@@ -5,7 +5,10 @@ import {
   BadRequestException,
   ForbiddenException,
   ConflictException,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
+import { OAuthService } from './oauth.service';
 import { eq, and, desc, asc, sql } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
@@ -34,6 +37,14 @@ import {
 @Injectable()
 export class ChannelService {
   private readonly logger = new Logger(ChannelService.name);
+
+  // Buffer time before expiration to trigger refresh (5 minutes)
+  private readonly TOKEN_REFRESH_BUFFER_MS = 5 * 60 * 1000;
+
+  constructor(
+    @Inject(forwardRef(() => OAuthService))
+    private readonly oauthService: OAuthService,
+  ) {}
 
   // ==========================================================================
   // Channel CRUD Operations
@@ -319,7 +330,7 @@ export class ChannelService {
   }
 
   /**
-   * Get decrypted access token for a channel
+   * Get decrypted access token for a channel (with automatic refresh)
    */
   async getAccessToken(channelId: number, workspaceId: string): Promise<string> {
     const channel = await db
@@ -337,14 +348,96 @@ export class ChannelService {
       throw new NotFoundException('Channel not found');
     }
 
-    // Check if token is expired
-    if (channel[0].tokenExpiresAt && channel[0].tokenExpiresAt < new Date()) {
+    const channelData = channel[0];
+    const platform = channelData.platform as SupportedPlatform;
+    const platformConfig = PLATFORM_CONFIG[platform];
+
+    // Check if token is expired or about to expire
+    const now = new Date();
+    const bufferTime = new Date(now.getTime() + this.TOKEN_REFRESH_BUFFER_MS);
+    const isExpired = channelData.tokenExpiresAt && channelData.tokenExpiresAt < now;
+    const isAboutToExpire = channelData.tokenExpiresAt && channelData.tokenExpiresAt < bufferTime;
+
+    // If token is expired or about to expire, try to refresh it
+    if ((isExpired || isAboutToExpire) && channelData.refreshToken && platformConfig?.supportsRefreshToken) {
+      this.logger.log(`Token for channel ${channelId} (${platform}) is ${isExpired ? 'expired' : 'about to expire'}, attempting refresh...`);
+
+      try {
+        const refreshToken = decrypt(channelData.refreshToken);
+        const refreshedTokens = await this.oauthService.refreshAccessToken(platform, refreshToken);
+
+        // Calculate new expiration time
+        const newExpiresAt = refreshedTokens.expiresIn
+          ? new Date(Date.now() + refreshedTokens.expiresIn * 1000)
+          : null;
+
+        // Update the channel with new tokens
+        await db
+          .update(socialMediaChannels)
+          .set({
+            accessToken: encrypt(refreshedTokens.accessToken),
+            refreshToken: refreshedTokens.refreshToken
+              ? encrypt(refreshedTokens.refreshToken)
+              : channelData.refreshToken, // Keep old refresh token if new one not provided
+            tokenExpiresAt: newExpiresAt,
+            connectionStatus: 'connected',
+            lastError: null,
+            lastErrorAt: null,
+            consecutiveErrors: 0,
+            updatedAt: new Date(),
+          })
+          .where(eq(socialMediaChannels.id, channelId));
+
+        // Log the successful refresh
+        await db.insert(tokenRefreshLogs).values({
+          channelId,
+          status: 'success',
+          oldExpiresAt: channelData.tokenExpiresAt,
+          newExpiresAt,
+        } as NewTokenRefreshLog);
+
+        this.logger.log(`Successfully refreshed token for channel ${channelId} (${platform})`);
+
+        return refreshedTokens.accessToken;
+      } catch (error) {
+        this.logger.error(`Failed to refresh token for channel ${channelId}: ${error}`);
+
+        // Log the failed refresh
+        await db.insert(tokenRefreshLogs).values({
+          channelId,
+          status: 'failed',
+          errorMessage: error instanceof Error ? error.message : String(error),
+          oldExpiresAt: channelData.tokenExpiresAt,
+        } as NewTokenRefreshLog);
+
+        // If token is expired (not just about to expire), throw error
+        if (isExpired) {
+          // Mark channel as expired
+          await db
+            .update(socialMediaChannels)
+            .set({
+              connectionStatus: 'expired',
+              lastError: 'Token refresh failed',
+              lastErrorAt: new Date(),
+              consecutiveErrors: (channelData.consecutiveErrors || 0) + 1,
+              updatedAt: new Date(),
+            })
+            .where(eq(socialMediaChannels.id, channelId));
+
+          throw new BadRequestException(
+            `Access token has expired and refresh failed. Please reconnect the ${platform} channel.`,
+          );
+        }
+        // If just about to expire, return current token and let it work until actual expiration
+      }
+    } else if (isExpired) {
+      // Token is expired but no refresh token available or platform doesn't support refresh
       throw new BadRequestException(
-        'Access token has expired. Please reconnect the channel.',
+        `Access token has expired. Please reconnect the ${platform} channel.`,
       );
     }
 
-    return decrypt(channel[0].accessToken);
+    return decrypt(channelData.accessToken);
   }
 
   /**
