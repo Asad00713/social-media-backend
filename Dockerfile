@@ -39,4 +39,5 @@ RUN ls -la dist/
 EXPOSE 3000
 
 # Start the application directly (not via npm)
-CMD ["node", "dist/main"]
+# NestJS builds to dist/src/main.js
+CMD ["node", "dist/src/main"]
