@@ -6,6 +6,7 @@ cmds = ["npm install"]
 
 [phases.build]
 cmds = ["npm run build"]
+onlyIncludeFiles = ["dist", "node_modules", "package.json"]
 
 [start]
 cmd = "node dist/main"
