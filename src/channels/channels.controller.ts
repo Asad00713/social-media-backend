@@ -200,7 +200,81 @@ export class ChannelsController {
         tokenExpiresAt.setSeconds(tokenExpiresAt.getSeconds() + tokens.expiresIn);
       }
 
-      // Redirect to frontend with success and tokens
+      // Special handling for Twitter: auto-create channel and chain to OAuth 1.0a
+      if (platform === 'twitter') {
+        try {
+          console.log('[OAuth Callback] Twitter: Auto-creating channel and initiating OAuth 1.0a...');
+
+          // Get Twitter user profile
+          const twitterUser = await this.twitterService.getCurrentUser(tokens.accessToken);
+
+          // Create the Twitter channel automatically
+          const channel = await this.channelService.createChannel(
+            stateData.workspaceId,
+            stateData.userId,
+            {
+              platform: 'twitter',
+              accountType: 'profile',
+              platformAccountId: twitterUser.id,
+              accountName: twitterUser.name,
+              username: twitterUser.username || undefined,
+              profilePictureUrl: twitterUser.profileImageUrl || undefined,
+              accessToken: tokens.accessToken,
+              refreshToken: tokens.refreshToken || undefined,
+              tokenExpiresAt: tokenExpiresAt?.toISOString(),
+              permissions: PLATFORM_CONFIG.twitter.oauthScopes,
+              capabilities: {
+                canPost: true,
+                canSchedule: true,
+                canReadAnalytics: true,
+                canReply: true,
+                canDelete: true,
+                supportedMediaTypes: ['text', 'image', 'video', 'gif'],
+                maxMediaPerPost: 4,
+                maxTextLength: 280,
+              },
+              metadata: {
+                description: twitterUser.description,
+                verified: twitterUser.verified,
+                verifiedType: twitterUser.verifiedType,
+                followersCount: twitterUser.publicMetrics.followersCount,
+                followingCount: twitterUser.publicMetrics.followingCount,
+                tweetCount: twitterUser.publicMetrics.tweetCount,
+                createdAt: twitterUser.createdAt,
+              },
+            },
+          );
+
+          console.log(`[OAuth Callback] Twitter channel created: ${channel.id}`);
+
+          // Initiate OAuth 1.0a for media upload support
+          const oauth1CallbackUrl = `${backendUrl}/channels/oauth/twitter/oauth1/callback`;
+          const oauth1Result = await this.twitterService.getOAuth1RequestToken(oauth1CallbackUrl);
+
+          // Store OAuth 1.0a state with channel ID
+          await this.channelService.createOAuthState(
+            stateData.workspaceId,
+            stateData.userId,
+            'twitter',
+            oauth1Result.oauthToken,
+            oauth1CallbackUrl,
+            oauth1Result.oauthTokenSecret,
+            { channelId: channel.id.toString() },
+          );
+
+          console.log('[OAuth Callback] Twitter: Redirecting to OAuth 1.0a authorization...');
+
+          // Redirect directly to Twitter OAuth 1.0a authorization
+          return res.redirect(oauth1Result.authorizationUrl);
+        } catch (twitterError) {
+          console.error('[OAuth Callback] Twitter auto-setup failed:', twitterError);
+          // Fall through to normal flow if Twitter-specific handling fails
+          const errorUrl = `${backendUrl}/channels/connect/error?error=${encodeURIComponent('Twitter setup failed: ' + (twitterError instanceof Error ? twitterError.message : 'Unknown error'))}`;
+          return res.redirect(errorUrl);
+        }
+      }
+
+      // Default flow for other platforms: Redirect to frontend with success and tokens
       // Frontend will fetch account info and complete the channel creation
       const successUrl = new URL(`${frontendUrl}/channels/connect/success`);
       successUrl.searchParams.set('platform', platform);
@@ -1262,6 +1336,7 @@ export class ChannelsController {
 
   /**
    * Get Twitter profile info and connect as channel
+   * Optionally initiates OAuth 1.0a flow for media upload support
    */
   @Post('workspaces/:workspaceId/twitter/connect')
   @UseGuards(JwtAuthGuard)
@@ -1269,7 +1344,7 @@ export class ChannelsController {
   async connectTwitter(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() dto: FetchPagesDto,
+    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string; enableMediaUpload?: boolean },
   ) {
     // Get Twitter profile info
     const twitterUser = await this.twitterService.getCurrentUser(dto.accessToken);
@@ -1286,6 +1361,8 @@ export class ChannelsController {
         username: twitterUser.username || undefined,
         profilePictureUrl: twitterUser.profileImageUrl || undefined,
         accessToken: dto.accessToken,
+        refreshToken: dto.refreshToken,
+        tokenExpiresAt: dto.tokenExpiresAt,
         permissions: PLATFORM_CONFIG.twitter.oauthScopes,
         capabilities: {
           canPost: true,
@@ -1309,9 +1386,40 @@ export class ChannelsController {
       },
     );
 
+    // If enableMediaUpload is true, initiate OAuth 1.0a flow for media uploads
+    let oauth1AuthUrl: string | null = null;
+    if (dto.enableMediaUpload !== false) {
+      try {
+        const appUrl = process.env.APP_URL || 'http://localhost:3001';
+        const callbackUrl = `${appUrl}/channels/oauth/twitter/oauth1/callback`;
+
+        const oauth1Result = await this.twitterService.getOAuth1RequestToken(callbackUrl);
+
+        // Store the OAuth 1.0a state
+        await this.channelService.createOAuthState(
+          workspaceId,
+          user.userId,
+          'twitter',
+          oauth1Result.oauthToken,
+          callbackUrl,
+          oauth1Result.oauthTokenSecret,
+          { channelId: channel.id.toString() },
+        );
+
+        oauth1AuthUrl = oauth1Result.authorizationUrl;
+      } catch (error) {
+        console.error('Failed to initiate OAuth 1.0a for Twitter media uploads:', error);
+        // Don't fail the whole connection, just skip OAuth 1.0a
+      }
+    }
+
     return {
       channel,
-      message: 'Twitter account connected successfully',
+      message: oauth1AuthUrl
+        ? 'Twitter account connected. Redirect to oauth1AuthUrl to enable media uploads.'
+        : 'Twitter account connected successfully',
+      oauth1AuthUrl,
+      mediaUploadEnabled: !oauth1AuthUrl, // If no URL, media was either skipped or already set up
     };
   }
 
