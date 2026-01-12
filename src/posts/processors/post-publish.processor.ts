@@ -3,6 +3,7 @@ import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
+import { withRetry } from '../../drizzle/db-utils';
 import { posts } from '../../drizzle/schema/posts.schema';
 import { QUEUES } from '../../queue/queue.module';
 import { PostService } from '../services/post.service';
@@ -27,12 +28,14 @@ export class PostPublishProcessor extends WorkerHost {
     this.logger.log(`Processing scheduled publish job for post: ${postId}`);
 
     try {
-      // Get the post to find its workspace
-      const [post] = await db
-        .select()
-        .from(posts)
-        .where(eq(posts.id, postId))
-        .limit(1);
+      // Get the post to find its workspace (with retry for transient failures)
+      const [post] = await withRetry(() =>
+        db
+          .select()
+          .from(posts)
+          .where(eq(posts.id, postId))
+          .limit(1),
+      );
 
       if (!post) {
         this.logger.error(`Post ${postId} not found`);
@@ -63,14 +66,16 @@ export class PostPublishProcessor extends WorkerHost {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Failed to publish post ${postId}: ${errorMessage}`);
 
-      // Update post with error
-      await db
-        .update(posts)
-        .set({
-          lastError: errorMessage,
-          updatedAt: new Date(),
-        })
-        .where(eq(posts.id, postId));
+      // Update post with error (with retry for transient failures)
+      await withRetry(() =>
+        db
+          .update(posts)
+          .set({
+            lastError: errorMessage,
+            updatedAt: new Date(),
+          })
+          .where(eq(posts.id, postId)),
+      );
 
       throw error; // Re-throw to trigger BullMQ retry
     }

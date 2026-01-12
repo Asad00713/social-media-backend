@@ -3,6 +3,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
+import { withRetry } from '../../drizzle/db-utils';
 import {
   dripCampaigns,
   dripPosts,
@@ -77,11 +78,13 @@ export class DripProcessor extends WorkerHost {
   private async handleGenerateContent(dripPostId: string, campaignId: string): Promise<any> {
     this.logger.log(`Generating AI content for drip post ${dripPostId}`);
 
-    // Get drip post and campaign
-    const [dripPost] = await db
-      .select()
-      .from(dripPosts)
-      .where(eq(dripPosts.id, dripPostId));
+    // Get drip post and campaign (with retry for transient failures)
+    const [dripPost] = await withRetry(() =>
+      db
+        .select()
+        .from(dripPosts)
+        .where(eq(dripPosts.id, dripPostId)),
+    );
 
     if (!dripPost) {
       throw new Error(`Drip post ${dripPostId} not found`);
@@ -93,10 +96,12 @@ export class DripProcessor extends WorkerHost {
       return { skipped: true, reason: `Status is ${dripPost.status}` };
     }
 
-    const [campaign] = await db
-      .select()
-      .from(dripCampaigns)
-      .where(eq(dripCampaigns.id, campaignId));
+    const [campaign] = await withRetry(() =>
+      db
+        .select()
+        .from(dripCampaigns)
+        .where(eq(dripCampaigns.id, campaignId)),
+    );
 
     if (!campaign) {
       throw new Error(`Campaign ${campaignId} not found`);
@@ -109,19 +114,23 @@ export class DripProcessor extends WorkerHost {
     }
 
     // Update status to generating
-    await db
-      .update(dripPosts)
-      .set({ status: 'generating', updatedAt: new Date() })
-      .where(eq(dripPosts.id, dripPostId));
+    await withRetry(() =>
+      db
+        .update(dripPosts)
+        .set({ status: 'generating', updatedAt: new Date() })
+        .where(eq(dripPosts.id, dripPostId)),
+    );
 
     await this.recordHistory(campaignId, dripPostId, 'generating_started', 'pending', 'generating');
 
     // Get target platforms from channels
     const targetChannelIds = campaign.targetChannelIds as string[];
-    const channels = await db
-      .select()
-      .from(socialMediaChannels)
-      .where(eq(socialMediaChannels.workspaceId, campaign.workspaceId));
+    const channels = await withRetry(() =>
+      db
+        .select()
+        .from(socialMediaChannels)
+        .where(eq(socialMediaChannels.workspaceId, campaign.workspaceId)),
+    );
 
     const targetPlatforms = channels
       .filter((c) => targetChannelIds.includes(String(c.id)))
@@ -501,21 +510,25 @@ export class DripProcessor extends WorkerHost {
    * Update drip post with error
    */
   private async updateDripPostError(dripPostId: string, errorMessage: string): Promise<void> {
-    const [dripPost] = await db
-      .select()
-      .from(dripPosts)
-      .where(eq(dripPosts.id, dripPostId));
+    const [dripPost] = await withRetry(() =>
+      db
+        .select()
+        .from(dripPosts)
+        .where(eq(dripPosts.id, dripPostId)),
+    );
 
     if (dripPost) {
-      await db
-        .update(dripPosts)
-        .set({
-          lastError: errorMessage,
-          lastErrorAt: new Date(),
-          retryCount: dripPost.retryCount + 1,
-          updatedAt: new Date(),
-        })
-        .where(eq(dripPosts.id, dripPostId));
+      await withRetry(() =>
+        db
+          .update(dripPosts)
+          .set({
+            lastError: errorMessage,
+            lastErrorAt: new Date(),
+            retryCount: dripPost.retryCount + 1,
+            updatedAt: new Date(),
+          })
+          .where(eq(dripPosts.id, dripPostId)),
+      );
     }
   }
 
@@ -532,17 +545,19 @@ export class DripProcessor extends WorkerHost {
     details?: Record<string, any>,
     errorMessage?: string,
   ): Promise<void> {
-    await db.insert(dripCampaignHistory).values({
-      dripCampaignId: campaignId,
-      dripPostId,
-      action,
-      previousStatus,
-      newStatus,
-      performedById,
-      performedBySystem: !performedById,
-      details,
-      errorMessage,
-    });
+    await withRetry(() =>
+      db.insert(dripCampaignHistory).values({
+        dripCampaignId: campaignId,
+        dripPostId,
+        action,
+        previousStatus,
+        newStatus,
+        performedById,
+        performedBySystem: !performedById,
+        details,
+        errorMessage,
+      }),
+    );
   }
 
   // ===========================================================================
