@@ -32,8 +32,8 @@ export class AuthController {
 
         response.cookie('refreshToken', refreshToken, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
+            secure: true,           // Always true for cross-origin cookies
+            sameSite: 'none',       // Required for cross-origin cookies
             maxAge: 7 * 24 * 60 * 60 * 1000
         });
 
@@ -55,8 +55,8 @@ export class AuthController {
 
         response.cookie('refreshToken', refreshToken, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
+            secure: true,           // Always true for cross-origin cookies
+            sameSite: 'none',       // Required for cross-origin cookies
             maxAge: 7 * 24 * 60 * 60 * 1000,
         });
 
@@ -79,8 +79,8 @@ export class AuthController {
 
         response.cookie('refreshToken', refreshToken, {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
+            secure: true,           // Always true for cross-origin cookies
+            sameSite: 'none',       // Required for cross-origin cookies
             maxAge: 7 * 24 * 60 * 60 * 1000,
         });
 
@@ -96,8 +96,8 @@ export class AuthController {
 
         response.clearCookie('refreshToken', {
             httpOnly: true,
-            secure: process.env.NODE_ENV === 'production',
-            sameSite: 'strict',
+            secure: true,           // Must match cookie settings
+            sameSite: 'none',       // Must match cookie settings
         });
 
         return {
