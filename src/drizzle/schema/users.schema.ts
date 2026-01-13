@@ -1,4 +1,11 @@
-import { pgTable, uuid, timestamp, varchar, text } from 'drizzle-orm/pg-core';
+import {
+  pgTable,
+  uuid,
+  timestamp,
+  varchar,
+  text,
+  boolean,
+} from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { workspace } from './workspace.schema';
 
@@ -7,6 +14,18 @@ export const users = pgTable('users', {
   email: varchar('email', { length: 255 }).notNull().unique(),
   name: varchar('name', { length: 255 }),
   password: text('password').notNull(),
+
+  // Email verification
+  isEmailVerified: boolean('is_email_verified').default(false).notNull(),
+  emailVerificationToken: varchar('email_verification_token', { length: 255 }),
+  emailVerificationTokenExpiresAt: timestamp(
+    'email_verification_token_expires_at',
+  ),
+
+  // Password reset
+  passwordResetToken: varchar('password_reset_token', { length: 255 }),
+  passwordResetTokenExpiresAt: timestamp('password_reset_token_expires_at'),
+
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

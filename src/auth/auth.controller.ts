@@ -11,6 +11,10 @@ import {
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
+import { ResendVerificationDto } from './dto/resend-verification.dto';
+import { ForgotPasswordDto } from './dto/forgot-password.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
 import { JwtRefreshGuard } from './guards/jwt-refresh.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
@@ -26,7 +30,7 @@ export class AuthController {
         @Body() createUserDto: CreateUserDto,
         @Res({ passthrough: true }) response: Response
     ) {
-        const { accessToken, user } = await this.authService.register(createUserDto);
+        const { accessToken, user, message } = await this.authService.register(createUserDto);
 
         const refreshToken = await this.authService.generateRefreshToken(user.id, user.email);
 
@@ -39,7 +43,8 @@ export class AuthController {
 
         return {
             accessToken,
-            user
+            user,
+            message,
         }
     }
 
@@ -109,5 +114,33 @@ export class AuthController {
     @UseGuards(JwtAuthGuard)
     async getProfile(@CurrentUser() user: { userId: string; email: string }) {
         return this.authService.whoAmI(user.userId);
+    }
+
+    // ==================== Email Verification ====================
+
+    @Post('verify-email')
+    @HttpCode(HttpStatus.OK)
+    async verifyEmail(@Body() dto: VerifyEmailDto) {
+        return this.authService.verifyEmail(dto.token);
+    }
+
+    @Post('resend-verification')
+    @HttpCode(HttpStatus.OK)
+    async resendVerification(@Body() dto: ResendVerificationDto) {
+        return this.authService.resendVerificationEmail(dto.email);
+    }
+
+    // ==================== Password Reset ====================
+
+    @Post('forgot-password')
+    @HttpCode(HttpStatus.OK)
+    async forgotPassword(@Body() dto: ForgotPasswordDto) {
+        return this.authService.forgotPassword(dto.email);
+    }
+
+    @Post('reset-password')
+    @HttpCode(HttpStatus.OK)
+    async resetPassword(@Body() dto: ResetPasswordDto) {
+        return this.authService.resetPassword(dto.token, dto.password);
     }
 }

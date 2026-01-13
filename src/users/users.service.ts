@@ -7,11 +7,14 @@ import { eq } from 'drizzle-orm';
 import * as bcrypt from 'bcrypt';
 import { UpdateUserDto } from './dto/update-user.dto';
 
+// Public user type that excludes sensitive fields
+export type PublicUser = Pick<User, 'id' | 'email' | 'name' | 'isEmailVerified' | 'createdAt' | 'updatedAt'>;
+
 @Injectable()
 export class UsersService {
     constructor(@Inject(DRIZZLE) private db: DbType) { }
 
-    async create(createUserDto: CreateUserDto): Promise<Omit<User, 'password'>> {
+    async create(createUserDto: CreateUserDto): Promise<PublicUser> {
         const existingUser = await this.db.query.users.findFirst({
             where: eq(users.email, createUserDto.email),
         });
@@ -31,38 +34,43 @@ export class UsersService {
             })
             .returning();
 
-        const { password, ...userWithoutPassword } = newUser;
-        return userWithoutPassword;
+        const {
+            password: _password,
+            emailVerificationToken: _evt,
+            emailVerificationTokenExpiresAt: _evte,
+            passwordResetToken: _prt,
+            passwordResetTokenExpiresAt: _prte,
+            ...publicUser
+        } = newUser;
+        return publicUser;
     }
 
-    async findAll(): Promise<Omit<User, 'password'>[]> {
+    async findAll(): Promise<PublicUser[]> {
         const allUsers = await this.db.query.users.findMany({
             columns: {
                 id: true,
                 email: true,
                 name: true,
+                isEmailVerified: true,
                 createdAt: true,
                 updatedAt: true,
             }
         });
 
-        return allUsers
+        return allUsers;
     }
 
-    async findOne(id: string): Promise<Omit<User, 'password'>> {
+    async findOne(id: string): Promise<PublicUser> {
         const user = await this.db.query.users.findFirst({
             where: eq(users.id, id),
             columns: {
                 id: true,
                 email: true,
                 name: true,
+                isEmailVerified: true,
                 createdAt: true,
                 updatedAt: true,
             },
-            // with: {
-            //     socialAccounts: true,
-            //     posts: true,
-            // },
         });
 
         if (!user) {
@@ -70,6 +78,69 @@ export class UsersService {
         }
 
         return user;
+    }
+
+    async findByVerificationToken(token: string): Promise<User | undefined> {
+        const user = await this.db.query.users.findFirst({
+            where: eq(users.emailVerificationToken, token)
+        });
+
+        return user;
+    }
+
+    async findByPasswordResetToken(token: string): Promise<User | undefined> {
+        const user = await this.db.query.users.findFirst({
+            where: eq(users.passwordResetToken, token)
+        });
+
+        return user;
+    }
+
+    async setEmailVerificationToken(userId: string, token: string, expiresAt: Date): Promise<void> {
+        await this.db
+            .update(users)
+            .set({
+                emailVerificationToken: token,
+                emailVerificationTokenExpiresAt: expiresAt,
+                updatedAt: new Date(),
+            })
+            .where(eq(users.id, userId));
+    }
+
+    async verifyEmail(userId: string): Promise<void> {
+        await this.db
+            .update(users)
+            .set({
+                isEmailVerified: true,
+                emailVerificationToken: null,
+                emailVerificationTokenExpiresAt: null,
+                updatedAt: new Date(),
+            })
+            .where(eq(users.id, userId));
+    }
+
+    async setPasswordResetToken(userId: string, token: string, expiresAt: Date): Promise<void> {
+        await this.db
+            .update(users)
+            .set({
+                passwordResetToken: token,
+                passwordResetTokenExpiresAt: expiresAt,
+                updatedAt: new Date(),
+            })
+            .where(eq(users.id, userId));
+    }
+
+    async resetPassword(userId: string, newPassword: string): Promise<void> {
+        const hashedPassword = await bcrypt.hash(newPassword, 10);
+        await this.db
+            .update(users)
+            .set({
+                password: hashedPassword,
+                passwordResetToken: null,
+                passwordResetTokenExpiresAt: null,
+                updatedAt: new Date(),
+            })
+            .where(eq(users.id, userId));
     }
 
     async findByEmail(email: string): Promise<User | undefined> {
@@ -80,7 +151,7 @@ export class UsersService {
         return user;
     }
 
-    async update(id: string, updateUserDto: UpdateUserDto): Promise<Omit<User, 'password'>> {
+    async update(id: string, updateUserDto: UpdateUserDto): Promise<PublicUser> {
         const user = await this.findOne(id);
 
         if (!user) {
@@ -102,8 +173,15 @@ export class UsersService {
             .where(eq(users.id, id))
             .returning();
 
-        const { password, ...userWithoutPassword } = updatedUser;
-        return userWithoutPassword;
+        const {
+            password: _password,
+            emailVerificationToken: _evt,
+            emailVerificationTokenExpiresAt: _evte,
+            passwordResetToken: _prt,
+            passwordResetTokenExpiresAt: _prte,
+            ...publicUser
+        } = updatedUser;
+        return publicUser;
     }
 
     async remove(id: string): Promise<void> {

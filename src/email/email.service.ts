@@ -302,4 +302,153 @@ If you don't make any changes, the post will be published automatically at the s
 This email was sent by your Social Media Automation tool.
     `.trim();
   }
+
+  /**
+   * Send email verification email
+   */
+  async sendVerificationEmail(
+    email: string,
+    token: string,
+    name?: string,
+  ): Promise<EmailResult> {
+    const verifyUrl = `${this.appUrl}/auth/verify?token=${token}`;
+    const greeting = name ? `Hi ${name}` : 'Hi there';
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Verify Your Email</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px 10px 0 0;">
+    <h1 style="color: white; margin: 0; font-size: 24px;">Welcome! Verify Your Email</h1>
+  </div>
+
+  <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
+    <p style="font-size: 16px; margin-top: 0;">${greeting},</p>
+
+    <p>Thank you for signing up! Please verify your email address to get started.</p>
+
+    <div style="text-align: center; margin: 30px 0;">
+      <a href="${verifyUrl}" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: bold; font-size: 16px;">Verify Email Address</a>
+    </div>
+
+    <p style="color: #6b7280; font-size: 14px;">
+      This link will expire in 24 hours. If you didn't create an account, you can safely ignore this email.
+    </p>
+
+    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+      <p style="color: #9ca3af; font-size: 12px; margin: 0;">
+        If the button doesn't work, copy and paste this link into your browser:<br>
+        <a href="${verifyUrl}" style="color: #667eea; word-break: break-all;">${verifyUrl}</a>
+      </p>
+    </div>
+  </div>
+
+  <div style="text-align: center; padding: 20px; color: #9ca3af; font-size: 12px;">
+    <p>This email was sent by your Social Media Automation tool.</p>
+  </div>
+</body>
+</html>
+    `.trim();
+
+    const text = `
+${greeting},
+
+Thank you for signing up! Please verify your email address to get started.
+
+Click the link below to verify your email:
+${verifyUrl}
+
+This link will expire in 24 hours. If you didn't create an account, you can safely ignore this email.
+
+---
+This email was sent by your Social Media Automation tool.
+    `.trim();
+
+    return this.sendEmail({
+      to: email,
+      subject: 'Verify Your Email Address',
+      html,
+      text,
+    });
+  }
+
+  /**
+   * Send password reset email
+   */
+  async sendPasswordResetEmail(
+    email: string,
+    token: string,
+    name?: string,
+  ): Promise<EmailResult> {
+    const resetUrl = `${this.appUrl}/auth/reset?token=${token}`;
+    const greeting = name ? `Hi ${name}` : 'Hi there';
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Reset Your Password</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px 10px 0 0;">
+    <h1 style="color: white; margin: 0; font-size: 24px;">Reset Your Password</h1>
+  </div>
+
+  <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
+    <p style="font-size: 16px; margin-top: 0;">${greeting},</p>
+
+    <p>We received a request to reset your password. Click the button below to choose a new password.</p>
+
+    <div style="text-align: center; margin: 30px 0;">
+      <a href="${resetUrl}" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: bold; font-size: 16px;">Reset Password</a>
+    </div>
+
+    <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px 0;">
+      <strong style="color: #92400e;">Security Notice</strong><br>
+      <span style="color: #92400e; font-size: 14px;">This link will expire in 1 hour. If you didn't request a password reset, please ignore this email or contact support if you have concerns.</span>
+    </div>
+
+    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+      <p style="color: #9ca3af; font-size: 12px; margin: 0;">
+        If the button doesn't work, copy and paste this link into your browser:<br>
+        <a href="${resetUrl}" style="color: #667eea; word-break: break-all;">${resetUrl}</a>
+      </p>
+    </div>
+  </div>
+
+  <div style="text-align: center; padding: 20px; color: #9ca3af; font-size: 12px;">
+    <p>This email was sent by your Social Media Automation tool.</p>
+  </div>
+</body>
+</html>
+    `.trim();
+
+    const text = `
+${greeting},
+
+We received a request to reset your password. Click the link below to choose a new password:
+
+${resetUrl}
+
+SECURITY NOTICE:
+This link will expire in 1 hour. If you didn't request a password reset, please ignore this email or contact support if you have concerns.
+
+---
+This email was sent by your Social Media Automation tool.
+    `.trim();
+
+    return this.sendEmail({
+      to: email,
+      subject: 'Reset Your Password',
+      html,
+      text,
+    });
+  }
 }
