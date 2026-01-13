@@ -3,10 +3,17 @@ import { ConfigService } from '@nestjs/config';
 import { PassportStrategy } from '@nestjs/passport';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { UsersService } from '../../users/users.service';
+import type { UserRole } from '../../drizzle/schema';
 
 export interface JwtPayload {
     sub: string;
     email: string;
+}
+
+export interface JwtUser {
+    userId: string;
+    email: string;
+    role: UserRole;
 }
 
 @Injectable()
@@ -28,13 +35,13 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
         });
     }
 
-    async validate(payload: JwtPayload) {
+    async validate(payload: JwtPayload): Promise<JwtUser> {
         const user = await this.usersService.findOne(payload.sub);
 
         if (!user) {
             throw new UnauthorizedException('User not found');
         }
 
-        return { userId: payload.sub, email: payload.email };
+        return { userId: payload.sub, email: payload.email, role: user.role };
     }
 }

@@ -10,7 +10,7 @@ import * as bcrypt from 'bcrypt';
 import { UsersService, PublicUser } from '../users/users.service';
 import { EmailService } from '../email/email.service';
 import { LoginDto } from './dto/login.dto';
-import type { User } from '../drizzle/schema';
+import type { User, UserRole } from '../drizzle/schema';
 import { CreateUserDto } from '../users/dto/create-user.dto';
 import { generateSecureToken, hash } from '../common/utils/encryption.util';
 
@@ -35,7 +35,10 @@ export class AuthService {
     ) { }
 
     async register(registerDto: CreateUserDto): Promise<AuthResponse> {
-        const user = await this.usersService.create(registerDto);
+        // Determine role based on SUPER_ADMIN_EMAILS environment variable
+        const role = this.determineUserRole(registerDto.email);
+
+        const user = await this.usersService.create(registerDto, role);
 
         // Generate verification token and send email
         await this.sendVerificationEmailInternal(user.id, user.email, user.name);
@@ -47,6 +50,28 @@ export class AuthService {
             user,
             message: 'Registration successful. Please check your email to verify your account.',
         };
+    }
+
+    /**
+     * Determine user role based on SUPER_ADMIN_EMAILS environment variable
+     */
+    private determineUserRole(email: string): UserRole {
+        const superAdminEmails = this.configService.get<string>('SUPER_ADMIN_EMAILS', '');
+
+        if (!superAdminEmails) {
+            return 'USER';
+        }
+
+        const adminEmailList = superAdminEmails
+            .split(',')
+            .map(e => e.trim().toLowerCase())
+            .filter(e => e.length > 0);
+
+        if (adminEmailList.includes(email.toLowerCase())) {
+            return 'SUPER_ADMIN';
+        }
+
+        return 'USER';
     }
 
     async login(loginDto: LoginDto): Promise<AuthResponse> {

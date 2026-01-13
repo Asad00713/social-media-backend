@@ -2,19 +2,19 @@ import { ConflictException, Inject, Injectable, NotFoundException } from '@nestj
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
 import { CreateUserDto } from './dto/create-user.dto';
-import { NewUser, User, users } from 'src/drizzle/schema';
+import { NewUser, User, users, UserRole } from 'src/drizzle/schema';
 import { eq } from 'drizzle-orm';
 import * as bcrypt from 'bcrypt';
 import { UpdateUserDto } from './dto/update-user.dto';
 
 // Public user type that excludes sensitive fields
-export type PublicUser = Pick<User, 'id' | 'email' | 'name' | 'isEmailVerified' | 'createdAt' | 'updatedAt'>;
+export type PublicUser = Pick<User, 'id' | 'email' | 'name' | 'role' | 'isEmailVerified' | 'createdAt' | 'updatedAt'>;
 
 @Injectable()
 export class UsersService {
     constructor(@Inject(DRIZZLE) private db: DbType) { }
 
-    async create(createUserDto: CreateUserDto): Promise<PublicUser> {
+    async create(createUserDto: CreateUserDto, role: UserRole = 'USER'): Promise<PublicUser> {
         const existingUser = await this.db.query.users.findFirst({
             where: eq(users.email, createUserDto.email),
         });
@@ -31,18 +31,19 @@ export class UsersService {
                 email: createUserDto.email,
                 name: createUserDto.name,
                 password: hashedPassword,
+                role,
             })
             .returning();
 
-        const {
-            password: _password,
-            emailVerificationToken: _evt,
-            emailVerificationTokenExpiresAt: _evte,
-            passwordResetToken: _prt,
-            passwordResetTokenExpiresAt: _prte,
-            ...publicUser
-        } = newUser;
-        return publicUser;
+        return {
+            id: newUser.id,
+            email: newUser.email,
+            name: newUser.name,
+            role: newUser.role,
+            isEmailVerified: newUser.isEmailVerified,
+            createdAt: newUser.createdAt,
+            updatedAt: newUser.updatedAt,
+        };
     }
 
     async findAll(): Promise<PublicUser[]> {
@@ -51,6 +52,7 @@ export class UsersService {
                 id: true,
                 email: true,
                 name: true,
+                role: true,
                 isEmailVerified: true,
                 createdAt: true,
                 updatedAt: true,
@@ -67,6 +69,7 @@ export class UsersService {
                 id: true,
                 email: true,
                 name: true,
+                role: true,
                 isEmailVerified: true,
                 createdAt: true,
                 updatedAt: true,
@@ -173,15 +176,15 @@ export class UsersService {
             .where(eq(users.id, id))
             .returning();
 
-        const {
-            password: _password,
-            emailVerificationToken: _evt,
-            emailVerificationTokenExpiresAt: _evte,
-            passwordResetToken: _prt,
-            passwordResetTokenExpiresAt: _prte,
-            ...publicUser
-        } = updatedUser;
-        return publicUser;
+        return {
+            id: updatedUser.id,
+            email: updatedUser.email,
+            name: updatedUser.name,
+            role: updatedUser.role,
+            isEmailVerified: updatedUser.isEmailVerified,
+            createdAt: updatedUser.createdAt,
+            updatedAt: updatedUser.updatedAt,
+        };
     }
 
     async remove(id: string): Promise<void> {

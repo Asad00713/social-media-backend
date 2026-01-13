@@ -71,6 +71,20 @@
       "when": 1768291057808,
       "tag": "0009_round_sabra",
       "breakpoints": true
+    },
+    {
+      "idx": 10,
+      "version": "7",
+      "when": 1768298706682,
+      "tag": "0010_puzzling_carnage",
+      "breakpoints": true
+    },
+    {
+      "idx": 11,
+      "version": "7",
+      "when": 1768301065716,
+      "tag": "0011_smart_wolf_cub",
+      "breakpoints": true
     }
   ]
 }
