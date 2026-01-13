@@ -1,4 +1,5 @@
 import {
+    Inject,
     Injectable,
     NotFoundException,
     UnauthorizedException,
@@ -10,9 +11,13 @@ import * as bcrypt from 'bcrypt';
 import { UsersService, PublicUser } from '../users/users.service';
 import { EmailService } from '../email/email.service';
 import { LoginDto } from './dto/login.dto';
-import type { User, UserRole } from '../drizzle/schema';
+import type { User, UserRole, Workspace } from '../drizzle/schema';
+import { workspace } from '../drizzle/schema';
 import { CreateUserDto } from '../users/dto/create-user.dto';
 import { generateSecureToken, hash } from '../common/utils/encryption.util';
+import { DRIZZLE } from '../drizzle/drizzle.module';
+import type { DbType } from '../drizzle/db';
+import { eq } from 'drizzle-orm';
 
 export interface TokenPayload {
     sub: string;
@@ -25,9 +30,16 @@ export interface AuthResponse {
     message?: string;
 }
 
+export interface MeResponse {
+    user: PublicUser;
+    workspaces: Workspace[];
+    lastAccessedWorkspace: Workspace | null;
+}
+
 @Injectable()
 export class AuthService {
     constructor(
+        @Inject(DRIZZLE) private db: DbType,
         private usersService: UsersService,
         private jwtService: JwtService,
         private configService: ConfigService,
@@ -81,8 +93,8 @@ export class AuthService {
             throw new UnauthorizedException('Invalid credentials');
         }
 
-        // Block login if email is not verified
-        if (!user.isEmailVerified) {
+        // Block login if email is not verified (only for SUPER_ADMIN)
+        if (user.role === 'SUPER_ADMIN' && !user.isEmailVerified) {
             throw new UnauthorizedException(
                 'Please verify your email before logging in. Check your inbox for the verification link.',
             );
@@ -154,15 +166,32 @@ export class AuthService {
         return accessToken;
     }
 
-    async whoAmI(userId: string) {
+    async whoAmI(userId: string): Promise<MeResponse> {
         const user = await this.usersService.findOne(userId);
 
         if (!user) {
             throw new UnauthorizedException('User not found')
         }
 
+        // Get all workspaces for the user
+        const workspaces = await this.db.query.workspace.findMany({
+            where: eq(workspace.ownerId, userId),
+            orderBy: (workspace, { desc }) => [desc(workspace.createdAt)]
+        });
+
+        // Get last accessed workspace if exists
+        let lastAccessedWorkspace: Workspace | null = null;
+        if (user.lastAccessedWorkspaceId) {
+            const foundWorkspace = await this.db.query.workspace.findFirst({
+                where: eq(workspace.id, user.lastAccessedWorkspaceId)
+            });
+            lastAccessedWorkspace = foundWorkspace || null;
+        }
+
         return {
-            user
+            user,
+            workspaces,
+            lastAccessedWorkspace,
         }
     }
 

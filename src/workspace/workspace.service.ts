@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, forwardRef } from '@nestjs/common';
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
 import { CreateWorkspaceDto } from './dto/create-workspace.dto';
@@ -7,6 +7,7 @@ import { and, eq } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { UpdateWorkspaceDto } from './dto/update-workspace.dto';
 import { UsageService } from 'src/billing/services/usage.service';
+import { UsersService } from 'src/users/users.service';
 
 type GetAllREsponse = {
     data: Workspace[],
@@ -23,6 +24,7 @@ export class WorkspaceService {
     constructor(
         @Inject(DRIZZLE) private db: DbType,
         private usageService: UsageService,
+        private usersService: UsersService,
     ) { }
 
     async create(createWorkspaceDto: CreateWorkspaceDto, userId: string): Promise<Workspace> {
@@ -60,6 +62,12 @@ export class WorkspaceService {
                 ownerId: userId
             })
             .returning()
+
+        // Auto-set lastAccessedWorkspaceId if this is user's first workspace
+        const user = await this.usersService.findOne(userId);
+        if (!user.lastAccessedWorkspaceId) {
+            await this.usersService.setLastAccessedWorkspace(userId, newWorkspace.id);
+        }
 
         return newWorkspace
     }
@@ -110,6 +118,15 @@ export class WorkspaceService {
                 totalPages: Math.ceil(Number(count) / limit),
             },
         }
+    }
+
+    async findAllByUser(userId: string): Promise<Workspace[]> {
+        const workspaces = await this.db.query.workspace.findMany({
+            where: eq(workspace.ownerId, userId),
+            orderBy: (workspace, { desc }) => [desc(workspace.createdAt)]
+        });
+
+        return workspaces;
     }
 
     async findOne(

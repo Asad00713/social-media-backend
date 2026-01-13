@@ -38,6 +38,9 @@ export const users = pgTable('users', {
   passwordResetToken: varchar('password_reset_token', { length: 255 }),
   passwordResetTokenExpiresAt: timestamp('password_reset_token_expires_at'),
 
+  // Last accessed workspace for redirect on login
+  lastAccessedWorkspaceId: uuid('last_accessed_workspace_id'),
+
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

@@ -8,7 +8,7 @@ import * as bcrypt from 'bcrypt';
 import { UpdateUserDto } from './dto/update-user.dto';
 
 // Public user type that excludes sensitive fields
-export type PublicUser = Pick<User, 'id' | 'email' | 'name' | 'role' | 'isEmailVerified' | 'createdAt' | 'updatedAt'>;
+export type PublicUser = Pick<User, 'id' | 'email' | 'name' | 'role' | 'isEmailVerified' | 'lastAccessedWorkspaceId' | 'createdAt' | 'updatedAt'>;
 
 @Injectable()
 export class UsersService {
@@ -41,6 +41,7 @@ export class UsersService {
             name: newUser.name,
             role: newUser.role,
             isEmailVerified: newUser.isEmailVerified,
+            lastAccessedWorkspaceId: newUser.lastAccessedWorkspaceId,
             createdAt: newUser.createdAt,
             updatedAt: newUser.updatedAt,
         };
@@ -54,6 +55,7 @@ export class UsersService {
                 name: true,
                 role: true,
                 isEmailVerified: true,
+                lastAccessedWorkspaceId: true,
                 createdAt: true,
                 updatedAt: true,
             }
@@ -71,6 +73,7 @@ export class UsersService {
                 name: true,
                 role: true,
                 isEmailVerified: true,
+                lastAccessedWorkspaceId: true,
                 createdAt: true,
                 updatedAt: true,
             },
@@ -182,9 +185,20 @@ export class UsersService {
             name: updatedUser.name,
             role: updatedUser.role,
             isEmailVerified: updatedUser.isEmailVerified,
+            lastAccessedWorkspaceId: updatedUser.lastAccessedWorkspaceId,
             createdAt: updatedUser.createdAt,
             updatedAt: updatedUser.updatedAt,
         };
+    }
+
+    async setLastAccessedWorkspace(userId: string, workspaceId: string): Promise<void> {
+        await this.db
+            .update(users)
+            .set({
+                lastAccessedWorkspaceId: workspaceId,
+                updatedAt: new Date(),
+            })
+            .where(eq(users.id, userId));
     }
 
     async remove(id: string): Promise<void> {
