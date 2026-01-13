@@ -24,11 +24,15 @@ export class EmailService {
   private readonly logger = new Logger(EmailService.name);
   private resend: Resend | null = null;
   private readonly fromEmail: string;
+  private readonly frontendUrl: string;
   private readonly appUrl: string;
 
   constructor(private readonly configService: ConfigService) {
     const apiKey = this.configService.get<string>('RESEND_API_KEY');
     this.fromEmail = this.configService.get<string>('RESEND_FROM_EMAIL', 'noreply@yourdomain.com');
+    // FRONTEND_URL for auth links (verification, password reset)
+    this.frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    // APP_URL for backend links (drip notifications, etc.)
     this.appUrl = this.configService.get<string>('APP_URL', 'http://localhost:3000');
 
     if (apiKey) {
@@ -311,7 +315,7 @@ This email was sent by your Social Media Automation tool.
     token: string,
     name?: string,
   ): Promise<EmailResult> {
-    const verifyUrl = `${this.appUrl}/auth/verify?token=${token}`;
+    const verifyUrl = `${this.frontendUrl}/auth/verify?token=${token}`;
     const greeting = name ? `Hi ${name}` : 'Hi there';
 
     const html = `
@@ -385,7 +389,7 @@ This email was sent by your Social Media Automation tool.
     token: string,
     name?: string,
   ): Promise<EmailResult> {
-    const resetUrl = `${this.appUrl}/auth/reset?token=${token}`;
+    const resetUrl = `${this.frontendUrl}/auth/reset?token=${token}`;
     const greeting = name ? `Hi ${name}` : 'Hi there';
 
     const html = `
