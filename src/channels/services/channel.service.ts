@@ -374,29 +374,41 @@ export class ChannelService {
           : null;
 
         // Update the channel with new tokens
+        // Build update data conditionally to avoid Drizzle timestamp null errors
+        const channelUpdateData: any = {
+          accessToken: encrypt(refreshedTokens.accessToken),
+          refreshToken: refreshedTokens.refreshToken
+            ? encrypt(refreshedTokens.refreshToken)
+            : channelData.refreshToken, // Keep old refresh token if new one not provided
+          connectionStatus: 'connected',
+          lastError: sql`NULL`,
+          lastErrorAt: sql`NULL`,
+          consecutiveErrors: 0,
+          updatedAt: new Date(),
+        };
+        if (newExpiresAt) {
+          channelUpdateData.tokenExpiresAt = newExpiresAt;
+        } else {
+          channelUpdateData.tokenExpiresAt = sql`NULL`;
+        }
         await db
           .update(socialMediaChannels)
-          .set({
-            accessToken: encrypt(refreshedTokens.accessToken),
-            refreshToken: refreshedTokens.refreshToken
-              ? encrypt(refreshedTokens.refreshToken)
-              : channelData.refreshToken, // Keep old refresh token if new one not provided
-            tokenExpiresAt: newExpiresAt,
-            connectionStatus: 'connected',
-            lastError: null,
-            lastErrorAt: null,
-            consecutiveErrors: 0,
-            updatedAt: new Date(),
-          })
+          .set(channelUpdateData)
           .where(eq(socialMediaChannels.id, channelId));
 
         // Log the successful refresh
-        await db.insert(tokenRefreshLogs).values({
+        // Build refresh log data conditionally to avoid Drizzle timestamp null errors
+        const refreshLogData: any = {
           channelId,
           status: 'success',
-          oldExpiresAt: channelData.tokenExpiresAt,
-          newExpiresAt,
-        } as NewTokenRefreshLog);
+        };
+        if (channelData.tokenExpiresAt) {
+          refreshLogData.oldExpiresAt = channelData.tokenExpiresAt;
+        }
+        if (newExpiresAt) {
+          refreshLogData.newExpiresAt = newExpiresAt;
+        }
+        await db.insert(tokenRefreshLogs).values(refreshLogData as NewTokenRefreshLog);
 
         this.logger.log(`Successfully refreshed token for channel ${channelId} (${platform})`);
 

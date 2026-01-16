@@ -3,7 +3,7 @@ import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
 import { CreateUserDto } from './dto/create-user.dto';
 import { NewUser, User, users, UserRole } from 'src/drizzle/schema';
-import { eq } from 'drizzle-orm';
+import { eq, sql } from 'drizzle-orm';
 import * as bcrypt from 'bcrypt';
 import { UpdateUserDto } from './dto/update-user.dto';
 
@@ -119,7 +119,7 @@ export class UsersService {
             .set({
                 isEmailVerified: true,
                 emailVerificationToken: null,
-                emailVerificationTokenExpiresAt: null,
+                emailVerificationTokenExpiresAt: sql`NULL`,
                 updatedAt: new Date(),
             })
             .where(eq(users.id, userId));
@@ -143,7 +143,7 @@ export class UsersService {
             .set({
                 password: hashedPassword,
                 passwordResetToken: null,
-                passwordResetTokenExpiresAt: null,
+                passwordResetTokenExpiresAt: sql`NULL`,
                 updatedAt: new Date(),
             })
             .where(eq(users.id, userId));
