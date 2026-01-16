@@ -6,3 +6,4 @@ export * from './billing.schema';
 export * from './channels.schema';
 export * from './posts.schema';
 export * from './drips.schema';
+export * from './feedback.schema';
