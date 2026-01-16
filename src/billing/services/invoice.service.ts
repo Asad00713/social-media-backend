@@ -286,22 +286,31 @@ export class InvoiceService {
       .where(eq(invoices.stripeInvoiceId, stripeInvoiceId))
       .limit(1);
 
-    const invoiceData = {
+    // Build invoice data, conditionally adding timestamps to avoid Drizzle null errors
+    const invoiceData: any = {
       subscriptionId: subscription[0].id,
       status: inv.status || 'draft',
       subtotalCents: inv.subtotal || 0,
       taxCents: inv.tax || 0,
       totalCents: inv.total || 0,
       currency: inv.currency || 'usd',
-      periodStart: inv.period_start ? new Date(inv.period_start * 1000) : null,
-      periodEnd: inv.period_end ? new Date(inv.period_end * 1000) : null,
-      paidAt: inv.status_transitions?.paid_at
-        ? new Date(inv.status_transitions.paid_at * 1000)
-        : null,
-      invoicePdfUrl: inv.invoice_pdf || null,
-      hostedInvoiceUrl: inv.hosted_invoice_url || null,
       updatedAt: new Date(),
     };
+    if (inv.period_start) {
+      invoiceData.periodStart = new Date(inv.period_start * 1000);
+    }
+    if (inv.period_end) {
+      invoiceData.periodEnd = new Date(inv.period_end * 1000);
+    }
+    if (inv.status_transitions?.paid_at) {
+      invoiceData.paidAt = new Date(inv.status_transitions.paid_at * 1000);
+    }
+    if (inv.invoice_pdf) {
+      invoiceData.invoicePdfUrl = inv.invoice_pdf;
+    }
+    if (inv.hosted_invoice_url) {
+      invoiceData.hostedInvoiceUrl = inv.hosted_invoice_url;
+    }
 
     if (existingInvoice.length > 0) {
       await db

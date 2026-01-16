@@ -466,16 +466,21 @@ export class PostService {
       finalStatus = 'failed';
     }
 
-    // Update post with results
+    // Update post with results - build data conditionally to avoid Drizzle null timestamp errors
+    const postUpdateData: any = {
+      status: finalStatus,
+      targets: updatedTargets,
+      updatedAt: new Date(),
+    };
+    if (anySuccess) {
+      postUpdateData.publishedAt = new Date();
+    }
+    if (!allSuccess) {
+      postUpdateData.lastError = 'Some channels failed to publish';
+    }
     const [updatedPost] = await db
       .update(posts)
-      .set({
-        status: finalStatus,
-        targets: updatedTargets,
-        publishedAt: anySuccess ? new Date() : null,
-        lastError: allSuccess ? null : 'Some channels failed to publish',
-        updatedAt: new Date(),
-      })
+      .set(postUpdateData)
       .where(eq(posts.id, postId))
       .returning();
 

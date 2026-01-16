@@ -92,18 +92,14 @@ export class ChannelService {
     const nextOrder = (maxOrderResult[0]?.maxOrder || 0) + 1;
 
     // Create channel with encrypted tokens
-    const newChannel: NewSocialMediaChannel = {
+    // Build channel data, conditionally adding optional fields to avoid Drizzle null errors
+    const newChannel: any = {
       workspaceId,
       platform: dto.platform,
       accountType: dto.accountType,
       platformAccountId: dto.platformAccountId,
       accountName: dto.accountName,
-      username: dto.username || null,
-      profilePictureUrl: dto.profilePictureUrl || null,
       accessToken: encrypt(dto.accessToken),
-      refreshToken: dto.refreshToken ? encrypt(dto.refreshToken) : null,
-      tokenExpiresAt: dto.tokenExpiresAt ? new Date(dto.tokenExpiresAt) : null,
-      tokenScope: dto.tokenScope || null,
       permissions: dto.permissions || [],
       capabilities: dto.capabilities || {
         canPost: true,
@@ -121,8 +117,13 @@ export class ChannelService {
       connectedByUserId: userId,
       displayOrder: nextOrder,
       timezone: dto.timezone || 'UTC',
-      color: dto.color || null,
     };
+    if (dto.username) newChannel.username = dto.username;
+    if (dto.profilePictureUrl) newChannel.profilePictureUrl = dto.profilePictureUrl;
+    if (dto.refreshToken) newChannel.refreshToken = encrypt(dto.refreshToken);
+    if (dto.tokenExpiresAt) newChannel.tokenExpiresAt = new Date(dto.tokenExpiresAt);
+    if (dto.tokenScope) newChannel.tokenScope = dto.tokenScope;
+    if (dto.color) newChannel.color = dto.color;
 
     const inserted = await db
       .insert(socialMediaChannels)
@@ -301,30 +302,31 @@ export class ChannelService {
     const channel = await this.getChannelById(channelId, workspaceId);
 
     const oldExpiresAt = channel.tokenExpiresAt;
-    const newExpiresAt = dto.tokenExpiresAt ? new Date(dto.tokenExpiresAt) : null;
+
+    // Build update data, conditionally adding optional fields to avoid Drizzle null errors
+    const updateData: any = {
+      accessToken: encrypt(dto.accessToken),
+      tokenScope: dto.tokenScope,
+      connectionStatus: 'connected',
+      consecutiveErrors: 0,
+      updatedAt: new Date(),
+    };
+    if (dto.refreshToken) updateData.refreshToken = encrypt(dto.refreshToken);
+    if (dto.tokenExpiresAt) updateData.tokenExpiresAt = new Date(dto.tokenExpiresAt);
 
     await db
       .update(socialMediaChannels)
-      .set({
-        accessToken: encrypt(dto.accessToken),
-        refreshToken: dto.refreshToken ? encrypt(dto.refreshToken) : undefined,
-        tokenExpiresAt: newExpiresAt,
-        tokenScope: dto.tokenScope,
-        connectionStatus: 'connected',
-        lastError: null,
-        lastErrorAt: null,
-        consecutiveErrors: 0,
-        updatedAt: new Date(),
-      })
+      .set(updateData)
       .where(eq(socialMediaChannels.id, channelId));
 
-    // Log the refresh
-    await db.insert(tokenRefreshLogs).values({
+    // Log the refresh - build data conditionally
+    const refreshLogData: any = {
       channelId,
       status: 'success',
-      oldExpiresAt,
-      newExpiresAt,
-    } as NewTokenRefreshLog);
+    };
+    if (oldExpiresAt) refreshLogData.oldExpiresAt = oldExpiresAt;
+    if (dto.tokenExpiresAt) refreshLogData.newExpiresAt = new Date(dto.tokenExpiresAt);
+    await db.insert(tokenRefreshLogs).values(refreshLogData as NewTokenRefreshLog);
 
     this.logger.log(`Updated tokens for channel ${channelId}`);
   }

@@ -239,7 +239,8 @@ export class WebhookService {
     }
 
     // Save invoice to database
-    await db.insert(invoices).values({
+    // Build invoice data, omitting null timestamps to avoid Drizzle errors
+    const invoiceData: any = {
       subscriptionId: sub[0].id,
       stripeInvoiceId: invoice.id,
       subtotalCents: inv.subtotal || 0,
@@ -249,11 +250,20 @@ export class WebhookService {
       amountPaidCents: inv.amount_paid || 0,
       currency: invoice.currency,
       status: invoice.status || 'draft',
-      periodStart: inv.period_start ? new Date(inv.period_start * 1000) : null,
-      periodEnd: inv.period_end ? new Date(inv.period_end * 1000) : null,
-      invoicePdfUrl: inv.invoice_pdf || null,
-      hostedInvoiceUrl: inv.hosted_invoice_url || null,
-    } as NewInvoice);
+    };
+    if (inv.period_start) {
+      invoiceData.periodStart = new Date(inv.period_start * 1000);
+    }
+    if (inv.period_end) {
+      invoiceData.periodEnd = new Date(inv.period_end * 1000);
+    }
+    if (inv.invoice_pdf) {
+      invoiceData.invoicePdfUrl = inv.invoice_pdf;
+    }
+    if (inv.hosted_invoice_url) {
+      invoiceData.hostedInvoiceUrl = inv.hosted_invoice_url;
+    }
+    await db.insert(invoices).values(invoiceData as NewInvoice);
   }
 
   private async handleInvoiceFinalized(invoice: Stripe.Invoice): Promise<void> {
@@ -288,22 +298,26 @@ export class WebhookService {
     if (inv.lines && inv.lines.data) {
       for (const line of inv.lines.data) {
         const lineItem: any = line;
-        await db.insert(invoiceLineItems).values({
+        // Build line item data, conditionally adding timestamps to avoid Drizzle null errors
+        const lineItemData: any = {
           invoiceId: existingInvoice[0].id,
           stripeLineItemId: line.id,
           description: line.description || 'No description',
-          itemType: line.metadata?.item_type || null,
           quantity: line.quantity || 1,
           unitPriceCents: lineItem.price?.unit_amount || 0,
           totalCents: line.amount || 0,
-          periodStart: lineItem.period?.start
-            ? new Date(lineItem.period.start * 1000)
-            : null,
-          periodEnd: lineItem.period?.end
-            ? new Date(lineItem.period.end * 1000)
-            : null,
           isProration: lineItem.proration || false,
-        } as NewInvoiceLineItem);
+        };
+        if (line.metadata?.item_type) {
+          lineItemData.itemType = line.metadata.item_type;
+        }
+        if (lineItem.period?.start) {
+          lineItemData.periodStart = new Date(lineItem.period.start * 1000);
+        }
+        if (lineItem.period?.end) {
+          lineItemData.periodEnd = new Date(lineItem.period.end * 1000);
+        }
+        await db.insert(invoiceLineItems).values(lineItemData as NewInvoiceLineItem);
       }
     }
   }
@@ -349,15 +363,17 @@ export class WebhookService {
     }
 
     const inv: any = invoice;
+    // Build update data, conditionally adding timestamps to avoid Drizzle null errors
+    const updateData: any = {
+      status: 'open',
+      updatedAt: new Date(),
+    };
+    if (inv.next_payment_attempt) {
+      updateData.nextPaymentAttempt = new Date(inv.next_payment_attempt * 1000);
+    }
     await db
       .update(invoices)
-      .set({
-        status: 'open',
-        nextPaymentAttempt: inv.next_payment_attempt
-          ? new Date(inv.next_payment_attempt * 1000)
-          : null,
-        updatedAt: new Date(),
-      })
+      .set(updateData)
       .where(eq(invoices.id, existingInvoice[0].id));
 
     // Get subscription to find workspace

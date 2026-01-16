@@ -408,15 +408,21 @@ export class DripProcessor extends WorkerHost {
       // Update drip post status based on publish result
       const finalStatus = publishedPost.status === 'published' ? 'published' : 'failed';
 
+      // Build update data conditionally to avoid Drizzle null timestamp errors
+      const dripPostUpdateData: any = {
+        status: finalStatus,
+        updatedAt: new Date(),
+      };
+      if (finalStatus === 'published') {
+        dripPostUpdateData.publishedAt = new Date();
+      } else {
+        dripPostUpdateData.lastError = 'Publishing failed';
+        dripPostUpdateData.lastErrorAt = new Date();
+      }
+
       await db
         .update(dripPosts)
-        .set({
-          status: finalStatus,
-          publishedAt: finalStatus === 'published' ? new Date() : null,
-          lastError: finalStatus === 'failed' ? 'Publishing failed' : null,
-          lastErrorAt: finalStatus === 'failed' ? new Date() : null,
-          updatedAt: new Date(),
-        })
+        .set(dripPostUpdateData)
         .where(eq(dripPosts.id, dripPostId));
 
       // Update campaign counters
