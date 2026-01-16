@@ -15,6 +15,7 @@ import {
   subscriptionChanges,
   workspace,
   NewSubscriptionChange,
+  NewSubscriptionItem,
 } from '../../drizzle/schema';
 import { StripeService } from '../../stripe/stripe.service';
 import { UsageService } from './usage.service';
@@ -258,9 +259,12 @@ export class PlanChangeService {
         .where(eq(plans.code, target.code));
     }
 
-    // 5. Handle Stripe subscription update
+    // 5. Handle Stripe subscription - either update existing or create new
+    let newStripeSubscriptionId: string | null = null;
+    let newStripeSubscriptionItemId: string | null = null;
+
     if (sub.stripeSubscriptionId && targetPriceId) {
-      // Get current base plan subscription item
+      // Existing Stripe subscription - update it
       const baseItem = await db
         .select()
         .from(subscriptionItems)
@@ -302,18 +306,48 @@ export class PlanChangeService {
           quantity: 1,
         });
       }
+    } else if (!sub.stripeSubscriptionId && targetPriceId && target.basePriceCents > 0) {
+      // Upgrading from FREE plan - need to create a new Stripe subscription
+      this.logger.log(`Creating new Stripe subscription for upgrade from FREE to ${newPlanCode}`);
+
+      // Create Stripe subscription
+      const stripeSubscription = await this.stripeService.createSubscription({
+        customerId: sub.stripeCustomerId,
+        priceId: targetPriceId,
+        metadata: {
+          workspaceId,
+          userId,
+          planCode: newPlanCode,
+        },
+      });
+
+      newStripeSubscriptionId = stripeSubscription.id;
+      newStripeSubscriptionItemId = stripeSubscription.items.data[0]?.id || null;
+
+      this.logger.log(`Created Stripe subscription ${newStripeSubscriptionId} for workspace ${workspaceId}`);
     }
 
-    // 5. Update subscription in database
+    // 6. Update subscription in database
+    const subscriptionUpdateData: any = {
+      planCode: newPlanCode,
+      updatedAt: new Date(),
+    };
+
+    // If we created a new Stripe subscription, update those fields too
+    if (newStripeSubscriptionId) {
+      subscriptionUpdateData.stripeSubscriptionId = newStripeSubscriptionId;
+      subscriptionUpdateData.status = 'active';
+      subscriptionUpdateData.currentPeriodStart = new Date();
+      // Set currentPeriodEnd to 30 days from now (will be updated by webhook)
+      subscriptionUpdateData.currentPeriodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+    }
+
     await db
       .update(subscriptions)
-      .set({
-        planCode: newPlanCode,
-        updatedAt: new Date(),
-      })
+      .set(subscriptionUpdateData)
       .where(eq(subscriptions.id, sub.id));
 
-    // 6. Update base plan subscription item
+    // 7. Update or create base plan subscription item
     const existingBaseItem = await db
       .select()
       .from(subscriptionItems)
@@ -326,17 +360,33 @@ export class PlanChangeService {
       .limit(1);
 
     if (existingBaseItem.length > 0) {
+      // Update existing subscription item
+      const updateItemData: any = {
+        stripePriceId: targetPriceId || '',
+        unitPriceCents: target.basePriceCents,
+        updatedAt: new Date(),
+      };
+      // If we created a new Stripe subscription item, update it
+      if (newStripeSubscriptionItemId) {
+        updateItemData.stripeSubscriptionItemId = newStripeSubscriptionItemId;
+      }
       await db
         .update(subscriptionItems)
-        .set({
-          stripePriceId: targetPriceId || '',
-          unitPriceCents: target.basePriceCents,
-          updatedAt: new Date(),
-        })
+        .set(updateItemData)
         .where(eq(subscriptionItems.id, existingBaseItem[0].id));
+    } else if (newStripeSubscriptionItemId) {
+      // Create new subscription item (for FREE to paid upgrade)
+      await db.insert(subscriptionItems).values({
+        subscriptionId: sub.id,
+        stripeSubscriptionItemId: newStripeSubscriptionItemId,
+        itemType: 'BASE_PLAN',
+        stripePriceId: targetPriceId || '',
+        quantity: 1,
+        unitPriceCents: target.basePriceCents,
+      } as NewSubscriptionItem);
     }
 
-    // 7. Update workspace usage limits
+    // 8. Update workspace usage limits
     await db
       .update(workspaceUsage)
       .set({
@@ -346,7 +396,7 @@ export class PlanChangeService {
       })
       .where(eq(workspaceUsage.workspaceId, workspaceId));
 
-    // 8. Log the change
+    // 9. Log the change
     await db.insert(subscriptionChanges).values({
       subscriptionId: sub.id,
       changeType: preview.isUpgrade ? 'PLAN_UPGRADED' : 'PLAN_DOWNGRADED',
