@@ -207,8 +207,12 @@ export class PlanChangeService {
       immediateDowngrade?: boolean; // Don't wait for period end
     },
   ): Promise<PlanChangeResult> {
+    this.logger.log(`[DEBUG] === changePlan START === workspace=${workspaceId}, newPlan=${newPlanCode}`);
+
     // 1. Preview to validate
+    this.logger.log(`[DEBUG] Step 1: Getting preview...`);
     const preview = await this.previewPlanChange(workspaceId, userId, newPlanCode);
+    this.logger.log(`[DEBUG] Step 1 DONE: canChange=${preview.canChange}`);
 
     if (!preview.canChange && !options?.forceDowngrade) {
       throw new BadRequestException(
@@ -217,6 +221,7 @@ export class PlanChangeService {
     }
 
     // 2. Get subscription
+    this.logger.log(`[DEBUG] Step 2: Getting subscription...`);
     const subscription = await db
       .select()
       .from(subscriptions)
@@ -229,6 +234,7 @@ export class PlanChangeService {
       .limit(1);
 
     const sub = subscription[0];
+    this.logger.log(`[DEBUG] Step 2 DONE: sub.id=${sub.id}, stripeSubId=${sub.stripeSubscriptionId}, currentPeriodEnd=${sub.currentPeriodEnd}`);
     const oldPlanCode = sub.planCode;
 
     // 3. Get new plan
@@ -328,6 +334,7 @@ export class PlanChangeService {
     }
 
     // 6. Update subscription in database
+    this.logger.log(`[DEBUG] Step 6: Updating subscription in DB...`);
     const subscriptionUpdateData: any = {
       planCode: newPlanCode,
       updatedAt: new Date(),
@@ -341,13 +348,16 @@ export class PlanChangeService {
       // Set currentPeriodEnd to 30 days from now (will be updated by webhook)
       subscriptionUpdateData.currentPeriodEnd = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
     }
+    this.logger.log(`[DEBUG] Step 6: subscriptionUpdateData = ${JSON.stringify(subscriptionUpdateData)}`);
 
     await db
       .update(subscriptions)
       .set(subscriptionUpdateData)
       .where(eq(subscriptions.id, sub.id));
+    this.logger.log(`[DEBUG] Step 6 DONE`);
 
     // 7. Update or create base plan subscription item
+    this.logger.log(`[DEBUG] Step 7: Updating subscription items...`);
     const existingBaseItem = await db
       .select()
       .from(subscriptionItems)
@@ -358,6 +368,7 @@ export class PlanChangeService {
         ),
       )
       .limit(1);
+    this.logger.log(`[DEBUG] Step 7: existingBaseItem.length=${existingBaseItem.length}, newStripeSubscriptionItemId=${newStripeSubscriptionItemId}`);
 
     if (existingBaseItem.length > 0) {
       // Update existing subscription item
@@ -370,12 +381,14 @@ export class PlanChangeService {
       if (newStripeSubscriptionItemId) {
         updateItemData.stripeSubscriptionItemId = newStripeSubscriptionItemId;
       }
+      this.logger.log(`[DEBUG] Step 7: Updating existing item with ${JSON.stringify(updateItemData)}`);
       await db
         .update(subscriptionItems)
         .set(updateItemData)
         .where(eq(subscriptionItems.id, existingBaseItem[0].id));
     } else if (newStripeSubscriptionItemId) {
       // Create new subscription item (for FREE to paid upgrade)
+      this.logger.log(`[DEBUG] Step 7: Creating new subscription item`);
       await db.insert(subscriptionItems).values({
         subscriptionId: sub.id,
         stripeSubscriptionItemId: newStripeSubscriptionItemId,
@@ -385,8 +398,10 @@ export class PlanChangeService {
         unitPriceCents: target.basePriceCents,
       } as NewSubscriptionItem);
     }
+    this.logger.log(`[DEBUG] Step 7 DONE`);
 
     // 8. Update workspace usage limits
+    this.logger.log(`[DEBUG] Step 8: Updating workspace usage limits...`);
     await db
       .update(workspaceUsage)
       .set({
@@ -395,8 +410,10 @@ export class PlanChangeService {
         updatedAt: new Date(),
       })
       .where(eq(workspaceUsage.workspaceId, workspaceId));
+    this.logger.log(`[DEBUG] Step 8 DONE`);
 
     // 9. Log the change
+    this.logger.log(`[DEBUG] Step 9: Logging subscription change...`);
     await db.insert(subscriptionChanges).values({
       subscriptionId: sub.id,
       changeType: preview.isUpgrade ? 'PLAN_UPGRADED' : 'PLAN_DOWNGRADED',
@@ -406,6 +423,7 @@ export class PlanChangeService {
       changedByUserId: userId,
       reason: `${preview.isUpgrade ? 'Upgraded' : 'Downgraded'} from ${preview.currentPlan.name} to ${preview.newPlan.name}`,
     } as NewSubscriptionChange);
+    this.logger.log(`[DEBUG] Step 9 DONE - changePlan COMPLETE`);
 
     this.logger.log(
       `Plan changed for workspace ${workspaceId}: ${oldPlanCode} -> ${newPlanCode}`,
