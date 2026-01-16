@@ -1,4 +1,4 @@
-import { ConflictException, ForbiddenException, Inject, Injectable, NotFoundException, forwardRef } from '@nestjs/common';
+import { ConflictException, ForbiddenException, Inject, Injectable, Logger, NotFoundException, forwardRef } from '@nestjs/common';
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
 import { CreateWorkspaceDto } from './dto/create-workspace.dto';
@@ -8,6 +8,7 @@ import { sql } from 'drizzle-orm';
 import { UpdateWorkspaceDto } from './dto/update-workspace.dto';
 import { UsageService } from 'src/billing/services/usage.service';
 import { UsersService } from 'src/users/users.service';
+import { SubscriptionService } from 'src/billing/services/subscription.service';
 
 type GetAllREsponse = {
     data: Workspace[],
@@ -21,10 +22,14 @@ type GetAllREsponse = {
 
 @Injectable()
 export class WorkspaceService {
+    private readonly logger = new Logger(WorkspaceService.name);
+
     constructor(
         @Inject(DRIZZLE) private db: DbType,
         private usageService: UsageService,
         private usersService: UsersService,
+        @Inject(forwardRef(() => SubscriptionService))
+        private subscriptionService: SubscriptionService,
     ) { }
 
     async create(createWorkspaceDto: CreateWorkspaceDto, userId: string): Promise<Workspace> {
@@ -62,6 +67,20 @@ export class WorkspaceService {
                 ownerId: userId
             })
             .returning()
+
+        // Auto-create FREE subscription for the new workspace
+        try {
+            this.logger.log(`Creating FREE subscription for new workspace ${newWorkspace.id}`);
+            await this.subscriptionService.createSubscription({
+                workspaceId: newWorkspace.id,
+                userId: userId,
+                planCode: 'FREE',
+            });
+            this.logger.log(`FREE subscription created for workspace ${newWorkspace.id}`);
+        } catch (error) {
+            this.logger.error(`Failed to create subscription for workspace ${newWorkspace.id}: ${error.message}`);
+            // Don't fail workspace creation if subscription fails - can be created later
+        }
 
         // Auto-set lastAccessedWorkspaceId if this is user's first workspace
         const user = await this.usersService.findOne(userId);
