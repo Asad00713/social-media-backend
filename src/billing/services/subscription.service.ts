@@ -151,18 +151,22 @@ export class SubscriptionService {
 
     // 8. Save subscription to database
     const sub: any = stripeSubscription;
+    const subscriptionData: any = {
+      workspaceId: dto.workspaceId,
+      stripeCustomerId,
+      stripeSubscriptionId: stripeSubscription.id,
+      planCode: dto.planCode,
+      status: stripeSubscription.status,
+      currentPeriodStart: new Date(sub.current_period_start * 1000),
+      currentPeriodEnd: new Date(sub.current_period_end * 1000),
+    };
+    // Only add trialEnd if it exists (avoid explicit null for timestamps)
+    if (sub.trial_end) {
+      subscriptionData.trialEnd = new Date(sub.trial_end * 1000);
+    }
     const [newSubscription] = await db
       .insert(subscriptions)
-      .values({
-        workspaceId: dto.workspaceId,
-        stripeCustomerId,
-        stripeSubscriptionId: stripeSubscription.id,
-        planCode: dto.planCode,
-        status: stripeSubscription.status,
-        currentPeriodStart: new Date(sub.current_period_start * 1000),
-        currentPeriodEnd: new Date(sub.current_period_end * 1000),
-        trialEnd: sub.trial_end ? new Date(sub.trial_end * 1000) : null,
-      } as NewSubscription)
+      .values(subscriptionData as NewSubscription)
       .returning();
 
     // 9. Create subscription item for base plan

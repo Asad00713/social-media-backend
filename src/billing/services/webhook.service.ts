@@ -175,16 +175,20 @@ export class WebhookService {
 
     // Update subscription details
     const sub: any = subscription;
+    const updateData: any = {
+      status: subscription.status,
+      currentPeriodStart: new Date(sub.current_period_start * 1000),
+      currentPeriodEnd: new Date(sub.current_period_end * 1000),
+      cancelAtPeriodEnd: sub.cancel_at_period_end,
+      updatedAt: new Date(),
+    };
+    // Only add canceledAt if it exists (avoid explicit null for timestamps)
+    if (sub.canceled_at) {
+      updateData.canceledAt = new Date(sub.canceled_at * 1000);
+    }
     await db
       .update(subscriptions)
-      .set({
-        status: subscription.status,
-        currentPeriodStart: new Date(sub.current_period_start * 1000),
-        currentPeriodEnd: new Date(sub.current_period_end * 1000),
-        cancelAtPeriodEnd: sub.cancel_at_period_end,
-        canceledAt: sub.canceled_at ? new Date(sub.canceled_at * 1000) : null,
-        updatedAt: new Date(),
-      })
+      .set(updateData)
       .where(eq(subscriptions.id, existingSub[0].id));
   }
 
