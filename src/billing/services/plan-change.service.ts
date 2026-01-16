@@ -19,6 +19,7 @@ import {
 } from '../../drizzle/schema';
 import { StripeService } from '../../stripe/stripe.service';
 import { UsageService } from './usage.service';
+import { NotificationEmitterService } from '../../notifications/notification-emitter.service';
 
 export interface PlanChangePreview {
   currentPlan: {
@@ -71,6 +72,7 @@ export class PlanChangeService {
   constructor(
     private stripeService: StripeService,
     private usageService: UsageService,
+    private notificationEmitter: NotificationEmitterService,
   ) {}
 
   // Preview plan change (shows proration, validation issues)
@@ -428,6 +430,19 @@ export class PlanChangeService {
     this.logger.log(
       `Plan changed for workspace ${workspaceId}: ${oldPlanCode} -> ${newPlanCode}`,
     );
+
+    // 10. Send notification to user about plan change
+    try {
+      await this.notificationEmitter.planChanged(
+        userId,
+        preview.currentPlan.name,
+        preview.newPlan.name,
+      );
+      this.logger.log(`Notification sent to user ${userId} about plan change`);
+    } catch (error) {
+      this.logger.error(`Failed to send plan change notification: ${error.message}`);
+      // Don't fail the plan change if notification fails
+    }
 
     return {
       success: true,

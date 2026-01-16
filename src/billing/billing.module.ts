@@ -12,9 +12,10 @@ import { InvoiceService } from './services/invoice.service';
 import { PaymentMethodService } from './services/payment-method.service';
 import { StripeModule } from '../stripe/stripe.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
-  imports: [StripeModule, DrizzleModule],
+  imports: [StripeModule, DrizzleModule, NotificationsModule],
   providers: [
     BillingService,
     CustomerService,
