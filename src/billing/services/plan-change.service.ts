@@ -239,8 +239,27 @@ export class PlanChangeService {
 
     const target = newPlan[0];
 
-    // 4. Handle Stripe subscription update
-    if (sub.stripeSubscriptionId && target.stripePriceId) {
+    // 4. Get or create Stripe price for the target plan
+    let targetPriceId = target.stripePriceId;
+
+    if (!targetPriceId && target.basePriceCents > 0) {
+      // Dynamically create price in Stripe if not configured
+      targetPriceId = await this.stripeService.getOrCreatePriceForPlan({
+        planCode: target.code,
+        planName: target.name,
+        priceCents: target.basePriceCents,
+        interval: 'month',
+      });
+
+      // Update the plan in database with the new price ID
+      await db
+        .update(plans)
+        .set({ stripePriceId: targetPriceId })
+        .where(eq(plans.code, target.code));
+    }
+
+    // 5. Handle Stripe subscription update
+    if (sub.stripeSubscriptionId && targetPriceId) {
       // Get current base plan subscription item
       const baseItem = await db
         .select()
@@ -269,7 +288,7 @@ export class PlanChangeService {
             items: [
               {
                 id: stripeItem.id,
-                price: target.stripePriceId,
+                price: targetPriceId,
               },
             ],
             proration_behavior: preview.isUpgrade ? 'create_prorations' : 'none',
@@ -279,7 +298,7 @@ export class PlanChangeService {
         // No existing item, add new one
         await this.stripeService.addSubscriptionItem({
           subscriptionId: sub.stripeSubscriptionId,
-          priceId: target.stripePriceId,
+          priceId: targetPriceId,
           quantity: 1,
         });
       }
@@ -310,7 +329,7 @@ export class PlanChangeService {
       await db
         .update(subscriptionItems)
         .set({
-          stripePriceId: target.stripePriceId || '',
+          stripePriceId: targetPriceId || '',
           unitPriceCents: target.basePriceCents,
           updatedAt: new Date(),
         })

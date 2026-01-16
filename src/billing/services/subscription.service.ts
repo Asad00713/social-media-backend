@@ -118,16 +118,29 @@ export class SubscriptionService {
       );
     }
 
-    // 7. Create Stripe subscription
-    if (!selectedPlan.stripePriceId) {
-      throw new BadRequestException(
-        'Plan does not have a Stripe price ID configured',
-      );
+    // 7. Get or create Stripe price for the plan
+    let stripePriceId = selectedPlan.stripePriceId;
+
+    if (!stripePriceId) {
+      // Dynamically create price in Stripe if not configured
+      stripePriceId = await this.stripeService.getOrCreatePriceForPlan({
+        planCode: selectedPlan.code,
+        planName: selectedPlan.name,
+        priceCents: selectedPlan.basePriceCents,
+        interval: 'month',
+      });
+
+      // Optionally update the plan in database with the new price ID
+      await db
+        .update(plans)
+        .set({ stripePriceId })
+        .where(eq(plans.code, selectedPlan.code));
     }
 
+    // 8. Create Stripe subscription
     const stripeSubscription = await this.stripeService.createSubscription({
       customerId: stripeCustomerId,
-      priceId: selectedPlan.stripePriceId,
+      priceId: stripePriceId,
       metadata: {
         workspaceId: dto.workspaceId,
         userId: dto.userId,
@@ -157,7 +170,7 @@ export class SubscriptionService {
       subscriptionId: newSubscription.id,
       stripeSubscriptionItemId: stripeSubscription.items.data[0].id,
       itemType: 'BASE_PLAN',
-      stripePriceId: selectedPlan.stripePriceId,
+      stripePriceId: stripePriceId,
       quantity: 1,
       unitPriceCents: selectedPlan.basePriceCents,
     } as NewSubscriptionItem);

@@ -166,6 +166,69 @@ export class StripeService implements OnModuleInit {
     });
   }
 
+  /**
+   * Get or create a Stripe product and price for a plan
+   * This creates products/prices dynamically so you don't need to pre-configure them in Stripe Dashboard
+   */
+  async getOrCreatePriceForPlan(params: {
+    planCode: string;
+    planName: string;
+    priceCents: number;
+    interval?: 'month' | 'year';
+  }): Promise<string> {
+    // Search for existing product by metadata
+    const existingProducts = await this.stripe.products.search({
+      query: `metadata['planCode']:'${params.planCode}'`,
+    });
+
+    let productId: string;
+
+    if (existingProducts.data.length > 0) {
+      productId = existingProducts.data[0].id;
+    } else {
+      // Create new product
+      const product = await this.stripe.products.create({
+        name: params.planName,
+        metadata: {
+          planCode: params.planCode,
+        },
+      });
+      productId = product.id;
+    }
+
+    // Search for existing price
+    const existingPrices = await this.stripe.prices.list({
+      product: productId,
+      active: true,
+    });
+
+    // Find a price that matches our amount and interval
+    const matchingPrice = existingPrices.data.find(
+      (p) =>
+        p.unit_amount === params.priceCents &&
+        p.recurring?.interval === (params.interval || 'month'),
+    );
+
+    if (matchingPrice) {
+      return matchingPrice.id;
+    }
+
+    // Create new price
+    const price = await this.stripe.prices.create({
+      product: productId,
+      unit_amount: params.priceCents,
+      currency: 'usd',
+      recurring: {
+        interval: params.interval || 'month',
+      },
+      metadata: {
+        planCode: params.planCode,
+      },
+    });
+
+    return price.id;
+  }
+
   // Payment Method Methods
   async attachPaymentMethod(
     paymentMethodId: string,
