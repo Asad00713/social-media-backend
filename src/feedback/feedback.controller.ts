@@ -15,7 +15,6 @@ import { FeedbackService } from './feedback.service';
 import { CreateFeedbackDto, UpdateFeedbackStatusDto } from './dto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { AdminGuard } from 'src/auth/guards/admin.guard';
-import { FeedbackStatus } from 'src/drizzle/schema';
 
 @Controller('feedback')
 export class FeedbackController {
@@ -70,7 +69,7 @@ export class FeedbackController {
   async findAllAdmin(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
-    @Query('status') status?: FeedbackStatus,
+    @Query('status') status?: 'pending' | 'approved' | 'rejected',
   ) {
     return this.feedbackService.findAllAdmin(
       page ? parseInt(page, 10) : 1,
