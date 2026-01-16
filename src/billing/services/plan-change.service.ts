@@ -353,7 +353,26 @@ export class PlanChangeService {
     };
   }
 
-  // Get available plans for upgrade/downgrade
+  // Get all plans (without workspace context)
+  async getAllPlans(): Promise<any[]> {
+    const allPlans = await db
+      .select()
+      .from(plans)
+      .where(eq(plans.isActive, true));
+
+    return allPlans.map((plan) => ({
+      code: plan.code,
+      name: plan.name,
+      priceCents: plan.basePriceCents,
+      priceFormatted: `$${(plan.basePriceCents / 100).toFixed(2)}/month`,
+      channelsPerWorkspace: plan.channelsPerWorkspace,
+      membersPerWorkspace: plan.membersPerWorkspace,
+      maxWorkspaces: plan.maxWorkspaces,
+      features: plan.features,
+    }));
+  }
+
+  // Get available plans for upgrade/downgrade (with workspace context)
   async getAvailablePlans(workspaceId: string): Promise<any[]> {
     // Get current subscription
     const subscription = await db

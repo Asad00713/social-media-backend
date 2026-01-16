@@ -154,11 +154,11 @@ export class BillingController {
     );
   }
 
-  // Plan change endpoints
+  // Plan endpoints
   @Get('plans')
-  @UseGuards(JwtAuthGuard)
-  async getAvailablePlans(@Param('workspaceId') workspaceId: string) {
-    return await this.planChangeService.getAvailablePlans(workspaceId);
+  async getAllPlans() {
+    // Public endpoint - returns all available plans without workspace context
+    return await this.planChangeService.getAllPlans();
   }
 
   @Get('workspaces/:workspaceId/plans')
