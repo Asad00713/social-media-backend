@@ -15,6 +15,7 @@ import { StripeModule } from './stripe/stripe.module';
 import { ChannelsModule } from './channels/channels.module';
 import { MediaModule } from './media/media.module';
 import { DripModule } from './drips/drip.module';
+import { FeedbackModule } from './feedback/feedback.module';
 
 @Module({
   imports: [
@@ -34,6 +35,7 @@ import { DripModule } from './drips/drip.module';
     MediaModule,
     AiModule,
     DripModule,
+    FeedbackModule,
   ],
   controllers: [AppController],
   providers: [AppService],
