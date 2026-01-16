@@ -374,20 +374,40 @@ export class ChannelService {
           : null;
 
         // Update the channel with new tokens
-        // For clearing timestamp/text fields, we use a raw SQL update to avoid Drizzle's value mapping
-        await db.execute(sql`
-          UPDATE social_media_channels
-          SET
-            access_token = ${encrypt(refreshedTokens.accessToken)},
-            refresh_token = ${refreshedTokens.refreshToken ? encrypt(refreshedTokens.refreshToken) : channelData.refreshToken},
-            token_expires_at = ${newExpiresAt},
-            connection_status = 'connected',
-            last_error = NULL,
-            last_error_at = NULL,
-            consecutive_errors = 0,
-            updated_at = ${new Date()}
-          WHERE id = ${channelId}
-        `);
+        // Use conditional SQL to handle null timestamp properly
+        const newRefreshToken = refreshedTokens.refreshToken
+          ? encrypt(refreshedTokens.refreshToken)
+          : channelData.refreshToken;
+
+        if (newExpiresAt) {
+          await db.execute(sql`
+            UPDATE social_media_channels
+            SET
+              access_token = ${encrypt(refreshedTokens.accessToken)},
+              refresh_token = ${newRefreshToken},
+              token_expires_at = ${newExpiresAt},
+              connection_status = 'connected',
+              last_error = NULL,
+              last_error_at = NULL,
+              consecutive_errors = 0,
+              updated_at = ${new Date()}
+            WHERE id = ${channelId}
+          `);
+        } else {
+          await db.execute(sql`
+            UPDATE social_media_channels
+            SET
+              access_token = ${encrypt(refreshedTokens.accessToken)},
+              refresh_token = ${newRefreshToken},
+              token_expires_at = NULL,
+              connection_status = 'connected',
+              last_error = NULL,
+              last_error_at = NULL,
+              consecutive_errors = 0,
+              updated_at = ${new Date()}
+            WHERE id = ${channelId}
+          `);
+        }
 
         // Log the successful refresh
         // Build refresh log data conditionally to avoid Drizzle timestamp null errors
