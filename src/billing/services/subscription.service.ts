@@ -211,17 +211,15 @@ export class SubscriptionService {
     plan: typeof plans.$inferSelect,
   ): Promise<SubscriptionResponse> {
     // Create local subscription record without Stripe subscription
+    // Note: Omit null timestamp fields instead of explicitly setting them to avoid Drizzle timestamp issues
     const [newSubscription] = await db
       .insert(subscriptions)
       .values({
         workspaceId,
         stripeCustomerId,
-        stripeSubscriptionId: null,
         planCode: 'FREE',
         status: 'active',
         currentPeriodStart: new Date(),
-        currentPeriodEnd: null,
-        trialEnd: null,
       } as NewSubscription)
       .returning();
 
