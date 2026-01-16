@@ -374,27 +374,20 @@ export class ChannelService {
           : null;
 
         // Update the channel with new tokens
-        // Build update data conditionally to avoid Drizzle timestamp null errors
-        const channelUpdateData: any = {
-          accessToken: encrypt(refreshedTokens.accessToken),
-          refreshToken: refreshedTokens.refreshToken
-            ? encrypt(refreshedTokens.refreshToken)
-            : channelData.refreshToken, // Keep old refresh token if new one not provided
-          connectionStatus: 'connected',
-          lastError: sql`NULL`,
-          lastErrorAt: sql`NULL`,
-          consecutiveErrors: 0,
-          updatedAt: new Date(),
-        };
-        if (newExpiresAt) {
-          channelUpdateData.tokenExpiresAt = newExpiresAt;
-        } else {
-          channelUpdateData.tokenExpiresAt = sql`NULL`;
-        }
-        await db
-          .update(socialMediaChannels)
-          .set(channelUpdateData)
-          .where(eq(socialMediaChannels.id, channelId));
+        // For clearing timestamp/text fields, we use a raw SQL update to avoid Drizzle's value mapping
+        await db.execute(sql`
+          UPDATE social_media_channels
+          SET
+            access_token = ${encrypt(refreshedTokens.accessToken)},
+            refresh_token = ${refreshedTokens.refreshToken ? encrypt(refreshedTokens.refreshToken) : channelData.refreshToken},
+            token_expires_at = ${newExpiresAt},
+            connection_status = 'connected',
+            last_error = NULL,
+            last_error_at = NULL,
+            consecutive_errors = 0,
+            updated_at = ${new Date()}
+          WHERE id = ${channelId}
+        `);
 
         // Log the successful refresh
         // Build refresh log data conditionally to avoid Drizzle timestamp null errors
@@ -416,13 +409,16 @@ export class ChannelService {
       } catch (error) {
         this.logger.error(`Failed to refresh token for channel ${channelId}: ${error}`);
 
-        // Log the failed refresh
-        await db.insert(tokenRefreshLogs).values({
+        // Log the failed refresh - build conditionally to avoid null timestamps
+        const failedRefreshLogData: any = {
           channelId,
           status: 'failed',
           errorMessage: error instanceof Error ? error.message : String(error),
-          oldExpiresAt: channelData.tokenExpiresAt,
-        } as NewTokenRefreshLog);
+        };
+        if (channelData.tokenExpiresAt) {
+          failedRefreshLogData.oldExpiresAt = channelData.tokenExpiresAt;
+        }
+        await db.insert(tokenRefreshLogs).values(failedRefreshLogData as NewTokenRefreshLog);
 
         // If token is expired (not just about to expire), throw error
         if (isExpired) {

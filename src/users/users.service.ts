@@ -114,15 +114,16 @@ export class UsersService {
     }
 
     async verifyEmail(userId: string): Promise<void> {
-        await this.db
-            .update(users)
-            .set({
-                isEmailVerified: true,
-                emailVerificationToken: null,
-                emailVerificationTokenExpiresAt: sql`NULL`,
-                updatedAt: new Date(),
-            })
-            .where(eq(users.id, userId));
+        // Use raw SQL to avoid Drizzle timestamp null mapping issues
+        await this.db.execute(sql`
+            UPDATE users
+            SET
+                is_email_verified = true,
+                email_verification_token = NULL,
+                email_verification_token_expires_at = NULL,
+                updated_at = ${new Date()}
+            WHERE id = ${userId}
+        `);
     }
 
     async setPasswordResetToken(userId: string, token: string, expiresAt: Date): Promise<void> {
@@ -138,15 +139,16 @@ export class UsersService {
 
     async resetPassword(userId: string, newPassword: string): Promise<void> {
         const hashedPassword = await bcrypt.hash(newPassword, 10);
-        await this.db
-            .update(users)
-            .set({
-                password: hashedPassword,
-                passwordResetToken: null,
-                passwordResetTokenExpiresAt: sql`NULL`,
-                updatedAt: new Date(),
-            })
-            .where(eq(users.id, userId));
+        // Use raw SQL to avoid Drizzle timestamp null mapping issues
+        await this.db.execute(sql`
+            UPDATE users
+            SET
+                password = ${hashedPassword},
+                password_reset_token = NULL,
+                password_reset_token_expires_at = NULL,
+                updated_at = ${new Date()}
+            WHERE id = ${userId}
+        `);
     }
 
     async findByEmail(email: string): Promise<User | undefined> {
