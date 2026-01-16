@@ -15,7 +15,7 @@ import { FeedbackService } from './feedback.service';
 import { CreateFeedbackDto, UpdateFeedbackStatusDto } from './dto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { AdminGuard } from 'src/auth/guards/admin.guard';
-import { FeedbackStatus } from 'src/drizzle/schema';
+import type { FeedbackStatus } from 'src/drizzle/schema';
 
 @Controller('feedback')
 export class FeedbackController {
