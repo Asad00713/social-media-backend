@@ -24,7 +24,6 @@
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
-    "dotenv": "^17.2.3",
     "@neondatabase/serverless": "^1.0.2",
     "@nestjs/bullmq": "^11.0.4",
     "@nestjs/common": "^11.0.1",
@@ -33,7 +32,9 @@
     "@nestjs/jwt": "^11.0.2",
     "@nestjs/passport": "^11.0.5",
     "@nestjs/platform-express": "^11.0.1",
+    "@nestjs/platform-socket.io": "^11.1.12",
     "@nestjs/schedule": "^6.0.1",
+    "@nestjs/websockets": "^11.1.12",
     "@tavily/core": "^0.6.4",
     "axios": "^1.13.2",
     "bcrypt": "^6.0.0",
@@ -43,6 +44,7 @@
     "cloudinary": "^2.8.0",
     "cookie-parser": "^1.4.7",
     "crypto-js": "^4.2.0",
+    "dotenv": "^17.2.3",
     "drizzle-orm": "^0.45.0",
     "groq-sdk": "^0.37.0",
     "ioredis": "^5.9.0",
@@ -53,6 +55,7 @@
     "reflect-metadata": "^0.2.2",
     "resend": "^6.7.0",
     "rxjs": "^7.8.1",
+    "socket.io": "^4.8.3",
     "stripe": "^20.1.0",
     "uuid": "^13.0.0"
   },

@@ -18,6 +18,7 @@ import { generateSecureToken, hash } from '../common/utils/encryption.util';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import type { DbType } from '../drizzle/db';
 import { eq } from 'drizzle-orm';
+import { NotificationEmitterService } from '../notifications/notification-emitter.service';
 
 export interface TokenPayload {
     sub: string;
@@ -44,6 +45,7 @@ export class AuthService {
         private jwtService: JwtService,
         private configService: ConfigService,
         private emailService: EmailService,
+        private notificationEmitter: NotificationEmitterService,
     ) { }
 
     async register(registerDto: CreateUserDto): Promise<AuthResponse> {
@@ -270,6 +272,9 @@ export class AuthService {
         // Verify the email
         await this.usersService.verifyEmail(user.id);
 
+        // Send notification
+        await this.notificationEmitter.emailVerified(user.id);
+
         return { message: 'Email verified successfully. You can now log in.' };
     }
 
@@ -333,6 +338,9 @@ export class AuthService {
 
         // Reset the password
         await this.usersService.resetPassword(user.id, newPassword);
+
+        // Send notification
+        await this.notificationEmitter.passwordChanged(user.id);
 
         return { message: 'Password reset successfully. You can now log in with your new password.' };
     }

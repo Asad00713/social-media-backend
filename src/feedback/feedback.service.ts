@@ -6,10 +6,11 @@ import {
 } from '@nestjs/common';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
 import type { DbType } from 'src/drizzle/db';
-import { feedback, Feedback, FeedbackStatus } from 'src/drizzle/schema';
+import { feedback, Feedback, FeedbackStatus, users } from 'src/drizzle/schema';
 import { eq, desc, and, sql } from 'drizzle-orm';
 import { CreateFeedbackDto } from './dto/create-feedback.dto';
 import { UpdateFeedbackStatusDto } from './dto/update-feedback-status.dto';
+import { NotificationEmitterService } from 'src/notifications/notification-emitter.service';
 
 export interface FeedbackWithUser extends Feedback {
   user: {
@@ -31,7 +32,10 @@ export interface PaginatedFeedback {
 
 @Injectable()
 export class FeedbackService {
-  constructor(@Inject(DRIZZLE) private db: DbType) {}
+  constructor(
+    @Inject(DRIZZLE) private db: DbType,
+    private notificationEmitter: NotificationEmitterService,
+  ) {}
 
   async create(
     createFeedbackDto: CreateFeedbackDto,
@@ -55,7 +59,41 @@ export class FeedbackService {
       })
       .returning();
 
+    // Notify super admins about new feedback
+    await this.notifySuperAdmins(userId, createFeedbackDto.rating);
+
     return newFeedback;
+  }
+
+  /**
+   * Notify super admins about new feedback
+   */
+  private async notifySuperAdmins(userId: string, rating: number) {
+    try {
+      // Get user name for notification
+      const user = await this.db.query.users.findFirst({
+        where: eq(users.id, userId),
+        columns: { name: true, email: true },
+      });
+
+      // Get all super admins
+      const superAdmins = await this.db.query.users.findMany({
+        where: eq(users.role, 'SUPER_ADMIN'),
+        columns: { id: true },
+      });
+
+      // Notify each super admin
+      for (const admin of superAdmins) {
+        await this.notificationEmitter.newFeedbackSubmitted(
+          admin.id,
+          rating,
+          user?.name || user?.email || 'A user',
+        );
+      }
+    } catch (error) {
+      // Don't fail the feedback creation if notification fails
+      console.error('Failed to notify admins about new feedback:', error);
+    }
   }
 
   async findAllPublic(

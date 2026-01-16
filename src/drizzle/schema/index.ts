@@ -7,3 +7,4 @@ export * from './channels.schema';
 export * from './posts.schema';
 export * from './drips.schema';
 export * from './feedback.schema';
+export * from './notifications.schema';

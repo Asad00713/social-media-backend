@@ -16,6 +16,7 @@ import { ChannelsModule } from './channels/channels.module';
 import { MediaModule } from './media/media.module';
 import { DripModule } from './drips/drip.module';
 import { FeedbackModule } from './feedback/feedback.module';
+import { NotificationsModule } from './notifications/notifications.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { FeedbackModule } from './feedback/feedback.module';
     AiModule,
     DripModule,
     FeedbackModule,
+    NotificationsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

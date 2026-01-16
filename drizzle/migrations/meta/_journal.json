@@ -99,6 +99,13 @@
       "when": 1768470831092,
       "tag": "0013_clean_menace",
       "breakpoints": true
+    },
+    {
+      "idx": 14,
+      "version": "7",
+      "when": 1768551580756,
+      "tag": "0014_bored_stranger",
+      "breakpoints": true
     }
   ]
 }
