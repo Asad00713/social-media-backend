@@ -228,6 +228,7 @@ export class PostService {
     }
 
     // Update scheduling
+    let clearScheduledAt = false;
     if (dto.scheduledAt !== undefined) {
       // Cancel existing job if any
       if (existingPost.jobId) {
@@ -235,15 +236,44 @@ export class PostService {
         updateData.jobId = null;
       }
 
-      updateData.scheduledAt = dto.scheduledAt;
-      updateData.status = dto.scheduledAt ? 'scheduled' : 'draft';
+      if (dto.scheduledAt === null) {
+        // Need to clear scheduledAt - will handle with raw SQL to avoid Drizzle timestamp null error
+        clearScheduledAt = true;
+        updateData.status = 'draft';
+      } else {
+        updateData.scheduledAt = dto.scheduledAt;
+        updateData.status = 'scheduled';
+      }
     }
 
-    const [updatedPost] = await db
-      .update(posts)
-      .set(updateData)
-      .where(eq(posts.id, postId))
-      .returning();
+    let updatedPost;
+
+    // If we need to clear scheduledAt, use raw SQL to avoid Drizzle timestamp null error
+    if (clearScheduledAt) {
+      // First do the regular update without scheduledAt
+      await db
+        .update(posts)
+        .set(updateData)
+        .where(eq(posts.id, postId));
+
+      // Then clear scheduledAt with raw SQL
+      await db.execute(sql`
+        UPDATE posts
+        SET scheduled_at = NULL
+        WHERE id = ${postId}
+      `);
+
+      // Re-fetch the post since we used raw SQL
+      const [refetched] = await db.select().from(posts).where(eq(posts.id, postId));
+      updatedPost = refetched;
+    } else {
+      const [result] = await db
+        .update(posts)
+        .set(updateData)
+        .where(eq(posts.id, postId))
+        .returning();
+      updatedPost = result;
+    }
 
     // Schedule new job if post is scheduled
     if (dto.scheduledAt) {
