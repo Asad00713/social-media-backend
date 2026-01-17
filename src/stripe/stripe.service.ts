@@ -153,11 +153,18 @@ export class StripeService implements OnModuleInit {
    */
   private async invoiceSubscriptionImmediately(subscriptionId: string): Promise<Stripe.Invoice | null> {
     try {
-      // First, get the subscription to find the customer ID
-      const subscription = await this.stripe.subscriptions.retrieve(subscriptionId);
+      // First, get the subscription to find the customer ID and payment method
+      const subscription = await this.stripe.subscriptions.retrieve(subscriptionId, {
+        expand: ['default_payment_method'],
+      });
       const customerId = typeof subscription.customer === 'string'
         ? subscription.customer
         : subscription.customer.id;
+
+      // Get the payment method from subscription (where it's saved via 'on_subscription')
+      const paymentMethodId = typeof subscription.default_payment_method === 'string'
+        ? subscription.default_payment_method
+        : subscription.default_payment_method?.id;
 
       // Create an invoice for any pending invoice items (prorations)
       const invoice = await this.stripe.invoices.create({
@@ -168,7 +175,12 @@ export class StripeService implements OnModuleInit {
 
       // If there are line items to charge, pay the invoice immediately
       if (invoice.amount_due > 0) {
-        const paidInvoice = await this.stripe.invoices.pay(invoice.id);
+        // Use the subscription's payment method if available
+        const payParams: Stripe.InvoicePayParams = {};
+        if (paymentMethodId) {
+          payParams.payment_method = paymentMethodId;
+        }
+        const paidInvoice = await this.stripe.invoices.pay(invoice.id, payParams);
         return paidInvoice;
       }
 

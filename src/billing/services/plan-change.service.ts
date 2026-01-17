@@ -6,6 +6,7 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { eq, and } from 'drizzle-orm';
+import Stripe from 'stripe';
 import { db } from '../../drizzle/db';
 import {
   subscriptions,
@@ -685,15 +686,34 @@ export class PlanChangeService {
     try {
       const stripe = this.stripeService.getClient();
 
+      // Get the subscription to find the customer ID and payment method
+      const subscription = await stripe.subscriptions.retrieve(stripeSubscriptionId, {
+        expand: ['default_payment_method'],
+      });
+      const customerId = typeof subscription.customer === 'string'
+        ? subscription.customer
+        : subscription.customer.id;
+
+      // Get the payment method from subscription
+      const paymentMethodId = typeof subscription.default_payment_method === 'string'
+        ? subscription.default_payment_method
+        : subscription.default_payment_method?.id;
+
       // Create an invoice for any pending invoice items (prorations)
       const invoice = await stripe.invoices.create({
+        customer: customerId,
         subscription: stripeSubscriptionId,
         auto_advance: true,
       });
 
       // If there are charges, pay the invoice immediately
       if (invoice.amount_due > 0) {
-        await stripe.invoices.pay(invoice.id);
+        // Use the subscription's payment method if available
+        const payParams: Stripe.InvoicePayParams = {};
+        if (paymentMethodId) {
+          payParams.payment_method = paymentMethodId;
+        }
+        await stripe.invoices.pay(invoice.id, payParams);
         this.logger.log(`Immediately charged ${invoice.amount_due} cents for plan upgrade`);
       } else if (invoice.status === 'draft') {
         // Finalize even if $0 (for record keeping)
