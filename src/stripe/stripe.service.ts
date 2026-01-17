@@ -298,6 +298,11 @@ export class StripeService implements OnModuleInit {
         ? subscription.default_payment_method
         : subscription.default_payment_method?.id;
 
+      // Save payment method to database if present
+      if (subscription.default_payment_method && typeof subscription.default_payment_method !== 'string') {
+        await this.savePaymentMethodToDatabase(customerId, subscription.default_payment_method);
+      }
+
       // Create an invoice for any pending invoice items (prorations)
       const invoice = await this.stripe.invoices.create({
         customer: customerId,
