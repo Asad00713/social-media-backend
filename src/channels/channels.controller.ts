@@ -163,21 +163,21 @@ export class ChannelsController {
     try {
       // Check for OAuth error (standard format)
       if (error) {
-        const errorUrl = `${backendUrl}/channels/connect/error?error=${encodeURIComponent(error)}&description=${encodeURIComponent(errorDescription || '')}`;
+        const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent(error)}&description=${encodeURIComponent(errorDescription || '')}`;
         return res.redirect(errorUrl);
       }
 
       // Check for Facebook-specific error format (error_code, error_message)
       if (errorCode || errorMessage) {
         console.log(`[OAuth Callback] Facebook error: code=${errorCode}, message=${errorMessage}`);
-        const errorUrl = `${backendUrl}/channels/connect/error?error=${encodeURIComponent(errorCode || 'facebook_error')}&description=${encodeURIComponent(errorMessage || 'Unknown Facebook error')}`;
+        const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent(errorCode || 'facebook_error')}&description=${encodeURIComponent(errorMessage || 'Unknown Facebook error')}`;
         return res.redirect(errorUrl);
       }
 
       // Check if state is missing
       if (!state) {
         console.log('[OAuth Callback] ERROR: State token is missing from callback');
-        const errorUrl = `${backendUrl}/channels/connect/error?error=${encodeURIComponent('State token missing')}&description=${encodeURIComponent('Facebook did not return the state parameter. This may be a configuration issue.')}`;
+        const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('State token missing')}&description=${encodeURIComponent('The platform did not return the state parameter. This may be a configuration issue.')}`;
         return res.redirect(errorUrl);
       }
 
@@ -269,7 +269,7 @@ export class ChannelsController {
         } catch (twitterError) {
           console.error('[OAuth Callback] Twitter auto-setup failed:', twitterError);
           // Fall through to normal flow if Twitter-specific handling fails
-          const errorUrl = `${backendUrl}/channels/connect/error?error=${encodeURIComponent('Twitter setup failed: ' + (twitterError instanceof Error ? twitterError.message : 'Unknown error'))}`;
+          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Twitter setup failed: ' + (twitterError instanceof Error ? twitterError.message : 'Unknown error'))}`;
           return res.redirect(errorUrl);
         }
       }
@@ -291,7 +291,7 @@ export class ChannelsController {
     } catch (err) {
       console.log(`[OAuth Callback] ERROR: ${err.message || 'Unknown error'}`);
       console.log(`[OAuth Callback] Full error:`, err);
-      const errorUrl = `${backendUrl}/channels/connect/error?error=${encodeURIComponent(err.message || 'Unknown error')}&description=${encodeURIComponent('State token: ' + (state ? state.substring(0, 10) + '...' : 'missing'))}`;
+      const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent(err.message || 'Unknown error')}&description=${encodeURIComponent('State token: ' + (state ? state.substring(0, 10) + '...' : 'missing'))}`;
       return res.redirect(errorUrl);
     }
   }
