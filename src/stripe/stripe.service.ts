@@ -139,17 +139,12 @@ export class StripeService implements OnModuleInit {
     return item;
   }
 
-  async deleteSubscriptionItem(itemId: string, subscriptionId?: string): Promise<any> {
-    const result = await this.stripe.subscriptionItems.del(itemId, {
+  async deleteSubscriptionItem(itemId: string): Promise<any> {
+    // For deletions, prorations create credits which are automatically
+    // applied to the next invoice - no need to invoice immediately
+    return await this.stripe.subscriptionItems.del(itemId, {
       proration_behavior: 'create_prorations',
     });
-
-    // If subscription ID provided, invoice immediately (credit will be applied)
-    if (subscriptionId) {
-      await this.invoiceSubscriptionImmediately(subscriptionId);
-    }
-
-    return result;
   }
 
   /**
@@ -171,7 +166,7 @@ export class StripeService implements OnModuleInit {
         auto_advance: true, // Automatically finalize and attempt payment
       });
 
-      // If there are line items, pay the invoice immediately
+      // If there are line items to charge, pay the invoice immediately
       if (invoice.amount_due > 0) {
         const paidInvoice = await this.stripe.invoices.pay(invoice.id);
         return paidInvoice;
@@ -184,8 +179,16 @@ export class StripeService implements OnModuleInit {
 
       return invoice;
     } catch (error: any) {
-      // If no pending items to invoice, that's okay
-      if (error.code === 'invoice_no_subscription_line_items') {
+      // Handle expected errors gracefully
+      if (
+        error.code === 'invoice_no_subscription_line_items' ||
+        error.code === 'nothing_to_invoice'
+      ) {
+        // No pending items to invoice - that's okay
+        return null;
+      }
+      if (error.code === 'invoice_payment_intent_requires_action') {
+        // Payment requires additional authentication - will be handled by webhook
         return null;
       }
       throw error;

@@ -373,23 +373,20 @@ export class AddonService {
     // 5. Update or delete in Stripe and database
     if (remainingQuantity === 0) {
       // Delete the item entirely
+      // Note: Credits from removal are automatically applied to next invoice by Stripe
       if (item.stripeSubscriptionItemId) {
-        await this.stripeService.deleteSubscriptionItem(
-          item.stripeSubscriptionItemId,
-          sub.stripeSubscriptionId!, // Pass subscription ID for immediate credit
-        );
+        await this.stripeService.deleteSubscriptionItem(item.stripeSubscriptionItemId);
       }
 
       await db
         .delete(subscriptionItems)
         .where(eq(subscriptionItems.id, item.id));
     } else {
-      // Update quantity
+      // Update quantity (reduction creates credits, applied to next invoice)
       if (item.stripeSubscriptionItemId) {
         await this.stripeService.updateSubscriptionItem(
           item.stripeSubscriptionItemId,
           remainingQuantity,
-          sub.stripeSubscriptionId!, // Pass subscription ID for immediate billing/credit
         );
       }
 
