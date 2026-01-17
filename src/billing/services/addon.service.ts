@@ -133,6 +133,26 @@ export class AddonService {
       );
     }
 
+    // 3.5 Get or create Stripe price for this addon
+    let stripePriceId = addonPrice.stripePriceId;
+    if (!stripePriceId) {
+      this.logger.log(`Creating Stripe price for add-on ${addonType} on plan ${sub.planCode}`);
+      stripePriceId = await this.stripeService.getOrCreatePriceForAddon({
+        addonType,
+        planCode: sub.planCode,
+        priceCents: addonPrice.pricePerUnitCents,
+        interval: 'month',
+      });
+
+      // Update the addon_pricing record with the new Stripe price ID
+      await db
+        .update(addonPricing)
+        .set({ stripePriceId })
+        .where(eq(addonPricing.id, addonPrice.id));
+
+      this.logger.log(`Created Stripe price ${stripePriceId} for add-on ${addonType}`);
+    }
+
     // 4. Check if subscription item already exists for this addon type
     const existingItem = await db
       .select()
@@ -171,7 +191,7 @@ export class AddonService {
         // Create new Stripe item if none exists
         const stripeItem = await this.stripeService.addSubscriptionItem({
           subscriptionId: sub.stripeSubscriptionId!,
-          priceId: addonPrice.stripePriceId,
+          priceId: stripePriceId,
           quantity: finalQuantity,
         });
         stripeSubscriptionItemId = stripeItem.id;
@@ -192,7 +212,7 @@ export class AddonService {
       // Create new subscription item in Stripe
       const stripeItem = await this.stripeService.addSubscriptionItem({
         subscriptionId: sub.stripeSubscriptionId!,
-        priceId: addonPrice.stripePriceId,
+        priceId: stripePriceId,
         quantity,
       });
 
@@ -205,7 +225,7 @@ export class AddonService {
           subscriptionId: sub.id,
           stripeSubscriptionItemId,
           itemType: addonType,
-          stripePriceId: addonPrice.stripePriceId,
+          stripePriceId: stripePriceId,
           quantity,
           unitPriceCents: addonPrice.pricePerUnitCents,
         } as NewSubscriptionItem)

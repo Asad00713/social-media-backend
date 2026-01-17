@@ -229,6 +229,85 @@ export class StripeService implements OnModuleInit {
     return price.id;
   }
 
+  /**
+   * Get or create a Stripe product and price for an add-on
+   * This creates products/prices dynamically so you don't need to pre-configure them in Stripe Dashboard
+   */
+  async getOrCreatePriceForAddon(params: {
+    addonType: string;
+    planCode: string;
+    priceCents: number;
+    interval?: 'month' | 'year';
+  }): Promise<string> {
+    const addonKey = `${params.planCode}_${params.addonType}`;
+    const addonName = this.getAddonDisplayName(params.addonType, params.planCode);
+
+    // Search for existing product by metadata
+    const existingProducts = await this.stripe.products.search({
+      query: `metadata['addonKey']:'${addonKey}'`,
+    });
+
+    let productId: string;
+
+    if (existingProducts.data.length > 0) {
+      productId = existingProducts.data[0].id;
+    } else {
+      // Create new product
+      const product = await this.stripe.products.create({
+        name: addonName,
+        metadata: {
+          addonKey,
+          addonType: params.addonType,
+          planCode: params.planCode,
+        },
+      });
+      productId = product.id;
+    }
+
+    // Search for existing price
+    const existingPrices = await this.stripe.prices.list({
+      product: productId,
+      active: true,
+    });
+
+    // Find a price that matches our amount and interval
+    const matchingPrice = existingPrices.data.find(
+      (p) =>
+        p.unit_amount === params.priceCents &&
+        p.recurring?.interval === (params.interval || 'month'),
+    );
+
+    if (matchingPrice) {
+      return matchingPrice.id;
+    }
+
+    // Create new price
+    const price = await this.stripe.prices.create({
+      product: productId,
+      unit_amount: params.priceCents,
+      currency: 'usd',
+      recurring: {
+        interval: params.interval || 'month',
+      },
+      metadata: {
+        addonKey,
+        addonType: params.addonType,
+        planCode: params.planCode,
+      },
+    });
+
+    return price.id;
+  }
+
+  private getAddonDisplayName(addonType: string, planCode: string): string {
+    const addonNames: Record<string, string> = {
+      EXTRA_CHANNEL: 'Extra Channel',
+      EXTRA_MEMBER: 'Extra Team Member',
+      EXTRA_WORKSPACE: 'Extra Workspace',
+    };
+    return `${addonNames[addonType] || addonType} (${planCode})`;
+  }
+
   // Payment Method Methods
   async attachPaymentMethod(
     paymentMethodId: string,
