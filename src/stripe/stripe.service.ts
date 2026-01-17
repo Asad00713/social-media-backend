@@ -158,8 +158,15 @@ export class StripeService implements OnModuleInit {
    */
   private async invoiceSubscriptionImmediately(subscriptionId: string): Promise<Stripe.Invoice | null> {
     try {
+      // First, get the subscription to find the customer ID
+      const subscription = await this.stripe.subscriptions.retrieve(subscriptionId);
+      const customerId = typeof subscription.customer === 'string'
+        ? subscription.customer
+        : subscription.customer.id;
+
       // Create an invoice for any pending invoice items (prorations)
       const invoice = await this.stripe.invoices.create({
+        customer: customerId,
         subscription: subscriptionId,
         auto_advance: true, // Automatically finalize and attempt payment
       });
