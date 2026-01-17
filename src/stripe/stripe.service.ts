@@ -1,10 +1,11 @@
-import { Injectable, OnModuleInit } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 
 @Injectable()
 export class StripeService implements OnModuleInit {
   private stripe: Stripe;
+  private readonly logger = new Logger(StripeService.name);
 
   constructor(private configService: ConfigService) {}
 
@@ -107,6 +108,8 @@ export class StripeService implements OnModuleInit {
     priceId: string;
     quantity: number;
   }): Promise<Stripe.SubscriptionItem> {
+    this.logger.log(`addSubscriptionItem called with: subscriptionId=${params.subscriptionId}, priceId=${params.priceId}, quantity=${params.quantity}`);
+
     // Get the subscription to find the customer ID
     const subscription = await this.stripe.subscriptions.retrieve(params.subscriptionId, {
       expand: ['default_payment_method'],
@@ -131,29 +134,48 @@ export class StripeService implements OnModuleInit {
     // Get the price details to know the amount
     const price = await this.stripe.prices.retrieve(params.priceId);
     const unitAmount = price.unit_amount || 0;
+    const totalAmount = unitAmount * params.quantity;
 
-    // Create a one-time invoice item for the first month's charge
-    // This ensures immediate billing at full price
-    await this.stripe.invoiceItems.create({
-      customer: customerId,
-      amount: unitAmount * params.quantity,
-      currency: price.currency,
-      description: 'Add-on activation (first month)',
-    });
+    this.logger.log(`Add-on price: ${unitAmount} cents, quantity: ${params.quantity}, total: ${totalAmount} cents`);
 
-    // Create and pay an invoice immediately for the invoice item
-    const invoice = await this.stripe.invoices.create({
-      customer: customerId,
-      auto_advance: true,
-    });
-
-    if (invoice.amount_due > 0 && paymentMethodId) {
-      await this.stripe.invoices.pay(invoice.id, {
-        payment_method: paymentMethodId,
+    if (totalAmount > 0) {
+      // Create a draft invoice FIRST
+      const invoice = await this.stripe.invoices.create({
+        customer: customerId,
+        auto_advance: false, // Don't auto-advance, we control finalization
+        pending_invoice_items_behavior: 'exclude', // Don't include other pending items
       });
-    } else if (invoice.amount_due > 0) {
-      // Try to pay without specifying payment method (uses default)
-      await this.stripe.invoices.pay(invoice.id);
+
+      this.logger.log(`Created draft invoice: ${invoice.id}`);
+
+      // Create invoice item and attach it to the specific invoice
+      const invoiceItem = await this.stripe.invoiceItems.create({
+        customer: customerId,
+        invoice: invoice.id, // Attach to this specific invoice
+        amount: totalAmount,
+        currency: price.currency,
+        description: `Add-on: ${params.quantity}x (first month charge)`,
+      });
+
+      this.logger.log(`Created invoice item: ${invoiceItem.id} for ${totalAmount} cents, attached to invoice ${invoice.id}`);
+
+      // Finalize the invoice to lock in the amount
+      const finalizedInvoice = await this.stripe.invoices.finalizeInvoice(invoice.id);
+
+      this.logger.log(`Finalized invoice: ${finalizedInvoice.id}, amount_due: ${finalizedInvoice.amount_due}`);
+
+      // Now pay the invoice
+      if (finalizedInvoice.amount_due > 0) {
+        if (paymentMethodId) {
+          await this.stripe.invoices.pay(finalizedInvoice.id, {
+            payment_method: paymentMethodId,
+          });
+          this.logger.log(`Paid invoice ${finalizedInvoice.id} with payment method ${paymentMethodId}`);
+        } else {
+          await this.stripe.invoices.pay(finalizedInvoice.id);
+          this.logger.log(`Paid invoice ${finalizedInvoice.id} with default payment method`);
+        }
+      }
     }
 
     return item;
