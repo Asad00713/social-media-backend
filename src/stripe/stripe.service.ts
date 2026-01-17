@@ -101,33 +101,88 @@ export class StripeService implements OnModuleInit {
   }
 
   // Subscription Item Methods (for add-ons)
+  // Industry standard: Charge immediately for add-ons with proration
   async addSubscriptionItem(params: {
     subscriptionId: string;
     priceId: string;
     quantity: number;
   }): Promise<Stripe.SubscriptionItem> {
-    return await this.stripe.subscriptionItems.create({
+    // Add the subscription item with prorations
+    const item = await this.stripe.subscriptionItems.create({
       subscription: params.subscriptionId,
       price: params.priceId,
       quantity: params.quantity,
       proration_behavior: 'create_prorations',
     });
+
+    // Create and pay an invoice immediately for the prorated amount
+    await this.invoiceSubscriptionImmediately(params.subscriptionId);
+
+    return item;
   }
 
   async updateSubscriptionItem(
     itemId: string,
     quantity: number,
+    subscriptionId?: string,
   ): Promise<Stripe.SubscriptionItem> {
-    return await this.stripe.subscriptionItems.update(itemId, {
+    const item = await this.stripe.subscriptionItems.update(itemId, {
       quantity,
       proration_behavior: 'create_prorations',
     });
+
+    // If subscription ID provided, invoice immediately for the change
+    if (subscriptionId) {
+      await this.invoiceSubscriptionImmediately(subscriptionId);
+    }
+
+    return item;
   }
 
-  async deleteSubscriptionItem(itemId: string): Promise<any> {
-    return await this.stripe.subscriptionItems.del(itemId, {
+  async deleteSubscriptionItem(itemId: string, subscriptionId?: string): Promise<any> {
+    const result = await this.stripe.subscriptionItems.del(itemId, {
       proration_behavior: 'create_prorations',
     });
+
+    // If subscription ID provided, invoice immediately (credit will be applied)
+    if (subscriptionId) {
+      await this.invoiceSubscriptionImmediately(subscriptionId);
+    }
+
+    return result;
+  }
+
+  /**
+   * Creates and pays an invoice immediately for any pending proration charges
+   * Industry standard approach for immediate billing of add-ons/upgrades
+   */
+  private async invoiceSubscriptionImmediately(subscriptionId: string): Promise<Stripe.Invoice | null> {
+    try {
+      // Create an invoice for any pending invoice items (prorations)
+      const invoice = await this.stripe.invoices.create({
+        subscription: subscriptionId,
+        auto_advance: true, // Automatically finalize and attempt payment
+      });
+
+      // If there are line items, pay the invoice immediately
+      if (invoice.amount_due > 0) {
+        const paidInvoice = await this.stripe.invoices.pay(invoice.id);
+        return paidInvoice;
+      }
+
+      // If invoice is $0 or credit, just finalize it
+      if (invoice.status === 'draft') {
+        return await this.stripe.invoices.finalizeInvoice(invoice.id);
+      }
+
+      return invoice;
+    } catch (error: any) {
+      // If no pending items to invoice, that's okay
+      if (error.code === 'invoice_no_subscription_line_items') {
+        return null;
+      }
+      throw error;
+    }
   }
 
   // Price Methods

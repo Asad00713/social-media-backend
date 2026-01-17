@@ -305,9 +305,14 @@ export class PlanChangeService {
             ],
             proration_behavior: preview.isUpgrade ? 'create_prorations' : 'none',
           });
+
+          // For upgrades, charge immediately (industry standard)
+          if (preview.isUpgrade) {
+            await this.invoiceImmediately(sub.stripeSubscriptionId);
+          }
         }
       } else {
-        // No existing item, add new one
+        // No existing item, add new one (this will invoice immediately via addSubscriptionItem)
         await this.stripeService.addSubscriptionItem({
           subscriptionId: sub.stripeSubscriptionId,
           priceId: targetPriceId,
@@ -670,5 +675,37 @@ export class PlanChangeService {
         maxWorkspaces: free.maxWorkspaces,
       },
     };
+  }
+
+  /**
+   * Creates and pays an invoice immediately for any pending proration charges
+   * Industry standard approach for immediate billing of plan upgrades
+   */
+  private async invoiceImmediately(stripeSubscriptionId: string): Promise<void> {
+    try {
+      const stripe = this.stripeService.getClient();
+
+      // Create an invoice for any pending invoice items (prorations)
+      const invoice = await stripe.invoices.create({
+        subscription: stripeSubscriptionId,
+        auto_advance: true,
+      });
+
+      // If there are charges, pay the invoice immediately
+      if (invoice.amount_due > 0) {
+        await stripe.invoices.pay(invoice.id);
+        this.logger.log(`Immediately charged ${invoice.amount_due} cents for plan upgrade`);
+      } else if (invoice.status === 'draft') {
+        // Finalize even if $0 (for record keeping)
+        await stripe.invoices.finalizeInvoice(invoice.id);
+      }
+    } catch (error: any) {
+      // If no pending items to invoice, that's okay
+      if (error.code === 'invoice_no_subscription_line_items') {
+        return;
+      }
+      this.logger.error(`Failed to create immediate invoice: ${error.message}`);
+      throw error;
+    }
   }
 }

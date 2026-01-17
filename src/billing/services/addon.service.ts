@@ -185,6 +185,7 @@ export class AddonService {
         await this.stripeService.updateSubscriptionItem(
           existingItem[0].stripeSubscriptionItemId,
           finalQuantity,
+          sub.stripeSubscriptionId!, // Pass subscription ID for immediate billing
         );
         stripeSubscriptionItemId = existingItem[0].stripeSubscriptionItemId;
       } else {
@@ -373,7 +374,10 @@ export class AddonService {
     if (remainingQuantity === 0) {
       // Delete the item entirely
       if (item.stripeSubscriptionItemId) {
-        await this.stripeService.deleteSubscriptionItem(item.stripeSubscriptionItemId);
+        await this.stripeService.deleteSubscriptionItem(
+          item.stripeSubscriptionItemId,
+          sub.stripeSubscriptionId!, // Pass subscription ID for immediate credit
+        );
       }
 
       await db
@@ -385,6 +389,7 @@ export class AddonService {
         await this.stripeService.updateSubscriptionItem(
           item.stripeSubscriptionItemId,
           remainingQuantity,
+          sub.stripeSubscriptionId!, // Pass subscription ID for immediate billing/credit
         );
       }
 
