@@ -1,6 +1,9 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
+import { db } from '../drizzle/db';
+import { invoices, invoiceLineItems, subscriptions } from '../drizzle/schema';
+import { eq } from 'drizzle-orm';
 
 @Injectable()
 export class StripeService implements OnModuleInit {
@@ -165,20 +168,84 @@ export class StripeService implements OnModuleInit {
       this.logger.log(`Finalized invoice: ${finalizedInvoice.id}, amount_due: ${finalizedInvoice.amount_due}`);
 
       // Now pay the invoice
+      let paidInvoice = finalizedInvoice;
       if (finalizedInvoice.amount_due > 0) {
         if (paymentMethodId) {
-          await this.stripe.invoices.pay(finalizedInvoice.id, {
+          paidInvoice = await this.stripe.invoices.pay(finalizedInvoice.id, {
             payment_method: paymentMethodId,
           });
           this.logger.log(`Paid invoice ${finalizedInvoice.id} with payment method ${paymentMethodId}`);
         } else {
-          await this.stripe.invoices.pay(finalizedInvoice.id);
+          paidInvoice = await this.stripe.invoices.pay(finalizedInvoice.id);
           this.logger.log(`Paid invoice ${finalizedInvoice.id} with default payment method`);
         }
       }
+
+      // Save invoice to database
+      await this.saveInvoiceToDatabase(paidInvoice, params.subscriptionId, invoiceItem);
     }
 
     return item;
+  }
+
+  /**
+   * Save a Stripe invoice to the database
+   */
+  private async saveInvoiceToDatabase(
+    stripeInvoice: Stripe.Invoice,
+    stripeSubscriptionId: string,
+    lineItem: Stripe.InvoiceItem,
+  ): Promise<void> {
+    try {
+      // Find subscription ID in our database
+      const subscription = await db
+        .select({ id: subscriptions.id })
+        .from(subscriptions)
+        .where(eq(subscriptions.stripeSubscriptionId, stripeSubscriptionId))
+        .limit(1);
+
+      const subscriptionId = subscription.length > 0 ? subscription[0].id : null;
+
+      // Insert invoice
+      const [savedInvoice] = await db
+        .insert(invoices)
+        .values({
+          subscriptionId,
+          stripeInvoiceId: stripeInvoice.id,
+          subtotalCents: stripeInvoice.subtotal || 0,
+          taxCents: (stripeInvoice as any).tax || 0,
+          totalCents: stripeInvoice.total || 0,
+          amountPaidCents: stripeInvoice.amount_paid || 0,
+          amountDueCents: stripeInvoice.amount_due || 0,
+          currency: stripeInvoice.currency || 'usd',
+          status: stripeInvoice.status || 'paid',
+          periodStart: stripeInvoice.period_start ? new Date(stripeInvoice.period_start * 1000) : null,
+          periodEnd: stripeInvoice.period_end ? new Date(stripeInvoice.period_end * 1000) : null,
+          paidAt: stripeInvoice.status === 'paid' ? new Date() : null,
+          invoicePdfUrl: stripeInvoice.invoice_pdf || null,
+          hostedInvoiceUrl: stripeInvoice.hosted_invoice_url || null,
+        })
+        .returning();
+
+      this.logger.log(`Saved invoice ${stripeInvoice.id} to database with ID ${savedInvoice.id}`);
+
+      // Insert line item
+      await db.insert(invoiceLineItems).values({
+        invoiceId: savedInvoice.id,
+        stripeLineItemId: lineItem.id,
+        description: lineItem.description || 'Add-on charge',
+        itemType: 'ADDON',
+        quantity: lineItem.quantity || 1,
+        unitPriceCents: lineItem.amount || 0,
+        totalCents: lineItem.amount || 0,
+        isProration: false,
+      });
+
+      this.logger.log(`Saved invoice line item for invoice ${savedInvoice.id}`);
+    } catch (error) {
+      this.logger.error(`Failed to save invoice to database: ${error.message}`, error.stack);
+      // Don't throw - invoice was already paid in Stripe, we just failed to save locally
+    }
   }
 
   async updateSubscriptionItem(
