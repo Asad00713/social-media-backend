@@ -101,21 +101,24 @@ export class StripeService implements OnModuleInit {
   }
 
   // Subscription Item Methods (for add-ons)
-  // Industry standard: Charge immediately for add-ons with proration
+  // Industry standard: Charge full price immediately for add-ons
   async addSubscriptionItem(params: {
     subscriptionId: string;
     priceId: string;
     quantity: number;
   }): Promise<Stripe.SubscriptionItem> {
-    // Add the subscription item with prorations
+    // Add the subscription item and bill immediately at full price
+    // Using 'always_invoice' ensures the full amount is charged right away
+    // (not prorated to $0 when added same day as subscription)
     const item = await this.stripe.subscriptionItems.create({
       subscription: params.subscriptionId,
       price: params.priceId,
       quantity: params.quantity,
-      proration_behavior: 'create_prorations',
+      proration_behavior: 'always_invoice',
+      payment_behavior: 'default_incomplete',
     });
 
-    // Create and pay an invoice immediately for the prorated amount
+    // Pay the pending invoice immediately
     await this.invoiceSubscriptionImmediately(params.subscriptionId);
 
     return item;
