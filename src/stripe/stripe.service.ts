@@ -107,19 +107,54 @@ export class StripeService implements OnModuleInit {
     priceId: string;
     quantity: number;
   }): Promise<Stripe.SubscriptionItem> {
-    // Add the subscription item and bill immediately at full price
-    // Using 'always_invoice' ensures the full amount is charged right away
-    // (not prorated to $0 when added same day as subscription)
+    // Get the subscription to find the customer ID
+    const subscription = await this.stripe.subscriptions.retrieve(params.subscriptionId, {
+      expand: ['default_payment_method'],
+    });
+    const customerId = typeof subscription.customer === 'string'
+      ? subscription.customer
+      : subscription.customer.id;
+
+    // Get the payment method from subscription
+    const paymentMethodId = typeof subscription.default_payment_method === 'string'
+      ? subscription.default_payment_method
+      : subscription.default_payment_method?.id;
+
+    // Add the subscription item WITHOUT proration (it will be billed starting next cycle)
     const item = await this.stripe.subscriptionItems.create({
       subscription: params.subscriptionId,
       price: params.priceId,
       quantity: params.quantity,
-      proration_behavior: 'always_invoice',
-      payment_behavior: 'default_incomplete',
+      proration_behavior: 'none', // Don't create $0 proration items
     });
 
-    // Pay the pending invoice immediately
-    await this.invoiceSubscriptionImmediately(params.subscriptionId);
+    // Get the price details to know the amount
+    const price = await this.stripe.prices.retrieve(params.priceId);
+    const unitAmount = price.unit_amount || 0;
+
+    // Create a one-time invoice item for the first month's charge
+    // This ensures immediate billing at full price
+    await this.stripe.invoiceItems.create({
+      customer: customerId,
+      amount: unitAmount * params.quantity,
+      currency: price.currency,
+      description: 'Add-on activation (first month)',
+    });
+
+    // Create and pay an invoice immediately for the invoice item
+    const invoice = await this.stripe.invoices.create({
+      customer: customerId,
+      auto_advance: true,
+    });
+
+    if (invoice.amount_due > 0 && paymentMethodId) {
+      await this.stripe.invoices.pay(invoice.id, {
+        payment_method: paymentMethodId,
+      });
+    } else if (invoice.amount_due > 0) {
+      // Try to pay without specifying payment method (uses default)
+      await this.stripe.invoices.pay(invoice.id);
+    }
 
     return item;
   }
