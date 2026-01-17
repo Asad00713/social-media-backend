@@ -2,7 +2,7 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { db } from '../drizzle/db';
-import { invoices, invoiceLineItems, subscriptions } from '../drizzle/schema';
+import { invoices, invoiceLineItems, subscriptions, paymentMethods, stripeCustomers } from '../drizzle/schema';
 import { eq } from 'drizzle-orm';
 
 @Injectable()
@@ -125,6 +125,11 @@ export class StripeService implements OnModuleInit {
     const paymentMethodId = typeof subscription.default_payment_method === 'string'
       ? subscription.default_payment_method
       : subscription.default_payment_method?.id;
+
+    // Save payment method to database if present
+    if (subscription.default_payment_method && typeof subscription.default_payment_method !== 'string') {
+      await this.savePaymentMethodToDatabase(customerId, subscription.default_payment_method);
+    }
 
     // Add the subscription item WITHOUT proration (it will be billed starting next cycle)
     const item = await this.stripe.subscriptionItems.create({
@@ -669,5 +674,64 @@ export class StripeService implements OnModuleInit {
       subscription: params.subscriptionId,
       limit: 1,
     }).then(invoices => invoices.data[0]);
+  }
+
+  /**
+   * Save a payment method to the database if it doesn't already exist
+   */
+  private async savePaymentMethodToDatabase(
+    stripeCustomerId: string,
+    paymentMethod: Stripe.PaymentMethod,
+  ): Promise<void> {
+    try {
+      // Check if this payment method already exists in our database
+      const existing = await db
+        .select()
+        .from(paymentMethods)
+        .where(eq(paymentMethods.stripePaymentMethodId, paymentMethod.id))
+        .limit(1);
+
+      if (existing.length > 0) {
+        this.logger.log(`Payment method ${paymentMethod.id} already exists in database`);
+        return;
+      }
+
+      // Check if customer exists in our database
+      const customer = await db
+        .select()
+        .from(stripeCustomers)
+        .where(eq(stripeCustomers.stripeCustomerId, stripeCustomerId))
+        .limit(1);
+
+      if (customer.length === 0) {
+        this.logger.warn(`Stripe customer ${stripeCustomerId} not found in database, skipping payment method save`);
+        return;
+      }
+
+      // Check if this is the first payment method for this customer
+      const existingMethods = await db
+        .select()
+        .from(paymentMethods)
+        .where(eq(paymentMethods.stripeCustomerId, stripeCustomerId));
+
+      const isFirstMethod = existingMethods.length === 0;
+
+      // Save the payment method
+      const pm = paymentMethod as any;
+      await db.insert(paymentMethods).values({
+        stripeCustomerId,
+        stripePaymentMethodId: paymentMethod.id,
+        type: paymentMethod.type || 'card',
+        cardBrand: pm.card?.brand || null,
+        cardLast4: pm.card?.last4 || null,
+        cardExpMonth: pm.card?.exp_month || null,
+        cardExpYear: pm.card?.exp_year || null,
+        isDefault: isFirstMethod, // First payment method is default
+      });
+
+      this.logger.log(`Saved payment method ${paymentMethod.id} to database (isDefault: ${isFirstMethod})`);
+    } catch (error) {
+      this.logger.error(`Failed to save payment method to database: ${error.message}`, error.stack);
+    }
   }
 }
