@@ -308,6 +308,10 @@ export class StripeService implements OnModuleInit {
           payParams.payment_method = paymentMethodId;
         }
         const paidInvoice = await this.stripe.invoices.pay(invoice.id, payParams);
+
+        // Save invoice to database
+        await this.saveProrationInvoiceToDatabase(paidInvoice, subscriptionId);
+
         return paidInvoice;
       }
 
@@ -331,6 +335,75 @@ export class StripeService implements OnModuleInit {
         return null;
       }
       throw error;
+    }
+  }
+
+  /**
+   * Save a proration invoice to the database (for subscription updates)
+   */
+  private async saveProrationInvoiceToDatabase(
+    stripeInvoice: Stripe.Invoice,
+    stripeSubscriptionId: string,
+  ): Promise<void> {
+    try {
+      // Find subscription ID in our database
+      const subscription = await db
+        .select({ id: subscriptions.id })
+        .from(subscriptions)
+        .where(eq(subscriptions.stripeSubscriptionId, stripeSubscriptionId))
+        .limit(1);
+
+      const subscriptionId = subscription.length > 0 ? subscription[0].id : null;
+
+      // Insert invoice
+      const [savedInvoice] = await db
+        .insert(invoices)
+        .values({
+          subscriptionId,
+          stripeInvoiceId: stripeInvoice.id,
+          subtotalCents: stripeInvoice.subtotal || 0,
+          taxCents: (stripeInvoice as any).tax || 0,
+          totalCents: stripeInvoice.total || 0,
+          amountPaidCents: stripeInvoice.amount_paid || 0,
+          amountDueCents: stripeInvoice.amount_due || 0,
+          currency: stripeInvoice.currency || 'usd',
+          status: stripeInvoice.status || 'paid',
+          periodStart: stripeInvoice.period_start ? new Date(stripeInvoice.period_start * 1000) : null,
+          periodEnd: stripeInvoice.period_end ? new Date(stripeInvoice.period_end * 1000) : null,
+          paidAt: stripeInvoice.status === 'paid' ? new Date() : null,
+          invoicePdfUrl: stripeInvoice.invoice_pdf || null,
+          hostedInvoiceUrl: stripeInvoice.hosted_invoice_url || null,
+        })
+        .returning();
+
+      this.logger.log(`Saved proration invoice ${stripeInvoice.id} to database with ID ${savedInvoice.id}`);
+
+      // Save line items from the invoice
+      const invoiceWithLines = await this.stripe.invoices.retrieve(stripeInvoice.id, {
+        expand: ['lines.data'],
+      });
+
+      if (invoiceWithLines.lines?.data) {
+        for (const line of invoiceWithLines.lines.data) {
+          const lineAny = line as any;
+          const isProration = lineAny.proration || false;
+          await db.insert(invoiceLineItems).values({
+            invoiceId: savedInvoice.id,
+            stripeLineItemId: line.id,
+            description: line.description || 'Subscription charge',
+            itemType: isProration ? 'PRORATION' : 'SUBSCRIPTION',
+            quantity: line.quantity || 1,
+            unitPriceCents: line.amount || 0,
+            totalCents: line.amount || 0,
+            periodStart: line.period?.start ? new Date(line.period.start * 1000) : null,
+            periodEnd: line.period?.end ? new Date(line.period.end * 1000) : null,
+            isProration,
+          });
+        }
+        this.logger.log(`Saved ${invoiceWithLines.lines.data.length} line items for invoice ${savedInvoice.id}`);
+      }
+    } catch (error) {
+      this.logger.error(`Failed to save proration invoice to database: ${error.message}`, error.stack);
     }
   }
 
