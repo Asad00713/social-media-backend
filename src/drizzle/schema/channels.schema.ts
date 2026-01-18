@@ -362,7 +362,7 @@ export const PLATFORM_CONFIG: Record<
     oauthScopes: [
       'instagram_basic',
       'instagram_content_publish',
-      'instagram_manage_insights',
+      // 'instagram_manage_insights', // Requires App Review approval - add back after approval
     ],
   },
   youtube: {

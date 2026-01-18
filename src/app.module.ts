@@ -17,6 +17,7 @@ import { MediaModule } from './media/media.module';
 import { DripModule } from './drips/drip.module';
 import { FeedbackModule } from './feedback/feedback.module';
 import { NotificationsModule } from './notifications/notifications.module';
+import { PexelsModule } from './pexels/pexels.module';
 
 @Module({
   imports: [
@@ -38,6 +39,7 @@ import { NotificationsModule } from './notifications/notifications.module';
     DripModule,
     FeedbackModule,
     NotificationsModule,
+    PexelsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
