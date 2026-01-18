@@ -51,7 +51,8 @@ export interface ExportDesignOptions {
 export class CanvaService {
   private readonly logger = new Logger(CanvaService.name);
   private readonly apiBaseUrl = 'https://api.canva.com/rest/v1';
-  private readonly authBaseUrl = 'https://www.canva.com/api/oauth';
+  private readonly authBaseUrl = 'https://www.canva.com/api/oauth'; // For authorization URL
+  private readonly tokenUrl = 'https://api.canva.com/rest/v1/oauth/token'; // For token exchange
   private readonly clientId: string;
   private readonly clientSecret: string;
 
@@ -114,8 +115,9 @@ export class CanvaService {
 
     this.logger.log(`Exchanging code for tokens. Redirect URI: ${redirectUri}`);
     this.logger.log(`Code verifier length: ${codeVerifier.length}`);
+    this.logger.log(`Token URL: ${this.tokenUrl}`);
 
-    const response = await fetch(`${this.authBaseUrl}/token`, {
+    const response = await fetch(this.tokenUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
@@ -157,7 +159,7 @@ export class CanvaService {
       throw new BadRequestException('Canva credentials not configured');
     }
 
-    const response = await fetch(`${this.authBaseUrl}/token`, {
+    const response = await fetch(this.tokenUrl, {
       method: 'POST',
       headers: {
         'Content-Type': 'application/x-www-form-urlencoded',
