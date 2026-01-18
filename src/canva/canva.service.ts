@@ -41,6 +41,19 @@ export interface CreateDesignOptions {
   assetId?: string; // Pre-fill with an uploaded asset
 }
 
+// Design dimensions for social media platforms (in pixels)
+const DESIGN_DIMENSIONS: Record<string, { width: number; height: number }> = {
+  'Instagram Post': { width: 1080, height: 1080 },
+  'Facebook Post': { width: 1200, height: 630 },
+  'Twitter Post': { width: 1200, height: 675 },
+  'Pinterest Pin': { width: 1000, height: 1500 },
+  'YouTube Thumbnail': { width: 1280, height: 720 },
+  'Video': { width: 1920, height: 1080 },
+};
+
+// Preset design types supported by Canva API
+const PRESET_TYPES = ['Presentation', 'Document', 'Whiteboard'];
+
 export interface ExportDesignOptions {
   format: 'png' | 'jpg' | 'pdf' | 'mp4' | 'gif';
   quality?: 'low' | 'medium' | 'high';
@@ -224,10 +237,27 @@ export class CanvaService {
   ): Promise<CanvaDesign> {
     const { designType = 'Instagram Post', title, assetId } = options;
 
+    // Build design_type based on whether it's a preset or custom size
+    let designTypeObj: Record<string, any>;
+
+    if (PRESET_TYPES.includes(designType)) {
+      // Use preset format for doc, whiteboard, presentation
+      designTypeObj = {
+        type: 'preset',
+        name: designType.toLowerCase(),
+      };
+    } else {
+      // Use custom dimensions for social media sizes
+      const dimensions = DESIGN_DIMENSIONS[designType] || DESIGN_DIMENSIONS['Instagram Post'];
+      designTypeObj = {
+        type: 'custom',
+        width: dimensions.width,
+        height: dimensions.height,
+      };
+    }
+
     const body: Record<string, any> = {
-      design_type: {
-        type: designType.toLowerCase().replace(/ /g, '_'),
-      },
+      design_type: designTypeObj,
     };
 
     if (title) {
@@ -238,7 +268,7 @@ export class CanvaService {
       body.asset_id = assetId;
     }
 
-    this.logger.log(`Creating Canva design: ${designType}`);
+    this.logger.log(`Creating Canva design: ${designType}, body: ${JSON.stringify(body)}`);
 
     const response = await fetch(`${this.apiBaseUrl}/designs`, {
       method: 'POST',
