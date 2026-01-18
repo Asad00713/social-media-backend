@@ -1,5 +1,5 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
-import { randomBytes } from 'crypto';
+import { randomBytes, createHash } from 'crypto';
 
 export interface CanvaTokens {
   accessToken: string;
@@ -76,8 +76,13 @@ export class CanvaService {
       throw new BadRequestException('Canva client ID not configured');
     }
 
-    // Generate code verifier and challenge for PKCE
+    // Generate code verifier and challenge for PKCE (S256)
     const codeVerifier = randomBytes(32).toString('base64url');
+
+    // Create SHA256 hash of verifier for code_challenge
+    const codeChallenge = createHash('sha256')
+      .update(codeVerifier)
+      .digest('base64url');
 
     const params = new URLSearchParams({
       response_type: 'code',
@@ -85,8 +90,8 @@ export class CanvaService {
       redirect_uri: redirectUri,
       state: state,
       scope: scopes.join(' '),
-      code_challenge: codeVerifier, // For simplicity using plain method
-      code_challenge_method: 'plain',
+      code_challenge: codeChallenge,
+      code_challenge_method: 'S256',
     });
 
     return {
