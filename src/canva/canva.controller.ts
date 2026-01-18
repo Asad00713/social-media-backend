@@ -9,8 +9,10 @@ import {
   HttpCode,
   HttpStatus,
   Res,
+  Logger,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { eq } from 'drizzle-orm';
 import { CanvaService } from './canva.service';
 import {
   InitiateCanvaOAuthDto,
@@ -25,12 +27,13 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { randomBytes } from 'crypto';
-
-// Simple in-memory store for OAuth states (use Redis in production)
-const oauthStates = new Map<string, { codeVerifier: string; redirectUrl: string; expiresAt: Date }>();
+import { db } from '../drizzle/db';
+import { oauthStates, NewOAuthState } from '../drizzle/schema/channels.schema';
 
 @Controller('canva')
 export class CanvaController {
+  private readonly logger = new Logger(CanvaController.name);
+
   constructor(private readonly canvaService: CanvaService) {}
 
   // ==========================================================================
@@ -45,10 +48,10 @@ export class CanvaController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async initiateOAuth(
-    @CurrentUser() user: { userId: string },
+    @CurrentUser() user: { userId: string; workspaceId?: string },
     @Body() dto: InitiateCanvaOAuthDto,
   ) {
-    const state = randomBytes(16).toString('hex');
+    const state = randomBytes(32).toString('hex');
     const redirectUri = `${process.env.APP_URL}/canva/oauth/callback`;
 
     const scopes = [
@@ -62,12 +65,27 @@ export class CanvaController {
 
     const result = this.canvaService.generateAuthUrl(redirectUri, state, scopes);
 
-    // Store state with code verifier for callback
-    oauthStates.set(state, {
-      codeVerifier: result.codeVerifier,
+    // Calculate expiration (15 minutes)
+    const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
+
+    // Store state in database for persistence across server restarts
+    // Use the user's workspace if available, otherwise use a placeholder
+    const workspaceId = user.workspaceId || dto.workspaceId;
+    if (!workspaceId) {
+      throw new Error('Workspace ID is required for Canva OAuth');
+    }
+
+    await db.insert(oauthStates).values({
+      stateToken: state,
+      workspaceId,
+      userId: user.userId,
+      platform: 'canva',
       redirectUrl: dto.redirectUrl || process.env.FRONTEND_URL || 'http://localhost:3001',
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000), // 10 minutes
-    });
+      codeVerifier: result.codeVerifier,
+      expiresAt,
+    } as NewOAuthState);
+
+    this.logger.log(`Canva OAuth initiated for user ${user.userId}, state: ${state.substring(0, 10)}...`);
 
     return {
       authorizationUrl: result.url,
@@ -86,32 +104,66 @@ export class CanvaController {
     @Query('error_description') errorDescription: string,
     @Res() res: Response,
   ) {
-    const stateData = oauthStates.get(state);
-    const frontendUrl = stateData?.redirectUrl || process.env.FRONTEND_URL || 'http://localhost:3001';
+    const defaultFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
 
-    // Clean up state
-    oauthStates.delete(state);
+    this.logger.log(`Canva OAuth callback received. State: ${state?.substring(0, 10)}...`);
 
+    // Look up state in database
+    const stateRecords = await db
+      .select()
+      .from(oauthStates)
+      .where(eq(oauthStates.stateToken, state))
+      .limit(1);
+
+    const stateData = stateRecords[0];
+    const frontendUrl = stateData?.redirectUrl || defaultFrontendUrl;
+
+    // Handle errors from Canva
     if (error) {
+      this.logger.error(`Canva OAuth error: ${error} - ${errorDescription}`);
       const errorUrl = `${frontendUrl}/canva/connect/error?error=${encodeURIComponent(error)}&description=${encodeURIComponent(errorDescription || '')}`;
       return res.redirect(errorUrl);
     }
 
-    if (!stateData || stateData.expiresAt < new Date()) {
-      const errorUrl = `${frontendUrl}/canva/connect/error?error=invalid_state&description=OAuth state expired or invalid`;
+    // Validate state
+    if (!stateData) {
+      this.logger.error(`State token not found in database: ${state?.substring(0, 10)}...`);
+      const errorUrl = `${frontendUrl}/canva/connect/error?error=invalid_state&description=OAuth state not found`;
       return res.redirect(errorUrl);
     }
 
+    if (new Date(stateData.expiresAt) < new Date()) {
+      this.logger.error(`State token expired: ${state?.substring(0, 10)}...`);
+      const errorUrl = `${frontendUrl}/canva/connect/error?error=invalid_state&description=OAuth state expired`;
+      return res.redirect(errorUrl);
+    }
+
+    if (stateData.usedAt) {
+      this.logger.error(`State token already used: ${state?.substring(0, 10)}...`);
+      const errorUrl = `${frontendUrl}/canva/connect/error?error=invalid_state&description=OAuth state already used`;
+      return res.redirect(errorUrl);
+    }
+
+    // Mark state as used
+    await db
+      .update(oauthStates)
+      .set({ usedAt: new Date() })
+      .where(eq(oauthStates.id, stateData.id));
+
     try {
       const redirectUri = `${process.env.APP_URL}/canva/oauth/callback`;
+      this.logger.log(`Exchanging code for tokens with redirect URI: ${redirectUri}`);
+
       const tokens = await this.canvaService.exchangeCodeForTokens(
         code,
         redirectUri,
-        stateData.codeVerifier,
+        stateData.codeVerifier!,
       );
 
       // Get user info
       const user = await this.canvaService.getCurrentUser(tokens.accessToken);
+
+      this.logger.log(`Canva OAuth successful for user: ${user.displayName}`);
 
       // Redirect to frontend with tokens
       const successUrl = `${frontendUrl}/canva/connect/success?` +
@@ -123,6 +175,7 @@ export class CanvaController {
 
       return res.redirect(successUrl);
     } catch (err) {
+      this.logger.error(`Canva token exchange failed: ${err.message}`);
       const errorUrl = `${frontendUrl}/canva/connect/error?error=token_exchange_failed&description=${encodeURIComponent(err.message)}`;
       return res.redirect(errorUrl);
     }

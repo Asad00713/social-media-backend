@@ -41,6 +41,9 @@ export class InitiateCanvaOAuthDto {
   @IsString()
   @IsOptional()
   redirectUrl?: string; // Frontend URL to redirect after OAuth
+
+  @IsString()
+  workspaceId: string; // Required for storing OAuth state
 }
 
 export class CanvaOAuthCallbackDto {
