@@ -220,11 +220,8 @@ export class CanvaController {
   @Post('designs')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
-  async createDesign(
-    @Body('accessToken') accessToken: string,
-    @Body() dto: CreateDesignDto,
-  ) {
-    return this.canvaService.createDesign(accessToken, {
+  async createDesign(@Body() dto: CreateDesignDto) {
+    return this.canvaService.createDesign(dto.accessToken, {
       designType: dto.designType,
       title: dto.title,
       assetId: dto.assetId,
@@ -237,11 +234,8 @@ export class CanvaController {
   @Post('designs/list')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async listDesigns(
-    @Body('accessToken') accessToken: string,
-    @Body() dto: ListDesignsDto,
-  ) {
-    return this.canvaService.listDesigns(accessToken, dto.limit, dto.continuation);
+  async listDesigns(@Body() dto: ListDesignsDto) {
+    return this.canvaService.listDesigns(dto.accessToken, dto.limit, dto.continuation);
   }
 
   /**
@@ -265,10 +259,9 @@ export class CanvaController {
   @HttpCode(HttpStatus.OK)
   async exportDesign(
     @Param('designId') designId: string,
-    @Body('accessToken') accessToken: string,
     @Body() dto: ExportDesignDto,
   ) {
-    return this.canvaService.exportDesign(accessToken, designId, {
+    return this.canvaService.exportDesign(dto.accessToken, designId, {
       format: dto.format,
       quality: dto.quality,
       pages: dto.pages,
@@ -298,11 +291,10 @@ export class CanvaController {
   @HttpCode(HttpStatus.OK)
   async exportAndWait(
     @Param('designId') designId: string,
-    @Body('accessToken') accessToken: string,
     @Body() dto: ExportDesignDto,
   ) {
     // Start export
-    const exportJob = await this.canvaService.exportDesign(accessToken, designId, {
+    const exportJob = await this.canvaService.exportDesign(dto.accessToken, designId, {
       format: dto.format,
       quality: dto.quality,
       pages: dto.pages,
@@ -310,7 +302,7 @@ export class CanvaController {
 
     // Wait for completion
     const urls = await this.canvaService.waitForExport(
-      accessToken,
+      dto.accessToken,
       designId,
       exportJob.id,
     );
@@ -333,11 +325,8 @@ export class CanvaController {
   @Post('assets/upload')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
-  async uploadAsset(
-    @Body('accessToken') accessToken: string,
-    @Body() dto: UploadAssetDto,
-  ) {
-    return this.canvaService.uploadAsset(accessToken, dto.name, dto.mediaUrl);
+  async uploadAsset(@Body() dto: UploadAssetDto) {
+    return this.canvaService.uploadAsset(dto.accessToken, dto.name, dto.mediaUrl);
   }
 
   // ==========================================================================

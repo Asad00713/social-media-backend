@@ -61,6 +61,9 @@ export class RefreshCanvaTokenDto {
 
 // Design DTOs
 export class CreateDesignDto {
+  @IsString()
+  accessToken: string;
+
   @IsEnum(CanvaDesignType)
   @IsOptional()
   designType?: CanvaDesignType;
@@ -75,6 +78,9 @@ export class CreateDesignDto {
 }
 
 export class ListDesignsDto {
+  @IsString()
+  accessToken: string;
+
   @IsNumber()
   @IsOptional()
   @Type(() => Number)
@@ -88,6 +94,9 @@ export class ListDesignsDto {
 }
 
 export class ExportDesignDto {
+  @IsString()
+  accessToken: string;
+
   @IsEnum(CanvaExportFormat)
   format: CanvaExportFormat;
 
@@ -108,6 +117,9 @@ export class GetExportStatusDto {
 
 // Asset DTOs
 export class UploadAssetDto {
+  @IsString()
+  accessToken: string;
+
   @IsString()
   name: string;
 
