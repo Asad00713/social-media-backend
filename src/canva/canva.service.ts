@@ -112,6 +112,9 @@ export class CanvaService {
       throw new BadRequestException('Canva credentials not configured');
     }
 
+    this.logger.log(`Exchanging code for tokens. Redirect URI: ${redirectUri}`);
+    this.logger.log(`Code verifier length: ${codeVerifier.length}`);
+
     const response = await fetch(`${this.authBaseUrl}/token`, {
       method: 'POST',
       headers: {
@@ -126,13 +129,16 @@ export class CanvaService {
       }),
     });
 
+    const responseText = await response.text();
+    this.logger.log(`Canva token response status: ${response.status}`);
+    this.logger.log(`Canva token response: ${responseText}`);
+
     if (!response.ok) {
-      const error = await response.text();
-      this.logger.error(`Canva token exchange failed: ${error}`);
-      throw new BadRequestException('Failed to exchange Canva authorization code');
+      this.logger.error(`Canva token exchange failed: ${responseText}`);
+      throw new BadRequestException(`Canva token exchange failed: ${responseText}`);
     }
 
-    const data = await response.json();
+    const data = JSON.parse(responseText);
 
     return {
       accessToken: data.access_token,
