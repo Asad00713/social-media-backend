@@ -108,17 +108,24 @@ export class FacebookService {
       'id,name,access_token,category,picture.type(large),username,followers_count,fan_count,instagram_business_account{id,username,name,profile_picture_url,followers_count,media_count,biography}',
     );
 
+    this.logger.log(`Fetching pages from: ${this.graphApiUrl}/me/accounts`);
+    this.logger.log(`Token (first 20 chars): ${userAccessToken.substring(0, 20)}...`);
+
     const response = await fetch(url.toString());
+    const responseText = await response.text();
+
+    this.logger.log(`Facebook API response status: ${response.status}`);
+    this.logger.log(`Facebook API response: ${responseText}`);
 
     if (!response.ok) {
-      const error = await response.json();
+      const error = JSON.parse(responseText);
       this.logger.error('Failed to fetch pages:', error);
       throw new BadRequestException(
         error.error?.message || 'Failed to fetch Facebook pages',
       );
     }
 
-    const data = await response.json();
+    const data = JSON.parse(responseText);
     const pages: FacebookPage[] = [];
 
     for (const page of data.data || []) {

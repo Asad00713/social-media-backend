@@ -427,14 +427,17 @@ export class OAuthService {
     }
 
     // Fall back to environment variables
-    const envPrefix = platform.toUpperCase();
+    // Instagram uses Facebook's Meta app credentials (same OAuth provider)
+    const envPrefix = platform === 'instagram' ? 'FACEBOOK' : platform.toUpperCase();
     const clientId = process.env[`${envPrefix}_CLIENT_ID`];
     const clientSecret = process.env[`${envPrefix}_CLIENT_SECRET`];
 
     if (!clientId || !clientSecret) {
+      const hint = platform === 'instagram'
+        ? 'Instagram uses Facebook credentials. Set FACEBOOK_CLIENT_ID and FACEBOOK_CLIENT_SECRET.'
+        : `Set ${envPrefix}_CLIENT_ID and ${envPrefix}_CLIENT_SECRET environment variables.`;
       throw new BadRequestException(
-        `OAuth credentials not configured for ${platform}. ` +
-          `Set ${envPrefix}_CLIENT_ID and ${envPrefix}_CLIENT_SECRET environment variables.`,
+        `OAuth credentials not configured for ${platform}. ${hint}`,
       );
     }
 
