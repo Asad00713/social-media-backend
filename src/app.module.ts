@@ -18,6 +18,7 @@ import { DripModule } from './drips/drip.module';
 import { FeedbackModule } from './feedback/feedback.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PexelsModule } from './pexels/pexels.module';
+import { CanvaModule } from './canva/canva.module';
 
 @Module({
   imports: [
@@ -40,6 +41,7 @@ import { PexelsModule } from './pexels/pexels.module';
     FeedbackModule,
     NotificationsModule,
     PexelsModule,
+    CanvaModule,
   ],
   controllers: [AppController],
   providers: [AppService],
