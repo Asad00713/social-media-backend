@@ -116,7 +116,15 @@ export class CanvaController {
       .limit(1);
 
     const stateData = stateRecords[0];
-    const frontendUrl = stateData?.redirectUrl || defaultFrontendUrl;
+    // Use base frontend URL (strip any path that might have been included)
+    let frontendUrl = stateData?.redirectUrl || defaultFrontendUrl;
+    try {
+      const urlObj = new URL(frontendUrl);
+      frontendUrl = urlObj.origin; // Get just protocol + host
+    } catch {
+      // If invalid URL, use as-is
+    }
+    this.logger.log(`Using frontend URL for redirect: ${frontendUrl}`);
 
     // Handle errors from Canva
     if (error) {

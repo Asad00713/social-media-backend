@@ -205,10 +205,12 @@ export class CanvaService {
     }
 
     const data = await response.json();
+    this.logger.log(`Canva user response: ${JSON.stringify(data)}`);
 
+    // Canva API returns profile info directly or nested
     return {
-      userId: data.user?.id || data.id,
-      displayName: data.user?.display_name || data.display_name || 'Canva User',
+      userId: data.id || data.user?.id || data.profile?.id || 'unknown',
+      displayName: data.display_name || data.user?.display_name || data.profile?.display_name || 'Canva User',
     };
   }
 
