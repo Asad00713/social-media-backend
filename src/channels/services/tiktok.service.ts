@@ -217,7 +217,7 @@ export class TikTokService {
   }
 
   /**
-   * Initialize direct file upload
+   * Initialize direct file upload to Creator Inbox
    * Use this when you want to upload video chunks directly
    *
    * @param accessToken - OAuth access token
@@ -234,6 +234,14 @@ export class TikTokService {
     publishId: string;
     uploadUrl: string;
   }> {
+    // TikTok requires exact calculation:
+    // total_chunk_count must equal ceil(video_size / chunk_size)
+    const calculatedChunks = Math.ceil(videoSize / chunkSize);
+    if (totalChunkCount !== calculatedChunks) {
+      this.logger.warn(`Correcting chunk count: provided=${totalChunkCount}, calculated=${calculatedChunks}`);
+      totalChunkCount = calculatedChunks;
+    }
+
     const requestBody = {
       source_info: {
         source: 'FILE_UPLOAD',
@@ -243,7 +251,7 @@ export class TikTokService {
       },
     };
 
-    this.logger.log(`Initializing file upload: size=${videoSize}, chunks=${totalChunkCount}`);
+    this.logger.log(`Initializing file upload: size=${videoSize}, chunkSize=${chunkSize}, chunks=${totalChunkCount}`);
 
     const response = await fetch(
       `${this.apiBaseUrl}/post/publish/inbox/video/init/`,
@@ -403,12 +411,18 @@ export class TikTokService {
 
     this.logger.log(`Video downloaded: ${videoSize} bytes`);
 
+    // Minimum video size check
+    if (videoSize < 1024) {
+      throw new BadRequestException('Video file is too small (minimum 1KB)');
+    }
+
     // TikTok chunk requirements (from TikTok docs):
     // - For FILE_UPLOAD source:
     //   - If video <= 64MB: chunk_size = video_size, total_chunk_count = 1
     //   - If video > 64MB: chunk_size between 5MB-64MB, multiple chunks
-    // - Chunk size must be exact for single-chunk uploads
+    // - IMPORTANT: total_chunk_count must EXACTLY equal ceil(video_size / chunk_size)
     const MAX_SINGLE_CHUNK_SIZE = 64 * 1024 * 1024; // 64MB
+    const MIN_CHUNK_SIZE = 5 * 1024 * 1024; // 5MB minimum for multi-chunk
     const PREFERRED_CHUNK_SIZE = 10 * 1024 * 1024; // 10MB preferred chunk size
 
     let chunkSize: number;
@@ -421,10 +435,20 @@ export class TikTokService {
       this.logger.log(`Using single chunk upload: ${chunkSize} bytes`);
     } else {
       // Video is over 64MB - use multiple chunks
+      // Use a chunk size that divides evenly or close to it
       chunkSize = PREFERRED_CHUNK_SIZE;
+
+      // Ensure chunk size is at least MIN_CHUNK_SIZE
+      if (chunkSize < MIN_CHUNK_SIZE) {
+        chunkSize = MIN_CHUNK_SIZE;
+      }
+
       totalChunkCount = Math.ceil(videoSize / chunkSize);
       this.logger.log(`Using multi-chunk upload: ${totalChunkCount} chunks of ${chunkSize} bytes`);
     }
+
+    this.logger.log(`Video size: ${videoSize}, Chunk size: ${chunkSize}, Total chunks: ${totalChunkCount}`);
+    this.logger.log(`Verification: ceil(${videoSize} / ${chunkSize}) = ${Math.ceil(videoSize / chunkSize)}`);
 
     // Initialize the upload to Creator Inbox
     const { publishId, uploadUrl } = await this.initializeFileUpload(
@@ -440,6 +464,7 @@ export class TikTokService {
       const end = Math.min(start + chunkSize, videoSize);
       const chunk = videoBuffer.slice(start, end);
 
+      this.logger.log(`Uploading chunk ${i + 1}/${totalChunkCount}: bytes ${start}-${end - 1}`);
       await this.uploadVideoChunk(uploadUrl, chunk, start, end, videoSize);
     }
 
