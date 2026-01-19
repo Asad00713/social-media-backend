@@ -10,6 +10,8 @@ import { TikTokService } from './services/tiktok.service';
 import { TwitterService } from './services/twitter.service';
 import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
+import { GoogleDriveService } from './services/google-drive.service';
+import { GooglePhotosService } from './services/google-photos.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 
 @Module({
@@ -26,6 +28,8 @@ import { DrizzleModule } from '../drizzle/drizzle.module';
     TwitterService,
     InstagramService,
     ThreadsService,
+    GoogleDriveService,
+    GooglePhotosService,
   ],
   exports: [
     ChannelService,
@@ -38,6 +42,8 @@ import { DrizzleModule } from '../drizzle/drizzle.module';
     TwitterService,
     InstagramService,
     ThreadsService,
+    GoogleDriveService,
+    GooglePhotosService,
   ],
 })
 export class ChannelsModule {}

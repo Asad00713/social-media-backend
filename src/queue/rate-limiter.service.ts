@@ -51,6 +51,16 @@ export const PLATFORM_RATE_LIMITS: Record<
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
     description: '20 posts per 24 hours',
   },
+  google_drive: {
+    maxRequests: 1000, // Google Drive has generous read limits
+    windowMs: 60 * 60 * 1000, // 1 hour
+    description: '1000 requests per hour',
+  },
+  google_photos: {
+    maxRequests: 1000, // Google Photos has generous read limits
+    windowMs: 60 * 60 * 1000, // 1 hour
+    description: '1000 requests per hour',
+  },
 };
 
 export interface RateLimitResult {

@@ -25,6 +25,8 @@ export const SUPPORTED_PLATFORMS = [
   'twitter',
   'linkedin',
   'threads',
+  'google_drive',
+  'google_photos',
 ] as const;
 
 export type SupportedPlatform = (typeof SUPPORTED_PLATFORMS)[number];
@@ -36,6 +38,7 @@ export const ACCOUNT_TYPES = [
   'channel',
   'business_account',
   'group',
+  'storage', // For Google Drive, Google Photos
 ] as const;
 
 export type AccountType = (typeof ACCOUNT_TYPES)[number];
@@ -434,5 +437,30 @@ export const PLATFORM_CONFIG: Record<
     maxTextLength: 500,
     supportedMediaTypes: ['image', 'video'],
     oauthScopes: ['threads_basic', 'threads_content_publish'],
+  },
+  // Google services - these share the same OAuth app but different scopes
+  google_drive: {
+    name: 'Google Drive',
+    accountTypes: ['storage'],
+    supportsRefreshToken: true,
+    tokenExpirationDays: null,
+    maxMediaPerPost: 0, // Not a posting platform
+    maxTextLength: 0,
+    supportedMediaTypes: ['image', 'video', 'document'],
+    oauthScopes: [
+      'https://www.googleapis.com/auth/drive.readonly',
+    ],
+  },
+  google_photos: {
+    name: 'Google Photos',
+    accountTypes: ['storage'],
+    supportsRefreshToken: true,
+    tokenExpirationDays: null,
+    maxMediaPerPost: 0, // Not a posting platform
+    maxTextLength: 0,
+    supportedMediaTypes: ['image', 'video'],
+    oauthScopes: [
+      'https://www.googleapis.com/auth/photoslibrary.readonly',
+    ],
   },
 };

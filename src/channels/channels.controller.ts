@@ -25,6 +25,8 @@ import { TikTokService } from './services/tiktok.service';
 import { TwitterService } from './services/twitter.service';
 import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
+import { GoogleDriveService } from './services/google-drive.service';
+import { GooglePhotosService } from './services/google-photos.service';
 import {
   InitiateOAuthDto,
   CreateChannelDto,
@@ -54,6 +56,8 @@ export class ChannelsController {
     private readonly twitterService: TwitterService,
     private readonly instagramService: InstagramService,
     private readonly threadsService: ThreadsService,
+    private readonly googleDriveService: GoogleDriveService,
+    private readonly googlePhotosService: GooglePhotosService,
   ) {}
 
   // ==========================================================================
@@ -1775,5 +1779,237 @@ export class ChannelsController {
       dto.accessToken,
       dto.threadId,
     );
+  }
+
+  // ==========================================================================
+  // Google Drive Endpoints
+  // ==========================================================================
+
+  /**
+   * List media files from Google Drive (images and videos)
+   */
+  @Post('google-drive/media')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listDriveMedia(
+    @Body() dto: FetchPagesDto & {
+      folderId?: string;
+      query?: string;
+      pageSize?: number;
+      pageToken?: string;
+    },
+  ) {
+    return await this.googleDriveService.listMedia(dto.accessToken, {
+      folderId: dto.folderId,
+      query: dto.query,
+      pageSize: dto.pageSize,
+      pageToken: dto.pageToken,
+    });
+  }
+
+  /**
+   * List images from Google Drive
+   */
+  @Post('google-drive/images')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listDriveImages(
+    @Body() dto: FetchPagesDto & {
+      folderId?: string;
+      query?: string;
+      pageSize?: number;
+      pageToken?: string;
+    },
+  ) {
+    return await this.googleDriveService.listImages(dto.accessToken, {
+      folderId: dto.folderId,
+      query: dto.query,
+      pageSize: dto.pageSize,
+      pageToken: dto.pageToken,
+    });
+  }
+
+  /**
+   * List videos from Google Drive
+   */
+  @Post('google-drive/videos')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listDriveVideos(
+    @Body() dto: FetchPagesDto & {
+      folderId?: string;
+      query?: string;
+      pageSize?: number;
+      pageToken?: string;
+    },
+  ) {
+    return await this.googleDriveService.listVideos(dto.accessToken, {
+      folderId: dto.folderId,
+      query: dto.query,
+      pageSize: dto.pageSize,
+      pageToken: dto.pageToken,
+    });
+  }
+
+  /**
+   * List folders from Google Drive
+   */
+  @Post('google-drive/folders')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listDriveFolders(
+    @Body() dto: FetchPagesDto & {
+      parentId?: string;
+      pageSize?: number;
+      pageToken?: string;
+    },
+  ) {
+    return await this.googleDriveService.listFolders(dto.accessToken, {
+      parentId: dto.parentId,
+      pageSize: dto.pageSize,
+      pageToken: dto.pageToken,
+    });
+  }
+
+  /**
+   * Get a specific file from Google Drive
+   */
+  @Post('google-drive/file/:fileId')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getDriveFile(
+    @Param('fileId') fileId: string,
+    @Body() dto: FetchPagesDto,
+  ) {
+    return await this.googleDriveService.getFile(dto.accessToken, fileId);
+  }
+
+  /**
+   * Get Google Drive user info
+   */
+  @Post('google-drive/me')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getDriveUserInfo(@Body() dto: FetchPagesDto) {
+    return await this.googleDriveService.getUserInfo(dto.accessToken);
+  }
+
+  /**
+   * Verify Google Drive access
+   */
+  @Post('google-drive/verify')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async verifyDriveAccess(@Body() dto: FetchPagesDto) {
+    const hasAccess = await this.googleDriveService.verifyAccess(dto.accessToken);
+    return { hasAccess };
+  }
+
+  // ==========================================================================
+  // Google Photos Endpoints
+  // ==========================================================================
+
+  /**
+   * List media items from Google Photos
+   */
+  @Post('google-photos/media')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listPhotosMedia(
+    @Body() dto: FetchPagesDto & {
+      pageSize?: number;
+      pageToken?: string;
+      albumId?: string;
+      mediaType?: 'ALL_MEDIA' | 'PHOTO' | 'VIDEO';
+    },
+  ) {
+    return await this.googlePhotosService.listMediaItems(dto.accessToken, {
+      pageSize: dto.pageSize,
+      pageToken: dto.pageToken,
+      albumId: dto.albumId,
+      filters: dto.mediaType ? { mediaTypeFilter: dto.mediaType } : undefined,
+    });
+  }
+
+  /**
+   * List only photos from Google Photos
+   */
+  @Post('google-photos/photos')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listPhotosOnly(
+    @Body() dto: FetchPagesDto & {
+      pageSize?: number;
+      pageToken?: string;
+      albumId?: string;
+    },
+  ) {
+    return await this.googlePhotosService.listPhotos(dto.accessToken, {
+      pageSize: dto.pageSize,
+      pageToken: dto.pageToken,
+      albumId: dto.albumId,
+    });
+  }
+
+  /**
+   * List only videos from Google Photos
+   */
+  @Post('google-photos/videos')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listPhotosVideos(
+    @Body() dto: FetchPagesDto & {
+      pageSize?: number;
+      pageToken?: string;
+      albumId?: string;
+    },
+  ) {
+    return await this.googlePhotosService.listVideos(dto.accessToken, {
+      pageSize: dto.pageSize,
+      pageToken: dto.pageToken,
+      albumId: dto.albumId,
+    });
+  }
+
+  /**
+   * List albums from Google Photos
+   */
+  @Post('google-photos/albums')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listPhotosAlbums(
+    @Body() dto: FetchPagesDto & {
+      pageSize?: number;
+      pageToken?: string;
+    },
+  ) {
+    return await this.googlePhotosService.listAlbums(dto.accessToken, {
+      pageSize: dto.pageSize,
+      pageToken: dto.pageToken,
+    });
+  }
+
+  /**
+   * Get a specific media item from Google Photos
+   */
+  @Post('google-photos/media/:mediaItemId')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getPhotosMediaItem(
+    @Param('mediaItemId') mediaItemId: string,
+    @Body() dto: FetchPagesDto,
+  ) {
+    return await this.googlePhotosService.getMediaItem(dto.accessToken, mediaItemId);
+  }
+
+  /**
+   * Verify Google Photos access
+   */
+  @Post('google-photos/verify')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async verifyPhotosAccess(@Body() dto: FetchPagesDto) {
+    const hasAccess = await this.googlePhotosService.verifyAccess(dto.accessToken);
+    return { hasAccess };
   }
 }

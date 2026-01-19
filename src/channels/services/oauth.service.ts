@@ -93,6 +93,28 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
     scopes: PLATFORM_CONFIG.threads.oauthScopes,
     usePKCE: false,
   },
+  // Google Drive - uses same Google OAuth as YouTube but different scopes
+  google_drive: {
+    authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: 'https://oauth2.googleapis.com/token',
+    scopes: PLATFORM_CONFIG.google_drive.oauthScopes,
+    usePKCE: true,
+    additionalParams: {
+      access_type: 'offline',
+      prompt: 'consent',
+    },
+  },
+  // Google Photos - uses same Google OAuth as YouTube but different scopes
+  google_photos: {
+    authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: 'https://oauth2.googleapis.com/token',
+    scopes: PLATFORM_CONFIG.google_photos.oauthScopes,
+    usePKCE: true,
+    additionalParams: {
+      access_type: 'offline',
+      prompt: 'consent',
+    },
+  },
 };
 
 @Injectable()
@@ -428,14 +450,25 @@ export class OAuthService {
 
     // Fall back to environment variables
     // Instagram uses Facebook's Meta app credentials (same OAuth provider)
-    const envPrefix = platform === 'instagram' ? 'FACEBOOK' : platform.toUpperCase();
+    // Google Drive and Google Photos use YouTube/Google credentials (same OAuth provider)
+    let envPrefix: string;
+    let hint: string;
+
+    if (platform === 'instagram') {
+      envPrefix = 'FACEBOOK';
+      hint = 'Instagram uses Facebook credentials. Set FACEBOOK_CLIENT_ID and FACEBOOK_CLIENT_SECRET.';
+    } else if (platform === 'google_drive' || platform === 'google_photos') {
+      envPrefix = 'YOUTUBE'; // Google Drive/Photos share the same Google OAuth app as YouTube
+      hint = 'Google Drive/Photos use YouTube credentials. Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET.';
+    } else {
+      envPrefix = platform.toUpperCase();
+      hint = `Set ${envPrefix}_CLIENT_ID and ${envPrefix}_CLIENT_SECRET environment variables.`;
+    }
+
     const clientId = process.env[`${envPrefix}_CLIENT_ID`];
     const clientSecret = process.env[`${envPrefix}_CLIENT_SECRET`];
 
     if (!clientId || !clientSecret) {
-      const hint = platform === 'instagram'
-        ? 'Instagram uses Facebook credentials. Set FACEBOOK_CLIENT_ID and FACEBOOK_CLIENT_SECRET.'
-        : `Set ${envPrefix}_CLIENT_ID and ${envPrefix}_CLIENT_SECRET environment variables.`;
       throw new BadRequestException(
         `OAuth credentials not configured for ${platform}. ${hint}`,
       );
