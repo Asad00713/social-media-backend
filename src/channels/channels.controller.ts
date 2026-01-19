@@ -1637,7 +1637,21 @@ export class ChannelsController {
   }
 
   /**
-   * Get Instagram account info
+   * Get Instagram account info using Instagram User Access Token
+   * Use this for tokens generated from Meta Developer Dashboard
+   */
+  @Post('instagram/me/token')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getInstagramProfileWithToken(
+    @Body() dto: { accessToken: string },
+  ) {
+    return await this.instagramService.getAccountInfoWithUserToken(dto.accessToken);
+  }
+
+  /**
+   * Get Instagram account info using Page Access Token
+   * Use this for tokens from Facebook OAuth flow
    */
   @Post('instagram/me')
   @UseGuards(JwtAuthGuard)

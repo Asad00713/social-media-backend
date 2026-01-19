@@ -35,6 +35,50 @@ export interface InstagramInsights {
 export class InstagramService {
   private readonly logger = new Logger(InstagramService.name);
   private readonly graphApiUrl = 'https://graph.facebook.com/v18.0';
+  private readonly instagramApiUrl = 'https://graph.instagram.com';
+
+  /**
+   * Get Instagram account info using Instagram User Access Token
+   * This works with tokens generated from Meta Developer Dashboard
+   */
+  async getAccountInfoWithUserToken(
+    accessToken: string,
+  ): Promise<InstagramUser> {
+    // First get the user ID using /me endpoint
+    const meUrl = new URL(`${this.instagramApiUrl}/me`);
+    meUrl.searchParams.set('access_token', accessToken);
+    meUrl.searchParams.set(
+      'fields',
+      'id,username,name,profile_picture_url,followers_count,follows_count,media_count,biography,website,account_type',
+    );
+
+    this.logger.log(`Fetching Instagram user info from: ${meUrl.toString().replace(accessToken, 'TOKEN_HIDDEN')}`);
+
+    const response = await fetch(meUrl.toString());
+
+    if (!response.ok) {
+      const error = await response.json();
+      this.logger.error('Failed to fetch Instagram account info:', error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to fetch Instagram account info',
+      );
+    }
+
+    const data = await response.json();
+    this.logger.log(`Instagram user data: ${JSON.stringify(data)}`);
+
+    return {
+      id: data.id,
+      username: data.username || 'unknown',
+      name: data.name || data.username || 'Instagram User',
+      profilePictureUrl: data.profile_picture_url || null,
+      followersCount: data.followers_count || 0,
+      followsCount: data.follows_count || 0,
+      mediaCount: data.media_count || 0,
+      biography: data.biography || null,
+      website: data.website || null,
+    };
+  }
 
   /**
    * Get Instagram Business/Creator account info
