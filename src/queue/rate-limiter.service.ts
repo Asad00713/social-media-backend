@@ -61,6 +61,11 @@ export const PLATFORM_RATE_LIMITS: Record<
     windowMs: 60 * 60 * 1000, // 1 hour
     description: '1000 requests per hour',
   },
+  google_calendar: {
+    maxRequests: 1000, // Google Calendar has generous limits
+    windowMs: 60 * 60 * 1000, // 1 hour
+    description: '1000 requests per hour',
+  },
 };
 
 export interface RateLimitResult {

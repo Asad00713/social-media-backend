@@ -115,6 +115,17 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
       prompt: 'consent',
     },
   },
+  // Google Calendar - uses same Google OAuth as YouTube but different scopes
+  google_calendar: {
+    authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: 'https://oauth2.googleapis.com/token',
+    scopes: PLATFORM_CONFIG.google_calendar.oauthScopes,
+    usePKCE: true,
+    additionalParams: {
+      access_type: 'offline',
+      prompt: 'consent',
+    },
+  },
 };
 
 @Injectable()
@@ -457,9 +468,9 @@ export class OAuthService {
     if (platform === 'instagram') {
       envPrefix = 'FACEBOOK';
       hint = 'Instagram uses Facebook credentials. Set FACEBOOK_CLIENT_ID and FACEBOOK_CLIENT_SECRET.';
-    } else if (platform === 'google_drive' || platform === 'google_photos') {
-      envPrefix = 'YOUTUBE'; // Google Drive/Photos share the same Google OAuth app as YouTube
-      hint = 'Google Drive/Photos use YouTube credentials. Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET.';
+    } else if (platform === 'google_drive' || platform === 'google_photos' || platform === 'google_calendar') {
+      envPrefix = 'YOUTUBE'; // Google Drive/Photos/Calendar share the same Google OAuth app as YouTube
+      hint = 'Google services use YouTube credentials. Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET.';
     } else {
       envPrefix = platform.toUpperCase();
       hint = `Set ${envPrefix}_CLIENT_ID and ${envPrefix}_CLIENT_SECRET environment variables.`;

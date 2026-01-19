@@ -12,6 +12,7 @@ import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
+import { GoogleCalendarService } from './services/google-calendar.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 
 @Module({
@@ -30,6 +31,7 @@ import { DrizzleModule } from '../drizzle/drizzle.module';
     ThreadsService,
     GoogleDriveService,
     GooglePhotosService,
+    GoogleCalendarService,
   ],
   exports: [
     ChannelService,
@@ -44,6 +46,7 @@ import { DrizzleModule } from '../drizzle/drizzle.module';
     ThreadsService,
     GoogleDriveService,
     GooglePhotosService,
+    GoogleCalendarService,
   ],
 })
 export class ChannelsModule {}

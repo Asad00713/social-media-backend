@@ -27,6 +27,7 @@ export const SUPPORTED_PLATFORMS = [
   'threads',
   'google_drive',
   'google_photos',
+  'google_calendar',
 ] as const;
 
 export type SupportedPlatform = (typeof SUPPORTED_PLATFORMS)[number];
@@ -461,6 +462,19 @@ export const PLATFORM_CONFIG: Record<
     supportedMediaTypes: ['image', 'video'],
     oauthScopes: [
       'https://www.googleapis.com/auth/photoslibrary.readonly',
+    ],
+  },
+  google_calendar: {
+    name: 'Google Calendar',
+    accountTypes: ['storage'], // Not a posting platform, utility service
+    supportsRefreshToken: true,
+    tokenExpirationDays: null,
+    maxMediaPerPost: 0,
+    maxTextLength: 0,
+    supportedMediaTypes: [],
+    oauthScopes: [
+      'https://www.googleapis.com/auth/calendar.events', // Create/update/delete events
+      'https://www.googleapis.com/auth/calendar.readonly', // Read calendars list
     ],
   },
 };

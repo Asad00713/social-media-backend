@@ -27,6 +27,7 @@ import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
+import { GoogleCalendarService } from './services/google-calendar.service';
 import {
   InitiateOAuthDto,
   CreateChannelDto,
@@ -58,6 +59,7 @@ export class ChannelsController {
     private readonly threadsService: ThreadsService,
     private readonly googleDriveService: GoogleDriveService,
     private readonly googlePhotosService: GooglePhotosService,
+    private readonly googleCalendarService: GoogleCalendarService,
   ) {}
 
   // ==========================================================================
@@ -2010,6 +2012,226 @@ export class ChannelsController {
   @HttpCode(HttpStatus.OK)
   async verifyPhotosAccess(@Body() dto: FetchPagesDto) {
     const hasAccess = await this.googlePhotosService.verifyAccess(dto.accessToken);
+    return { hasAccess };
+  }
+
+  // ==========================================================================
+  // Google Calendar Endpoints
+  // ==========================================================================
+
+  /**
+   * List user's calendars
+   */
+  @Post('google-calendar/calendars')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listCalendars(@Body() dto: FetchPagesDto) {
+    return await this.googleCalendarService.listCalendars(dto.accessToken);
+  }
+
+  /**
+   * Get primary calendar
+   */
+  @Post('google-calendar/primary')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getPrimaryCalendar(@Body() dto: FetchPagesDto) {
+    return await this.googleCalendarService.getPrimaryCalendar(dto.accessToken);
+  }
+
+  /**
+   * List calendar events
+   */
+  @Post('google-calendar/events')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listCalendarEvents(
+    @Body() dto: FetchPagesDto & {
+      calendarId?: string;
+      timeMin?: string;
+      timeMax?: string;
+      maxResults?: number;
+      pageToken?: string;
+    },
+  ) {
+    return await this.googleCalendarService.listEvents(dto.accessToken, {
+      calendarId: dto.calendarId,
+      timeMin: dto.timeMin ? new Date(dto.timeMin) : undefined,
+      timeMax: dto.timeMax ? new Date(dto.timeMax) : undefined,
+      maxResults: dto.maxResults,
+      pageToken: dto.pageToken,
+    });
+  }
+
+  /**
+   * Create a calendar event
+   */
+  @Post('google-calendar/events/create')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async createCalendarEvent(
+    @Body() dto: FetchPagesDto & {
+      summary: string;
+      description?: string;
+      startTime: string;
+      endTime?: string;
+      timeZone?: string;
+      colorId?: string;
+      calendarId?: string;
+    },
+  ) {
+    return await this.googleCalendarService.createEvent(dto.accessToken, {
+      summary: dto.summary,
+      description: dto.description,
+      startTime: new Date(dto.startTime),
+      endTime: dto.endTime ? new Date(dto.endTime) : undefined,
+      timeZone: dto.timeZone,
+      colorId: dto.colorId,
+      calendarId: dto.calendarId,
+    });
+  }
+
+  /**
+   * Create a calendar event for a scheduled post
+   */
+  @Post('google-calendar/events/post')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async createPostCalendarEvent(
+    @Body() dto: FetchPagesDto & {
+      postId: string;
+      platforms: string[];
+      caption: string;
+      scheduledAt: string;
+      mediaUrls?: string[];
+      workspaceName?: string;
+      calendarId?: string;
+    },
+  ) {
+    return await this.googleCalendarService.createPostEvent(
+      dto.accessToken,
+      {
+        postId: dto.postId,
+        platforms: dto.platforms,
+        caption: dto.caption,
+        scheduledAt: new Date(dto.scheduledAt),
+        mediaUrls: dto.mediaUrls,
+        workspaceName: dto.workspaceName,
+      },
+      dto.calendarId,
+    );
+  }
+
+  /**
+   * Update a calendar event
+   */
+  @Post('google-calendar/events/:eventId/update')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async updateCalendarEvent(
+    @Param('eventId') eventId: string,
+    @Body() dto: FetchPagesDto & {
+      summary?: string;
+      description?: string;
+      startTime?: string;
+      endTime?: string;
+      timeZone?: string;
+      colorId?: string;
+      calendarId?: string;
+    },
+  ) {
+    return await this.googleCalendarService.updateEvent(
+      dto.accessToken,
+      eventId,
+      {
+        summary: dto.summary,
+        description: dto.description,
+        startTime: dto.startTime ? new Date(dto.startTime) : undefined,
+        endTime: dto.endTime ? new Date(dto.endTime) : undefined,
+        timeZone: dto.timeZone,
+        colorId: dto.colorId,
+      },
+      dto.calendarId,
+    );
+  }
+
+  /**
+   * Delete a calendar event
+   */
+  @Post('google-calendar/events/:eventId/delete')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async deleteCalendarEvent(
+    @Param('eventId') eventId: string,
+    @Body() dto: FetchPagesDto & { calendarId?: string },
+  ) {
+    await this.googleCalendarService.deleteEvent(
+      dto.accessToken,
+      eventId,
+      dto.calendarId,
+    );
+    return { success: true };
+  }
+
+  /**
+   * Get a specific calendar event
+   */
+  @Post('google-calendar/events/:eventId')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getCalendarEvent(
+    @Param('eventId') eventId: string,
+    @Body() dto: FetchPagesDto & { calendarId?: string },
+  ) {
+    return await this.googleCalendarService.getEvent(
+      dto.accessToken,
+      eventId,
+      dto.calendarId,
+    );
+  }
+
+  /**
+   * Mark a calendar event as published
+   */
+  @Post('google-calendar/events/:eventId/published')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async markEventPublished(
+    @Param('eventId') eventId: string,
+    @Body() dto: FetchPagesDto & { calendarId?: string },
+  ) {
+    return await this.googleCalendarService.markEventAsPublished(
+      dto.accessToken,
+      eventId,
+      dto.calendarId,
+    );
+  }
+
+  /**
+   * Mark a calendar event as failed
+   */
+  @Post('google-calendar/events/:eventId/failed')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async markEventFailed(
+    @Param('eventId') eventId: string,
+    @Body() dto: FetchPagesDto & { calendarId?: string },
+  ) {
+    return await this.googleCalendarService.markEventAsFailed(
+      dto.accessToken,
+      eventId,
+      dto.calendarId,
+    );
+  }
+
+  /**
+   * Verify Google Calendar access
+   */
+  @Post('google-calendar/verify')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async verifyCalendarAccess(@Body() dto: FetchPagesDto) {
+    const hasAccess = await this.googleCalendarService.verifyAccess(dto.accessToken);
     return { hasAccess };
   }
 }
