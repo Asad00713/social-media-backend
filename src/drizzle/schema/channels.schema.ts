@@ -355,20 +355,30 @@ export const PLATFORM_CONFIG: Record<
       'pages_read_engagement',
       'pages_manage_posts',
       'pages_manage_metadata',
+      'pages_manage_engagement',
+      'business_management',
+      // Include Instagram scopes for connected Instagram accounts
+      'instagram_basic',
+      'instagram_content_publish',
+      'instagram_manage_comments',
     ],
   },
   instagram: {
     name: 'Instagram',
     accountTypes: ['business_account'],
-    supportsRefreshToken: false, // Uses FB token
+    supportsRefreshToken: false, // Uses FB token via Facebook Page
     tokenExpirationDays: 60,
     maxMediaPerPost: 10,
     maxTextLength: 2200,
     supportedMediaTypes: ['image', 'video', 'carousel'],
     oauthScopes: [
+      // Instagram Business accounts require Facebook Page permissions
+      'pages_show_list',
+      'pages_read_engagement',
+      'business_management',
       'instagram_basic',
       'instagram_content_publish',
-      // 'instagram_manage_insights', // Requires App Review approval - add back after approval
+      'instagram_manage_comments',
     ],
   },
   youtube: {
