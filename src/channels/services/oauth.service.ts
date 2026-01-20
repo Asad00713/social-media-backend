@@ -126,6 +126,26 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
       prompt: 'consent',
     },
   },
+  // OneDrive - Live Connect API for personal Microsoft accounts
+  onedrive: {
+    authorizationUrl: 'https://login.live.com/oauth20_authorize.srf',
+    tokenUrl: 'https://login.live.com/oauth20_token.srf',
+    scopes: PLATFORM_CONFIG.onedrive.oauthScopes,
+    usePKCE: false, // Live Connect doesn't support PKCE
+    additionalParams: {
+      response_type: 'code',
+    },
+  },
+  // Dropbox
+  dropbox: {
+    authorizationUrl: 'https://www.dropbox.com/oauth2/authorize',
+    tokenUrl: 'https://api.dropboxapi.com/oauth2/token',
+    scopes: [], // Dropbox doesn't use scopes in OAuth URL, uses App permissions
+    usePKCE: true,
+    additionalParams: {
+      token_access_type: 'offline', // Get refresh token
+    },
+  },
 };
 
 @Injectable()
@@ -471,6 +491,12 @@ export class OAuthService {
     } else if (platform === 'google_drive' || platform === 'google_photos' || platform === 'google_calendar') {
       envPrefix = 'YOUTUBE'; // Google Drive/Photos/Calendar share the same Google OAuth app as YouTube
       hint = 'Google services use YouTube credentials. Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET.';
+    } else if (platform === 'onedrive') {
+      envPrefix = 'ONEDRIVE'; // Microsoft Azure AD app
+      hint = 'OneDrive uses Microsoft credentials. Set ONEDRIVE_CLIENT_ID and ONEDRIVE_CLIENT_SECRET.';
+    } else if (platform === 'dropbox') {
+      envPrefix = 'DROPBOX'; // Dropbox app
+      hint = 'Dropbox uses Dropbox App credentials. Set DROPBOX_CLIENT_ID and DROPBOX_CLIENT_SECRET.';
     } else {
       envPrefix = platform.toUpperCase();
       hint = `Set ${envPrefix}_CLIENT_ID and ${envPrefix}_CLIENT_SECRET environment variables.`;

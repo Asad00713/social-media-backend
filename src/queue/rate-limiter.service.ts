@@ -66,6 +66,16 @@ export const PLATFORM_RATE_LIMITS: Record<
     windowMs: 60 * 60 * 1000, // 1 hour
     description: '1000 requests per hour',
   },
+  onedrive: {
+    maxRequests: 10000, // Microsoft Graph has generous limits
+    windowMs: 10 * 60 * 1000, // 10 minutes
+    description: '10000 requests per 10 minutes',
+  },
+  dropbox: {
+    maxRequests: 1000, // Dropbox rate limits vary by endpoint
+    windowMs: 60 * 60 * 1000, // 1 hour
+    description: '1000 requests per hour',
+  },
 };
 
 export interface RateLimitResult {

@@ -28,6 +28,8 @@ export const SUPPORTED_PLATFORMS = [
   'google_drive',
   'google_photos',
   'google_calendar',
+  'onedrive',
+  'dropbox',
 ] as const;
 
 export type SupportedPlatform = (typeof SUPPORTED_PLATFORMS)[number];
@@ -475,6 +477,36 @@ export const PLATFORM_CONFIG: Record<
     oauthScopes: [
       'https://www.googleapis.com/auth/calendar.events', // Create/update/delete events
       'https://www.googleapis.com/auth/calendar.readonly', // Read calendars list
+    ],
+  },
+  onedrive: {
+    name: 'OneDrive',
+    accountTypes: ['storage'],
+    supportsRefreshToken: true,
+    tokenExpirationDays: null, // Refresh token doesn't expire if used regularly
+    maxMediaPerPost: 0, // Not a posting platform
+    maxTextLength: 0,
+    supportedMediaTypes: ['image', 'video', 'document'],
+    oauthScopes: [
+      // Consumer OneDrive scopes (wl.* scopes for personal accounts)
+      'wl.signin',
+      'wl.skydrive',
+      'wl.skydrive_update',
+      'wl.offline_access',
+    ],
+  },
+  dropbox: {
+    name: 'Dropbox',
+    accountTypes: ['storage'],
+    supportsRefreshToken: true,
+    tokenExpirationDays: null, // Short-lived access tokens with refresh
+    maxMediaPerPost: 0, // Not a posting platform
+    maxTextLength: 0,
+    supportedMediaTypes: ['image', 'video', 'document'],
+    oauthScopes: [
+      'account_info.read',
+      'files.metadata.read',
+      'files.content.read',
     ],
   },
 };
