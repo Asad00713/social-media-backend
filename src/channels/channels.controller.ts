@@ -28,6 +28,8 @@ import { ThreadsService } from './services/threads.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
+import { OneDriveService } from './services/onedrive.service';
+import { DropboxService } from './services/dropbox.service';
 import {
   InitiateOAuthDto,
   CreateChannelDto,
@@ -60,6 +62,8 @@ export class ChannelsController {
     private readonly googleDriveService: GoogleDriveService,
     private readonly googlePhotosService: GooglePhotosService,
     private readonly googleCalendarService: GoogleCalendarService,
+    private readonly oneDriveService: OneDriveService,
+    private readonly dropboxService: DropboxService,
   ) {}
 
   // ==========================================================================
@@ -2246,6 +2250,454 @@ export class ChannelsController {
   @HttpCode(HttpStatus.OK)
   async verifyCalendarAccess(@Body() dto: FetchPagesDto) {
     const hasAccess = await this.googleCalendarService.verifyAccess(dto.accessToken);
+    return { hasAccess };
+  }
+
+  // ==========================================================================
+  // OneDrive Endpoints
+  // ==========================================================================
+
+  /**
+   * Connect OneDrive account
+   */
+  @Post('workspaces/:workspaceId/onedrive/connect')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async connectOneDrive(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
+  ) {
+    // Decode tokens in case they're URL-encoded
+    const accessToken = decodeURIComponent(dto.accessToken);
+    const refreshToken = dto.refreshToken ? decodeURIComponent(dto.refreshToken) : undefined;
+
+    // Get OneDrive user info
+    const driveInfo = await this.oneDriveService.getUserInfo(accessToken);
+
+    // Create the OneDrive channel
+    const channel = await this.channelService.createChannel(
+      workspaceId,
+      user.userId,
+      {
+        platform: 'onedrive',
+        accountType: 'storage',
+        platformAccountId: driveInfo.id,
+        accountName: driveInfo.owner?.user?.displayName || 'OneDrive',
+        username: driveInfo.owner?.user?.email || undefined,
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        tokenExpiresAt: dto.tokenExpiresAt,
+        permissions: PLATFORM_CONFIG.onedrive.oauthScopes,
+        capabilities: {
+          canPost: false,
+          canSchedule: false,
+          canReadAnalytics: false,
+          canReply: false,
+          canDelete: false,
+          supportedMediaTypes: ['image', 'video', 'document'],
+          maxMediaPerPost: 0,
+          maxTextLength: 0,
+        },
+        metadata: {
+          driveType: driveInfo.driveType,
+          quota: driveInfo.quota,
+        },
+      },
+    );
+
+    return {
+      channel,
+      message: 'OneDrive connected successfully',
+    };
+  }
+
+  /**
+   * Get OneDrive user info
+   */
+  @Post('onedrive/me')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getOneDriveUserInfo(@Body() dto: FetchPagesDto) {
+    return await this.oneDriveService.getUserInfo(dto.accessToken);
+  }
+
+  /**
+   * List media files from OneDrive (images and videos)
+   */
+  @Post('onedrive/media')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listOneDriveMedia(
+    @Body() dto: FetchPagesDto & {
+      folderId?: string;
+      pageSize?: number;
+      nextLink?: string;
+    },
+  ) {
+    return await this.oneDriveService.listMedia(dto.accessToken, {
+      folderId: dto.folderId,
+      pageSize: dto.pageSize,
+      nextLink: dto.nextLink,
+    });
+  }
+
+  /**
+   * List images from OneDrive
+   */
+  @Post('onedrive/images')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listOneDriveImages(
+    @Body() dto: FetchPagesDto & {
+      folderId?: string;
+      pageSize?: number;
+      nextLink?: string;
+    },
+  ) {
+    return await this.oneDriveService.listImages(dto.accessToken, {
+      folderId: dto.folderId,
+      pageSize: dto.pageSize,
+      nextLink: dto.nextLink,
+    });
+  }
+
+  /**
+   * List videos from OneDrive
+   */
+  @Post('onedrive/videos')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listOneDriveVideos(
+    @Body() dto: FetchPagesDto & {
+      folderId?: string;
+      pageSize?: number;
+      nextLink?: string;
+    },
+  ) {
+    return await this.oneDriveService.listVideos(dto.accessToken, {
+      folderId: dto.folderId,
+      pageSize: dto.pageSize,
+      nextLink: dto.nextLink,
+    });
+  }
+
+  /**
+   * List folders from OneDrive
+   */
+  @Post('onedrive/folders')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listOneDriveFolders(
+    @Body() dto: FetchPagesDto & {
+      parentId?: string;
+      pageSize?: number;
+      nextLink?: string;
+    },
+  ) {
+    return await this.oneDriveService.listFolders(dto.accessToken, {
+      parentId: dto.parentId,
+      pageSize: dto.pageSize,
+      nextLink: dto.nextLink,
+    });
+  }
+
+  /**
+   * Search OneDrive files
+   */
+  @Post('onedrive/search')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async searchOneDrive(
+    @Body() dto: FetchPagesDto & {
+      query: string;
+      pageSize?: number;
+      nextLink?: string;
+    },
+  ) {
+    return await this.oneDriveService.searchFiles(dto.accessToken, dto.query, {
+      pageSize: dto.pageSize,
+      nextLink: dto.nextLink,
+    });
+  }
+
+  /**
+   * Get a specific item from OneDrive
+   */
+  @Post('onedrive/item/:itemId')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getOneDriveItem(
+    @Param('itemId') itemId: string,
+    @Body() dto: FetchPagesDto,
+  ) {
+    return await this.oneDriveService.getItem(dto.accessToken, itemId);
+  }
+
+  /**
+   * Get download URL for a OneDrive file
+   */
+  @Post('onedrive/download-url/:itemId')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getOneDriveDownloadUrl(
+    @Param('itemId') itemId: string,
+    @Body() dto: FetchPagesDto,
+  ) {
+    const url = await this.oneDriveService.getDownloadUrl(dto.accessToken, itemId);
+    return { downloadUrl: url };
+  }
+
+  /**
+   * Verify OneDrive access
+   */
+  @Post('onedrive/verify')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async verifyOneDriveAccess(@Body() dto: FetchPagesDto) {
+    const hasAccess = await this.oneDriveService.verifyAccess(dto.accessToken);
+    return { hasAccess };
+  }
+
+  // ==========================================================================
+  // Dropbox Endpoints
+  // ==========================================================================
+
+  /**
+   * Connect Dropbox account
+   */
+  @Post('workspaces/:workspaceId/dropbox/connect')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async connectDropbox(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
+  ) {
+    // Decode tokens in case they're URL-encoded
+    const accessToken = decodeURIComponent(dto.accessToken);
+    const refreshToken = dto.refreshToken ? decodeURIComponent(dto.refreshToken) : undefined;
+
+    // Get Dropbox user info
+    const dropboxUser = await this.dropboxService.getUserInfo(accessToken);
+
+    // Create the Dropbox channel
+    const channel = await this.channelService.createChannel(
+      workspaceId,
+      user.userId,
+      {
+        platform: 'dropbox',
+        accountType: 'storage',
+        platformAccountId: dropboxUser.account_id,
+        accountName: dropboxUser.name?.display_name || 'Dropbox',
+        username: dropboxUser.email || undefined,
+        profilePictureUrl: dropboxUser.profile_photo_url || undefined,
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        tokenExpiresAt: dto.tokenExpiresAt,
+        permissions: PLATFORM_CONFIG.dropbox.oauthScopes,
+        capabilities: {
+          canPost: false,
+          canSchedule: false,
+          canReadAnalytics: false,
+          canReply: false,
+          canDelete: false,
+          supportedMediaTypes: ['image', 'video', 'document'],
+          maxMediaPerPost: 0,
+          maxTextLength: 0,
+        },
+        metadata: {
+          email: dropboxUser.email,
+          emailVerified: dropboxUser.email_verified,
+          country: dropboxUser.country,
+        },
+      },
+    );
+
+    return {
+      channel,
+      message: 'Dropbox connected successfully',
+    };
+  }
+
+  /**
+   * Get Dropbox user info
+   */
+  @Post('dropbox/me')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getDropboxUserInfo(@Body() dto: FetchPagesDto) {
+    return await this.dropboxService.getUserInfo(dto.accessToken);
+  }
+
+  /**
+   * Get Dropbox space usage
+   */
+  @Post('dropbox/space')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getDropboxSpaceUsage(@Body() dto: FetchPagesDto) {
+    return await this.dropboxService.getSpaceUsage(dto.accessToken);
+  }
+
+  /**
+   * List files and folders from Dropbox
+   */
+  @Post('dropbox/list')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listDropboxFolder(
+    @Body() dto: FetchPagesDto & {
+      path?: string;
+      limit?: number;
+      cursor?: string;
+      recursive?: boolean;
+    },
+  ) {
+    return await this.dropboxService.listFolder(dto.accessToken, {
+      path: dto.path,
+      limit: dto.limit,
+      cursor: dto.cursor,
+      recursive: dto.recursive,
+    });
+  }
+
+  /**
+   * List media files from Dropbox (images and videos)
+   */
+  @Post('dropbox/media')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listDropboxMedia(
+    @Body() dto: FetchPagesDto & {
+      path?: string;
+      limit?: number;
+      cursor?: string;
+    },
+  ) {
+    return await this.dropboxService.listMedia(dto.accessToken, {
+      path: dto.path,
+      limit: dto.limit,
+      cursor: dto.cursor,
+    });
+  }
+
+  /**
+   * List images from Dropbox
+   */
+  @Post('dropbox/images')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listDropboxImages(
+    @Body() dto: FetchPagesDto & {
+      path?: string;
+      limit?: number;
+      cursor?: string;
+    },
+  ) {
+    return await this.dropboxService.listImages(dto.accessToken, {
+      path: dto.path,
+      limit: dto.limit,
+      cursor: dto.cursor,
+    });
+  }
+
+  /**
+   * List videos from Dropbox
+   */
+  @Post('dropbox/videos')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listDropboxVideos(
+    @Body() dto: FetchPagesDto & {
+      path?: string;
+      limit?: number;
+      cursor?: string;
+    },
+  ) {
+    return await this.dropboxService.listVideos(dto.accessToken, {
+      path: dto.path,
+      limit: dto.limit,
+      cursor: dto.cursor,
+    });
+  }
+
+  /**
+   * List folders from Dropbox
+   */
+  @Post('dropbox/folders')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listDropboxFolders(
+    @Body() dto: FetchPagesDto & {
+      path?: string;
+      limit?: number;
+      cursor?: string;
+    },
+  ) {
+    return await this.dropboxService.listFolders(dto.accessToken, {
+      path: dto.path,
+      limit: dto.limit,
+      cursor: dto.cursor,
+    });
+  }
+
+  /**
+   * Search Dropbox files
+   */
+  @Post('dropbox/search')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async searchDropbox(
+    @Body() dto: FetchPagesDto & {
+      query: string;
+      path?: string;
+      maxResults?: number;
+      cursor?: string;
+      fileExtensions?: string[];
+    },
+  ) {
+    return await this.dropboxService.searchFiles(dto.accessToken, dto.query, {
+      path: dto.path,
+      maxResults: dto.maxResults,
+      cursor: dto.cursor,
+      fileExtensions: dto.fileExtensions,
+    });
+  }
+
+  /**
+   * Get metadata for a Dropbox file or folder
+   */
+  @Post('dropbox/metadata')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getDropboxMetadata(
+    @Body() dto: FetchPagesDto & { path: string },
+  ) {
+    return await this.dropboxService.getMetadata(dto.accessToken, dto.path);
+  }
+
+  /**
+   * Get temporary download link for a Dropbox file
+   */
+  @Post('dropbox/download-link')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getDropboxDownloadLink(
+    @Body() dto: FetchPagesDto & { path: string },
+  ) {
+    const link = await this.dropboxService.getTemporaryLink(dto.accessToken, dto.path);
+    return { downloadLink: link };
+  }
+
+  /**
+   * Verify Dropbox access
+   */
+  @Post('dropbox/verify')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async verifyDropboxAccess(@Body() dto: FetchPagesDto) {
+    const hasAccess = await this.dropboxService.verifyAccess(dto.accessToken);
     return { hasAccess };
   }
 }
