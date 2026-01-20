@@ -540,6 +540,51 @@ export class ChannelsController {
   }
 
   /**
+   * Debug endpoint to check token permissions
+   * This helps diagnose why /me/accounts returns empty
+   */
+  @Post('facebook/debug-token')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async debugFacebookToken(@Body() dto: FetchPagesDto) {
+    const graphApiUrl = 'https://graph.facebook.com/v18.0';
+
+    // Get token debug info
+    const debugUrl = new URL(`${graphApiUrl}/debug_token`);
+    debugUrl.searchParams.set('input_token', dto.accessToken);
+    debugUrl.searchParams.set('access_token', dto.accessToken);
+
+    const debugResponse = await fetch(debugUrl.toString());
+    const debugData = await debugResponse.json();
+
+    // Get user info
+    const meUrl = new URL(`${graphApiUrl}/me`);
+    meUrl.searchParams.set('access_token', dto.accessToken);
+    meUrl.searchParams.set('fields', 'id,name,email');
+
+    const meResponse = await fetch(meUrl.toString());
+    const meData = await meResponse.json();
+
+    // Try /me/accounts with more logging
+    const accountsUrl = new URL(`${graphApiUrl}/me/accounts`);
+    accountsUrl.searchParams.set('access_token', dto.accessToken);
+    accountsUrl.searchParams.set('fields', 'id,name,access_token');
+
+    const accountsResponse = await fetch(accountsUrl.toString());
+    const accountsData = await accountsResponse.json();
+
+    return {
+      tokenInfo: debugData.data || debugData,
+      userInfo: meData,
+      pagesResponse: accountsData,
+      scopes: debugData.data?.scopes || [],
+      hint: accountsData.data?.length === 0
+        ? 'Empty pages array. You need to add yourself as a Test User in Meta App Dashboard -> App Roles -> Roles'
+        : null,
+    };
+  }
+
+  /**
    * Connect a Facebook Page as a channel
    * Automatically creates the channel with the Page Access Token
    */
