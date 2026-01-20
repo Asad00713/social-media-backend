@@ -351,16 +351,12 @@ export const PLATFORM_CONFIG: Record<
     maxTextLength: 63206,
     supportedMediaTypes: ['image', 'video', 'link'],
     oauthScopes: [
+      // Only scopes that are "Ready for testing" in Meta App Console
+      'public_profile',
       'pages_show_list',
       'pages_read_engagement',
       'pages_manage_posts',
       'pages_manage_metadata',
-      'pages_manage_engagement',
-      'business_management',
-      // Include Instagram scopes for connected Instagram accounts
-      'instagram_basic',
-      'instagram_content_publish',
-      'instagram_manage_comments',
     ],
   },
   instagram: {
@@ -372,13 +368,12 @@ export const PLATFORM_CONFIG: Record<
     maxTextLength: 2200,
     supportedMediaTypes: ['image', 'video', 'carousel'],
     oauthScopes: [
-      // Instagram Business accounts require Facebook Page permissions
+      // Only scopes that are "Ready for testing" in Meta App Console
+      'public_profile',
       'pages_show_list',
       'pages_read_engagement',
-      'business_management',
       'instagram_basic',
       'instagram_content_publish',
-      'instagram_manage_comments',
     ],
   },
   youtube: {
