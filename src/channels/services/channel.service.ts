@@ -198,6 +198,53 @@ export class ChannelService {
   }
 
   /**
+   * Get channel by ID for internal use (includes access token)
+   * Use this for posting operations where we need the decrypted token
+   */
+  async getChannelForPosting(channelId: number): Promise<{
+    id: number;
+    workspaceId: string;
+    platform: SupportedPlatform;
+    platformAccountId: string;
+    accessToken: string | null;
+    accountName: string;
+  }> {
+    const channel = await db
+      .select()
+      .from(socialMediaChannels)
+      .where(eq(socialMediaChannels.id, channelId))
+      .limit(1);
+
+    if (channel.length === 0) {
+      throw new NotFoundException('Channel not found');
+    }
+
+    const ch = channel[0];
+
+    return {
+      id: ch.id,
+      workspaceId: ch.workspaceId,
+      platform: ch.platform as SupportedPlatform,
+      platformAccountId: ch.platformAccountId,
+      accessToken: ch.accessToken ? decrypt(ch.accessToken) : null,
+      accountName: ch.accountName,
+    };
+  }
+
+  /**
+   * Update channel's last posted timestamp (internal use)
+   */
+  async updateLastPostedAt(channelId: number): Promise<void> {
+    await db
+      .update(socialMediaChannels)
+      .set({
+        lastPostedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(eq(socialMediaChannels.id, channelId));
+  }
+
+  /**
    * Update a channel
    */
   async updateChannel(

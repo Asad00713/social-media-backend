@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
   Res,
+  BadRequestException,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -1764,6 +1765,135 @@ export class ChannelsController {
       dto.pageAccessToken,
       period || 'day',
     );
+  }
+
+  /**
+   * Post an image to Instagram
+   * Requires a publicly accessible image URL (Instagram fetches the image)
+   */
+  @Post('instagram/post/image')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postImageToInstagram(
+    @Body()
+    dto: {
+      channelId: number;
+      imageUrl: string;
+      caption?: string;
+    },
+  ) {
+    // Get channel to retrieve access token and account ID
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'instagram') {
+      throw new BadRequestException('Channel is not an Instagram channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    // Post the image
+    const result = await this.instagramService.createImagePost(
+      channel.platformAccountId,
+      channel.accessToken,
+      dto.imageUrl,
+      dto.caption,
+    );
+
+    // Update last posted timestamp
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postId: result.postId,
+      message: 'Image posted to Instagram successfully',
+    };
+  }
+
+  /**
+   * Post a video/reel to Instagram
+   * Requires a publicly accessible video URL
+   */
+  @Post('instagram/post/video')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postVideoToInstagram(
+    @Body()
+    dto: {
+      channelId: number;
+      videoUrl: string;
+      caption?: string;
+      isReel?: boolean;
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'instagram') {
+      throw new BadRequestException('Channel is not an Instagram channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const result = await this.instagramService.createVideoPost(
+      channel.platformAccountId,
+      channel.accessToken,
+      dto.videoUrl,
+      dto.caption,
+      dto.isReel ?? false,
+    );
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postId: result.postId,
+      message: dto.isReel
+        ? 'Reel posted to Instagram successfully'
+        : 'Video posted to Instagram successfully',
+    };
+  }
+
+  /**
+   * Post a carousel (multiple images/videos) to Instagram
+   */
+  @Post('instagram/post/carousel')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postCarouselToInstagram(
+    @Body()
+    dto: {
+      channelId: number;
+      mediaItems: Array<{ type: 'IMAGE' | 'VIDEO'; url: string }>;
+      caption?: string;
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'instagram') {
+      throw new BadRequestException('Channel is not an Instagram channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const result = await this.instagramService.createCarouselPost(
+      channel.platformAccountId,
+      channel.accessToken,
+      dto.mediaItems,
+      dto.caption,
+    );
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postId: result.postId,
+      message: 'Carousel posted to Instagram successfully',
+    };
   }
 
   // ==========================================================================
