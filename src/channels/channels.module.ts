@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ChannelsController } from './channels.controller';
+import { WebhooksController } from './webhooks.controller';
 import { ChannelService } from './services/channel.service';
 import { OAuthService } from './services/oauth.service';
 import { FacebookService } from './services/facebook.service';
@@ -19,7 +20,7 @@ import { DrizzleModule } from '../drizzle/drizzle.module';
 
 @Module({
   imports: [DrizzleModule],
-  controllers: [ChannelsController],
+  controllers: [ChannelsController, WebhooksController],
   providers: [
     ChannelService,
     OAuthService,

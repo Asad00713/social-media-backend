@@ -1654,6 +1654,68 @@ export class ChannelsController {
   }
 
   /**
+   * Connect Instagram using Instagram User Access Token
+   * This endpoint works with tokens generated from Meta Developer Dashboard
+   * (API setup with Instagram login - "Generate access tokens" section)
+   *
+   * Note: This token type has limited permissions - it can read account info
+   * but may not support content publishing. For full posting capabilities,
+   * use the Facebook OAuth flow with connectFacebookPage endpoint.
+   */
+  @Post('workspaces/:workspaceId/instagram/connect-with-token')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async connectInstagramWithUserToken(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: { accessToken: string },
+  ) {
+    // Get Instagram account info using User Access Token
+    const instagramUser = await this.instagramService.getAccountInfoWithUserToken(
+      dto.accessToken,
+    );
+
+    // Create the Instagram channel
+    const channel = await this.channelService.createChannel(
+      workspaceId,
+      user.userId,
+      {
+        platform: 'instagram',
+        accountType: 'business_account',
+        platformAccountId: instagramUser.id,
+        accountName: instagramUser.name,
+        username: instagramUser.username,
+        profilePictureUrl: instagramUser.profilePictureUrl || undefined,
+        accessToken: dto.accessToken, // Instagram User Access Token
+        permissions: ['instagram_basic', 'instagram_content_publish'],
+        capabilities: {
+          canPost: true,
+          canSchedule: true,
+          canReadAnalytics: false, // User tokens have limited analytics access
+          canReply: false,
+          canDelete: false,
+          supportedMediaTypes: ['image', 'video', 'carousel'],
+          maxMediaPerPost: 10,
+          maxTextLength: 2200,
+        },
+        metadata: {
+          biography: instagramUser.biography,
+          followersCount: instagramUser.followersCount,
+          followsCount: instagramUser.followsCount,
+          mediaCount: instagramUser.mediaCount,
+          website: instagramUser.website,
+          tokenType: 'instagram_user_token', // Mark token type for reference
+        },
+      },
+    );
+
+    return {
+      channel,
+      message: 'Instagram account connected successfully using User Access Token',
+    };
+  }
+
+  /**
    * Get Instagram account info using Page Access Token
    * Use this for tokens from Facebook OAuth flow
    */
