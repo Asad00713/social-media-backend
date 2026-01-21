@@ -1,0 +1,29 @@
+import { Module } from '@nestjs/common';
+import { MediaLibraryController } from './media-library.controller';
+import { CategoryService } from './services/category.service';
+import { MediaItemService } from './services/media-item.service';
+import { TemplateService } from './services/template.service';
+import { TextSnippetService } from './services/text-snippet.service';
+import { SavedLinkService } from './services/saved-link.service';
+import { MediaModule } from '../media/media.module';
+import { DrizzleModule } from '../drizzle/drizzle.module';
+
+@Module({
+  imports: [DrizzleModule, MediaModule],
+  controllers: [MediaLibraryController],
+  providers: [
+    CategoryService,
+    MediaItemService,
+    TemplateService,
+    TextSnippetService,
+    SavedLinkService,
+  ],
+  exports: [
+    CategoryService,
+    MediaItemService,
+    TemplateService,
+    TextSnippetService,
+    SavedLinkService,
+  ],
+})
+export class MediaLibraryModule {}

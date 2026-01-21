@@ -19,6 +19,7 @@ import { FeedbackModule } from './feedback/feedback.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PexelsModule } from './pexels/pexels.module';
 import { CanvaModule } from './canva/canva.module';
+import { MediaLibraryModule } from './media-library/media-library.module';
 
 @Module({
   imports: [
@@ -36,6 +37,7 @@ import { CanvaModule } from './canva/canva.module';
     ChannelsModule,
     PostsModule,
     MediaModule,
+    MediaLibraryModule,
     AiModule,
     DripModule,
     FeedbackModule,
