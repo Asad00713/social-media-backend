@@ -7,11 +7,16 @@ import {
   HttpCode,
   HttpStatus,
   UseGuards,
+  UseInterceptors,
+  UploadedFile,
+  BadRequestException,
 } from '@nestjs/common';
+import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { GroqService } from './groq.service';
 import { AiTokenService, AI_OPERATION_COSTS } from './services/ai-token.service';
+import { ElevenLabsSttService } from './services/elevenlabs-stt.service';
 import {
   GeneratePostDto,
   GenerateCaptionDto,
@@ -35,6 +40,7 @@ export class AiController {
   constructor(
     private readonly groqService: GroqService,
     private readonly aiTokenService: AiTokenService,
+    private readonly sttService: ElevenLabsSttService,
   ) {}
 
   // ==========================================================================
@@ -49,10 +55,12 @@ export class AiController {
   getStatus() {
     return {
       configured: this.groqService.isReady(),
+      sttConfigured: this.sttService.isReady(),
       message: this.groqService.isReady()
         ? 'AI service is configured and ready'
         : 'AI service is not configured - check GROQ_API_KEY environment variable',
       model: 'llama-3.3-70b-versatile',
+      sttProvider: 'ElevenLabs Scribe',
     };
   }
 
@@ -440,5 +448,82 @@ export class AiController {
     );
 
     return { ...result, usage };
+  }
+
+  // ==========================================================================
+  // Speech-to-Text (Voice Input)
+  // ==========================================================================
+
+  /**
+   * Get STT service info
+   */
+  @Get('stt/info')
+  @HttpCode(HttpStatus.OK)
+  getSttInfo() {
+    return {
+      configured: this.sttService.isReady(),
+      supportedFormats: this.sttService.getSupportedFormats(),
+      maxDurationSeconds: this.sttService.getMaxDuration(),
+      tokenCost: AI_OPERATION_COSTS.speech_to_text,
+    };
+  }
+
+  /**
+   * Transcribe audio to text (voice input for AI prompts)
+   * Max duration: 3 minutes
+   * Supported formats: MP3, WAV, WebM, OGG, M4A
+   */
+  @Post('workspaces/:workspaceId/transcribe')
+  @HttpCode(HttpStatus.OK)
+  @UseInterceptors(
+    FileInterceptor('audio', {
+      limits: {
+        fileSize: 25 * 1024 * 1024, // 25MB max
+      },
+    }),
+  )
+  async transcribeAudio(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
+    @UploadedFile() file: Express.Multer.File,
+    @Body('durationSeconds') durationSeconds?: string,
+    @Body('languageCode') languageCode?: string,
+  ) {
+    if (!file) {
+      throw new BadRequestException('No audio file provided');
+    }
+
+    // Parse duration if provided (for client-side validation backup)
+    const duration = durationSeconds ? parseFloat(durationSeconds) : undefined;
+
+    // Validate audio file
+    const validation = this.sttService.validateAudioFile(file, duration);
+    if (!validation.valid) {
+      throw new BadRequestException(validation.error);
+    }
+
+    const { result, usage } = await this.aiTokenService.executeWithTokens(
+      workspaceId,
+      user.userId,
+      'speech_to_text',
+      undefined,
+      `Voice transcription: ${file.originalname}`,
+      async () => {
+        const transcription = await this.sttService.transcribeFile(file, {
+          languageCode,
+        });
+        return {
+          result: transcription,
+          outputLength: transcription.text.length,
+        };
+      },
+    );
+
+    return {
+      text: result.text,
+      language: result.language,
+      durationSeconds: result.durationSeconds,
+      usage,
+    };
   }
 }

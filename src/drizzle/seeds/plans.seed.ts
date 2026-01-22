@@ -17,6 +17,7 @@ export async function seedPlans() {
       channelsPerWorkspace: 3,
       membersPerWorkspace: 1,
       maxWorkspaces: 1,
+      aiTokensPerMonth: 0, // No AI for free plan
       features: {
         basicScheduling: true,
         analytics: false,
@@ -24,6 +25,7 @@ export async function seedPlans() {
         apiAccess: false,
         prioritySupport: false,
         whiteLabel: false,
+        aiFeatures: false,
       },
       isActive: true,
     },
@@ -35,6 +37,7 @@ export async function seedPlans() {
       channelsPerWorkspace: 8,
       membersPerWorkspace: 5,
       maxWorkspaces: 3,
+      aiTokensPerMonth: 2000, // 2000 AI tokens per month
       features: {
         basicScheduling: true,
         analytics: true,
@@ -42,6 +45,7 @@ export async function seedPlans() {
         apiAccess: true,
         prioritySupport: false,
         whiteLabel: false,
+        aiFeatures: true,
       },
       isActive: true,
     },
@@ -53,6 +57,7 @@ export async function seedPlans() {
       channelsPerWorkspace: 50,
       membersPerWorkspace: 25,
       maxWorkspaces: 10,
+      aiTokensPerMonth: 5000, // 5000 AI tokens per month
       features: {
         basicScheduling: true,
         analytics: true,
@@ -60,6 +65,7 @@ export async function seedPlans() {
         apiAccess: true,
         prioritySupport: true,
         whiteLabel: true,
+        aiFeatures: true,
       },
       isActive: true,
     },
@@ -101,6 +107,15 @@ export async function seedAddonPricing() {
       maxQuantity: null,
       isActive: true,
     },
+    {
+      planCode: 'PRO',
+      addonType: 'AI_TOKENS', // 500 extra AI tokens pack
+      pricePerUnitCents: 500, // $5.00 per 500 tokens
+      stripePriceId: '', // Will be set after creating in Stripe
+      minQuantity: 1,
+      maxQuantity: null, // Unlimited purchases allowed
+      isActive: true,
+    },
     // MAX Plan Add-ons
     {
       planCode: 'MAX',
@@ -127,6 +142,15 @@ export async function seedAddonPricing() {
       stripePriceId: '', // Will be set after creating in Stripe
       minQuantity: 1,
       maxQuantity: null,
+      isActive: true,
+    },
+    {
+      planCode: 'MAX',
+      addonType: 'AI_TOKENS', // 500 extra AI tokens pack (discounted for MAX)
+      pricePerUnitCents: 400, // $4.00 per 500 tokens (discounted)
+      stripePriceId: '', // Will be set after creating in Stripe
+      minQuantity: 1,
+      maxQuantity: null, // Unlimited purchases allowed
       isActive: true,
     },
   ]).onConflictDoNothing();
