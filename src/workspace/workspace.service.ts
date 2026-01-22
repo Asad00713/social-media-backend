@@ -179,6 +179,13 @@ export class WorkspaceService {
             );
         }
 
+        // Check if workspace is suspended
+        if (!result.isActive) {
+            throw new ForbiddenException(
+                `This workspace has been suspended. Reason: ${result.suspendedReason || 'Contact support for details.'}`
+            );
+        }
+
         return result;
     };
 

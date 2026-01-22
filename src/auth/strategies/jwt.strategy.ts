@@ -36,10 +36,17 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
     }
 
     async validate(payload: JwtPayload): Promise<JwtUser> {
-        const user = await this.usersService.findOne(payload.sub);
+        const user = await this.usersService.findOneWithSuspension(payload.sub);
 
         if (!user) {
             throw new UnauthorizedException('User not found');
+        }
+
+        // Check if user is suspended
+        if (!user.isActive) {
+            throw new UnauthorizedException(
+                `Your account has been suspended. Reason: ${user.suspendedReason || 'Contact support for details.'}`,
+            );
         }
 
         return { userId: payload.sub, email: payload.email, role: user.role };

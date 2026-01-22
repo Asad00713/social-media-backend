@@ -41,6 +41,16 @@ export const users = pgTable('users', {
   // Last accessed workspace for redirect on login
   lastAccessedWorkspaceId: uuid('last_accessed_workspace_id'),
 
+  // Account suspension
+  isActive: boolean('is_active').default(true).notNull(),
+  suspendedAt: timestamp('suspended_at'),
+  suspendedReason: varchar('suspended_reason', { length: 50 }), // non_payment, policy_violation, abuse, manual
+  suspendedById: uuid('suspended_by_id'),
+  suspensionNote: text('suspension_note'),
+
+  // Last login tracking
+  lastLoginAt: timestamp('last_login_at'),
+
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
