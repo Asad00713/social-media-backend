@@ -14,7 +14,9 @@ All endpoints require:
 2. [User Management](#user-management)
 3. [Workspace Management](#workspace-management)
 4. [Analytics](#analytics)
-5. [Suspension Reasons](#suspension-reasons)
+5. [User Inactivity](#user-inactivity)
+6. [AI Usage](#ai-usage)
+7. [Suspension Reasons](#suspension-reasons)
 
 ---
 
@@ -625,6 +627,234 @@ GET /admin/analytics/revenue
   ]
 }
 ```
+
+---
+
+## User Inactivity
+
+### Get Inactivity Statistics
+
+Returns statistics about inactive users across different stages.
+
+```
+GET /admin/inactivity/stats
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "inactive15Days": 45,
+  "inactive25Days": 12,
+  "deactivated30Days": 5,
+  "pendingDeletion365Days": 2,
+  "lastCheckAt": "2024-01-15T06:00:00Z"
+}
+```
+
+---
+
+### Get Inactivity Email Statistics
+
+Returns count of inactivity emails triggered per workspace.
+
+```
+GET /admin/inactivity/email-stats
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "emailStats": [
+    {
+      "workspaceId": "uuid",
+      "workspaceName": "Marketing Team",
+      "emails15Days": 10,
+      "emails25Days": 3,
+      "deactivationEmails": 1
+    }
+  ],
+  "totals": {
+    "total15DayEmails": 150,
+    "total25DayEmails": 45,
+    "totalDeactivationEmails": 12
+  }
+}
+```
+
+---
+
+### Run Manual Inactivity Check
+
+Manually trigger the inactivity check job (normally runs daily via cron).
+
+```
+POST /admin/inactivity/run-check
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "success": true,
+  "processed": {
+    "warning15Days": 45,
+    "warning25Days": 12,
+    "deactivated": 5,
+    "deleted": 0
+  },
+  "runAt": "2024-01-15T10:30:00Z"
+}
+```
+
+---
+
+## AI Usage
+
+### Get AI Usage Statistics
+
+Returns comprehensive AI usage statistics across the platform.
+
+```
+GET /admin/ai-usage/stats
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "totals": {
+    "totalTokensUsed": 125000,
+    "totalOperations": 8500
+  },
+  "last30Days": {
+    "tokensUsed": 45000,
+    "operations": 3200
+  },
+  "last7Days": {
+    "tokensUsed": 12000,
+    "operations": 850
+  },
+  "byOperation": [
+    { "operation": "generate_post", "count": 3500, "tokensUsed": 17500 },
+    { "operation": "generate_caption", "count": 2100, "tokensUsed": 10500 },
+    { "operation": "generate_hashtags", "count": 1800, "tokensUsed": 3600 },
+    { "operation": "speech_to_text", "count": 500, "tokensUsed": 2500 },
+    { "operation": "generate_thread", "count": 200, "tokensUsed": 2000 }
+  ],
+  "byWorkspace": [
+    {
+      "workspaceId": "uuid",
+      "workspaceName": "Marketing Team",
+      "tokensUsed": 15000,
+      "operations": 1200
+    },
+    {
+      "workspaceId": "uuid",
+      "workspaceName": "Sales Team",
+      "tokensUsed": 8500,
+      "operations": 650
+    }
+  ]
+}
+```
+
+---
+
+### Get AI Usage Activity
+
+Returns recent AI usage activity logs with user and workspace details.
+
+```
+GET /admin/ai-usage/activity
+```
+
+**Query Parameters:**
+
+| Parameter | Type    | Required | Default | Description              |
+|-----------|---------|----------|---------|--------------------------|
+| limit     | integer | No       | 50      | Number of items to return |
+
+**Response:** `200 OK`
+
+```json
+{
+  "activity": [
+    {
+      "id": 12345,
+      "operation": "generate_post",
+      "tokensUsed": 5,
+      "platform": "instagram",
+      "inputSummary": "Post about: Summer fashion trends...",
+      "outputLength": 280,
+      "success": true,
+      "errorMessage": null,
+      "createdAt": "2024-01-15T10:30:00Z",
+      "user": {
+        "id": "uuid",
+        "email": "user@example.com",
+        "name": "John Doe"
+      },
+      "workspace": {
+        "id": "uuid",
+        "name": "Marketing Team"
+      }
+    },
+    {
+      "id": 12344,
+      "operation": "speech_to_text",
+      "tokensUsed": 5,
+      "platform": null,
+      "inputSummary": "Voice transcription: recording.webm",
+      "outputLength": 450,
+      "success": true,
+      "errorMessage": null,
+      "createdAt": "2024-01-15T10:25:00Z",
+      "user": {
+        "id": "uuid",
+        "email": "jane@example.com",
+        "name": "Jane Smith"
+      },
+      "workspace": {
+        "id": "uuid",
+        "name": "Sales Team"
+      }
+    }
+  ]
+}
+```
+
+---
+
+### AI Token Costs Reference
+
+| Operation | Tokens | Description |
+|-----------|--------|-------------|
+| `generate_hashtags` | 2 | Generate hashtags for a topic |
+| `generate_bio` | 2 | Generate social media bio |
+| `generate_post` | 5 | Generate a social media post |
+| `generate_caption` | 5 | Generate media caption |
+| `improve_post` | 5 | Improve existing post |
+| `repurpose_content` | 5 | Repurpose content across platforms |
+| `translate_content` | 5 | Translate content |
+| `speech_to_text` | 5 | Voice transcription (max 3 min) |
+| `generate_ideas` | 8 | Generate content ideas |
+| `generate_youtube_metadata` | 8 | Generate YouTube metadata |
+| `generate_variations` | 8 | Generate post variations |
+| `analyze_post` | 8 | Analyze post performance |
+| `generate_thread` | 10 | Generate Twitter/Threads thread |
+| `generate_drip_content` | 15 | Generate drip campaign content |
+
+---
+
+### AI Token Limits by Plan
+
+| Plan | Monthly Tokens | Can Purchase Add-ons |
+|------|----------------|---------------------|
+| FREE | 0 (no AI access) | No |
+| PRO | 2,000 | Yes ($5.00 per 500 tokens) |
+| MAX | 5,000 | Yes ($4.00 per 500 tokens) |
 
 ---
 

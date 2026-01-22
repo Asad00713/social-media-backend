@@ -3,17 +3,18 @@ config({ path: '.env' });
 
 import { db } from '../db';
 import { plans, addonPricing } from '../schema';
+import { sql } from 'drizzle-orm';
 
 export async function seedPlans() {
   console.log('Seeding plans...');
 
-  // Insert plans
-  await db.insert(plans).values([
+  // Insert or update plans (upsert)
+  // Note: stripePriceId is NOT updated to preserve existing Stripe integrations
+  const planData = [
     {
       code: 'FREE',
       name: 'Free Plan',
       basePriceCents: 0,
-      stripePriceId: null, // No Stripe price for free plan
       channelsPerWorkspace: 3,
       membersPerWorkspace: 1,
       maxWorkspaces: 1,
@@ -33,7 +34,6 @@ export async function seedPlans() {
       code: 'PRO',
       name: 'Pro Plan',
       basePriceCents: 1000, // $10.00
-      stripePriceId: null, // Will be set after creating in Stripe
       channelsPerWorkspace: 8,
       membersPerWorkspace: 5,
       maxWorkspaces: 3,
@@ -53,7 +53,6 @@ export async function seedPlans() {
       code: 'MAX',
       name: 'Max Plan',
       basePriceCents: 5000, // $50.00
-      stripePriceId: null, // Will be set after creating in Stripe
       channelsPerWorkspace: 50,
       membersPerWorkspace: 25,
       maxWorkspaces: 10,
@@ -69,7 +68,26 @@ export async function seedPlans() {
       },
       isActive: true,
     },
-  ]).onConflictDoNothing();
+  ];
+
+  await db
+    .insert(plans)
+    .values(planData)
+    .onConflictDoUpdate({
+      target: plans.code,
+      set: {
+        name: sql`excluded.name`,
+        basePriceCents: sql`excluded.base_price_cents`,
+        channelsPerWorkspace: sql`excluded.channels_per_workspace`,
+        membersPerWorkspace: sql`excluded.members_per_workspace`,
+        maxWorkspaces: sql`excluded.max_workspaces`,
+        aiTokensPerMonth: sql`excluded.ai_tokens_per_month`,
+        features: sql`excluded.features`,
+        isActive: sql`excluded.is_active`,
+        updatedAt: new Date(),
+        // NOTE: stripePriceId is NOT included to preserve existing Stripe prices
+      },
+    });
 
   console.log('Plans seeded successfully!');
 }
