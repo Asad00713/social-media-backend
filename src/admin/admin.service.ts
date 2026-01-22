@@ -20,6 +20,7 @@ export const SUSPENSION_REASONS = [
   'policy_violation',
   'abuse',
   'user_request',
+  'inactivity',
   'manual',
 ] as const;
 

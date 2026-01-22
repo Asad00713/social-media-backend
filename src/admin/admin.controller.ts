@@ -13,6 +13,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { AdminService, SuspensionReason, SUSPENSION_REASONS } from './admin.service';
+import { UserInactivityService } from './user-inactivity.service';
 
 // DTOs
 class SuspendDto {
@@ -38,7 +39,10 @@ class WorkspaceQueryDto {
 @Controller('admin')
 @UseGuards(JwtAuthGuard, SuperAdminGuard)
 export class AdminController {
-  constructor(private readonly adminService: AdminService) {}
+  constructor(
+    private readonly adminService: AdminService,
+    private readonly userInactivityService: UserInactivityService,
+  ) {}
 
   // ==========================================================================
   // Dashboard
@@ -169,5 +173,21 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   async getRevenueStats() {
     return this.adminService.getRevenueStats();
+  }
+
+  // ==========================================================================
+  // User Inactivity
+  // ==========================================================================
+
+  @Get('inactivity/stats')
+  @HttpCode(HttpStatus.OK)
+  async getInactivityStats() {
+    return this.userInactivityService.getInactivityStats();
+  }
+
+  @Post('inactivity/run-check')
+  @HttpCode(HttpStatus.OK)
+  async runInactivityCheck() {
+    return this.userInactivityService.runManualCheck();
   }
 }
