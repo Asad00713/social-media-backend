@@ -20,6 +20,7 @@ import { NotificationsModule } from './notifications/notifications.module';
 import { PexelsModule } from './pexels/pexels.module';
 import { CanvaModule } from './canva/canva.module';
 import { MediaLibraryModule } from './media-library/media-library.module';
+import { AdminModule } from './admin/admin.module';
 
 @Module({
   imports: [
@@ -44,6 +45,7 @@ import { MediaLibraryModule } from './media-library/media-library.module';
     NotificationsModule,
     PexelsModule,
     CanvaModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],

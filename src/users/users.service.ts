@@ -86,6 +86,30 @@ export class UsersService {
         return user;
     }
 
+    async findOneWithSuspension(id: string): Promise<PublicUser & { isActive: boolean; suspendedReason: string | null }> {
+        const user = await this.db.query.users.findFirst({
+            where: eq(users.id, id),
+            columns: {
+                id: true,
+                email: true,
+                name: true,
+                role: true,
+                isEmailVerified: true,
+                lastAccessedWorkspaceId: true,
+                isActive: true,
+                suspendedReason: true,
+                createdAt: true,
+                updatedAt: true,
+            },
+        });
+
+        if (!user) {
+            throw new NotFoundException(`User with ID ${id} not found`)
+        }
+
+        return user;
+    }
+
     async findByVerificationToken(token: string): Promise<User | undefined> {
         const user = await this.db.query.users.findFirst({
             where: eq(users.emailVerificationToken, token)
