@@ -382,6 +382,321 @@ This email was sent by your Social Media Automation tool.
   }
 
   /**
+   * Send inactivity reminder email (15 days)
+   */
+  async sendInactivityReminder15Days(
+    email: string,
+    name?: string,
+  ): Promise<EmailResult> {
+    const greeting = name ? `Hi ${name}` : 'Hi there';
+    const loginUrl = `${this.frontendUrl}/auth/login`;
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>We Miss You!</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px 10px 0 0;">
+    <h1 style="color: white; margin: 0; font-size: 24px;">We Miss You! 👋</h1>
+  </div>
+
+  <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
+    <p style="font-size: 16px; margin-top: 0;">${greeting},</p>
+
+    <p>We noticed you haven't logged in for about <strong>15 days</strong>. Your scheduled posts and social media channels are waiting for you!</p>
+
+    <p>Here's what you might be missing:</p>
+    <ul style="color: #6b7280;">
+      <li>New AI content generation features</li>
+      <li>Your scheduled posts need attention</li>
+      <li>Analytics and insights from your channels</li>
+    </ul>
+
+    <div style="text-align: center; margin: 30px 0;">
+      <a href="${loginUrl}" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: bold; font-size: 16px;">Log In Now</a>
+    </div>
+
+    <p style="color: #6b7280; font-size: 14px;">
+      If you need any help getting started again, our support team is here for you!
+    </p>
+  </div>
+
+  <div style="text-align: center; padding: 20px; color: #9ca3af; font-size: 12px;">
+    <p>This email was sent by your Social Media Automation tool.</p>
+  </div>
+</body>
+</html>
+    `.trim();
+
+    const text = `
+${greeting},
+
+We noticed you haven't logged in for about 15 days. Your scheduled posts and social media channels are waiting for you!
+
+Here's what you might be missing:
+- New AI content generation features
+- Your scheduled posts need attention
+- Analytics and insights from your channels
+
+Log in now: ${loginUrl}
+
+If you need any help getting started again, our support team is here for you!
+
+---
+This email was sent by your Social Media Automation tool.
+    `.trim();
+
+    return this.sendEmail({
+      to: email,
+      subject: 'We Miss You! Your Social Media Awaits 👋',
+      html,
+      text,
+    });
+  }
+
+  /**
+   * Send inactivity reminder email (25 days)
+   */
+  async sendInactivityReminder25Days(
+    email: string,
+    name?: string,
+  ): Promise<EmailResult> {
+    const greeting = name ? `Hi ${name}` : 'Hi there';
+    const loginUrl = `${this.frontendUrl}/auth/login`;
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Your Account Needs Attention</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); padding: 30px; border-radius: 10px 10px 0 0;">
+    <h1 style="color: white; margin: 0; font-size: 24px;">Your Account Needs Attention ⚠️</h1>
+  </div>
+
+  <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
+    <p style="font-size: 16px; margin-top: 0;">${greeting},</p>
+
+    <p>It's been <strong>25 days</strong> since we last saw you. We wanted to remind you that your account is still here, but it needs some attention.</p>
+
+    <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px 0;">
+      <strong style="color: #92400e;">Important Notice</strong><br>
+      <span style="color: #92400e; font-size: 14px;">If you don't log in within the next 5 days, your account will be temporarily deactivated to protect your data.</span>
+    </div>
+
+    <p>Don't worry - you won't lose anything! Simply log in to keep your account active.</p>
+
+    <div style="text-align: center; margin: 30px 0;">
+      <a href="${loginUrl}" style="display: inline-block; background: linear-gradient(135deg, #f59e0b 0%, #d97706 100%); color: white; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: bold; font-size: 16px;">Keep My Account Active</a>
+    </div>
+
+    <p style="color: #6b7280; font-size: 14px;">
+      If you're having trouble logging in or have questions, please contact our support team.
+    </p>
+  </div>
+
+  <div style="text-align: center; padding: 20px; color: #9ca3af; font-size: 12px;">
+    <p>This email was sent by your Social Media Automation tool.</p>
+  </div>
+</body>
+</html>
+    `.trim();
+
+    const text = `
+${greeting},
+
+It's been 25 days since we last saw you. We wanted to remind you that your account is still here, but it needs some attention.
+
+IMPORTANT NOTICE:
+If you don't log in within the next 5 days, your account will be temporarily deactivated to protect your data.
+
+Don't worry - you won't lose anything! Simply log in to keep your account active.
+
+Log in now: ${loginUrl}
+
+If you're having trouble logging in or have questions, please contact our support team.
+
+---
+This email was sent by your Social Media Automation tool.
+    `.trim();
+
+    return this.sendEmail({
+      to: email,
+      subject: '⚠️ Your Account Will Be Deactivated Soon',
+      html,
+      text,
+    });
+  }
+
+  /**
+   * Send final inactivity notice email (30 days - account deactivated)
+   */
+  async sendInactivityDeactivationNotice(
+    email: string,
+    name?: string,
+  ): Promise<EmailResult> {
+    const greeting = name ? `Hi ${name}` : 'Hi there';
+    const loginUrl = `${this.frontendUrl}/auth/login`;
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Account Deactivated</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); padding: 30px; border-radius: 10px 10px 0 0;">
+    <h1 style="color: white; margin: 0; font-size: 24px;">Account Deactivated 🔒</h1>
+  </div>
+
+  <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
+    <p style="font-size: 16px; margin-top: 0;">${greeting},</p>
+
+    <p>Due to <strong>30 days of inactivity</strong>, your account has been temporarily deactivated.</p>
+
+    <div style="background: #fee2e2; border-left: 4px solid #ef4444; padding: 15px; margin: 20px 0;">
+      <strong style="color: #991b1b;">What This Means</strong><br>
+      <ul style="color: #991b1b; font-size: 14px; margin: 10px 0; padding-left: 20px;">
+        <li>You cannot log in until your account is reactivated</li>
+        <li>Scheduled posts have been paused</li>
+        <li>Your data is safe and preserved</li>
+      </ul>
+    </div>
+
+    <p><strong>Want to reactivate your account?</strong></p>
+    <p>Simply contact our support team and we'll help you get back up and running in no time.</p>
+
+    <div style="background: #fef3c7; border-left: 4px solid #f59e0b; padding: 15px; margin: 20px 0;">
+      <strong style="color: #92400e;">Important</strong><br>
+      <span style="color: #92400e; font-size: 14px;">If your account remains inactive for 1 year, it will be permanently deleted along with all associated data.</span>
+    </div>
+
+    <div style="text-align: center; margin: 30px 0;">
+      <a href="mailto:support@yourdomain.com?subject=Reactivate My Account" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: bold; font-size: 16px;">Contact Support</a>
+    </div>
+  </div>
+
+  <div style="text-align: center; padding: 20px; color: #9ca3af; font-size: 12px;">
+    <p>This email was sent by your Social Media Automation tool.</p>
+  </div>
+</body>
+</html>
+    `.trim();
+
+    const text = `
+${greeting},
+
+Due to 30 days of inactivity, your account has been temporarily deactivated.
+
+WHAT THIS MEANS:
+- You cannot log in until your account is reactivated
+- Scheduled posts have been paused
+- Your data is safe and preserved
+
+WANT TO REACTIVATE YOUR ACCOUNT?
+Simply contact our support team and we'll help you get back up and running in no time.
+
+IMPORTANT:
+If your account remains inactive for 1 year, it will be permanently deleted along with all associated data.
+
+Contact support to reactivate: support@yourdomain.com
+
+---
+This email was sent by your Social Media Automation tool.
+    `.trim();
+
+    return this.sendEmail({
+      to: email,
+      subject: '🔒 Your Account Has Been Deactivated',
+      html,
+      text,
+    });
+  }
+
+  /**
+   * Send account deletion warning email (before 1 year deletion)
+   */
+  async sendAccountDeletionWarning(
+    email: string,
+    name?: string,
+    daysUntilDeletion: number = 30,
+  ): Promise<EmailResult> {
+    const greeting = name ? `Hi ${name}` : 'Hi there';
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Account Scheduled for Deletion</title>
+</head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #ef4444 0%, #991b1b 100%); padding: 30px; border-radius: 10px 10px 0 0;">
+    <h1 style="color: white; margin: 0; font-size: 24px;">⚠️ Account Scheduled for Deletion</h1>
+  </div>
+
+  <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
+    <p style="font-size: 16px; margin-top: 0;">${greeting},</p>
+
+    <p>Your account has been inactive for almost <strong>1 year</strong> and is scheduled for permanent deletion.</p>
+
+    <div style="background: #fee2e2; border-left: 4px solid #ef4444; padding: 15px; margin: 20px 0;">
+      <strong style="color: #991b1b;">⏰ ${daysUntilDeletion} Days Until Permanent Deletion</strong><br>
+      <span style="color: #991b1b; font-size: 14px;">After this date, your account and ALL associated data (posts, media, settings) will be permanently deleted and cannot be recovered.</span>
+    </div>
+
+    <p><strong>Don't want to lose your account?</strong></p>
+    <p>Contact our support team immediately to reactivate your account before it's too late.</p>
+
+    <div style="text-align: center; margin: 30px 0;">
+      <a href="mailto:support@yourdomain.com?subject=URGENT: Prevent Account Deletion" style="display: inline-block; background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%); color: white; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: bold; font-size: 16px;">Contact Support Now</a>
+    </div>
+  </div>
+
+  <div style="text-align: center; padding: 20px; color: #9ca3af; font-size: 12px;">
+    <p>This email was sent by your Social Media Automation tool.</p>
+  </div>
+</body>
+</html>
+    `.trim();
+
+    const text = `
+${greeting},
+
+Your account has been inactive for almost 1 year and is scheduled for permanent deletion.
+
+⏰ ${daysUntilDeletion} DAYS UNTIL PERMANENT DELETION
+After this date, your account and ALL associated data (posts, media, settings) will be permanently deleted and cannot be recovered.
+
+DON'T WANT TO LOSE YOUR ACCOUNT?
+Contact our support team immediately to reactivate your account before it's too late.
+
+Contact support NOW: support@yourdomain.com
+Subject: URGENT: Prevent Account Deletion
+
+---
+This email was sent by your Social Media Automation tool.
+    `.trim();
+
+    return this.sendEmail({
+      to: email,
+      subject: '⚠️ URGENT: Your Account Will Be Deleted in ' + daysUntilDeletion + ' Days',
+      html,
+      text,
+    });
+  }
+
+  /**
    * Send password reset email
    */
   async sendPasswordResetEmail(

@@ -51,6 +51,11 @@ export const users = pgTable('users', {
   // Last login tracking
   lastLoginAt: timestamp('last_login_at'),
 
+  // Inactivity email tracking
+  inactivityEmail15DaysSentAt: timestamp('inactivity_email_15_days_sent_at'),
+  inactivityEmail25DaysSentAt: timestamp('inactivity_email_25_days_sent_at'),
+  inactivityEmail30DaysSentAt: timestamp('inactivity_email_30_days_sent_at'),
+
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

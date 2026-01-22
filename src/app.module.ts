@@ -21,12 +21,14 @@ import { PexelsModule } from './pexels/pexels.module';
 import { CanvaModule } from './canva/canva.module';
 import { MediaLibraryModule } from './media-library/media-library.module';
 import { AdminModule } from './admin/admin.module';
+import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
   imports: [
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    ScheduleModule.forRoot(),
     SocialMediaModule,
     DrizzleModule,
     StripeModule,

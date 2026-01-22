@@ -42,6 +42,10 @@ export const NOTIFICATION_TYPES = [
   // Admin
   'new_user_registered',
   'new_feedback_submitted',
+  'user_inactive_15_days',
+  'user_inactive_25_days',
+  'user_deactivated_30_days',
+  'user_deleted_365_days',
   // General
   'system_announcement',
 ] as const;
