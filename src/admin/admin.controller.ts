@@ -185,9 +185,31 @@ export class AdminController {
     return this.userInactivityService.getInactivityStats();
   }
 
+  @Get('inactivity/email-stats')
+  @HttpCode(HttpStatus.OK)
+  async getInactivityEmailStats() {
+    return this.userInactivityService.getInactivityEmailStats();
+  }
+
   @Post('inactivity/run-check')
   @HttpCode(HttpStatus.OK)
   async runInactivityCheck() {
     return this.userInactivityService.runManualCheck();
+  }
+
+  // ==========================================================================
+  // AI Usage
+  // ==========================================================================
+
+  @Get('ai-usage/stats')
+  @HttpCode(HttpStatus.OK)
+  async getAiUsageStats() {
+    return this.adminService.getAiUsageStats();
+  }
+
+  @Get('ai-usage/activity')
+  @HttpCode(HttpStatus.OK)
+  async getAiUsageActivity(@Query('limit') limit?: number) {
+    return this.adminService.getAiUsageActivity(limit ? Number(limit) : 50);
   }
 }

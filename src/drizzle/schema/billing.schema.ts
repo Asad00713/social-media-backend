@@ -22,6 +22,7 @@ export const plans = pgTable('plans', {
   channelsPerWorkspace: integer('channels_per_workspace').notNull(),
   membersPerWorkspace: integer('members_per_workspace').notNull(),
   maxWorkspaces: integer('max_workspaces').notNull(),
+  aiTokensPerMonth: integer('ai_tokens_per_month').default(0).notNull(), // 0=no AI, 2000=pro, 5000=max
   features: jsonb('features'),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -89,6 +90,11 @@ export const workspaceUsage = pgTable('workspace_usage', {
   membersCount: integer('members_count').default(0).notNull(),
   membersLimit: integer('members_limit').notNull(),
   extraMembersPurchased: integer('extra_members_purchased').default(0).notNull(),
+  // AI Token tracking
+  aiTokensUsedThisMonth: integer('ai_tokens_used_this_month').default(0).notNull(),
+  aiTokensLimit: integer('ai_tokens_limit').default(0).notNull(), // From plan
+  extraAiTokensPurchased: integer('extra_ai_tokens_purchased').default(0).notNull(), // From add-on packs
+  aiTokensResetDate: timestamp('ai_tokens_reset_date'),
   lastCalculatedAt: timestamp('last_calculated_at').defaultNow(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
@@ -109,7 +115,25 @@ export const usageEvents = pgTable('usage_events', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
 
-// 8. Invoices - Mirror of Stripe invoices
+// 8. AI Usage Log - Detailed tracking of AI operations (who, where, when, how much)
+export const aiUsageLog = pgTable('ai_usage_log', {
+  id: bigserial('id', { mode: 'number' }).primaryKey(),
+  workspaceId: uuid('workspace_id').notNull().references(() => workspace.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  operation: varchar('operation', { length: 50 }).notNull(), // generate_post, generate_caption, etc.
+  tokensUsed: integer('tokens_used').notNull(),
+  platform: varchar('platform', { length: 30 }), // twitter, linkedin, etc.
+  inputSummary: text('input_summary'), // Brief description of input for context
+  outputLength: integer('output_length'), // Characters generated
+  success: boolean('success').default(true).notNull(),
+  errorMessage: text('error_message'),
+  // Optional: Track actual API tokens for cost analysis
+  apiInputTokens: integer('api_input_tokens'),
+  apiOutputTokens: integer('api_output_tokens'),
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+});
+
+// 9. Invoices - Mirror of Stripe invoices
 export const invoices = pgTable('invoices', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
   subscriptionId: integer('subscription_id').references(() => subscriptions.id, { onDelete: 'set null' }),
@@ -253,6 +277,17 @@ export const usageEventsRelations = relations(usageEvents, ({ one }) => ({
   }),
 }));
 
+export const aiUsageLogRelations = relations(aiUsageLog, ({ one }) => ({
+  workspace: one(workspace, {
+    fields: [aiUsageLog.workspaceId],
+    references: [workspace.id],
+  }),
+  user: one(users, {
+    fields: [aiUsageLog.userId],
+    references: [users.id],
+  }),
+}));
+
 export const invoicesRelations = relations(invoices, ({ one, many }) => ({
   subscription: one(subscriptions, {
     fields: [invoices.subscriptionId],
@@ -330,6 +365,9 @@ export type NewWorkspaceUsage = typeof workspaceUsage.$inferInsert;
 
 export type UsageEvent = typeof usageEvents.$inferSelect;
 export type NewUsageEvent = typeof usageEvents.$inferInsert;
+
+export type AiUsageLog = typeof aiUsageLog.$inferSelect;
+export type NewAiUsageLog = typeof aiUsageLog.$inferInsert;
 
 export type Invoice = typeof invoices.$inferSelect;
 export type NewInvoice = typeof invoices.$inferInsert;

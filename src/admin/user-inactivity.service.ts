@@ -2,8 +2,8 @@ import { Injectable, Logger, Inject } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
-import { users } from '../drizzle/schema';
-import { eq, and, isNull, lte, sql } from 'drizzle-orm';
+import { users, workspace, workspaceInvitation } from '../drizzle/schema';
+import { eq, and, isNull, isNotNull, or, sql } from 'drizzle-orm';
 import { EmailService } from '../email/email.service';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../drizzle/schema';
@@ -424,6 +424,167 @@ export class UserInactivityService {
       inactive15to24Days: Number(inactive15Days[0]?.count) || 0,
       inactive25to29Days: Number(inactive25Days[0]?.count) || 0,
       deactivatedDueToInactivity: Number(deactivatedUsers[0]?.count) || 0,
+    };
+  }
+
+  /**
+   * Get inactivity email statistics - total counts and per workspace breakdown
+   */
+  async getInactivityEmailStats() {
+    // Get total email counts
+    const [totalEmails] = await this.db
+      .select({
+        emails15Days: sql<number>`count(*) FILTER (WHERE ${users.inactivityEmail15DaysSentAt} IS NOT NULL)`,
+        emails25Days: sql<number>`count(*) FILTER (WHERE ${users.inactivityEmail25DaysSentAt} IS NOT NULL)`,
+        emails30Days: sql<number>`count(*) FILTER (WHERE ${users.inactivityEmail30DaysSentAt} IS NOT NULL)`,
+      })
+      .from(users)
+      .where(sql`${users.role} != 'SUPER_ADMIN'`);
+
+    // Get users who received any inactivity email with their workspace info
+    // A user can be: workspace owner OR workspace member (accepted invitation)
+    const usersWithEmails = await this.db
+      .select({
+        userId: users.id,
+        email: users.email,
+        name: users.name,
+        email15DaysSentAt: users.inactivityEmail15DaysSentAt,
+        email25DaysSentAt: users.inactivityEmail25DaysSentAt,
+        email30DaysSentAt: users.inactivityEmail30DaysSentAt,
+        isActive: users.isActive,
+      })
+      .from(users)
+      .where(
+        and(
+          sql`${users.role} != 'SUPER_ADMIN'`,
+          or(
+            isNotNull(users.inactivityEmail15DaysSentAt),
+            isNotNull(users.inactivityEmail25DaysSentAt),
+            isNotNull(users.inactivityEmail30DaysSentAt),
+          ),
+        ),
+      );
+
+    // Get workspace stats per user (as owner)
+    const workspacesByOwner = await this.db
+      .select({
+        workspaceId: workspace.id,
+        workspaceName: workspace.name,
+        ownerId: workspace.ownerId,
+      })
+      .from(workspace);
+
+    // Get workspace memberships
+    const memberships = await this.db
+      .select({
+        workspaceId: workspaceInvitation.workspaceId,
+        userId: workspaceInvitation.userId,
+      })
+      .from(workspaceInvitation)
+      .where(eq(workspaceInvitation.status, 'ACCEPTED'));
+
+    // Build workspace stats map
+    const workspaceStatsMap = new Map<string, {
+      workspaceId: string;
+      workspaceName: string;
+      emails15Days: number;
+      emails25Days: number;
+      emails30Days: number;
+      totalEmails: number;
+      affectedUsers: { email: string; name: string | null; status: string }[];
+    }>();
+
+    // Initialize workspaces
+    for (const ws of workspacesByOwner) {
+      workspaceStatsMap.set(ws.workspaceId, {
+        workspaceId: ws.workspaceId,
+        workspaceName: ws.workspaceName,
+        emails15Days: 0,
+        emails25Days: 0,
+        emails30Days: 0,
+        totalEmails: 0,
+        affectedUsers: [],
+      });
+    }
+
+    // Process each user with emails
+    for (const user of usersWithEmails) {
+      // Find workspaces this user belongs to (as owner or member)
+      const userWorkspaces = new Set<string>();
+
+      // As owner
+      for (const ws of workspacesByOwner) {
+        if (ws.ownerId === user.userId) {
+          userWorkspaces.add(ws.workspaceId);
+        }
+      }
+
+      // As member
+      for (const membership of memberships) {
+        if (membership.userId === user.userId) {
+          userWorkspaces.add(membership.workspaceId);
+        }
+      }
+
+      // Count emails for each workspace
+      for (const wsId of userWorkspaces) {
+        const stats = workspaceStatsMap.get(wsId);
+        if (stats) {
+          if (user.email15DaysSentAt) stats.emails15Days++;
+          if (user.email25DaysSentAt) stats.emails25Days++;
+          if (user.email30DaysSentAt) stats.emails30Days++;
+
+          const userEmailCount =
+            (user.email15DaysSentAt ? 1 : 0) +
+            (user.email25DaysSentAt ? 1 : 0) +
+            (user.email30DaysSentAt ? 1 : 0);
+          stats.totalEmails += userEmailCount;
+
+          // Add user to affected users list if not already there
+          const existingUser = stats.affectedUsers.find(u => u.email === user.email);
+          if (!existingUser) {
+            stats.affectedUsers.push({
+              email: user.email,
+              name: user.name,
+              status: user.isActive ? 'active' : 'deactivated',
+            });
+          }
+        }
+      }
+    }
+
+    // Convert map to array and sort by total emails
+    const workspaceStats = Array.from(workspaceStatsMap.values())
+      .filter(ws => ws.totalEmails > 0)
+      .sort((a, b) => b.totalEmails - a.totalEmails);
+
+    return {
+      totals: {
+        emails15Days: Number(totalEmails?.emails15Days) || 0,
+        emails25Days: Number(totalEmails?.emails25Days) || 0,
+        emails30Days: Number(totalEmails?.emails30Days) || 0,
+        totalEmails:
+          (Number(totalEmails?.emails15Days) || 0) +
+          (Number(totalEmails?.emails25Days) || 0) +
+          (Number(totalEmails?.emails30Days) || 0),
+      },
+      byWorkspace: workspaceStats,
+      usersWithNoWorkspace: usersWithEmails
+        .filter(user => {
+          // Check if user has any workspace
+          const hasWorkspace =
+            workspacesByOwner.some(ws => ws.ownerId === user.userId) ||
+            memberships.some(m => m.userId === user.userId);
+          return !hasWorkspace;
+        })
+        .map(user => ({
+          email: user.email,
+          name: user.name,
+          emails15Days: user.email15DaysSentAt ? 1 : 0,
+          emails25Days: user.email25DaysSentAt ? 1 : 0,
+          emails30Days: user.email30DaysSentAt ? 1 : 0,
+          status: user.isActive ? 'active' : 'deactivated',
+        })),
     };
   }
 }

@@ -12,6 +12,8 @@ import {
   failedPayments,
   stripeCustomers,
   plans,
+  aiUsageLog,
+  workspaceUsage,
 } from '../drizzle/schema';
 
 // Suspension reasons
@@ -744,5 +746,159 @@ export class AdminService {
       recentUsers,
       recentWorkspaces,
     };
+  }
+
+  // ==========================================================================
+  // AI Usage Statistics
+  // ==========================================================================
+
+  async getAiUsageStats() {
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const sevenDaysAgo = new Date(now.getTime() - 7 * 24 * 60 * 60 * 1000);
+
+    // Total stats
+    const [totalStats] = await this.db
+      .select({
+        totalTokens: sql<number>`COALESCE(SUM(${aiUsageLog.tokensUsed}), 0)`,
+        totalOperations: count(),
+        successfulOperations: sql<number>`COUNT(*) FILTER (WHERE ${aiUsageLog.success} = true)`,
+        failedOperations: sql<number>`COUNT(*) FILTER (WHERE ${aiUsageLog.success} = false)`,
+      })
+      .from(aiUsageLog);
+
+    // Last 30 days stats
+    const [last30DaysStats] = await this.db
+      .select({
+        totalTokens: sql<number>`COALESCE(SUM(${aiUsageLog.tokensUsed}), 0)`,
+        totalOperations: count(),
+      })
+      .from(aiUsageLog)
+      .where(gte(aiUsageLog.createdAt, thirtyDaysAgo));
+
+    // Last 7 days stats
+    const [last7DaysStats] = await this.db
+      .select({
+        totalTokens: sql<number>`COALESCE(SUM(${aiUsageLog.tokensUsed}), 0)`,
+        totalOperations: count(),
+      })
+      .from(aiUsageLog)
+      .where(gte(aiUsageLog.createdAt, sevenDaysAgo));
+
+    // Unique users who used AI
+    const [uniqueUsers] = await this.db
+      .select({
+        total: sql<number>`COUNT(DISTINCT ${aiUsageLog.userId})`,
+        last30Days: sql<number>`COUNT(DISTINCT ${aiUsageLog.userId}) FILTER (WHERE ${aiUsageLog.createdAt} >= ${thirtyDaysAgo})`,
+      })
+      .from(aiUsageLog);
+
+    // Stats by operation
+    const operationStats = await this.db
+      .select({
+        operation: aiUsageLog.operation,
+        count: count(),
+        totalTokens: sql<number>`COALESCE(SUM(${aiUsageLog.tokensUsed}), 0)`,
+      })
+      .from(aiUsageLog)
+      .groupBy(aiUsageLog.operation)
+      .orderBy(sql`COUNT(*) DESC`);
+
+    // Stats by workspace (top 10)
+    const workspaceStatsRaw = await this.db
+      .select({
+        workspaceId: aiUsageLog.workspaceId,
+        totalTokens: sql<number>`COALESCE(SUM(${aiUsageLog.tokensUsed}), 0)`,
+        operationCount: count(),
+      })
+      .from(aiUsageLog)
+      .groupBy(aiUsageLog.workspaceId)
+      .orderBy(sql`SUM(${aiUsageLog.tokensUsed}) DESC`)
+      .limit(10);
+
+    // Get workspace names
+    const workspaceStats = await Promise.all(
+      workspaceStatsRaw.map(async (ws) => {
+        const wsData = await this.db.query.workspace.findFirst({
+          where: eq(workspace.id, ws.workspaceId),
+          columns: { name: true, slug: true },
+        });
+        return {
+          workspaceId: ws.workspaceId,
+          workspaceName: wsData?.name || 'Unknown',
+          workspaceSlug: wsData?.slug || 'unknown',
+          totalTokens: Number(ws.totalTokens),
+          operationCount: Number(ws.operationCount),
+        };
+      }),
+    );
+
+    return {
+      totals: {
+        totalTokensConsumed: Number(totalStats?.totalTokens) || 0,
+        totalOperations: Number(totalStats?.totalOperations) || 0,
+        successfulOperations: Number(totalStats?.successfulOperations) || 0,
+        failedOperations: Number(totalStats?.failedOperations) || 0,
+        uniqueUsers: Number(uniqueUsers?.total) || 0,
+      },
+      last30Days: {
+        tokensConsumed: Number(last30DaysStats?.totalTokens) || 0,
+        operations: Number(last30DaysStats?.totalOperations) || 0,
+        uniqueUsers: Number(uniqueUsers?.last30Days) || 0,
+      },
+      last7Days: {
+        tokensConsumed: Number(last7DaysStats?.totalTokens) || 0,
+        operations: Number(last7DaysStats?.totalOperations) || 0,
+      },
+      byOperation: operationStats.map((op) => ({
+        operation: op.operation,
+        count: Number(op.count),
+        totalTokens: Number(op.totalTokens),
+      })),
+      byWorkspace: workspaceStats,
+    };
+  }
+
+  async getAiUsageActivity(limit = 50) {
+    const logs = await this.db
+      .select({
+        id: aiUsageLog.id,
+        workspaceId: aiUsageLog.workspaceId,
+        userId: aiUsageLog.userId,
+        operation: aiUsageLog.operation,
+        tokensUsed: aiUsageLog.tokensUsed,
+        platform: aiUsageLog.platform,
+        inputSummary: aiUsageLog.inputSummary,
+        success: aiUsageLog.success,
+        errorMessage: aiUsageLog.errorMessage,
+        createdAt: aiUsageLog.createdAt,
+      })
+      .from(aiUsageLog)
+      .orderBy(desc(aiUsageLog.createdAt))
+      .limit(limit);
+
+    // Enrich with user and workspace info
+    const enrichedLogs = await Promise.all(
+      logs.map(async (log) => {
+        const [user, ws] = await Promise.all([
+          this.db.query.users.findFirst({
+            where: eq(users.id, log.userId),
+            columns: { email: true, name: true },
+          }),
+          this.db.query.workspace.findFirst({
+            where: eq(workspace.id, log.workspaceId),
+            columns: { name: true, slug: true },
+          }),
+        ]);
+
+        return {
+          ...log,
+          user: user ? { email: user.email, name: user.name } : null,
+          workspace: ws ? { name: ws.name, slug: ws.slug } : null,
+        };
+      }),
+    );
+
+    return enrichedLogs;
   }
 }
