@@ -99,17 +99,20 @@ export class TikTokService {
       },
     );
 
-    if (!response.ok) {
-      const errorData = await response.text();
-      this.logger.error(`Failed to query TikTok creator info: ${errorData}`);
-      throw new BadRequestException('Failed to query creator info');
+    const responseText = await response.text();
+    let data: any;
+
+    try {
+      data = JSON.parse(responseText);
+    } catch {
+      this.logger.error(`Failed to parse TikTok response: ${responseText}`);
+      throw new BadRequestException(`TikTok API error: ${responseText}`);
     }
 
-    const data = await response.json();
-
-    if (data.error?.code !== 'ok' && data.error?.code) {
-      this.logger.error(`TikTok API error: ${JSON.stringify(data.error)}`);
-      throw new BadRequestException(data.error.message || 'TikTok API error');
+    if (!response.ok || (data.error?.code && data.error.code !== 'ok')) {
+      this.logger.error(`TikTok creator info error: ${JSON.stringify(data)}`);
+      const errorMsg = data.error?.message || data.message || `HTTP ${response.status}`;
+      throw new BadRequestException(`TikTok API error: ${errorMsg} (code: ${data.error?.code || 'unknown'})`);
     }
 
     const info = data.data;
@@ -201,12 +204,13 @@ export class TikTokService {
     if (data.error?.code && data.error.code !== 'ok') {
       this.logger.error(`TikTok API error: ${JSON.stringify(data.error)}`);
       throw new BadRequestException(
-        data.error.message || `TikTok error: ${data.error.code}`,
+        `TikTok error: ${data.error.message || data.error.code} (code: ${data.error.code})`,
       );
     }
 
     if (!data.data?.publish_id) {
-      throw new BadRequestException('No publish ID returned from TikTok');
+      this.logger.error(`No publish_id in response: ${responseText}`);
+      throw new BadRequestException(`No publish ID returned from TikTok. Response: ${JSON.stringify(data)}`);
     }
 
     this.logger.log(`Video post initiated with publish_id: ${data.data.publish_id}`);
