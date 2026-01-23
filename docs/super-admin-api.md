@@ -16,7 +16,9 @@ All endpoints require:
 4. [Analytics](#analytics)
 5. [User Inactivity](#user-inactivity)
 6. [AI Usage](#ai-usage)
-7. [Suspension Reasons](#suspension-reasons)
+7. [Queue Monitoring](#queue-monitoring)
+8. [Rate Limiting](#rate-limiting)
+9. [Suspension Reasons](#suspension-reasons)
 
 ---
 
@@ -855,6 +857,480 @@ GET /admin/ai-usage/activity
 | FREE | 0 (no AI access) | No |
 | PRO | 2,000 | Yes ($5.00 per 500 tokens) |
 | MAX | 5,000 | Yes ($4.00 per 500 tokens) |
+
+---
+
+## Queue Monitoring
+
+Monitor and manage BullMQ job queues for post publishing, token refresh, and drip campaigns.
+
+### Available Queues
+
+| Queue Name | Description |
+|------------|-------------|
+| `post-publishing` | Handles scheduled post publishing to social media |
+| `token-refresh` | Handles OAuth token refresh operations |
+| `drip-campaigns` | Handles automated drip campaign content generation and publishing |
+
+---
+
+### Get All Queues Overview
+
+Returns overview of all queues with aggregate statistics.
+
+```
+GET /admin/queues
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "queues": [
+    {
+      "name": "post-publishing",
+      "waiting": 25,
+      "active": 3,
+      "completed": 15420,
+      "failed": 45,
+      "delayed": 150,
+      "paused": false
+    },
+    {
+      "name": "token-refresh",
+      "waiting": 0,
+      "active": 0,
+      "completed": 8500,
+      "failed": 12,
+      "delayed": 0,
+      "paused": false
+    },
+    {
+      "name": "drip-campaigns",
+      "waiting": 5,
+      "active": 1,
+      "completed": 3200,
+      "failed": 8,
+      "delayed": 45,
+      "paused": false
+    }
+  ],
+  "aggregate": {
+    "totalWaiting": 30,
+    "totalActive": 4,
+    "totalCompleted": 27120,
+    "totalFailed": 65,
+    "totalDelayed": 195,
+    "queuesHealthy": 3,
+    "queuesPaused": 0
+  },
+  "availableQueues": ["post-publishing", "token-refresh", "drip-campaigns"]
+}
+```
+
+---
+
+### Get Queue Statistics
+
+Get detailed statistics for a specific queue.
+
+```
+GET /admin/queues/:queueName
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "name": "post-publishing",
+  "waiting": 25,
+  "active": 3,
+  "completed": 15420,
+  "failed": 45,
+  "delayed": 150,
+  "paused": false
+}
+```
+
+---
+
+### Get Failed Jobs
+
+Get list of failed jobs in a queue.
+
+```
+GET /admin/queues/:queueName/failed
+```
+
+**Query Parameters:**
+
+| Parameter | Type    | Required | Default | Description              |
+|-----------|---------|----------|---------|--------------------------|
+| limit     | integer | No       | 20      | Number of jobs to return |
+
+**Response:** `200 OK`
+
+```json
+{
+  "queueName": "post-publishing",
+  "jobs": [
+    {
+      "id": "123",
+      "name": "publish-post",
+      "data": {
+        "postId": "uuid",
+        "channelId": "uuid",
+        "workspaceId": "uuid"
+      },
+      "failedReason": "Instagram API rate limit exceeded",
+      "attemptsMade": 3,
+      "timestamp": 1705315800000,
+      "processedOn": 1705315801000,
+      "finishedOn": 1705315802000
+    }
+  ],
+  "count": 1
+}
+```
+
+---
+
+### Get Active Jobs
+
+Get currently processing jobs.
+
+```
+GET /admin/queues/:queueName/active
+```
+
+**Query Parameters:**
+
+| Parameter | Type    | Required | Default | Description              |
+|-----------|---------|----------|---------|--------------------------|
+| limit     | integer | No       | 20      | Number of jobs to return |
+
+**Response:** `200 OK`
+
+```json
+{
+  "queueName": "post-publishing",
+  "jobs": [
+    {
+      "id": "456",
+      "name": "publish-post",
+      "data": {
+        "postId": "uuid",
+        "channelId": "uuid"
+      },
+      "progress": 50,
+      "attemptsMade": 1,
+      "timestamp": 1705315800000,
+      "processedOn": 1705315801000
+    }
+  ],
+  "count": 1
+}
+```
+
+---
+
+### Get Waiting Jobs
+
+Get jobs waiting to be processed.
+
+```
+GET /admin/queues/:queueName/waiting
+```
+
+---
+
+### Get Delayed Jobs
+
+Get jobs scheduled for future processing.
+
+```
+GET /admin/queues/:queueName/delayed
+```
+
+---
+
+### Get Completed Jobs
+
+Get recently completed jobs.
+
+```
+GET /admin/queues/:queueName/completed
+```
+
+---
+
+### Retry Failed Job
+
+Retry a specific failed job.
+
+```
+POST /admin/queues/:queueName/retry
+```
+
+**Request Body:**
+
+```json
+{
+  "jobId": "123"
+}
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "success": true,
+  "message": "Job 123 has been queued for retry"
+}
+```
+
+---
+
+### Retry All Failed Jobs
+
+Retry all failed jobs in a queue.
+
+```
+POST /admin/queues/:queueName/retry-all
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "success": true,
+  "count": 45,
+  "message": "Retried 45 failed jobs"
+}
+```
+
+---
+
+### Remove Job
+
+Remove a specific job from the queue.
+
+```
+POST /admin/queues/:queueName/remove
+```
+
+**Request Body:**
+
+```json
+{
+  "jobId": "123"
+}
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "success": true,
+  "message": "Job 123 has been removed"
+}
+```
+
+---
+
+### Clean Queue
+
+Clean old jobs from a queue.
+
+```
+POST /admin/queues/:queueName/clean
+```
+
+**Request Body:**
+
+```json
+{
+  "type": "completed",
+  "gracePeriodHours": 24
+}
+```
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| type | enum | Yes | - | One of: `completed`, `failed`, `delayed`, `wait` |
+| gracePeriodHours | integer | No | 24 | Only clean jobs older than this |
+
+**Response:** `200 OK`
+
+```json
+{
+  "success": true,
+  "count": 1500,
+  "message": "Cleaned 1500 completed jobs older than 24 hours"
+}
+```
+
+---
+
+### Pause Queue
+
+Pause a queue (stops processing new jobs).
+
+```
+POST /admin/queues/:queueName/pause
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "success": true,
+  "message": "Queue post-publishing has been paused"
+}
+```
+
+---
+
+### Resume Queue
+
+Resume a paused queue.
+
+```
+POST /admin/queues/:queueName/resume
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "success": true,
+  "message": "Queue post-publishing has been resumed"
+}
+```
+
+---
+
+## Rate Limiting
+
+Monitor API rate limits per social media platform. The system uses sliding window rate limiting to stay within each platform's API limits.
+
+### Get All Rate Limits
+
+Get current rate limit status for all platforms.
+
+```
+GET /admin/rate-limits
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "platforms": {
+    "twitter": {
+      "current": 45,
+      "max": 200,
+      "remaining": 155,
+      "windowMs": 10800000,
+      "description": "200 tweets per 3 hours"
+    },
+    "facebook": {
+      "current": 12,
+      "max": 150,
+      "remaining": 138,
+      "windowMs": 3600000,
+      "description": "150 posts per hour"
+    },
+    "instagram": {
+      "current": 8,
+      "max": 20,
+      "remaining": 12,
+      "windowMs": 86400000,
+      "description": "20 posts per 24 hours"
+    },
+    "linkedin": {
+      "current": 0,
+      "max": 80,
+      "remaining": 80,
+      "windowMs": 86400000,
+      "description": "80 posts per 24 hours"
+    },
+    "tiktok": {
+      "current": 2,
+      "max": 8,
+      "remaining": 6,
+      "windowMs": 86400000,
+      "description": "8 videos per 24 hours"
+    }
+  },
+  "limits": {
+    "twitter": { "maxRequests": 200, "windowMs": 10800000, "description": "200 tweets per 3 hours" },
+    "facebook": { "maxRequests": 150, "windowMs": 3600000, "description": "150 posts per hour" },
+    "instagram": { "maxRequests": 20, "windowMs": 86400000, "description": "20 posts per 24 hours" },
+    "linkedin": { "maxRequests": 80, "windowMs": 86400000, "description": "80 posts per 24 hours" },
+    "pinterest": { "maxRequests": 50, "windowMs": 3600000, "description": "50 pins per hour" },
+    "tiktok": { "maxRequests": 8, "windowMs": 86400000, "description": "8 videos per 24 hours" },
+    "youtube": { "maxRequests": 50, "windowMs": 86400000, "description": "50 videos per 24 hours" },
+    "threads": { "maxRequests": 20, "windowMs": 86400000, "description": "20 posts per 24 hours" }
+  }
+}
+```
+
+---
+
+### Get Platform Rate Limit
+
+Get detailed rate limit status for a specific platform.
+
+```
+GET /admin/rate-limits/:platform
+```
+
+**Response:** `200 OK`
+
+```json
+{
+  "platform": "instagram",
+  "current": 8,
+  "max": 20,
+  "remaining": 12,
+  "resetAt": "2024-01-16T10:30:00Z",
+  "limit": {
+    "maxRequests": 20,
+    "windowMs": 86400000,
+    "description": "20 posts per 24 hours"
+  }
+}
+```
+
+---
+
+### Platform Rate Limits Reference
+
+| Platform | Max Requests | Window | Notes |
+|----------|-------------|--------|-------|
+| Twitter | 200 | 3 hours | Conservative limit (API allows 300) |
+| Facebook | 150 | 1 hour | Conservative limit (API allows ~200) |
+| Instagram | 20 | 24 hours | Very strict platform limit |
+| LinkedIn | 80 | 24 hours | Conservative limit |
+| Pinterest | 50 | 1 hour | Relatively generous |
+| TikTok | 8 | 24 hours | Very strict platform limit |
+| YouTube | 50 | 24 hours | Daily upload limit varies |
+| Threads | 20 | 24 hours | Similar to Instagram |
+| Google Drive | 1000 | 1 hour | Read operations |
+| Google Photos | 1000 | 1 hour | Read operations |
+| OneDrive | 10000 | 10 minutes | Microsoft Graph limits |
+| Dropbox | 1000 | 1 hour | Varies by endpoint |
+
+### Per-Channel Rate Limits
+
+In addition to global platform limits, these per-account limits apply:
+
+| Platform | Max per Account | Window |
+|----------|----------------|--------|
+| Instagram | 10 | 24 hours |
+| TikTok | 5 | 24 hours |
+| Twitter | 50 | 1 hour |
 
 ---
 
