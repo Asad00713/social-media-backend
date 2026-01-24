@@ -191,7 +191,15 @@ export class OAuthService {
     const expiresAt = new Date();
     expiresAt.setMinutes(expiresAt.getMinutes() + this.STATE_EXPIRATION_MINUTES);
 
-    // Save state to database
+    // Build redirect URI BEFORE saving state so we can store it
+    const redirectUri = this.getRedirectUri(platform);
+
+    // Save state to database - include redirect_uri in additionalData to ensure exact match during token exchange
+    const additionalDataWithRedirect = {
+      ...(dto.additionalData || {}),
+      _oauthRedirectUri: redirectUri, // Store the exact redirect_uri used
+    };
+
     await db.insert(oauthStates).values({
       stateToken,
       workspaceId,
@@ -199,12 +207,11 @@ export class OAuthService {
       platform,
       redirectUrl: dto.redirectUrl || null,
       codeVerifier,
-      additionalData: dto.additionalData || null,
+      additionalData: additionalDataWithRedirect,
       expiresAt,
     } as NewOAuthState);
 
     // Build authorization URL
-    const redirectUri = this.getRedirectUri(platform);
     const authUrl = new URL(oauthConfig.authorizationUrl);
 
     // TikTok uses client_key instead of client_id
@@ -331,6 +338,7 @@ export class OAuthService {
     platform: SupportedPlatform,
     code: string,
     codeVerifier: string | null,
+    storedRedirectUri?: string | null, // Use the exact redirect_uri from authorization
   ): Promise<{
     accessToken: string;
     refreshToken: string | null;
@@ -340,11 +348,13 @@ export class OAuthService {
   }> {
     const oauthConfig = OAUTH_CONFIGS[platform];
     const credentials = await this.getPlatformCredentials(platform);
-    const redirectUri = this.getRedirectUri(platform);
+    // Use stored redirect_uri if provided, otherwise generate it
+    const redirectUri = storedRedirectUri || this.getRedirectUri(platform);
 
     this.logger.log(`Token exchange for ${platform}:`);
     this.logger.log(`  - Token URL: ${oauthConfig.tokenUrl}`);
     this.logger.log(`  - Redirect URI: ${redirectUri}`);
+    this.logger.log(`  - Redirect URI (from stored): ${storedRedirectUri ? 'YES' : 'NO'}`);
     this.logger.log(`  - Redirect URI length: ${redirectUri.length}`);
     this.logger.log(`  - Client ID: ${credentials.clientId.substring(0, 10)}...`);
     this.logger.log(`  - APP_URL env: ${process.env.APP_URL}`);

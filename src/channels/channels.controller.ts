@@ -197,11 +197,16 @@ export class ChannelsController {
       const stateData = await this.oauthService.validateState(state);
       console.log(`[OAuth Callback] State validated successfully for workspace: ${stateData.workspaceId}`);
 
+      // Get the stored redirect_uri to ensure exact match during token exchange
+      const storedRedirectUri = stateData.additionalData?._oauthRedirectUri as string | undefined;
+      console.log(`[OAuth Callback] Stored redirect_uri: ${storedRedirectUri || 'NOT FOUND'}`);
+
       // Exchange code for tokens
       const tokens = await this.oauthService.exchangeCodeForTokens(
         platform as SupportedPlatform,
         code,
         stateData.codeVerifier,
+        storedRedirectUri,
       );
 
       // Calculate token expiration
