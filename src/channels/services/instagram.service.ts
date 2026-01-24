@@ -559,9 +559,12 @@ export class InstagramService {
 
     const containerData = await containerResponse.json();
     const creationId = containerData.id;
-    this.logger.log(`Media container created: ${creationId}`);
+    this.logger.log(`Media container created: ${creationId}, waiting for processing...`);
 
-    // Step 2: Publish the container
+    // Step 2: Wait for the container to be ready (even images need processing time)
+    await this.waitForMediaReadyWithUserToken(creationId, accessToken);
+
+    // Step 3: Publish the container
     return await this.publishContainerWithUserToken(userId, accessToken, creationId);
   }
 
@@ -667,10 +670,8 @@ export class InstagramService {
       const containerData = await containerResponse.json();
       childContainerIds.push(containerData.id);
 
-      // Wait for video items to be ready
-      if (item.type === 'VIDEO') {
-        await this.waitForMediaReadyWithUserToken(containerData.id, accessToken);
-      }
+      // Wait for all items to be ready (images and videos)
+      await this.waitForMediaReadyWithUserToken(containerData.id, accessToken);
     }
 
     // Step 2: Create carousel container
