@@ -530,23 +530,23 @@ export class InstagramService {
     this.logger.log(`Creating Instagram image post for user ${userId}`);
 
     // Step 1: Create media container
+    // Instagram API expects form-urlencoded data, not JSON
     const containerUrl = new URL(`${this.instagramApiUrl}/${userId}/media`);
 
-    const containerBody: Record<string, string> = {
-      access_token: accessToken,
-      image_url: imageUrl,
-    };
+    const containerParams = new URLSearchParams();
+    containerParams.set('access_token', accessToken);
+    containerParams.set('image_url', imageUrl);
 
     if (caption) {
-      containerBody.caption = caption;
+      containerParams.set('caption', caption);
     }
 
-    this.logger.log(`Creating media container at: ${containerUrl.toString().replace(accessToken, 'TOKEN_HIDDEN')}`);
+    this.logger.log(`Creating media container at: ${containerUrl.toString()}`);
 
     const containerResponse = await fetch(containerUrl.toString(), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(containerBody),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: containerParams,
     });
 
     if (!containerResponse.ok) {
@@ -581,20 +581,19 @@ export class InstagramService {
     // Step 1: Create media container for video
     const containerUrl = new URL(`${this.instagramApiUrl}/${userId}/media`);
 
-    const containerBody: Record<string, string> = {
-      access_token: accessToken,
-      video_url: videoUrl,
-      media_type: isReel ? 'REELS' : 'VIDEO',
-    };
+    const containerParams = new URLSearchParams();
+    containerParams.set('access_token', accessToken);
+    containerParams.set('video_url', videoUrl);
+    containerParams.set('media_type', isReel ? 'REELS' : 'VIDEO');
 
     if (caption) {
-      containerBody.caption = caption;
+      containerParams.set('caption', caption);
     }
 
     const containerResponse = await fetch(containerUrl.toString(), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(containerBody),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: containerParams,
     });
 
     if (!containerResponse.ok) {
@@ -640,22 +639,21 @@ export class InstagramService {
     for (const item of mediaItems) {
       const containerUrl = new URL(`${this.instagramApiUrl}/${userId}/media`);
 
-      const containerBody: Record<string, string> = {
-        access_token: accessToken,
-        is_carousel_item: 'true',
-      };
+      const containerParams = new URLSearchParams();
+      containerParams.set('access_token', accessToken);
+      containerParams.set('is_carousel_item', 'true');
 
       if (item.type === 'IMAGE') {
-        containerBody.image_url = item.url;
+        containerParams.set('image_url', item.url);
       } else {
-        containerBody.video_url = item.url;
-        containerBody.media_type = 'VIDEO';
+        containerParams.set('video_url', item.url);
+        containerParams.set('media_type', 'VIDEO');
       }
 
       const containerResponse = await fetch(containerUrl.toString(), {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(containerBody),
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: containerParams,
       });
 
       if (!containerResponse.ok) {
@@ -678,20 +676,19 @@ export class InstagramService {
     // Step 2: Create carousel container
     const carouselUrl = new URL(`${this.instagramApiUrl}/${userId}/media`);
 
-    const carouselBody: Record<string, string> = {
-      access_token: accessToken,
-      media_type: 'CAROUSEL',
-      children: childContainerIds.join(','),
-    };
+    const carouselParams = new URLSearchParams();
+    carouselParams.set('access_token', accessToken);
+    carouselParams.set('media_type', 'CAROUSEL');
+    carouselParams.set('children', childContainerIds.join(','));
 
     if (caption) {
-      carouselBody.caption = caption;
+      carouselParams.set('caption', caption);
     }
 
     const carouselResponse = await fetch(carouselUrl.toString(), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(carouselBody),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: carouselParams,
     });
 
     if (!carouselResponse.ok) {
@@ -754,13 +751,14 @@ export class InstagramService {
 
     this.logger.log(`Publishing media container ${creationId}`);
 
+    const publishParams = new URLSearchParams();
+    publishParams.set('access_token', accessToken);
+    publishParams.set('creation_id', creationId);
+
     const publishResponse = await fetch(publishUrl.toString(), {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        access_token: accessToken,
-        creation_id: creationId,
-      }),
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: publishParams,
     });
 
     if (!publishResponse.ok) {
