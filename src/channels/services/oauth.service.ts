@@ -42,13 +42,15 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
     },
   },
   instagram: {
-    authorizationUrl: 'https://www.facebook.com/v18.0/dialog/oauth',
-    tokenUrl: 'https://graph.facebook.com/v18.0/oauth/access_token',
-    scopes: [
-      ...PLATFORM_CONFIG.facebook.oauthScopes,
-      ...PLATFORM_CONFIG.instagram.oauthScopes,
-    ],
+    // Instagram Business Login (direct Instagram auth without Facebook Pages)
+    authorizationUrl: 'https://www.instagram.com/oauth/authorize',
+    tokenUrl: 'https://api.instagram.com/oauth/access_token',
+    scopes: PLATFORM_CONFIG.instagram.oauthScopes,
     usePKCE: false,
+    additionalParams: {
+      enable_fb_login: '0', // Disable Facebook login option
+      force_authentication: '1', // Force re-authentication
+    },
   },
   youtube: {
     authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -486,8 +488,11 @@ export class OAuthService {
     let hint: string;
 
     if (platform === 'instagram') {
-      envPrefix = 'FACEBOOK';
-      hint = 'Instagram uses Facebook credentials. Set FACEBOOK_CLIENT_ID and FACEBOOK_CLIENT_SECRET.';
+      envPrefix = 'INSTAGRAM';
+      hint = 'Instagram Business Login. Set INSTAGRAM_CLIENT_ID and INSTAGRAM_CLIENT_SECRET.';
+    } else if (platform === 'threads') {
+      envPrefix = 'THREADS';
+      hint = 'Threads API. Set THREADS_CLIENT_ID and THREADS_CLIENT_SECRET.';
     } else if (platform === 'google_drive' || platform === 'google_photos' || platform === 'google_calendar') {
       envPrefix = 'YOUTUBE'; // Google Drive/Photos/Calendar share the same Google OAuth app as YouTube
       hint = 'Google services use YouTube credentials. Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET.';

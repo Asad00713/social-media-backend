@@ -285,6 +285,121 @@ export class ChannelsController {
         }
       }
 
+      // Instagram Business Login: Auto-create channel
+      if (platform === 'instagram') {
+        try {
+          console.log('[OAuth Callback] Instagram Business Login: Auto-creating channel...');
+
+          // Instagram Business Login returns short-lived token (1 hour)
+          // Exchange for long-lived token (60 days)
+          const longLivedTokenData = await this.instagramService.exchangeForLongLivedToken(tokens.accessToken);
+          const longLivedAccessToken = longLivedTokenData.accessToken;
+
+          // Calculate expiration for long-lived token
+          const longLivedExpiresAt = new Date();
+          longLivedExpiresAt.setSeconds(longLivedExpiresAt.getSeconds() + longLivedTokenData.expiresIn);
+
+          // Get Instagram user profile using the long-lived token
+          const instagramUser = await this.instagramService.getAccountInfoWithUserToken(longLivedAccessToken);
+
+          // Create the Instagram channel automatically
+          const channel = await this.channelService.createChannel(
+            stateData.workspaceId,
+            stateData.userId,
+            {
+              platform: 'instagram',
+              accountType: 'business_account',
+              platformAccountId: instagramUser.id,
+              accountName: instagramUser.name,
+              username: instagramUser.username,
+              profilePictureUrl: instagramUser.profilePictureUrl || undefined,
+              accessToken: longLivedAccessToken,
+              tokenExpiresAt: longLivedExpiresAt.toISOString(),
+              permissions: PLATFORM_CONFIG.instagram.oauthScopes,
+              capabilities: {
+                canPost: true,
+                canSchedule: true,
+                canReadAnalytics: true,
+                canReply: true,
+                canDelete: false, // Instagram API doesn't support delete
+                supportedMediaTypes: ['image', 'video', 'carousel'],
+                maxMediaPerPost: 10,
+                maxTextLength: 2200,
+              },
+              metadata: {
+                biography: instagramUser.biography,
+                followersCount: instagramUser.followersCount,
+                followsCount: instagramUser.followsCount,
+                mediaCount: instagramUser.mediaCount,
+                tokenType: 'instagram_business_login',
+              },
+            },
+          );
+
+          console.log(`[OAuth Callback] Instagram channel created: ${channel.id}`);
+
+          // Redirect to frontend success page
+          const successUrl = `${frontendUrl}/channels/connect/success?platform=instagram&channelId=${channel.id}`;
+          return res.redirect(successUrl);
+        } catch (igError) {
+          console.error('[OAuth Callback] Instagram setup failed:', igError);
+          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Instagram setup failed: ' + (igError instanceof Error ? igError.message : 'Unknown error'))}`;
+          return res.redirect(errorUrl);
+        }
+      }
+
+      // Threads: Auto-create channel
+      if (platform === 'threads') {
+        try {
+          console.log('[OAuth Callback] Threads: Auto-creating channel...');
+
+          // Get Threads user profile
+          const threadsUser = await this.threadsService.getUserProfile(tokens.accessToken);
+
+          // Create the Threads channel automatically
+          const channel = await this.channelService.createChannel(
+            stateData.workspaceId,
+            stateData.userId,
+            {
+              platform: 'threads',
+              accountType: 'profile',
+              platformAccountId: threadsUser.id,
+              accountName: threadsUser.name || threadsUser.username,
+              username: threadsUser.username,
+              profilePictureUrl: threadsUser.profilePictureUrl || undefined,
+              accessToken: tokens.accessToken,
+              refreshToken: tokens.refreshToken || undefined,
+              tokenExpiresAt: tokenExpiresAt?.toISOString(),
+              permissions: PLATFORM_CONFIG.threads.oauthScopes,
+              capabilities: {
+                canPost: true,
+                canSchedule: true,
+                canReadAnalytics: true,
+                canReply: true,
+                canDelete: true,
+                supportedMediaTypes: ['text', 'image', 'video'],
+                maxMediaPerPost: 10,
+                maxTextLength: 500,
+              },
+              metadata: {
+                biography: threadsUser.biography,
+                threadsProfileUrl: threadsUser.threadsProfileUrl,
+              },
+            },
+          );
+
+          console.log(`[OAuth Callback] Threads channel created: ${channel.id}`);
+
+          // Redirect to frontend success page
+          const successUrl = `${frontendUrl}/channels/connect/success?platform=threads&channelId=${channel.id}`;
+          return res.redirect(successUrl);
+        } catch (threadsError) {
+          console.error('[OAuth Callback] Threads setup failed:', threadsError);
+          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Threads setup failed: ' + (threadsError instanceof Error ? threadsError.message : 'Unknown error'))}`;
+          return res.redirect(errorUrl);
+        }
+      }
+
       // Default flow for other platforms: Redirect to frontend with success and tokens
       // Frontend will fetch account info and complete the channel creation
       const successUrl = new URL(`${frontendUrl}/channels/connect/success`);
@@ -1941,6 +2056,20 @@ export class ChannelsController {
     };
   }
 
+  /**
+   * Instagram deauthorization webhook
+   * Called by Meta when user revokes app access
+   * This endpoint is PUBLIC (no auth) as Meta calls it directly
+   */
+  @Post('instagram/deauthorize')
+  @HttpCode(HttpStatus.OK)
+  async instagramDeauthorize(@Body() body: any) {
+    console.log('[Instagram Deauthorize] Received webhook:', JSON.stringify(body));
+    // Meta sends a signed_request with user info
+    // TODO: Parse signed_request, find channel by platform account ID, mark as revoked
+    return { success: true };
+  }
+
   // ==========================================================================
   // Threads Specific Endpoints
   // ==========================================================================
@@ -2036,6 +2165,20 @@ export class ChannelsController {
       dto.accessToken,
       dto.threadId,
     );
+  }
+
+  /**
+   * Threads deauthorization webhook
+   * Called by Meta when user revokes app access
+   * This endpoint is PUBLIC (no auth) as Meta calls it directly
+   */
+  @Post('threads/deauthorize')
+  @HttpCode(HttpStatus.OK)
+  async threadsDeauthorize(@Body() body: any) {
+    console.log('[Threads Deauthorize] Received webhook:', JSON.stringify(body));
+    // Meta sends a signed_request with user info
+    // TODO: Parse signed_request, find channel by platform account ID, mark as revoked
+    return { success: true };
   }
 
   // ==========================================================================

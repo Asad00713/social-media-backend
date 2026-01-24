@@ -511,4 +511,75 @@ export class InstagramService {
     const data = await response.json();
     return data.success === true;
   }
+
+  // ==========================================================================
+  // Instagram Business Login Token Management
+  // ==========================================================================
+
+  /**
+   * Exchange short-lived token for long-lived token (60 days)
+   * Instagram Business Login returns short-lived tokens (1 hour)
+   * This method exchanges them for long-lived tokens
+   */
+  async exchangeForLongLivedToken(shortLivedToken: string): Promise<{
+    accessToken: string;
+    expiresIn: number;
+  }> {
+    const clientSecret = process.env.INSTAGRAM_CLIENT_SECRET;
+    if (!clientSecret) {
+      throw new BadRequestException('INSTAGRAM_CLIENT_SECRET not configured');
+    }
+
+    const url = new URL('https://graph.instagram.com/access_token');
+    url.searchParams.set('grant_type', 'ig_exchange_token');
+    url.searchParams.set('client_secret', clientSecret);
+    url.searchParams.set('access_token', shortLivedToken);
+
+    this.logger.log('Exchanging Instagram short-lived token for long-lived token');
+
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      const error = await response.text();
+      this.logger.error(`Failed to exchange Instagram token: ${error}`);
+      throw new BadRequestException(`Failed to exchange token: ${error}`);
+    }
+
+    const data = await response.json();
+    this.logger.log(`Instagram long-lived token obtained, expires in ${data.expires_in} seconds`);
+
+    return {
+      accessToken: data.access_token,
+      expiresIn: data.expires_in, // ~5184000 seconds (60 days)
+    };
+  }
+
+  /**
+   * Refresh a long-lived token (extends by another 60 days)
+   * Can only refresh tokens that are at least 24 hours old but not expired
+   */
+  async refreshLongLivedToken(longLivedToken: string): Promise<{
+    accessToken: string;
+    expiresIn: number;
+  }> {
+    const url = new URL('https://graph.instagram.com/refresh_access_token');
+    url.searchParams.set('grant_type', 'ig_refresh_token');
+    url.searchParams.set('access_token', longLivedToken);
+
+    this.logger.log('Refreshing Instagram long-lived token');
+
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      const error = await response.text();
+      this.logger.error(`Failed to refresh Instagram token: ${error}`);
+      throw new BadRequestException(`Failed to refresh token: ${error}`);
+    }
+
+    const data = await response.json();
+    this.logger.log(`Instagram token refreshed, expires in ${data.expires_in} seconds`);
+
+    return {
+      accessToken: data.access_token,
+      expiresIn: data.expires_in,
+    };
+  }
 }

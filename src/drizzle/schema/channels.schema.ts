@@ -362,18 +362,17 @@ export const PLATFORM_CONFIG: Record<
   instagram: {
     name: 'Instagram',
     accountTypes: ['business_account'],
-    supportsRefreshToken: false, // Uses FB token via Facebook Page
+    supportsRefreshToken: false, // Instagram Business Login uses long-lived tokens (60 days)
     tokenExpirationDays: 60,
     maxMediaPerPost: 10,
     maxTextLength: 2200,
     supportedMediaTypes: ['image', 'video', 'carousel'],
     oauthScopes: [
-      // Only scopes that are "Ready for testing" in Meta App Console
-      'public_profile',
-      'pages_show_list',
-      'pages_read_engagement',
-      'instagram_basic',
-      'instagram_content_publish',
+      // Instagram Business Login scopes (July 2024+)
+      'instagram_business_basic',
+      'instagram_business_manage_messages',
+      'instagram_business_manage_comments',
+      'instagram_business_content_publish',
     ],
   },
   youtube: {
