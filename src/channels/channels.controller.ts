@@ -2220,6 +2220,176 @@ export class ChannelsController {
     );
   }
 
+  // ==========================================================================
+  // Threads Posting Endpoints
+  // ==========================================================================
+
+  /**
+   * Post a text-only thread
+   */
+  @Post('threads/post/text')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postTextToThreads(
+    @Body()
+    dto: {
+      channelId: number;
+      text: string;
+      replyToId?: string;
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'threads') {
+      throw new BadRequestException('Channel is not a Threads channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const result = await this.threadsService.createTextThread(
+      channel.accessToken,
+      channel.platformAccountId,
+      dto.text,
+      dto.replyToId,
+    );
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postId: result.postId,
+      message: 'Text thread posted successfully',
+    };
+  }
+
+  /**
+   * Post an image thread
+   */
+  @Post('threads/post/image')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postImageToThreads(
+    @Body()
+    dto: {
+      channelId: number;
+      imageUrl: string;
+      text?: string;
+      replyToId?: string;
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'threads') {
+      throw new BadRequestException('Channel is not a Threads channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const result = await this.threadsService.createImageThread(
+      channel.accessToken,
+      channel.platformAccountId,
+      dto.imageUrl,
+      dto.text,
+      dto.replyToId,
+    );
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postId: result.postId,
+      message: 'Image thread posted successfully',
+    };
+  }
+
+  /**
+   * Post a video thread
+   */
+  @Post('threads/post/video')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postVideoToThreads(
+    @Body()
+    dto: {
+      channelId: number;
+      videoUrl: string;
+      text?: string;
+      replyToId?: string;
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'threads') {
+      throw new BadRequestException('Channel is not a Threads channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const result = await this.threadsService.createVideoThread(
+      channel.accessToken,
+      channel.platformAccountId,
+      dto.videoUrl,
+      dto.text,
+      dto.replyToId,
+    );
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postId: result.postId,
+      message: 'Video thread posted successfully',
+    };
+  }
+
+  /**
+   * Post a carousel thread (multiple images/videos)
+   */
+  @Post('threads/post/carousel')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postCarouselToThreads(
+    @Body()
+    dto: {
+      channelId: number;
+      mediaItems: Array<{ type: 'IMAGE' | 'VIDEO'; url: string }>;
+      text?: string;
+      replyToId?: string;
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'threads') {
+      throw new BadRequestException('Channel is not a Threads channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const result = await this.threadsService.createCarouselThread(
+      channel.accessToken,
+      channel.platformAccountId,
+      dto.mediaItems,
+      dto.text,
+      dto.replyToId,
+    );
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postId: result.postId,
+      message: 'Carousel thread posted successfully',
+    };
+  }
+
   /**
    * Threads deauthorization webhook
    * Called by Meta when user revokes app access
