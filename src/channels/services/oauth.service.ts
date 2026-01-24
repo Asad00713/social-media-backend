@@ -340,6 +340,11 @@ export class OAuthService {
     const credentials = await this.getPlatformCredentials(platform);
     const redirectUri = this.getRedirectUri(platform);
 
+    this.logger.log(`Token exchange for ${platform}:`);
+    this.logger.log(`  - Token URL: ${oauthConfig.tokenUrl}`);
+    this.logger.log(`  - Redirect URI: ${redirectUri}`);
+    this.logger.log(`  - Client ID: ${credentials.clientId.substring(0, 10)}...`);
+
     const tokenParams = new URLSearchParams();
     tokenParams.set('grant_type', 'authorization_code');
     tokenParams.set('code', code);
@@ -380,9 +385,24 @@ export class OAuthService {
     if (!response.ok) {
       const errorData = await response.text();
       this.logger.error(`Token exchange failed for ${platform}: ${errorData}`);
-      throw new BadRequestException(
-        `Failed to exchange authorization code: ${response.status}`,
-      );
+      // Include actual error message for debugging
+      let errorMessage = `Failed to exchange authorization code: ${response.status}`;
+      try {
+        const errorJson = JSON.parse(errorData);
+        if (errorJson.error_message) {
+          errorMessage = errorJson.error_message;
+        } else if (errorJson.error?.message) {
+          errorMessage = errorJson.error.message;
+        } else if (errorJson.error_description) {
+          errorMessage = errorJson.error_description;
+        }
+      } catch {
+        // If not JSON, use raw error
+        if (errorData && errorData.length < 200) {
+          errorMessage = errorData;
+        }
+      }
+      throw new BadRequestException(errorMessage);
     }
 
     const data = await response.json();
