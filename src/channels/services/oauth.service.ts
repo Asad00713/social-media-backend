@@ -359,21 +359,26 @@ export class OAuthService {
     this.logger.log(`  - Client ID: ${credentials.clientId.substring(0, 10)}...`);
     this.logger.log(`  - APP_URL env: ${process.env.APP_URL}`);
 
-    // Instagram uses multipart/form-data for token exchange
+    // Instagram uses x-www-form-urlencoded for token exchange
     if (platform === 'instagram') {
-      const formData = new FormData();
-      formData.append('client_id', credentials.clientId);
-      formData.append('client_secret', credentials.clientSecret);
-      formData.append('grant_type', 'authorization_code');
-      formData.append('redirect_uri', redirectUri);
-      formData.append('code', code);
+      const instagramParams = new URLSearchParams();
+      instagramParams.set('client_id', credentials.clientId);
+      instagramParams.set('client_secret', credentials.clientSecret);
+      instagramParams.set('grant_type', 'authorization_code');
+      instagramParams.set('redirect_uri', redirectUri);
+      instagramParams.set('code', code);
 
-      this.logger.log(`Instagram token exchange using FormData`);
+      const instagramBody = instagramParams.toString();
+      this.logger.log(`Instagram token exchange using URLSearchParams`);
       this.logger.log(`  - redirect_uri value: ${redirectUri}`);
+      this.logger.log(`  - Full request body: ${instagramBody}`);
 
       const response = await fetch(oauthConfig.tokenUrl, {
         method: 'POST',
-        body: formData,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: instagramBody,
       });
 
       if (!response.ok) {
