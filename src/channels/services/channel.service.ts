@@ -208,6 +208,7 @@ export class ChannelService {
     platformAccountId: string;
     accessToken: string | null;
     accountName: string;
+    metadata: Record<string, any> | null;
   }> {
     const channel = await db
       .select()
@@ -228,6 +229,7 @@ export class ChannelService {
       platformAccountId: ch.platformAccountId,
       accessToken: ch.accessToken ? decrypt(ch.accessToken) : null,
       accountName: ch.accountName,
+      metadata: (ch.metadata as Record<string, any>) || null,
     };
   }
 
