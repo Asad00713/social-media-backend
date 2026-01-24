@@ -359,36 +359,35 @@ export class OAuthService {
     this.logger.log(`  - Client ID: ${credentials.clientId.substring(0, 10)}...`);
     this.logger.log(`  - APP_URL env: "${process.env.APP_URL}" (length: ${process.env.APP_URL?.length})`);
 
-    // Instagram Business Login uses multipart/form-data for token exchange
-    // (Meta's curl examples use -F which is form-data, not -d which is urlencoded)
+    // Instagram Business Login token exchange
     if (platform === 'instagram') {
-      // Try decoding the authorization code in case it's URL-encoded from the callback
-      let decodedCode = code;
-      try {
-        decodedCode = decodeURIComponent(code);
-      } catch {
-        // Code wasn't URL-encoded, use as-is
-      }
-
-      this.logger.log(`Instagram token exchange using FormData (multipart/form-data)`);
+      this.logger.log(`Instagram token exchange - trying URLSearchParams approach`);
       this.logger.log(`  - redirect_uri value: ${redirectUri}`);
-      this.logger.log(`  - redirect_uri URL-encoded: ${encodeURIComponent(redirectUri)}`);
-      this.logger.log(`  - Original code (first 50 chars): ${code.substring(0, 50)}...`);
-      this.logger.log(`  - Decoded code (first 50 chars): ${decodedCode.substring(0, 50)}...`);
-      this.logger.log(`  - Code same after decode: ${code === decodedCode ? 'YES' : 'NO'}`);
+      this.logger.log(`  - Client ID: ${credentials.clientId}`);
+      this.logger.log(`  - Client Secret (first 10): ${credentials.clientSecret.substring(0, 10)}...`);
+      this.logger.log(`  - Code (first 50 chars): ${code.substring(0, 50)}...`);
+      this.logger.log(`  - Code length: ${code.length}`);
 
-      // Use FormData for multipart/form-data as per Instagram's documentation
-      const formData = new FormData();
-      formData.append('client_id', credentials.clientId);
-      formData.append('client_secret', credentials.clientSecret);
-      formData.append('grant_type', 'authorization_code');
-      formData.append('redirect_uri', redirectUri);
-      formData.append('code', decodedCode);
+      // Build the request body using URLSearchParams
+      // Pass URLSearchParams object directly - fetch will set Content-Type automatically
+      const params = new URLSearchParams({
+        client_id: credentials.clientId,
+        client_secret: credentials.clientSecret,
+        grant_type: 'authorization_code',
+        redirect_uri: redirectUri,
+        code: code,
+      });
 
-      // Note: Don't set Content-Type header - fetch will set it with boundary for FormData
+      this.logger.log(`  - Request body: ${params.toString()}`);
+      this.logger.log(`  - Token URL: ${oauthConfig.tokenUrl}`);
+
+      // Try with explicit x-www-form-urlencoded content type
       const response = await fetch(oauthConfig.tokenUrl, {
         method: 'POST',
-        body: formData,
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+        },
+        body: params,
       });
 
       if (!response.ok) {
