@@ -47,10 +47,7 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
     tokenUrl: 'https://api.instagram.com/oauth/access_token',
     scopes: PLATFORM_CONFIG.instagram.oauthScopes,
     usePKCE: false,
-    additionalParams: {
-      enable_fb_login: '0', // Disable Facebook login option
-      force_authentication: '1', // Force re-authentication
-    },
+    // Note: Removed enable_fb_login and force_authentication params as they may interfere
   },
   youtube: {
     authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -250,7 +247,9 @@ export class OAuthService {
     this.logger.log(`Authorization URL: ${finalAuthUrl}`);
     this.logger.log(`Redirect URI configured: ${redirectUri}`);
     this.logger.log(`Redirect URI length: ${redirectUri.length}`);
-    this.logger.log(`APP_URL env: ${process.env.APP_URL}`);
+    this.logger.log(`Redirect URI char codes: ${redirectUri.split('').map(c => c.charCodeAt(0)).join(',')}`);
+    this.logger.log(`APP_URL env: "${process.env.APP_URL}" (length: ${process.env.APP_URL?.length})`);
+    this.logger.log(`APP_URL char codes: ${process.env.APP_URL?.split('').map(c => c.charCodeAt(0)).join(',')}`);
 
     return {
       authorizationUrl: finalAuthUrl,
@@ -356,29 +355,40 @@ export class OAuthService {
     this.logger.log(`  - Redirect URI: ${redirectUri}`);
     this.logger.log(`  - Redirect URI (from stored): ${storedRedirectUri ? 'YES' : 'NO'}`);
     this.logger.log(`  - Redirect URI length: ${redirectUri.length}`);
+    this.logger.log(`  - Redirect URI char codes: ${redirectUri.split('').map(c => c.charCodeAt(0)).join(',')}`);
     this.logger.log(`  - Client ID: ${credentials.clientId.substring(0, 10)}...`);
-    this.logger.log(`  - APP_URL env: ${process.env.APP_URL}`);
+    this.logger.log(`  - APP_URL env: "${process.env.APP_URL}" (length: ${process.env.APP_URL?.length})`);
 
-    // Instagram uses x-www-form-urlencoded for token exchange
+    // Instagram Business Login uses multipart/form-data for token exchange
+    // (Meta's curl examples use -F which is form-data, not -d which is urlencoded)
     if (platform === 'instagram') {
-      const instagramParams = new URLSearchParams();
-      instagramParams.set('client_id', credentials.clientId);
-      instagramParams.set('client_secret', credentials.clientSecret);
-      instagramParams.set('grant_type', 'authorization_code');
-      instagramParams.set('redirect_uri', redirectUri);
-      instagramParams.set('code', code);
+      // Try decoding the authorization code in case it's URL-encoded from the callback
+      let decodedCode = code;
+      try {
+        decodedCode = decodeURIComponent(code);
+      } catch {
+        // Code wasn't URL-encoded, use as-is
+      }
 
-      const instagramBody = instagramParams.toString();
-      this.logger.log(`Instagram token exchange using URLSearchParams`);
+      this.logger.log(`Instagram token exchange using FormData (multipart/form-data)`);
       this.logger.log(`  - redirect_uri value: ${redirectUri}`);
-      this.logger.log(`  - Full request body: ${instagramBody}`);
+      this.logger.log(`  - redirect_uri URL-encoded: ${encodeURIComponent(redirectUri)}`);
+      this.logger.log(`  - Original code (first 50 chars): ${code.substring(0, 50)}...`);
+      this.logger.log(`  - Decoded code (first 50 chars): ${decodedCode.substring(0, 50)}...`);
+      this.logger.log(`  - Code same after decode: ${code === decodedCode ? 'YES' : 'NO'}`);
 
+      // Use FormData for multipart/form-data as per Instagram's documentation
+      const formData = new FormData();
+      formData.append('client_id', credentials.clientId);
+      formData.append('client_secret', credentials.clientSecret);
+      formData.append('grant_type', 'authorization_code');
+      formData.append('redirect_uri', redirectUri);
+      formData.append('code', decodedCode);
+
+      // Note: Don't set Content-Type header - fetch will set it with boundary for FormData
       const response = await fetch(oauthConfig.tokenUrl, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-        },
-        body: instagramBody,
+        body: formData,
       });
 
       if (!response.ok) {
@@ -614,8 +624,8 @@ export class OAuthService {
    */
   private getRedirectUri(platform: SupportedPlatform): string {
     let baseUrl = process.env.APP_URL || 'http://localhost:3000';
-    // Remove trailing slash if present to avoid double slashes
-    baseUrl = baseUrl.replace(/\/+$/, '');
+    // Trim any whitespace and remove trailing slash if present to avoid double slashes
+    baseUrl = baseUrl.trim().replace(/\/+$/, '');
     return `${baseUrl}/channels/oauth/${platform}/callback`;
   }
 
