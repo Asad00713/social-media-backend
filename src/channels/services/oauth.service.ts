@@ -349,6 +349,54 @@ export class OAuthService {
     this.logger.log(`  - Client ID: ${credentials.clientId.substring(0, 10)}...`);
     this.logger.log(`  - APP_URL env: ${process.env.APP_URL}`);
 
+    // Instagram uses multipart/form-data for token exchange
+    if (platform === 'instagram') {
+      const formData = new FormData();
+      formData.append('client_id', credentials.clientId);
+      formData.append('client_secret', credentials.clientSecret);
+      formData.append('grant_type', 'authorization_code');
+      formData.append('redirect_uri', redirectUri);
+      formData.append('code', code);
+
+      this.logger.log(`Instagram token exchange using FormData`);
+      this.logger.log(`  - redirect_uri value: ${redirectUri}`);
+
+      const response = await fetch(oauthConfig.tokenUrl, {
+        method: 'POST',
+        body: formData,
+      });
+
+      if (!response.ok) {
+        const errorData = await response.text();
+        this.logger.error(`Token exchange failed for ${platform}: ${errorData}`);
+        let errorMessage = `Failed to exchange authorization code: ${response.status}`;
+        try {
+          const errorJson = JSON.parse(errorData);
+          if (errorJson.error_message) {
+            errorMessage = errorJson.error_message;
+          } else if (errorJson.error?.message) {
+            errorMessage = errorJson.error.message;
+          } else if (errorJson.error_description) {
+            errorMessage = errorJson.error_description;
+          }
+        } catch {
+          if (errorData && errorData.length < 200) {
+            errorMessage = errorData;
+          }
+        }
+        throw new BadRequestException(errorMessage);
+      }
+
+      const data = await response.json();
+      return {
+        accessToken: data.access_token,
+        refreshToken: data.refresh_token || null,
+        expiresIn: data.expires_in || null,
+        tokenType: data.token_type || 'Bearer',
+        scope: data.scope || null,
+      };
+    }
+
     const tokenParams = new URLSearchParams();
     tokenParams.set('grant_type', 'authorization_code');
     tokenParams.set('code', code);
