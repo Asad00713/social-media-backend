@@ -513,6 +513,270 @@ export class InstagramService {
   }
 
   // ==========================================================================
+  // Instagram Business Login Content Publishing
+  // These methods use graph.instagram.com (not graph.facebook.com)
+  // ==========================================================================
+
+  /**
+   * Create an image post using Instagram Business Login token
+   * Uses graph.instagram.com API
+   */
+  async createImagePostWithUserToken(
+    userId: string,
+    accessToken: string,
+    imageUrl: string,
+    caption?: string,
+  ): Promise<{ postId: string }> {
+    this.logger.log(`Creating Instagram image post for user ${userId}`);
+
+    // Step 1: Create media container
+    const containerUrl = new URL(`${this.instagramApiUrl}/${userId}/media`);
+
+    const containerBody: Record<string, string> = {
+      access_token: accessToken,
+      image_url: imageUrl,
+    };
+
+    if (caption) {
+      containerBody.caption = caption;
+    }
+
+    this.logger.log(`Creating media container at: ${containerUrl.toString().replace(accessToken, 'TOKEN_HIDDEN')}`);
+
+    const containerResponse = await fetch(containerUrl.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(containerBody),
+    });
+
+    if (!containerResponse.ok) {
+      const error = await containerResponse.json();
+      this.logger.error('Failed to create Instagram media container:', error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to create Instagram post',
+      );
+    }
+
+    const containerData = await containerResponse.json();
+    const creationId = containerData.id;
+    this.logger.log(`Media container created: ${creationId}`);
+
+    // Step 2: Publish the container
+    return await this.publishContainerWithUserToken(userId, accessToken, creationId);
+  }
+
+  /**
+   * Create a video/reel post using Instagram Business Login token
+   * Uses graph.instagram.com API
+   */
+  async createVideoPostWithUserToken(
+    userId: string,
+    accessToken: string,
+    videoUrl: string,
+    caption?: string,
+    isReel: boolean = false,
+  ): Promise<{ postId: string }> {
+    this.logger.log(`Creating Instagram ${isReel ? 'reel' : 'video'} post for user ${userId}`);
+
+    // Step 1: Create media container for video
+    const containerUrl = new URL(`${this.instagramApiUrl}/${userId}/media`);
+
+    const containerBody: Record<string, string> = {
+      access_token: accessToken,
+      video_url: videoUrl,
+      media_type: isReel ? 'REELS' : 'VIDEO',
+    };
+
+    if (caption) {
+      containerBody.caption = caption;
+    }
+
+    const containerResponse = await fetch(containerUrl.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(containerBody),
+    });
+
+    if (!containerResponse.ok) {
+      const error = await containerResponse.json();
+      this.logger.error('Failed to create Instagram video container:', error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to create Instagram video post',
+      );
+    }
+
+    const containerData = await containerResponse.json();
+    const creationId = containerData.id;
+    this.logger.log(`Video container created: ${creationId}, waiting for processing...`);
+
+    // Wait for video to be processed
+    await this.waitForMediaReadyWithUserToken(creationId, accessToken);
+
+    // Step 2: Publish the container
+    return await this.publishContainerWithUserToken(userId, accessToken, creationId);
+  }
+
+  /**
+   * Create a carousel post using Instagram Business Login token
+   * Uses graph.instagram.com API
+   */
+  async createCarouselPostWithUserToken(
+    userId: string,
+    accessToken: string,
+    mediaItems: Array<{ type: 'IMAGE' | 'VIDEO'; url: string }>,
+    caption?: string,
+  ): Promise<{ postId: string }> {
+    if (mediaItems.length < 2 || mediaItems.length > 10) {
+      throw new BadRequestException(
+        'Carousel posts require between 2 and 10 media items',
+      );
+    }
+
+    this.logger.log(`Creating Instagram carousel with ${mediaItems.length} items for user ${userId}`);
+
+    // Step 1: Create containers for each media item
+    const childContainerIds: string[] = [];
+
+    for (const item of mediaItems) {
+      const containerUrl = new URL(`${this.instagramApiUrl}/${userId}/media`);
+
+      const containerBody: Record<string, string> = {
+        access_token: accessToken,
+        is_carousel_item: 'true',
+      };
+
+      if (item.type === 'IMAGE') {
+        containerBody.image_url = item.url;
+      } else {
+        containerBody.video_url = item.url;
+        containerBody.media_type = 'VIDEO';
+      }
+
+      const containerResponse = await fetch(containerUrl.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(containerBody),
+      });
+
+      if (!containerResponse.ok) {
+        const error = await containerResponse.json();
+        this.logger.error('Failed to create carousel item container:', error);
+        throw new BadRequestException(
+          error.error?.message || 'Failed to create carousel item',
+        );
+      }
+
+      const containerData = await containerResponse.json();
+      childContainerIds.push(containerData.id);
+
+      // Wait for video items to be ready
+      if (item.type === 'VIDEO') {
+        await this.waitForMediaReadyWithUserToken(containerData.id, accessToken);
+      }
+    }
+
+    // Step 2: Create carousel container
+    const carouselUrl = new URL(`${this.instagramApiUrl}/${userId}/media`);
+
+    const carouselBody: Record<string, string> = {
+      access_token: accessToken,
+      media_type: 'CAROUSEL',
+      children: childContainerIds.join(','),
+    };
+
+    if (caption) {
+      carouselBody.caption = caption;
+    }
+
+    const carouselResponse = await fetch(carouselUrl.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(carouselBody),
+    });
+
+    if (!carouselResponse.ok) {
+      const error = await carouselResponse.json();
+      this.logger.error('Failed to create carousel container:', error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to create carousel post',
+      );
+    }
+
+    const carouselData = await carouselResponse.json();
+    this.logger.log(`Carousel container created: ${carouselData.id}`);
+
+    // Step 3: Publish the carousel
+    return await this.publishContainerWithUserToken(userId, accessToken, carouselData.id);
+  }
+
+  /**
+   * Wait for media to be ready (for video uploads) - Instagram Business Login version
+   */
+  private async waitForMediaReadyWithUserToken(
+    containerId: string,
+    accessToken: string,
+    maxAttempts: number = 30,
+  ): Promise<void> {
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      const url = new URL(`${this.instagramApiUrl}/${containerId}`);
+      url.searchParams.set('access_token', accessToken);
+      url.searchParams.set('fields', 'status_code');
+
+      const response = await fetch(url.toString());
+      const data = await response.json();
+
+      this.logger.log(`Media status check ${attempt + 1}/${maxAttempts}: ${data.status_code}`);
+
+      if (data.status_code === 'FINISHED') {
+        return;
+      }
+
+      if (data.status_code === 'ERROR') {
+        throw new BadRequestException('Media processing failed');
+      }
+
+      // Wait 2 seconds before next poll
+      await new Promise((resolve) => setTimeout(resolve, 2000));
+    }
+
+    throw new BadRequestException('Media processing timed out');
+  }
+
+  /**
+   * Publish a media container - Instagram Business Login version
+   */
+  private async publishContainerWithUserToken(
+    userId: string,
+    accessToken: string,
+    creationId: string,
+  ): Promise<{ postId: string }> {
+    const publishUrl = new URL(`${this.instagramApiUrl}/${userId}/media_publish`);
+
+    this.logger.log(`Publishing media container ${creationId}`);
+
+    const publishResponse = await fetch(publishUrl.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        access_token: accessToken,
+        creation_id: creationId,
+      }),
+    });
+
+    if (!publishResponse.ok) {
+      const error = await publishResponse.json();
+      this.logger.error('Failed to publish Instagram post:', error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to publish Instagram post',
+      );
+    }
+
+    const publishData = await publishResponse.json();
+    this.logger.log(`Instagram post published successfully: ${publishData.id}`);
+    return { postId: publishData.id };
+  }
+
+  // ==========================================================================
   // Instagram Business Login Token Management
   // ==========================================================================
 

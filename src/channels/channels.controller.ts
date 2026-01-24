@@ -1958,13 +1958,28 @@ export class ChannelsController {
       throw new BadRequestException('Channel has no access token');
     }
 
-    // Post the image
-    const result = await this.instagramService.createImagePost(
-      channel.platformAccountId,
-      channel.accessToken,
-      dto.imageUrl,
-      dto.caption,
-    );
+    // Check if this is an Instagram Business Login channel
+    const isInstagramBusinessLogin = (channel.metadata as any)?.tokenType === 'instagram_business_login';
+
+    let result: { postId: string };
+
+    if (isInstagramBusinessLogin) {
+      // Use Instagram Graph API (graph.instagram.com)
+      result = await this.instagramService.createImagePostWithUserToken(
+        channel.platformAccountId,
+        channel.accessToken,
+        dto.imageUrl,
+        dto.caption,
+      );
+    } else {
+      // Use Facebook Graph API (graph.facebook.com) for Page-linked accounts
+      result = await this.instagramService.createImagePost(
+        channel.platformAccountId,
+        channel.accessToken,
+        dto.imageUrl,
+        dto.caption,
+      );
+    }
 
     // Update last posted timestamp
     await this.channelService.updateLastPostedAt(dto.channelId);
@@ -2002,13 +2017,30 @@ export class ChannelsController {
       throw new BadRequestException('Channel has no access token');
     }
 
-    const result = await this.instagramService.createVideoPost(
-      channel.platformAccountId,
-      channel.accessToken,
-      dto.videoUrl,
-      dto.caption,
-      dto.isReel ?? false,
-    );
+    // Check if this is an Instagram Business Login channel
+    const isInstagramBusinessLogin = (channel.metadata as any)?.tokenType === 'instagram_business_login';
+
+    let result: { postId: string };
+
+    if (isInstagramBusinessLogin) {
+      // Use Instagram Graph API (graph.instagram.com)
+      result = await this.instagramService.createVideoPostWithUserToken(
+        channel.platformAccountId,
+        channel.accessToken,
+        dto.videoUrl,
+        dto.caption,
+        dto.isReel ?? false,
+      );
+    } else {
+      // Use Facebook Graph API (graph.facebook.com) for Page-linked accounts
+      result = await this.instagramService.createVideoPost(
+        channel.platformAccountId,
+        channel.accessToken,
+        dto.videoUrl,
+        dto.caption,
+        dto.isReel ?? false,
+      );
+    }
 
     await this.channelService.updateLastPostedAt(dto.channelId);
 
@@ -2045,12 +2077,28 @@ export class ChannelsController {
       throw new BadRequestException('Channel has no access token');
     }
 
-    const result = await this.instagramService.createCarouselPost(
-      channel.platformAccountId,
-      channel.accessToken,
-      dto.mediaItems,
-      dto.caption,
-    );
+    // Check if this is an Instagram Business Login channel
+    const isInstagramBusinessLogin = (channel.metadata as any)?.tokenType === 'instagram_business_login';
+
+    let result: { postId: string };
+
+    if (isInstagramBusinessLogin) {
+      // Use Instagram Graph API (graph.instagram.com)
+      result = await this.instagramService.createCarouselPostWithUserToken(
+        channel.platformAccountId,
+        channel.accessToken,
+        dto.mediaItems,
+        dto.caption,
+      );
+    } else {
+      // Use Facebook Graph API (graph.facebook.com) for Page-linked accounts
+      result = await this.instagramService.createCarouselPost(
+        channel.platformAccountId,
+        channel.accessToken,
+        dto.mediaItems,
+        dto.caption,
+      );
+    }
 
     await this.channelService.updateLastPostedAt(dto.channelId);
 
