@@ -242,6 +242,8 @@ export class OAuthService {
     );
     this.logger.log(`Authorization URL: ${finalAuthUrl}`);
     this.logger.log(`Redirect URI configured: ${redirectUri}`);
+    this.logger.log(`Redirect URI length: ${redirectUri.length}`);
+    this.logger.log(`APP_URL env: ${process.env.APP_URL}`);
 
     return {
       authorizationUrl: finalAuthUrl,
@@ -343,7 +345,9 @@ export class OAuthService {
     this.logger.log(`Token exchange for ${platform}:`);
     this.logger.log(`  - Token URL: ${oauthConfig.tokenUrl}`);
     this.logger.log(`  - Redirect URI: ${redirectUri}`);
+    this.logger.log(`  - Redirect URI length: ${redirectUri.length}`);
     this.logger.log(`  - Client ID: ${credentials.clientId.substring(0, 10)}...`);
+    this.logger.log(`  - APP_URL env: ${process.env.APP_URL}`);
 
     const tokenParams = new URLSearchParams();
     tokenParams.set('grant_type', 'authorization_code');
@@ -376,10 +380,13 @@ export class OAuthService {
       tokenParams.set('code_verifier', codeVerifier);
     }
 
+    const requestBody = tokenParams.toString();
+    this.logger.log(`Token exchange request body (first 500 chars): ${requestBody.substring(0, 500)}`);
+
     const response = await fetch(oauthConfig.tokenUrl, {
       method: 'POST',
       headers,
-      body: tokenParams.toString(),
+      body: requestBody,
     });
 
     if (!response.ok) {
@@ -543,7 +550,9 @@ export class OAuthService {
    * Get OAuth redirect URI for a platform
    */
   private getRedirectUri(platform: SupportedPlatform): string {
-    const baseUrl = process.env.APP_URL || 'http://localhost:3000';
+    let baseUrl = process.env.APP_URL || 'http://localhost:3000';
+    // Remove trailing slash if present to avoid double slashes
+    baseUrl = baseUrl.replace(/\/+$/, '');
     return `${baseUrl}/channels/oauth/${platform}/callback`;
   }
 
