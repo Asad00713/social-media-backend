@@ -167,6 +167,11 @@ export class ChannelsController {
     @Query() allQuery: Record<string, string>,
     @Res() res: Response,
   ) {
+    // Delegate to platform-specific callbacks for platforms with custom OAuth flows
+    if (platform === 'mastodon') {
+      return this.mastodonOAuthCallback(code, state, res);
+    }
+
     // Get frontend URL for redirect (use backend URL for debug pages)
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
     const backendUrl = process.env.APP_URL || 'http://localhost:3001';
