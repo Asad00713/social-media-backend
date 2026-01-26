@@ -56,6 +56,11 @@ export const PLATFORM_RATE_LIMITS: Record<
     windowMs: 60 * 60 * 1000, // 1 hour
     description: '100 posts per hour',
   },
+  mastodon: {
+    maxRequests: 300, // Mastodon default is 300 requests per 5 minutes
+    windowMs: 5 * 60 * 1000, // 5 minutes
+    description: '300 requests per 5 minutes',
+  },
   google_drive: {
     maxRequests: 1000, // Google Drive has generous read limits
     windowMs: 60 * 60 * 1000, // 1 hour

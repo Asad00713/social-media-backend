@@ -153,6 +153,14 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
     scopes: [],
     usePKCE: false,
   },
+  // Mastodon - uses per-instance OAuth (dynamic URLs)
+  // Connection is handled via custom endpoints that handle instance-specific OAuth
+  mastodon: {
+    authorizationUrl: '', // Dynamic - based on instance URL
+    tokenUrl: '', // Dynamic - based on instance URL
+    scopes: ['read', 'write', 'follow'],
+    usePKCE: false,
+  },
 };
 
 @Injectable()

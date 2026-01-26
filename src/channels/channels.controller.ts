@@ -27,6 +27,7 @@ import { TwitterService } from './services/twitter.service';
 import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
 import { BlueskyService } from './services/bluesky.service';
+import { MastodonService } from './services/mastodon.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
@@ -46,7 +47,10 @@ import {
   CreateLinkedInPostDto,
   PostTikTokVideoDto,
 } from './dto/channel.dto';
-import { SupportedPlatform, PLATFORM_CONFIG } from '../drizzle/schema/channels.schema';
+import { SupportedPlatform, PLATFORM_CONFIG, oauthStates } from '../drizzle/schema/channels.schema';
+import { db } from '../drizzle/db';
+import { eq, and, isNull, gt } from 'drizzle-orm';
+import * as crypto from 'crypto';
 
 @Controller('channels')
 export class ChannelsController {
@@ -62,6 +66,7 @@ export class ChannelsController {
     private readonly instagramService: InstagramService,
     private readonly threadsService: ThreadsService,
     private readonly blueskyService: BlueskyService,
+    private readonly mastodonService: MastodonService,
     private readonly googleDriveService: GoogleDriveService,
     private readonly googlePhotosService: GooglePhotosService,
     private readonly googleCalendarService: GoogleCalendarService,
@@ -2794,6 +2799,453 @@ export class ChannelsController {
       success: true,
       message: 'Post deleted successfully from Bluesky',
     };
+  }
+
+  // ==========================================================================
+  // Mastodon Endpoints
+  // ==========================================================================
+
+  /**
+   * Initiate Mastodon OAuth flow
+   * Mastodon requires per-instance app registration, so this handles that
+   */
+  @Post('workspaces/:workspaceId/mastodon/oauth/initiate')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async initiateMastodonOAuth(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+    @Body()
+    dto: {
+      instanceUrl: string; // e.g., "mastodon.social" or "https://mastodon.social"
+      redirectUrl?: string; // Frontend URL to redirect after OAuth
+    },
+  ) {
+    // Build our backend callback URL
+    const appUrl = process.env.APP_URL || 'http://localhost:3000';
+    const redirectUri = `${appUrl}/channels/oauth/mastodon/callback`;
+
+    // Register app with the Mastodon instance
+    const app = await this.mastodonService.registerApp(
+      dto.instanceUrl,
+      redirectUri,
+    );
+
+    // Generate state token for CSRF protection
+    const stateToken = crypto.randomBytes(32).toString('hex');
+
+    // Store state in database
+    const expiresAt = new Date();
+    expiresAt.setMinutes(expiresAt.getMinutes() + 15);
+
+    await db.insert(oauthStates).values({
+      stateToken,
+      workspaceId,
+      userId: user.userId,
+      platform: 'mastodon',
+      redirectUrl: dto.redirectUrl || null,
+      additionalData: {
+        instanceUrl: app.instanceUrl,
+        clientId: app.clientId,
+        clientSecret: app.clientSecret,
+        redirectUri,
+      },
+      expiresAt,
+    });
+
+    // Generate authorization URL
+    const authorizationUrl = this.mastodonService.getAuthorizationUrl(
+      app.instanceUrl,
+      app.clientId,
+      redirectUri,
+      stateToken,
+    );
+
+    return {
+      authorizationUrl,
+      state: stateToken,
+    };
+  }
+
+  /**
+   * Mastodon OAuth callback
+   */
+  @Get('oauth/mastodon/callback')
+  async mastodonOAuthCallback(
+    @Query('code') code: string,
+    @Query('state') state: string,
+    @Res() res: Response,
+  ) {
+    // Find and validate state
+    const stateRecords = await db
+      .select()
+      .from(oauthStates)
+      .where(
+        and(
+          eq(oauthStates.stateToken, state),
+          eq(oauthStates.platform, 'mastodon'),
+          isNull(oauthStates.usedAt),
+          gt(oauthStates.expiresAt, new Date()),
+        ),
+      )
+      .limit(1);
+
+    if (stateRecords.length === 0) {
+      return res.redirect(
+        `/channels/connect/error?error=invalid_state&description=OAuth+state+is+invalid+or+expired`,
+      );
+    }
+
+    const stateRecord = stateRecords[0];
+    const additionalData = stateRecord.additionalData as {
+      instanceUrl: string;
+      clientId: string;
+      clientSecret: string;
+      redirectUri: string;
+    };
+
+    // Mark state as used
+    await db
+      .update(oauthStates)
+      .set({ usedAt: new Date() })
+      .where(eq(oauthStates.id, stateRecord.id));
+
+    try {
+      // Exchange code for token
+      const tokenData = await this.mastodonService.exchangeCodeForToken(
+        additionalData.instanceUrl,
+        additionalData.clientId,
+        additionalData.clientSecret,
+        code,
+        additionalData.redirectUri,
+      );
+
+      // Get account info
+      const account = await this.mastodonService.verifyCredentials(
+        additionalData.instanceUrl,
+        tokenData.accessToken,
+      );
+
+      // Create channel
+      await this.channelService.createChannel(
+        stateRecord.workspaceId,
+        stateRecord.userId,
+        {
+          platform: 'mastodon',
+          accountType: 'profile',
+          platformAccountId: account.id,
+          accountName: account.displayName || account.username,
+          username: `${account.username}@${new URL(additionalData.instanceUrl).hostname}`,
+          profilePictureUrl: account.avatar,
+          accessToken: tokenData.accessToken,
+          tokenScope: tokenData.scope,
+          metadata: {
+            instanceUrl: additionalData.instanceUrl,
+            clientId: additionalData.clientId,
+            clientSecret: additionalData.clientSecret,
+            acct: account.acct,
+            url: account.url,
+            followersCount: account.followersCount,
+            followingCount: account.followingCount,
+            statusesCount: account.statusesCount,
+          },
+          capabilities: {
+            canPost: true,
+            canSchedule: true,
+            canReadAnalytics: false,
+            canReply: true,
+            canDelete: true,
+            supportedMediaTypes: ['image', 'video', 'gif'],
+            maxMediaPerPost: 4,
+            maxTextLength: 500,
+          },
+        },
+      );
+
+      // Redirect to frontend
+      const redirectUrl = stateRecord.redirectUrl || '/channels/connect/success';
+      const separator = redirectUrl.includes('?') ? '&' : '?';
+      return res.redirect(`${redirectUrl}${separator}platform=mastodon&success=true`);
+    } catch (error) {
+      console.error('[Mastodon OAuth] Error:', error);
+      const redirectUrl = stateRecord.redirectUrl || '/channels/connect/error';
+      const separator = redirectUrl.includes('?') ? '&' : '?';
+      return res.redirect(
+        `${redirectUrl}${separator}error=oauth_failed&description=${encodeURIComponent(error.message || 'OAuth failed')}`,
+      );
+    }
+  }
+
+  /**
+   * Get Mastodon profile info
+   */
+  @Post('mastodon/me')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getMastodonProfile(
+    @Body() dto: { channelId: number },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'mastodon') {
+      throw new BadRequestException('Channel is not a Mastodon channel');
+    }
+
+    const metadata = channel.metadata as { instanceUrl?: string } | null;
+    if (!metadata?.instanceUrl) {
+      throw new BadRequestException('Channel is missing Mastodon instance URL');
+    }
+
+    return await this.mastodonService.verifyCredentials(
+      metadata.instanceUrl,
+      channel.accessToken!,
+    );
+  }
+
+  /**
+   * Get user's Mastodon posts
+   */
+  @Post('mastodon/posts')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getMastodonPosts(
+    @Body() dto: { channelId: number; limit?: number; maxId?: string },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'mastodon') {
+      throw new BadRequestException('Channel is not a Mastodon channel');
+    }
+
+    const metadata = channel.metadata as { instanceUrl?: string } | null;
+    if (!metadata?.instanceUrl) {
+      throw new BadRequestException('Channel is missing Mastodon instance URL');
+    }
+
+    return await this.mastodonService.getAccountStatuses(
+      metadata.instanceUrl,
+      channel.accessToken!,
+      channel.platformAccountId,
+      dto.limit || 20,
+      dto.maxId,
+    );
+  }
+
+  // ==========================================================================
+  // Mastodon Posting Endpoints
+  // ==========================================================================
+
+  /**
+   * Post a text status to Mastodon
+   */
+  @Post('mastodon/post/text')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postTextToMastodon(
+    @Body()
+    dto: {
+      channelId: number;
+      text: string;
+      visibility?: 'public' | 'unlisted' | 'private' | 'direct';
+      inReplyToId?: string;
+      sensitive?: boolean;
+      spoilerText?: string;
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'mastodon') {
+      throw new BadRequestException('Channel is not a Mastodon channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const metadata = channel.metadata as { instanceUrl?: string } | null;
+    if (!metadata?.instanceUrl) {
+      throw new BadRequestException('Channel is missing Mastodon instance URL');
+    }
+
+    const result = await this.mastodonService.createStatus(
+      metadata.instanceUrl,
+      channel.accessToken,
+      dto.text,
+      {
+        visibility: dto.visibility,
+        inReplyToId: dto.inReplyToId,
+        sensitive: dto.sensitive,
+        spoilerText: dto.spoilerText,
+      },
+    );
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postId: result.id,
+      postUrl: result.url,
+      message: 'Status posted successfully to Mastodon',
+    };
+  }
+
+  /**
+   * Post an image to Mastodon
+   */
+  @Post('mastodon/post/image')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postImageToMastodon(
+    @Body()
+    dto: {
+      channelId: number;
+      text: string;
+      imageUrls: string[];
+      altTexts?: string[];
+      visibility?: 'public' | 'unlisted' | 'private' | 'direct';
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'mastodon') {
+      throw new BadRequestException('Channel is not a Mastodon channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const metadata = channel.metadata as { instanceUrl?: string } | null;
+    if (!metadata?.instanceUrl) {
+      throw new BadRequestException('Channel is missing Mastodon instance URL');
+    }
+
+    if (!dto.imageUrls || dto.imageUrls.length === 0) {
+      throw new BadRequestException('At least one image URL is required');
+    }
+
+    if (dto.imageUrls.length > 4) {
+      throw new BadRequestException('Mastodon allows a maximum of 4 images per post');
+    }
+
+    const result = await this.mastodonService.createImagePost(
+      metadata.instanceUrl,
+      channel.accessToken,
+      dto.text,
+      dto.imageUrls,
+      dto.altTexts,
+      dto.visibility,
+    );
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postId: result.id,
+      postUrl: result.url,
+      message: 'Image post created successfully on Mastodon',
+    };
+  }
+
+  /**
+   * Post a video to Mastodon
+   */
+  @Post('mastodon/post/video')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postVideoToMastodon(
+    @Body()
+    dto: {
+      channelId: number;
+      text: string;
+      videoUrl: string;
+      description?: string;
+      visibility?: 'public' | 'unlisted' | 'private' | 'direct';
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'mastodon') {
+      throw new BadRequestException('Channel is not a Mastodon channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const metadata = channel.metadata as { instanceUrl?: string } | null;
+    if (!metadata?.instanceUrl) {
+      throw new BadRequestException('Channel is missing Mastodon instance URL');
+    }
+
+    const result = await this.mastodonService.createVideoPost(
+      metadata.instanceUrl,
+      channel.accessToken,
+      dto.text,
+      dto.videoUrl,
+      dto.description,
+      dto.visibility,
+    );
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postId: result.id,
+      postUrl: result.url,
+      message: 'Video post created successfully on Mastodon',
+    };
+  }
+
+  /**
+   * Delete a Mastodon post
+   */
+  @Delete('mastodon/post')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async deleteMastodonPost(
+    @Body()
+    dto: {
+      channelId: number;
+      postId: string;
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'mastodon') {
+      throw new BadRequestException('Channel is not a Mastodon channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const metadata = channel.metadata as { instanceUrl?: string } | null;
+    if (!metadata?.instanceUrl) {
+      throw new BadRequestException('Channel is missing Mastodon instance URL');
+    }
+
+    await this.mastodonService.deleteStatus(
+      metadata.instanceUrl,
+      channel.accessToken,
+      dto.postId,
+    );
+
+    return {
+      success: true,
+      message: 'Post deleted successfully from Mastodon',
+    };
+  }
+
+  /**
+   * Get Mastodon instance info
+   */
+  @Post('mastodon/instance')
+  @HttpCode(HttpStatus.OK)
+  async getMastodonInstanceInfo(
+    @Body() dto: { instanceUrl: string },
+  ) {
+    return await this.mastodonService.getInstanceInfo(dto.instanceUrl);
   }
 
   // ==========================================================================

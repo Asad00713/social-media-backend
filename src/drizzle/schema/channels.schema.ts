@@ -26,6 +26,7 @@ export const SUPPORTED_PLATFORMS = [
   'linkedin',
   'threads',
   'bluesky',
+  'mastodon',
   'google_drive',
   'google_photos',
   'google_calendar',
@@ -455,6 +456,16 @@ export const PLATFORM_CONFIG: Record<
     maxTextLength: 300,
     supportedMediaTypes: ['image', 'video'],
     oauthScopes: [], // Uses App Passwords, not OAuth
+  },
+  mastodon: {
+    name: 'Mastodon',
+    accountTypes: ['profile'],
+    supportsRefreshToken: false, // Mastodon tokens don't expire by default
+    tokenExpirationDays: null, // Tokens don't expire unless revoked
+    maxMediaPerPost: 4,
+    maxTextLength: 500, // Default, can vary by instance
+    supportedMediaTypes: ['image', 'video', 'gif'],
+    oauthScopes: ['read', 'write', 'follow'], // Standard Mastodon scopes
   },
   // Google services - these share the same OAuth app but different scopes
   google_drive: {
