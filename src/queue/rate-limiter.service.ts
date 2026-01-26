@@ -51,6 +51,11 @@ export const PLATFORM_RATE_LIMITS: Record<
     windowMs: 24 * 60 * 60 * 1000, // 24 hours
     description: '20 posts per 24 hours',
   },
+  bluesky: {
+    maxRequests: 100, // Bluesky has relatively generous rate limits
+    windowMs: 60 * 60 * 1000, // 1 hour
+    description: '100 posts per hour',
+  },
   google_drive: {
     maxRequests: 1000, // Google Drive has generous read limits
     windowMs: 60 * 60 * 1000, // 1 hour

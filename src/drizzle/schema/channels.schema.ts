@@ -25,6 +25,7 @@ export const SUPPORTED_PLATFORMS = [
   'twitter',
   'linkedin',
   'threads',
+  'bluesky',
   'google_drive',
   'google_photos',
   'google_calendar',
@@ -444,6 +445,16 @@ export const PLATFORM_CONFIG: Record<
     maxTextLength: 500,
     supportedMediaTypes: ['image', 'video'],
     oauthScopes: ['threads_basic', 'threads_content_publish'],
+  },
+  bluesky: {
+    name: 'Bluesky',
+    accountTypes: ['profile'],
+    supportsRefreshToken: true, // Uses session refresh
+    tokenExpirationDays: null, // Sessions can be refreshed indefinitely
+    maxMediaPerPost: 4,
+    maxTextLength: 300,
+    supportedMediaTypes: ['image', 'video'],
+    oauthScopes: [], // Uses App Passwords, not OAuth
   },
   // Google services - these share the same OAuth app but different scopes
   google_drive: {

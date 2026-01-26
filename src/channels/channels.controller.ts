@@ -26,6 +26,7 @@ import { TikTokService } from './services/tiktok.service';
 import { TwitterService } from './services/twitter.service';
 import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
+import { BlueskyService } from './services/bluesky.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
@@ -60,6 +61,7 @@ export class ChannelsController {
     private readonly twitterService: TwitterService,
     private readonly instagramService: InstagramService,
     private readonly threadsService: ThreadsService,
+    private readonly blueskyService: BlueskyService,
     private readonly googleDriveService: GoogleDriveService,
     private readonly googlePhotosService: GooglePhotosService,
     private readonly googleCalendarService: GoogleCalendarService,
@@ -2402,6 +2404,396 @@ export class ChannelsController {
     // Meta sends a signed_request with user info
     // TODO: Parse signed_request, find channel by platform account ID, mark as revoked
     return { success: true };
+  }
+
+  // ==========================================================================
+  // Bluesky Endpoints
+  // ==========================================================================
+
+  /**
+   * Connect Bluesky account using handle and app password
+   * Bluesky uses App Passwords instead of OAuth
+   */
+  @Post('workspaces/:workspaceId/bluesky/connect')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async connectBluesky(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+    @Body()
+    dto: {
+      identifier: string; // Handle (e.g., user.bsky.social) or email
+      appPassword: string; // App password from Bluesky settings
+    },
+  ) {
+    // Create session with Bluesky
+    const session = await this.blueskyService.createSession(
+      dto.identifier,
+      dto.appPassword,
+    );
+
+    // Get user profile
+    const profile = await this.blueskyService.getProfile(
+      session.accessJwt,
+      session.did,
+    );
+
+    // Create channel
+    const channel = await this.channelService.createChannel(
+      workspaceId,
+      user.userId,
+      {
+        platform: 'bluesky',
+        accountType: 'profile',
+        platformAccountId: session.did,
+        accountName: profile.displayName || profile.handle,
+        username: profile.handle,
+        profilePictureUrl: profile.avatar || undefined,
+        accessToken: session.accessJwt,
+        refreshToken: session.refreshJwt,
+        tokenExpiresAt: undefined, // Bluesky sessions don't have a fixed expiration
+        tokenScope: 'atproto',
+        metadata: {
+          did: session.did,
+          handle: profile.handle,
+          displayName: profile.displayName,
+          description: profile.description,
+          followersCount: profile.followersCount,
+          followsCount: profile.followsCount,
+          postsCount: profile.postsCount,
+        },
+        capabilities: {
+          canPost: true,
+          canSchedule: true,
+          canReadAnalytics: false,
+          canReply: true,
+          canDelete: true,
+          supportedMediaTypes: ['image', 'video'],
+          maxMediaPerPost: 4,
+          maxTextLength: 300,
+        },
+      },
+    );
+
+    return {
+      channel,
+      message: 'Bluesky account connected successfully',
+    };
+  }
+
+  /**
+   * Get Bluesky profile info
+   */
+  @Post('bluesky/me')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getBlueskyProfile(
+    @Body() dto: FetchPagesDto & { did: string },
+  ) {
+    return await this.blueskyService.getProfile(dto.accessToken, dto.did);
+  }
+
+  /**
+   * Get user's Bluesky posts
+   */
+  @Post('bluesky/posts')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getBlueskyPosts(
+    @Body() dto: FetchPagesDto & { actor: string; limit?: number; cursor?: string },
+  ) {
+    return await this.blueskyService.getAuthorFeed(
+      dto.accessToken,
+      dto.actor,
+      dto.limit || 25,
+      dto.cursor,
+    );
+  }
+
+  /**
+   * Refresh Bluesky session
+   */
+  @Post('bluesky/refresh')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async refreshBlueskySession(
+    @Body() dto: { channelId: number },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'bluesky') {
+      throw new BadRequestException('Channel is not a Bluesky channel');
+    }
+
+    const metadata = channel.metadata as { did?: string } | null;
+    if (!metadata?.did) {
+      throw new BadRequestException('Channel is missing Bluesky DID');
+    }
+
+    // Get refresh token from channel
+    if (!channel.refreshToken) {
+      throw new BadRequestException('No refresh token available. Please reconnect the account.');
+    }
+
+    const newSession = await this.blueskyService.refreshSession(channel.refreshToken);
+
+    // Update channel with new tokens
+    await this.channelService.updateChannelTokens(
+      dto.channelId,
+      newSession.accessJwt,
+      newSession.refreshJwt,
+    );
+
+    return {
+      success: true,
+      message: 'Bluesky session refreshed successfully',
+    };
+  }
+
+  // ==========================================================================
+  // Bluesky Posting Endpoints
+  // ==========================================================================
+
+  /**
+   * Post a text-only thread to Bluesky
+   */
+  @Post('bluesky/post/text')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postTextToBluesky(
+    @Body()
+    dto: {
+      channelId: number;
+      text: string;
+      replyTo?: { uri: string; cid: string };
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'bluesky') {
+      throw new BadRequestException('Channel is not a Bluesky channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const metadata = channel.metadata as { did?: string } | null;
+    if (!metadata?.did) {
+      throw new BadRequestException('Channel is missing Bluesky DID');
+    }
+
+    const result = await this.blueskyService.createTextPost(
+      channel.accessToken,
+      metadata.did,
+      dto.text,
+      dto.replyTo,
+    );
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postUri: result.uri,
+      postCid: result.cid,
+      message: 'Text post created successfully on Bluesky',
+    };
+  }
+
+  /**
+   * Post an image to Bluesky
+   */
+  @Post('bluesky/post/image')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postImageToBluesky(
+    @Body()
+    dto: {
+      channelId: number;
+      text: string;
+      imageUrls: string[];
+      altTexts?: string[];
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'bluesky') {
+      throw new BadRequestException('Channel is not a Bluesky channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const metadata = channel.metadata as { did?: string } | null;
+    if (!metadata?.did) {
+      throw new BadRequestException('Channel is missing Bluesky DID');
+    }
+
+    if (!dto.imageUrls || dto.imageUrls.length === 0) {
+      throw new BadRequestException('At least one image URL is required');
+    }
+
+    if (dto.imageUrls.length > 4) {
+      throw new BadRequestException('Bluesky allows a maximum of 4 images per post');
+    }
+
+    const result = await this.blueskyService.createImagePost(
+      channel.accessToken,
+      metadata.did,
+      dto.text,
+      dto.imageUrls,
+      dto.altTexts,
+    );
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postUri: result.uri,
+      postCid: result.cid,
+      message: 'Image post created successfully on Bluesky',
+    };
+  }
+
+  /**
+   * Post a video to Bluesky
+   */
+  @Post('bluesky/post/video')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postVideoToBluesky(
+    @Body()
+    dto: {
+      channelId: number;
+      text: string;
+      videoUrl: string;
+      altText?: string;
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'bluesky') {
+      throw new BadRequestException('Channel is not a Bluesky channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const metadata = channel.metadata as { did?: string } | null;
+    if (!metadata?.did) {
+      throw new BadRequestException('Channel is missing Bluesky DID');
+    }
+
+    const result = await this.blueskyService.createVideoPost(
+      channel.accessToken,
+      metadata.did,
+      dto.text,
+      dto.videoUrl,
+      dto.altText,
+    );
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postUri: result.uri,
+      postCid: result.cid,
+      message: 'Video post created successfully on Bluesky',
+    };
+  }
+
+  /**
+   * Post with a link card to Bluesky
+   */
+  @Post('bluesky/post/link')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postLinkToBluesky(
+    @Body()
+    dto: {
+      channelId: number;
+      text: string;
+      linkUrl: string;
+      linkTitle: string;
+      linkDescription?: string;
+      linkThumbUrl?: string;
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'bluesky') {
+      throw new BadRequestException('Channel is not a Bluesky channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const metadata = channel.metadata as { did?: string } | null;
+    if (!metadata?.did) {
+      throw new BadRequestException('Channel is missing Bluesky DID');
+    }
+
+    const result = await this.blueskyService.createLinkPost(
+      channel.accessToken,
+      metadata.did,
+      dto.text,
+      dto.linkUrl,
+      dto.linkTitle,
+      dto.linkDescription,
+      dto.linkThumbUrl,
+    );
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postUri: result.uri,
+      postCid: result.cid,
+      message: 'Link post created successfully on Bluesky',
+    };
+  }
+
+  /**
+   * Delete a Bluesky post
+   */
+  @Delete('bluesky/post')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async deleteBlueskyPost(
+    @Body()
+    dto: {
+      channelId: number;
+      postUri: string;
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'bluesky') {
+      throw new BadRequestException('Channel is not a Bluesky channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    const metadata = channel.metadata as { did?: string } | null;
+    if (!metadata?.did) {
+      throw new BadRequestException('Channel is missing Bluesky DID');
+    }
+
+    await this.blueskyService.deletePost(
+      channel.accessToken,
+      metadata.did,
+      dto.postUri,
+    );
+
+    return {
+      success: true,
+      message: 'Post deleted successfully from Bluesky',
+    };
   }
 
   // ==========================================================================

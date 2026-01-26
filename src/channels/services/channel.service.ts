@@ -207,6 +207,7 @@ export class ChannelService {
     platform: SupportedPlatform;
     platformAccountId: string;
     accessToken: string | null;
+    refreshToken: string | null;
     accountName: string;
     metadata: Record<string, any> | null;
   }> {
@@ -228,6 +229,7 @@ export class ChannelService {
       platform: ch.platform as SupportedPlatform,
       platformAccountId: ch.platformAccountId,
       accessToken: ch.accessToken ? decrypt(ch.accessToken) : null,
+      refreshToken: ch.refreshToken ? decrypt(ch.refreshToken) : null,
       accountName: ch.accountName,
       metadata: (ch.metadata as Record<string, any>) || null,
     };
@@ -243,6 +245,29 @@ export class ChannelService {
         lastPostedAt: new Date(),
         updatedAt: new Date(),
       })
+      .where(eq(socialMediaChannels.id, channelId));
+  }
+
+  /**
+   * Update channel tokens (internal use for token refresh)
+   */
+  async updateChannelTokens(
+    channelId: number,
+    accessToken: string,
+    refreshToken?: string,
+  ): Promise<void> {
+    const updateData: Partial<typeof socialMediaChannels.$inferInsert> = {
+      accessToken: encrypt(accessToken),
+      updatedAt: new Date(),
+    };
+
+    if (refreshToken) {
+      updateData.refreshToken = encrypt(refreshToken);
+    }
+
+    await db
+      .update(socialMediaChannels)
+      .set(updateData)
       .where(eq(socialMediaChannels.id, channelId));
   }
 

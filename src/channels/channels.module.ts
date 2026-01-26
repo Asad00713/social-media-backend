@@ -11,6 +11,7 @@ import { TikTokService } from './services/tiktok.service';
 import { TwitterService } from './services/twitter.service';
 import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
+import { BlueskyService } from './services/bluesky.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
@@ -32,6 +33,7 @@ import { DrizzleModule } from '../drizzle/drizzle.module';
     TwitterService,
     InstagramService,
     ThreadsService,
+    BlueskyService,
     GoogleDriveService,
     GooglePhotosService,
     GoogleCalendarService,
@@ -49,6 +51,7 @@ import { DrizzleModule } from '../drizzle/drizzle.module';
     TwitterService,
     InstagramService,
     ThreadsService,
+    BlueskyService,
     GoogleDriveService,
     GooglePhotosService,
     GoogleCalendarService,

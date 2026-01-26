@@ -145,6 +145,14 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
       token_access_type: 'offline', // Get refresh token
     },
   },
+  // Bluesky - uses App Passwords instead of OAuth
+  // Connection is handled via direct endpoint, not OAuth flow
+  bluesky: {
+    authorizationUrl: '', // Not used - Bluesky uses App Passwords
+    tokenUrl: '', // Not used - Bluesky uses App Passwords
+    scopes: [],
+    usePKCE: false,
+  },
 };
 
 @Injectable()
