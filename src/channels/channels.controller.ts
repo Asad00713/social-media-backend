@@ -841,7 +841,7 @@ export class ChannelsController {
   async connectPinterest(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() dto: FetchPagesDto,
+    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
   ) {
     // Get Pinterest user info
     const pinterestUser = await this.pinterestService.getCurrentUser(dto.accessToken);
@@ -858,6 +858,8 @@ export class ChannelsController {
         username: pinterestUser.username,
         profilePictureUrl: pinterestUser.profileImage || undefined,
         accessToken: dto.accessToken,
+        refreshToken: dto.refreshToken,
+        tokenExpiresAt: dto.tokenExpiresAt,
         permissions: PLATFORM_CONFIG.pinterest.oauthScopes,
         capabilities: {
           canPost: true,
@@ -984,7 +986,7 @@ export class ChannelsController {
   async connectYouTube(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() dto: FetchPagesDto,
+    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
   ) {
     // Get YouTube channel info
     const youtubeChannel = await this.youtubeService.getCurrentChannel(dto.accessToken);
@@ -1001,6 +1003,8 @@ export class ChannelsController {
         username: youtubeChannel.customUrl || undefined,
         profilePictureUrl: youtubeChannel.thumbnailUrl || undefined,
         accessToken: dto.accessToken,
+        refreshToken: dto.refreshToken,
+        tokenExpiresAt: dto.tokenExpiresAt,
         permissions: PLATFORM_CONFIG.youtube.oauthScopes,
         capabilities: {
           canPost: true,
@@ -1134,7 +1138,7 @@ export class ChannelsController {
   async connectLinkedIn(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() dto: FetchPagesDto,
+    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
   ) {
     // Get LinkedIn profile info
     const linkedinProfile = await this.linkedinService.getCurrentUser(dto.accessToken);
@@ -1151,6 +1155,8 @@ export class ChannelsController {
         username: linkedinProfile.vanityName || undefined,
         profilePictureUrl: linkedinProfile.profilePictureUrl || undefined,
         accessToken: dto.accessToken,
+        refreshToken: dto.refreshToken,
+        tokenExpiresAt: dto.tokenExpiresAt,
         permissions: PLATFORM_CONFIG.linkedin.oauthScopes,
         capabilities: {
           canPost: true,
@@ -1324,7 +1330,7 @@ export class ChannelsController {
   async connectTikTok(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() dto: FetchPagesDto,
+    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
   ) {
     // Get TikTok profile info
     const tiktokUser = await this.tiktokService.getCurrentUser(dto.accessToken);
@@ -1341,6 +1347,8 @@ export class ChannelsController {
         username: tiktokUser.username || undefined,
         profilePictureUrl: tiktokUser.avatarUrl || undefined,
         accessToken: dto.accessToken,
+        refreshToken: dto.refreshToken,
+        tokenExpiresAt: dto.tokenExpiresAt,
         permissions: PLATFORM_CONFIG.tiktok.oauthScopes,
         capabilities: {
           canPost: true,
