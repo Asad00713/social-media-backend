@@ -1505,6 +1505,9 @@ export class ChannelsController {
 
     let result: { publishId: string };
 
+    // Convert thumbnailTime (seconds) to videoCoverTimestampMs if provided
+    const videoCoverTimestampMs = dto.videoCoverTimestampMs || (dto.thumbnailTime ? dto.thumbnailTime * 1000 : undefined);
+
     if (dto.useDirectUpload) {
       // Download and upload directly to TikTok (more reliable but slower)
       result = await this.tiktokService.uploadVideoFromUrl(
@@ -1516,7 +1519,9 @@ export class ChannelsController {
           disableDuet: dto.disableDuet,
           disableStitch: dto.disableStitch,
           disableComment: dto.disableComment,
-          videoCoverTimestampMs: dto.videoCoverTimestampMs,
+          videoCoverTimestampMs,
+          brandOrganicToggle: dto.brandOrganicToggle,
+          brandContentToggle: dto.brandContentToggle,
         },
       );
     } else {
@@ -1530,7 +1535,9 @@ export class ChannelsController {
           disableDuet: dto.disableDuet,
           disableStitch: dto.disableStitch,
           disableComment: dto.disableComment,
-          videoCoverTimestampMs: dto.videoCoverTimestampMs,
+          videoCoverTimestampMs,
+          brandOrganicToggle: dto.brandOrganicToggle,
+          brandContentToggle: dto.brandContentToggle,
         },
       );
     }

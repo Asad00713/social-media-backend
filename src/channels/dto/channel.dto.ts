@@ -475,6 +475,18 @@ export class PostTikTokVideoDto {
   @IsOptional()
   videoCoverTimestampMs?: number;
 
+  @IsNumber()
+  @IsOptional()
+  thumbnailTime?: number; // Alias for videoCoverTimestampMs (in seconds)
+
+  @IsBoolean()
+  @IsOptional()
+  brandOrganicToggle?: boolean; // "Your Brand" - promotes yourself (Brand Organic)
+
+  @IsBoolean()
+  @IsOptional()
+  brandContentToggle?: boolean; // "Branded Content" - paid partnership
+
   @IsBoolean()
   @IsOptional()
   useDirectUpload?: boolean;
