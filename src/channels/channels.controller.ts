@@ -417,6 +417,62 @@ export class ChannelsController {
         }
       }
 
+      // TikTok: Auto-create channel to ensure refresh token is saved
+      if (platform === 'tiktok') {
+        try {
+          console.log('[OAuth Callback] TikTok: Auto-creating channel...');
+          console.log(`[OAuth Callback] TikTok tokens - accessToken: ${tokens.accessToken ? 'YES' : 'NO'}, refreshToken: ${tokens.refreshToken ? 'YES' : 'NO'}, expiresIn: ${tokens.expiresIn}`);
+
+          // Get TikTok user profile
+          const tiktokUser = await this.tiktokService.getCurrentUser(tokens.accessToken);
+
+          // Create the TikTok channel automatically
+          const channel = await this.channelService.createChannel(
+            stateData.workspaceId,
+            stateData.userId,
+            {
+              platform: 'tiktok',
+              accountType: 'business_account',
+              platformAccountId: tiktokUser.id,
+              accountName: tiktokUser.displayName || tiktokUser.username,
+              username: tiktokUser.username || undefined,
+              profilePictureUrl: tiktokUser.avatarUrl || undefined,
+              accessToken: tokens.accessToken,
+              refreshToken: tokens.refreshToken || undefined,
+              tokenExpiresAt: tokenExpiresAt?.toISOString(),
+              permissions: PLATFORM_CONFIG.tiktok.oauthScopes,
+              capabilities: {
+                canPost: true,
+                canSchedule: true,
+                canReadAnalytics: true,
+                canReply: false,
+                canDelete: false,
+                supportedMediaTypes: ['video'],
+                maxMediaPerPost: 1,
+                maxTextLength: 2200,
+              },
+              metadata: {
+                followerCount: tiktokUser.followerCount,
+                followingCount: tiktokUser.followingCount,
+                likesCount: tiktokUser.likesCount,
+                videoCount: tiktokUser.videoCount,
+                isVerified: tiktokUser.isVerified,
+              },
+            },
+          );
+
+          console.log(`[OAuth Callback] TikTok channel created: ${channel.id}`);
+
+          // Redirect to frontend success page
+          const successUrl = `${frontendUrl}/channels/connect/success?platform=tiktok&channelId=${channel.id}`;
+          return res.redirect(successUrl);
+        } catch (tiktokError) {
+          console.error('[OAuth Callback] TikTok setup failed:', tiktokError);
+          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('TikTok setup failed: ' + (tiktokError instanceof Error ? tiktokError.message : 'Unknown error'))}`;
+          return res.redirect(errorUrl);
+        }
+      }
+
       // Default flow for other platforms: Redirect to frontend with success and tokens
       // Frontend will fetch account info and complete the channel creation
       const successUrl = new URL(`${frontendUrl}/channels/connect/success`);
