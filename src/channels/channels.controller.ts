@@ -1435,34 +1435,54 @@ export class ChannelsController {
   /**
    * Get TikTok profile info
    */
-  @Post('tiktok/me')
+  @Post('workspaces/:workspaceId/:channelId/tiktok/me')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getTikTokProfile(@Body() dto: FetchPagesDto) {
-    return await this.tiktokService.getCurrentUser(dto.accessToken);
+  async getTikTokProfile(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+  ) {
+    const accessToken = await this.channelService.getAccessToken(
+      parseInt(channelId, 10),
+      workspaceId,
+    );
+    return await this.tiktokService.getCurrentUser(accessToken);
   }
 
   /**
    * Get TikTok videos
    */
-  @Post('tiktok/videos')
+  @Post('workspaces/:workspaceId/:channelId/tiktok/videos')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async getTikTokVideos(
-    @Body() dto: FetchPagesDto,
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
     @Query('cursor') cursor?: string,
   ) {
-    return await this.tiktokService.getUserVideos(dto.accessToken, 20, cursor);
+    const accessToken = await this.channelService.getAccessToken(
+      parseInt(channelId, 10),
+      workspaceId,
+    );
+    return await this.tiktokService.getUserVideos(accessToken, 20, cursor);
   }
 
   /**
    * Get TikTok creator info (posting options available for the user)
+   * Uses channelId to automatically decrypt and use the stored access token
    */
-  @Post('tiktok/creator-info')
+  @Post('workspaces/:workspaceId/:channelId/tiktok/creator-info')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getTikTokCreatorInfo(@Body() dto: FetchPagesDto) {
-    return await this.tiktokService.queryCreatorInfo(dto.accessToken);
+  async getTikTokCreatorInfo(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+  ) {
+    const accessToken = await this.channelService.getAccessToken(
+      parseInt(channelId, 10),
+      workspaceId,
+    );
+    return await this.tiktokService.queryCreatorInfo(accessToken);
   }
 
   /**
