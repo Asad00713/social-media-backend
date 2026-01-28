@@ -33,6 +33,7 @@ import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
 import { OneDriveService } from './services/onedrive.service';
 import { DropboxService } from './services/dropbox.service';
+import { UnsplashService } from './services/unsplash.service';
 import {
   InitiateOAuthDto,
   CreateChannelDto,
@@ -72,6 +73,7 @@ export class ChannelsController {
     private readonly googleCalendarService: GoogleCalendarService,
     private readonly oneDriveService: OneDriveService,
     private readonly dropboxService: DropboxService,
+    private readonly unsplashService: UnsplashService,
   ) {}
 
   // ==========================================================================
@@ -4242,5 +4244,95 @@ export class ChannelsController {
   async verifyDropboxAccess(@Body() dto: FetchPagesDto) {
     const hasAccess = await this.dropboxService.verifyAccess(dto.accessToken);
     return { hasAccess };
+  }
+
+  // ==========================================================================
+  // Unsplash Image Search Endpoints
+  // ==========================================================================
+
+  /**
+   * Search for photos on Unsplash
+   */
+  @Get('unsplash/search')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async searchUnsplashPhotos(
+    @Query('query') query: string,
+    @Query('page') page?: string,
+    @Query('perPage') perPage?: string,
+    @Query('orientation') orientation?: 'landscape' | 'portrait' | 'squarish',
+    @Query('color') color?: string,
+  ) {
+    if (!query) {
+      throw new BadRequestException('Query parameter is required');
+    }
+    return await this.unsplashService.searchPhotos(
+      query,
+      page ? parseInt(page, 10) : 1,
+      perPage ? parseInt(perPage, 10) : 20,
+      orientation,
+      color,
+    );
+  }
+
+  /**
+   * Get random photos from Unsplash
+   */
+  @Get('unsplash/random')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getRandomUnsplashPhotos(
+    @Query('query') query?: string,
+    @Query('orientation') orientation?: 'landscape' | 'portrait' | 'squarish',
+    @Query('count') count?: string,
+  ) {
+    return await this.unsplashService.getRandomPhoto(
+      query,
+      orientation,
+      count ? parseInt(count, 10) : 1,
+    );
+  }
+
+  /**
+   * Get curated/popular photos from Unsplash
+   */
+  @Get('unsplash/curated')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getCuratedUnsplashPhotos(
+    @Query('page') page?: string,
+    @Query('perPage') perPage?: string,
+  ) {
+    return await this.unsplashService.getCuratedPhotos(
+      page ? parseInt(page, 10) : 1,
+      perPage ? parseInt(perPage, 10) : 20,
+    );
+  }
+
+  /**
+   * Get a specific photo by ID
+   */
+  @Get('unsplash/photos/:photoId')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getUnsplashPhoto(@Param('photoId') photoId: string) {
+    return await this.unsplashService.getPhoto(photoId);
+  }
+
+  /**
+   * Track a photo download (required by Unsplash API guidelines)
+   * Call this when a user selects/downloads a photo
+   */
+  @Post('unsplash/download')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async trackUnsplashDownload(
+    @Body() dto: { downloadLocation: string },
+  ) {
+    if (!dto.downloadLocation) {
+      throw new BadRequestException('downloadLocation is required');
+    }
+    await this.unsplashService.trackDownload(dto.downloadLocation);
+    return { success: true, message: 'Download tracked successfully' };
   }
 }

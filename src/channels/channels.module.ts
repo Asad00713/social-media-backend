@@ -18,6 +18,7 @@ import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
 import { OneDriveService } from './services/onedrive.service';
 import { DropboxService } from './services/dropbox.service';
+import { UnsplashService } from './services/unsplash.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 
 @Module({
@@ -41,6 +42,7 @@ import { DrizzleModule } from '../drizzle/drizzle.module';
     GoogleCalendarService,
     OneDriveService,
     DropboxService,
+    UnsplashService,
   ],
   exports: [
     ChannelService,
@@ -60,6 +62,7 @@ import { DrizzleModule } from '../drizzle/drizzle.module';
     GoogleCalendarService,
     OneDriveService,
     DropboxService,
+    UnsplashService,
   ],
 })
 export class ChannelsModule {}
