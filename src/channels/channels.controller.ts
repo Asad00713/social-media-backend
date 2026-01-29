@@ -2215,6 +2215,114 @@ export class ChannelsController {
   }
 
   /**
+   * Post a story to Instagram (image or video)
+   * Stories expire after 24 hours. Captions are not supported.
+   * Only available for Instagram Business accounts.
+   */
+  @Post('instagram/story')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postStoryToInstagram(
+    @Body()
+    dto: {
+      channelId: number;
+      mediaUrl: string;
+      mediaType: 'IMAGE' | 'VIDEO';
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'instagram') {
+      throw new BadRequestException('Channel is not an Instagram channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    // Check if this is an Instagram Business Login channel
+    const isInstagramBusinessLogin = (channel.metadata as any)?.tokenType === 'instagram_business_login';
+
+    let result: { postId: string };
+
+    if (isInstagramBusinessLogin) {
+      // Use Instagram Graph API (graph.instagram.com)
+      result = await this.instagramService.createStoryPostWithUserToken(
+        channel.platformAccountId,
+        channel.accessToken,
+        dto.mediaUrl,
+        dto.mediaType,
+      );
+    } else {
+      // Use Facebook Graph API (graph.facebook.com) for Page-linked accounts
+      result = await this.instagramService.createStoryPost(
+        channel.platformAccountId,
+        channel.accessToken,
+        dto.mediaUrl,
+        dto.mediaType,
+      );
+    }
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postId: result.postId,
+      message: 'Story posted to Instagram successfully',
+    };
+  }
+
+  /**
+   * Post a story to a Facebook Page (image or video)
+   * Stories expire after 24 hours.
+   */
+  @Post('facebook/story')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async postStoryToFacebook(
+    @Body()
+    dto: {
+      channelId: number;
+      mediaUrl: string;
+      mediaType: 'IMAGE' | 'VIDEO';
+    },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'facebook') {
+      throw new BadRequestException('Channel is not a Facebook channel');
+    }
+
+    if (!channel.accessToken) {
+      throw new BadRequestException('Channel has no access token');
+    }
+
+    let result: { postId: string };
+
+    if (dto.mediaType === 'IMAGE') {
+      result = await this.facebookService.postPhotoStoryToPage(
+        channel.platformAccountId,
+        channel.accessToken,
+        dto.mediaUrl,
+      );
+    } else {
+      result = await this.facebookService.postVideoStoryToPage(
+        channel.platformAccountId,
+        channel.accessToken,
+        dto.mediaUrl,
+      );
+    }
+
+    await this.channelService.updateLastPostedAt(dto.channelId);
+
+    return {
+      success: true,
+      postId: result.postId,
+      message: 'Story posted to Facebook successfully',
+    };
+  }
+
+  /**
    * Instagram deauthorization webhook
    * Called by Meta when user revokes app access
    * This endpoint is PUBLIC (no auth) as Meta calls it directly

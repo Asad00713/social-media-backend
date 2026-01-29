@@ -329,6 +329,161 @@ export class FacebookService {
   }
 
   /**
+   * Post a photo story to a Facebook Page
+   * Photo stories use a two-step process:
+   * 1. Upload photo as unpublished
+   * 2. Create photo story with the photo_id
+   */
+  async postPhotoStoryToPage(
+    pageId: string,
+    pageAccessToken: string,
+    imageUrl: string,
+  ): Promise<{ postId: string }> {
+    this.logger.log(`Creating Facebook photo story for page ${pageId}`);
+
+    // Step 1: Upload photo as unpublished
+    const photoUrl = new URL(`${this.graphApiUrl}/${pageId}/photos`);
+
+    const photoBody: Record<string, string> = {
+      access_token: pageAccessToken,
+      url: imageUrl,
+      published: 'false',
+    };
+
+    const photoResponse = await fetch(photoUrl.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(photoBody),
+    });
+
+    if (!photoResponse.ok) {
+      const error = await photoResponse.json();
+      this.logger.error('Failed to upload unpublished photo for story:', error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to upload photo for story',
+      );
+    }
+
+    const photoData = await photoResponse.json();
+    const photoId = photoData.id;
+    this.logger.log(`Unpublished photo created: ${photoId}`);
+
+    // Step 2: Create photo story
+    const storyUrl = new URL(`${this.graphApiUrl}/${pageId}/photo_stories`);
+
+    const storyBody: Record<string, string> = {
+      access_token: pageAccessToken,
+      photo_id: photoId,
+    };
+
+    const storyResponse = await fetch(storyUrl.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(storyBody),
+    });
+
+    if (!storyResponse.ok) {
+      const error = await storyResponse.json();
+      this.logger.error('Failed to create Facebook photo story:', error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to create Facebook photo story',
+      );
+    }
+
+    const storyData = await storyResponse.json();
+    this.logger.log(`Facebook photo story published: ${storyData.post_id || storyData.id}`);
+    return { postId: storyData.post_id || storyData.id };
+  }
+
+  /**
+   * Post a video story to a Facebook Page
+   * Video stories use a three-step process:
+   * 1. Start upload to get video_id and upload_url
+   * 2. Upload the video binary via the upload_url
+   * 3. Finish and publish the video story
+   */
+  async postVideoStoryToPage(
+    pageId: string,
+    pageAccessToken: string,
+    videoUrl: string,
+  ): Promise<{ postId: string }> {
+    this.logger.log(`Creating Facebook video story for page ${pageId}`);
+
+    // Step 1: Start the upload
+    const startUrl = new URL(`${this.graphApiUrl}/${pageId}/video_stories`);
+
+    const startBody: Record<string, string> = {
+      access_token: pageAccessToken,
+      upload_phase: 'start',
+    };
+
+    const startResponse = await fetch(startUrl.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(startBody),
+    });
+
+    if (!startResponse.ok) {
+      const error = await startResponse.json();
+      this.logger.error('Failed to start video story upload:', error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to start video story upload',
+      );
+    }
+
+    const startData = await startResponse.json();
+    const videoId = startData.video_id;
+    const uploadUrl = startData.upload_url;
+    this.logger.log(`Video story upload started, video_id: ${videoId}`);
+
+    // Step 2: Upload the video binary
+    const uploadResponse = await fetch(uploadUrl, {
+      method: 'POST',
+      headers: {
+        Authorization: `OAuth ${pageAccessToken}`,
+        file_url: videoUrl,
+      },
+    });
+
+    if (!uploadResponse.ok) {
+      const error = await uploadResponse.json();
+      this.logger.error('Failed to upload video for story:', error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to upload video for story',
+      );
+    }
+
+    this.logger.log('Video uploaded successfully, finishing story...');
+
+    // Step 3: Finish and publish
+    const finishUrl = new URL(`${this.graphApiUrl}/${pageId}/video_stories`);
+
+    const finishBody: Record<string, string> = {
+      access_token: pageAccessToken,
+      upload_phase: 'finish',
+      video_id: videoId,
+    };
+
+    const finishResponse = await fetch(finishUrl.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(finishBody),
+    });
+
+    if (!finishResponse.ok) {
+      const error = await finishResponse.json();
+      this.logger.error('Failed to finish video story:', error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to publish video story',
+      );
+    }
+
+    const finishData = await finishResponse.json();
+    this.logger.log(`Facebook video story published: ${finishData.post_id || finishData.id}`);
+    return { postId: finishData.post_id || finishData.id };
+  }
+
+  /**
    * Post to Instagram Business Account (via Facebook Graph API)
    */
   async postToInstagram(
