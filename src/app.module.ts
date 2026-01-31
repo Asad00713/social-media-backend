@@ -21,6 +21,7 @@ import { PexelsModule } from './pexels/pexels.module';
 import { CanvaModule } from './canva/canva.module';
 import { MediaLibraryModule } from './media-library/media-library.module';
 import { AdminModule } from './admin/admin.module';
+import { CommunityModule } from './community/community.module';
 import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
@@ -48,6 +49,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     PexelsModule,
     CanvaModule,
     AdminModule,
+    CommunityModule,
   ],
   controllers: [AppController],
   providers: [AppService],

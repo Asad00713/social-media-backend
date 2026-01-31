@@ -39,6 +39,18 @@ export interface Tweet {
   };
 }
 
+export interface TweetWithAuthor extends Tweet {
+  authorId: string;
+  conversationId?: string;
+  inReplyToUserId?: string;
+  author?: {
+    id: string;
+    name: string;
+    username: string;
+    profileImageUrl: string | null;
+  };
+}
+
 @Injectable()
 export class TwitterService {
   private readonly logger = new Logger(TwitterService.name);
@@ -120,6 +132,10 @@ export class TwitterService {
       replyToTweetId?: string;
       quoteTweetId?: string;
       mediaIds?: string[];
+      poll?: {
+        options: string[];
+        durationMinutes: number;
+      };
     },
   ): Promise<Tweet> {
     const body: Record<string, any> = { text };
@@ -134,6 +150,13 @@ export class TwitterService {
 
     if (options?.mediaIds && options.mediaIds.length > 0) {
       body.media = { media_ids: options.mediaIds };
+    }
+
+    if (options?.poll) {
+      body.poll = {
+        options: options.poll.options,
+        duration_minutes: options.poll.durationMinutes,
+      };
     }
 
     const response = await fetch(`${this.apiBaseUrl}/tweets`, {
@@ -210,7 +233,7 @@ export class TwitterService {
     url.searchParams.set('max_results', Math.min(maxResults, 100).toString());
     url.searchParams.set(
       'tweet.fields',
-      'id,text,created_at,public_metrics',
+      'id,text,created_at,public_metrics,conversation_id,in_reply_to_user_id',
     );
 
     if (paginationToken) {
@@ -240,6 +263,8 @@ export class TwitterService {
         id: tweet.id,
         text: tweet.text,
         createdAt: tweet.created_at,
+        conversationId: tweet.conversation_id || null,
+        inReplyToUserId: tweet.in_reply_to_user_id || null,
         publicMetrics: tweet.public_metrics
           ? {
               retweetCount: tweet.public_metrics.retweet_count || 0,
@@ -252,6 +277,313 @@ export class TwitterService {
           : undefined,
       })),
       nextToken: data.meta?.next_token,
+    };
+  }
+
+  /**
+   * Get the owner's replies to a specific conversation (post).
+   * Fetches recent tweets from the user and filters those that belong
+   * to the given conversation (i.e., replies the owner made on that post).
+   * Works on Free tier since it uses /2/users/:id/tweets.
+   */
+  async getOwnerRepliesForConversation(
+    accessToken: string,
+    userId: string,
+    conversationId: string,
+    maxResults: number = 100,
+  ): Promise<TweetWithAuthor[]> {
+    const url = new URL(`${this.apiBaseUrl}/users/${userId}/tweets`);
+    url.searchParams.set('max_results', Math.min(maxResults, 100).toString());
+    url.searchParams.set(
+      'tweet.fields',
+      'id,text,created_at,public_metrics,conversation_id,in_reply_to_user_id,author_id',
+    );
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(`Failed to get owner replies: ${errorData}`);
+
+      if (response.status === 401) {
+        throw new BadRequestException(
+          'Unauthorized: Twitter access token is expired or invalid.',
+        );
+      }
+
+      if (response.status === 429) {
+        const resetTime = response.headers.get('x-rate-limit-reset');
+        const retryAfter = resetTime
+          ? Math.ceil((parseInt(resetTime) * 1000 - Date.now()) / 60000)
+          : 15;
+        throw new BadRequestException(
+          `Twitter rate limit exceeded. Please try again in ${retryAfter} minute(s).`,
+        );
+      }
+
+      throw new BadRequestException('Failed to fetch owner replies');
+    }
+
+    const data = await response.json();
+
+    if (data.errors) {
+      throw new BadRequestException(data.errors[0]?.message || 'Twitter API error');
+    }
+
+    // Filter tweets that belong to this conversation and are replies (not the root tweet)
+    const allTweets: any[] = data.data || [];
+    const replies = allTweets.filter(
+      (tweet: any) =>
+        tweet.conversation_id === conversationId &&
+        tweet.id !== conversationId && // exclude the root tweet itself
+        tweet.in_reply_to_user_id, // must be a reply
+    );
+
+    return replies.map((tweet: any) => ({
+      id: tweet.id,
+      text: tweet.text,
+      createdAt: tweet.created_at,
+      authorId: tweet.author_id || userId,
+      conversationId: tweet.conversation_id,
+      inReplyToUserId: tweet.in_reply_to_user_id,
+      publicMetrics: tweet.public_metrics
+        ? {
+            retweetCount: tweet.public_metrics.retweet_count || 0,
+            replyCount: tweet.public_metrics.reply_count || 0,
+            likeCount: tweet.public_metrics.like_count || 0,
+            quoteCount: tweet.public_metrics.quote_count || 0,
+            bookmarkCount: tweet.public_metrics.bookmark_count || 0,
+            impressionCount: tweet.public_metrics.impression_count || 0,
+          }
+        : undefined,
+    }));
+  }
+
+  /**
+   * Get tweets mentioning the authenticated user
+   * Uses GET /2/users/:id/mentions
+   * Free tier: 450 req/15min (app), 180 req/15min (user)
+   */
+  async getUserMentions(
+    accessToken: string,
+    userId: string,
+    maxResults: number = 10,
+    paginationToken?: string,
+    sinceId?: string,
+  ): Promise<{
+    tweets: TweetWithAuthor[];
+    nextToken?: string;
+    newestId?: string;
+    oldestId?: string;
+  }> {
+    const url = new URL(`${this.apiBaseUrl}/users/${userId}/mentions`);
+    url.searchParams.set('max_results', Math.min(maxResults, 100).toString());
+    url.searchParams.set(
+      'tweet.fields',
+      'id,text,created_at,public_metrics,author_id,conversation_id,in_reply_to_user_id',
+    );
+    url.searchParams.set('expansions', 'author_id');
+    url.searchParams.set(
+      'user.fields',
+      'id,name,username,profile_image_url',
+    );
+
+    if (paginationToken) {
+      url.searchParams.set('pagination_token', paginationToken);
+    }
+
+    if (sinceId) {
+      url.searchParams.set('since_id', sinceId);
+    }
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(`Failed to get user mentions: ${errorData}`);
+
+      if (response.status === 401) {
+        throw new BadRequestException(
+          'Unauthorized: Twitter access token is expired or invalid.',
+        );
+      }
+
+      if (response.status === 429) {
+        const resetTime = response.headers.get('x-rate-limit-reset');
+        const retryAfter = resetTime
+          ? Math.ceil((parseInt(resetTime) * 1000 - Date.now()) / 60000)
+          : 15;
+        throw new BadRequestException(
+          `Twitter rate limit exceeded. Please try again in ${retryAfter} minute(s).`,
+        );
+      }
+
+      throw new BadRequestException('Failed to fetch mentions');
+    }
+
+    const data = await response.json();
+
+    if (data.errors) {
+      throw new BadRequestException(data.errors[0]?.message || 'Twitter API error');
+    }
+
+    // Build author lookup map from includes
+    const authorMap = new Map<string, { id: string; name: string; username: string; profileImageUrl: string | null }>();
+    if (data.includes?.users) {
+      for (const user of data.includes.users) {
+        authorMap.set(user.id, {
+          id: user.id,
+          name: user.name,
+          username: user.username,
+          profileImageUrl: user.profile_image_url || null,
+        });
+      }
+    }
+
+    return {
+      tweets: (data.data || []).map((tweet: any) => ({
+        id: tweet.id,
+        text: tweet.text,
+        createdAt: tweet.created_at,
+        authorId: tweet.author_id,
+        conversationId: tweet.conversation_id,
+        inReplyToUserId: tweet.in_reply_to_user_id,
+        author: authorMap.get(tweet.author_id) || undefined,
+        publicMetrics: tweet.public_metrics
+          ? {
+              retweetCount: tweet.public_metrics.retweet_count || 0,
+              replyCount: tweet.public_metrics.reply_count || 0,
+              likeCount: tweet.public_metrics.like_count || 0,
+              quoteCount: tweet.public_metrics.quote_count || 0,
+              bookmarkCount: tweet.public_metrics.bookmark_count || 0,
+              impressionCount: tweet.public_metrics.impression_count || 0,
+            }
+          : undefined,
+      })),
+      nextToken: data.meta?.next_token,
+      newestId: data.meta?.newest_id,
+      oldestId: data.meta?.oldest_id,
+    };
+  }
+
+  /**
+   * Get all replies in a conversation thread
+   * Uses GET /2/tweets/search/recent with conversation_id query
+   * Free tier: 450 req/15min (app), 180 req/15min (user)
+   * Note: Only covers last 7 days
+   */
+  async getConversationReplies(
+    accessToken: string,
+    conversationId: string,
+    maxResults: number = 10,
+    paginationToken?: string,
+    sinceId?: string,
+  ): Promise<{
+    tweets: TweetWithAuthor[];
+    nextToken?: string;
+    newestId?: string;
+    oldestId?: string;
+  }> {
+    const url = new URL(`${this.apiBaseUrl}/tweets/search/recent`);
+    url.searchParams.set('query', `conversation_id:${conversationId}`);
+    url.searchParams.set('max_results', Math.min(maxResults, 100).toString());
+    url.searchParams.set(
+      'tweet.fields',
+      'id,text,created_at,public_metrics,author_id,conversation_id,in_reply_to_user_id',
+    );
+    url.searchParams.set('expansions', 'author_id');
+    url.searchParams.set(
+      'user.fields',
+      'id,name,username,profile_image_url',
+    );
+
+    if (paginationToken) {
+      url.searchParams.set('next_token', paginationToken);
+    }
+
+    if (sinceId) {
+      url.searchParams.set('since_id', sinceId);
+    }
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(`Failed to get conversation replies: ${errorData}`);
+
+      if (response.status === 401) {
+        throw new BadRequestException(
+          'Twitter access token is expired or invalid. Please reconnect your Twitter account.',
+        );
+      }
+
+      if (response.status === 429) {
+        const resetTime = response.headers.get('x-rate-limit-reset');
+        const retryAfter = resetTime
+          ? Math.ceil((parseInt(resetTime) * 1000 - Date.now()) / 60000)
+          : 15;
+        throw new BadRequestException(
+          `Twitter rate limit exceeded. Please try again in ${retryAfter} minute(s).`,
+        );
+      }
+
+      throw new BadRequestException('Failed to fetch conversation replies');
+    }
+
+    const data = await response.json();
+
+    if (data.errors) {
+      throw new BadRequestException(data.errors[0]?.message || 'Twitter API error');
+    }
+
+    // Build author lookup map from includes
+    const authorMap = new Map<string, { id: string; name: string; username: string; profileImageUrl: string | null }>();
+    if (data.includes?.users) {
+      for (const user of data.includes.users) {
+        authorMap.set(user.id, {
+          id: user.id,
+          name: user.name,
+          username: user.username,
+          profileImageUrl: user.profile_image_url || null,
+        });
+      }
+    }
+
+    return {
+      tweets: (data.data || []).map((tweet: any) => ({
+        id: tweet.id,
+        text: tweet.text,
+        createdAt: tweet.created_at,
+        authorId: tweet.author_id,
+        conversationId: tweet.conversation_id,
+        inReplyToUserId: tweet.in_reply_to_user_id,
+        author: authorMap.get(tweet.author_id) || undefined,
+        publicMetrics: tweet.public_metrics
+          ? {
+              retweetCount: tweet.public_metrics.retweet_count || 0,
+              replyCount: tweet.public_metrics.reply_count || 0,
+              likeCount: tweet.public_metrics.like_count || 0,
+              quoteCount: tweet.public_metrics.quote_count || 0,
+              bookmarkCount: tweet.public_metrics.bookmark_count || 0,
+              impressionCount: tweet.public_metrics.impression_count || 0,
+            }
+          : undefined,
+      })),
+      nextToken: data.meta?.next_token,
+      newestId: data.meta?.newest_id,
+      oldestId: data.meta?.oldest_id,
     };
   }
 
