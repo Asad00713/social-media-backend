@@ -16,7 +16,7 @@ export class TwitterPublisher extends BasePublisher {
   }
 
   validate(options: PublishOptions): void {
-    const { content, mediaItems } = options;
+    const { content, mediaItems, metadata } = options;
 
     // Twitter allows text-only posts
     if (!content && mediaItems.length === 0) {
@@ -31,6 +31,26 @@ export class TwitterPublisher extends BasePublisher {
     // Check media limit
     if (mediaItems.length > 4) {
       throw new Error('Twitter allows maximum 4 media items per post');
+    }
+
+    // Poll validation
+    const poll = metadata?.poll;
+    if (poll) {
+      if (mediaItems.length > 0) {
+        throw new Error('Twitter polls cannot be combined with media');
+      }
+      if (!Array.isArray(poll.options) || poll.options.length < 2 || poll.options.length > 4) {
+        throw new Error('Twitter polls must have 2-4 options');
+      }
+      for (const option of poll.options) {
+        if (typeof option !== 'string' || option.length < 1 || option.length > 25) {
+          throw new Error('Each poll option must be 1-25 characters');
+        }
+      }
+      const duration = poll.durationMinutes;
+      if (typeof duration !== 'number' || duration < 5 || duration > 10080) {
+        throw new Error('Poll duration must be between 5 and 10080 minutes (7 days)');
+      }
     }
   }
 
@@ -53,9 +73,16 @@ export class TwitterPublisher extends BasePublisher {
       mediaIds = await this.uploadMediaItems(accessToken, mediaItems, oauth1Credentials);
     }
 
-    // Create tweet with optional media
+    // Build poll options from metadata
+    const pollData = options.metadata?.poll;
+    const poll = pollData
+      ? { options: pollData.options as string[], durationMinutes: pollData.durationMinutes as number }
+      : undefined;
+
+    // Create tweet with optional media and/or poll
     const result = await this.twitterService.createTweet(accessToken, content, {
       mediaIds,
+      poll,
     });
 
     this.logger.log(`Published tweet: ${result.id}`);

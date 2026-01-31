@@ -1710,8 +1710,22 @@ export class ChannelsController {
   @Post('twitter/me')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getTwitterProfile(@Body() dto: FetchPagesDto) {
-    return await this.twitterService.getCurrentUser(dto.accessToken);
+  async getTwitterProfile(
+    @Body() dto: { channelId: number },
+  ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'twitter') {
+      throw new BadRequestException('Channel is not a Twitter channel');
+    }
+
+    // Use getAccessToken which auto-refreshes expired tokens
+    const accessToken = await this.channelService.getAccessToken(
+      dto.channelId,
+      channel.workspaceId,
+    );
+
+    return await this.twitterService.getCurrentUser(accessToken);
   }
 
   /**
@@ -1721,12 +1735,24 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async getTwitterTweets(
-    @Body() dto: FetchPagesDto & { userId: string },
+    @Body() dto: { channelId: number },
     @Query('paginationToken') paginationToken?: string,
   ) {
+    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+
+    if (channel.platform !== 'twitter') {
+      throw new BadRequestException('Channel is not a Twitter channel');
+    }
+
+    // Use getAccessToken which auto-refreshes expired tokens
+    const accessToken = await this.channelService.getAccessToken(
+      dto.channelId,
+      channel.workspaceId,
+    );
+
     return await this.twitterService.getUserTweets(
-      dto.accessToken,
-      dto.userId,
+      accessToken,
+      channel.platformAccountId,
       10,
       paginationToken,
     );

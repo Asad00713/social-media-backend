@@ -209,6 +209,8 @@ export class ChannelService {
     accessToken: string | null;
     refreshToken: string | null;
     accountName: string;
+    username: string | null;
+    profilePictureUrl: string | null;
     metadata: Record<string, any> | null;
   }> {
     const channel = await db
@@ -231,6 +233,8 @@ export class ChannelService {
       accessToken: ch.accessToken ? decrypt(ch.accessToken) : null,
       refreshToken: ch.refreshToken ? decrypt(ch.refreshToken) : null,
       accountName: ch.accountName,
+      username: ch.username || null,
+      profilePictureUrl: ch.profilePictureUrl || null,
       metadata: (ch.metadata as Record<string, any>) || null,
     };
   }
@@ -542,6 +546,84 @@ export class ChannelService {
     }
 
     return decrypt(channelData.accessToken);
+  }
+
+  /**
+   * Force refresh access token regardless of expiration status.
+   * Useful when a 401 is received from the platform API.
+   */
+  async forceRefreshToken(channelId: number, workspaceId: string): Promise<string> {
+    const channel = await db
+      .select()
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.id, channelId),
+          eq(socialMediaChannels.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
+
+    if (channel.length === 0) {
+      throw new NotFoundException('Channel not found');
+    }
+
+    const channelData = channel[0];
+    const platform = channelData.platform as SupportedPlatform;
+    const platformConfig = PLATFORM_CONFIG[platform];
+
+    if (!channelData.refreshToken || !platformConfig?.supportsRefreshToken) {
+      throw new BadRequestException(
+        `Cannot refresh token for ${platform}. Please reconnect the channel.`,
+      );
+    }
+
+    this.logger.log(`Force refreshing token for channel ${channelId} (${platform})`);
+
+    const refreshToken = decrypt(channelData.refreshToken);
+    const refreshedTokens = await this.oauthService.refreshAccessToken(platform, refreshToken);
+
+    const newExpiresAt = refreshedTokens.expiresIn
+      ? new Date(Date.now() + refreshedTokens.expiresIn * 1000)
+      : null;
+
+    const newRefreshToken = refreshedTokens.refreshToken
+      ? encrypt(refreshedTokens.refreshToken)
+      : channelData.refreshToken;
+
+    if (newExpiresAt) {
+      await db.execute(sql`
+        UPDATE social_media_channels
+        SET
+          access_token = ${encrypt(refreshedTokens.accessToken)},
+          refresh_token = ${newRefreshToken},
+          token_expires_at = ${newExpiresAt},
+          connection_status = 'connected',
+          last_error = NULL,
+          last_error_at = NULL,
+          consecutive_errors = 0,
+          updated_at = ${new Date()}
+        WHERE id = ${channelId}
+      `);
+    } else {
+      await db.execute(sql`
+        UPDATE social_media_channels
+        SET
+          access_token = ${encrypt(refreshedTokens.accessToken)},
+          refresh_token = ${newRefreshToken},
+          token_expires_at = NULL,
+          connection_status = 'connected',
+          last_error = NULL,
+          last_error_at = NULL,
+          consecutive_errors = 0,
+          updated_at = ${new Date()}
+        WHERE id = ${channelId}
+      `);
+    }
+
+    this.logger.log(`Force refresh successful for channel ${channelId} (${platform})`);
+
+    return refreshedTokens.accessToken;
   }
 
   /**
