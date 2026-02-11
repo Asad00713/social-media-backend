@@ -445,7 +445,7 @@ export const PLATFORM_CONFIG: Record<
     maxMediaPerPost: 10,
     maxTextLength: 500,
     supportedMediaTypes: ['image', 'video'],
-    oauthScopes: ['threads_basic', 'threads_content_publish'],
+    oauthScopes: ['threads_basic', 'threads_content_publish', 'threads_manage_replies'],
   },
   bluesky: {
     name: 'Bluesky',

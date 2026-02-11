@@ -2,6 +2,7 @@ import { Injectable, BadRequestException } from '@nestjs/common';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import { BaseCommunityProvider } from './base-community.provider';
 import { TwitterCommunityProvider } from './twitter-community.provider';
+import { ThreadsCommunityProvider } from './threads-community.provider';
 
 @Injectable()
 export class CommunityProviderFactory {
@@ -9,9 +10,11 @@ export class CommunityProviderFactory {
 
   constructor(
     private readonly twitterCommunityProvider: TwitterCommunityProvider,
+    private readonly threadsCommunityProvider: ThreadsCommunityProvider,
   ) {
     this.providers = new Map<SupportedPlatform, BaseCommunityProvider>();
     this.providers.set('twitter', this.twitterCommunityProvider);
+    this.providers.set('threads', this.threadsCommunityProvider);
   }
 
   getProvider(platform: SupportedPlatform): BaseCommunityProvider {

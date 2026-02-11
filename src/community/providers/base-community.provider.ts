@@ -3,6 +3,7 @@ import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import {
   CommunityCommentsResponse,
   CommunityReplyResponse,
+  CommunityPostsResponse,
 } from '../dto/community.dto';
 
 export interface ChannelOwnerInfo {
@@ -38,6 +39,13 @@ export interface CreateReplyOptions {
   channelMetadata?: Record<string, any>;
 }
 
+export interface FetchPostsOptions {
+  accessToken: string;
+  platformAccountId: string;
+  maxResults?: number;
+  paginationToken?: string;
+}
+
 export abstract class BaseCommunityProvider {
   protected readonly logger: Logger;
   abstract readonly platform: SupportedPlatform;
@@ -57,4 +65,8 @@ export abstract class BaseCommunityProvider {
   abstract createReply(
     options: CreateReplyOptions,
   ): Promise<CommunityReplyResponse>;
+
+  abstract getPosts(
+    options: FetchPostsOptions,
+  ): Promise<CommunityPostsResponse>;
 }

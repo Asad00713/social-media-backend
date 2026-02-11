@@ -6,6 +6,7 @@ import {
   CommunityCommentsResponse,
   CommunityReplyResponse,
   FullCommentsResponse,
+  AllCommentsResponse,
 } from '../dto/community.dto';
 
 @Injectable()
@@ -139,7 +140,7 @@ export class CommunityService {
     text: string,
     mediaUrls?: string[],
   ): Promise<CommunityReplyResponse> {
-    const { platform, channelMetadata } =
+    const { platform, channelMetadata, platformAccountId } =
       await this.resolveChannel(channelId, workspaceId);
 
     const provider = this.providerFactory.getProvider(platform);
@@ -154,10 +155,86 @@ export class CommunityService {
         replyToId,
         text,
         mediaUrls,
-        channelMetadata,
+        channelMetadata: { ...channelMetadata, platformAccountId },
       });
 
     return this.executeWithTokenRetry(channelId, workspaceId, callProvider);
+  }
+
+  /**
+   * Get all comments across recent posts for a channel.
+   * Fetches the channel's recent posts, then retrieves comments for each post
+   * that has replies, returning a combined result grouped by post.
+   */
+  async getAllComments(
+    channelId: number,
+    workspaceId: string,
+    options?: {
+      paginationToken?: string;
+      maxPosts?: number;
+    },
+  ): Promise<AllCommentsResponse> {
+    const { platformAccountId, platform } =
+      await this.resolveChannel(channelId, workspaceId);
+
+    const provider = this.providerFactory.getProvider(platform);
+
+    this.logger.log(
+      `Fetching all comments for ${platform} channel ${channelId}`,
+    );
+
+    // Step 1: Fetch recent posts
+    const postsResult = await this.executeWithTokenRetry(
+      channelId,
+      workspaceId,
+      (token) =>
+        provider.getPosts({
+          accessToken: token,
+          platformAccountId,
+          maxResults: options?.maxPosts || 10,
+          paginationToken: options?.paginationToken,
+        }),
+    );
+
+    // Step 2: Filter posts that may have replies, then fetch comments in parallel.
+    // Include posts with unknown metrics (no metrics = we can't rule out replies).
+    const postsWithReplies = postsResult.posts.filter(
+      (p) => !p.metrics || p.metrics.replyCount > 0,
+    );
+
+    const postsWithComments = await Promise.all(
+      postsWithReplies.map(async (post) => {
+        try {
+          const commentsResult = await this.executeWithTokenRetry(
+            channelId,
+            workspaceId,
+            (token) =>
+              provider.getPostComments({
+                accessToken: token,
+                platformAccountId,
+                postId: post.id,
+              }),
+          );
+          return {
+            post,
+            comments: commentsResult.comments,
+          };
+        } catch (error) {
+          this.logger.warn(
+            `Failed to fetch comments for post ${post.id}: ${error}`,
+          );
+          return {
+            post,
+            comments: [],
+          };
+        }
+      }),
+    );
+
+    return {
+      posts: postsWithComments,
+      pagination: postsResult.pagination,
+    };
   }
 
   /**

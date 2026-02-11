@@ -41,6 +41,19 @@ export class GetMentionsDto {
   sinceId?: string;
 }
 
+export class GetAllCommentsDto {
+  @IsNumber()
+  channelId: number;
+
+  @IsOptional()
+  @IsString()
+  paginationToken?: string;
+
+  @IsOptional()
+  @IsNumber()
+  maxPosts?: number; // Max posts to fetch comments for (default 10)
+}
+
 export class CreateReplyDto {
   @IsNumber()
   channelId: number;
@@ -104,6 +117,36 @@ export interface CommunityReplyResponse {
   text: string;
   createdAt: string;
   platformUrl?: string;
+}
+
+export interface CommunityPost {
+  id: string;
+  platform: string;
+  text: string;
+  createdAt: string;
+  metrics?: {
+    likeCount: number;
+    replyCount: number;
+    repostCount: number;
+  };
+  platformUrl?: string;
+}
+
+export interface CommunityPostsResponse {
+  posts: CommunityPost[];
+  pagination: {
+    nextToken?: string;
+  };
+}
+
+export interface AllCommentsResponse {
+  posts: Array<{
+    post: CommunityPost;
+    comments: CommunityComment[];
+  }>;
+  pagination: {
+    nextToken?: string;
+  };
 }
 
 export interface FullCommentsResponse {

@@ -10,11 +10,13 @@ import {
   FetchCommentsOptions,
   FetchMentionsOptions,
   CreateReplyOptions,
+  FetchPostsOptions,
 } from './base-community.provider';
 import {
   CommunityComment,
   CommunityCommentsResponse,
   CommunityReplyResponse,
+  CommunityPostsResponse,
   FullCommentsResponse,
 } from '../dto/community.dto';
 
@@ -151,6 +153,37 @@ export class TwitterCommunityProvider extends BaseCommunityProvider {
     if (lower.includes('.mp4')) return 'video/mp4';
     if (lower.includes('.png')) return 'image/png';
     return 'image/jpeg';
+  }
+
+  async getPosts(
+    options: FetchPostsOptions,
+  ): Promise<CommunityPostsResponse> {
+    const result = await this.twitterService.getUserTweets(
+      options.accessToken,
+      options.platformAccountId,
+      options.maxResults || 10,
+      options.paginationToken,
+    );
+
+    return {
+      posts: result.tweets.map((t) => ({
+        id: t.id,
+        platform: 'twitter' as const,
+        text: t.text,
+        createdAt: t.createdAt,
+        metrics: t.publicMetrics
+          ? {
+              likeCount: t.publicMetrics.likeCount,
+              replyCount: t.publicMetrics.replyCount,
+              repostCount: t.publicMetrics.retweetCount,
+            }
+          : undefined,
+        platformUrl: `https://twitter.com/i/web/status/${t.id}`,
+      })),
+      pagination: {
+        nextToken: result.nextToken,
+      },
+    };
   }
 
   /**

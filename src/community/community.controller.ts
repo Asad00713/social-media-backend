@@ -13,6 +13,7 @@ import { CommunityService } from './services/community.service';
 import {
   GetPostRepliesDto,
   GetMentionsDto,
+  GetAllCommentsDto,
   CreateReplyDto,
 } from './dto/community.dto';
 
@@ -60,6 +61,27 @@ export class CommunityController {
       {
         paginationToken: dto.paginationToken,
         sinceId: dto.sinceId,
+      },
+    );
+  }
+
+  /**
+   * Get all comments across recent posts for a channel (no postId needed).
+   * Fetches recent posts, then retrieves comments for each post with replies.
+   * POST /community/workspaces/:workspaceId/comments/all
+   */
+  @Post('workspaces/:workspaceId/comments/all')
+  @HttpCode(HttpStatus.OK)
+  async getAllComments(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: GetAllCommentsDto,
+  ) {
+    return this.communityService.getAllComments(
+      dto.channelId,
+      workspaceId,
+      {
+        paginationToken: dto.paginationToken,
+        maxPosts: dto.maxPosts,
       },
     );
   }

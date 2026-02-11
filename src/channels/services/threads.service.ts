@@ -19,6 +19,8 @@ export interface ThreadsPost {
   shortcode: string | null;
   isQuotePost: boolean;
   children?: ThreadsPost[];
+  username?: string;
+  hasReplies?: boolean;
 }
 
 export interface ThreadsInsights {
@@ -509,13 +511,17 @@ export class ThreadsService {
     url.searchParams.set('access_token', accessToken);
     url.searchParams.set(
       'fields',
-      'id,text,media_type,media_url,permalink,timestamp,shortcode',
+      'id,text,media_type,media_url,permalink,timestamp,shortcode,username,has_replies',
     );
     url.searchParams.set('limit', limit.toString());
 
     if (after) {
       url.searchParams.set('after', after);
     }
+
+    // Debug: Log the URL (without token) and first 20 chars of token
+    this.logger.debug(`Fetching replies from: ${this.graphApiUrl}/${threadId}/replies`);
+    this.logger.debug(`Token starts with: ${accessToken.substring(0, 20)}...`);
 
     const response = await fetch(url.toString());
 
@@ -539,6 +545,59 @@ export class ThreadsService {
         timestamp: reply.timestamp,
         shortcode: reply.shortcode || null,
         isQuotePost: false,
+        username: reply.username || null,
+        hasReplies: reply.has_replies || false,
+      })),
+      nextCursor: data.paging?.cursors?.after || null,
+    };
+  }
+
+  /**
+   * Get the full conversation tree for a thread (all nested replies flattened).
+   * Uses the /conversation endpoint instead of /replies.
+   */
+  async getThreadConversation(
+    accessToken: string,
+    threadId: string,
+    limit: number = 25,
+    after?: string,
+  ): Promise<{ replies: ThreadsPost[]; nextCursor: string | null }> {
+    const url = new URL(`${this.graphApiUrl}/${threadId}/conversation`);
+    url.searchParams.set('access_token', accessToken);
+    url.searchParams.set(
+      'fields',
+      'id,text,media_type,media_url,permalink,timestamp,shortcode,username,has_replies',
+    );
+    url.searchParams.set('limit', limit.toString());
+
+    if (after) {
+      url.searchParams.set('after', after);
+    }
+
+    const response = await fetch(url.toString());
+
+    if (!response.ok) {
+      const error = await response.json();
+      this.logger.error('Failed to fetch thread conversation:', error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to fetch thread conversation',
+      );
+    }
+
+    const data = await response.json();
+
+    return {
+      replies: (data.data || []).map((reply: any) => ({
+        id: reply.id,
+        text: reply.text || null,
+        mediaType: reply.media_type,
+        mediaUrl: reply.media_url || null,
+        permalink: reply.permalink,
+        timestamp: reply.timestamp,
+        shortcode: reply.shortcode || null,
+        isQuotePost: false,
+        username: reply.username || null,
+        hasReplies: reply.has_replies || false,
       })),
       nextCursor: data.paging?.cursors?.after || null,
     };

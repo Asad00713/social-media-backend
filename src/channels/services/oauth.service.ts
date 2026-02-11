@@ -236,8 +236,8 @@ export class OAuthService {
     authUrl.searchParams.set('redirect_uri', redirectUri);
     authUrl.searchParams.set('response_type', 'code');
     authUrl.searchParams.set('state', stateToken);
-    // TikTok uses comma-separated scopes instead of space-separated
-    if (platform === 'tiktok') {
+    // TikTok and Threads use comma-separated scopes instead of space-separated
+    if (platform === 'tiktok' || platform === 'threads') {
       authUrl.searchParams.set('scope', oauthConfig.scopes.join(','));
     } else {
       authUrl.searchParams.set('scope', oauthConfig.scopes.join(' '));
