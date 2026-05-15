@@ -27,6 +27,7 @@ export const SUPPORTED_PLATFORMS = [
   'threads',
   'bluesky',
   'mastodon',
+  'google_business',
   'google_drive',
   'google_photos',
   'google_calendar',
@@ -468,6 +469,16 @@ export const PLATFORM_CONFIG: Record<
     oauthScopes: ['read', 'write', 'follow'], // Standard Mastodon scopes
   },
   // Google services - these share the same OAuth app but different scopes
+  google_business: {
+    name: 'Google Business',
+    accountTypes: ['business_account'],
+    supportsRefreshToken: true,
+    tokenExpirationDays: null,
+    maxMediaPerPost: 10,
+    maxTextLength: 1500,
+    supportedMediaTypes: ['image', 'video'],
+    oauthScopes: ['https://www.googleapis.com/auth/business.manage'],
+  },
   google_drive: {
     name: 'Google Drive',
     accountTypes: ['storage'],

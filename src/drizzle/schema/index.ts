@@ -9,3 +9,4 @@ export * from './drips.schema';
 export * from './feedback.schema';
 export * from './notifications.schema';
 export * from './media-library.schema';
+export * from './chatbot.schema';

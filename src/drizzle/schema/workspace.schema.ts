@@ -10,6 +10,9 @@ export const workspace = pgTable('workspace', {
   ownerId: uuid("owner_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
   timezone: text("timezone").notNull().default("UTC"),
 
+  // AI provider preference (null = system default)
+  preferredAiProvider: varchar('preferred_ai_provider', { length: 20 }),
+
   // Workspace suspension
   isActive: boolean('is_active').notNull().default(true),
   suspendedAt: timestamp('suspended_at'),

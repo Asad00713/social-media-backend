@@ -20,7 +20,7 @@ import {
 import { StripeService } from '../../stripe/stripe.service';
 import { UsageService } from './usage.service';
 
-export type AddonType = 'EXTRA_CHANNEL' | 'EXTRA_MEMBER' | 'EXTRA_WORKSPACE';
+export type AddonType = 'EXTRA_CHANNEL' | 'EXTRA_MEMBER' | 'EXTRA_WORKSPACE' | 'EXTRA_AI_TOKENS';
 
 export interface PurchaseAddonDto {
   workspaceId: string;
@@ -39,6 +39,7 @@ export interface AddonPurchaseResult {
   newLimits: {
     channelsLimit?: number;
     membersLimit?: number;
+    aiTokensLimit?: number;
   };
 }
 
@@ -266,6 +267,7 @@ export class AddonService {
       newLimits: {
         channelsLimit: usage.channelsLimit,
         membersLimit: usage.membersLimit,
+        aiTokensLimit: usage.aiTokensLimit,
       },
     };
   }
@@ -528,6 +530,8 @@ export class AddonService {
       updates['extraChannelsPurchased'] = newQuantity;
     } else if (addonType === 'EXTRA_MEMBER') {
       updates['extraMembersPurchased'] = newQuantity;
+    } else if (addonType === 'EXTRA_AI_TOKENS') {
+      updates['extraAiTokensPurchased'] = newQuantity;
     }
 
     if (Object.keys(updates).length > 0) {

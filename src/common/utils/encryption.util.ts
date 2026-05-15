@@ -123,6 +123,18 @@ export function generateSecureToken(length: number = 32): string {
 }
 
 /**
+ * Generate a numeric OTP code using cryptographically-secure randomness.
+ *
+ * @param digits - Number of digits (default: 6)
+ * @returns Zero-padded numeric string
+ */
+export function generateOtp(digits: number = 6): string {
+  const max = 10 ** digits;
+  const value = crypto.randomInt(0, max);
+  return value.toString().padStart(digits, '0');
+}
+
+/**
  * Generate a PKCE code verifier for OAuth 2.0
  *
  * @returns Code verifier string (43-128 characters)

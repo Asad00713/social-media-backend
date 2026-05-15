@@ -22,6 +22,7 @@ import { CanvaModule } from './canva/canva.module';
 import { MediaLibraryModule } from './media-library/media-library.module';
 import { AdminModule } from './admin/admin.module';
 import { CommunityModule } from './community/community.module';
+import { ChatbotModule } from './chatbot/chatbot.module';
 import { ScheduleModule } from '@nestjs/schedule';
 
 @Module({
@@ -50,6 +51,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     CanvaModule,
     AdminModule,
     CommunityModule,
+    ChatbotModule,
   ],
   controllers: [AppController],
   providers: [AppService],

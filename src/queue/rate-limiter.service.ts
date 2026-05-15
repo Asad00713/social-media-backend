@@ -61,6 +61,11 @@ export const PLATFORM_RATE_LIMITS: Record<
     windowMs: 5 * 60 * 1000, // 5 minutes
     description: '300 requests per 5 minutes',
   },
+  google_business: {
+    maxRequests: 100, // Google Business Profile API conservative limit
+    windowMs: 60 * 60 * 1000, // 1 hour
+    description: '100 requests per hour',
+  },
   google_drive: {
     maxRequests: 1000, // Google Drive has generous read limits
     windowMs: 60 * 60 * 1000, // 1 hour

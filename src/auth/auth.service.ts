@@ -12,13 +12,18 @@ import { UsersService, PublicUser } from '../users/users.service';
 import { EmailService } from '../email/email.service';
 import { LoginDto } from './dto/login.dto';
 import type { User, UserRole, Workspace } from '../drizzle/schema';
-import { workspace } from '../drizzle/schema';
+import { users, workspace } from '../drizzle/schema';
 import { CreateUserDto } from '../users/dto/create-user.dto';
-import { generateSecureToken, hash } from '../common/utils/encryption.util';
+import { generateOtp, generateSecureToken, hash } from '../common/utils/encryption.util';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import type { DbType } from '../drizzle/db';
 import { eq } from 'drizzle-orm';
 import { NotificationEmitterService } from '../notifications/notification-emitter.service';
+
+// OTP expires in 10 minutes — short-lived because the code space is small (1M).
+const OTP_TTL_MS = 10 * 60 * 1000;
+// Resend rate-limit window: must wait at least this long between requests.
+const RESEND_COOLDOWN_MS = 60 * 1000;
 
 export interface TokenPayload {
     sub: string;
@@ -200,27 +205,24 @@ export class AuthService {
     // ==================== Email Verification ====================
 
     /**
-     * Internal method to generate token and send verification email
+     * Internal method to generate an OTP and send the verification email.
+     *
+     * Stores the SHA-256 hash of the OTP so a database leak doesn't expose
+     * codes. The plain OTP is sent to the user via email and is what they
+     * type into the OTP form.
      */
     private async sendVerificationEmailInternal(
         userId: string,
         email: string,
         name?: string | null,
     ): Promise<void> {
-        // Generate a secure token
-        const rawToken = generateSecureToken(32);
-        // Hash it before storing (we'll compare hashes later)
-        const hashedToken = hash(rawToken);
+        const otp = generateOtp(6);
+        const hashedOtp = hash(otp);
+        const expiresAt = new Date(Date.now() + OTP_TTL_MS);
 
-        // Token expires in 24 hours
-        const expiresAt = new Date();
-        expiresAt.setHours(expiresAt.getHours() + 24);
+        await this.usersService.setEmailVerificationToken(userId, hashedOtp, expiresAt);
 
-        // Store hashed token in database
-        await this.usersService.setEmailVerificationToken(userId, hashedToken, expiresAt);
-
-        // Send email with raw token (user will click link with raw token)
-        await this.emailService.sendVerificationEmail(email, rawToken, name || undefined);
+        await this.emailService.sendVerificationEmail(email, otp, name || undefined);
     }
 
     /**
@@ -238,10 +240,12 @@ export class AuthService {
             throw new BadRequestException('Email is already verified.');
         }
 
-        // Rate limiting: Check if token was sent recently (within 1 minute)
+        // Rate limiting: enforce a cooldown between resend requests so users
+        // can't spam the email service.
         if (user.emailVerificationTokenExpiresAt) {
-            const tokenAge = new Date().getTime() - (user.emailVerificationTokenExpiresAt.getTime() - 24 * 60 * 60 * 1000);
-            if (tokenAge < 60 * 1000) { // Less than 1 minute ago
+            const issuedAt = user.emailVerificationTokenExpiresAt.getTime() - OTP_TTL_MS;
+            const ageMs = Date.now() - issuedAt;
+            if (ageMs < RESEND_COOLDOWN_MS) {
                 throw new BadRequestException('Please wait before requesting another verification email.');
             }
         }
@@ -252,10 +256,13 @@ export class AuthService {
     }
 
     /**
-     * Verify email with token
+     * Verify email with token (legacy link-based flow).
+     *
+     * Kept for backwards compatibility — the primary verification path is now
+     * OTP-based via `verifyEmailWithOtp`, which is auth-required and looks up
+     * by user ID to avoid cross-user OTP collisions.
      */
     async verifyEmail(token: string): Promise<{ message: string }> {
-        // Hash the provided token to compare with stored hash
         const hashedToken = hash(token);
 
         const user = await this.usersService.findByVerificationToken(hashedToken);
@@ -264,18 +271,53 @@ export class AuthService {
             throw new BadRequestException('Invalid or expired verification token.');
         }
 
-        // Check if token has expired
         if (!user.emailVerificationTokenExpiresAt || user.emailVerificationTokenExpiresAt < new Date()) {
             throw new BadRequestException('Verification token has expired. Please request a new one.');
         }
 
-        // Verify the email
         await this.usersService.verifyEmail(user.id);
 
-        // Send notification
         await this.notificationEmitter.emailVerified(user.id);
 
         return { message: 'Email verified successfully. You can now log in.' };
+    }
+
+    /**
+     * Verify email with OTP for an authenticated user.
+     *
+     * Looks up the OTP hash on the user's own record (no cross-user search),
+     * so two users with the same 6-digit code don't collide.
+     */
+    async verifyEmailWithOtp(userId: string, otp: string): Promise<{ message: string }> {
+        const user = await this.db.query.users.findFirst({
+            where: eq(users.id, userId),
+        });
+
+        if (!user) {
+            throw new NotFoundException('User not found.');
+        }
+
+        if (user.isEmailVerified) {
+            return { message: 'Email is already verified.' };
+        }
+
+        if (!user.emailVerificationToken || !user.emailVerificationTokenExpiresAt) {
+            throw new BadRequestException('No verification code is pending. Please request a new one.');
+        }
+
+        if (user.emailVerificationTokenExpiresAt < new Date()) {
+            throw new BadRequestException('Verification code has expired. Please request a new one.');
+        }
+
+        const hashedOtp = hash(otp);
+        if (hashedOtp !== user.emailVerificationToken) {
+            throw new BadRequestException('Invalid verification code.');
+        }
+
+        await this.usersService.verifyEmail(user.id);
+        await this.notificationEmitter.emailVerified(user.id);
+
+        return { message: 'Email verified successfully.' };
     }
 
     // ==================== Password Reset ====================
