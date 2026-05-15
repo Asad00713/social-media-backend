@@ -308,14 +308,14 @@ This email was sent by your Social Media Automation tool.
   }
 
   /**
-   * Send email verification email
+   * Send email verification email containing a 6-digit OTP code.
+   * The user types this code into the OTP form on the verification page.
    */
   async sendVerificationEmail(
     email: string,
-    token: string,
+    otp: string,
     name?: string,
   ): Promise<EmailResult> {
-    const verifyUrl = `${this.frontendUrl}/auth/verify?token=${token}`;
     const greeting = name ? `Hi ${name}` : 'Hi there';
 
     const html = `
@@ -328,28 +328,27 @@ This email was sent by your Social Media Automation tool.
 </head>
 <body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
   <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px 10px 0 0;">
-    <h1 style="color: white; margin: 0; font-size: 24px;">Welcome! Verify Your Email</h1>
+    <h1 style="color: white; margin: 0; font-size: 24px;">Verify Your Email</h1>
   </div>
 
   <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
     <p style="font-size: 16px; margin-top: 0;">${greeting},</p>
 
-    <p>Thank you for signing up! Please verify your email address to get started.</p>
+    <p>Use the verification code below to confirm your email address and finish setting up your account.</p>
 
-    <div style="text-align: center; margin: 30px 0;">
-      <a href="${verifyUrl}" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: bold; font-size: 16px;">Verify Email Address</a>
+    <div style="text-align: center; margin: 32px 0;">
+      <div style="display: inline-block; background: #ffffff; border: 1px solid #e5e7eb; border-radius: 12px; padding: 20px 32px;">
+        <div style="font-family: 'SFMono-Regular', Menlo, Monaco, Consolas, monospace; font-size: 36px; font-weight: 700; letter-spacing: 8px; color: #111827;">${otp}</div>
+      </div>
     </div>
 
-    <p style="color: #6b7280; font-size: 14px;">
-      This link will expire in 24 hours. If you didn't create an account, you can safely ignore this email.
+    <p style="color: #6b7280; font-size: 14px; text-align: center;">
+      This code expires in <strong>10 minutes</strong>.
     </p>
 
-    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
-      <p style="color: #9ca3af; font-size: 12px; margin: 0;">
-        If the button doesn't work, copy and paste this link into your browser:<br>
-        <a href="${verifyUrl}" style="color: #667eea; word-break: break-all;">${verifyUrl}</a>
-      </p>
-    </div>
+    <p style="color: #9ca3af; font-size: 12px; margin-top: 24px;">
+      If you didn't create an account, you can safely ignore this email — no further action is needed.
+    </p>
   </div>
 
   <div style="text-align: center; padding: 20px; color: #9ca3af; font-size: 12px;">
@@ -362,12 +361,13 @@ This email was sent by your Social Media Automation tool.
     const text = `
 ${greeting},
 
-Thank you for signing up! Please verify your email address to get started.
+Use the verification code below to confirm your email address:
 
-Click the link below to verify your email:
-${verifyUrl}
+    ${otp}
 
-This link will expire in 24 hours. If you didn't create an account, you can safely ignore this email.
+This code expires in 10 minutes.
+
+If you didn't create an account, you can safely ignore this email.
 
 ---
 This email was sent by your Social Media Automation tool.
@@ -375,7 +375,7 @@ This email was sent by your Social Media Automation tool.
 
     return this.sendEmail({
       to: email,
-      subject: 'Verify Your Email Address',
+      subject: `Your verification code: ${otp}`,
       html,
       text,
     });

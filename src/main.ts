@@ -10,6 +10,7 @@ async function bootstrap() {
     origin: [
       'http://localhost:3000',
       'http://localhost:3001',
+      'http://localhost:3002',
       process.env.APP_URL,
       process.env.FRONTEND_URL,
     ].filter(Boolean),
@@ -26,7 +27,7 @@ async function bootstrap() {
     }),
   );
 
-  const port = process.env.PORT ?? 3000;
+  const port = process.env.PORT ?? 8000;
   await app.listen(port, '0.0.0.0');
   console.log(`Application is running on port ${port}`);
 }

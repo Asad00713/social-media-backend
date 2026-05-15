@@ -92,6 +92,17 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
     scopes: PLATFORM_CONFIG.threads.oauthScopes,
     usePKCE: false,
   },
+  // Google Business Profile - uses same Google OAuth as YouTube but different scopes
+  google_business: {
+    authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
+    tokenUrl: 'https://oauth2.googleapis.com/token',
+    scopes: PLATFORM_CONFIG.google_business.oauthScopes,
+    usePKCE: true,
+    additionalParams: {
+      access_type: 'offline',
+      prompt: 'consent',
+    },
+  },
   // Google Drive - uses same Google OAuth as YouTube but different scopes
   google_drive: {
     authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',

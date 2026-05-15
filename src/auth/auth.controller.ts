@@ -12,6 +12,7 @@ import type { Response } from 'express';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
+import { VerifyOtpDto } from './dto/verify-otp.dto';
 import { ResendVerificationDto } from './dto/resend-verification.dto';
 import { ForgotPasswordDto } from './dto/forgot-password.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
@@ -122,6 +123,16 @@ export class AuthController {
     @HttpCode(HttpStatus.OK)
     async verifyEmail(@Body() dto: VerifyEmailDto) {
         return this.authService.verifyEmail(dto.token);
+    }
+
+    @Post('verify-otp')
+    @HttpCode(HttpStatus.OK)
+    @UseGuards(JwtAuthGuard)
+    async verifyOtp(
+        @CurrentUser() user: { userId: string; email: string },
+        @Body() dto: VerifyOtpDto,
+    ) {
+        return this.authService.verifyEmailWithOtp(user.userId, dto.otp);
     }
 
     @Post('resend-verification')

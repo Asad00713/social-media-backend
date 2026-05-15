@@ -127,7 +127,7 @@ export class BillingController {
   async purchaseAddon(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() body: { addonType: 'EXTRA_CHANNEL' | 'EXTRA_MEMBER' | 'EXTRA_WORKSPACE'; quantity: number },
+    @Body() body: { addonType: 'EXTRA_CHANNEL' | 'EXTRA_MEMBER' | 'EXTRA_WORKSPACE' | 'EXTRA_AI_TOKENS'; quantity: number },
   ) {
     return await this.addonService.purchaseAddon({
       workspaceId,
@@ -142,7 +142,7 @@ export class BillingController {
   @HttpCode(HttpStatus.OK)
   async removeAddon(
     @Param('workspaceId') workspaceId: string,
-    @Param('addonType') addonType: 'EXTRA_CHANNEL' | 'EXTRA_MEMBER' | 'EXTRA_WORKSPACE',
+    @Param('addonType') addonType: 'EXTRA_CHANNEL' | 'EXTRA_MEMBER' | 'EXTRA_WORKSPACE' | 'EXTRA_AI_TOKENS',
     @CurrentUser() user: { userId: string; email: string },
     @Body() body: { quantity?: number },
   ) {

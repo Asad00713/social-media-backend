@@ -35,6 +35,11 @@ export interface UsageLimits {
   membersAvailable: number;
   extraChannelsPurchased: number;
   extraMembersPurchased: number;
+  aiTokensUsedThisMonth: number;
+  aiTokensLimit: number;
+  aiTokensRemaining: number;
+  extraAiTokensPurchased: number;
+  aiTokensResetDate: Date | null;
 }
 
 export interface WorkspaceLimits {
@@ -60,6 +65,7 @@ export class UsageService {
     }
 
     const u = usage[0];
+    const totalAiTokens = u.aiTokensLimit + u.extraAiTokensPurchased;
     return {
       channelsLimit: u.channelsLimit + u.extraChannelsPurchased,
       channelsCount: u.channelsCount,
@@ -69,6 +75,11 @@ export class UsageService {
       membersAvailable: u.membersLimit + u.extraMembersPurchased - u.membersCount,
       extraChannelsPurchased: u.extraChannelsPurchased,
       extraMembersPurchased: u.extraMembersPurchased,
+      aiTokensUsedThisMonth: u.aiTokensUsedThisMonth,
+      aiTokensLimit: totalAiTokens,
+      aiTokensRemaining: Math.max(0, totalAiTokens - u.aiTokensUsedThisMonth),
+      extraAiTokensPurchased: u.extraAiTokensPurchased,
+      aiTokensResetDate: u.aiTokensResetDate,
     };
   }
 
@@ -386,6 +397,7 @@ export class UsageService {
       membersLimit?: number;
       extraChannelsPurchased?: number;
       extraMembersPurchased?: number;
+      extraAiTokensPurchased?: number;
     },
   ): Promise<void> {
     const currentUsage = await db

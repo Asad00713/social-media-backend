@@ -33,6 +33,10 @@ export interface BillingDashboard {
     membersPercentage: number;
     extraChannelsPurchased: number;
     extraMembersPurchased: number;
+    aiTokensUsed: number;
+    aiTokensLimit: number;
+    aiTokensPercentage: number;
+    extraAiTokensPurchased: number;
   } | null;
   billing: {
     monthlyTotal: number;
@@ -142,6 +146,7 @@ export class DashboardService {
       const u = usage[0];
       const totalChannels = u.channelsLimit + u.extraChannelsPurchased;
       const totalMembers = u.membersLimit + u.extraMembersPurchased;
+      const totalAiTokens = u.aiTokensLimit + u.extraAiTokensPurchased;
 
       usageData = {
         channelsCount: u.channelsCount,
@@ -152,6 +157,10 @@ export class DashboardService {
         membersPercentage: totalMembers > 0 ? Math.round((u.membersCount / totalMembers) * 100) : 0,
         extraChannelsPurchased: u.extraChannelsPurchased,
         extraMembersPurchased: u.extraMembersPurchased,
+        aiTokensUsed: u.aiTokensUsedThisMonth,
+        aiTokensLimit: totalAiTokens,
+        aiTokensPercentage: totalAiTokens > 0 ? Math.round((u.aiTokensUsedThisMonth / totalAiTokens) * 100) : 0,
+        extraAiTokensPurchased: u.extraAiTokensPurchased,
       };
     }
 
