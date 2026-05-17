@@ -233,6 +233,32 @@ const LINKEDIN_CAPABILITIES: PlatformCapabilities = {
   dailyQuotaBudget: null,
 };
 
+const TIKTOK_CAPABILITIES: PlatformCapabilities = {
+  platform: 'tiktok',
+  hasFollowerCount: true,
+  hasFollowerTimeSeries: true,
+  hasFollowingCount: true,
+  hasImpressions: true, // view_count maps to impressions
+  hasReach: false,
+  hasEngagementRate: true,
+  hasVideoMetrics: true,
+  hasDemographics: false, // Display API doesn't expose demographics
+  hasTrafficSources: false,
+  contentTypes: ['video', 'short'],
+  vocabulary: {
+    follower: 'followers',
+    following: 'following',
+    share: 'share',
+    post: 'video',
+  },
+  hasEphemeralContent: false,
+  ephemeralTTLHours: null,
+  profileDataSource: 'hybrid',
+  postDataSource: 'platform_api',
+  dataFreshness: 'hourly',
+  dailyQuotaBudget: 1000, // TikTok Display API limit: 1000 calls/day per app
+};
+
 const PINTEREST_CAPABILITIES: PlatformCapabilities = {
   platform: 'pinterest',
   hasFollowerCount: true,
@@ -271,6 +297,7 @@ export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCa
   threads: THREADS_CAPABILITIES,
   pinterest: PINTEREST_CAPABILITIES,
   linkedin: LINKEDIN_CAPABILITIES,
+  tiktok: TIKTOK_CAPABILITIES,
 };
 
 export function getCapabilities(platform: SupportedPlatform): PlatformCapabilities {
