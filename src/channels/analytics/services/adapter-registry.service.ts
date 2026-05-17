@@ -9,6 +9,7 @@ import { ThreadsAnalyticsAdapter } from '../adapters/threads/threads-analytics.a
 import { PinterestAnalyticsAdapter } from '../adapters/pinterest/pinterest-analytics.adapter';
 import { LinkedInAnalyticsAdapter } from '../adapters/linkedin/linkedin-analytics.adapter';
 import { TikTokAnalyticsAdapter } from '../adapters/tiktok/tiktok-analytics.adapter';
+import { TwitterAnalyticsAdapter } from '../adapters/twitter/twitter-analytics.adapter';
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
 
 /**
@@ -29,6 +30,7 @@ export class AdapterRegistryService {
     private readonly pinterest: PinterestAnalyticsAdapter,
     private readonly linkedin: LinkedInAnalyticsAdapter,
     private readonly tiktok: TikTokAnalyticsAdapter,
+    private readonly twitter: TwitterAnalyticsAdapter,
   ) {
     this.adapters.set('youtube', youtube);
     this.adapters.set('bluesky', bluesky);
@@ -39,6 +41,7 @@ export class AdapterRegistryService {
     this.adapters.set('pinterest', pinterest);
     this.adapters.set('linkedin', linkedin);
     this.adapters.set('tiktok', tiktok);
+    this.adapters.set('twitter', twitter);
   }
 
   get(platform: SupportedPlatform): PlatformAnalyticsAdapter {

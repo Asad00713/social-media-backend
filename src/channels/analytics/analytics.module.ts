@@ -39,6 +39,8 @@ import { YouTubePubSubHubbubService } from './services/youtube-pubsubhubbub.serv
 import { YouTubePubSubHubbubController } from './youtube-pubsubhubbub.controller';
 import { TikTokApiClient } from './adapters/tiktok/tiktok-api.client';
 import { TikTokAnalyticsAdapter } from './adapters/tiktok/tiktok-analytics.adapter';
+import { TwitterApiClient } from './adapters/twitter/twitter-api.client';
+import { TwitterAnalyticsAdapter } from './adapters/twitter/twitter-analytics.adapter';
 
 @Module({
   imports: [ConfigModule, BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS })],
@@ -77,6 +79,8 @@ import { TikTokAnalyticsAdapter } from './adapters/tiktok/tiktok-analytics.adapt
     LinkedInAnalyticsAdapter,
     { provide: TikTokApiClient, useValue: new TikTokApiClient() },
     TikTokAnalyticsAdapter,
+    { provide: TwitterApiClient, useValue: new TwitterApiClient() },
+    TwitterAnalyticsAdapter,
     AdapterRegistryService,
   ],
   exports: [QuotaTrackerService, AnalyticsService, ChannelSyncLifecycleService, AdapterRegistryService],

@@ -259,6 +259,32 @@ const TIKTOK_CAPABILITIES: PlatformCapabilities = {
   dailyQuotaBudget: 1000, // TikTok Display API limit: 1000 calls/day per app
 };
 
+const TWITTER_CAPABILITIES: PlatformCapabilities = {
+  platform: 'twitter',
+  hasFollowerCount: true,
+  hasFollowerTimeSeries: true,
+  hasFollowingCount: true,
+  hasImpressions: true, // available but requires Basic tier ($100/mo); degrades to partial gracefully
+  hasReach: false, // Twitter API v2 does not expose unique reach
+  hasEngagementRate: true,
+  hasVideoMetrics: false,
+  hasDemographics: false,
+  hasTrafficSources: false,
+  contentTypes: ['post'],
+  vocabulary: {
+    follower: 'followers',
+    following: 'following',
+    share: 'retweet',
+    post: 'tweet',
+  },
+  hasEphemeralContent: false,
+  ephemeralTTLHours: null,
+  profileDataSource: 'hybrid',
+  postDataSource: 'platform_api',
+  dataFreshness: 'hourly',
+  dailyQuotaBudget: 500, // conservative free-tier estimate per app
+};
+
 const PINTEREST_CAPABILITIES: PlatformCapabilities = {
   platform: 'pinterest',
   hasFollowerCount: true,
@@ -298,6 +324,7 @@ export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCa
   pinterest: PINTEREST_CAPABILITIES,
   linkedin: LINKEDIN_CAPABILITIES,
   tiktok: TIKTOK_CAPABILITIES,
+  twitter: TWITTER_CAPABILITIES,
 };
 
 export function getCapabilities(platform: SupportedPlatform): PlatformCapabilities {
