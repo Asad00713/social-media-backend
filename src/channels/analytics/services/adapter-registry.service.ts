@@ -1,6 +1,7 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import type { PlatformAnalyticsAdapter } from '../types/platform-adapter.types';
 import { YouTubeAnalyticsAdapter } from '../adapters/youtube/youtube-analytics.adapter';
+import { BlueskyAnalyticsAdapter } from '../adapters/bluesky/bluesky-analytics.adapter';
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
 
 /**
@@ -11,8 +12,12 @@ import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema'
 export class AdapterRegistryService {
   private readonly adapters = new Map<SupportedPlatform, PlatformAnalyticsAdapter>();
 
-  constructor(private readonly youtube: YouTubeAnalyticsAdapter) {
+  constructor(
+    private readonly youtube: YouTubeAnalyticsAdapter,
+    private readonly bluesky: BlueskyAnalyticsAdapter,
+  ) {
     this.adapters.set('youtube', youtube);
+    this.adapters.set('bluesky', bluesky);
   }
 
   get(platform: SupportedPlatform): PlatformAnalyticsAdapter {

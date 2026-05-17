@@ -20,6 +20,32 @@ const SOCIAL_PLATFORMS = [
   'mastodon',
 ] as const satisfies readonly SupportedPlatform[];
 
+const BLUESKY_CAPABILITIES: PlatformCapabilities = {
+  platform: 'bluesky',
+  hasFollowerCount: true,
+  hasFollowerTimeSeries: true,
+  hasFollowingCount: true,
+  hasImpressions: false,
+  hasReach: false,
+  hasEngagementRate: true,
+  hasVideoMetrics: false,
+  hasDemographics: false,
+  hasTrafficSources: false,
+  contentTypes: ['post'],
+  vocabulary: {
+    follower: 'followers',
+    following: 'following',
+    share: 'repost',
+    post: 'post',
+  },
+  hasEphemeralContent: false,
+  ephemeralTTLHours: null,
+  profileDataSource: 'hybrid',
+  postDataSource: 'platform_api',
+  dataFreshness: 'realtime',
+  dailyQuotaBudget: null,
+};
+
 const YOUTUBE_CAPABILITIES: PlatformCapabilities = {
   platform: 'youtube',
   hasFollowerCount: true,
@@ -79,6 +105,7 @@ export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCa
     SOCIAL_PLATFORMS.map((p) => [p, placeholderCapabilities(p)]),
   ),
   youtube: YOUTUBE_CAPABILITIES,
+  bluesky: BLUESKY_CAPABILITIES,
 };
 
 export function getCapabilities(platform: SupportedPlatform): PlatformCapabilities {
