@@ -204,6 +204,32 @@ const THREADS_CAPABILITIES: PlatformCapabilities = {
   dailyQuotaBudget: null, // Meta uses request-based throttling, not call-count quotas
 };
 
+const PINTEREST_CAPABILITIES: PlatformCapabilities = {
+  platform: 'pinterest',
+  hasFollowerCount: true,
+  hasFollowerTimeSeries: true,
+  hasFollowingCount: false,
+  hasImpressions: true,
+  hasReach: false,
+  hasEngagementRate: true,
+  hasVideoMetrics: false,
+  hasDemographics: false,
+  hasTrafficSources: false,
+  contentTypes: ['pin'],
+  vocabulary: {
+    follower: 'followers',
+    following: 'following',
+    share: 'save',
+    post: 'pin',
+  },
+  hasEphemeralContent: false,
+  ephemeralTTLHours: null,
+  profileDataSource: 'hybrid', // /user_account for profile fields, /user_account/analytics for follower counts
+  postDataSource: 'platform_api',
+  dataFreshness: 'daily', // Pinterest analytics API data has up to 2-day lag
+  dailyQuotaBudget: null,
+};
+
 export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCapabilities>> = {
   ...Object.fromEntries(
     SOCIAL_PLATFORMS.map((p) => [p, placeholderCapabilities(p)]),
@@ -214,6 +240,7 @@ export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCa
   facebook: FACEBOOK_CAPABILITIES,
   instagram: INSTAGRAM_CAPABILITIES,
   threads: THREADS_CAPABILITIES,
+  pinterest: PINTEREST_CAPABILITIES,
 };
 
 export function getCapabilities(platform: SupportedPlatform): PlatformCapabilities {
