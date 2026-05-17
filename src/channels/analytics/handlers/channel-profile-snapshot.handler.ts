@@ -159,6 +159,18 @@ export class ChannelProfileSnapshotHandler {
           lastProfileSyncError: result.error.message,
         },
       });
+
+    // If auth failed, escalate to channel-level so UI shows "Reconnect Required"
+    if (result.error.code === 'auth_failed') {
+      await this.db
+        .update(socialMediaChannels)
+        .set({
+          connectionStatus: 'expired',
+          lastError: result.error.message?.slice(0, 500) ?? null,
+        })
+        .where(eq(socialMediaChannels.id, channelId));
+    }
+
     this.logger.error(`Profile snapshot failed: channelId=${channelId} ${result.error.message}`);
     return { ok: false };
   }
