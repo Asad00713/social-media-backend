@@ -75,6 +75,7 @@ export class TokenRefreshProcessor extends WorkerHost {
       // Some platforms rotate refresh tokens — store the new one if provided
       if (tokens.refreshToken) {
         updateData.refreshToken = encrypt(tokens.refreshToken);
+        updateData.refreshTokenIssuedAt = new Date();
       }
 
       await this.db

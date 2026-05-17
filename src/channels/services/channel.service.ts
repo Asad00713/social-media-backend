@@ -105,6 +105,7 @@ export class ChannelService {
 
       if (dto.refreshToken) {
         reconnectData.refreshToken = encrypt(dto.refreshToken);
+        reconnectData.refreshTokenIssuedAt = new Date();
       }
       if (dto.tokenExpiresAt) {
         reconnectData.tokenExpiresAt = new Date(dto.tokenExpiresAt);
@@ -187,7 +188,10 @@ export class ChannelService {
     };
     if (dto.username) newChannel.username = dto.username;
     if (dto.profilePictureUrl) newChannel.profilePictureUrl = dto.profilePictureUrl;
-    if (dto.refreshToken) newChannel.refreshToken = encrypt(dto.refreshToken);
+    if (dto.refreshToken) {
+      newChannel.refreshToken = encrypt(dto.refreshToken);
+      newChannel.refreshTokenIssuedAt = new Date();
+    }
     if (dto.tokenExpiresAt) newChannel.tokenExpiresAt = new Date(dto.tokenExpiresAt);
     if (dto.tokenScope) newChannel.tokenScope = dto.tokenScope;
     if (dto.color) newChannel.color = dto.color;
