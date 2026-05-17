@@ -83,12 +83,22 @@ export class PostMetricSnapshotHandler {
       return { ok: false };
     }
 
-    // Pass channel's accessToken + platformPostId onto post — adapter expects them.
-    // Real fetching of platformPostId from post_targets is a Phase 2b improvement.
+    // Extract platformPostId from targets array (per-channel storage)
+    const targets = (post.targets ?? []) as Array<{ channelId: string; platformPostId?: string; publishedAt?: string }>;
+    const target = targets.find((t) => Number(t.channelId) === channelId);
+    const platformPostId = target?.platformPostId;
+    const targetPublishedAt = target?.publishedAt ?? post.publishedAt;
+
+    if (!platformPostId) {
+      this.logger.warn(`Post snapshot: post ${postId} has no platformPostId for channel ${channelId}, skipping`);
+      return { ok: true };
+    }
+
     const result = await adapter.fetchPostMetrics({
       ...post,
       accessToken: decrypt(channel.accessToken),
-      platformPostId: (post as any).platformPostId,
+      platformPostId,
+      publishedAt: targetPublishedAt,
     } as any);
 
     if (result.status === 'failed') {
