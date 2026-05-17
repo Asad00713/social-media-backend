@@ -20,6 +20,32 @@ const SOCIAL_PLATFORMS = [
   'mastodon',
 ] as const satisfies readonly SupportedPlatform[];
 
+const YOUTUBE_CAPABILITIES: PlatformCapabilities = {
+  platform: 'youtube',
+  hasFollowerCount: true,
+  hasFollowerTimeSeries: true,
+  hasFollowingCount: false,
+  hasImpressions: true,
+  hasReach: false,
+  hasEngagementRate: true,
+  hasVideoMetrics: true,
+  hasDemographics: true,
+  hasTrafficSources: true,
+  contentTypes: ['video', 'short'],
+  vocabulary: {
+    follower: 'subscribers',
+    following: 'subscriptions',
+    share: 'share',
+    post: 'video',
+  },
+  hasEphemeralContent: false,
+  ephemeralTTLHours: null,
+  profileDataSource: 'hybrid',
+  postDataSource: 'platform_api',
+  dataFreshness: 'hourly',
+  dailyQuotaBudget: 10000,
+};
+
 function placeholderCapabilities(platform: SupportedPlatform): PlatformCapabilities {
   return {
     platform,
@@ -48,10 +74,12 @@ function placeholderCapabilities(platform: SupportedPlatform): PlatformCapabilit
   };
 }
 
-export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCapabilities>> =
-  Object.fromEntries(
+export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCapabilities>> = {
+  ...Object.fromEntries(
     SOCIAL_PLATFORMS.map((p) => [p, placeholderCapabilities(p)]),
-  );
+  ),
+  youtube: YOUTUBE_CAPABILITIES,
+};
 
 export function getCapabilities(platform: SupportedPlatform): PlatformCapabilities {
   // Reject non-social platforms explicitly
