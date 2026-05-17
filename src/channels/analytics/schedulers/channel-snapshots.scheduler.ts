@@ -2,10 +2,13 @@ import { Injectable, Logger, Inject } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { QUEUES } from '../../../queue/queue.module';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
+import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
+import { YouTubePubSubHubbubService } from '../services/youtube-pubsubhubbub.service';
 
 const SOCIAL_PLATFORMS: readonly SupportedPlatform[] = [
   'facebook',
@@ -42,6 +45,7 @@ export class ChannelSnapshotsScheduler {
   constructor(
     @InjectQueue(QUEUES.CHANNEL_SNAPSHOTS) private readonly queue: Queue,
     @Inject(DRIZZLE) private readonly db: any,
+    private readonly pubsub: YouTubePubSubHubbubService,
   ) {}
 
   @Cron('30 2 * * *', { timeZone: 'UTC', name: 'enqueueRecentPostsSync' })
@@ -101,6 +105,45 @@ export class ChannelSnapshotsScheduler {
         { channelId: eligible[i].id, date },
         { delay: i * 100 },
       );
+    }
+  }
+
+  /**
+   * Daily cron at 04:00 UTC.
+   * Re-subscribes YouTube channels whose PubSubHubbub lease expires within the
+   * next 2 days (or has never been confirmed). Subscriptions are valid for 10
+   * days — renewing at the 8-day mark gives a 2-day safety window.
+   */
+  @Cron('0 4 * * *', { timeZone: 'UTC', name: 'renewYouTubePubSubHubbub' })
+  async renewYouTubePubSubHubbub(): Promise<void> {
+    const inTwoDays = new Date(Date.now() + 2 * 24 * 60 * 60 * 1000);
+
+    const rows = await this.db
+      .select({
+        id: socialMediaChannels.id,
+        platformAccountId: socialMediaChannels.platformAccountId,
+      })
+      .from(socialMediaChannels)
+      .leftJoin(channelSyncState, eq(channelSyncState.channelId, socialMediaChannels.id))
+      .where(
+        and(
+          eq(socialMediaChannels.platform, 'youtube'),
+          eq(socialMediaChannels.isActive, true),
+          eq(socialMediaChannels.connectionStatus, 'connected'),
+          or(
+            isNull(channelSyncState.pubsubhubbubLeaseExpiresAt),
+            lt(channelSyncState.pubsubhubbubLeaseExpiresAt, inTwoDays),
+          ),
+        ),
+      );
+
+    const list = rows as Array<{ id: number; platformAccountId: string }>;
+    this.logger.log(
+      `renewYouTubePubSubHubbub: renewing ${list.length} YT channel(s)`,
+    );
+
+    for (const r of list) {
+      await this.pubsub.subscribe(Number(r.id), r.platformAccountId);
     }
   }
 }

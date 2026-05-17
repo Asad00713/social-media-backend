@@ -5,6 +5,8 @@ import { eq } from 'drizzle-orm';
 import { QUEUES } from '../../../queue/queue.module';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
+import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
+import { YouTubePubSubHubbubService } from './youtube-pubsubhubbub.service';
 
 /**
  * Handles channel lifecycle transitions that affect analytics:
@@ -20,6 +22,7 @@ export class ChannelSyncLifecycleService {
   constructor(
     @InjectQueue(QUEUES.CHANNEL_SNAPSHOTS) private readonly queue: Queue,
     @Inject(DRIZZLE) private readonly db: any,
+    private readonly pubsub: YouTubePubSubHubbubService,
   ) {}
 
   async onChannelDisconnected(channelId: number): Promise<void> {
@@ -61,6 +64,29 @@ export class ChannelSyncLifecycleService {
 
     await this.queue.add('channel-initial-backfill', { channelId, workspaceId });
     this.logger.log(`Connect for channelId=${channelId}: sync state initialized + backfill enqueued`);
+
+    // For YouTube channels, subscribe to PubSubHubbub for instant upload notifications.
+    // Look up the platform and platformAccountId to avoid requiring callers to pass them.
+    const channelRows = await this.db
+      .select({
+        platform: socialMediaChannels.platform,
+        platformAccountId: socialMediaChannels.platformAccountId,
+      })
+      .from(socialMediaChannels)
+      .where(eq(socialMediaChannels.id, channelId))
+      .limit(1);
+
+    const ch = channelRows[0] as
+      | { platform: string; platformAccountId: string }
+      | undefined;
+
+    if (ch?.platform === 'youtube' && ch.platformAccountId) {
+      void this.pubsub.subscribe(channelId, ch.platformAccountId).catch((e: Error) => {
+        this.logger.warn(
+          `PubSubHubbub auto-subscribe failed for channelId=${channelId}: ${e.message}`,
+        );
+      });
+    }
   }
 }
 

@@ -21,10 +21,12 @@ import { YouTubeAnalyticsAdapter } from './adapters/youtube/youtube-analytics.ad
 import { YouTubeDataApiClient } from './adapters/youtube/youtube-data-api.client';
 import { YouTubeAnalyticsApiClient } from './adapters/youtube/youtube-analytics-api.client';
 import { AdapterRegistryService } from './services/adapter-registry.service';
+import { YouTubePubSubHubbubService } from './services/youtube-pubsubhubbub.service';
+import { YouTubePubSubHubbubController } from './youtube-pubsubhubbub.controller';
 
 @Module({
   imports: [ConfigModule, BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS })],
-  controllers: [AnalyticsController, ChannelRefreshController],
+  controllers: [AnalyticsController, ChannelRefreshController, YouTubePubSubHubbubController],
   providers: [
     QuotaTrackerService,
     AnalyticsService,
@@ -39,6 +41,7 @@ import { AdapterRegistryService } from './services/adapter-registry.service';
     ChannelSnapshotsScheduler,
     TieredPollingScheduler,
     ChannelSyncLifecycleService,
+    YouTubePubSubHubbubService,
     { provide: YouTubeDataApiClient, useValue: new YouTubeDataApiClient() },
     { provide: YouTubeAnalyticsApiClient, useValue: new YouTubeAnalyticsApiClient() },
     YouTubeAnalyticsAdapter,

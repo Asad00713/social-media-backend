@@ -30,6 +30,7 @@ export const channelSyncState = pgTable('channel_sync_state', {
     .$type<BackfillStatus>(),
   initialBackfillCompletedAt: timestamp('initial_backfill_completed_at', { withTimezone: true }),
   lastPostsSyncAt: timestamp('last_posts_sync_at', { withTimezone: true }),
+  pubsubhubbubLeaseExpiresAt: timestamp('pubsubhubbub_lease_expires_at', { withTimezone: true }),
 });
 
 export type ChannelSyncStateRow = typeof channelSyncState.$inferSelect;
