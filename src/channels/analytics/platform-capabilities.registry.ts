@@ -178,6 +178,32 @@ const INSTAGRAM_CAPABILITIES: PlatformCapabilities = {
   dailyQuotaBudget: null, // Meta uses request-based throttling, not call-count quotas
 };
 
+const THREADS_CAPABILITIES: PlatformCapabilities = {
+  platform: 'threads',
+  hasFollowerCount: true,
+  hasFollowerTimeSeries: true,
+  hasFollowingCount: false, // Threads API does not expose following_count
+  hasImpressions: true,
+  hasReach: false, // no unique reach metric on Threads API
+  hasEngagementRate: true,
+  hasVideoMetrics: false,
+  hasDemographics: false,
+  hasTrafficSources: false,
+  contentTypes: ['thread'],
+  vocabulary: {
+    follower: 'followers',
+    following: 'following',
+    share: 'repost',
+    post: 'thread',
+  },
+  hasEphemeralContent: false,
+  ephemeralTTLHours: null,
+  profileDataSource: 'hybrid', // /me for profile fields, /me/threads_insights for followers_count
+  postDataSource: 'platform_api',
+  dataFreshness: 'hourly',
+  dailyQuotaBudget: null, // Meta uses request-based throttling, not call-count quotas
+};
+
 export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCapabilities>> = {
   ...Object.fromEntries(
     SOCIAL_PLATFORMS.map((p) => [p, placeholderCapabilities(p)]),
@@ -187,6 +213,7 @@ export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCa
   mastodon: MASTODON_CAPABILITIES,
   facebook: FACEBOOK_CAPABILITIES,
   instagram: INSTAGRAM_CAPABILITIES,
+  threads: THREADS_CAPABILITIES,
 };
 
 export function getCapabilities(platform: SupportedPlatform): PlatformCapabilities {
