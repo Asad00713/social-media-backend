@@ -46,6 +46,32 @@ const BLUESKY_CAPABILITIES: PlatformCapabilities = {
   dailyQuotaBudget: null,
 };
 
+const MASTODON_CAPABILITIES: PlatformCapabilities = {
+  platform: 'mastodon',
+  hasFollowerCount: true,
+  hasFollowerTimeSeries: true,
+  hasFollowingCount: true,
+  hasImpressions: false,
+  hasReach: false,
+  hasEngagementRate: true,
+  hasVideoMetrics: false,
+  hasDemographics: false,
+  hasTrafficSources: false,
+  contentTypes: ['post'],
+  vocabulary: {
+    follower: 'followers',
+    following: 'following',
+    share: 'boost',
+    post: 'toot',
+  },
+  hasEphemeralContent: false,
+  ephemeralTTLHours: null,
+  profileDataSource: 'hybrid',
+  postDataSource: 'platform_api',
+  dataFreshness: 'realtime',
+  dailyQuotaBudget: null,
+};
+
 const YOUTUBE_CAPABILITIES: PlatformCapabilities = {
   platform: 'youtube',
   hasFollowerCount: true,
@@ -106,6 +132,7 @@ export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCa
   ),
   youtube: YOUTUBE_CAPABILITIES,
   bluesky: BLUESKY_CAPABILITIES,
+  mastodon: MASTODON_CAPABILITIES,
 };
 
 export function getCapabilities(platform: SupportedPlatform): PlatformCapabilities {

@@ -22,6 +22,8 @@ import { YouTubeDataApiClient } from './adapters/youtube/youtube-data-api.client
 import { YouTubeAnalyticsApiClient } from './adapters/youtube/youtube-analytics-api.client';
 import { BlueskyApiClient } from './adapters/bluesky/bluesky-api.client';
 import { BlueskyAnalyticsAdapter } from './adapters/bluesky/bluesky-analytics.adapter';
+import { MastodonApiClient } from './adapters/mastodon/mastodon-api.client';
+import { MastodonAnalyticsAdapter } from './adapters/mastodon/mastodon-analytics.adapter';
 import { AdapterRegistryService } from './services/adapter-registry.service';
 import { YouTubePubSubHubbubService } from './services/youtube-pubsubhubbub.service';
 import { YouTubePubSubHubbubController } from './youtube-pubsubhubbub.controller';
@@ -49,6 +51,8 @@ import { YouTubePubSubHubbubController } from './youtube-pubsubhubbub.controller
     YouTubeAnalyticsAdapter,
     { provide: BlueskyApiClient, useValue: new BlueskyApiClient() },
     BlueskyAnalyticsAdapter,
+    { provide: MastodonApiClient, useValue: new MastodonApiClient() },
+    MastodonAnalyticsAdapter,
     AdapterRegistryService,
   ],
   exports: [QuotaTrackerService, AnalyticsService, ChannelSyncLifecycleService, AdapterRegistryService],
