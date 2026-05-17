@@ -9,6 +9,7 @@ import {
   forwardRef,
 } from '@nestjs/common';
 import { OAuthService } from './oauth.service';
+import { ChannelSyncLifecycleService } from '../analytics/services/channel-sync-lifecycle.service';
 import { eq, and, desc, asc, sql } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
@@ -44,6 +45,7 @@ export class ChannelService {
   constructor(
     @Inject(forwardRef(() => OAuthService))
     private readonly oauthService: OAuthService,
+    private readonly syncLifecycle: ChannelSyncLifecycleService,
   ) {}
 
   // ==========================================================================
@@ -132,6 +134,9 @@ export class ChannelService {
 
     // Update workspace usage count
     await this.incrementChannelCount(workspaceId);
+
+    // Initialize sync state and enqueue initial backfill
+    await this.syncLifecycle.onChannelConnected(inserted[0].id, workspaceId);
 
     this.logger.log(
       `Created ${dto.platform} channel for workspace ${workspaceId}: ${dto.accountName}`,
@@ -330,6 +335,9 @@ export class ChannelService {
     if (channel.length === 0) {
       throw new NotFoundException('Channel not found');
     }
+
+    // Cancel pending snapshot jobs and null out next-sync window before deletion
+    await this.syncLifecycle.onChannelDisconnected(channelId);
 
     await db
       .delete(socialMediaChannels)

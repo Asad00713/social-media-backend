@@ -20,9 +20,10 @@ import { OneDriveService } from './services/onedrive.service';
 import { DropboxService } from './services/dropbox.service';
 import { UnsplashService } from './services/unsplash.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
+import { AnalyticsModule } from './analytics/analytics.module';
 
 @Module({
-  imports: [DrizzleModule],
+  imports: [DrizzleModule, AnalyticsModule],
   controllers: [ChannelsController, WebhooksController],
   providers: [
     ChannelService,
