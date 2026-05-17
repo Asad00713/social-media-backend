@@ -19,26 +19,9 @@ export interface PostMetricSnapshotJob {
   ageBucket: AgeBucket;
 }
 
-const BUCKET_TO_NEXT: Partial<Record<AgeBucket, AgeBucket | null>> = {
-  '30m': '1h',
-  '1h': '6h',
-  '6h': '24h',
-  '24h': '3d',
-  '3d': '7d',
-  '7d': '30d',
-  '30d': 'final',
-  'final': null,
-};
-
-const BUCKET_TO_DELAY_MS: Partial<Record<AgeBucket, number>> = {
-  '30m': 30 * 60 * 1000,
-  '1h': 60 * 60 * 1000,
-  '6h': 6 * 60 * 60 * 1000,
-  '24h': 24 * 60 * 60 * 1000,
-  '3d': 3 * 24 * 60 * 60 * 1000,
-  '7d': 7 * 24 * 60 * 60 * 1000,
-  '30d': 30 * 24 * 60 * 60 * 1000,
-};
+// NOTE: cascade-style enqueue removed in Phase 0. The TieredPollingScheduler
+// now drives polling based on post age tiers, picked up every 5 min.
+// BUCKET_TO_NEXT and BUCKET_TO_DELAY_MS constants have been removed.
 
 @Injectable()
 export class PostMetricSnapshotHandler {
@@ -159,15 +142,14 @@ export class PostMetricSnapshotHandler {
           r.shares === lastThree[0].shares,
       );
 
-    const nextBucket = BUCKET_TO_NEXT[ageBucket];
-    if (stable || !nextBucket) {
-      this.logger.log(`Post ${postId} bucket=${ageBucket} reached final (${stable ? 'stable' : 'last bucket'}), stopping`);
-      return { ok: true };
+    // Engagement-decay logging: informational only — no cascade enqueue.
+    // The TieredPollingScheduler picks this post up again at the next tick
+    // based on its age tier. (cascade-style enqueue removed in Phase 0)
+    if (stable) {
+      this.logger.log(`Post ${postId} bucket=${ageBucket}: metrics stable across last 3 snapshots (engagement likely plateaued)`);
+    } else {
+      this.logger.log(`Post snapshot success postId=${postId} bucket=${ageBucket}`);
     }
-
-    const delay = BUCKET_TO_DELAY_MS[ageBucket] ?? 24 * 60 * 60 * 1000;
-    await this.queue.add('post-metric-snapshot', { postId, channelId, ageBucket: nextBucket }, { delay });
-    this.logger.log(`Post snapshot success postId=${postId} bucket=${ageBucket}, scheduled next=${nextBucket}`);
     return { ok: true };
   }
 }

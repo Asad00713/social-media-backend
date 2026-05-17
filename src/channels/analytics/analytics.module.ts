@@ -15,6 +15,7 @@ import { ChannelDailyRollupHandler } from './handlers/channel-daily-rollup.handl
 import { ChannelInitialBackfillHandler } from './handlers/channel-initial-backfill.handler';
 import { ChannelRecentPostsSyncHandler } from './handlers/channel-recent-posts-sync.handler';
 import { ChannelSnapshotsScheduler } from './schedulers/channel-snapshots.scheduler';
+import { TieredPollingScheduler } from './schedulers/tiered-polling.scheduler';
 import { ChannelSyncLifecycleService } from './services/channel-sync-lifecycle.service';
 import { YouTubeAnalyticsAdapter } from './adapters/youtube/youtube-analytics.adapter';
 import { YouTubeDataApiClient } from './adapters/youtube/youtube-data-api.client';
@@ -36,6 +37,7 @@ import { AdapterRegistryService } from './services/adapter-registry.service';
     ChannelRecentPostsSyncHandler,
     ChannelSnapshotsDispatcherProcessor,
     ChannelSnapshotsScheduler,
+    TieredPollingScheduler,
     ChannelSyncLifecycleService,
     { provide: YouTubeDataApiClient, useValue: new YouTubeDataApiClient() },
     { provide: YouTubeAnalyticsApiClient, useValue: new YouTubeAnalyticsApiClient() },

@@ -21,9 +21,16 @@ const SOCIAL_PLATFORMS: readonly SupportedPlatform[] = [
 ];
 
 /**
- * Daily cron jobs that enqueue per-channel snapshot + rollup work.
- * Jobs are staggered (100ms apart) to spread platform-API load and avoid
- * thundering herds against rate limits.
+ * Daily cron jobs for recent-posts discovery and metric rollups.
+ *
+ * NOTE: The `enqueueProfileSnapshots` method (previously on 02:00 UTC daily)
+ * has been removed. Channel profile snapshots are now driven by
+ * TieredPollingScheduler which runs every 5 min and applies age-based
+ * intervals (new channel: 5 min, active: 15 min, otherwise: 30 min).
+ *
+ * Remaining methods:
+ *   - enqueueRecentPostsSync (02:30 daily) — discovers externally-uploaded posts
+ *   - enqueueDailyRollups   (03:00 daily) — daily by nature, kept as-is
  *
  * Cloud-storage channels (google_drive etc.) are excluded — analytics only
  * applies to social platforms.
@@ -36,36 +43,6 @@ export class ChannelSnapshotsScheduler {
     @InjectQueue(QUEUES.CHANNEL_SNAPSHOTS) private readonly queue: Queue,
     @Inject(DRIZZLE) private readonly db: any,
   ) {}
-
-  @Cron('0 2 * * *', { timeZone: 'UTC', name: 'enqueueProfileSnapshots' })
-  async enqueueProfileSnapshots(): Promise<void> {
-    const rows = await this.db
-      .select({
-        id: socialMediaChannels.id,
-        workspaceId: socialMediaChannels.workspaceId,
-        platform: socialMediaChannels.platform,
-        isActive: socialMediaChannels.isActive,
-      })
-      .from(socialMediaChannels);
-
-    const eligible = rows.filter(
-      (r: { isActive: boolean; platform: string }) =>
-        r.isActive && (SOCIAL_PLATFORMS as readonly string[]).includes(r.platform),
-    );
-
-    this.logger.log(
-      `Enqueuing profile snapshots for ${eligible.length} active channels`,
-    );
-
-    for (let i = 0; i < eligible.length; i++) {
-      const r = eligible[i];
-      await this.queue.add(
-        'channel-profile-snapshot',
-        { channelId: r.id, workspaceId: r.workspaceId },
-        { delay: i * 100 },
-      );
-    }
-  }
 
   @Cron('30 2 * * *', { timeZone: 'UTC', name: 'enqueueRecentPostsSync' })
   async enqueueRecentPostsSync(): Promise<void> {
