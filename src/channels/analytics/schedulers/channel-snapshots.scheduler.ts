@@ -67,6 +67,34 @@ export class ChannelSnapshotsScheduler {
     }
   }
 
+  @Cron('30 2 * * *', { timeZone: 'UTC', name: 'enqueueRecentPostsSync' })
+  async enqueueRecentPostsSync(): Promise<void> {
+    const rows = await this.db
+      .select({
+        id: socialMediaChannels.id,
+        workspaceId: socialMediaChannels.workspaceId,
+        platform: socialMediaChannels.platform,
+        isActive: socialMediaChannels.isActive,
+      })
+      .from(socialMediaChannels);
+
+    const eligible = rows.filter(
+      (r: { isActive: boolean; platform: string }) =>
+        r.isActive && (SOCIAL_PLATFORMS as readonly string[]).includes(r.platform),
+    );
+
+    this.logger.log(`Enqueuing recent-posts-sync for ${eligible.length} active channels`);
+
+    for (let i = 0; i < eligible.length; i++) {
+      const r = eligible[i];
+      await this.queue.add(
+        'channel-recent-posts-sync',
+        { channelId: r.id, workspaceId: r.workspaceId, sinceDays: 7, limit: 50 },
+        { delay: i * 100 },
+      );
+    }
+  }
+
   @Cron('0 3 * * *', { timeZone: 'UTC', name: 'enqueueDailyRollups' })
   async enqueueDailyRollups(): Promise<void> {
     const rows = await this.db

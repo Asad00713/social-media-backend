@@ -6,12 +6,14 @@ import { ChannelProfileSnapshotHandler, type ChannelProfileSnapshotJob } from '.
 import { PostMetricSnapshotHandler, type PostMetricSnapshotJob } from '../handlers/post-metric-snapshot.handler';
 import { ChannelDailyRollupHandler, type ChannelDailyRollupJob } from '../handlers/channel-daily-rollup.handler';
 import { ChannelInitialBackfillHandler, type ChannelInitialBackfillJob } from '../handlers/channel-initial-backfill.handler';
+import { ChannelRecentPostsSyncHandler, type ChannelRecentPostsSyncJob } from '../handlers/channel-recent-posts-sync.handler';
 
 type AnyJob =
   | Job<ChannelProfileSnapshotJob>
   | Job<PostMetricSnapshotJob>
   | Job<ChannelDailyRollupJob>
-  | Job<ChannelInitialBackfillJob>;
+  | Job<ChannelInitialBackfillJob>
+  | Job<ChannelRecentPostsSyncJob>;
 
 @Processor(QUEUES.CHANNEL_SNAPSHOTS)
 export class ChannelSnapshotsDispatcherProcessor extends WorkerHost {
@@ -22,6 +24,7 @@ export class ChannelSnapshotsDispatcherProcessor extends WorkerHost {
     private readonly post: PostMetricSnapshotHandler,
     private readonly rollup: ChannelDailyRollupHandler,
     private readonly backfill: ChannelInitialBackfillHandler,
+    private readonly recentPosts: ChannelRecentPostsSyncHandler,
   ) {
     super();
   }
@@ -36,6 +39,8 @@ export class ChannelSnapshotsDispatcherProcessor extends WorkerHost {
         return this.rollup.handle(job.data as ChannelDailyRollupJob);
       case 'channel-initial-backfill':
         return this.backfill.handle(job.data as ChannelInitialBackfillJob);
+      case 'channel-recent-posts-sync':
+        return this.recentPosts.handle(job.data as ChannelRecentPostsSyncJob);
       default:
         this.logger.warn(`Unknown job name on channel-snapshots queue: ${job.name}`);
         return { ok: true };

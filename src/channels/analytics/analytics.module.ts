@@ -13,6 +13,7 @@ import { ChannelProfileSnapshotHandler } from './handlers/channel-profile-snapsh
 import { PostMetricSnapshotHandler } from './handlers/post-metric-snapshot.handler';
 import { ChannelDailyRollupHandler } from './handlers/channel-daily-rollup.handler';
 import { ChannelInitialBackfillHandler } from './handlers/channel-initial-backfill.handler';
+import { ChannelRecentPostsSyncHandler } from './handlers/channel-recent-posts-sync.handler';
 import { ChannelSnapshotsScheduler } from './schedulers/channel-snapshots.scheduler';
 import { ChannelSyncLifecycleService } from './services/channel-sync-lifecycle.service';
 import { YouTubeAnalyticsAdapter } from './adapters/youtube/youtube-analytics.adapter';
@@ -32,6 +33,7 @@ import { AdapterRegistryService } from './services/adapter-registry.service';
     PostMetricSnapshotHandler,
     ChannelDailyRollupHandler,
     ChannelInitialBackfillHandler,
+    ChannelRecentPostsSyncHandler,
     ChannelSnapshotsDispatcherProcessor,
     ChannelSnapshotsScheduler,
     ChannelSyncLifecycleService,

@@ -7,13 +7,13 @@ import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.sch
 import { AdapterRegistryService } from '../services/adapter-registry.service';
 import { QuotaTrackerService } from '../services/quota-tracker.service';
 import { decrypt } from '../../../common/utils/encryption.util';
+import { ChannelRecentPostsSyncHandler } from './channel-recent-posts-sync.handler';
 
 export interface ChannelInitialBackfillJob {
   channelId: number;
   workspaceId: string;
 }
 
-const BACKFILL_DAYS = 30;
 
 @Injectable()
 export class ChannelInitialBackfillHandler {
@@ -22,6 +22,7 @@ export class ChannelInitialBackfillHandler {
   constructor(
     private readonly registry: AdapterRegistryService,
     private readonly quota: QuotaTrackerService,
+    private readonly recentPostsSync: ChannelRecentPostsSyncHandler,
     @Inject(DRIZZLE) private readonly db: any,
   ) {}
 
@@ -65,22 +66,14 @@ export class ChannelInitialBackfillHandler {
       }
     }
 
-    // 2. Recent posts (if adapter supports it). Phase 2 just logs the count —
-    // creating synthetic post rows is out of scope (needs post-sync flow design).
-    if (adapter.fetchRecentPosts) {
-      const since = new Date(Date.now() - BACKFILL_DAYS * 24 * 60 * 60 * 1000);
-      const recentCost = adapter.estimateQuotaCost('fetchRecentPosts');
-      const rq = await this.quota.tryConsume(channel.platform as SupportedPlatform, recentCost);
-      if (rq.allowed) {
-        const recent = await adapter.fetchRecentPosts(channelForAdapter, { since, limit: 50 });
-        if (recent.status !== 'failed') {
-          const count = recent.data.posts?.length ?? 0;
-          this.logger.log(
-            `Backfill: ${count} recent posts available (not persisted in Phase 2; needs post-sync flow)`,
-          );
-        }
-      }
-    }
+    // 2. Recent posts — delegate to ChannelRecentPostsSyncHandler for full persistence.
+    const syncResult = await this.recentPostsSync.handle({
+      channelId,
+      workspaceId: data.workspaceId,
+      sinceDays: 90,
+      limit: 50,
+    });
+    this.logger.log(`Initial backfill: recent-posts-sync returned ${JSON.stringify(syncResult)}`);
 
     await this.markBackfillStatus(channelId, 'completed');
     this.logger.log(`Initial backfill completed for channelId=${channelId}`);

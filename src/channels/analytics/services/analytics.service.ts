@@ -198,6 +198,7 @@ export class AnalyticsService {
     await this.redis.incrby(key, 1);
     await this.redis.expire(key, 60 * 60);
     await this.queue.add('channel-profile-snapshot', { channelId, workspaceId });
+    await this.queue.add('channel-recent-posts-sync', { channelId, workspaceId, sinceDays: 7, limit: 50 });
     return {
       accepted: true,
       nextAllowedAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
