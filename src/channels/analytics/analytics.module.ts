@@ -14,6 +14,10 @@ import { ChannelDailyRollupProcessor } from './processors/channel-daily-rollup.p
 import { ChannelInitialBackfillProcessor } from './processors/channel-initial-backfill.processor';
 import { ChannelSnapshotsScheduler } from './schedulers/channel-snapshots.scheduler';
 import { ChannelSyncLifecycleService } from './services/channel-sync-lifecycle.service';
+import { YouTubeAnalyticsAdapter } from './adapters/youtube/youtube-analytics.adapter';
+import { YouTubeDataApiClient } from './adapters/youtube/youtube-data-api.client';
+import { YouTubeAnalyticsApiClient } from './adapters/youtube/youtube-analytics-api.client';
+import { AdapterRegistryService } from './services/adapter-registry.service';
 
 @Module({
   imports: [ConfigModule, BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS })],
@@ -29,7 +33,11 @@ import { ChannelSyncLifecycleService } from './services/channel-sync-lifecycle.s
     ChannelInitialBackfillProcessor,
     ChannelSnapshotsScheduler,
     ChannelSyncLifecycleService,
+    { provide: YouTubeDataApiClient, useValue: new YouTubeDataApiClient() },
+    { provide: YouTubeAnalyticsApiClient, useValue: new YouTubeAnalyticsApiClient() },
+    YouTubeAnalyticsAdapter,
+    AdapterRegistryService,
   ],
-  exports: [QuotaTrackerService, AnalyticsService, ChannelSyncLifecycleService],
+  exports: [QuotaTrackerService, AnalyticsService, ChannelSyncLifecycleService, AdapterRegistryService],
 })
 export class AnalyticsModule {}
