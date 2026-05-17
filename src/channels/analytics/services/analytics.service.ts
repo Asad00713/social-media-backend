@@ -71,7 +71,7 @@ export class AnalyticsService {
         WHERE channel_id = ${channelId} AND snapshot_at >= ${new Date(start + 'T00:00:00Z')}
         ORDER BY post_id, snapshot_at DESC
       )
-      SELECT l.*, p.content, p.media, p.published_at
+      SELECT l.*, p.content, p.media_items, p.published_at
       FROM latest l
       JOIN ${posts} p ON p.id = l.post_id
       ORDER BY (COALESCE(l.likes_count,0) + COALESCE(l.comments_count,0) + COALESCE(l.shares_count,0)) DESC
@@ -141,7 +141,7 @@ export class AnalyticsService {
         postId: r.post_id,
         publishedAt: r.published_at ? new Date(r.published_at).toISOString() : new Date().toISOString(),
         content: r.content ?? '',
-        mediaUrl: extractFirstMediaUrl(r.media),
+        mediaUrl: extractFirstMediaUrl(r.media_items),
         metrics: {
           likes: Number(r.likes_count ?? 0),
           comments: Number(r.comments_count ?? 0),
