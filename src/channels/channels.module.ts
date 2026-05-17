@@ -24,6 +24,7 @@ import { AnalyticsModule } from './analytics/analytics.module';
 import { QueueModule } from '../queue/queue.module';
 import { TokenRefreshProcessor } from './processors/token-refresh.processor';
 import { TokenRefreshScheduler } from './schedulers/token-refresh.scheduler';
+import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.scheduler';
 
 @Module({
   imports: [DrizzleModule, AnalyticsModule, QueueModule],
@@ -49,6 +50,7 @@ import { TokenRefreshScheduler } from './schedulers/token-refresh.scheduler';
     UnsplashService,
     TokenRefreshProcessor,
     TokenRefreshScheduler,
+    RefreshTokenExpiryScheduler,
   ],
   exports: [
     ChannelService,

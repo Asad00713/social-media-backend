@@ -23,6 +23,7 @@ import {
   SupportedPlatform,
   PLATFORM_CONFIG,
   ConnectionStatus,
+  getRefreshTokenTtlDays,
 } from '../../drizzle/schema/channels.schema';
 import { workspaceUsage } from '../../drizzle/schema';
 import { encrypt, decrypt, maskSensitiveData } from '../../common/utils/encryption.util';
@@ -954,6 +955,16 @@ export class ChannelService {
 
     const hasRefreshToken = !!channel.refreshToken;
 
+    const refreshTokenExpiresInDays = (() => {
+      if (!channel.refreshToken || !channel.refreshTokenIssuedAt) return null;
+      const ttlDays = getRefreshTokenTtlDays(channel.platform as SupportedPlatform);
+      if (ttlDays === null) return null;
+      const issuedAt = new Date(channel.refreshTokenIssuedAt).getTime();
+      const expiresAt = issuedAt + ttlDays * 24 * 60 * 60 * 1000;
+      const remainingMs = expiresAt - Date.now();
+      return Math.floor(remainingMs / (24 * 60 * 60 * 1000));
+    })();
+
     return {
       id: channel.id,
       workspaceId: channel.workspaceId,
@@ -977,6 +988,7 @@ export class ChannelService {
       tokenExpiresAt: channel.tokenExpiresAt,
       isTokenExpired,
       hasRefreshToken,
+      refreshTokenExpiresInDays,
       createdAt: channel.createdAt,
       updatedAt: channel.updatedAt,
     };

@@ -243,6 +243,7 @@ export class ChannelResponseDto {
   tokenExpiresAt: Date | null;
   isTokenExpired: boolean;
   hasRefreshToken: boolean;
+  refreshTokenExpiresInDays: number | null;
   createdAt: Date;
   updatedAt: Date;
 }
