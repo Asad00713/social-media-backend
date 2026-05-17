@@ -21,9 +21,12 @@ import { DropboxService } from './services/dropbox.service';
 import { UnsplashService } from './services/unsplash.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { AnalyticsModule } from './analytics/analytics.module';
+import { QueueModule } from '../queue/queue.module';
+import { TokenRefreshProcessor } from './processors/token-refresh.processor';
+import { TokenRefreshScheduler } from './schedulers/token-refresh.scheduler';
 
 @Module({
-  imports: [DrizzleModule, AnalyticsModule],
+  imports: [DrizzleModule, AnalyticsModule, QueueModule],
   controllers: [ChannelsController, WebhooksController],
   providers: [
     ChannelService,
@@ -44,6 +47,8 @@ import { AnalyticsModule } from './analytics/analytics.module';
     OneDriveService,
     DropboxService,
     UnsplashService,
+    TokenRefreshProcessor,
+    TokenRefreshScheduler,
   ],
   exports: [
     ChannelService,
