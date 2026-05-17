@@ -25,6 +25,10 @@ import { CommunityModule } from './community/community.module';
 import { ChatbotModule } from './chatbot/chatbot.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AnalyticsModule } from './channels/analytics/analytics.module';
+import { BullBoardModule } from '@bull-board/nestjs';
+import { ExpressAdapter } from '@bull-board/express';
+import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
+import { QUEUES } from './queue/queue.module';
 
 @Module({
   imports: [
@@ -54,6 +58,16 @@ import { AnalyticsModule } from './channels/analytics/analytics.module';
     CommunityModule,
     ChatbotModule,
     AnalyticsModule,
+    BullBoardModule.forRoot({
+      route: '/admin/queues',
+      adapter: ExpressAdapter,
+    }),
+    BullBoardModule.forFeature(
+      { name: QUEUES.POST_PUBLISHING, adapter: BullMQAdapter },
+      { name: QUEUES.TOKEN_REFRESH, adapter: BullMQAdapter },
+      { name: QUEUES.DRIP_CAMPAIGNS, adapter: BullMQAdapter },
+      { name: QUEUES.CHANNEL_SNAPSHOTS, adapter: BullMQAdapter },
+    ),
   ],
   controllers: [AppController],
   providers: [AppService],
