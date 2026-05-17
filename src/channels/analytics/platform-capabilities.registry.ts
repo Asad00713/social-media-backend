@@ -126,6 +126,32 @@ function placeholderCapabilities(platform: SupportedPlatform): PlatformCapabilit
   };
 }
 
+const FACEBOOK_CAPABILITIES: PlatformCapabilities = {
+  platform: 'facebook',
+  hasFollowerCount: true,
+  hasFollowerTimeSeries: true,
+  hasFollowingCount: false,
+  hasImpressions: true,
+  hasReach: true,
+  hasEngagementRate: true,
+  hasVideoMetrics: true,
+  hasDemographics: true, // page_fans_country + page_fans_gender_age via Page Insights
+  hasTrafficSources: false,
+  contentTypes: ['post'],
+  vocabulary: {
+    follower: 'followers',
+    following: 'following',
+    share: 'share',
+    post: 'post',
+  },
+  hasEphemeralContent: true, // FB Stories
+  ephemeralTTLHours: 24,
+  profileDataSource: 'hybrid',
+  postDataSource: 'platform_api',
+  dataFreshness: 'hourly',
+  dailyQuotaBudget: null, // Meta uses request-based throttling, not call-count quotas
+};
+
 export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCapabilities>> = {
   ...Object.fromEntries(
     SOCIAL_PLATFORMS.map((p) => [p, placeholderCapabilities(p)]),
@@ -133,6 +159,7 @@ export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCa
   youtube: YOUTUBE_CAPABILITIES,
   bluesky: BLUESKY_CAPABILITIES,
   mastodon: MASTODON_CAPABILITIES,
+  facebook: FACEBOOK_CAPABILITIES,
 };
 
 export function getCapabilities(platform: SupportedPlatform): PlatformCapabilities {

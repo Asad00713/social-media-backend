@@ -3,11 +3,12 @@ import type { PlatformAnalyticsAdapter } from '../types/platform-adapter.types';
 import { YouTubeAnalyticsAdapter } from '../adapters/youtube/youtube-analytics.adapter';
 import { BlueskyAnalyticsAdapter } from '../adapters/bluesky/bluesky-analytics.adapter';
 import { MastodonAnalyticsAdapter } from '../adapters/mastodon/mastodon-analytics.adapter';
+import { FacebookAnalyticsAdapter } from '../adapters/facebook/facebook-analytics.adapter';
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
 
 /**
- * Lookup table for platform adapters. Phase 2 ships YouTube only;
- * subsequent phases register more adapters here.
+ * Lookup table for platform adapters. Adapters are registered here as each
+ * platform's analytics phase ships.
  */
 @Injectable()
 export class AdapterRegistryService {
@@ -17,10 +18,12 @@ export class AdapterRegistryService {
     private readonly youtube: YouTubeAnalyticsAdapter,
     private readonly bluesky: BlueskyAnalyticsAdapter,
     private readonly mastodon: MastodonAnalyticsAdapter,
+    private readonly facebook: FacebookAnalyticsAdapter,
   ) {
     this.adapters.set('youtube', youtube);
     this.adapters.set('bluesky', bluesky);
     this.adapters.set('mastodon', mastodon);
+    this.adapters.set('facebook', facebook);
   }
 
   get(platform: SupportedPlatform): PlatformAnalyticsAdapter {
