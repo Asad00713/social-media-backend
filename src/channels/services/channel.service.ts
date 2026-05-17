@@ -948,6 +948,8 @@ export class ChannelService {
       ? channel.tokenExpiresAt < new Date()
       : false;
 
+    const hasRefreshToken = !!channel.refreshToken;
+
     return {
       id: channel.id,
       workspaceId: channel.workspaceId,
@@ -970,6 +972,7 @@ export class ChannelService {
       color: channel.color,
       tokenExpiresAt: channel.tokenExpiresAt,
       isTokenExpired,
+      hasRefreshToken,
       createdAt: channel.createdAt,
       updatedAt: channel.updatedAt,
     };

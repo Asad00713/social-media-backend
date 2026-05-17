@@ -242,6 +242,7 @@ export class ChannelResponseDto {
   color: string | null;
   tokenExpiresAt: Date | null;
   isTokenExpired: boolean;
+  hasRefreshToken: boolean;
   createdAt: Date;
   updatedAt: Date;
 }
