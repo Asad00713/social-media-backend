@@ -152,6 +152,32 @@ const FACEBOOK_CAPABILITIES: PlatformCapabilities = {
   dailyQuotaBudget: null, // Meta uses request-based throttling, not call-count quotas
 };
 
+const INSTAGRAM_CAPABILITIES: PlatformCapabilities = {
+  platform: 'instagram',
+  hasFollowerCount: true,
+  hasFollowerTimeSeries: true,
+  hasFollowingCount: true,
+  hasImpressions: true,
+  hasReach: true,
+  hasEngagementRate: true,
+  hasVideoMetrics: true,
+  hasDemographics: true,
+  hasTrafficSources: false,
+  contentTypes: ['post', 'reel', 'story'],
+  vocabulary: {
+    follower: 'followers',
+    following: 'following',
+    share: 'share',
+    post: 'post',
+  },
+  hasEphemeralContent: true, // Stories expire after 24h
+  ephemeralTTLHours: 24,
+  profileDataSource: 'hybrid',
+  postDataSource: 'platform_api',
+  dataFreshness: 'hourly',
+  dailyQuotaBudget: null, // Meta uses request-based throttling, not call-count quotas
+};
+
 export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCapabilities>> = {
   ...Object.fromEntries(
     SOCIAL_PLATFORMS.map((p) => [p, placeholderCapabilities(p)]),
@@ -160,6 +186,7 @@ export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCa
   bluesky: BLUESKY_CAPABILITIES,
   mastodon: MASTODON_CAPABILITIES,
   facebook: FACEBOOK_CAPABILITIES,
+  instagram: INSTAGRAM_CAPABILITIES,
 };
 
 export function getCapabilities(platform: SupportedPlatform): PlatformCapabilities {

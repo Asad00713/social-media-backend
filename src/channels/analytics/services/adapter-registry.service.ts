@@ -4,6 +4,7 @@ import { YouTubeAnalyticsAdapter } from '../adapters/youtube/youtube-analytics.a
 import { BlueskyAnalyticsAdapter } from '../adapters/bluesky/bluesky-analytics.adapter';
 import { MastodonAnalyticsAdapter } from '../adapters/mastodon/mastodon-analytics.adapter';
 import { FacebookAnalyticsAdapter } from '../adapters/facebook/facebook-analytics.adapter';
+import { InstagramAnalyticsAdapter } from '../adapters/instagram/instagram-analytics.adapter';
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
 
 /**
@@ -19,11 +20,13 @@ export class AdapterRegistryService {
     private readonly bluesky: BlueskyAnalyticsAdapter,
     private readonly mastodon: MastodonAnalyticsAdapter,
     private readonly facebook: FacebookAnalyticsAdapter,
+    private readonly instagram: InstagramAnalyticsAdapter,
   ) {
     this.adapters.set('youtube', youtube);
     this.adapters.set('bluesky', bluesky);
     this.adapters.set('mastodon', mastodon);
     this.adapters.set('facebook', facebook);
+    this.adapters.set('instagram', instagram);
   }
 
   get(platform: SupportedPlatform): PlatformAnalyticsAdapter {

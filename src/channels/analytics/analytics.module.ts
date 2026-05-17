@@ -26,6 +26,8 @@ import { MastodonApiClient } from './adapters/mastodon/mastodon-api.client';
 import { MastodonAnalyticsAdapter } from './adapters/mastodon/mastodon-analytics.adapter';
 import { FacebookApiClient } from './adapters/facebook/facebook-api.client';
 import { FacebookAnalyticsAdapter } from './adapters/facebook/facebook-analytics.adapter';
+import { InstagramApiClient } from './adapters/instagram/instagram-api.client';
+import { InstagramAnalyticsAdapter } from './adapters/instagram/instagram-analytics.adapter';
 import { AdapterRegistryService } from './services/adapter-registry.service';
 import { YouTubePubSubHubbubService } from './services/youtube-pubsubhubbub.service';
 import { YouTubePubSubHubbubController } from './youtube-pubsubhubbub.controller';
@@ -57,6 +59,8 @@ import { YouTubePubSubHubbubController } from './youtube-pubsubhubbub.controller
     MastodonAnalyticsAdapter,
     { provide: FacebookApiClient, useValue: new FacebookApiClient() },
     FacebookAnalyticsAdapter,
+    { provide: InstagramApiClient, useValue: new InstagramApiClient() },
+    InstagramAnalyticsAdapter,
     AdapterRegistryService,
   ],
   exports: [QuotaTrackerService, AnalyticsService, ChannelSyncLifecycleService, AdapterRegistryService],
