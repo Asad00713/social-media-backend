@@ -1,6 +1,6 @@
-import { Processor, WorkerHost, InjectQueue } from '@nestjs/bullmq';
-import { Inject, Logger } from '@nestjs/common';
-import { Job, Queue } from 'bullmq';
+import { Injectable, Inject, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { and, desc, eq } from 'drizzle-orm';
 import { QUEUES } from '../../../queue/queue.module';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
@@ -39,22 +39,19 @@ const BUCKET_TO_DELAY_MS: Partial<Record<AgeBucket, number>> = {
   '30d': 30 * 24 * 60 * 60 * 1000,
 };
 
-@Processor(QUEUES.CHANNEL_SNAPSHOTS)
-export class PostMetricSnapshotProcessor extends WorkerHost {
-  private readonly logger = new Logger(PostMetricSnapshotProcessor.name);
+@Injectable()
+export class PostMetricSnapshotHandler {
+  private readonly logger = new Logger(PostMetricSnapshotHandler.name);
 
   constructor(
     private readonly registry: AdapterRegistryService,
     private readonly quota: QuotaTrackerService,
     @InjectQueue(QUEUES.CHANNEL_SNAPSHOTS) private readonly queue: Queue,
     @Inject(DRIZZLE) private readonly db: any,
-  ) {
-    super();
-  }
+  ) {}
 
-  async process(job: Job<PostMetricSnapshotJob>): Promise<{ ok: boolean }> {
-    if (job.name !== 'post-metric-snapshot') return { ok: true };
-    const { postId, channelId, ageBucket } = job.data;
+  async handle(data: PostMetricSnapshotJob): Promise<{ ok: boolean }> {
+    const { postId, channelId, ageBucket } = data;
 
     const channelRow = await this.db
       .select()
@@ -99,18 +96,18 @@ export class PostMetricSnapshotProcessor extends WorkerHost {
       return { ok: false };
     }
 
-    const data = result.data;
+    const metricData = result.data;
     await this.db.insert(postMetricSnapshots).values({
       postId,
       channelId,
       snapshotAt: new Date(),
       ageBucket,
-      likesCount: data.likesCount ?? null,
-      commentsCount: data.commentsCount ?? null,
-      sharesCount: data.sharesCount ?? null,
-      impressionsCount: data.impressionsCount ?? null,
-      reachCount: data.reachCount ?? null,
-      platformMetrics: data.platformMetrics ?? {},
+      likesCount: metricData.likesCount ?? null,
+      commentsCount: metricData.commentsCount ?? null,
+      sharesCount: metricData.sharesCount ?? null,
+      impressionsCount: metricData.impressionsCount ?? null,
+      reachCount: metricData.reachCount ?? null,
+      platformMetrics: metricData.platformMetrics ?? {},
       metricsSchemaVersion: 1,
       fetchedAt: new Date(),
       syncStatus: result.status,

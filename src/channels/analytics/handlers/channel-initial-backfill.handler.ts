@@ -1,8 +1,5 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Inject, Logger } from '@nestjs/common';
-import { Job } from 'bullmq';
+import { Injectable, Inject, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
-import { QUEUES } from '../../../queue/queue.module';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { socialMediaChannels, type SupportedPlatform } from '../../../drizzle/schema/channels.schema';
 import { channelSnapshots } from '../../../drizzle/schema/channel-snapshots.schema';
@@ -18,21 +15,18 @@ export interface ChannelInitialBackfillJob {
 
 const BACKFILL_DAYS = 30;
 
-@Processor(QUEUES.CHANNEL_SNAPSHOTS)
-export class ChannelInitialBackfillProcessor extends WorkerHost {
-  private readonly logger = new Logger(ChannelInitialBackfillProcessor.name);
+@Injectable()
+export class ChannelInitialBackfillHandler {
+  private readonly logger = new Logger(ChannelInitialBackfillHandler.name);
 
   constructor(
     private readonly registry: AdapterRegistryService,
     private readonly quota: QuotaTrackerService,
     @Inject(DRIZZLE) private readonly db: any,
-  ) {
-    super();
-  }
+  ) {}
 
-  async process(job: Job<ChannelInitialBackfillJob>): Promise<{ ok: boolean }> {
-    if (job.name !== 'channel-initial-backfill') return { ok: true };
-    const { channelId } = job.data;
+  async handle(data: ChannelInitialBackfillJob): Promise<{ ok: boolean }> {
+    const { channelId } = data;
 
     const rows = await this.db.select().from(socialMediaChannels).where(eq(socialMediaChannels.id, channelId)).limit(1);
     const channel = rows[0];

@@ -1,8 +1,5 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Inject, Logger } from '@nestjs/common';
-import { Job } from 'bullmq';
+import { Injectable, Inject, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
-import { QUEUES } from '../../../queue/queue.module';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { socialMediaChannels, type SupportedPlatform } from '../../../drizzle/schema/channels.schema';
 import { channelSnapshots } from '../../../drizzle/schema/channel-snapshots.schema';
@@ -16,21 +13,18 @@ export interface ChannelProfileSnapshotJob {
   workspaceId: string;
 }
 
-@Processor(QUEUES.CHANNEL_SNAPSHOTS)
-export class ChannelProfileSnapshotProcessor extends WorkerHost {
-  private readonly logger = new Logger(ChannelProfileSnapshotProcessor.name);
+@Injectable()
+export class ChannelProfileSnapshotHandler {
+  private readonly logger = new Logger(ChannelProfileSnapshotHandler.name);
 
   constructor(
     private readonly registry: AdapterRegistryService,
     private readonly quota: QuotaTrackerService,
     @Inject(DRIZZLE) private readonly db: any,
-  ) {
-    super();
-  }
+  ) {}
 
-  async process(job: Job<ChannelProfileSnapshotJob>): Promise<{ ok: boolean }> {
-    if (job.name !== 'channel-profile-snapshot') return { ok: true };
-    const { channelId } = job.data;
+  async handle(data: ChannelProfileSnapshotJob): Promise<{ ok: boolean }> {
+    const { channelId } = data;
 
     const rows = await this.db
       .select()
@@ -62,16 +56,16 @@ export class ChannelProfileSnapshotProcessor extends WorkerHost {
     const today = new Date().toISOString().slice(0, 10);
 
     if (result.status === 'success' || result.status === 'partial') {
-      const data = result.data;
+      const snapshotData = result.data;
       await this.db
         .insert(channelSnapshots)
         .values({
           channelId,
           snapshotDate: today,
-          followersCount: data.followersCount ?? null,
-          followingCount: data.followingCount ?? null,
-          totalPostsCount: data.totalPostsCount ?? null,
-          platformMetrics: data.platformMetrics ?? {},
+          followersCount: snapshotData.followersCount ?? null,
+          followingCount: snapshotData.followingCount ?? null,
+          totalPostsCount: snapshotData.totalPostsCount ?? null,
+          platformMetrics: snapshotData.platformMetrics ?? {},
           metricsSchemaVersion: 1,
           fetchedAt: new Date(),
           syncStatus: result.status,
@@ -99,7 +93,7 @@ export class ChannelProfileSnapshotProcessor extends WorkerHost {
             consecutiveFailures: 0,
           },
         });
-      this.logger.log(`Profile snapshot success: channelId=${channelId} followers=${data.followersCount ?? '?'}`);
+      this.logger.log(`Profile snapshot success: channelId=${channelId} followers=${snapshotData.followersCount ?? '?'}`);
       return { ok: true };
     }
 

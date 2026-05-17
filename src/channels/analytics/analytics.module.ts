@@ -8,10 +8,11 @@ import { ChannelRefreshController } from './channel-refresh.controller';
 import { RedisClientProvider } from './redis-client.provider';
 import { ChannelLookupRepoProvider } from './guards/channel-ownership.guard';
 import { QUEUES } from '../../queue/queue.module';
-import { ChannelProfileSnapshotProcessor } from './processors/channel-profile-snapshot.processor';
-import { PostMetricSnapshotProcessor } from './processors/post-metric-snapshot.processor';
-import { ChannelDailyRollupProcessor } from './processors/channel-daily-rollup.processor';
-import { ChannelInitialBackfillProcessor } from './processors/channel-initial-backfill.processor';
+import { ChannelSnapshotsDispatcherProcessor } from './processors/channel-snapshots-dispatcher.processor';
+import { ChannelProfileSnapshotHandler } from './handlers/channel-profile-snapshot.handler';
+import { PostMetricSnapshotHandler } from './handlers/post-metric-snapshot.handler';
+import { ChannelDailyRollupHandler } from './handlers/channel-daily-rollup.handler';
+import { ChannelInitialBackfillHandler } from './handlers/channel-initial-backfill.handler';
 import { ChannelSnapshotsScheduler } from './schedulers/channel-snapshots.scheduler';
 import { ChannelSyncLifecycleService } from './services/channel-sync-lifecycle.service';
 import { YouTubeAnalyticsAdapter } from './adapters/youtube/youtube-analytics.adapter';
@@ -27,10 +28,11 @@ import { AdapterRegistryService } from './services/adapter-registry.service';
     AnalyticsService,
     RedisClientProvider,
     ChannelLookupRepoProvider,
-    ChannelProfileSnapshotProcessor,
-    PostMetricSnapshotProcessor,
-    ChannelDailyRollupProcessor,
-    ChannelInitialBackfillProcessor,
+    ChannelProfileSnapshotHandler,
+    PostMetricSnapshotHandler,
+    ChannelDailyRollupHandler,
+    ChannelInitialBackfillHandler,
+    ChannelSnapshotsDispatcherProcessor,
     ChannelSnapshotsScheduler,
     ChannelSyncLifecycleService,
     { provide: YouTubeDataApiClient, useValue: new YouTubeDataApiClient() },

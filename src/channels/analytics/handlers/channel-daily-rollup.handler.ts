@@ -1,8 +1,5 @@
-import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Inject, Logger } from '@nestjs/common';
-import { Job } from 'bullmq';
+import { Injectable, Inject, Logger } from '@nestjs/common';
 import { and, eq, sql } from 'drizzle-orm';
-import { QUEUES } from '../../../queue/queue.module';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { postMetricSnapshots } from '../../../drizzle/schema/post-metric-snapshots.schema';
 import { channelSnapshots } from '../../../drizzle/schema/channel-snapshots.schema';
@@ -13,17 +10,14 @@ export interface ChannelDailyRollupJob {
   date: string;
 }
 
-@Processor(QUEUES.CHANNEL_SNAPSHOTS)
-export class ChannelDailyRollupProcessor extends WorkerHost {
-  private readonly logger = new Logger(ChannelDailyRollupProcessor.name);
+@Injectable()
+export class ChannelDailyRollupHandler {
+  private readonly logger = new Logger(ChannelDailyRollupHandler.name);
 
-  constructor(@Inject(DRIZZLE) private readonly db: any) {
-    super();
-  }
+  constructor(@Inject(DRIZZLE) private readonly db: any) {}
 
-  async process(job: Job<ChannelDailyRollupJob>): Promise<{ ok: true }> {
-    if (job.name !== 'channel-daily-rollup') return { ok: true };
-    const { channelId, date } = job.data;
+  async handle(data: ChannelDailyRollupJob): Promise<{ ok: true }> {
+    const { channelId, date } = data;
 
     const dayStart = new Date(date + 'T00:00:00Z');
     const dayEnd = new Date(date + 'T23:59:59.999Z');
