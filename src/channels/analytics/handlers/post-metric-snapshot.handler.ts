@@ -11,6 +11,7 @@ import { AdapterRegistryService } from '../services/adapter-registry.service';
 import { QuotaTrackerService } from '../services/quota-tracker.service';
 import { decrypt } from '../../../common/utils/encryption.util';
 import type { AgeBucket } from '../types/platform-capabilities.types';
+import { AnalyticsEventEmitter } from '../../../realtime/analytics-event-emitter.service';
 
 export interface PostMetricSnapshotJob {
   postId: string;
@@ -46,6 +47,7 @@ export class PostMetricSnapshotHandler {
   constructor(
     private readonly registry: AdapterRegistryService,
     private readonly quota: QuotaTrackerService,
+    private readonly events: AnalyticsEventEmitter,
     @InjectQueue(QUEUES.CHANNEL_SNAPSHOTS) private readonly queue: Queue,
     @Inject(DRIZZLE) private readonly db: any,
   ) {}
@@ -121,6 +123,18 @@ export class PostMetricSnapshotHandler {
       metricsSchemaVersion: 1,
       fetchedAt: new Date(),
       syncStatus: result.status,
+    });
+
+    this.events.emit(channel.workspaceId, 'post.metrics.updated', {
+      workspaceId: channel.workspaceId,
+      channelId,
+      postId,
+      ageBucket,
+      likesCount: metricData.likesCount ?? null,
+      commentsCount: metricData.commentsCount ?? null,
+      sharesCount: metricData.sharesCount ?? null,
+      impressionsCount: metricData.impressionsCount ?? null,
+      fetchedAt: new Date().toISOString(),
     });
 
     // Engagement-decay check: if last 3 snapshots show stable likes/comments/shares,

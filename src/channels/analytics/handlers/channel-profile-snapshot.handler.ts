@@ -7,6 +7,7 @@ import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.sch
 import { AdapterRegistryService } from '../services/adapter-registry.service';
 import { QuotaTrackerService } from '../services/quota-tracker.service';
 import { decrypt } from '../../../common/utils/encryption.util';
+import { AnalyticsEventEmitter } from '../../../realtime/analytics-event-emitter.service';
 
 export interface ChannelProfileSnapshotJob {
   channelId: number;
@@ -20,6 +21,7 @@ export class ChannelProfileSnapshotHandler {
   constructor(
     private readonly registry: AdapterRegistryService,
     private readonly quota: QuotaTrackerService,
+    private readonly events: AnalyticsEventEmitter,
     @Inject(DRIZZLE) private readonly db: any,
   ) {}
 
@@ -117,6 +119,23 @@ export class ChannelProfileSnapshotHandler {
             consecutiveFailures: 0,
           },
         });
+      this.events.emit(channel.workspaceId, 'channel.snapshot.updated', {
+        workspaceId: channel.workspaceId,
+        channelId,
+        platform: channel.platform,
+        snapshotDate: today,
+        followersCount: snapshotData.followersCount ?? null,
+        totalPostsCount: snapshotData.totalPostsCount ?? null,
+        platformMetrics: snapshotData.platformMetrics ?? {},
+        fetchedAt: new Date().toISOString(),
+      });
+      this.events.emit(channel.workspaceId, 'channel.sync.state.changed', {
+        workspaceId: channel.workspaceId,
+        channelId,
+        status: 'healthy',
+        lastSyncedAt: new Date().toISOString(),
+        consecutiveFailures: 0,
+      });
       this.logger.log(`Profile snapshot success: channelId=${channelId} followers=${snapshotData.followersCount ?? '?'}`);
       return { ok: true };
     }
