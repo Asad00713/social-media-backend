@@ -79,11 +79,27 @@ export class AnalyticsService {
     `);
     const topRows = (topResult.rows ?? topResult) as any[];
 
+    // Direct count from posts table — accurate immediately, doesn't depend on daily rollups
+    // (daily rollup cron at 03:00 UTC, so new posts show 0 until next morning otherwise).
+    const postsCountResult: any = await this.db.execute(sql`
+      SELECT COUNT(*)::int AS count
+      FROM posts
+      WHERE workspace_id = (SELECT workspace_id FROM social_media_channels WHERE id = ${channelId})
+        AND status = 'published'
+        AND targets @> ${JSON.stringify([{ channelId: String(channelId), status: 'published' }])}::jsonb
+        AND published_at >= ${new Date(start + 'T00:00:00Z')}
+        AND published_at <= ${new Date(end + 'T23:59:59.999Z')}
+    `);
+    const directPostsCount = Number(((postsCountResult.rows ?? postsCountResult)[0] ?? {}).count ?? 0);
+
     const fullDates = buildDateRange(start, end);
     const dailyMap = new Map<string, any>(dailyRows.map((r: any) => [r.date, r]));
     const snapMap = new Map<string, number | null>(snapRows.map((r: any) => [r.date, r.followers]));
 
-    const sumPosts = dailyRows.reduce((a: number, r: any) => a + Number(r.postsPublished ?? 0), 0);
+    // Prefer the direct count (accurate even before daily rollups run).
+    // Fall back to rollup aggregation if direct count is 0 (defensive).
+    const rollupPosts = dailyRows.reduce((a: number, r: any) => a + Number(r.postsPublished ?? 0), 0);
+    const sumPosts = directPostsCount > 0 ? directPostsCount : rollupPosts;
     const sumLikes = dailyRows.reduce((a: number, r: any) => a + Number(r.totalLikes ?? 0), 0);
     const sumComments = dailyRows.reduce((a: number, r: any) => a + Number(r.totalComments ?? 0), 0);
     const sumShares = dailyRows.reduce((a: number, r: any) => a + Number(r.totalShares ?? 0), 0);
