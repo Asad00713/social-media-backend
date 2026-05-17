@@ -73,6 +73,30 @@ export class ChannelProfileSnapshotHandler {
         })
         .onConflictDoNothing({ target: [channelSnapshots.channelId, channelSnapshots.snapshotDate] });
 
+      // Update channels.metadata + lastSyncedAt so the UI header chips reflect fresh data.
+      // The daily snapshot writes to channel_snapshots but the header reads from channels.metadata
+      // which was frozen at OAuth-connect-time (often all zeros). We spread existing metadata
+      // first to preserve any platform-specific fields written by the original connect flow,
+      // then override with the fresh counts. Both common aliases are written so the frontend
+      // normalizer finds the right key regardless of platform.
+      const platformMetricsData = snapshotData.platformMetrics ?? {};
+      await this.db
+        .update(socialMediaChannels)
+        .set({
+          metadata: {
+            ...(channel.metadata ?? {}),
+            subscriberCount: snapshotData.followersCount ?? null,
+            followersCount: snapshotData.followersCount ?? null,
+            videoCount: snapshotData.totalPostsCount ?? null,
+            totalPostsCount: snapshotData.totalPostsCount ?? null,
+            viewCount: (platformMetricsData as any).viewCount ?? (channel.metadata as any)?.viewCount ?? null,
+            description: (platformMetricsData as any).description ?? (channel.metadata as any)?.description ?? null,
+            thumbnailUrl: (platformMetricsData as any).thumbnailUrl ?? (channel.metadata as any)?.thumbnailUrl ?? null,
+          },
+          lastSyncedAt: new Date(),
+        })
+        .where(eq(socialMediaChannels.id, channelId));
+
       await this.db
         .insert(channelSyncState)
         .values({
