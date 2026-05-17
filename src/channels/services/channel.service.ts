@@ -77,7 +77,16 @@ export class ChannelService {
       const existingChannel = existing[0];
 
       // Genuine duplicate: channel is healthy — protect against double-connect
-      if (existingChannel.connectionStatus === 'connected' && existingChannel.isActive) {
+      const tokenStillValid =
+        !existingChannel.tokenExpiresAt ||
+        new Date(existingChannel.tokenExpiresAt).getTime() > Date.now();
+
+      const isHealthyConnection =
+        existingChannel.connectionStatus === 'connected' &&
+        existingChannel.isActive &&
+        tokenStillValid;
+
+      if (isHealthyConnection) {
         throw new ConflictException(
           `This ${dto.platform} account is already connected to this workspace`,
         );
