@@ -10,6 +10,17 @@ export interface VideoMetricsRow {
   averageViewDurationSeconds: number;
 }
 
+export interface DemographicsRow {
+  ageGroup: string;
+  gender: string;
+  viewerPercentage: number;
+}
+
+export interface TrafficSourceRow {
+  sourceType: string;
+  views: number;
+}
+
 /** YouTube Analytics API v2 — requires yt-analytics.readonly OAuth scope. */
 export class YouTubeAnalyticsApiClient {
   private readonly baseUrl = 'https://youtubeanalytics.googleapis.com/v2';
@@ -50,6 +61,62 @@ export class YouTubeAnalyticsApiClient {
       watchTimeMinutes: Number(row[4] ?? 0),
       averageViewDurationSeconds: Number(row[5] ?? 0),
     };
+  }
+
+  async getDemographics(opts: {
+    accessToken: string;
+    startDate: string;
+    endDate: string;
+  }): Promise<DemographicsRow[]> {
+    const params = new URLSearchParams({
+      ids: 'channel==MINE',
+      startDate: opts.startDate,
+      endDate: opts.endDate,
+      metrics: 'viewerPercentage',
+      dimensions: 'ageGroup,gender',
+    });
+    const res = await this.fetchImpl(`${this.baseUrl}/reports?${params}`, {
+      headers: { Authorization: `Bearer ${opts.accessToken}` },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const message = (body as { error?: { message?: string } }).error?.message ?? `HTTP ${res.status}`;
+      throw new YouTubeApiError(this.mapCode(res.status, message), res.status, message);
+    }
+    const data = (await res.json()) as YouTubeAnalyticsQueryResponse;
+    return (data.rows ?? []).map((r) => ({
+      ageGroup: String(r[0] ?? ''),
+      gender: String(r[1] ?? ''),
+      viewerPercentage: Number(r[2] ?? 0),
+    }));
+  }
+
+  async getTrafficSources(opts: {
+    accessToken: string;
+    startDate: string;
+    endDate: string;
+  }): Promise<TrafficSourceRow[]> {
+    const params = new URLSearchParams({
+      ids: 'channel==MINE',
+      startDate: opts.startDate,
+      endDate: opts.endDate,
+      metrics: 'views',
+      dimensions: 'insightTrafficSourceType',
+      sort: '-views',
+    });
+    const res = await this.fetchImpl(`${this.baseUrl}/reports?${params}`, {
+      headers: { Authorization: `Bearer ${opts.accessToken}` },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const message = (body as { error?: { message?: string } }).error?.message ?? `HTTP ${res.status}`;
+      throw new YouTubeApiError(this.mapCode(res.status, message), res.status, message);
+    }
+    const data = (await res.json()) as YouTubeAnalyticsQueryResponse;
+    return (data.rows ?? []).map((r) => ({
+      sourceType: String(r[0] ?? ''),
+      views: Number(r[1] ?? 0),
+    }));
   }
 
   private mapCode(status: number, message: string): YouTubeApiError['code'] {

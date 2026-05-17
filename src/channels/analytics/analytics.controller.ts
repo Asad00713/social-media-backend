@@ -57,4 +57,22 @@ export class AnalyticsController {
   ) {
     return this.analytics.getSyncState(Number(channelIdParam));
   }
+
+  @Get('demographics')
+  async getDemographics(
+    @Param('wsId') wsId: string,
+    @Param('channelId') channelIdParam: string,
+    @Query('range') range: AnalyticsRange = '30d',
+  ): Promise<{ data: Array<{ ageGroup: string; gender: string; viewerPercentage: number }>; supported: boolean }> {
+    return this.analytics.getDemographics(Number(channelIdParam), range, wsId);
+  }
+
+  @Get('traffic-sources')
+  async getTrafficSources(
+    @Param('wsId') wsId: string,
+    @Param('channelId') channelIdParam: string,
+    @Query('range') range: AnalyticsRange = '30d',
+  ): Promise<{ data: Array<{ sourceType: string; views: number }>; supported: boolean }> {
+    return this.analytics.getTrafficSources(Number(channelIdParam), range, wsId);
+  }
 }

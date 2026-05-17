@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { and, eq, gte, lte, sql } from 'drizzle-orm';
@@ -16,16 +16,21 @@ import type { OverviewResponseDto } from '../dto/overview-response.dto';
 import type { ManualRefreshResponse } from '../dto/overview-response.dto';
 import type { RedisLike } from './quota-tracker.service';
 import { QuotaTrackerService } from './quota-tracker.service';
+import { YouTubeAnalyticsApiClient } from '../adapters/youtube/youtube-analytics-api.client';
+import { decrypt } from '../../../common/utils/encryption.util';
 
 export type AnalyticsRange = '7d' | '30d' | 'mtd' | 'lm' | 'custom';
 
 @Injectable()
 export class AnalyticsService {
+  private readonly logger = new Logger(AnalyticsService.name);
+
   constructor(
     @Inject(DRIZZLE) private readonly db: any,
     @InjectQueue(QUEUES.CHANNEL_SNAPSHOTS) private readonly queue: Queue,
     @Inject('REDIS_CLIENT') private readonly redis: RedisLike,
     private readonly quota: QuotaTrackerService,
+    private readonly ytAnalyticsClient: YouTubeAnalyticsApiClient,
   ) {}
 
   async getOverview(
@@ -267,6 +272,61 @@ export class AnalyticsService {
       nextAllowedAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
       message: 'Refreshing channel data — this may take a few seconds.',
     };
+  }
+
+  async getDemographics(channelId: number, range: AnalyticsRange, workspaceId: string) {
+    const channel = await this.lookupChannel(channelId);
+    if (!channel) return { data: [], supported: false };
+
+    const capabilities = getCapabilities(channel.platform as SupportedPlatform);
+    if (!capabilities.hasDemographics) return { data: [], supported: false };
+
+    if (channel.platform !== 'youtube') return { data: [], supported: false };
+
+    const { start, end } = rangeToWindow(range);
+    try {
+      const rows = await this.ytAnalyticsClient.getDemographics({
+        accessToken: decrypt(channel.accessToken),
+        startDate: start,
+        endDate: end,
+      });
+      return { data: rows, supported: true };
+    } catch (err) {
+      this.logger.warn(`Demographics fetch failed for channel ${channelId}: ${(err as Error).message}`);
+      return { data: [], supported: true };
+    }
+  }
+
+  async getTrafficSources(channelId: number, range: AnalyticsRange, workspaceId: string) {
+    const channel = await this.lookupChannel(channelId);
+    if (!channel) return { data: [], supported: false };
+
+    const capabilities = getCapabilities(channel.platform as SupportedPlatform);
+    if (!capabilities.hasTrafficSources) return { data: [], supported: false };
+
+    if (channel.platform !== 'youtube') return { data: [], supported: false };
+
+    const { start, end } = rangeToWindow(range);
+    try {
+      const rows = await this.ytAnalyticsClient.getTrafficSources({
+        accessToken: decrypt(channel.accessToken),
+        startDate: start,
+        endDate: end,
+      });
+      return { data: rows, supported: true };
+    } catch (err) {
+      this.logger.warn(`TrafficSources fetch failed for channel ${channelId}: ${(err as Error).message}`);
+      return { data: [], supported: true };
+    }
+  }
+
+  private async lookupChannel(channelId: number): Promise<{ platform: string; accessToken: string } | null> {
+    const rows = await this.db
+      .select({ platform: socialMediaChannels.platform, accessToken: socialMediaChannels.accessToken })
+      .from(socialMediaChannels)
+      .where(eq(socialMediaChannels.id, channelId))
+      .limit(1);
+    return rows[0] ?? null;
   }
 
   private nextDayMidnightUTC(): string {
