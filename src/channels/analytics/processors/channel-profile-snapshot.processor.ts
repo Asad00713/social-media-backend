@@ -9,6 +9,7 @@ import { channelSnapshots } from '../../../drizzle/schema/channel-snapshots.sche
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import { AdapterRegistryService } from '../services/adapter-registry.service';
 import { QuotaTrackerService } from '../services/quota-tracker.service';
+import { decrypt } from '../../../common/utils/encryption.util';
 
 export interface ChannelProfileSnapshotJob {
   channelId: number;
@@ -56,7 +57,8 @@ export class ChannelProfileSnapshotProcessor extends WorkerHost {
       return { ok: false };
     }
 
-    const result = await adapter.fetchProfileSnapshot(channel);
+    const channelForAdapter = { ...channel, accessToken: decrypt(channel.accessToken) };
+    const result = await adapter.fetchProfileSnapshot(channelForAdapter);
     const today = new Date().toISOString().slice(0, 10);
 
     if (result.status === 'success' || result.status === 'partial') {

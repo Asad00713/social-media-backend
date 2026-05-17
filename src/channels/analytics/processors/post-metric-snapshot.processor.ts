@@ -9,6 +9,7 @@ import { socialMediaChannels, type SupportedPlatform } from '../../../drizzle/sc
 import { postMetricSnapshots } from '../../../drizzle/schema/post-metric-snapshots.schema';
 import { AdapterRegistryService } from '../services/adapter-registry.service';
 import { QuotaTrackerService } from '../services/quota-tracker.service';
+import { decrypt } from '../../../common/utils/encryption.util';
 import type { AgeBucket } from '../types/platform-capabilities.types';
 
 export interface PostMetricSnapshotJob {
@@ -89,7 +90,7 @@ export class PostMetricSnapshotProcessor extends WorkerHost {
     // Real fetching of platformPostId from post_targets is a Phase 2b improvement.
     const result = await adapter.fetchPostMetrics({
       ...post,
-      accessToken: channel.accessToken,
+      accessToken: decrypt(channel.accessToken),
       platformPostId: (post as any).platformPostId,
     } as any);
 

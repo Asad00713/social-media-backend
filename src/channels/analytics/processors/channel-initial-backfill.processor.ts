@@ -9,6 +9,7 @@ import { channelSnapshots } from '../../../drizzle/schema/channel-snapshots.sche
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import { AdapterRegistryService } from '../services/adapter-registry.service';
 import { QuotaTrackerService } from '../services/quota-tracker.service';
+import { decrypt } from '../../../common/utils/encryption.util';
 
 export interface ChannelInitialBackfillJob {
   channelId: number;
@@ -44,12 +45,13 @@ export class ChannelInitialBackfillProcessor extends WorkerHost {
     await this.markBackfillStatus(channelId, 'running');
 
     const adapter = this.registry.get(channel.platform as SupportedPlatform);
+    const channelForAdapter = { ...channel, accessToken: decrypt(channel.accessToken) };
 
     // 1. Profile snapshot
     const profileCost = adapter.estimateQuotaCost('fetchProfileSnapshot');
     const pq = await this.quota.tryConsume(channel.platform as SupportedPlatform, profileCost);
     if (pq.allowed) {
-      const profile = await adapter.fetchProfileSnapshot(channel);
+      const profile = await adapter.fetchProfileSnapshot(channelForAdapter);
       if (profile.status !== 'failed') {
         await this.db
           .insert(channelSnapshots)
@@ -76,7 +78,7 @@ export class ChannelInitialBackfillProcessor extends WorkerHost {
       const recentCost = adapter.estimateQuotaCost('fetchRecentPosts');
       const rq = await this.quota.tryConsume(channel.platform as SupportedPlatform, recentCost);
       if (rq.allowed) {
-        const recent = await adapter.fetchRecentPosts(channel, { since, limit: 50 });
+        const recent = await adapter.fetchRecentPosts(channelForAdapter, { since, limit: 50 });
         if (recent.status !== 'failed') {
           const count = recent.data.posts?.length ?? 0;
           this.logger.log(
