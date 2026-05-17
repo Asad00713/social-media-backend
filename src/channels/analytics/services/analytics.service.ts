@@ -1,89 +1,220 @@
-import { Injectable } from '@nestjs/common';
+import { Inject, Injectable } from '@nestjs/common';
+import { and, eq, gte, lte, sql } from 'drizzle-orm';
+import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { getCapabilities } from '../platform-capabilities.registry';
+import { channelSnapshots } from '../../../drizzle/schema/channel-snapshots.schema';
+import { channelAnalyticsDaily } from '../../../drizzle/schema/channel-analytics-daily.schema';
+import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
+import { postMetricSnapshots } from '../../../drizzle/schema/post-metric-snapshots.schema';
+import { posts } from '../../../drizzle/schema/posts.schema';
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
-import type {
-  OverviewResponseDto,
-  EngagementPointDto,
-} from '../dto/overview-response.dto';
+import type { OverviewResponseDto } from '../dto/overview-response.dto';
 
 export type AnalyticsRange = '7d' | '30d' | 'mtd' | 'lm' | 'custom';
 
 @Injectable()
 export class AnalyticsService {
-  /**
-   * Phase 1: returns shaped stub data so frontend can develop against contract.
-   * Phase 2 replaces this with real queries against channel_analytics_daily +
-   * post_metric_snapshots.
-   */
+  constructor(@Inject(DRIZZLE) private readonly db: any) {}
+
   async getOverview(
     channelId: number,
     platform: SupportedPlatform,
     range: AnalyticsRange,
   ): Promise<OverviewResponseDto> {
     const capabilities = getCapabilities(platform);
-    const days = rangeToDays(range);
-    const dates = stubDates(days);
+    const { start, end } = rangeToWindow(range);
+
+    const dailyRows = await this.db
+      .select()
+      .from(channelAnalyticsDaily)
+      .where(
+        and(
+          eq(channelAnalyticsDaily.channelId, channelId),
+          gte(channelAnalyticsDaily.date, start),
+          lte(channelAnalyticsDaily.date, end),
+        ),
+      )
+      .orderBy(channelAnalyticsDaily.date);
+
+    const snapRows = await this.db
+      .select({ date: channelSnapshots.snapshotDate, followers: channelSnapshots.followersCount })
+      .from(channelSnapshots)
+      .where(
+        and(
+          eq(channelSnapshots.channelId, channelId),
+          gte(channelSnapshots.snapshotDate, start),
+          lte(channelSnapshots.snapshotDate, end),
+        ),
+      )
+      .orderBy(channelSnapshots.snapshotDate);
+
+    const stateRow = await this.db
+      .select()
+      .from(channelSyncState)
+      .where(eq(channelSyncState.channelId, channelId))
+      .limit(1);
+    const state = stateRow[0];
+
+    const topResult: any = await this.db.execute(sql`
+      WITH latest AS (
+        SELECT DISTINCT ON (post_id)
+          post_id, likes_count, comments_count, shares_count, impressions_count, reach_count, snapshot_at
+        FROM ${postMetricSnapshots}
+        WHERE channel_id = ${channelId} AND snapshot_at >= ${new Date(start + 'T00:00:00Z')}
+        ORDER BY post_id, snapshot_at DESC
+      )
+      SELECT l.*, p.content, p.media, p.published_at
+      FROM latest l
+      JOIN ${posts} p ON p.id = l.post_id
+      ORDER BY (COALESCE(l.likes_count,0) + COALESCE(l.comments_count,0) + COALESCE(l.shares_count,0)) DESC
+      LIMIT 5
+    `);
+    const topRows = (topResult.rows ?? topResult) as any[];
+
+    const fullDates = buildDateRange(start, end);
+    const dailyMap = new Map<string, any>(dailyRows.map((r: any) => [r.date, r]));
+    const snapMap = new Map<string, number | null>(snapRows.map((r: any) => [r.date, r.followers]));
+
+    const sumPosts = dailyRows.reduce((a: number, r: any) => a + Number(r.postsPublished ?? 0), 0);
+    const sumLikes = dailyRows.reduce((a: number, r: any) => a + Number(r.totalLikes ?? 0), 0);
+    const sumComments = dailyRows.reduce((a: number, r: any) => a + Number(r.totalComments ?? 0), 0);
+    const sumShares = dailyRows.reduce((a: number, r: any) => a + Number(r.totalShares ?? 0), 0);
+    const hasImpr = dailyRows.some((r: any) => r.totalImpressions != null);
+    const sumImpressions = hasImpr
+      ? dailyRows.reduce((a: number, r: any) => a + Number(r.totalImpressions ?? 0), 0)
+      : null;
+    const hasReach = dailyRows.some((r: any) => r.totalReach != null);
+    const sumReach = hasReach
+      ? dailyRows.reduce((a: number, r: any) => a + Number(r.totalReach ?? 0), 0)
+      : null;
+    const followersGained = dailyRows.reduce(
+      (a: number | null, r: any) =>
+        r.followersGained == null ? a : (a ?? 0) + Number(r.followersGained),
+      null as number | null,
+    );
+
+    const trackingSinceDate = snapRows[0]?.date ?? null;
+    const gapDays = fullDates.length - dailyRows.length;
 
     return {
       freshness: {
-        lastSyncedAt: null,
+        lastSyncedAt: state?.lastProfileSyncAt?.toISOString?.() ?? null,
         dataFreshness: capabilities.dataFreshness,
-        isPartial: true,
-        trackingSinceDate: null,
-        gapDays: days,
+        isPartial: gapDays > 0,
+        trackingSinceDate,
+        gapDays,
       },
       capabilities,
       summary: {
-        posts: { value: 0, deltaPct: null },
-        likes: { value: 0, deltaPct: null },
-        comments: { value: 0, deltaPct: null },
-        shares: { value: 0, deltaPct: null },
-        impressions: { value: null, deltaPct: null },
-        reach: { value: null, deltaPct: null },
+        posts: { value: sumPosts, deltaPct: null },
+        likes: { value: sumLikes, deltaPct: null },
+        comments: { value: sumComments, deltaPct: null },
+        shares: { value: sumShares, deltaPct: null },
+        impressions: { value: sumImpressions, deltaPct: null },
+        reach: { value: sumReach, deltaPct: null },
         engagementRate: { value: null, deltaPct: null },
-        followersGained: { value: null, deltaPct: null },
+        followersGained: { value: followersGained, deltaPct: null },
       },
       timeseries: {
-        followers: dates.map((date) => ({ date, value: null })),
-        posts: dates.map((date) => ({ date, value: 0 })),
-        engagement: dates.map<EngagementPointDto>((date) => ({ date, likes: 0, comments: 0, shares: 0 })),
-        reach: dates.map((date) => ({ date, value: null })),
+        followers: fullDates.map((d) => ({ date: d, value: snapMap.get(d) ?? null })),
+        posts: fullDates.map((d) => ({ date: d, value: Number(dailyMap.get(d)?.postsPublished ?? 0) })),
+        engagement: fullDates.map((d) => ({
+          date: d,
+          likes: Number(dailyMap.get(d)?.totalLikes ?? 0),
+          comments: Number(dailyMap.get(d)?.totalComments ?? 0),
+          shares: Number(dailyMap.get(d)?.totalShares ?? 0),
+        })),
+        reach: fullDates.map((d) => ({
+          date: d,
+          value: dailyMap.get(d)?.totalReach == null ? null : Number(dailyMap.get(d).totalReach),
+        })),
       },
-      topPosts: [],
+      topPosts: topRows.map((r) => ({
+        postId: r.post_id,
+        publishedAt: r.published_at ? new Date(r.published_at).toISOString() : new Date().toISOString(),
+        content: r.content ?? '',
+        mediaUrl: extractFirstMediaUrl(r.media),
+        metrics: {
+          likes: Number(r.likes_count ?? 0),
+          comments: Number(r.comments_count ?? 0),
+          shares: Number(r.shares_count ?? 0),
+          impressions: r.impressions_count == null ? null : Number(r.impressions_count),
+          reach: r.reach_count == null ? null : Number(r.reach_count),
+          engagementRate: null,
+        },
+      })),
     };
   }
 
-  async getSyncState(_channelId: number) {
+  async getSyncState(channelId: number) {
+    const row = await this.db.select().from(channelSyncState).where(eq(channelSyncState.channelId, channelId)).limit(1);
+    const state = row[0];
+    if (!state) {
+      return {
+        lastSyncedAt: null,
+        nextSyncAt: null,
+        status: 'healthy' as const,
+        consecutiveFailures: 0,
+        pausedUntil: null,
+        initialBackfillStatus: 'pending' as const,
+      };
+    }
+    const now = Date.now();
+    let status: 'healthy' | 'catching_up' | 'rate_limited' | 'failing' | 'paused' = 'healthy';
+    if (state.pausedUntil && new Date(state.pausedUntil).getTime() > now) status = 'paused';
+    else if (state.lastProfileSyncStatus === 'rate_limited') status = 'rate_limited';
+    else if (Number(state.consecutiveFailures ?? 0) >= 3) status = 'failing';
+    else if (state.lastProfileSyncAt && now - new Date(state.lastProfileSyncAt).getTime() > 36 * 60 * 60 * 1000)
+      status = 'catching_up';
+
     return {
-      lastSyncedAt: null,
-      nextSyncAt: null,
-      status: 'healthy' as const,
-      consecutiveFailures: 0,
-      pausedUntil: null,
-      initialBackfillStatus: 'pending' as const,
+      lastSyncedAt: state.lastProfileSyncAt ? new Date(state.lastProfileSyncAt).toISOString() : null,
+      nextSyncAt: state.nextProfileSyncAt ? new Date(state.nextProfileSyncAt).toISOString() : null,
+      status,
+      consecutiveFailures: Number(state.consecutiveFailures ?? 0),
+      pausedUntil: state.pausedUntil ? new Date(state.pausedUntil).toISOString() : null,
+      initialBackfillStatus: state.initialBackfillStatus,
     };
   }
 
-  async requestManualRefresh(_channelId: number) {
+  async requestManualRefresh(_channelId: number, _workspaceId?: string) {
+    // Phase 2 Task 14 wires this. Keep stub for compilation.
     return { accepted: true, nextAllowedAt: null };
   }
 }
 
-function rangeToDays(range: AnalyticsRange): number {
+function rangeToWindow(range: AnalyticsRange): { start: string; end: string; days: number } {
+  const today = new Date();
+  let days: number;
   switch (range) {
-    case '7d': return 7;
-    case '30d': return 30;
-    case 'mtd': return new Date().getUTCDate();
-    case 'lm': return 30;
-    case 'custom': return 30;
+    case '7d': days = 7; break;
+    case '30d': days = 30; break;
+    case 'mtd': days = today.getUTCDate(); break;
+    case 'lm': days = 30; break;
+    case 'custom': days = 30; break;
   }
+  const end = today.toISOString().slice(0, 10);
+  const startDate = new Date(today);
+  startDate.setUTCDate(startDate.getUTCDate() - (days - 1));
+  return { start: startDate.toISOString().slice(0, 10), end, days };
 }
 
-function stubDates(days: number): string[] {
-  const today = new Date();
-  return Array.from({ length: days }, (_, i) => {
-    const d = new Date(today);
-    d.setUTCDate(d.getUTCDate() - (days - 1 - i));
-    return d.toISOString().slice(0, 10);
-  });
+function buildDateRange(start: string, end: string): string[] {
+  const out: string[] = [];
+  const cur = new Date(start);
+  const endDate = new Date(end);
+  while (cur <= endDate) {
+    out.push(cur.toISOString().slice(0, 10));
+    cur.setUTCDate(cur.getUTCDate() + 1);
+  }
+  return out;
+}
+
+function extractFirstMediaUrl(media: unknown): string | null {
+  if (!media) return null;
+  if (Array.isArray(media) && media.length > 0) {
+    const first = media[0] as { url?: string };
+    return first?.url ?? null;
+  }
+  return null;
 }
