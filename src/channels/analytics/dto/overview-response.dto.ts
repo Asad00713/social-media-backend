@@ -1,6 +1,19 @@
 import { FreshnessDto } from './freshness.dto';
 import type { PlatformCapabilities } from '../types/platform-capabilities.types';
 
+export type ManualRefreshReason =
+  | 'ok'
+  | 'channel_rate_limited'
+  | 'workspace_daily_cap'
+  | 'platform_quota_exhausted';
+
+export interface ManualRefreshResponse {
+  accepted: boolean;
+  nextAllowedAt: string | null;
+  reason: ManualRefreshReason;
+  message?: string;
+}
+
 export class SummaryMetricDto {
   value!: number | null;
   deltaPct!: number | null;

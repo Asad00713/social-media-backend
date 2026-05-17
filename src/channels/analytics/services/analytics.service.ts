@@ -10,9 +10,12 @@ import { channelAnalyticsDaily } from '../../../drizzle/schema/channel-analytics
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import { postMetricSnapshots } from '../../../drizzle/schema/post-metric-snapshots.schema';
 import { posts } from '../../../drizzle/schema/posts.schema';
+import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
 import type { OverviewResponseDto } from '../dto/overview-response.dto';
+import type { ManualRefreshResponse } from '../dto/overview-response.dto';
 import type { RedisLike } from './quota-tracker.service';
+import { QuotaTrackerService } from './quota-tracker.service';
 
 export type AnalyticsRange = '7d' | '30d' | 'mtd' | 'lm' | 'custom';
 
@@ -22,6 +25,7 @@ export class AnalyticsService {
     @Inject(DRIZZLE) private readonly db: any,
     @InjectQueue(QUEUES.CHANNEL_SNAPSHOTS) private readonly queue: Queue,
     @Inject('REDIS_CLIENT') private readonly redis: RedisLike,
+    private readonly quota: QuotaTrackerService,
   ) {}
 
   async getOverview(
@@ -201,24 +205,75 @@ export class AnalyticsService {
     };
   }
 
-  async requestManualRefresh(channelId: number, workspaceId: string) {
-    const key = `refresh-limit:channel:${channelId}`;
-    const existing = await this.redis.get(key);
-    if (existing) {
-      const ttl = await this.redis.ttl(key);
+  async requestManualRefresh(channelId: number, workspaceId: string): Promise<ManualRefreshResponse> {
+    // Validation 1: Per-channel 1/hour rate limit
+    const channelKey = `refresh-limit:channel:${channelId}`;
+    const channelExisting = await this.redis.get(channelKey);
+    if (channelExisting) {
+      const ttl = await this.redis.ttl(channelKey);
       return {
         accepted: false,
+        reason: 'channel_rate_limited',
         nextAllowedAt: new Date(Date.now() + ttl * 1000).toISOString(),
+        message: 'This channel was refreshed recently. Try again later.',
       };
     }
-    await this.redis.incrby(key, 1);
-    await this.redis.expire(key, 60 * 60);
+
+    // Validation 2: Per-workspace daily cap (50/day)
+    const today = new Date().toISOString().slice(0, 10);
+    const workspaceKey = `refresh-limit:workspace:${workspaceId}:${today}`;
+    const workspaceCount = Number((await this.redis.get(workspaceKey)) ?? '0');
+    if (workspaceCount >= 50) {
+      return {
+        accepted: false,
+        reason: 'workspace_daily_cap',
+        nextAllowedAt: this.nextDayMidnightUTC(),
+        message: 'Workspace has reached its daily manual refresh limit (50/day). Resets at midnight UTC.',
+      };
+    }
+
+    // Validation 3: Per-platform quota pre-check (refuses when usage >= 95% threshold)
+    const channelRows = await this.db
+      .select({ platform: socialMediaChannels.platform })
+      .from(socialMediaChannels)
+      .where(eq(socialMediaChannels.id, channelId))
+      .limit(1);
+    const platform = channelRows[0]?.platform as SupportedPlatform | undefined;
+    if (platform) {
+      const quotaPeek = await this.quota.tryConsume(platform, 0);
+      if (!quotaPeek.allowed) {
+        return {
+          accepted: false,
+          reason: 'platform_quota_exhausted',
+          nextAllowedAt: this.nextDayMidnightUTC(),
+          message: `Platform API rate limit reached today. Manual refreshes will resume tomorrow.`,
+        };
+      }
+    }
+
+    // All validations passed — increment counters + enqueue
+    await this.redis.incrby(channelKey, 1);
+    await this.redis.expire(channelKey, 60 * 60);
+
+    await this.redis.incrby(workspaceKey, 1);
+    await this.redis.expire(workspaceKey, 26 * 60 * 60); // 26h TTL safely covers UTC day boundary
+
     await this.queue.add('channel-profile-snapshot', { channelId, workspaceId });
     await this.queue.add('channel-recent-posts-sync', { channelId, workspaceId, sinceDays: 7, limit: 50 });
+
     return {
       accepted: true,
+      reason: 'ok',
       nextAllowedAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+      message: 'Refreshing channel data — this may take a few seconds.',
     };
+  }
+
+  private nextDayMidnightUTC(): string {
+    const d = new Date();
+    d.setUTCDate(d.getUTCDate() + 1);
+    d.setUTCHours(0, 0, 0, 0);
+    return d.toISOString();
   }
 }
 
