@@ -1,6 +1,9 @@
 import { Inject, Injectable } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { and, eq, gte, lte, sql } from 'drizzle-orm';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
+import { QUEUES } from '../../../queue/queue.module';
 import { getCapabilities } from '../platform-capabilities.registry';
 import { channelSnapshots } from '../../../drizzle/schema/channel-snapshots.schema';
 import { channelAnalyticsDaily } from '../../../drizzle/schema/channel-analytics-daily.schema';
@@ -9,12 +12,17 @@ import { postMetricSnapshots } from '../../../drizzle/schema/post-metric-snapsho
 import { posts } from '../../../drizzle/schema/posts.schema';
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
 import type { OverviewResponseDto } from '../dto/overview-response.dto';
+import type { RedisLike } from './quota-tracker.service';
 
 export type AnalyticsRange = '7d' | '30d' | 'mtd' | 'lm' | 'custom';
 
 @Injectable()
 export class AnalyticsService {
-  constructor(@Inject(DRIZZLE) private readonly db: any) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: any,
+    @InjectQueue(QUEUES.CHANNEL_SNAPSHOTS) private readonly queue: Queue,
+    @Inject('REDIS_CLIENT') private readonly redis: RedisLike,
+  ) {}
 
   async getOverview(
     channelId: number,
@@ -177,9 +185,23 @@ export class AnalyticsService {
     };
   }
 
-  async requestManualRefresh(_channelId: number, _workspaceId?: string) {
-    // Phase 2 Task 14 wires this. Keep stub for compilation.
-    return { accepted: true, nextAllowedAt: null };
+  async requestManualRefresh(channelId: number, workspaceId: string) {
+    const key = `refresh-limit:channel:${channelId}`;
+    const existing = await this.redis.get(key);
+    if (existing) {
+      const ttl = await this.redis.ttl(key);
+      return {
+        accepted: false,
+        nextAllowedAt: new Date(Date.now() + ttl * 1000).toISOString(),
+      };
+    }
+    await this.redis.incrby(key, 1);
+    await this.redis.expire(key, 60 * 60);
+    await this.queue.add('channel-profile-snapshot', { channelId, workspaceId });
+    return {
+      accepted: true,
+      nextAllowedAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+    };
   }
 }
 

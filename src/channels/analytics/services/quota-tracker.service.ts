@@ -6,6 +6,7 @@ export interface RedisLike {
   get(key: string): Promise<string | null>;
   incrby(key: string, by: number): Promise<number>;
   expire(key: string, seconds: number): Promise<number>;
+  ttl(key: string): Promise<number>;
 }
 
 export interface QuotaConsumeResult {

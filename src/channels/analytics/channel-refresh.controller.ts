@@ -15,9 +15,9 @@ export class ChannelRefreshController {
 
   @Post('refresh')
   async refresh(
-    @Param('wsId') _wsId: string,
+    @Param('wsId') wsId: string,
     @Param('channelId') channelIdParam: string,
   ) {
-    return this.analytics.requestManualRefresh(Number(channelIdParam));
+    return this.analytics.requestManualRefresh(Number(channelIdParam), wsId);
   }
 }
