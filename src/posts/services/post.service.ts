@@ -24,6 +24,8 @@ import { ChannelService } from '../../channels/services/channel.service';
 import { PublisherFactory } from '../publishers/publisher.factory';
 import { QUEUES } from '../../queue/queue.module';
 import { RateLimiterService } from '../../queue/rate-limiter.service';
+import { AdapterRegistryService } from '../../channels/analytics/services/adapter-registry.service';
+import type { AgeBucket } from '../../channels/analytics/types/platform-capabilities.types';
 
 export interface CreatePostDto {
   content?: string;
@@ -53,6 +55,9 @@ export class PostService {
     private readonly rateLimiterService: RateLimiterService,
     @InjectQueue(QUEUES.POST_PUBLISHING)
     private readonly publishingQueue: Queue,
+    @InjectQueue(QUEUES.CHANNEL_SNAPSHOTS)
+    private readonly snapshotQueue: Queue,
+    private readonly adapters: AdapterRegistryService,
   ) {}
 
   /**
@@ -444,6 +449,12 @@ export class PostService {
         });
         anySuccess = true;
 
+        await this.enqueuePostSnapshotTrail(
+          postId,
+          parseInt(target.channelId, 10),
+          target.platform,
+        );
+
         await this.recordHistory(
           postId,
           'published',
@@ -516,6 +527,41 @@ export class PostService {
 
     this.logger.log(`Post ${postId} publishing completed with status: ${finalStatus}`);
     return updatedPost;
+  }
+
+  /**
+   * Enqueue the first post-metric snapshot job for platforms that have an analytics adapter.
+   * The processor cascades subsequent buckets after each snapshot completes.
+   */
+  private async enqueuePostSnapshotTrail(
+    postId: string,
+    channelId: number,
+    platform: string,
+  ): Promise<void> {
+    if (!this.adapters.has(platform as SupportedPlatform)) return;
+    const adapter = this.adapters.get(platform as SupportedPlatform);
+    const profile = adapter.pollingProfile;
+    const buckets = profile.schedulePerContentType[profile.defaultContentType];
+    if (!buckets || buckets.length === 0) return;
+    const firstBucket = buckets[0] as AgeBucket;
+    const delayMap: Record<string, number> = {
+      '30m': 30 * 60_000,
+      '1h': 60 * 60_000,
+      '6h': 6 * 60 * 60_000,
+      '24h': 24 * 60 * 60_000,
+      '3d': 3 * 24 * 60 * 60_000,
+      '7d': 7 * 24 * 60 * 60_000,
+      '30d': 30 * 24 * 60 * 60_000,
+    };
+    const delay = delayMap[firstBucket] ?? 60 * 60_000;
+    await this.snapshotQueue.add(
+      'post-metric-snapshot',
+      { postId, channelId, ageBucket: firstBucket },
+      { delay },
+    );
+    this.logger.log(
+      `Enqueued post-metric-snapshot trail for post ${postId} on ${platform} (channel ${channelId}), first bucket: ${firstBucket} in ${delay / 60_000}min`,
+    );
   }
 
   /**
