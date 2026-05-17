@@ -85,16 +85,25 @@ export class BlueskyApiClient {
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       const message = (body as any).message ?? `HTTP ${res.status}`;
-      throw new BlueskyApiError(this.mapCode(res.status), res.status, message);
+      const errorName = (body as any).error;
+      throw new BlueskyApiError(this.mapCode(res.status, errorName, message), res.status, message);
     }
     return res.json() as Promise<T>;
   }
 
-  private mapCode(status: number): BlueskyApiError['code'] {
+  private mapCode(status: number, errorName?: string, message?: string): BlueskyApiError['code'] {
     if (status === 401) return 'auth_failed';
     if (status === 429) return 'rate_limited';
     if (status === 404) return 'not_found';
     if (status >= 500) return 'transient';
+    // Bluesky returns HTTP 400 with error name like 'ExpiredToken' / 'InvalidToken' / 'AuthRequired'
+    if (status === 400) {
+      const e = (errorName ?? '').toLowerCase();
+      const m = (message ?? '').toLowerCase();
+      if (e.includes('token') || e === 'authrequired' || m.includes('token has expired') || m.includes('invalid token')) {
+        return 'auth_failed';
+      }
+    }
     return 'permanent';
   }
 }
