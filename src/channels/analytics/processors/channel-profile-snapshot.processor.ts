@@ -1,27 +1,133 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Logger } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
+import { eq } from 'drizzle-orm';
 import { QUEUES } from '../../../queue/queue.module';
+import { DRIZZLE } from '../../../drizzle/drizzle.module';
+import { socialMediaChannels, type SupportedPlatform } from '../../../drizzle/schema/channels.schema';
+import { channelSnapshots } from '../../../drizzle/schema/channel-snapshots.schema';
+import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
+import { AdapterRegistryService } from '../services/adapter-registry.service';
+import { QuotaTrackerService } from '../services/quota-tracker.service';
 
 export interface ChannelProfileSnapshotJob {
   channelId: number;
   workspaceId: string;
 }
 
-/**
- * Phase 1 stub. Logs the job and returns. Phase 2 replaces this with adapter
- * dispatch + channel_snapshots upsert + channel_sync_state update.
- *
- * Note: all 4 analytics processors share the CHANNEL_SNAPSHOTS queue and
- * dispatch by job.name. Don't register additional queues.
- */
 @Processor(QUEUES.CHANNEL_SNAPSHOTS)
 export class ChannelProfileSnapshotProcessor extends WorkerHost {
   private readonly logger = new Logger(ChannelProfileSnapshotProcessor.name);
 
-  async process(job: Job<ChannelProfileSnapshotJob>): Promise<{ ok: true }> {
-    if (job.name !== 'channel-profile-snapshot') return { ok: true };
-    this.logger.log(`[stub] Channel profile snapshot for channelId=${job.data.channelId}`);
-    return { ok: true };
+  constructor(
+    private readonly registry: AdapterRegistryService,
+    private readonly quota: QuotaTrackerService,
+    @Inject(DRIZZLE) private readonly db: any,
+  ) {
+    super();
   }
+
+  async process(job: Job<ChannelProfileSnapshotJob>): Promise<{ ok: boolean }> {
+    if (job.name !== 'channel-profile-snapshot') return { ok: true };
+    const { channelId } = job.data;
+
+    const rows = await this.db
+      .select()
+      .from(socialMediaChannels)
+      .where(eq(socialMediaChannels.id, channelId))
+      .limit(1);
+    const channel = rows[0];
+    if (!channel) {
+      this.logger.warn(`Profile snapshot: channel ${channelId} not found, skipping`);
+      return { ok: false };
+    }
+
+    const platform = channel.platform as SupportedPlatform;
+    if (!this.registry.has(platform)) {
+      this.logger.log(`No adapter for platform ${platform}, skipping channel ${channelId}`);
+      return { ok: true };
+    }
+
+    const adapter = this.registry.get(platform);
+    const cost = adapter.estimateQuotaCost('fetchProfileSnapshot');
+    const quota = await this.quota.tryConsume(platform, cost);
+    if (!quota.allowed) {
+      this.logger.warn(`Quota exhausted for ${platform}, deferring channel ${channelId}`);
+      return { ok: false };
+    }
+
+    const result = await adapter.fetchProfileSnapshot(channel);
+    const today = new Date().toISOString().slice(0, 10);
+
+    if (result.status === 'success' || result.status === 'partial') {
+      const data = result.data;
+      await this.db
+        .insert(channelSnapshots)
+        .values({
+          channelId,
+          snapshotDate: today,
+          followersCount: data.followersCount ?? null,
+          followingCount: data.followingCount ?? null,
+          totalPostsCount: data.totalPostsCount ?? null,
+          platformMetrics: data.platformMetrics ?? {},
+          metricsSchemaVersion: 1,
+          fetchedAt: new Date(),
+          syncStatus: result.status,
+          syncError: null,
+        })
+        .onConflictDoNothing({ target: [channelSnapshots.channelId, channelSnapshots.snapshotDate] });
+
+      await this.db
+        .insert(channelSyncState)
+        .values({
+          channelId,
+          lastProfileSyncAt: new Date(),
+          lastProfileSyncStatus: 'success',
+          lastProfileSyncError: null,
+          nextProfileSyncAt: nextDayAt2UTC(),
+          consecutiveFailures: 0,
+        })
+        .onConflictDoUpdate({
+          target: channelSyncState.channelId,
+          set: {
+            lastProfileSyncAt: new Date(),
+            lastProfileSyncStatus: 'success',
+            lastProfileSyncError: null,
+            nextProfileSyncAt: nextDayAt2UTC(),
+            consecutiveFailures: 0,
+          },
+        });
+      this.logger.log(`Profile snapshot success: channelId=${channelId} followers=${data.followersCount ?? '?'}`);
+      return { ok: true };
+    }
+
+    // failed
+    await this.db
+      .insert(channelSyncState)
+      .values({
+        channelId,
+        lastProfileSyncAt: new Date(),
+        lastProfileSyncStatus: result.error.code === 'rate_limited' ? 'rate_limited' : 'failed',
+        lastProfileSyncError: result.error.message,
+        nextProfileSyncAt: nextDayAt2UTC(),
+        consecutiveFailures: 1,
+      })
+      .onConflictDoUpdate({
+        target: channelSyncState.channelId,
+        set: {
+          lastProfileSyncAt: new Date(),
+          lastProfileSyncStatus: result.error.code === 'rate_limited' ? 'rate_limited' : 'failed',
+          lastProfileSyncError: result.error.message,
+        },
+      });
+    this.logger.error(`Profile snapshot failed: channelId=${channelId} ${result.error.message}`);
+    return { ok: false };
+  }
+}
+
+function nextDayAt2UTC(): Date {
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() + 1);
+  d.setUTCHours(2, 0, 0, 0);
+  return d;
 }
