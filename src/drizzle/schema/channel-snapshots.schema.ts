@@ -2,6 +2,7 @@ import {
   pgTable,
   serial,
   integer,
+  bigint,
   date,
   jsonb,
   timestamp,
@@ -19,7 +20,7 @@ export const channelSnapshots = pgTable(
   'channel_snapshots',
   {
     id: serial('id').primaryKey(),
-    channelId: integer('channel_id')
+    channelId: bigint('channel_id', { mode: 'number' })
       .notNull()
       .references(() => socialMediaChannels.id, { onDelete: 'cascade' }),
     snapshotDate: date('snapshot_date').notNull(),
