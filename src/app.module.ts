@@ -24,6 +24,7 @@ import { AdminModule } from './admin/admin.module';
 import { CommunityModule } from './community/community.module';
 import { ChatbotModule } from './chatbot/chatbot.module';
 import { ScheduleModule } from '@nestjs/schedule';
+import { AnalyticsModule } from './channels/analytics/analytics.module';
 
 @Module({
   imports: [
@@ -52,6 +53,7 @@ import { ScheduleModule } from '@nestjs/schedule';
     AdminModule,
     CommunityModule,
     ChatbotModule,
+    AnalyticsModule,
   ],
   controllers: [AppController],
   providers: [AppService],
