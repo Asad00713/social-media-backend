@@ -8,6 +8,7 @@ export const QUEUES = {
   POST_PUBLISHING: 'post-publishing',
   TOKEN_REFRESH: 'token-refresh',
   DRIP_CAMPAIGNS: 'drip-campaigns',
+  CHANNEL_SNAPSHOTS: 'channel-snapshots',
 } as const;
 
 @Module({
@@ -50,6 +51,7 @@ export const QUEUES = {
       { name: QUEUES.POST_PUBLISHING },
       { name: QUEUES.TOKEN_REFRESH },
       { name: QUEUES.DRIP_CAMPAIGNS },
+      { name: QUEUES.CHANNEL_SNAPSHOTS },
     ),
   ],
   providers: [RateLimiterService],
