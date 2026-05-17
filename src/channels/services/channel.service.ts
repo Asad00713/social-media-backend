@@ -60,9 +60,6 @@ export class ChannelService {
     userId: string,
     dto: CreateChannelDto,
   ): Promise<ChannelResponseDto> {
-    // Check channel limit before creating
-    await this.enforceChannelLimit(workspaceId);
-
     // Check for duplicate
     const existing = await db
       .select()
@@ -77,10 +74,69 @@ export class ChannelService {
       .limit(1);
 
     if (existing.length > 0) {
-      throw new ConflictException(
-        `This ${dto.platform} account is already connected to this workspace`,
+      const existingChannel = existing[0];
+
+      // Genuine duplicate: channel is healthy — protect against double-connect
+      if (existingChannel.connectionStatus === 'connected' && existingChannel.isActive) {
+        throw new ConflictException(
+          `This ${dto.platform} account is already connected to this workspace`,
+        );
+      }
+
+      // Reconnect path: channel exists but is in a broken/inactive state
+      // Update tokens, status, and profile metadata without touching identity fields
+      const reconnectData: Record<string, any> = {
+        accessToken: encrypt(dto.accessToken),
+        accountName: dto.accountName,
+        connectionStatus: 'connected' as ConnectionStatus,
+        lastError: null,
+        isActive: true,
+        updatedAt: new Date(),
+      };
+
+      if (dto.refreshToken) {
+        reconnectData.refreshToken = encrypt(dto.refreshToken);
+      }
+      if (dto.tokenExpiresAt) {
+        reconnectData.tokenExpiresAt = new Date(dto.tokenExpiresAt);
+      }
+      if (dto.tokenScope !== undefined) {
+        reconnectData.tokenScope = dto.tokenScope;
+      }
+      if (dto.permissions !== undefined) {
+        reconnectData.permissions = dto.permissions;
+      }
+      if (dto.capabilities !== undefined) {
+        reconnectData.capabilities = dto.capabilities;
+      }
+      if (dto.metadata !== undefined) {
+        reconnectData.metadata = dto.metadata;
+      }
+      if (dto.username !== undefined) {
+        reconnectData.username = dto.username;
+      }
+      if (dto.profilePictureUrl !== undefined) {
+        reconnectData.profilePictureUrl = dto.profilePictureUrl;
+      }
+
+      const updated = await db
+        .update(socialMediaChannels)
+        .set(reconnectData)
+        .where(eq(socialMediaChannels.id, existingChannel.id))
+        .returning();
+
+      // Re-fire lifecycle hook to reset sync state and enqueue fresh backfill
+      await this.syncLifecycle.onChannelConnected(existingChannel.id, workspaceId);
+
+      this.logger.log(
+        `Reconnected ${dto.platform} channel ${existingChannel.id} for workspace ${workspaceId}`,
       );
+
+      return this.toResponseDto(updated[0]);
     }
+
+    // No existing row — enforce channel limit before creating a new slot
+    await this.enforceChannelLimit(workspaceId);
 
     // Get platform config for defaults
     const platformConfig = PLATFORM_CONFIG[dto.platform as SupportedPlatform];
