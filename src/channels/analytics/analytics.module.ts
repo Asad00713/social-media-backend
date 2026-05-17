@@ -32,6 +32,8 @@ import { ThreadsApiClient } from './adapters/threads/threads-api.client';
 import { ThreadsAnalyticsAdapter } from './adapters/threads/threads-analytics.adapter';
 import { PinterestApiClient } from './adapters/pinterest/pinterest-api.client';
 import { PinterestAnalyticsAdapter } from './adapters/pinterest/pinterest-analytics.adapter';
+import { LinkedInApiClient } from './adapters/linkedin/linkedin-api.client';
+import { LinkedInAnalyticsAdapter } from './adapters/linkedin/linkedin-analytics.adapter';
 import { AdapterRegistryService } from './services/adapter-registry.service';
 import { YouTubePubSubHubbubService } from './services/youtube-pubsubhubbub.service';
 import { YouTubePubSubHubbubController } from './youtube-pubsubhubbub.controller';
@@ -69,6 +71,8 @@ import { YouTubePubSubHubbubController } from './youtube-pubsubhubbub.controller
     ThreadsAnalyticsAdapter,
     { provide: PinterestApiClient, useValue: new PinterestApiClient() },
     PinterestAnalyticsAdapter,
+    { provide: LinkedInApiClient, useValue: new LinkedInApiClient() },
+    LinkedInAnalyticsAdapter,
     AdapterRegistryService,
   ],
   exports: [QuotaTrackerService, AnalyticsService, ChannelSyncLifecycleService, AdapterRegistryService],

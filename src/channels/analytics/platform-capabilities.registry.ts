@@ -204,6 +204,35 @@ const THREADS_CAPABILITIES: PlatformCapabilities = {
   dailyQuotaBudget: null, // Meta uses request-based throttling, not call-count quotas
 };
 
+const LINKEDIN_CAPABILITIES: PlatformCapabilities = {
+  platform: 'linkedin',
+  // LinkedIn personal-member API does not expose follower/following counts without
+  // Marketing Developer Platform (MDP) approval. Conservative by design.
+  hasFollowerCount: false,
+  hasFollowerTimeSeries: false,
+  hasFollowingCount: false,
+  hasImpressions: false,
+  hasReach: false,
+  hasEngagementRate: true, // likes + comments available via socialActions (MDP-gated, handled gracefully)
+  hasVideoMetrics: false,
+  hasDemographics: false,
+  hasTrafficSources: false,
+  contentTypes: ['post', 'article'],
+  vocabulary: {
+    // LinkedIn uses "connections" not "followers" for personal accounts
+    follower: 'connections',
+    following: 'connections',
+    share: 'share',
+    post: 'post',
+  },
+  hasEphemeralContent: false,
+  ephemeralTTLHours: null,
+  profileDataSource: 'platform_api',
+  postDataSource: 'platform_api',
+  dataFreshness: 'daily',
+  dailyQuotaBudget: null,
+};
+
 const PINTEREST_CAPABILITIES: PlatformCapabilities = {
   platform: 'pinterest',
   hasFollowerCount: true,
@@ -241,6 +270,7 @@ export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCa
   instagram: INSTAGRAM_CAPABILITIES,
   threads: THREADS_CAPABILITIES,
   pinterest: PINTEREST_CAPABILITIES,
+  linkedin: LINKEDIN_CAPABILITIES,
 };
 
 export function getCapabilities(platform: SupportedPlatform): PlatformCapabilities {
