@@ -11,6 +11,7 @@ import { QUEUES } from '../../queue/queue.module';
 import { ChannelProfileSnapshotProcessor } from './processors/channel-profile-snapshot.processor';
 import { PostMetricSnapshotProcessor } from './processors/post-metric-snapshot.processor';
 import { ChannelDailyRollupProcessor } from './processors/channel-daily-rollup.processor';
+import { ChannelInitialBackfillProcessor } from './processors/channel-initial-backfill.processor';
 
 @Module({
   imports: [ConfigModule, BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS })],
@@ -23,6 +24,7 @@ import { ChannelDailyRollupProcessor } from './processors/channel-daily-rollup.p
     ChannelProfileSnapshotProcessor,
     PostMetricSnapshotProcessor,
     ChannelDailyRollupProcessor,
+    ChannelInitialBackfillProcessor,
   ],
   exports: [QuotaTrackerService, AnalyticsService],
 })
