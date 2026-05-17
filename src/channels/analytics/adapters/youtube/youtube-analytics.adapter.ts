@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import type {
   PlatformAnalyticsAdapter,
   AdapterOperation,
@@ -31,6 +31,7 @@ export class YouTubeAnalyticsAdapter implements PlatformAnalyticsAdapter {
   readonly platform = 'youtube' as const;
   readonly capabilities: PlatformCapabilities;
   readonly pollingProfile = POLLING_PROFILE;
+  private readonly logger = new Logger(YouTubeAnalyticsAdapter.name);
 
   constructor(
     private readonly dataClient: YouTubeDataApiClient,
@@ -92,31 +93,48 @@ export class YouTubeAnalyticsAdapter implements PlatformAnalyticsAdapter {
       const published = new Date((post as any).publishedAt ?? Date.now());
       const startDate = published.toISOString().slice(0, 10);
 
-      const [videoResp, analyticsRow] = await Promise.all([
-        this.dataClient.getVideosByIds([videoId], accessToken),
-        this.analyticsClient.getVideoMetrics({ videoId, accessToken, startDate, endDate: today }),
-      ]);
+      // Data API is mandatory — has likes/comments/views
+      const videoResp = await this.dataClient.getVideosByIds([videoId], accessToken);
+
+      // Analytics API is best-effort — for watch time / avg view duration.
+      // Common failure: API not enabled in Google Cloud project. We still return success
+      // with the Data API stats so the post snapshot is useful.
+      let analyticsRow: Awaited<ReturnType<typeof this.analyticsClient.getVideoMetrics>> = null;
+      const missing: string[] = [];
+      try {
+        analyticsRow = await this.analyticsClient.getVideoMetrics({
+          videoId,
+          accessToken,
+          startDate,
+          endDate: today,
+        });
+      } catch (analyticsErr) {
+        missing.push('watchTimeMinutes', 'averageViewDurationSeconds');
+        // Log once but don't fail — most data still comes from Data API
+        this.logger.warn(`Analytics API unavailable for video ${videoId}: ${(analyticsErr as Error).message}`);
+      }
 
       const video = videoResp.items?.[0];
       const dataStats = video?.statistics ?? {};
 
-      return {
-        status: 'success',
-        data: {
-          likesCount: Number(dataStats.likeCount ?? analyticsRow?.likes ?? 0),
-          commentsCount: Number(dataStats.commentCount ?? analyticsRow?.comments ?? 0),
-          sharesCount: analyticsRow?.shares ?? null,
-          impressionsCount: analyticsRow?.views ?? Number(dataStats.viewCount ?? 0),
-          reachCount: null,
-          platformMetrics: {
-            viewCount: Number(dataStats.viewCount ?? '0'),
-            watchTimeMinutes: analyticsRow?.watchTimeMinutes ?? null,
-            averageViewDurationSeconds: analyticsRow?.averageViewDurationSeconds ?? null,
-            duration: video?.contentDetails?.duration ?? null,
-          },
+      const data = {
+        likesCount: Number(dataStats.likeCount ?? analyticsRow?.likes ?? 0),
+        commentsCount: Number(dataStats.commentCount ?? analyticsRow?.comments ?? 0),
+        sharesCount: analyticsRow?.shares ?? null,
+        impressionsCount: Number(dataStats.viewCount ?? analyticsRow?.views ?? 0),
+        reachCount: null,
+        platformMetrics: {
+          viewCount: Number(dataStats.viewCount ?? '0'),
+          watchTimeMinutes: analyticsRow?.watchTimeMinutes ?? null,
+          averageViewDurationSeconds: analyticsRow?.averageViewDurationSeconds ?? null,
+          duration: video?.contentDetails?.duration ?? null,
         },
-        quotaCostUsed: 1,
       };
+
+      if (missing.length > 0) {
+        return { status: 'partial', data, missing, quotaCostUsed: 1 };
+      }
+      return { status: 'success', data, quotaCostUsed: 1 };
     } catch (err) {
       return this.toFailedResult(err, 1);
     }
