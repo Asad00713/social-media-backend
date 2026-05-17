@@ -120,6 +120,58 @@ export class PostMetricSnapshotHandler {
       fetchedAt: new Date().toISOString(),
     });
 
+    // Velocity-aware boost: if metrics jumped >=25% since previous snapshot
+    // AND post is < 24h old, enqueue an immediate follow-up. Catches viral
+    // moments without waiting for the tier's next regular interval.
+    const HOT_THRESHOLD = 0.25;
+    const HOT_AGE_MAX_MS = 24 * 60 * 60 * 1000;
+    const VELOCITY_FOLLOWUP_DELAY_MS = 2 * 60 * 1000;
+
+    try {
+      const ageMs = targetPublishedAt ? Date.now() - new Date(targetPublishedAt).getTime() : Number.POSITIVE_INFINITY;
+      if (ageMs < HOT_AGE_MAX_MS) {
+        const recent = await this.db
+          .select({
+            likes: postMetricSnapshots.likesCount,
+            comments: postMetricSnapshots.commentsCount,
+            impressions: postMetricSnapshots.impressionsCount,
+            snapshotAt: postMetricSnapshots.snapshotAt,
+          })
+          .from(postMetricSnapshots)
+          .where(and(eq(postMetricSnapshots.postId, postId), eq(postMetricSnapshots.channelId, channelId)))
+          .orderBy(desc(postMetricSnapshots.snapshotAt))
+          .limit(2);
+
+        if (recent.length === 2) {
+          const [latest, previous] = recent;
+          const safeDelta = (curr: number | null | undefined, prev: number | null | undefined): number => {
+            const c = Number(curr ?? 0);
+            const p = Number(prev ?? 0);
+            if (p === 0 && c === 0) return 0;
+            if (p === 0) return c > 0 ? 1 : 0; // 100% growth from zero
+            return (c - p) / p;
+          };
+          const maxDelta = Math.max(
+            safeDelta(latest.likes, previous.likes),
+            safeDelta(latest.comments, previous.comments),
+            safeDelta(latest.impressions, previous.impressions),
+          );
+
+          if (maxDelta >= HOT_THRESHOLD) {
+            await this.queue.add(
+              'post-metric-snapshot',
+              { postId, channelId, ageBucket },
+              { delay: VELOCITY_FOLLOWUP_DELAY_MS },
+            );
+            this.logger.log(`Velocity boost: post ${postId} delta=${(maxDelta * 100).toFixed(1)}% — follow-up in 2 min`);
+          }
+        }
+      }
+    } catch (velocityErr) {
+      // Never let velocity logic break the snapshot write path
+      this.logger.warn(`Velocity boost check failed for post ${postId}: ${(velocityErr as Error).message}`);
+    }
+
     // Engagement-decay check: if last 3 snapshots show stable likes/comments/shares,
     // stop scheduling further snapshots.
     const lastThree = await this.db
