@@ -9,6 +9,7 @@ import { RedisClientProvider } from './redis-client.provider';
 import { ChannelLookupRepoProvider } from './guards/channel-ownership.guard';
 import { QUEUES } from '../../queue/queue.module';
 import { ChannelProfileSnapshotProcessor } from './processors/channel-profile-snapshot.processor';
+import { PostMetricSnapshotProcessor } from './processors/post-metric-snapshot.processor';
 
 @Module({
   imports: [ConfigModule, BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS })],
@@ -19,6 +20,7 @@ import { ChannelProfileSnapshotProcessor } from './processors/channel-profile-sn
     RedisClientProvider,
     ChannelLookupRepoProvider,
     ChannelProfileSnapshotProcessor,
+    PostMetricSnapshotProcessor,
   ],
   exports: [QuotaTrackerService, AnalyticsService],
 })
