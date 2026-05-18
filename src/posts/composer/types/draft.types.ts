@@ -1,4 +1,16 @@
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
+import type {
+  TwitterFields,
+  InstagramFields,
+  YouTubeFields,
+  FacebookFields,
+  LinkedInFields,
+  TikTokFields,
+  PinterestFields,
+  ThreadsFields,
+  BlueskyFields,
+  MastodonFields,
+} from './platform-fields.types';
 
 export interface Draft {
   id: string;
@@ -84,18 +96,17 @@ export interface ScheduleConfig {
   scheduleAt?: string;
 }
 
-// Forward-declared — Task 2 replaces with strongly-typed versions
 export interface PlatformOverrides {
-  twitter?: PlatformOverride<unknown>;
-  instagram?: PlatformOverride<unknown>;
-  youtube?: PlatformOverride<unknown>;
-  facebook?: PlatformOverride<unknown>;
-  linkedin?: PlatformOverride<unknown>;
-  tiktok?: PlatformOverride<unknown>;
-  pinterest?: PlatformOverride<unknown>;
-  threads?: PlatformOverride<unknown>;
-  bluesky?: PlatformOverride<unknown>;
-  mastodon?: PlatformOverride<unknown>;
+  twitter?: PlatformOverride<TwitterFields>;
+  instagram?: PlatformOverride<InstagramFields>;
+  youtube?: PlatformOverride<YouTubeFields>;
+  facebook?: PlatformOverride<FacebookFields>;
+  linkedin?: PlatformOverride<LinkedInFields>;
+  tiktok?: PlatformOverride<TikTokFields>;
+  pinterest?: PlatformOverride<PinterestFields>;
+  threads?: PlatformOverride<ThreadsFields>;
+  bluesky?: PlatformOverride<BlueskyFields>;
+  mastodon?: PlatformOverride<MastodonFields>;
 }
 
 export interface PlatformOverride<TFields> {
