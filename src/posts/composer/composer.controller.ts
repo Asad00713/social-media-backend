@@ -15,10 +15,12 @@ import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { ComposerService } from './services/composer.service';
 import { ComposerValidatorService } from './services/composer-validator.service';
 import { PayloadResolverService } from './services/payload-resolver.service';
+import { PublishOrchestratorService } from './services/publish-orchestrator.service';
 import { getCapabilities } from '../../channels/analytics/platform-capabilities.registry';
 import type { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import { CreateDraftDto } from './dto/create-draft.dto';
 import { UpdateDraftDto } from './dto/update-draft.dto';
+import { PublishDraftDto } from './dto/publish-draft.dto';
 
 @Controller('posts/workspaces/:wsId/composer')
 @UseGuards(JwtAuthGuard)
@@ -27,6 +29,7 @@ export class ComposerController {
     private readonly composer: ComposerService,
     private readonly validator: ComposerValidatorService,
     private readonly resolver: PayloadResolverService,
+    private readonly orchestrator: PublishOrchestratorService,
   ) {}
 
   @Post('drafts')
@@ -124,5 +127,26 @@ export class ComposerController {
       throw new BadRequestException(`Channel ${body.channelId} not selected on this draft`);
     }
     return this.resolver.resolve(draft, channel);
+  }
+
+  @Post('drafts/:draftId/publish')
+  async publishDraft(
+    @Param('wsId') wsId: string,
+    @Param('draftId') draftId: string,
+    @Body() dto: PublishDraftDto,
+  ) {
+    return this.orchestrator.publishDraft(wsId, draftId, { channelIds: dto.channelIds });
+  }
+
+  @Post('drafts/:draftId/retry')
+  async retryDraft(
+    @Param('wsId') wsId: string,
+    @Param('draftId') draftId: string,
+    @Body() dto: PublishDraftDto,
+  ) {
+    if (!dto.channelIds?.length) {
+      throw new BadRequestException('retry requires channelIds');
+    }
+    return this.orchestrator.publishDraft(wsId, draftId, { channelIds: dto.channelIds });
   }
 }
