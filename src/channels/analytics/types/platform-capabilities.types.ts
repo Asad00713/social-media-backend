@@ -1,4 +1,5 @@
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
+import type { ComposerCapabilities } from '../../../posts/composer/types/composer-capabilities.types';
 
 export type ContentType =
   | 'post' | 'video' | 'short' | 'story' | 'reel' | 'pin' | 'thread' | 'article';
@@ -31,6 +32,7 @@ export interface PlatformCapabilities {
   postDataSource: 'platform_api' | 'self_snapshot_only' | 'hybrid';
   dataFreshness: 'realtime' | 'hourly' | 'daily';
   dailyQuotaBudget: number | null;
+  composer?: ComposerCapabilities;
 }
 
 export interface PollingProfile {
