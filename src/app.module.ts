@@ -26,6 +26,7 @@ import { ChatbotModule } from './chatbot/chatbot.module';
 import { ScheduleModule } from '@nestjs/schedule';
 import { AnalyticsModule } from './channels/analytics/analytics.module';
 import { RealtimeModule } from './realtime/realtime.module';
+import { ComposerModule } from './posts/composer/composer.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
@@ -60,6 +61,7 @@ import { QUEUES } from './queue/queue.module';
     ChatbotModule,
     AnalyticsModule,
     RealtimeModule,
+    ComposerModule,
     BullBoardModule.forRoot({
       route: '/admin/queues',
       adapter: ExpressAdapter,
