@@ -1,5 +1,6 @@
 import type { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import type { PlatformCapabilities } from './types/platform-capabilities.types';
+import type { ComposerCapabilities } from '../../posts/composer/types/composer-capabilities.types';
 
 /**
  * Phase 1 ships placeholder capabilities for all platforms. Real per-platform
@@ -7,6 +8,322 @@ import type { PlatformCapabilities } from './types/platform-capabilities.types';
  * phases = Instagram, Twitter, etc.). Frontend reads this registry directly
  * via type-sharing — keep changes additive.
  */
+
+// ─── Composer capability constants (one per platform) ────────────────────────
+
+// Twitter — 280 chars, 4 images OR 1 video
+const TWITTER_COMPOSER: ComposerCapabilities = {
+  supportsTitle: false,
+  supportsBody: true,
+  supportsDescription: false,
+  supportsHashtags: true,
+  supportsFirstComment: false,
+  supportsThread: true,
+  supportsPoll: true,
+  supportsLocation: false,
+  supportsMentions: true,
+  supportsLinkPreview: true,
+  postTypes: ['post'],
+  visibilityOptions: [],
+  replyControlOptions: ['everyone', 'following', 'mentioned_only'],
+  maxCharsBody: 280,
+  mediaConstraints: {
+    imageMaxCount: 4,
+    imageMaxSizeMB: 5,
+    imageAllowedTypes: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
+    imageAspectRatios: [],
+    videoMaxCount: 1,
+    videoMaxSizeMB: 512,
+    videoMaxDurationSec: 140,
+    videoAllowedTypes: ['video/mp4', 'video/mov'],
+    videoAspectRatios: [],
+  },
+  requiredFields: ['body'],
+};
+
+// Instagram
+const INSTAGRAM_COMPOSER: ComposerCapabilities = {
+  supportsTitle: false,
+  supportsBody: true,
+  supportsDescription: false,
+  supportsHashtags: true,
+  supportsFirstComment: true,
+  supportsThread: false,
+  supportsPoll: false,
+  supportsLocation: true,
+  supportsMentions: true,
+  supportsLinkPreview: false,
+  postTypes: ['feed', 'reel', 'story', 'carousel'],
+  visibilityOptions: [],
+  replyControlOptions: [],
+  maxCharsBody: 2200,
+  maxCharsFirstComment: 2200,
+  mediaConstraints: {
+    imageMaxCount: 10,
+    imageMaxSizeMB: 8,
+    imageAllowedTypes: ['image/jpeg', 'image/png'],
+    imageAspectRatios: ['1:1', '4:5', '16:9'],
+    videoMaxCount: 1,
+    videoMaxSizeMB: 1024,
+    videoMaxDurationSec: 90,
+    videoAllowedTypes: ['video/mp4'],
+    videoAspectRatios: ['9:16', '1:1'],
+    carouselMaxCount: 10,
+    requiresMediaOfType: 'image',
+  },
+  requiredFields: ['body'],
+};
+
+// YouTube — title required, 5000 char description, video required
+const YOUTUBE_COMPOSER: ComposerCapabilities = {
+  supportsTitle: true,
+  supportsBody: false,
+  supportsDescription: true,
+  supportsHashtags: true,
+  supportsFirstComment: false,
+  supportsThread: false,
+  supportsPoll: false,
+  supportsLocation: false,
+  supportsMentions: false,
+  supportsLinkPreview: false,
+  postTypes: ['video', 'short'],
+  visibilityOptions: ['public', 'unlisted', 'private'],
+  replyControlOptions: [],
+  maxCharsTitle: 100,
+  maxCharsBody: 0,
+  maxCharsDescription: 5000,
+  mediaConstraints: {
+    imageMaxCount: 1,
+    imageMaxSizeMB: 2,
+    imageAllowedTypes: ['image/jpeg', 'image/png'],
+    imageAspectRatios: ['16:9'],
+    videoMaxCount: 1,
+    videoMaxSizeMB: 256000,
+    videoMaxDurationSec: 43200,
+    videoAllowedTypes: ['video/mp4', 'video/mov', 'video/avi'],
+    videoAspectRatios: ['16:9', '9:16'],
+    requiresThumbnail: true,
+    requiresMediaOfType: 'video',
+  },
+  requiredFields: ['title', 'description', 'video'],
+};
+
+// Facebook Page
+const FACEBOOK_COMPOSER: ComposerCapabilities = {
+  supportsTitle: false,
+  supportsBody: true,
+  supportsDescription: false,
+  supportsHashtags: true,
+  supportsFirstComment: true,
+  supportsThread: false,
+  supportsPoll: false,
+  supportsLocation: true,
+  supportsMentions: true,
+  supportsLinkPreview: true,
+  postTypes: ['post'],
+  visibilityOptions: [],
+  replyControlOptions: [],
+  maxCharsBody: 63206,
+  maxCharsFirstComment: 8000,
+  mediaConstraints: {
+    imageMaxCount: 10,
+    imageMaxSizeMB: 30,
+    imageAllowedTypes: ['image/jpeg', 'image/png', 'image/gif'],
+    imageAspectRatios: [],
+    videoMaxCount: 1,
+    videoMaxSizeMB: 10240,
+    videoMaxDurationSec: 14400,
+    videoAllowedTypes: ['video/mp4', 'video/mov'],
+    videoAspectRatios: [],
+  },
+  requiredFields: ['body'],
+};
+
+// LinkedIn
+const LINKEDIN_COMPOSER: ComposerCapabilities = {
+  supportsTitle: false,
+  supportsBody: true,
+  supportsDescription: false,
+  supportsHashtags: true,
+  supportsFirstComment: true,
+  supportsThread: false,
+  supportsPoll: true,
+  supportsLocation: false,
+  supportsMentions: true,
+  supportsLinkPreview: true,
+  postTypes: ['post', 'article'],
+  visibilityOptions: ['public', 'connections'],
+  replyControlOptions: [],
+  maxCharsBody: 3000,
+  maxCharsFirstComment: 1250,
+  mediaConstraints: {
+    imageMaxCount: 9,
+    imageMaxSizeMB: 5,
+    imageAllowedTypes: ['image/jpeg', 'image/png'],
+    imageAspectRatios: [],
+    videoMaxCount: 1,
+    videoMaxSizeMB: 5120,
+    videoMaxDurationSec: 600,
+    videoAllowedTypes: ['video/mp4', 'video/mov'],
+    videoAspectRatios: ['16:9', '1:1', '9:16'],
+  },
+  requiredFields: ['body'],
+};
+
+// TikTok — video required
+const TIKTOK_COMPOSER: ComposerCapabilities = {
+  supportsTitle: false,
+  supportsBody: true,
+  supportsDescription: false,
+  supportsHashtags: true,
+  supportsFirstComment: false,
+  supportsThread: false,
+  supportsPoll: false,
+  supportsLocation: false,
+  supportsMentions: true,
+  supportsLinkPreview: false,
+  postTypes: ['video'],
+  visibilityOptions: ['public', 'friends', 'private'],
+  replyControlOptions: [],
+  maxCharsBody: 2200,
+  mediaConstraints: {
+    imageMaxCount: 0,
+    imageMaxSizeMB: 0,
+    imageAllowedTypes: [],
+    imageAspectRatios: [],
+    videoMaxCount: 1,
+    videoMaxSizeMB: 4096,
+    videoMaxDurationSec: 600,
+    videoMinDurationSec: 3,
+    videoAllowedTypes: ['video/mp4'],
+    videoAspectRatios: ['9:16'],
+    requiresMediaOfType: 'video',
+  },
+  requiredFields: ['body', 'video'],
+};
+
+// Pinterest
+const PINTEREST_COMPOSER: ComposerCapabilities = {
+  supportsTitle: true,
+  supportsBody: false,
+  supportsDescription: true,
+  supportsHashtags: false,
+  supportsFirstComment: false,
+  supportsThread: false,
+  supportsPoll: false,
+  supportsLocation: false,
+  supportsMentions: false,
+  supportsLinkPreview: false,
+  postTypes: ['pin'],
+  visibilityOptions: [],
+  replyControlOptions: [],
+  maxCharsTitle: 100,
+  maxCharsBody: 0,
+  maxCharsDescription: 500,
+  mediaConstraints: {
+    imageMaxCount: 1,
+    imageMaxSizeMB: 32,
+    imageAllowedTypes: ['image/jpeg', 'image/png'],
+    imageAspectRatios: ['2:3'],
+    videoMaxCount: 1,
+    videoMaxSizeMB: 2048,
+    videoMaxDurationSec: 900,
+    videoAllowedTypes: ['video/mp4', 'video/mov'],
+    videoAspectRatios: ['2:3'],
+    requiresMediaOfType: 'image',
+  },
+  requiredFields: ['title', 'image', 'board'],
+};
+
+// Threads
+const THREADS_COMPOSER: ComposerCapabilities = {
+  supportsTitle: false,
+  supportsBody: true,
+  supportsDescription: false,
+  supportsHashtags: true,
+  supportsFirstComment: false,
+  supportsThread: true,
+  supportsPoll: false,
+  supportsLocation: false,
+  supportsMentions: true,
+  supportsLinkPreview: true,
+  postTypes: ['thread'],
+  visibilityOptions: [],
+  replyControlOptions: ['everyone', 'followed', 'mentioned'],
+  maxCharsBody: 500,
+  mediaConstraints: {
+    imageMaxCount: 10,
+    imageMaxSizeMB: 8,
+    imageAllowedTypes: ['image/jpeg', 'image/png'],
+    imageAspectRatios: [],
+    videoMaxCount: 1,
+    videoMaxSizeMB: 1024,
+    videoMaxDurationSec: 300,
+    videoAllowedTypes: ['video/mp4'],
+    videoAspectRatios: [],
+  },
+  requiredFields: ['body'],
+};
+
+// Bluesky
+const BLUESKY_COMPOSER: ComposerCapabilities = {
+  supportsTitle: false,
+  supportsBody: true,
+  supportsDescription: false,
+  supportsHashtags: true,
+  supportsFirstComment: false,
+  supportsThread: true,
+  supportsPoll: false,
+  supportsLocation: false,
+  supportsMentions: true,
+  supportsLinkPreview: true,
+  postTypes: ['post'],
+  visibilityOptions: [],
+  replyControlOptions: ['everyone', 'following', 'mentioned'],
+  maxCharsBody: 300,
+  mediaConstraints: {
+    imageMaxCount: 4,
+    imageMaxSizeMB: 1,
+    imageAllowedTypes: ['image/jpeg', 'image/png'],
+    imageAspectRatios: [],
+    videoMaxCount: 0,
+    videoMaxSizeMB: 0,
+    videoMaxDurationSec: 0,
+    videoAllowedTypes: [],
+    videoAspectRatios: [],
+  },
+  requiredFields: ['body'],
+};
+
+// Mastodon
+const MASTODON_COMPOSER: ComposerCapabilities = {
+  supportsTitle: false,
+  supportsBody: true,
+  supportsDescription: false,
+  supportsHashtags: true,
+  supportsFirstComment: false,
+  supportsThread: false,
+  supportsPoll: true,
+  supportsLocation: false,
+  supportsMentions: true,
+  supportsLinkPreview: true,
+  postTypes: ['post'],
+  visibilityOptions: ['public', 'unlisted', 'private', 'direct'],
+  replyControlOptions: [],
+  maxCharsBody: 500,
+  mediaConstraints: {
+    imageMaxCount: 4,
+    imageMaxSizeMB: 8,
+    imageAllowedTypes: ['image/jpeg', 'image/png', 'image/gif'],
+    imageAspectRatios: [],
+    videoMaxCount: 1,
+    videoMaxSizeMB: 99,
+    videoMaxDurationSec: 60,
+    videoAllowedTypes: ['video/mp4'],
+    videoAspectRatios: [],
+  },
+  requiredFields: ['body'],
+};
 const SOCIAL_PLATFORMS = [
   'facebook',
   'instagram',
@@ -44,6 +361,7 @@ const BLUESKY_CAPABILITIES: PlatformCapabilities = {
   postDataSource: 'platform_api',
   dataFreshness: 'realtime',
   dailyQuotaBudget: null,
+  composer: BLUESKY_COMPOSER,
 };
 
 const MASTODON_CAPABILITIES: PlatformCapabilities = {
@@ -70,6 +388,7 @@ const MASTODON_CAPABILITIES: PlatformCapabilities = {
   postDataSource: 'platform_api',
   dataFreshness: 'realtime',
   dailyQuotaBudget: null,
+  composer: MASTODON_COMPOSER,
 };
 
 const YOUTUBE_CAPABILITIES: PlatformCapabilities = {
@@ -96,6 +415,7 @@ const YOUTUBE_CAPABILITIES: PlatformCapabilities = {
   postDataSource: 'platform_api',
   dataFreshness: 'hourly',
   dailyQuotaBudget: 10000,
+  composer: YOUTUBE_COMPOSER,
 };
 
 function placeholderCapabilities(platform: SupportedPlatform): PlatformCapabilities {
@@ -150,6 +470,7 @@ const FACEBOOK_CAPABILITIES: PlatformCapabilities = {
   postDataSource: 'platform_api',
   dataFreshness: 'hourly',
   dailyQuotaBudget: null, // Meta uses request-based throttling, not call-count quotas
+  composer: FACEBOOK_COMPOSER,
 };
 
 const INSTAGRAM_CAPABILITIES: PlatformCapabilities = {
@@ -176,6 +497,7 @@ const INSTAGRAM_CAPABILITIES: PlatformCapabilities = {
   postDataSource: 'platform_api',
   dataFreshness: 'hourly',
   dailyQuotaBudget: null, // Meta uses request-based throttling, not call-count quotas
+  composer: INSTAGRAM_COMPOSER,
 };
 
 const THREADS_CAPABILITIES: PlatformCapabilities = {
@@ -202,6 +524,7 @@ const THREADS_CAPABILITIES: PlatformCapabilities = {
   postDataSource: 'platform_api',
   dataFreshness: 'hourly',
   dailyQuotaBudget: null, // Meta uses request-based throttling, not call-count quotas
+  composer: THREADS_COMPOSER,
 };
 
 const LINKEDIN_CAPABILITIES: PlatformCapabilities = {
@@ -231,6 +554,7 @@ const LINKEDIN_CAPABILITIES: PlatformCapabilities = {
   postDataSource: 'platform_api',
   dataFreshness: 'daily',
   dailyQuotaBudget: null,
+  composer: LINKEDIN_COMPOSER,
 };
 
 const TIKTOK_CAPABILITIES: PlatformCapabilities = {
@@ -257,6 +581,7 @@ const TIKTOK_CAPABILITIES: PlatformCapabilities = {
   postDataSource: 'platform_api',
   dataFreshness: 'hourly',
   dailyQuotaBudget: 1000, // TikTok Display API limit: 1000 calls/day per app
+  composer: TIKTOK_COMPOSER,
 };
 
 const TWITTER_CAPABILITIES: PlatformCapabilities = {
@@ -283,6 +608,7 @@ const TWITTER_CAPABILITIES: PlatformCapabilities = {
   postDataSource: 'platform_api',
   dataFreshness: 'hourly',
   dailyQuotaBudget: 500, // conservative free-tier estimate per app
+  composer: TWITTER_COMPOSER,
 };
 
 const PINTEREST_CAPABILITIES: PlatformCapabilities = {
@@ -309,6 +635,7 @@ const PINTEREST_CAPABILITIES: PlatformCapabilities = {
   postDataSource: 'platform_api',
   dataFreshness: 'daily', // Pinterest analytics API data has up to 2-day lag
   dailyQuotaBudget: null,
+  composer: PINTEREST_COMPOSER,
 };
 
 export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCapabilities>> = {
