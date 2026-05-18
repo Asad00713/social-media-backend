@@ -1,7 +1,14 @@
+import type {
+  ComposerPublishStateChangedPayload,
+  ComposerDraftStatusChangedPayload,
+} from './composer-events.types';
+
 export type AnalyticsEventName =
   | 'channel.snapshot.updated'
   | 'post.metrics.updated'
-  | 'channel.sync.state.changed';
+  | 'channel.sync.state.changed'
+  | 'composer.publish.state.changed'
+  | 'composer.draft.status.changed';
 
 export interface ChannelSnapshotUpdatedPayload {
   workspaceId: string;
@@ -38,4 +45,6 @@ export type AnalyticsEventPayloadMap = {
   'channel.snapshot.updated': ChannelSnapshotUpdatedPayload;
   'post.metrics.updated': PostMetricsUpdatedPayload;
   'channel.sync.state.changed': ChannelSyncStateChangedPayload;
+  'composer.publish.state.changed': ComposerPublishStateChangedPayload;
+  'composer.draft.status.changed': ComposerDraftStatusChangedPayload;
 };
