@@ -319,10 +319,26 @@ export class CreatePinterestBoardDto {
   @MaxLength(500)
   description?: string;
 
-  @IsString()
   @IsOptional()
-  @IsEnum(['PUBLIC', 'SECRET', 'PROTECTED'])
-  privacy?: 'PUBLIC' | 'SECRET' | 'PROTECTED';
+  @IsEnum(['PUBLIC', 'SECRET'])
+  privacy?: 'PUBLIC' | 'SECRET';
+}
+
+export class UpdatePinterestBoardDto {
+  @IsOptional()
+  @IsString()
+  @MinLength(1)
+  @MaxLength(50)
+  name?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  description?: string;
+
+  @IsOptional()
+  @IsEnum(['PUBLIC', 'SECRET'])
+  privacy?: 'PUBLIC' | 'SECRET';
 }
 
 export class CreatePinterestPinDto {
