@@ -103,13 +103,48 @@ export class PinterestService {
   }
 
   /**
+   * Slim board listing used by the composer's board picker. Returns only the
+   * fields the picker needs ({ id, name, image_thumbnail_url }).
+   *
+   * Shipped but untested with a live account — verify in smoke test.
+   */
+  async listBoards(
+    accessToken: string,
+  ): Promise<Array<{ id: string; name: string; image_thumbnail_url: string | null }>> {
+    const response = await fetch(`${this.apiUrl}/boards`, {
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      this.logger.error('Failed to list Pinterest boards:', error);
+      throw new BadRequestException(
+        error.message || 'Failed to list Pinterest boards',
+      );
+    }
+
+    const data = await response.json();
+    return (data.items || []).map((board: any) => ({
+      id: board.id,
+      name: board.name,
+      image_thumbnail_url:
+        board.media?.image_cover_url ||
+        board.media?.pin_thumbnail_urls?.[0] ||
+        null,
+    }));
+  }
+
+  /**
    * Create a new Pinterest board
    */
   async createBoard(
     accessToken: string,
     name: string,
     description?: string,
-    privacy: 'PUBLIC' | 'SECRET' | 'PROTECTED' = 'PUBLIC',
+    privacy: 'PUBLIC' | 'SECRET' = 'PUBLIC',
   ): Promise<PinterestBoard> {
     const response = await fetch(`${this.apiUrl}/boards`, {
       method: 'POST',
@@ -144,6 +179,86 @@ export class PinterestService {
       followerCount: 0,
       collaboratorCount: 0,
     };
+  }
+
+  /**
+   * Update an existing Pinterest board's metadata.
+   * Pinterest API: PATCH /v5/boards/{board_id}
+   */
+  async updateBoard(
+    accessToken: string,
+    boardId: string,
+    patch: {
+      name?: string;
+      description?: string;
+      privacy?: 'PUBLIC' | 'SECRET';
+    },
+  ): Promise<PinterestBoard> {
+    const body: Record<string, unknown> = {};
+    if (typeof patch.name === 'string') body.name = patch.name;
+    if (typeof patch.description === 'string') body.description = patch.description;
+    if (patch.privacy) body.privacy = patch.privacy;
+
+    if (Object.keys(body).length === 0) {
+      throw new BadRequestException('No board fields supplied to update');
+    }
+
+    const response = await fetch(`${this.apiUrl}/boards/${boardId}`, {
+      method: 'PATCH',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      this.logger.error('Failed to update Pinterest board:', error);
+      throw new BadRequestException(
+        error.message || 'Failed to update board',
+      );
+    }
+
+    const board = await response.json();
+    this.logger.log(`Pinterest board updated: ${board.id}`);
+
+    return {
+      id: board.id,
+      name: board.name,
+      description: board.description || null,
+      privacy: board.privacy || 'PUBLIC',
+      pinCount: typeof board.pin_count === 'number' ? board.pin_count : 0,
+      followerCount:
+        typeof board.follower_count === 'number' ? board.follower_count : 0,
+      collaboratorCount:
+        typeof board.collaborator_count === 'number'
+          ? board.collaborator_count
+          : 0,
+    };
+  }
+
+  /**
+   * Delete a Pinterest board. Also removes every pin inside it.
+   * Pinterest API: DELETE /v5/boards/{board_id} → 204 on success.
+   */
+  async deleteBoard(accessToken: string, boardId: string): Promise<void> {
+    const response = await fetch(`${this.apiUrl}/boards/${boardId}`, {
+      method: 'DELETE',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+      },
+    });
+
+    if (!response.ok && response.status !== 204) {
+      const error = await response.json().catch(() => ({}));
+      this.logger.error('Failed to delete Pinterest board:', error);
+      throw new BadRequestException(
+        error.message || 'Failed to delete board',
+      );
+    }
+
+    this.logger.log(`Pinterest board deleted: ${boardId}`);
   }
 
   /**
