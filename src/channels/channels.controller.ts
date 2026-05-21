@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Put,
+  Patch,
   Delete,
   Body,
   Param,
@@ -34,6 +35,7 @@ import { GoogleCalendarService } from './services/google-calendar.service';
 import { OneDriveService } from './services/onedrive.service';
 import { DropboxService } from './services/dropbox.service';
 import { UnsplashService } from './services/unsplash.service';
+import { RedditService } from './services/reddit.service';
 import {
   InitiateOAuthDto,
   CreateChannelDto,
@@ -43,6 +45,7 @@ import {
   FetchPagesDto,
   ConnectFacebookPageDto,
   CreatePinterestBoardDto,
+  UpdatePinterestBoardDto,
   CreatePinterestPinDto,
   UploadYouTubeVideoDto,
   CreateLinkedInPostDto,
@@ -74,6 +77,7 @@ export class ChannelsController {
     private readonly oneDriveService: OneDriveService,
     private readonly dropboxService: DropboxService,
     private readonly unsplashService: UnsplashService,
+    private readonly redditService: RedditService,
   ) {}
 
   // ==========================================================================
@@ -664,6 +668,26 @@ export class ChannelsController {
     });
   }
 
+  /**
+   * Force-reset a channel's status to 'connected' without going through
+   * OAuth. Use when the analytics layer has misclassified a working channel
+   * as expired (common with platforms whose analytics adapter is broken but
+   * publishing works). The next sync attempt will re-flip if the token is
+   * truly bad.
+   */
+  @Post('workspaces/:workspaceId/:channelId/force-connected')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async forceConnected(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+  ) {
+    return this.channelService.forceMarkConnected(
+      parseInt(channelId, 10),
+      workspaceId,
+    );
+  }
+
   // ==========================================================================
   // Statistics Endpoints
   // ==========================================================================
@@ -965,6 +989,81 @@ export class ChannelsController {
   }
 
   /**
+   * List Pinterest boards for a connected channel (composer board picker).
+   * Verifies the channel belongs to the workspace and is a Pinterest channel,
+   * then uses the stored OAuth token to fetch boards from Pinterest.
+   */
+  @Get('workspaces/:workspaceId/:channelId/pinterest/boards')
+  @UseGuards(JwtAuthGuard)
+  async listPinterestBoardsForChannel(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+  ) {
+    const channel = await this.channelService.getChannelById(
+      parseInt(channelId, 10),
+      workspaceId,
+    );
+
+    if (channel.platform !== 'pinterest') {
+      throw new BadRequestException(
+        `Channel ${channelId} is a ${channel.platform} channel, not a Pinterest channel`,
+      );
+    }
+
+    const accessToken = await this.channelService.getAccessToken(
+      parseInt(channelId, 10),
+      workspaceId,
+    );
+
+    const boards = await this.pinterestService.listBoards(accessToken);
+    return { boards };
+  }
+
+  /**
+   * Reddit — list the user's subscribed + moderated subreddits.
+   */
+  @Get('workspaces/:workspaceId/:channelId/reddit/subreddits')
+  @UseGuards(JwtAuthGuard)
+  async listRedditSubreddits(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+  ) {
+    const numericId = parseInt(channelId, 10);
+    const channel = await this.channelService.getChannelById(numericId, workspaceId);
+    if (channel.platform !== 'reddit') {
+      throw new BadRequestException(
+        `Channel ${channelId} is a ${channel.platform} channel, not a Reddit channel`,
+      );
+    }
+    const accessToken = await this.channelService.getAccessToken(numericId, workspaceId);
+    return this.redditService.listSubredditsMine(accessToken);
+  }
+
+  /**
+   * Reddit — list link flairs configured for a given subreddit.
+   */
+  @Get('workspaces/:workspaceId/:channelId/reddit/flairs')
+  @UseGuards(JwtAuthGuard)
+  async listRedditFlairs(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+    @Query('subreddit') subreddit: string,
+  ) {
+    if (!subreddit) {
+      throw new BadRequestException('subreddit query param required');
+    }
+    const numericId = parseInt(channelId, 10);
+    const channel = await this.channelService.getChannelById(numericId, workspaceId);
+    if (channel.platform !== 'reddit') {
+      throw new BadRequestException(
+        `Channel ${channelId} is a ${channel.platform} channel, not a Reddit channel`,
+      );
+    }
+    const accessToken = await this.channelService.getAccessToken(numericId, workspaceId);
+    return this.redditService.getSubredditFlairs(accessToken, subreddit);
+  }
+
+  /**
    * Create a new Pinterest board
    */
   @Post('workspaces/:workspaceId/:channelId/pinterest/boards')
@@ -991,6 +1090,46 @@ export class ChannelsController {
       board,
       message: 'Board created successfully',
     };
+  }
+
+  /**
+   * Update an existing Pinterest board's name / description / privacy.
+   */
+  @Patch('workspaces/:workspaceId/:channelId/pinterest/boards/:boardId')
+  @UseGuards(JwtAuthGuard)
+  async updatePinterestBoard(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+    @Param('boardId') boardId: string,
+    @Body() dto: UpdatePinterestBoardDto,
+  ) {
+    const accessToken = await this.channelService.getAccessToken(
+      parseInt(channelId, 10),
+      workspaceId,
+    );
+    return this.pinterestService.updateBoard(accessToken, boardId, {
+      name: dto.name,
+      description: dto.description,
+      privacy: dto.privacy,
+    });
+  }
+
+  /**
+   * Delete a Pinterest board and all its pins.
+   */
+  @Delete('workspaces/:workspaceId/:channelId/pinterest/boards/:boardId')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.NO_CONTENT)
+  async deletePinterestBoard(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+    @Param('boardId') boardId: string,
+  ) {
+    const accessToken = await this.channelService.getAccessToken(
+      parseInt(channelId, 10),
+      workspaceId,
+    );
+    await this.pinterestService.deleteBoard(accessToken, boardId);
   }
 
   /**
