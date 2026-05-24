@@ -33,6 +33,7 @@ export const SUPPORTED_PLATFORMS = [
   'google_calendar',
   'onedrive',
   'dropbox',
+  'reddit',
 ] as const;
 
 export type SupportedPlatform = (typeof SUPPORTED_PLATFORMS)[number];
@@ -95,6 +96,7 @@ export const socialMediaChannels = pgTable(
     accessToken: text('access_token').notNull(),
     refreshToken: text('refresh_token'),
     tokenExpiresAt: timestamp('token_expires_at'),
+    refreshTokenIssuedAt: timestamp('refresh_token_issued_at', { withTimezone: true }),
     tokenScope: text('token_scope'), // Granted OAuth scopes
 
     // Permissions and capabilities
@@ -122,6 +124,9 @@ export const socialMediaChannels = pgTable(
     // Sync information
     lastSyncedAt: timestamp('last_synced_at'),
     lastPostedAt: timestamp('last_posted_at'),
+    // Last time the inbox poller fetched comments for this channel.
+    // Used by INBOX_POLLING worker for YT/Bluesky/Mastodon (no webhooks).
+    lastInboxPollAt: timestamp('last_inbox_poll_at'),
 
     // Platform-specific metadata (flexible JSON)
     metadata: jsonb('metadata').$type<Record<string, any>>().default({}),
@@ -329,6 +334,26 @@ export type NewTokenRefreshLog = typeof tokenRefreshLogs.$inferInsert;
 export type PlatformCredential = typeof platformCredentials.$inferSelect;
 export type NewPlatformCredential = typeof platformCredentials.$inferInsert;
 
+/**
+ * Returns the effective refresh-token TTL (in days) for a platform.
+ *
+ * Priority: env var `<PLATFORM_UPPER>_REFRESH_TOKEN_TTL_DAYS` > PLATFORM_CONFIG default.
+ * Returns null when the platform's refresh token never expires.
+ *
+ * Example env overrides:
+ *   YOUTUBE_REFRESH_TOKEN_TTL_DAYS=36500   (published Google OAuth app)
+ *   GOOGLE_BUSINESS_REFRESH_TOKEN_TTL_DAYS=36500
+ */
+export function getRefreshTokenTtlDays(platform: SupportedPlatform): number | null {
+  const envKey = `${platform.toUpperCase().replace(/-/g, '_')}_REFRESH_TOKEN_TTL_DAYS`;
+  const envValue = process.env[envKey];
+  if (envValue) {
+    const parsed = Number(envValue);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return PLATFORM_CONFIG[platform]?.refreshTokenTtlDays ?? null;
+}
+
 // =============================================================================
 // Platform Configuration Constants
 // =============================================================================
@@ -339,6 +364,7 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: AccountType[];
     supportsRefreshToken: boolean;
     tokenExpirationDays: number | null; // null = doesn't expire
+    refreshTokenTtlDays: number | null; // null = refresh token doesn't expire
     maxMediaPerPost: number;
     maxTextLength: number;
     supportedMediaTypes: string[];
@@ -350,6 +376,7 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['page', 'group'],
     supportsRefreshToken: false, // Uses long-lived tokens
     tokenExpirationDays: 60,
+    refreshTokenTtlDays: 60, // Long-lived token acts as the refresh token
     maxMediaPerPost: 10,
     maxTextLength: 63206,
     supportedMediaTypes: ['image', 'video', 'link'],
@@ -360,6 +387,12 @@ export const PLATFORM_CONFIG: Record<
       'pages_read_engagement',
       'pages_manage_posts',
       'pages_manage_metadata',
+      // Required for posting comments on Page posts (first-comment feature).
+      // Must be enabled in Meta App Console → App Review → Permissions and Features
+      // before existing users will see it in the consent screen.
+      'pages_manage_engagement',
+      // Required to read user-generated comments on Page posts (inbox feature).
+      'pages_read_user_content',
     ],
   },
   instagram: {
@@ -367,6 +400,7 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['business_account'],
     supportsRefreshToken: false, // Instagram Business Login uses long-lived tokens (60 days)
     tokenExpirationDays: 60,
+    refreshTokenTtlDays: 60, // Long-lived token must be refreshed within 60 days
     maxMediaPerPost: 10,
     maxTextLength: 2200,
     supportedMediaTypes: ['image', 'video', 'carousel'],
@@ -383,12 +417,17 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['channel'],
     supportsRefreshToken: true,
     tokenExpirationDays: null, // Refresh token doesn't expire
+    refreshTokenTtlDays: 7, // Testing-mode Google apps; override via YOUTUBE_REFRESH_TOKEN_TTL_DAYS=36500 for published apps
     maxMediaPerPost: 1,
     maxTextLength: 5000,
     supportedMediaTypes: ['video'],
     oauthScopes: [
       'https://www.googleapis.com/auth/youtube.upload',
       'https://www.googleapis.com/auth/youtube',
+      'https://www.googleapis.com/auth/yt-analytics.readonly',
+      // Required for commentThreads.insert (first-comment feature).
+      // The broader youtube scope does NOT cover comment writes — verified at runtime.
+      'https://www.googleapis.com/auth/youtube.force-ssl',
     ],
   },
   tiktok: {
@@ -396,6 +435,7 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['business_account'],
     supportsRefreshToken: true,
     tokenExpirationDays: 1, // Very short
+    refreshTokenTtlDays: 365,
     maxMediaPerPost: 1,
     maxTextLength: 2200,
     supportedMediaTypes: ['video'],
@@ -413,6 +453,7 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['business_account', 'profile'],
     supportsRefreshToken: true,
     tokenExpirationDays: 30,
+    refreshTokenTtlDays: 365,
     maxMediaPerPost: 1,
     maxTextLength: 500,
     supportedMediaTypes: ['image', 'video'],
@@ -423,6 +464,7 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['profile'],
     supportsRefreshToken: true,
     tokenExpirationDays: null,
+    refreshTokenTtlDays: 180,
     maxMediaPerPost: 4,
     maxTextLength: 280,
     supportedMediaTypes: ['image', 'video', 'gif'],
@@ -433,6 +475,7 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['profile', 'page'],
     supportsRefreshToken: true,
     tokenExpirationDays: 60,
+    refreshTokenTtlDays: 60,
     maxMediaPerPost: 9,
     maxTextLength: 3000,
     supportedMediaTypes: ['image', 'video', 'document'],
@@ -443,16 +486,27 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['profile'],
     supportsRefreshToken: false, // Uses IG token
     tokenExpirationDays: 60,
+    refreshTokenTtlDays: 60,
     maxMediaPerPost: 10,
     maxTextLength: 500,
     supportedMediaTypes: ['image', 'video'],
-    oauthScopes: ['threads_basic', 'threads_content_publish'],
+    oauthScopes: [
+      'threads_basic',
+      'threads_content_publish',
+      // Required to use reply_to_id when chaining a multi-post thread.
+      // Without this, the first post publishes but subsequent replies fail
+      // with THApiException code 10 "Application does not have permission".
+      'threads_manage_replies',
+      // Required to read replies on our Threads posts (inbox feature).
+      'threads_read_replies',
+    ],
   },
   bluesky: {
     name: 'Bluesky',
     accountTypes: ['profile'],
     supportsRefreshToken: true, // Uses session refresh
     tokenExpirationDays: null, // Sessions can be refreshed indefinitely
+    refreshTokenTtlDays: null, // App Passwords don't expire
     maxMediaPerPost: 4,
     maxTextLength: 300,
     supportedMediaTypes: ['image', 'video'],
@@ -463,6 +517,7 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['profile'],
     supportsRefreshToken: false, // Mastodon tokens don't expire by default
     tokenExpirationDays: null, // Tokens don't expire unless revoked
+    refreshTokenTtlDays: null, // No refresh token; access token doesn't expire
     maxMediaPerPost: 4,
     maxTextLength: 500, // Default, can vary by instance
     supportedMediaTypes: ['image', 'video', 'gif'],
@@ -474,16 +529,29 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['business_account'],
     supportsRefreshToken: true,
     tokenExpirationDays: null,
+    refreshTokenTtlDays: 7, // Google testing-mode default; override via GOOGLE_BUSINESS_REFRESH_TOKEN_TTL_DAYS
     maxMediaPerPost: 10,
     maxTextLength: 1500,
     supportedMediaTypes: ['image', 'video'],
     oauthScopes: ['https://www.googleapis.com/auth/business.manage'],
+  },
+  reddit: {
+    name: 'Reddit',
+    accountTypes: ['profile'],
+    supportsRefreshToken: true,
+    tokenExpirationDays: null, // Reddit access tokens last 1 hour
+    refreshTokenTtlDays: 365, // Reddit refresh tokens are permanent if duration=permanent
+    maxMediaPerPost: 1,
+    maxTextLength: 40000,
+    supportedMediaTypes: ['image'],
+    oauthScopes: ['identity', 'submit', 'read', 'mysubreddits', 'flair'],
   },
   google_drive: {
     name: 'Google Drive',
     accountTypes: ['storage'],
     supportsRefreshToken: true,
     tokenExpirationDays: null,
+    refreshTokenTtlDays: 7, // Google testing-mode default; override via GOOGLE_DRIVE_REFRESH_TOKEN_TTL_DAYS
     maxMediaPerPost: 0, // Not a posting platform
     maxTextLength: 0,
     supportedMediaTypes: ['image', 'video', 'document'],
@@ -496,6 +564,7 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['storage'],
     supportsRefreshToken: true,
     tokenExpirationDays: null,
+    refreshTokenTtlDays: 7, // Google testing-mode default; override via GOOGLE_PHOTOS_REFRESH_TOKEN_TTL_DAYS
     maxMediaPerPost: 0, // Not a posting platform
     maxTextLength: 0,
     supportedMediaTypes: ['image', 'video'],
@@ -508,6 +577,7 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['storage'], // Not a posting platform, utility service
     supportsRefreshToken: true,
     tokenExpirationDays: null,
+    refreshTokenTtlDays: 7, // Google testing-mode default; override via GOOGLE_CALENDAR_REFRESH_TOKEN_TTL_DAYS
     maxMediaPerPost: 0,
     maxTextLength: 0,
     supportedMediaTypes: [],
@@ -521,6 +591,7 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['storage'],
     supportsRefreshToken: true,
     tokenExpirationDays: null, // Refresh token doesn't expire if used regularly
+    refreshTokenTtlDays: 60, // Microsoft consumer tokens inactive for 90 days expire; warn at 60
     maxMediaPerPost: 0, // Not a posting platform
     maxTextLength: 0,
     supportedMediaTypes: ['image', 'video', 'document'],
@@ -537,6 +608,7 @@ export const PLATFORM_CONFIG: Record<
     accountTypes: ['storage'],
     supportsRefreshToken: true,
     tokenExpirationDays: null, // Short-lived access tokens with refresh
+    refreshTokenTtlDays: 60, // Dropbox offline tokens expire after inactivity; conservative estimate
     maxMediaPerPost: 0, // Not a posting platform
     maxTextLength: 0,
     supportedMediaTypes: ['image', 'video', 'document'],

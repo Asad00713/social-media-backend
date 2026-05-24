@@ -92,6 +92,17 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
     scopes: PLATFORM_CONFIG.threads.oauthScopes,
     usePKCE: false,
   },
+  // Reddit — OAuth 2.0 with HTTP Basic auth on token exchange.
+  // duration=permanent is added in additionalParams so we get a refresh token.
+  reddit: {
+    authorizationUrl: 'https://www.reddit.com/api/v1/authorize',
+    tokenUrl: 'https://www.reddit.com/api/v1/access_token',
+    scopes: PLATFORM_CONFIG.reddit.oauthScopes,
+    usePKCE: false,
+    additionalParams: {
+      duration: 'permanent',
+    },
+  },
   // Google Business Profile - uses same Google OAuth as YouTube but different scopes
   google_business: {
     authorizationUrl: 'https://accounts.google.com/o/oauth2/v2/auth',
@@ -459,8 +470,8 @@ export class OAuthService {
       Accept: 'application/json',
     };
 
-    // Pinterest and Twitter require Basic Authentication header
-    if (platform === 'pinterest' || platform === 'twitter') {
+    // Pinterest, Twitter, and Reddit require Basic Authentication header
+    if (platform === 'pinterest' || platform === 'twitter' || platform === 'reddit') {
       const basicAuth = Buffer.from(
         `${credentials.clientId}:${credentials.clientSecret}`,
       ).toString('base64');
@@ -473,6 +484,11 @@ export class OAuthService {
       // Other platforms use body params for credentials
       tokenParams.set('client_id', credentials.clientId);
       tokenParams.set('client_secret', credentials.clientSecret);
+    }
+
+    // Reddit requires a custom User-Agent header — generic UAs are spam-blocked.
+    if (platform === 'reddit') {
+      headers['User-Agent'] = process.env.REDDIT_USER_AGENT ?? 'Schedura/1.0';
     }
 
     if (codeVerifier && oauthConfig.usePKCE) {

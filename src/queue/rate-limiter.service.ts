@@ -91,6 +91,11 @@ export const PLATFORM_RATE_LIMITS: Record<
     windowMs: 60 * 60 * 1000, // 1 hour
     description: '1000 requests per hour',
   },
+  reddit: {
+    maxRequests: 60, // Reddit OAuth limit is 60 requests/min per client
+    windowMs: 60 * 1000, // 1 minute
+    description: '60 requests per minute',
+  },
 };
 
 export interface RateLimitResult {

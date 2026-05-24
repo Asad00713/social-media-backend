@@ -53,6 +53,7 @@ export class PostPublishProcessor extends WorkerHost {
         postId,
         post.workspaceId,
         post.createdById, // Use the original creator as the performer
+        { triggeredBy: 'scheduler' },
       );
 
       this.logger.log(`Post ${postId} published with status: ${result.status}`);

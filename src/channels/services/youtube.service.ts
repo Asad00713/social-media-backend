@@ -457,4 +457,249 @@ export class YouTubeService {
         title: category.snippet.title,
       }));
   }
+
+  /**
+   * Posts a top-level comment on a YouTube video.
+   * API: commentThreads.insert
+   * Quota cost: 50 units (vs ~1600 for an upload).
+   *
+   * Required OAuth scope: youtube.force-ssl
+   *
+   * @returns the new comment's ID
+   */
+  async postComment(
+    accessToken: string,
+    videoId: string,
+    text: string,
+  ): Promise<{ commentId: string }> {
+    if (!text || !text.trim()) {
+      throw new Error('Comment text is required');
+    }
+    if (text.length > 10000) {
+      throw new Error('YouTube comments are limited to 10,000 characters');
+    }
+
+    const url = new URL('https://www.googleapis.com/youtube/v3/commentThreads');
+    url.searchParams.set('part', 'snippet');
+
+    const response = await fetch(url.toString(), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        snippet: {
+          videoId,
+          topLevelComment: {
+            snippet: {
+              textOriginal: text,
+            },
+          },
+        },
+      }),
+    });
+
+    if (!response.ok) {
+      const error = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string; code?: number };
+      };
+      const reason = error?.error?.message ?? `HTTP ${response.status}`;
+      const isAuthIssue =
+        response.status === 401 ||
+        response.status === 403 ||
+        /insufficient/i.test(reason) ||
+        /not properly authorized/i.test(reason);
+
+      if (isAuthIssue) {
+        // Inspect the actual granted scopes via Google's tokeninfo endpoint so
+        // the operator can immediately see whether youtube.force-ssl was really
+        // granted on this token. Without this, "insufficient permissions" is
+        // ambiguous — could be missing scope, brand-channel mismatch, or video
+        // settings.
+        const grantedScopes = await this.debugTokenScopes(accessToken).catch(
+          () => null,
+        );
+        this.logger.error(
+          `YouTube comment auth failed (status ${response.status}). Token scopes: ${
+            grantedScopes ? JSON.stringify(grantedScopes) : '<tokeninfo call failed>'
+          }`,
+        );
+        const hasForceSsl = grantedScopes?.some((s) =>
+          s.includes('youtube.force-ssl'),
+        );
+        const hint = hasForceSsl
+          ? 'Token has youtube.force-ssl. The video may be private (private videos disallow API comments), comments may be disabled by the uploader, OR the OAuth account differs from the channel that owns the video (brand-channel mismatch).'
+          : 'Token is MISSING youtube.force-ssl. Disconnect, then REVOKE the app at https://myaccount.google.com/permissions, then reconnect — Google caches consent and a simple in-app reconnect often reuses the old token.';
+        throw new Error(`YouTube comment post failed: ${reason}. ${hint}`);
+      }
+
+      throw new Error(`YouTube comment post failed: ${reason}`);
+    }
+
+    const data = (await response.json()) as { id?: string };
+    if (!data.id) {
+      throw new Error('YouTube returned no comment ID');
+    }
+    this.logger.log(
+      `Posted YouTube comment on video ${videoId}: ${data.id} (quota: ~50 units)`,
+    );
+    return { commentId: data.id };
+  }
+
+  /**
+   * Inspects a Google OAuth token via the public tokeninfo endpoint and
+   * returns the list of granted scopes. No additional auth required —
+   * tokeninfo accepts the access token itself.
+   */
+  private async debugTokenScopes(accessToken: string): Promise<string[]> {
+    const url = `https://www.googleapis.com/oauth2/v1/tokeninfo?access_token=${encodeURIComponent(accessToken)}`;
+    const res = await fetch(url);
+    if (!res.ok) return [];
+    const data = (await res.json()) as { scope?: string };
+    return typeof data.scope === 'string' ? data.scope.split(' ').filter(Boolean) : [];
+  }
+
+  // ==========================================================================
+  // Inbox — fetch + reply
+  // ==========================================================================
+
+  /**
+   * Fetch all comment threads on a video, including nested replies.
+   * Uses commentThreads.list (1 quota unit per call) + paginates via nextPageToken.
+   * Each thread carries up to 5 inline replies; for threads with more we'd need
+   * a follow-up comments.list call, but that's rare and Phase 1 lives with it.
+   *
+   * Cap: 5 pages = ~500 threads. Beyond that we stop to protect quota.
+   */
+  async fetchVideoComments(
+    accessToken: string,
+    videoId: string,
+  ): Promise<YouTubeCommentThread[]> {
+    const out: YouTubeCommentThread[] = [];
+    let pageToken: string | undefined;
+    let pages = 0;
+    const maxPages = 5;
+
+    while (pages < maxPages) {
+      const url = new URL('https://www.googleapis.com/youtube/v3/commentThreads');
+      url.searchParams.set('part', 'snippet,replies');
+      url.searchParams.set('videoId', videoId);
+      url.searchParams.set('maxResults', '100');
+      url.searchParams.set('order', 'time');
+      if (pageToken) url.searchParams.set('pageToken', pageToken);
+
+      const res = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!res.ok) {
+        const err = await res.text();
+        // Known benign reasons — log at INFO and return empty, don't spam
+        // ERROR + don't bubble up (poll would crash for the whole channel).
+        //   - 403 commentsDisabled: uploader turned comments off
+        //   - 404 videoNotFound: video deleted, private, or a non-video target
+        //     (e.g. a Short that no longer exists, or a wrong ID format from
+        //     an old PostTarget where we stored a stale platformPostId)
+        if (res.status === 403 && /commentsDisabled/i.test(err)) {
+          this.logger.log(`Comments disabled on video ${videoId}`);
+          return out;
+        }
+        if (res.status === 404 && /videoNotFound/i.test(err)) {
+          this.logger.warn(
+            `YouTube fetchVideoComments: video ${videoId} not found (deleted / private / stale id)`,
+          );
+          return out;
+        }
+        this.logger.error(`YouTube fetchVideoComments failed: ${err}`);
+        throw new Error(`YouTube fetchVideoComments failed: ${res.status}`);
+      }
+
+      const data = (await res.json()) as {
+        items?: YouTubeCommentThread[];
+        nextPageToken?: string;
+      };
+      if (data.items?.length) out.push(...data.items);
+      if (!data.nextPageToken) break;
+      pageToken = data.nextPageToken;
+      pages += 1;
+    }
+    return out;
+  }
+
+  /**
+   * Reply to an existing top-level comment.
+   * Uses comments.insert (~50 quota units) with parentId = the thread's
+   * top-level comment id.
+   */
+  async replyToComment(
+    accessToken: string,
+    parentCommentId: string,
+    text: string,
+  ): Promise<{ commentId: string }> {
+    const url = new URL('https://www.googleapis.com/youtube/v3/comments');
+    url.searchParams.set('part', 'snippet');
+
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        snippet: {
+          parentId: parentCommentId,
+          textOriginal: text,
+        },
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`YouTube replyToComment failed: ${err}`);
+      throw new Error(`YouTube replyToComment failed: ${res.status} ${err}`);
+    }
+    const data = (await res.json()) as { id?: string };
+    if (!data.id) throw new Error('YouTube returned no reply id');
+    return { commentId: data.id };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// YouTube commentThreads response shapes (subset used by the inbox adapter)
+// ---------------------------------------------------------------------------
+
+export interface YouTubeCommentSnippet {
+  textDisplay: string;
+  textOriginal: string;
+  authorDisplayName: string;
+  authorProfileImageUrl: string;
+  authorChannelId?: { value: string };
+  authorChannelUrl?: string;
+  videoId?: string;
+  publishedAt: string;
+  updatedAt: string;
+  parentId?: string;
+  /** Present only on top-level comments — channel id of the video owner */
+  channelId?: string;
+  /** Number of likes on this comment. YouTube doesn't expose dislike counts. */
+  likeCount?: number;
+}
+
+export interface YouTubeComment {
+  kind: 'youtube#comment';
+  id: string;
+  snippet: YouTubeCommentSnippet;
+}
+
+export interface YouTubeCommentThread {
+  kind: 'youtube#commentThread';
+  id: string;
+  snippet: {
+    channelId: string;
+    videoId: string;
+    topLevelComment: YouTubeComment;
+    totalReplyCount: number;
+    canReply: boolean;
+  };
+  replies?: { comments: YouTubeComment[] };
 }

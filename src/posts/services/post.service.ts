@@ -24,6 +24,13 @@ import { ChannelService } from '../../channels/services/channel.service';
 import { PublisherFactory } from '../publishers/publisher.factory';
 import { QUEUES } from '../../queue/queue.module';
 import { RateLimiterService } from '../../queue/rate-limiter.service';
+import { AdapterRegistryService } from '../../channels/analytics/services/adapter-registry.service';
+import type { AgeBucket } from '../../channels/analytics/types/platform-capabilities.types';
+import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
+import type {
+  PostStatusChangedPayload,
+  PostStatusChangedTarget,
+} from '../../realtime/types/analytics-events.types';
 
 export interface CreatePostDto {
   content?: string;
@@ -53,7 +60,51 @@ export class PostService {
     private readonly rateLimiterService: RateLimiterService,
     @InjectQueue(QUEUES.POST_PUBLISHING)
     private readonly publishingQueue: Queue,
+    @InjectQueue(QUEUES.CHANNEL_SNAPSHOTS)
+    private readonly snapshotQueue: Queue,
+    private readonly adapters: AdapterRegistryService,
+    private readonly realtimeEmitter: AnalyticsEventEmitter,
   ) {}
+
+  private serializeTargetsForEvent(
+    targets: PostTarget[],
+  ): PostStatusChangedTarget[] {
+    return (targets || []).map((t) => ({
+      channelId: t.channelId,
+      platform: t.platform,
+      status: t.status,
+      platformPostId: t.platformPostId,
+      platformPostUrl: t.platformPostUrl,
+      publishedAt: t.publishedAt,
+      errorMessage: t.errorMessage,
+    }));
+  }
+
+  private emitPostStatusChanged(args: {
+    workspaceId: string;
+    postId: string;
+    previousStatus: PostStatus;
+    status: PostStatus;
+    targets: PostTarget[];
+    publishedAt: Date | null;
+    lastError: string | null;
+    triggeredBy: 'user' | 'scheduler';
+    triggeredByUserId: string | null;
+  }): void {
+    const payload: PostStatusChangedPayload = {
+      workspaceId: args.workspaceId,
+      postId: args.postId,
+      previousStatus: args.previousStatus,
+      status: args.status,
+      targets: this.serializeTargetsForEvent(args.targets),
+      publishedAt: args.publishedAt ? args.publishedAt.toISOString() : null,
+      lastError: args.lastError,
+      updatedAt: new Date().toISOString(),
+      triggeredBy: args.triggeredBy,
+      triggeredByUserId: args.triggeredByUserId,
+    };
+    this.realtimeEmitter.emit(args.workspaceId, 'post.status.changed', payload);
+  }
 
   /**
    * Create a new post (draft or scheduled)
@@ -327,7 +378,9 @@ export class PostService {
     postId: string,
     workspaceId: string,
     userId: string,
+    options?: { triggeredBy?: 'user' | 'scheduler' },
   ): Promise<typeof posts.$inferSelect> {
+    const triggeredBy = options?.triggeredBy ?? 'user';
     const post = await this.getPost(postId, workspaceId);
 
     if (post.status === 'published') {
@@ -341,6 +394,8 @@ export class PostService {
     if (!post.targets || post.targets.length === 0) {
       throw new BadRequestException('Post has no target channels');
     }
+
+    const previousStatus = post.status;
 
     // Update status to publishing
     await db
@@ -356,6 +411,18 @@ export class PostService {
       null,
       userId,
     );
+
+    this.emitPostStatusChanged({
+      workspaceId,
+      postId,
+      previousStatus,
+      status: 'publishing',
+      targets: post.targets,
+      publishedAt: null,
+      lastError: null,
+      triggeredBy,
+      triggeredByUserId: userId,
+    });
 
     // Publish to each channel
     const updatedTargets: PostTarget[] = [];
@@ -444,6 +511,12 @@ export class PostService {
         });
         anySuccess = true;
 
+        await this.enqueuePostSnapshotTrail(
+          postId,
+          parseInt(target.channelId, 10),
+          target.platform,
+        );
+
         await this.recordHistory(
           postId,
           'published',
@@ -514,8 +587,55 @@ export class PostService {
       .where(eq(posts.id, postId))
       .returning();
 
+    this.emitPostStatusChanged({
+      workspaceId,
+      postId,
+      previousStatus: 'publishing',
+      status: finalStatus,
+      targets: updatedTargets,
+      publishedAt: updatedPost.publishedAt ?? null,
+      lastError: updatedPost.lastError ?? null,
+      triggeredBy,
+      triggeredByUserId: userId,
+    });
+
     this.logger.log(`Post ${postId} publishing completed with status: ${finalStatus}`);
     return updatedPost;
+  }
+
+  /**
+   * Enqueue the first post-metric snapshot job for platforms that have an analytics adapter.
+   * The processor cascades subsequent buckets after each snapshot completes.
+   */
+  private async enqueuePostSnapshotTrail(
+    postId: string,
+    channelId: number,
+    platform: string,
+  ): Promise<void> {
+    if (!this.adapters.has(platform as SupportedPlatform)) return;
+    const adapter = this.adapters.get(platform as SupportedPlatform);
+    const profile = adapter.pollingProfile;
+    const buckets = profile.schedulePerContentType[profile.defaultContentType];
+    if (!buckets || buckets.length === 0) return;
+    const firstBucket = buckets[0] as AgeBucket;
+    const delayMap: Record<string, number> = {
+      '30m': 30 * 60_000,
+      '1h': 60 * 60_000,
+      '6h': 6 * 60 * 60_000,
+      '24h': 24 * 60 * 60_000,
+      '3d': 3 * 24 * 60 * 60_000,
+      '7d': 7 * 24 * 60 * 60_000,
+      '30d': 30 * 24 * 60 * 60_000,
+    };
+    const delay = delayMap[firstBucket] ?? 60 * 60_000;
+    await this.snapshotQueue.add(
+      'post-metric-snapshot',
+      { postId, channelId, ageBucket: firstBucket },
+      { delay },
+    );
+    this.logger.log(
+      `Enqueued post-metric-snapshot trail for post ${postId} on ${platform} (channel ${channelId}), first bucket: ${firstBucket} in ${delay / 60_000}min`,
+    );
   }
 
   /**
@@ -550,6 +670,23 @@ export class PostService {
     const content = platformContent?.text || post.content || '';
     const mediaItems = platformContent?.mediaItems || post.mediaItems || [];
 
+    // Merge per-platform settings into the publisher's metadata.
+    // The composer stores Pinterest boardId, YouTube title, Reddit subreddit,
+    // etc. inside platformContent[platform].platformSpecific — without this
+    // merge, publishers receive only post.metadata (which has top-level
+    // composer fields like hashtags, title, source) and fail on platform-
+    // specific requirements. Per-platform fields take precedence over the
+    // legacy top-level metadata when keys collide.
+    const platformSpecific =
+      ((platformContent as Record<string, any>)?.platformSpecific as
+        | Record<string, any>
+        | undefined) ?? {};
+    const postMetadata = (post.metadata as Record<string, any>) || {};
+    const mergedMetadata: Record<string, any> = {
+      ...postMetadata,
+      ...platformSpecific,
+    };
+
     // Decrypt access token
     const accessToken = await this.channelService.getAccessToken(
       channelId,
@@ -563,7 +700,7 @@ export class PostService {
     return await publisher.publish({
       content,
       mediaItems,
-      metadata: (post.metadata as Record<string, any>) || {},
+      metadata: mergedMetadata,
       accessToken,
       platformAccountId: channel.platformAccountId,
       channelMetadata: (channel.metadata as Record<string, any>) || {},

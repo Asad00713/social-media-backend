@@ -1,0 +1,88 @@
+import { Module } from '@nestjs/common';
+import { ConfigModule } from '@nestjs/config';
+import { BullModule } from '@nestjs/bullmq';
+import { QuotaTrackerService } from './services/quota-tracker.service';
+import { AnalyticsService } from './services/analytics.service';
+import { AnalyticsController } from './analytics.controller';
+import { ChannelRefreshController } from './channel-refresh.controller';
+import { RedisClientProvider } from './redis-client.provider';
+import { ChannelLookupRepoProvider } from './guards/channel-ownership.guard';
+import { QUEUES } from '../../queue/queue.module';
+import { ChannelSnapshotsDispatcherProcessor } from './processors/channel-snapshots-dispatcher.processor';
+import { ChannelProfileSnapshotHandler } from './handlers/channel-profile-snapshot.handler';
+import { PostMetricSnapshotHandler } from './handlers/post-metric-snapshot.handler';
+import { ChannelDailyRollupHandler } from './handlers/channel-daily-rollup.handler';
+import { ChannelInitialBackfillHandler } from './handlers/channel-initial-backfill.handler';
+import { ChannelRecentPostsSyncHandler } from './handlers/channel-recent-posts-sync.handler';
+import { ChannelSnapshotsScheduler } from './schedulers/channel-snapshots.scheduler';
+import { TieredPollingScheduler } from './schedulers/tiered-polling.scheduler';
+import { ChannelSyncLifecycleService } from './services/channel-sync-lifecycle.service';
+import { YouTubeAnalyticsAdapter } from './adapters/youtube/youtube-analytics.adapter';
+import { YouTubeDataApiClient } from './adapters/youtube/youtube-data-api.client';
+import { YouTubeAnalyticsApiClient } from './adapters/youtube/youtube-analytics-api.client';
+import { BlueskyApiClient } from './adapters/bluesky/bluesky-api.client';
+import { BlueskyAnalyticsAdapter } from './adapters/bluesky/bluesky-analytics.adapter';
+import { MastodonApiClient } from './adapters/mastodon/mastodon-api.client';
+import { MastodonAnalyticsAdapter } from './adapters/mastodon/mastodon-analytics.adapter';
+import { FacebookApiClient } from './adapters/facebook/facebook-api.client';
+import { FacebookAnalyticsAdapter } from './adapters/facebook/facebook-analytics.adapter';
+import { InstagramApiClient } from './adapters/instagram/instagram-api.client';
+import { InstagramAnalyticsAdapter } from './adapters/instagram/instagram-analytics.adapter';
+import { ThreadsApiClient } from './adapters/threads/threads-api.client';
+import { ThreadsAnalyticsAdapter } from './adapters/threads/threads-analytics.adapter';
+import { PinterestApiClient } from './adapters/pinterest/pinterest-api.client';
+import { PinterestAnalyticsAdapter } from './adapters/pinterest/pinterest-analytics.adapter';
+import { LinkedInApiClient } from './adapters/linkedin/linkedin-api.client';
+import { LinkedInAnalyticsAdapter } from './adapters/linkedin/linkedin-analytics.adapter';
+import { AdapterRegistryService } from './services/adapter-registry.service';
+import { YouTubePubSubHubbubService } from './services/youtube-pubsubhubbub.service';
+import { YouTubePubSubHubbubController } from './youtube-pubsubhubbub.controller';
+import { TikTokApiClient } from './adapters/tiktok/tiktok-api.client';
+import { TikTokAnalyticsAdapter } from './adapters/tiktok/tiktok-analytics.adapter';
+import { TwitterApiClient } from './adapters/twitter/twitter-api.client';
+import { TwitterAnalyticsAdapter } from './adapters/twitter/twitter-analytics.adapter';
+
+@Module({
+  imports: [ConfigModule, BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS })],
+  controllers: [AnalyticsController, ChannelRefreshController, YouTubePubSubHubbubController],
+  providers: [
+    QuotaTrackerService,
+    AnalyticsService,
+    RedisClientProvider,
+    ChannelLookupRepoProvider,
+    ChannelProfileSnapshotHandler,
+    PostMetricSnapshotHandler,
+    ChannelDailyRollupHandler,
+    ChannelInitialBackfillHandler,
+    ChannelRecentPostsSyncHandler,
+    ChannelSnapshotsDispatcherProcessor,
+    ChannelSnapshotsScheduler,
+    TieredPollingScheduler,
+    ChannelSyncLifecycleService,
+    YouTubePubSubHubbubService,
+    { provide: YouTubeDataApiClient, useValue: new YouTubeDataApiClient() },
+    { provide: YouTubeAnalyticsApiClient, useValue: new YouTubeAnalyticsApiClient() },
+    YouTubeAnalyticsAdapter,
+    { provide: BlueskyApiClient, useValue: new BlueskyApiClient() },
+    BlueskyAnalyticsAdapter,
+    { provide: MastodonApiClient, useValue: new MastodonApiClient() },
+    MastodonAnalyticsAdapter,
+    { provide: FacebookApiClient, useValue: new FacebookApiClient() },
+    FacebookAnalyticsAdapter,
+    { provide: InstagramApiClient, useValue: new InstagramApiClient() },
+    InstagramAnalyticsAdapter,
+    { provide: ThreadsApiClient, useValue: new ThreadsApiClient() },
+    ThreadsAnalyticsAdapter,
+    { provide: PinterestApiClient, useValue: new PinterestApiClient() },
+    PinterestAnalyticsAdapter,
+    { provide: LinkedInApiClient, useValue: new LinkedInApiClient() },
+    LinkedInAnalyticsAdapter,
+    { provide: TikTokApiClient, useValue: new TikTokApiClient() },
+    TikTokAnalyticsAdapter,
+    { provide: TwitterApiClient, useValue: new TwitterApiClient() },
+    TwitterAnalyticsAdapter,
+    AdapterRegistryService,
+  ],
+  exports: [QuotaTrackerService, AnalyticsService, ChannelSyncLifecycleService, AdapterRegistryService],
+})
+export class AnalyticsModule {}

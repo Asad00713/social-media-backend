@@ -10,43 +10,34 @@ import {
   Res,
 } from '@nestjs/common';
 import type { Response } from 'express';
+import { InboxService } from '../inbox/inbox.service';
+import type { SupportedPlatform } from '../drizzle/schema/channels.schema';
 
 /**
- * Webhooks Controller
+ * Webhooks Controller — receives push events from social platforms.
  *
- * Handles incoming webhooks from social media platforms.
- * These endpoints are public (no auth) as they receive data from external services.
+ * Public (no JWT auth) since events come from external services. Webhook
+ * authenticity is verified per-platform:
+ *   - Meta (FB/IG/Threads): hub.verify_token on registration; HMAC signature
+ *     verification of POST body for production (TODO — Phase 1 skips and
+ *     relies on the verify_token + IP allowlist).
  *
- * IMPORTANT: Webhook URLs must be:
- * - HTTPS in production
- * - Publicly accessible
- * - Return expected responses for verification
+ * Registered in `InboxModule` (not ChannelsModule) so it can inject
+ * InboxService without a circular dep.
  */
 @Controller('webhooks')
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
 
-  // Simple verify token - should be set in environment variables in production
   private readonly META_VERIFY_TOKEN =
     process.env.META_WEBHOOK_VERIFY_TOKEN || 'webondev_verify_123';
 
+  constructor(private readonly inbox: InboxService) {}
+
   // ==========================================================================
-  // Meta (Facebook/Instagram) Webhooks
+  // Meta (Facebook / Instagram / Threads) — verification challenges
   // ==========================================================================
 
-  /**
-   * Meta Webhook Verification (GET)
-   *
-   * When you configure a webhook URL in Meta Developer Console,
-   * Meta sends a GET request to verify your endpoint.
-   *
-   * Query params from Meta:
-   * - hub.mode: Should be "subscribe"
-   * - hub.verify_token: Your verify token (set in Meta dashboard)
-   * - hub.challenge: Random string you must return
-   *
-   * @returns The hub.challenge value as plain text (200 OK)
-   */
   @Get('instagram')
   @HttpCode(HttpStatus.OK)
   verifyInstagramWebhook(
@@ -55,54 +46,9 @@ export class WebhooksController {
     @Query('hub.challenge') challenge: string,
     @Res() res: Response,
   ) {
-    this.logger.log(
-      `Instagram webhook verification: mode=${mode}, token=${token ? 'present' : 'missing'}`,
-    );
-
-    if (mode === 'subscribe' && token === this.META_VERIFY_TOKEN) {
-      this.logger.log('Instagram webhook verified successfully');
-      // Return challenge as plain text
-      return res.status(200).send(challenge);
-    }
-
-    this.logger.warn('Instagram webhook verification failed');
-    return res.status(403).send('Verification failed');
+    return this.respondToVerify('instagram', mode, token, challenge, res);
   }
 
-  /**
-   * Meta Webhook Events (POST)
-   *
-   * Receives real-time updates from Instagram:
-   * - Comments on your posts
-   * - Messages (requires messaging permissions)
-   * - Story mentions
-   * - etc.
-   *
-   * IMPORTANT: Always return 200 OK quickly, then process async
-   */
-  @Post('instagram')
-  @HttpCode(HttpStatus.OK)
-  async handleInstagramWebhook(
-    @Body() body: any,
-    @Res() res: Response,
-  ) {
-    this.logger.log(`Instagram webhook received: ${JSON.stringify(body)}`);
-
-    // Always return 200 OK immediately
-    // Meta will retry if you don't respond within 20 seconds
-    res.status(200).send('EVENT_RECEIVED');
-
-    // Process the webhook asynchronously
-    try {
-      await this.processMetaWebhook(body, 'instagram');
-    } catch (error) {
-      this.logger.error('Error processing Instagram webhook:', error);
-    }
-  }
-
-  /**
-   * Facebook Webhook Verification (GET)
-   */
   @Get('facebook')
   @HttpCode(HttpStatus.OK)
   verifyFacebookWebhook(
@@ -111,32 +57,58 @@ export class WebhooksController {
     @Query('hub.challenge') challenge: string,
     @Res() res: Response,
   ) {
-    this.logger.log(
-      `Facebook webhook verification: mode=${mode}, token=${token ? 'present' : 'missing'}`,
-    );
+    return this.respondToVerify('facebook', mode, token, challenge, res);
+  }
 
+  @Get('threads')
+  @HttpCode(HttpStatus.OK)
+  verifyThreadsWebhook(
+    @Query('hub.mode') mode: string,
+    @Query('hub.verify_token') token: string,
+    @Query('hub.challenge') challenge: string,
+    @Res() res: Response,
+  ) {
+    return this.respondToVerify('threads', mode, token, challenge, res);
+  }
+
+  private respondToVerify(
+    source: string,
+    mode: string,
+    token: string,
+    challenge: string,
+    res: Response,
+  ) {
+    this.logger.log(
+      `${source} webhook verification: mode=${mode}, token=${token ? 'present' : 'missing'}`,
+    );
     if (mode === 'subscribe' && token === this.META_VERIFY_TOKEN) {
-      this.logger.log('Facebook webhook verified successfully');
+      this.logger.log(`${source} webhook verified successfully`);
       return res.status(200).send(challenge);
     }
-
-    this.logger.warn('Facebook webhook verification failed');
+    this.logger.warn(`${source} webhook verification failed`);
     return res.status(403).send('Verification failed');
   }
 
-  /**
-   * Facebook Webhook Events (POST)
-   */
+  // ==========================================================================
+  // Meta — event delivery
+  // ==========================================================================
+
+  @Post('instagram')
+  @HttpCode(HttpStatus.OK)
+  async handleInstagramWebhook(@Body() body: any, @Res() res: Response) {
+    // Meta requires a fast 200; everything heavy happens async.
+    res.status(200).send('EVENT_RECEIVED');
+    try {
+      await this.processMetaWebhook(body, 'instagram');
+    } catch (error) {
+      this.logger.error('Error processing Instagram webhook:', error);
+    }
+  }
+
   @Post('facebook')
   @HttpCode(HttpStatus.OK)
-  async handleFacebookWebhook(
-    @Body() body: any,
-    @Res() res: Response,
-  ) {
-    this.logger.log(`Facebook webhook received: ${JSON.stringify(body)}`);
-
+  async handleFacebookWebhook(@Body() body: any, @Res() res: Response) {
     res.status(200).send('EVENT_RECEIVED');
-
     try {
       await this.processMetaWebhook(body, 'facebook');
     } catch (error) {
@@ -144,89 +116,227 @@ export class WebhooksController {
     }
   }
 
-  /**
-   * Process Meta webhook events
-   *
-   * Meta webhook payload structure:
-   * {
-   *   "object": "instagram" | "page",
-   *   "entry": [
-   *     {
-   *       "id": "page_or_instagram_id",
-   *       "time": 1234567890,
-   *       "changes": [
-   *         {
-   *           "field": "comments" | "messages" | etc,
-   *           "value": { ... event data ... }
-   *         }
-   *       ]
-   *     }
-   *   ]
-   * }
-   */
+  @Post('threads')
+  @HttpCode(HttpStatus.OK)
+  async handleThreadsWebhook(@Body() body: any, @Res() res: Response) {
+    res.status(200).send('EVENT_RECEIVED');
+    try {
+      await this.processMetaWebhook(body, 'threads');
+    } catch (error) {
+      this.logger.error('Error processing Threads webhook:', error);
+    }
+  }
+
+  // ==========================================================================
+  // Dispatch
+  // ==========================================================================
+
   private async processMetaWebhook(
     payload: any,
-    source: 'instagram' | 'facebook',
+    source: 'instagram' | 'facebook' | 'threads',
   ): Promise<void> {
-    const objectType = payload.object;
-    const entries = payload.entry || [];
-
+    const entries = payload?.entry ?? [];
     for (const entry of entries) {
-      const accountId = entry.id;
-      const changes = entry.changes || [];
+      const accountId = entry.id as string;
+      const eventTime = entry.time
+        ? new Date(Number(entry.time) * 1000)
+        : new Date();
+      const changes = entry.changes ?? [];
 
       for (const change of changes) {
-        const field = change.field;
-        const value = change.value;
+        const field = change.field as string;
+        const value = change.value ?? {};
 
         this.logger.log(
-          `${source} webhook - Account: ${accountId}, Field: ${field}`,
+          `${source} webhook — account=${accountId} field=${field}`,
         );
 
-        // Handle different event types
-        switch (field) {
-          case 'comments':
-            await this.handleCommentEvent(accountId, value);
-            break;
-          case 'messages':
-            await this.handleMessageEvent(accountId, value);
-            break;
-          case 'mentions':
-            await this.handleMentionEvent(accountId, value);
-            break;
-          case 'story_insights':
-            await this.handleStoryInsightsEvent(accountId, value);
-            break;
-          default:
-            this.logger.log(`Unhandled webhook field: ${field}`);
+        try {
+          if (source === 'instagram' && field === 'comments') {
+            await this.ingestInstagramComment(accountId, value, eventTime);
+          } else if (
+            source === 'facebook' &&
+            (field === 'feed' || field === 'comments')
+          ) {
+            await this.ingestFacebookFeedEvent(accountId, value, eventTime);
+          } else if (source === 'threads' && field === 'replies') {
+            await this.ingestThreadsReply(accountId, value, eventTime);
+          } else {
+            // mentions / messages / story_insights → Phase 2 / analytics.
+            this.logger.verbose(`Ignoring ${source} field '${field}' in Phase 1`);
+          }
+        } catch (err) {
+          this.logger.error(
+            `${source} webhook handler failed: ${(err as Error).message}`,
+          );
         }
       }
     }
   }
 
-  private async handleCommentEvent(accountId: string, data: any): Promise<void> {
-    this.logger.log(`New comment on account ${accountId}: ${JSON.stringify(data)}`);
-    // TODO: Implement comment handling logic
-    // - Store in database
-    // - Notify user
-    // - Auto-reply if configured
-  }
-
-  private async handleMessageEvent(accountId: string, data: any): Promise<void> {
-    this.logger.log(`New message on account ${accountId}: ${JSON.stringify(data)}`);
-    // TODO: Implement message handling logic
-  }
-
-  private async handleMentionEvent(accountId: string, data: any): Promise<void> {
-    this.logger.log(`New mention on account ${accountId}: ${JSON.stringify(data)}`);
-    // TODO: Implement mention handling logic
-  }
-
-  private async handleStoryInsightsEvent(
-    accountId: string,
-    data: any,
+  // ──────────────────────────────────────────────────────────────────────
+  // Instagram — value shape:
+  //   { id, from{id,username}, media{id,...}, text, parent_id? }
+  // ──────────────────────────────────────────────────────────────────────
+  private async ingestInstagramComment(
+    igUserId: string,
+    value: any,
+    eventTime: Date,
   ): Promise<void> {
-    this.logger.log(`Story insights for account ${accountId}: ${JSON.stringify(data)}`);
-    // TODO: Implement story insights handling logic
+    const platformItemId = value.id as string | undefined;
+    const mediaId = value.media?.id as string | undefined;
+    if (!platformItemId || !mediaId) {
+      this.logger.warn('Instagram comment webhook missing id or media.id');
+      return;
+    }
+
+    await this.ingestFromWebhook({
+      platform: 'instagram',
+      platformAccountIdToMatch: igUserId,
+      platformItemId,
+      platformParentId: (value.parent_id as string | undefined) ?? null,
+      platformPostId: mediaId,
+      authorPlatformId: value.from?.id,
+      authorHandle: value.from?.username,
+      authorDisplayName: value.from?.username,
+      text: (value.text as string | undefined) ?? '',
+      eventTime,
+    });
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Facebook — `feed` field with value.item === 'comment', verb 'add' | 'edit'.
+  // Comment shape inside value:
+  //   { item: 'comment', verb, comment_id, parent_id, post_id, from, message, created_time }
+  // ──────────────────────────────────────────────────────────────────────
+  private async ingestFacebookFeedEvent(
+    pageId: string,
+    value: any,
+    eventTime: Date,
+  ): Promise<void> {
+    if (value.item && value.item !== 'comment') return;
+    if (value.verb && value.verb !== 'add' && value.verb !== 'edit') {
+      // Don't surface deletions in Phase 1 — would need a soft-delete column.
+      return;
+    }
+
+    const platformItemId = value.comment_id as string | undefined;
+    const postId = value.post_id as string | undefined;
+    if (!platformItemId || !postId) {
+      this.logger.warn('Facebook comment webhook missing comment_id or post_id');
+      return;
+    }
+
+    // parent_id can equal post_id for top-level comments — normalize to null.
+    let parentId = (value.parent_id as string | undefined) ?? null;
+    if (parentId === postId) parentId = null;
+
+    const createdAt = value.created_time
+      ? new Date(Number(value.created_time) * 1000)
+      : eventTime;
+
+    await this.ingestFromWebhook({
+      platform: 'facebook',
+      platformAccountIdToMatch: pageId,
+      platformItemId,
+      platformParentId: parentId,
+      platformPostId: postId,
+      authorPlatformId: value.from?.id,
+      authorHandle: value.from?.id,
+      authorDisplayName: value.from?.name,
+      text: (value.message as string | undefined) ?? '',
+      eventTime: createdAt,
+    });
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Threads — `replies` field. Shape (per Meta docs):
+  //   { id, text, timestamp, root_post_id, replied_to{id}, from{id,username} }
+  // ──────────────────────────────────────────────────────────────────────
+  private async ingestThreadsReply(
+    threadsUserId: string,
+    value: any,
+    eventTime: Date,
+  ): Promise<void> {
+    const platformItemId = value.id as string | undefined;
+    const rootPostId = (value.root_post_id ?? value.replied_to_id) as
+      | string
+      | undefined;
+    if (!platformItemId || !rootPostId) {
+      this.logger.warn('Threads reply webhook missing id or root_post_id');
+      return;
+    }
+
+    const createdAt = value.timestamp ? new Date(value.timestamp) : eventTime;
+
+    await this.ingestFromWebhook({
+      platform: 'threads',
+      platformAccountIdToMatch: threadsUserId,
+      platformItemId,
+      platformParentId: (value.replied_to?.id as string | undefined) ?? null,
+      platformPostId: rootPostId,
+      authorPlatformId: value.from?.id,
+      authorHandle: value.from?.username,
+      authorDisplayName: value.from?.username,
+      text: (value.text as string | undefined) ?? '',
+      eventTime: createdAt,
+    });
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Common ingest path — resolves channel, looks up our post, upserts.
+  // Drops the event silently if the comment is on a post we didn't publish
+  // (Phase 1 scope: only show comments on Schedura-published posts).
+  // ──────────────────────────────────────────────────────────────────────
+  private async ingestFromWebhook(args: {
+    platform: SupportedPlatform;
+    platformAccountIdToMatch: string;
+    platformItemId: string;
+    platformParentId: string | null;
+    platformPostId: string;
+    authorPlatformId?: string;
+    authorHandle?: string;
+    authorDisplayName?: string;
+    text: string;
+    eventTime: Date;
+  }): Promise<void> {
+    const channel = await this.inbox.findChannelByPlatformAccount(
+      args.platform,
+      args.platformAccountIdToMatch,
+    );
+    if (!channel) {
+      this.logger.warn(
+        `Webhook for ${args.platform} account ${args.platformAccountIdToMatch}: channel not connected`,
+      );
+      return;
+    }
+
+    // Only ingest comments on posts published via Schedura.
+    const ourPostId = await this.inbox.findOurPostId(
+      channel.id,
+      args.platformPostId,
+    );
+    if (!ourPostId) {
+      this.logger.verbose(
+        `Webhook ignored: ${args.platform} post ${args.platformPostId} not from Schedura`,
+      );
+      return;
+    }
+
+    await this.inbox.upsertComment({
+      workspaceId: channel.workspaceId,
+      channelId: channel.id,
+      platform: args.platform,
+      platformItemId: args.platformItemId,
+      platformParentId: args.platformParentId,
+      platformPostId: args.platformPostId,
+      ourPostId,
+      authorPlatformId: args.authorPlatformId,
+      authorHandle: args.authorHandle,
+      authorDisplayName: args.authorDisplayName,
+      text: args.text,
+      fromMe: false, // webhooks don't fire for our own comments; safe default
+      platformCreatedAt: args.eventTime,
+    });
   }
 }

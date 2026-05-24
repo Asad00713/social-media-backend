@@ -389,7 +389,7 @@ This email was sent by your Social Media Automation tool.
     name?: string,
   ): Promise<EmailResult> {
     const greeting = name ? `Hi ${name}` : 'Hi there';
-    const loginUrl = `${this.frontendUrl}/auth/login`;
+    const loginUrl = `${this.frontendUrl}/login`;
 
     const html = `
 <!DOCTYPE html>
@@ -466,7 +466,7 @@ This email was sent by your Social Media Automation tool.
     name?: string,
   ): Promise<EmailResult> {
     const greeting = name ? `Hi ${name}` : 'Hi there';
-    const loginUrl = `${this.frontendUrl}/auth/login`;
+    const loginUrl = `${this.frontendUrl}/login`;
 
     const html = `
 <!DOCTYPE html>
@@ -543,7 +543,7 @@ This email was sent by your Social Media Automation tool.
     name?: string,
   ): Promise<EmailResult> {
     const greeting = name ? `Hi ${name}` : 'Hi there';
-    const loginUrl = `${this.frontendUrl}/auth/login`;
+    const loginUrl = `${this.frontendUrl}/login`;
 
     const html = `
 <!DOCTYPE html>
@@ -704,7 +704,7 @@ This email was sent by your Social Media Automation tool.
     token: string,
     name?: string,
   ): Promise<EmailResult> {
-    const resetUrl = `${this.frontendUrl}/auth/reset?token=${token}`;
+    const resetUrl = `${this.frontendUrl}/reset-password?token=${token}`;
     const greeting = name ? `Hi ${name}` : 'Hi there';
 
     const html = `

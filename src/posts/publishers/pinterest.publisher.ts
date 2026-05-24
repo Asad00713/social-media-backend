@@ -20,9 +20,18 @@ export class PinterestPublisher extends BasePublisher {
       throw new Error('Pinterest pins require an image or video');
     }
 
-    // Pinterest requires a board ID
-    if (!metadata?.pinterestBoardId) {
+    // Pinterest requires a board ID. Composer sends it as `boardId`
+    // (matches the validator + frontend PinterestFields); accept the legacy
+    // `pinterestBoardId` too in case anything still emits the old name.
+    const boardId = resolveBoardId(metadata);
+    if (!boardId) {
       throw new Error('Pinterest board ID is required');
+    }
+
+    // Pinterest pins need a title — composer enforces this client-side,
+    // but the publisher guards too.
+    if (!metadata?.title?.trim()) {
+      throw new Error('Pinterest pin title is required');
     }
 
     // Check media type
@@ -32,7 +41,7 @@ export class PinterestPublisher extends BasePublisher {
     }
 
     // Check title length (max 100 chars)
-    if (metadata?.title && metadata.title.length > 100) {
+    if (metadata.title.length > 100) {
       throw new Error('Pinterest pin title cannot exceed 100 characters');
     }
   }
@@ -47,16 +56,25 @@ export class PinterestPublisher extends BasePublisher {
 
     this.validate(options);
 
-    const boardId = metadata.pinterestBoardId;
+    const boardId = resolveBoardId(metadata)!;
     const title = metadata?.title || content?.slice(0, 100) || 'Pin';
-    const link = metadata?.link;
+    // Composer sends `destinationLink` (matches the frontend PinterestFields).
+    // Accept legacy `link` too for backwards compat.
+    const link = metadata?.destinationLink ?? metadata?.link;
     const mediaType = mediaItems[0].type as 'image' | 'video';
+
+    // Description priority: the Pinterest panel's Description field
+    // (metadata.description) wins over any body text propagated from the
+    // All-channels editor (content). Pinterest doesn't have a body editor —
+    // its "caption" IS the description field, so user intent is in
+    // metadata.description.
+    const description = pickDescription(metadata, content);
 
     const result = await this.pinterestService.createPin(
       accessToken,
       boardId,
       title,
-      content || '',
+      description,
       mediaItems[0].url,
       {
         link,
@@ -72,4 +90,45 @@ export class PinterestPublisher extends BasePublisher {
       platformPostUrl: result.pinUrl,
     };
   }
+}
+
+/**
+ * Pick the pin description: prefer the dedicated Pinterest panel description
+ * field (`metadata.description`) over the cross-platform body text
+ * (`content`). Pinterest's "caption" is the description — body text from
+ * other platforms shouldn't silently override what the user typed in the
+ * Pinterest tab.
+ */
+function pickDescription(
+  metadata: Record<string, unknown> | undefined,
+  content: string | undefined,
+): string {
+  const fromPanel = metadata?.description;
+  if (typeof fromPanel === 'string' && fromPanel.trim().length > 0) {
+    return fromPanel;
+  }
+  if (typeof content === 'string' && content.trim().length > 0) {
+    return content;
+  }
+  return '';
+}
+
+/**
+ * Resolve the board ID from the composer metadata, accepting both the
+ * canonical `boardId` field (frontend PinterestFields) and the legacy
+ * `pinterestBoardId` name in case anything still emits it.
+ */
+function resolveBoardId(
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  if (!metadata) return undefined;
+  const fromCanonical = metadata.boardId;
+  if (typeof fromCanonical === 'string' && fromCanonical.trim().length > 0) {
+    return fromCanonical;
+  }
+  const fromLegacy = metadata.pinterestBoardId;
+  if (typeof fromLegacy === 'string' && fromLegacy.trim().length > 0) {
+    return fromLegacy;
+  }
+  return undefined;
 }

@@ -11,6 +11,7 @@ async function bootstrap() {
       'http://localhost:3000',
       'http://localhost:3001',
       'http://localhost:3002',
+      'https://3efe-39-45-20-34.ngrok-free.app',
       process.env.APP_URL,
       process.env.FRONTEND_URL,
     ].filter(Boolean),
@@ -18,6 +19,20 @@ async function bootstrap() {
   })
 
   app.use(cookieParser());
+
+  // Basic-auth gate for Bull Board dashboard. Phase 1: env-driven. Will be
+  // upgraded to a proper admin JWT guard when admin pattern is consolidated.
+  app.use('/admin/queues', (req: any, res: any, next: any) => {
+    const auth = (req.headers.authorization as string) ?? '';
+    const user = process.env.QUEUE_ADMIN_USER ?? 'admin';
+    const pass = process.env.QUEUE_ADMIN_PASSWORD ?? 'change-me';
+    const expected = `Basic ${Buffer.from(`${user}:${pass}`).toString('base64')}`;
+    if (auth !== expected) {
+      res.setHeader('WWW-Authenticate', 'Basic realm="Queue Admin"');
+      return res.status(401).send('Unauthorized');
+    }
+    next();
+  });
 
   app.useGlobalPipes(
     new ValidationPipe({

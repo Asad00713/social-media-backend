@@ -36,6 +36,8 @@ export class InstagramService {
   private readonly logger = new Logger(InstagramService.name);
   private readonly graphApiUrl = 'https://graph.facebook.com/v18.0';
   private readonly instagramApiUrl = 'https://graph.instagram.com';
+  /** One-shot guard so the token-scope diagnostic prints once per process. */
+  private static debugTokenLoggedOnce = false;
 
   // Instagram aspect ratio limits
   private readonly MIN_ASPECT_RATIO = 0.8; // 4:5 portrait
@@ -834,6 +836,14 @@ export class InstagramService {
   /**
    * Create a video/reel post using Instagram Business Login token
    * Uses graph.instagram.com API
+   *
+   * `mediaType` controls the IG container `media_type` field:
+   *   - 'VIDEO' (default for legacy callers) → standard feed video
+   *   - 'REELS'                              → Reel
+   * The boolean `isReel` form is kept for backwards compatibility but
+   * `mediaType` takes precedence when both are passed.
+   *
+   * Shipped but untested with a live account — verify in smoke test.
    */
   async createVideoPostWithUserToken(
     userId: string,
@@ -841,8 +851,12 @@ export class InstagramService {
     videoUrl: string,
     caption?: string,
     isReel: boolean = false,
+    mediaType?: 'VIDEO' | 'REELS',
   ): Promise<{ postId: string }> {
-    this.logger.log(`Creating Instagram ${isReel ? 'reel' : 'video'} post for user ${userId}`);
+    const resolvedMediaType = mediaType ?? (isReel ? 'REELS' : 'VIDEO');
+    this.logger.log(
+      `Creating Instagram ${resolvedMediaType === 'REELS' ? 'reel' : 'video'} post for user ${userId}`,
+    );
 
     // Step 1: Create media container for video
     const containerUrl = new URL(`${this.instagramApiUrl}/${userId}/media`);
@@ -850,7 +864,7 @@ export class InstagramService {
     const containerParams = new URLSearchParams();
     containerParams.set('access_token', accessToken);
     containerParams.set('video_url', videoUrl);
-    containerParams.set('media_type', isReel ? 'REELS' : 'VIDEO');
+    containerParams.set('media_type', resolvedMediaType);
 
     if (caption) {
       containerParams.set('caption', caption);
@@ -969,7 +983,13 @@ export class InstagramService {
     const carouselData = await carouselResponse.json();
     this.logger.log(`Carousel container created: ${carouselData.id}`);
 
-    // Step 3: Publish the carousel
+    // Step 3: Wait for the carousel container itself to be FINISHED.
+    // Child media being FINISHED is necessary but not sufficient — the carousel
+    // container also goes through its own assembly phase before /media_publish
+    // accepts it. Skipping this step trips IG error 2207027 ("Media not ready").
+    await this.waitForMediaReadyWithUserToken(carouselData.id, accessToken);
+
+    // Step 4: Publish the carousel
     return await this.publishContainerWithUserToken(userId, accessToken, carouselData.id);
   }
 
@@ -1025,6 +1045,26 @@ export class InstagramService {
   }
 
   /**
+   * Convenience wrapper for the composer: post a Story given a boolean flag
+   * for whether the media is a video. Delegates to createStoryPostWithUserToken.
+   *
+   * Shipped but untested with a live account — verify in smoke test.
+   */
+  async createStoryWithUserToken(
+    userId: string,
+    accessToken: string,
+    mediaUrl: string,
+    isVideo: boolean,
+  ): Promise<{ postId: string }> {
+    return this.createStoryPostWithUserToken(
+      userId,
+      accessToken,
+      mediaUrl,
+      isVideo ? 'VIDEO' : 'IMAGE',
+    );
+  }
+
+  /**
    * Wait for media to be ready (for video uploads) - Instagram Business Login version
    */
   private async waitForMediaReadyWithUserToken(
@@ -1058,7 +1098,12 @@ export class InstagramService {
   }
 
   /**
-   * Publish a media container - Instagram Business Login version
+   * Publish a media container - Instagram Business Login version.
+   *
+   * IG occasionally returns error_subcode 2207027 ("Media not ready") for a
+   * brief window after the container reports FINISHED. We retry up to 3 times
+   * with exponential backoff for that specific case so a transient race
+   * doesn't fail the publish.
    */
   private async publishContainerWithUserToken(
     userId: string,
@@ -1073,23 +1118,49 @@ export class InstagramService {
     publishParams.set('access_token', accessToken);
     publishParams.set('creation_id', creationId);
 
-    const publishResponse = await fetch(publishUrl.toString(), {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-      body: publishParams,
-    });
+    const MAX_ATTEMPTS = 3;
+    let lastError: unknown = null;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      const publishResponse = await fetch(publishUrl.toString(), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: publishParams,
+      });
 
-    if (!publishResponse.ok) {
-      const error = await publishResponse.json();
-      this.logger.error('Failed to publish Instagram post:', error);
-      throw new BadRequestException(
-        error.error?.message || 'Failed to publish Instagram post',
+      if (publishResponse.ok) {
+        const publishData = await publishResponse.json();
+        this.logger.log(`Instagram post published successfully: ${publishData.id}`);
+        return { postId: publishData.id };
+      }
+
+      const error = (await publishResponse.json().catch(() => ({}))) as {
+        error?: { message?: string; error_subcode?: number; code?: number };
+      };
+      lastError = error;
+
+      const subcode = error.error?.error_subcode;
+      const isNotReady = subcode === 2207027;
+
+      if (!isNotReady || attempt === MAX_ATTEMPTS) {
+        this.logger.error('Failed to publish Instagram post:', error);
+        throw new BadRequestException(
+          error.error?.message || 'Failed to publish Instagram post',
+        );
+      }
+
+      // Backoff: 3s, 6s, 12s
+      const backoffMs = 3000 * Math.pow(2, attempt - 1);
+      this.logger.warn(
+        `IG reported "Media not ready" (subcode 2207027) on attempt ${attempt}/${MAX_ATTEMPTS} — retrying in ${backoffMs}ms`,
       );
+      await new Promise((r) => setTimeout(r, backoffMs));
     }
 
-    const publishData = await publishResponse.json();
-    this.logger.log(`Instagram post published successfully: ${publishData.id}`);
-    return { postId: publishData.id };
+    // Should be unreachable — the loop either returns or throws above.
+    throw new BadRequestException(
+      (lastError as { error?: { message?: string } })?.error?.message ||
+        'Failed to publish Instagram post after retries',
+    );
   }
 
   // ==========================================================================
@@ -1134,6 +1205,57 @@ export class InstagramService {
   }
 
   /**
+   * Posts a comment on a published Instagram media.
+   * Uses Instagram Graph API: POST /{ig-media-id}/comments
+   *
+   * Only works for Business and Creator accounts (User Token flow).
+   *
+   * @returns the new comment's ID
+   */
+  async postCommentWithUserToken(
+    igUserAccessToken: string,
+    mediaId: string,
+    message: string,
+  ): Promise<{ commentId: string }> {
+    if (!message || !message.trim()) {
+      throw new Error('Comment message is required');
+    }
+
+    // Match the file's *WithUserToken pattern: graph.instagram.com base URL
+    // with form-urlencoded body for POST.
+    const url = new URL(`${this.instagramApiUrl}/${mediaId}/comments`);
+
+    const params = new URLSearchParams();
+    params.set('access_token', igUserAccessToken);
+    params.set('message', message);
+
+    this.logger.log(`Posting Instagram comment on media ${mediaId}`);
+
+    const response = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params,
+    });
+
+    if (!response.ok) {
+      const error = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string; code?: number };
+      };
+      const reason = error?.error?.message ?? `HTTP ${response.status}`;
+      this.logger.error(`Failed to post Instagram comment: ${reason}`);
+      throw new Error(`Instagram comment post failed: ${reason}`);
+    }
+
+    const data = (await response.json()) as { id?: string };
+    if (!data.id) {
+      throw new Error('Instagram returned no comment ID');
+    }
+
+    this.logger.log(`Instagram comment posted: ${data.id}`);
+    return { commentId: data.id };
+  }
+
+  /**
    * Refresh a long-lived token (extends by another 60 days)
    * Can only refresh tokens that are at least 24 hours old but not expired
    */
@@ -1162,4 +1284,253 @@ export class InstagramService {
       expiresIn: data.expires_in,
     };
   }
+
+  // ==========================================================================
+  // Inbox — fetch comments on a media item / reply to a comment
+  // ==========================================================================
+
+  /**
+   * Fetch comments on a Business/Creator IG media post (including nested replies).
+   * Uses graph.instagram.com so it works with the IG-direct token returned by
+   * Instagram Business Login.
+   *
+   * Required scope: instagram_business_manage_comments.
+   */
+  async fetchMediaComments(
+    igUserAccessToken: string,
+    mediaId: string,
+    since?: Date,
+  ): Promise<InstagramComment[]> {
+    // ONE-TIME diagnostic per process — verify the actual scopes granted to
+    // this IG Business Login token. "Ready for testing" in the Meta App
+    // console only means the scope is configurable; if it was added AFTER
+    // the channel was connected, the existing token won't carry it.
+    //
+    // Note: IG Business Login tokens (issued by graph.instagram.com) cannot
+    // be introspected via graph.facebook.com/debug_token — that's for FB
+    // access tokens only. Use the IG /me/permissions endpoint instead.
+    if (!InstagramService.debugTokenLoggedOnce) {
+      InstagramService.debugTokenLoggedOnce = true;
+      try {
+        const dbg = await fetch(
+          `${this.instagramApiUrl}/me/permissions?access_token=${encodeURIComponent(
+            igUserAccessToken,
+          )}`,
+        );
+        const dbgBody = await dbg.text();
+        this.logger.log(
+          `IG /me/permissions (first call this process): ${dbgBody.slice(0, 1000)}`,
+        );
+        // Also log basic /me to confirm the token can hit ANY IG endpoint —
+        // helps tell "scope missing" from "token invalid".
+        const me = await fetch(
+          `${this.instagramApiUrl}/me?fields=id,username,account_type&access_token=${encodeURIComponent(
+            igUserAccessToken,
+          )}`,
+        );
+        const meBody = await me.text();
+        this.logger.log(
+          `IG /me (account_type check): ${meBody.slice(0, 500)}`,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `IG token diagnostic failed: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    const out: InstagramComment[] = [];
+    let nextUrl: string | null = this.buildIgCommentsUrl(mediaId, igUserAccessToken);
+
+    for (let i = 0; i < 5 && nextUrl; i++) {
+      const res = await fetch(nextUrl);
+      if (!res.ok) {
+        const errText = await res.text();
+        // Same graceful handling as the FB poller — Stories / Reels / deleted
+        // media may not expose a /comments edge. Catch (#100) / "nonexisting
+        // field" errors here so a single bad media doesn't crash the poll.
+        if (
+          res.status === 400 &&
+          (/code"\s*:\s*100/.test(errText) ||
+            /nonexisting field/i.test(errText) ||
+            /aliases you requested do not exist/i.test(errText))
+        ) {
+          this.logger.warn(
+            `Instagram fetchMediaComments: media ${mediaId} has no comments edge (story / deleted / non-commentable) — skipping`,
+          );
+          return out;
+        }
+        this.logger.error(`Instagram fetchMediaComments failed: ${errText}`);
+        throw new Error(`Instagram fetchMediaComments failed: ${res.status}`);
+      }
+
+      // Diagnostic: log raw response body when the result is empty. In Meta
+      // App development mode the API returns 200 OK with `data: []` for
+      // comments made by accounts that aren't app testers/admins — there's
+      // no error, no warning, just no data. Without this log it's impossible
+      // to tell "post genuinely has no comments" from "dev-mode filter ate
+      // them". Remove after the app passes Meta App Review.
+      const cloned = res.clone();
+      const rawBody = await cloned.text();
+      try {
+        const parsedForLog = JSON.parse(rawBody) as { data?: unknown[] };
+        const dataLen = Array.isArray(parsedForLog.data)
+          ? parsedForLog.data.length
+          : 0;
+        if (dataLen === 0) {
+          this.logger.debug(
+            `Instagram fetchMediaComments: media ${mediaId} raw response (data empty): ${rawBody.slice(0, 500)}`,
+          );
+        }
+      } catch {
+        // ignore JSON parse failure here — main path will still handle
+      }
+      const data = (await res.json()) as {
+        data?: InstagramCommentRaw[];
+        paging?: { next?: string };
+      };
+
+      for (const raw of data.data ?? []) {
+        const createdAt = new Date(raw.timestamp);
+        if (since && createdAt <= since) continue;
+
+        out.push({
+          id: raw.id,
+          parentId: null,
+          message: raw.text ?? '',
+          createdAt,
+          likeCount: raw.like_count ?? 0,
+          author: {
+            id: raw.from?.id ?? raw.username ?? '',
+            name: raw.username ?? raw.from?.username ?? '',
+          },
+        });
+
+        if (raw.replies?.data) {
+          for (const reply of raw.replies.data) {
+            const replyCreatedAt = new Date(reply.timestamp);
+            if (since && replyCreatedAt <= since) continue;
+            out.push({
+              id: reply.id,
+              parentId: raw.id,
+              message: reply.text ?? '',
+              createdAt: replyCreatedAt,
+              likeCount: reply.like_count ?? 0,
+              author: {
+                id: reply.from?.id ?? reply.username ?? '',
+                name: reply.username ?? reply.from?.username ?? '',
+              },
+            });
+          }
+        }
+      }
+      nextUrl = data.paging?.next ?? null;
+    }
+    return out;
+  }
+
+  private buildIgCommentsUrl(mediaId: string, igUserAccessToken: string): string {
+    const url = new URL(`${this.instagramApiUrl}/${mediaId}/comments`);
+    url.searchParams.set('access_token', igUserAccessToken);
+    url.searchParams.set(
+      'fields',
+      [
+        'id',
+        'text',
+        'timestamp',
+        'username',
+        'like_count',
+        'from{id,username}',
+        // Inline nested replies (IG depth limit is 2 — same as FB).
+        'replies.limit(50){id,text,timestamp,username,like_count,from{id,username}}',
+      ].join(','),
+    );
+    url.searchParams.set('limit', '100');
+    return url.toString();
+  }
+
+  /**
+   * Activate webhook delivery for this IG Business account.
+   *
+   * App-level webhook config in Meta Dashboard isn't enough — each IG account
+   * must POST to its `/subscribed_apps` to opt in. Without this, Meta won't
+   * deliver `comments` events for the account.
+   *
+   * Idempotent — safe to call repeatedly.
+   */
+  async subscribeAccountToWebhooks(
+    igUserId: string,
+    igUserAccessToken: string,
+    fields: string[] = ['comments'],
+  ): Promise<{ success: boolean }> {
+    const url = new URL(`${this.instagramApiUrl}/${igUserId}/subscribed_apps`);
+    url.searchParams.set('access_token', igUserAccessToken);
+    url.searchParams.set('subscribed_fields', fields.join(','));
+
+    const res = await fetch(url.toString(), { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`IG subscribeAccountToWebhooks failed for ${igUserId}: ${err}`);
+      throw new Error(`IG webhook subscription failed: ${res.status} ${err}`);
+    }
+    const data = (await res.json()) as { success?: boolean };
+    this.logger.log(
+      `IG account ${igUserId} subscribed to webhook fields [${fields.join(',')}]`,
+    );
+    return { success: data.success ?? true };
+  }
+
+  /**
+   * Reply to an existing IG comment (nested under it).
+   * Uses POST /{comment-id}/replies — same auth as posting top-level comments.
+   */
+  async replyToCommentWithUserToken(
+    igUserAccessToken: string,
+    parentCommentId: string,
+    message: string,
+  ): Promise<{ commentId: string }> {
+    const url = new URL(`${this.instagramApiUrl}/${parentCommentId}/replies`);
+    const params = new URLSearchParams();
+    params.set('access_token', igUserAccessToken);
+    params.set('message', message);
+
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+      body: params,
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`Instagram replyToComment failed: ${err}`);
+      throw new Error(`Instagram replyToComment failed: ${res.status} ${err}`);
+    }
+
+    const data = (await res.json()) as { id?: string };
+    if (!data.id) throw new Error('Instagram returned no reply id');
+    return { commentId: data.id };
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Instagram comment shapes
+// ---------------------------------------------------------------------------
+
+export interface InstagramCommentRaw {
+  id: string;
+  text?: string;
+  timestamp: string;
+  username?: string;
+  like_count?: number;
+  from?: { id?: string; username?: string };
+  replies?: { data: InstagramCommentRaw[] };
+}
+
+export interface InstagramComment {
+  id: string;
+  parentId: string | null;
+  message: string;
+  createdAt: Date;
+  likeCount: number;
+  author: { id: string; name: string };
 }

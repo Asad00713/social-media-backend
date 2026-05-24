@@ -21,6 +21,19 @@ export interface ThreadsPost {
   children?: ThreadsPost[];
 }
 
+export interface ThreadsConversationEntry {
+  id: string;
+  text: string | null;
+  timestamp: string;
+  permalink: string | null;
+  /** Parent reply id (or null if direct child of root). */
+  repliedToId: string | null;
+  authorId: string | null;
+  authorUsername: string | null;
+  shortcode: string | null;
+  likeCount: number;
+}
+
 export interface ThreadsInsights {
   views: number;
   likes: number;
@@ -542,6 +555,62 @@ export class ThreadsService {
       })),
       nextCursor: data.paging?.cursors?.after || null,
     };
+  }
+
+  /**
+   * Fetch the full conversation under a thread (post + all descendants flat).
+   * Uses `conversation` endpoint with extended fields so we can reconstruct
+   * nested threading + identify who wrote each reply.
+   *
+   * `replied_to{id}` lets us pick the parent of each reply (flat → tree).
+   * `from{id,username}` lets us flag fromMe.
+   */
+  async getThreadConversation(
+    accessToken: string,
+    threadId: string,
+  ): Promise<ThreadsConversationEntry[]> {
+    const out: ThreadsConversationEntry[] = [];
+    let after: string | undefined;
+
+    for (let page = 0; page < 5; page++) {
+      const url = new URL(`${this.graphApiUrl}/${threadId}/conversation`);
+      url.searchParams.set('access_token', accessToken);
+      url.searchParams.set(
+        'fields',
+        'id,text,timestamp,permalink,from{id,username},replied_to{id},shortcode,like_count',
+      );
+      url.searchParams.set('limit', '100');
+      if (after) url.searchParams.set('after', after);
+
+      const res = await fetch(url.toString());
+      if (!res.ok) {
+        const err = await res.json();
+        this.logger.error('Failed to fetch Threads conversation:', err);
+        throw new BadRequestException(
+          err.error?.message || 'Failed to fetch Threads conversation',
+        );
+      }
+      const data = await res.json();
+      if (data.data?.length) {
+        for (const entry of data.data) {
+          out.push({
+            id: entry.id,
+            text: entry.text ?? null,
+            timestamp: entry.timestamp,
+            permalink: entry.permalink ?? null,
+            repliedToId: entry.replied_to?.id ?? null,
+            authorId: entry.from?.id ?? null,
+            authorUsername: entry.from?.username ?? null,
+            shortcode: entry.shortcode ?? null,
+            likeCount: entry.like_count ?? 0,
+          });
+        }
+      }
+      after = data.paging?.cursors?.after;
+      if (!after) break;
+    }
+
+    return out;
   }
 
   /**

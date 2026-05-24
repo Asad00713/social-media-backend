@@ -40,6 +40,22 @@ export class BillingController {
     private stripeService: StripeService,
   ) {}
 
+  /**
+   * Hard-reset billing back to FREE. Use when the DB references a Stripe
+   * subscription that no longer exists (test data wipe, mode mismatch).
+   * After reset, user must go through the normal subscribe flow which
+   * requires adding a payment method first.
+   */
+  @Post('workspaces/:workspaceId/reset')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async resetBillingState(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
+  ) {
+    return this.subscriptionService.resetBillingState(workspaceId, user.userId);
+  }
+
   @Post('workspaces/:workspaceId/subscription')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)

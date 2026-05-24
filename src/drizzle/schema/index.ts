@@ -10,3 +10,8 @@ export * from './feedback.schema';
 export * from './notifications.schema';
 export * from './media-library.schema';
 export * from './chatbot.schema';
+export * from './channel-snapshots.schema';
+export * from './post-metric-snapshots.schema';
+export * from './channel-analytics-daily.schema';
+export * from './channel-sync-state.schema';
+export * from './inbox.schema';

@@ -252,6 +252,65 @@ export class SubscriptionService {
     };
   }
 
+  /**
+   * Hard-reset the workspace's billing state back to FREE without touching
+   * Stripe. Use when stripeSubscriptionId in DB points at a subscription
+   * that no longer exists on Stripe (test data wipe, account swap, mode
+   * mismatch). After reset the user can re-subscribe through the normal
+   * flow — which on a clean slate forces them to add a card first.
+   */
+  async resetBillingState(
+    workspaceId: string,
+    userId: string,
+  ): Promise<{ success: true; message: string }> {
+    const ws = await db
+      .select()
+      .from(workspace)
+      .where(
+        and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)),
+      )
+      .limit(1);
+
+    if (ws.length === 0) {
+      throw new NotFoundException(
+        'Workspace not found or you are not the owner',
+      );
+    }
+
+    // Wipe subscription items first (FK to subscriptions)
+    const sub = await db
+      .select({ id: subscriptions.id })
+      .from(subscriptions)
+      .where(eq(subscriptions.workspaceId, workspaceId))
+      .limit(1);
+
+    if (sub.length > 0) {
+      await db
+        .delete(subscriptionItems)
+        .where(eq(subscriptionItems.subscriptionId, sub[0].id));
+
+      // Reset subscription row to FREE / clean state
+      await db
+        .update(subscriptions)
+        .set({
+          planCode: 'FREE',
+          status: 'active',
+          stripeSubscriptionId: null,
+          currentPeriodStart: new Date(),
+          currentPeriodEnd: null,
+          cancelAtPeriodEnd: false,
+          updatedAt: new Date(),
+        })
+        .where(eq(subscriptions.id, sub[0].id));
+    }
+
+    return {
+      success: true,
+      message:
+        'Billing state reset. You are now on the Free plan — pick a paid plan and add a payment method to upgrade.',
+    };
+  }
+
   async getSubscriptionByWorkspaceId(workspaceId: string) {
     const subscription = await db
       .select()

@@ -774,4 +774,173 @@ export class LinkedInService {
       return false;
     }
   }
+
+  /**
+   * Posts a comment on a published LinkedIn share/UGC post.
+   * Uses the Social Actions API: POST /v2/socialActions/{post-urn}/comments
+   *
+   * @param accessToken — Member access token (same token used for the post)
+   * @param actorUrn — The author's URN (e.g., "urn:li:person:{id}" or "urn:li:organization:{id}")
+   * @param postUrn — The published post's URN
+   * @returns the new comment's URN
+   */
+  async postComment(
+    accessToken: string,
+    actorUrn: string,
+    postUrn: string,
+    message: string,
+  ): Promise<{ commentUrn: string }> {
+    if (!message || !message.trim()) {
+      throw new Error('Comment message is required');
+    }
+
+    // Social Actions API expects the URN AS-IS. LinkedIn post creation returns
+    // the URN in different shapes depending on the endpoint:
+    //   • /v2/ugcPosts → urn:li:share:{id}  (most common, our default)
+    //   • /v2/posts    → urn:li:share:{id} (header) or urn:li:ugcPost:{id}
+    //
+    // An earlier version of this code converted everything to urn:li:activity:{id}
+    // assuming share/ugcPost/activity share the same numeric ID. That's NOT true
+    // in all cases — activity URNs are derived asynchronously by LinkedIn and the
+    // ID does not always match the share's ID. The comment endpoint accepts the
+    // original share/ugcPost URN directly, so use it raw.
+    const tryComment = async (entityUrn: string) => {
+      const url = `${this.apiBaseUrl}/socialActions/${encodeURIComponent(entityUrn)}/comments`;
+      return fetch(url, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'X-Restli-Protocol-Version': '2.0.0',
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          actor: actorUrn,
+          object: entityUrn,
+          message: { text: message },
+        }),
+      });
+    };
+
+    let response = await tryComment(postUrn);
+
+    // LinkedIn has eventual consistency on freshly-created posts. If the first
+    // attempt 404s, wait briefly and retry once — this fixes the common "post
+    // created but social-actions index not yet populated" race.
+    if (response.status === 404) {
+      this.logger.warn(
+        `LinkedIn social-actions returned 404 for ${postUrn} — likely propagation delay, retrying in 2s`,
+      );
+      await new Promise((r) => setTimeout(r, 2000));
+      response = await tryComment(postUrn);
+    }
+
+    if (!response.ok) {
+      const error = (await response.json().catch(() => ({}))) as {
+        message?: string;
+        serviceErrorCode?: number;
+      };
+      const reason = error?.message ?? `HTTP ${response.status}`;
+      throw new Error(`LinkedIn comment post failed: ${reason}`);
+    }
+
+    // LinkedIn returns the new comment URN as x-restli-id header,
+    // or in the response body as $URN. Try both.
+    let commentUrn = response.headers.get('x-restli-id') ?? '';
+    if (!commentUrn) {
+      const data = (await response.json().catch(() => ({}))) as { $URN?: string };
+      commentUrn = data['$URN'] ?? '';
+    }
+    if (!commentUrn) {
+      throw new Error('LinkedIn returned no comment URN');
+    }
+    return { commentUrn };
+  }
+
+  /**
+   * Create a LinkedIn poll post via the Posts API (`/v2/posts`).
+   *
+   * Uses the newer versioned Posts API since /ugcPosts deprecated poll support.
+   *
+   * @param accessToken — Member access token
+   * @param actorUrn — Full URN of the author (e.g. "urn:li:person:{id}" or "urn:li:organization:{id}")
+   * @param question — The poll question (max 140 chars)
+   * @param options — 2–4 poll option strings
+   * @param durationDays — 1 | 3 | 7 | 14 (LinkedIn-supported durations)
+   * @param commentary — Optional commentary that appears as the post body above the poll card
+   * @param visibility — PUBLIC | CONNECTIONS (CONNECTIONS only valid for person authors)
+   */
+  async createPollPost(
+    accessToken: string,
+    actorUrn: string,
+    question: string,
+    options: string[],
+    durationDays: number = 7,
+    commentary: string = '',
+    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+  ): Promise<{ postId: string }> {
+    if (!question || !question.trim()) throw new Error('Poll question is required');
+    if (!Array.isArray(options) || options.length < 2) {
+      throw new Error('Poll requires at least 2 options');
+    }
+    if (options.length > 4) throw new Error('Poll allows at most 4 options');
+
+    // Map allowed durations
+    const durationMap: Record<number, string> = {
+      1: 'ONE_DAY',
+      3: 'THREE_DAYS',
+      7: 'SEVEN_DAYS',
+      14: 'FOURTEEN_DAYS',
+    };
+    const duration = durationMap[durationDays] ?? 'SEVEN_DAYS';
+
+    const body = {
+      author: actorUrn,
+      commentary: commentary || '',
+      visibility,
+      lifecycleState: 'PUBLISHED',
+      content: {
+        poll: {
+          question: question.trim(),
+          options: options.map((o) => ({ text: o.trim() })),
+          settings: {
+            duration,
+            // voteSelectionType:'SINGLE_VOTE' is the default; not setting it.
+          },
+        },
+      },
+      distribution: {
+        feedDistribution: 'MAIN_FEED',
+        targetEntities: [],
+        thirdPartyDistributionChannels: [],
+      },
+      isReshareDisabledByAuthor: false,
+    };
+
+    const response = await fetch(`${this.apiBaseUrl}/posts`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+        'X-Restli-Protocol-Version': '2.0.0',
+        'LinkedIn-Version': '202404',
+      },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(`Failed to create LinkedIn poll: ${errorData}`);
+      throw new BadRequestException('Failed to create LinkedIn poll post');
+    }
+
+    // The /v2/posts endpoint returns the new post URN in the x-restli-id header.
+    const postId = response.headers.get('x-restli-id') ?? '';
+    if (!postId) {
+      // Some response shapes return it in the body
+      const data = (await response.json().catch(() => ({}))) as { id?: string };
+      if (!data.id) throw new BadRequestException('LinkedIn returned no poll post ID');
+      return { postId: data.id };
+    }
+    return { postId };
+  }
 }
