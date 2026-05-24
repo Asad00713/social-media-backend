@@ -103,14 +103,18 @@ export class PinterestService {
   }
 
   /**
-   * Slim board listing used by the composer's board picker. Returns only the
-   * fields the picker needs ({ id, name, image_thumbnail_url }).
-   *
-   * Shipped but untested with a live account — verify in smoke test.
+   * Board listing used by the composer's board picker. Returns the full set
+   * of fields Pinterest's `GET /v5/boards` provides — the picker uses
+   * `pinCount` (for the row badge + delete blast-radius), `privacy` (for the
+   * 🌐/🔒 icon), and `image_thumbnail_url` (if we add board thumbnails later).
    */
   async listBoards(
     accessToken: string,
-  ): Promise<Array<{ id: string; name: string; image_thumbnail_url: string | null }>> {
+  ): Promise<
+    Array<
+      PinterestBoard & { image_thumbnail_url: string | null }
+    >
+  > {
     const response = await fetch(`${this.apiUrl}/boards`, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -130,6 +134,15 @@ export class PinterestService {
     return (data.items || []).map((board: any) => ({
       id: board.id,
       name: board.name,
+      description: board.description || null,
+      privacy: board.privacy || 'PUBLIC',
+      pinCount: typeof board.pin_count === 'number' ? board.pin_count : 0,
+      followerCount:
+        typeof board.follower_count === 'number' ? board.follower_count : 0,
+      collaboratorCount:
+        typeof board.collaborator_count === 'number'
+          ? board.collaborator_count
+          : 0,
       image_thumbnail_url:
         board.media?.image_cover_url ||
         board.media?.pin_thumbnail_urls?.[0] ||

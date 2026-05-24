@@ -100,6 +100,37 @@ export class AddonService {
       );
     }
 
+    // Defensive: the DB might reference a Stripe subscription that no longer
+    // exists (test data wiped, account changed, mode switched between test
+    // and live). Verify the subscription is still real on Stripe BEFORE we
+    // try to mutate it — gives the user a clear actionable error instead
+    // of a generic 500.
+    if (sub.stripeSubscriptionId) {
+      try {
+        await this.stripeService.getSubscription(sub.stripeSubscriptionId);
+      } catch (err: any) {
+        if (err?.code === 'resource_missing') {
+          this.logger.warn(
+            `Stale stripe_subscription_id ${sub.stripeSubscriptionId} for workspace ${workspaceId} — clearing and asking user to re-subscribe.`,
+          );
+          // Clear the orphan reference so the next subscribe call creates fresh.
+          await db
+            .update(subscriptions)
+            .set({
+              stripeSubscriptionId: null,
+              status: 'incomplete',
+              updatedAt: new Date(),
+            })
+            .where(eq(subscriptions.id, sub.id));
+
+          throw new BadRequestException(
+            'Your subscription is no longer linked to Stripe (this can happen if test data was reset or the Stripe account changed). Please go to Billing and re-subscribe to your current plan, then try adding the add-on again.',
+          );
+        }
+        throw err;
+      }
+    }
+
     // 3. Get addon pricing for this plan
     const pricing = await db
       .select()

@@ -18,17 +18,36 @@ export class TwitterPublisher extends BasePublisher {
   validate(options: PublishOptions): void {
     const { content, mediaItems, metadata } = options;
 
-    // Twitter allows text-only posts
+    const thread = metadata?.thread as
+      | Array<{ text: string; mediaItems?: MediaItem[] }>
+      | undefined;
+
+    if (Array.isArray(thread) && thread.length > 1) {
+      // Thread mode: validate each tweet independently.
+      thread.forEach((t, i) => {
+        const hasMedia = (t.mediaItems?.length ?? 0) > 0;
+        if (!t.text && !hasMedia) {
+          throw new Error(`Thread tweet ${i + 1} must have content or media`);
+        }
+        if (t.text && t.text.length > 280) {
+          throw new Error(
+            `Thread tweet ${i + 1} exceeds 280 character limit (${t.text.length} chars)`,
+          );
+        }
+        if ((t.mediaItems?.length ?? 0) > 4) {
+          throw new Error(`Thread tweet ${i + 1} has more than 4 media items`);
+        }
+      });
+      return;
+    }
+
+    // Single-tweet validation
     if (!content && mediaItems.length === 0) {
       throw new Error('Twitter post must have content or media');
     }
-
-    // Check character limit
     if (content && content.length > 280) {
       throw new Error(`Twitter content exceeds 280 character limit (${content.length} chars)`);
     }
-
-    // Check media limit
     if (mediaItems.length > 4) {
       throw new Error('Twitter allows maximum 4 media items per post');
     }
@@ -60,26 +79,34 @@ export class TwitterPublisher extends BasePublisher {
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
-    const { content, mediaItems, accessToken, channelMetadata } = options;
+    const { content, mediaItems, accessToken, channelMetadata, metadata } = options;
 
     this.validate(options);
 
-    // Get OAuth 1.0a credentials from channel metadata (if available)
     const oauth1Credentials = this.getOAuth1Credentials(channelMetadata);
 
-    // Upload media if present
+    // Thread mode — composer sets `metadata.thread = [{ text, mediaItems? }, ...]`
+    // when posting a multi-tweet sequence. We publish the first tweet, then
+    // chain subsequent tweets via in_reply_to_tweet_id.
+    const thread = metadata?.thread as
+      | Array<{ text: string; mediaItems?: MediaItem[] }>
+      | undefined;
+
+    if (Array.isArray(thread) && thread.length > 1) {
+      return this.publishThread(accessToken, thread, oauth1Credentials);
+    }
+
+    // Single-tweet mode (default)
     let mediaIds: string[] | undefined;
     if (mediaItems && mediaItems.length > 0) {
       mediaIds = await this.uploadMediaItems(accessToken, mediaItems, oauth1Credentials);
     }
 
-    // Build poll options from metadata
-    const pollData = options.metadata?.poll;
+    const pollData = metadata?.poll;
     const poll = pollData
       ? { options: pollData.options as string[], durationMinutes: pollData.durationMinutes as number }
       : undefined;
 
-    // Create tweet with optional media and/or poll
     const result = await this.twitterService.createTweet(accessToken, content, {
       mediaIds,
       poll,
@@ -90,6 +117,58 @@ export class TwitterPublisher extends BasePublisher {
     return {
       platformPostId: result.id,
       platformPostUrl: `https://twitter.com/i/web/status/${result.id}`,
+    };
+  }
+
+  /**
+   * Posts a thread: tweet 1 is the root, tweets 2..N each reply to the
+   * previous tweet's id. Returns the ROOT tweet's id/url so the channel
+   * target's platformPostUrl points to the head of the thread. If a
+   * mid-thread post fails, earlier tweets remain live on Twitter — we
+   * surface the failure and let the user retry from the composer.
+   */
+  private async publishThread(
+    accessToken: string,
+    tweets: Array<{ text: string; mediaItems?: MediaItem[] }>,
+    oauth1Credentials: TwitterOAuth1Credentials | undefined,
+  ): Promise<PublishResult> {
+    let replyToId: string | undefined;
+    let rootId: string | undefined;
+    const postedIds: string[] = [];
+
+    for (let i = 0; i < tweets.length; i++) {
+      const tweet = tweets[i];
+
+      let mediaIds: string[] | undefined;
+      if (tweet.mediaItems && tweet.mediaItems.length > 0) {
+        mediaIds = await this.uploadMediaItems(
+          accessToken,
+          tweet.mediaItems,
+          oauth1Credentials,
+        );
+      }
+
+      try {
+        const result = await this.twitterService.createTweet(accessToken, tweet.text, {
+          mediaIds,
+          replyToTweetId: replyToId,
+        });
+        if (!rootId) rootId = result.id;
+        replyToId = result.id;
+        postedIds.push(result.id);
+        this.logger.log(`Thread tweet ${i + 1}/${tweets.length} posted: ${result.id}`);
+      } catch (err) {
+        this.logger.error(
+          `Thread broke at tweet ${i + 1}/${tweets.length}. Posted so far: ${postedIds.join(',')}`,
+        );
+        throw err;
+      }
+    }
+
+    return {
+      platformPostId: rootId!,
+      platformPostUrl: `https://twitter.com/i/web/status/${rootId}`,
+      metadata: { threadIds: postedIds },
     };
   }
 

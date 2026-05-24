@@ -1,44 +1,72 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
-import { and, eq, desc } from 'drizzle-orm';
+import { and, desc, eq, inArray } from 'drizzle-orm';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { posts } from '../../../drizzle/schema/posts.schema';
+import type { SaveDraftDto } from '../dto/save-draft.dto';
 import type {
-  Draft,
   BaseContent,
-  PlatformOverrides,
   ChannelTarget,
+  Draft,
+  PlatformOverrides,
   ScheduleConfig,
 } from '../types/draft.types';
-import type { CreateDraftDto } from '../dto/create-draft.dto';
-import type { UpdateDraftDto } from '../dto/update-draft.dto';
 
 /**
- * Draft CRUD against the existing posts table. Drafts are posts rows with
- * status='draft'. No schema migration — posts.platformContent (jsonb)
- * already supports per-platform overrides, posts.targets (jsonb) supports
- * channel selection. Hashtags / mentions / linkPreview / schedule live
- * in posts.metadata.
+ * Stores drafts on the server when the user explicitly clicks "Save draft".
+ * Reuses the existing posts table with status='draft'. NOT used for
+ * autosave — drafts only land here on explicit save / publish / schedule.
  */
 @Injectable()
-export class ComposerService {
+export class DraftStoreService {
   constructor(@Inject(DRIZZLE) private readonly db: any) {}
 
-  async create(workspaceId: string, userId: string, _dto: CreateDraftDto): Promise<Draft> {
-    const inserted = await this.db
-      .insert(posts)
-      .values({
-        workspaceId,
-        createdById: userId,
-        content: '',
-        mediaItems: [],
-        targets: [],
-        status: 'draft',
-        platformContent: {},
-        metadata: {},
-      })
-      .returning();
+  async upsert(workspaceId: string, userId: string, dto: SaveDraftDto): Promise<Draft> {
+    const existing = await this.db
+      .select()
+      .from(posts)
+      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)))
+      .limit(1);
 
-    return this.toDraft(inserted[0]);
+    const metadata = {
+      hashtags: dto.base.hashtags,
+      mentions: dto.base.mentions,
+      linkPreview: dto.base.linkPreview,
+      schedule: dto.schedule,
+      title: dto.title,
+    };
+
+    if (existing.length === 0) {
+      const [inserted] = await this.db
+        .insert(posts)
+        .values({
+          id: dto.draftId,
+          workspaceId,
+          createdById: userId,
+          content: dto.base.text,
+          mediaItems: dto.base.mediaItems as any,
+          targets: (dto.channels ?? []) as any,
+          status: 'draft',
+          platformContent: (dto.perPlatform ?? {}) as any,
+          metadata: metadata as any,
+        })
+        .returning();
+      return this.toDraft(inserted);
+    }
+
+    const [updated] = await this.db
+      .update(posts)
+      .set({
+        content: dto.base.text,
+        mediaItems: dto.base.mediaItems as any,
+        targets: (dto.channels ?? []) as any,
+        status: 'draft',
+        platformContent: (dto.perPlatform ?? {}) as any,
+        metadata: metadata as any,
+        updatedAt: new Date(),
+      })
+      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)))
+      .returning();
+    return this.toDraft(updated);
   }
 
   async findById(workspaceId: string, draftId: string): Promise<Draft> {
@@ -47,10 +75,7 @@ export class ComposerService {
       .from(posts)
       .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)))
       .limit(1);
-
-    if (rows.length === 0) {
-      throw new NotFoundException(`Draft ${draftId} not found`);
-    }
+    if (rows.length === 0) throw new NotFoundException(`Draft ${draftId} not found`);
     return this.toDraft(rows[0]);
   }
 
@@ -58,39 +83,15 @@ export class ComposerService {
     const rows = await this.db
       .select()
       .from(posts)
-      .where(and(eq(posts.workspaceId, workspaceId), eq(posts.status, 'draft')))
+      .where(
+        and(
+          eq(posts.workspaceId, workspaceId),
+          inArray(posts.status, ['draft', 'scheduled', 'failed']),
+        ),
+      )
       .orderBy(desc(posts.updatedAt))
       .limit(limit);
-
     return rows.map((r: any) => this.toDraft(r));
-  }
-
-  async update(workspaceId: string, draftId: string, dto: UpdateDraftDto): Promise<Draft> {
-    const existing = await this.findById(workspaceId, draftId);
-    const newBase: BaseContent = dto.base
-      ? { ...existing.base, ...dto.base }
-      : existing.base;
-
-    const updated = await this.db
-      .update(posts)
-      .set({
-        content: newBase.text,
-        mediaItems: newBase.mediaItems,
-        platformContent: dto.perPlatform ?? existing.perPlatform,
-        targets: (dto.channels ?? existing.channels) as any,
-        scheduledAt: dto.schedule?.scheduleAt ? new Date(dto.schedule.scheduleAt) : null,
-        metadata: {
-          hashtags: newBase.hashtags,
-          mentions: newBase.mentions,
-          linkPreview: newBase.linkPreview,
-          schedule: dto.schedule ?? existing.schedule,
-        },
-        updatedAt: new Date(),
-      })
-      .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)))
-      .returning();
-
-    return this.toDraft(updated[0]);
   }
 
   async delete(workspaceId: string, draftId: string): Promise<{ success: true }> {

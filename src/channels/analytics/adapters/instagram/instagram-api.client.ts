@@ -17,7 +17,14 @@ export class InstagramApiError extends Error {
 }
 
 export class InstagramApiClient {
-  private readonly baseUrl = 'https://graph.facebook.com/v22.0';
+  // Instagram Business Login tokens are issued for graph.instagram.com,
+  // NOT graph.facebook.com. Hitting Facebook's graph with an IG token
+  // returns "Cannot parse access token" (code 190). The IG graph host is
+  // unversioned. Reference:
+  //   https://developers.facebook.com/docs/instagram-platform/reference/instagram-user/media
+  //
+  // Shipped but untested with a live account — verify in smoke test.
+  private readonly baseUrl = 'https://graph.instagram.com';
 
   constructor(private readonly fetchImpl: typeof fetch = fetch) {}
 

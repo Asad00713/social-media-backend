@@ -26,6 +26,8 @@ import {
   getRefreshTokenTtlDays,
 } from '../../drizzle/schema/channels.schema';
 import { workspaceUsage } from '../../drizzle/schema';
+import { channelSyncState } from '../../drizzle/schema/channel-sync-state.schema';
+import { posts, type PostTarget } from '../../drizzle/schema/posts.schema';
 import { encrypt, decrypt, maskSensitiveData } from '../../common/utils/encryption.util';
 import {
   CreateChannelDto,
@@ -208,11 +210,112 @@ export class ChannelService {
     // Initialize sync state and enqueue initial backfill
     await this.syncLifecycle.onChannelConnected(inserted[0].id, workspaceId);
 
+    // Re-link orphaned post targets from any previously-deleted channel of
+    // the same platform in this workspace. Without this, disconnect+reconnect
+    // breaks every downstream feature that joins on targets[].channelId
+    // (inbox poll, analytics, etc) because the IDs no longer match.
+    await this.migrateOrphanedPostTargets(
+      workspaceId,
+      dto.platform,
+      inserted[0].id,
+      dto.platformAccountId,
+    );
+
     this.logger.log(
       `Created ${dto.platform} channel for workspace ${workspaceId}: ${dto.accountName}`,
     );
 
     return this.toResponseDto(inserted[0]);
+  }
+
+  /**
+   * After a channel is (re-)created, find every `posts.targets[]` entry in
+   * this workspace that references the SAME platform but a now-deleted
+   * `channelId`, and re-point it at the new channel id.
+   *
+   * Background: disconnect does a hard `DELETE` on the channel row, and the
+   * subsequent reconnect inserts a brand-new row with a fresh bigserial id.
+   * Posts published before the disconnect still carry the old id in their
+   * JSONB `targets`. Without this migration, the inbox poller (and analytics
+   * snapshotter, and anything else that joins via `targets[].channelId`)
+   * finds zero historical posts after a reconnect.
+   *
+   * For Bluesky we additionally verify the DID in the AT URI matches the new
+   * channel's platformAccountId — that's a precise account-equality check.
+   * For other platforms the platformPostId doesn't encode account info, so we
+   * fall back to a workspace+platform match (acceptable trade-off: only fails
+   * if the user disconnected account A and connected a DIFFERENT account B
+   * on the same platform, a rare flow).
+   */
+  private async migrateOrphanedPostTargets(
+    workspaceId: string,
+    platform: SupportedPlatform,
+    newChannelId: number,
+    newPlatformAccountId: string,
+  ): Promise<void> {
+    // Find live channel ids of this platform — anything else in targets[] for
+    // this platform that isn't in this set is "orphaned".
+    const liveChannels = await db
+      .select({ id: socialMediaChannels.id })
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.workspaceId, workspaceId),
+          eq(socialMediaChannels.platform, platform),
+        ),
+      );
+    const liveIds = new Set(liveChannels.map((c) => String(c.id)));
+
+    // Pull candidate posts (anything in this workspace published in last 60d
+    // — wider than the poll window so we catch slightly older content too).
+    const sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+    const candidates = await db
+      .select({
+        id: posts.id,
+        targets: posts.targets,
+      })
+      .from(posts)
+      .where(
+        and(
+          eq(posts.workspaceId, workspaceId),
+          // jsonb-contains: at least one target on this platform
+          sql`${posts.targets} @> ${JSON.stringify([{ platform }])}::jsonb`,
+          // limit to posts published in window
+          sql`(${posts.publishedAt} IS NULL OR ${posts.publishedAt} >= ${sixtyDaysAgo})`,
+        ),
+      );
+
+    let updated = 0;
+    for (const post of candidates) {
+      const targets = (post.targets ?? []) as PostTarget[];
+      let dirty = false;
+      const next: PostTarget[] = targets.map((t) => {
+        if (t.platform !== platform) return t;
+        if (liveIds.has(String(t.channelId))) return t; // already live
+        // Bluesky-specific: verify DID match before re-linking. For other
+        // platforms we trust the workspace+platform scope.
+        if (platform === 'bluesky' && t.platformPostId) {
+          const didMatch = t.platformPostId.match(/^at:\/\/(did:[^/]+)\//);
+          if (didMatch && didMatch[1] !== newPlatformAccountId) {
+            return t; // different DID, don't claim
+          }
+        }
+        dirty = true;
+        return { ...t, channelId: String(newChannelId) };
+      });
+      if (!dirty) continue;
+      await db
+        .update(posts)
+        .set({ targets: next, updatedAt: new Date() })
+        .where(eq(posts.id, post.id));
+      updated += 1;
+    }
+
+    if (updated > 0) {
+      this.logger.log(
+        `Re-linked ${updated} orphaned post target(s) on workspace ${workspaceId} to ${platform} channel ${newChannelId}`,
+      );
+    }
   }
 
   /**
@@ -390,6 +493,40 @@ export class ChannelService {
   /**
    * Delete a channel
    */
+  /**
+   * Force-reset a channel to 'connected' without OAuth. For cases where
+   * the analytics layer wrongly marked a working channel as expired.
+   * The next sync attempt will re-flip if the token is actually bad.
+   */
+  async forceMarkConnected(
+    channelId: number,
+    workspaceId: string,
+  ): Promise<{ success: true; channelId: number }> {
+    const [row] = await db
+      .select({ id: socialMediaChannels.id })
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.id, channelId),
+          eq(socialMediaChannels.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
+    if (!row) throw new NotFoundException('Channel not found');
+
+    await db
+      .update(socialMediaChannels)
+      .set({ connectionStatus: 'connected', lastError: null })
+      .where(eq(socialMediaChannels.id, channelId));
+
+    await db
+      .update(channelSyncState)
+      .set({ consecutiveFailures: 0 })
+      .where(eq(channelSyncState.channelId, channelId));
+
+    return { success: true, channelId };
+  }
+
   async deleteChannel(channelId: number, workspaceId: string): Promise<void> {
     const channel = await db
       .select()
@@ -510,6 +647,13 @@ export class ChannelService {
     const platform = channelData.platform as SupportedPlatform;
     const platformConfig = PLATFORM_CONFIG[platform];
 
+    // Bluesky has its own session-refresh flow (com.atproto.server.refreshSession,
+    // NOT OAuth2). Its accessJwt lives ~2h; we never track tokenExpiresAt for it
+    // so the OAuth-style refresh below would never fire. Handle inline.
+    if (platform === 'bluesky') {
+      return this.getBlueskyAccessToken(channelData);
+    }
+
     // Check if token is expired or about to expire
     const now = new Date();
     const bufferTime = new Date(now.getTime() + this.TOKEN_REFRESH_BUFFER_MS);
@@ -624,6 +768,119 @@ export class ChannelService {
     }
 
     return decrypt(channelData.accessToken);
+  }
+
+  /**
+   * Bluesky-specific token resolution.
+   *
+   * Bluesky `accessJwt` lives ~2h (per AT Protocol) and we never populate
+   * `tokenExpiresAt` for Bluesky channels (the OAuth-shaped `tokenExpirationDays`
+   * is null), so the standard OAuth refresh path can't fire. Without inline
+   * refresh, every inbox poll / publishing call would fail with `ExpiredToken`
+   * 2 hours after the user last connected/refreshed.
+   *
+   * Strategy: keep `updated_at` as a proxy for last-refresh timestamp. If it's
+   * older than 90 minutes, proactively refresh via `com.atproto.server.refreshSession`
+   * and persist the new accessJwt + refreshJwt. Refresh failure falls back to
+   * returning the existing token (caller may still succeed, or will get a
+   * fresh error to surface).
+   */
+  private async getBlueskyAccessToken(
+    channelData: typeof socialMediaChannels.$inferSelect,
+  ): Promise<string> {
+    const REFRESH_AFTER_MS = 90 * 60 * 1000; // 90 min — comfortable margin under the 2h JWT TTL
+    const lastTouched = channelData.updatedAt?.getTime() ?? 0;
+    const ageMs = Date.now() - lastTouched;
+
+    if (ageMs < REFRESH_AFTER_MS) {
+      return decrypt(channelData.accessToken);
+    }
+
+    if (!channelData.refreshToken) {
+      this.logger.warn(
+        `Bluesky channel ${channelData.id} has no refresh token — returning existing access token`,
+      );
+      return decrypt(channelData.accessToken);
+    }
+
+    this.logger.log(
+      `Bluesky channel ${channelData.id}: token ${Math.round(ageMs / 60_000)}min old, refreshing session`,
+    );
+
+    try {
+      const refreshJwt = decrypt(channelData.refreshToken);
+      const res = await fetch(
+        'https://bsky.social/xrpc/com.atproto.server.refreshSession',
+        {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${refreshJwt}` },
+        },
+      );
+
+      if (!res.ok) {
+        const errText = await res.text().catch(() => '');
+        this.logger.warn(
+          `Bluesky refresh failed for channel ${channelData.id}: HTTP ${res.status} ${errText}`,
+        );
+
+        // Mark channel as expired so the UI surfaces a reconnect CTA. The
+        // refreshJwt itself can expire if the App Password was revoked.
+        if (res.status === 400 || res.status === 401) {
+          await db
+            .update(socialMediaChannels)
+            .set({
+              connectionStatus: 'expired',
+              lastError: `Bluesky session refresh failed: ${errText}`,
+              lastErrorAt: new Date(),
+              updatedAt: new Date(),
+            })
+            .where(eq(socialMediaChannels.id, channelData.id));
+        }
+        return decrypt(channelData.accessToken);
+      }
+
+      const data = (await res.json()) as {
+        accessJwt?: string;
+        refreshJwt?: string;
+        did?: string;
+        handle?: string;
+      };
+
+      if (!data.accessJwt) {
+        this.logger.warn(
+          `Bluesky refresh returned no accessJwt for channel ${channelData.id}`,
+        );
+        return decrypt(channelData.accessToken);
+      }
+
+      const newAccessToken = encrypt(data.accessJwt);
+      const newRefreshToken = data.refreshJwt
+        ? encrypt(data.refreshJwt)
+        : channelData.refreshToken;
+
+      await db
+        .update(socialMediaChannels)
+        .set({
+          accessToken: newAccessToken,
+          refreshToken: newRefreshToken,
+          connectionStatus: 'connected',
+          lastError: null,
+          lastErrorAt: null,
+          consecutiveErrors: 0,
+          updatedAt: new Date(),
+        })
+        .where(eq(socialMediaChannels.id, channelData.id));
+
+      this.logger.log(
+        `Bluesky channel ${channelData.id} session refreshed successfully`,
+      );
+      return data.accessJwt;
+    } catch (err) {
+      this.logger.error(
+        `Bluesky refresh threw for channel ${channelData.id}: ${(err as Error).message}`,
+      );
+      return decrypt(channelData.accessToken);
+    }
   }
 
   /**

@@ -17,6 +17,9 @@ import { LinkedInPublisher } from './publishers/linkedin.publisher';
 import { PinterestPublisher } from './publishers/pinterest.publisher';
 import { TikTokPublisher } from './publishers/tiktok.publisher';
 import { YouTubePublisher } from './publishers/youtube.publisher';
+import { BlueskyPublisher } from './publishers/bluesky.publisher';
+import { MastodonPublisher } from './publishers/mastodon.publisher';
+import { RedditPublisher } from './publishers/reddit.publisher';
 
 // Processors (BullMQ job handlers)
 import { PostPublishProcessor } from './processors/post-publish.processor';
@@ -41,6 +44,9 @@ import { PostPublishProcessor } from './processors/post-publish.processor';
     PinterestPublisher,
     TikTokPublisher,
     YouTubePublisher,
+    BlueskyPublisher,
+    MastodonPublisher,
+    RedditPublisher,
     PostPublishProcessor,
   ],
   exports: [PostService, PublisherFactory],

@@ -324,6 +324,38 @@ const MASTODON_COMPOSER: ComposerCapabilities = {
   },
   requiredFields: ['body'],
 };
+
+// Reddit — title + selftext / link / image, per-subreddit. 300-char title, 40k selftext.
+const REDDIT_COMPOSER: ComposerCapabilities = {
+  supportsTitle: true,
+  supportsBody: true,
+  supportsDescription: false,
+  supportsHashtags: false,
+  supportsFirstComment: false,
+  supportsThread: false,
+  supportsPoll: false,
+  supportsLocation: false,
+  supportsMentions: true,
+  supportsLinkPreview: true,
+  postTypes: ['self', 'link', 'image'],
+  visibilityOptions: [],
+  replyControlOptions: [],
+  maxCharsTitle: 300,
+  maxCharsBody: 40000,
+  mediaConstraints: {
+    imageMaxCount: 1,
+    imageMaxSizeMB: 20,
+    imageAllowedTypes: ['image/jpeg', 'image/png', 'image/gif'],
+    imageAspectRatios: [],
+    videoMaxCount: 0,
+    videoMaxSizeMB: 0,
+    videoMaxDurationSec: 0,
+    videoAllowedTypes: [],
+    videoAspectRatios: [],
+  },
+  requiredFields: ['title', 'subreddit'],
+};
+
 const SOCIAL_PLATFORMS = [
   'facebook',
   'instagram',
@@ -335,6 +367,7 @@ const SOCIAL_PLATFORMS = [
   'threads',
   'bluesky',
   'mastodon',
+  'reddit',
 ] as const satisfies readonly SupportedPlatform[];
 
 const BLUESKY_CAPABILITIES: PlatformCapabilities = {
@@ -389,6 +422,33 @@ const MASTODON_CAPABILITIES: PlatformCapabilities = {
   dataFreshness: 'realtime',
   dailyQuotaBudget: null,
   composer: MASTODON_COMPOSER,
+};
+
+const REDDIT_CAPABILITIES: PlatformCapabilities = {
+  platform: 'reddit',
+  hasFollowerCount: false, // Reddit has karma, not followers (per-post)
+  hasFollowerTimeSeries: false,
+  hasFollowingCount: false,
+  hasImpressions: false,
+  hasReach: false,
+  hasEngagementRate: true,
+  hasVideoMetrics: false,
+  hasDemographics: false,
+  hasTrafficSources: false,
+  contentTypes: ['post'],
+  vocabulary: {
+    follower: 'subscribers',
+    following: 'subscribed',
+    share: 'crosspost',
+    post: 'submission',
+  },
+  hasEphemeralContent: false,
+  ephemeralTTLHours: null,
+  profileDataSource: 'platform_api',
+  postDataSource: 'platform_api',
+  dataFreshness: 'realtime',
+  dailyQuotaBudget: null,
+  composer: REDDIT_COMPOSER,
 };
 
 const YOUTUBE_CAPABILITIES: PlatformCapabilities = {
@@ -652,6 +712,7 @@ export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCa
   linkedin: LINKEDIN_CAPABILITIES,
   tiktok: TIKTOK_CAPABILITIES,
   twitter: TWITTER_CAPABILITIES,
+  reddit: REDDIT_CAPABILITIES,
 };
 
 export function getCapabilities(platform: SupportedPlatform): PlatformCapabilities {

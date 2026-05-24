@@ -1,6 +1,5 @@
 import { Module } from '@nestjs/common';
 import { ChannelsController } from './channels.controller';
-import { WebhooksController } from './webhooks.controller';
 import { ChannelService } from './services/channel.service';
 import { OAuthService } from './services/oauth.service';
 import { FacebookService } from './services/facebook.service';
@@ -19,6 +18,7 @@ import { GoogleCalendarService } from './services/google-calendar.service';
 import { OneDriveService } from './services/onedrive.service';
 import { DropboxService } from './services/dropbox.service';
 import { UnsplashService } from './services/unsplash.service';
+import { RedditService } from './services/reddit.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { QueueModule } from '../queue/queue.module';
@@ -28,7 +28,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
 
 @Module({
   imports: [DrizzleModule, AnalyticsModule, QueueModule],
-  controllers: [ChannelsController, WebhooksController],
+  controllers: [ChannelsController],
   providers: [
     ChannelService,
     OAuthService,
@@ -48,6 +48,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     OneDriveService,
     DropboxService,
     UnsplashService,
+    RedditService,
     TokenRefreshProcessor,
     TokenRefreshScheduler,
     RefreshTokenExpiryScheduler,
@@ -71,6 +72,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     OneDriveService,
     DropboxService,
     UnsplashService,
+    RedditService,
   ],
 })
 export class ChannelsModule {}

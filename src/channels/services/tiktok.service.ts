@@ -481,6 +481,83 @@ export class TikTokService {
   }
 
   /**
+   * Publishes a TikTok photo carousel via PULL_FROM_URL.
+   * Up to 35 publicly-accessible image URLs. TikTok pulls the images server-side.
+   *
+   * @param accessToken - User access token (scope: video.upload)
+   * @param imageUrls - 1-35 publicly accessible JPEG/PNG/WebP URLs
+   * @param description - caption text shown with the photo carousel
+   * @param title - optional title (TikTok displays this in some surfaces)
+   * @param privacyLevel - TikTok privacy enum
+   * @returns the publish_id (used to poll status; serves as our platformPostId)
+   */
+  async postPhotoFromUrl(
+    accessToken: string,
+    imageUrls: string[],
+    description: string = '',
+    title: string = '',
+    privacyLevel:
+      | 'PUBLIC_TO_EVERYONE'
+      | 'MUTUAL_FOLLOW_FRIENDS'
+      | 'FOLLOWER_OF_CREATOR'
+      | 'SELF_ONLY' = 'SELF_ONLY',
+  ): Promise<{ publishId: string }> {
+    if (!Array.isArray(imageUrls) || imageUrls.length === 0) {
+      throw new BadRequestException('TikTok photo post requires at least 1 image URL');
+    }
+    if (imageUrls.length > 35) {
+      throw new BadRequestException('TikTok photo post allows at most 35 images');
+    }
+
+    const body = {
+      post_info: {
+        title: (title || '').slice(0, 90),
+        description: (description || '').slice(0, 2200),
+        disable_comment: false,
+        privacy_level: privacyLevel,
+        auto_add_music: true,
+      },
+      source_info: {
+        source: 'PULL_FROM_URL',
+        photo_cover_index: 0,
+        photo_images: imageUrls,
+      },
+      post_mode: 'DIRECT_POST',
+      media_type: 'PHOTO',
+    };
+
+    const response = await fetch(
+      `${this.apiBaseUrl}/post/publish/content/init/`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json; charset=UTF-8',
+        },
+        body: JSON.stringify(body),
+      },
+    );
+
+    const data = (await response.json().catch(() => ({}))) as {
+      data?: { publish_id?: string };
+      error?: { code?: string; message?: string };
+    };
+
+    if (!response.ok || (data.error && data.error.code !== 'ok')) {
+      const reason = data.error?.message ?? `HTTP ${response.status}`;
+      this.logger.error(`TikTok photo post failed: ${reason}`);
+      throw new BadRequestException(`TikTok photo post failed: ${reason}`);
+    }
+
+    if (!data.data?.publish_id) {
+      throw new BadRequestException('TikTok returned no publish_id for photo post');
+    }
+
+    this.logger.log(`TikTok photo post initialized: ${data.data.publish_id}`);
+    return { publishId: data.data.publish_id };
+  }
+
+  /**
    * Check video publish status
    *
    * Status values:

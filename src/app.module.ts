@@ -27,6 +27,7 @@ import { ScheduleModule } from '@nestjs/schedule';
 import { AnalyticsModule } from './channels/analytics/analytics.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { ComposerModule } from './posts/composer/composer.module';
+import { InboxModule } from './inbox/inbox.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
@@ -62,6 +63,7 @@ import { QUEUES } from './queue/queue.module';
     AnalyticsModule,
     RealtimeModule,
     ComposerModule,
+    InboxModule,
     BullBoardModule.forRoot({
       route: '/admin/queues',
       adapter: ExpressAdapter,
@@ -71,6 +73,7 @@ import { QUEUES } from './queue/queue.module';
       { name: QUEUES.TOKEN_REFRESH, adapter: BullMQAdapter },
       { name: QUEUES.DRIP_CAMPAIGNS, adapter: BullMQAdapter },
       { name: QUEUES.CHANNEL_SNAPSHOTS, adapter: BullMQAdapter },
+      { name: QUEUES.INBOX_POLLING, adapter: BullMQAdapter },
     ),
   ],
   controllers: [AppController],

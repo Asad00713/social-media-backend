@@ -4,6 +4,14 @@ import { LinkedInService } from '../../channels/services/linkedin.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
+type LinkedInVisibility = 'PUBLIC' | 'CONNECTIONS';
+
+function normalizeVisibility(value: unknown): LinkedInVisibility {
+  if (typeof value !== 'string') return 'PUBLIC';
+  const upper = value.toUpperCase();
+  return upper === 'CONNECTIONS' ? 'CONNECTIONS' : 'PUBLIC';
+}
+
 @Injectable()
 export class LinkedInPublisher extends BasePublisher {
   readonly platform: SupportedPlatform = 'linkedin';
@@ -13,7 +21,21 @@ export class LinkedInPublisher extends BasePublisher {
   }
 
   validate(options: PublishOptions): void {
-    const { content, mediaItems } = options;
+    const { content, mediaItems, metadata } = options;
+
+    if (metadata?.postType === 'poll') {
+      // Polls don't need text/media; question + 2 options is enough.
+      const q = typeof metadata.pollQuestion === 'string' ? metadata.pollQuestion.trim() : '';
+      const opts = Array.isArray(metadata.pollOptions)
+        ? (metadata.pollOptions as unknown[]).filter(
+            (o): o is string => typeof o === 'string' && o.trim().length > 0,
+          )
+        : [];
+      if (!q) throw new Error('LinkedIn poll requires a question');
+      if (opts.length < 2) throw new Error('LinkedIn poll requires at least 2 options');
+      if (opts.length > 4) throw new Error('LinkedIn poll allows at most 4 options');
+      return;
+    }
 
     // LinkedIn allows text-only posts
     if (!content && mediaItems.length === 0) {
@@ -37,7 +59,49 @@ export class LinkedInPublisher extends BasePublisher {
     this.validate(options);
 
     const isOrganization = channelMetadata?.isOrganization || false;
-    const visibility = metadata?.visibility || 'PUBLIC';
+    const visibility = normalizeVisibility(metadata?.visibility);
+    const postType = (metadata?.postType as string | undefined) ?? 'post';
+
+    // POLL — uses Posts API with content.poll structure
+    if (postType === 'poll') {
+      const actorUrn = isOrganization
+        ? `urn:li:organization:${platformAccountId}`
+        : `urn:li:person:${platformAccountId}`;
+      const opts = (metadata!.pollOptions as string[])
+        .map((o) => o.trim())
+        .filter((o) => o.length > 0);
+      const result = await this.linkedinService.createPollPost(
+        accessToken,
+        actorUrn,
+        metadata!.pollQuestion as string,
+        opts,
+        (metadata?.pollDurationDays as number | undefined) ?? 7,
+        content ?? '',
+        visibility,
+      );
+
+      const publishResult: PublishResult = {
+        platformPostId: result.postId,
+        platformPostUrl: `https://www.linkedin.com/feed/update/${result.postId}`,
+      };
+      return publishResult;
+    }
+
+    // ARTICLE — pragmatic implementation: merge headline + body into a regular post.
+    // (LinkedIn's native long-form Article API `/originalArticles` requires Marketing
+    // Developer Platform approval which we don't have. This matches what Buffer/Hootsuite
+    // do — the headline becomes the visually prominent first line in feed.)
+    let effectiveContent = content ?? '';
+    if (postType === 'article') {
+      const headline = typeof metadata?.articleHeadline === 'string'
+        ? metadata.articleHeadline.trim()
+        : '';
+      if (headline) {
+        effectiveContent = effectiveContent.trim()
+          ? `${headline}\n\n${effectiveContent}`
+          : headline;
+      }
+    }
 
     let result: { postId: string };
 
@@ -50,7 +114,7 @@ export class LinkedInPublisher extends BasePublisher {
           result = await this.linkedinService.createOrganizationPostWithImage(
             accessToken,
             platformAccountId,
-            content || '',
+            effectiveContent,
             mediaItem.url,
             metadata?.imageTitle,
           );
@@ -58,7 +122,7 @@ export class LinkedInPublisher extends BasePublisher {
           result = await this.linkedinService.createPostWithImage(
             accessToken,
             platformAccountId,
-            content || '',
+            effectiveContent,
             mediaItem.url,
             metadata?.imageTitle,
             visibility,
@@ -70,7 +134,7 @@ export class LinkedInPublisher extends BasePublisher {
           result = await this.linkedinService.createOrganizationPostWithVideo(
             accessToken,
             platformAccountId,
-            content || '',
+            effectiveContent,
             mediaItem.url,
             metadata?.videoTitle,
           );
@@ -78,7 +142,7 @@ export class LinkedInPublisher extends BasePublisher {
           result = await this.linkedinService.createPostWithVideo(
             accessToken,
             platformAccountId,
-            content || '',
+            effectiveContent,
             mediaItem.url,
             metadata?.videoTitle,
             visibility,
@@ -88,12 +152,12 @@ export class LinkedInPublisher extends BasePublisher {
         throw new Error(`Unsupported media type: ${mediaItem.type}`);
       }
     } else if (metadata?.linkUrl) {
-      // Link/article post
+      // Link post
       if (isOrganization) {
         result = await this.linkedinService.createOrganizationPostWithLink(
           accessToken,
           platformAccountId,
-          content || '',
+          effectiveContent,
           metadata.linkUrl,
           metadata.linkTitle,
           metadata.linkDescription,
@@ -102,7 +166,7 @@ export class LinkedInPublisher extends BasePublisher {
         result = await this.linkedinService.createPostWithLink(
           accessToken,
           platformAccountId,
-          content || '',
+          effectiveContent,
           metadata.linkUrl,
           metadata.linkTitle,
           metadata.linkDescription,
@@ -115,13 +179,13 @@ export class LinkedInPublisher extends BasePublisher {
         result = await this.linkedinService.createOrganizationPost(
           accessToken,
           platformAccountId,
-          content || '',
+          effectiveContent,
         );
       } else {
         result = await this.linkedinService.createPost(
           accessToken,
           platformAccountId,
-          content || '',
+          effectiveContent,
           visibility,
         );
       }
@@ -129,9 +193,44 @@ export class LinkedInPublisher extends BasePublisher {
 
     this.logger.log(`Published to LinkedIn: ${result.postId}`);
 
-    return {
+    const publishResult: PublishResult = {
       platformPostId: result.postId,
       platformPostUrl: `https://www.linkedin.com/feed/update/${result.postId}`,
     };
+
+    const firstComment = typeof metadata?.firstComment === 'string'
+      ? metadata.firstComment.trim()
+      : '';
+    if (firstComment.length > 0) {
+      try {
+        const actorUrn = isOrganization
+          ? `urn:li:organization:${platformAccountId}`
+          : `urn:li:person:${platformAccountId}`;
+        const comment = await this.linkedinService.postComment(
+          accessToken,
+          actorUrn,
+          result.postId,
+          firstComment,
+        );
+        this.logger.log(
+          `First comment posted on LinkedIn post ${result.postId}: ${comment.commentUrn}`,
+        );
+        publishResult.metadata = {
+          ...(publishResult.metadata ?? {}),
+          firstCommentUrn: comment.commentUrn,
+        };
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `First comment failed on LinkedIn post ${result.postId}: ${reason}`,
+        );
+        publishResult.metadata = {
+          ...(publishResult.metadata ?? {}),
+          firstCommentWarning: reason,
+        };
+      }
+    }
+
+    return publishResult;
   }
 }

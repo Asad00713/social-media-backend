@@ -140,7 +140,19 @@ export class ChannelProfileSnapshotHandler {
       return { ok: true };
     }
 
-    // failed
+    // failed — read current consecutiveFailures so we can increment, then
+    // only escalate to "Reconnect Required" once auth_failed has happened
+    // 3+ times in a row. One-off classifier mistakes (e.g., an analytics
+    // adapter pointing at the wrong Graph endpoint returning code 190)
+    // shouldn't break the channel UI.
+    const RECONNECT_THRESHOLD = 3;
+    const existing = await this.db
+      .select({ consecutiveFailures: channelSyncState.consecutiveFailures })
+      .from(channelSyncState)
+      .where(eq(channelSyncState.channelId, channelId))
+      .limit(1);
+    const nextConsecutive = (existing[0]?.consecutiveFailures ?? 0) + 1;
+
     await this.db
       .insert(channelSyncState)
       .values({
@@ -149,7 +161,7 @@ export class ChannelProfileSnapshotHandler {
         lastProfileSyncStatus: result.error.code === 'rate_limited' ? 'rate_limited' : 'failed',
         lastProfileSyncError: result.error.message,
         nextProfileSyncAt: nextDayAt2UTC(),
-        consecutiveFailures: 1,
+        consecutiveFailures: nextConsecutive,
       })
       .onConflictDoUpdate({
         target: channelSyncState.channelId,
@@ -157,11 +169,14 @@ export class ChannelProfileSnapshotHandler {
           lastProfileSyncAt: new Date(),
           lastProfileSyncStatus: result.error.code === 'rate_limited' ? 'rate_limited' : 'failed',
           lastProfileSyncError: result.error.message,
+          consecutiveFailures: nextConsecutive,
         },
       });
 
-    // If auth failed, escalate to channel-level so UI shows "Reconnect Required"
-    if (result.error.code === 'auth_failed') {
+    if (
+      result.error.code === 'auth_failed' &&
+      nextConsecutive >= RECONNECT_THRESHOLD
+    ) {
       await this.db
         .update(socialMediaChannels)
         .set({
@@ -169,6 +184,9 @@ export class ChannelProfileSnapshotHandler {
           lastError: result.error.message?.slice(0, 500) ?? null,
         })
         .where(eq(socialMediaChannels.id, channelId));
+      this.logger.warn(
+        `Channel ${channelId} marked 'expired' after ${nextConsecutive} consecutive auth failures`,
+      );
     }
 
     this.logger.error(`Profile snapshot failed: channelId=${channelId} ${result.error.message}`);

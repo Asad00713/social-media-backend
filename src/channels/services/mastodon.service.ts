@@ -617,4 +617,61 @@ export class MastodonService {
       maxTootChars: data.configuration?.statuses?.max_characters || data.max_toot_chars || 500,
     };
   }
+
+  // ==========================================================================
+  // Inbox — fetch status context (descendants = the comment thread)
+  // ==========================================================================
+
+  /**
+   * Fetch the context of a status — both ancestors and descendants. For our
+   * inbox we only consume `descendants`, which is the flat list of replies
+   * (Mastodon flattens nested replies into a single list with `in_reply_to_id`
+   * pointers so we can rebuild the tree client-side).
+   */
+  async getStatusContext(
+    instanceUrl: string,
+    accessToken: string,
+    statusId: string,
+  ): Promise<{
+    ancestors: MastodonStatusContextEntry[];
+    descendants: MastodonStatusContextEntry[];
+  }> {
+    const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
+    const response = await fetch(
+      `${normalizedUrl}/api/v1/statuses/${encodeURIComponent(statusId)}/context`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+    );
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(`Failed to fetch Mastodon status context: ${errorData}`);
+      throw new BadRequestException('Failed to fetch Mastodon status context');
+    }
+
+    const data = await response.json();
+    return {
+      ancestors: (data.ancestors ?? []) as MastodonStatusContextEntry[],
+      descendants: (data.descendants ?? []) as MastodonStatusContextEntry[],
+    };
+  }
+}
+
+export interface MastodonStatusContextEntry {
+  id: string;
+  uri: string;
+  url: string;
+  content: string; // HTML
+  created_at: string;
+  in_reply_to_id: string | null;
+  in_reply_to_account_id: string | null;
+  favourites_count?: number;
+  account: {
+    id: string;
+    username: string;
+    acct: string;
+    display_name: string;
+    avatar: string;
+  };
 }

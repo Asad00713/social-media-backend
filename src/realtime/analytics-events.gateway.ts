@@ -11,6 +11,10 @@ import { Logger } from '@nestjs/common';
 import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
+import { and, eq } from 'drizzle-orm';
+import { db } from '../drizzle/db';
+import { workspace } from '../drizzle/schema/workspace.schema';
+import { workspaceInvitation } from '../drizzle/schema/workspace-invitation.schema';
 import type {
   AnalyticsEventName,
   AnalyticsEventPayloadMap,
@@ -70,17 +74,54 @@ export class AnalyticsEventsGateway implements OnGatewayConnection, OnGatewayDis
   async onSubscribeWorkspace(
     @ConnectedSocket() socket: AuthedSocket,
     @MessageBody() data: { workspaceId: string },
-  ): Promise<{ ok: boolean }> {
-    if (!socket.userId) return { ok: false };
-    if (!data?.workspaceId) return { ok: false };
-    // TODO: verify user has access to this workspace (cross-check workspace_members)
-    // For now, defer the access check to the existing JWT user — production-grade
-    // workspace ACL check is a polish step.
+  ): Promise<{ ok: boolean; reason?: string }> {
+    if (!socket.userId) return { ok: false, reason: 'unauthenticated' };
+    if (!data?.workspaceId) return { ok: false, reason: 'missing_workspace_id' };
+
+    const hasAccess = await this.userHasWorkspaceAccess(
+      data.workspaceId,
+      socket.userId,
+    );
+    if (!hasAccess) {
+      this.logger.warn(
+        `Socket ${socket.id} (user ${socket.userId}) denied access to workspace ${data.workspaceId}`,
+      );
+      return { ok: false, reason: 'forbidden' };
+    }
+
     await socket.join(this.workspaceRoom(data.workspaceId));
     this.logger.log(
       `Socket ${socket.id} (user ${socket.userId}) joined workspace ${data.workspaceId}`,
     );
     return { ok: true };
+  }
+
+  private async userHasWorkspaceAccess(
+    workspaceId: string,
+    userId: string,
+  ): Promise<boolean> {
+    try {
+      const owned = await db.query.workspace.findFirst({
+        where: and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)),
+        columns: { id: true },
+      });
+      if (owned) return true;
+
+      const member = await db.query.workspaceInvitation.findFirst({
+        where: and(
+          eq(workspaceInvitation.workspaceId, workspaceId),
+          eq(workspaceInvitation.userId, userId),
+          eq(workspaceInvitation.status, 'ACCEPTED'),
+        ),
+        columns: { id: true },
+      });
+      return !!member;
+    } catch (err) {
+      this.logger.error(
+        `Workspace access check failed for user=${userId} ws=${workspaceId}: ${(err as Error).message}`,
+      );
+      return false;
+    }
   }
 
   @SubscribeMessage('unsubscribe:workspace')

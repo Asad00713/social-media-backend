@@ -240,6 +240,36 @@ export class PlanChangeService {
     this.logger.log(`[DEBUG] Step 2 DONE: sub.id=${sub.id}, stripeSubId=${sub.stripeSubscriptionId}, currentPeriodEnd=${sub.currentPeriodEnd}`);
     const oldPlanCode = sub.planCode;
 
+    // Defensive: the stored stripeSubscriptionId may have been wiped on
+    // Stripe's side (test data reset, account switch, mode change). Verify
+    // it still exists before we try to mutate it. If it's gone, null it
+    // out in our DB and treat as a fresh subscribe — let the user proceed
+    // via Checkout instead of crashing.
+    if (sub.stripeSubscriptionId) {
+      try {
+        await this.stripeService.getSubscription(sub.stripeSubscriptionId);
+      } catch (err: any) {
+        if (err?.code === 'resource_missing') {
+          this.logger.warn(
+            `Stale stripe_subscription_id ${sub.stripeSubscriptionId} on workspace ${workspaceId} — clearing.`,
+          );
+          await db
+            .update(subscriptions)
+            .set({
+              stripeSubscriptionId: null,
+              status: 'incomplete',
+              updatedAt: new Date(),
+            })
+            .where(eq(subscriptions.id, sub.id));
+          // Wipe the in-memory copy so the rest of changePlan treats this
+          // as the "no existing Stripe subscription" path (Checkout flow).
+          sub.stripeSubscriptionId = null;
+        } else {
+          throw err;
+        }
+      }
+    }
+
     // 3. Get new plan
     const newPlan = await db
       .select()

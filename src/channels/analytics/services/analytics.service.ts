@@ -90,12 +90,24 @@ export class AnalyticsService {
 
     // Direct count from posts table — accurate immediately, doesn't depend on daily rollups
     // (daily rollup cron at 03:00 UTC, so new posts show 0 until next morning otherwise).
+    // Tolerate both shapes: legacy PostTarget uses `status`, new composer
+    // ChannelTarget uses `publishStatus`. Old composer rows might only
+    // have the latter, so we OR-check both keys.
+    const targetMatchLegacy = JSON.stringify([
+      { channelId: String(channelId), status: 'published' },
+    ]);
+    const targetMatchComposer = JSON.stringify([
+      { channelId: String(channelId), publishStatus: 'published' },
+    ]);
     const postsCountResult: any = await this.db.execute(sql`
       SELECT COUNT(*)::int AS count
       FROM posts
       WHERE workspace_id = (SELECT workspace_id FROM social_media_channels WHERE id = ${channelId})
         AND status = 'published'
-        AND targets @> ${JSON.stringify([{ channelId: String(channelId), status: 'published' }])}::jsonb
+        AND (
+          targets @> ${targetMatchLegacy}::jsonb
+          OR targets @> ${targetMatchComposer}::jsonb
+        )
         AND published_at >= ${new Date(start + 'T00:00:00Z')}
         AND published_at <= ${new Date(end + 'T23:59:59.999Z')}
     `);

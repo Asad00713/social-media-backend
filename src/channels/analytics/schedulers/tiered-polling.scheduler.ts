@@ -56,7 +56,10 @@ export class TieredPollingScheduler {
         WHERE p.status = 'published'
           AND p.published_at IS NOT NULL
           AND p.published_at >= ${cutoff30d}
-          AND t.value->>'status' = 'published'
+          AND (
+            t.value->>'status' = 'published'
+            OR t.value->>'publishStatus' = 'published'
+          )
           AND t.value->>'platformPostId' IS NOT NULL
       )
       SELECT

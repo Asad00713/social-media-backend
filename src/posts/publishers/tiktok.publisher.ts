@@ -13,21 +13,33 @@ export class TikTokPublisher extends BasePublisher {
   }
 
   validate(options: PublishOptions): void {
-    const { mediaItems } = options;
+    const { mediaItems, metadata } = options;
+    const postType = (metadata?.postType as string | undefined) ?? 'video';
 
-    // TikTok requires a video
+    // TikTok requires media (video or images)
     if (mediaItems.length === 0) {
-      throw new Error('TikTok posts require a video');
+      throw new Error('TikTok posts require media');
     }
 
-    if (mediaItems[0].type !== 'video') {
+    if (postType === 'photo') {
+      // Photo mode: 1-35 images
+      if (mediaItems.length > 35) {
+        throw new Error('TikTok photo posts allow at most 35 images');
+      }
+      if (!mediaItems.every((m) => m.type === 'image')) {
+        throw new Error('TikTok photo posts only accept image media');
+      }
+    } else if (mediaItems[0].type !== 'video') {
       throw new Error('TikTok only supports video content');
     }
   }
 
   supportsMediaTypes(mediaItems: MediaItem[]): boolean {
-    // TikTok only supports videos
-    return mediaItems.every((m) => m.type === 'video');
+    // TikTok supports videos (single) or images (carousel photo mode)
+    if (mediaItems.length === 0) return false;
+    const allVideos = mediaItems.every((m) => m.type === 'video');
+    const allImages = mediaItems.every((m) => m.type === 'image');
+    return allVideos || allImages;
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
@@ -35,11 +47,44 @@ export class TikTokPublisher extends BasePublisher {
 
     this.validate(options);
 
-    const videoItem = mediaItems[0];
-    const title = content || metadata?.title || '';
+    const postType = (metadata?.postType as string | undefined) ?? 'video';
 
     // Get privacy level from metadata, default to SELF_ONLY for safety
     const privacyLevel = metadata?.privacyLevel || 'SELF_ONLY';
+
+    // Photo carousel flow (PULL_FROM_URL)
+    if (postType === 'photo') {
+      const imageUrls = mediaItems.map((m) => m.url);
+      this.logger.log(
+        `Publishing TikTok photo carousel: ${imageUrls.length} image(s)`,
+      );
+
+      const photoResult = await this.tiktokService.postPhotoFromUrl(
+        accessToken,
+        imageUrls,
+        content || '',
+        metadata?.title || '',
+        privacyLevel,
+      );
+
+      this.logger.log(
+        `TikTok photo publish initiated: ${photoResult.publishId}`,
+      );
+
+      return {
+        platformPostId: photoResult.publishId,
+        platformPostUrl: undefined,
+        metadata: {
+          publishId: photoResult.publishId,
+          status: 'processing',
+          note: 'Photo carousel is being processed by TikTok. Use the publish status endpoint to check completion.',
+        },
+      };
+    }
+
+    // Video flow (existing)
+    const videoItem = mediaItems[0];
+    const title = content || metadata?.title || '';
     const useDirectUpload = metadata?.useDirectUpload ?? true; // Default to direct upload for reliability
 
     this.logger.log(`Publishing TikTok video: ${videoItem.url}`);

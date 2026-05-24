@@ -1,5 +1,16 @@
+/**
+ * Shared shape for thread/reply-chain items across platforms that support them.
+ * Twitter, Threads, Bluesky, and Mastodon all chain status posts via a parent-id;
+ * the publisher walks this array and links each item to the previous one.
+ */
+export interface ThreadPost {
+  id: string;
+  text: string;
+  mediaItems?: Array<{ url: string; type: string; altText?: string }>;
+}
+
 export interface TwitterFields {
-  threadTweets?: string[];
+  thread?: ThreadPost[];
   replyControl?: 'everyone' | 'following' | 'mentioned_only';
   pollOptions?: string[];
   pollDurationMinutes?: number;
@@ -28,6 +39,7 @@ export interface YouTubeFields {
   playlistId?: string;
   thumbnailMediaId?: string;
   premiereScheduledFor?: string;
+  firstComment?: string;
 }
 
 export interface FacebookFields {
@@ -63,11 +75,12 @@ export interface PinterestFields {
 }
 
 export interface ThreadsFields {
+  thread?: ThreadPost[];
   replyControl?: 'everyone' | 'followed' | 'mentioned';
 }
 
 export interface BlueskyFields {
-  threadPosts?: string[];
+  thread?: ThreadPost[];
   replyControl?: 'everyone' | 'mentioned' | 'following';
 }
 
@@ -77,4 +90,5 @@ export interface MastodonFields {
   sensitive: boolean;
   pollOptions?: string[];
   pollExpiresInSec?: number;
+  thread?: ThreadPost[];
 }

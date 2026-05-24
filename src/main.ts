@@ -11,6 +11,7 @@ async function bootstrap() {
       'http://localhost:3000',
       'http://localhost:3001',
       'http://localhost:3002',
+      'https://3efe-39-45-20-34.ngrok-free.app',
       process.env.APP_URL,
       process.env.FRONTEND_URL,
     ].filter(Boolean),

@@ -33,6 +33,7 @@ export const SUPPORTED_PLATFORMS = [
   'google_calendar',
   'onedrive',
   'dropbox',
+  'reddit',
 ] as const;
 
 export type SupportedPlatform = (typeof SUPPORTED_PLATFORMS)[number];
@@ -123,6 +124,9 @@ export const socialMediaChannels = pgTable(
     // Sync information
     lastSyncedAt: timestamp('last_synced_at'),
     lastPostedAt: timestamp('last_posted_at'),
+    // Last time the inbox poller fetched comments for this channel.
+    // Used by INBOX_POLLING worker for YT/Bluesky/Mastodon (no webhooks).
+    lastInboxPollAt: timestamp('last_inbox_poll_at'),
 
     // Platform-specific metadata (flexible JSON)
     metadata: jsonb('metadata').$type<Record<string, any>>().default({}),
@@ -383,6 +387,12 @@ export const PLATFORM_CONFIG: Record<
       'pages_read_engagement',
       'pages_manage_posts',
       'pages_manage_metadata',
+      // Required for posting comments on Page posts (first-comment feature).
+      // Must be enabled in Meta App Console → App Review → Permissions and Features
+      // before existing users will see it in the consent screen.
+      'pages_manage_engagement',
+      // Required to read user-generated comments on Page posts (inbox feature).
+      'pages_read_user_content',
     ],
   },
   instagram: {
@@ -415,6 +425,9 @@ export const PLATFORM_CONFIG: Record<
       'https://www.googleapis.com/auth/youtube.upload',
       'https://www.googleapis.com/auth/youtube',
       'https://www.googleapis.com/auth/yt-analytics.readonly',
+      // Required for commentThreads.insert (first-comment feature).
+      // The broader youtube scope does NOT cover comment writes — verified at runtime.
+      'https://www.googleapis.com/auth/youtube.force-ssl',
     ],
   },
   tiktok: {
@@ -477,7 +490,16 @@ export const PLATFORM_CONFIG: Record<
     maxMediaPerPost: 10,
     maxTextLength: 500,
     supportedMediaTypes: ['image', 'video'],
-    oauthScopes: ['threads_basic', 'threads_content_publish'],
+    oauthScopes: [
+      'threads_basic',
+      'threads_content_publish',
+      // Required to use reply_to_id when chaining a multi-post thread.
+      // Without this, the first post publishes but subsequent replies fail
+      // with THApiException code 10 "Application does not have permission".
+      'threads_manage_replies',
+      // Required to read replies on our Threads posts (inbox feature).
+      'threads_read_replies',
+    ],
   },
   bluesky: {
     name: 'Bluesky',
@@ -512,6 +534,17 @@ export const PLATFORM_CONFIG: Record<
     maxTextLength: 1500,
     supportedMediaTypes: ['image', 'video'],
     oauthScopes: ['https://www.googleapis.com/auth/business.manage'],
+  },
+  reddit: {
+    name: 'Reddit',
+    accountTypes: ['profile'],
+    supportsRefreshToken: true,
+    tokenExpirationDays: null, // Reddit access tokens last 1 hour
+    refreshTokenTtlDays: 365, // Reddit refresh tokens are permanent if duration=permanent
+    maxMediaPerPost: 1,
+    maxTextLength: 40000,
+    supportedMediaTypes: ['image'],
+    oauthScopes: ['identity', 'submit', 'read', 'mysubreddits', 'flair'],
   },
   google_drive: {
     name: 'Google Drive',
