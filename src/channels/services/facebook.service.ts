@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  BadRequestException,
-  NotImplementedException,
-} from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import type {
   FetchedDm,
   CreatedDm,
@@ -1082,74 +1077,273 @@ export class FacebookService {
   }
 
   // ==========================================================================
-  // Messenger DM — Phase 2.1
+  // Messenger DM — Phase 2.1.fb-impl
   // ==========================================================================
+
+  /**
+   * Resolve a Messenger user (PSID) to their public profile. Used by the
+   * webhook handler to enrich author info on inbound DMs (the webhook payload
+   * only contains the PSID — name + picture have to be fetched separately).
+   *
+   * Endpoint: GET /<psid>?fields=name,first_name,last_name,profile_pic
+   *   &access_token=<page-token>
+   *
+   * Page-scoped: the PSID is only readable by the page that received the DM.
+   * Returns null on failure (e.g. user blocked, deleted, restricted) — caller
+   * persists the row with handle/name=null and we'll surface "Unknown" in UI.
+   */
+  async getMessengerUserProfile(
+    psid: string,
+    pageAccessToken: string,
+  ): Promise<{
+    name: string | null;
+    firstName: string | null;
+    profilePictureUrl: string | null;
+  } | null> {
+    try {
+      const url = new URL(`${this.graphApiUrl}/${psid}`);
+      url.searchParams.set('fields', 'name,first_name,last_name,profile_pic');
+      url.searchParams.set('access_token', pageAccessToken);
+
+      const res = await fetch(url.toString());
+      if (!res.ok) {
+        const err = await res.text();
+        this.logger.warn(
+          `Messenger getUserProfile failed for psid=${psid}: ${res.status} ${err}`,
+        );
+        return null;
+      }
+      const data = (await res.json()) as {
+        name?: string;
+        first_name?: string;
+        profile_pic?: string;
+      };
+      return {
+        name: data.name ?? null,
+        firstName: data.first_name ?? null,
+        profilePictureUrl: data.profile_pic ?? null,
+      };
+    } catch (err) {
+      this.logger.warn(
+        `Messenger getUserProfile threw for psid=${psid}: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
 
   /**
    * List Messenger conversations on this Page.
    *
-   * Endpoint: GET /me/conversations
-   *   ?fields=participants,updated_time,unread_count,
-   *           messages.limit(1){message,from,created_time}
+   * Endpoint: GET /<page-id>/conversations
+   *   ?platform=messenger
+   *   &fields=participants,updated_time,unread_count,
+   *           messages.limit(1){message,from,created_time,id}
    *
-   * TODO(Phase 2.1.fb-impl): Currently stubbed — returns empty list. Real impl
-   * fetches threads, maps participants → DmConversationSummary with our
-   * `<pageId>:<otherPartyPsid>` convo id format.
+   * Returns one DmConversationSummary per thread. Our internal conversation_id
+   * is derived from `<pageId>:<otherPartyPsid>` (the non-page participant).
    */
   async listMessengerConversations(
-    _pageId: string,
-    _pageAccessToken: string,
+    pageId: string,
+    pageAccessToken: string,
     _since?: Date,
   ): Promise<DmConversationSummary[]> {
-    this.logger.warn(
-      'listMessengerConversations: stub — returning empty list. Real Messenger fetch not yet implemented.',
+    const url = new URL(`${this.graphApiUrl}/${pageId}/conversations`);
+    url.searchParams.set('platform', 'messenger');
+    url.searchParams.set(
+      'fields',
+      'participants,updated_time,unread_count,messages.limit(1){message,from,created_time,id}',
     );
-    return [];
+    url.searchParams.set('limit', '50');
+    url.searchParams.set('access_token', pageAccessToken);
+
+    const res = await fetch(url.toString());
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(
+        `Messenger listConversations failed for page=${pageId}: ${err}`,
+      );
+      throw new Error(`Messenger listConversations failed: ${res.status}`);
+    }
+
+    const data = (await res.json()) as {
+      data?: Array<{
+        id: string;
+        participants?: { data: { id: string; name?: string }[] };
+        updated_time?: string;
+        unread_count?: number;
+        messages?: {
+          data: Array<{
+            id: string;
+            message?: string;
+            created_time?: string;
+            from?: { id: string; name?: string };
+          }>;
+        };
+      }>;
+    };
+
+    const summaries: DmConversationSummary[] = [];
+    for (const thread of data.data ?? []) {
+      const participants = thread.participants?.data ?? [];
+      const otherParty = participants.find((p) => p.id !== pageId);
+      if (!otherParty) continue;
+
+      const conversationId = `${pageId}:${otherParty.id}`;
+      const lastMessageEntry = thread.messages?.data?.[0];
+
+      summaries.push({
+        conversationId,
+        participant: {
+          platformId: otherParty.id,
+          handle: otherParty.name ?? undefined,
+          displayName: otherParty.name ?? undefined,
+        },
+        lastMessageText: lastMessageEntry?.message ?? '',
+        lastMessageAt: lastMessageEntry?.created_time
+          ? new Date(lastMessageEntry.created_time)
+          : thread.updated_time
+            ? new Date(thread.updated_time)
+            : new Date(),
+        lastMessageFromMe: lastMessageEntry?.from?.id === pageId,
+        unreadCount: thread.unread_count ?? 0,
+        metadata: { thread_id: thread.id },
+      });
+    }
+    return summaries;
   }
 
   /**
    * Fetch messages in a Messenger conversation (for backfill / initial sync).
-   * Live updates come through webhooks; this is only called during initial
-   * connect or manual sync.
-   *
-   * TODO(Phase 2.1.fb-impl): GET /<thread-id>/messages?fields=message,from,to,created_time
-   * Need to resolve thread_id from our `<pageId>:<psid>` convo id format
-   * (call /me/conversations?user_id=<psid> to find thread).
+   * The conversation_id is `<pageId>:<otherPartyPsid>` — we first resolve the
+   * thread_id via `/<page>/conversations?user_id=<psid>`, then list messages.
    */
   async fetchMessengerThread(
-    _pageId: string,
-    _pageAccessToken: string,
-    _conversationId: string,
+    pageId: string,
+    pageAccessToken: string,
+    conversationId: string,
     _since?: Date,
   ): Promise<FetchedDm[]> {
-    this.logger.warn(
-      'fetchMessengerThread: stub — returning empty messages. Real impl pending.',
+    const [, otherPartyId] = conversationId.split(':');
+    if (!otherPartyId) {
+      throw new Error(`Invalid Messenger conversation id: ${conversationId}`);
+    }
+
+    // 1) Resolve thread_id from the other party's PSID.
+    const lookupUrl = new URL(`${this.graphApiUrl}/${pageId}/conversations`);
+    lookupUrl.searchParams.set('platform', 'messenger');
+    lookupUrl.searchParams.set('user_id', otherPartyId);
+    lookupUrl.searchParams.set('fields', 'id');
+    lookupUrl.searchParams.set('access_token', pageAccessToken);
+
+    const lookupRes = await fetch(lookupUrl.toString());
+    if (!lookupRes.ok) {
+      throw new Error(
+        `Messenger thread lookup failed: ${lookupRes.status} ${await lookupRes.text()}`,
+      );
+    }
+    const lookupData = (await lookupRes.json()) as {
+      data?: { id: string }[];
+    };
+    const threadId = lookupData.data?.[0]?.id;
+    if (!threadId) return [];
+
+    // 2) Fetch messages in that thread.
+    const msgUrl = new URL(`${this.graphApiUrl}/${threadId}/messages`);
+    msgUrl.searchParams.set(
+      'fields',
+      'id,message,from,to,created_time',
     );
-    return [];
+    msgUrl.searchParams.set('limit', '100');
+    msgUrl.searchParams.set('access_token', pageAccessToken);
+
+    const msgRes = await fetch(msgUrl.toString());
+    if (!msgRes.ok) {
+      throw new Error(
+        `Messenger thread fetch failed: ${msgRes.status} ${await msgRes.text()}`,
+      );
+    }
+    const msgData = (await msgRes.json()) as {
+      data?: Array<{
+        id: string;
+        message?: string;
+        created_time?: string;
+        from?: { id: string; name?: string };
+      }>;
+    };
+
+    const messages: FetchedDm[] = [];
+    for (const m of msgData.data ?? []) {
+      const fromMe = m.from?.id === pageId;
+      messages.push({
+        conversationId,
+        platformItemId: m.id,
+        author: fromMe
+          ? null
+          : {
+              platformId: m.from?.id ?? otherPartyId,
+              handle: m.from?.name ?? undefined,
+              displayName: m.from?.name ?? undefined,
+            },
+        text: m.message ?? '',
+        platformCreatedAt: m.created_time ? new Date(m.created_time) : new Date(),
+        fromMe,
+      });
+    }
+    return messages;
   }
 
   /**
-   * Send a Messenger DM. The reply is delivered immediately if within the
-   * 24h messaging window; outside the window FB returns error code 10/200 — we
-   * surface that as a normal exception and the InboxService's window check
-   * should prevent it from being reached.
+   * Send a Messenger DM. Standard messaging mode — only valid inside the
+   * 24h window since the user's last message. Outside that window FB returns
+   * error code 10 / subcode 2018278; the InboxService's window check should
+   * prevent reaching this method, but we still surface FB's error verbatim.
    *
-   * Endpoint: POST /me/messages
-   *   body: { recipient: { id: psid }, message: { text }, messaging_type: 'RESPONSE' }
-   *
-   * TODO(Phase 2.1.fb-impl): Implement actual HTTP call. Currently throws
-   * NotImplementedException to keep the surface contract honest.
+   * Endpoint: POST /me/messages?access_token=<page-token>
+   *   body: { recipient: { id: psid }, message: { text },
+   *           messaging_type: 'RESPONSE' }
    */
   async sendMessengerMessage(
     pageId: string,
-    _pageAccessToken: string,
+    pageAccessToken: string,
     recipientPsid: string,
     text: string,
   ): Promise<CreatedDm> {
-    throw new NotImplementedException(
-      `Facebook Messenger send not yet implemented (Phase 2.1.fb-impl). ` +
-        `Would send to page=${pageId} recipient=${recipientPsid} text="${text.slice(0, 30)}…"`,
-    );
+    const url = new URL(`${this.graphApiUrl}/me/messages`);
+    url.searchParams.set('access_token', pageAccessToken);
+
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipient: { id: recipientPsid },
+        message: { text },
+        messaging_type: 'RESPONSE',
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`Messenger send failed: ${err}`);
+      throw new Error(`Messenger send failed: ${res.status} ${err}`);
+    }
+
+    const data = (await res.json()) as {
+      message_id?: string;
+      recipient_id?: string;
+    };
+    if (!data.message_id) {
+      throw new Error('Messenger send: no message_id returned');
+    }
+
+    // FB's send response doesn't include a timestamp; use server now. The
+    // echo webhook will follow shortly with the canonical timestamp and our
+    // upsert merges them via the unique (channel, platform_item_id) constraint.
+    return {
+      conversationId: `${pageId}:${recipientPsid}`,
+      platformItemId: data.message_id,
+      text,
+      platformCreatedAt: new Date(),
+    };
   }
 }
 

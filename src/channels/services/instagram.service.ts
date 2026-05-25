@@ -1,9 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  BadRequestException,
-  NotImplementedException,
-} from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import type {
   FetchedDm,
   CreatedDm,
@@ -1522,83 +1517,256 @@ export class InstagramService {
   }
 
   // ==========================================================================
-  // Instagram Direct DM — Phase 2.1
+  // Instagram Direct DM — Phase 2.1.ig-impl
   // ==========================================================================
+  // Uses the IG Business Login API host (graph.instagram.com) since that's
+  // the auth flow the user wired in the Meta dashboard. Endpoints mirror the
+  // FB Messenger unified Messaging API.
 
   /**
-   * List DM conversations for this IG Business account.
+   * Resolve an IG sender (IGSID) to their public profile. Webhook payloads
+   * only include the IGSID — name + avatar fetched via this call.
+   */
+  async getInstagramUserProfile(
+    igsid: string,
+    accessToken: string,
+  ): Promise<{
+    name: string | null;
+    username: string | null;
+    profilePictureUrl: string | null;
+  } | null> {
+    try {
+      const url = new URL(`${this.instagramApiUrl}/v22.0/${igsid}`);
+      url.searchParams.set('fields', 'name,username,profile_pic');
+      url.searchParams.set('access_token', accessToken);
+
+      const res = await fetch(url.toString());
+      if (!res.ok) {
+        const err = await res.text();
+        this.logger.warn(
+          `IG getUserProfile failed for igsid=${igsid}: ${res.status} ${err}`,
+        );
+        return null;
+      }
+      const data = (await res.json()) as {
+        name?: string;
+        username?: string;
+        profile_pic?: string;
+      };
+      return {
+        name: data.name ?? null,
+        username: data.username ?? null,
+        profilePictureUrl: data.profile_pic ?? null,
+      };
+    } catch (err) {
+      this.logger.warn(
+        `IG getUserProfile threw for igsid=${igsid}: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * List IG Direct conversations.
    *
-   * Endpoint: GET /{ig-user-id}/conversations
+   * Endpoint: GET /v22.0/<ig-user-id>/conversations
    *   ?platform=instagram&fields=participants,updated_time,unread_count,
-   *           messages.limit(1){message,from,created_time}
-   *
-   * TODO(Phase 2.1.ig-impl): Currently stubbed — returns empty list.
+   *           messages.limit(1){message,from,created_time,id}
    */
   async listDmConversations(
-    _igUserId: string,
-    _accessToken: string,
+    igUserId: string,
+    accessToken: string,
     _since?: Date,
   ): Promise<DmConversationSummary[]> {
-    this.logger.warn(
-      'listDmConversations: stub — returning empty list. Real IG Direct fetch not yet implemented.',
+    const url = new URL(`${this.instagramApiUrl}/v22.0/${igUserId}/conversations`);
+    url.searchParams.set('platform', 'instagram');
+    url.searchParams.set(
+      'fields',
+      'participants,updated_time,unread_count,messages.limit(1){message,from,created_time,id}',
     );
-    return [];
+    url.searchParams.set('limit', '50');
+    url.searchParams.set('access_token', accessToken);
+
+    const res = await fetch(url.toString());
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(
+        `IG listConversations failed for ig=${igUserId}: ${err}`,
+      );
+      throw new Error(`IG listConversations failed: ${res.status}`);
+    }
+
+    const data = (await res.json()) as {
+      data?: Array<{
+        id: string;
+        participants?: { data: { id: string; username?: string; name?: string }[] };
+        updated_time?: string;
+        unread_count?: number;
+        messages?: {
+          data: Array<{
+            id: string;
+            message?: string;
+            created_time?: string;
+            from?: { id: string; username?: string };
+          }>;
+        };
+      }>;
+    };
+
+    const summaries: DmConversationSummary[] = [];
+    for (const thread of data.data ?? []) {
+      const participants = thread.participants?.data ?? [];
+      const otherParty = participants.find((p) => p.id !== igUserId);
+      if (!otherParty) continue;
+
+      const conversationId = `${igUserId}:${otherParty.id}`;
+      const lastMessageEntry = thread.messages?.data?.[0];
+
+      summaries.push({
+        conversationId,
+        participant: {
+          platformId: otherParty.id,
+          handle: otherParty.username ?? undefined,
+          displayName: otherParty.name ?? otherParty.username ?? undefined,
+        },
+        lastMessageText: lastMessageEntry?.message ?? '',
+        lastMessageAt: lastMessageEntry?.created_time
+          ? new Date(lastMessageEntry.created_time)
+          : thread.updated_time
+            ? new Date(thread.updated_time)
+            : new Date(),
+        lastMessageFromMe: lastMessageEntry?.from?.id === igUserId,
+        unreadCount: thread.unread_count ?? 0,
+        metadata: { thread_id: thread.id },
+      });
+    }
+    return summaries;
   }
 
   /**
-   * Fetch messages in an IG conversation (for backfill / initial sync).
-   * Endpoint: GET /<thread-id>/messages?fields=message,from,to,created_time
-   *
-   * TODO(Phase 2.1.ig-impl).
+   * Fetch messages in an IG conversation.
+   * conversationId = `<igUserId>:<otherPartyIgsid>`.
    */
   async fetchDmThread(
-    _igUserId: string,
-    _accessToken: string,
-    _conversationId: string,
+    igUserId: string,
+    accessToken: string,
+    conversationId: string,
     _since?: Date,
   ): Promise<FetchedDm[]> {
-    this.logger.warn(
-      'fetchDmThread: stub — returning empty messages. Real impl pending.',
+    const [, otherPartyId] = conversationId.split(':');
+    if (!otherPartyId) {
+      throw new Error(`Invalid IG conversation id: ${conversationId}`);
+    }
+
+    // 1) Resolve thread_id from the other party's IGSID.
+    const lookupUrl = new URL(
+      `${this.instagramApiUrl}/v22.0/${igUserId}/conversations`,
     );
-    return [];
+    lookupUrl.searchParams.set('platform', 'instagram');
+    lookupUrl.searchParams.set('user_id', otherPartyId);
+    lookupUrl.searchParams.set('fields', 'id');
+    lookupUrl.searchParams.set('access_token', accessToken);
+
+    const lookupRes = await fetch(lookupUrl.toString());
+    if (!lookupRes.ok) {
+      throw new Error(
+        `IG thread lookup failed: ${lookupRes.status} ${await lookupRes.text()}`,
+      );
+    }
+    const lookupData = (await lookupRes.json()) as { data?: { id: string }[] };
+    const threadId = lookupData.data?.[0]?.id;
+    if (!threadId) return [];
+
+    // 2) Fetch messages in that thread.
+    const msgUrl = new URL(`${this.instagramApiUrl}/v22.0/${threadId}/messages`);
+    msgUrl.searchParams.set('fields', 'id,message,from,to,created_time');
+    msgUrl.searchParams.set('limit', '100');
+    msgUrl.searchParams.set('access_token', accessToken);
+
+    const msgRes = await fetch(msgUrl.toString());
+    if (!msgRes.ok) {
+      throw new Error(
+        `IG thread fetch failed: ${msgRes.status} ${await msgRes.text()}`,
+      );
+    }
+    const msgData = (await msgRes.json()) as {
+      data?: Array<{
+        id: string;
+        message?: string;
+        created_time?: string;
+        from?: { id: string; username?: string };
+      }>;
+    };
+
+    const messages: FetchedDm[] = [];
+    for (const m of msgData.data ?? []) {
+      const fromMe = m.from?.id === igUserId;
+      messages.push({
+        conversationId,
+        platformItemId: m.id,
+        author: fromMe
+          ? null
+          : {
+              platformId: m.from?.id ?? otherPartyId,
+              handle: m.from?.username ?? undefined,
+              displayName: m.from?.username ?? undefined,
+            },
+        text: m.message ?? '',
+        platformCreatedAt: m.created_time ? new Date(m.created_time) : new Date(),
+        fromMe,
+      });
+    }
+    return messages;
   }
 
   /**
-   * Send an IG Direct DM. Same shape as FB Messenger but on the IG endpoint.
-   * Endpoint: POST /{ig-user-id}/messages
-   *   body: { recipient: { id: igsid }, message: { text }, messaging_type: 'RESPONSE' }
-   *
-   * TODO(Phase 2.1.ig-impl).
+   * Send an IG Direct DM.
+   * Endpoint: POST /v22.0/<ig-user-id>/messages
+   *   body: { recipient: { id: igsid }, message: { text } }
    */
   async sendDirectMessage(
     igUserId: string,
-    _accessToken: string,
+    accessToken: string,
     conversationId: string,
     text: string,
   ): Promise<CreatedDm> {
-    throw new NotImplementedException(
-      `Instagram Direct send not yet implemented (Phase 2.1.ig-impl). ` +
-        `Would send from ig=${igUserId} convo=${conversationId} text="${text.slice(0, 30)}…"`,
-    );
-  }
+    const [, recipientIgsid] = conversationId.split(':');
+    if (!recipientIgsid) {
+      throw new Error(`Invalid IG conversation id: ${conversationId}`);
+    }
 
-  /**
-   * Activate IG messaging webhook subscription for this account.
-   * Endpoint: POST /{ig-user-id}/subscribed_apps?subscribed_fields=messages,...
-   *
-   * Idempotent — Meta accepts repeated calls without error.
-   */
-  async subscribeAccountToMessaging(
-    igUserId: string,
-    accessToken: string,
-    fields: string[] = ['messages', 'messaging_postbacks'],
-  ): Promise<{ success: boolean }> {
-    // Reuse the existing subscribeAccountToWebhooks pattern but with messaging fields.
-    // The real impl will call the IG subscribed_apps endpoint with the new field set.
-    this.logger.log(
-      `IG account ${igUserId} subscribe-messaging stub — fields=[${fields.join(',')}] (Phase 2.1.ig-impl will wire to real API)`,
-    );
-    return { success: true };
+    const url = new URL(`${this.instagramApiUrl}/v22.0/${igUserId}/messages`);
+    url.searchParams.set('access_token', accessToken);
+
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipient: { id: recipientIgsid },
+        message: { text },
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`IG Direct send failed: ${err}`);
+      throw new Error(`IG Direct send failed: ${res.status} ${err}`);
+    }
+
+    const data = (await res.json()) as {
+      message_id?: string;
+      recipient_id?: string;
+    };
+    if (!data.message_id) {
+      throw new Error('IG Direct send: no message_id returned');
+    }
+
+    return {
+      conversationId: `${igUserId}:${recipientIgsid}`,
+      platformItemId: data.message_id,
+      text,
+      platformCreatedAt: new Date(),
+    };
   }
 }
 

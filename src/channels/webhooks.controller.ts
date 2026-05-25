@@ -11,6 +11,9 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { InboxService } from '../inbox/inbox.service';
+import { FacebookService } from './services/facebook.service';
+import { InstagramService } from './services/instagram.service';
+import { ChannelService } from './services/channel.service';
 import type { SupportedPlatform } from '../drizzle/schema/channels.schema';
 
 /**
@@ -32,7 +35,12 @@ export class WebhooksController {
   private readonly META_VERIFY_TOKEN =
     process.env.META_WEBHOOK_VERIFY_TOKEN || 'webondev_verify_123';
 
-  constructor(private readonly inbox: InboxService) {}
+  constructor(
+    private readonly inbox: InboxService,
+    private readonly facebookService: FacebookService,
+    private readonly instagramService: InstagramService,
+    private readonly channelService: ChannelService,
+  ) {}
 
   // ==========================================================================
   // Meta (Facebook / Instagram / Threads) — verification challenges
@@ -254,6 +262,48 @@ export class WebhooksController {
       ? new Date(Number(event.timestamp))
       : eventTime;
 
+    // Enrich author info for inbound messages (not echoes). The webhook payload
+    // only contains the platform id of the sender — name + avatar come from
+    // the User Profile API. Best-effort: if the call fails, we still ingest
+    // the row with null author fields and surface "Unknown" in the UI.
+    let authorHandle: string | null = null;
+    let authorDisplayName: string | null = null;
+    let authorAvatarUrl: string | null = null;
+
+    if (!fromMe) {
+      try {
+        const token = await this.channelService.getAccessToken(
+          channel.id,
+          channel.workspaceId,
+        );
+        if (source === 'facebook') {
+          const profile = await this.facebookService.getMessengerUserProfile(
+            otherPartyId,
+            token,
+          );
+          if (profile) {
+            authorHandle = profile.firstName ?? profile.name;
+            authorDisplayName = profile.name;
+            authorAvatarUrl = profile.profilePictureUrl;
+          }
+        } else {
+          const profile = await this.instagramService.getInstagramUserProfile(
+            otherPartyId,
+            token,
+          );
+          if (profile) {
+            authorHandle = profile.username;
+            authorDisplayName = profile.name ?? profile.username;
+            authorAvatarUrl = profile.profilePictureUrl;
+          }
+        }
+      } catch (err) {
+        this.logger.warn(
+          `${source} DM author enrichment failed for ${otherPartyId}: ${(err as Error).message}`,
+        );
+      }
+    }
+
     await this.inbox.upsertDm({
       workspaceId: channel.workspaceId,
       channelId: channel.id,
@@ -262,9 +312,9 @@ export class WebhooksController {
       platformItemId: mid,
       platformParentId: (message.reply_to?.mid as string | undefined) ?? null,
       authorPlatformId: otherPartyId,
-      authorHandle: null, // Resolved by adapter backfill — Phase 2.1.<fb|ig>-impl
-      authorDisplayName: null,
-      authorAvatarUrl: null,
+      authorHandle,
+      authorDisplayName,
+      authorAvatarUrl,
       text,
       fromMe,
       platformCreatedAt: createdAt,
