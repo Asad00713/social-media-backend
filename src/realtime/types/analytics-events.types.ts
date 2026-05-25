@@ -88,6 +88,8 @@ export interface InboxItemEventBase {
   platformItemId: string;
   platformParentId: string | null;
   platformPostId: string | null;
+  /** Populated for DMs only — `<pageId>:<otherPartyPsid>` style. Null for comments. */
+  conversationId?: string | null;
   authorHandle: string | null;
   authorDisplayName: string | null;
   authorAvatarUrl: string | null;

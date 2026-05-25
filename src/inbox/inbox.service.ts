@@ -1811,7 +1811,7 @@ export class InboxService {
       status: row.status,
       fromMe: row.fromMe,
       platformCreatedAt: row.platformCreatedAt.toISOString(),
-    } as any);
+    });
 
     void this.emitCounts(input.workspaceId);
     return row;
