@@ -143,6 +143,12 @@ export class WebhooksController {
     payload: any,
     source: 'instagram' | 'facebook' | 'threads',
   ): Promise<void> {
+    // Diagnostic top-level log — emits once per webhook delivery so we can see
+    // what Meta is actually sending us. Use to debug missing events.
+    this.logger.log(
+      `${source} webhook payload received: object=${payload?.object} entries=${(payload?.entry ?? []).length}`,
+    );
+
     const entries = payload?.entry ?? [];
     for (const entry of entries) {
       const accountId = entry.id as string;
@@ -153,8 +159,15 @@ export class WebhooksController {
       // Phase 2.1 — DM events arrive on `entry.messaging[]` (not `entry.changes[]`).
       // FB Messenger and IG Direct both use this shape. Threads has no DM API.
       const messagingEvents = entry.messaging ?? [];
+      this.logger.log(
+        `${source} entry: id=${accountId} messaging=${messagingEvents.length} changes=${(entry.changes ?? []).length}`,
+      );
       if (messagingEvents.length > 0 && source !== 'threads') {
         for (const event of messagingEvents) {
+          // Log the raw event so we can see exact payload shape from IG.
+          this.logger.log(
+            `${source} messaging event: ${JSON.stringify(event).slice(0, 500)}`,
+          );
           try {
             await this.ingestMetaMessagingEvent(
               source as 'facebook' | 'instagram',
@@ -253,10 +266,15 @@ export class WebhooksController {
     );
     if (!channel) {
       this.logger.warn(
-        `${source} DM webhook: no channel for account ${accountId}`,
+        `${source} DM webhook: NO CHANNEL FOUND for platform=${source} platformAccountId=${accountId}. ` +
+          `Check that the connected channel's platformAccountId matches this id ` +
+          `(diff = the IG/page id in webhook vs what OAuth stored).`,
       );
       return;
     }
+    this.logger.log(
+      `${source} DM webhook: matched channel=${channel.id} workspace=${channel.workspaceId}`,
+    );
 
     const createdAt = event.timestamp
       ? new Date(Number(event.timestamp))
