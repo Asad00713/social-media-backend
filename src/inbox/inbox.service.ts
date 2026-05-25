@@ -26,7 +26,11 @@ import { ChannelService } from '../channels/services/channel.service';
 import { FacebookService } from '../channels/services/facebook.service';
 import { InstagramService } from '../channels/services/instagram.service';
 import { InboxDispatcher } from './services/inbox-dispatcher.service';
-import type { ResolvedChannel } from './adapters/inbox-adapter.interface';
+import type {
+  ResolvedChannel,
+  DmConversationSummary as AdapterDmConversationSummary,
+  FetchedDm,
+} from './adapters/inbox-adapter.interface';
 import { InboxFolder } from './dto/list-comments.dto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -79,6 +83,55 @@ export interface CommentNodeDto {
 
 export interface CommentThreadDetail extends CommentThreadSummary {
   rootComments: CommentNodeDto[];
+}
+
+// ============================================================================
+// DM types — Phase 2.1
+// ============================================================================
+
+export interface DmConversationSummaryDto {
+  /** Synthetic key: `<channelId>:<conversationId>` — used in URLs. */
+  id: string;
+  type: 'dm';
+  channelId: string;
+  platform: SupportedPlatform;
+  conversationId: string;
+  participant: {
+    platformId: string;
+    handle: string;
+    displayName: string;
+    avatarUrl?: string;
+  };
+  lastMessageText: string;
+  lastMessageAt: string;
+  lastMessageFromMe: boolean;
+  status: InboxItemStatus;
+  unreadCount: number;
+  totalMessageCount: number;
+  /** Cached reply window state (FB/IG only). For Bluesky/Mastodon always { canReply: true }. */
+  replyWindow?: {
+    canReply: boolean;
+    reason?: string;
+    windowExpiresAt?: string;
+  };
+}
+
+export interface DmMessageDto {
+  id: string;
+  author: {
+    handle: string;
+    displayName: string;
+    avatarUrl?: string;
+  };
+  text: string;
+  timestamp: string;
+  fromMe: boolean;
+  platformItemId: string;
+  status: InboxItemStatus;
+}
+
+export interface DmThreadDetail extends DmConversationSummaryDto {
+  messages: DmMessageDto[];
 }
 
 export interface InboxCounts {
@@ -1106,16 +1159,26 @@ export class InboxService {
       try {
         const token = await this.channelService.getAccessToken(row.id, workspaceId);
         if (row.platform === 'facebook') {
+          // Phase 2.1: subscribe to messaging fields too so DMs arrive via webhook.
           await this.facebookService.subscribePageToWebhooks(
             row.platformAccountId,
             token,
-            ['feed'],
+            [
+              'feed',
+              'messages',
+              'messaging_postbacks',
+              'message_deliveries',
+              'message_reads',
+              'message_reactions',
+              'message_echoes',
+              'message_edits',
+            ],
           );
         } else {
           await this.instagramService.subscribeAccountToWebhooks(
             row.platformAccountId,
             token,
-            ['comments'],
+            ['comments', 'messages', 'messaging_postbacks', 'message_reactions'],
           );
         }
         webhookActivated += 1;
@@ -1209,5 +1272,548 @@ export class InboxService {
       if (hit) return r.id;
     }
     return null;
+  }
+
+  // ==========================================================================
+  // DM — Phase 2.1
+  // ==========================================================================
+  // Phase 2.1 ships the foundation:
+  //   - schema + types + adapter interface + dispatcher wiring
+  //   - service methods serve DM rows from `inbox_items` where type='dm'
+  //   - send goes through the platform adapter (which today is a stub per
+  //     platform — fills in incrementally)
+  //   - count + window-state logic ready for the frontend
+  //
+  // Per-platform real API integration lands in:
+  //   Phase 2.1.fb-impl, 2.1.ig-impl, 2.1.bsky-impl, 2.1.mastodon-impl
+
+  /**
+   * Resolve the platform identity for our own outbound DM row. The author
+   * fields default to the connected channel's identity (so a DM sent via
+   * Schedura is attributed to the brand, not a generic "me").
+   */
+  private async loadMyDmIdentity(channelId: number): Promise<{
+    handle: string;
+    displayName: string;
+    avatarUrl?: string;
+    platformId: string;
+  }> {
+    const ch = await db.query.socialMediaChannels.findFirst({
+      where: eq(socialMediaChannels.id, channelId),
+    });
+    if (!ch) {
+      return { handle: 'me', displayName: 'You', platformId: '' };
+    }
+    return {
+      handle: ch.username?.replace(/^@+/, '').trim() || ch.accountName,
+      displayName: ch.accountName,
+      avatarUrl: ch.profilePictureUrl ?? undefined,
+      platformId: ch.platformAccountId,
+    };
+  }
+
+  /**
+   * Decode a DM thread key `<channelId>:<conversationId>` — note that
+   * conversationId itself may contain colons (e.g. FB `<pageId>:<psid>`), so
+   * we only split on the first colon.
+   */
+  private decodeDmThreadKey(threadKey: string): {
+    channelId: number;
+    conversationId: string;
+  } {
+    const idx = threadKey.indexOf(':');
+    if (idx <= 0) {
+      throw new BadRequestException('Invalid DM thread key');
+    }
+    const channelId = Number(threadKey.slice(0, idx));
+    const conversationId = threadKey.slice(idx + 1);
+    if (!Number.isFinite(channelId) || !conversationId) {
+      throw new BadRequestException('Invalid DM thread key');
+    }
+    return { channelId, conversationId };
+  }
+
+  /**
+   * List DM conversations in this workspace, grouped by (channelId, conversationId).
+   * Mirrors `listCommentThreads` shape so the frontend reuses one list pattern.
+   */
+  async listDmConversations(
+    workspaceId: string,
+    userId: string,
+    options: {
+      channelId?: string;
+      folder?: InboxFolder;
+      status?: InboxItemStatus;
+      cursor?: string;
+      limit?: number;
+    },
+  ): Promise<{ threads: DmConversationSummaryDto[]; nextCursor: string | null }> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+
+    const limit = Math.min(options.limit ?? 20, 100);
+    const conditions = [
+      eq(inboxItems.workspaceId, workspaceId),
+      eq(inboxItems.type, 'dm'),
+    ];
+
+    if (options.channelId && options.channelId !== 'all') {
+      const channelIdNum = Number(options.channelId);
+      if (Number.isFinite(channelIdNum)) {
+        conditions.push(eq(inboxItems.channelId, channelIdNum));
+      }
+    }
+
+    const statusFilter = options.status ?? this.folderToStatus(options.folder);
+    if (statusFilter) {
+      conditions.push(eq(inboxItems.status, statusFilter));
+    }
+
+    if (options.cursor) {
+      const cursorDate = new Date(options.cursor);
+      if (!Number.isNaN(cursorDate.getTime())) {
+        conditions.push(lt(inboxItems.platformCreatedAt, cursorDate));
+      }
+    }
+
+    const rows = await db
+      .select()
+      .from(inboxItems)
+      .where(and(...conditions))
+      .orderBy(desc(inboxItems.platformCreatedAt))
+      .limit(limit * 10);
+
+    // Group by (channelId, conversationId)
+    const groups = new Map<string, InboxItem[]>();
+    for (const row of rows) {
+      if (!row.conversationId) continue;
+      const key = `${row.channelId}:${row.conversationId}`;
+      const list = groups.get(key) ?? [];
+      list.push(row);
+      groups.set(key, list);
+    }
+
+    const summariesRaw: { summary: DmConversationSummaryDto; latestAt: Date }[] =
+      [];
+
+    for (const [key, items] of groups) {
+      items.sort(
+        (a, b) => b.platformCreatedAt.getTime() - a.platformCreatedAt.getTime(),
+      );
+      const latest = items[0];
+      const unread = items.filter(
+        (i) => i.status === 'unread' && !i.fromMe,
+      ).length;
+
+      // Participant = freshest non-fromMe author seen in the convo.
+      const incoming = items.find((i) => !i.fromMe) ?? latest;
+      const lastIncomingAt = items
+        .filter((i) => !i.fromMe)
+        .map((i) => i.platformCreatedAt)
+        .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+
+      // Reply-window state (only meaningful for FB/IG; safe no-op for others).
+      let replyWindow: DmConversationSummaryDto['replyWindow'];
+      if (this.dispatcher.supportsDm(latest.platform)) {
+        try {
+          const adapter = this.dispatcher.getDm(latest.platform);
+          const channel = await this.resolveChannel(latest.channelId, workspaceId);
+          const ws = await adapter.getReplyWindowState(
+            channel,
+            latest.conversationId!,
+            lastIncomingAt,
+          );
+          replyWindow = {
+            canReply: ws.canReply,
+            reason: ws.reason,
+            windowExpiresAt: ws.windowExpiresAt?.toISOString(),
+          };
+        } catch (err) {
+          this.logger.warn(
+            `Reply window state failed for ${latest.platform} convo ${key}: ${(err as Error).message}`,
+          );
+        }
+      }
+
+      summariesRaw.push({
+        summary: {
+          id: key,
+          type: 'dm',
+          channelId: String(latest.channelId),
+          platform: latest.platform,
+          conversationId: latest.conversationId!,
+          participant: {
+            platformId: incoming.authorPlatformId ?? 'unknown',
+            handle: incoming.authorHandle?.trim() || 'unknown',
+            displayName:
+              incoming.authorDisplayName?.trim() ||
+              incoming.authorHandle?.trim() ||
+              'Unknown',
+            avatarUrl: incoming.authorAvatarUrl ?? undefined,
+          },
+          lastMessageText: latest.text ?? '',
+          lastMessageAt: latest.platformCreatedAt.toISOString(),
+          lastMessageFromMe: latest.fromMe,
+          status: this.deriveThreadStatus(items),
+          unreadCount: unread,
+          totalMessageCount: items.length,
+          replyWindow,
+        },
+        latestAt: latest.platformCreatedAt,
+      });
+    }
+
+    summariesRaw.sort((a, b) => b.latestAt.getTime() - a.latestAt.getTime());
+    const sliced = summariesRaw.slice(0, limit);
+    const nextCursor =
+      summariesRaw.length > limit
+        ? summariesRaw[limit - 1].latestAt.toISOString()
+        : null;
+
+    return { threads: sliced.map((s) => s.summary), nextCursor };
+  }
+
+  async getDmThread(
+    workspaceId: string,
+    userId: string,
+    threadKey: string,
+  ): Promise<DmThreadDetail> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+    const { channelId, conversationId } = this.decodeDmThreadKey(threadKey);
+
+    const items = await db
+      .select()
+      .from(inboxItems)
+      .where(
+        and(
+          eq(inboxItems.workspaceId, workspaceId),
+          eq(inboxItems.channelId, channelId),
+          eq(inboxItems.conversationId, conversationId),
+          eq(inboxItems.type, 'dm'),
+        ),
+      )
+      .orderBy(asc(inboxItems.platformCreatedAt));
+
+    if (items.length === 0) {
+      // Empty conversation isn't necessarily a 404 — caller may be opening a
+      // DM the platform hasn't pushed yet. Return shell with no messages.
+      const channel = await db.query.socialMediaChannels.findFirst({
+        where: eq(socialMediaChannels.id, channelId),
+      });
+      if (!channel || channel.workspaceId !== workspaceId) {
+        throw new NotFoundException('Channel not found in workspace');
+      }
+      return {
+        id: threadKey,
+        type: 'dm',
+        channelId: String(channelId),
+        platform: channel.platform as SupportedPlatform,
+        conversationId,
+        participant: {
+          platformId: 'unknown',
+          handle: 'unknown',
+          displayName: 'Unknown',
+        },
+        lastMessageText: '',
+        lastMessageAt: new Date().toISOString(),
+        lastMessageFromMe: false,
+        status: 'unread',
+        unreadCount: 0,
+        totalMessageCount: 0,
+        messages: [],
+      };
+    }
+
+    const latest = items[items.length - 1];
+    const incoming = items.find((i) => !i.fromMe) ?? latest;
+    const unread = items.filter(
+      (i) => i.status === 'unread' && !i.fromMe,
+    ).length;
+    const lastIncomingAt =
+      items
+        .filter((i) => !i.fromMe)
+        .map((i) => i.platformCreatedAt)
+        .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+
+    let replyWindow: DmConversationSummaryDto['replyWindow'];
+    if (this.dispatcher.supportsDm(latest.platform)) {
+      try {
+        const adapter = this.dispatcher.getDm(latest.platform);
+        const channel = await this.resolveChannel(channelId, workspaceId);
+        const ws = await adapter.getReplyWindowState(
+          channel,
+          conversationId,
+          lastIncomingAt,
+        );
+        replyWindow = {
+          canReply: ws.canReply,
+          reason: ws.reason,
+          windowExpiresAt: ws.windowExpiresAt?.toISOString(),
+        };
+      } catch (err) {
+        this.logger.warn(
+          `Reply window state failed: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    return {
+      id: threadKey,
+      type: 'dm',
+      channelId: String(channelId),
+      platform: latest.platform,
+      conversationId,
+      participant: {
+        platformId: incoming.authorPlatformId ?? 'unknown',
+        handle: incoming.authorHandle?.trim() || 'unknown',
+        displayName:
+          incoming.authorDisplayName?.trim() ||
+          incoming.authorHandle?.trim() ||
+          'Unknown',
+        avatarUrl: incoming.authorAvatarUrl ?? undefined,
+      },
+      lastMessageText: latest.text ?? '',
+      lastMessageAt: latest.platformCreatedAt.toISOString(),
+      lastMessageFromMe: latest.fromMe,
+      status: this.deriveThreadStatus(items),
+      unreadCount: unread,
+      totalMessageCount: items.length,
+      replyWindow,
+      messages: items.map((it) => this.dmItemToDto(it)),
+    };
+  }
+
+  private dmItemToDto(item: InboxItem): DmMessageDto {
+    return {
+      id: item.id,
+      author: {
+        handle: item.authorHandle?.trim() || 'unknown',
+        displayName:
+          item.authorDisplayName?.trim() ||
+          item.authorHandle?.trim() ||
+          'Unknown',
+        avatarUrl: item.authorAvatarUrl ?? undefined,
+      },
+      text: item.text ?? '',
+      timestamp: item.platformCreatedAt.toISOString(),
+      fromMe: item.fromMe,
+      platformItemId: item.platformItemId,
+      status: item.status,
+    };
+  }
+
+  /**
+   * Send a DM in an existing conversation. Looks up the channel + platform,
+   * checks the reply window (FB/IG), dispatches to the platform adapter, and
+   * persists our outbound row.
+   */
+  async sendDm(
+    workspaceId: string,
+    userId: string,
+    threadKey: string,
+    text: string,
+  ): Promise<DmMessageDto> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+    const { channelId, conversationId } = this.decodeDmThreadKey(threadKey);
+
+    const channelRow = await db.query.socialMediaChannels.findFirst({
+      where: eq(socialMediaChannels.id, channelId),
+    });
+    if (!channelRow || channelRow.workspaceId !== workspaceId) {
+      throw new NotFoundException('Channel not found in workspace');
+    }
+
+    const platform = channelRow.platform as SupportedPlatform;
+    if (!this.dispatcher.supportsDm(platform)) {
+      throw new BadRequestException(
+        `Platform '${platform}' doesn't support DMs`,
+      );
+    }
+
+    const adapter = this.dispatcher.getDm(platform);
+    const channel = await this.resolveChannel(channelId, workspaceId);
+
+    // 24h window check — server is source of truth.
+    const lastIncomingAtRow = await db
+      .select({ at: inboxItems.platformCreatedAt })
+      .from(inboxItems)
+      .where(
+        and(
+          eq(inboxItems.workspaceId, workspaceId),
+          eq(inboxItems.channelId, channelId),
+          eq(inboxItems.conversationId, conversationId),
+          eq(inboxItems.fromMe, false),
+        ),
+      )
+      .orderBy(desc(inboxItems.platformCreatedAt))
+      .limit(1);
+    const lastIncomingAt = lastIncomingAtRow[0]?.at ?? null;
+
+    const windowState = await adapter.getReplyWindowState(
+      channel,
+      conversationId,
+      lastIncomingAt,
+    );
+    if (!windowState.canReply) {
+      throw new ForbiddenException(
+        windowState.reason ?? 'Cannot reply to this conversation right now',
+      );
+    }
+
+    const created = await adapter.sendDm(channel, conversationId, text);
+    const myIdentity = await this.loadMyDmIdentity(channelId);
+
+    const newRow = await this.upsertDm({
+      workspaceId,
+      channelId,
+      platform,
+      conversationId: created.conversationId,
+      platformItemId: created.platformItemId,
+      authorPlatformId: myIdentity.platformId,
+      authorHandle: myIdentity.handle,
+      authorDisplayName: myIdentity.displayName,
+      authorAvatarUrl: myIdentity.avatarUrl,
+      text: created.text,
+      fromMe: true,
+      platformCreatedAt: created.platformCreatedAt,
+    });
+
+    void this.emitCounts(workspaceId);
+
+    const row =
+      newRow ??
+      (await db.query.inboxItems.findFirst({
+        where: and(
+          eq(inboxItems.channelId, channelId),
+          eq(inboxItems.platformItemId, created.platformItemId),
+        ),
+      }));
+    if (!row) throw new Error('Failed to persist DM');
+    return this.dmItemToDto(row);
+  }
+
+  /** Mark all unread inbound DM messages in a conversation as needs_reply. */
+  async markDmConversationRead(
+    workspaceId: string,
+    userId: string,
+    threadKey: string,
+  ): Promise<{ updatedCount: number }> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+    const { channelId, conversationId } = this.decodeDmThreadKey(threadKey);
+
+    const updated = await db
+      .update(inboxItems)
+      .set({ status: 'needs_reply', updatedAt: new Date() })
+      .where(
+        and(
+          eq(inboxItems.workspaceId, workspaceId),
+          eq(inboxItems.channelId, channelId),
+          eq(inboxItems.conversationId, conversationId),
+          eq(inboxItems.status, 'unread'),
+          eq(inboxItems.fromMe, false),
+        ),
+      )
+      .returning({ id: inboxItems.id });
+
+    if (updated.length === 0) return { updatedCount: 0 };
+
+    for (const row of updated) {
+      this.emitter.emit(workspaceId, 'inbox.item.updated', {
+        id: row.id,
+        workspaceId,
+        channelId,
+        changes: { status: 'needs_reply' },
+      });
+    }
+    void this.emitCounts(workspaceId);
+    return { updatedCount: updated.length };
+  }
+
+  /**
+   * Idempotent upsert for a DM row (incoming or outbound).
+   * Shares the same unique constraint as comments: (channel_id, platform_item_id).
+   */
+  async upsertDm(input: {
+    workspaceId: string;
+    channelId: number;
+    platform: SupportedPlatform;
+    conversationId: string;
+    platformItemId: string;
+    platformParentId?: string | null;
+    authorPlatformId?: string | null;
+    authorHandle?: string | null;
+    authorDisplayName?: string | null;
+    authorAvatarUrl?: string | null;
+    text: string;
+    fromMe?: boolean;
+    platformCreatedAt: Date;
+    metadata?: Record<string, any>;
+  }): Promise<InboxItem | null> {
+    const values: NewInboxItem = {
+      workspaceId: input.workspaceId,
+      channelId: input.channelId,
+      platform: input.platform,
+      type: 'dm',
+      platformItemId: input.platformItemId,
+      platformParentId: input.platformParentId ?? null,
+      platformPostId: null,
+      conversationId: input.conversationId,
+      ourPostId: null,
+      authorPlatformId: input.authorPlatformId ?? null,
+      authorHandle: input.authorHandle ?? null,
+      authorDisplayName: input.authorDisplayName ?? null,
+      authorAvatarUrl: input.authorAvatarUrl ?? null,
+      text: input.text,
+      status: input.fromMe ? 'replied' : 'unread',
+      fromMe: input.fromMe ?? false,
+      platformCreatedAt: input.platformCreatedAt,
+      metadata: input.metadata ?? {},
+    };
+
+    const inserted = await db
+      .insert(inboxItems)
+      .values(values)
+      .onConflictDoUpdate({
+        target: [inboxItems.channelId, inboxItems.platformItemId],
+        set: {
+          conversationId: sql`COALESCE(${inboxItems.conversationId}, EXCLUDED.conversation_id)`,
+          authorPlatformId: sql`COALESCE(${inboxItems.authorPlatformId}, EXCLUDED.author_platform_id)`,
+          authorHandle: sql`COALESCE(${inboxItems.authorHandle}, EXCLUDED.author_handle)`,
+          authorDisplayName: sql`COALESCE(${inboxItems.authorDisplayName}, EXCLUDED.author_display_name)`,
+          authorAvatarUrl: sql`COALESCE(${inboxItems.authorAvatarUrl}, EXCLUDED.author_avatar_url)`,
+          fromMe: sql`${inboxItems.fromMe} OR EXCLUDED.from_me`,
+          metadata: sql`${inboxItems.metadata} || EXCLUDED.metadata`,
+          updatedAt: new Date(),
+        },
+      })
+      .returning();
+
+    if (inserted.length === 0) return null;
+    const row = inserted[0];
+
+    const wasNewInsert =
+      Math.abs(row.createdAt.getTime() - row.updatedAt.getTime()) < 1000;
+    if (!wasNewInsert) return null;
+
+    this.emitter.emit(input.workspaceId, 'inbox.item.created', {
+      id: row.id,
+      workspaceId: row.workspaceId,
+      channelId: row.channelId,
+      platform: row.platform,
+      type: row.type,
+      platformItemId: row.platformItemId,
+      platformParentId: row.platformParentId,
+      platformPostId: row.platformPostId,
+      conversationId: row.conversationId,
+      authorHandle: row.authorHandle,
+      authorDisplayName: row.authorDisplayName,
+      authorAvatarUrl: row.authorAvatarUrl,
+      text: row.text,
+      status: row.status,
+      fromMe: row.fromMe,
+      platformCreatedAt: row.platformCreatedAt.toISOString(),
+    } as any);
+
+    void this.emitCounts(input.workspaceId);
+    return row;
   }
 }

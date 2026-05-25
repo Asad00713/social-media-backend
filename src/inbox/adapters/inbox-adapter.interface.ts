@@ -102,3 +102,107 @@ export interface PlatformInboxAdapter {
     text: string,
   ): Promise<CreatedComment>;
 }
+
+// ============================================================================
+// DM (Phase 2.1) — Direct Message surface
+// ============================================================================
+
+export interface DmAuthor {
+  /** Stable platform-side id of the author (FB PSID, IG IGSID, Bluesky DID, Mastodon acct id). */
+  platformId: string;
+  handle?: string;
+  displayName?: string;
+  avatarUrl?: string;
+}
+
+export interface FetchedDm {
+  /** Platform-side conversation/thread id. The adapter is the source of truth
+   *  for how this is derived; the service stores it verbatim in `conversation_id`. */
+  conversationId: string;
+  /** Platform-side message id. Unique per channel — used for dedup. */
+  platformItemId: string;
+  /** Optional in-thread reply pointer (when a platform exposes message-level
+   *  threading like a reply-to-message). Null for top-level conversation flow. */
+  platformParentId?: string | null;
+  /** Author of this message — when null, message is authored by our connected
+   *  account (i.e. fromMe=true and identity is loaded from the channel row). */
+  author: DmAuthor | null;
+  text: string;
+  platformCreatedAt: Date;
+  fromMe: boolean;
+  metadata?: Record<string, any>;
+}
+
+export interface DmConversationSummary {
+  conversationId: string;
+  /** The "other party" — i.e. the user the conversation is with. */
+  participant: DmAuthor;
+  /** Snippet of latest message in the conversation. */
+  lastMessageText: string;
+  lastMessageAt: Date;
+  /** True when the latest message was authored by us. */
+  lastMessageFromMe: boolean;
+  unreadCount: number;
+  /** Optional platform-specific extras (e.g. message_window_state, can_reply). */
+  metadata?: Record<string, any>;
+}
+
+export interface CreatedDm {
+  conversationId: string;
+  platformItemId: string;
+  text: string;
+  platformCreatedAt: Date;
+}
+
+/**
+ * Optional DM surface — platforms that support DMs implement this in addition
+ * to PlatformInboxAdapter. Threads and YouTube do NOT implement this since
+ * they expose no public DM API.
+ */
+export interface PlatformDmAdapter {
+  readonly platform: SocialMediaChannel['platform'];
+
+  /**
+   * List conversations available on the connected account. The adapter walks
+   * the platform's threads endpoint and returns conversation summaries.
+   * `since` is best-effort and used to skip conversations that haven't changed
+   * since last poll (where the API supports it).
+   */
+  listConversations(
+    channel: ResolvedChannel,
+    since?: Date,
+  ): Promise<DmConversationSummary[]>;
+
+  /**
+   * Fetch all messages in a single conversation. Pagination is the adapter's
+   * concern — return everything since `since` (or a sensible window if not
+   * provided, typically last 90 days).
+   */
+  fetchConversationMessages(
+    channel: ResolvedChannel,
+    conversationId: string,
+    since?: Date,
+  ): Promise<FetchedDm[]>;
+
+  /**
+   * Send a DM in an existing conversation. The adapter resolves the recipient
+   * from the conversationId (e.g. by parsing `pageId:senderPsid`).
+   */
+  sendDm(
+    channel: ResolvedChannel,
+    conversationId: string,
+    text: string,
+  ): Promise<CreatedDm>;
+
+  /**
+   * True when this platform/conversation supports replies right now (e.g. FB
+   * and IG enforce a 24h messaging window). Adapters return `{ canReply: false,
+   * reason }` so the service / UI can surface the constraint. For platforms
+   * with no window (Bluesky, Mastodon), always return `{ canReply: true }`.
+   */
+  getReplyWindowState(
+    channel: ResolvedChannel,
+    conversationId: string,
+    lastIncomingAt: Date | null,
+  ): Promise<{ canReply: boolean; reason?: string; windowExpiresAt?: Date }>;
+}

@@ -1,5 +1,16 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  NotImplementedException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type {
+  FetchedDm,
+  CreatedDm,
+  DmConversationSummary,
+  ResolvedChannel,
+} from '../../inbox/adapters/inbox-adapter.interface';
 
 export interface MastodonApp {
   id: string;
@@ -655,6 +666,67 @@ export class MastodonService {
       ancestors: (data.ancestors ?? []) as MastodonStatusContextEntry[],
       descendants: (data.descendants ?? []) as MastodonStatusContextEntry[],
     };
+  }
+
+  // ==========================================================================
+  // Mastodon Direct DM — Phase 2.1
+  // ==========================================================================
+  // Mastodon "DMs" are statuses with visibility=direct, grouped natively via
+  // /api/v1/conversations. Each conversation has an id, unread flag, accounts
+  // (participants), and a `last_status`. To fetch the full thread, walk the
+  // status `context` (ancestors + descendants).
+
+  /**
+   * List Mastodon direct conversations.
+   * Endpoint: GET /api/v1/conversations
+   *
+   * TODO(Phase 2.1.mastodon-impl).
+   */
+  async listDirectConversations(
+    _channel: ResolvedChannel,
+    _since?: Date,
+  ): Promise<DmConversationSummary[]> {
+    this.logger.warn(
+      'listDirectConversations: stub — returning empty list. Real Mastodon DM fetch not yet implemented.',
+    );
+    return [];
+  }
+
+  /**
+   * Fetch all messages in a Mastodon direct conversation. The conversation id
+   * resolves to its `last_status.id`; we walk context.ancestors + descendants
+   * to get the full thread.
+   *
+   * TODO(Phase 2.1.mastodon-impl).
+   */
+  async fetchDirectConversationMessages(
+    _channel: ResolvedChannel,
+    _conversationId: string,
+    _since?: Date,
+  ): Promise<FetchedDm[]> {
+    this.logger.warn(
+      'fetchDirectConversationMessages: stub — returning empty messages. Real impl pending.',
+    );
+    return [];
+  }
+
+  /**
+   * Send a Mastodon direct message — posts a new status with visibility=direct
+   * as a reply to the conversation's last_status.
+   * Endpoint: POST /api/v1/statuses
+   *   body: { status: "@user text", visibility: 'direct', in_reply_to_id }
+   *
+   * TODO(Phase 2.1.mastodon-impl).
+   */
+  async sendDirectMessage(
+    channel: ResolvedChannel,
+    conversationId: string,
+    text: string,
+  ): Promise<CreatedDm> {
+    throw new NotImplementedException(
+      `Mastodon DM send not yet implemented (Phase 2.1.mastodon-impl). ` +
+        `Would send from acct=${channel.platformAccountId} convo=${conversationId} text="${text.slice(0, 30)}…"`,
+    );
   }
 }
 

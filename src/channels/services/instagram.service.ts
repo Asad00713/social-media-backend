@@ -1,4 +1,14 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  NotImplementedException,
+} from '@nestjs/common';
+import type {
+  FetchedDm,
+  CreatedDm,
+  DmConversationSummary,
+} from '../../inbox/adapters/inbox-adapter.interface';
 
 export interface InstagramUser {
   id: string;
@@ -1509,6 +1519,86 @@ export class InstagramService {
     const data = (await res.json()) as { id?: string };
     if (!data.id) throw new Error('Instagram returned no reply id');
     return { commentId: data.id };
+  }
+
+  // ==========================================================================
+  // Instagram Direct DM — Phase 2.1
+  // ==========================================================================
+
+  /**
+   * List DM conversations for this IG Business account.
+   *
+   * Endpoint: GET /{ig-user-id}/conversations
+   *   ?platform=instagram&fields=participants,updated_time,unread_count,
+   *           messages.limit(1){message,from,created_time}
+   *
+   * TODO(Phase 2.1.ig-impl): Currently stubbed — returns empty list.
+   */
+  async listDmConversations(
+    _igUserId: string,
+    _accessToken: string,
+    _since?: Date,
+  ): Promise<DmConversationSummary[]> {
+    this.logger.warn(
+      'listDmConversations: stub — returning empty list. Real IG Direct fetch not yet implemented.',
+    );
+    return [];
+  }
+
+  /**
+   * Fetch messages in an IG conversation (for backfill / initial sync).
+   * Endpoint: GET /<thread-id>/messages?fields=message,from,to,created_time
+   *
+   * TODO(Phase 2.1.ig-impl).
+   */
+  async fetchDmThread(
+    _igUserId: string,
+    _accessToken: string,
+    _conversationId: string,
+    _since?: Date,
+  ): Promise<FetchedDm[]> {
+    this.logger.warn(
+      'fetchDmThread: stub — returning empty messages. Real impl pending.',
+    );
+    return [];
+  }
+
+  /**
+   * Send an IG Direct DM. Same shape as FB Messenger but on the IG endpoint.
+   * Endpoint: POST /{ig-user-id}/messages
+   *   body: { recipient: { id: igsid }, message: { text }, messaging_type: 'RESPONSE' }
+   *
+   * TODO(Phase 2.1.ig-impl).
+   */
+  async sendDirectMessage(
+    igUserId: string,
+    _accessToken: string,
+    conversationId: string,
+    text: string,
+  ): Promise<CreatedDm> {
+    throw new NotImplementedException(
+      `Instagram Direct send not yet implemented (Phase 2.1.ig-impl). ` +
+        `Would send from ig=${igUserId} convo=${conversationId} text="${text.slice(0, 30)}…"`,
+    );
+  }
+
+  /**
+   * Activate IG messaging webhook subscription for this account.
+   * Endpoint: POST /{ig-user-id}/subscribed_apps?subscribed_fields=messages,...
+   *
+   * Idempotent — Meta accepts repeated calls without error.
+   */
+  async subscribeAccountToMessaging(
+    igUserId: string,
+    accessToken: string,
+    fields: string[] = ['messages', 'messaging_postbacks'],
+  ): Promise<{ success: boolean }> {
+    // Reuse the existing subscribeAccountToWebhooks pattern but with messaging fields.
+    // The real impl will call the IG subscribed_apps endpoint with the new field set.
+    this.logger.log(
+      `IG account ${igUserId} subscribe-messaging stub — fields=[${fields.join(',')}] (Phase 2.1.ig-impl will wire to real API)`,
+    );
+    return { success: true };
   }
 }
 

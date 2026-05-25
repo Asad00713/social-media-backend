@@ -141,8 +141,28 @@ export class WebhooksController {
       const eventTime = entry.time
         ? new Date(Number(entry.time) * 1000)
         : new Date();
-      const changes = entry.changes ?? [];
 
+      // Phase 2.1 — DM events arrive on `entry.messaging[]` (not `entry.changes[]`).
+      // FB Messenger and IG Direct both use this shape. Threads has no DM API.
+      const messagingEvents = entry.messaging ?? [];
+      if (messagingEvents.length > 0 && source !== 'threads') {
+        for (const event of messagingEvents) {
+          try {
+            await this.ingestMetaMessagingEvent(
+              source as 'facebook' | 'instagram',
+              accountId,
+              event,
+              eventTime,
+            );
+          } catch (err) {
+            this.logger.error(
+              `${source} DM webhook handler failed: ${(err as Error).message}`,
+            );
+          }
+        }
+      }
+
+      const changes = entry.changes ?? [];
       for (const change of changes) {
         const field = change.field as string;
         const value = change.value ?? {};
@@ -162,7 +182,6 @@ export class WebhooksController {
           } else if (source === 'threads' && field === 'replies') {
             await this.ingestThreadsReply(accountId, value, eventTime);
           } else {
-            // mentions / messages / story_insights → Phase 2 / analytics.
             this.logger.verbose(`Ignoring ${source} field '${field}' in Phase 1`);
           }
         } catch (err) {
@@ -172,6 +191,89 @@ export class WebhooksController {
         }
       }
     }
+  }
+
+  /**
+   * Ingest a Meta DM webhook event (FB Messenger or IG Direct).
+   *
+   * Event shape:
+   *   { sender: { id: psid }, recipient: { id: pageId }, timestamp,
+   *     message: { mid, text, ...(attachments / reactions / etc) } }
+   *
+   * For Phase 2.1 we ingest only text messages. Attachments / reactions /
+   * read receipts are logged and dropped — Phase 2.2 will handle them.
+   *
+   * Conversation id format:
+   *   FB:  `<pageId>:<senderPsid>`   (recipient = page, sender = user)
+   *   IG:  `<igUserId>:<senderIgsid>`
+   *
+   * When the sender is the Page itself (echo of an outbound message), we still
+   * upsert with fromMe=true; the unique constraint dedups against our optimistic
+   * send insert.
+   */
+  private async ingestMetaMessagingEvent(
+    source: 'facebook' | 'instagram',
+    accountId: string,
+    event: any,
+    eventTime: Date,
+  ): Promise<void> {
+    const senderId = event?.sender?.id as string | undefined;
+    const recipientId = event?.recipient?.id as string | undefined;
+    const message = event?.message;
+
+    if (!senderId || !recipientId || !message) {
+      this.logger.verbose(
+        `${source} messaging event ignored — non-text or missing fields`,
+      );
+      return;
+    }
+
+    const mid = message.mid as string | undefined;
+    const text = (message.text as string | undefined) ?? '';
+    if (!mid) return;
+
+    // is_echo === true when the Page sent the message (outbound echo).
+    const fromMe = message.is_echo === true || senderId === accountId;
+    // Other-party id: the user (PSID/IGSID), not the page.
+    const otherPartyId = fromMe ? recipientId : senderId;
+    const conversationId = `${accountId}:${otherPartyId}`;
+
+    // Look up channel + workspace by platform account id.
+    const channel = await this.inbox.findChannelByPlatformAccount(
+      source as SupportedPlatform,
+      accountId,
+    );
+    if (!channel) {
+      this.logger.warn(
+        `${source} DM webhook: no channel for account ${accountId}`,
+      );
+      return;
+    }
+
+    const createdAt = event.timestamp
+      ? new Date(Number(event.timestamp))
+      : eventTime;
+
+    await this.inbox.upsertDm({
+      workspaceId: channel.workspaceId,
+      channelId: channel.id,
+      platform: source as SupportedPlatform,
+      conversationId,
+      platformItemId: mid,
+      platformParentId: (message.reply_to?.mid as string | undefined) ?? null,
+      authorPlatformId: otherPartyId,
+      authorHandle: null, // Resolved by adapter backfill — Phase 2.1.<fb|ig>-impl
+      authorDisplayName: null,
+      authorAvatarUrl: null,
+      text,
+      fromMe,
+      platformCreatedAt: createdAt,
+      metadata: { raw: event },
+    });
+
+    this.logger.log(
+      `${source} DM ingested: convo=${conversationId} mid=${mid} fromMe=${fromMe}`,
+    );
   }
 
   // ──────────────────────────────────────────────────────────────────────

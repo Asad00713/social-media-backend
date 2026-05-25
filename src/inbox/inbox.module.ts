@@ -10,6 +10,10 @@ import { YoutubeInboxAdapter } from './adapters/youtube-inbox.adapter';
 import { FacebookInboxAdapter } from './adapters/facebook-inbox.adapter';
 import { InstagramInboxAdapter } from './adapters/instagram-inbox.adapter';
 import { ThreadsInboxAdapter } from './adapters/threads-inbox.adapter';
+import { FacebookDmAdapter } from './adapters/facebook-dm.adapter';
+import { InstagramDmAdapter } from './adapters/instagram-dm.adapter';
+import { BlueskyDmAdapter } from './adapters/bluesky-dm.adapter';
+import { MastodonDmAdapter } from './adapters/mastodon-dm.adapter';
 import { InboxPollProcessor } from './processors/inbox-poll.processor';
 import { InboxPollScheduler } from './schedulers/inbox-poll.scheduler';
 import { ChannelsModule } from '../channels/channels.module';
@@ -33,6 +37,10 @@ import { QUEUES } from '../queue/queue.module';
     FacebookInboxAdapter,
     InstagramInboxAdapter,
     ThreadsInboxAdapter,
+    FacebookDmAdapter,
+    InstagramDmAdapter,
+    BlueskyDmAdapter,
+    MastodonDmAdapter,
     InboxPollProcessor,
     InboxPollScheduler,
   ],

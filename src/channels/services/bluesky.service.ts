@@ -1,4 +1,15 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  NotImplementedException,
+} from '@nestjs/common';
+import type {
+  FetchedDm,
+  CreatedDm,
+  DmConversationSummary,
+  ResolvedChannel,
+} from '../../inbox/adapters/inbox-adapter.interface';
 
 export interface BlueskySession {
   did: string; // Decentralized Identifier
@@ -964,6 +975,66 @@ export class BlueskyService {
 
     const data = await response.json();
     return data.posts ?? [];
+  }
+
+  // ==========================================================================
+  // Bluesky Chat DM — Phase 2.1
+  // ==========================================================================
+  // All chat requests need: header `atproto-proxy: did:web:api.bsky.chat#bsky_chat`
+  // Lexicon: chat.bsky.convo.listConvos / getConvo / sendMessage
+
+  /**
+   * List chat conversations for this Bluesky account.
+   *
+   * Endpoint: GET chat.bsky.convo.listConvos
+   *
+   * TODO(Phase 2.1.bsky-impl): Currently stubbed.
+   * Risk: Bluesky chat API may 403 if token lacks chat scope; surface as
+   * normal error so InboxService can mark channel as dm-disabled.
+   */
+  async listChatConvos(
+    _channel: ResolvedChannel,
+    _since?: Date,
+  ): Promise<DmConversationSummary[]> {
+    this.logger.warn(
+      'listChatConvos: stub — returning empty list. Real Bluesky Chat fetch not yet implemented.',
+    );
+    return [];
+  }
+
+  /**
+   * Fetch messages in a Bluesky chat convo.
+   * Endpoint: GET chat.bsky.convo.getMessages?convoId=...
+   *
+   * TODO(Phase 2.1.bsky-impl).
+   */
+  async getChatConvoMessages(
+    _channel: ResolvedChannel,
+    _conversationId: string,
+    _since?: Date,
+  ): Promise<FetchedDm[]> {
+    this.logger.warn(
+      'getChatConvoMessages: stub — returning empty messages. Real impl pending.',
+    );
+    return [];
+  }
+
+  /**
+   * Send a Bluesky chat message.
+   * Endpoint: POST chat.bsky.convo.sendMessage
+   *   body: { convoId, message: { text } }
+   *
+   * TODO(Phase 2.1.bsky-impl).
+   */
+  async sendChatMessage(
+    channel: ResolvedChannel,
+    conversationId: string,
+    text: string,
+  ): Promise<CreatedDm> {
+    throw new NotImplementedException(
+      `Bluesky chat send not yet implemented (Phase 2.1.bsky-impl). ` +
+        `Would send from did=${channel.platformAccountId} convo=${conversationId} text="${text.slice(0, 30)}…"`,
+    );
   }
 }
 

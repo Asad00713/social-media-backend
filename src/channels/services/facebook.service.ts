@@ -1,4 +1,14 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  NotImplementedException,
+} from '@nestjs/common';
+import type {
+  FetchedDm,
+  CreatedDm,
+  DmConversationSummary,
+} from '../../inbox/adapters/inbox-adapter.interface';
 
 /**
  * Facebook/Instagram Page and Account data structures
@@ -1069,6 +1079,77 @@ export class FacebookService {
     const data = (await res.json()) as { id?: string };
     if (!data.id) throw new Error('Facebook returned no reply id');
     return { commentId: data.id };
+  }
+
+  // ==========================================================================
+  // Messenger DM — Phase 2.1
+  // ==========================================================================
+
+  /**
+   * List Messenger conversations on this Page.
+   *
+   * Endpoint: GET /me/conversations
+   *   ?fields=participants,updated_time,unread_count,
+   *           messages.limit(1){message,from,created_time}
+   *
+   * TODO(Phase 2.1.fb-impl): Currently stubbed — returns empty list. Real impl
+   * fetches threads, maps participants → DmConversationSummary with our
+   * `<pageId>:<otherPartyPsid>` convo id format.
+   */
+  async listMessengerConversations(
+    _pageId: string,
+    _pageAccessToken: string,
+    _since?: Date,
+  ): Promise<DmConversationSummary[]> {
+    this.logger.warn(
+      'listMessengerConversations: stub — returning empty list. Real Messenger fetch not yet implemented.',
+    );
+    return [];
+  }
+
+  /**
+   * Fetch messages in a Messenger conversation (for backfill / initial sync).
+   * Live updates come through webhooks; this is only called during initial
+   * connect or manual sync.
+   *
+   * TODO(Phase 2.1.fb-impl): GET /<thread-id>/messages?fields=message,from,to,created_time
+   * Need to resolve thread_id from our `<pageId>:<psid>` convo id format
+   * (call /me/conversations?user_id=<psid> to find thread).
+   */
+  async fetchMessengerThread(
+    _pageId: string,
+    _pageAccessToken: string,
+    _conversationId: string,
+    _since?: Date,
+  ): Promise<FetchedDm[]> {
+    this.logger.warn(
+      'fetchMessengerThread: stub — returning empty messages. Real impl pending.',
+    );
+    return [];
+  }
+
+  /**
+   * Send a Messenger DM. The reply is delivered immediately if within the
+   * 24h messaging window; outside the window FB returns error code 10/200 — we
+   * surface that as a normal exception and the InboxService's window check
+   * should prevent it from being reached.
+   *
+   * Endpoint: POST /me/messages
+   *   body: { recipient: { id: psid }, message: { text }, messaging_type: 'RESPONSE' }
+   *
+   * TODO(Phase 2.1.fb-impl): Implement actual HTTP call. Currently throws
+   * NotImplementedException to keep the surface contract honest.
+   */
+  async sendMessengerMessage(
+    pageId: string,
+    _pageAccessToken: string,
+    recipientPsid: string,
+    text: string,
+  ): Promise<CreatedDm> {
+    throw new NotImplementedException(
+      `Facebook Messenger send not yet implemented (Phase 2.1.fb-impl). ` +
+        `Would send to page=${pageId} recipient=${recipientPsid} text="${text.slice(0, 30)}…"`,
+    );
   }
 }
 

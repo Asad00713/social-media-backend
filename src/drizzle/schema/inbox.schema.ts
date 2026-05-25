@@ -58,6 +58,10 @@ export const inboxItems = pgTable(
     // Platform id of the post this comment belongs to (FB/IG/YT post/video id).
     // Always populated for comments; for DMs (Phase 2) will be null.
     platformPostId: varchar('platform_post_id', { length: 255 }),
+    // Platform-side conversation/thread id — populated for DMs only.
+    // FB: `pageId:senderPsid` pair, IG: thread_id, Bluesky: convoId, Mastodon: conversation_id.
+    // Always null for comments. Used to group DM messages into threads.
+    conversationId: varchar('conversation_id', { length: 255 }),
 
     // If this comment is on a post we published through Schedura, link it.
     ourPostId: uuid('our_post_id').references(() => posts.id, { onDelete: 'set null' }),
@@ -105,6 +109,15 @@ export const inboxItems = pgTable(
     channelIdx: index('inbox_channel_idx').on(table.channelId),
     postIdx: index('inbox_post_idx').on(table.channelId, table.platformPostId),
     parentIdx: index('inbox_parent_idx').on(table.platformParentId),
+    // DM conversation lookups (list per channel, latest message in conversation).
+    conversationIdx: index('inbox_conversation_idx').on(
+      table.channelId,
+      table.conversationId,
+    ),
+    workspaceConversationIdx: index('inbox_workspace_conversation_idx').on(
+      table.workspaceId,
+      table.conversationId,
+    ),
     platformCreatedIdx: index('inbox_platform_created_idx').on(
       table.platformCreatedAt,
     ),

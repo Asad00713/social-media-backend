@@ -138,4 +138,61 @@ export class InboxController {
   ) {
     return this.inboxService.syncNow(workspaceId, user.userId);
   }
+
+  // ==========================================================================
+  // DM — Phase 2.1
+  // ==========================================================================
+
+  @Get('dms')
+  async listDmConversations(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Query() query: ListCommentsDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.inboxService.listDmConversations(workspaceId, user.userId, {
+      channelId: query.channelId,
+      folder: query.folder,
+      status: query.status,
+      cursor: query.cursor,
+      limit: query.limit,
+    });
+  }
+
+  @Get('dms/:threadKey')
+  async getDmThread(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('threadKey') threadKey: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.inboxService.getDmThread(workspaceId, user.userId, threadKey);
+  }
+
+  @Post('dms/:threadKey/messages')
+  async sendDm(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('threadKey') threadKey: string,
+    @Body() dto: ReplyDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.inboxService.sendDm(
+      workspaceId,
+      user.userId,
+      threadKey,
+      dto.text,
+    );
+  }
+
+  @Post('dms/:threadKey/read')
+  @HttpCode(HttpStatus.OK)
+  async markDmRead(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('threadKey') threadKey: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.inboxService.markDmConversationRead(
+      workspaceId,
+      user.userId,
+      threadKey,
+    );
+  }
 }
