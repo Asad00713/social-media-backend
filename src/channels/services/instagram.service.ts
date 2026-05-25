@@ -1536,7 +1536,7 @@ export class InstagramService {
     profilePictureUrl: string | null;
   } | null> {
     try {
-      const url = new URL(`${this.instagramApiUrl}/v22.0/${igsid}`);
+      const url = new URL(`${this.instagramApiUrl}/${igsid}`);
       url.searchParams.set('fields', 'name,username,profile_pic');
       url.searchParams.set('access_token', accessToken);
 
@@ -1578,7 +1578,7 @@ export class InstagramService {
     accessToken: string,
     _since?: Date,
   ): Promise<DmConversationSummary[]> {
-    const url = new URL(`${this.instagramApiUrl}/v22.0/${igUserId}/conversations`);
+    const url = new URL(`${this.instagramApiUrl}/${igUserId}/conversations`);
     url.searchParams.set('platform', 'instagram');
     url.searchParams.set(
       'fields',
@@ -1660,7 +1660,7 @@ export class InstagramService {
 
     // 1) Resolve thread_id from the other party's IGSID.
     const lookupUrl = new URL(
-      `${this.instagramApiUrl}/v22.0/${igUserId}/conversations`,
+      `${this.instagramApiUrl}/${igUserId}/conversations`,
     );
     lookupUrl.searchParams.set('platform', 'instagram');
     lookupUrl.searchParams.set('user_id', otherPartyId);
@@ -1678,7 +1678,7 @@ export class InstagramService {
     if (!threadId) return [];
 
     // 2) Fetch messages in that thread.
-    const msgUrl = new URL(`${this.instagramApiUrl}/v22.0/${threadId}/messages`);
+    const msgUrl = new URL(`${this.instagramApiUrl}/${threadId}/messages`);
     msgUrl.searchParams.set('fields', 'id,message,from,to,created_time');
     msgUrl.searchParams.set('limit', '100');
     msgUrl.searchParams.set('access_token', accessToken);
@@ -1735,7 +1735,7 @@ export class InstagramService {
       throw new Error(`Invalid IG conversation id: ${conversationId}`);
     }
 
-    const url = new URL(`${this.instagramApiUrl}/v22.0/${igUserId}/messages`);
+    const url = new URL(`${this.instagramApiUrl}/${igUserId}/messages`);
     url.searchParams.set('access_token', accessToken);
 
     const res = await fetch(url.toString(), {
