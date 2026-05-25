@@ -195,6 +195,17 @@ export class WebhooksController {
         try {
           if (source === 'instagram' && field === 'comments') {
             await this.ingestInstagramComment(accountId, value, eventTime);
+          } else if (source === 'instagram' && field === 'messages') {
+            // IG Direct DMs arrive via changes[].field='messages' (NOT
+            // entry.messaging[] like FB Messenger). Same inner shape though:
+            //   value = { sender:{id}, recipient:{id}, timestamp, message:{mid,text} }
+            // Route to the shared ingestMetaMessagingEvent path.
+            await this.ingestMetaMessagingEvent(
+              'instagram',
+              accountId,
+              value,
+              eventTime,
+            );
           } else if (
             source === 'facebook' &&
             (field === 'feed' || field === 'comments')
@@ -276,9 +287,15 @@ export class WebhooksController {
       `${source} DM webhook: matched channel=${channel.id} workspace=${channel.workspaceId}`,
     );
 
-    const createdAt = event.timestamp
-      ? new Date(Number(event.timestamp))
-      : eventTime;
+    // Timestamp parsing — FB Messenger sends ms, IG samples sometimes show
+    // seconds. Auto-detect: anything below 10^12 is seconds.
+    let createdAt: Date = eventTime;
+    if (event.timestamp) {
+      const tsNum = Number(event.timestamp);
+      if (Number.isFinite(tsNum) && tsNum > 0) {
+        createdAt = new Date(tsNum < 1e12 ? tsNum * 1000 : tsNum);
+      }
+    }
 
     // Enrich author info for inbound messages (not echoes). The webhook payload
     // only contains the platform id of the sender — name + avatar come from
