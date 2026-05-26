@@ -2,7 +2,6 @@ import {
   Injectable,
   Logger,
   BadRequestException,
-  NotImplementedException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
@@ -677,37 +676,293 @@ export class MastodonService {
   // status `context` (ancestors + descendants).
 
   /**
+   * Strip HTML tags from Mastodon status content to produce plain text.
+   */
+  private stripHtml(html: string): string {
+    if (!html) return '';
+    // Replace common block-level tags with newlines/spaces before stripping,
+    // so paragraphs/line-breaks don't collapse into a wall of text.
+    return html
+      .replace(/<br\s*\/?>(?=)/gi, '\n')
+      .replace(/<\/p>/gi, '\n')
+      .replace(/<[^>]+>/g, '')
+      .replace(/&nbsp;/g, ' ')
+      .replace(/&amp;/g, '&')
+      .replace(/&lt;/g, '<')
+      .replace(/&gt;/g, '>')
+      .replace(/&quot;/g, '"')
+      .replace(/&#39;/g, "'")
+      .trim();
+  }
+
+  /**
+   * Extract the Mastodon instance host from the channel metadata.
+   * Falls back to `mastodon.social` if not configured.
+   */
+  private getInstanceFromChannel(channel: ResolvedChannel): string {
+    const instance =
+      (channel.metadata?.instance as string | undefined) ||
+      (channel.metadata?.instanceUrl as string | undefined) ||
+      (channel.metadata?.instance_url as string | undefined);
+
+    if (!instance) {
+      throw new BadRequestException(
+        'Mastodon channel is missing `instance` in metadata — cannot resolve API host',
+      );
+    }
+    return this.normalizeInstanceUrl(instance);
+  }
+
+  /**
+   * Fetch a single Mastodon conversation by id (paginates if necessary).
+   * Returns the raw conversation object or null if not found.
+   */
+  private async findConversationById(
+    instanceUrl: string,
+    accessToken: string,
+    conversationId: string,
+  ): Promise<MastodonConversation | null> {
+    let maxId: string | undefined;
+    // Cap pagination so we don't run away forever.
+    for (let page = 0; page < 5; page++) {
+      const url = new URL(`${instanceUrl}/api/v1/conversations`);
+      url.searchParams.set('limit', '40');
+      if (maxId) url.searchParams.set('max_id', maxId);
+
+      const response = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.text();
+        this.logger.error(`Failed to list Mastodon conversations: ${errorData}`);
+        throw new BadRequestException(
+          'Failed to list Mastodon conversations',
+        );
+      }
+
+      const data = (await response.json()) as MastodonConversation[];
+      if (!Array.isArray(data) || data.length === 0) return null;
+
+      const match = data.find((c) => c.id === conversationId);
+      if (match) return match;
+
+      maxId = data[data.length - 1]?.id;
+      if (!maxId) return null;
+    }
+
+    return null;
+  }
+
+  /**
+   * Map a raw Mastodon status to our FetchedDm shape.
+   */
+  private mapStatusToFetchedDm(
+    status: MastodonStatusContextEntry,
+    conversationId: string,
+    selfAccountId: string,
+  ): FetchedDm {
+    const fromMe = status.account?.id === selfAccountId;
+    const text = this.stripHtml(status.content ?? '');
+
+    return {
+      conversationId,
+      platformItemId: status.id,
+      platformParentId: status.in_reply_to_id ?? null,
+      author: fromMe
+        ? null
+        : {
+            platformId: status.account.id,
+            handle: status.account.acct || status.account.username,
+            displayName:
+              status.account.display_name || status.account.username,
+            avatarUrl: status.account.avatar,
+          },
+      text,
+      platformCreatedAt: new Date(status.created_at),
+      fromMe,
+      metadata: {
+        uri: status.uri,
+        url: status.url,
+        inReplyToAccountId: status.in_reply_to_account_id ?? null,
+        accountAcct: status.account.acct,
+      },
+    };
+  }
+
+  /**
    * List Mastodon direct conversations.
    * Endpoint: GET /api/v1/conversations
-   *
-   * TODO(Phase 2.1.mastodon-impl).
    */
   async listDirectConversations(
-    _channel: ResolvedChannel,
-    _since?: Date,
+    channel: ResolvedChannel,
+    since?: Date,
   ): Promise<DmConversationSummary[]> {
-    this.logger.warn(
-      'listDirectConversations: stub — returning empty list. Real Mastodon DM fetch not yet implemented.',
-    );
-    return [];
+    const instanceUrl = this.getInstanceFromChannel(channel);
+    const url = new URL(`${instanceUrl}/api/v1/conversations`);
+    url.searchParams.set('limit', '40');
+
+    const response = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${channel.accessToken}` },
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(`Failed to list Mastodon conversations: ${errorData}`);
+      throw new BadRequestException('Failed to list Mastodon conversations');
+    }
+
+    const conversations = (await response.json()) as MastodonConversation[];
+    if (!Array.isArray(conversations)) return [];
+
+    const summaries: DmConversationSummary[] = [];
+
+    for (const convo of conversations) {
+      const lastStatus = convo.last_status;
+      if (!lastStatus) continue;
+
+      // Pick the first non-self participant; if all are self (rare — note to
+      // self), fall back to the first account in the list.
+      const others = (convo.accounts ?? []).filter(
+        (a) => a.id !== channel.platformAccountId,
+      );
+      const participantAcct =
+        others[0] ?? convo.accounts?.[0] ?? null;
+      if (!participantAcct) continue;
+
+      const lastMessageAt = new Date(lastStatus.created_at);
+
+      if (since && lastMessageAt <= since) {
+        // Older than caller's high-water mark — skip.
+        continue;
+      }
+
+      summaries.push({
+        conversationId: convo.id,
+        participant: {
+          platformId: participantAcct.id,
+          handle: participantAcct.acct || participantAcct.username,
+          displayName:
+            participantAcct.display_name || participantAcct.username,
+          avatarUrl: participantAcct.avatar,
+        },
+        lastMessageText: this.stripHtml(lastStatus.content ?? ''),
+        lastMessageAt,
+        lastMessageFromMe:
+          lastStatus.account?.id === channel.platformAccountId,
+        unreadCount: convo.unread ? 1 : 0,
+        metadata: {
+          lastStatusId: lastStatus.id,
+          lastStatusUri: lastStatus.uri,
+          participantAcct: participantAcct.acct || participantAcct.username,
+          participantId: participantAcct.id,
+          accountIds: (convo.accounts ?? []).map((a) => a.id),
+        },
+      });
+    }
+
+    return summaries;
   }
 
   /**
    * Fetch all messages in a Mastodon direct conversation. The conversation id
-   * resolves to its `last_status.id`; we walk context.ancestors + descendants
-   * to get the full thread.
-   *
-   * TODO(Phase 2.1.mastodon-impl).
+   * resolves to its `last_status.id`; we walk context.ancestors + last_status
+   * + descendants to get the full thread.
    */
   async fetchDirectConversationMessages(
-    _channel: ResolvedChannel,
-    _conversationId: string,
-    _since?: Date,
+    channel: ResolvedChannel,
+    conversationId: string,
+    since?: Date,
   ): Promise<FetchedDm[]> {
-    this.logger.warn(
-      'fetchDirectConversationMessages: stub — returning empty messages. Real impl pending.',
+    const instanceUrl = this.getInstanceFromChannel(channel);
+
+    const conversation = await this.findConversationById(
+      instanceUrl,
+      channel.accessToken,
+      conversationId,
     );
-    return [];
+
+    if (!conversation || !conversation.last_status) {
+      this.logger.warn(
+        `Mastodon conversation ${conversationId} not found or has no last_status`,
+      );
+      return [];
+    }
+
+    const lastStatus = conversation.last_status;
+
+    // Fetch the context (ancestors + descendants) around last_status.
+    const contextResponse = await fetch(
+      `${instanceUrl}/api/v1/statuses/${encodeURIComponent(lastStatus.id)}/context`,
+      { headers: { Authorization: `Bearer ${channel.accessToken}` } },
+    );
+
+    if (!contextResponse.ok) {
+      const errorData = await contextResponse.text();
+      this.logger.error(
+        `Failed to fetch Mastodon status context: ${errorData}`,
+      );
+      throw new BadRequestException(
+        'Failed to fetch Mastodon conversation messages',
+      );
+    }
+
+    const contextData = (await contextResponse.json()) as {
+      ancestors?: MastodonStatusContextEntry[];
+      descendants?: MastodonStatusContextEntry[];
+    };
+
+    // last_status is itself a Status (not part of ancestors/descendants); merge
+    // it in so the full thread reads chronologically.
+    const lastStatusEntry: MastodonStatusContextEntry = {
+      id: lastStatus.id,
+      uri: lastStatus.uri,
+      url: lastStatus.url,
+      content: lastStatus.content,
+      created_at: lastStatus.created_at,
+      in_reply_to_id: lastStatus.in_reply_to_id ?? null,
+      in_reply_to_account_id: lastStatus.in_reply_to_account_id ?? null,
+      account: lastStatus.account,
+      visibility: lastStatus.visibility,
+    };
+
+    const all: MastodonStatusContextEntry[] = [
+      ...(contextData.ancestors ?? []),
+      lastStatusEntry,
+      ...(contextData.descendants ?? []),
+    ];
+
+    // De-duplicate by id (ancestors/descendants shouldn't overlap with
+    // last_status, but defensive).
+    const seen = new Set<string>();
+    const unique = all.filter((s) => {
+      if (!s?.id) return false;
+      if (seen.has(s.id)) return false;
+      seen.add(s.id);
+      return true;
+    });
+
+    // Only consider direct-visibility statuses. Mastodon's context endpoint
+    // shouldn't bleed in non-direct replies for a direct-visibility root, but
+    // visibility can be missing for older API versions — accept missing as
+    // direct.
+    const directOnly = unique.filter(
+      (s) => !s.visibility || s.visibility === 'direct',
+    );
+
+    // Sort chronologically.
+    directOnly.sort(
+      (a, b) =>
+        new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
+    );
+
+    const filtered = since
+      ? directOnly.filter((s) => new Date(s.created_at) > since)
+      : directOnly;
+
+    return filtered.map((s) =>
+      this.mapStatusToFetchedDm(s, conversationId, channel.platformAccountId),
+    );
   }
 
   /**
@@ -715,19 +970,96 @@ export class MastodonService {
    * as a reply to the conversation's last_status.
    * Endpoint: POST /api/v1/statuses
    *   body: { status: "@user text", visibility: 'direct', in_reply_to_id }
-   *
-   * TODO(Phase 2.1.mastodon-impl).
    */
   async sendDirectMessage(
     channel: ResolvedChannel,
     conversationId: string,
     text: string,
   ): Promise<CreatedDm> {
-    throw new NotImplementedException(
-      `Mastodon DM send not yet implemented (Phase 2.1.mastodon-impl). ` +
-        `Would send from acct=${channel.platformAccountId} convo=${conversationId} text="${text.slice(0, 30)}…"`,
+    const instanceUrl = this.getInstanceFromChannel(channel);
+
+    const conversation = await this.findConversationById(
+      instanceUrl,
+      channel.accessToken,
+      conversationId,
     );
+
+    if (!conversation || !conversation.last_status) {
+      throw new BadRequestException(
+        `Mastodon conversation ${conversationId} not found — cannot send reply`,
+      );
+    }
+
+    const lastStatus = conversation.last_status;
+
+    // Recipient(s): every account in the conversation that isn't us. Mastodon
+    // requires every direct-message recipient to be @-mentioned in the status
+    // body, otherwise the visibility=direct still posts but the other party
+    // won't receive it in their conversation.
+    const recipients = (conversation.accounts ?? []).filter(
+      (a) => a.id !== channel.platformAccountId,
+    );
+
+    if (recipients.length === 0) {
+      throw new BadRequestException(
+        `Mastodon conversation ${conversationId} has no other participants to message`,
+      );
+    }
+
+    const mentions = recipients
+      .map((a) => `@${a.acct || a.username}`)
+      .join(' ');
+
+    const statusBody = `${mentions} ${text}`.trim();
+
+    const response = await fetch(`${instanceUrl}/api/v1/statuses`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${channel.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        status: statusBody,
+        visibility: 'direct',
+        in_reply_to_id: lastStatus.id,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(`Failed to send Mastodon DM: ${errorData}`);
+      throw new BadRequestException(
+        `Failed to send Mastodon direct message: ${errorData}`,
+      );
+    }
+
+    const data = await response.json();
+
+    return {
+      conversationId,
+      platformItemId: data.id,
+      text: this.stripHtml(data.content ?? statusBody),
+      platformCreatedAt: new Date(data.created_at),
+    };
   }
+}
+
+/**
+ * Raw Mastodon conversation shape from /api/v1/conversations.
+ */
+interface MastodonConversation {
+  id: string;
+  unread: boolean;
+  accounts: Array<{
+    id: string;
+    username: string;
+    acct: string;
+    display_name: string;
+    avatar: string;
+  }>;
+  last_status: (MastodonStatusContextEntry & {
+    visibility?: 'public' | 'unlisted' | 'private' | 'direct';
+  }) | null;
 }
 
 export interface MastodonStatusContextEntry {
@@ -739,6 +1071,7 @@ export interface MastodonStatusContextEntry {
   in_reply_to_id: string | null;
   in_reply_to_account_id: string | null;
   favourites_count?: number;
+  visibility?: 'public' | 'unlisted' | 'private' | 'direct';
   account: {
     id: string;
     username: string;
