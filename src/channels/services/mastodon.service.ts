@@ -755,6 +755,80 @@ export class MastodonService {
   }
 
   /**
+   * Build a participant-based synthetic conversation id for Mastodon DMs.
+   *
+   * Why this exists: Mastodon's `/api/v1/conversations` returns a NEW
+   * `conversation.id` for every fresh direct-visibility status thread, even
+   * when the same two users are involved. Two unrelated standalone posts
+   * from the same sender = two separate Mastodon conversations.
+   *
+   * Users expect one inbox thread per sender (Messenger/IG/WhatsApp model).
+   * So we synthesize a stable id from the sorted non-self participant ids and
+   * use that as our internal conversation_id. Multiple Mastodon conversations
+   * sharing the same participant set collapse into one inbox thread.
+   *
+   * Format: `m:<sortedOtherAccountIds-joined-by-colon>`
+   */
+  private buildSyntheticConvoId(
+    channel: ResolvedChannel,
+    accounts: { id: string }[] | undefined,
+  ): string | null {
+    const otherIds = (accounts ?? [])
+      .filter((a) => a.id !== channel.platformAccountId)
+      .map((a) => a.id)
+      .filter(Boolean)
+      .sort();
+    if (otherIds.length === 0) return null;
+    return `m:${otherIds.join(':')}`;
+  }
+
+  /**
+   * Pagination-walk /api/v1/conversations and return every conversation whose
+   * non-self participant set matches the synthetic id. Capped at 5 pages × 40.
+   */
+  private async findConversationsBySyntheticId(
+    instanceUrl: string,
+    accessToken: string,
+    channel: ResolvedChannel,
+    syntheticConvoId: string,
+  ): Promise<MastodonConversation[]> {
+    const matching: MastodonConversation[] = [];
+    let maxId: string | undefined;
+
+    for (let page = 0; page < 5; page++) {
+      const url = new URL(`${instanceUrl}/api/v1/conversations`);
+      url.searchParams.set('limit', '40');
+      if (maxId) url.searchParams.set('max_id', maxId);
+
+      const response = await fetch(url.toString(), {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+
+      if (!response.ok) {
+        const errorData = await response.text();
+        this.logger.error(`Failed to list Mastodon conversations: ${errorData}`);
+        throw new BadRequestException(
+          'Failed to list Mastodon conversations',
+        );
+      }
+
+      const data = (await response.json()) as MastodonConversation[];
+      if (!Array.isArray(data) || data.length === 0) break;
+
+      for (const convo of data) {
+        if (this.buildSyntheticConvoId(channel, convo.accounts) === syntheticConvoId) {
+          matching.push(convo);
+        }
+      }
+
+      maxId = data[data.length - 1]?.id;
+      if (!maxId || data.length < 40) break;
+    }
+
+    return matching;
+  }
+
+  /**
    * Map a raw Mastodon status to our FetchedDm shape.
    */
   private mapStatusToFetchedDm(
@@ -815,30 +889,45 @@ export class MastodonService {
     const conversations = (await response.json()) as MastodonConversation[];
     if (!Array.isArray(conversations)) return [];
 
+    // Group Mastodon conversations by participant set. Mastodon makes a brand
+    // new conversation.id for every standalone direct status, so two replies
+    // from the same sender that weren't threaded together show up as two
+    // separate API conversations. We collapse them under one synthetic id so
+    // the inbox shows ONE thread per sender (like Messenger/IG).
+    const groups = new Map<string, MastodonConversation[]>();
+    for (const convo of conversations) {
+      const syntheticId = this.buildSyntheticConvoId(channel, convo.accounts);
+      if (!syntheticId) continue; // self-only or empty — skip
+      const bucket = groups.get(syntheticId) ?? [];
+      bucket.push(convo);
+      groups.set(syntheticId, bucket);
+    }
+
     const summaries: DmConversationSummary[] = [];
 
-    for (const convo of conversations) {
-      const lastStatus = convo.last_status;
+    for (const [syntheticId, convos] of groups) {
+      // Sort newest-first so summary reflects the latest activity.
+      convos.sort((a, b) => {
+        const aT = a.last_status ? new Date(a.last_status.created_at).getTime() : 0;
+        const bT = b.last_status ? new Date(b.last_status.created_at).getTime() : 0;
+        return bT - aT;
+      });
+      const latestConvo = convos[0];
+      const lastStatus = latestConvo.last_status;
       if (!lastStatus) continue;
 
-      // Pick the first non-self participant; if all are self (rare — note to
-      // self), fall back to the first account in the list.
-      const others = (convo.accounts ?? []).filter(
+      const others = (latestConvo.accounts ?? []).filter(
         (a) => a.id !== channel.platformAccountId,
       );
       const participantAcct =
-        others[0] ?? convo.accounts?.[0] ?? null;
+        others[0] ?? latestConvo.accounts?.[0] ?? null;
       if (!participantAcct) continue;
 
       const lastMessageAt = new Date(lastStatus.created_at);
-
-      if (since && lastMessageAt <= since) {
-        // Older than caller's high-water mark — skip.
-        continue;
-      }
+      if (since && lastMessageAt <= since) continue;
 
       summaries.push({
-        conversationId: convo.id,
+        conversationId: syntheticId,
         participant: {
           platformId: participantAcct.id,
           handle: participantAcct.acct || participantAcct.username,
@@ -850,13 +939,16 @@ export class MastodonService {
         lastMessageAt,
         lastMessageFromMe:
           lastStatus.account?.id === channel.platformAccountId,
-        unreadCount: convo.unread ? 1 : 0,
+        // Aggregate unread across all merged Mastodon conversations.
+        unreadCount: convos.reduce((n, c) => n + (c.unread ? 1 : 0), 0),
         metadata: {
-          lastStatusId: lastStatus.id,
-          lastStatusUri: lastStatus.uri,
+          latestStatusId: lastStatus.id,
+          latestStatusUri: lastStatus.uri,
+          latestMastodonConvoId: latestConvo.id,
+          allMastodonConvoIds: convos.map((c) => c.id),
           participantAcct: participantAcct.acct || participantAcct.username,
           participantId: participantAcct.id,
-          accountIds: (convo.accounts ?? []).map((a) => a.id),
+          accountIds: (latestConvo.accounts ?? []).map((a) => a.id),
         },
       });
     }
@@ -876,22 +968,83 @@ export class MastodonService {
   ): Promise<FetchedDm[]> {
     const instanceUrl = this.getInstanceFromChannel(channel);
 
-    const conversation = await this.findConversationById(
+    // Backward-compat: if an old caller still passes a raw Mastodon convo.id
+    // (no "m:" prefix), look it up directly and walk that single thread.
+    if (!conversationId.startsWith('m:')) {
+      const single = await this.findConversationById(
+        instanceUrl,
+        channel.accessToken,
+        conversationId,
+      );
+      if (!single?.last_status) return [];
+      return this.walkConvoContext(
+        instanceUrl,
+        channel,
+        single,
+        conversationId,
+        since,
+      );
+    }
+
+    // Synthetic id (participant-based) — find ALL Mastodon conversations
+    // matching this participant set and walk each. Their statuses get merged
+    // into one chronological thread.
+    const matching = await this.findConversationsBySyntheticId(
       instanceUrl,
       channel.accessToken,
+      channel,
       conversationId,
     );
-
-    if (!conversation || !conversation.last_status) {
+    if (matching.length === 0) {
       this.logger.warn(
-        `Mastodon conversation ${conversationId} not found or has no last_status`,
+        `Mastodon synthetic convo ${conversationId} has no matching conversations`,
       );
       return [];
     }
 
-    const lastStatus = conversation.last_status;
+    const allStatuses: FetchedDm[] = [];
+    for (const convo of matching) {
+      if (!convo.last_status) continue;
+      const subset = await this.walkConvoContext(
+        instanceUrl,
+        channel,
+        convo,
+        conversationId,
+        since,
+      );
+      allStatuses.push(...subset);
+    }
 
-    // Fetch the context (ancestors + descendants) around last_status.
+    // De-duplicate by platformItemId (status.id) across all walked threads.
+    const seen = new Set<string>();
+    const unique = allStatuses.filter((s) => {
+      if (seen.has(s.platformItemId)) return false;
+      seen.add(s.platformItemId);
+      return true;
+    });
+
+    unique.sort(
+      (a, b) =>
+        a.platformCreatedAt.getTime() - b.platformCreatedAt.getTime(),
+    );
+    return unique;
+  }
+
+  /**
+   * Walk one Mastodon conversation's thread (its last_status + ancestors +
+   * descendants) and shape each direct-visibility status into FetchedDm.
+   * Shared by both the single-id legacy path and the synthetic-id path.
+   */
+  private async walkConvoContext(
+    instanceUrl: string,
+    channel: ResolvedChannel,
+    convo: MastodonConversation,
+    conversationIdForDb: string,
+    since?: Date,
+  ): Promise<FetchedDm[]> {
+    const lastStatus = convo.last_status;
+    if (!lastStatus) return [];
+
     const contextResponse = await fetch(
       `${instanceUrl}/api/v1/statuses/${encodeURIComponent(lastStatus.id)}/context`,
       { headers: { Authorization: `Bearer ${channel.accessToken}` } },
@@ -902,9 +1055,9 @@ export class MastodonService {
       this.logger.error(
         `Failed to fetch Mastodon status context: ${errorData}`,
       );
-      throw new BadRequestException(
-        'Failed to fetch Mastodon conversation messages',
-      );
+      // Don't throw — caller may be walking multiple convos; let the others
+      // succeed and just skip this one.
+      return [];
     }
 
     const contextData = (await contextResponse.json()) as {
@@ -912,8 +1065,6 @@ export class MastodonService {
       descendants?: MastodonStatusContextEntry[];
     };
 
-    // last_status is itself a Status (not part of ancestors/descendants); merge
-    // it in so the full thread reads chronologically.
     const lastStatusEntry: MastodonStatusContextEntry = {
       id: lastStatus.id,
       uri: lastStatus.uri,
@@ -932,8 +1083,6 @@ export class MastodonService {
       ...(contextData.descendants ?? []),
     ];
 
-    // De-duplicate by id (ancestors/descendants shouldn't overlap with
-    // last_status, but defensive).
     const seen = new Set<string>();
     const unique = all.filter((s) => {
       if (!s?.id) return false;
@@ -942,27 +1091,20 @@ export class MastodonService {
       return true;
     });
 
-    // Only consider direct-visibility statuses. Mastodon's context endpoint
-    // shouldn't bleed in non-direct replies for a direct-visibility root, but
-    // visibility can be missing for older API versions — accept missing as
-    // direct.
     const directOnly = unique.filter(
       (s) => !s.visibility || s.visibility === 'direct',
     );
 
-    // Sort chronologically.
-    directOnly.sort(
-      (a, b) =>
-        new Date(a.created_at).getTime() - new Date(b.created_at).getTime(),
-    );
-
-    const filtered = since
-      ? directOnly.filter((s) => new Date(s.created_at) > since)
-      : directOnly;
-
-    return filtered.map((s) =>
-      this.mapStatusToFetchedDm(s, conversationId, channel.platformAccountId),
-    );
+    const sinceMs = since ? since.getTime() : 0;
+    return directOnly
+      .filter((s) => new Date(s.created_at).getTime() > sinceMs)
+      .map((s) =>
+        this.mapStatusToFetchedDm(
+          s,
+          conversationIdForDb,
+          channel.platformAccountId,
+        ),
+      );
   }
 
   /**
@@ -978,11 +1120,35 @@ export class MastodonService {
   ): Promise<CreatedDm> {
     const instanceUrl = this.getInstanceFromChannel(channel);
 
-    const conversation = await this.findConversationById(
-      instanceUrl,
-      channel.accessToken,
-      conversationId,
-    );
+    // Resolve to a real Mastodon conversation. Synthetic ids (participant-based)
+    // need to pick the LATEST matching Mastodon convo to reply into; legacy
+    // raw ids still go through findConversationById.
+    let conversation: MastodonConversation | null = null;
+    if (conversationId.startsWith('m:')) {
+      const matching = await this.findConversationsBySyntheticId(
+        instanceUrl,
+        channel.accessToken,
+        channel,
+        conversationId,
+      );
+      if (matching.length === 0) {
+        throw new BadRequestException(
+          `No Mastodon conversation matches synthetic id ${conversationId} — has the participant ever messaged this account?`,
+        );
+      }
+      matching.sort((a, b) => {
+        const aT = a.last_status ? new Date(a.last_status.created_at).getTime() : 0;
+        const bT = b.last_status ? new Date(b.last_status.created_at).getTime() : 0;
+        return bT - aT;
+      });
+      conversation = matching[0];
+    } else {
+      conversation = await this.findConversationById(
+        instanceUrl,
+        channel.accessToken,
+        conversationId,
+      );
+    }
 
     if (!conversation || !conversation.last_status) {
       throw new BadRequestException(
