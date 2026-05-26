@@ -696,6 +696,35 @@ export class MastodonService {
   }
 
   /**
+   * Strip leading @-mentions from a DM status body for display.
+   *
+   * Why: Mastodon's DM protocol requires every recipient to be @-mentioned at
+   * the START of the status body, otherwise delivery doesn't happen. These
+   * leading mentions are bookkeeping, not user-intended content. Showing
+   * `@asad289 Hello` in the chat bubble when the user's display name is
+   * already @asad289 looks broken — strip them.
+   *
+   * Trade-off: a sender who intentionally wrote `@friend hi` at the start of
+   * their message will see the `@friend` stripped. Acceptable for now since
+   * 99% of DM bodies are protocol-prefixed mentions, not content mentions.
+   * Mid-sentence and trailing @-mentions are preserved.
+   */
+  private stripLeadingMentions(text: string): string {
+    if (!text) return '';
+    // Matches one or more @-handles at the very start, separated by whitespace.
+    // Handle shape: @username or @username@instance.tld
+    return text.replace(/^(?:@[\w-]+(?:@[\w.-]+)?\s+)+/, '').trim();
+  }
+
+  /**
+   * Convenience: strip HTML then strip leading mentions, for any field that
+   * surfaces in the inbox UI (status body, conversation preview, etc.).
+   */
+  private toDisplayText(html: string): string {
+    return this.stripLeadingMentions(this.stripHtml(html));
+  }
+
+  /**
    * Extract the Mastodon instance host from the channel metadata.
    * Falls back to `mastodon.social` if not configured.
    */
@@ -837,7 +866,7 @@ export class MastodonService {
     selfAccountId: string,
   ): FetchedDm {
     const fromMe = status.account?.id === selfAccountId;
-    const text = this.stripHtml(status.content ?? '');
+    const text = this.toDisplayText(status.content ?? '');
 
     return {
       conversationId,
@@ -935,7 +964,7 @@ export class MastodonService {
             participantAcct.display_name || participantAcct.username,
           avatarUrl: participantAcct.avatar,
         },
-        lastMessageText: this.stripHtml(lastStatus.content ?? ''),
+        lastMessageText: this.toDisplayText(lastStatus.content ?? ''),
         lastMessageAt,
         lastMessageFromMe:
           lastStatus.account?.id === channel.platformAccountId,
@@ -1204,7 +1233,7 @@ export class MastodonService {
     return {
       conversationId,
       platformItemId: data.id,
-      text: this.stripHtml(data.content ?? statusBody),
+      text: this.toDisplayText(data.content ?? statusBody),
       platformCreatedAt: new Date(data.created_at),
     };
   }
