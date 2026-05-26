@@ -220,6 +220,28 @@ export class InboxPollProcessor extends WorkerHost {
               since,
             );
             for (const msg of messages) {
+              // Author enrichment fallback: Bluesky's getMessages only returns
+              // `sender.did` (no handle/name/avatar) — fill from the convo's
+              // participant data (which IS richer because listConvos returns
+              // members[]). For Mastodon, messages already carry rich author
+              // info, so this no-ops via the ?? chain.
+              const isFromParticipant =
+                !msg.fromMe &&
+                msg.author?.platformId === convo.participant.platformId;
+              const authorHandle =
+                msg.author?.handle ??
+                (isFromParticipant ? convo.participant.handle ?? null : null);
+              const authorDisplayName =
+                msg.author?.displayName ??
+                (isFromParticipant
+                  ? convo.participant.displayName ?? null
+                  : null);
+              const authorAvatarUrl =
+                msg.author?.avatarUrl ??
+                (isFromParticipant
+                  ? convo.participant.avatarUrl ?? null
+                  : null);
+
               const inserted = await this.inboxService.upsertDm({
                 workspaceId: channelRow.workspaceId,
                 channelId,
@@ -228,9 +250,9 @@ export class InboxPollProcessor extends WorkerHost {
                 platformItemId: msg.platformItemId,
                 platformParentId: msg.platformParentId,
                 authorPlatformId: msg.author?.platformId ?? null,
-                authorHandle: msg.author?.handle ?? null,
-                authorDisplayName: msg.author?.displayName ?? null,
-                authorAvatarUrl: msg.author?.avatarUrl ?? null,
+                authorHandle,
+                authorDisplayName,
+                authorAvatarUrl,
                 text: msg.text,
                 fromMe: msg.fromMe,
                 platformCreatedAt: msg.platformCreatedAt,
