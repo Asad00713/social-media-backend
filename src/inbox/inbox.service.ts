@@ -1677,6 +1677,42 @@ export class InboxService {
       platformCreatedAt: created.platformCreatedAt,
     });
 
+    // Auto-mark prior inbound unread messages in this conversation as replied
+    // — the user just answered, so those incoming messages no longer count as
+    // demanding attention. Without this, the conversation list would keep its
+    // unread badge after the user already responded.
+    const acknowledged = await db
+      .update(inboxItems)
+      .set({
+        status: 'replied',
+        repliedByUserId: userId,
+        repliedAt: new Date(),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(inboxItems.workspaceId, workspaceId),
+          eq(inboxItems.channelId, channelId),
+          eq(inboxItems.conversationId, conversationId),
+          eq(inboxItems.status, 'unread'),
+          eq(inboxItems.fromMe, false),
+        ),
+      )
+      .returning({ id: inboxItems.id });
+
+    for (const ack of acknowledged) {
+      this.emitter.emit(workspaceId, 'inbox.item.updated', {
+        id: ack.id,
+        workspaceId,
+        channelId,
+        changes: {
+          status: 'replied',
+          repliedByUserId: userId,
+          repliedAt: new Date().toISOString(),
+        },
+      });
+    }
+
     void this.emitCounts(workspaceId);
 
     const row =
