@@ -192,9 +192,13 @@ export class InboxPollProcessor extends WorkerHost {
     // ──────────────────────────────────────────────────────────────────────
     // DM polling — Phase 2.1
     //
-    // FB Messenger + IG Direct use webhooks for DMs, so we skip them here
-    // (webhook ingestion is the source of truth). Bluesky and Mastodon
-    // have no DM webhook surface, so we poll on the same cron.
+    // Platforms with webhook DM delivery (FB Messenger) use the webhook path
+    // and skip polling. Bluesky / Mastodon have no DM webhook surface and
+    // must poll. Instagram is webhook-capable in theory but Meta blocks all
+    // real-event delivery in app dev mode — the dashboard warns:
+    //   "No production data, including from app admins, developers or
+    //    testers, will be delivered unless the app has been published."
+    // So until App Review unlocks live mode, IG DMs are also polled.
     //
     // Strategy: list DM conversations since the last poll, then for each
     // conversation fetch messages since the same cutoff. Each message
@@ -203,7 +207,9 @@ export class InboxPollProcessor extends WorkerHost {
     let dmIngested = 0;
     if (
       this.dispatcher.supportsDm(platform) &&
-      (platform === 'bluesky' || platform === 'mastodon')
+      (platform === 'bluesky' ||
+        platform === 'mastodon' ||
+        platform === 'instagram')
     ) {
       try {
         const dmAdapter = this.dispatcher.getDm(platform);
