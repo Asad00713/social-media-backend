@@ -189,6 +189,71 @@ export class InboxPollProcessor extends WorkerHost {
       }
     }
 
+    // ──────────────────────────────────────────────────────────────────────
+    // DM polling — Phase 2.1
+    //
+    // FB Messenger + IG Direct use webhooks for DMs, so we skip them here
+    // (webhook ingestion is the source of truth). Bluesky and Mastodon
+    // have no DM webhook surface, so we poll on the same cron.
+    //
+    // Strategy: list DM conversations since the last poll, then for each
+    // conversation fetch messages since the same cutoff. Each message
+    // dedups via the (channel_id, platform_item_id) unique constraint.
+    // ──────────────────────────────────────────────────────────────────────
+    let dmIngested = 0;
+    if (
+      this.dispatcher.supportsDm(platform) &&
+      (platform === 'bluesky' || platform === 'mastodon')
+    ) {
+      try {
+        const dmAdapter = this.dispatcher.getDm(platform);
+        const conversations = await dmAdapter.listConversations(channel, since);
+        this.logger.debug(
+          `Inbox DM poll: ${platform} channel ${channelId} returned ${conversations.length} conversations (since=${since?.toISOString() ?? 'never'})`,
+        );
+
+        for (const convo of conversations) {
+          try {
+            const messages = await dmAdapter.fetchConversationMessages(
+              channel,
+              convo.conversationId,
+              since,
+            );
+            for (const msg of messages) {
+              const inserted = await this.inboxService.upsertDm({
+                workspaceId: channelRow.workspaceId,
+                channelId,
+                platform,
+                conversationId: msg.conversationId,
+                platformItemId: msg.platformItemId,
+                platformParentId: msg.platformParentId,
+                authorPlatformId: msg.author?.platformId ?? null,
+                authorHandle: msg.author?.handle ?? null,
+                authorDisplayName: msg.author?.displayName ?? null,
+                authorAvatarUrl: msg.author?.avatarUrl ?? null,
+                text: msg.text,
+                fromMe: msg.fromMe,
+                platformCreatedAt: msg.platformCreatedAt,
+                metadata: msg.metadata,
+              });
+              if (inserted) dmIngested += 1;
+            }
+          } catch (err) {
+            this.logger.error(
+              `Inbox DM poll: convo ${convo.conversationId} on channel ${channelId} (${platform}) failed: ${(err as Error).message}`,
+            );
+          }
+        }
+      } catch (err) {
+        // Bluesky chat scope gating returns 403 — listConvos in the service
+        // already logs + returns []. Anything else is a real error; log it
+        // but don't fail the whole channel poll (comments succeeded above).
+        this.logger.error(
+          `Inbox DM poll: ${platform} channel ${channelId} list failed: ${(err as Error).message}`,
+        );
+      }
+    }
+
     // Mark channel as polled even if no new items — prevents thrashing on next cron.
     await db
       .update(socialMediaChannels)
@@ -196,10 +261,10 @@ export class InboxPollProcessor extends WorkerHost {
       .where(eq(socialMediaChannels.id, channelId));
 
     this.logger.log(
-      `Inbox poll: channel ${channelId} (${platform}) — posts:${recent.length} fetched:${fetched} new:${ingested} dup:${duplicates}`,
+      `Inbox poll: channel ${channelId} (${platform}) — posts:${recent.length} fetched:${fetched} new:${ingested} dup:${duplicates} dmNew:${dmIngested}`,
     );
 
-    return { ok: true, ingested };
+    return { ok: true, ingested: ingested + dmIngested };
   }
 }
 
