@@ -4,6 +4,7 @@ import { adAccounts } from '../../drizzle/schema'
 import { and, eq } from 'drizzle-orm'
 import { MetaAdsClient } from './meta-ads.client'
 import { ChannelService } from '../../channels/services/channel.service'
+import { FacebookService } from '../../channels/services/facebook.service'
 
 @Injectable()
 export class AdAccountsService {
@@ -12,6 +13,7 @@ export class AdAccountsService {
   constructor(
     private readonly metaClient: MetaAdsClient,
     private readonly channelService: ChannelService,
+    private readonly facebookService: FacebookService,
   ) {}
 
   /**
@@ -91,5 +93,42 @@ export class AdAccountsService {
 
     if (!row) throw new NotFoundException('Ad account not found')
     return row
+  }
+
+  /**
+   * List recent FB Page posts available for boosting.
+   * Used by the boost-wizard UI picker.
+   */
+  async listPagePostsForBoost(
+    workspaceId: string,
+    channelId: number,
+  ): Promise<
+    {
+      id: string;
+      message?: string;
+      createdTime: string;
+      fullPicture?: string;
+      permalinkUrl?: string;
+      attachmentsType?: string;
+    }[]
+  > {
+    const channel = await this.channelService.getChannelForPosting(channelId)
+
+    if (!channel || channel.platform !== 'facebook') {
+      throw new NotFoundException('Facebook channel not found')
+    }
+
+    if (channel.workspaceId !== workspaceId) {
+      throw new ForbiddenException('Channel does not belong to this workspace')
+    }
+
+    if (!channel.accessToken) {
+      throw new ForbiddenException('Channel access token unavailable')
+    }
+
+    return this.facebookService.listPagePostsForBoost(
+      channel.platformAccountId,
+      channel.accessToken,
+    )
   }
 }

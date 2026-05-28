@@ -66,6 +66,19 @@ export class AdsController {
     return { success: true }
   }
 
+  /**
+   * List recent FB Page posts available for boosting (boost-wizard picker).
+   * GET /ads/workspaces/:workspaceId/channels/:channelId/posts-for-boost
+   */
+  @Get('channels/:channelId/posts-for-boost')
+  async postsForBoost(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+  ) {
+    const posts = await this.adAccounts.listPagePostsForBoost(wid, Number(channelId))
+    return { posts }
+  }
+
   // ==========================================================================
   // Ad drafts — wizard auto-save / resume
   // ==========================================================================
