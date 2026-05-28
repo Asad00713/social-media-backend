@@ -7,6 +7,7 @@ import {
   HttpStatus,
   Param,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common'
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'
@@ -15,6 +16,7 @@ import { AdAccountsService } from './services/ad-accounts.service'
 import { AdDraftsService } from './services/ad-drafts.service'
 import { BoostPostService } from './services/boost-post.service'
 import { LeadCampaignService } from './services/lead-campaign.service'
+import { AdInsightsService } from './services/ad-insights.service'
 import { UpsertDraftDto } from './dto/draft.dto'
 import { CreateBoostDto } from './dto/create-boost.dto'
 import { CreateLeadCampaignDto } from './dto/create-lead-campaign.dto'
@@ -32,6 +34,7 @@ export class AdsController {
     private readonly drafts: AdDraftsService,
     private readonly boost: BoostPostService,
     private readonly leadCampaign: LeadCampaignService,
+    private readonly insights: AdInsightsService,
   ) {}
 
   // ==========================================================================
@@ -175,4 +178,35 @@ export class AdsController {
   ) {
     return this.leadCampaign.create(wid, user.userId, body)
   }
+
+  // ==========================================================================
+  // Ad Insights
+  // ==========================================================================
+
+  /**
+   * Fetch daily insights rows for all ad sets under a campaign.
+   * GET /ads/workspaces/:workspaceId/campaigns/:campaignId/insights?since=YYYY-MM-DD
+   *
+   * Defaults to the last 7 days when `since` is omitted.
+   */
+  @Get('campaigns/:campaignId/insights')
+  getCampaignInsights(
+    @Param('workspaceId') wid: string,
+    @Param('campaignId') campaignId: string,
+    @Query('since') since?: string,
+  ) {
+    const sinceDate = since ?? defaultSince()
+    return this.insights.getForCampaign(wid, campaignId, sinceDate)
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
+
+/** Returns the date 7 days ago as YYYY-MM-DD (UTC). */
+function defaultSince(): string {
+  const d = new Date()
+  d.setUTCDate(d.getUTCDate() - 7)
+  return d.toISOString().slice(0, 10)
 }

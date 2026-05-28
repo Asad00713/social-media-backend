@@ -12,6 +12,9 @@ import { LeadFormService } from './services/lead-form.service'
 import { LeadCampaignService } from './services/lead-campaign.service'
 import { LeadRouterService } from './services/lead-router.service'
 import { LeadDeliveryProcessor } from './processors/lead-delivery.processor'
+import { AdInsightsService } from './services/ad-insights.service'
+import { AdInsightsSyncProcessor } from './processors/ad-insights-sync.processor'
+import { AdInsightsSyncScheduler } from './schedulers/ad-insights-sync.scheduler'
 
 /**
  * AdsModule — Meta Ads Phase 1
@@ -28,11 +31,23 @@ import { LeadDeliveryProcessor } from './processors/lead-delivery.processor'
  * they depend on EmailModule, which is not imported by ChannelsModule. Importing
  * EmailModule in AdsModule is the cleanest path and avoids adding a new dependency to
  * the already-heavy ChannelsModule.
+ *
+ * AdInsightsService depends on MetaAdsClient + ChannelService, both of which are
+ * exported by ChannelsModule, so it can live here in AdsModule.
+ * AdInsightsSyncProcessor and AdInsightsSyncScheduler also live here as they only
+ * depend on the queue and AdInsightsService.
  */
 @Module({
   imports: [ChannelsModule, RealtimeModule, EmailModule],
   controllers: [AdsController, LeadAdsController],
-  providers: [AdDraftsService, LeadRouterService, LeadDeliveryProcessor],
-  exports: [MetaAdsClient, AdAccountsService, AdDraftsService, BoostPostService, LeadFormService, LeadCampaignService, LeadRouterService],
+  providers: [
+    AdDraftsService,
+    LeadRouterService,
+    LeadDeliveryProcessor,
+    AdInsightsService,
+    AdInsightsSyncProcessor,
+    AdInsightsSyncScheduler,
+  ],
+  exports: [MetaAdsClient, AdAccountsService, AdDraftsService, BoostPostService, LeadFormService, LeadCampaignService, LeadRouterService, AdInsightsService],
 })
 export class AdsModule {}
