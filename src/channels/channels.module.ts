@@ -19,6 +19,8 @@ import { OneDriveService } from './services/onedrive.service';
 import { DropboxService } from './services/dropbox.service';
 import { UnsplashService } from './services/unsplash.service';
 import { RedditService } from './services/reddit.service';
+import { MetaAdsClient } from '../ads/services/meta-ads.client';
+import { AdAccountsService } from '../ads/services/ad-accounts.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { QueueModule } from '../queue/queue.module';
@@ -52,6 +54,8 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     TokenRefreshProcessor,
     TokenRefreshScheduler,
     RefreshTokenExpiryScheduler,
+    MetaAdsClient,
+    AdAccountsService,
   ],
   exports: [
     ChannelService,
@@ -73,6 +77,8 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     DropboxService,
     UnsplashService,
     RedditService,
+    MetaAdsClient,
+    AdAccountsService,
   ],
 })
 export class ChannelsModule {}

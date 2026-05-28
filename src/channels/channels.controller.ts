@@ -36,6 +36,7 @@ import { OneDriveService } from './services/onedrive.service';
 import { DropboxService } from './services/dropbox.service';
 import { UnsplashService } from './services/unsplash.service';
 import { RedditService } from './services/reddit.service';
+import { AdAccountsService } from '../ads/services/ad-accounts.service';
 import {
   InitiateOAuthDto,
   CreateChannelDto,
@@ -78,6 +79,7 @@ export class ChannelsController {
     private readonly dropboxService: DropboxService,
     private readonly unsplashService: UnsplashService,
     private readonly redditService: RedditService,
+    private readonly adAccountsService: AdAccountsService,
   ) {}
 
   // ==========================================================================
@@ -944,6 +946,19 @@ export class ChannelsController {
           (err as Error).message,
         );
       }
+    }
+
+    // Fire-and-forget ad account sync when intent=ads OAuth flow completes.
+    // Errors are logged but never propagate — we don't want a Meta API hiccup
+    // to fail the channel connect response.
+    if (dto.intent === 'ads') {
+      this.adAccountsService
+        .syncForChannel(workspaceId, fbChannel.id)
+        .catch((err: Error) => {
+          console.warn(
+            `[connectFacebookPage] Ad account sync failed for workspace=${workspaceId}, channel=${fbChannel.id}: ${err.message}`,
+          );
+        });
     }
 
     return {
