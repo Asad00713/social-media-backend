@@ -14,8 +14,10 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator'
 import { AdAccountsService } from './services/ad-accounts.service'
 import { AdDraftsService } from './services/ad-drafts.service'
 import { BoostPostService } from './services/boost-post.service'
+import { LeadCampaignService } from './services/lead-campaign.service'
 import { UpsertDraftDto } from './dto/draft.dto'
 import { CreateBoostDto } from './dto/create-boost.dto'
+import { CreateLeadCampaignDto } from './dto/create-lead-campaign.dto'
 
 interface AuthUser {
   userId: string
@@ -29,6 +31,7 @@ export class AdsController {
     private readonly adAccounts: AdAccountsService,
     private readonly drafts: AdDraftsService,
     private readonly boost: BoostPostService,
+    private readonly leadCampaign: LeadCampaignService,
   ) {}
 
   // ==========================================================================
@@ -154,5 +157,22 @@ export class AdsController {
     @Body() body: CreateBoostDto,
   ) {
     return this.boost.create(wid, user.userId, body)
+  }
+
+  // ==========================================================================
+  // Lead Campaigns
+  // ==========================================================================
+
+  /**
+   * Create a Lead Ads campaign (form + image upload + campaign + adset + creative + ad).
+   * POST /ads/workspaces/:workspaceId/lead-campaigns
+   */
+  @Post('lead-campaigns')
+  createLeadCampaign(
+    @Param('workspaceId') wid: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: CreateLeadCampaignDto,
+  ) {
+    return this.leadCampaign.create(wid, user.userId, body)
   }
 }
