@@ -15,6 +15,7 @@ import { LeadDeliveryProcessor } from './processors/lead-delivery.processor'
 import { AdInsightsService } from './services/ad-insights.service'
 import { AdInsightsSyncProcessor } from './processors/ad-insights-sync.processor'
 import { AdInsightsSyncScheduler } from './schedulers/ad-insights-sync.scheduler'
+import { AdMutationsService } from './services/ad-mutations.service'
 
 /**
  * AdsModule — Meta Ads Phase 1
@@ -47,7 +48,8 @@ import { AdInsightsSyncScheduler } from './schedulers/ad-insights-sync.scheduler
     AdInsightsService,
     AdInsightsSyncProcessor,
     AdInsightsSyncScheduler,
+    AdMutationsService,
   ],
-  exports: [MetaAdsClient, AdAccountsService, AdDraftsService, BoostPostService, LeadFormService, LeadCampaignService, LeadRouterService, AdInsightsService],
+  exports: [MetaAdsClient, AdAccountsService, AdDraftsService, BoostPostService, LeadFormService, LeadCampaignService, LeadRouterService, AdInsightsService, AdMutationsService],
 })
 export class AdsModule {}

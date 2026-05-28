@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -17,9 +18,14 @@ import { AdDraftsService } from './services/ad-drafts.service'
 import { BoostPostService } from './services/boost-post.service'
 import { LeadCampaignService } from './services/lead-campaign.service'
 import { AdInsightsService } from './services/ad-insights.service'
+import { AdMutationsService } from './services/ad-mutations.service'
 import { UpsertDraftDto } from './dto/draft.dto'
 import { CreateBoostDto } from './dto/create-boost.dto'
 import { CreateLeadCampaignDto } from './dto/create-lead-campaign.dto'
+import { UpdateCampaignStatusDto, UpdateAdSetBudgetDto } from './dto/ad-mutations.dto'
+import { db } from '../drizzle/db'
+import { adCampaigns, leads } from '../drizzle/schema'
+import { eq, and, desc } from 'drizzle-orm'
 
 interface AuthUser {
   userId: string
@@ -35,6 +41,7 @@ export class AdsController {
     private readonly boost: BoostPostService,
     private readonly leadCampaign: LeadCampaignService,
     private readonly insights: AdInsightsService,
+    private readonly mutations: AdMutationsService,
   ) {}
 
   // ==========================================================================
@@ -197,6 +204,81 @@ export class AdsController {
   ) {
     const sinceDate = since ?? defaultSince()
     return this.insights.getForCampaign(wid, campaignId, sinceDate)
+  }
+
+  // ==========================================================================
+  // Campaign list / pause / resume
+  // ==========================================================================
+
+  /**
+   * List all campaigns for a workspace, newest first.
+   * GET /ads/workspaces/:workspaceId/campaigns
+   */
+  @Get('campaigns')
+  async listCampaigns(@Param('workspaceId') wid: string) {
+    const rows = await db
+      .select()
+      .from(adCampaigns)
+      .where(eq(adCampaigns.workspaceId, wid))
+      .orderBy(desc(adCampaigns.createdAt))
+    return { campaigns: rows }
+  }
+
+  /**
+   * Pause, resume, or archive a campaign.
+   * PATCH /ads/workspaces/:workspaceId/campaigns/:id/status
+   * Body: { status: 'ACTIVE' | 'PAUSED' | 'ARCHIVED' }
+   */
+  @Patch('campaigns/:id/status')
+  updateCampaignStatus(
+    @Param('workspaceId') wid: string,
+    @Param('id') id: string,
+    @Body() body: UpdateCampaignStatusDto,
+  ) {
+    return this.mutations.setCampaignStatus(wid, id, body.status)
+  }
+
+  /**
+   * Update the daily budget of an ad set (minor units, e.g. cents).
+   * PATCH /ads/workspaces/:workspaceId/adsets/:id/budget
+   * Body: { dailyBudgetMinor: number }
+   */
+  @Patch('adsets/:id/budget')
+  updateAdSetBudget(
+    @Param('workspaceId') wid: string,
+    @Param('id') id: string,
+    @Body() body: UpdateAdSetBudgetDto,
+  ) {
+    return this.mutations.setAdSetBudget(wid, id, body.dailyBudgetMinor)
+  }
+
+  // ==========================================================================
+  // Leads list
+  // ==========================================================================
+
+  /**
+   * List captured leads for a workspace, optionally filtered by lead form.
+   * GET /ads/workspaces/:workspaceId/leads?formId=<uuid>
+   *
+   * Returns up to 200 rows ordered by capturedAt desc.
+   */
+  @Get('leads')
+  async listLeads(
+    @Param('workspaceId') wid: string,
+    @Query('formId') formId?: string,
+  ) {
+    const condition = formId
+      ? and(eq(leads.workspaceId, wid), eq(leads.leadFormId, formId))
+      : eq(leads.workspaceId, wid)
+
+    const rows = await db
+      .select()
+      .from(leads)
+      .where(condition)
+      .orderBy(desc(leads.capturedAt))
+      .limit(200)
+
+    return { leads: rows }
   }
 }
 
