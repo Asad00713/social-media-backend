@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common'
 import { ChannelsModule } from '../channels/channels.module'
 import { RealtimeModule } from '../realtime/realtime.module'
 import { EmailModule } from '../email/email.module'
+import { QueueModule } from '../queue/queue.module'
 import { AdsController } from './ads.controller'
 import { LeadAdsController } from './lead-ads.controller'
 import { AdDraftsService } from './services/ad-drafts.service'
@@ -31,7 +32,7 @@ import { AdMutationsService } from './services/ad-mutations.service'
  *   - AdMutationsService — same pattern
  */
 @Module({
-  imports: [ChannelsModule, RealtimeModule, EmailModule],
+  imports: [ChannelsModule, RealtimeModule, EmailModule, QueueModule],
   controllers: [AdsController, LeadAdsController],
   providers: [
     AdDraftsService,
