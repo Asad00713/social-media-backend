@@ -72,6 +72,7 @@ export class AdsController {
         status: r.accountStatus,
         disableReason: r.disableReason,
         canRunAds: r.accountStatus === 1,
+        channelId: r.channelId,
       })),
     }
   }
