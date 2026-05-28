@@ -393,6 +393,13 @@ export const PLATFORM_CONFIG: Record<
       'pages_manage_engagement',
       // Required to read user-generated comments on Page posts (inbox feature).
       'pages_read_user_content',
+      // === Ads Phase 1 additions ===
+      // Must be approved in Meta App Console before existing users will see them.
+      'ads_management',
+      'ads_read',
+      'leads_retrieval',
+      'pages_manage_ads',
+      'business_management',
     ],
   },
   instagram: {
@@ -410,6 +417,8 @@ export const PLATFORM_CONFIG: Record<
       'instagram_business_manage_messages',
       'instagram_business_manage_comments',
       'instagram_business_content_publish',
+      // Required for reading IG insights when an FB ad targets IG placements.
+      'instagram_manage_insights',
     ],
   },
   youtube: {

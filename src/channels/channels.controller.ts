@@ -85,7 +85,15 @@ export class ChannelsController {
   // ==========================================================================
 
   /**
-   * Initiate OAuth flow - returns authorization URL
+   * Initiate OAuth flow - returns authorization URL.
+   *
+   * For Facebook, pass `additionalData: { intent: 'ads' }` in the request body
+   * to request only the ads-related scopes (ads_management, ads_read,
+   * leads_retrieval, pages_manage_ads, business_management) instead of the
+   * full base scope list. The `intent` value is persisted in the OAuth state
+   * row so that the callback can identify the flow type.
+   *
+   * Default intent is 'connect' (full base scopes for posting + inbox).
    */
   @Post('workspaces/:workspaceId/oauth/initiate')
   @UseGuards(JwtAuthGuard)
