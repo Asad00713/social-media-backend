@@ -13,7 +13,9 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'
 import { CurrentUser } from '../auth/decorators/current-user.decorator'
 import { AdAccountsService } from './services/ad-accounts.service'
 import { AdDraftsService } from './services/ad-drafts.service'
+import { BoostPostService } from './services/boost-post.service'
 import { UpsertDraftDto } from './dto/draft.dto'
+import { CreateBoostDto } from './dto/create-boost.dto'
 
 interface AuthUser {
   userId: string
@@ -26,6 +28,7 @@ export class AdsController {
   constructor(
     private readonly adAccounts: AdAccountsService,
     private readonly drafts: AdDraftsService,
+    private readonly boost: BoostPostService,
   ) {}
 
   // ==========================================================================
@@ -134,5 +137,22 @@ export class AdsController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.drafts.delete(wid, user.userId, id)
+  }
+
+  // ==========================================================================
+  // Boost Post
+  // ==========================================================================
+
+  /**
+   * Create a boost campaign for a Facebook Page post.
+   * POST /ads/workspaces/:workspaceId/boost
+   */
+  @Post('boost')
+  createBoost(
+    @Param('workspaceId') wid: string,
+    @CurrentUser() user: AuthUser,
+    @Body() body: CreateBoostDto,
+  ) {
+    return this.boost.create(wid, user.userId, body)
   }
 }

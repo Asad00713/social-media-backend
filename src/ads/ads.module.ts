@@ -5,12 +5,13 @@ import { AdsController } from './ads.controller'
 import { MetaAdsClient } from './services/meta-ads.client'
 import { AdAccountsService } from './services/ad-accounts.service'
 import { AdDraftsService } from './services/ad-drafts.service'
+import { BoostPostService } from './services/boost-post.service'
 
 /**
  * AdsModule — Meta Ads Phase 1
  *
- * MetaAdsClient and AdAccountsService are declared in ChannelsModule to avoid
- * a circular dependency (AdsModule → ChannelsModule → AdsModule).
+ * MetaAdsClient, AdAccountsService, and BoostPostService are declared in
+ * ChannelsModule to avoid a circular dependency (AdsModule → ChannelsModule → AdsModule).
  * ChannelsModule exports them, so importing ChannelsModule here makes them
  * available for AdsController's dependency injection.
  *
@@ -21,6 +22,6 @@ import { AdDraftsService } from './services/ad-drafts.service'
   imports: [ChannelsModule, RealtimeModule],
   controllers: [AdsController],
   providers: [AdDraftsService],
-  exports: [MetaAdsClient, AdAccountsService, AdDraftsService],
+  exports: [MetaAdsClient, AdAccountsService, AdDraftsService, BoostPostService],
 })
 export class AdsModule {}
