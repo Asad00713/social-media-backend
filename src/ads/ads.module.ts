@@ -6,6 +6,7 @@ import { MetaAdsClient } from './services/meta-ads.client'
 import { AdAccountsService } from './services/ad-accounts.service'
 import { AdDraftsService } from './services/ad-drafts.service'
 import { BoostPostService } from './services/boost-post.service'
+import { LeadFormService } from './services/lead-form.service'
 
 /**
  * AdsModule — Meta Ads Phase 1
@@ -22,6 +23,6 @@ import { BoostPostService } from './services/boost-post.service'
   imports: [ChannelsModule, RealtimeModule],
   controllers: [AdsController],
   providers: [AdDraftsService],
-  exports: [MetaAdsClient, AdAccountsService, AdDraftsService, BoostPostService],
+  exports: [MetaAdsClient, AdAccountsService, AdDraftsService, BoostPostService, LeadFormService],
 })
 export class AdsModule {}

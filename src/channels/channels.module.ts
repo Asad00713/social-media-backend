@@ -22,6 +22,7 @@ import { RedditService } from './services/reddit.service';
 import { MetaAdsClient } from '../ads/services/meta-ads.client';
 import { AdAccountsService } from '../ads/services/ad-accounts.service';
 import { BoostPostService } from '../ads/services/boost-post.service';
+import { LeadFormService } from '../ads/services/lead-form.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { QueueModule } from '../queue/queue.module';
@@ -58,6 +59,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     MetaAdsClient,
     AdAccountsService,
     BoostPostService,
+    LeadFormService,
   ],
   exports: [
     ChannelService,
@@ -82,6 +84,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     MetaAdsClient,
     AdAccountsService,
     BoostPostService,
+    LeadFormService,
   ],
 })
 export class ChannelsModule {}
