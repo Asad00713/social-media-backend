@@ -10,6 +10,8 @@ import {
 } from '../../drizzle/schema/channels.schema';
 import { posts, type PostTarget } from '../../drizzle/schema/posts.schema';
 import { ChannelService } from '../../channels/services/channel.service';
+import { FacebookService } from '../../channels/services/facebook.service';
+import { InstagramService } from '../../channels/services/instagram.service';
 import { InboxDispatcher } from '../services/inbox-dispatcher.service';
 import { InboxService } from '../inbox.service';
 import type { ResolvedChannel } from '../adapters/inbox-adapter.interface';
@@ -36,14 +38,38 @@ const SLACK_MS = 60 * 1000; // 1 min — overlap with previous fetch so we don't
  * Failure mode: one bad post shouldn't stop the rest of the channel. Each post
  * is wrapped in try/catch.
  */
-@Processor(QUEUES.INBOX_POLLING)
+// A full channel poll iterates up to 30 posts + DM convos sequentially against
+// the platform APIs. Facebook's `/{post}/comments` can take 1–3s per call,
+// plus DM list + per-convo fetches. Multiplied across the loop, total wall
+// time often exceeds BullMQ's default 30s lock window, producing
+// "Missing lock for job" + `code: -2` errors when the worker tries to
+// finish/move the job after the lock expired.
+//
+// Bump the lock to 10 min (well above worst-case poll time) and renew it
+// every 30 s so the redis-side TTL stays fresh even when individual platform
+// calls block for several seconds each.
+@Processor(QUEUES.INBOX_POLLING, {
+  lockDuration: 10 * 60 * 1000,
+  lockRenewTime: 30 * 1000,
+})
 export class InboxPollProcessor extends WorkerHost {
   private readonly logger = new Logger(InboxPollProcessor.name);
+
+  /**
+   * Channels we've already attempted to (re-)subscribe to Meta webhook events
+   * during this backend process lifetime. The subscribe call is idempotent
+   * but costs a Graph API hit, so we only fire it once per channel per
+   * restart — a safety net for cases where the OAuth-time subscribe got lost
+   * (Meta dropped it, token refreshed, etc).
+   */
+  private readonly webhookSubscribedChannels = new Set<number>();
 
   constructor(
     private readonly channelService: ChannelService,
     private readonly dispatcher: InboxDispatcher,
     private readonly inboxService: InboxService,
+    private readonly facebookService: FacebookService,
+    private readonly instagramService: InstagramService,
   ) {
     super();
   }
@@ -95,6 +121,20 @@ export class InboxPollProcessor extends WorkerHost {
         `Inbox poll: failed to resolve channel ${channelId} (${platform}, account=${channelRow.platformAccountId}): ${(err as Error).message}`,
       );
       return { ok: false, ingested: 0 };
+    }
+
+    // Phase 2.3 — lazy webhook subscription. Once per backend lifetime per
+    // channel, try to re-arm the Meta webhook subscription for FB Pages + IG
+    // Business accounts. Idempotent on Meta's side; this is the safety net
+    // for cases where the OAuth-time subscribe failed or got dropped (token
+    // refresh, channel re-connect, Meta-side eviction). Fire-and-forget so a
+    // webhook failure never delays the poll itself.
+    if (
+      (platform === 'facebook' || platform === 'instagram') &&
+      !this.webhookSubscribedChannels.has(channelId)
+    ) {
+      this.webhookSubscribedChannels.add(channelId);
+      void this.ensureWebhookSubscription(channel, platform);
     }
 
     // Pull the most recent published posts targeting this channel within window.
@@ -189,6 +229,100 @@ export class InboxPollProcessor extends WorkerHost {
       }
     }
 
+    // ──────────────────────────────────────────────────────────────────────
+    // DM polling — Phase 2.1
+    //
+    // Platforms with webhook DM delivery (FB Messenger) use the webhook path
+    // and skip polling. Bluesky / Mastodon have no DM webhook surface and
+    // must poll. Instagram is webhook-capable in theory but Meta blocks all
+    // real-event delivery in app dev mode — the dashboard warns:
+    //   "No production data, including from app admins, developers or
+    //    testers, will be delivered unless the app has been published."
+    // So until App Review unlocks live mode, IG DMs are also polled.
+    //
+    // Strategy: list DM conversations since the last poll, then for each
+    // conversation fetch messages since the same cutoff. Each message
+    // dedups via the (channel_id, platform_item_id) unique constraint.
+    // ──────────────────────────────────────────────────────────────────────
+    let dmIngested = 0;
+    if (
+      this.dispatcher.supportsDm(platform) &&
+      (platform === 'bluesky' ||
+        platform === 'mastodon' ||
+        platform === 'instagram')
+    ) {
+      try {
+        const dmAdapter = this.dispatcher.getDm(platform);
+        const conversations = await dmAdapter.listConversations(channel, since);
+        this.logger.debug(
+          `Inbox DM poll: ${platform} channel ${channelId} returned ${conversations.length} conversations (since=${since?.toISOString() ?? 'never'})`,
+        );
+
+        for (const convo of conversations) {
+          try {
+            const messages = await dmAdapter.fetchConversationMessages(
+              channel,
+              convo.conversationId,
+              since,
+            );
+            for (const msg of messages) {
+              // Author enrichment fallback: Bluesky's getMessages only returns
+              // `sender.did` (no handle/name/avatar) — fill from the convo's
+              // participant data (which IS richer because listConvos returns
+              // members[]). For Mastodon, messages already carry rich author
+              // info, so this no-ops via the ?? chain.
+              const isFromParticipant =
+                !msg.fromMe &&
+                msg.author?.platformId === convo.participant.platformId;
+              const authorHandle =
+                msg.author?.handle ??
+                (isFromParticipant ? convo.participant.handle ?? null : null);
+              const authorDisplayName =
+                msg.author?.displayName ??
+                (isFromParticipant
+                  ? convo.participant.displayName ?? null
+                  : null);
+              const authorAvatarUrl =
+                msg.author?.avatarUrl ??
+                (isFromParticipant
+                  ? convo.participant.avatarUrl ?? null
+                  : null);
+
+              const inserted = await this.inboxService.upsertDm({
+                workspaceId: channelRow.workspaceId,
+                channelId,
+                platform,
+                conversationId: msg.conversationId,
+                platformItemId: msg.platformItemId,
+                platformParentId: msg.platformParentId,
+                authorPlatformId: msg.author?.platformId ?? null,
+                authorHandle,
+                authorDisplayName,
+                authorAvatarUrl,
+                text: msg.text,
+                fromMe: msg.fromMe,
+                platformCreatedAt: msg.platformCreatedAt,
+                metadata: msg.metadata,
+                attachments: msg.attachments,
+              });
+              if (inserted) dmIngested += 1;
+            }
+          } catch (err) {
+            this.logger.error(
+              `Inbox DM poll: convo ${convo.conversationId} on channel ${channelId} (${platform}) failed: ${(err as Error).message}`,
+            );
+          }
+        }
+      } catch (err) {
+        // Bluesky chat scope gating returns 403 — listConvos in the service
+        // already logs + returns []. Anything else is a real error; log it
+        // but don't fail the whole channel poll (comments succeeded above).
+        this.logger.error(
+          `Inbox DM poll: ${platform} channel ${channelId} list failed: ${(err as Error).message}`,
+        );
+      }
+    }
+
     // Mark channel as polled even if no new items — prevents thrashing on next cron.
     await db
       .update(socialMediaChannels)
@@ -196,10 +330,57 @@ export class InboxPollProcessor extends WorkerHost {
       .where(eq(socialMediaChannels.id, channelId));
 
     this.logger.log(
-      `Inbox poll: channel ${channelId} (${platform}) — posts:${recent.length} fetched:${fetched} new:${ingested} dup:${duplicates}`,
+      `Inbox poll: channel ${channelId} (${platform}) — posts:${recent.length} fetched:${fetched} new:${ingested} dup:${duplicates} dmNew:${dmIngested}`,
     );
 
-    return { ok: true, ingested };
+    return { ok: true, ingested: ingested + dmIngested };
+  }
+
+  /**
+   * Re-arm Meta webhook subscription for an FB Page or IG Business account.
+   * Called lazily once per channel per backend lifetime as a safety net for
+   * cases where the OAuth-time subscribe got lost. Best-effort, errors only
+   * surface in logs.
+   */
+  private async ensureWebhookSubscription(
+    channel: ResolvedChannel,
+    platform: SupportedPlatform,
+  ): Promise<void> {
+    try {
+      if (platform === 'facebook') {
+        await this.facebookService.subscribePageToWebhooks(
+          channel.platformAccountId,
+          channel.accessToken,
+          [
+            'feed',
+            'messages',
+            'messaging_postbacks',
+            'message_deliveries',
+            'message_reads',
+            'message_reactions',
+            'message_echoes',
+            'message_edits',
+          ],
+        );
+        this.logger.log(
+          `Webhook subscribe (FB) re-armed for channel ${channel.id} (page=${channel.platformAccountId})`,
+        );
+      } else if (platform === 'instagram') {
+        await this.instagramService.subscribeAccountToWebhooks(
+          channel.platformAccountId,
+          channel.accessToken,
+          ['comments', 'messages', 'messaging_postbacks', 'message_reactions'],
+        );
+        this.logger.log(
+          `Webhook subscribe (IG) re-armed for channel ${channel.id} (ig=${channel.platformAccountId})`,
+        );
+      }
+    } catch (err) {
+      // Don't escalate — polling continues as the fallback.
+      this.logger.warn(
+        `Webhook auto-subscribe failed for channel ${channel.id} (${platform}): ${(err as Error).message}`,
+      );
+    }
   }
 }
 

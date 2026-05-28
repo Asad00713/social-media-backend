@@ -1,4 +1,14 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+} from '@nestjs/common';
+import type {
+  FetchedDm,
+  CreatedDm,
+  DmConversationSummary,
+  ResolvedChannel,
+} from '../../inbox/adapters/inbox-adapter.interface';
 
 export interface BlueskySession {
   did: string; // Decentralized Identifier
@@ -964,6 +974,324 @@ export class BlueskyService {
 
     const data = await response.json();
     return data.posts ?? [];
+  }
+
+  // ==========================================================================
+  // Bluesky Chat DM — Phase 2.1
+  // ==========================================================================
+  // All chat requests need: header `atproto-proxy: did:web:api.bsky.chat#bsky_chat`
+  // Lexicon: chat.bsky.convo.listConvos / getConvo / sendMessage
+
+  // Bluesky Chat lives on a dedicated AppView host (api.bsky.chat) — NOT on the
+  // user's PDS. All chat lexicon calls require the `atproto-proxy` header so the
+  // entryway routes the request to the chat AppView under the bsky_chat key.
+  private readonly chatApiBaseUrl = 'https://api.bsky.chat/xrpc';
+  private readonly chatProxyHeader = 'did:web:api.bsky.chat#bsky_chat';
+
+  /**
+   * List chat conversations for this Bluesky account.
+   *
+   * Endpoint: GET chat.bsky.convo.listConvos
+   *
+   * `since` is filtered client-side because listConvos doesn't accept a since
+   * cursor — we drop convos whose lastMessage.sentAt is older than `since`.
+   *
+   * On 403 (account lacks chat scope) we log a warning and return [] so the
+   * caller can keep syncing the rest of the workspace without erroring.
+   */
+  async listChatConvos(
+    channel: ResolvedChannel,
+    since?: Date,
+  ): Promise<DmConversationSummary[]> {
+    const url = `${this.chatApiBaseUrl}/chat.bsky.convo.listConvos?limit=50`;
+
+    const response = await fetch(url, {
+      headers: {
+        Authorization: `Bearer ${channel.accessToken}`,
+        'atproto-proxy': this.chatProxyHeader,
+      },
+    });
+
+    if (response.status === 403) {
+      this.logger.warn(
+        `Bluesky chat listConvos returned 403 for did=${channel.platformAccountId} — account likely lacks chat scope. Returning empty list.`,
+      );
+      return [];
+    }
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(`Failed to list Bluesky chat convos: ${errorData}`);
+      throw new BadRequestException(
+        `Failed to fetch Bluesky chat conversations: ${errorData}`,
+      );
+    }
+
+    const data = (await response.json()) as {
+      convos?: Array<{
+        id: string;
+        unreadCount?: number;
+        members?: Array<{
+          did: string;
+          handle?: string;
+          displayName?: string;
+          avatar?: string;
+        }>;
+        lastMessage?: {
+          id?: string;
+          text?: string;
+          sentAt?: string;
+          sender?: { did: string };
+        };
+      }>;
+    };
+
+    const myDid = channel.platformAccountId;
+    const sinceMs = since ? since.getTime() : undefined;
+    const summaries: DmConversationSummary[] = [];
+
+    for (const convo of data.convos ?? []) {
+      // Pick the "other" participant. Bluesky convos are currently 1:1, but
+      // members[] includes the authed user too — filter ourselves out.
+      const other = (convo.members ?? []).find((m) => m.did !== myDid);
+      if (!other) {
+        // Can't resolve the other side (self-convo or malformed) — skip.
+        continue;
+      }
+
+      const lastMessage = convo.lastMessage;
+      const lastSentAtRaw = lastMessage?.sentAt;
+      const lastMessageAt = lastSentAtRaw ? new Date(lastSentAtRaw) : new Date(0);
+
+      if (sinceMs !== undefined && lastMessageAt.getTime() < sinceMs) {
+        continue;
+      }
+
+      summaries.push({
+        conversationId: convo.id,
+        participant: {
+          platformId: other.did,
+          handle: other.handle,
+          displayName: other.displayName,
+          avatarUrl: other.avatar,
+        },
+        lastMessageText: lastMessage?.text ?? '',
+        lastMessageAt,
+        lastMessageFromMe: lastMessage?.sender?.did === myDid,
+        unreadCount: convo.unreadCount ?? 0,
+        metadata: {
+          bskyConvoId: convo.id,
+          bskyLastMessageId: lastMessage?.id,
+        },
+      });
+    }
+
+    return summaries;
+  }
+
+  /**
+   * Fetch messages in a Bluesky chat convo.
+   *
+   * Endpoint: GET chat.bsky.convo.getMessages?convoId=...
+   *
+   * `since` filtered client-side (Bluesky's getMessages doesn't take a since
+   * cursor in the public lexicon; the `cursor` field is opaque pagination).
+   * On 403 we return [] with a warning, matching listChatConvos.
+   */
+  async getChatConvoMessages(
+    channel: ResolvedChannel,
+    conversationId: string,
+    since?: Date,
+  ): Promise<FetchedDm[]> {
+    const url = new URL(`${this.chatApiBaseUrl}/chat.bsky.convo.getMessages`);
+    url.searchParams.set('convoId', conversationId);
+    url.searchParams.set('limit', '100');
+
+    const response = await fetch(url.toString(), {
+      headers: {
+        Authorization: `Bearer ${channel.accessToken}`,
+        'atproto-proxy': this.chatProxyHeader,
+      },
+    });
+
+    if (response.status === 403) {
+      this.logger.warn(
+        `Bluesky chat getMessages returned 403 for convo=${conversationId} did=${channel.platformAccountId}. Returning empty list.`,
+      );
+      return [];
+    }
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(
+        `Failed to fetch Bluesky chat messages (convo=${conversationId}): ${errorData}`,
+      );
+      throw new BadRequestException(
+        `Failed to fetch Bluesky chat messages: ${errorData}`,
+      );
+    }
+
+    const data = (await response.json()) as {
+      messages?: Array<{
+        id: string;
+        text?: string;
+        sentAt?: string;
+        sender?: { did: string };
+        // Deleted messages come back as a different $type with no text — we
+        // skip those rather than emit empty DMs.
+        $type?: string;
+      }>;
+      cursor?: string;
+    };
+
+    const myDid = channel.platformAccountId;
+    const sinceMs = since ? since.getTime() : undefined;
+    const fetched: FetchedDm[] = [];
+
+    for (const message of data.messages ?? []) {
+      // Only include "real" messages — Bluesky also returns deletedMessageView
+      // entries with $type chat.bsky.convo.defs#deletedMessageView; those have
+      // no text and we don't want them in the inbox.
+      if (
+        message.$type &&
+        message.$type !== 'chat.bsky.convo.defs#messageView'
+      ) {
+        continue;
+      }
+
+      const sentAtRaw = message.sentAt;
+      const sentAt = sentAtRaw ? new Date(sentAtRaw) : new Date();
+      if (sinceMs !== undefined && sentAt.getTime() < sinceMs) {
+        continue;
+      }
+
+      const senderDid = message.sender?.did;
+      const fromMe = senderDid === myDid;
+
+      fetched.push({
+        conversationId,
+        platformItemId: message.id,
+        platformParentId: null, // Bluesky chat has no reply-threading per message
+        author: fromMe
+          ? null
+          : senderDid
+          ? {
+              platformId: senderDid,
+              handle: undefined,
+              displayName: undefined,
+              avatarUrl: undefined,
+            }
+          : null,
+        text: message.text ?? '',
+        platformCreatedAt: sentAt,
+        fromMe,
+        metadata: {
+          bskyMessageId: message.id,
+        },
+      });
+    }
+
+    return fetched;
+  }
+
+  /**
+   * Send a Bluesky chat message.
+   *
+   * Endpoint: POST chat.bsky.convo.sendMessage
+   *   body: { convoId, message: { text } }
+   *
+   * Errors are thrown (not swallowed) — InboxService surfaces them to the user.
+   */
+  async sendChatMessage(
+    channel: ResolvedChannel,
+    conversationId: string,
+    text: string,
+  ): Promise<CreatedDm> {
+    const response = await fetch(
+      `${this.chatApiBaseUrl}/chat.bsky.convo.sendMessage`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${channel.accessToken}`,
+          'atproto-proxy': this.chatProxyHeader,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          convoId: conversationId,
+          message: { text },
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(
+        `Failed to send Bluesky chat message (convo=${conversationId}): ${errorData}`,
+      );
+      if (response.status === 403) {
+        throw new BadRequestException(
+          'Bluesky chat is not enabled for this account. Open bsky.app → Settings → Privacy and Security → Chat and confirm DMs are allowed, then retry.',
+        );
+      }
+      throw new BadRequestException(
+        `Failed to send Bluesky chat message: ${errorData}`,
+      );
+    }
+
+    const sent = (await response.json()) as {
+      id: string;
+      text?: string;
+      sentAt?: string;
+      sender?: { did: string };
+    };
+
+    return {
+      conversationId,
+      platformItemId: sent.id,
+      text: sent.text ?? text,
+      platformCreatedAt: sent.sentAt ? new Date(sent.sentAt) : new Date(),
+    };
+  }
+
+  /**
+   * Delete a chat message — Bluesky exposes a "delete for self" lexicon that
+   * removes the message from our side only (the recipient still sees it).
+   *
+   * Endpoint: POST chat.bsky.convo.deleteMessageForSelf
+   *   body: { convoId, messageId }
+   *
+   * Phase 2.3 — used by inbox delete-DM flow.
+   */
+  async deleteChatMessage(
+    accessToken: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<void> {
+    const response = await fetch(
+      `${this.chatApiBaseUrl}/chat.bsky.convo.deleteMessageForSelf`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'atproto-proxy': this.chatProxyHeader,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          convoId: conversationId,
+          messageId,
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(
+        `Failed to delete Bluesky chat message ${messageId}: ${errorData}`,
+      );
+      throw new BadRequestException(
+        `Failed to delete Bluesky DM: ${errorData}`,
+      );
+    }
   }
 }
 

@@ -10,6 +10,7 @@ export const QUEUES = {
   DRIP_CAMPAIGNS: 'drip-campaigns',
   CHANNEL_SNAPSHOTS: 'channel-snapshots',
   INBOX_POLLING: 'inbox-polling',
+  SCHEDULED_INBOX: 'scheduled-inbox',
 } as const;
 
 @Module({
@@ -54,6 +55,7 @@ export const QUEUES = {
       { name: QUEUES.DRIP_CAMPAIGNS },
       { name: QUEUES.CHANNEL_SNAPSHOTS },
       { name: QUEUES.INBOX_POLLING },
+      { name: QUEUES.SCHEDULED_INBOX },
     ),
   ],
   providers: [RateLimiterService],

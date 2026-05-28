@@ -11,6 +11,9 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { InboxService } from '../inbox/inbox.service';
+import { FacebookService } from './services/facebook.service';
+import { InstagramService } from './services/instagram.service';
+import { ChannelService } from './services/channel.service';
 import type { SupportedPlatform } from '../drizzle/schema/channels.schema';
 
 /**
@@ -32,7 +35,12 @@ export class WebhooksController {
   private readonly META_VERIFY_TOKEN =
     process.env.META_WEBHOOK_VERIFY_TOKEN || 'webondev_verify_123';
 
-  constructor(private readonly inbox: InboxService) {}
+  constructor(
+    private readonly inbox: InboxService,
+    private readonly facebookService: FacebookService,
+    private readonly instagramService: InstagramService,
+    private readonly channelService: ChannelService,
+  ) {}
 
   // ==========================================================================
   // Meta (Facebook / Instagram / Threads) — verification challenges
@@ -135,14 +143,47 @@ export class WebhooksController {
     payload: any,
     source: 'instagram' | 'facebook' | 'threads',
   ): Promise<void> {
+    // Diagnostic top-level log — emits once per webhook delivery so we can see
+    // what Meta is actually sending us. Use to debug missing events.
+    this.logger.log(
+      `${source} webhook payload received: object=${payload?.object} entries=${(payload?.entry ?? []).length}`,
+    );
+
     const entries = payload?.entry ?? [];
     for (const entry of entries) {
       const accountId = entry.id as string;
       const eventTime = entry.time
         ? new Date(Number(entry.time) * 1000)
         : new Date();
-      const changes = entry.changes ?? [];
 
+      // Phase 2.1 — DM events arrive on `entry.messaging[]` (not `entry.changes[]`).
+      // FB Messenger and IG Direct both use this shape. Threads has no DM API.
+      const messagingEvents = entry.messaging ?? [];
+      this.logger.log(
+        `${source} entry: id=${accountId} messaging=${messagingEvents.length} changes=${(entry.changes ?? []).length}`,
+      );
+      if (messagingEvents.length > 0 && source !== 'threads') {
+        for (const event of messagingEvents) {
+          // Log the raw event so we can see exact payload shape from IG.
+          this.logger.log(
+            `${source} messaging event: ${JSON.stringify(event).slice(0, 500)}`,
+          );
+          try {
+            await this.ingestMetaMessagingEvent(
+              source as 'facebook' | 'instagram',
+              accountId,
+              event,
+              eventTime,
+            );
+          } catch (err) {
+            this.logger.error(
+              `${source} DM webhook handler failed: ${(err as Error).message}`,
+            );
+          }
+        }
+      }
+
+      const changes = entry.changes ?? [];
       for (const change of changes) {
         const field = change.field as string;
         const value = change.value ?? {};
@@ -154,6 +195,17 @@ export class WebhooksController {
         try {
           if (source === 'instagram' && field === 'comments') {
             await this.ingestInstagramComment(accountId, value, eventTime);
+          } else if (source === 'instagram' && field === 'messages') {
+            // IG Direct DMs arrive via changes[].field='messages' (NOT
+            // entry.messaging[] like FB Messenger). Same inner shape though:
+            //   value = { sender:{id}, recipient:{id}, timestamp, message:{mid,text} }
+            // Route to the shared ingestMetaMessagingEvent path.
+            await this.ingestMetaMessagingEvent(
+              'instagram',
+              accountId,
+              value,
+              eventTime,
+            );
           } else if (
             source === 'facebook' &&
             (field === 'feed' || field === 'comments')
@@ -162,7 +214,6 @@ export class WebhooksController {
           } else if (source === 'threads' && field === 'replies') {
             await this.ingestThreadsReply(accountId, value, eventTime);
           } else {
-            // mentions / messages / story_insights → Phase 2 / analytics.
             this.logger.verbose(`Ignoring ${source} field '${field}' in Phase 1`);
           }
         } catch (err) {
@@ -172,6 +223,142 @@ export class WebhooksController {
         }
       }
     }
+  }
+
+  /**
+   * Ingest a Meta DM webhook event (FB Messenger or IG Direct).
+   *
+   * Event shape:
+   *   { sender: { id: psid }, recipient: { id: pageId }, timestamp,
+   *     message: { mid, text, ...(attachments / reactions / etc) } }
+   *
+   * For Phase 2.1 we ingest only text messages. Attachments / reactions /
+   * read receipts are logged and dropped — Phase 2.2 will handle them.
+   *
+   * Conversation id format:
+   *   FB:  `<pageId>:<senderPsid>`   (recipient = page, sender = user)
+   *   IG:  `<igUserId>:<senderIgsid>`
+   *
+   * When the sender is the Page itself (echo of an outbound message), we still
+   * upsert with fromMe=true; the unique constraint dedups against our optimistic
+   * send insert.
+   */
+  private async ingestMetaMessagingEvent(
+    source: 'facebook' | 'instagram',
+    accountId: string,
+    event: any,
+    eventTime: Date,
+  ): Promise<void> {
+    const senderId = event?.sender?.id as string | undefined;
+    const recipientId = event?.recipient?.id as string | undefined;
+    const message = event?.message;
+
+    if (!senderId || !recipientId || !message) {
+      this.logger.verbose(
+        `${source} messaging event ignored — non-text or missing fields`,
+      );
+      return;
+    }
+
+    const mid = message.mid as string | undefined;
+    const text = (message.text as string | undefined) ?? '';
+    if (!mid) return;
+
+    // is_echo === true when the Page sent the message (outbound echo).
+    const fromMe = message.is_echo === true || senderId === accountId;
+    // Other-party id: the user (PSID/IGSID), not the page.
+    const otherPartyId = fromMe ? recipientId : senderId;
+    const conversationId = `${accountId}:${otherPartyId}`;
+
+    // Look up channel + workspace by platform account id.
+    const channel = await this.inbox.findChannelByPlatformAccount(
+      source as SupportedPlatform,
+      accountId,
+    );
+    if (!channel) {
+      this.logger.warn(
+        `${source} DM webhook: NO CHANNEL FOUND for platform=${source} platformAccountId=${accountId}. ` +
+          `Check that the connected channel's platformAccountId matches this id ` +
+          `(diff = the IG/page id in webhook vs what OAuth stored).`,
+      );
+      return;
+    }
+    this.logger.log(
+      `${source} DM webhook: matched channel=${channel.id} workspace=${channel.workspaceId}`,
+    );
+
+    // Timestamp parsing — FB Messenger sends ms, IG samples sometimes show
+    // seconds. Auto-detect: anything below 10^12 is seconds.
+    let createdAt: Date = eventTime;
+    if (event.timestamp) {
+      const tsNum = Number(event.timestamp);
+      if (Number.isFinite(tsNum) && tsNum > 0) {
+        createdAt = new Date(tsNum < 1e12 ? tsNum * 1000 : tsNum);
+      }
+    }
+
+    // Enrich author info for inbound messages (not echoes). The webhook payload
+    // only contains the platform id of the sender — name + avatar come from
+    // the User Profile API. Best-effort: if the call fails, we still ingest
+    // the row with null author fields and surface "Unknown" in the UI.
+    let authorHandle: string | null = null;
+    let authorDisplayName: string | null = null;
+    let authorAvatarUrl: string | null = null;
+
+    if (!fromMe) {
+      try {
+        const token = await this.channelService.getAccessToken(
+          channel.id,
+          channel.workspaceId,
+        );
+        if (source === 'facebook') {
+          const profile = await this.facebookService.getMessengerUserProfile(
+            otherPartyId,
+            token,
+          );
+          if (profile) {
+            authorHandle = profile.firstName ?? profile.name;
+            authorDisplayName = profile.name;
+            authorAvatarUrl = profile.profilePictureUrl;
+          }
+        } else {
+          const profile = await this.instagramService.getInstagramUserProfile(
+            otherPartyId,
+            token,
+          );
+          if (profile) {
+            authorHandle = profile.username;
+            authorDisplayName = profile.name ?? profile.username;
+            authorAvatarUrl = profile.profilePictureUrl;
+          }
+        }
+      } catch (err) {
+        this.logger.warn(
+          `${source} DM author enrichment failed for ${otherPartyId}: ${(err as Error).message}`,
+        );
+      }
+    }
+
+    await this.inbox.upsertDm({
+      workspaceId: channel.workspaceId,
+      channelId: channel.id,
+      platform: source as SupportedPlatform,
+      conversationId,
+      platformItemId: mid,
+      platformParentId: (message.reply_to?.mid as string | undefined) ?? null,
+      authorPlatformId: otherPartyId,
+      authorHandle,
+      authorDisplayName,
+      authorAvatarUrl,
+      text,
+      fromMe,
+      platformCreatedAt: createdAt,
+      metadata: { raw: event },
+    });
+
+    this.logger.log(
+      `${source} DM ingested: convo=${conversationId} mid=${mid} fromMe=${fromMe}`,
+    );
   }
 
   // ──────────────────────────────────────────────────────────────────────

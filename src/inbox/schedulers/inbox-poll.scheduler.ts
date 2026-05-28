@@ -42,7 +42,7 @@ export class InboxPollScheduler {
 
   constructor(@InjectQueue(QUEUES.INBOX_POLLING) private readonly queue: Queue) {}
 
-  @Cron('*/5 * * * *', { timeZone: 'UTC', name: 'enqueueInboxPolling' })
+  @Cron('*/30 * * * * *', { timeZone: 'UTC', name: 'enqueueInboxPolling' })
   async enqueueInboxPolling(): Promise<void> {
     const rows = await db
       .select({ id: socialMediaChannels.id })

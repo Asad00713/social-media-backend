@@ -83,4 +83,12 @@ export class InstagramInboxAdapter implements PlatformInboxAdapter {
       platformCreatedAt: new Date(),
     };
   }
+
+  // Phase 2.3 — delete an IG comment authored by the connected business account.
+  async deleteComment(
+    channel: ResolvedChannel,
+    platformItemId: string,
+  ): Promise<boolean> {
+    return this.instagram.deleteComment(channel.accessToken, platformItemId);
+  }
 }

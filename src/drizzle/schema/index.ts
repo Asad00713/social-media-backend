@@ -15,3 +15,4 @@ export * from './post-metric-snapshots.schema';
 export * from './channel-analytics-daily.schema';
 export * from './channel-sync-state.schema';
 export * from './inbox.schema';
+export * from './scheduled-inbox-messages.schema';

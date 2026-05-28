@@ -35,6 +35,32 @@ export class YouTubeService {
   private readonly apiBaseUrl = 'https://www.googleapis.com/youtube/v3';
 
   /**
+   * Delete a YouTube comment authored by the connected channel. Phase 2.3.
+   *
+   * Endpoint: DELETE /youtube/v3/comments?id={commentId}
+   * Requires scope: youtube.force-ssl
+   */
+  async deleteComment(
+    accessToken: string,
+    commentId: string,
+  ): Promise<boolean> {
+    const url = new URL(`${this.apiBaseUrl}/comments`);
+    url.searchParams.set('id', commentId);
+    const res = await fetch(url.toString(), {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    // YouTube returns 204 No Content on success.
+    if (res.status === 204) return true;
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`YouTube deleteComment failed: ${err}`);
+      throw new Error(`YouTube delete failed: ${res.status} ${err}`);
+    }
+    return true;
+  }
+
+  /**
    * Get the authenticated user's YouTube channel
    */
   async getCurrentChannel(accessToken: string): Promise<YouTubeChannel> {

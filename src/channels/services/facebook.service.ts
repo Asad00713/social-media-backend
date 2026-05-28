@@ -1,4 +1,9 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import type {
+  FetchedDm,
+  CreatedDm,
+  DmConversationSummary,
+} from '../../inbox/adapters/inbox-adapter.interface';
 
 /**
  * Facebook/Instagram Page and Account data structures
@@ -1069,6 +1074,442 @@ export class FacebookService {
     const data = (await res.json()) as { id?: string };
     if (!data.id) throw new Error('Facebook returned no reply id');
     return { commentId: data.id };
+  }
+
+  // ==========================================================================
+  // Messenger DM — Phase 2.1.fb-impl
+  // ==========================================================================
+
+  /**
+   * Resolve a Messenger user (PSID) to their public profile. Used by the
+   * webhook handler to enrich author info on inbound DMs (the webhook payload
+   * only contains the PSID — name + picture have to be fetched separately).
+   *
+   * Endpoint: GET /<psid>?fields=name,first_name,last_name,profile_pic
+   *   &access_token=<page-token>
+   *
+   * Page-scoped: the PSID is only readable by the page that received the DM.
+   * Returns null on failure (e.g. user blocked, deleted, restricted) — caller
+   * persists the row with handle/name=null and we'll surface "Unknown" in UI.
+   */
+  async getMessengerUserProfile(
+    psid: string,
+    pageAccessToken: string,
+  ): Promise<{
+    name: string | null;
+    firstName: string | null;
+    profilePictureUrl: string | null;
+  } | null> {
+    try {
+      const url = new URL(`${this.graphApiUrl}/${psid}`);
+      url.searchParams.set('fields', 'name,first_name,last_name,profile_pic');
+      url.searchParams.set('access_token', pageAccessToken);
+
+      const res = await fetch(url.toString());
+      if (!res.ok) {
+        const err = await res.text();
+        this.logger.warn(
+          `Messenger getUserProfile failed for psid=${psid}: ${res.status} ${err}`,
+        );
+        return null;
+      }
+      const data = (await res.json()) as {
+        name?: string;
+        first_name?: string;
+        profile_pic?: string;
+      };
+      return {
+        name: data.name ?? null,
+        firstName: data.first_name ?? null,
+        profilePictureUrl: data.profile_pic ?? null,
+      };
+    } catch (err) {
+      this.logger.warn(
+        `Messenger getUserProfile threw for psid=${psid}: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
+   * List Messenger conversations on this Page.
+   *
+   * Endpoint: GET /<page-id>/conversations
+   *   ?platform=messenger
+   *   &fields=participants,updated_time,unread_count,
+   *           messages.limit(1){message,from,created_time,id}
+   *
+   * Returns one DmConversationSummary per thread. Our internal conversation_id
+   * is derived from `<pageId>:<otherPartyPsid>` (the non-page participant).
+   */
+  async listMessengerConversations(
+    pageId: string,
+    pageAccessToken: string,
+    _since?: Date,
+  ): Promise<DmConversationSummary[]> {
+    const url = new URL(`${this.graphApiUrl}/${pageId}/conversations`);
+    url.searchParams.set('platform', 'messenger');
+    url.searchParams.set(
+      'fields',
+      'participants,updated_time,unread_count,messages.limit(1){message,from,created_time,id}',
+    );
+    url.searchParams.set('limit', '50');
+    url.searchParams.set('access_token', pageAccessToken);
+
+    const res = await fetch(url.toString());
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(
+        `Messenger listConversations failed for page=${pageId}: ${err}`,
+      );
+      throw new Error(`Messenger listConversations failed: ${res.status}`);
+    }
+
+    const data = (await res.json()) as {
+      data?: Array<{
+        id: string;
+        participants?: { data: { id: string; name?: string }[] };
+        updated_time?: string;
+        unread_count?: number;
+        messages?: {
+          data: Array<{
+            id: string;
+            message?: string;
+            created_time?: string;
+            from?: { id: string; name?: string };
+          }>;
+        };
+      }>;
+    };
+
+    const summaries: DmConversationSummary[] = [];
+    for (const thread of data.data ?? []) {
+      const participants = thread.participants?.data ?? [];
+      const otherParty = participants.find((p) => p.id !== pageId);
+      if (!otherParty) continue;
+
+      const conversationId = `${pageId}:${otherParty.id}`;
+      const lastMessageEntry = thread.messages?.data?.[0];
+
+      summaries.push({
+        conversationId,
+        participant: {
+          platformId: otherParty.id,
+          handle: otherParty.name ?? undefined,
+          displayName: otherParty.name ?? undefined,
+        },
+        lastMessageText: lastMessageEntry?.message ?? '',
+        lastMessageAt: lastMessageEntry?.created_time
+          ? new Date(lastMessageEntry.created_time)
+          : thread.updated_time
+            ? new Date(thread.updated_time)
+            : new Date(),
+        lastMessageFromMe: lastMessageEntry?.from?.id === pageId,
+        unreadCount: thread.unread_count ?? 0,
+        metadata: { thread_id: thread.id },
+      });
+    }
+    return summaries;
+  }
+
+  /**
+   * Fetch messages in a Messenger conversation (for backfill / initial sync).
+   * The conversation_id is `<pageId>:<otherPartyPsid>` — we first resolve the
+   * thread_id via `/<page>/conversations?user_id=<psid>`, then list messages.
+   */
+  async fetchMessengerThread(
+    pageId: string,
+    pageAccessToken: string,
+    conversationId: string,
+    _since?: Date,
+  ): Promise<FetchedDm[]> {
+    const [, otherPartyId] = conversationId.split(':');
+    if (!otherPartyId) {
+      throw new Error(`Invalid Messenger conversation id: ${conversationId}`);
+    }
+
+    // 1) Resolve thread_id from the other party's PSID.
+    const lookupUrl = new URL(`${this.graphApiUrl}/${pageId}/conversations`);
+    lookupUrl.searchParams.set('platform', 'messenger');
+    lookupUrl.searchParams.set('user_id', otherPartyId);
+    lookupUrl.searchParams.set('fields', 'id');
+    lookupUrl.searchParams.set('access_token', pageAccessToken);
+
+    const lookupRes = await fetch(lookupUrl.toString());
+    if (!lookupRes.ok) {
+      throw new Error(
+        `Messenger thread lookup failed: ${lookupRes.status} ${await lookupRes.text()}`,
+      );
+    }
+    const lookupData = (await lookupRes.json()) as {
+      data?: { id: string }[];
+    };
+    const threadId = lookupData.data?.[0]?.id;
+    if (!threadId) return [];
+
+    // 2) Fetch messages in that thread.
+    // `attachments` field surfaces image/video/audio attached to a message —
+    // each entry has mime_type + image_data.url (for images) or file_url.
+    const msgUrl = new URL(`${this.graphApiUrl}/${threadId}/messages`);
+    msgUrl.searchParams.set(
+      'fields',
+      'id,message,from,to,created_time,attachments{id,mime_type,name,image_data,video_data,file_url}',
+    );
+    msgUrl.searchParams.set('limit', '100');
+    msgUrl.searchParams.set('access_token', pageAccessToken);
+
+    const msgRes = await fetch(msgUrl.toString());
+    if (!msgRes.ok) {
+      throw new Error(
+        `Messenger thread fetch failed: ${msgRes.status} ${await msgRes.text()}`,
+      );
+    }
+    const msgData = (await msgRes.json()) as {
+      data?: Array<{
+        id: string;
+        message?: string;
+        created_time?: string;
+        from?: { id: string; name?: string };
+        attachments?: {
+          data?: Array<{
+            id?: string;
+            mime_type?: string;
+            name?: string;
+            image_data?: { url?: string; preview_url?: string };
+            video_data?: { url?: string; preview_url?: string };
+            file_url?: string;
+          }>;
+        };
+      }>;
+    };
+
+    const messages: FetchedDm[] = [];
+    for (const m of msgData.data ?? []) {
+      const fromMe = m.from?.id === pageId;
+
+      // Phase 2.3 — map FB attachment shapes to our DmAttachment normalized form.
+      const attachments = (m.attachments?.data ?? [])
+        .map((a) => {
+          const mime = a.mime_type ?? '';
+          const url =
+            a.image_data?.url ??
+            a.video_data?.url ??
+            a.file_url ??
+            '';
+          if (!url) return null;
+          const kind: 'image' | 'video' | 'audio' | 'file' = mime.startsWith(
+            'image/',
+          )
+            ? 'image'
+            : mime.startsWith('video/')
+              ? 'video'
+              : mime.startsWith('audio/')
+                ? 'audio'
+                : 'file';
+          return {
+            kind,
+            url,
+            contentType: mime || undefined,
+            thumbnailUrl: a.image_data?.preview_url ?? a.video_data?.preview_url,
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => x !== null);
+
+      messages.push({
+        conversationId,
+        platformItemId: m.id,
+        author: fromMe
+          ? null
+          : {
+              platformId: m.from?.id ?? otherPartyId,
+              handle: m.from?.name ?? undefined,
+              displayName: m.from?.name ?? undefined,
+            },
+        text: m.message ?? '',
+        platformCreatedAt: m.created_time ? new Date(m.created_time) : new Date(),
+        fromMe,
+        attachments: attachments.length > 0 ? attachments : undefined,
+      });
+    }
+    return messages;
+  }
+
+  /**
+   * Send a Messenger DM. Standard messaging mode — only valid inside the
+   * 24h window since the user's last message. Outside that window FB returns
+   * error code 10 / subcode 2018278; the InboxService's window check should
+   * prevent reaching this method, but we still surface FB's error verbatim.
+   *
+   * Endpoint: POST /me/messages?access_token=<page-token>
+   *   body: { recipient: { id: psid }, message: { text },
+   *           messaging_type: 'RESPONSE' }
+   */
+  /**
+   * Delete a Facebook comment. Requires the comment to have been authored by
+   * the page (i.e. `from.id === pageId`) — Graph API rejects otherwise with
+   * "(#200) Comments cannot be removed by this user". Phase 2.3.
+   *
+   * Endpoint: DELETE /{comment-id}?access_token=PAGE_TOKEN
+   */
+  async deleteComment(
+    pageAccessToken: string,
+    commentId: string,
+  ): Promise<boolean> {
+    const url = new URL(`${this.graphApiUrl}/${commentId}`);
+    url.searchParams.set('access_token', pageAccessToken);
+    const res = await fetch(url.toString(), { method: 'DELETE' });
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`FB deleteComment failed: ${err}`);
+      throw new Error(`Facebook delete failed: ${res.status} ${err}`);
+    }
+    return true;
+  }
+
+  /**
+   * Unsend a Facebook Messenger message. Meta's Send API supports unsending
+   * via `/me/messages` with `message: { unsend: { mid } }`. The window is
+   * platform-enforced (~24h for some accounts, less for others). Phase 2.3.
+   */
+  async unsendMessengerMessage(
+    pageAccessToken: string,
+    recipientPsid: string,
+    messageId: string,
+  ): Promise<boolean> {
+    const url = new URL(`${this.graphApiUrl}/me/messages`);
+    url.searchParams.set('access_token', pageAccessToken);
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipient: { id: recipientPsid },
+        message: { unsend: { mid: messageId } },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`FB unsendMessage failed: ${err}`);
+      throw new Error(
+        `Failed to unsend Messenger message: ${res.status} ${err}`,
+      );
+    }
+    return true;
+  }
+
+  async sendMessengerMessage(
+    pageId: string,
+    pageAccessToken: string,
+    recipientPsid: string,
+    text: string,
+  ): Promise<CreatedDm> {
+    const url = new URL(`${this.graphApiUrl}/me/messages`);
+    url.searchParams.set('access_token', pageAccessToken);
+
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipient: { id: recipientPsid },
+        message: { text },
+        messaging_type: 'RESPONSE',
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`Messenger send failed: ${err}`);
+      throw new Error(`Messenger send failed: ${res.status} ${err}`);
+    }
+
+    const data = (await res.json()) as {
+      message_id?: string;
+      recipient_id?: string;
+    };
+    if (!data.message_id) {
+      throw new Error('Messenger send: no message_id returned');
+    }
+
+    // FB's send response doesn't include a timestamp; use server now. The
+    // echo webhook will follow shortly with the canonical timestamp and our
+    // upsert merges them via the unique (channel, platform_item_id) constraint.
+    return {
+      conversationId: `${pageId}:${recipientPsid}`,
+      platformItemId: data.message_id,
+      text,
+      platformCreatedAt: new Date(),
+    };
+  }
+
+  /**
+   * Send a Messenger message with a media attachment (image / video / audio /
+   * file). Meta supports passing a public URL via attachment.payload.url so
+   * we don't have to upload bytes — R2's public URL is sufficient.
+   *
+   * One attachment per message (Meta's API constraint); for multiple, the
+   * caller sends multiple Messenger messages.
+   *
+   * Phase 2.3.
+   */
+  async sendMessengerAttachmentMessage(
+    pageId: string,
+    pageAccessToken: string,
+    recipientPsid: string,
+    attachment: {
+      kind: 'image' | 'video' | 'audio' | 'file';
+      url: string;
+    },
+    text?: string,
+  ): Promise<CreatedDm> {
+    const url = new URL(`${this.graphApiUrl}/me/messages`);
+    url.searchParams.set('access_token', pageAccessToken);
+
+    // FB's attachment.type taxonomy is: image | video | audio | file
+    const fbType = attachment.kind;
+
+    // If text is provided, FB requires it as a separate message. Send the
+    // attachment first; the text-only message can follow via the caller.
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipient: { id: recipientPsid },
+        message: {
+          attachment: {
+            type: fbType,
+            payload: { url: attachment.url, is_reusable: false },
+          },
+        },
+        messaging_type: 'RESPONSE',
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`Messenger attachment send failed: ${err}`);
+      throw new Error(`Messenger attachment send failed: ${res.status} ${err}`);
+    }
+
+    const data = (await res.json()) as { message_id?: string };
+    if (!data.message_id) {
+      throw new Error('Messenger attachment send: no message_id returned');
+    }
+
+    // Optional accompanying text — send as a second message right away.
+    if (text && text.trim()) {
+      await this.sendMessengerMessage(
+        pageId,
+        pageAccessToken,
+        recipientPsid,
+        text.trim(),
+      );
+    }
+
+    return {
+      conversationId: `${pageId}:${recipientPsid}`,
+      platformItemId: data.message_id,
+      text: text ?? '',
+      platformCreatedAt: new Date(),
+    };
   }
 }
 

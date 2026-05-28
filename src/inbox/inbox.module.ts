@@ -10,9 +10,16 @@ import { YoutubeInboxAdapter } from './adapters/youtube-inbox.adapter';
 import { FacebookInboxAdapter } from './adapters/facebook-inbox.adapter';
 import { InstagramInboxAdapter } from './adapters/instagram-inbox.adapter';
 import { ThreadsInboxAdapter } from './adapters/threads-inbox.adapter';
+import { FacebookDmAdapter } from './adapters/facebook-dm.adapter';
+import { InstagramDmAdapter } from './adapters/instagram-dm.adapter';
+import { BlueskyDmAdapter } from './adapters/bluesky-dm.adapter';
+import { MastodonDmAdapter } from './adapters/mastodon-dm.adapter';
 import { InboxPollProcessor } from './processors/inbox-poll.processor';
 import { InboxPollScheduler } from './schedulers/inbox-poll.scheduler';
+import { ScheduledInboxProcessor } from './processors/scheduled-inbox.processor';
+import { ScheduledMessagesService } from './services/scheduled-messages.service';
 import { ChannelsModule } from '../channels/channels.module';
+import { MediaModule } from '../media/media.module';
 import { QUEUES } from '../queue/queue.module';
 
 @Module({
@@ -21,7 +28,11 @@ import { QUEUES } from '../queue/queue.module';
   // INBOX_POLLING queue token; the queue itself is configured once in QueueModule.
   imports: [
     ChannelsModule,
-    BullModule.registerQueue({ name: QUEUES.INBOX_POLLING }),
+    MediaModule,
+    BullModule.registerQueue(
+      { name: QUEUES.INBOX_POLLING },
+      { name: QUEUES.SCHEDULED_INBOX },
+    ),
   ],
   controllers: [InboxController, WebhooksController],
   providers: [
@@ -33,9 +44,15 @@ import { QUEUES } from '../queue/queue.module';
     FacebookInboxAdapter,
     InstagramInboxAdapter,
     ThreadsInboxAdapter,
+    FacebookDmAdapter,
+    InstagramDmAdapter,
+    BlueskyDmAdapter,
+    MastodonDmAdapter,
     InboxPollProcessor,
     InboxPollScheduler,
+    ScheduledMessagesService,
+    ScheduledInboxProcessor,
   ],
-  exports: [InboxService, InboxDispatcher],
+  exports: [InboxService, InboxDispatcher, ScheduledMessagesService],
 })
 export class InboxModule {}

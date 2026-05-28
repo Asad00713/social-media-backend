@@ -84,4 +84,12 @@ export class FacebookInboxAdapter implements PlatformInboxAdapter {
       platformCreatedAt: new Date(),
     };
   }
+
+  // Phase 2.3 — delete a comment authored by the page.
+  async deleteComment(
+    channel: ResolvedChannel,
+    platformItemId: string,
+  ): Promise<boolean> {
+    return this.facebook.deleteComment(channel.accessToken, platformItemId);
+  }
 }
