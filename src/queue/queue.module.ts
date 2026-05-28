@@ -11,6 +11,9 @@ export const QUEUES = {
   CHANNEL_SNAPSHOTS: 'channel-snapshots',
   INBOX_POLLING: 'inbox-polling',
   SCHEDULED_INBOX: 'scheduled-inbox',
+  LEAD_INTAKE: 'lead-intake',
+  LEAD_DELIVERY: 'lead-delivery',
+  AD_INSIGHTS_SYNC: 'ad-insights-sync',
 } as const;
 
 @Module({
@@ -56,6 +59,9 @@ export const QUEUES = {
       { name: QUEUES.CHANNEL_SNAPSHOTS },
       { name: QUEUES.INBOX_POLLING },
       { name: QUEUES.SCHEDULED_INBOX },
+      { name: QUEUES.LEAD_INTAKE },
+      { name: QUEUES.LEAD_DELIVERY },
+      { name: QUEUES.AD_INSIGHTS_SYNC },
     ),
   ],
   providers: [RateLimiterService],
