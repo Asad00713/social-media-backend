@@ -1,4 +1,4 @@
-import { IsIn, IsInt, IsOptional, IsString, IsUUID, ValidateNested, Min, IsISO8601 } from 'class-validator'
+import { IsBoolean, IsIn, IsInt, IsOptional, IsString, IsUUID, ValidateNested, Min, IsISO8601 } from 'class-validator'
 import { Type } from 'class-transformer'
 import { AudienceDto } from './audience.dto'
 
@@ -11,4 +11,9 @@ export class CreateBoostDto {
   @IsInt() @Min(100) dailyBudgetMinor!: number   // e.g. 100 = $1.00 (Meta minimum)
   @IsISO8601() startTime!: string
   @IsOptional() @IsISO8601() endTime?: string
+  /** When true, campaign + ad set are flipped to ACTIVE after creation and
+   *  Meta starts spending immediately. When false (default), everything is
+   *  left PAUSED — the user must explicitly activate from the Ads overview
+   *  page. Safety default so accidental publish doesn't burn budget. */
+  @IsOptional() @IsBoolean() activateImmediately?: boolean
 }

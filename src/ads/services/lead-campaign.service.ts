@@ -79,19 +79,24 @@ export class LeadCampaignService {
       },
     })
 
-    // 6) Ad — created ACTIVE; campaign + adset are still PAUSED
+    const finalStatus = dto.activateImmediately ? 'ACTIVE' : 'PAUSED'
+
+    // 6) Ad (status follows the caller's choice — PAUSED by default)
     const ad = await this.meta.createAd(acct.metaAdAccountId, userToken, {
       name: `${dto.campaignName} ad`,
       adset_id: adset.id,
       creative: { creative_id: creative.id },
-      status: 'ACTIVE',
+      status: finalStatus,
     })
 
-    // 7) Resume entities (PAUSED → ACTIVE)
-    await this.meta.updateEntityStatus(camp.id, userToken, 'ACTIVE')
-    await this.meta.updateEntityStatus(adset.id, userToken, 'ACTIVE')
+    // 7) Only flip to ACTIVE if the caller opted in — otherwise the
+    // campaign stays PAUSED until the user activates it manually.
+    if (dto.activateImmediately) {
+      await this.meta.updateEntityStatus(camp.id, userToken, 'ACTIVE')
+      await this.meta.updateEntityStatus(adset.id, userToken, 'ACTIVE')
+    }
 
-    // 8) Persist mirror to DB
+    // 8) Persist mirror to DB with the real status
     const [campRow] = await db
       .insert(adCampaigns)
       .values({
@@ -102,7 +107,7 @@ export class LeadCampaignService {
         name: dto.campaignName,
         objective: 'OUTCOME_LEADS',
         kind: 'lead_gen',
-        status: 'ACTIVE',
+        status: finalStatus,
         specialAdCategories: dto.specialAdCategories,
         createdByUserId: userId,
       })
@@ -115,7 +120,7 @@ export class LeadCampaignService {
         campaignId: campRow.id,
         metaAdsetId: adset.id,
         name: `${dto.campaignName} adset`,
-        status: 'ACTIVE',
+        status: finalStatus,
         dailyBudgetMinor: dto.dailyBudgetMinor,
         currency: acct.currency,
         startTime: new Date(dto.startTime),
@@ -132,7 +137,7 @@ export class LeadCampaignService {
       adsetId: adsetRow.id,
       metaAdId: ad.id,
       name: `${dto.campaignName} ad`,
-      status: 'ACTIVE',
+      status: finalStatus,
       metaCreativeId: creative.id,
       creativeSnapshot: {
         headline: dto.headline,

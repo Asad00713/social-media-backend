@@ -62,19 +62,25 @@ export class BoostPostService {
       object_story_id: dto.platformPostId,
     })
 
-    // 4) Ad
+    const finalStatus = dto.activateImmediately ? 'ACTIVE' : 'PAUSED'
+
+    // 4) Ad (status follows the caller's choice — PAUSED by default)
     const ad = await this.meta.createAd(acct.metaAdAccountId, userToken, {
       name: `${camp.id} ad`,
       adset_id: adset.id,
       creative: { creative_id: creative.id },
-      status: 'ACTIVE',
+      status: finalStatus,
     })
 
-    // 5) Resume campaign + ad set (were PAUSED so all child entities created cleanly)
-    await this.meta.updateEntityStatus(camp.id, userToken, 'ACTIVE')
-    await this.meta.updateEntityStatus(adset.id, userToken, 'ACTIVE')
+    // 5) Only flip campaign + ad set to ACTIVE when caller opted in.
+    // Otherwise everything stays PAUSED — Meta won't spend until the user
+    // activates manually from the Ads overview.
+    if (dto.activateImmediately) {
+      await this.meta.updateEntityStatus(camp.id, userToken, 'ACTIVE')
+      await this.meta.updateEntityStatus(adset.id, userToken, 'ACTIVE')
+    }
 
-    // 6) Persist mirrors to DB
+    // 6) Persist mirrors to DB with the actual status
     const [campRow] = await db
       .insert(adCampaigns)
       .values({
@@ -85,7 +91,7 @@ export class BoostPostService {
         name: `Boost — ${dto.platformPostId}`,
         objective: dto.objective,
         kind: 'boost',
-        status: 'ACTIVE',
+        status: finalStatus,
         createdByUserId: userId,
       })
       .returning()
@@ -97,7 +103,7 @@ export class BoostPostService {
         campaignId: campRow.id,
         metaAdsetId: adset.id,
         name: `${camp.id} adset`,
-        status: 'ACTIVE',
+        status: finalStatus,
         dailyBudgetMinor: dto.dailyBudgetMinor,
         currency: acct.currency,
         startTime: new Date(dto.startTime),
@@ -114,7 +120,7 @@ export class BoostPostService {
       adsetId: adsetRow.id,
       metaAdId: ad.id,
       name: `${camp.id} ad`,
-      status: 'ACTIVE',
+      status: finalStatus,
       metaCreativeId: creative.id,
       creativeSnapshot: { object_story_id: dto.platformPostId },
     })
