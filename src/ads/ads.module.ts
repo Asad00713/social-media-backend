@@ -4,12 +4,7 @@ import { RealtimeModule } from '../realtime/realtime.module'
 import { EmailModule } from '../email/email.module'
 import { AdsController } from './ads.controller'
 import { LeadAdsController } from './lead-ads.controller'
-import { MetaAdsClient } from './services/meta-ads.client'
-import { AdAccountsService } from './services/ad-accounts.service'
 import { AdDraftsService } from './services/ad-drafts.service'
-import { BoostPostService } from './services/boost-post.service'
-import { LeadFormService } from './services/lead-form.service'
-import { LeadCampaignService } from './services/lead-campaign.service'
 import { LeadRouterService } from './services/lead-router.service'
 import { LeadDeliveryProcessor } from './processors/lead-delivery.processor'
 import { AdInsightsService } from './services/ad-insights.service'
@@ -20,23 +15,20 @@ import { AdMutationsService } from './services/ad-mutations.service'
 /**
  * AdsModule — Meta Ads Phase 1
  *
- * MetaAdsClient, AdAccountsService, and BoostPostService are declared in
- * ChannelsModule to avoid a circular dependency (AdsModule → ChannelsModule → AdsModule).
- * ChannelsModule exports them, so importing ChannelsModule here makes them
- * available for AdsController's dependency injection.
+ * Architecture note: MetaAdsClient, AdAccountsService, BoostPostService,
+ * LeadFormService, and LeadCampaignService live in ChannelsModule to avoid a
+ * circular dependency (those services need ChannelService for token retrieval).
+ * They are exported by ChannelsModule, so importing ChannelsModule here makes
+ * them available to AdsController/LeadAdsController via DI. Any module that
+ * needs those services should import ChannelsModule directly.
  *
- * AdDraftsService only touches the adDrafts table and has no channel dependency,
- * so it lives directly in this module's providers.
- *
- * LeadRouterService + LeadDeliveryProcessor live here (not in ChannelsModule) because
- * they depend on EmailModule, which is not imported by ChannelsModule. Importing
- * EmailModule in AdsModule is the cleanest path and avoids adding a new dependency to
- * the already-heavy ChannelsModule.
- *
- * AdInsightsService depends on MetaAdsClient + ChannelService, both of which are
- * exported by ChannelsModule, so it can live here in AdsModule.
- * AdInsightsSyncProcessor and AdInsightsSyncScheduler also live here as they only
- * depend on the queue and AdInsightsService.
+ * Providers that live here (and are therefore exportable from here):
+ *   - AdDraftsService — only touches adDrafts table, no channel dependency
+ *   - LeadRouterService + LeadDeliveryProcessor — need EmailModule, kept out
+ *     of ChannelsModule to keep that module lean
+ *   - AdInsightsService + sync processor + scheduler — depend on
+ *     MetaAdsClient/ChannelService via ChannelsModule export
+ *   - AdMutationsService — same pattern
  */
 @Module({
   imports: [ChannelsModule, RealtimeModule, EmailModule],
@@ -50,6 +42,11 @@ import { AdMutationsService } from './services/ad-mutations.service'
     AdInsightsSyncScheduler,
     AdMutationsService,
   ],
-  exports: [MetaAdsClient, AdAccountsService, AdDraftsService, BoostPostService, LeadFormService, LeadCampaignService, LeadRouterService, AdInsightsService, AdMutationsService],
+  exports: [
+    AdDraftsService,
+    LeadRouterService,
+    AdInsightsService,
+    AdMutationsService,
+  ],
 })
 export class AdsModule {}
