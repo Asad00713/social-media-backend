@@ -1435,6 +1435,7 @@ export class InboxService {
             token,
             [
               'feed',
+              'leadgen',
               'messages',
               'messaging_postbacks',
               'message_deliveries',

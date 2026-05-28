@@ -32,6 +32,7 @@ import { QUEUES } from '../queue/queue.module';
     BullModule.registerQueue(
       { name: QUEUES.INBOX_POLLING },
       { name: QUEUES.SCHEDULED_INBOX },
+      { name: QUEUES.LEAD_INTAKE },
     ),
   ],
   controllers: [InboxController, WebhooksController],

@@ -24,6 +24,8 @@ import { AdAccountsService } from '../ads/services/ad-accounts.service';
 import { BoostPostService } from '../ads/services/boost-post.service';
 import { LeadFormService } from '../ads/services/lead-form.service';
 import { LeadCampaignService } from '../ads/services/lead-campaign.service';
+import { LeadIntakeService } from '../ads/services/lead-intake.service';
+import { LeadIntakeProcessor } from '../ads/processors/lead-intake.processor';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { QueueModule } from '../queue/queue.module';
@@ -62,6 +64,8 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     BoostPostService,
     LeadFormService,
     LeadCampaignService,
+    LeadIntakeService,
+    LeadIntakeProcessor,
   ],
   exports: [
     ChannelService,
@@ -88,6 +92,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     BoostPostService,
     LeadFormService,
     LeadCampaignService,
+    LeadIntakeService,
   ],
 })
 export class ChannelsModule {}

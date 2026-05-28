@@ -9,12 +9,15 @@ import {
   Logger,
   Res,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import type { Response } from 'express';
 import { InboxService } from '../inbox/inbox.service';
 import { FacebookService } from './services/facebook.service';
 import { InstagramService } from './services/instagram.service';
 import { ChannelService } from './services/channel.service';
 import type { SupportedPlatform } from '../drizzle/schema/channels.schema';
+import { QUEUES } from '../queue/queue.module';
 
 /**
  * Webhooks Controller — receives push events from social platforms.
@@ -40,6 +43,7 @@ export class WebhooksController {
     private readonly facebookService: FacebookService,
     private readonly instagramService: InstagramService,
     private readonly channelService: ChannelService,
+    @InjectQueue(QUEUES.LEAD_INTAKE) private readonly leadIntakeQueue: Queue,
   ) {}
 
   // ==========================================================================
@@ -193,7 +197,23 @@ export class WebhooksController {
         );
 
         try {
-          if (source === 'instagram' && field === 'comments') {
+          if (field === 'leadgen') {
+            // Meta Ads lead gen — field arrives on FB Page webhooks when a user
+            // submits a lead form. Queue async so we can 200 Meta immediately.
+            await this.leadIntakeQueue.add(
+              'lead-intake',
+              {
+                leadgenId: value.leadgen_id as string,
+                pageId: value.page_id as string,
+                formId: value.form_id as string,
+                adId: value.ad_id as string | undefined,
+                adsetId: value.adset_id as string | undefined,
+                campaignId: value.campaign_id as string | undefined,
+                createdTime: value.created_time as number | undefined,
+              },
+              { attempts: 3, backoff: { type: 'exponential', delay: 5000 } },
+            );
+          } else if (source === 'instagram' && field === 'comments') {
             await this.ingestInstagramComment(accountId, value, eventTime);
           } else if (source === 'instagram' && field === 'messages') {
             // IG Direct DMs arrive via changes[].field='messages' (NOT
