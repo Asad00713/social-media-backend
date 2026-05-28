@@ -5,6 +5,7 @@ import {
   Get,
   HttpCode,
   HttpStatus,
+  NotFoundException,
   Param,
   Patch,
   Post,
@@ -19,12 +20,16 @@ import { BoostPostService } from './services/boost-post.service'
 import { LeadCampaignService } from './services/lead-campaign.service'
 import { AdInsightsService } from './services/ad-insights.service'
 import { AdMutationsService } from './services/ad-mutations.service'
+import { MetaAdsClient } from './services/meta-ads.client'
+import { ChannelService } from '../channels/services/channel.service'
 import { UpsertDraftDto } from './dto/draft.dto'
 import { CreateBoostDto } from './dto/create-boost.dto'
 import { CreateLeadCampaignDto } from './dto/create-lead-campaign.dto'
 import { UpdateCampaignStatusDto, UpdateAdSetBudgetDto } from './dto/ad-mutations.dto'
+import { DeliveryEstimateDto } from './dto/delivery-estimate.dto'
+import { audienceToMetaTargeting } from './utils/audience-to-targeting'
 import { db } from '../drizzle/db'
-import { adCampaigns, leads } from '../drizzle/schema'
+import { adAccounts, adCampaigns, leads } from '../drizzle/schema'
 import { eq, and, desc } from 'drizzle-orm'
 
 interface AuthUser {
@@ -42,6 +47,8 @@ export class AdsController {
     private readonly leadCampaign: LeadCampaignService,
     private readonly insights: AdInsightsService,
     private readonly mutations: AdMutationsService,
+    private readonly metaAdsClient: MetaAdsClient,
+    private readonly channelService: ChannelService,
   ) {}
 
   // ==========================================================================
@@ -279,6 +286,60 @@ export class AdsController {
       .limit(200)
 
     return { leads: rows }
+  }
+
+  // ==========================================================================
+  // Targeting helpers
+  // ==========================================================================
+
+  /**
+   * Autocomplete Meta's interest taxonomy.
+   * GET /ads/workspaces/:workspaceId/targeting/interests?q=<query>&channelId=<id>
+   *
+   * Returns empty array when q.length < 2.
+   */
+  @Get('targeting/interests')
+  async searchInterests(
+    @Query('q') q: string,
+    @Query('channelId') channelId: string,
+  ) {
+    if (!q || q.length < 2) {
+      return []
+    }
+    const channel = await this.channelService.getChannelForPosting(Number(channelId))
+    const token = channel.accessToken ?? ''
+    return this.metaAdsClient.searchInterests(q, token)
+  }
+
+  /**
+   * Estimate audience delivery for given targeting parameters.
+   * POST /ads/workspaces/:workspaceId/targeting/delivery-estimate
+   * Body: DeliveryEstimateDto
+   */
+  @Post('targeting/delivery-estimate')
+  async getDeliveryEstimate(
+    @Param('workspaceId') wid: string,
+    @Body() body: DeliveryEstimateDto,
+  ) {
+    const [account] = await db
+      .select()
+      .from(adAccounts)
+      .where(and(eq(adAccounts.id, body.adAccountId), eq(adAccounts.workspaceId, wid)))
+      .limit(1)
+
+    if (!account) {
+      throw new NotFoundException('Ad account not found in this workspace')
+    }
+
+    const channel = await this.channelService.getChannelForPosting(body.channelId)
+    const token = channel.accessToken ?? ''
+    const targeting = audienceToMetaTargeting(body.audience)
+    return this.metaAdsClient.getDeliveryEstimate(
+      account.metaAdAccountId,
+      token,
+      targeting,
+      body.optimizationGoal,
+    )
   }
 }
 
