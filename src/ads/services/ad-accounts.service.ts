@@ -1,6 +1,12 @@
-import { Injectable, Logger, NotFoundException, ForbiddenException } from '@nestjs/common'
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  ForbiddenException,
+  BadRequestException,
+} from '@nestjs/common'
 import { db } from '../../drizzle/db'
-import { adAccounts } from '../../drizzle/schema'
+import { adAccounts, socialMediaChannels } from '../../drizzle/schema'
 import { and, eq } from 'drizzle-orm'
 import { MetaAdsClient } from './meta-ads.client'
 import { ChannelService } from '../../channels/services/channel.service'
@@ -18,10 +24,23 @@ export class AdAccountsService {
 
   /**
    * Sync the user's connected Meta ad accounts.
-   * Called fire-and-forget after intent=ads OAuth completes.
+   *
+   * Meta's `/me/adaccounts` endpoint requires a USER access token (with
+   * ads_management / ads_read scopes). The channel row stores the Page
+   * access token, which can't read ad accounts. So we either:
+   *   1. Receive the fresh user token via the `userAccessToken` parameter
+   *      (called from `connectFacebookPage` right after OAuth completes), or
+   *   2. Pull a previously-cached user token from `channel.metadata.fbUserAccessToken`
+   *      (stashed at connect-time so manual refreshes work)
+   *
+   * If neither is available the user must reconnect via the
+   * Continue-with-Meta flow.
    */
-  async syncForChannel(workspaceId: string, channelId: number): Promise<void> {
-    // getChannelForPosting returns the channel with decrypted accessToken
+  async syncForChannel(
+    workspaceId: string,
+    channelId: number,
+    userAccessToken?: string,
+  ): Promise<void> {
     const channel = await this.channelService.getChannelForPosting(channelId)
 
     if (!channel || channel.platform !== 'facebook') {
@@ -32,11 +51,36 @@ export class AdAccountsService {
       throw new ForbiddenException('Channel does not belong to this workspace')
     }
 
-    if (!channel.accessToken) {
-      throw new ForbiddenException('Channel access token unavailable')
+    // Prefer the freshly-passed user token. Otherwise look for one stashed
+    // at connect-time in the channel metadata.
+    const cachedUserToken =
+      (channel.metadata as Record<string, unknown> | null)?.[
+        'fbUserAccessToken'
+      ]
+    const tokenToUse =
+      userAccessToken ??
+      (typeof cachedUserToken === 'string' ? cachedUserToken : undefined)
+
+    if (!tokenToUse) {
+      throw new BadRequestException(
+        'Cannot read ad accounts with a Page-scoped token. Please reconnect this Facebook page using the "Continue with Meta" flow to grant ads permissions.',
+      )
     }
 
-    const remote = await this.metaClient.listAdAccounts(channel.accessToken)
+    const remote = await this.metaClient.listAdAccounts(tokenToUse)
+
+    // If we got a fresh user token, cache it so manual refreshes work later.
+    if (userAccessToken) {
+      const nextMetadata = {
+        ...((channel.metadata as Record<string, unknown> | null) ?? {}),
+        fbUserAccessToken: userAccessToken,
+      }
+      await db
+        .update(socialMediaChannels)
+        .set({ metadata: nextMetadata, updatedAt: new Date() })
+        .where(eq(socialMediaChannels.id, channelId))
+    }
+
     this.logger.log(`Syncing ${remote.length} ad account(s) for channel ${channelId}`)
 
     for (const acct of remote) {

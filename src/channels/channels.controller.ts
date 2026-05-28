@@ -950,10 +950,13 @@ export class ChannelsController {
 
     // Fire-and-forget ad account sync when intent=ads OAuth flow completes.
     // Errors are logged but never propagate — we don't want a Meta API hiccup
-    // to fail the channel connect response.
+    // to fail the channel connect response. The user access token is required
+    // to read /me/adaccounts (Page-scoped tokens can't); pass it through here
+    // so the sync uses it and also caches it on the channel for later manual
+    // refreshes.
     if (dto.intent === 'ads') {
       this.adAccountsService
-        .syncForChannel(workspaceId, fbChannel.id)
+        .syncForChannel(workspaceId, fbChannel.id, dto.userAccessToken)
         .catch((err: Error) => {
           console.warn(
             `[connectFacebookPage] Ad account sync failed for workspace=${workspaceId}, channel=${fbChannel.id}: ${err.message}`,
