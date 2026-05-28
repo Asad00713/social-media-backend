@@ -10,6 +10,8 @@ import {
 } from '../../drizzle/schema/channels.schema';
 import { posts, type PostTarget } from '../../drizzle/schema/posts.schema';
 import { ChannelService } from '../../channels/services/channel.service';
+import { FacebookService } from '../../channels/services/facebook.service';
+import { InstagramService } from '../../channels/services/instagram.service';
 import { InboxDispatcher } from '../services/inbox-dispatcher.service';
 import { InboxService } from '../inbox.service';
 import type { ResolvedChannel } from '../adapters/inbox-adapter.interface';
@@ -36,14 +38,38 @@ const SLACK_MS = 60 * 1000; // 1 min — overlap with previous fetch so we don't
  * Failure mode: one bad post shouldn't stop the rest of the channel. Each post
  * is wrapped in try/catch.
  */
-@Processor(QUEUES.INBOX_POLLING)
+// A full channel poll iterates up to 30 posts + DM convos sequentially against
+// the platform APIs. Facebook's `/{post}/comments` can take 1–3s per call,
+// plus DM list + per-convo fetches. Multiplied across the loop, total wall
+// time often exceeds BullMQ's default 30s lock window, producing
+// "Missing lock for job" + `code: -2` errors when the worker tries to
+// finish/move the job after the lock expired.
+//
+// Bump the lock to 10 min (well above worst-case poll time) and renew it
+// every 30 s so the redis-side TTL stays fresh even when individual platform
+// calls block for several seconds each.
+@Processor(QUEUES.INBOX_POLLING, {
+  lockDuration: 10 * 60 * 1000,
+  lockRenewTime: 30 * 1000,
+})
 export class InboxPollProcessor extends WorkerHost {
   private readonly logger = new Logger(InboxPollProcessor.name);
+
+  /**
+   * Channels we've already attempted to (re-)subscribe to Meta webhook events
+   * during this backend process lifetime. The subscribe call is idempotent
+   * but costs a Graph API hit, so we only fire it once per channel per
+   * restart — a safety net for cases where the OAuth-time subscribe got lost
+   * (Meta dropped it, token refreshed, etc).
+   */
+  private readonly webhookSubscribedChannels = new Set<number>();
 
   constructor(
     private readonly channelService: ChannelService,
     private readonly dispatcher: InboxDispatcher,
     private readonly inboxService: InboxService,
+    private readonly facebookService: FacebookService,
+    private readonly instagramService: InstagramService,
   ) {
     super();
   }
@@ -95,6 +121,20 @@ export class InboxPollProcessor extends WorkerHost {
         `Inbox poll: failed to resolve channel ${channelId} (${platform}, account=${channelRow.platformAccountId}): ${(err as Error).message}`,
       );
       return { ok: false, ingested: 0 };
+    }
+
+    // Phase 2.3 — lazy webhook subscription. Once per backend lifetime per
+    // channel, try to re-arm the Meta webhook subscription for FB Pages + IG
+    // Business accounts. Idempotent on Meta's side; this is the safety net
+    // for cases where the OAuth-time subscribe failed or got dropped (token
+    // refresh, channel re-connect, Meta-side eviction). Fire-and-forget so a
+    // webhook failure never delays the poll itself.
+    if (
+      (platform === 'facebook' || platform === 'instagram') &&
+      !this.webhookSubscribedChannels.has(channelId)
+    ) {
+      this.webhookSubscribedChannels.add(channelId);
+      void this.ensureWebhookSubscription(channel, platform);
     }
 
     // Pull the most recent published posts targeting this channel within window.
@@ -263,6 +303,7 @@ export class InboxPollProcessor extends WorkerHost {
                 fromMe: msg.fromMe,
                 platformCreatedAt: msg.platformCreatedAt,
                 metadata: msg.metadata,
+                attachments: msg.attachments,
               });
               if (inserted) dmIngested += 1;
             }
@@ -293,6 +334,53 @@ export class InboxPollProcessor extends WorkerHost {
     );
 
     return { ok: true, ingested: ingested + dmIngested };
+  }
+
+  /**
+   * Re-arm Meta webhook subscription for an FB Page or IG Business account.
+   * Called lazily once per channel per backend lifetime as a safety net for
+   * cases where the OAuth-time subscribe got lost. Best-effort, errors only
+   * surface in logs.
+   */
+  private async ensureWebhookSubscription(
+    channel: ResolvedChannel,
+    platform: SupportedPlatform,
+  ): Promise<void> {
+    try {
+      if (platform === 'facebook') {
+        await this.facebookService.subscribePageToWebhooks(
+          channel.platformAccountId,
+          channel.accessToken,
+          [
+            'feed',
+            'messages',
+            'messaging_postbacks',
+            'message_deliveries',
+            'message_reads',
+            'message_reactions',
+            'message_echoes',
+            'message_edits',
+          ],
+        );
+        this.logger.log(
+          `Webhook subscribe (FB) re-armed for channel ${channel.id} (page=${channel.platformAccountId})`,
+        );
+      } else if (platform === 'instagram') {
+        await this.instagramService.subscribeAccountToWebhooks(
+          channel.platformAccountId,
+          channel.accessToken,
+          ['comments', 'messages', 'messaging_postbacks', 'message_reactions'],
+        );
+        this.logger.log(
+          `Webhook subscribe (IG) re-armed for channel ${channel.id} (ig=${channel.platformAccountId})`,
+        );
+      }
+    } catch (err) {
+      // Don't escalate — polling continues as the fallback.
+      this.logger.warn(
+        `Webhook auto-subscribe failed for channel ${channel.id} (${platform}): ${(err as Error).message}`,
+      );
+    }
   }
 }
 

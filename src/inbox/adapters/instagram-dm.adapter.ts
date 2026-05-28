@@ -6,6 +6,7 @@ import type {
   FetchedDm,
   CreatedDm,
   DmConversationSummary,
+  DmAttachmentInput,
 } from './inbox-adapter.interface';
 
 /**
@@ -55,6 +56,54 @@ export class InstagramDmAdapter implements PlatformDmAdapter {
       channel.accessToken,
       conversationId,
       text,
+    );
+  }
+
+  /** Phase 2.3 — IG Direct supports image/video/audio attachments. One per
+   *  message (IG limit); additional attachments chunked as separate messages. */
+  async sendDmWithAttachments(
+    channel: ResolvedChannel,
+    conversationId: string,
+    text: string,
+    attachments: DmAttachmentInput[],
+  ): Promise<CreatedDm> {
+    if (attachments.length === 0) {
+      return this.sendDm(channel, conversationId, text);
+    }
+    const mapKind = (
+      k: DmAttachmentInput['kind'],
+    ): 'image' | 'video' | 'audio' =>
+      k === 'voice' || k === 'audio' ? 'audio' : k === 'video' ? 'video' : 'image';
+
+    const [first, ...rest] = attachments;
+    const created = await this.instagramService.sendDirectAttachmentMessage(
+      channel.platformAccountId,
+      channel.accessToken,
+      conversationId,
+      { kind: mapKind(first.kind), url: first.url },
+      text,
+    );
+
+    for (const att of rest) {
+      await this.instagramService.sendDirectAttachmentMessage(
+        channel.platformAccountId,
+        channel.accessToken,
+        conversationId,
+        { kind: mapKind(att.kind), url: att.url },
+      );
+    }
+
+    return created;
+  }
+
+  /**
+   * Phase 2.3 — Instagram does not expose a DM delete API for third-party apps.
+   * The platform deletion is user-initiated via the IG app only. We throw a
+   * clear error so the inbox service surfaces it as a friendly toast.
+   */
+  async deleteDm(): Promise<boolean> {
+    throw new Error(
+      'Instagram does not allow deleting DMs via API. Open the Instagram app to remove the message.',
     );
   }
 

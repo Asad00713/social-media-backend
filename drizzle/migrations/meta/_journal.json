@@ -134,6 +134,13 @@
       "when": 1779700048664,
       "tag": "0018_tough_luminals",
       "breakpoints": true
+    },
+    {
+      "idx": 19,
+      "version": "7",
+      "when": 1779800134577,
+      "tag": "0019_harsh_whistler",
+      "breakpoints": true
     }
   ]
 }

@@ -101,6 +101,18 @@ export interface PlatformInboxAdapter {
     platformPostId: string,
     text: string,
   ): Promise<CreatedComment>;
+
+  /**
+   * Delete a comment authored by our connected account from the platform.
+   * Implementations MUST verify the comment belongs to the channel's account
+   * before deleting (server-side rule — service double-checks via fromMe row).
+   * Returns true when deleted, false when the platform reports the object
+   * already gone (treat as idempotent success).
+   */
+  deleteComment?(
+    channel: ResolvedChannel,
+    platformItemId: string,
+  ): Promise<boolean>;
 }
 
 // ============================================================================
@@ -130,6 +142,8 @@ export interface FetchedDm {
   text: string;
   platformCreatedAt: Date;
   fromMe: boolean;
+  /** Phase 2.3 — media attached to this incoming message. Empty when text-only. */
+  attachments?: FetchedDmAttachment[];
   metadata?: Record<string, any>;
 }
 
@@ -205,4 +219,64 @@ export interface PlatformDmAdapter {
     conversationId: string,
     lastIncomingAt: Date | null,
   ): Promise<{ canReply: boolean; reason?: string; windowExpiresAt?: Date }>;
+
+  /**
+   * Delete a DM authored by our connected account, where the platform permits.
+   *
+   * Platform constraints (Phase 2.3):
+   *   - Facebook Messenger: allowed within ~10 minutes of send (per Meta docs)
+   *   - Instagram Direct:   NOT supported — adapters should throw
+   *   - Bluesky chat:       allowed (delete-for-self)
+   *   - Mastodon DMs:       allowed (DELETE /api/v1/statuses/:id)
+   *
+   * Returns true when deleted; false when platform reports the message gone.
+   * Throws when platform refuses (e.g. IG, or FB outside the 10-min window).
+   */
+  deleteDm?(
+    channel: ResolvedChannel,
+    conversationId: string,
+    platformItemId: string,
+  ): Promise<boolean>;
+
+  /**
+   * Send a DM with one or more pre-uploaded R2 media URLs. Adapters that
+   * support attachments override this; the default `sendDm` is text-only.
+   *
+   * Phase 2.3 support matrix:
+   *   - FB Messenger: images, video, audio (file or url attachment)
+   *   - IG Direct:    images, video (via attachment with type+url)
+   *   - Bluesky chat: text only (no attachment API yet) — adapter throws
+   *   - Mastodon:     images, video, audio via media_attachments
+   */
+  sendDmWithAttachments?(
+    channel: ResolvedChannel,
+    conversationId: string,
+    text: string,
+    attachments: DmAttachmentInput[],
+  ): Promise<CreatedDm>;
+}
+
+/**
+ * `voice` is a frontend-friendly alias for audio recordings made via
+ * MediaRecorder; adapters map it to the platform's native audio attachment
+ * type before sending. Treat as audio for transport purposes.
+ */
+export type DmAttachmentKind = 'image' | 'video' | 'audio' | 'voice' | 'file';
+
+export interface DmAttachmentInput {
+  kind: DmAttachmentKind;
+  /** Publicly-reachable URL (Cloudflare R2). The adapter passes this to the
+   *  platform's media-attachment endpoint. */
+  url: string;
+  /** MIME type — required for IG / Mastodon's classifier. */
+  contentType: string;
+  /** Bytes — informational, some platforms enforce limits server-side. */
+  sizeBytes?: number;
+}
+
+export interface FetchedDmAttachment {
+  kind: DmAttachmentKind;
+  url: string;
+  contentType?: string;
+  thumbnailUrl?: string;
 }

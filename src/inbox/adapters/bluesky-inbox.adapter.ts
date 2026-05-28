@@ -209,6 +209,30 @@ export class BlueskyInboxAdapter implements PlatformInboxAdapter {
       platformCreatedAt: new Date(),
     };
   }
+
+  // ──────────────────────────────────────────────────────────────────────
+  // Delete (Phase 2.3) — Bluesky deletes go through repo.deleteRecord on
+  // the post's collection. The service.deletePost already wraps that call
+  // and handles the rkey extraction from the AT URI.
+  // ──────────────────────────────────────────────────────────────────────
+  async deleteComment(
+    channel: ResolvedChannel,
+    platformItemId: string,
+  ): Promise<boolean> {
+    const did = resolveDid(channel);
+    if (!did) throw new Error('Bluesky channel is missing DID');
+    try {
+      await this.bluesky.deletePost(channel.accessToken, did, platformItemId);
+      return true;
+    } catch (err) {
+      // Bluesky returns 200 even if record doesn't exist, so most error paths
+      // are network / auth. Surface as caller-visible.
+      this.logger.warn(
+        `Bluesky deleteComment failed for ${platformItemId}: ${(err as Error).message}`,
+      );
+      throw err;
+    }
+  }
 }
 
 function resolveDid(channel: ResolvedChannel): string | undefined {

@@ -6,6 +6,7 @@ import type {
   FetchedDm,
   CreatedDm,
   DmConversationSummary,
+  DmAttachmentInput,
 } from './inbox-adapter.interface';
 
 /**
@@ -57,5 +58,42 @@ export class MastodonDmAdapter implements PlatformDmAdapter {
     windowExpiresAt?: Date;
   }> {
     return { canReply: true };
+  }
+
+  /** Phase 2.3 — Mastodon supports image/video/audio attachments on statuses
+   *  (visibility=direct). Caps at 4 per status. */
+  async sendDmWithAttachments(
+    channel: ResolvedChannel,
+    conversationId: string,
+    text: string,
+    attachments: DmAttachmentInput[],
+  ): Promise<CreatedDm> {
+    return this.mastodonService.sendDirectMessageWithAttachments(
+      channel,
+      conversationId,
+      text,
+      attachments.map((a) => ({ url: a.url, contentType: a.contentType })),
+    );
+  }
+
+  // Mastodon DMs are statuses (visibility=direct) — same delete endpoint
+  // as regular statuses.
+  async deleteDm(
+    channel: ResolvedChannel,
+    _conversationId: string,
+    platformItemId: string,
+  ): Promise<boolean> {
+    const instanceUrl =
+      (channel.metadata?.instanceUrl as string | undefined) ??
+      (channel.metadata?.instance as string | undefined);
+    if (!instanceUrl) {
+      throw new Error('Mastodon channel is missing instanceUrl');
+    }
+    await this.mastodonService.deleteStatus(
+      instanceUrl,
+      channel.accessToken,
+      platformItemId,
+    );
+    return true;
   }
 }

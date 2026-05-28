@@ -1248,10 +1248,12 @@ export class FacebookService {
     if (!threadId) return [];
 
     // 2) Fetch messages in that thread.
+    // `attachments` field surfaces image/video/audio attached to a message —
+    // each entry has mime_type + image_data.url (for images) or file_url.
     const msgUrl = new URL(`${this.graphApiUrl}/${threadId}/messages`);
     msgUrl.searchParams.set(
       'fields',
-      'id,message,from,to,created_time',
+      'id,message,from,to,created_time,attachments{id,mime_type,name,image_data,video_data,file_url}',
     );
     msgUrl.searchParams.set('limit', '100');
     msgUrl.searchParams.set('access_token', pageAccessToken);
@@ -1268,12 +1270,51 @@ export class FacebookService {
         message?: string;
         created_time?: string;
         from?: { id: string; name?: string };
+        attachments?: {
+          data?: Array<{
+            id?: string;
+            mime_type?: string;
+            name?: string;
+            image_data?: { url?: string; preview_url?: string };
+            video_data?: { url?: string; preview_url?: string };
+            file_url?: string;
+          }>;
+        };
       }>;
     };
 
     const messages: FetchedDm[] = [];
     for (const m of msgData.data ?? []) {
       const fromMe = m.from?.id === pageId;
+
+      // Phase 2.3 — map FB attachment shapes to our DmAttachment normalized form.
+      const attachments = (m.attachments?.data ?? [])
+        .map((a) => {
+          const mime = a.mime_type ?? '';
+          const url =
+            a.image_data?.url ??
+            a.video_data?.url ??
+            a.file_url ??
+            '';
+          if (!url) return null;
+          const kind: 'image' | 'video' | 'audio' | 'file' = mime.startsWith(
+            'image/',
+          )
+            ? 'image'
+            : mime.startsWith('video/')
+              ? 'video'
+              : mime.startsWith('audio/')
+                ? 'audio'
+                : 'file';
+          return {
+            kind,
+            url,
+            contentType: mime || undefined,
+            thumbnailUrl: a.image_data?.preview_url ?? a.video_data?.preview_url,
+          };
+        })
+        .filter((x): x is NonNullable<typeof x> => x !== null);
+
       messages.push({
         conversationId,
         platformItemId: m.id,
@@ -1287,6 +1328,7 @@ export class FacebookService {
         text: m.message ?? '',
         platformCreatedAt: m.created_time ? new Date(m.created_time) : new Date(),
         fromMe,
+        attachments: attachments.length > 0 ? attachments : undefined,
       });
     }
     return messages;
@@ -1302,6 +1344,58 @@ export class FacebookService {
    *   body: { recipient: { id: psid }, message: { text },
    *           messaging_type: 'RESPONSE' }
    */
+  /**
+   * Delete a Facebook comment. Requires the comment to have been authored by
+   * the page (i.e. `from.id === pageId`) — Graph API rejects otherwise with
+   * "(#200) Comments cannot be removed by this user". Phase 2.3.
+   *
+   * Endpoint: DELETE /{comment-id}?access_token=PAGE_TOKEN
+   */
+  async deleteComment(
+    pageAccessToken: string,
+    commentId: string,
+  ): Promise<boolean> {
+    const url = new URL(`${this.graphApiUrl}/${commentId}`);
+    url.searchParams.set('access_token', pageAccessToken);
+    const res = await fetch(url.toString(), { method: 'DELETE' });
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`FB deleteComment failed: ${err}`);
+      throw new Error(`Facebook delete failed: ${res.status} ${err}`);
+    }
+    return true;
+  }
+
+  /**
+   * Unsend a Facebook Messenger message. Meta's Send API supports unsending
+   * via `/me/messages` with `message: { unsend: { mid } }`. The window is
+   * platform-enforced (~24h for some accounts, less for others). Phase 2.3.
+   */
+  async unsendMessengerMessage(
+    pageAccessToken: string,
+    recipientPsid: string,
+    messageId: string,
+  ): Promise<boolean> {
+    const url = new URL(`${this.graphApiUrl}/me/messages`);
+    url.searchParams.set('access_token', pageAccessToken);
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipient: { id: recipientPsid },
+        message: { unsend: { mid: messageId } },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`FB unsendMessage failed: ${err}`);
+      throw new Error(
+        `Failed to unsend Messenger message: ${res.status} ${err}`,
+      );
+    }
+    return true;
+  }
+
   async sendMessengerMessage(
     pageId: string,
     pageAccessToken: string,
@@ -1342,6 +1436,78 @@ export class FacebookService {
       conversationId: `${pageId}:${recipientPsid}`,
       platformItemId: data.message_id,
       text,
+      platformCreatedAt: new Date(),
+    };
+  }
+
+  /**
+   * Send a Messenger message with a media attachment (image / video / audio /
+   * file). Meta supports passing a public URL via attachment.payload.url so
+   * we don't have to upload bytes — R2's public URL is sufficient.
+   *
+   * One attachment per message (Meta's API constraint); for multiple, the
+   * caller sends multiple Messenger messages.
+   *
+   * Phase 2.3.
+   */
+  async sendMessengerAttachmentMessage(
+    pageId: string,
+    pageAccessToken: string,
+    recipientPsid: string,
+    attachment: {
+      kind: 'image' | 'video' | 'audio' | 'file';
+      url: string;
+    },
+    text?: string,
+  ): Promise<CreatedDm> {
+    const url = new URL(`${this.graphApiUrl}/me/messages`);
+    url.searchParams.set('access_token', pageAccessToken);
+
+    // FB's attachment.type taxonomy is: image | video | audio | file
+    const fbType = attachment.kind;
+
+    // If text is provided, FB requires it as a separate message. Send the
+    // attachment first; the text-only message can follow via the caller.
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipient: { id: recipientPsid },
+        message: {
+          attachment: {
+            type: fbType,
+            payload: { url: attachment.url, is_reusable: false },
+          },
+        },
+        messaging_type: 'RESPONSE',
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`Messenger attachment send failed: ${err}`);
+      throw new Error(`Messenger attachment send failed: ${res.status} ${err}`);
+    }
+
+    const data = (await res.json()) as { message_id?: string };
+    if (!data.message_id) {
+      throw new Error('Messenger attachment send: no message_id returned');
+    }
+
+    // Optional accompanying text — send as a second message right away.
+    if (text && text.trim()) {
+      await this.sendMessengerMessage(
+        pageId,
+        pageAccessToken,
+        recipientPsid,
+        text.trim(),
+      );
+    }
+
+    return {
+      conversationId: `${pageId}:${recipientPsid}`,
+      platformItemId: data.message_id,
+      text: text ?? '',
       platformCreatedAt: new Date(),
     };
   }

@@ -103,6 +103,12 @@ export interface DmConversationSummaryDto {
     avatarUrl?: string;
   };
   lastMessageText: string;
+  /**
+   * Phase 2.3 — structured hint for the list-row preview. Frontend renders a
+   * Lucide icon matching the kind alongside the text label. 'text' = no
+   * special rendering (just the text), other values = icon + label.
+   */
+  lastMessageKind: 'text' | 'image' | 'voice' | 'video' | 'file';
   lastMessageAt: string;
   lastMessageFromMe: boolean;
   status: InboxItemStatus;
@@ -128,6 +134,13 @@ export interface DmMessageDto {
   fromMe: boolean;
   platformItemId: string;
   status: InboxItemStatus;
+  /** Phase 2.3 — media attached to this message. Empty when text-only. */
+  attachments?: Array<{
+    kind: 'image' | 'voice' | 'video' | 'file' | 'audio';
+    url: string;
+    contentType?: string;
+    thumbnailUrl?: string;
+  }>;
 }
 
 export interface DmThreadDetail extends DmConversationSummaryDto {
@@ -254,6 +267,14 @@ export class InboxService {
     if (!member) {
       throw new ForbiddenException('No access to this workspace');
     }
+  }
+
+  /** Public wrapper for controllers that need the same access rule. */
+  async assertWorkspaceAccessPublic(
+    workspaceId: string,
+    userId: string,
+  ): Promise<void> {
+    return this.assertWorkspaceAccess(workspaceId, userId);
   }
 
   // ==========================================================================
@@ -929,6 +950,155 @@ export class InboxService {
     };
   }
 
+  // ==========================================================================
+  // Delete (Phase 2.3) — for messages/comments authored by us only.
+  // ==========================================================================
+
+  async deleteComment(
+    workspaceId: string,
+    userId: string,
+    itemId: string,
+  ): Promise<{ success: true; deletedAt: string }> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+
+    const row = await db.query.inboxItems.findFirst({
+      where: and(
+        eq(inboxItems.id, itemId),
+        eq(inboxItems.workspaceId, workspaceId),
+      ),
+    });
+    if (!row) throw new NotFoundException('Comment not found');
+    if (row.type !== 'comment') {
+      throw new BadRequestException('Item is not a comment');
+    }
+    if (!row.fromMe) {
+      throw new ForbiddenException('Can only delete your own comments');
+    }
+
+    const channel = await this.resolveChannel(row.channelId, workspaceId);
+    const adapter = this.dispatcher.get(row.platform);
+
+    if (!adapter.deleteComment) {
+      throw new BadRequestException(
+        `Delete is not supported on ${row.platform}`,
+      );
+    }
+
+    try {
+      await adapter.deleteComment(channel, row.platformItemId);
+    } catch (err) {
+      this.logger.error(
+        `Delete comment failed (channel=${row.channelId}, item=${row.platformItemId}): ${(err as Error).message}`,
+      );
+      throw new BadRequestException(
+        `Platform refused delete: ${(err as Error).message}`,
+      );
+    }
+
+    // Soft-delete row: keep audit trail. Status flip + mark in metadata.
+    const now = new Date();
+    await db
+      .update(inboxItems)
+      .set({
+        status: 'done',
+        text: '[deleted]',
+        metadata: {
+          ...(row.metadata ?? {}),
+          deletedAt: now.toISOString(),
+          deletedByUserId: userId,
+        },
+        updatedAt: now,
+      })
+      .where(eq(inboxItems.id, row.id));
+
+    this.emitter.emit(workspaceId, 'inbox.item.updated', {
+      id: row.id,
+      workspaceId,
+      channelId: row.channelId,
+      changes: {
+        status: 'done',
+      },
+    });
+    void this.emitCounts(workspaceId);
+
+    return { success: true, deletedAt: now.toISOString() };
+  }
+
+  async deleteDm(
+    workspaceId: string,
+    userId: string,
+    itemId: string,
+  ): Promise<{ success: true; deletedAt: string }> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+
+    const row = await db.query.inboxItems.findFirst({
+      where: and(
+        eq(inboxItems.id, itemId),
+        eq(inboxItems.workspaceId, workspaceId),
+      ),
+    });
+    if (!row) throw new NotFoundException('Message not found');
+    if (row.type !== 'dm') {
+      throw new BadRequestException('Item is not a DM');
+    }
+    if (!row.fromMe) {
+      throw new ForbiddenException('Can only delete your own DMs');
+    }
+    if (!row.conversationId) {
+      throw new BadRequestException('DM row missing conversationId');
+    }
+
+    const platform = row.platform as SupportedPlatform;
+    if (!this.dispatcher.supportsDm(platform)) {
+      throw new BadRequestException(`DM not supported on ${platform}`);
+    }
+    const adapter = this.dispatcher.getDm(platform);
+
+    if (!adapter.deleteDm) {
+      throw new BadRequestException(
+        `Delete DM is not supported on ${platform}`,
+      );
+    }
+
+    const channel = await this.resolveChannel(row.channelId, workspaceId);
+
+    try {
+      await adapter.deleteDm(channel, row.conversationId, row.platformItemId);
+    } catch (err) {
+      this.logger.error(
+        `Delete DM failed (channel=${row.channelId}, item=${row.platformItemId}): ${(err as Error).message}`,
+      );
+      throw new BadRequestException(
+        `Platform refused delete: ${(err as Error).message}`,
+      );
+    }
+
+    const now = new Date();
+    await db
+      .update(inboxItems)
+      .set({
+        status: 'done',
+        text: '[deleted]',
+        metadata: {
+          ...(row.metadata ?? {}),
+          deletedAt: now.toISOString(),
+          deletedByUserId: userId,
+        },
+        updatedAt: now,
+      })
+      .where(eq(inboxItems.id, row.id));
+
+    this.emitter.emit(workspaceId, 'inbox.item.updated', {
+      id: row.id,
+      workspaceId,
+      channelId: row.channelId,
+      changes: { status: 'done' },
+    });
+    void this.emitCounts(workspaceId);
+
+    return { success: true, deletedAt: now.toISOString() };
+  }
+
   /** Fire-and-forget counts emit after mutations. */
   private async emitCounts(workspaceId: string): Promise<void> {
     try {
@@ -1104,6 +1274,106 @@ export class InboxService {
     }
 
     return { deleted: rows.length, channels };
+  }
+
+  /**
+   * Phase 2.3 diagnostic — for each FB/IG channel in the workspace, query
+   * Meta's `/{id}/subscribed_apps` to see what fields the channel is
+   * actually subscribed to. Lets us tell "webhook is live" vs "polling
+   * only" without guessing.
+   */
+  async getWebhookStatus(
+    workspaceId: string,
+    userId: string,
+  ): Promise<{
+    channels: Array<{
+      channelId: number;
+      platform: string;
+      platformAccountId: string;
+      subscribed: boolean;
+      fields: string[];
+      error?: string;
+    }>;
+  }> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+
+    const rows = await db
+      .select({
+        id: socialMediaChannels.id,
+        platform: socialMediaChannels.platform,
+        platformAccountId: socialMediaChannels.platformAccountId,
+        workspaceId: socialMediaChannels.workspaceId,
+      })
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.workspaceId, workspaceId),
+          eq(socialMediaChannels.isActive, true),
+          eq(socialMediaChannels.connectionStatus, 'connected'),
+        ),
+      );
+
+    const out: Array<{
+      channelId: number;
+      platform: string;
+      platformAccountId: string;
+      subscribed: boolean;
+      fields: string[];
+      error?: string;
+    }> = [];
+
+    for (const r of rows) {
+      if (r.platform !== 'facebook' && r.platform !== 'instagram') continue;
+      try {
+        const token = await this.channelService.getAccessToken(
+          r.id,
+          workspaceId,
+        );
+        if (r.platform === 'instagram') {
+          const status =
+            await this.instagramService.getWebhookSubscriptionStatus(
+              r.platformAccountId,
+              token,
+            );
+          out.push({
+            channelId: r.id,
+            platform: r.platform,
+            platformAccountId: r.platformAccountId,
+            subscribed: status.subscribed,
+            fields: status.fields,
+          });
+        } else {
+          // FB Page has the same endpoint shape
+          const url = new URL(
+            `https://graph.facebook.com/v18.0/${r.platformAccountId}/subscribed_apps?access_token=${encodeURIComponent(
+              token,
+            )}`,
+          );
+          const res = await fetch(url.toString());
+          const data = (await res.json().catch(() => ({}))) as {
+            data?: Array<{ subscribed_fields?: string[] }>;
+          };
+          const apps = data.data ?? [];
+          out.push({
+            channelId: r.id,
+            platform: r.platform,
+            platformAccountId: r.platformAccountId,
+            subscribed: apps.length > 0,
+            fields: apps[0]?.subscribed_fields ?? [],
+          });
+        }
+      } catch (err) {
+        out.push({
+          channelId: r.id,
+          platform: r.platform,
+          platformAccountId: r.platformAccountId,
+          subscribed: false,
+          fields: [],
+          error: (err as Error).message,
+        });
+      }
+    }
+    return { channels: out };
   }
 
   // ==========================================================================
@@ -1450,7 +1720,8 @@ export class InboxService {
               'Unknown',
             avatarUrl: incoming.authorAvatarUrl ?? undefined,
           },
-          lastMessageText: latest.text ?? '',
+          lastMessageText: this.deriveLastMessagePreview(latest).text,
+          lastMessageKind: this.deriveLastMessagePreview(latest).kind,
           lastMessageAt: latest.platformCreatedAt.toISOString(),
           lastMessageFromMe: latest.fromMe,
           status: this.deriveThreadStatus(items),
@@ -1514,6 +1785,7 @@ export class InboxService {
           displayName: 'Unknown',
         },
         lastMessageText: '',
+        lastMessageKind: 'text',
         lastMessageAt: new Date().toISOString(),
         lastMessageFromMe: false,
         status: 'unread',
@@ -1571,7 +1843,8 @@ export class InboxService {
           'Unknown',
         avatarUrl: incoming.authorAvatarUrl ?? undefined,
       },
-      lastMessageText: latest.text ?? '',
+      lastMessageText: this.deriveLastMessagePreview(latest).text,
+      lastMessageKind: this.deriveLastMessagePreview(latest).kind,
       lastMessageAt: latest.platformCreatedAt.toISOString(),
       lastMessageFromMe: latest.fromMe,
       status: this.deriveThreadStatus(items),
@@ -1582,7 +1855,48 @@ export class InboxService {
     };
   }
 
+  /**
+   * Compose the structured "last message" preview for a DM list row.
+   * Returns `{ kind, text }` so the frontend can render a Lucide icon
+   * matching the attachment type alongside the plain label — cleaner than
+   * emoji-prefixed strings. Phase 2.3.
+   *
+   *   - text DM      → { kind: 'text',  text: <the text> }
+   *   - image        → { kind: 'image', text: 'Photo' }
+   *   - voice/audio  → { kind: 'voice', text: 'Voice note' }
+   *   - video        → { kind: 'video', text: 'Video' }
+   *   - file         → { kind: 'file',  text: 'File' }
+   *   - empty + none → { kind: 'text',  text: '' }
+   */
+  private deriveLastMessagePreview(item: InboxItem): {
+    kind: 'text' | 'image' | 'voice' | 'video' | 'file';
+    text: string;
+  } {
+    if (item.text && item.text.trim()) return { kind: 'text', text: item.text };
+    const md = (item.metadata ?? {}) as Record<string, unknown>;
+    const atts = Array.isArray(md.attachments)
+      ? (md.attachments as Array<{ kind?: string }>)
+      : [];
+    if (atts.length === 0) return { kind: 'text', text: '' };
+    const first = atts[0];
+    switch (first?.kind) {
+      case 'voice':
+      case 'audio':
+        return { kind: 'voice', text: 'Voice note' };
+      case 'image':
+        return { kind: 'image', text: 'Photo' };
+      case 'video':
+        return { kind: 'video', text: 'Video' };
+      case 'file':
+        return { kind: 'file', text: 'File' };
+      default:
+        return { kind: 'text', text: '' };
+    }
+  }
+
   private dmItemToDto(item: InboxItem): DmMessageDto {
+    const md = (item.metadata ?? {}) as Record<string, any>;
+    const rawAttachments = Array.isArray(md.attachments) ? md.attachments : [];
     return {
       id: item.id,
       author: {
@@ -1598,6 +1912,7 @@ export class InboxService {
       fromMe: item.fromMe,
       platformItemId: item.platformItemId,
       status: item.status,
+      attachments: rawAttachments.length > 0 ? rawAttachments : undefined,
     };
   }
 
@@ -1611,6 +1926,7 @@ export class InboxService {
     userId: string,
     threadKey: string,
     text: string,
+    attachments?: import('./adapters/inbox-adapter.interface').DmAttachmentInput[],
   ): Promise<DmMessageDto> {
     await this.assertWorkspaceAccess(workspaceId, userId);
     const { channelId, conversationId } = this.decodeDmThreadKey(threadKey);
@@ -1659,7 +1975,25 @@ export class InboxService {
       );
     }
 
-    const created = await adapter.sendDm(channel, conversationId, text);
+    // Dispatch with attachments when adapter supports them, otherwise fall
+    // back to text-only path. Attachments empty array also falls through.
+    const hasAttachments = attachments && attachments.length > 0;
+    let created;
+    if (hasAttachments) {
+      if (!adapter.sendDmWithAttachments) {
+        throw new BadRequestException(
+          `Platform '${platform}' does not support DM attachments yet.`,
+        );
+      }
+      created = await adapter.sendDmWithAttachments(
+        channel,
+        conversationId,
+        text,
+        attachments!,
+      );
+    } else {
+      created = await adapter.sendDm(channel, conversationId, text);
+    }
     const myIdentity = await this.loadMyDmIdentity(channelId);
 
     const newRow = await this.upsertDm({
@@ -1675,6 +2009,13 @@ export class InboxService {
       text: created.text,
       fromMe: true,
       platformCreatedAt: created.platformCreatedAt,
+      attachments: hasAttachments
+        ? attachments!.map((a) => ({
+            kind: a.kind,
+            url: a.url,
+            contentType: a.contentType,
+          }))
+        : undefined,
     });
 
     // Auto-mark prior inbound unread messages in this conversation as replied
@@ -1783,7 +2124,19 @@ export class InboxService {
     fromMe?: boolean;
     platformCreatedAt: Date;
     metadata?: Record<string, any>;
+    /** Phase 2.3 — media attached to this message (image/voice/video/file). */
+    attachments?: Array<{
+      kind: 'image' | 'voice' | 'video' | 'file' | 'audio';
+      url: string;
+      contentType?: string;
+      thumbnailUrl?: string;
+    }>;
   }): Promise<InboxItem | null> {
+    const mergedMetadata: Record<string, any> = { ...(input.metadata ?? {}) };
+    if (input.attachments && input.attachments.length > 0) {
+      mergedMetadata.attachments = input.attachments;
+    }
+
     const values: NewInboxItem = {
       workspaceId: input.workspaceId,
       channelId: input.channelId,
@@ -1802,7 +2155,7 @@ export class InboxService {
       status: input.fromMe ? 'replied' : 'unread',
       fromMe: input.fromMe ?? false,
       platformCreatedAt: input.platformCreatedAt,
-      metadata: input.metadata ?? {},
+      metadata: mergedMetadata,
     };
 
     const inserted = await db

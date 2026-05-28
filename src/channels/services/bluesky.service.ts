@@ -1252,6 +1252,47 @@ export class BlueskyService {
       platformCreatedAt: sent.sentAt ? new Date(sent.sentAt) : new Date(),
     };
   }
+
+  /**
+   * Delete a chat message — Bluesky exposes a "delete for self" lexicon that
+   * removes the message from our side only (the recipient still sees it).
+   *
+   * Endpoint: POST chat.bsky.convo.deleteMessageForSelf
+   *   body: { convoId, messageId }
+   *
+   * Phase 2.3 — used by inbox delete-DM flow.
+   */
+  async deleteChatMessage(
+    accessToken: string,
+    conversationId: string,
+    messageId: string,
+  ): Promise<void> {
+    const response = await fetch(
+      `${this.chatApiBaseUrl}/chat.bsky.convo.deleteMessageForSelf`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'atproto-proxy': this.chatProxyHeader,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          convoId: conversationId,
+          messageId,
+        }),
+      },
+    );
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(
+        `Failed to delete Bluesky chat message ${messageId}: ${errorData}`,
+      );
+      throw new BadRequestException(
+        `Failed to delete Bluesky DM: ${errorData}`,
+      );
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -12,7 +12,12 @@ export type AnalyticsEventName =
   | 'post.status.changed'
   | 'inbox.item.created'
   | 'inbox.item.updated'
-  | 'inbox.counts.changed';
+  | 'inbox.counts.changed'
+  | 'scheduled.message.created'
+  | 'scheduled.message.updated'
+  | 'scheduled.message.cancelled'
+  | 'scheduled.message.sent'
+  | 'scheduled.message.failed';
 
 export interface ChannelSnapshotUpdatedPayload {
   workspaceId: string;
@@ -118,6 +123,43 @@ export interface InboxCountsChangedPayload {
   smartFolders: { all: number; unread: number; needs_reply: number; done: number };
 }
 
+export type ScheduledInboxLifecycleStatus =
+  | 'pending'
+  | 'sending'
+  | 'sent'
+  | 'failed'
+  | 'cancelled';
+
+export interface ScheduledInboxEventBase {
+  id: string;
+  workspaceId: string;
+  channelId: number;
+  type: 'comment' | 'dm';
+  threadKey: string;
+  status: ScheduledInboxLifecycleStatus;
+  scheduledAt: string;
+  textPreview: string;
+  targetLabel: string | null;
+  parentItemId?: string | null;
+  platformPostId?: string | null;
+  conversationId?: string | null;
+}
+
+export interface ScheduledInboxCreatedPayload extends ScheduledInboxEventBase {}
+export interface ScheduledInboxUpdatedPayload extends ScheduledInboxEventBase {}
+export interface ScheduledInboxCancelledPayload {
+  id: string;
+  workspaceId: string;
+  channelId: number;
+  threadKey: string;
+}
+export interface ScheduledInboxSentPayload extends ScheduledInboxEventBase {
+  inboxItemId: string | null;
+}
+export interface ScheduledInboxFailedPayload extends ScheduledInboxEventBase {
+  errorMessage: string;
+}
+
 export type AnalyticsEventPayloadMap = {
   'channel.snapshot.updated': ChannelSnapshotUpdatedPayload;
   'post.metrics.updated': PostMetricsUpdatedPayload;
@@ -128,4 +170,9 @@ export type AnalyticsEventPayloadMap = {
   'inbox.item.created': InboxItemCreatedPayload;
   'inbox.item.updated': InboxItemUpdatedPayload;
   'inbox.counts.changed': InboxCountsChangedPayload;
+  'scheduled.message.created': ScheduledInboxCreatedPayload;
+  'scheduled.message.updated': ScheduledInboxUpdatedPayload;
+  'scheduled.message.cancelled': ScheduledInboxCancelledPayload;
+  'scheduled.message.sent': ScheduledInboxSentPayload;
+  'scheduled.message.failed': ScheduledInboxFailedPayload;
 };

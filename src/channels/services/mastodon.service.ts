@@ -325,13 +325,23 @@ export class MastodonService {
   }
 
   /**
-   * Upload media attachment
+   * Upload media attachment.
+   *
+   * `overrideContentType` lets the caller force a specific MIME type — needed
+   * because Mastodon's `MediaTypeSpoofValidator` does a string-equal compare
+   * between the declared Content-Type and what libmagic detects from bytes.
+   * Browser MediaRecorder emits `audio/webm;codecs=opus`; libmagic detects
+   * `audio/webm` — different strings, so Mastodon rejects with
+   * "File has contents that are not what they are reported to be". Stripping
+   * codec parameters (or accepting an explicit type from the inbox upload
+   * record) sidesteps that mismatch.
    */
   async uploadMedia(
     instanceUrl: string,
     accessToken: string,
     mediaUrl: string,
     description?: string,
+    overrideContentType?: string,
   ): Promise<MastodonMediaAttachment> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
 
@@ -342,7 +352,13 @@ export class MastodonService {
     }
 
     const mediaBuffer = Buffer.from(await mediaResponse.arrayBuffer());
-    const mimeType = mediaResponse.headers.get('content-type') || 'application/octet-stream';
+    const rawMimeType =
+      overrideContentType ||
+      mediaResponse.headers.get('content-type') ||
+      'application/octet-stream';
+    // Strip any `;codecs=...` / `;charset=...` parameter so the declared MIME
+    // matches what libmagic will detect (which never includes the parameter).
+    const mimeType = rawMimeType.split(';')[0].trim();
 
     // Determine filename from URL or use default
     const urlParts = mediaUrl.split('/');
@@ -868,6 +884,45 @@ export class MastodonService {
     const fromMe = status.account?.id === selfAccountId;
     const text = this.toDisplayText(status.content ?? '');
 
+    // Phase 2.3 — Mastodon attaches media via `media_attachments[]` on the
+    // status object. Each entry has type (image/video/gifv/audio), url, and
+    // preview_url. We normalize to our DmAttachment shape.
+    const rawMedia = Array.isArray(
+      (status as MastodonStatusContextEntry & {
+        media_attachments?: Array<{
+          type?: string;
+          url?: string;
+          preview_url?: string;
+        }>;
+      }).media_attachments,
+    )
+      ? (status as MastodonStatusContextEntry & {
+          media_attachments: Array<{
+            type?: string;
+            url?: string;
+            preview_url?: string;
+          }>;
+        }).media_attachments
+      : [];
+
+    const attachments = rawMedia
+      .filter((m) => !!m.url)
+      .map((m) => {
+        const kind: 'image' | 'video' | 'audio' | 'file' =
+          m.type === 'image' || m.type === 'gifv'
+            ? 'image'
+            : m.type === 'video'
+              ? 'video'
+              : m.type === 'audio'
+                ? 'audio'
+                : 'file';
+        return {
+          kind,
+          url: m.url!,
+          thumbnailUrl: m.preview_url,
+        };
+      });
+
     return {
       conversationId,
       platformItemId: status.id,
@@ -884,6 +939,7 @@ export class MastodonService {
       text,
       platformCreatedAt: new Date(status.created_at),
       fromMe,
+      attachments: attachments.length > 0 ? attachments : undefined,
       metadata: {
         uri: status.uri,
         url: status.url,
@@ -1230,6 +1286,113 @@ export class MastodonService {
 
     const data = await response.json();
 
+    return {
+      conversationId,
+      platformItemId: data.id,
+      text: this.toDisplayText(data.content ?? statusBody),
+      platformCreatedAt: new Date(data.created_at),
+    };
+  }
+
+  /**
+   * Send a Mastodon direct message with media attachments. Phase 2.3.
+   * Flow: upload each attachment URL to Mastodon (downloads from R2 → re-uploads
+   * to fediverse), gather media_ids, then post a status with visibility=direct
+   * and the media_ids array. Mastodon caps attachments to 4 per status.
+   */
+  async sendDirectMessageWithAttachments(
+    channel: ResolvedChannel,
+    conversationId: string,
+    text: string,
+    attachments: Array<{ url: string; contentType: string }>,
+  ): Promise<CreatedDm> {
+    const instanceUrl = this.getInstanceFromChannel(channel);
+
+    let conversation: MastodonConversation | null = null;
+    if (conversationId.startsWith('m:')) {
+      const matching = await this.findConversationsBySyntheticId(
+        instanceUrl,
+        channel.accessToken,
+        channel,
+        conversationId,
+      );
+      if (matching.length === 0) {
+        throw new BadRequestException(
+          `No Mastodon conversation matches synthetic id ${conversationId}`,
+        );
+      }
+      matching.sort((a, b) => {
+        const aT = a.last_status ? new Date(a.last_status.created_at).getTime() : 0;
+        const bT = b.last_status ? new Date(b.last_status.created_at).getTime() : 0;
+        return bT - aT;
+      });
+      conversation = matching[0];
+    } else {
+      conversation = await this.findConversationById(
+        instanceUrl,
+        channel.accessToken,
+        conversationId,
+      );
+    }
+
+    if (!conversation?.last_status) {
+      throw new BadRequestException(
+        `Mastodon conversation ${conversationId} not found`,
+      );
+    }
+
+    const recipients = (conversation.accounts ?? []).filter(
+      (a) => a.id !== channel.platformAccountId,
+    );
+    if (recipients.length === 0) {
+      throw new BadRequestException(
+        'Mastodon conversation has no other participants',
+      );
+    }
+    const mentions = recipients
+      .map((a) => `@${a.acct || a.username}`)
+      .join(' ');
+    const statusBody = `${mentions} ${text}`.trim();
+
+    // Upload attachments to Mastodon, gathering media_ids.
+    // Mastodon caps to 4 attachments per status; trim defensively.
+    const mediaIds: string[] = [];
+    for (const att of attachments.slice(0, 4)) {
+      const uploaded = await this.uploadMedia(
+        instanceUrl,
+        channel.accessToken,
+        att.url,
+        undefined,
+        att.contentType, // explicit MIME — sidesteps R2 / libmagic mismatch
+      );
+      mediaIds.push(uploaded.id);
+    }
+
+    const response = await fetch(`${instanceUrl}/api/v1/statuses`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${channel.accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        status: statusBody || mentions, // status field is required even if blank
+        visibility: 'direct',
+        in_reply_to_id: conversation.last_status.id,
+        media_ids: mediaIds,
+      }),
+    });
+
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(
+        `Failed to send Mastodon DM with attachments: ${errorData}`,
+      );
+      throw new BadRequestException(
+        `Failed to send Mastodon DM with attachments: ${errorData}`,
+      );
+    }
+
+    const data = await response.json();
     return {
       conversationId,
       platformItemId: data.id,

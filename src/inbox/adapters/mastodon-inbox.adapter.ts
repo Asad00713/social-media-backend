@@ -106,6 +106,24 @@ export class MastodonInboxAdapter implements PlatformInboxAdapter {
       platformCreatedAt: new Date(created.createdAt),
     };
   }
+
+  // Phase 2.3 — Mastodon allows deleting any status authored by the
+  // authenticated user. Replies (comments) and direct-visibility statuses
+  // (DMs) both go through the same endpoint, so the DM adapter delegates
+  // here too.
+  async deleteComment(
+    channel: ResolvedChannel,
+    platformItemId: string,
+  ): Promise<boolean> {
+    const instanceUrl = resolveInstanceUrl(channel);
+    if (!instanceUrl) throw new Error('Mastodon channel is missing instanceUrl');
+    await this.mastodon.deleteStatus(
+      instanceUrl,
+      channel.accessToken,
+      platformItemId,
+    );
+    return true;
+  }
 }
 
 function resolveInstanceUrl(channel: ResolvedChannel): string | undefined {

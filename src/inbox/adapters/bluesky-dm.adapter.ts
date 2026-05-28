@@ -58,4 +58,19 @@ export class BlueskyDmAdapter implements PlatformDmAdapter {
   }> {
     return { canReply: true };
   }
+
+  // Phase 2.3 — Bluesky's chat lexicon supports "delete for self".
+  // Recipient still sees the message; only our side removes it.
+  async deleteDm(
+    channel: ResolvedChannel,
+    conversationId: string,
+    platformItemId: string,
+  ): Promise<boolean> {
+    await this.blueskyService.deleteChatMessage(
+      channel.accessToken,
+      conversationId,
+      platformItemId,
+    );
+    return true;
+  }
 }

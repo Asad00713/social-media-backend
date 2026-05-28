@@ -128,4 +128,13 @@ export class YoutubeInboxAdapter implements PlatformInboxAdapter {
       platformCreatedAt: new Date(),
     };
   }
+
+  // Phase 2.3 — YouTube only allows deleting comments authored by the
+  // authenticated channel. Requires youtube.force-ssl scope.
+  async deleteComment(
+    channel: ResolvedChannel,
+    platformItemId: string,
+  ): Promise<boolean> {
+    return this.youtube.deleteComment(channel.accessToken, platformItemId);
+  }
 }

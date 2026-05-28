@@ -891,6 +891,53 @@ export class ChannelsController {
       );
     }
 
+    // Phase 2.3 — Auto-subscribe both FB Page + (if connected) IG account to
+    // their respective Meta webhook channels right after OAuth. Without this,
+    // events only arrive via polling (30 s lag); with it, DMs + comments
+    // arrive in <2 s. The subscribe calls are idempotent and best-effort so
+    // a webhook failure doesn't block the connect flow.
+    //
+    // We use `page.accessToken` directly (the FB Page Access Token from the
+    // OAuth flow) — the channelService response DTO strips the encrypted
+    // token, but the IG account uses the SAME Page Access Token as its FB
+    // parent, so one variable covers both subscribes.
+    try {
+      await this.facebookService.subscribePageToWebhooks(
+        page.id,
+        page.accessToken,
+        [
+          'feed',
+          'messages',
+          'messaging_postbacks',
+          'message_deliveries',
+          'message_reads',
+          'message_reactions',
+          'message_echoes',
+          'message_edits',
+        ],
+      );
+    } catch (err) {
+      console.warn(
+        `[connectFacebookPage] FB webhook auto-subscribe failed for page=${page.id}:`,
+        (err as Error).message,
+      );
+    }
+
+    if (igChannel && page.instagramBusinessAccount) {
+      try {
+        await this.instagramService.subscribeAccountToWebhooks(
+          page.instagramBusinessAccount.id,
+          page.accessToken,
+          ['comments', 'messages', 'messaging_postbacks', 'message_reactions'],
+        );
+      } catch (err) {
+        console.warn(
+          `[connectFacebookPage] IG webhook auto-subscribe failed for ig=${page.instagramBusinessAccount.id}:`,
+          (err as Error).message,
+        );
+      }
+    }
+
     return {
       facebookChannel: fbChannel,
       instagramChannel: igChannel,
@@ -2070,6 +2117,25 @@ export class ChannelsController {
       },
     );
 
+    // Phase 2.3 — Auto-subscribe the IG account to webhook events at OAuth
+    // connect time so DMs + comments arrive in real time (no need for the
+    // user to click "Sync Inbox" once after every connect). The subscribe
+    // call is idempotent — Meta accepts repeats without error.
+    try {
+      await this.instagramService.subscribeAccountToWebhooks(
+        instagramUser.id,
+        dto.pageAccessToken,
+        ['comments', 'messages', 'messaging_postbacks', 'message_reactions'],
+      );
+    } catch (err) {
+      // Surface to logs but don't block the connection — the user can still
+      // poll, and the next manual sync will retry the subscription.
+      console.warn(
+        `[connectInstagram] Webhook auto-subscribe failed for ig=${instagramUser.id}:`,
+        (err as Error).message,
+      );
+    }
+
     return {
       channel,
       message: 'Instagram account connected successfully',
@@ -2144,6 +2210,20 @@ export class ChannelsController {
         },
       },
     );
+
+    // Phase 2.3 — same auto-subscribe as the page-token connect flow.
+    try {
+      await this.instagramService.subscribeAccountToWebhooks(
+        instagramUser.id,
+        dto.accessToken,
+        ['comments', 'messages', 'messaging_postbacks', 'message_reactions'],
+      );
+    } catch (err) {
+      console.warn(
+        `[connectInstagramWithUserToken] Webhook auto-subscribe failed for ig=${instagramUser.id}:`,
+        (err as Error).message,
+      );
+    }
 
     return {
       channel,
