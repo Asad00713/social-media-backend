@@ -30,11 +30,17 @@ export class MetaAdsClient {
   }
 
   async createCampaign(adAccountId: string, token: string, input: MetaCampaignCreate): Promise<{ id: string }> {
-    return this.post(`/act_${stripAct(adAccountId)}/campaigns`, token, input)
+    return this.post(`/act_${stripAct(adAccountId)}/campaigns`, token, {
+      ...input,
+      is_adset_budget_sharing_enabled: false,
+    })
   }
 
   async createAdSet(adAccountId: string, token: string, input: MetaAdSetCreate): Promise<{ id: string }> {
-    return this.post(`/act_${stripAct(adAccountId)}/adsets`, token, input)
+    return this.post(`/act_${stripAct(adAccountId)}/adsets`, token, {
+      bid_strategy: 'LOWEST_COST_WITHOUT_CAP',
+      ...input,
+    })
   }
 
   /**
@@ -71,7 +77,11 @@ export class MetaAdsClient {
   }
 
   async createLeadForm(pageId: string, pageAccessToken: string, input: MetaLeadFormInput): Promise<{ id: string }> {
-    return this.post(`/${pageId}/leadgen_forms`, pageAccessToken, input)
+    // Lead-gen forms have deeply-nested objects (privacy_policy, thank_you_page,
+    // questions[]). Form-urlencoded with JSON.stringify per-field makes Meta's
+    // parser return generic "An unknown error has occurred." (code 1). Sending
+    // as application/json works reliably — confirmed via Graph API Explorer.
+    return this.postJson(`/${pageId}/leadgen_forms`, pageAccessToken, input)
   }
 
   async getLead(
@@ -115,12 +125,75 @@ export class MetaAdsClient {
     return this.post(`/${metaAdsetId}`, token, { daily_budget: dailyBudgetMinor })
   }
 
+  async updateAdSetSchedule(
+    metaAdsetId: string,
+    token: string,
+    input: { start_time?: string; end_time?: string | null },
+  ): Promise<{ success: boolean }> {
+    // Meta accepts `null` to clear end_time on an open-ended ad set.
+    return this.post(`/${metaAdsetId}`, token, input)
+  }
+
+  async updateAdSetTargeting(
+    metaAdsetId: string,
+    token: string,
+    targeting: object,
+  ): Promise<{ success: boolean }> {
+    return this.post(`/${metaAdsetId}`, token, { targeting })
+  }
+
   async searchInterests(
     query: string,
     token: string,
     limit = 25,
   ): Promise<Array<{ id: string; name: string; audience_size_lower_bound?: number; audience_size_upper_bound?: number; topic?: string }>> {
     const url = `/search?type=adinterest&q=${encodeURIComponent(query)}&limit=${limit}&access_token=${encodeURIComponent(token)}`
+    const res = await this.get<{ data: Array<{ id: string; name: string }> }>(url)
+    return res.data ?? []
+  }
+
+  /** Geo-location autocomplete (cities, regions, countries). We restrict to
+   *  cities here since countries are already exposed via the simple country
+   *  picker. Meta returns `key` + `name` + `region` + `country_code` items. */
+  async searchGeoLocations(
+    query: string,
+    token: string,
+    limit = 25,
+  ): Promise<Array<{ key: string; name: string; type: string; country_name?: string; region?: string }>> {
+    const url = `/search?type=adgeolocation&location_types=["city"]&q=${encodeURIComponent(query)}&limit=${limit}&access_token=${encodeURIComponent(token)}`
+    const res = await this.get<{ data: Array<{ key: string; name: string; type: string; country_name?: string; region?: string }> }>(url)
+    return res.data ?? []
+  }
+
+  /** Locale autocomplete. Meta returns locale id + name (e.g. {key: 6, name: "English (US)"}). */
+  async searchLanguages(
+    query: string,
+    token: string,
+    limit = 25,
+  ): Promise<Array<{ key: number; name: string }>> {
+    const url = `/search?type=adlocale&q=${encodeURIComponent(query)}&limit=${limit}&access_token=${encodeURIComponent(token)}`
+    const res = await this.get<{ data: Array<{ key: number; name: string }> }>(url)
+    return res.data ?? []
+  }
+
+  /** Behaviour-targeting autocomplete (Meta's behaviour taxonomy). */
+  async searchBehaviors(
+    query: string,
+    token: string,
+    limit = 25,
+  ): Promise<Array<{ id: string; name: string; audience_size_lower_bound?: number; audience_size_upper_bound?: number }>> {
+    const url = `/search?type=adTargetingCategory&class=behaviors&q=${encodeURIComponent(query)}&limit=${limit}&access_token=${encodeURIComponent(token)}`
+    const res = await this.get<{ data: Array<{ id: string; name: string }> }>(url)
+    return res.data ?? []
+  }
+
+  /** Detailed-demographic autocomplete. */
+  async searchDemographics(
+    query: string,
+    token: string,
+    limit = 25,
+  ): Promise<Array<{ id: string; name: string; audience_size_lower_bound?: number; audience_size_upper_bound?: number }>> {
+    const url = `/search?type=adTargetingCategory&class=demographics&q=${encodeURIComponent(query)}&limit=${limit}&access_token=${encodeURIComponent(token)}`
     const res = await this.get<{ data: Array<{ id: string; name: string }> }>(url)
     return res.data ?? []
   }
@@ -136,6 +209,27 @@ export class MetaAdsClient {
     return data as T
   }
 
+  /** application/json variant of post(). Used for endpoints whose payloads
+   *  include deeply-nested objects that Meta's form-urlencoded parser mangles
+   *  (e.g. leadgen_forms). */
+  private async postJson<T>(path: string, token: string, body: object): Promise<T> {
+    const res = await fetch(`${GRAPH}${path}?access_token=${encodeURIComponent(token)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    })
+    const data = await res.json()
+    if (!res.ok) {
+      this.logger.error(`Meta POST(json) ${path} failed: ${JSON.stringify(data)} body: ${JSON.stringify(body)}`)
+      const err = (data as any)?.error ?? {}
+      const detail = err.error_user_msg || err.error_user_title || err.message || 'unknown'
+      throw new BadRequestException(
+        `Meta API error on ${path}: ${detail} (code: ${err.code}, subcode: ${err.error_subcode ?? 'none'}, trace: ${err.fbtrace_id ?? 'none'})`,
+      )
+    }
+    return data as T
+  }
+
   private async post<T>(path: string, token: string, body: object): Promise<T> {
     const formBody = new URLSearchParams()
     for (const [k, v] of Object.entries(body)) {
@@ -146,7 +240,18 @@ export class MetaAdsClient {
     const data = await res.json()
     if (!res.ok) {
       this.logger.error(`Meta POST ${path} failed: ${JSON.stringify(data)} body: ${JSON.stringify(body)}`)
-      throw new BadRequestException(`Meta API error: ${(data as any)?.error?.message ?? 'unknown'} (code: ${(data as any)?.error?.code})`)
+      const err = (data as any)?.error ?? {}
+      let detail = err.error_user_msg || err.error_user_title || err.message || 'unknown'
+      // Meta returns a useless "An unknown error has occurred." (code 1) when
+      // creating leadgen_forms before the Page admin has accepted the Lead
+      // Generation Terms of Service. Surface a helpful hint.
+      if (path.includes('/leadgen_forms') && err.code === 1) {
+        detail =
+          'Meta could not create the lead form. Most often this means the Facebook Page admin has not yet accepted the Lead Generation Terms of Service. Open the Page → Settings → Lead Ads Forms and accept the terms, then retry.'
+      }
+      throw new BadRequestException(
+        `Meta API error on ${path}: ${detail} (code: ${err.code}, subcode: ${err.error_subcode ?? 'none'}, trace: ${err.fbtrace_id ?? 'none'})`,
+      )
     }
     return data as T
   }
