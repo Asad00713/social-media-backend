@@ -1,7 +1,7 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common'
 import type {
   MetaAdAccountDto, MetaCampaignCreate, MetaAdSetCreate,
-  MetaCreativeBoostInput, MetaCreativeLeadInput,
+  MetaCreativeBoostInput, MetaCreativeBoostOverridesInput, MetaCreativeLeadInput,
   MetaLeadFormInput, MetaInsightsRow, MetaTargeting,
 } from '../types/meta-ads.types'
 
@@ -67,19 +67,7 @@ export class MetaAdsClient {
   async createCreativeBoostWithOverrides(
     adAccountId: string,
     token: string,
-    input: {
-      name: string
-      object_story_spec: {
-        page_id: string
-        link_data: {
-          message: string
-          link: string
-          name?: string
-          description?: string
-          call_to_action?: { type: string; value: { link: string } }
-        }
-      }
-    },
+    input: MetaCreativeBoostOverridesInput,
   ): Promise<{ id: string }> {
     return this.postJson(`/act_${stripAct(adAccountId)}/adcreatives`, token, input)
   }

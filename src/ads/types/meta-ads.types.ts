@@ -58,6 +58,20 @@ export interface MetaCreativeBoostInput {
   object_story_id: string          // '<page_id>_<post_id>'
 }
 
+export interface MetaCreativeBoostOverridesInput {
+  name: string
+  object_story_spec: {
+    page_id: string
+    link_data: {
+      message: string
+      link: string
+      name?: string
+      description?: string
+      call_to_action?: { type: string; value: { link: string } }
+    }
+  }
+}
+
 export interface MetaCreativeLeadInput {
   name: string
   object_story_spec: {

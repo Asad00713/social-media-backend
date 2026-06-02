@@ -89,6 +89,12 @@ export class BoostPostService {
     // Without overrides we use object_story_id which re-uses the original post
     // as-is (cheapest path, no extra copy needed).
     const hasOverrides = !!(dto.adMessage || dto.adHeadline || dto.adDescription || dto.adLinkUrl)
+    // platformPostId is `<page_id>_<post_id>`; split on the first underscore so
+    // we don't break on post IDs that contain additional underscores.
+    const [postPageId, ...postIdParts] = dto.platformPostId.split('_')
+    const postPermalink = `https://www.facebook.com/${postPageId}/posts/${postIdParts.join('_')}`
+    const resolvedLink = dto.adLinkUrl ?? postPermalink
+
     const creative = hasOverrides
       ? await this.meta.createCreativeBoostWithOverrides(acct.metaAdAccountId, userToken, {
           name: `${camp.id} creative`,
@@ -96,12 +102,12 @@ export class BoostPostService {
             page_id: channel.platformAccountId,
             link_data: {
               message: dto.adMessage ?? '',
-              link: dto.adLinkUrl ?? `https://www.facebook.com/${dto.platformPostId.replace('_', '/posts/')}`,
+              link: resolvedLink,
               name: dto.adHeadline,
               description: dto.adDescription,
               call_to_action:
                 dto.objective === 'OUTCOME_TRAFFIC'
-                  ? { type: 'LEARN_MORE', value: { link: dto.adLinkUrl ?? `https://www.facebook.com/${dto.platformPostId.replace('_', '/posts/')}` } }
+                  ? { type: 'LEARN_MORE', value: { link: resolvedLink } }
                   : undefined,
             },
           },
