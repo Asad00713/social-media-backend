@@ -2,7 +2,7 @@ import { Injectable, Logger, BadRequestException } from '@nestjs/common'
 import type {
   MetaAdAccountDto, MetaCampaignCreate, MetaAdSetCreate,
   MetaCreativeBoostInput, MetaCreativeLeadInput,
-  MetaLeadFormInput, MetaInsightsRow,
+  MetaLeadFormInput, MetaInsightsRow, MetaTargeting,
 } from '../types/meta-ads.types'
 
 const GRAPH = 'https://graph.facebook.com/v21.0'
@@ -137,7 +137,7 @@ export class MetaAdsClient {
   async updateAdSetTargeting(
     metaAdsetId: string,
     token: string,
-    targeting: object,
+    targeting: MetaTargeting,
   ): Promise<{ success: boolean }> {
     return this.post(`/${metaAdsetId}`, token, { targeting })
   }
@@ -152,15 +152,15 @@ export class MetaAdsClient {
     return res.data ?? []
   }
 
-  /** Geo-location autocomplete (cities, regions, countries). We restrict to
-   *  cities here since countries are already exposed via the simple country
-   *  picker. Meta returns `key` + `name` + `region` + `country_code` items. */
+  /** Geo-location autocomplete (cities only). Meta returns key + name + type
+   *  + country_name + region for each item. Countries are exposed via the
+   *  simple country picker instead. */
   async searchGeoLocations(
     query: string,
     token: string,
     limit = 25,
   ): Promise<Array<{ key: string; name: string; type: string; country_name?: string; region?: string }>> {
-    const url = `/search?type=adgeolocation&location_types=["city"]&q=${encodeURIComponent(query)}&limit=${limit}&access_token=${encodeURIComponent(token)}`
+    const url = `/search?type=adgeolocation&location_types=${encodeURIComponent('["city"]')}&q=${encodeURIComponent(query)}&limit=${limit}&access_token=${encodeURIComponent(token)}`
     const res = await this.get<{ data: Array<{ key: string; name: string; type: string; country_name?: string; region?: string }> }>(url)
     return res.data ?? []
   }
@@ -183,7 +183,7 @@ export class MetaAdsClient {
     limit = 25,
   ): Promise<Array<{ id: string; name: string; audience_size_lower_bound?: number; audience_size_upper_bound?: number }>> {
     const url = `/search?type=adTargetingCategory&class=behaviors&q=${encodeURIComponent(query)}&limit=${limit}&access_token=${encodeURIComponent(token)}`
-    const res = await this.get<{ data: Array<{ id: string; name: string }> }>(url)
+    const res = await this.get<{ data: Array<{ id: string; name: string; audience_size_lower_bound?: number; audience_size_upper_bound?: number }> }>(url)
     return res.data ?? []
   }
 
@@ -194,7 +194,7 @@ export class MetaAdsClient {
     limit = 25,
   ): Promise<Array<{ id: string; name: string; audience_size_lower_bound?: number; audience_size_upper_bound?: number }>> {
     const url = `/search?type=adTargetingCategory&class=demographics&q=${encodeURIComponent(query)}&limit=${limit}&access_token=${encodeURIComponent(token)}`
-    const res = await this.get<{ data: Array<{ id: string; name: string }> }>(url)
+    const res = await this.get<{ data: Array<{ id: string; name: string; audience_size_lower_bound?: number; audience_size_upper_bound?: number }> }>(url)
     return res.data ?? []
   }
 
