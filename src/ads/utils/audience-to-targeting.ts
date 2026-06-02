@@ -15,6 +15,9 @@ export function audienceToMetaTargeting(a: AudienceDto): MetaTargeting {
     !!(a.behaviors && a.behaviors.length) ||
     !!(a.demographics && a.demographics.length)
   const ageMin = hasDetailedTargeting ? Math.max(18, a.ageMin) : a.ageMin
+  // If clamping age_min inverted the range, push age_max up too so Meta
+  // doesn't reject the targeting spec with a min>max error.
+  const ageMax = Math.max(ageMin, a.ageMax)
 
   // Cities default to a 10-mile radius (Meta's own default) when the caller
   // omits one.
@@ -26,12 +29,15 @@ export function audienceToMetaTargeting(a: AudienceDto): MetaTargeting {
   return {
     targeting_automation: { advantage_audience: 0 },
     age_min: ageMin,
-    age_max: a.ageMax,
+    age_max: ageMax,
     genders,
-    geo_locations: {
-      countries: a.countries && a.countries.length > 0 ? a.countries : undefined,
-      cities,
-    },
+    geo_locations:
+      (a.countries && a.countries.length > 0) || cities
+        ? {
+            countries: a.countries && a.countries.length > 0 ? a.countries : undefined,
+            cities,
+          }
+        : undefined,
     interests: a.interests && a.interests.length > 0 ? a.interests : undefined,
     behaviors: a.behaviors && a.behaviors.length > 0 ? a.behaviors : undefined,
     family_statuses: a.demographics && a.demographics.length > 0 ? a.demographics : undefined,

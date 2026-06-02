@@ -92,6 +92,37 @@ describe('audienceToMetaTargeting', () => {
     expect(t.locales).toEqual([6, 1031])
   })
 
+  it('maps demographics to family_statuses', () => {
+    const t = audienceToMetaTargeting({
+      ...base,
+      genders: ['all'],
+      demographics: [
+        { id: 'd1', name: 'Engaged' },
+        { id: 'd2', name: 'Newlyweds' },
+      ],
+    })
+    expect(t.family_statuses).toEqual([
+      { id: 'd1', name: 'Engaged' },
+      { id: 'd2', name: 'Newlyweds' },
+    ])
+  })
+
+  it('omits geo_locations entirely when both countries and cities are empty', () => {
+    const t = audienceToMetaTargeting({ ...base, genders: ['all'] })
+    expect(t.geo_locations).toBeUndefined()
+  })
+
+  it('clamps age_max up to age_min when clamp inverts the range', () => {
+    const t = audienceToMetaTargeting({
+      ageMin: 15,
+      ageMax: 17,
+      genders: ['all'],
+      interests: [{ id: 'i1', name: 'Fashion' }],
+    })
+    expect(t.age_min).toBe(18)
+    expect(t.age_max).toBe(18)
+  })
+
   it('always sets advantage_audience to 0 (off)', () => {
     const t = audienceToMetaTargeting({ ...base, genders: ['all'] })
     expect(t.targeting_automation).toEqual({ advantage_audience: 0 })
