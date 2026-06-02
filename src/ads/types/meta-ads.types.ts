@@ -12,6 +12,7 @@ export interface MetaAdAccountDto {
 }
 
 export interface MetaTargeting {
+  targeting_automation?: { advantage_audience: 0 | 1 }
   age_min?: number
   age_max?: number
   genders?: number[]               // [0]=all, [1]=male, [2]=female
@@ -20,6 +21,8 @@ export interface MetaTargeting {
     cities?: Array<{ key: string; radius?: number; distance_unit?: 'mile' | 'kilometer' }>
   }
   interests?: Array<{ id: string; name: string }>
+  behaviors?: Array<{ id: string; name: string }>
+  family_statuses?: Array<{ id: string; name: string }>
   locales?: number[]
   publisher_platforms?: string[]
   facebook_positions?: string[]
@@ -42,6 +45,7 @@ export interface MetaAdSetCreate {
   billing_event: 'IMPRESSIONS' | 'LINK_CLICKS'
   optimization_goal: 'LEAD_GENERATION' | 'POST_ENGAGEMENT' | 'REACH' | 'IMPRESSIONS' | 'LINK_CLICKS'
   bid_strategy?: 'LOWEST_COST_WITHOUT_CAP'
+  destination_type?: 'ON_POST' | 'ON_AD' | 'WEBSITE' | 'APP' | 'MESSENGER'
   targeting: MetaTargeting
   start_time?: string              // ISO8601
   end_time?: string
@@ -64,7 +68,11 @@ export interface MetaCreativeLeadInput {
       link: string
       name?: string
       description?: string
-      image_hash: string
+      /** Image hash from /adimages upload. Requires Marketing API standard
+       *  access — blocked in newer dev-mode apps. Prefer `picture` (URL). */
+      image_hash?: string
+      /** Public image URL. Works in dev mode without /adimages capability. */
+      picture?: string
       call_to_action: {
         type: 'SIGN_UP' | 'LEARN_MORE' | 'APPLY_NOW' | 'GET_QUOTE' | 'DOWNLOAD' | 'SUBSCRIBE'
         value: { lead_gen_form_id: string }
