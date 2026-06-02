@@ -2,6 +2,7 @@ import {
   Body,
   Controller,
   Delete,
+  ForbiddenException,
   Get,
   HttpCode,
   HttpStatus,
@@ -302,6 +303,7 @@ export class AdsController {
    */
   @Get('targeting/interests')
   async searchInterests(
+    @Param('workspaceId') wid: string,
     @Query('q') q: string,
     @Query('channelId') channelId: string,
   ) {
@@ -309,6 +311,9 @@ export class AdsController {
       return []
     }
     const channel = await this.channelService.getChannelForPosting(Number(channelId))
+    if (channel.workspaceId !== wid) {
+      throw new ForbiddenException('Channel does not belong to this workspace')
+    }
     const token = channel.accessToken ?? ''
     return this.metaAdsClient.searchInterests(q, token)
   }
@@ -316,14 +321,22 @@ export class AdsController {
   /**
    * Autocomplete Meta's geo-location taxonomy (cities only).
    * GET /ads/workspaces/:workspaceId/targeting/geo-locations?q=<query>&channelId=<id>
+   *
+   * Returns empty array when q.length < 2.
    */
   @Get('targeting/geo-locations')
   async searchGeoLocations(
+    @Param('workspaceId') wid: string,
     @Query('q') q: string,
     @Query('channelId') channelId: string,
   ) {
-    if (!q || q.length < 2) return []
+    if (!q || q.length < 2) {
+      return []
+    }
     const channel = await this.channelService.getChannelForPosting(Number(channelId))
+    if (channel.workspaceId !== wid) {
+      throw new ForbiddenException('Channel does not belong to this workspace')
+    }
     const token = channel.accessToken ?? ''
     return this.metaAdsClient.searchGeoLocations(q, token)
   }
@@ -331,14 +344,22 @@ export class AdsController {
   /**
    * Autocomplete Meta's locale taxonomy.
    * GET /ads/workspaces/:workspaceId/targeting/languages?q=<query>&channelId=<id>
+   *
+   * Returns empty array when q.length < 2.
    */
   @Get('targeting/languages')
   async searchLanguages(
+    @Param('workspaceId') wid: string,
     @Query('q') q: string,
     @Query('channelId') channelId: string,
   ) {
-    if (!q || q.length < 2) return []
+    if (!q || q.length < 2) {
+      return []
+    }
     const channel = await this.channelService.getChannelForPosting(Number(channelId))
+    if (channel.workspaceId !== wid) {
+      throw new ForbiddenException('Channel does not belong to this workspace')
+    }
     const token = channel.accessToken ?? ''
     return this.metaAdsClient.searchLanguages(q, token)
   }
@@ -346,14 +367,22 @@ export class AdsController {
   /**
    * Autocomplete Meta's behavior taxonomy.
    * GET /ads/workspaces/:workspaceId/targeting/behaviors?q=<query>&channelId=<id>
+   *
+   * Returns empty array when q.length < 2.
    */
   @Get('targeting/behaviors')
   async searchBehaviors(
+    @Param('workspaceId') wid: string,
     @Query('q') q: string,
     @Query('channelId') channelId: string,
   ) {
-    if (!q || q.length < 2) return []
+    if (!q || q.length < 2) {
+      return []
+    }
     const channel = await this.channelService.getChannelForPosting(Number(channelId))
+    if (channel.workspaceId !== wid) {
+      throw new ForbiddenException('Channel does not belong to this workspace')
+    }
     const token = channel.accessToken ?? ''
     return this.metaAdsClient.searchBehaviors(q, token)
   }
@@ -361,14 +390,22 @@ export class AdsController {
   /**
    * Autocomplete Meta's detailed-demographics taxonomy.
    * GET /ads/workspaces/:workspaceId/targeting/demographics?q=<query>&channelId=<id>
+   *
+   * Returns empty array when q.length < 2.
    */
   @Get('targeting/demographics')
   async searchDemographics(
+    @Param('workspaceId') wid: string,
     @Query('q') q: string,
     @Query('channelId') channelId: string,
   ) {
-    if (!q || q.length < 2) return []
+    if (!q || q.length < 2) {
+      return []
+    }
     const channel = await this.channelService.getChannelForPosting(Number(channelId))
+    if (channel.workspaceId !== wid) {
+      throw new ForbiddenException('Channel does not belong to this workspace')
+    }
     const token = channel.accessToken ?? ''
     return this.metaAdsClient.searchDemographics(q, token)
   }
