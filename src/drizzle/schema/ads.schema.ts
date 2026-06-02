@@ -20,6 +20,8 @@ export const adObjectiveEnum = pgEnum('ad_objective', [
   'OUTCOME_LEADS',
   'OUTCOME_ENGAGEMENT',
   'OUTCOME_AWARENESS',
+  'OUTCOME_TRAFFIC',
+  'OUTCOME_VIDEO_VIEWS',
 ]);
 export const adEntityStatusEnum = pgEnum('ad_entity_status', [
   'ACTIVE',

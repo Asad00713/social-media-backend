@@ -32,7 +32,7 @@ export interface MetaTargeting {
 
 export interface MetaCampaignCreate {
   name: string
-  objective: 'OUTCOME_LEADS' | 'OUTCOME_ENGAGEMENT' | 'OUTCOME_AWARENESS'
+  objective: 'OUTCOME_LEADS' | 'OUTCOME_ENGAGEMENT' | 'OUTCOME_AWARENESS' | 'OUTCOME_TRAFFIC' | 'OUTCOME_VIDEO_VIEWS'
   status: 'ACTIVE' | 'PAUSED'
   special_ad_categories: string[]
   buying_type?: 'AUCTION'
@@ -43,7 +43,7 @@ export interface MetaAdSetCreate {
   campaign_id: string
   daily_budget: number             // minor units (cents for USD; whole units for JPY)
   billing_event: 'IMPRESSIONS' | 'LINK_CLICKS'
-  optimization_goal: 'LEAD_GENERATION' | 'POST_ENGAGEMENT' | 'REACH' | 'IMPRESSIONS' | 'LINK_CLICKS'
+  optimization_goal: 'LEAD_GENERATION' | 'POST_ENGAGEMENT' | 'REACH' | 'IMPRESSIONS' | 'LINK_CLICKS' | 'THRUPLAY'
   bid_strategy?: 'LOWEST_COST_WITHOUT_CAP'
   destination_type?: 'ON_POST' | 'ON_AD' | 'WEBSITE' | 'APP' | 'MESSENGER'
   targeting: MetaTargeting

@@ -64,6 +64,26 @@ export class MetaAdsClient {
     return this.post(`/act_${stripAct(adAccountId)}/adcreatives`, token, input)
   }
 
+  async createCreativeBoostWithOverrides(
+    adAccountId: string,
+    token: string,
+    input: {
+      name: string
+      object_story_spec: {
+        page_id: string
+        link_data: {
+          message: string
+          link: string
+          name?: string
+          description?: string
+          call_to_action?: { type: string; value: { link: string } }
+        }
+      }
+    },
+  ): Promise<{ id: string }> {
+    return this.postJson(`/act_${stripAct(adAccountId)}/adcreatives`, token, input)
+  }
+
   async createCreativeLead(adAccountId: string, token: string, input: MetaCreativeLeadInput): Promise<{ id: string }> {
     return this.post(`/act_${stripAct(adAccountId)}/adcreatives`, token, input)
   }
