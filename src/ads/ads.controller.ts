@@ -18,6 +18,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator'
 import { AdAccountsService } from './services/ad-accounts.service'
 import { AdDraftsService } from './services/ad-drafts.service'
 import { BoostPostService } from './services/boost-post.service'
+import { BoostEditService } from './services/boost-edit.service'
 import { LeadCampaignService } from './services/lead-campaign.service'
 import { AdInsightsService } from './services/ad-insights.service'
 import { AdMutationsService } from './services/ad-mutations.service'
@@ -25,12 +26,13 @@ import { MetaAdsClient } from './services/meta-ads.client'
 import { ChannelService } from '../channels/services/channel.service'
 import { UpsertDraftDto } from './dto/draft.dto'
 import { CreateBoostDto } from './dto/create-boost.dto'
+import { BoostEditDto } from './dto/boost-edit.dto'
 import { CreateLeadCampaignDto } from './dto/create-lead-campaign.dto'
 import { UpdateCampaignStatusDto, UpdateAdSetBudgetDto } from './dto/ad-mutations.dto'
 import { DeliveryEstimateDto } from './dto/delivery-estimate.dto'
 import { audienceToMetaTargeting } from './utils/audience-to-targeting'
 import { db } from '../drizzle/db'
-import { adAccounts, adCampaigns, leads } from '../drizzle/schema'
+import { adAccounts, adCampaigns, adSets, leads } from '../drizzle/schema'
 import { eq, and, desc } from 'drizzle-orm'
 
 interface AuthUser {
@@ -50,6 +52,7 @@ export class AdsController {
     private readonly mutations: AdMutationsService,
     private readonly metaAdsClient: MetaAdsClient,
     private readonly channelService: ChannelService,
+    private readonly boostEdit: BoostEditService,
   ) {}
 
   // ==========================================================================
@@ -177,6 +180,61 @@ export class AdsController {
     @Body() body: CreateBoostDto,
   ) {
     return this.boost.create(wid, user.userId, body)
+  }
+
+  /**
+   * Fetch a boost campaign's full state — used by Edit dialog and Duplicate.
+   * GET /ads/workspaces/:workspaceId/boost/:campaignId
+   */
+  @Get('boost/:campaignId')
+  async getBoost(
+    @Param('workspaceId') wid: string,
+    @Param('campaignId') campaignId: string,
+  ) {
+    const [campaign] = await db
+      .select()
+      .from(adCampaigns)
+      .where(and(eq(adCampaigns.id, campaignId), eq(adCampaigns.workspaceId, wid)))
+      .limit(1)
+    if (!campaign || campaign.kind !== 'boost') throw new NotFoundException('Boost campaign not found')
+    const [adset] = await db
+      .select()
+      .from(adSets)
+      .where(eq(adSets.campaignId, campaign.id))
+      .limit(1)
+    if (!adset) throw new NotFoundException('Ad set not found')
+    return {
+      campaign: {
+        id: campaign.id,
+        metaCampaignId: campaign.metaCampaignId,
+        name: campaign.name,
+        objective: campaign.objective,
+        status: campaign.status,
+        channelId: campaign.channelId,
+      },
+      adset: {
+        id: adset.id,
+        dailyBudgetMinor: adset.dailyBudgetMinor,
+        currency: adset.currency,
+        startTime: adset.startTime,
+        endTime: adset.endTime,
+        targeting: adset.targeting,
+        promotedObject: adset.promotedObject,
+      },
+    }
+  }
+
+  /**
+   * Edit an existing boost. Sends only changed fields.
+   * PATCH /ads/workspaces/:workspaceId/boost/:campaignId
+   */
+  @Patch('boost/:campaignId')
+  editBoost(
+    @Param('workspaceId') wid: string,
+    @Param('campaignId') campaignId: string,
+    @Body() body: BoostEditDto,
+  ) {
+    return this.boostEdit.apply(wid, campaignId, body)
   }
 
   // ==========================================================================

@@ -12,6 +12,7 @@ import { AdInsightsService } from './services/ad-insights.service'
 import { AdInsightsSyncProcessor } from './processors/ad-insights-sync.processor'
 import { AdInsightsSyncScheduler } from './schedulers/ad-insights-sync.scheduler'
 import { AdMutationsService } from './services/ad-mutations.service'
+import { BoostEditService } from './services/boost-edit.service'
 
 /**
  * AdsModule — Meta Ads Phase 1
@@ -42,6 +43,7 @@ import { AdMutationsService } from './services/ad-mutations.service'
     AdInsightsSyncProcessor,
     AdInsightsSyncScheduler,
     AdMutationsService,
+    BoostEditService,
   ],
   exports: [
     AdDraftsService,
