@@ -23,6 +23,10 @@ export class BoostEditService {
   ) {}
 
   async apply(workspaceId: string, campaignId: string, dto: BoostEditDto) {
+    const editableKeys: Array<keyof BoostEditDto> = ['dailyBudgetMinor', 'startTime', 'endTime', 'audience', 'status']
+    const hasEdits = editableKeys.some((k) => dto[k] !== undefined)
+    if (!hasEdits) return { ok: true, changed: [] as string[] }
+
     // Load campaign + its (single) ad set
     const [campaign] = await db
       .select()
@@ -40,7 +44,9 @@ export class BoostEditService {
     if (!adset) throw new NotFoundException('Ad set not found for this campaign')
 
     const channel = await this.channelService.getChannelForPosting(campaign.channelId)
-    if (!channel || channel.workspaceId !== workspaceId) throw new ForbiddenException('Channel mismatch')
+    if (!channel) throw new NotFoundException('Channel not found')
+    if (channel.workspaceId !== workspaceId) throw new ForbiddenException('Channel does not belong to this workspace')
+    if (channel.platform !== 'facebook') throw new BadRequestException('Only FB Page boosts can be edited via this endpoint')
     if (!channel.accessToken) throw new BadRequestException('No access token for channel')
 
     const cachedUserToken = (channel.metadata as Record<string, unknown> | null)?.['fbUserAccessToken']
@@ -81,14 +87,15 @@ export class BoostEditService {
     }
 
     // 4. Status — pause/resume/archive both campaign + ad set so Meta-side state stays consistent
-    if (dto.status) {
+    if (dto.status !== undefined) {
       await this.meta.updateEntityStatus(campaign.metaCampaignId, userToken, dto.status)
       await this.meta.updateEntityStatus(adset.metaAdsetId, userToken, dto.status)
       await db.update(adCampaigns).set({ status: dto.status, updatedAt: new Date() }).where(eq(adCampaigns.id, campaign.id))
       await db.update(adSets).set({ status: dto.status, updatedAt: new Date() }).where(eq(adSets.id, adset.id))
     }
 
-    this.logger.log(`Boost ${campaignId} edited: ${Object.keys(dto).join(', ')}`)
-    return { ok: true }
+    const editedFields = Object.keys(dto).filter((k) => k !== 'acknowledgeLearningPhaseReset')
+    this.logger.log(`Boost ${campaignId} edited: ${editedFields.join(', ')}`)
+    return { ok: true, changed: editedFields }
   }
 }

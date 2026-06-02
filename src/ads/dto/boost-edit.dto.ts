@@ -1,4 +1,4 @@
-import { IsBoolean, IsIn, IsInt, IsISO8601, IsOptional, Min, ValidateNested } from 'class-validator'
+import { IsBoolean, IsIn, IsInt, IsISO8601, IsOptional, Min, ValidateIf, ValidateNested } from 'class-validator'
 import { Type } from 'class-transformer'
 import { AudienceDto } from './audience.dto'
 
@@ -13,7 +13,7 @@ export class BoostEditDto {
   @IsOptional() @IsInt() @Min(100) dailyBudgetMinor?: number
   @IsOptional() @IsISO8601() startTime?: string
   /** Pass `null` to clear an existing end_time (run open-ended). */
-  @IsOptional() endTime?: string | null
+  @IsOptional() @ValidateIf((o) => o.endTime !== null) @IsISO8601() endTime?: string | null
   @IsOptional() @ValidateNested() @Type(() => AudienceDto) audience?: AudienceDto
   @IsOptional() @IsIn(['ACTIVE', 'PAUSED', 'ARCHIVED']) status?: 'ACTIVE' | 'PAUSED' | 'ARCHIVED'
   /** Required true for audience changes — confirms the user knows it triggers Meta's learning phase reset. */
