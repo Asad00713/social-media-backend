@@ -96,6 +96,21 @@ export const PLATFORM_RATE_LIMITS: Record<
     windowMs: 60 * 1000, // 1 minute
     description: '60 requests per minute',
   },
+  slack: {
+    maxRequests: 50, // Slack Tier 2 methods: 20+/min; conservative global limit
+    windowMs: 60 * 1000, // 1 minute
+    description: '50 requests per minute',
+  },
+  telegram: {
+    maxRequests: 30, // Telegram Bot API: 30 messages/sec to different chats
+    windowMs: 1000, // 1 second
+    description: '30 requests per second',
+  },
+  discord: {
+    maxRequests: 50, // Discord global rate limit: 50 requests per second
+    windowMs: 1000, // 1 second
+    description: '50 requests per second',
+  },
 };
 
 export interface RateLimitResult {

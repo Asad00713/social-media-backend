@@ -34,6 +34,9 @@ export const SUPPORTED_PLATFORMS = [
   'onedrive',
   'dropbox',
   'reddit',
+  'slack',
+  'telegram',
+  'discord',
 ] as const;
 
 export type SupportedPlatform = (typeof SUPPORTED_PLATFORMS)[number];
@@ -46,6 +49,9 @@ export const ACCOUNT_TYPES = [
   'business_account',
   'group',
   'storage', // For Google Drive, Google Photos
+  'workspace',
+  'bot',
+  'server',
 ] as const;
 
 export type AccountType = (typeof ACCOUNT_TYPES)[number];
@@ -625,6 +631,50 @@ export const PLATFORM_CONFIG: Record<
       'account_info.read',
       'files.metadata.read',
       'files.content.read',
+    ],
+  },
+  slack: {
+    name: 'Slack',
+    accountTypes: ['workspace'],
+    supportsRefreshToken: true,
+    tokenExpirationDays: null, // Slack bot tokens don't expire unless revoked
+    refreshTokenTtlDays: null,
+    maxMediaPerPost: 0, // Inbox/notification platform, not a publishing target
+    maxTextLength: 40000,
+    supportedMediaTypes: [],
+    oauthScopes: [
+      'channels:history',
+      'channels:read',
+      'chat:write',
+      'im:history',
+      'im:read',
+      'users:read',
+    ],
+  },
+  telegram: {
+    name: 'Telegram',
+    accountTypes: ['bot'],
+    supportsRefreshToken: false, // Bot tokens don't expire
+    tokenExpirationDays: null,
+    refreshTokenTtlDays: null,
+    maxMediaPerPost: 0, // Inbox/notification platform, not a publishing target
+    maxTextLength: 4096,
+    supportedMediaTypes: [],
+    oauthScopes: [], // Uses Bot API token, not OAuth
+  },
+  discord: {
+    name: 'Discord',
+    accountTypes: ['server'],
+    supportsRefreshToken: true,
+    tokenExpirationDays: null,
+    refreshTokenTtlDays: null,
+    maxMediaPerPost: 0, // Inbox/notification platform, not a publishing target
+    maxTextLength: 2000,
+    supportedMediaTypes: [],
+    oauthScopes: [
+      'bot',
+      'guilds',
+      'messages.read',
     ],
   },
 };
