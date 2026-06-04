@@ -46,6 +46,7 @@ import {
   ListSlackMembersQueryDto,
   JoinSlackChannelBodyDto,
   StartSlackDmBodyDto,
+  CreateSlackChannelBodyDto,
 } from './dto/slack-browse.dto';
 import {
   InitiateOAuthDto,
@@ -4890,5 +4891,29 @@ export class ChannelsController {
       platformCreatedAt: new Date(Number(ts.split('.')[0]) * 1000),
     });
     return { ok: true, conversationId, ts };
+  }
+
+  /**
+   * Create a new Slack channel in the connected workspace.
+   * The bot is automatically the creator and therefore a member.
+   */
+  @Post('workspaces/:workspaceId/slack/:channelId/conversations/create')
+  @UseGuards(JwtAuthGuard)
+  async createSlackChannel(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Body() body: CreateSlackChannelBodyDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'slack') {
+      throw new ForbiddenException('Slack channel not found in this workspace');
+    }
+    const token = await this.channelService.getAccessToken(channel.id, wid);
+    const created = await this.slackService.createChannel(token, {
+      name: body.name,
+      isPrivate: body.isPrivate,
+      purpose: body.purpose,
+    });
+    return { ok: true, ...created };
   }
 }

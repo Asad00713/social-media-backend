@@ -58,3 +58,18 @@ export class StartSlackDmBodyDto {
   @MaxLength(40000)
   text!: string;
 }
+
+export class CreateSlackChannelBodyDto {
+  @IsString()
+  @MaxLength(80)
+  name!: string;
+
+  @IsOptional()
+  @IsBoolean()
+  isPrivate?: boolean;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(250)
+  purpose?: string;
+}

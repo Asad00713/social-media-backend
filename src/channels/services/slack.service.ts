@@ -28,6 +28,7 @@ export class SlackService {
       'chat:write',
       'chat:write.public',
       'channels:join',
+      'channels:manage',
       'channels:history',
       'groups:history',
       'im:history',
@@ -38,6 +39,7 @@ export class SlackService {
       'mpim:read',
       'im:write',
       'mpim:write',
+      'groups:write',
       'users:read',
       'team:read',
       'files:write',
@@ -225,6 +227,37 @@ export class SlackService {
       );
     }
     return { already_in_channel: (res as any).already_in_channel as boolean | undefined };
+  }
+
+  /** Create a new channel. Bot becomes a member automatically as the creator.
+   *  Returns the new conversation id + name. */
+  async createChannel(
+    botToken: string,
+    options: { name: string; isPrivate?: boolean; purpose?: string },
+  ): Promise<{ id: string; name: string }> {
+    const client = new WebClient(botToken);
+    const res = await client.conversations.create({
+      name: options.name,
+      is_private: options.isPrivate ?? false,
+    });
+    if (!res.ok || !res.channel?.id) {
+      throw new BadRequestException(
+        `conversations.create failed: ${res.error ?? 'unknown'}`,
+      );
+    }
+    // Set purpose separately (optional)
+    if (options.purpose) {
+      await client.conversations
+        .setPurpose({
+          channel: res.channel.id,
+          purpose: options.purpose,
+        })
+        .catch(() => null);
+    }
+    return {
+      id: res.channel.id,
+      name: (res.channel as any).name ?? options.name,
+    };
   }
 
   /** Look up a user's profile by Slack user id — populates author handle /
