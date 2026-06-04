@@ -29,6 +29,7 @@ import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
 import { BlueskyService } from './services/bluesky.service';
 import { MastodonService } from './services/mastodon.service';
+import { SlackService } from './services/slack.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
@@ -72,6 +73,7 @@ export class ChannelsController {
     private readonly threadsService: ThreadsService,
     private readonly blueskyService: BlueskyService,
     private readonly mastodonService: MastodonService,
+    private readonly slackService: SlackService,
     private readonly googleDriveService: GoogleDriveService,
     private readonly googlePhotosService: GooglePhotosService,
     private readonly googleCalendarService: GoogleCalendarService,
@@ -228,6 +230,64 @@ export class ChannelsController {
       // Get the stored redirect_uri to ensure exact match during token exchange
       const storedRedirectUri = stateData.additionalData?._oauthRedirectUri as string | undefined;
       console.log(`[OAuth Callback] Stored redirect_uri: ${storedRedirectUri || 'NOT FOUND'}`);
+
+      // Slack: intercept before generic token exchange — uses its own Web API SDK
+      if (platform === 'slack') {
+        try {
+          console.log('[OAuth Callback] Slack: exchanging code for bot token...');
+          const slackRedirectUri = storedRedirectUri || `${(process.env.APP_URL || 'http://localhost:3000').trim().replace(/\/+$/, '')}/channels/oauth/slack/callback`;
+
+          const tokenResp = await this.slackService.exchangeCode(code, slackRedirectUri);
+
+          const botProfile = await this.slackService.getBotProfile(
+            tokenResp.access_token,
+            tokenResp.bot_user_id,
+          );
+
+          const channel = await this.channelService.createChannel(
+            stateData.workspaceId,
+            stateData.userId,
+            {
+              platform: 'slack',
+              accountType: 'workspace',
+              platformAccountId: tokenResp.team.id,
+              accountName: tokenResp.team.name,
+              username: botProfile.name,
+              profilePictureUrl: botProfile.avatar ?? undefined,
+              accessToken: tokenResp.access_token,
+              refreshToken: undefined,
+              tokenExpiresAt: undefined,
+              permissions: tokenResp.scope.split(','),
+              capabilities: {
+                canPost: false,
+                canSchedule: false,
+                canReadAnalytics: false,
+                canReply: true,
+                canDelete: false,
+                supportedMediaTypes: [],
+                maxMediaPerPost: 0,
+                maxTextLength: 40000,
+              },
+              metadata: {
+                botUserId: tokenResp.bot_user_id,
+                teamId: tokenResp.team.id,
+                teamName: tokenResp.team.name,
+                enterpriseId: tokenResp.enterprise?.id ?? null,
+                scopes: tokenResp.scope.split(','),
+              },
+            },
+          );
+
+          console.log(`[OAuth Callback] Slack channel created: ${channel.id}`);
+
+          const slackSuccessUrl = `${frontendUrl}/channels/connect/success?platform=slack&channelId=${channel.id}`;
+          return res.redirect(slackSuccessUrl);
+        } catch (slackError) {
+          console.error('[OAuth Callback] Slack setup failed:', slackError);
+          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Slack setup failed: ' + (slackError instanceof Error ? slackError.message : 'Unknown error'))}`;
+          return res.redirect(errorUrl);
+        }
+      }
 
       // Exchange code for tokens
       const tokens = await this.oauthService.exchangeCodeForTokens(
