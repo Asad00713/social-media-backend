@@ -14,6 +14,8 @@ import { FacebookDmAdapter } from './adapters/facebook-dm.adapter';
 import { InstagramDmAdapter } from './adapters/instagram-dm.adapter';
 import { BlueskyDmAdapter } from './adapters/bluesky-dm.adapter';
 import { MastodonDmAdapter } from './adapters/mastodon-dm.adapter';
+import { SlackDmAdapter } from './adapters/slack-dm.adapter';
+import { SlackIngestProcessor } from './processors/slack-ingest.processor';
 import { InboxPollProcessor } from './processors/inbox-poll.processor';
 import { InboxPollScheduler } from './schedulers/inbox-poll.scheduler';
 import { ScheduledInboxProcessor } from './processors/scheduled-inbox.processor';
@@ -50,6 +52,8 @@ import { QUEUES } from '../queue/queue.module';
     InstagramDmAdapter,
     BlueskyDmAdapter,
     MastodonDmAdapter,
+    SlackDmAdapter,
+    SlackIngestProcessor,
     InboxPollProcessor,
     InboxPollScheduler,
     ScheduledMessagesService,
