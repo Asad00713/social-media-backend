@@ -13,6 +13,7 @@ import {
   HttpStatus,
   Res,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -38,6 +39,14 @@ import { DropboxService } from './services/dropbox.service';
 import { UnsplashService } from './services/unsplash.service';
 import { RedditService } from './services/reddit.service';
 import { AdAccountsService } from '../ads/services/ad-accounts.service';
+import { SlackBackfillService } from '../inbox/services/slack-backfill.service';
+import { InboxService } from '../inbox/inbox.service';
+import {
+  ListSlackChannelsQueryDto,
+  ListSlackMembersQueryDto,
+  JoinSlackChannelBodyDto,
+  StartSlackDmBodyDto,
+} from './dto/slack-browse.dto';
 import {
   InitiateOAuthDto,
   CreateChannelDto,
@@ -82,6 +91,8 @@ export class ChannelsController {
     private readonly unsplashService: UnsplashService,
     private readonly redditService: RedditService,
     private readonly adAccountsService: AdAccountsService,
+    private readonly slackBackfill: SlackBackfillService,
+    private readonly inboxService: InboxService,
   ) {}
 
   // ==========================================================================
@@ -4773,5 +4784,103 @@ export class ChannelsController {
     }
     await this.unsplashService.trackDownload(dto.downloadLocation);
     return { success: true, message: 'Download tracked successfully' };
+  }
+
+  // ============================================================================
+  // Slack — Workspace Browse (Wave 1.A.5)
+  // ============================================================================
+
+  /**
+   * List all public (and optionally private) channels visible to the Slack bot.
+   * Returns paginated results with a `nextCursor` for subsequent pages.
+   */
+  @Get('workspaces/:workspaceId/slack/:channelId/conversations')
+  @UseGuards(JwtAuthGuard)
+  async listSlackConversations(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Query() query: ListSlackChannelsQueryDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'slack') {
+      throw new ForbiddenException('Slack channel not found in this workspace');
+    }
+    const token = await this.channelService.getAccessToken(channel.id, wid);
+    return this.slackService.listAllChannels(token, {
+      cursor: query.cursor,
+      limit: query.limit,
+      includePrivate: query.includePrivate,
+    });
+  }
+
+  /**
+   * List workspace members visible to the Slack bot.
+   * Supports optional `query` substring filter and pagination cursor.
+   */
+  @Get('workspaces/:workspaceId/slack/:channelId/members')
+  @UseGuards(JwtAuthGuard)
+  async listSlackMembers(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Query() query: ListSlackMembersQueryDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'slack') {
+      throw new ForbiddenException('Slack channel not found in this workspace');
+    }
+    const token = await this.channelService.getAccessToken(channel.id, wid);
+    return this.slackService.listMembers(token, query);
+  }
+
+  /**
+   * Bot joins a public Slack channel and backfills the last 50 messages into
+   * the inbox. Idempotent — safe to call multiple times.
+   */
+  @Post('workspaces/:workspaceId/slack/:channelId/join')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async joinSlackChannel(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Body() body: JoinSlackChannelBodyDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'slack') {
+      throw new ForbiddenException('Slack channel not found in this workspace');
+    }
+    const token = await this.channelService.getAccessToken(channel.id, wid);
+    const joinResult = await this.slackService.joinChannel(token, body.conversationId);
+    const backfill = await this.slackBackfill.backfillConversation(wid, channel.id, body.conversationId, 50);
+    return { ok: true, ...joinResult, backfilled: backfill.ingested };
+  }
+
+  /**
+   * Open a DM with a Slack workspace member and send the first message.
+   * Records the outbound message in the inbox for conversation threading.
+   */
+  @Post('workspaces/:workspaceId/slack/:channelId/start-dm')
+  @UseGuards(JwtAuthGuard)
+  async startSlackDm(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Body() body: StartSlackDmBodyDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'slack') {
+      throw new ForbiddenException('Slack channel not found in this workspace');
+    }
+    const token = await this.channelService.getAccessToken(channel.id, wid);
+    const { conversationId, ts } = await this.slackService.openDmAndSendFirst(token, body.userId, body.text);
+    await this.inboxService.upsertDm({
+      workspaceId: wid,
+      channelId: channel.id,
+      platform: 'slack',
+      conversationId,
+      platformItemId: ts,
+      text: body.text,
+      fromMe: true,
+      platformCreatedAt: new Date(Number(ts.split('.')[0]) * 1000),
+    });
+    return { ok: true, conversationId, ts };
   }
 }

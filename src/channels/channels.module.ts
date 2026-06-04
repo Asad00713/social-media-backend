@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ChannelsController } from './channels.controller';
 import { ChannelService } from './services/channel.service';
 import { OAuthService } from './services/oauth.service';
@@ -27,6 +27,7 @@ import { LeadFormService } from '../ads/services/lead-form.service';
 import { LeadCampaignService } from '../ads/services/lead-campaign.service';
 import { LeadIntakeService } from '../ads/services/lead-intake.service';
 import { LeadIntakeProcessor } from '../ads/processors/lead-intake.processor';
+import { InboxModule } from '../inbox/inbox.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { QueueModule } from '../queue/queue.module';
@@ -35,7 +36,7 @@ import { TokenRefreshScheduler } from './schedulers/token-refresh.scheduler';
 import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.scheduler';
 
 @Module({
-  imports: [DrizzleModule, AnalyticsModule, QueueModule],
+  imports: [DrizzleModule, AnalyticsModule, QueueModule, forwardRef(() => InboxModule)],
   controllers: [ChannelsController],
   providers: [
     ChannelService,

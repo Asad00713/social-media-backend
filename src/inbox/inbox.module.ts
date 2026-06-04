@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { InboxController } from './inbox.controller';
 import { WebhooksController } from '../channels/webhooks.controller';
@@ -30,7 +30,7 @@ import { QUEUES } from '../queue/queue.module';
   // BullModule.registerQueue() is needed locally so this module can inject the
   // INBOX_POLLING queue token; the queue itself is configured once in QueueModule.
   imports: [
-    ChannelsModule,
+    forwardRef(() => ChannelsModule),
     MediaModule,
     BullModule.registerQueue(
       { name: QUEUES.INBOX_POLLING },
