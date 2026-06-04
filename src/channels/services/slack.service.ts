@@ -27,6 +27,7 @@ export class SlackService {
       'app_mentions:read',
       'chat:write',
       'chat:write.public',
+      'channels:join',
       'channels:history',
       'groups:history',
       'im:history',
