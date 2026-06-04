@@ -273,4 +273,50 @@ export class SlackService {
       avatarUrl: res.user.profile?.image_192 ?? null,
     };
   }
+
+  /** Resolve Slack's raw message markup to a human-readable string.
+   *  Handles:
+   *   - User mentions: `<@U0B91QB557S>`        → `@displayName`
+   *   - Channel refs:  `<#C0123|general>`      → `#general`
+   *   - URLs w/ label: `<https://x.com|click>` → `click`
+   *   - Bare URLs:     `<https://x.com>`       → `https://x.com`
+   *
+   *  We cache user lookups within the call so a single message with multiple
+   *  mentions doesn't fire one users.info per occurrence. */
+  async resolveSlackMentions(botToken: string, text: string): Promise<string> {
+    if (!text) return text;
+
+    // 1. User mentions
+    const userIds = Array.from(
+      new Set([...text.matchAll(/<@([UW][A-Z0-9]+)>/g)].map((m) => m[1])),
+    );
+    const userMap = new Map<string, string>();
+    await Promise.all(
+      userIds.map(async (id) => {
+        const info = await this.getUserInfo(botToken, id).catch(() => null);
+        if (info) {
+          userMap.set(id, info.displayName ?? info.handle ?? id);
+        }
+      }),
+    );
+
+    let resolved = text.replace(/<@([UW][A-Z0-9]+)>/g, (_, id: string) => {
+      const name = userMap.get(id);
+      return name ? `@${name}` : `@${id}`;
+    });
+
+    // 2. Channel refs — `<#CID|name>` or `<#CID>`
+    resolved = resolved.replace(
+      /<#([CG][A-Z0-9]+)(?:\|([^>]+))?>/g,
+      (_, _id: string, name?: string) => (name ? `#${name}` : `#channel`),
+    );
+
+    // 3. URLs with optional label — `<https://x|y>` or `<https://x>`
+    resolved = resolved.replace(
+      /<(https?:\/\/[^|>]+)(?:\|([^>]+))?>/g,
+      (_, url: string, label?: string) => label ?? url,
+    );
+
+    return resolved;
+  }
 }

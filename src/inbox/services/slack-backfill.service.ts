@@ -68,6 +68,11 @@ export class SlackBackfillService {
         .getUserInfo(token, m.user)
         .catch(() => null);
 
+      // Resolve `<@USER_ID>` / `<#CHANNEL>` / `<URL|label>` markup before storing.
+      const resolvedText = await this.slack
+        .resolveSlackMentions(token, m.text ?? '')
+        .catch(() => m.text ?? '');
+
       const row = await this.inbox.upsertDm({
         workspaceId,
         channelId: channel.id,
@@ -79,7 +84,7 @@ export class SlackBackfillService {
         authorHandle: userInfo?.handle ?? null,
         authorDisplayName: userInfo?.displayName ?? null,
         authorAvatarUrl: userInfo?.avatarUrl ?? null,
-        text: m.text ?? '',
+        text: resolvedText,
         fromMe: false,
         platformCreatedAt: new Date(Number(m.ts.split('.')[0]) * 1000),
         metadata: { threadTs: m.thread_ts ?? null, backfilled: true },

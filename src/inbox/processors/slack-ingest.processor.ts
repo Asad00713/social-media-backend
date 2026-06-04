@@ -80,6 +80,12 @@ export class SlackIngestProcessor extends WorkerHost {
       ? await this.slack.getUserInfo(accessToken, event.user).catch(() => null)
       : null;
 
+    // Resolve Slack mention/URL markup so `<@U123>` shows as `@displayName`
+    // (and channel refs / URLs render readable) in the inbox UI.
+    const resolvedText = await this.slack
+      .resolveSlackMentions(accessToken, event.text ?? '')
+      .catch(() => event.text ?? '');
+
     await this.inbox.upsertDm({
       workspaceId: channel.workspaceId,
       channelId: channel.id,
@@ -93,7 +99,7 @@ export class SlackIngestProcessor extends WorkerHost {
       authorHandle: userInfo?.handle ?? null,
       authorDisplayName: userInfo?.displayName ?? null,
       authorAvatarUrl: userInfo?.avatarUrl ?? null,
-      text: event.text ?? '',
+      text: resolvedText,
       fromMe: false,
       platformCreatedAt: new Date(Number(event.ts.split('.')[0]) * 1000),
       metadata: {
