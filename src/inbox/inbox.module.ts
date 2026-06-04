@@ -33,6 +33,7 @@ import { QUEUES } from '../queue/queue.module';
       { name: QUEUES.INBOX_POLLING },
       { name: QUEUES.SCHEDULED_INBOX },
       { name: QUEUES.LEAD_INTAKE },
+      { name: QUEUES.SLACK_INGEST },
     ),
   ],
   controllers: [InboxController, WebhooksController],

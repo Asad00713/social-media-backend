@@ -14,6 +14,7 @@ export const QUEUES = {
   LEAD_INTAKE: 'lead-intake',
   LEAD_DELIVERY: 'lead-delivery',
   AD_INSIGHTS_SYNC: 'ad-insights-sync',
+  SLACK_INGEST: 'slack-ingest',
 } as const;
 
 @Module({
@@ -62,6 +63,7 @@ export const QUEUES = {
       { name: QUEUES.LEAD_INTAKE },
       { name: QUEUES.LEAD_DELIVERY },
       { name: QUEUES.AD_INSIGHTS_SYNC },
+      { name: QUEUES.SLACK_INGEST },
     ),
   ],
   providers: [RateLimiterService],

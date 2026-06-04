@@ -2,6 +2,7 @@ import { NestFactory } from '@nestjs/core';
 import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
+import express from 'express';
 
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
@@ -17,6 +18,12 @@ async function bootstrap() {
     ].filter(Boolean),
     credentials: true,
   })
+
+  // Slack Events API: capture raw body BEFORE the global JSON parser so that
+  // HMAC-SHA256 signature verification has the exact bytes Slack signed.
+  // This middleware matches only the Slack events endpoint; all other routes
+  // continue to receive parsed JSON as usual.
+  app.use('/webhooks/slack/events', express.raw({ type: 'application/json' }));
 
   app.use(cookieParser());
 

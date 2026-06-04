@@ -6,12 +6,16 @@ import {
   Body,
   HttpCode,
   HttpStatus,
+  HttpException,
   Logger,
+  Req,
   Res,
+  Headers,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import type { Response } from 'express';
+import type { Request as ExpressRequest, Response } from 'express';
+import { verifySlackSignature } from '../common/utils/webhook-signature.util';
 import { InboxService } from '../inbox/inbox.service';
 import { FacebookService } from './services/facebook.service';
 import { InstagramService } from './services/instagram.service';
@@ -38,12 +42,15 @@ export class WebhooksController {
   private readonly META_VERIFY_TOKEN =
     process.env.META_WEBHOOK_VERIFY_TOKEN || 'webondev_verify_123';
 
+  private readonly SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET!;
+
   constructor(
     private readonly inbox: InboxService,
     private readonly facebookService: FacebookService,
     private readonly instagramService: InstagramService,
     private readonly channelService: ChannelService,
     @InjectQueue(QUEUES.LEAD_INTAKE) private readonly leadIntakeQueue: Queue,
+    @InjectQueue(QUEUES.SLACK_INGEST) private readonly slackQueue: Queue,
   ) {}
 
   // ==========================================================================
@@ -545,5 +552,68 @@ export class WebhooksController {
       fromMe: false, // webhooks don't fire for our own comments; safe default
       platformCreatedAt: args.eventTime,
     });
+  }
+
+  // ==========================================================================
+  // Slack — Events API
+  // ==========================================================================
+
+  /**
+   * Slack Events API webhook. Receives every event from every workspace where
+   * the Schedura app is installed. Routes by `team_id` in the payload.
+   *
+   * Signature verification: HMAC-SHA256 over `v0:<ts>:<raw_body>` with the
+   * Signing Secret. Replay protection: ±5 minutes.
+   *
+   * url_verification handshake: Slack hits this endpoint once when the URL is
+   * registered; we reflect the challenge value back.
+   *
+   * event_callback: enqueue to BullMQ SLACK_INGEST and respond 200 within 3s
+   * so Slack doesn't retry / disable the app.
+   */
+  @Post('slack/events')
+  @HttpCode(HttpStatus.OK)
+  async slackEvents(
+    @Req() req: ExpressRequest,
+    @Headers('x-slack-signature') signature: string | undefined,
+    @Headers('x-slack-request-timestamp') timestamp: string | undefined,
+  ) {
+    // Raw body (configured in main.ts) — Buffer on this route only.
+    const rawBuf = req.body as unknown as Buffer;
+    const raw = rawBuf?.toString('utf8') ?? '';
+
+    if (
+      !verifySlackSignature({
+        signingSecret: this.SLACK_SIGNING_SECRET,
+        timestamp,
+        signature,
+        rawBody: raw,
+      })
+    ) {
+      this.logger.warn('Slack webhook signature verification failed');
+      throw new HttpException('signature mismatch', HttpStatus.UNAUTHORIZED);
+    }
+
+    const payload = JSON.parse(raw) as Record<string, any>;
+
+    // url_verification — Slack expects the challenge back.
+    if (payload.type === 'url_verification') {
+      return { challenge: payload.challenge };
+    }
+
+    // event_callback — the real event. Enqueue and ack fast.
+    if (payload.type === 'event_callback') {
+      await this.slackQueue.add('ingest', payload, {
+        jobId: payload.event_id as string | undefined, // dedupe — Slack retries on non-2xx
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 2000 },
+        removeOnComplete: 1000,
+        removeOnFail: 500,
+      });
+      return { ok: true };
+    }
+
+    this.logger.warn(`Unhandled Slack payload type: ${payload.type}`);
+    return { ok: true };
   }
 }
