@@ -4871,6 +4871,10 @@ export class ChannelsController {
     }
     const token = await this.channelService.getAccessToken(channel.id, wid);
     const { conversationId, ts } = await this.slackService.openDmAndSendFirst(token, body.userId, body.text);
+    // Fetch the recipient's profile so the inbox conversation has a real
+    // participant identity from the very first outbound message. Without this
+    // the conversation row shows "Unknown" until the recipient replies.
+    const recipient = await this.slackService.getUserInfo(token, body.userId).catch(() => null);
     await this.inboxService.upsertDm({
       workspaceId: wid,
       channelId: channel.id,
@@ -4879,6 +4883,10 @@ export class ChannelsController {
       platformItemId: ts,
       text: body.text,
       fromMe: true,
+      authorPlatformId: body.userId,
+      authorHandle: recipient?.handle ?? null,
+      authorDisplayName: recipient?.displayName ?? null,
+      authorAvatarUrl: recipient?.avatarUrl ?? null,
       platformCreatedAt: new Date(Number(ts.split('.')[0]) * 1000),
     });
     return { ok: true, conversationId, ts };
