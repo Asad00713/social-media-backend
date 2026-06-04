@@ -28,26 +28,21 @@ export class SlackDmAdapter implements PlatformDmAdapter {
   async listConversations(
     channel: ResolvedChannel,
   ): Promise<DmConversationSummary[]> {
-    const items = await this.slack.listConversations(channel.accessToken);
-    return items.map((c: any) => ({
-      conversationId: c.id!,
+    const result = await this.slack.listAllChannels(channel.accessToken);
+    const items = result.channels;
+    return items.map((c) => ({
+      conversationId: c.id,
       participant: {
-        platformId: c.user ?? c.id!,
-        handle: c.name ?? undefined,
-        displayName: c.name ?? undefined,
+        platformId: c.id,
+        handle: c.name || undefined,
+        displayName: c.name || undefined,
       },
       lastMessageText: '',
       lastMessageAt: new Date(),
       lastMessageFromMe: false,
-      unreadCount: (c.unread_count as number | undefined) ?? 0,
+      unreadCount: 0,
       metadata: {
-        channelType: c.is_im
-          ? 'im'
-          : c.is_mpim
-            ? 'mpim'
-            : c.is_private
-              ? 'group'
-              : 'channel',
+        channelType: c.isPrivate ? 'group' : 'channel',
       },
     }));
   }

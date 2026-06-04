@@ -117,16 +117,74 @@ export class SlackService {
     return res.messages ?? [];
   }
 
-  /** List conversations the bot is a member of — for the inbox list. */
-  async listConversations(botToken: string) {
+  /** List all public + private channels the bot can see, with pagination cursor.
+   *  We surface `is_member` so the UI can show a Join button on rows the bot
+   *  isn't in yet. */
+  async listAllChannels(
+    botToken: string,
+    options: { cursor?: string; limit?: number; includePrivate?: boolean } = {},
+  ) {
     const client = new WebClient(botToken);
+    const types = options.includePrivate
+      ? 'public_channel,private_channel'
+      : 'public_channel';
     const res = await client.conversations.list({
-      types: 'public_channel,private_channel,im,mpim',
-      limit: 200,
+      types,
+      limit: options.limit ?? 100,
+      cursor: options.cursor,
+      exclude_archived: true,
     });
     if (!res.ok)
       throw new BadRequestException(`conversations.list failed: ${res.error}`);
-    return res.channels ?? [];
+    return {
+      channels: (res.channels ?? []).map((c) => ({
+        id: c.id!,
+        name: c.name ?? '',
+        isMember: c.is_member ?? false,
+        isPrivate: c.is_private ?? false,
+        numMembers: c.num_members ?? 0,
+        topic: c.topic?.value ?? null,
+        purpose: c.purpose?.value ?? null,
+      })),
+      nextCursor: res.response_metadata?.next_cursor || null,
+    };
+  }
+
+  /** Paginated workspace members. Filters out bots and deactivated users.
+   *  Pass a `query` to narrow by name (case-insensitive substring on real_name/name). */
+  async listMembers(
+    botToken: string,
+    options: { cursor?: string; limit?: number; query?: string } = {},
+  ) {
+    const client = new WebClient(botToken);
+    const res = await client.users.list({
+      limit: options.limit ?? 200,
+      cursor: options.cursor,
+    });
+    if (!res.ok)
+      throw new BadRequestException(`users.list failed: ${res.error}`);
+    const filtered = (res.members ?? []).filter(
+      (u) => !u.is_bot && !u.deleted && u.id !== 'USLACKBOT',
+    );
+    const q = options.query?.trim().toLowerCase();
+    const matched = q
+      ? filtered.filter((u) => {
+          const name = (u.real_name ?? u.name ?? '').toLowerCase();
+          const handle = (u.name ?? '').toLowerCase();
+          return name.includes(q) || handle.includes(q);
+        })
+      : filtered;
+    return {
+      members: matched.map((u) => ({
+        id: u.id!,
+        handle: u.name ?? null,
+        displayName: u.real_name ?? u.name ?? null,
+        avatarUrl: u.profile?.image_192 ?? null,
+        email: u.profile?.email ?? null,
+        isAdmin: u.is_admin ?? false,
+      })),
+      nextCursor: res.response_metadata?.next_cursor || null,
+    };
   }
 
   /** Open a DM channel with a specific user. */
@@ -138,6 +196,33 @@ export class SlackService {
         `conversations.open failed: ${res.error}`,
       );
     return res.channel.id;
+  }
+
+  /** Open a DM with a user and send the first message in one call. */
+  async openDmAndSendFirst(
+    botToken: string,
+    userId: string,
+    text: string,
+  ): Promise<{ conversationId: string; ts: string }> {
+    const conversationId = await this.openDm(botToken, userId);
+    const res = await this.postMessage(botToken, { channel: conversationId, text });
+    return { conversationId, ts: res.ts };
+  }
+
+  /** Bot self-joins a public channel so it can read history + receive events. */
+  async joinChannel(
+    botToken: string,
+    channelId: string,
+  ): Promise<{ already_in_channel?: boolean }> {
+    const client = new WebClient(botToken);
+    const res = await client.conversations.join({ channel: channelId });
+    if (!res.ok) {
+      // Slack returns method_not_supported_for_channel_type for IMs/MPIMs/private channels.
+      throw new BadRequestException(
+        `conversations.join failed: ${res.error}`,
+      );
+    }
+    return { already_in_channel: (res as any).already_in_channel as boolean | undefined };
   }
 
   /** Look up a user's profile by Slack user id — populates author handle /
