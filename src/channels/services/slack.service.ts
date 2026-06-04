@@ -36,6 +36,8 @@ export class SlackService {
       'groups:read',
       'im:read',
       'mpim:read',
+      'im:write',
+      'mpim:write',
       'users:read',
       'team:read',
       'files:write',
