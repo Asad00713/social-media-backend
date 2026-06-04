@@ -19,6 +19,7 @@ import { OneDriveService } from './services/onedrive.service';
 import { DropboxService } from './services/dropbox.service';
 import { UnsplashService } from './services/unsplash.service';
 import { RedditService } from './services/reddit.service';
+import { SlackService } from './services/slack.service';
 import { MetaAdsClient } from '../ads/services/meta-ads.client';
 import { AdAccountsService } from '../ads/services/ad-accounts.service';
 import { BoostPostService } from '../ads/services/boost-post.service';
@@ -56,6 +57,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     DropboxService,
     UnsplashService,
     RedditService,
+    SlackService,
     TokenRefreshProcessor,
     TokenRefreshScheduler,
     RefreshTokenExpiryScheduler,
@@ -87,6 +89,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     DropboxService,
     UnsplashService,
     RedditService,
+    SlackService,
     MetaAdsClient,
     AdAccountsService,
     BoostPostService,
