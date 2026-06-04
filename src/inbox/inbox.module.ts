@@ -20,6 +20,7 @@ import { InboxPollProcessor } from './processors/inbox-poll.processor';
 import { InboxPollScheduler } from './schedulers/inbox-poll.scheduler';
 import { ScheduledInboxProcessor } from './processors/scheduled-inbox.processor';
 import { ScheduledMessagesService } from './services/scheduled-messages.service';
+import { SlackBackfillService } from './services/slack-backfill.service';
 import { ChannelsModule } from '../channels/channels.module';
 import { MediaModule } from '../media/media.module';
 import { QUEUES } from '../queue/queue.module';
@@ -58,7 +59,8 @@ import { QUEUES } from '../queue/queue.module';
     InboxPollScheduler,
     ScheduledMessagesService,
     ScheduledInboxProcessor,
+    SlackBackfillService,
   ],
-  exports: [InboxService, InboxDispatcher, ScheduledMessagesService],
+  exports: [InboxService, InboxDispatcher, ScheduledMessagesService, SlackBackfillService],
 })
 export class InboxModule {}
