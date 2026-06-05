@@ -8,6 +8,8 @@ import { QUEUES } from '../../queue/queue.module';
 import { InboxService } from '../inbox.service';
 import { SlackService } from '../../channels/services/slack.service';
 import { ChannelService } from '../../channels/services/channel.service';
+import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
+import type { R2MediaKind } from '../../media/cloudflare-r2.service';
 
 /**
  * Consumes `SLACK_INGEST` jobs enqueued by the Slack event webhook controller.
@@ -24,6 +26,7 @@ export class SlackIngestProcessor extends WorkerHost {
     private readonly inbox: InboxService,
     private readonly channelService: ChannelService,
     private readonly slack: SlackService,
+    private readonly r2: CloudflareR2Service,
   ) {
     super();
   }
@@ -86,6 +89,48 @@ export class SlackIngestProcessor extends WorkerHost {
       .resolveSlackMentions(accessToken, event.text ?? '')
       .catch(() => event.text ?? '');
 
+    // Phase 1.A.6 — rehost Slack-hosted files into R2 so the inbox UI can
+    // render them without a bot token (url_private requires auth + expires).
+    // Failures here log + drop the failed file only, never the whole message.
+    type RehostedAttachment = {
+      kind: 'image' | 'video' | 'audio' | 'voice' | 'file';
+      url: string;
+      contentType?: string;
+    };
+    const rehostedAttachments: RehostedAttachment[] = [];
+    const rawFiles: any[] = Array.isArray(event.files) ? event.files : [];
+    for (const f of rawFiles) {
+      const downloadUrl =
+        (f.url_private_download as string | undefined) ??
+        (f.url_private as string | undefined);
+      if (!downloadUrl) continue;
+      try {
+        const { buffer, contentType } = await this.slack.downloadFile(
+          accessToken,
+          downloadUrl,
+        );
+        const { r2Kind, dmKind } = this.classifySlackFile(f);
+        const finalContentType = (f.mimetype as string | undefined) ?? contentType;
+        const filename = (f.name as string | undefined) ?? `slack-${f.id ?? Date.now()}`;
+        const { publicUrl } = await this.r2.uploadBuffer({
+          kind: r2Kind,
+          workspaceId: channel.workspaceId,
+          buffer,
+          contentType: finalContentType,
+          filename,
+        });
+        rehostedAttachments.push({
+          kind: dmKind,
+          url: publicUrl,
+          contentType: finalContentType,
+        });
+      } catch (err) {
+        this.logger.error(
+          `Failed to rehost Slack file ${f.id ?? '?'} for channel ${channel.id}: ${String(err)}`,
+        );
+      }
+    }
+
     await this.inbox.upsertDm({
       workspaceId: channel.workspaceId,
       channelId: channel.id,
@@ -106,6 +151,26 @@ export class SlackIngestProcessor extends WorkerHost {
         channelType: event.channel_type ?? null, // 'im' | 'mpim' | 'channel' | 'group'
         threadTs: event.thread_ts ?? null,
       },
+      attachments: rehostedAttachments.length > 0 ? rehostedAttachments : undefined,
     });
+  }
+
+  /** Map a Slack file payload to our 4 R2 storage kinds + the 5 DM attachment
+   *  kinds the frontend renders. Slack voice memos carry `subtype: 'voice_memo'`
+   *  on the file object — surface those as 'voice' so the bubble uses VoicePlayer.
+   *  Other audio files go through as 'audio' (also rendered with VoicePlayer
+   *  on the frontend per dm-message-bubble.tsx). */
+  private classifySlackFile(file: {
+    mimetype?: string;
+    subtype?: string;
+  }): { r2Kind: R2MediaKind; dmKind: 'image' | 'video' | 'audio' | 'voice' | 'file' } {
+    const mime = (file.mimetype ?? '').toLowerCase();
+    if (mime.startsWith('image/')) return { r2Kind: 'image', dmKind: 'image' };
+    if (mime.startsWith('video/')) return { r2Kind: 'video', dmKind: 'video' };
+    if (mime.startsWith('audio/')) {
+      const isVoiceMemo = file.subtype === 'voice_memo';
+      return { r2Kind: 'voice', dmKind: isVoiceMemo ? 'voice' : 'audio' };
+    }
+    return { r2Kind: 'file', dmKind: 'file' };
   }
 }
