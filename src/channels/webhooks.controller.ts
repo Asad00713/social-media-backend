@@ -51,6 +51,7 @@ export class WebhooksController {
     private readonly channelService: ChannelService,
     @InjectQueue(QUEUES.LEAD_INTAKE) private readonly leadIntakeQueue: Queue,
     @InjectQueue(QUEUES.SLACK_INGEST) private readonly slackQueue: Queue,
+    @InjectQueue(QUEUES.TELEGRAM_INGEST) private readonly telegramQueue: Queue,
   ) {}
 
   // ==========================================================================
@@ -614,6 +615,38 @@ export class WebhooksController {
     }
 
     this.logger.warn(`Unhandled Slack payload type: ${payload.type}`);
+    return { ok: true };
+  }
+
+  // ==========================================================================
+  // Telegram — Bot API webhook
+  // ==========================================================================
+
+  private readonly TELEGRAM_WEBHOOK_SECRET =
+    process.env.TELEGRAM_WEBHOOK_SECRET || '';
+
+  @Post('telegram')
+  @HttpCode(HttpStatus.OK)
+  async receiveTelegramUpdate(
+    @Headers('x-telegram-bot-api-secret-token') headerSecret: string | undefined,
+    @Body() update: Record<string, unknown>,
+  ) {
+    if (!this.TELEGRAM_WEBHOOK_SECRET) {
+      this.logger.warn(
+        'Telegram webhook hit but TELEGRAM_WEBHOOK_SECRET is unset — ignoring',
+      );
+      return { ok: true };
+    }
+    if (headerSecret !== this.TELEGRAM_WEBHOOK_SECRET) {
+      this.logger.warn('Telegram webhook secret mismatch');
+      throw new HttpException('Forbidden', HttpStatus.FORBIDDEN);
+    }
+    // Always enqueue. Telegram retries on non-200, so we never throw on a
+    // valid-but-empty update; we just return ok and let the processor decide.
+    await this.telegramQueue.add('update', update, {
+      removeOnComplete: true,
+      attempts: 3,
+    });
     return { ok: true };
   }
 }
