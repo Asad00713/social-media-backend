@@ -235,6 +235,53 @@ export class CloudflareR2Service {
   }
 
   /**
+   * Server-side upload — used to re-host third-party media (e.g. Slack
+   * `url_private` files, whose URLs require auth and expire) into our durable
+   * R2 bucket so the inbox UI can render them without an auth token.
+   *
+   * Path convention matches createPresignedUpload so lifecycle rules work for
+   * both browser uploads and server rehosts.
+   */
+  async uploadBuffer(input: {
+    kind: R2MediaKind;
+    workspaceId: string;
+    buffer: Buffer;
+    contentType: string;
+    filename?: string;
+  }): Promise<{ key: string; publicUrl: string }> {
+    const client = this.getClient();
+    const { kind, workspaceId, buffer, contentType, filename } = input;
+
+    if (!ALLOWED_MIME[kind].test(contentType)) {
+      throw new BadRequestException(
+        `Content type '${contentType}' not allowed for ${kind}.`,
+      );
+    }
+    if (buffer.length <= 0 || buffer.length > MAX_BYTES[kind]) {
+      throw new BadRequestException(
+        `Size ${buffer.length} exceeds limit ${MAX_BYTES[kind]} bytes for ${kind}.`,
+      );
+    }
+
+    const ext = this.extensionFor(contentType, filename);
+    const id = crypto.randomBytes(12).toString('hex');
+    // No userId on the server rehost path — use 'system' so the key layout
+    // stays grep-able and lifecycle rules still match.
+    const key = `${KIND_TO_PREFIX[kind]}/${workspaceId}/system/${Date.now()}-${id}${ext}`;
+
+    await client.send(
+      new PutObjectCommand({
+        Bucket: this.bucket,
+        Key: key,
+        Body: buffer,
+        ContentType: contentType,
+      }),
+    );
+
+    return { key, publicUrl: `${this.publicUrlBase}/${key}` };
+  }
+
+  /**
    * Verify a previously-uploaded object actually exists and matches expected
    * size/type. Call this from inbox send paths BEFORE forwarding the URL to
    * the platform API — prevents users from passing arbitrary URLs.
