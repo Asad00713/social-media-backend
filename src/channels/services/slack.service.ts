@@ -358,23 +358,27 @@ export class SlackService {
     },
   ): Promise<{ fileId: string }> {
     const client = new WebClient(botToken);
-    const res = await client.files.uploadV2({
-      channel_id: input.channelId,
-      filename: input.filename,
-      file: input.buffer,
-      initial_comment: input.initialComment,
-      ...(input.threadTs ? { thread_ts: input.threadTs } : {}),
-    } as any);
-    if (!res.ok) {
-      throw new BadRequestException(
-        `files.uploadV2 failed: ${(res as any).error ?? 'unknown'}`,
-      );
+    let res: Awaited<ReturnType<typeof client.files.uploadV2>>;
+    try {
+      res = await client.files.uploadV2({
+        channel_id: input.channelId,
+        filename: input.filename,
+        file: input.buffer,
+        initial_comment: input.initialComment,
+        ...(input.threadTs ? { thread_ts: input.threadTs } : {}),
+      } as any);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'unknown';
+      throw new BadRequestException(`files.uploadV2 failed: ${msg}`);
     }
     // uploadV2 returns { files: [{ id, ... }] } on success.
     const fileId =
-      (res as any).files?.[0]?.id ??
-      (res as any).file?.id ??
-      'unknown';
+      (res as any).files?.[0]?.id ?? (res as any).file?.id;
+    if (!fileId) {
+      throw new BadRequestException(
+        'files.uploadV2 succeeded but returned no file id',
+      );
+    }
     return { fileId: String(fileId) };
   }
 }
