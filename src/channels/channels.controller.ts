@@ -67,6 +67,11 @@ import { SupportedPlatform, PLATFORM_CONFIG, oauthStates } from '../drizzle/sche
 import { db } from '../drizzle/db';
 import { eq, and, isNull, gt } from 'drizzle-orm';
 import * as crypto from 'crypto';
+import { telegramChatBindings } from '../drizzle/schema/telegram-bindings.schema';
+import type {
+  GenerateConnectLinkResponse,
+  CheckBindingResponse,
+} from './dto/telegram-connect.dto';
 
 @Controller('channels')
 export class ChannelsController {
@@ -4915,5 +4920,48 @@ export class ChannelsController {
       purpose: body.purpose,
     });
     return { ok: true, ...created };
+  }
+
+  // ==========================================================================
+  // Telegram — Connect (deep link) + check binding
+  // ==========================================================================
+
+  @Post('workspaces/:workspaceId/channels/telegram/connect')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async generateTelegramConnectLink(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+  ): Promise<GenerateConnectLinkResponse> {
+    await this.inboxService.assertWorkspaceAccessPublic(workspaceId, user.userId);
+    const botUsername = process.env.TELEGRAM_BOT_USERNAME ?? '';
+    if (!botUsername) {
+      throw new BadRequestException('TELEGRAM_BOT_USERNAME is not configured.');
+    }
+    return {
+      url: `https://t.me/${botUsername}?start=${workspaceId}`,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    };
+  }
+
+  @Get('workspaces/:workspaceId/channels/telegram/check-binding')
+  @UseGuards(JwtAuthGuard)
+  async checkTelegramBinding(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+  ): Promise<CheckBindingResponse> {
+    await this.inboxService.assertWorkspaceAccessPublic(workspaceId, user.userId);
+    const rows = await db
+      .select({ chatId: telegramChatBindings.telegramChatId })
+      .from(telegramChatBindings)
+      .where(
+        and(
+          eq(telegramChatBindings.workspaceId, workspaceId),
+          eq(telegramChatBindings.chatType, 'private'),
+        ),
+      )
+      .limit(1);
+    if (rows.length === 0) return { bound: false };
+    return { bound: true, chatId: rows[0].chatId };
   }
 }
