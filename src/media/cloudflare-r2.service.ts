@@ -269,14 +269,21 @@ export class CloudflareR2Service {
     // stays grep-able and lifecycle rules still match.
     const key = `${KIND_TO_PREFIX[kind]}/${workspaceId}/system/${Date.now()}-${id}${ext}`;
 
-    await client.send(
-      new PutObjectCommand({
-        Bucket: this.bucket,
-        Key: key,
-        Body: buffer,
-        ContentType: contentType,
-      }),
-    );
+    try {
+      await client.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: buffer,
+          ContentType: contentType,
+        }),
+      );
+    } catch (err) {
+      this.logger.error(
+        `uploadBuffer failed — key=${key}, size=${buffer.length}: ${(err as Error).message}`,
+      );
+      throw new InternalServerErrorException('Failed to upload media to storage.');
+    }
 
     return { key, publicUrl: `${this.publicUrlBase}/${key}` };
   }
@@ -337,6 +344,7 @@ export class CloudflareR2Service {
         return filename.slice(idx).toLowerCase();
       }
     }
+    const bareType = contentType.split(';')[0].trim().toLowerCase();
     const map: Record<string, string> = {
       'image/jpeg': '.jpg',
       'image/png': '.png',
@@ -354,6 +362,6 @@ export class CloudflareR2Service {
       'video/webm': '.webm',
       'video/quicktime': '.mov',
     };
-    return map[contentType.toLowerCase()] ?? '';
+    return map[bareType] ?? '';
   }
 }
