@@ -319,4 +319,62 @@ export class SlackService {
 
     return resolved;
   }
+
+  /** Download a Slack-hosted file using the bot token. `url_private_download`
+   *  works the same as `url_private` but forces a Content-Disposition: attachment
+   *  response, which is what we want for arbitrary blobs. */
+  async downloadFile(
+    botToken: string,
+    url: string,
+  ): Promise<{ buffer: Buffer; contentType: string; sizeBytes: number }> {
+    const res = await fetch(url, {
+      headers: { Authorization: `Bearer ${botToken}` },
+    });
+    if (!res.ok) {
+      throw new BadRequestException(
+        `Slack file download failed: ${res.status} ${res.statusText}`,
+      );
+    }
+    const arrayBuffer = await res.arrayBuffer();
+    const buffer = Buffer.from(arrayBuffer);
+    const contentType =
+      res.headers.get('content-type')?.split(';')[0]?.trim() ||
+      'application/octet-stream';
+    return { buffer, contentType, sizeBytes: buffer.length };
+  }
+
+  /** Upload a file to a Slack channel using files.uploadV2 (handles the
+   *  getUploadURLExternal → PUT → completeUploadExternal flow internally).
+   *  Pass `initialComment` to attach the message text as the file's caption. */
+  async uploadFile(
+    botToken: string,
+    input: {
+      channelId: string;
+      filename: string;
+      contentType: string;
+      buffer: Buffer;
+      initialComment?: string;
+      threadTs?: string;
+    },
+  ): Promise<{ fileId: string }> {
+    const client = new WebClient(botToken);
+    const res = await client.files.uploadV2({
+      channel_id: input.channelId,
+      filename: input.filename,
+      file: input.buffer,
+      initial_comment: input.initialComment,
+      ...(input.threadTs ? { thread_ts: input.threadTs } : {}),
+    } as any);
+    if (!res.ok) {
+      throw new BadRequestException(
+        `files.uploadV2 failed: ${(res as any).error ?? 'unknown'}`,
+      );
+    }
+    // uploadV2 returns { files: [{ id, ... }] } on success.
+    const fileId =
+      (res as any).files?.[0]?.id ??
+      (res as any).file?.id ??
+      'unknown';
+    return { fileId: String(fileId) };
+  }
 }
