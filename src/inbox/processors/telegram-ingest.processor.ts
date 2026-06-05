@@ -34,8 +34,10 @@ export class TelegramIngestProcessor extends WorkerHost {
         const me = await this.telegram.getMe();
         this.botId = me.id;
       } catch (err) {
-        this.logger.error(`getMe failed: ${(err as Error).message}`);
-        return;
+        this.logger.error(
+          `getMe failed for job ${job.id} — will retry: ${(err as Error).message}`,
+        );
+        throw err;
       }
     }
 
@@ -65,6 +67,15 @@ export class TelegramIngestProcessor extends WorkerHost {
     workspaceId: string,
     message: TgMessage,
   ): Promise<void> {
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_RE.test(workspaceId)) {
+      await this.telegram.sendMessage(
+        message.chat.id,
+        'Unknown workspace id. Please re-open the Connect Telegram link from your Schedura dashboard.',
+      );
+      return;
+    }
+
     const [ws] = await db
       .select({ id: workspace.id })
       .from(workspace)
@@ -168,6 +179,10 @@ export class TelegramIngestProcessor extends WorkerHost {
       .where(eq(workspace.id, workspaceId))
       .limit(1);
 
+    if (!ws) {
+      throw new Error(`ensureTelegramChannel: workspace ${workspaceId} not found`);
+    }
+
     const [created] = await db
       .insert(socialMediaChannels)
       .values({
@@ -183,7 +198,27 @@ export class TelegramIngestProcessor extends WorkerHost {
         metadata: { mode: 'shared_bot' },
         connectedByUserId: ws.ownerId,
       })
+      .onConflictDoNothing()
       .returning();
-    return created;
+
+    if (created) return created;
+
+    // Conflict fired — another concurrent call already inserted. Refetch.
+    const [refetched] = await db
+      .select()
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.workspaceId, workspaceId),
+          eq(socialMediaChannels.platform, 'telegram'),
+        ),
+      )
+      .limit(1);
+    if (!refetched) {
+      throw new Error(
+        `ensureTelegramChannel: insert conflict but no row found for workspace ${workspaceId}`,
+      );
+    }
+    return refetched;
   }
 }
