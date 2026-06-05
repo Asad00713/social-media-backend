@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { SlackService } from '../../channels/services/slack.service';
 import type {
   PlatformDmAdapter,
@@ -113,7 +113,8 @@ export class SlackDmAdapter implements PlatformDmAdapter {
       return this.sendDm(channel, conversationId, text);
     }
 
-    let lastFileId = 'unknown';
+    let lastFileId = '';
+    let successCount = 0;
     for (let i = 0; i < attachments.length; i++) {
       const att = attachments[i];
       const isLast = i === attachments.length - 1;
@@ -121,8 +122,8 @@ export class SlackDmAdapter implements PlatformDmAdapter {
       // Pull the R2 object — same bucket the user just uploaded to, no auth.
       const res = await fetch(att.url);
       if (!res.ok) {
-        throw new Error(
-          `Failed to fetch attachment from R2: ${res.status} ${res.statusText}`,
+        throw new BadRequestException(
+          `Failed to fetch attachment ${i + 1}/${attachments.length} from R2 after ${successCount} uploaded: ${res.status} ${res.statusText}`,
         );
       }
       const buffer = Buffer.from(await res.arrayBuffer());
@@ -142,6 +143,7 @@ export class SlackDmAdapter implements PlatformDmAdapter {
         initialComment: isLast && text ? text : undefined,
       });
       lastFileId = uploaded.fileId;
+      successCount++;
     }
 
     // Slack's completeUploadExternal doesn't surface the resulting message ts,
