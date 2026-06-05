@@ -18,3 +18,4 @@ export * from './channel-sync-state.schema';
 export * from './inbox.schema';
 export * from './scheduled-inbox-messages.schema';
 export * from './notification-routes.schema';
+export * from './telegram-bindings.schema';
