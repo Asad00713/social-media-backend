@@ -306,10 +306,19 @@ export class TelegramIngestProcessor extends WorkerHost {
     const chat = cbq.message?.chat as { id: number; type: string; title?: string } | undefined;
     const messageId: number | undefined = cbq.message?.message_id;
 
-    if (!data || !cbqId || !tapperId || !chat || !messageId) return;
+    if (!cbqId) return;
+    if (!data || !tapperId || !chat || !messageId) {
+      await this.telegram.answerCallbackQuery(cbqId, '', false);
+      return;
+    }
     if (!data.startsWith('tg-bind:')) return;
 
     const workspaceId = data.slice('tg-bind:'.length);
+    const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!UUID_RE.test(workspaceId)) {
+      await this.telegram.answerCallbackQuery(cbqId, 'Invalid workspace.', true);
+      return;
+    }
     if (chat.type !== 'group' && chat.type !== 'supergroup') {
       await this.telegram.answerCallbackQuery(
         cbqId,
@@ -339,16 +348,28 @@ export class TelegramIngestProcessor extends WorkerHost {
       return;
     }
 
-    await this.ensureTelegramChannel(workspaceId);
-    await db
-      .insert(telegramChatBindings)
-      .values({
-        workspaceId,
-        telegramChatId: String(chat.id),
-        chatType: chat.type as 'group' | 'supergroup',
-        boundByTelegramUserId: String(tapperId),
-      })
-      .onConflictDoNothing();
+    try {
+      await this.ensureTelegramChannel(workspaceId);
+      await db
+        .insert(telegramChatBindings)
+        .values({
+          workspaceId,
+          telegramChatId: String(chat.id),
+          chatType: chat.type as 'group' | 'supergroup',
+          boundByTelegramUserId: String(tapperId),
+        })
+        .onConflictDoNothing();
+    } catch (err) {
+      this.logger.error(
+        `Group bind DB write failed for workspace ${workspaceId}: ${(err as Error).message}`,
+      );
+      await this.telegram.answerCallbackQuery(
+        cbqId,
+        'Connection failed. Please try again.',
+        true,
+      );
+      return;
+    }
 
     await this.telegram.answerCallbackQuery(cbqId, 'Group connected ✅');
     try {
