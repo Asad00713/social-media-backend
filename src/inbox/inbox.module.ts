@@ -15,6 +15,7 @@ import { InstagramDmAdapter } from './adapters/instagram-dm.adapter';
 import { BlueskyDmAdapter } from './adapters/bluesky-dm.adapter';
 import { MastodonDmAdapter } from './adapters/mastodon-dm.adapter';
 import { SlackDmAdapter } from './adapters/slack-dm.adapter';
+import { TelegramDmAdapter } from './adapters/telegram-dm.adapter';
 import { SlackIngestProcessor } from './processors/slack-ingest.processor';
 import { TelegramIngestProcessor } from './processors/telegram-ingest.processor';
 import { InboxPollProcessor } from './processors/inbox-poll.processor';
@@ -56,6 +57,7 @@ import { QUEUES } from '../queue/queue.module';
     BlueskyDmAdapter,
     MastodonDmAdapter,
     SlackDmAdapter,
+    TelegramDmAdapter,
     SlackIngestProcessor,
     TelegramIngestProcessor,
     InboxPollProcessor,
