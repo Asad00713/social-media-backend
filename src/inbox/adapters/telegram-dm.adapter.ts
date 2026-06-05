@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { telegramChatBindings } from '../../drizzle/schema/telegram-bindings.schema';
@@ -10,6 +10,7 @@ import type {
   CreatedDm,
   DmConversationSummary,
 } from './inbox-adapter.interface';
+import type { DmAttachmentInput } from './inbox-adapter.interface';
 
 /** Telegram DM adapter. Bot API limitations baked in:
  *   - No message-history read. fetchConversationMessages returns []. All
@@ -61,6 +62,68 @@ export class TelegramDmAdapter implements PlatformDmAdapter {
       platformItemId: String(res.message_id),
       text,
       platformCreatedAt: new Date(res.date * 1000),
+    };
+  }
+
+  async sendDmWithAttachments(
+    _channel: ResolvedChannel,
+    conversationId: string,
+    text: string,
+    attachments: DmAttachmentInput[],
+  ): Promise<CreatedDm> {
+    if (attachments.length === 0) {
+      return this.sendDm(_channel, conversationId, text);
+    }
+
+    let lastMessageId = 0;
+    let lastDate = Math.floor(Date.now() / 1000);
+    let successCount = 0;
+
+    for (let i = 0; i < attachments.length; i++) {
+      const att = attachments[i];
+      const isLast = i === attachments.length - 1;
+      const caption = isLast && text ? text : undefined;
+
+      const res = await fetch(att.url);
+      if (!res.ok) {
+        throw new BadRequestException(
+          `Failed to fetch attachment ${i + 1}/${attachments.length} from R2 after ${successCount} uploaded: ${res.status} ${res.statusText}`,
+        );
+      }
+      const buffer = Buffer.from(await res.arrayBuffer());
+
+      const tail = att.url.split('/').pop() ?? 'attachment';
+      const filename = decodeURIComponent(tail);
+
+      let sent;
+      switch (att.kind) {
+        case 'image':
+          sent = await this.telegram.sendPhoto(conversationId, buffer, filename, att.contentType, caption);
+          break;
+        case 'voice':
+          sent = await this.telegram.sendVoice(conversationId, buffer, filename, att.contentType, caption);
+          break;
+        case 'audio':
+          sent = await this.telegram.sendAudio(conversationId, buffer, filename, att.contentType, caption);
+          break;
+        case 'video':
+          sent = await this.telegram.sendVideo(conversationId, buffer, filename, att.contentType, caption);
+          break;
+        case 'file':
+        default:
+          sent = await this.telegram.sendDocument(conversationId, buffer, filename, att.contentType, caption);
+          break;
+      }
+      lastMessageId = sent.message_id;
+      lastDate = sent.date;
+      successCount++;
+    }
+
+    return {
+      conversationId,
+      platformItemId: String(lastMessageId),
+      text,
+      platformCreatedAt: new Date(lastDate * 1000),
     };
   }
 
