@@ -181,9 +181,16 @@ export class TelegramService {
     return this.callJson('getFile', { file_id: fileId });
   }
 
+  /** No auth header needed — the bot token is embedded in `fileBaseUrl` per
+   *  Telegram's file API spec. */
   async downloadFile(
     filePath: string,
   ): Promise<{ buffer: Buffer; contentType: string; sizeBytes: number }> {
+    if (!this.isConfigured()) {
+      throw new InternalServerErrorException(
+        'TELEGRAM_BOT_TOKEN not configured.',
+      );
+    }
     const res = await fetch(`${this.fileBaseUrl}/${filePath}`);
     if (!res.ok) {
       throw new BadRequestException(
