@@ -1,14 +1,14 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { workspace } from '../../drizzle/schema/workspace.schema';
 import { telegramChatBindings } from '../../drizzle/schema/telegram-bindings.schema';
 import { QUEUES } from '../../queue/queue.module';
 import { InboxService } from '../inbox.service';
-import { TelegramService, type TgMessage } from '../../channels/services/telegram.service';
+import { TelegramService, type TgMessage, type TgInlineKeyboardButton } from '../../channels/services/telegram.service';
 
 @Processor(QUEUES.TELEGRAM_INGEST)
 export class TelegramIngestProcessor extends WorkerHost {
@@ -26,9 +26,16 @@ export class TelegramIngestProcessor extends WorkerHost {
   async process(job: Job<Record<string, unknown>>): Promise<void> {
     const update = job.data;
     const message = update.message as TgMessage | undefined;
-    if (!message) return;
+    // Spec note: implementer adds these two branches.
+    // The runtime `any` casts are intentional — Telegram's update envelopes have
+    // optional nested fields we don't type fully here.
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const myChatMember = update.my_chat_member as any;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const callbackQuery = update.callback_query as any;
 
-    // Lazily resolve our bot id once.
+    // Lazy bot id resolution (must come BEFORE the routing branches below so
+    // botId is available when handleMyChatMember reads it).
     if (this.botId === null) {
       try {
         const me = await this.telegram.getMe();
@@ -40,6 +47,19 @@ export class TelegramIngestProcessor extends WorkerHost {
         throw err;
       }
     }
+
+    if (callbackQuery) {
+      await this.handleCallbackQuery(callbackQuery);
+      return;
+    }
+    if (myChatMember) {
+      await this.handleMyChatMember(myChatMember);
+      return;
+    }
+    if (!message) return;
+
+    // -- below this point is the EXISTING Task 6 body: bot-self filter, /start
+    //    routing, ingestPlainMessage call. Keep it as it is. --
 
     if (message.from?.is_bot && message.from.id === this.botId) return;
 
@@ -220,5 +240,127 @@ export class TelegramIngestProcessor extends WorkerHost {
       );
     }
     return refetched;
+  }
+
+  /** Telegram pings us with `my_chat_member` whenever the bot's membership
+   *  status in a chat changes. We only care about "bot was added to a group
+   *  by user X" — anything else is ignored. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async handleMyChatMember(evt: any): Promise<void> {
+    const newStatus = evt.new_chat_member?.status as string | undefined;
+    const newUserId = evt.new_chat_member?.user?.id as number | undefined;
+    const chat = evt.chat as { id: number; type: string; title?: string } | undefined;
+    const inviter = evt.from as { id: number; username?: string; first_name?: string } | undefined;
+
+    if (!chat || !inviter || !newUserId) return;
+    if (newUserId !== this.botId) return;
+    if (newStatus !== 'member' && newStatus !== 'administrator') return;
+    if (chat.type !== 'group' && chat.type !== 'supergroup') return;
+
+    const inviterBindings = await db
+      .select({ workspaceId: telegramChatBindings.workspaceId })
+      .from(telegramChatBindings)
+      .where(
+        and(
+          eq(telegramChatBindings.boundByTelegramUserId, String(inviter.id)),
+          eq(telegramChatBindings.chatType, 'private'),
+        ),
+      );
+
+    if (inviterBindings.length === 0) {
+      await this.telegram.sendMessage(
+        chat.id,
+        `Hi! No Schedura workspace is connected for the user who added me. Please connect Telegram from your Schedura dashboard first, then try again.`,
+      );
+      return;
+    }
+
+    // Limit keyboard to 5 workspaces to keep it compact (Telegram limit is
+    // higher but 5 covers nearly every real user).
+    const wsIds = inviterBindings.slice(0, 5).map((b) => b.workspaceId);
+    const workspaces = await db
+      .select({ id: workspace.id, name: workspace.name })
+      .from(workspace)
+      .where(inArray(workspace.id, wsIds));
+
+    const buttons: TgInlineKeyboardButton[][] = workspaces.map((w) => [
+      { text: w.name, callback_data: `tg-bind:${w.id}` },
+    ]);
+
+    await this.telegram.sendMessage(
+      chat.id,
+      `Hi! Pick a Schedura workspace to connect this group to:`,
+      { replyMarkup: { inline_keyboard: buttons } },
+    );
+  }
+
+  /** Inviter (or another user) tapped a workspace button. Verify the tapper
+   *  themselves owns a DM binding to that workspace (security — prevents random
+   *  group members from binding the bot to someone else's workspace), insert
+   *  the group binding row, ack callback, edit message to success state. */
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  private async handleCallbackQuery(cbq: any): Promise<void> {
+    const data: string | undefined = cbq.data;
+    const cbqId: string | undefined = cbq.id;
+    const tapperId: number | undefined = cbq.from?.id;
+    const chat = cbq.message?.chat as { id: number; type: string; title?: string } | undefined;
+    const messageId: number | undefined = cbq.message?.message_id;
+
+    if (!data || !cbqId || !tapperId || !chat || !messageId) return;
+    if (!data.startsWith('tg-bind:')) return;
+
+    const workspaceId = data.slice('tg-bind:'.length);
+    if (chat.type !== 'group' && chat.type !== 'supergroup') {
+      await this.telegram.answerCallbackQuery(
+        cbqId,
+        'Only groups can be bound this way.',
+        true,
+      );
+      return;
+    }
+
+    const [tapperBinding] = await db
+      .select()
+      .from(telegramChatBindings)
+      .where(
+        and(
+          eq(telegramChatBindings.workspaceId, workspaceId),
+          eq(telegramChatBindings.boundByTelegramUserId, String(tapperId)),
+          eq(telegramChatBindings.chatType, 'private'),
+        ),
+      )
+      .limit(1);
+    if (!tapperBinding) {
+      await this.telegram.answerCallbackQuery(
+        cbqId,
+        'You are not authorised to bind this workspace.',
+        true,
+      );
+      return;
+    }
+
+    await this.ensureTelegramChannel(workspaceId);
+    await db
+      .insert(telegramChatBindings)
+      .values({
+        workspaceId,
+        telegramChatId: String(chat.id),
+        chatType: chat.type as 'group' | 'supergroup',
+        boundByTelegramUserId: String(tapperId),
+      })
+      .onConflictDoNothing();
+
+    await this.telegram.answerCallbackQuery(cbqId, 'Group connected ✅');
+    try {
+      await this.telegram.editMessageText(
+        chat.id,
+        messageId,
+        `Group connected to Schedura ✅`,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `editMessageText after bind failed (non-blocking): ${(err as Error).message}`,
+      );
+    }
   }
 }
