@@ -6,6 +6,7 @@ import { ChannelsModule } from '../channels/channels.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { QueueModule, QUEUES } from '../queue/queue.module';
 import { AnalyticsModule } from '../channels/analytics/analytics.module';
+import { MediaModule } from '../media/media.module';
 
 // Publishers
 import { PublisherFactory } from './publishers/publisher.factory';
@@ -31,6 +32,7 @@ import { PostPublishProcessor } from './processors/post-publish.processor';
     QueueModule,
     BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS }),
     AnalyticsModule,
+    MediaModule,
   ],
   controllers: [PostsController],
   providers: [

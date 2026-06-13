@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import { TikTokService } from '../../channels/services/tiktok.service';
 import { TikTokQuotaService } from '../../channels/services/tiktok-quota.service';
+import { TikTokMediaProxyService } from '../../media/tiktok-media-proxy.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import { assertTikTokCompliance } from './tiktok-compliance';
@@ -13,6 +14,7 @@ export class TikTokPublisher extends BasePublisher {
   constructor(
     private readonly tiktokService: TikTokService,
     private readonly tiktokQuotaService: TikTokQuotaService,
+    private readonly tiktokMediaProxy: TikTokMediaProxyService,
   ) {
     super();
   }
@@ -68,6 +70,13 @@ export class TikTokPublisher extends BasePublisher {
     const creatorOpenId = creatorInfo.creatorUsername || 'unknown';
     await this.tiktokQuotaService.reserveSlot(creatorOpenId);
 
+    // PULL_FROM_URL flows MUST hand TikTok a URL on our verified domain.
+    // We mint a signed token wrapping the original Cloudinary/R2 URL and
+    // route through `${proxyBase}/api/tiktok-media/:token`, which streams
+    // the upstream bytes through unmodified.
+    const proxyBase =
+      process.env.API_PUBLIC_URL ?? 'https://api.schedura.ai';
+
     const postType = (metadata?.postType as string | undefined) ?? 'video';
 
     // Get privacy level from metadata, default to SELF_ONLY for safety
@@ -76,13 +85,17 @@ export class TikTokPublisher extends BasePublisher {
     // Photo carousel flow (PULL_FROM_URL)
     if (postType === 'photo') {
       const imageUrls = mediaItems.map((m) => m.url);
+      const proxiedImageUrls = imageUrls.map(
+        (u) =>
+          `${proxyBase}/api/tiktok-media/${this.tiktokMediaProxy.mintProxyToken(u)}`,
+      );
       this.logger.log(
-        `Publishing TikTok photo carousel: ${imageUrls.length} image(s)`,
+        `Publishing TikTok photo carousel: ${imageUrls.length} image(s) via verified-domain proxy`,
       );
 
       const photoResult = await this.tiktokService.postPhotoFromUrl(
         accessToken,
-        imageUrls,
+        proxiedImageUrls,
         {
           description: content || '',
           title: metadata?.title || '',
@@ -134,10 +147,12 @@ export class TikTokPublisher extends BasePublisher {
         },
       );
     } else {
-      // Let TikTok pull from URL (faster but URL must be publicly accessible)
+      // Let TikTok pull from URL — must be on the verified domain, so wrap
+      // the original Cloudinary/R2 URL in a signed proxy token.
+      const proxiedVideoUrl = `${proxyBase}/api/tiktok-media/${this.tiktokMediaProxy.mintProxyToken(videoItem.url)}`;
       result = await this.tiktokService.postVideoFromUrl(
         accessToken,
-        videoItem.url,
+        proxiedVideoUrl,
         {
           title,
           privacyLevel,

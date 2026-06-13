@@ -1,5 +1,6 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
@@ -11,14 +12,33 @@ interface CachedMedia {
   expiresAt: Date;
 }
 
+interface MediaTokenPayload {
+  url: string;
+  iat?: number;
+  exp?: number;
+}
+
 /**
  * TikTok Media Proxy Service
  *
- * This service caches videos locally so they can be served from your own domain.
- * TikTok requires videos to be served from a verified domain for PULL_FROM_URL.
+ * Two responsibilities:
  *
- * NOTE: For production, use a proper CDN/storage solution (Cloudflare R2, S3, etc.)
- * Railway has ephemeral storage - files are lost on redeployment.
+ * 1. **Token mint / verify (preferred, used by current PULL_FROM_URL flow):**
+ *    Mints a short-lived signed JWT that wraps the original Cloudinary/R2 URL.
+ *    The verified-domain endpoint (`/api/tiktok-media/:token`) decodes the
+ *    token and streams the upstream bytes through. TikTok only ever sees a
+ *    URL on `api.schedura.ai`, satisfying the dev-console verified-domain
+ *    requirement without any pre-caching.
+ *
+ * 2. **Legacy disk cache (kept for backwards compatibility):**
+ *    Older `cacheVideo` / `getMediaStream` path that downloaded videos to
+ *    `/tmp` and served them via `/media/tiktok-proxy/:mediaId`. Retained for
+ *    any callers still using the old controller route — new code should use
+ *    the token-based flow.
+ *
+ * IMPORTANT (TikTok policy compliance, Point 5): this service must NOT inject
+ * any Schedura watermark, logo, or branding overlay into media bound for
+ * TikTok. Audited 2026-06-13 — no overlay code present. Do not add any.
  */
 @Injectable()
 export class TikTokMediaProxyService {
@@ -26,12 +46,58 @@ export class TikTokMediaProxyService {
   private readonly cacheDir: string;
   private readonly mediaCache = new Map<string, CachedMedia>();
   private readonly CACHE_DURATION_HOURS = 2; // TikTok needs 1 hour, we keep 2
+  private readonly tokenTtlSeconds = 60 * 60; // 1 hour — matches TikTok's max PULL window
 
-  constructor(private readonly configService: ConfigService) {
+  constructor(
+    private readonly configService: ConfigService,
+    private readonly jwtService: JwtService,
+  ) {
     // Use /tmp for Railway (ephemeral but works)
     this.cacheDir = process.env.MEDIA_CACHE_DIR || '/tmp/tiktok-media-cache';
     this.ensureCacheDir();
     this.startCleanupInterval();
+  }
+
+  // ==========================================================================
+  // Token-based proxy (preferred flow — used by tiktok.publisher.ts)
+  // ==========================================================================
+
+  /**
+   * Mint a short-lived signed token wrapping the original media URL.
+   * The token is appended to `/api/tiktok-media/:token` and handed to TikTok
+   * so the verified-domain endpoint can stream the upstream bytes through.
+   */
+  mintProxyToken(originalUrl: string): string {
+    const payload: MediaTokenPayload = { url: originalUrl };
+    const secret =
+      process.env.JWT_ACCESS_SECRET ??
+      this.configService.get<string>('JWT_ACCESS_SECRET');
+    if (!secret) {
+      throw new Error(
+        'JWT_ACCESS_SECRET is not configured — cannot mint TikTok proxy token',
+      );
+    }
+    return this.jwtService.sign(payload, {
+      secret,
+      expiresIn: this.tokenTtlSeconds,
+    });
+  }
+
+  /**
+   * Verify a proxy token and return the wrapped original URL.
+   * Throws if the token is invalid or expired.
+   */
+  verifyProxyToken(token: string): string {
+    const secret =
+      process.env.JWT_ACCESS_SECRET ??
+      this.configService.get<string>('JWT_ACCESS_SECRET');
+    if (!secret) {
+      throw new Error(
+        'JWT_ACCESS_SECRET is not configured — cannot verify TikTok proxy token',
+      );
+    }
+    const decoded = this.jwtService.verify<MediaTokenPayload>(token, { secret });
+    return decoded.url;
   }
 
   private ensureCacheDir(): void {
