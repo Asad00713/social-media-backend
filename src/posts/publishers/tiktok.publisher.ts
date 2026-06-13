@@ -19,17 +19,80 @@ export class TikTokPublisher extends BasePublisher {
     super();
   }
 
+  /**
+   * Translates the composer's frontend TikTokFields shape into the TikTok
+   * Direct Post API shape this publisher (and the underlying service) expects.
+   *
+   * Composer stores fields aligned with TikTok's UX (positive-phrased
+   * "allow X" booleans, short privacy slugs, semantic brand labels). The
+   * TikTok API uses inverse-phrased "disable X" booleans, full enum values,
+   * and toggle-suffixed brand keys. This adapter is the single point where
+   * those two shapes meet — keeps the orchestrator / resolver platform-
+   * agnostic and the tiktok.service / publish API surface unchanged.
+   *
+   * Backwards-compatible: if a caller already uses the TikTok-API shape
+   * (privacyLevel/disableX/brandContentToggle) those values win.
+   */
+  private normalizeMetadata(
+    raw: Record<string, any> | undefined,
+  ): Record<string, any> {
+    if (!raw) return {};
+    const m = raw as Record<string, any>;
+
+    const mapPrivacy = (p: unknown): string | undefined => {
+      if (typeof p !== 'string') return undefined;
+      switch (p) {
+        case 'public':
+          return 'PUBLIC_TO_EVERYONE';
+        case 'friends':
+          return 'MUTUAL_FOLLOW_FRIENDS';
+        case 'private':
+          return 'SELF_ONLY';
+        default:
+          return undefined;
+      }
+    };
+
+    const privacyLevel =
+      typeof m.privacyLevel === 'string' ? m.privacyLevel : mapPrivacy(m.privacy);
+
+    // allowX (positive) → disableX (negative). When neither is set, default
+    // to "allowed" (matches TikTok's permissive default for missing fields).
+    const flip = (allowKey: string, disableKey: string): boolean => {
+      if (m[disableKey] !== undefined) return Boolean(m[disableKey]);
+      if (m[allowKey] !== undefined) return !m[allowKey];
+      return false;
+    };
+
+    return {
+      ...m,
+      privacyLevel,
+      disableComment: flip('allowComments', 'disableComment'),
+      disableDuet: flip('allowDuet', 'disableDuet'),
+      disableStitch: flip('allowStitch', 'disableStitch'),
+      brandOrganicToggle:
+        m.brandOrganicToggle !== undefined
+          ? Boolean(m.brandOrganicToggle)
+          : Boolean(m.yourBrand),
+      brandContentToggle:
+        m.brandContentToggle !== undefined
+          ? Boolean(m.brandContentToggle)
+          : Boolean(m.brandedContent),
+    };
+  }
+
   validate(options: PublishOptions): void {
-    const { mediaItems, metadata } = options;
+    const { mediaItems } = options;
+    const metadata = this.normalizeMetadata(options.metadata);
 
     assertTikTokCompliance({
-      privacyLevel: metadata?.privacyLevel as string | undefined,
-      brandContentToggle: metadata?.brandContentToggle as boolean | undefined,
-      brandOrganicToggle: metadata?.brandOrganicToggle as boolean | undefined,
-      discloseContent: metadata?.discloseContent as boolean | undefined,
+      privacyLevel: metadata.privacyLevel as string | undefined,
+      brandContentToggle: metadata.brandContentToggle as boolean | undefined,
+      brandOrganicToggle: metadata.brandOrganicToggle as boolean | undefined,
+      discloseContent: metadata.discloseContent as boolean | undefined,
     });
 
-    const postType = (metadata?.postType as string | undefined) ?? 'video';
+    const postType = (metadata.postType as string | undefined) ?? 'video';
 
     // TikTok requires media (video or images)
     if (mediaItems.length === 0) {
@@ -58,7 +121,8 @@ export class TikTokPublisher extends BasePublisher {
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
-    const { content, mediaItems, accessToken, metadata } = options;
+    const { content, mediaItems, accessToken } = options;
+    const metadata = this.normalizeMetadata(options.metadata);
 
     this.validate(options);
 
