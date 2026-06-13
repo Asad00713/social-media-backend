@@ -62,9 +62,14 @@ export class TikTokPublisher extends BasePublisher {
       const photoResult = await this.tiktokService.postPhotoFromUrl(
         accessToken,
         imageUrls,
-        content || '',
-        metadata?.title || '',
-        privacyLevel,
+        {
+          description: content || '',
+          title: metadata?.title || '',
+          privacyLevel,
+          disableComment: metadata?.disableComment ?? false,
+          brandContentToggle: metadata?.brandContentToggle ?? false,
+          brandOrganicToggle: metadata?.brandOrganicToggle ?? false,
+        },
       );
 
       this.logger.log(
@@ -103,6 +108,8 @@ export class TikTokPublisher extends BasePublisher {
           disableStitch: metadata?.disableStitch ?? false,
           disableComment: metadata?.disableComment ?? false,
           videoCoverTimestampMs: metadata?.videoCoverTimestampMs ?? 1000,
+          brandContentToggle: metadata?.brandContentToggle ?? false,
+          brandOrganicToggle: metadata?.brandOrganicToggle ?? false,
         },
       );
     } else {
@@ -117,6 +124,8 @@ export class TikTokPublisher extends BasePublisher {
           disableStitch: metadata?.disableStitch ?? false,
           disableComment: metadata?.disableComment ?? false,
           videoCoverTimestampMs: metadata?.videoCoverTimestampMs ?? 1000,
+          brandContentToggle: metadata?.brandContentToggle ?? false,
+          brandOrganicToggle: metadata?.brandOrganicToggle ?? false,
         },
       );
     }

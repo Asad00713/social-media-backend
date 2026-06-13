@@ -494,14 +494,30 @@ export class TikTokService {
   async postPhotoFromUrl(
     accessToken: string,
     imageUrls: string[],
-    description: string = '',
-    title: string = '',
-    privacyLevel:
-      | 'PUBLIC_TO_EVERYONE'
-      | 'MUTUAL_FOLLOW_FRIENDS'
-      | 'FOLLOWER_OF_CREATOR'
-      | 'SELF_ONLY' = 'SELF_ONLY',
+    options: {
+      description?: string;
+      title?: string;
+      privacyLevel?:
+        | 'PUBLIC_TO_EVERYONE'
+        | 'MUTUAL_FOLLOW_FRIENDS'
+        | 'FOLLOWER_OF_CREATOR'
+        | 'SELF_ONLY';
+      disableComment?: boolean;
+      brandContentToggle?: boolean;
+      brandOrganicToggle?: boolean;
+      autoAddMusic?: boolean;
+    } = {},
   ): Promise<{ publishId: string }> {
+    const {
+      description = '',
+      title = '',
+      privacyLevel = 'SELF_ONLY',
+      disableComment = false,
+      brandContentToggle = false,
+      brandOrganicToggle = false,
+      autoAddMusic = true,
+    } = options;
+
     if (!Array.isArray(imageUrls) || imageUrls.length === 0) {
       throw new BadRequestException('TikTok photo post requires at least 1 image URL');
     }
@@ -513,9 +529,11 @@ export class TikTokService {
       post_info: {
         title: (title || '').slice(0, 90),
         description: (description || '').slice(0, 2200),
-        disable_comment: false,
+        disable_comment: disableComment,
         privacy_level: privacyLevel,
-        auto_add_music: true,
+        auto_add_music: autoAddMusic,
+        brand_content_toggle: brandContentToggle,
+        brand_organic_toggle: brandOrganicToggle,
       },
       source_info: {
         source: 'PULL_FROM_URL',
