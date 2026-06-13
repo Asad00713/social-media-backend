@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import { TikTokService } from '../../channels/services/tiktok.service';
+import { TikTokQuotaService } from '../../channels/services/tiktok-quota.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import { assertTikTokCompliance } from './tiktok-compliance';
@@ -9,7 +10,10 @@ import { assertTikTokCompliance } from './tiktok-compliance';
 export class TikTokPublisher extends BasePublisher {
   readonly platform: SupportedPlatform = 'tiktok';
 
-  constructor(private readonly tiktokService: TikTokService) {
+  constructor(
+    private readonly tiktokService: TikTokService,
+    private readonly tiktokQuotaService: TikTokQuotaService,
+  ) {
     super();
   }
 
@@ -55,6 +59,14 @@ export class TikTokPublisher extends BasePublisher {
     const { content, mediaItems, accessToken, metadata } = options;
 
     this.validate(options);
+
+    // Enforce TikTok quota caps (pre-audit user cap + per-creator daily cap)
+    // before any publish API call. queryCreatorInfo returns creatorUsername
+    // reliably; the response shape doesn't expose open_id directly and the
+    // username is unique-per-creator on TikTok so it works as a quota key.
+    const creatorInfo = await this.tiktokService.queryCreatorInfo(accessToken);
+    const creatorOpenId = creatorInfo.creatorUsername || 'unknown';
+    await this.tiktokQuotaService.reserveSlot(creatorOpenId);
 
     const postType = (metadata?.postType as string | undefined) ?? 'video';
 

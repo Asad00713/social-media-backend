@@ -7,6 +7,8 @@ import { PinterestService } from './services/pinterest.service';
 import { YouTubeService } from './services/youtube.service';
 import { LinkedInService } from './services/linkedin.service';
 import { TikTokService } from './services/tiktok.service';
+import { TikTokQuotaService } from './services/tiktok-quota.service';
+import { RedisClientProvider } from './analytics/redis-client.provider';
 import { TwitterService } from './services/twitter.service';
 import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
@@ -48,6 +50,8 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     YouTubeService,
     LinkedInService,
     TikTokService,
+    TikTokQuotaService,
+    RedisClientProvider,
     TwitterService,
     InstagramService,
     ThreadsService,
@@ -82,6 +86,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     YouTubeService,
     LinkedInService,
     TikTokService,
+    TikTokQuotaService,
     TwitterService,
     InstagramService,
     ThreadsService,
