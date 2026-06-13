@@ -3,6 +3,7 @@ import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import { TikTokService } from '../../channels/services/tiktok.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import { assertTikTokCompliance } from './tiktok-compliance';
 
 @Injectable()
 export class TikTokPublisher extends BasePublisher {
@@ -14,6 +15,14 @@ export class TikTokPublisher extends BasePublisher {
 
   validate(options: PublishOptions): void {
     const { mediaItems, metadata } = options;
+
+    assertTikTokCompliance({
+      privacyLevel: metadata?.privacyLevel as string | undefined,
+      brandContentToggle: metadata?.brandContentToggle as boolean | undefined,
+      brandOrganicToggle: metadata?.brandOrganicToggle as boolean | undefined,
+      discloseContent: metadata?.discloseContent as boolean | undefined,
+    });
+
     const postType = (metadata?.postType as string | undefined) ?? 'video';
 
     // TikTok requires media (video or images)
