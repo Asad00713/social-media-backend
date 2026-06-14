@@ -109,3 +109,21 @@ export class SignedUploadParamsResponseDto {
   apiKey: string;
   folder: string;
 }
+
+export class PresignComposerVideoDto {
+  @IsString()
+  workspaceId: string;
+
+  @IsString()
+  contentType: string;
+
+  @IsString()
+  @IsOptional()
+  filename?: string;
+
+  // Size validation (cap + non-negative) happens inside CloudflareR2Service
+  // — we just type it here. class-validator's number guards (IsInt, Min,
+  // Max) would reject the 4 GB cap as a precision issue without explicit
+  // coercion, and the service is the authoritative limit anyway.
+  sizeBytes: number;
+}

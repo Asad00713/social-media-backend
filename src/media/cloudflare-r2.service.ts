@@ -27,13 +27,23 @@ export interface PresignedUploadResult {
   expiresIn: number;
 }
 
-export type R2MediaKind = 'image' | 'voice' | 'video' | 'file';
+export type R2MediaKind =
+  | 'image'
+  | 'voice'
+  | 'video'
+  | 'file'
+  | 'composer-video';
 
 const KIND_TO_PREFIX: Record<R2MediaKind, string> = {
   image: 'inbox/images',
   voice: 'inbox/voice',
   video: 'inbox/videos',
   file: 'inbox/files',
+  // Composer media gets its own top-level prefix so lifecycle rules + billing
+  // queries can target it independently of inbox media. Keeping all kinds in
+  // a single bucket avoids a bucket-rename migration; prefixes give us the
+  // same isolation logically.
+  'composer-video': 'composer/videos',
 };
 
 const MAX_BYTES: Record<R2MediaKind, number> = {
@@ -41,6 +51,11 @@ const MAX_BYTES: Record<R2MediaKind, number> = {
   voice: 25 * 1024 * 1024, // 25 MB (~25 min of opus @ 128kbps)
   video: 100 * 1024 * 1024, // 100 MB
   file: 25 * 1024 * 1024,
+  // TikTok's published Direct Post API limit is 4 GB; this matches the cap
+  // the publisher accepts. Browsers and R2 both handle multi-GB presigned
+  // PUTs without chunking on our side — the AWS SDK's signature scheme is
+  // size-agnostic when ContentLength is unsignableHeader (see below).
+  'composer-video': 4 * 1024 * 1024 * 1024,
 };
 
 // Allow optional `;param=value` suffixes (e.g. `audio/webm;codecs=opus`,
@@ -53,6 +68,7 @@ const ALLOWED_MIME: Record<R2MediaKind, RegExp> = {
   voice: /^audio\/(webm|ogg|mp4|mpeg|wav|aac|x-m4a)(;.*)?$/i,
   video: /^video\/(mp4|webm|quicktime)(;.*)?$/i,
   file: /.*/,
+  'composer-video': /^video\/(mp4|webm|quicktime)(;.*)?$/i,
 };
 
 /**
