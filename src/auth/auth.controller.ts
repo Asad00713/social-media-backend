@@ -117,6 +117,13 @@ export class AuthController {
         return this.authService.whoAmI(user.userId);
     }
 
+    @Post('onboarding/complete')
+    @HttpCode(HttpStatus.OK)
+    @UseGuards(JwtAuthGuard)
+    async completeOnboarding(@CurrentUser() user: { userId: string; email: string }) {
+        return this.authService.markOnboardingCompleted(user.userId);
+    }
+
     // ==================== Email Verification ====================
 
     @Post('verify-email')

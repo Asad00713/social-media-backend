@@ -1,4 +1,5 @@
 // Export all schemas
+export * from './ads.schema';
 export * from './users.schema';
 export * from './workspace.schema';
 export * from './workspace-invitation.schema';
@@ -16,3 +17,5 @@ export * from './channel-analytics-daily.schema';
 export * from './channel-sync-state.schema';
 export * from './inbox.schema';
 export * from './scheduled-inbox-messages.schema';
+export * from './notification-routes.schema';
+export * from './telegram-bindings.schema';

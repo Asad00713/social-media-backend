@@ -27,13 +27,23 @@ export interface PresignedUploadResult {
   expiresIn: number;
 }
 
-export type R2MediaKind = 'image' | 'voice' | 'video' | 'file';
+export type R2MediaKind =
+  | 'image'
+  | 'voice'
+  | 'video'
+  | 'file'
+  | 'composer-video';
 
 const KIND_TO_PREFIX: Record<R2MediaKind, string> = {
   image: 'inbox/images',
   voice: 'inbox/voice',
   video: 'inbox/videos',
   file: 'inbox/files',
+  // Composer media gets its own top-level prefix so lifecycle rules + billing
+  // queries can target it independently of inbox media. Keeping all kinds in
+  // a single bucket avoids a bucket-rename migration; prefixes give us the
+  // same isolation logically.
+  'composer-video': 'composer/videos',
 };
 
 const MAX_BYTES: Record<R2MediaKind, number> = {
@@ -41,6 +51,11 @@ const MAX_BYTES: Record<R2MediaKind, number> = {
   voice: 25 * 1024 * 1024, // 25 MB (~25 min of opus @ 128kbps)
   video: 100 * 1024 * 1024, // 100 MB
   file: 25 * 1024 * 1024,
+  // TikTok's published Direct Post API limit is 4 GB; this matches the cap
+  // the publisher accepts. Browsers and R2 both handle multi-GB presigned
+  // PUTs without chunking on our side — the AWS SDK's signature scheme is
+  // size-agnostic when ContentLength is unsignableHeader (see below).
+  'composer-video': 4 * 1024 * 1024 * 1024,
 };
 
 // Allow optional `;param=value` suffixes (e.g. `audio/webm;codecs=opus`,
@@ -53,6 +68,7 @@ const ALLOWED_MIME: Record<R2MediaKind, RegExp> = {
   voice: /^audio\/(webm|ogg|mp4|mpeg|wav|aac|x-m4a)(;.*)?$/i,
   video: /^video\/(mp4|webm|quicktime)(;.*)?$/i,
   file: /.*/,
+  'composer-video': /^video\/(mp4|webm|quicktime)(;.*)?$/i,
 };
 
 /**
@@ -235,6 +251,60 @@ export class CloudflareR2Service {
   }
 
   /**
+   * Server-side upload — used to re-host third-party media (e.g. Slack
+   * `url_private` files, whose URLs require auth and expire) into our durable
+   * R2 bucket so the inbox UI can render them without an auth token.
+   *
+   * Path convention matches createPresignedUpload so lifecycle rules work for
+   * both browser uploads and server rehosts.
+   */
+  async uploadBuffer(input: {
+    kind: R2MediaKind;
+    workspaceId: string;
+    buffer: Buffer;
+    contentType: string;
+    filename?: string;
+  }): Promise<{ key: string; publicUrl: string }> {
+    const client = this.getClient();
+    const { kind, workspaceId, buffer, contentType, filename } = input;
+
+    if (!ALLOWED_MIME[kind].test(contentType)) {
+      throw new BadRequestException(
+        `Content type '${contentType}' not allowed for ${kind}.`,
+      );
+    }
+    if (buffer.length <= 0 || buffer.length > MAX_BYTES[kind]) {
+      throw new BadRequestException(
+        `Size ${buffer.length} exceeds limit ${MAX_BYTES[kind]} bytes for ${kind}.`,
+      );
+    }
+
+    const ext = this.extensionFor(contentType, filename);
+    const id = crypto.randomBytes(12).toString('hex');
+    // No userId on the server rehost path — use 'system' so the key layout
+    // stays grep-able and lifecycle rules still match.
+    const key = `${KIND_TO_PREFIX[kind]}/${workspaceId}/system/${Date.now()}-${id}${ext}`;
+
+    try {
+      await client.send(
+        new PutObjectCommand({
+          Bucket: this.bucket,
+          Key: key,
+          Body: buffer,
+          ContentType: contentType,
+        }),
+      );
+    } catch (err) {
+      this.logger.error(
+        `uploadBuffer failed — key=${key}, size=${buffer.length}: ${(err as Error).message}`,
+      );
+      throw new InternalServerErrorException('Failed to upload media to storage.');
+    }
+
+    return { key, publicUrl: `${this.publicUrlBase}/${key}` };
+  }
+
+  /**
    * Verify a previously-uploaded object actually exists and matches expected
    * size/type. Call this from inbox send paths BEFORE forwarding the URL to
    * the platform API — prevents users from passing arbitrary URLs.
@@ -290,6 +360,7 @@ export class CloudflareR2Service {
         return filename.slice(idx).toLowerCase();
       }
     }
+    const bareType = contentType.split(';')[0].trim().toLowerCase();
     const map: Record<string, string> = {
       'image/jpeg': '.jpg',
       'image/png': '.png',
@@ -307,6 +378,6 @@ export class CloudflareR2Service {
       'video/webm': '.webm',
       'video/quicktime': '.mov',
     };
-    return map[contentType.toLowerCase()] ?? '';
+    return map[bareType] ?? '';
   }
 }

@@ -14,6 +14,8 @@ import { FacebookDmAdapter } from '../adapters/facebook-dm.adapter';
 import { InstagramDmAdapter } from '../adapters/instagram-dm.adapter';
 import { BlueskyDmAdapter } from '../adapters/bluesky-dm.adapter';
 import { MastodonDmAdapter } from '../adapters/mastodon-dm.adapter';
+import { SlackDmAdapter } from '../adapters/slack-dm.adapter';
+import { TelegramDmAdapter } from '../adapters/telegram-dm.adapter';
 
 /**
  * Picks the right adapter for a given platform. Unsupported platforms throw
@@ -39,6 +41,8 @@ export class InboxDispatcher {
     private readonly instagramDm: InstagramDmAdapter,
     private readonly blueskyDm: BlueskyDmAdapter,
     private readonly mastodonDm: MastodonDmAdapter,
+    private readonly slackDm: SlackDmAdapter,
+    private readonly telegramDm: TelegramDmAdapter,
   ) {
     this.adapters = new Map<SupportedPlatform, PlatformInboxAdapter>([
       ['bluesky', this.bluesky],
@@ -54,6 +58,8 @@ export class InboxDispatcher {
       ['instagram', this.instagramDm],
       ['bluesky', this.blueskyDm],
       ['mastodon', this.mastodonDm],
+      ['slack', this.slackDm],
+      ['telegram', this.telegramDm],
     ]);
   }
 

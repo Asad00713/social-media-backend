@@ -28,6 +28,7 @@ import { AnalyticsModule } from './channels/analytics/analytics.module';
 import { RealtimeModule } from './realtime/realtime.module';
 import { ComposerModule } from './posts/composer/composer.module';
 import { InboxModule } from './inbox/inbox.module';
+import { AdsModule } from './ads/ads.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
@@ -64,6 +65,7 @@ import { QUEUES } from './queue/queue.module';
     RealtimeModule,
     ComposerModule,
     InboxModule,
+    AdsModule,
     BullBoardModule.forRoot({
       route: '/admin/queues',
       adapter: ExpressAdapter,

@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { InboxController } from './inbox.controller';
 import { WebhooksController } from '../channels/webhooks.controller';
@@ -14,10 +14,15 @@ import { FacebookDmAdapter } from './adapters/facebook-dm.adapter';
 import { InstagramDmAdapter } from './adapters/instagram-dm.adapter';
 import { BlueskyDmAdapter } from './adapters/bluesky-dm.adapter';
 import { MastodonDmAdapter } from './adapters/mastodon-dm.adapter';
+import { SlackDmAdapter } from './adapters/slack-dm.adapter';
+import { TelegramDmAdapter } from './adapters/telegram-dm.adapter';
+import { SlackIngestProcessor } from './processors/slack-ingest.processor';
+import { TelegramIngestProcessor } from './processors/telegram-ingest.processor';
 import { InboxPollProcessor } from './processors/inbox-poll.processor';
 import { InboxPollScheduler } from './schedulers/inbox-poll.scheduler';
 import { ScheduledInboxProcessor } from './processors/scheduled-inbox.processor';
 import { ScheduledMessagesService } from './services/scheduled-messages.service';
+import { SlackBackfillService } from './services/slack-backfill.service';
 import { ChannelsModule } from '../channels/channels.module';
 import { MediaModule } from '../media/media.module';
 import { QUEUES } from '../queue/queue.module';
@@ -27,11 +32,14 @@ import { QUEUES } from '../queue/queue.module';
   // BullModule.registerQueue() is needed locally so this module can inject the
   // INBOX_POLLING queue token; the queue itself is configured once in QueueModule.
   imports: [
-    ChannelsModule,
+    forwardRef(() => ChannelsModule),
     MediaModule,
     BullModule.registerQueue(
       { name: QUEUES.INBOX_POLLING },
       { name: QUEUES.SCHEDULED_INBOX },
+      { name: QUEUES.LEAD_INTAKE },
+      { name: QUEUES.SLACK_INGEST },
+      { name: QUEUES.TELEGRAM_INGEST },
     ),
   ],
   controllers: [InboxController, WebhooksController],
@@ -48,11 +56,16 @@ import { QUEUES } from '../queue/queue.module';
     InstagramDmAdapter,
     BlueskyDmAdapter,
     MastodonDmAdapter,
+    SlackDmAdapter,
+    TelegramDmAdapter,
+    SlackIngestProcessor,
+    TelegramIngestProcessor,
     InboxPollProcessor,
     InboxPollScheduler,
     ScheduledMessagesService,
     ScheduledInboxProcessor,
+    SlackBackfillService,
   ],
-  exports: [InboxService, InboxDispatcher, ScheduledMessagesService],
+  exports: [InboxService, InboxDispatcher, ScheduledMessagesService, SlackBackfillService],
 })
 export class InboxModule {}

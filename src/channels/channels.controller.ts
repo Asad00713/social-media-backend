@@ -13,6 +13,7 @@ import {
   HttpStatus,
   Res,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -29,6 +30,7 @@ import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
 import { BlueskyService } from './services/bluesky.service';
 import { MastodonService } from './services/mastodon.service';
+import { SlackService } from './services/slack.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
@@ -36,6 +38,16 @@ import { OneDriveService } from './services/onedrive.service';
 import { DropboxService } from './services/dropbox.service';
 import { UnsplashService } from './services/unsplash.service';
 import { RedditService } from './services/reddit.service';
+import { AdAccountsService } from '../ads/services/ad-accounts.service';
+import { SlackBackfillService } from '../inbox/services/slack-backfill.service';
+import { InboxService } from '../inbox/inbox.service';
+import {
+  ListSlackChannelsQueryDto,
+  ListSlackMembersQueryDto,
+  JoinSlackChannelBodyDto,
+  StartSlackDmBodyDto,
+  CreateSlackChannelBodyDto,
+} from './dto/slack-browse.dto';
 import {
   InitiateOAuthDto,
   CreateChannelDto,
@@ -55,6 +67,11 @@ import { SupportedPlatform, PLATFORM_CONFIG, oauthStates } from '../drizzle/sche
 import { db } from '../drizzle/db';
 import { eq, and, isNull, gt } from 'drizzle-orm';
 import * as crypto from 'crypto';
+import { telegramChatBindings } from '../drizzle/schema/telegram-bindings.schema';
+import type {
+  GenerateConnectLinkResponse,
+  CheckBindingResponse,
+} from './dto/telegram-connect.dto';
 
 @Controller('channels')
 export class ChannelsController {
@@ -71,6 +88,7 @@ export class ChannelsController {
     private readonly threadsService: ThreadsService,
     private readonly blueskyService: BlueskyService,
     private readonly mastodonService: MastodonService,
+    private readonly slackService: SlackService,
     private readonly googleDriveService: GoogleDriveService,
     private readonly googlePhotosService: GooglePhotosService,
     private readonly googleCalendarService: GoogleCalendarService,
@@ -78,6 +96,9 @@ export class ChannelsController {
     private readonly dropboxService: DropboxService,
     private readonly unsplashService: UnsplashService,
     private readonly redditService: RedditService,
+    private readonly adAccountsService: AdAccountsService,
+    private readonly slackBackfill: SlackBackfillService,
+    private readonly inboxService: InboxService,
   ) {}
 
   // ==========================================================================
@@ -85,7 +106,15 @@ export class ChannelsController {
   // ==========================================================================
 
   /**
-   * Initiate OAuth flow - returns authorization URL
+   * Initiate OAuth flow - returns authorization URL.
+   *
+   * For Facebook, pass `additionalData: { intent: 'ads' }` in the request body
+   * to request only the ads-related scopes (ads_management, ads_read,
+   * leads_retrieval, pages_manage_ads, business_management) instead of the
+   * full base scope list. The `intent` value is persisted in the OAuth state
+   * row so that the callback can identify the flow type.
+   *
+   * Default intent is 'connect' (full base scopes for posting + inbox).
    */
   @Post('workspaces/:workspaceId/oauth/initiate')
   @UseGuards(JwtAuthGuard)
@@ -218,6 +247,64 @@ export class ChannelsController {
       // Get the stored redirect_uri to ensure exact match during token exchange
       const storedRedirectUri = stateData.additionalData?._oauthRedirectUri as string | undefined;
       console.log(`[OAuth Callback] Stored redirect_uri: ${storedRedirectUri || 'NOT FOUND'}`);
+
+      // Slack: intercept before generic token exchange — uses its own Web API SDK
+      if (platform === 'slack') {
+        try {
+          console.log('[OAuth Callback] Slack: exchanging code for bot token...');
+          const slackRedirectUri = storedRedirectUri || `${(process.env.APP_URL || 'http://localhost:3000').trim().replace(/\/+$/, '')}/channels/oauth/slack/callback`;
+
+          const tokenResp = await this.slackService.exchangeCode(code, slackRedirectUri);
+
+          const botProfile = await this.slackService.getBotProfile(
+            tokenResp.access_token,
+            tokenResp.bot_user_id,
+          );
+
+          const channel = await this.channelService.createChannel(
+            stateData.workspaceId,
+            stateData.userId,
+            {
+              platform: 'slack',
+              accountType: 'workspace',
+              platformAccountId: tokenResp.team.id,
+              accountName: tokenResp.team.name,
+              username: botProfile.name,
+              profilePictureUrl: botProfile.avatar ?? undefined,
+              accessToken: tokenResp.access_token,
+              refreshToken: undefined,
+              tokenExpiresAt: undefined,
+              permissions: tokenResp.scope.split(','),
+              capabilities: {
+                canPost: false,
+                canSchedule: false,
+                canReadAnalytics: false,
+                canReply: true,
+                canDelete: false,
+                supportedMediaTypes: [],
+                maxMediaPerPost: 0,
+                maxTextLength: 40000,
+              },
+              metadata: {
+                botUserId: tokenResp.bot_user_id,
+                teamId: tokenResp.team.id,
+                teamName: tokenResp.team.name,
+                enterpriseId: tokenResp.enterprise?.id ?? null,
+                scopes: tokenResp.scope.split(','),
+              },
+            },
+          );
+
+          console.log(`[OAuth Callback] Slack channel created: ${channel.id}`);
+
+          const slackSuccessUrl = `${frontendUrl}/channels/connect/success?platform=slack&channelId=${channel.id}`;
+          return res.redirect(slackSuccessUrl);
+        } catch (slackError) {
+          console.error('[OAuth Callback] Slack setup failed:', slackError);
+          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Slack setup failed: ' + (slackError instanceof Error ? slackError.message : 'Unknown error'))}`;
+          return res.redirect(errorUrl);
+        }
+      }
 
       // Exchange code for tokens
       const tokens = await this.oauthService.exchangeCodeForTokens(
@@ -936,6 +1023,22 @@ export class ChannelsController {
           (err as Error).message,
         );
       }
+    }
+
+    // Fire-and-forget ad account sync when intent=ads OAuth flow completes.
+    // Errors are logged but never propagate — we don't want a Meta API hiccup
+    // to fail the channel connect response. The user access token is required
+    // to read /me/adaccounts (Page-scoped tokens can't); pass it through here
+    // so the sync uses it and also caches it on the channel for later manual
+    // refreshes.
+    if (dto.intent === 'ads') {
+      this.adAccountsService
+        .syncForChannel(workspaceId, fbChannel.id, dto.userAccessToken)
+        .catch((err: Error) => {
+          console.warn(
+            `[connectFacebookPage] Ad account sync failed for workspace=${workspaceId}, channel=${fbChannel.id}: ${err.message}`,
+          );
+        });
     }
 
     return {
@@ -4687,5 +4790,181 @@ export class ChannelsController {
     }
     await this.unsplashService.trackDownload(dto.downloadLocation);
     return { success: true, message: 'Download tracked successfully' };
+  }
+
+  // ============================================================================
+  // Slack — Workspace Browse (Wave 1.A.5)
+  // ============================================================================
+
+  /**
+   * List all public (and optionally private) channels visible to the Slack bot.
+   * Returns paginated results with a `nextCursor` for subsequent pages.
+   */
+  @Get('workspaces/:workspaceId/slack/:channelId/conversations')
+  @UseGuards(JwtAuthGuard)
+  async listSlackConversations(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Query() query: ListSlackChannelsQueryDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'slack') {
+      throw new ForbiddenException('Slack channel not found in this workspace');
+    }
+    const token = await this.channelService.getAccessToken(channel.id, wid);
+    return this.slackService.listAllChannels(token, {
+      cursor: query.cursor,
+      limit: query.limit,
+      includePrivate: query.includePrivate,
+    });
+  }
+
+  /**
+   * List workspace members visible to the Slack bot.
+   * Supports optional `query` substring filter and pagination cursor.
+   */
+  @Get('workspaces/:workspaceId/slack/:channelId/members')
+  @UseGuards(JwtAuthGuard)
+  async listSlackMembers(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Query() query: ListSlackMembersQueryDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'slack') {
+      throw new ForbiddenException('Slack channel not found in this workspace');
+    }
+    const token = await this.channelService.getAccessToken(channel.id, wid);
+    return this.slackService.listMembers(token, query);
+  }
+
+  /**
+   * Bot joins a public Slack channel and backfills the last 50 messages into
+   * the inbox. Idempotent — safe to call multiple times.
+   */
+  @Post('workspaces/:workspaceId/slack/:channelId/join')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async joinSlackChannel(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Body() body: JoinSlackChannelBodyDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'slack') {
+      throw new ForbiddenException('Slack channel not found in this workspace');
+    }
+    const token = await this.channelService.getAccessToken(channel.id, wid);
+    const joinResult = await this.slackService.joinChannel(token, body.conversationId);
+    const backfill = await this.slackBackfill.backfillConversation(wid, channel.id, body.conversationId, 50);
+    return { ok: true, ...joinResult, backfilled: backfill.ingested };
+  }
+
+  /**
+   * Open a DM with a Slack workspace member and send the first message.
+   * Records the outbound message in the inbox for conversation threading.
+   */
+  @Post('workspaces/:workspaceId/slack/:channelId/start-dm')
+  @UseGuards(JwtAuthGuard)
+  async startSlackDm(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Body() body: StartSlackDmBodyDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'slack') {
+      throw new ForbiddenException('Slack channel not found in this workspace');
+    }
+    const token = await this.channelService.getAccessToken(channel.id, wid);
+    const { conversationId, ts } = await this.slackService.openDmAndSendFirst(token, body.userId, body.text);
+    // Fetch the recipient's profile so the inbox conversation has a real
+    // participant identity from the very first outbound message. Without this
+    // the conversation row shows "Unknown" until the recipient replies.
+    const recipient = await this.slackService.getUserInfo(token, body.userId).catch(() => null);
+    await this.inboxService.upsertDm({
+      workspaceId: wid,
+      channelId: channel.id,
+      platform: 'slack',
+      conversationId,
+      platformItemId: ts,
+      text: body.text,
+      fromMe: true,
+      authorPlatformId: body.userId,
+      authorHandle: recipient?.handle ?? null,
+      authorDisplayName: recipient?.displayName ?? null,
+      authorAvatarUrl: recipient?.avatarUrl ?? null,
+      platformCreatedAt: new Date(Number(ts.split('.')[0]) * 1000),
+    });
+    return { ok: true, conversationId, ts };
+  }
+
+  /**
+   * Create a new Slack channel in the connected workspace.
+   * The bot is automatically the creator and therefore a member.
+   */
+  @Post('workspaces/:workspaceId/slack/:channelId/conversations/create')
+  @UseGuards(JwtAuthGuard)
+  async createSlackChannel(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Body() body: CreateSlackChannelBodyDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'slack') {
+      throw new ForbiddenException('Slack channel not found in this workspace');
+    }
+    const token = await this.channelService.getAccessToken(channel.id, wid);
+    const created = await this.slackService.createChannel(token, {
+      name: body.name,
+      isPrivate: body.isPrivate,
+      purpose: body.purpose,
+    });
+    return { ok: true, ...created };
+  }
+
+  // ==========================================================================
+  // Telegram — Connect (deep link) + check binding
+  // ==========================================================================
+
+  @Post('workspaces/:workspaceId/telegram/connect')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async generateTelegramConnectLink(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+  ): Promise<GenerateConnectLinkResponse> {
+    await this.inboxService.assertWorkspaceAccessPublic(workspaceId, user.userId);
+    // Strip leading `@` defensively — users often paste the bot handle with it,
+    // but t.me deep links must NOT include the `@` (e.g. `t.me/ScheduraBot`, not
+    // `t.me/@ScheduraBot`).
+    const botUsername = (process.env.TELEGRAM_BOT_USERNAME ?? '').replace(/^@/, '');
+    if (!botUsername) {
+      throw new BadRequestException('TELEGRAM_BOT_USERNAME is not configured.');
+    }
+    return {
+      url: `https://t.me/${botUsername}?start=${workspaceId}`,
+      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
+    };
+  }
+
+  @Get('workspaces/:workspaceId/telegram/check-binding')
+  @UseGuards(JwtAuthGuard)
+  async checkTelegramBinding(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+  ): Promise<CheckBindingResponse> {
+    await this.inboxService.assertWorkspaceAccessPublic(workspaceId, user.userId);
+    const rows = await db
+      .select({ chatId: telegramChatBindings.telegramChatId })
+      .from(telegramChatBindings)
+      .where(
+        and(
+          eq(telegramChatBindings.workspaceId, workspaceId),
+          eq(telegramChatBindings.chatType, 'private'),
+        ),
+      )
+      .limit(1);
+    if (rows.length === 0) return { bound: false };
+    return { bound: true, chatId: rows[0].chatId };
   }
 }

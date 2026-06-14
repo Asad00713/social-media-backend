@@ -1450,6 +1450,71 @@ export class FacebookService {
    *
    * Phase 2.3.
    */
+  // ==========================================================================
+  // Ads — page posts for boost picker
+  // ==========================================================================
+
+  /**
+   * List recent FB Page posts suitable for boosting.
+   * Returns the last `limit` posts with enough preview data for the
+   * boost-wizard picker UI.
+   *
+   * Graph v21.0: GET /{pageId}/posts
+   *   fields=id,message,created_time,full_picture,permalink_url,attachments{type}
+   */
+  async listPagePostsForBoost(
+    pageId: string,
+    pageAccessToken: string,
+    limit = 25,
+  ): Promise<
+    {
+      id: string;
+      message?: string;
+      createdTime: string;
+      fullPicture?: string;
+      permalinkUrl?: string;
+      attachmentsType?: string;
+    }[]
+  > {
+    const url = new URL('https://graph.facebook.com/v21.0/' + pageId + '/posts');
+    url.searchParams.set('access_token', pageAccessToken);
+    url.searchParams.set(
+      'fields',
+      'id,message,created_time,full_picture,permalink_url,attachments{type}',
+    );
+    url.searchParams.set('limit', String(limit));
+
+    const res = await fetch(url.toString());
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      const reason = err?.error?.message ?? `HTTP ${res.status}`;
+      this.logger.error(`listPagePostsForBoost failed for page ${pageId}: ${reason}`);
+      throw new BadRequestException(`Failed to fetch page posts: ${reason}`);
+    }
+
+    const data = (await res.json()) as {
+      data?: Array<{
+        id: string;
+        message?: string;
+        created_time?: string;
+        full_picture?: string;
+        permalink_url?: string;
+        attachments?: { data?: Array<{ type?: string }> };
+      }>;
+    };
+
+    return (data.data ?? []).map((post) => ({
+      id: post.id,
+      message: post.message,
+      createdTime: post.created_time ?? '',
+      fullPicture: post.full_picture,
+      permalinkUrl: post.permalink_url,
+      attachmentsType: post.attachments?.data?.[0]?.type,
+    }));
+  }
+
   async sendMessengerAttachmentMessage(
     pageId: string,
     pageAccessToken: string,

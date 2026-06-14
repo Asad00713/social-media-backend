@@ -202,6 +202,16 @@ export class AuthService {
         }
     }
 
+    /**
+     * Stamps the user as having completed the multi-step onboarding flow and
+     * returns the fresh `whoAmI` payload so the frontend can replace its
+     * cached /auth/me without a second round-trip.
+     */
+    async markOnboardingCompleted(userId: string): Promise<MeResponse> {
+        await this.usersService.markOnboardingCompleted(userId);
+        return this.whoAmI(userId);
+    }
+
     // ==================== Email Verification ====================
 
     /**

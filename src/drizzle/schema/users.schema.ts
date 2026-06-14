@@ -41,6 +41,12 @@ export const users = pgTable('users', {
   // Last accessed workspace for redirect on login
   lastAccessedWorkspaceId: uuid('last_accessed_workspace_id'),
 
+  // Stamped when the user finishes the multi-step onboarding flow
+  // (workspace → persona → invite → connect). Null while onboarding is
+  // in progress. Source of truth for route-guard gating so the decision
+  // is per-user (server-side) instead of per-browser (localStorage).
+  onboardingCompletedAt: timestamp('onboarding_completed_at'),
+
   // Account suspension
   isActive: boolean('is_active').default(true).notNull(),
   suspendedAt: timestamp('suspended_at'),

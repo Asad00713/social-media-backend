@@ -18,15 +18,18 @@ import {
 import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { CloudinaryService } from './cloudinary.service';
 import { TikTokMediaProxyService } from './tiktok-media-proxy.service';
 import { BunnyCDNService } from './bunnycdn.service';
+import { CloudflareR2Service } from './cloudflare-r2.service';
 import {
   UploadFromUrlDto,
   UploadFromBase64Dto,
   DeleteMediaDto,
   GetOptimizedUrlDto,
   GetSignedUploadParamsDto,
+  PresignComposerVideoDto,
 } from './dto/media.dto';
 
 @Controller('media')
@@ -35,6 +38,7 @@ export class MediaController {
     private readonly cloudinaryService: CloudinaryService,
     private readonly tiktokProxyService: TikTokMediaProxyService,
     private readonly bunnyCDNService: BunnyCDNService,
+    private readonly r2Service: CloudflareR2Service,
   ) {}
 
   // ==========================================================================
@@ -391,6 +395,38 @@ export class MediaController {
       url,
       publicId,
     };
+  }
+
+  /**
+   * Cloudflare R2 presigned upload for composer videos.
+   *
+   * Composer videos (TikTok primarily, but routable to any video-capable
+   * platform) are stored in R2 under the `composer/videos/...` prefix so they
+   * can lifecycle separately from inbox media. The browser uploads bytes
+   * directly to R2 via the returned `uploadUrl` — Schedura's API never
+   * touches the video, which is critical for multi-GB TikTok uploads.
+   *
+   * Workspace membership is NOT verified here yet (consistent with the
+   * existing Cloudinary upload endpoint, which also doesn't). The R2 key
+   * path embeds the authenticated userId, so a user can't write under
+   * someone else's identity even if they spoof the workspaceId. Tightening
+   * this to membership-check parity is a follow-up.
+   */
+  @Post('r2/presign-composer-video')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async presignComposerVideo(
+    @Body() dto: PresignComposerVideoDto,
+    @CurrentUser() user: { userId: string; email: string },
+  ) {
+    return this.r2Service.createPresignedUpload({
+      workspaceId: dto.workspaceId,
+      userId: user.userId,
+      kind: 'composer-video',
+      contentType: dto.contentType,
+      sizeBytes: dto.sizeBytes,
+      filename: dto.filename,
+    });
   }
 
   /**

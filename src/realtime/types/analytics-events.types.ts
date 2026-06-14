@@ -17,7 +17,12 @@ export type AnalyticsEventName =
   | 'scheduled.message.updated'
   | 'scheduled.message.cancelled'
   | 'scheduled.message.sent'
-  | 'scheduled.message.failed';
+  | 'scheduled.message.failed'
+  | 'ad_account.connected'
+  | 'ad.status.changed'
+  | 'ad.insights.updated'
+  | 'lead.created'
+  | 'lead.delivered';
 
 export interface ChannelSnapshotUpdatedPayload {
   workspaceId: string;
@@ -160,6 +165,41 @@ export interface ScheduledInboxFailedPayload extends ScheduledInboxEventBase {
   errorMessage: string;
 }
 
+export interface AdAccountConnectedPayload {
+  workspaceId: string;
+  adAccountId: string;
+  name: string;
+  currency: string;
+}
+
+export interface AdStatusChangedPayload {
+  workspaceId: string;
+  campaignId: string;
+  entity: 'campaign' | 'adset' | 'ad';
+  status: 'ACTIVE' | 'PAUSED' | 'ARCHIVED';
+}
+
+export interface AdInsightsUpdatedPayload {
+  workspaceId: string;
+  campaignId: string;
+  date: string;
+}
+
+export interface LeadCreatedPayload {
+  workspaceId: string;
+  leadId: string;
+  leadFormId: string;
+  capturedAt: string;
+}
+
+export interface LeadDeliveredPayload {
+  workspaceId: string;
+  leadId: string;
+  destination: 'inbox' | 'email' | 'webhook';
+  success: boolean;
+  error?: string;
+}
+
 export type AnalyticsEventPayloadMap = {
   'channel.snapshot.updated': ChannelSnapshotUpdatedPayload;
   'post.metrics.updated': PostMetricsUpdatedPayload;
@@ -175,4 +215,9 @@ export type AnalyticsEventPayloadMap = {
   'scheduled.message.cancelled': ScheduledInboxCancelledPayload;
   'scheduled.message.sent': ScheduledInboxSentPayload;
   'scheduled.message.failed': ScheduledInboxFailedPayload;
+  'ad_account.connected': AdAccountConnectedPayload;
+  'ad.status.changed': AdStatusChangedPayload;
+  'ad.insights.updated': AdInsightsUpdatedPayload;
+  'lead.created': LeadCreatedPayload;
+  'lead.delivered': LeadDeliveredPayload;
 };

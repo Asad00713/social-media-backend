@@ -34,6 +34,9 @@ export const SUPPORTED_PLATFORMS = [
   'onedrive',
   'dropbox',
   'reddit',
+  'slack',
+  'telegram',
+  'discord',
 ] as const;
 
 export type SupportedPlatform = (typeof SUPPORTED_PLATFORMS)[number];
@@ -46,6 +49,9 @@ export const ACCOUNT_TYPES = [
   'business_account',
   'group',
   'storage', // For Google Drive, Google Photos
+  'workspace',
+  'bot',
+  'server',
 ] as const;
 
 export type AccountType = (typeof ACCOUNT_TYPES)[number];
@@ -393,6 +399,13 @@ export const PLATFORM_CONFIG: Record<
       'pages_manage_engagement',
       // Required to read user-generated comments on Page posts (inbox feature).
       'pages_read_user_content',
+      // === Ads Phase 1 additions ===
+      // Must be approved in Meta App Console before existing users will see them.
+      'ads_management',
+      'ads_read',
+      'leads_retrieval',
+      'pages_manage_ads',
+      'business_management',
     ],
   },
   instagram: {
@@ -410,6 +423,8 @@ export const PLATFORM_CONFIG: Record<
       'instagram_business_manage_messages',
       'instagram_business_manage_comments',
       'instagram_business_content_publish',
+      // Required for reading IG insights when an FB ad targets IG placements.
+      'instagram_manage_insights',
     ],
   },
   youtube: {
@@ -616,6 +631,50 @@ export const PLATFORM_CONFIG: Record<
       'account_info.read',
       'files.metadata.read',
       'files.content.read',
+    ],
+  },
+  slack: {
+    name: 'Slack',
+    accountTypes: ['workspace'],
+    supportsRefreshToken: true,
+    tokenExpirationDays: null, // Slack bot tokens don't expire unless revoked
+    refreshTokenTtlDays: null,
+    maxMediaPerPost: 0, // Inbox/notification platform, not a publishing target
+    maxTextLength: 40000,
+    supportedMediaTypes: [],
+    oauthScopes: [
+      'channels:history',
+      'channels:read',
+      'chat:write',
+      'im:history',
+      'im:read',
+      'users:read',
+    ],
+  },
+  telegram: {
+    name: 'Telegram',
+    accountTypes: ['bot'],
+    supportsRefreshToken: false, // Bot tokens don't expire
+    tokenExpirationDays: null,
+    refreshTokenTtlDays: null,
+    maxMediaPerPost: 0, // Inbox/notification platform, not a publishing target
+    maxTextLength: 4096,
+    supportedMediaTypes: [],
+    oauthScopes: [], // Uses Bot API token, not OAuth
+  },
+  discord: {
+    name: 'Discord',
+    accountTypes: ['server'],
+    supportsRefreshToken: true,
+    tokenExpirationDays: null,
+    refreshTokenTtlDays: null,
+    maxMediaPerPost: 0, // Inbox/notification platform, not a publishing target
+    maxTextLength: 2000,
+    supportedMediaTypes: [],
+    oauthScopes: [
+      'bot',
+      'guilds',
+      'messages.read',
     ],
   },
 };

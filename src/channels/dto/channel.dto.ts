@@ -284,6 +284,11 @@ export class ConnectFacebookPageDto {
   @IsBoolean()
   @IsOptional()
   includeInstagram?: boolean;
+
+  /** Pass 'ads' after completing intent=ads OAuth to trigger ad account sync */
+  @IsString()
+  @IsOptional()
+  intent?: 'connect' | 'ads';
 }
 
 export class FacebookPageResponseDto {

@@ -21,6 +21,28 @@ import {
 import { InitiateOAuthDto, OAuthUrlResponseDto } from '../dto/channel.dto';
 
 /**
+ * Returns the scope subset to request based on the user's intent.
+ * - 'connect' (default): full base scopes for posting + inbox
+ * - 'ads': only ads-related scopes for incremental upgrade of an
+ *   already-connected Page channel. Requesting ALL scopes again
+ *   would force the user through the full consent screen unnecessarily.
+ */
+export function facebookScopesFor(intent: 'connect' | 'ads' = 'connect'): string[] {
+  if (intent === 'ads') {
+    return [
+      'public_profile',
+      'pages_show_list',
+      'ads_management',
+      'ads_read',
+      'leads_retrieval',
+      'pages_manage_ads',
+      'business_management',
+    ];
+  }
+  return PLATFORM_CONFIG.facebook.oauthScopes;
+}
+
+/**
  * OAuth configuration for each platform
  */
 interface PlatformOAuthConfig {
@@ -183,6 +205,27 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
     scopes: ['read', 'write', 'follow'],
     usePKCE: false,
   },
+  // Slack - uses OAuth 2.0 with bot token grant
+  slack: {
+    authorizationUrl: 'https://slack.com/oauth/v2/authorize',
+    tokenUrl: 'https://slack.com/api/oauth.v2.access',
+    scopes: PLATFORM_CONFIG.slack.oauthScopes,
+    usePKCE: false,
+  },
+  // Telegram - uses Bot API token, not OAuth; placeholder for registry consistency
+  telegram: {
+    authorizationUrl: '', // Not used - Telegram uses Bot API token
+    tokenUrl: '', // Not used - Telegram uses Bot API token
+    scopes: [],
+    usePKCE: false,
+  },
+  // Discord - uses OAuth 2.0 with bot scope
+  discord: {
+    authorizationUrl: 'https://discord.com/api/oauth2/authorize',
+    tokenUrl: 'https://discord.com/api/oauth2/token',
+    scopes: PLATFORM_CONFIG.discord.oauthScopes,
+    usePKCE: false,
+  },
 };
 
 @Injectable()
@@ -249,6 +292,11 @@ export class OAuthService {
     // Build authorization URL
     const authUrl = new URL(oauthConfig.authorizationUrl);
 
+    // Resolve effective scopes — Facebook supports intent-based scope subsets
+    const intent = (dto.additionalData?.intent as 'connect' | 'ads') ?? 'connect';
+    const effectiveScopes =
+      platform === 'facebook' ? facebookScopesFor(intent) : oauthConfig.scopes;
+
     // TikTok uses client_key instead of client_id
     if (platform === 'tiktok') {
       authUrl.searchParams.set('client_key', credentials.clientId);
@@ -260,9 +308,9 @@ export class OAuthService {
     authUrl.searchParams.set('state', stateToken);
     // TikTok uses comma-separated scopes instead of space-separated
     if (platform === 'tiktok') {
-      authUrl.searchParams.set('scope', oauthConfig.scopes.join(','));
+      authUrl.searchParams.set('scope', effectiveScopes.join(','));
     } else {
-      authUrl.searchParams.set('scope', oauthConfig.scopes.join(' '));
+      authUrl.searchParams.set('scope', effectiveScopes.join(' '));
     }
 
     // Add PKCE challenge if needed
