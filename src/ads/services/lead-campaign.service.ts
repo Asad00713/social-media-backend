@@ -32,13 +32,29 @@ export class LeadCampaignService {
     if (channel.platform !== 'facebook') throw new BadRequestException('Lead Ads require an FB Page channel')
     if (!channel.accessToken) throw new BadRequestException('No access token for channel')
 
-    const userToken = channel.accessToken
+    // The channel.accessToken is the Page token (scoped to page-level
+    // operations). Ad-account-level Meta endpoints — /adimages, /campaigns,
+    // /adsets, /ads, /adcreatives — all require a USER token with
+    // ads_management. We cache that user token in channel.metadata at
+    // ads-OAuth time. Fall back to the page token only if no cached user
+    // token exists (will surface a clearer error than (#3) capability).
+    const cachedUserToken = (channel.metadata as Record<string, unknown> | null)?.['fbUserAccessToken']
+    const userToken =
+      typeof cachedUserToken === 'string' && cachedUserToken.length > 0
+        ? cachedUserToken
+        : channel.accessToken
+    if (!userToken) {
+      throw new BadRequestException(
+        'No ads-capable access token for this channel. Please reconnect the Facebook page with ads permissions.',
+      )
+    }
 
     // 1) Create lead form (synchronously — its id is required by the creative)
     const formRow = await this.leadForms.create(workspaceId, dto.channelId, dto.form)
 
-    // 2) Upload image to Meta ad library
-    const img = await this.meta.uploadAdImage(acct.metaAdAccountId, userToken, dto.creativeImageUrl)
+    // 2) Image: skip /adimages upload (requires Marketing API standard access,
+    //    blocked in dev-mode apps with the new use-case model) and pass the
+    //    public R2 URL directly as link_data.picture instead. Meta accepts both.
 
     // 3) Campaign — created PAUSED so child entities create cleanly without going live mid-build
     const camp = await this.meta.createCampaign(acct.metaAdAccountId, userToken, {
@@ -73,7 +89,7 @@ export class LeadCampaignService {
           link: dto.form.privacyPolicy.url,
           name: dto.headline,
           description: dto.description,
-          image_hash: img.hash,
+          picture: dto.creativeImageUrl,
           call_to_action: { type: dto.ctaType, value: { lead_gen_form_id: formRow.metaFormId } },
         },
       },
@@ -142,7 +158,7 @@ export class LeadCampaignService {
       creativeSnapshot: {
         headline: dto.headline,
         primaryText: dto.primaryText,
-        imageHash: img.hash,
+        imageUrl: dto.creativeImageUrl,
         leadFormId: formRow.id,
       },
     })

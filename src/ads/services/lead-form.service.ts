@@ -24,8 +24,17 @@ export class LeadFormService {
     // The accessToken on an FB Page channel is already page-scoped — use it directly
     const pageToken = channel.accessToken
 
+    // Meta requires unique form names per Page. Append a short timestamp
+    // suffix so retries / similar campaigns don't collide on the user's
+    // chosen name. Suffix uses local date+hhmm — short enough to stay
+    // readable in Ads Manager.
+    // Base36 of millis-since-epoch gives a short collision-resistant suffix
+    // even on rapid retries (every call gets a different ms timestamp).
+    const stamp = Date.now().toString(36)
+    const uniqueName = `${dto.name} (${stamp})`
+
     const remote = await this.meta.createLeadForm(channel.platformAccountId, pageToken, {
-      name: dto.name,
+      name: uniqueName,
       locale: dto.locale ?? 'en_US',
       privacy_policy: { url: dto.privacyPolicy.url, link_text: dto.privacyPolicy.linkText },
       questions: dto.questions.map((q) => {
@@ -64,7 +73,7 @@ export class LeadFormService {
         workspaceId,
         channelId,
         metaFormId: remote.id,
-        name: dto.name,
+        name: uniqueName,
         locale: dto.locale ?? 'en_US',
         questionsSnapshot: dto.questions as any,
         privacyPolicyUrl: dto.privacyPolicy.url,

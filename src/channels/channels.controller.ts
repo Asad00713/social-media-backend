@@ -4926,7 +4926,7 @@ export class ChannelsController {
   // Telegram — Connect (deep link) + check binding
   // ==========================================================================
 
-  @Post('workspaces/:workspaceId/channels/telegram/connect')
+  @Post('workspaces/:workspaceId/telegram/connect')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async generateTelegramConnectLink(
@@ -4934,7 +4934,10 @@ export class ChannelsController {
     @CurrentUser() user: { userId: string; email: string },
   ): Promise<GenerateConnectLinkResponse> {
     await this.inboxService.assertWorkspaceAccessPublic(workspaceId, user.userId);
-    const botUsername = process.env.TELEGRAM_BOT_USERNAME ?? '';
+    // Strip leading `@` defensively — users often paste the bot handle with it,
+    // but t.me deep links must NOT include the `@` (e.g. `t.me/ScheduraBot`, not
+    // `t.me/@ScheduraBot`).
+    const botUsername = (process.env.TELEGRAM_BOT_USERNAME ?? '').replace(/^@/, '');
     if (!botUsername) {
       throw new BadRequestException('TELEGRAM_BOT_USERNAME is not configured.');
     }
@@ -4944,7 +4947,7 @@ export class ChannelsController {
     };
   }
 
-  @Get('workspaces/:workspaceId/channels/telegram/check-binding')
+  @Get('workspaces/:workspaceId/telegram/check-binding')
   @UseGuards(JwtAuthGuard)
   async checkTelegramBinding(
     @Param('workspaceId') workspaceId: string,
