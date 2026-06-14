@@ -8,7 +8,18 @@ import * as bcrypt from 'bcrypt';
 import { UpdateUserDto } from './dto/update-user.dto';
 
 // Public user type that excludes sensitive fields
-export type PublicUser = Pick<User, 'id' | 'email' | 'name' | 'role' | 'isEmailVerified' | 'lastAccessedWorkspaceId' | 'createdAt' | 'updatedAt'>;
+export type PublicUser = Pick<
+    User,
+    | 'id'
+    | 'email'
+    | 'name'
+    | 'role'
+    | 'isEmailVerified'
+    | 'lastAccessedWorkspaceId'
+    | 'onboardingCompletedAt'
+    | 'createdAt'
+    | 'updatedAt'
+>;
 
 @Injectable()
 export class UsersService {
@@ -42,6 +53,7 @@ export class UsersService {
             role: newUser.role,
             isEmailVerified: newUser.isEmailVerified,
             lastAccessedWorkspaceId: newUser.lastAccessedWorkspaceId,
+            onboardingCompletedAt: newUser.onboardingCompletedAt,
             createdAt: newUser.createdAt,
             updatedAt: newUser.updatedAt,
         };
@@ -56,6 +68,7 @@ export class UsersService {
                 role: true,
                 isEmailVerified: true,
                 lastAccessedWorkspaceId: true,
+                onboardingCompletedAt: true,
                 createdAt: true,
                 updatedAt: true,
             }
@@ -74,6 +87,7 @@ export class UsersService {
                 role: true,
                 isEmailVerified: true,
                 lastAccessedWorkspaceId: true,
+                onboardingCompletedAt: true,
                 createdAt: true,
                 updatedAt: true,
             },
@@ -96,6 +110,7 @@ export class UsersService {
                 role: true,
                 isEmailVerified: true,
                 lastAccessedWorkspaceId: true,
+                onboardingCompletedAt: true,
                 isActive: true,
                 suspendedReason: true,
                 createdAt: true,
@@ -212,9 +227,25 @@ export class UsersService {
             role: updatedUser.role,
             isEmailVerified: updatedUser.isEmailVerified,
             lastAccessedWorkspaceId: updatedUser.lastAccessedWorkspaceId,
+            onboardingCompletedAt: updatedUser.onboardingCompletedAt,
             createdAt: updatedUser.createdAt,
             updatedAt: updatedUser.updatedAt,
         };
+    }
+
+    /**
+     * Idempotent: stamps onboardingCompletedAt with the current time. If
+     * already set, leaves the original timestamp untouched so we don't
+     * accidentally reset analytics that depend on the first completion time.
+     */
+    async markOnboardingCompleted(userId: string): Promise<void> {
+        await this.db
+            .update(users)
+            .set({
+                onboardingCompletedAt: sql`COALESCE(${users.onboardingCompletedAt}, NOW())`,
+                updatedAt: new Date(),
+            })
+            .where(eq(users.id, userId));
     }
 
     async setLastAccessedWorkspace(userId: string, workspaceId: string): Promise<void> {
