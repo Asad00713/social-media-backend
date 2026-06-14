@@ -54,3 +54,8 @@ pids
 
 # Diagnostic reports (https://nodejs.org/api/report.html)
 report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
+
+# Boot/dev logs
+_boot.txt
+_nest-bootlog.txt
+_nest-bootlog.err.txt
