@@ -159,6 +159,21 @@ export class TelegramService {
     });
   }
 
+  /** Delete a message. Telegram lets a bot delete its own outgoing messages,
+   *  and incoming messages in private chats; in groups/supergroups the bot
+   *  needs the `can_delete_messages` admin right. Messages older than 48h
+   *  generally can't be deleted — Telegram returns an error, which propagates
+   *  as a thrown BadRequestException for the caller to surface. */
+  async deleteMessage(
+    chatId: string | number,
+    messageId: number,
+  ): Promise<true> {
+    return this.callJson<true>('deleteMessage', {
+      chat_id: chatId,
+      message_id: messageId,
+    });
+  }
+
   async answerCallbackQuery(
     callbackQueryId: string,
     text?: string,
