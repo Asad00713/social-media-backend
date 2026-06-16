@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { SiteVerificationController } from './site-verification/site-verification.controller';
 import { SocialMediaModule } from './social-media/social-media.module';
 import { PostsModule } from './posts/posts.module';
 import { AiModule } from './ai/ai.module';
@@ -78,7 +79,7 @@ import { QUEUES } from './queue/queue.module';
       { name: QUEUES.INBOX_POLLING, adapter: BullMQAdapter },
     ),
   ],
-  controllers: [AppController],
+  controllers: [AppController, SiteVerificationController],
   providers: [AppService],
 })
 export class AppModule {}
