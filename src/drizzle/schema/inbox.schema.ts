@@ -97,6 +97,12 @@ export const inboxItems = pgTable(
     // Platform-specific extras: attachment urls, sentiment from API, like counts, etc.
     metadata: jsonb('metadata').$type<Record<string, any>>().default({}),
 
+    // Soft-archive: when set, this row is hidden from inbox lists + unread
+    // counts (conversation "deleted" from the inbox). Thread detail still shows
+    // archived rows so reopening keeps history. A new incoming message inserts
+    // a fresh (un-archived) row, which makes the conversation reappear.
+    archivedAt: timestamp('archived_at', { withTimezone: true }),
+
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
