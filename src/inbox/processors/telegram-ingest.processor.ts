@@ -1,9 +1,10 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, isNotNull } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
+import { inboxItems } from '../../drizzle/schema/inbox.schema';
 import { workspace } from '../../drizzle/schema/workspace.schema';
 import { telegramChatBindings } from '../../drizzle/schema/telegram-bindings.schema';
 import { QUEUES } from '../../queue/queue.module';
@@ -17,6 +18,11 @@ export class TelegramIngestProcessor extends WorkerHost {
   private readonly logger = new Logger(TelegramIngestProcessor.name);
   /** Cached bot user — populated lazily so we can recognise our own messages. */
   private botId: number | null = null;
+  /** Per-author avatar cache (telegram user id → R2 url | null). Avoids
+   *  re-fetching + re-uploading a profile photo for every message. null is
+   *  cached too, so photo-less / privacy-restricted users aren't re-queried
+   *  for the process lifetime. Survives restarts via the DB-reuse path. */
+  private readonly avatarCache = new Map<string, string | null>();
 
   constructor(
     private readonly inbox: InboxService,
@@ -157,6 +163,14 @@ export class TelegramIngestProcessor extends WorkerHost {
       message.entities ?? message.caption_entities,
     );
 
+    const authorAvatarUrl = from
+      ? await this.resolveAuthorAvatar(
+          String(from.id),
+          binding.workspaceId,
+          channel.id,
+        )
+      : null;
+
     // Phase 1.B media rehost — Slack-parity pattern: download from Telegram
     // CDN with bot token, upload to R2, store the durable public URL.
     type RehostedAttachment = {
@@ -227,7 +241,7 @@ export class TelegramIngestProcessor extends WorkerHost {
       authorPlatformId: from ? String(from.id) : null,
       authorHandle: from?.username ?? null,
       authorDisplayName: displayName,
-      authorAvatarUrl: null,
+      authorAvatarUrl,
       text: resolvedText,
       fromMe: false,
       platformCreatedAt: new Date(message.date * 1000),
@@ -444,6 +458,80 @@ export class TelegramIngestProcessor extends WorkerHost {
       this.logger.warn(
         `editMessageText after bind failed (non-blocking): ${(err as Error).message}`,
       );
+    }
+  }
+
+  /** Resolve an author's avatar to a durable R2 URL, cheaply.
+   *
+   *  Resolution order (each step avoids the next, more expensive one):
+   *    1. in-memory cache (this process)
+   *    2. reuse the avatar URL from a prior ingested message by the same
+   *       author on this channel (survives restarts, no Telegram API hit)
+   *    3. fetch the profile photo from Telegram → rehost to R2
+   *
+   *  Best-effort: any failure resolves to null and the UI falls back to an
+   *  initials avatar. Never throws — must not block message ingest. */
+  private async resolveAuthorAvatar(
+    authorId: string,
+    workspaceId: string,
+    channelId: number,
+  ): Promise<string | null> {
+    if (this.avatarCache.has(authorId)) {
+      return this.avatarCache.get(authorId) ?? null;
+    }
+
+    // Step 2 — reuse a previously rehosted avatar for this author.
+    try {
+      const [prior] = await db
+        .select({ url: inboxItems.authorAvatarUrl })
+        .from(inboxItems)
+        .where(
+          and(
+            eq(inboxItems.channelId, channelId),
+            eq(inboxItems.authorPlatformId, authorId),
+            isNotNull(inboxItems.authorAvatarUrl),
+          ),
+        )
+        .orderBy(desc(inboxItems.createdAt))
+        .limit(1);
+      if (prior?.url) {
+        this.avatarCache.set(authorId, prior.url);
+        return prior.url;
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Avatar DB-reuse lookup failed for author ${authorId}: ${(err as Error).message}`,
+      );
+    }
+
+    // Step 3 — fetch from Telegram and rehost to R2.
+    try {
+      const fileId = await this.telegram.getUserProfilePhotoFileId(authorId);
+      if (!fileId) {
+        this.avatarCache.set(authorId, null);
+        return null;
+      }
+      const file = await this.telegram.getFile(fileId);
+      if (!file.file_path) {
+        this.avatarCache.set(authorId, null);
+        return null;
+      }
+      const downloaded = await this.telegram.downloadFile(file.file_path);
+      const { publicUrl } = await this.r2.uploadBuffer({
+        kind: 'image',
+        workspaceId,
+        buffer: downloaded.buffer,
+        contentType: downloaded.contentType,
+        filename: `tg-avatar-${authorId}.jpg`,
+      });
+      this.avatarCache.set(authorId, publicUrl);
+      return publicUrl;
+    } catch (err) {
+      this.logger.warn(
+        `Avatar fetch/rehost failed for author ${authorId}: ${(err as Error).message}`,
+      );
+      this.avatarCache.set(authorId, null);
+      return null;
     }
   }
 

@@ -181,6 +181,30 @@ export class TelegramService {
     return this.callJson('getFile', { file_id: fileId });
   }
 
+  /** Returns the `file_id` of the largest resolution of a user's current
+   *  profile photo, or null when the user has no photo / hides it via privacy
+   *  settings. Never throws — avatar resolution is best-effort and must not
+   *  block message ingest. */
+  async getUserProfilePhotoFileId(
+    userId: number | string,
+  ): Promise<string | null> {
+    try {
+      const res = await this.callJson<{
+        total_count: number;
+        photos: Array<Array<{ file_id: string; file_size?: number }>>;
+      }>('getUserProfilePhotos', { user_id: userId, limit: 1 });
+      const firstPhoto = res.photos?.[0];
+      if (!firstPhoto || firstPhoto.length === 0) return null;
+      // Telegram orders sizes ascending — last entry is the largest.
+      return firstPhoto[firstPhoto.length - 1].file_id;
+    } catch (err) {
+      this.logger.warn(
+        `getUserProfilePhotos failed for user ${userId}: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
   /** No auth header needed — the bot token is embedded in `fileBaseUrl` per
    *  Telegram's file API spec. */
   async downloadFile(
