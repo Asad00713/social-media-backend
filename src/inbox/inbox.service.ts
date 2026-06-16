@@ -5,7 +5,7 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { and, asc, desc, eq, inArray, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { db } from '../drizzle/db';
 import {
   inboxItems,
@@ -298,6 +298,9 @@ export class InboxService {
     const conditions = [
       eq(inboxItems.workspaceId, workspaceId),
       eq(inboxItems.type, 'comment'),
+      // Hide archived rows so a "deleted" thread drops out of the list. A new
+      // incoming comment inserts an un-archived row → the thread reappears.
+      isNull(inboxItems.archivedAt),
     ];
 
     if (options.channelId && options.channelId !== 'all') {
@@ -910,7 +913,13 @@ export class InboxService {
         dms: sql<number>`count(*) filter (where ${inboxItems.type} = 'dm' and ${inboxItems.status} = 'unread' and ${inboxItems.fromMe} = false)`,
       })
       .from(inboxItems)
-      .where(eq(inboxItems.workspaceId, workspaceId))
+      .where(
+        and(
+          eq(inboxItems.workspaceId, workspaceId),
+          // Archived (inbox-deleted) rows must not count toward badges.
+          isNull(inboxItems.archivedAt),
+        ),
+      )
       .groupBy(inboxItems.channelId);
 
     const folderRows = await db
@@ -922,7 +931,11 @@ export class InboxService {
       })
       .from(inboxItems)
       .where(
-        and(eq(inboxItems.workspaceId, workspaceId), eq(inboxItems.type, 'comment')),
+        and(
+          eq(inboxItems.workspaceId, workspaceId),
+          eq(inboxItems.type, 'comment'),
+          isNull(inboxItems.archivedAt),
+        ),
       );
 
     const folder = folderRows[0] ?? {
@@ -1097,6 +1110,72 @@ export class InboxService {
     void this.emitCounts(workspaceId);
 
     return { success: true, deletedAt: now.toISOString() };
+  }
+
+  // ==========================================================================
+  // Archive whole conversation / thread (soft "delete" from the inbox only).
+  // Stamps archivedAt on every row of the conversation. Platform messages are
+  // untouched. A new incoming message (un-archived row) makes it reappear.
+  // ==========================================================================
+
+  async archiveDmConversation(
+    workspaceId: string,
+    userId: string,
+    threadKey: string,
+  ): Promise<{ success: true; archivedCount: number }> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+    const { channelId, conversationId } = this.decodeDmThreadKey(threadKey);
+
+    const now = new Date();
+    const updated = await db
+      .update(inboxItems)
+      .set({ archivedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(inboxItems.workspaceId, workspaceId),
+          eq(inboxItems.channelId, channelId),
+          eq(inboxItems.conversationId, conversationId),
+          eq(inboxItems.type, 'dm'),
+          isNull(inboxItems.archivedAt),
+        ),
+      )
+      .returning({ id: inboxItems.id });
+
+    void this.emitCounts(workspaceId);
+    return { success: true, archivedCount: updated.length };
+  }
+
+  async archiveCommentThread(
+    workspaceId: string,
+    userId: string,
+    threadKey: string,
+  ): Promise<{ success: true; archivedCount: number }> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+
+    const [channelIdStr, ...rest] = threadKey.split(':');
+    const platformPostId = rest.join(':');
+    const channelId = Number(channelIdStr);
+    if (!Number.isFinite(channelId) || !platformPostId) {
+      throw new BadRequestException('Invalid thread key');
+    }
+
+    const now = new Date();
+    const updated = await db
+      .update(inboxItems)
+      .set({ archivedAt: now, updatedAt: now })
+      .where(
+        and(
+          eq(inboxItems.workspaceId, workspaceId),
+          eq(inboxItems.channelId, channelId),
+          eq(inboxItems.platformPostId, platformPostId),
+          eq(inboxItems.type, 'comment'),
+          isNull(inboxItems.archivedAt),
+        ),
+      )
+      .returning({ id: inboxItems.id });
+
+    void this.emitCounts(workspaceId);
+    return { success: true, archivedCount: updated.length };
   }
 
   /** Fire-and-forget counts emit after mutations. */
@@ -1625,6 +1704,9 @@ export class InboxService {
     const conditions = [
       eq(inboxItems.workspaceId, workspaceId),
       eq(inboxItems.type, 'dm'),
+      // Hide archived rows so a "deleted" conversation drops out of the list.
+      // A new incoming message inserts an un-archived row → it reappears.
+      isNull(inboxItems.archivedAt),
     ];
 
     if (options.channelId && options.channelId !== 'all') {

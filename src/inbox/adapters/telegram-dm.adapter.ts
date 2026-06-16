@@ -134,4 +134,17 @@ export class TelegramDmAdapter implements PlatformDmAdapter {
   }> {
     return { canReply: true };
   }
+
+  /** Delete our own sent message from the Telegram chat. The inbox only allows
+   *  deleting `fromMe` messages, which the bot can always remove (within
+   *  Telegram's ~48h window). Throws if Telegram refuses (too old / lacking
+   *  group admin rights) — InboxService surfaces that as an error toast. */
+  async deleteDm(
+    _channel: ResolvedChannel,
+    conversationId: string,
+    platformItemId: string,
+  ): Promise<boolean> {
+    await this.telegram.deleteMessage(conversationId, Number(platformItemId));
+    return true;
+  }
 }

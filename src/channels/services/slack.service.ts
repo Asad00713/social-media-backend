@@ -371,14 +371,51 @@ export class SlackService {
       const msg = err instanceof Error ? err.message : 'unknown';
       throw new BadRequestException(`files.uploadV2 failed: ${msg}`);
     }
-    // uploadV2 returns { files: [{ id, ... }] } on success.
+    // uploadV2 (SDK v7) returns a DOUBLE-nested shape:
+    //   { files: [ { ok, files: [ { id, ... } ] } ] }
+    // The outer `files[]` is one FilesCompleteUploadExternalResponse per
+    // upload; the real file object (with `id`) lives in its inner `files[]`.
+    // Reading `files[0].id` lands on the wrapper (no `id`) → false "no file
+    // id" error even though the upload succeeded. Read the nested id first,
+    // keep flatter shapes as fallbacks for older/edge responses.
     const fileId =
-      (res as any).files?.[0]?.id ?? (res as any).file?.id;
+      (res as any).files?.[0]?.files?.[0]?.id ??
+      (res as any).files?.[0]?.id ??
+      (res as any).file?.id;
     if (!fileId) {
       throw new BadRequestException(
         'files.uploadV2 succeeded but returned no file id',
       );
     }
     return { fileId: String(fileId) };
+  }
+
+  /** Delete a message the bot posted via chat.postMessage. `ts` is the Slack
+   *  message timestamp. Slack only permits a bot to delete its own messages,
+   *  and (unlike FB Messenger) imposes no time window. Requires `chat:write`. */
+  async deleteMessage(
+    botToken: string,
+    channel: string,
+    ts: string,
+  ): Promise<boolean> {
+    const client = new WebClient(botToken);
+    const res = await client.chat.delete({ channel, ts });
+    if (!res.ok) {
+      throw new BadRequestException(`chat.delete failed: ${res.error}`);
+    }
+    return true;
+  }
+
+  /** Delete a file the bot uploaded via files.uploadV2. Slack has no
+   *  per-share delete, so this unshares the file from EVERY channel it was
+   *  posted to. We rely on it for attachment DMs because uploadV2 returns no
+   *  message `ts` to target with chat.delete. Requires `files:write`. */
+  async deleteFile(botToken: string, fileId: string): Promise<boolean> {
+    const client = new WebClient(botToken);
+    const res = await client.files.delete({ file: fileId });
+    if (!res.ok) {
+      throw new BadRequestException(`files.delete failed: ${res.error}`);
+    }
+    return true;
   }
 }

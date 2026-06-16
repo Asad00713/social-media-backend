@@ -157,6 +157,39 @@ export class SlackDmAdapter implements PlatformDmAdapter {
     };
   }
 
+  /**
+   * Phase 2.3 — delete a DM we sent. Slack splits this across two APIs based on
+   * how the message was originally sent:
+   *   - text replies (chat.postMessage) → `platformItemId` is the message `ts`,
+   *     deleted via chat.delete.
+   *   - attachment replies (files.uploadV2) → uploadV2 returns no message `ts`,
+   *     so sendDmWithAttachments synthesises `platformItemId` as
+   *     `slack-file:<fileId>`. We delete the underlying file via files.delete,
+   *     which unshares it from the channel (Slack has no per-share delete).
+   * Slack only lets the bot delete its own messages/files; no time window.
+   */
+  async deleteDm(
+    channel: ResolvedChannel,
+    conversationId: string,
+    platformItemId: string,
+  ): Promise<boolean> {
+    const FILE_PREFIX = 'slack-file:';
+    if (platformItemId.startsWith(FILE_PREFIX)) {
+      const fileId = platformItemId.slice(FILE_PREFIX.length);
+      if (!fileId) {
+        throw new BadRequestException(
+          `Slack attachment delete: missing file id in "${platformItemId}"`,
+        );
+      }
+      return this.slack.deleteFile(channel.accessToken, fileId);
+    }
+    return this.slack.deleteMessage(
+      channel.accessToken,
+      conversationId,
+      platformItemId,
+    );
+  }
+
   async getReplyWindowState(): Promise<{
     canReply: boolean;
     reason?: string;

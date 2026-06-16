@@ -341,4 +341,38 @@ export class InboxController {
   ) {
     return this.inboxService.deleteDm(workspaceId, user.userId, itemId);
   }
+
+  // ==========================================================================
+  // Archive whole conversation/thread (soft "delete" from the inbox only).
+  // Deeper paths than dms/:itemId & comments/:itemId so the threadKey
+  // (channelId:conversationId, contains colons, not a UUID) doesn't collide.
+  // ==========================================================================
+
+  @Delete('dms/conversation/:threadKey')
+  @HttpCode(HttpStatus.OK)
+  async archiveDmConversation(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('threadKey') threadKey: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.inboxService.archiveDmConversation(
+      workspaceId,
+      user.userId,
+      threadKey,
+    );
+  }
+
+  @Delete('comments/thread/:threadKey')
+  @HttpCode(HttpStatus.OK)
+  async archiveCommentThread(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('threadKey') threadKey: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.inboxService.archiveCommentThread(
+      workspaceId,
+      user.userId,
+      threadKey,
+    );
+  }
 }
