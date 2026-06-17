@@ -7,6 +7,7 @@ import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
 import { YouTubePubSubHubbubService } from './youtube-pubsubhubbub.service';
+import { ChannelProfileSnapshotHandler } from '../handlers/channel-profile-snapshot.handler';
 
 /**
  * Handles channel lifecycle transitions that affect analytics:
@@ -23,6 +24,7 @@ export class ChannelSyncLifecycleService {
     @InjectQueue(QUEUES.CHANNEL_SNAPSHOTS) private readonly queue: Queue,
     @Inject(DRIZZLE) private readonly db: any,
     private readonly pubsub: YouTubePubSubHubbubService,
+    private readonly profileSnapshot: ChannelProfileSnapshotHandler,
   ) {}
 
   async onChannelDisconnected(channelId: number): Promise<void> {
@@ -61,6 +63,23 @@ export class ChannelSyncLifecycleService {
           initialBackfillStatus: 'pending',
         },
       });
+
+    // Synchronously fetch the profile snapshot (followers/views/post count)
+    // BEFORE returning from connect, so the UI header chips show real numbers
+    // immediately instead of the OAuth-time frozen zeros. This handler writes
+    // both channel_snapshots AND channels.metadata (the source the header reads)
+    // and emits realtime events. Best-effort: any failure (API down, quota,
+    // timeout) must NOT block the connect — the enqueued backfill + the daily
+    // job remain the fallback, and the backfill skips re-fetch if this succeeds.
+    try {
+      await this.profileSnapshot.handle({ channelId, workspaceId });
+    } catch (err) {
+      this.logger.warn(
+        `Connect for channelId=${channelId}: inline profile snapshot failed (non-blocking) — ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
 
     await this.queue.add('channel-initial-backfill', { channelId, workspaceId });
     this.logger.log(`Connect for channelId=${channelId}: sync state initialized + backfill enqueued`);
