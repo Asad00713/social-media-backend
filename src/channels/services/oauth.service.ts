@@ -219,12 +219,17 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
     scopes: [],
     usePKCE: false,
   },
-  // Discord - uses OAuth 2.0 with bot scope
+  // Discord - uses OAuth 2.0 with bot scope (bot-invite flow). `permissions` is
+  // the bot permission bitfield requested at invite time:
+  //   VIEW_CHANNEL(1024) + SEND_MESSAGES(2048) + READ_MESSAGE_HISTORY(65536) +
+  //   ATTACH_FILES(32768) = 101376. Without it the bot joins with no perms and
+  //   can neither read mentions nor reply.
   discord: {
     authorizationUrl: 'https://discord.com/api/oauth2/authorize',
     tokenUrl: 'https://discord.com/api/oauth2/token',
     scopes: PLATFORM_CONFIG.discord.oauthScopes,
     usePKCE: false,
+    additionalParams: { permissions: '101376' },
   },
 };
 

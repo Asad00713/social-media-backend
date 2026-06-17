@@ -31,6 +31,7 @@ import { ThreadsService } from './services/threads.service';
 import { BlueskyService } from './services/bluesky.service';
 import { MastodonService } from './services/mastodon.service';
 import { SlackService } from './services/slack.service';
+import { DiscordService } from './services/discord.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
@@ -89,6 +90,7 @@ export class ChannelsController {
     private readonly blueskyService: BlueskyService,
     private readonly mastodonService: MastodonService,
     private readonly slackService: SlackService,
+    private readonly discordService: DiscordService,
     private readonly googleDriveService: GoogleDriveService,
     private readonly googlePhotosService: GooglePhotosService,
     private readonly googleCalendarService: GoogleCalendarService,
@@ -302,6 +304,58 @@ export class ChannelsController {
         } catch (slackError) {
           console.error('[OAuth Callback] Slack setup failed:', slackError);
           const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Slack setup failed: ' + (slackError instanceof Error ? slackError.message : 'Unknown error'))}`;
+          return res.redirect(errorUrl);
+        }
+      }
+
+      // Discord: bot-invite flow — the token response carries the guild the bot
+      // was added to. We use the single shared bot token (env) at runtime, so we
+      // only need to record the guild_id → workspace mapping here.
+      if (platform === 'discord') {
+        try {
+          console.log('[OAuth Callback] Discord: exchanging code for guild...');
+          const discordRedirectUri = storedRedirectUri || `${(process.env.APP_URL || 'http://localhost:3000').trim().replace(/\/+$/, '')}/channels/oauth/discord/callback`;
+
+          const { guildId, guildName, guildIconUrl, accessToken } =
+            await this.discordService.exchangeOAuthCode(code, discordRedirectUri);
+
+          const channel = await this.channelService.createChannel(
+            stateData.workspaceId,
+            stateData.userId,
+            {
+              platform: 'discord',
+              accountType: 'server',
+              platformAccountId: guildId,
+              accountName: guildName ?? `Discord server ${guildId}`,
+              username: guildName ?? guildId,
+              profilePictureUrl: guildIconUrl ?? undefined,
+              accessToken,
+              refreshToken: undefined,
+              tokenExpiresAt: undefined,
+              permissions: ['bot', 'guilds', 'messages.read'],
+              capabilities: {
+                canPost: false,
+                canSchedule: false,
+                canReadAnalytics: false,
+                canReply: true,
+                canDelete: true,
+                supportedMediaTypes: [],
+                maxMediaPerPost: 0,
+                maxTextLength: 2000,
+              },
+              metadata: {
+                guildId,
+                guildName: guildName ?? null,
+              },
+            },
+          );
+
+          console.log(`[OAuth Callback] Discord channel created: ${channel.id}`);
+          const discordSuccessUrl = `${frontendUrl}/channels/connect/success?platform=discord&channelId=${channel.id}`;
+          return res.redirect(discordSuccessUrl);
+        } catch (discordError) {
+          console.error('[OAuth Callback] Discord setup failed:', discordError);
+          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Discord setup failed: ' + (discordError instanceof Error ? discordError.message : 'Unknown error'))}`;
           return res.redirect(errorUrl);
         }
       }

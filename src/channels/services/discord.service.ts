@@ -94,11 +94,18 @@ export class DiscordService {
     return { buffer: Buffer.from(await res.arrayBuffer()), contentType };
   }
 
-  /** Exchange the bot-invite OAuth code for the guild id the bot was added to. */
+  /** Exchange the bot-invite OAuth code for the guild the bot was added to.
+   *  The token response carries the full `guild` object (id/name/icon) so we
+   *  can label the channel without a follow-up REST call. */
   async exchangeOAuthCode(
     code: string,
     redirectUri: string,
-  ): Promise<{ guildId: string; accessToken: string }> {
+  ): Promise<{
+    guildId: string;
+    guildName: string | null;
+    guildIconUrl: string | null;
+    accessToken: string;
+  }> {
     const params = new URLSearchParams({
       client_id: process.env.DISCORD_CLIENT_ID ?? '',
       client_secret: process.env.DISCORD_CLIENT_SECRET ?? '',
@@ -113,11 +120,19 @@ export class DiscordService {
     });
     const data = (await res.json().catch(() => ({}))) as {
       access_token?: string;
-      guild?: { id?: string };
+      guild?: { id?: string; name?: string; icon?: string | null };
     };
-    if (!res.ok || !data.guild?.id) {
+    const guild = data.guild;
+    if (!res.ok || !guild?.id) {
       throw new BadRequestException('Discord OAuth exchange failed');
     }
-    return { guildId: data.guild.id, accessToken: data.access_token ?? '' };
+    return {
+      guildId: guild.id,
+      guildName: guild.name ?? null,
+      guildIconUrl: guild.icon
+        ? `https://cdn.discordapp.com/icons/${guild.id}/${guild.icon}.png`
+        : null,
+      accessToken: data.access_token ?? '',
+    };
   }
 }
