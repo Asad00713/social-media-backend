@@ -23,6 +23,7 @@ import { UnsplashService } from './services/unsplash.service';
 import { RedditService } from './services/reddit.service';
 import { SlackService } from './services/slack.service';
 import { TelegramService } from './services/telegram.service';
+import { DiscordService } from './services/discord.service';
 import { TelegramBotSetupService } from './services/telegram-bot-setup.service';
 import { MetaAdsClient } from '../ads/services/meta-ads.client';
 import { AdAccountsService } from '../ads/services/ad-accounts.service';
@@ -67,6 +68,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     SlackService,
     TelegramService,
     TelegramBotSetupService,
+    DiscordService,
     TokenRefreshProcessor,
     TokenRefreshScheduler,
     RefreshTokenExpiryScheduler,
@@ -101,6 +103,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     RedditService,
     SlackService,
     TelegramService,
+    DiscordService,
     MetaAdsClient,
     AdAccountsService,
     BoostPostService,
