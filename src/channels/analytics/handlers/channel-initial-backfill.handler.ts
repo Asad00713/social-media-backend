@@ -1,5 +1,5 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { socialMediaChannels, type SupportedPlatform } from '../../../drizzle/schema/channels.schema';
 import { channelSnapshots } from '../../../drizzle/schema/channel-snapshots.schema';
@@ -42,28 +42,51 @@ export class ChannelInitialBackfillHandler {
     const adapter = this.registry.get(channel.platform as SupportedPlatform);
     const channelForAdapter = { ...channel, accessToken: decrypt(channel.accessToken) };
 
-    // 1. Profile snapshot
-    const profileCost = adapter.estimateQuotaCost('fetchProfileSnapshot');
-    const pq = await this.quota.tryConsume(channel.platform as SupportedPlatform, profileCost);
-    if (pq.allowed) {
-      const profile = await adapter.fetchProfileSnapshot(channelForAdapter);
-      if (profile.status !== 'failed') {
-        await this.db
-          .insert(channelSnapshots)
-          .values({
-            channelId,
-            snapshotDate: new Date().toISOString().slice(0, 10),
-            followersCount: profile.data.followersCount ?? null,
-            followingCount: profile.data.followingCount ?? null,
-            totalPostsCount: profile.data.totalPostsCount ?? null,
-            platformMetrics: profile.data.platformMetrics ?? {},
-            metricsSchemaVersion: 1,
-            fetchedAt: new Date(),
-            syncStatus: profile.status,
-            syncError: null,
-          })
-          .onConflictDoNothing();
+    // 1. Profile snapshot — skip if connect already wrote today's snapshot
+    //    synchronously (ChannelSyncLifecycleService.onChannelConnected runs the
+    //    full ChannelProfileSnapshotHandler inline). That path also updates
+    //    channels.metadata + emits realtime events, so re-fetching here would
+    //    only burn quota. If the inline fetch failed, no row exists for today
+    //    and we run the fetch here as the fallback.
+    const today = new Date().toISOString().slice(0, 10);
+    const existingToday = await this.db
+      .select({ channelId: channelSnapshots.channelId })
+      .from(channelSnapshots)
+      .where(
+        and(
+          eq(channelSnapshots.channelId, channelId),
+          eq(channelSnapshots.snapshotDate, today),
+        ),
+      )
+      .limit(1);
+
+    if (existingToday.length === 0) {
+      const profileCost = adapter.estimateQuotaCost('fetchProfileSnapshot');
+      const pq = await this.quota.tryConsume(channel.platform as SupportedPlatform, profileCost);
+      if (pq.allowed) {
+        const profile = await adapter.fetchProfileSnapshot(channelForAdapter);
+        if (profile.status !== 'failed') {
+          await this.db
+            .insert(channelSnapshots)
+            .values({
+              channelId,
+              snapshotDate: today,
+              followersCount: profile.data.followersCount ?? null,
+              followingCount: profile.data.followingCount ?? null,
+              totalPostsCount: profile.data.totalPostsCount ?? null,
+              platformMetrics: profile.data.platformMetrics ?? {},
+              metricsSchemaVersion: 1,
+              fetchedAt: new Date(),
+              syncStatus: profile.status,
+              syncError: null,
+            })
+            .onConflictDoNothing();
+        }
       }
+    } else {
+      this.logger.log(
+        `Backfill: today's snapshot already present for channelId=${channelId} (inline connect fetch) — skipping profile re-fetch`,
+      );
     }
 
     // 2. Recent posts — delegate to ChannelRecentPostsSyncHandler for full persistence.
