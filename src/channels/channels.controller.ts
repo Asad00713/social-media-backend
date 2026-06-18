@@ -68,10 +68,19 @@ import { db } from '../drizzle/db';
 import { eq, and, isNull, gt } from 'drizzle-orm';
 import * as crypto from 'crypto';
 import { telegramChatBindings } from '../drizzle/schema/telegram-bindings.schema';
-import type {
-  GenerateConnectLinkResponse,
-  CheckBindingResponse,
-} from './dto/telegram-connect.dto';
+import { TelegramConnectService } from './services/telegram-connect.service';
+import { ConnectTelegramBotDto } from './dto/telegram-connect.dto';
+
+// Legacy response shapes kept for checkTelegramBinding (removed in a later task)
+interface GenerateConnectLinkResponse {
+  url: string;
+  expiresAt: string;
+}
+
+interface CheckBindingResponse {
+  bound: boolean;
+  chatId?: string;
+}
 
 @Controller('channels')
 export class ChannelsController {
@@ -99,6 +108,7 @@ export class ChannelsController {
     private readonly adAccountsService: AdAccountsService,
     private readonly slackBackfill: SlackBackfillService,
     private readonly inboxService: InboxService,
+    private readonly telegramConnectService: TelegramConnectService,
   ) {}
 
   // ==========================================================================
@@ -4929,22 +4939,12 @@ export class ChannelsController {
   @Post('workspaces/:workspaceId/telegram/connect')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async generateTelegramConnectLink(
+  async connectTelegramBot(
     @Param('workspaceId') workspaceId: string,
+    @Body() dto: ConnectTelegramBotDto,
     @CurrentUser() user: { userId: string; email: string },
-  ): Promise<GenerateConnectLinkResponse> {
-    await this.inboxService.assertWorkspaceAccessPublic(workspaceId, user.userId);
-    // Strip leading `@` defensively — users often paste the bot handle with it,
-    // but t.me deep links must NOT include the `@` (e.g. `t.me/ScheduraBot`, not
-    // `t.me/@ScheduraBot`).
-    const botUsername = (process.env.TELEGRAM_BOT_USERNAME ?? '').replace(/^@/, '');
-    if (!botUsername) {
-      throw new BadRequestException('TELEGRAM_BOT_USERNAME is not configured.');
-    }
-    return {
-      url: `https://t.me/${botUsername}?start=${workspaceId}`,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-    };
+  ) {
+    return this.telegramConnectService.connect(workspaceId, user.userId, dto.token);
   }
 
   @Get('workspaces/:workspaceId/telegram/check-binding')
