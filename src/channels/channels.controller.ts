@@ -68,21 +68,9 @@ import { SupportedPlatform, PLATFORM_CONFIG, oauthStates } from '../drizzle/sche
 import { db } from '../drizzle/db';
 import { eq, and, isNull, gt } from 'drizzle-orm';
 import * as crypto from 'crypto';
-import { telegramChatBindings } from '../drizzle/schema/telegram-bindings.schema';
 import { TelegramConnectService } from './services/telegram-connect.service';
 import { TelegramService } from './services/telegram.service';
 import { ConnectTelegramBotDto } from './dto/telegram-connect.dto';
-
-// Legacy response shapes kept for checkTelegramBinding (removed in a later task)
-interface GenerateConnectLinkResponse {
-  url: string;
-  expiresAt: string;
-}
-
-interface CheckBindingResponse {
-  bound: boolean;
-  chatId?: string;
-}
 
 @Controller('channels')
 export class ChannelsController {
@@ -4963,24 +4951,4 @@ export class ChannelsController {
     return this.telegramConnectService.connect(workspaceId, user.userId, dto.token);
   }
 
-  @Get('workspaces/:workspaceId/telegram/check-binding')
-  @UseGuards(JwtAuthGuard)
-  async checkTelegramBinding(
-    @Param('workspaceId') workspaceId: string,
-    @CurrentUser() user: { userId: string; email: string },
-  ): Promise<CheckBindingResponse> {
-    await this.inboxService.assertWorkspaceAccessPublic(workspaceId, user.userId);
-    const rows = await db
-      .select({ chatId: telegramChatBindings.telegramChatId })
-      .from(telegramChatBindings)
-      .where(
-        and(
-          eq(telegramChatBindings.workspaceId, workspaceId),
-          eq(telegramChatBindings.chatType, 'private'),
-        ),
-      )
-      .limit(1);
-    if (rows.length === 0) return { bound: false };
-    return { bound: true, chatId: rows[0].chatId };
-  }
 }
