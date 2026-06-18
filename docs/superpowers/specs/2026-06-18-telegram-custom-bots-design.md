@@ -244,10 +244,9 @@ Components scaffold under `src/features/channels/`:
   bot in the same workspace to prove multi-bot isolation.
 - Build: `npm run build` (backend), `npm run build` (frontend).
 
-## 11. Open Questions
+## 11. Resolved Decisions
 
-- Should we proactively drop `telegram_chat_bindings` now or in a later cleanup?
-  (Proposed: later cleanup migration, keep this change focused.)
-- Bot avatar: `getMe` doesn't return a photo; fetching the bot's own avatar needs
-  `getUserProfilePhotos` on the bot id. Worth it, or skip avatar for the bot row?
-  (Proposed: best-effort fetch; fall back to initials.)
+- **`telegram_chat_bindings`:** Keep the table in place but unused for now; drop it
+  in a later, separate cleanup migration. This change stays focused.
+- **Bot avatar:** Best-effort fetch via `getUserProfilePhotos` on the bot id at
+  connect time; store on the channel row. Fall back to initials if absent/failed.
