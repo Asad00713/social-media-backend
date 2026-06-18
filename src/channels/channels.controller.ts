@@ -14,6 +14,7 @@ import {
   Res,
   BadRequestException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -69,6 +70,7 @@ import { eq, and, isNull, gt } from 'drizzle-orm';
 import * as crypto from 'crypto';
 import { telegramChatBindings } from '../drizzle/schema/telegram-bindings.schema';
 import { TelegramConnectService } from './services/telegram-connect.service';
+import { TelegramService } from './services/telegram.service';
 import { ConnectTelegramBotDto } from './dto/telegram-connect.dto';
 
 // Legacy response shapes kept for checkTelegramBinding (removed in a later task)
@@ -84,6 +86,8 @@ interface CheckBindingResponse {
 
 @Controller('channels')
 export class ChannelsController {
+  private readonly logger = new Logger(ChannelsController.name);
+
   constructor(
     private readonly channelService: ChannelService,
     private readonly oauthService: OAuthService,
@@ -109,6 +113,7 @@ export class ChannelsController {
     private readonly slackBackfill: SlackBackfillService,
     private readonly inboxService: InboxService,
     private readonly telegramConnectService: TelegramConnectService,
+    private readonly telegramService: TelegramService,
   ) {}
 
   // ==========================================================================
@@ -670,10 +675,21 @@ export class ChannelsController {
     @Param('workspaceId') workspaceId: string,
     @Param('channelId') channelId: string,
   ) {
-    await this.channelService.deleteChannel(
-      parseInt(channelId, 10),
-      workspaceId,
-    );
+    const id = parseInt(channelId, 10);
+    // Telegram: best-effort remove the bot's webhook before deleting the row,
+    // so a re-add of the same bot can set a fresh webhook cleanly.
+    try {
+      const channel = await this.channelService.getChannelById(id, workspaceId);
+      if (channel.platform === 'telegram') {
+        const token = await this.channelService.getAccessToken(id, workspaceId);
+        await this.telegramService.forToken(token).deleteWebhook();
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Telegram deleteWebhook on disconnect failed (non-blocking): ${(err as Error).message}`,
+      );
+    }
+    await this.channelService.deleteChannel(id, workspaceId);
   }
 
   /**
