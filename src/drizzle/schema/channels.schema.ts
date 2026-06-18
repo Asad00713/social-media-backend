@@ -98,6 +98,9 @@ export const socialMediaChannels = pgTable(
     username: varchar('username', { length: 255 }), // @handle
     profilePictureUrl: text('profile_picture_url'),
 
+    // Webhook routing (for inbox and custom bot functionality)
+    telegramWebhookRouteId: text('telegram_webhook_route_id').unique(),
+
     // OAuth tokens (encrypted in application layer)
     accessToken: text('access_token').notNull(),
     refreshToken: text('refresh_token'),
