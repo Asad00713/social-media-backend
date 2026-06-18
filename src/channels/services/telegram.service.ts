@@ -1,7 +1,6 @@
 import {
   BadRequestException,
   Injectable,
-  InternalServerErrorException,
   Logger,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -55,32 +54,22 @@ export interface TgInlineKeyboardButton {
   url?: string;
 }
 
-@Injectable()
-export class TelegramService {
-  private readonly logger = new Logger(TelegramService.name);
-  private readonly botToken: string;
+export class TelegramClient {
   private readonly baseUrl: string;
   private readonly fileBaseUrl: string;
 
-  constructor(private readonly config: ConfigService) {
-    this.botToken = this.config.get<string>('TELEGRAM_BOT_TOKEN', '');
-    this.baseUrl = `https://api.telegram.org/bot${this.botToken}`;
-    this.fileBaseUrl = `https://api.telegram.org/file/bot${this.botToken}`;
-  }
-
-  isConfigured(): boolean {
-    return !!this.botToken;
+  constructor(
+    private readonly token: string,
+    private readonly logger: Logger,
+  ) {
+    this.baseUrl = `https://api.telegram.org/bot${token}`;
+    this.fileBaseUrl = `https://api.telegram.org/file/bot${token}`;
   }
 
   private async callJson<T>(
     method: string,
     body: Record<string, unknown>,
   ): Promise<T> {
-    if (!this.isConfigured()) {
-      throw new InternalServerErrorException(
-        'TELEGRAM_BOT_TOKEN not configured.',
-      );
-    }
     const res = await fetch(`${this.baseUrl}/${method}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -99,11 +88,6 @@ export class TelegramService {
     method: string,
     form: FormData,
   ): Promise<T> {
-    if (!this.isConfigured()) {
-      throw new InternalServerErrorException(
-        'TELEGRAM_BOT_TOKEN not configured.',
-      );
-    }
     const res = await fetch(`${this.baseUrl}/${method}`, {
       method: 'POST',
       body: form,
@@ -225,11 +209,6 @@ export class TelegramService {
   async downloadFile(
     filePath: string,
   ): Promise<{ buffer: Buffer; contentType: string; sizeBytes: number }> {
-    if (!this.isConfigured()) {
-      throw new InternalServerErrorException(
-        'TELEGRAM_BOT_TOKEN not configured.',
-      );
-    }
     const res = await fetch(`${this.fileBaseUrl}/${filePath}`);
     if (!res.ok) {
       throw new BadRequestException(
@@ -302,5 +281,33 @@ export class TelegramService {
     }
     out += text.slice(cursor);
     return out;
+  }
+
+  async deleteWebhook(): Promise<true> {
+    return this.callJson<true>('deleteWebhook', { drop_pending_updates: false });
+  }
+
+  async getWebhookInfo(): Promise<{ url: string; last_error_message?: string }> {
+    return this.callJson('getWebhookInfo', {});
+  }
+}
+
+@Injectable()
+export class TelegramService {
+  private readonly logger = new Logger(TelegramService.name);
+  private readonly envToken: string;
+
+  constructor(private readonly config: ConfigService) {
+    this.envToken = this.config.get<string>('TELEGRAM_BOT_TOKEN', '');
+  }
+
+  /** Build a client bound to a specific bot token. Falls back to the env
+   *  token only when no token is passed (dev/local). */
+  forToken(token?: string): TelegramClient {
+    const effective = token ?? this.envToken;
+    if (!effective) {
+      throw new BadRequestException('No Telegram bot token available.');
+    }
+    return new TelegramClient(effective, this.logger);
   }
 }
