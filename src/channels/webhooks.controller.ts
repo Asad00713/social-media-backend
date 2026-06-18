@@ -8,6 +8,7 @@ import {
   HttpStatus,
   HttpException,
   Logger,
+  Param,
   Req,
   Res,
   Headers,
@@ -16,6 +17,7 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import type { Request as ExpressRequest, Response } from 'express';
 import { verifySlackSignature } from '../common/utils/webhook-signature.util';
+import { verifyTelegramWebhookSecret } from './utils/telegram-webhook-secret.util';
 import { InboxService } from '../inbox/inbox.service';
 import { FacebookService } from './services/facebook.service';
 import { InstagramService } from './services/instagram.service';
@@ -619,34 +621,30 @@ export class WebhooksController {
   }
 
   // ==========================================================================
-  // Telegram — Bot API webhook
+  // Telegram — per-bot webhook route
   // ==========================================================================
 
-  private readonly TELEGRAM_WEBHOOK_SECRET =
-    process.env.TELEGRAM_WEBHOOK_SECRET || '';
-
-  @Post('telegram')
+  @Post('telegram/:routeId')
   @HttpCode(HttpStatus.OK)
   async receiveTelegramUpdate(
+    @Param('routeId') routeId: string,
     @Headers('x-telegram-bot-api-secret-token') headerSecret: string | undefined,
     @Body() update: Record<string, unknown>,
   ) {
-    if (!this.TELEGRAM_WEBHOOK_SECRET) {
-      this.logger.warn(
-        'Telegram webhook hit but TELEGRAM_WEBHOOK_SECRET is unset — ignoring',
-      );
+    const channel = await this.inbox.findTelegramChannelByRouteId(routeId);
+    if (!channel) {
+      this.logger.warn(`Telegram webhook: unknown routeId ${routeId}`);
       return { ok: true };
     }
-    if (headerSecret !== this.TELEGRAM_WEBHOOK_SECRET) {
-      this.logger.warn('Telegram webhook secret mismatch');
+    if (!verifyTelegramWebhookSecret(routeId, headerSecret)) {
+      this.logger.warn(`Telegram webhook secret mismatch for routeId ${routeId}`);
       throw new HttpException('Forbidden', HttpStatus.FORBIDDEN);
     }
-    // Always enqueue. Telegram retries on non-200, so we never throw on a
-    // valid-but-empty update; we just return ok and let the processor decide.
-    await this.telegramQueue.add('update', update, {
-      removeOnComplete: true,
-      attempts: 3,
-    });
+    await this.telegramQueue.add(
+      'update',
+      { channelId: channel.id, workspaceId: channel.workspaceId, update },
+      { removeOnComplete: true, attempts: 3 },
+    );
     return { ok: true };
   }
 }

@@ -1600,6 +1600,17 @@ export class InboxService {
     });
   }
 
+  async findTelegramChannelByRouteId(
+    routeId: string,
+  ): Promise<{ id: number; workspaceId: string } | null> {
+    const [row] = await db
+      .select({ id: socialMediaChannels.id, workspaceId: socialMediaChannels.workspaceId })
+      .from(socialMediaChannels)
+      .where(eq(socialMediaChannels.telegramWebhookRouteId, routeId))
+      .limit(1);
+    return row ?? null;
+  }
+
   /** Look up the workspace-side post id from a (channelId, platformPostId) pair. */
   async findOurPostId(
     channelId: number,
