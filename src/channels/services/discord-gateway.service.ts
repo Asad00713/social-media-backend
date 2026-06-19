@@ -79,11 +79,17 @@ export class DiscordGatewayService implements OnModuleInit, OnModuleDestroy {
     }
 
     this.client = new Client({
+      // NOTE: MessageContent is deliberately NOT requested. Phase 1 only needs
+      // DMs + @mentions, and Discord exempts both from the privileged Message
+      // Content intent — content is delivered for DMs received and for messages
+      // that mention the bot without it. Requesting it fails with "Used
+      // disallowed intents" unless toggled on in the Developer Portal, and at
+      // 100+ servers it requires Discord review. Keeping it off keeps Phase 1
+      // unprivileged. (All-channel reading is Phase 2 and would need it.)
       intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
         GatewayIntentBits.DirectMessages,
-        GatewayIntentBits.MessageContent,
       ],
       // Required to receive DMs (the DM channel is otherwise uncached).
       partials: [Partials.Channel],
