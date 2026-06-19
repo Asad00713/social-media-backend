@@ -54,6 +54,33 @@ export class DiscordService {
     return true;
   }
 
+  /** List the TEXT channels of a guild the bot is in (type 0 = GUILD_TEXT,
+   *  type 5 = GUILD_ANNOUNCEMENT — both accept messages). Used by the compose
+   *  surface to let the user pick where to post. */
+  async listGuildChannels(
+    guildId: string,
+  ): Promise<{ id: string; name: string; type: number }[]> {
+    const channels = (await this.rest.get(
+      Routes.guildChannels(guildId),
+    )) as { id: string; name: string; type: number }[];
+    return channels
+      .filter((c) => c.type === 0 || c.type === 5)
+      .map((c) => ({ id: c.id, name: c.name, type: c.type }));
+  }
+
+  /** Create a new text channel in a guild. Requires the bot to have the
+   *  MANAGE_CHANNELS permission (granted at invite time via the permissions
+   *  bitfield — existing bots must reconnect to gain it). */
+  async createGuildChannel(
+    guildId: string,
+    name: string,
+  ): Promise<{ id: string; name: string }> {
+    const created = (await this.rest.post(Routes.guildChannels(guildId), {
+      body: { name, type: 0 },
+    })) as { id: string; name: string };
+    return { id: created.id, name: created.name };
+  }
+
   /** Fetch a user's public profile for inbox author display. */
   async getUser(userId: string): Promise<{
     id: string;

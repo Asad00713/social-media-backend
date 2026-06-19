@@ -50,6 +50,10 @@ import {
   CreateSlackChannelBodyDto,
 } from './dto/slack-browse.dto';
 import {
+  SendDiscordMessageBodyDto,
+  CreateDiscordChannelBodyDto,
+} from './dto/discord-browse.dto';
+import {
   InitiateOAuthDto,
   CreateChannelDto,
   UpdateChannelDto,
@@ -4973,6 +4977,68 @@ export class ChannelsController {
       isPrivate: body.isPrivate,
       purpose: body.purpose,
     });
+    return { ok: true, ...created };
+  }
+
+  // ==========================================================================
+  // Discord — Compose surface (list channels, post to channel, create channel)
+  // The shared bot token (env) is used, so there is no per-channel token to
+  // decrypt; the guild id is the connected channel's platformAccountId.
+  // ==========================================================================
+
+  /** List the text channels of the connected Discord server. */
+  @Get('workspaces/:workspaceId/discord/:channelId/channels')
+  @UseGuards(JwtAuthGuard)
+  async listDiscordChannels(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'discord') {
+      throw new ForbiddenException('Discord channel not found in this workspace');
+    }
+    const channels = await this.discordService.listGuildChannels(
+      channel.platformAccountId,
+    );
+    return { channels };
+  }
+
+  /** Post a message into a Discord channel of the connected server. */
+  @Post('workspaces/:workspaceId/discord/:channelId/send')
+  @UseGuards(JwtAuthGuard)
+  async sendDiscordChannelMessage(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Body() body: SendDiscordMessageBodyDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'discord') {
+      throw new ForbiddenException('Discord channel not found in this workspace');
+    }
+    const res = await this.discordService.createMessage(body.conversationId, {
+      content: body.text,
+    });
+    return { ok: true, messageId: res.id, channelId: res.channelId };
+  }
+
+  /** Create a new text channel in the connected Discord server. Requires the
+   *  bot to hold MANAGE_CHANNELS (granted via the invite permissions bitfield —
+   *  bots connected before that change must reconnect). */
+  @Post('workspaces/:workspaceId/discord/:channelId/channels/create')
+  @UseGuards(JwtAuthGuard)
+  async createDiscordChannel(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Body() body: CreateDiscordChannelBodyDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'discord') {
+      throw new ForbiddenException('Discord channel not found in this workspace');
+    }
+    const created = await this.discordService.createGuildChannel(
+      channel.platformAccountId,
+      body.name,
+    );
     return { ok: true, ...created };
   }
 
