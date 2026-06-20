@@ -54,6 +54,17 @@ export class DiscordService {
     return true;
   }
 
+  /** Open (or fetch the existing) DM channel with a user. Used by the `/ask`
+   *  slash command so the question + the team's replies thread as a normal DM
+   *  conversation. Works because the user shares a guild with the bot. Returns
+   *  the DM channel id (used as the inbox conversationId). */
+  async openDmChannel(userId: string): Promise<string> {
+    const dm = (await this.rest.post(Routes.userChannels(), {
+      body: { recipient_id: userId },
+    })) as { id: string };
+    return dm.id;
+  }
+
   /** List the TEXT channels of a guild the bot is in (type 0 = GUILD_TEXT,
    *  type 5 = GUILD_ANNOUNCEMENT — both accept messages). Used by the compose
    *  surface to let the user pick where to post. */

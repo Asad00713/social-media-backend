@@ -6,7 +6,14 @@ import {
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { Client, GatewayIntentBits, Events, Partials } from 'discord.js';
+import {
+  Client,
+  GatewayIntentBits,
+  Events,
+  Partials,
+  ApplicationCommandOptionType,
+  MessageFlags,
+} from 'discord.js';
 import { QUEUES } from '../../queue/queue.module';
 
 /** Normalized message shape forwarded to the ingest queue (decoupled from the
@@ -100,6 +107,16 @@ export class DiscordGatewayService implements OnModuleInit, OnModuleDestroy {
       this.logger.log(
         `Discord gateway ready as ${c.user.tag} (${c.user.id})`,
       );
+      // Register the /ask command in every guild the bot is already in.
+      // Guild-scoped commands appear instantly (global ones take up to 1h).
+      for (const [guildId] of c.guilds.cache) {
+        void this.registerAskCommand(guildId);
+      }
+    });
+
+    // Register /ask for any guild the bot is added to after startup.
+    this.client.on(Events.GuildCreate, (g) => {
+      void this.registerAskCommand(g.id);
     });
 
     this.client.on(Events.MessageCreate, (m) => {
@@ -111,8 +128,83 @@ export class DiscordGatewayService implements OnModuleInit, OnModuleDestroy {
     this.client.on(Events.MessageDelete, (m) => {
       void this.forwardDelete(m);
     });
+    this.client.on(Events.InteractionCreate, (i) => {
+      void this.handleInteraction(i);
+    });
 
     await this.client.login(process.env.DISCORD_BOT_TOKEN);
+  }
+
+  /** Register the /ask slash command for a guild (idempotent — Discord upserts
+   *  by name). Gives community members a discoverable way to message the team;
+   *  the question lands in the Schedura inbox as a DM conversation. */
+  private async registerAskCommand(guildId: string): Promise<void> {
+    try {
+      await this.client?.application?.commands.create(
+        {
+          name: 'ask',
+          description: 'Send a question or message to the team',
+          options: [
+            {
+              type: ApplicationCommandOptionType.String,
+              name: 'message',
+              description: 'Your question or message',
+              required: true,
+            },
+          ],
+        },
+        guildId,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Failed to register /ask in guild ${guildId}: ${String(err)}`,
+      );
+    }
+  }
+
+  /** Handle a /ask interaction: acknowledge within Discord's 3s window, then
+   *  enqueue the question for the ingest processor to thread into the inbox. */
+  private async handleInteraction(interaction: any): Promise<void> {
+    try {
+      if (
+        !interaction.isChatInputCommand?.() ||
+        interaction.commandName !== 'ask'
+      ) {
+        return;
+      }
+      const message: string =
+        interaction.options.getString('message') ?? '';
+
+      // Acknowledge privately so the member knows it was received.
+      await interaction.reply({
+        content:
+          'Thanks! Your message has reached the team — they will reply to you here in a DM.',
+        flags: MessageFlags.Ephemeral,
+      });
+
+      const user = interaction.user;
+      await this.queue.add(
+        'ask',
+        {
+          type: 'ask',
+          message: {
+            guild_id: interaction.guildId,
+            interaction_id: interaction.id,
+            text: message,
+            author: {
+              id: user.id,
+              bot: Boolean(user.bot),
+              username: user.username,
+              global_name: user.globalName ?? null,
+              avatar: user.avatar ?? null,
+            },
+          },
+        },
+        { removeOnComplete: true, removeOnFail: 50 },
+      );
+    } catch (err) {
+      this.logger.error(`Failed to handle /ask interaction: ${String(err)}`);
+    }
   }
 
   private async forward(type: 'create' | 'update', m: any): Promise<void> {

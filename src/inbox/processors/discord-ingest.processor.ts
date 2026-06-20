@@ -49,7 +49,7 @@ export class DiscordIngestProcessor extends WorkerHost {
   }
 
   async process(
-    job: Job<{ type: 'create' | 'update' | 'delete'; message: any }>,
+    job: Job<{ type: 'create' | 'update' | 'delete' | 'ask'; message: any }>,
   ): Promise<void> {
     const { type, message: msg } = job.data;
 
@@ -66,6 +66,31 @@ export class DiscordIngestProcessor extends WorkerHost {
         workspaceId: channel.workspaceId,
         channelId: channel.id,
         platformItemId: msg.id,
+      });
+      return;
+    }
+
+    // `/ask` slash command — open a DM channel with the asker so the question
+    // and the team's replies thread as a normal DM conversation, then ingest
+    // the question as the first inbound message. Replies sent from the inbox go
+    // back to the member via that DM channel (DiscordDmAdapter.sendDm).
+    if (type === 'ask') {
+      const asker = msg.author ?? {};
+      const dmChannelId = await this.discord.openDmChannel(asker.id);
+      await this.inbox.upsertDm({
+        workspaceId: channel.workspaceId,
+        channelId: channel.id,
+        platform: 'discord',
+        conversationId: dmChannelId,
+        platformItemId: msg.interaction_id,
+        authorPlatformId: asker.id ?? null,
+        authorHandle: asker.username ?? null,
+        authorDisplayName: asker.global_name ?? asker.username ?? null,
+        authorAvatarUrl: this.discord.avatarUrl(asker.id, asker.avatar ?? null),
+        text: msg.text ?? '',
+        fromMe: false,
+        platformCreatedAt: new Date(),
+        metadata: { guildId: msg.guild_id ?? null, source: 'slash:ask' },
       });
       return;
     }
