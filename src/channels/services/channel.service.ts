@@ -198,6 +198,9 @@ export class ChannelService {
     if (dto.tokenExpiresAt) newChannel.tokenExpiresAt = new Date(dto.tokenExpiresAt);
     if (dto.tokenScope) newChannel.tokenScope = dto.tokenScope;
     if (dto.color) newChannel.color = dto.color;
+    if (dto.telegramWebhookRouteId !== undefined) {
+      newChannel.telegramWebhookRouteId = dto.telegramWebhookRouteId ?? null;
+    }
 
     const inserted = await db
       .insert(socialMediaChannels)
@@ -316,6 +319,27 @@ export class ChannelService {
         `Re-linked ${updated} orphaned post target(s) on workspace ${workspaceId} to ${platform} channel ${newChannelId}`,
       );
     }
+  }
+
+  /**
+   * Find a channel by platform + platformAccountId across ALL workspaces.
+   * Used for global bot-uniqueness enforcement (e.g. Telegram custom bots).
+   */
+  async findChannelByPlatformAccountGlobal(
+    platform: string,
+    platformAccountId: string,
+  ): Promise<{ id: number } | null> {
+    const [row] = await db
+      .select({ id: socialMediaChannels.id })
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.platform, platform as any),
+          eq(socialMediaChannels.platformAccountId, platformAccountId),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
   }
 
   /**

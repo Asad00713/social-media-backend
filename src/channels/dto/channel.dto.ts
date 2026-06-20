@@ -129,6 +129,10 @@ export class CreateChannelDto {
   @IsString()
   @IsOptional()
   color?: string;
+
+  @IsString()
+  @IsOptional()
+  telegramWebhookRouteId?: string;
 }
 
 export class UpdateChannelDto {

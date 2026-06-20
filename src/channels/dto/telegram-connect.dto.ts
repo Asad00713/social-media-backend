@@ -1,9 +1,7 @@
-export interface GenerateConnectLinkResponse {
-  url: string;
-  expiresAt: string;
-}
+import { IsNotEmpty, IsString } from 'class-validator';
 
-export interface CheckBindingResponse {
-  bound: boolean;
-  chatId?: string;
+export class ConnectTelegramBotDto {
+  @IsString()
+  @IsNotEmpty()
+  token!: string;
 }

@@ -14,6 +14,7 @@ import {
   Res,
   BadRequestException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -72,14 +73,14 @@ import { SupportedPlatform, PLATFORM_CONFIG, oauthStates } from '../drizzle/sche
 import { db } from '../drizzle/db';
 import { eq, and, isNull, gt } from 'drizzle-orm';
 import * as crypto from 'crypto';
-import { telegramChatBindings } from '../drizzle/schema/telegram-bindings.schema';
-import type {
-  GenerateConnectLinkResponse,
-  CheckBindingResponse,
-} from './dto/telegram-connect.dto';
+import { TelegramConnectService } from './services/telegram-connect.service';
+import { TelegramService } from './services/telegram.service';
+import { ConnectTelegramBotDto } from './dto/telegram-connect.dto';
 
 @Controller('channels')
 export class ChannelsController {
+  private readonly logger = new Logger(ChannelsController.name);
+
   constructor(
     private readonly channelService: ChannelService,
     private readonly oauthService: OAuthService,
@@ -105,6 +106,8 @@ export class ChannelsController {
     private readonly adAccountsService: AdAccountsService,
     private readonly slackBackfill: SlackBackfillService,
     private readonly inboxService: InboxService,
+    private readonly telegramConnectService: TelegramConnectService,
+    private readonly telegramService: TelegramService,
   ) {}
 
   // ==========================================================================
@@ -718,10 +721,21 @@ export class ChannelsController {
     @Param('workspaceId') workspaceId: string,
     @Param('channelId') channelId: string,
   ) {
-    await this.channelService.deleteChannel(
-      parseInt(channelId, 10),
-      workspaceId,
-    );
+    const id = parseInt(channelId, 10);
+    // Telegram: best-effort remove the bot's webhook before deleting the row,
+    // so a re-add of the same bot can set a fresh webhook cleanly.
+    try {
+      const channel = await this.channelService.getChannelById(id, workspaceId);
+      if (channel.platform === 'telegram') {
+        const token = await this.channelService.getAccessToken(id, workspaceId);
+        await this.telegramService.forToken(token).deleteWebhook();
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Telegram deleteWebhook on disconnect failed (non-blocking): ${(err as Error).message}`,
+      );
+    }
+    await this.channelService.deleteChannel(id, workspaceId);
   }
 
   /**
@@ -5049,42 +5063,12 @@ export class ChannelsController {
   @Post('workspaces/:workspaceId/telegram/connect')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async generateTelegramConnectLink(
+  async connectTelegramBot(
     @Param('workspaceId') workspaceId: string,
+    @Body() dto: ConnectTelegramBotDto,
     @CurrentUser() user: { userId: string; email: string },
-  ): Promise<GenerateConnectLinkResponse> {
-    await this.inboxService.assertWorkspaceAccessPublic(workspaceId, user.userId);
-    // Strip leading `@` defensively — users often paste the bot handle with it,
-    // but t.me deep links must NOT include the `@` (e.g. `t.me/ScheduraBot`, not
-    // `t.me/@ScheduraBot`).
-    const botUsername = (process.env.TELEGRAM_BOT_USERNAME ?? '').replace(/^@/, '');
-    if (!botUsername) {
-      throw new BadRequestException('TELEGRAM_BOT_USERNAME is not configured.');
-    }
-    return {
-      url: `https://t.me/${botUsername}?start=${workspaceId}`,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-    };
+  ) {
+    return this.telegramConnectService.connect(workspaceId, user.userId, dto.token);
   }
 
-  @Get('workspaces/:workspaceId/telegram/check-binding')
-  @UseGuards(JwtAuthGuard)
-  async checkTelegramBinding(
-    @Param('workspaceId') workspaceId: string,
-    @CurrentUser() user: { userId: string; email: string },
-  ): Promise<CheckBindingResponse> {
-    await this.inboxService.assertWorkspaceAccessPublic(workspaceId, user.userId);
-    const rows = await db
-      .select({ chatId: telegramChatBindings.telegramChatId })
-      .from(telegramChatBindings)
-      .where(
-        and(
-          eq(telegramChatBindings.workspaceId, workspaceId),
-          eq(telegramChatBindings.chatType, 'private'),
-        ),
-      )
-      .limit(1);
-    if (rows.length === 0) return { bound: false };
-    return { bound: true, chatId: rows[0].chatId };
-  }
 }

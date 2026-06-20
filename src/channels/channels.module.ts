@@ -25,7 +25,7 @@ import { SlackService } from './services/slack.service';
 import { TelegramService } from './services/telegram.service';
 import { DiscordService } from './services/discord.service';
 import { DiscordGatewayService } from './services/discord-gateway.service';
-import { TelegramBotSetupService } from './services/telegram-bot-setup.service';
+import { TelegramConnectService } from './services/telegram-connect.service';
 import { MetaAdsClient } from '../ads/services/meta-ads.client';
 import { AdAccountsService } from '../ads/services/ad-accounts.service';
 import { BoostPostService } from '../ads/services/boost-post.service';
@@ -68,7 +68,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     RedditService,
     SlackService,
     TelegramService,
-    TelegramBotSetupService,
+    TelegramConnectService,
     DiscordService,
     DiscordGatewayService,
     TokenRefreshProcessor,
