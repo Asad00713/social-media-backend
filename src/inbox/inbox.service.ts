@@ -1600,6 +1600,17 @@ export class InboxService {
     });
   }
 
+  async findTelegramChannelByRouteId(
+    routeId: string,
+  ): Promise<{ id: number; workspaceId: string } | null> {
+    const [row] = await db
+      .select({ id: socialMediaChannels.id, workspaceId: socialMediaChannels.workspaceId })
+      .from(socialMediaChannels)
+      .where(eq(socialMediaChannels.telegramWebhookRouteId, routeId))
+      .limit(1);
+    return row ?? null;
+  }
+
   /** Look up the workspace-side post id from a (channelId, platformPostId) pair. */
   async findOurPostId(
     channelId: number,
@@ -2287,5 +2298,47 @@ export class InboxService {
 
     void this.emitCounts(input.workspaceId);
     return row;
+  }
+
+  /** Soft-delete a DM identified by its platform message id — used by the
+   *  Discord gateway when a message is deleted on the platform side (we don't
+   *  have our internal id there). Flips text→'[deleted]', status→'done', and
+   *  notifies the UI. No-op when the row is absent (a message we never ingested).
+   *  (channelId, platformItemId) is unique, so it pins exactly one row. */
+  async softDeleteDmByPlatformItemId(input: {
+    workspaceId: string;
+    channelId: number;
+    platformItemId: string;
+  }): Promise<void> {
+    const [row] = await db
+      .select()
+      .from(inboxItems)
+      .where(
+        and(
+          eq(inboxItems.channelId, input.channelId),
+          eq(inboxItems.platformItemId, input.platformItemId),
+        ),
+      )
+      .limit(1);
+    if (!row) return;
+
+    const now = new Date();
+    await db
+      .update(inboxItems)
+      .set({
+        status: 'done',
+        text: '[deleted]',
+        metadata: { ...(row.metadata ?? {}), deletedAt: now.toISOString() },
+        updatedAt: now,
+      })
+      .where(eq(inboxItems.id, row.id));
+
+    this.emitter.emit(input.workspaceId, 'inbox.item.updated', {
+      id: row.id,
+      workspaceId: input.workspaceId,
+      channelId: row.channelId,
+      changes: { status: 'done' },
+    });
+    void this.emitCounts(input.workspaceId);
   }
 }

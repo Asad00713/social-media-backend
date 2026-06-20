@@ -16,6 +16,7 @@ export const QUEUES = {
   AD_INSIGHTS_SYNC: 'ad-insights-sync',
   SLACK_INGEST: 'slack-ingest',
   TELEGRAM_INGEST: 'telegram-ingest',
+  DISCORD_INGEST: 'discord-ingest',
 } as const;
 
 @Module({
@@ -66,6 +67,7 @@ export const QUEUES = {
       { name: QUEUES.AD_INSIGHTS_SYNC },
       { name: QUEUES.SLACK_INGEST },
       { name: QUEUES.TELEGRAM_INGEST },
+      { name: QUEUES.DISCORD_INGEST },
     ),
   ],
   providers: [RateLimiterService],

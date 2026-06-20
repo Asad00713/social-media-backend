@@ -14,6 +14,7 @@ import {
   Res,
   BadRequestException,
   ForbiddenException,
+  Logger,
 } from '@nestjs/common';
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -31,6 +32,7 @@ import { ThreadsService } from './services/threads.service';
 import { BlueskyService } from './services/bluesky.service';
 import { MastodonService } from './services/mastodon.service';
 import { SlackService } from './services/slack.service';
+import { DiscordService } from './services/discord.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
@@ -48,6 +50,10 @@ import {
   StartSlackDmBodyDto,
   CreateSlackChannelBodyDto,
 } from './dto/slack-browse.dto';
+import {
+  SendDiscordMessageBodyDto,
+  CreateDiscordChannelBodyDto,
+} from './dto/discord-browse.dto';
 import {
   InitiateOAuthDto,
   CreateChannelDto,
@@ -67,14 +73,14 @@ import { SupportedPlatform, PLATFORM_CONFIG, oauthStates } from '../drizzle/sche
 import { db } from '../drizzle/db';
 import { eq, and, isNull, gt } from 'drizzle-orm';
 import * as crypto from 'crypto';
-import { telegramChatBindings } from '../drizzle/schema/telegram-bindings.schema';
-import type {
-  GenerateConnectLinkResponse,
-  CheckBindingResponse,
-} from './dto/telegram-connect.dto';
+import { TelegramConnectService } from './services/telegram-connect.service';
+import { TelegramService } from './services/telegram.service';
+import { ConnectTelegramBotDto } from './dto/telegram-connect.dto';
 
 @Controller('channels')
 export class ChannelsController {
+  private readonly logger = new Logger(ChannelsController.name);
+
   constructor(
     private readonly channelService: ChannelService,
     private readonly oauthService: OAuthService,
@@ -89,6 +95,7 @@ export class ChannelsController {
     private readonly blueskyService: BlueskyService,
     private readonly mastodonService: MastodonService,
     private readonly slackService: SlackService,
+    private readonly discordService: DiscordService,
     private readonly googleDriveService: GoogleDriveService,
     private readonly googlePhotosService: GooglePhotosService,
     private readonly googleCalendarService: GoogleCalendarService,
@@ -99,6 +106,8 @@ export class ChannelsController {
     private readonly adAccountsService: AdAccountsService,
     private readonly slackBackfill: SlackBackfillService,
     private readonly inboxService: InboxService,
+    private readonly telegramConnectService: TelegramConnectService,
+    private readonly telegramService: TelegramService,
   ) {}
 
   // ==========================================================================
@@ -302,6 +311,58 @@ export class ChannelsController {
         } catch (slackError) {
           console.error('[OAuth Callback] Slack setup failed:', slackError);
           const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Slack setup failed: ' + (slackError instanceof Error ? slackError.message : 'Unknown error'))}`;
+          return res.redirect(errorUrl);
+        }
+      }
+
+      // Discord: bot-invite flow — the token response carries the guild the bot
+      // was added to. We use the single shared bot token (env) at runtime, so we
+      // only need to record the guild_id → workspace mapping here.
+      if (platform === 'discord') {
+        try {
+          console.log('[OAuth Callback] Discord: exchanging code for guild...');
+          const discordRedirectUri = storedRedirectUri || `${(process.env.APP_URL || 'http://localhost:3000').trim().replace(/\/+$/, '')}/channels/oauth/discord/callback`;
+
+          const { guildId, guildName, guildIconUrl, accessToken } =
+            await this.discordService.exchangeOAuthCode(code, discordRedirectUri);
+
+          const channel = await this.channelService.createChannel(
+            stateData.workspaceId,
+            stateData.userId,
+            {
+              platform: 'discord',
+              accountType: 'server',
+              platformAccountId: guildId,
+              accountName: guildName ?? `Discord server ${guildId}`,
+              username: guildName ?? guildId,
+              profilePictureUrl: guildIconUrl ?? undefined,
+              accessToken,
+              refreshToken: undefined,
+              tokenExpiresAt: undefined,
+              permissions: ['bot', 'guilds', 'messages.read'],
+              capabilities: {
+                canPost: false,
+                canSchedule: false,
+                canReadAnalytics: false,
+                canReply: true,
+                canDelete: true,
+                supportedMediaTypes: [],
+                maxMediaPerPost: 0,
+                maxTextLength: 2000,
+              },
+              metadata: {
+                guildId,
+                guildName: guildName ?? null,
+              },
+            },
+          );
+
+          console.log(`[OAuth Callback] Discord channel created: ${channel.id}`);
+          const discordSuccessUrl = `${frontendUrl}/channels/connect/success?platform=discord&channelId=${channel.id}`;
+          return res.redirect(discordSuccessUrl);
+        } catch (discordError) {
+          console.error('[OAuth Callback] Discord setup failed:', discordError);
+          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Discord setup failed: ' + (discordError instanceof Error ? discordError.message : 'Unknown error'))}`;
           return res.redirect(errorUrl);
         }
       }
@@ -660,10 +721,21 @@ export class ChannelsController {
     @Param('workspaceId') workspaceId: string,
     @Param('channelId') channelId: string,
   ) {
-    await this.channelService.deleteChannel(
-      parseInt(channelId, 10),
-      workspaceId,
-    );
+    const id = parseInt(channelId, 10);
+    // Telegram: best-effort remove the bot's webhook before deleting the row,
+    // so a re-add of the same bot can set a fresh webhook cleanly.
+    try {
+      const channel = await this.channelService.getChannelById(id, workspaceId);
+      if (channel.platform === 'telegram') {
+        const token = await this.channelService.getAccessToken(id, workspaceId);
+        await this.telegramService.forToken(token).deleteWebhook();
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Telegram deleteWebhook on disconnect failed (non-blocking): ${(err as Error).message}`,
+      );
+    }
+    await this.channelService.deleteChannel(id, workspaceId);
   }
 
   /**
@@ -4923,48 +4995,80 @@ export class ChannelsController {
   }
 
   // ==========================================================================
+  // Discord — Compose surface (list channels, post to channel, create channel)
+  // The shared bot token (env) is used, so there is no per-channel token to
+  // decrypt; the guild id is the connected channel's platformAccountId.
+  // ==========================================================================
+
+  /** List the text channels of the connected Discord server. */
+  @Get('workspaces/:workspaceId/discord/:channelId/channels')
+  @UseGuards(JwtAuthGuard)
+  async listDiscordChannels(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'discord') {
+      throw new ForbiddenException('Discord channel not found in this workspace');
+    }
+    const channels = await this.discordService.listGuildChannels(
+      channel.platformAccountId,
+    );
+    return { channels };
+  }
+
+  /** Post a message into a Discord channel of the connected server. */
+  @Post('workspaces/:workspaceId/discord/:channelId/send')
+  @UseGuards(JwtAuthGuard)
+  async sendDiscordChannelMessage(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Body() body: SendDiscordMessageBodyDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'discord') {
+      throw new ForbiddenException('Discord channel not found in this workspace');
+    }
+    const res = await this.discordService.createMessage(body.conversationId, {
+      content: body.text,
+    });
+    return { ok: true, messageId: res.id, channelId: res.channelId };
+  }
+
+  /** Create a new text channel in the connected Discord server. Requires the
+   *  bot to hold MANAGE_CHANNELS (granted via the invite permissions bitfield —
+   *  bots connected before that change must reconnect). */
+  @Post('workspaces/:workspaceId/discord/:channelId/channels/create')
+  @UseGuards(JwtAuthGuard)
+  async createDiscordChannel(
+    @Param('workspaceId') wid: string,
+    @Param('channelId') channelId: string,
+    @Body() body: CreateDiscordChannelBodyDto,
+  ) {
+    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    if (channel.platform !== 'discord') {
+      throw new ForbiddenException('Discord channel not found in this workspace');
+    }
+    const created = await this.discordService.createGuildChannel(
+      channel.platformAccountId,
+      body.name,
+    );
+    return { ok: true, ...created };
+  }
+
+  // ==========================================================================
   // Telegram — Connect (deep link) + check binding
   // ==========================================================================
 
   @Post('workspaces/:workspaceId/telegram/connect')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async generateTelegramConnectLink(
+  async connectTelegramBot(
     @Param('workspaceId') workspaceId: string,
+    @Body() dto: ConnectTelegramBotDto,
     @CurrentUser() user: { userId: string; email: string },
-  ): Promise<GenerateConnectLinkResponse> {
-    await this.inboxService.assertWorkspaceAccessPublic(workspaceId, user.userId);
-    // Strip leading `@` defensively — users often paste the bot handle with it,
-    // but t.me deep links must NOT include the `@` (e.g. `t.me/ScheduraBot`, not
-    // `t.me/@ScheduraBot`).
-    const botUsername = (process.env.TELEGRAM_BOT_USERNAME ?? '').replace(/^@/, '');
-    if (!botUsername) {
-      throw new BadRequestException('TELEGRAM_BOT_USERNAME is not configured.');
-    }
-    return {
-      url: `https://t.me/${botUsername}?start=${workspaceId}`,
-      expiresAt: new Date(Date.now() + 10 * 60 * 1000).toISOString(),
-    };
+  ) {
+    return this.telegramConnectService.connect(workspaceId, user.userId, dto.token);
   }
 
-  @Get('workspaces/:workspaceId/telegram/check-binding')
-  @UseGuards(JwtAuthGuard)
-  async checkTelegramBinding(
-    @Param('workspaceId') workspaceId: string,
-    @CurrentUser() user: { userId: string; email: string },
-  ): Promise<CheckBindingResponse> {
-    await this.inboxService.assertWorkspaceAccessPublic(workspaceId, user.userId);
-    const rows = await db
-      .select({ chatId: telegramChatBindings.telegramChatId })
-      .from(telegramChatBindings)
-      .where(
-        and(
-          eq(telegramChatBindings.workspaceId, workspaceId),
-          eq(telegramChatBindings.chatType, 'private'),
-        ),
-      )
-      .limit(1);
-    if (rows.length === 0) return { bound: false };
-    return { bound: true, chatId: rows[0].chatId };
-  }
 }

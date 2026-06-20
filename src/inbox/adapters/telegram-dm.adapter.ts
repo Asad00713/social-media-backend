@@ -1,7 +1,4 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
-import { eq } from 'drizzle-orm';
-import { db } from '../../drizzle/db';
-import { telegramChatBindings } from '../../drizzle/schema/telegram-bindings.schema';
 import { TelegramService } from '../../channels/services/telegram.service';
 import type {
   PlatformDmAdapter,
@@ -23,26 +20,10 @@ export class TelegramDmAdapter implements PlatformDmAdapter {
 
   constructor(private readonly telegram: TelegramService) {}
 
-  async listConversations(
-    channel: ResolvedChannel,
-  ): Promise<DmConversationSummary[]> {
-    const bindings = await db
-      .select()
-      .from(telegramChatBindings)
-      .where(eq(telegramChatBindings.workspaceId, channel.workspaceId));
-    return bindings.map((b) => ({
-      conversationId: b.telegramChatId,
-      participant: {
-        platformId: b.telegramChatId,
-        handle: undefined,
-        displayName: b.chatType === 'private' ? 'Telegram user' : 'Telegram group',
-      },
-      lastMessageText: '',
-      lastMessageAt: b.createdAt,
-      lastMessageFromMe: false,
-      unreadCount: 0,
-      metadata: { chatType: b.chatType },
-    }));
+  async listConversations(): Promise<DmConversationSummary[]> {
+    // Telegram conversations are surfaced from webhook ingest (inbox_items),
+    // not enumerated here. Bot API has no conversation-list endpoint.
+    return [];
   }
 
   async fetchConversationMessages(): Promise<FetchedDm[]> {
@@ -52,11 +33,12 @@ export class TelegramDmAdapter implements PlatformDmAdapter {
   }
 
   async sendDm(
-    _channel: ResolvedChannel,
+    channel: ResolvedChannel,
     conversationId: string,
     text: string,
   ): Promise<CreatedDm> {
-    const res = await this.telegram.sendMessage(conversationId, text);
+    const client = this.telegram.forToken(channel.accessToken);
+    const res = await client.sendMessage(conversationId, text);
     return {
       conversationId,
       platformItemId: String(res.message_id),
@@ -66,15 +48,16 @@ export class TelegramDmAdapter implements PlatformDmAdapter {
   }
 
   async sendDmWithAttachments(
-    _channel: ResolvedChannel,
+    channel: ResolvedChannel,
     conversationId: string,
     text: string,
     attachments: DmAttachmentInput[],
   ): Promise<CreatedDm> {
     if (attachments.length === 0) {
-      return this.sendDm(_channel, conversationId, text);
+      return this.sendDm(channel, conversationId, text);
     }
 
+    const client = this.telegram.forToken(channel.accessToken);
     let lastMessageId = 0;
     let lastDate = Math.floor(Date.now() / 1000);
     let successCount = 0;
@@ -98,20 +81,20 @@ export class TelegramDmAdapter implements PlatformDmAdapter {
       let sent;
       switch (att.kind) {
         case 'image':
-          sent = await this.telegram.sendPhoto(conversationId, buffer, filename, att.contentType, caption);
+          sent = await client.sendPhoto(conversationId, buffer, filename, att.contentType, caption);
           break;
         case 'voice':
-          sent = await this.telegram.sendVoice(conversationId, buffer, filename, att.contentType, caption);
+          sent = await client.sendVoice(conversationId, buffer, filename, att.contentType, caption);
           break;
         case 'audio':
-          sent = await this.telegram.sendAudio(conversationId, buffer, filename, att.contentType, caption);
+          sent = await client.sendAudio(conversationId, buffer, filename, att.contentType, caption);
           break;
         case 'video':
-          sent = await this.telegram.sendVideo(conversationId, buffer, filename, att.contentType, caption);
+          sent = await client.sendVideo(conversationId, buffer, filename, att.contentType, caption);
           break;
         case 'file':
         default:
-          sent = await this.telegram.sendDocument(conversationId, buffer, filename, att.contentType, caption);
+          sent = await client.sendDocument(conversationId, buffer, filename, att.contentType, caption);
           break;
       }
       lastMessageId = sent.message_id;
@@ -140,11 +123,12 @@ export class TelegramDmAdapter implements PlatformDmAdapter {
    *  Telegram's ~48h window). Throws if Telegram refuses (too old / lacking
    *  group admin rights) — InboxService surfaces that as an error toast. */
   async deleteDm(
-    _channel: ResolvedChannel,
+    channel: ResolvedChannel,
     conversationId: string,
     platformItemId: string,
   ): Promise<boolean> {
-    await this.telegram.deleteMessage(conversationId, Number(platformItemId));
+    const client = this.telegram.forToken(channel.accessToken);
+    await client.deleteMessage(conversationId, Number(platformItemId));
     return true;
   }
 }

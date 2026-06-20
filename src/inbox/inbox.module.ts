@@ -16,8 +16,10 @@ import { BlueskyDmAdapter } from './adapters/bluesky-dm.adapter';
 import { MastodonDmAdapter } from './adapters/mastodon-dm.adapter';
 import { SlackDmAdapter } from './adapters/slack-dm.adapter';
 import { TelegramDmAdapter } from './adapters/telegram-dm.adapter';
+import { DiscordDmAdapter } from './adapters/discord-dm.adapter';
 import { SlackIngestProcessor } from './processors/slack-ingest.processor';
 import { TelegramIngestProcessor } from './processors/telegram-ingest.processor';
+import { DiscordIngestProcessor } from './processors/discord-ingest.processor';
 import { InboxPollProcessor } from './processors/inbox-poll.processor';
 import { InboxPollScheduler } from './schedulers/inbox-poll.scheduler';
 import { ScheduledInboxProcessor } from './processors/scheduled-inbox.processor';
@@ -40,6 +42,7 @@ import { QUEUES } from '../queue/queue.module';
       { name: QUEUES.LEAD_INTAKE },
       { name: QUEUES.SLACK_INGEST },
       { name: QUEUES.TELEGRAM_INGEST },
+      { name: QUEUES.DISCORD_INGEST },
     ),
   ],
   controllers: [InboxController, WebhooksController],
@@ -58,8 +61,10 @@ import { QUEUES } from '../queue/queue.module';
     MastodonDmAdapter,
     SlackDmAdapter,
     TelegramDmAdapter,
+    DiscordDmAdapter,
     SlackIngestProcessor,
     TelegramIngestProcessor,
+    DiscordIngestProcessor,
     InboxPollProcessor,
     InboxPollScheduler,
     ScheduledMessagesService,
