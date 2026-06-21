@@ -162,15 +162,6 @@ export class WorkspaceService {
                 condition,
                 eq(workspace.ownerId, userId)
             ),
-            with: {
-                owner: {
-                    columns: {
-                        id: true,
-                        name: true,
-                        email: true,
-                    }
-                }
-            }
         });
 
         if (!result) {
