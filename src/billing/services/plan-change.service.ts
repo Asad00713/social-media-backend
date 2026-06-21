@@ -506,6 +506,7 @@ export class PlanChangeService {
       channelsPerWorkspace: plan.channelsPerWorkspace,
       membersPerWorkspace: plan.membersPerWorkspace,
       maxWorkspaces: plan.maxWorkspaces,
+      aiTokensPerMonth: plan.aiTokensPerMonth,
       features: plan.features,
     }));
   }
@@ -578,6 +579,7 @@ export class PlanChangeService {
         channelsPerWorkspace: plan.channelsPerWorkspace,
         membersPerWorkspace: plan.membersPerWorkspace,
         maxWorkspaces: plan.maxWorkspaces,
+        aiTokensPerMonth: plan.aiTokensPerMonth,
         features: plan.features,
         isCurrent,
         isUpgrade,
