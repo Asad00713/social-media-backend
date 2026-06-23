@@ -20,7 +20,10 @@ import {
 } from '../drizzle/schema/channels.schema';
 import { workspace } from '../drizzle/schema/workspace.schema';
 import { workspaceInvitation } from '../drizzle/schema/workspace-invitation.schema';
-import { posts as postsTable, PostTarget } from '../drizzle/schema/posts.schema';
+import {
+  posts as postsTable,
+  PostTarget,
+} from '../drizzle/schema/posts.schema';
 import { AnalyticsEventEmitter } from '../realtime/analytics-event-emitter.service';
 import { ChannelService } from '../channels/services/channel.service';
 import { FacebookService } from '../channels/services/facebook.service';
@@ -149,7 +152,12 @@ export interface DmThreadDetail extends DmConversationSummaryDto {
 
 export interface InboxCounts {
   perChannel: { channelId: number; comments: number; dms: number }[];
-  smartFolders: { all: number; unread: number; needs_reply: number; done: number };
+  smartFolders: {
+    all: number;
+    unread: number;
+    needs_reply: number;
+    done: number;
+  };
   total: number;
 }
 
@@ -235,7 +243,7 @@ export class InboxService {
       platform: channel.platform as SupportedPlatform,
       platformAccountId: channel.platformAccountId,
       accessToken,
-      metadata: (channel.metadata ?? {}) as Record<string, any>,
+      metadata: channel.metadata ?? {},
       username: channel.username,
       accountName: channel.accountName,
       profilePictureUrl: channel.profilePictureUrl,
@@ -347,13 +355,16 @@ export class InboxService {
     // fromMe, plus legit external comments on platforms whose author-id wasn't
     // captured cleanly. Show every thread; the per-row preview reflects the
     // newest activity regardless of authorship.
-    const summariesRaw: { summary: CommentThreadSummary; latestAt: Date }[] = [];
+    const summariesRaw: { summary: CommentThreadSummary; latestAt: Date }[] =
+      [];
     for (const [key, items] of groups) {
       items.sort(
         (a, b) => b.platformCreatedAt.getTime() - a.platformCreatedAt.getTime(),
       );
       const latest = items[0];
-      const unread = items.filter((i) => i.status === 'unread' && !i.fromMe).length;
+      const unread = items.filter(
+        (i) => i.status === 'unread' && !i.fromMe,
+      ).length;
       // Iterate to find post info — our own reply rows don't carry it.
       const postMeta = this.resolvePostMeta(items);
 
@@ -368,7 +379,8 @@ export class InboxService {
             caption: postMeta.caption ?? null,
             thumbnailUrl: postMeta.thumbnailUrl,
             mediaType: postMeta.mediaType ?? 'none',
-            publishedAt: postMeta.publishedAt ?? latest.platformCreatedAt.toISOString(),
+            publishedAt:
+              postMeta.publishedAt ?? latest.platformCreatedAt.toISOString(),
             platformPostUrl: postMeta.platformPostUrl,
           },
           latestCommenter: {
@@ -463,7 +475,9 @@ export class InboxService {
 
     const rootComments = this.buildCommentTree(items);
     const latest = items[items.length - 1];
-    const unread = items.filter((i) => i.status === 'unread' && !i.fromMe).length;
+    const unread = items.filter(
+      (i) => i.status === 'unread' && !i.fromMe,
+    ).length;
     const postMeta = this.resolvePostMeta(items);
 
     return {
@@ -476,12 +490,14 @@ export class InboxService {
         caption: postMeta.caption ?? null,
         thumbnailUrl: postMeta.thumbnailUrl,
         mediaType: postMeta.mediaType ?? 'none',
-        publishedAt: postMeta.publishedAt ?? latest.platformCreatedAt.toISOString(),
+        publishedAt:
+          postMeta.publishedAt ?? latest.platformCreatedAt.toISOString(),
         platformPostUrl: postMeta.platformPostUrl,
       },
       latestCommenter: {
         handle: latest.authorHandle ?? 'unknown',
-        displayName: latest.authorDisplayName ?? latest.authorHandle ?? 'Unknown',
+        displayName:
+          latest.authorDisplayName ?? latest.authorHandle ?? 'Unknown',
         avatarUrl: latest.authorAvatarUrl ?? undefined,
       },
       status: this.deriveThreadStatus(items),
@@ -508,7 +524,7 @@ export class InboxService {
     items: InboxItem[],
   ): Partial<CommentThreadSummary['post']> {
     for (const item of items) {
-      const meta = (item.metadata ?? {}) as Record<string, any>;
+      const meta = item.metadata ?? {};
       const post = meta.post as
         | Partial<CommentThreadSummary['post']>
         | undefined;
@@ -530,7 +546,7 @@ export class InboxService {
   private buildCommentTree(items: InboxItem[]): CommentNodeDto[] {
     const byPlatformId = new Map<string, CommentNodeDto>();
     for (const item of items) {
-      const itemMeta = (item.metadata ?? {}) as Record<string, any>;
+      const itemMeta = item.metadata ?? {};
       byPlatformId.set(item.platformItemId, {
         id: item.id,
         parentId: item.platformParentId,
@@ -571,7 +587,7 @@ export class InboxService {
 
   /** Build the public CommentNodeDto shape from an `inbox_items` row. */
   private itemToNode(item: InboxItem): CommentNodeDto {
-    const meta = (item.metadata ?? {}) as Record<string, any>;
+    const meta = item.metadata ?? {};
     return {
       id: item.id,
       parentId: item.platformParentId,
@@ -588,8 +604,7 @@ export class InboxService {
       fromMe: item.fromMe,
       platformItemId: item.platformItemId,
       status: item.status,
-      likeCount:
-        typeof meta.likeCount === 'number' ? meta.likeCount : 0,
+      likeCount: typeof meta.likeCount === 'number' ? meta.likeCount : 0,
       replies: [],
     };
   }
@@ -734,7 +749,9 @@ export class InboxService {
     }
 
     const channel = await this.resolveChannel(channelId, workspaceId);
-    const adapter = this.dispatcher.get(channelRow.platform as SupportedPlatform);
+    const adapter = this.dispatcher.get(
+      channelRow.platform as SupportedPlatform,
+    );
 
     const created = await adapter.commentOnPost(channel, platformPostId, text);
 
@@ -1061,7 +1078,7 @@ export class InboxService {
       throw new BadRequestException('DM row missing conversationId');
     }
 
-    const platform = row.platform as SupportedPlatform;
+    const platform = row.platform;
     if (!this.dispatcher.supportsDm(platform)) {
       throw new BadRequestException(`DM not supported on ${platform}`);
     }
@@ -1331,10 +1348,16 @@ export class InboxService {
       RETURNING channel_id
     `);
 
-    const rows = (result as any).rows ?? result ?? [];
-    const channels = Array.from(
-      new Set(rows.map((r: any) => Number(r.channel_id)).filter(Boolean)),
-    ) as number[];
+    const rows = ((result as any).rows ?? result ?? []) as Array<{
+      channel_id: number | string;
+    }>;
+    const channels: number[] = Array.from(
+      new Set(
+        rows
+          .map((r) => Number(r.channel_id))
+          .filter((n): n is number => Boolean(n)),
+      ),
+    );
 
     if (rows.length > 0) {
       // Reset lastInboxPollAt for affected channels so the next poll has no
@@ -1506,7 +1529,10 @@ export class InboxService {
     for (const row of eligible) {
       if (row.platform !== 'facebook' && row.platform !== 'instagram') continue;
       try {
-        const token = await this.channelService.getAccessToken(row.id, workspaceId);
+        const token = await this.channelService.getAccessToken(
+          row.id,
+          workspaceId,
+        );
         if (row.platform === 'facebook') {
           // Phase 2.1: subscribe to messaging fields too so DMs arrive via webhook.
           await this.facebookService.subscribePageToWebhooks(
@@ -1528,7 +1554,12 @@ export class InboxService {
           await this.instagramService.subscribeAccountToWebhooks(
             row.platformAccountId,
             token,
-            ['comments', 'messages', 'messaging_postbacks', 'message_reactions'],
+            [
+              'comments',
+              'messages',
+              'messaging_postbacks',
+              'message_reactions',
+            ],
           );
         }
         webhookActivated += 1;
@@ -1604,7 +1635,10 @@ export class InboxService {
     routeId: string,
   ): Promise<{ id: number; workspaceId: string } | null> {
     const [row] = await db
-      .select({ id: socialMediaChannels.id, workspaceId: socialMediaChannels.workspaceId })
+      .select({
+        id: socialMediaChannels.id,
+        workspaceId: socialMediaChannels.workspaceId,
+      })
       .from(socialMediaChannels)
       .where(eq(socialMediaChannels.telegramWebhookRouteId, routeId))
       .limit(1);
@@ -1620,11 +1654,13 @@ export class InboxService {
     const rows = await db
       .select({ id: postsTable.id, targets: postsTable.targets })
       .from(postsTable)
-      .where(sql`${postsTable.targets} @> ${JSON.stringify([{ channelId: String(channelId) }])}::jsonb`)
+      .where(
+        sql`${postsTable.targets} @> ${JSON.stringify([{ channelId: String(channelId) }])}::jsonb`,
+      )
       .limit(50);
 
     for (const r of rows) {
-      const targets = (r.targets ?? []) as PostTarget[];
+      const targets = r.targets ?? [];
       const hit = targets.find(
         (t) =>
           String(t.channelId) === String(channelId) &&
@@ -1708,7 +1744,10 @@ export class InboxService {
       cursor?: string;
       limit?: number;
     },
-  ): Promise<{ threads: DmConversationSummaryDto[]; nextCursor: string | null }> {
+  ): Promise<{
+    threads: DmConversationSummaryDto[];
+    nextCursor: string | null;
+  }> {
     await this.assertWorkspaceAccess(workspaceId, userId);
 
     const limit = Math.min(options.limit ?? 20, 100);
@@ -1756,8 +1795,10 @@ export class InboxService {
       groups.set(key, list);
     }
 
-    const summariesRaw: { summary: DmConversationSummaryDto; latestAt: Date }[] =
-      [];
+    const summariesRaw: {
+      summary: DmConversationSummaryDto;
+      latestAt: Date;
+    }[] = [];
 
     for (const [key, items] of groups) {
       items.sort(
@@ -1770,17 +1811,21 @@ export class InboxService {
 
       // Participant = freshest non-fromMe author seen in the convo.
       const incoming = items.find((i) => !i.fromMe) ?? latest;
-      const lastIncomingAt = items
-        .filter((i) => !i.fromMe)
-        .map((i) => i.platformCreatedAt)
-        .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
+      const lastIncomingAt =
+        items
+          .filter((i) => !i.fromMe)
+          .map((i) => i.platformCreatedAt)
+          .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
 
       // Reply-window state (only meaningful for FB/IG; safe no-op for others).
       let replyWindow: DmConversationSummaryDto['replyWindow'];
       if (this.dispatcher.supportsDm(latest.platform)) {
         try {
           const adapter = this.dispatcher.getDm(latest.platform);
-          const channel = await this.resolveChannel(latest.channelId, workspaceId);
+          const channel = await this.resolveChannel(
+            latest.channelId,
+            workspaceId,
+          );
           const ws = await adapter.getReplyWindowState(
             channel,
             latest.conversationId!,
@@ -1989,7 +2034,7 @@ export class InboxService {
   }
 
   private dmItemToDto(item: InboxItem): DmMessageDto {
-    const md = (item.metadata ?? {}) as Record<string, any>;
+    const md = item.metadata ?? {};
     const rawAttachments = Array.isArray(md.attachments) ? md.attachments : [];
     return {
       id: item.id,
@@ -2083,7 +2128,7 @@ export class InboxService {
         channel,
         conversationId,
         text,
-        attachments!,
+        attachments,
       );
     } else {
       created = await adapter.sendDm(channel, conversationId, text);
@@ -2104,7 +2149,7 @@ export class InboxService {
       fromMe: true,
       platformCreatedAt: created.platformCreatedAt,
       attachments: hasAttachments
-        ? attachments!.map((a) => ({
+        ? attachments.map((a) => ({
             kind: a.kind,
             url: a.url,
             contentType: a.contentType,
