@@ -17,6 +17,12 @@ import { buildPoolConfig } from './pool-config';
  */
 const pool = new Pool(buildPoolConfig(process.env.DATABASE_URL!));
 
+// A long-lived TCP pool emits 'error' on idle-client/network failures; without a
+// listener Node escalates it to an uncaught exception and crashes the process.
+pool.on('error', (err) => {
+  console.error('[db] unexpected idle client error', err);
+});
+
 export const db = drizzle(pool, { schema });
 
 export type DbType = typeof db;

@@ -5,15 +5,15 @@ import type { PoolConfig } from 'pg';
  *
  * Railway runtime connects over the private network (host `*.railway.internal`)
  * with no TLS. Admin tasks from a local machine connect over the public proxy
- * (host `*.rlwy.net` / `*.railway.app`, or the URL carries `sslmode=`) and MUST
- * use VERIFIED TLS. We never set `rejectUnauthorized: false` (it permits MITM).
- * If Railway's proxy certificate is not in the system trust store, supply its CA
- * via the `DATABASE_CA_CERT` env var.
+ * (host `*.proxy.rlwy.net`, or the URL carries `sslmode=`) and MUST use VERIFIED
+ * TLS. We never set `rejectUnauthorized: false` (it permits MITM). If Railway's
+ * proxy certificate is not in the system trust store, supply its CA via the
+ * `DATABASE_CA_CERT` env var.
  */
 export function buildPoolConfig(connectionString: string): PoolConfig {
   const needsSsl =
     /sslmode=(require|verify-ca|verify-full)/.test(connectionString) ||
-    /\.rlwy\.net|\.railway\.app/.test(connectionString);
+    /\.rlwy\.net/.test(connectionString);
 
   const ca = process.env.DATABASE_CA_CERT;
 

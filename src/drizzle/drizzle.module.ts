@@ -21,6 +21,9 @@ export const DRIZZLE = 'DRIZZLE';
         }
 
         const pool = new Pool(buildPoolConfig(databaseUrl));
+        pool.on('error', (err) => {
+          console.error('[DrizzleModule] unexpected idle client error', err);
+        });
         return drizzle(pool, { schema });
       },
     },

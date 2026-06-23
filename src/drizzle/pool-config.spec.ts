@@ -44,4 +44,10 @@ describe('buildPoolConfig', () => {
     expect(cfg.connectionString).toBe(PUBLIC);
     expect(cfg.max).toBe(10);
   });
+
+  it('disables TLS for an arbitrary non-Railway host without sslmode', () => {
+    expect(buildPoolConfig('postgresql://u:p@db.example.com:5432/db').ssl).toBe(
+      false,
+    );
+  });
 });
