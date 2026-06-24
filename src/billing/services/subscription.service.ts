@@ -118,23 +118,15 @@ export class SubscriptionService {
       );
     }
 
-    // 7. Get or create Stripe price for the plan
-    let stripePriceId = selectedPlan.stripePriceId;
+    // 7. Read the provisioned Stripe price for the plan (read-only — prices are
+    //    provisioned out-of-band by the stripe-provision script; FREE returned
+    //    above at step 5, so only paid plans reach here).
+    const stripePriceId = selectedPlan.stripePriceId;
 
     if (!stripePriceId) {
-      // Dynamically create price in Stripe if not configured
-      stripePriceId = await this.stripeService.getOrCreatePriceForPlan({
-        planCode: selectedPlan.code,
-        planName: selectedPlan.name,
-        priceCents: selectedPlan.basePriceCents,
-        interval: 'month',
-      });
-
-      // Optionally update the plan in database with the new price ID
-      await db
-        .update(plans)
-        .set({ stripePriceId })
-        .where(eq(plans.code, selectedPlan.code));
+      throw new BadRequestException(
+        `Plan "${selectedPlan.code}" is not provisioned in Stripe — run the pricing provision script (npx ts-node src/drizzle/seeds/stripe-provision.ts)`,
+      );
     }
 
     // 8. Create Stripe subscription

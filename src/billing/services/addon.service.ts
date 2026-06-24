@@ -171,27 +171,12 @@ export class AddonService {
       );
     }
 
-    // 3.5 Get or create Stripe price for this addon
-    let stripePriceId = addonPrice.stripePriceId;
+    // 3.5 Read the provisioned Stripe price for this addon (read-only — prices
+    //     are provisioned out-of-band by the stripe-provision script).
+    const stripePriceId = addonPrice.stripePriceId;
     if (!stripePriceId) {
-      this.logger.log(
-        `Creating Stripe price for add-on ${addonType} on plan ${sub.planCode}`,
-      );
-      stripePriceId = await this.stripeService.getOrCreatePriceForAddon({
-        addonType,
-        planCode: sub.planCode,
-        priceCents: addonPrice.pricePerUnitCents,
-        interval: 'month',
-      });
-
-      // Update the addon_pricing record with the new Stripe price ID
-      await db
-        .update(addonPricing)
-        .set({ stripePriceId })
-        .where(eq(addonPricing.id, addonPrice.id));
-
-      this.logger.log(
-        `Created Stripe price ${stripePriceId} for add-on ${addonType}`,
+      throw new BadRequestException(
+        `Add-on "${addonType}" for plan "${sub.planCode}" is not provisioned in Stripe — run the pricing provision script (npx ts-node src/drizzle/seeds/stripe-provision.ts)`,
       );
     }
 

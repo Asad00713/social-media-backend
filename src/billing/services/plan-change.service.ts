@@ -289,23 +289,16 @@ export class PlanChangeService {
 
     const target = newPlan[0];
 
-    // 4. Get or create Stripe price for the target plan
-    let targetPriceId = target.stripePriceId;
+    // 4. Read the provisioned Stripe price for the target plan (read-only).
+    //    FREE (basePriceCents === 0) has no price — targetPriceId stays empty
+    //    and the downstream `if (sub.stripeSubscriptionId && targetPriceId)`
+    //    branch handles the free path.
+    const targetPriceId = target.stripePriceId;
 
     if (!targetPriceId && target.basePriceCents > 0) {
-      // Dynamically create price in Stripe if not configured
-      targetPriceId = await this.stripeService.getOrCreatePriceForPlan({
-        planCode: target.code,
-        planName: target.name,
-        priceCents: target.basePriceCents,
-        interval: 'month',
-      });
-
-      // Update the plan in database with the new price ID
-      await db
-        .update(plans)
-        .set({ stripePriceId: targetPriceId })
-        .where(eq(plans.code, target.code));
+      throw new BadRequestException(
+        `Plan "${target.code}" is not provisioned in Stripe — run the pricing provision script (npx ts-node src/drizzle/seeds/stripe-provision.ts)`,
+      );
     }
 
     // 5. Handle Stripe subscription - either update existing or create new
