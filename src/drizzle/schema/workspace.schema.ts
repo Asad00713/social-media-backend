@@ -6,6 +6,7 @@ import {
   boolean,
   text,
 } from 'drizzle-orm/pg-core';
+import { relations } from 'drizzle-orm';
 import { users } from './users.schema';
 
 export const workspace = pgTable('workspace', {
@@ -32,6 +33,16 @@ export const workspace = pgTable('workspace', {
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
+
+// Reverse of usersRelations.ownedWorkspaces — also powers `with: { owner }`
+// queries (e.g. workspace general settings). Without this, Drizzle's relational
+// query builder throws "Cannot read properties of undefined (referencedTable)".
+export const workspaceRelations = relations(workspace, ({ one }) => ({
+  owner: one(users, {
+    fields: [workspace.ownerId],
+    references: [users.id],
+  }),
+}));
 
 export type Workspace = typeof workspace.$inferSelect;
 export type NewWorkspace = typeof workspace.$inferInsert;
