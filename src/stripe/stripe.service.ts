@@ -593,6 +593,15 @@ export class StripeService implements OnModuleInit {
     return paymentMethods.data;
   }
 
+  async customerHasPaymentMethod(customerId: string): Promise<boolean> {
+    const methods = await this.stripe.paymentMethods.list({
+      customer: customerId,
+      type: 'card',
+      limit: 1,
+    });
+    return methods.data.length > 0;
+  }
+
   // Invoice Methods
   async getInvoice(invoiceId: string): Promise<Stripe.Invoice> {
     return await this.stripe.invoices.retrieve(invoiceId);

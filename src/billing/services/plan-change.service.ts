@@ -368,6 +368,17 @@ export class PlanChangeService {
         `Creating new Stripe subscription for upgrade from FREE to ${newPlanCode}`,
       );
 
+      // Guard: FREE→paid upgrade requires a card on file. The Checkout flow
+      // attaches the card before the webhook fires; direct calls must be blocked.
+      const hasCard = await this.stripeService.customerHasPaymentMethod(
+        sub.stripeCustomerId,
+      );
+      if (!hasCard) {
+        throw new BadRequestException(
+          'A payment method is required to upgrade to a paid plan — subscribe via Checkout',
+        );
+      }
+
       // Create Stripe subscription
       const stripeSubscription = await this.stripeService.createSubscription({
         customerId: sub.stripeCustomerId,

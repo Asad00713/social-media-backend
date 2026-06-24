@@ -130,6 +130,18 @@ export class SubscriptionService {
       );
     }
 
+    // Guard: a paid subscription must have a card. FREE→paid goes through
+    // Checkout; this direct path must never create an incomplete subscription.
+    if (!dto.paymentMethodId) {
+      const hasCard =
+        await this.stripeService.customerHasPaymentMethod(stripeCustomerId);
+      if (!hasCard) {
+        throw new BadRequestException(
+          'A payment method is required for a paid plan — subscribe via Checkout',
+        );
+      }
+    }
+
     // 8. Create Stripe subscription
     const stripeSubscription = await this.stripeService.createSubscription({
       customerId: stripeCustomerId,
