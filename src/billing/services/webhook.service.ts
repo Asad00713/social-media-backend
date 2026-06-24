@@ -16,6 +16,8 @@ import {
   NewInvoiceLineItem,
   NewFailedPayment,
 } from '../../drizzle/schema';
+import { SubscriptionService } from './subscription.service';
+import { StripeService } from '../../stripe/stripe.service';
 
 @Injectable()
 export class WebhookService {
@@ -24,6 +26,11 @@ export class WebhookService {
   // Configuration for failed payment handling
   private readonly MAX_FAILED_ATTEMPTS = 3;
   private readonly GRACE_PERIOD_DAYS = 7;
+
+  constructor(
+    private subscriptionService: SubscriptionService,
+    private stripeService: StripeService,
+  ) {}
 
   async handleWebhook(event: Stripe.Event): Promise<void> {
     // Check if event already processed
@@ -49,6 +56,12 @@ export class WebhookService {
     // Process event based on type
     try {
       switch (event.type) {
+        case 'checkout.session.completed':
+          await this.handleCheckoutSessionCompleted(
+            event.data.object as Stripe.Checkout.Session,
+          );
+          break;
+
         case 'customer.subscription.created':
           await this.handleSubscriptionCreated(event.data.object);
           break;
@@ -134,6 +147,54 @@ export class WebhookService {
     this.logger.log(`Subscription created: ${subscription.id}`);
     // Subscription is already created in our database by the createSubscription method
     // This webhook can be used for additional processing or verification
+  }
+
+  private async handleCheckoutSessionCompleted(
+    session: Stripe.Checkout.Session,
+  ): Promise<void> {
+    this.logger.log(`Checkout session completed: ${session.id}`);
+
+    if (session.mode !== 'subscription' || !session.subscription) {
+      return; // not a subscription checkout — ignore
+    }
+
+    const subscriptionId =
+      typeof session.subscription === 'string'
+        ? session.subscription
+        : session.subscription.id;
+
+    // Retrieve the full subscription to read items, period, and metadata.
+    const stripeSubscription =
+      await this.stripeService.getSubscription(subscriptionId);
+
+    const meta = (stripeSubscription.metadata ??
+      session.metadata ??
+      {}) as Record<string, string>;
+    const workspaceId = meta.workspaceId;
+    const planCode = meta.planCode;
+
+    if (!workspaceId || !planCode) {
+      this.logger.error(
+        `checkout.session.completed ${session.id} missing workspaceId/planCode metadata`,
+      );
+      return;
+    }
+
+    const stripeCustomerId =
+      typeof stripeSubscription.customer === 'string'
+        ? stripeSubscription.customer
+        : stripeSubscription.customer.id;
+
+    await this.subscriptionService.persistStripeSubscription({
+      workspaceId,
+      planCode,
+      stripeCustomerId,
+      stripeSubscription,
+    });
+
+    this.logger.log(
+      `Synced subscription ${subscriptionId} for workspace ${workspaceId} (${planCode})`,
+    );
   }
 
   private async handleSubscriptionUpdated(
