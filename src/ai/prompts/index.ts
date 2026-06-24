@@ -22,7 +22,8 @@ export const PLATFORM_STYLES = {
     'friendly, conversational, community-focused, encourages sharing and comments',
   instagram:
     'visual-focused, lifestyle-oriented, uses emojis strategically, hashtag-heavy',
-  threads: 'casual, conversational, authentic, similar to Twitter but more personal',
+  threads:
+    'casual, conversational, authentic, similar to Twitter but more personal',
   pinterest:
     'descriptive, keyword-rich, inspiring, actionable, focuses on value and ideas',
   youtube:

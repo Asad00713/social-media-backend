@@ -78,15 +78,27 @@ export class PexelsService {
   constructor() {
     this.apiKey = process.env.PEXELS_API_KEY || '';
     if (!this.apiKey) {
-      this.logger.warn('PEXELS_API_KEY not set - Pexels integration will not work');
+      this.logger.warn(
+        'PEXELS_API_KEY not set - Pexels integration will not work',
+      );
     }
   }
 
   /**
    * Search for photos on Pexels
    */
-  async searchPhotos(options: PexelsSearchOptions): Promise<PexelsSearchResult<PexelsPhoto>> {
-    const { query, orientation, size, color, locale, page = 1, perPage = 15 } = options;
+  async searchPhotos(
+    options: PexelsSearchOptions,
+  ): Promise<PexelsSearchResult<PexelsPhoto>> {
+    const {
+      query,
+      orientation,
+      size,
+      color,
+      locale,
+      page = 1,
+      perPage = 15,
+    } = options;
 
     if (!this.apiKey) {
       throw new BadRequestException('Pexels API key not configured');
@@ -131,7 +143,10 @@ export class PexelsService {
   /**
    * Get curated photos (editor's picks)
    */
-  async getCuratedPhotos(page = 1, perPage = 15): Promise<PexelsSearchResult<PexelsPhoto>> {
+  async getCuratedPhotos(
+    page = 1,
+    perPage = 15,
+  ): Promise<PexelsSearchResult<PexelsPhoto>> {
     if (!this.apiKey) {
       throw new BadRequestException('Pexels API key not configured');
     }
@@ -194,8 +209,17 @@ export class PexelsService {
   /**
    * Search for videos on Pexels
    */
-  async searchVideos(options: PexelsSearchOptions): Promise<PexelsSearchResult<PexelsVideo>> {
-    const { query, orientation, size, locale, page = 1, perPage = 15 } = options;
+  async searchVideos(
+    options: PexelsSearchOptions,
+  ): Promise<PexelsSearchResult<PexelsVideo>> {
+    const {
+      query,
+      orientation,
+      size,
+      locale,
+      page = 1,
+      perPage = 15,
+    } = options;
 
     if (!this.apiKey) {
       throw new BadRequestException('Pexels API key not configured');
@@ -257,8 +281,10 @@ export class PexelsService {
 
     if (minWidth) url.searchParams.set('min_width', minWidth.toString());
     if (minHeight) url.searchParams.set('min_height', minHeight.toString());
-    if (minDuration) url.searchParams.set('min_duration', minDuration.toString());
-    if (maxDuration) url.searchParams.set('max_duration', maxDuration.toString());
+    if (minDuration)
+      url.searchParams.set('min_duration', minDuration.toString());
+    if (maxDuration)
+      url.searchParams.set('max_duration', maxDuration.toString());
 
     this.logger.log(`Fetching popular videos (page ${page})`);
 

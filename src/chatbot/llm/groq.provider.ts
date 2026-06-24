@@ -46,7 +46,9 @@ export class GroqChatProvider extends BaseLLMProvider {
         `Groq chat provider initialized with ${this.clients.length} API key(s)`,
       );
     } else {
-      this.logger.warn('No GROQ_API_KEY configured - chatbot will be unavailable');
+      this.logger.warn(
+        'No GROQ_API_KEY configured - chatbot will be unavailable',
+      );
     }
   }
 
@@ -98,7 +100,7 @@ export class GroqChatProvider extends BaseLLMProvider {
       }
 
       return {
-        role: msg.role as 'system' | 'user' | 'assistant',
+        role: msg.role,
         content: msg.content || '',
       };
     });
@@ -119,7 +121,10 @@ export class GroqChatProvider extends BaseLLMProvider {
     }));
   }
 
-  async chat(messages: LLMMessage[], options?: LLMChatOptions): Promise<LLMResponse> {
+  async chat(
+    messages: LLMMessage[],
+    options?: LLMChatOptions,
+  ): Promise<LLMResponse> {
     const client = this.ensureClient();
     const model = options?.model || this.defaultModel;
 
@@ -165,7 +170,8 @@ export class GroqChatProvider extends BaseLLMProvider {
       'status' in error &&
       (error as any).status === 400
     ) {
-      const msg = (error as any)?.error?.message || (error as any)?.message || '';
+      const msg =
+        (error as any)?.error?.message || (error as any)?.message || '';
       if (
         msg.includes('Failed to call a function') ||
         msg.includes('Tool call validation failed') ||
@@ -234,7 +240,8 @@ export class GroqChatProvider extends BaseLLMProvider {
           const existing = toolCallsMap.get(tc.index)!;
           if (tc.id) existing.id = tc.id;
           if (tc.function?.name) existing.name += tc.function.name;
-          if (tc.function?.arguments) existing.arguments += tc.function.arguments;
+          if (tc.function?.arguments)
+            existing.arguments += tc.function.arguments;
         }
       }
 

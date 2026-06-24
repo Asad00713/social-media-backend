@@ -73,7 +73,9 @@ export class InstagramService {
 
       throw new Error('Could not determine image dimensions');
     } catch (error) {
-      this.logger.warn(`Failed to get image dimensions for ${imageUrl}: ${error}`);
+      this.logger.warn(
+        `Failed to get image dimensions for ${imageUrl}: ${error}`,
+      );
       throw new BadRequestException(
         `Failed to validate image dimensions. Please ensure the image URL is accessible and is a valid image format (JPEG, PNG, GIF, or WebP).`,
       );
@@ -145,20 +147,36 @@ export class InstagramService {
       data[11] === 0x50 // "WEBP"
     ) {
       // VP8L (lossless)
-      if (data[12] === 0x56 && data[13] === 0x50 && data[14] === 0x38 && data[15] === 0x4c) {
-        const bits = data[21] | (data[22] << 8) | (data[23] << 16) | (data[24] << 24);
+      if (
+        data[12] === 0x56 &&
+        data[13] === 0x50 &&
+        data[14] === 0x38 &&
+        data[15] === 0x4c
+      ) {
+        const bits =
+          data[21] | (data[22] << 8) | (data[23] << 16) | (data[24] << 24);
         const width = (bits & 0x3fff) + 1;
         const height = ((bits >> 14) & 0x3fff) + 1;
         return { width, height };
       }
       // VP8X (extended)
-      if (data[12] === 0x56 && data[13] === 0x50 && data[14] === 0x38 && data[15] === 0x58) {
+      if (
+        data[12] === 0x56 &&
+        data[13] === 0x50 &&
+        data[14] === 0x38 &&
+        data[15] === 0x58
+      ) {
         const width = 1 + (data[24] | (data[25] << 8) | (data[26] << 16));
         const height = 1 + (data[27] | (data[28] << 8) | (data[29] << 16));
         return { width, height };
       }
       // VP8 (lossy)
-      if (data[12] === 0x56 && data[13] === 0x50 && data[14] === 0x38 && data[15] === 0x20) {
+      if (
+        data[12] === 0x56 &&
+        data[13] === 0x50 &&
+        data[14] === 0x38 &&
+        data[15] === 0x20
+      ) {
         const width = (data[26] | (data[27] << 8)) & 0x3fff;
         const height = (data[28] | (data[29] << 8)) & 0x3fff;
         return { width, height };
@@ -211,7 +229,8 @@ export class InstagramService {
 
     this.logger.log(`Validating aspect ratios for ${imageItems.length} images`);
 
-    const dimensions: Array<{ width: number; height: number; ratio: number }> = [];
+    const dimensions: Array<{ width: number; height: number; ratio: number }> =
+      [];
 
     for (let i = 0; i < mediaItems.length; i++) {
       const item = mediaItems[i];
@@ -263,7 +282,9 @@ export class InstagramService {
       'id,username,name,profile_picture_url,followers_count,follows_count,media_count,biography,website,account_type',
     );
 
-    this.logger.log(`Fetching Instagram user info from: ${meUrl.toString().replace(accessToken, 'TOKEN_HIDDEN')}`);
+    this.logger.log(
+      `Fetching Instagram user info from: ${meUrl.toString().replace(accessToken, 'TOKEN_HIDDEN')}`,
+    );
 
     const response = await fetch(meUrl.toString());
 
@@ -591,7 +612,9 @@ export class InstagramService {
     mediaUrl: string,
     mediaType: 'IMAGE' | 'VIDEO',
   ): Promise<{ postId: string }> {
-    this.logger.log(`Creating Instagram story for account ${instagramAccountId}`);
+    this.logger.log(
+      `Creating Instagram story for account ${instagramAccountId}`,
+    );
 
     // Step 1: Create media container with media_type=STORIES
     const containerUrl = new URL(
@@ -759,10 +782,7 @@ export class InstagramService {
   /**
    * Delete a post
    */
-  async deletePost(
-    mediaId: string,
-    pageAccessToken: string,
-  ): Promise<boolean> {
+  async deletePost(mediaId: string, pageAccessToken: string): Promise<boolean> {
     const url = new URL(`${this.graphApiUrl}/${mediaId}`);
     url.searchParams.set('access_token', pageAccessToken);
 
@@ -829,13 +849,19 @@ export class InstagramService {
 
     const containerData = await containerResponse.json();
     const creationId = containerData.id;
-    this.logger.log(`Media container created: ${creationId}, waiting for processing...`);
+    this.logger.log(
+      `Media container created: ${creationId}, waiting for processing...`,
+    );
 
     // Step 2: Wait for the container to be ready (even images need processing time)
     await this.waitForMediaReadyWithUserToken(creationId, accessToken);
 
     // Step 3: Publish the container
-    return await this.publishContainerWithUserToken(userId, accessToken, creationId);
+    return await this.publishContainerWithUserToken(
+      userId,
+      accessToken,
+      creationId,
+    );
   }
 
   /**
@@ -891,13 +917,19 @@ export class InstagramService {
 
     const containerData = await containerResponse.json();
     const creationId = containerData.id;
-    this.logger.log(`Video container created: ${creationId}, waiting for processing...`);
+    this.logger.log(
+      `Video container created: ${creationId}, waiting for processing...`,
+    );
 
     // Wait for video to be processed
     await this.waitForMediaReadyWithUserToken(creationId, accessToken);
 
     // Step 2: Publish the container
-    return await this.publishContainerWithUserToken(userId, accessToken, creationId);
+    return await this.publishContainerWithUserToken(
+      userId,
+      accessToken,
+      creationId,
+    );
   }
 
   /**
@@ -919,7 +951,9 @@ export class InstagramService {
     // Validate aspect ratios before sending to Instagram
     await this.validateCarouselAspectRatios(mediaItems);
 
-    this.logger.log(`Creating Instagram carousel with ${mediaItems.length} items for user ${userId}`);
+    this.logger.log(
+      `Creating Instagram carousel with ${mediaItems.length} items for user ${userId}`,
+    );
 
     // Step 1: Create containers for each media item
     const childContainerIds: string[] = [];
@@ -995,7 +1029,11 @@ export class InstagramService {
     await this.waitForMediaReadyWithUserToken(carouselData.id, accessToken);
 
     // Step 4: Publish the carousel
-    return await this.publishContainerWithUserToken(userId, accessToken, carouselData.id);
+    return await this.publishContainerWithUserToken(
+      userId,
+      accessToken,
+      carouselData.id,
+    );
   }
 
   /**
@@ -1040,13 +1078,19 @@ export class InstagramService {
 
     const containerData = await containerResponse.json();
     const creationId = containerData.id;
-    this.logger.log(`Story container created: ${creationId}, waiting for processing...`);
+    this.logger.log(
+      `Story container created: ${creationId}, waiting for processing...`,
+    );
 
     // Step 2: Wait for media to be processed
     await this.waitForMediaReadyWithUserToken(creationId, accessToken);
 
     // Step 3: Publish the container
-    return await this.publishContainerWithUserToken(userId, accessToken, creationId);
+    return await this.publishContainerWithUserToken(
+      userId,
+      accessToken,
+      creationId,
+    );
   }
 
   /**
@@ -1085,7 +1129,9 @@ export class InstagramService {
       const response = await fetch(url.toString());
       const data = await response.json();
 
-      this.logger.log(`Media status check ${attempt + 1}/${maxAttempts}: ${data.status_code}`);
+      this.logger.log(
+        `Media status check ${attempt + 1}/${maxAttempts}: ${data.status_code}`,
+      );
 
       if (data.status_code === 'FINISHED') {
         return;
@@ -1115,7 +1161,9 @@ export class InstagramService {
     accessToken: string,
     creationId: string,
   ): Promise<{ postId: string }> {
-    const publishUrl = new URL(`${this.instagramApiUrl}/${userId}/media_publish`);
+    const publishUrl = new URL(
+      `${this.instagramApiUrl}/${userId}/media_publish`,
+    );
 
     this.logger.log(`Publishing media container ${creationId}`);
 
@@ -1134,7 +1182,9 @@ export class InstagramService {
 
       if (publishResponse.ok) {
         const publishData = await publishResponse.json();
-        this.logger.log(`Instagram post published successfully: ${publishData.id}`);
+        this.logger.log(
+          `Instagram post published successfully: ${publishData.id}`,
+        );
         return { postId: publishData.id };
       }
 
@@ -1191,7 +1241,9 @@ export class InstagramService {
     url.searchParams.set('client_secret', clientSecret);
     url.searchParams.set('access_token', shortLivedToken);
 
-    this.logger.log('Exchanging Instagram short-lived token for long-lived token');
+    this.logger.log(
+      'Exchanging Instagram short-lived token for long-lived token',
+    );
 
     const response = await fetch(url.toString());
     if (!response.ok) {
@@ -1201,7 +1253,9 @@ export class InstagramService {
     }
 
     const data = await response.json();
-    this.logger.log(`Instagram long-lived token obtained, expires in ${data.expires_in} seconds`);
+    this.logger.log(
+      `Instagram long-lived token obtained, expires in ${data.expires_in} seconds`,
+    );
 
     return {
       accessToken: data.access_token,
@@ -1282,7 +1336,9 @@ export class InstagramService {
     }
 
     const data = await response.json();
-    this.logger.log(`Instagram token refreshed, expires in ${data.expires_in} seconds`);
+    this.logger.log(
+      `Instagram token refreshed, expires in ${data.expires_in} seconds`,
+    );
 
     return {
       accessToken: data.access_token,
@@ -1334,9 +1390,7 @@ export class InstagramService {
           )}`,
         );
         const meBody = await me.text();
-        this.logger.log(
-          `IG /me (account_type check): ${meBody.slice(0, 500)}`,
-        );
+        this.logger.log(`IG /me (account_type check): ${meBody.slice(0, 500)}`);
       } catch (err) {
         this.logger.warn(
           `IG token diagnostic failed: ${(err as Error).message}`,
@@ -1345,7 +1399,10 @@ export class InstagramService {
     }
 
     const out: InstagramComment[] = [];
-    let nextUrl: string | null = this.buildIgCommentsUrl(mediaId, igUserAccessToken);
+    let nextUrl: string | null = this.buildIgCommentsUrl(
+      mediaId,
+      igUserAccessToken,
+    );
 
     for (let i = 0; i < 5 && nextUrl; i++) {
       const res = await fetch(nextUrl);
@@ -1434,7 +1491,10 @@ export class InstagramService {
     return out;
   }
 
-  private buildIgCommentsUrl(mediaId: string, igUserAccessToken: string): string {
+  private buildIgCommentsUrl(
+    mediaId: string,
+    igUserAccessToken: string,
+  ): string {
     const url = new URL(`${this.instagramApiUrl}/${mediaId}/comments`);
     url.searchParams.set('access_token', igUserAccessToken);
     url.searchParams.set(
@@ -1475,7 +1535,9 @@ export class InstagramService {
     const res = await fetch(url.toString(), { method: 'POST' });
     if (!res.ok) {
       const err = await res.text();
-      this.logger.error(`IG subscribeAccountToWebhooks failed for ${igUserId}: ${err}`);
+      this.logger.error(
+        `IG subscribeAccountToWebhooks failed for ${igUserId}: ${err}`,
+      );
       throw new Error(`IG webhook subscription failed: ${res.status} ${err}`);
     }
     const data = (await res.json()) as { success?: boolean };
@@ -1813,10 +1875,7 @@ export class InstagramService {
         .map((a) => {
           const mime = a.mime_type ?? '';
           const url =
-            a.image_data?.url ??
-            a.video_data?.url ??
-            a.file_url ??
-            '';
+            a.image_data?.url ?? a.video_data?.url ?? a.file_url ?? '';
           if (!url) return null;
           const kind: 'image' | 'video' | 'audio' | 'file' = mime.startsWith(
             'image/',
@@ -1831,7 +1890,8 @@ export class InstagramService {
             kind,
             url,
             contentType: mime || undefined,
-            thumbnailUrl: a.image_data?.preview_url ?? a.video_data?.preview_url,
+            thumbnailUrl:
+              a.image_data?.preview_url ?? a.video_data?.preview_url,
           };
         })
         .filter((x): x is NonNullable<typeof x> => x !== null);
@@ -1848,7 +1908,9 @@ export class InstagramService {
               avatarUrl: m.from?.profile_pic ?? undefined,
             },
         text: m.message ?? '',
-        platformCreatedAt: m.created_time ? new Date(m.created_time) : new Date(),
+        platformCreatedAt: m.created_time
+          ? new Date(m.created_time)
+          : new Date(),
         fromMe,
         attachments: attachments.length > 0 ? attachments : undefined,
       });
@@ -1969,9 +2031,7 @@ export class InstagramService {
     if (!res.ok) {
       const err = await res.text();
       this.logger.error(`IG Direct attachment send failed: ${err}`);
-      throw new Error(
-        `IG Direct attachment send failed: ${res.status} ${err}`,
-      );
+      throw new Error(`IG Direct attachment send failed: ${res.status} ${err}`);
     }
 
     const data = (await res.json()) as { message_id?: string };

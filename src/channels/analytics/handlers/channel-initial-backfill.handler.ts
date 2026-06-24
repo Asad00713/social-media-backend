@@ -1,7 +1,10 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
-import { socialMediaChannels, type SupportedPlatform } from '../../../drizzle/schema/channels.schema';
+import {
+  socialMediaChannels,
+  type SupportedPlatform,
+} from '../../../drizzle/schema/channels.schema';
 import { channelSnapshots } from '../../../drizzle/schema/channel-snapshots.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import { AdapterRegistryService } from '../services/adapter-registry.service';
@@ -13,7 +16,6 @@ export interface ChannelInitialBackfillJob {
   channelId: number;
   workspaceId: string;
 }
-
 
 @Injectable()
 export class ChannelInitialBackfillHandler {
@@ -29,10 +31,16 @@ export class ChannelInitialBackfillHandler {
   async handle(data: ChannelInitialBackfillJob): Promise<{ ok: boolean }> {
     const { channelId } = data;
 
-    const rows = await this.db.select().from(socialMediaChannels).where(eq(socialMediaChannels.id, channelId)).limit(1);
+    const rows = await this.db
+      .select()
+      .from(socialMediaChannels)
+      .where(eq(socialMediaChannels.id, channelId))
+      .limit(1);
     const channel = rows[0];
     if (!channel || !this.registry.has(channel.platform as SupportedPlatform)) {
-      this.logger.log(`Backfill: no adapter for ${channel?.platform ?? 'unknown'}, skipping channelId=${channelId}`);
+      this.logger.log(
+        `Backfill: no adapter for ${channel?.platform ?? 'unknown'}, skipping channelId=${channelId}`,
+      );
       await this.markBackfillStatus(channelId, 'completed');
       return { ok: true };
     }
@@ -40,7 +48,10 @@ export class ChannelInitialBackfillHandler {
     await this.markBackfillStatus(channelId, 'running');
 
     const adapter = this.registry.get(channel.platform as SupportedPlatform);
-    const channelForAdapter = { ...channel, accessToken: decrypt(channel.accessToken) };
+    const channelForAdapter = {
+      ...channel,
+      accessToken: decrypt(channel.accessToken),
+    };
 
     // 1. Profile snapshot — skip if connect already wrote today's snapshot
     //    synchronously (ChannelSyncLifecycleService.onChannelConnected runs the
@@ -62,7 +73,10 @@ export class ChannelInitialBackfillHandler {
 
     if (existingToday.length === 0) {
       const profileCost = adapter.estimateQuotaCost('fetchProfileSnapshot');
-      const pq = await this.quota.tryConsume(channel.platform as SupportedPlatform, profileCost);
+      const pq = await this.quota.tryConsume(
+        channel.platform as SupportedPlatform,
+        profileCost,
+      );
       if (pq.allowed) {
         const profile = await adapter.fetchProfileSnapshot(channelForAdapter);
         if (profile.status !== 'failed') {
@@ -96,7 +110,9 @@ export class ChannelInitialBackfillHandler {
       sinceDays: 90,
       limit: 50,
     });
-    this.logger.log(`Initial backfill: recent-posts-sync returned ${JSON.stringify(syncResult)}`);
+    this.logger.log(
+      `Initial backfill: recent-posts-sync returned ${JSON.stringify(syncResult)}`,
+    );
 
     await this.markBackfillStatus(channelId, 'completed');
     this.logger.log(`Initial backfill completed for channelId=${channelId}`);
@@ -120,7 +136,8 @@ export class ChannelInitialBackfillHandler {
         target: channelSyncState.channelId,
         set: {
           initialBackfillStatus: status,
-          initialBackfillCompletedAt: status === 'completed' ? new Date() : null,
+          initialBackfillCompletedAt:
+            status === 'completed' ? new Date() : null,
         },
       });
   }

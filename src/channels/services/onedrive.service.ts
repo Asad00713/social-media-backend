@@ -399,7 +399,9 @@ export class OneDriveService {
     // Clean the token - remove any whitespace/newlines that may have been introduced
     const cleanToken = accessToken.replace(/\s/g, '');
 
-    this.logger.debug(`Token length: ${cleanToken.length}, starts with: ${cleanToken.substring(0, 20)}...`);
+    this.logger.debug(
+      `Token length: ${cleanToken.length}, starts with: ${cleanToken.substring(0, 20)}...`,
+    );
 
     // Detect token type: MSA compact tokens start with "EwA" or "EwB" and don't have dots
     // JWT tokens (for work/school accounts) have dots separating header.payload.signature
@@ -420,15 +422,21 @@ export class OneDriveService {
 
     if (!response.ok) {
       const errorText = await response.text();
-      this.logger.error(`Failed to get OneDrive info (${response.status}): ${errorText}`);
+      this.logger.error(
+        `Failed to get OneDrive info (${response.status}): ${errorText}`,
+      );
 
       // Try to parse Microsoft error for better message
       try {
         const errorJson = JSON.parse(errorText);
         const msError = errorJson.error;
         if (msError) {
-          this.logger.error(`Microsoft Graph error code: ${msError.code}, message: ${msError.message}`);
-          throw new BadRequestException(`OneDrive API error: ${msError.code} - ${msError.message}`);
+          this.logger.error(
+            `Microsoft Graph error code: ${msError.code}, message: ${msError.message}`,
+          );
+          throw new BadRequestException(
+            `OneDrive API error: ${msError.code} - ${msError.message}`,
+          );
         }
       } catch (parseError) {
         // If parsing fails, use raw error
@@ -460,7 +468,9 @@ export class OneDriveService {
     };
   }> {
     // Get user info from Live Connect API
-    const userResponse = await fetch(`https://apis.live.net/v5.0/me?access_token=${encodeURIComponent(accessToken)}`);
+    const userResponse = await fetch(
+      `https://apis.live.net/v5.0/me?access_token=${encodeURIComponent(accessToken)}`,
+    );
 
     if (!userResponse.ok) {
       const error = await userResponse.text();
@@ -474,7 +484,9 @@ export class OneDriveService {
     // Get OneDrive quota
     let quota: { total: number; used: number; remaining: number } | undefined;
     try {
-      const quotaResponse = await fetch(`https://apis.live.net/v5.0/me/skydrive/quota?access_token=${encodeURIComponent(accessToken)}`);
+      const quotaResponse = await fetch(
+        `https://apis.live.net/v5.0/me/skydrive/quota?access_token=${encodeURIComponent(accessToken)}`,
+      );
       if (quotaResponse.ok) {
         const quotaData = await quotaResponse.json();
         quota = {

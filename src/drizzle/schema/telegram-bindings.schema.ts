@@ -52,5 +52,4 @@ export const telegramChatBindings = pgTable(
 );
 
 export type TelegramChatBinding = typeof telegramChatBindings.$inferSelect;
-export type NewTelegramChatBinding =
-  typeof telegramChatBindings.$inferInsert;
+export type NewTelegramChatBinding = typeof telegramChatBindings.$inferInsert;

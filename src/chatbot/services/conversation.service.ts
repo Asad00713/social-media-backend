@@ -27,7 +27,9 @@ export class ConversationService {
       })
       .returning();
 
-    this.logger.log(`Created conversation ${conversation.id} for user ${userId}`);
+    this.logger.log(
+      `Created conversation ${conversation.id} for user ${userId}`,
+    );
     return conversation;
   }
 
@@ -49,12 +51,7 @@ export class ConversationService {
   /**
    * List conversations for a user in a workspace.
    */
-  async list(
-    userId: string,
-    workspaceId: string,
-    limit = 20,
-    offset = 0,
-  ) {
+  async list(userId: string, workspaceId: string, limit = 20, offset = 0) {
     const results = await this.db.query.conversations.findMany({
       where: and(
         eq(conversations.userId, userId),
@@ -125,7 +122,9 @@ export class ConversationService {
       .update(conversations)
       .set({ updatedAt: new Date() })
       .where(eq(conversations.id, conversationId))
-      .catch((err) => this.logger.warn(`Failed to update conversation timestamp: ${err}`));
+      .catch((err) =>
+        this.logger.warn(`Failed to update conversation timestamp: ${err}`),
+      );
 
     return message;
   }
@@ -259,12 +258,7 @@ export class ConversationService {
   /**
    * Search conversations by message content or title.
    */
-  async search(
-    userId: string,
-    workspaceId: string,
-    query: string,
-    limit = 20,
-  ) {
+  async search(userId: string, workspaceId: string, query: string, limit = 20) {
     const searchTerm = `%${query}%`;
 
     // Find conversations where title or any message content matches
@@ -291,7 +285,10 @@ export class ConversationService {
     return this.db.query.conversations.findMany({
       where: and(
         eq(conversations.userId, userId),
-        sql`${conversations.id} = ANY(ARRAY[${sql.join(ids.map((id) => sql`${id}::uuid`), sql`, `)}])`,
+        sql`${conversations.id} = ANY(ARRAY[${sql.join(
+          ids.map((id) => sql`${id}::uuid`),
+          sql`, `,
+        )}])`,
       ),
       orderBy: [desc(conversations.isPinned), desc(conversations.updatedAt)],
     });

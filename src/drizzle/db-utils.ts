@@ -26,7 +26,8 @@ const DEFAULT_OPTIONS: Required<RetryOptions> = {
 
 function isRetryableError(error: unknown, retryableErrors: string[]): boolean {
   if (error instanceof Error) {
-    const errorString = `${error.message} ${error.name} ${(error as any).code || ''}`.toLowerCase();
+    const errorString =
+      `${error.message} ${error.name} ${(error as any).code || ''}`.toLowerCase();
     return retryableErrors.some((re) => errorString.includes(re.toLowerCase()));
   }
   return false;

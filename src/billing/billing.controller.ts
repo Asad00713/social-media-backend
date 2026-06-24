@@ -78,6 +78,21 @@ export class BillingController {
     });
   }
 
+  @Post('workspaces/:workspaceId/checkout-session')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async createCheckoutSession(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
+    @Body() body: { planCode: string },
+  ) {
+    return await this.subscriptionService.createCheckoutSession({
+      workspaceId,
+      userId: user.userId,
+      planCode: body.planCode,
+    });
+  }
+
   @Get('workspaces/:workspaceId/subscription')
   @UseGuards(JwtAuthGuard)
   async getSubscription(@Param('workspaceId') workspaceId: string) {
@@ -143,7 +158,15 @@ export class BillingController {
   async purchaseAddon(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() body: { addonType: 'EXTRA_CHANNEL' | 'EXTRA_MEMBER' | 'EXTRA_WORKSPACE' | 'EXTRA_AI_TOKENS'; quantity: number },
+    @Body()
+    body: {
+      addonType:
+        | 'EXTRA_CHANNEL'
+        | 'EXTRA_MEMBER'
+        | 'EXTRA_WORKSPACE'
+        | 'EXTRA_AI_TOKENS';
+      quantity: number;
+    },
   ) {
     return await this.addonService.purchaseAddon({
       workspaceId,
@@ -158,7 +181,12 @@ export class BillingController {
   @HttpCode(HttpStatus.OK)
   async removeAddon(
     @Param('workspaceId') workspaceId: string,
-    @Param('addonType') addonType: 'EXTRA_CHANNEL' | 'EXTRA_MEMBER' | 'EXTRA_WORKSPACE' | 'EXTRA_AI_TOKENS',
+    @Param('addonType')
+    addonType:
+      | 'EXTRA_CHANNEL'
+      | 'EXTRA_MEMBER'
+      | 'EXTRA_WORKSPACE'
+      | 'EXTRA_AI_TOKENS',
     @CurrentUser() user: { userId: string; email: string },
     @Body() body: { quantity?: number },
   ) {
@@ -219,7 +247,10 @@ export class BillingController {
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
   ) {
-    return await this.planChangeService.downgradeToFree(workspaceId, user.userId);
+    return await this.planChangeService.downgradeToFree(
+      workspaceId,
+      user.userId,
+    );
   }
 
   // Dashboard endpoints
@@ -287,7 +318,9 @@ export class BillingController {
   @Get('invoices/:invoiceId/pdf')
   @UseGuards(JwtAuthGuard)
   async getInvoicePdf(@Param('invoiceId') invoiceId: string) {
-    const pdfUrl = await this.invoiceService.getInvoicePdfUrl(parseInt(invoiceId, 10));
+    const pdfUrl = await this.invoiceService.getInvoicePdfUrl(
+      parseInt(invoiceId, 10),
+    );
     return { pdfUrl };
   }
 

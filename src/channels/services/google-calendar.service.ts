@@ -166,7 +166,9 @@ export class GoogleCalendarService {
     };
 
     if (updates.startTime) {
-      const endTime = updates.endTime || new Date(updates.startTime.getTime() + 30 * 60 * 1000);
+      const endTime =
+        updates.endTime ||
+        new Date(updates.startTime.getTime() + 30 * 60 * 1000);
       updatedEvent.start = {
         dateTime: updates.startTime.toISOString(),
         timeZone: updates.timeZone || 'UTC',
@@ -324,11 +326,19 @@ export class GoogleCalendarService {
     postData: PostEventData,
     calendarId: string = 'primary',
   ): Promise<CalendarEvent> {
-    const { postId, platforms, caption, scheduledAt, mediaUrls, workspaceName } = postData;
+    const {
+      postId,
+      platforms,
+      caption,
+      scheduledAt,
+      mediaUrls,
+      workspaceName,
+    } = postData;
 
     // Build event summary with platform emojis
     const platformEmojis = this.getPlatformEmojis(platforms);
-    const captionPreview = caption.length > 50 ? caption.substring(0, 50) + '...' : caption;
+    const captionPreview =
+      caption.length > 50 ? caption.substring(0, 50) + '...' : caption;
     const summary = `${platformEmojis} ${captionPreview}`;
 
     // Build description with full details
@@ -378,7 +388,9 @@ export class GoogleCalendarService {
         ? this.getPlatformEmojis(postData.platforms)
         : '';
       const captionPreview = postData.caption
-        ? (postData.caption.length > 50 ? postData.caption.substring(0, 50) + '...' : postData.caption)
+        ? postData.caption.length > 50
+          ? postData.caption.substring(0, 50) + '...'
+          : postData.caption
         : '';
 
       if (platformEmojis || captionPreview) {
@@ -466,11 +478,14 @@ export class GoogleCalendarService {
    */
   async verifyAccess(accessToken: string): Promise<boolean> {
     try {
-      const response = await fetch(`${this.apiBaseUrl}/users/me/calendarList?maxResults=1`, {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
+      const response = await fetch(
+        `${this.apiBaseUrl}/users/me/calendarList?maxResults=1`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
         },
-      });
+      );
 
       return response.ok;
     } catch {

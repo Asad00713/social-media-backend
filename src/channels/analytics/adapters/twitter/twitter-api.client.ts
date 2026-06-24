@@ -8,7 +8,13 @@ import type {
 
 export class TwitterApiError extends Error {
   constructor(
-    public code: 'rate_limited' | 'auth_failed' | 'not_found' | 'transient' | 'permanent' | 'tier_required',
+    public code:
+      | 'rate_limited'
+      | 'auth_failed'
+      | 'not_found'
+      | 'transient'
+      | 'permanent'
+      | 'tier_required',
     public status: number,
     message: string,
   ) {
@@ -35,7 +41,8 @@ export class TwitterApiClient {
 
   async getMe(accessToken: string): Promise<TwitterUser> {
     const params = new URLSearchParams({
-      'user.fields': 'id,name,username,description,profile_image_url,public_metrics,verified',
+      'user.fields':
+        'id,name,username,description,profile_image_url,public_metrics,verified',
     });
     const body = await this.request<TwitterUserResponse>(
       `${this.baseUrl}/users/me?${params}`,
@@ -51,7 +58,10 @@ export class TwitterApiClient {
     startTime?: string;
   }): Promise<{
     tweets: TwitterTweet[];
-    media: Map<string, { url?: string; previewImageUrl?: string; type: string }>;
+    media: Map<
+      string,
+      { url?: string; previewImageUrl?: string; type: string }
+    >;
   }> {
     const params = new URLSearchParams({
       max_results: String(opts.maxResults ?? 25),
@@ -66,7 +76,10 @@ export class TwitterApiClient {
       opts.accessToken,
     );
 
-    const media = new Map<string, { url?: string; previewImageUrl?: string; type: string }>();
+    const media = new Map<
+      string,
+      { url?: string; previewImageUrl?: string; type: string }
+    >();
     for (const m of body.includes?.media ?? []) {
       media.set(m.media_key, {
         url: m.url,
@@ -110,9 +123,12 @@ export class TwitterApiClient {
 
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      const message =
-        (body as any).detail ?? (body as any).title ?? `HTTP ${res.status}`;
-      throw new TwitterApiError(this.mapCode(res.status, message), res.status, message);
+      const message = body.detail ?? body.title ?? `HTTP ${res.status}`;
+      throw new TwitterApiError(
+        this.mapCode(res.status, message),
+        res.status,
+        message,
+      );
     }
 
     return res.json() as Promise<T>;
@@ -121,7 +137,8 @@ export class TwitterApiClient {
   private mapCode(status: number, message: string): TwitterApiError['code'] {
     if (status === 401) return 'auth_failed';
     if (status === 403) {
-      if (/access level|tier|Pro|Basic|Enterprise/i.test(message)) return 'tier_required';
+      if (/access level|tier|Pro|Basic|Enterprise/i.test(message))
+        return 'tier_required';
       return 'auth_failed';
     }
     if (status === 429) return 'rate_limited';

@@ -1,7 +1,12 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Groq from 'groq-sdk';
-import { SYSTEM_PROMPTS, USER_PROMPTS, PLATFORM_OPTIONS, TONE_OPTIONS } from './prompts';
+import {
+  SYSTEM_PROMPTS,
+  USER_PROMPTS,
+  PLATFORM_OPTIONS,
+  TONE_OPTIONS,
+} from './prompts';
 
 export type Platform = (typeof PLATFORM_OPTIONS)[number];
 export type Tone = (typeof TONE_OPTIONS)[number];
@@ -93,7 +98,9 @@ export class GroqService {
       this.client = new Groq({ apiKey });
       this.logger.log('Groq client initialized');
     } else {
-      this.logger.warn('GROQ_API_KEY not configured - AI features will be unavailable');
+      this.logger.warn(
+        'GROQ_API_KEY not configured - AI features will be unavailable',
+      );
     }
   }
 
@@ -120,7 +127,11 @@ export class GroqService {
       throw new BadRequestException('Groq API is not configured');
     }
 
-    const { temperature = 0.7, maxTokens = 1024, model = this.defaultModel } = options || {};
+    const {
+      temperature = 0.7,
+      maxTokens = 1024,
+      model = this.defaultModel,
+    } = options || {};
 
     try {
       const completion = await this.client.chat.completions.create({
@@ -154,7 +165,12 @@ export class GroqService {
   async generatePost(options: GeneratePostOptions): Promise<string> {
     const { topic, platform, tone, additionalContext } = options;
 
-    const userPrompt = USER_PROMPTS.generatePost(topic, platform, tone, additionalContext);
+    const userPrompt = USER_PROMPTS.generatePost(
+      topic,
+      platform,
+      tone,
+      additionalContext,
+    );
 
     return this.generateCompletion(SYSTEM_PROMPTS.contentGenerator, userPrompt);
   }
@@ -163,7 +179,8 @@ export class GroqService {
    * Generate a caption for media content
    */
   async generateCaption(options: GenerateCaptionOptions): Promise<string> {
-    const { description, platform, tone, includeHashtags, includeCta } = options;
+    const { description, platform, tone, includeHashtags, includeCta } =
+      options;
 
     const userPrompt = USER_PROMPTS.generateCaption(
       description,
@@ -184,7 +201,10 @@ export class GroqService {
 
     const userPrompt = USER_PROMPTS.generateHashtags(topic, platform, count);
 
-    const result = await this.generateCompletion(SYSTEM_PROMPTS.hashtagGenerator, userPrompt);
+    const result = await this.generateCompletion(
+      SYSTEM_PROMPTS.hashtagGenerator,
+      userPrompt,
+    );
 
     // Parse hashtags from the response
     const hashtags = result
@@ -202,11 +222,20 @@ export class GroqService {
   async generateIdeas(options: GenerateIdeasOptions): Promise<ContentIdea[]> {
     const { niche, platform, count, contentType } = options;
 
-    const userPrompt = USER_PROMPTS.generateIdeas(niche, platform, count, contentType);
+    const userPrompt = USER_PROMPTS.generateIdeas(
+      niche,
+      platform,
+      count,
+      contentType,
+    );
 
-    const result = await this.generateCompletion(SYSTEM_PROMPTS.ideaGenerator, userPrompt, {
-      maxTokens: 2048,
-    });
+    const result = await this.generateCompletion(
+      SYSTEM_PROMPTS.ideaGenerator,
+      userPrompt,
+      {
+        maxTokens: 2048,
+      },
+    );
 
     // Parse ideas from the response
     const ideas: ContentIdea[] = [];
@@ -247,11 +276,18 @@ export class GroqService {
   ): Promise<YouTubeMetadataResult> {
     const { videoDescription, targetAudience } = options;
 
-    const userPrompt = USER_PROMPTS.generateYouTubeMetadata(videoDescription, targetAudience);
+    const userPrompt = USER_PROMPTS.generateYouTubeMetadata(
+      videoDescription,
+      targetAudience,
+    );
 
-    const result = await this.generateCompletion(SYSTEM_PROMPTS.contentGenerator, userPrompt, {
-      maxTokens: 2048,
-    });
+    const result = await this.generateCompletion(
+      SYSTEM_PROMPTS.contentGenerator,
+      userPrompt,
+      {
+        maxTokens: 2048,
+      },
+    );
 
     // Parse the structured response
     let title = '';
@@ -305,7 +341,11 @@ export class GroqService {
   async improvePost(options: ImprovePostOptions): Promise<string> {
     const { originalPost, platform, improvementFocus } = options;
 
-    const userPrompt = USER_PROMPTS.improvePost(originalPost, platform, improvementFocus);
+    const userPrompt = USER_PROMPTS.improvePost(
+      originalPost,
+      platform,
+      improvementFocus,
+    );
 
     return this.generateCompletion(SYSTEM_PROMPTS.contentGenerator, userPrompt);
   }
@@ -316,11 +356,19 @@ export class GroqService {
   async generateThread(options: GenerateThreadOptions): Promise<string[]> {
     const { topic, platform, postCount } = options;
 
-    const userPrompt = USER_PROMPTS.generateThreadIdeas(topic, platform, postCount);
+    const userPrompt = USER_PROMPTS.generateThreadIdeas(
+      topic,
+      platform,
+      postCount,
+    );
 
-    const result = await this.generateCompletion(SYSTEM_PROMPTS.contentGenerator, userPrompt, {
-      maxTokens: 2048,
-    });
+    const result = await this.generateCompletion(
+      SYSTEM_PROMPTS.contentGenerator,
+      userPrompt,
+      {
+        maxTokens: 2048,
+      },
+    );
 
     // Parse thread posts from the response
     const posts: string[] = [];
@@ -352,11 +400,19 @@ export class GroqService {
   async generateBio(options: GenerateBioOptions): Promise<string> {
     const { description, platform, keywords } = options;
 
-    const userPrompt = USER_PROMPTS.generateBio(description, platform, keywords);
+    const userPrompt = USER_PROMPTS.generateBio(
+      description,
+      platform,
+      keywords,
+    );
 
-    return this.generateCompletion(SYSTEM_PROMPTS.contentGenerator, userPrompt, {
-      maxTokens: 256,
-    });
+    return this.generateCompletion(
+      SYSTEM_PROMPTS.contentGenerator,
+      userPrompt,
+      {
+        maxTokens: 256,
+      },
+    );
   }
 
   /**
@@ -365,7 +421,11 @@ export class GroqService {
   async translateContent(options: TranslateContentOptions): Promise<string> {
     const { content, targetLanguage, platform } = options;
 
-    const userPrompt = USER_PROMPTS.translateContent(content, targetLanguage, platform);
+    const userPrompt = USER_PROMPTS.translateContent(
+      content,
+      targetLanguage,
+      platform,
+    );
 
     return this.generateCompletion(SYSTEM_PROMPTS.contentGenerator, userPrompt);
   }
@@ -385,9 +445,13 @@ ${content}
 
 Provide ${count} variations, numbered 1 through ${count}. Each should be complete and ready to publish.`;
 
-    const result = await this.generateCompletion(SYSTEM_PROMPTS.contentGenerator, prompt, {
-      maxTokens: 2048,
-    });
+    const result = await this.generateCompletion(
+      SYSTEM_PROMPTS.contentGenerator,
+      prompt,
+      {
+        maxTokens: 2048,
+      },
+    );
 
     // Parse variations
     const variations: string[] = [];
@@ -440,9 +504,13 @@ IMPROVEMENTS:
 - [improvement 2]
 SUGGESTIONS: [A brief paragraph with specific suggestions to improve the post]`;
 
-    const result = await this.generateCompletion(SYSTEM_PROMPTS.contentGenerator, prompt, {
-      temperature: 0.5,
-    });
+    const result = await this.generateCompletion(
+      SYSTEM_PROMPTS.contentGenerator,
+      prompt,
+      {
+        temperature: 0.5,
+      },
+    );
 
     // Parse the analysis
     let score = 7;

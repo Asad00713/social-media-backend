@@ -110,8 +110,10 @@ export class SlackIngestProcessor extends WorkerHost {
           downloadUrl,
         );
         const { r2Kind, dmKind } = this.classifySlackFile(f);
-        const finalContentType = (f.mimetype as string | undefined) ?? contentType;
-        const filename = (f.name as string | undefined) ?? `slack-${f.id ?? Date.now()}`;
+        const finalContentType =
+          (f.mimetype as string | undefined) ?? contentType;
+        const filename =
+          (f.name as string | undefined) ?? `slack-${f.id ?? Date.now()}`;
         const { publicUrl } = await this.r2.uploadBuffer({
           kind: r2Kind,
           workspaceId: channel.workspaceId,
@@ -151,7 +153,8 @@ export class SlackIngestProcessor extends WorkerHost {
         channelType: event.channel_type ?? null, // 'im' | 'mpim' | 'channel' | 'group'
         threadTs: event.thread_ts ?? null,
       },
-      attachments: rehostedAttachments.length > 0 ? rehostedAttachments : undefined,
+      attachments:
+        rehostedAttachments.length > 0 ? rehostedAttachments : undefined,
     });
   }
 
@@ -160,10 +163,10 @@ export class SlackIngestProcessor extends WorkerHost {
    *  on the file object — surface those as 'voice' so the bubble uses VoicePlayer.
    *  Other audio files go through as 'audio' (also rendered with VoicePlayer
    *  on the frontend per dm-message-bubble.tsx). */
-  private classifySlackFile(file: {
-    mimetype?: string;
-    subtype?: string;
-  }): { r2Kind: R2MediaKind; dmKind: 'image' | 'video' | 'audio' | 'voice' | 'file' } {
+  private classifySlackFile(file: { mimetype?: string; subtype?: string }): {
+    r2Kind: R2MediaKind;
+    dmKind: 'image' | 'video' | 'audio' | 'voice' | 'file';
+  } {
     const mime = (file.mimetype ?? '').toLowerCase();
     if (mime.startsWith('image/')) return { r2Kind: 'image', dmKind: 'image' };
     if (mime.startsWith('video/')) return { r2Kind: 'video', dmKind: 'video' };

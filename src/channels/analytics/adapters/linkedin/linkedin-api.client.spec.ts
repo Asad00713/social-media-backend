@@ -74,7 +74,10 @@ describe('LinkedInApiClient', () => {
   });
 
   it('getMemberPosts defaults count to 25 when not provided', async () => {
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ elements: [] }) });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ elements: [] }),
+    });
 
     await client.getMemberPosts({ memberId: 'abc123', accessToken: 'tok' });
 

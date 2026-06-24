@@ -7,7 +7,12 @@ import type {
 
 export class InstagramApiError extends Error {
   constructor(
-    public code: 'rate_limited' | 'auth_failed' | 'not_found' | 'transient' | 'permanent',
+    public code:
+      | 'rate_limited'
+      | 'auth_failed'
+      | 'not_found'
+      | 'transient'
+      | 'permanent',
     public status: number,
     message: string,
   ) {
@@ -33,7 +38,10 @@ export class InstagramApiClient {
       fields:
         'id,username,name,profile_picture_url,followers_count,follows_count,media_count,biography,website',
     });
-    return this.request<InstagramUser>(`${this.baseUrl}/${igUserId}?${params}`, accessToken);
+    return this.request<InstagramUser>(
+      `${this.baseUrl}/${igUserId}?${params}`,
+      accessToken,
+    );
   }
 
   async getUserMedia(opts: {
@@ -52,12 +60,18 @@ export class InstagramApiClient {
     );
   }
 
-  async getMedia(mediaId: string, accessToken: string): Promise<InstagramMedia> {
+  async getMedia(
+    mediaId: string,
+    accessToken: string,
+  ): Promise<InstagramMedia> {
     const params = new URLSearchParams({
       fields:
         'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count',
     });
-    return this.request<InstagramMedia>(`${this.baseUrl}/${mediaId}?${params}`, accessToken);
+    return this.request<InstagramMedia>(
+      `${this.baseUrl}/${mediaId}?${params}`,
+      accessToken,
+    );
   }
 
   async getMediaInsights(
@@ -74,7 +88,8 @@ export class InstagramApiClient {
       IMAGE: 'impressions,reach,engagement,saved',
       CAROUSEL_ALBUM: 'impressions,reach,engagement,saved',
     };
-    const metric = metricsByType[mediaType] ?? 'impressions,reach,engagement,saved';
+    const metric =
+      metricsByType[mediaType] ?? 'impressions,reach,engagement,saved';
     const params = new URLSearchParams({ metric });
     return this.request<InstagramMediaInsights>(
       `${this.baseUrl}/${mediaId}/insights?${params}`,
@@ -88,9 +103,13 @@ export class InstagramApiClient {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      const igError = (body as any).error ?? {};
+      const igError = body.error ?? {};
       const message = igError.message ?? `HTTP ${res.status}`;
-      throw new InstagramApiError(this.mapCode(res.status, igError), res.status, message);
+      throw new InstagramApiError(
+        this.mapCode(res.status, igError),
+        res.status,
+        message,
+      );
     }
     return res.json() as Promise<T>;
   }

@@ -25,7 +25,9 @@ export class RecycleBinCleanupService {
    */
   @Cron(CronExpression.EVERY_DAY_AT_3AM)
   async handleRecycleBinCleanup() {
-    this.logger.log('Starting recycle bin cleanup (items older than 30 days)...');
+    this.logger.log(
+      'Starting recycle bin cleanup (items older than 30 days)...',
+    );
 
     try {
       // Clean up media items

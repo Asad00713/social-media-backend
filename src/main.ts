@@ -5,7 +5,11 @@ import cookieParser from 'cookie-parser';
 import express from 'express';
 
 async function bootstrap() {
-  const app = await NestFactory.create(AppModule);
+  // `rawBody: true` makes Nest buffer the unparsed request body onto
+  // `req.rawBody` (alongside the normal parsed JSON). Stripe webhook signature
+  // verification needs the exact bytes Stripe signed — see
+  // BillingController.handleStripeWebhook.
+  const app = await NestFactory.create(AppModule, { rawBody: true });
 
   app.enableCors({
     origin: [
@@ -17,7 +21,7 @@ async function bootstrap() {
       process.env.FRONTEND_URL,
     ].filter(Boolean),
     credentials: true,
-  })
+  });
 
   // Slack Events API: capture raw body BEFORE the global JSON parser so that
   // HMAC-SHA256 signature verification has the exact bytes Slack signed.

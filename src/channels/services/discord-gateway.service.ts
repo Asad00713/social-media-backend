@@ -104,9 +104,7 @@ export class DiscordGatewayService implements OnModuleInit, OnModuleDestroy {
 
     this.client.once(Events.ClientReady, (c) => {
       this.botUserId = c.user.id;
-      this.logger.log(
-        `Discord gateway ready as ${c.user.tag} (${c.user.id})`,
-      );
+      this.logger.log(`Discord gateway ready as ${c.user.tag} (${c.user.id})`);
       // Register the /ask command in every guild the bot is already in.
       // Guild-scoped commands appear instantly (global ones take up to 1h).
       for (const [guildId] of c.guilds.cache) {
@@ -172,8 +170,7 @@ export class DiscordGatewayService implements OnModuleInit, OnModuleDestroy {
       ) {
         return;
       }
-      const message: string =
-        interaction.options.getString('message') ?? '';
+      const message: string = interaction.options.getString('message') ?? '';
 
       // Acknowledge privately so the member knows it was received.
       await interaction.reply({
@@ -245,9 +242,7 @@ export class DiscordGatewayService implements OnModuleInit, OnModuleDestroy {
     const mentionUsers: any[] = m.mentions?.users
       ? [...m.mentions.users.values()]
       : [];
-    const attachments: any[] = m.attachments
-      ? [...m.attachments.values()]
-      : [];
+    const attachments: any[] = m.attachments ? [...m.attachments.values()] : [];
     return {
       id: m.id,
       channel_id: m.channelId,

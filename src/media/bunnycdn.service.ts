@@ -31,7 +31,10 @@ export class BunnyCDNService {
   private readonly isConfigured: boolean;
 
   constructor(private readonly configService: ConfigService) {
-    this.storageZone = this.configService.get<string>('BUNNYCDN_STORAGE_ZONE', '');
+    this.storageZone = this.configService.get<string>(
+      'BUNNYCDN_STORAGE_ZONE',
+      '',
+    );
     this.accessKey = this.configService.get<string>('BUNNYCDN_ACCESS_KEY', '');
     this.storageHostname = this.configService.get<string>(
       'BUNNYCDN_STORAGE_HOSTNAME',
@@ -41,10 +44,14 @@ export class BunnyCDNService {
 
     if (this.storageZone && this.accessKey && this.cdnUrl) {
       this.isConfigured = true;
-      this.logger.log(`BunnyCDN configured: ${this.storageZone} @ ${this.storageHostname}`);
+      this.logger.log(
+        `BunnyCDN configured: ${this.storageZone} @ ${this.storageHostname}`,
+      );
     } else {
       this.isConfigured = false;
-      this.logger.warn('BunnyCDN not configured - missing environment variables');
+      this.logger.warn(
+        'BunnyCDN not configured - missing environment variables',
+      );
     }
   }
 
@@ -84,7 +91,9 @@ export class BunnyCDNService {
     const response = await fetch(sourceUrl);
 
     if (!response.ok) {
-      throw new BadRequestException(`Failed to download video: ${response.status}`);
+      throw new BadRequestException(
+        `Failed to download video: ${response.status}`,
+      );
     }
 
     const buffer = Buffer.from(await response.arrayBuffer());
@@ -139,8 +148,12 @@ export class BunnyCDNService {
 
     if (!response.ok) {
       const errorText = await response.text();
-      this.logger.error(`BunnyCDN upload failed: ${response.status} - ${errorText}`);
-      throw new BadRequestException(`Failed to upload to BunnyCDN: ${response.status}`);
+      this.logger.error(
+        `BunnyCDN upload failed: ${response.status} - ${errorText}`,
+      );
+      throw new BadRequestException(
+        `Failed to upload to BunnyCDN: ${response.status}`,
+      );
     }
 
     this.logger.log(`Upload successful: ${key}`);

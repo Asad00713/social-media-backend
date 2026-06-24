@@ -54,7 +54,10 @@ export class AnalyticsService {
       .orderBy(channelAnalyticsDaily.date);
 
     const snapRows = await this.db
-      .select({ date: channelSnapshots.snapshotDate, followers: channelSnapshots.followersCount })
+      .select({
+        date: channelSnapshots.snapshotDate,
+        followers: channelSnapshots.followersCount,
+      })
       .from(channelSnapshots)
       .where(
         and(
@@ -111,26 +114,50 @@ export class AnalyticsService {
         AND published_at >= ${new Date(start + 'T00:00:00Z')}
         AND published_at <= ${new Date(end + 'T23:59:59.999Z')}
     `);
-    const directPostsCount = Number(((postsCountResult.rows ?? postsCountResult)[0] ?? {}).count ?? 0);
+    const directPostsCount = Number(
+      ((postsCountResult.rows ?? postsCountResult)[0] ?? {}).count ?? 0,
+    );
 
     const fullDates = buildDateRange(start, end);
-    const dailyMap = new Map<string, any>(dailyRows.map((r: any) => [r.date, r]));
-    const snapMap = new Map<string, number | null>(snapRows.map((r: any) => [r.date, r.followers]));
+    const dailyMap = new Map<string, any>(
+      dailyRows.map((r: any) => [r.date, r]),
+    );
+    const snapMap = new Map<string, number | null>(
+      snapRows.map((r: any) => [r.date, r.followers]),
+    );
 
     // Prefer the direct count (accurate even before daily rollups run).
     // Fall back to rollup aggregation if direct count is 0 (defensive).
-    const rollupPosts = dailyRows.reduce((a: number, r: any) => a + Number(r.postsPublished ?? 0), 0);
+    const rollupPosts = dailyRows.reduce(
+      (a: number, r: any) => a + Number(r.postsPublished ?? 0),
+      0,
+    );
     const sumPosts = directPostsCount > 0 ? directPostsCount : rollupPosts;
-    const sumLikes = dailyRows.reduce((a: number, r: any) => a + Number(r.totalLikes ?? 0), 0);
-    const sumComments = dailyRows.reduce((a: number, r: any) => a + Number(r.totalComments ?? 0), 0);
-    const sumShares = dailyRows.reduce((a: number, r: any) => a + Number(r.totalShares ?? 0), 0);
+    const sumLikes = dailyRows.reduce(
+      (a: number, r: any) => a + Number(r.totalLikes ?? 0),
+      0,
+    );
+    const sumComments = dailyRows.reduce(
+      (a: number, r: any) => a + Number(r.totalComments ?? 0),
+      0,
+    );
+    const sumShares = dailyRows.reduce(
+      (a: number, r: any) => a + Number(r.totalShares ?? 0),
+      0,
+    );
     const hasImpr = dailyRows.some((r: any) => r.totalImpressions != null);
     const sumImpressions = hasImpr
-      ? dailyRows.reduce((a: number, r: any) => a + Number(r.totalImpressions ?? 0), 0)
+      ? dailyRows.reduce(
+          (a: number, r: any) => a + Number(r.totalImpressions ?? 0),
+          0,
+        )
       : null;
     const hasReach = dailyRows.some((r: any) => r.totalReach != null);
     const sumReach = hasReach
-      ? dailyRows.reduce((a: number, r: any) => a + Number(r.totalReach ?? 0), 0)
+      ? dailyRows.reduce(
+          (a: number, r: any) => a + Number(r.totalReach ?? 0),
+          0,
+        )
       : null;
     const followersGained = dailyRows.reduce(
       (a: number | null, r: any) =>
@@ -161,8 +188,14 @@ export class AnalyticsService {
         followersGained: { value: followersGained, deltaPct: null },
       },
       timeseries: {
-        followers: fullDates.map((d) => ({ date: d, value: snapMap.get(d) ?? null })),
-        posts: fullDates.map((d) => ({ date: d, value: Number(dailyMap.get(d)?.postsPublished ?? 0) })),
+        followers: fullDates.map((d) => ({
+          date: d,
+          value: snapMap.get(d) ?? null,
+        })),
+        posts: fullDates.map((d) => ({
+          date: d,
+          value: Number(dailyMap.get(d)?.postsPublished ?? 0),
+        })),
         engagement: fullDates.map((d) => ({
           date: d,
           likes: Number(dailyMap.get(d)?.totalLikes ?? 0),
@@ -171,19 +204,25 @@ export class AnalyticsService {
         })),
         reach: fullDates.map((d) => ({
           date: d,
-          value: dailyMap.get(d)?.totalReach == null ? null : Number(dailyMap.get(d).totalReach),
+          value:
+            dailyMap.get(d)?.totalReach == null
+              ? null
+              : Number(dailyMap.get(d).totalReach),
         })),
       },
       topPosts: topRows.map((r) => ({
         postId: r.post_id,
-        publishedAt: r.published_at ? new Date(r.published_at).toISOString() : new Date().toISOString(),
+        publishedAt: r.published_at
+          ? new Date(r.published_at).toISOString()
+          : new Date().toISOString(),
         content: r.content ?? '',
         mediaUrl: extractFirstMediaUrl(r.media_items),
         metrics: {
           likes: Number(r.likes_count ?? 0),
           comments: Number(r.comments_count ?? 0),
           shares: Number(r.shares_count ?? 0),
-          impressions: r.impressions_count == null ? null : Number(r.impressions_count),
+          impressions:
+            r.impressions_count == null ? null : Number(r.impressions_count),
           reach: r.reach_count == null ? null : Number(r.reach_count),
           engagementRate: null,
         },
@@ -192,7 +231,11 @@ export class AnalyticsService {
   }
 
   async getSyncState(channelId: number) {
-    const row = await this.db.select().from(channelSyncState).where(eq(channelSyncState.channelId, channelId)).limit(1);
+    const row = await this.db
+      .select()
+      .from(channelSyncState)
+      .where(eq(channelSyncState.channelId, channelId))
+      .limit(1);
     const state = row[0];
     if (!state) {
       return {
@@ -205,24 +248,43 @@ export class AnalyticsService {
       };
     }
     const now = Date.now();
-    let status: 'healthy' | 'catching_up' | 'rate_limited' | 'failing' | 'paused' = 'healthy';
-    if (state.pausedUntil && new Date(state.pausedUntil).getTime() > now) status = 'paused';
-    else if (state.lastProfileSyncStatus === 'rate_limited') status = 'rate_limited';
+    let status:
+      | 'healthy'
+      | 'catching_up'
+      | 'rate_limited'
+      | 'failing'
+      | 'paused' = 'healthy';
+    if (state.pausedUntil && new Date(state.pausedUntil).getTime() > now)
+      status = 'paused';
+    else if (state.lastProfileSyncStatus === 'rate_limited')
+      status = 'rate_limited';
     else if (Number(state.consecutiveFailures ?? 0) >= 3) status = 'failing';
-    else if (state.lastProfileSyncAt && now - new Date(state.lastProfileSyncAt).getTime() > 36 * 60 * 60 * 1000)
+    else if (
+      state.lastProfileSyncAt &&
+      now - new Date(state.lastProfileSyncAt).getTime() > 36 * 60 * 60 * 1000
+    )
       status = 'catching_up';
 
     return {
-      lastSyncedAt: state.lastProfileSyncAt ? new Date(state.lastProfileSyncAt).toISOString() : null,
-      nextSyncAt: state.nextProfileSyncAt ? new Date(state.nextProfileSyncAt).toISOString() : null,
+      lastSyncedAt: state.lastProfileSyncAt
+        ? new Date(state.lastProfileSyncAt).toISOString()
+        : null,
+      nextSyncAt: state.nextProfileSyncAt
+        ? new Date(state.nextProfileSyncAt).toISOString()
+        : null,
       status,
       consecutiveFailures: Number(state.consecutiveFailures ?? 0),
-      pausedUntil: state.pausedUntil ? new Date(state.pausedUntil).toISOString() : null,
+      pausedUntil: state.pausedUntil
+        ? new Date(state.pausedUntil).toISOString()
+        : null,
       initialBackfillStatus: state.initialBackfillStatus,
     };
   }
 
-  async requestManualRefresh(channelId: number, workspaceId: string): Promise<ManualRefreshResponse> {
+  async requestManualRefresh(
+    channelId: number,
+    workspaceId: string,
+  ): Promise<ManualRefreshResponse> {
     // Validation 1: Per-channel 1/hour rate limit
     const channelKey = `refresh-limit:channel:${channelId}`;
     const channelExisting = await this.redis.get(channelKey);
@@ -245,7 +307,8 @@ export class AnalyticsService {
         accepted: false,
         reason: 'workspace_daily_cap',
         nextAllowedAt: this.nextDayMidnightUTC(),
-        message: 'Workspace has reached its daily manual refresh limit (50/day). Resets at midnight UTC.',
+        message:
+          'Workspace has reached its daily manual refresh limit (50/day). Resets at midnight UTC.',
       };
     }
 
@@ -275,8 +338,16 @@ export class AnalyticsService {
     await this.redis.incrby(workspaceKey, 1);
     await this.redis.expire(workspaceKey, 26 * 60 * 60); // 26h TTL safely covers UTC day boundary
 
-    await this.queue.add('channel-profile-snapshot', { channelId, workspaceId });
-    await this.queue.add('channel-recent-posts-sync', { channelId, workspaceId, sinceDays: 7, limit: 50 });
+    await this.queue.add('channel-profile-snapshot', {
+      channelId,
+      workspaceId,
+    });
+    await this.queue.add('channel-recent-posts-sync', {
+      channelId,
+      workspaceId,
+      sinceDays: 7,
+      limit: 50,
+    });
 
     return {
       accepted: true,
@@ -286,7 +357,11 @@ export class AnalyticsService {
     };
   }
 
-  async getDemographics(channelId: number, range: AnalyticsRange, workspaceId: string) {
+  async getDemographics(
+    channelId: number,
+    range: AnalyticsRange,
+    workspaceId: string,
+  ) {
     const channel = await this.lookupChannel(channelId);
     if (!channel) return { data: [], supported: false };
 
@@ -304,12 +379,18 @@ export class AnalyticsService {
       });
       return { data: rows, supported: true };
     } catch (err) {
-      this.logger.warn(`Demographics fetch failed for channel ${channelId}: ${(err as Error).message}`);
+      this.logger.warn(
+        `Demographics fetch failed for channel ${channelId}: ${(err as Error).message}`,
+      );
       return { data: [], supported: true };
     }
   }
 
-  async getTrafficSources(channelId: number, range: AnalyticsRange, workspaceId: string) {
+  async getTrafficSources(
+    channelId: number,
+    range: AnalyticsRange,
+    workspaceId: string,
+  ) {
     const channel = await this.lookupChannel(channelId);
     if (!channel) return { data: [], supported: false };
 
@@ -327,14 +408,21 @@ export class AnalyticsService {
       });
       return { data: rows, supported: true };
     } catch (err) {
-      this.logger.warn(`TrafficSources fetch failed for channel ${channelId}: ${(err as Error).message}`);
+      this.logger.warn(
+        `TrafficSources fetch failed for channel ${channelId}: ${(err as Error).message}`,
+      );
       return { data: [], supported: true };
     }
   }
 
-  private async lookupChannel(channelId: number): Promise<{ platform: string; accessToken: string } | null> {
+  private async lookupChannel(
+    channelId: number,
+  ): Promise<{ platform: string; accessToken: string } | null> {
     const rows = await this.db
-      .select({ platform: socialMediaChannels.platform, accessToken: socialMediaChannels.accessToken })
+      .select({
+        platform: socialMediaChannels.platform,
+        accessToken: socialMediaChannels.accessToken,
+      })
       .from(socialMediaChannels)
       .where(eq(socialMediaChannels.id, channelId))
       .limit(1);
@@ -349,15 +437,29 @@ export class AnalyticsService {
   }
 }
 
-function rangeToWindow(range: AnalyticsRange): { start: string; end: string; days: number } {
+function rangeToWindow(range: AnalyticsRange): {
+  start: string;
+  end: string;
+  days: number;
+} {
   const today = new Date();
   let days: number;
   switch (range) {
-    case '7d': days = 7; break;
-    case '30d': days = 30; break;
-    case 'mtd': days = today.getUTCDate(); break;
-    case 'lm': days = 30; break;
-    case 'custom': days = 30; break;
+    case '7d':
+      days = 7;
+      break;
+    case '30d':
+      days = 30;
+      break;
+    case 'mtd':
+      days = today.getUTCDate();
+      break;
+    case 'lm':
+      days = 30;
+      break;
+    case 'custom':
+      days = 30;
+      break;
   }
   const end = today.toISOString().slice(0, 10);
   const startDate = new Date(today);

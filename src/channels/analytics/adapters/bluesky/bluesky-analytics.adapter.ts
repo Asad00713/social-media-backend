@@ -39,7 +39,9 @@ export class BlueskyAnalyticsAdapter implements PlatformAnalyticsAdapter {
     return 0; // Bluesky has no quota
   }
 
-  async fetchProfileSnapshot(channel: ChannelEntity): Promise<ProfileSnapshotResult> {
+  async fetchProfileSnapshot(
+    channel: ChannelEntity,
+  ): Promise<ProfileSnapshotResult> {
     try {
       const actor = channel.username ?? channel.platformAccountId;
       const profile = await this.client.getProfile(actor, channel.accessToken);
@@ -69,17 +71,29 @@ export class BlueskyAnalyticsAdapter implements PlatformAnalyticsAdapter {
     try {
       const atUri = (post as any).platformPostId as string;
       if (!atUri) {
-        return { status: 'failed', error: { code: 'not_found', message: 'No platformPostId on post' }, quotaCostUsed: 0 };
+        return {
+          status: 'failed',
+          error: { code: 'not_found', message: 'No platformPostId on post' },
+          quotaCostUsed: 0,
+        };
       }
       const accessJwt = (post as any).accessToken as string;
       if (!accessJwt) {
-        return { status: 'failed', error: { code: 'auth_failed', message: 'No access token' }, quotaCostUsed: 0 };
+        return {
+          status: 'failed',
+          error: { code: 'auth_failed', message: 'No access token' },
+          quotaCostUsed: 0,
+        };
       }
 
       const threadResp = await this.client.getPostThread(atUri, accessJwt);
       const p = threadResp.thread?.post;
       if (!p) {
-        return { status: 'failed', error: { code: 'not_found', message: 'Post not found in thread' }, quotaCostUsed: 0 };
+        return {
+          status: 'failed',
+          error: { code: 'not_found', message: 'Post not found in thread' },
+          quotaCostUsed: 0,
+        };
       }
 
       return {
@@ -121,7 +135,9 @@ export class BlueskyAnalyticsAdapter implements PlatformAnalyticsAdapter {
           const firstImage = item.post.embed?.images?.[0];
           return {
             platformPostId: item.post.uri,
-            publishedAt: new Date(item.post.record.createdAt ?? item.post.indexedAt),
+            publishedAt: new Date(
+              item.post.record.createdAt ?? item.post.indexedAt,
+            ),
             content: item.post.record.text ?? '',
             mediaUrl: firstImage?.thumb ?? firstImage?.fullsize ?? null,
             metrics: {
@@ -143,8 +159,13 @@ export class BlueskyAnalyticsAdapter implements PlatformAnalyticsAdapter {
 
   private toFailedResult<T extends { status: string }>(err: unknown): T {
     const bskyErr = err as BlueskyApiError;
-    const code: AdapterError['code'] = (bskyErr && bskyErr.code) ? bskyErr.code : 'transient';
+    const code: AdapterError['code'] =
+      bskyErr && bskyErr.code ? bskyErr.code : 'transient';
     const message = (err as Error)?.message ?? 'Unknown error';
-    return { status: 'failed', error: { code, message }, quotaCostUsed: 0 } as unknown as T;
+    return {
+      status: 'failed',
+      error: { code, message },
+      quotaCostUsed: 0,
+    } as unknown as T;
   }
 }

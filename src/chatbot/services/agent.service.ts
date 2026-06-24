@@ -2,7 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { LLMRouterService } from '../llm/llm-router.service';
 import { ToolRegistryService } from '../tools/tool-registry.service';
 import { GroqChatProvider } from '../llm/groq.provider';
-import { LLMMessage, LLMToolCall, LLMUsage } from '../llm/llm-provider.interface';
+import {
+  LLMMessage,
+  LLMToolCall,
+  LLMUsage,
+} from '../llm/llm-provider.interface';
 import { ToolContext } from '../tools/tool.interface';
 
 /**
@@ -49,7 +53,10 @@ export type AgentSSEEvent =
   | { event: 'message_saved'; data: { messageId: string } }
   | { event: 'title_generated'; data: { title: string } }
   | { event: 'followups'; data: { suggestions: string[] } }
-  | { event: 'actions'; data: { actions: Array<{ type: string; payload: Record<string, any> }> } }
+  | {
+      event: 'actions';
+      data: { actions: Array<{ type: string; payload: Record<string, any> }> };
+    }
   | { event: 'media'; data: { items: MediaItem[] } }
   | { event: 'post_preview'; data: { previews: PostPreviewData[] } }
   | { event: 'error'; data: { message: string } }
@@ -57,7 +64,11 @@ export type AgentSSEEvent =
 
 export interface AgentResult {
   content: string;
-  toolCalls: Array<{ id: string; name: string; arguments: Record<string, any> }>;
+  toolCalls: Array<{
+    id: string;
+    name: string;
+    arguments: Record<string, any>;
+  }>;
   thinkingSteps: string[];
   followups: string[];
   actions: Array<{ type: string; payload: Record<string, any> }>;
@@ -78,7 +89,7 @@ function trimHistory(messages: LLMMessage[], keep = 10): LLMMessage[] {
   // Always keep the first message (system prompt)
   if (messages.length <= keep + 1) return messages;
   const system = messages[0]?.role === 'system' ? [messages[0]] : [];
-  return [...system, ...messages.slice(-(keep))];
+  return [...system, ...messages.slice(-keep)];
 }
 
 @Injectable()
@@ -106,7 +117,9 @@ export class AgentService {
     signal?: AbortSignal,
     options?: { preferredProvider?: string },
   ): AsyncGenerator<AgentSSEEvent> {
-    const provider = this.llmRouter.getProvider({ preferredProvider: options?.preferredProvider });
+    const provider = this.llmRouter.getProvider({
+      preferredProvider: options?.preferredProvider,
+    });
     const toolDefs = this.toolRegistry.getToolDefinitions();
 
     // Classify intent from last user message to optimize model selection
@@ -119,7 +132,11 @@ export class AgentService {
     const useTools = intent !== 'simple'; // Skip tools for simple queries
 
     const thinkingSteps: string[] = [];
-    const allToolCalls: Array<{ id: string; name: string; arguments: Record<string, any> }> = [];
+    const allToolCalls: Array<{
+      id: string;
+      name: string;
+      arguments: Record<string, any>;
+    }> = [];
     let finalContent = '';
     let totalTokens = 0;
     let keyRotationsUsed = 0; // prevent infinite key rotation loop
@@ -221,7 +238,10 @@ export class AgentService {
             .map((m) => {
               if (m.role === 'assistant' && m.tool_calls) {
                 // Keep the assistant text but remove tool_calls
-                return { role: m.role, content: m.content || 'I was working on your request.' };
+                return {
+                  role: m.role,
+                  content: m.content || 'I was working on your request.',
+                };
               }
               return m;
             });
@@ -246,12 +266,18 @@ export class AgentService {
               // No tools — force a plain text response
             })) {
               if (signal?.aborted) {
-                yield { event: 'error', data: { message: 'Request cancelled' } };
+                yield {
+                  event: 'error',
+                  data: { message: 'Request cancelled' },
+                };
                 return;
               }
               if (chunk.type === 'content') {
                 streamedContent += chunk.content;
-                yield { event: 'message_stream', data: { token: chunk.content } };
+                yield {
+                  event: 'message_stream',
+                  data: { token: chunk.content },
+                };
               }
               if (chunk.type === 'done') {
                 usage = chunk.usage;
@@ -317,13 +343,19 @@ export class AgentService {
             arguments: parsedArgs,
           });
 
-          const result = await this.toolRegistry.execute(toolName, parsedArgs, context);
+          const result = await this.toolRegistry.execute(
+            toolName,
+            parsedArgs,
+            context,
+          );
 
           yield { event: 'tool_complete', data: { tool: toolName } };
 
           // Emit structured media data for frontend rendering (filter out duplicates)
           const rawMediaItems = this.extractMediaItems(toolName, result);
-          const mediaItems = rawMediaItems.filter((m) => !returnedMediaIds.has(m.id));
+          const mediaItems = rawMediaItems.filter(
+            (m) => !returnedMediaIds.has(m.id),
+          );
           for (const m of mediaItems) returnedMediaIds.add(m.id);
           if (mediaItems.length > 0) {
             yield { event: 'media', data: { items: mediaItems } };
@@ -396,7 +428,9 @@ export class AgentService {
 
       // If any media was involved this turn, keep ONLY the first line (intro sentence).
       if (returnedMediaIds.size > 0) {
-        const firstLine = finalContent.split('\n').find((l) => l.trim().length > 0);
+        const firstLine = finalContent
+          .split('\n')
+          .find((l) => l.trim().length > 0);
         finalContent = firstLine?.trim() || finalContent.trim();
       } else {
         finalContent = finalContent.replace(/\n{3,}/g, '\n\n').trim();
@@ -450,7 +484,8 @@ Example: ["Create a new post", "View my scheduled posts", "Check my analytics"]`
           ...recentMessages,
           {
             role: 'user',
-            content: 'Generate 3 follow-up suggestions based on the conversation above.',
+            content:
+              'Generate 3 follow-up suggestions based on the conversation above.',
           },
         ],
         {
@@ -516,15 +551,17 @@ Example: ["Create a new post", "View my scheduled posts", "Check my analytics"]`
 
       // Normalize mediaItems — LLMs sometimes pass strings instead of objects
       if (key === 'mediaItems' && Array.isArray(val)) {
-        args[key] = val.map((item: any) => {
-          if (typeof item === 'string') {
-            return { url: item, type: 'image' };
-          }
-          if (item && typeof item === 'object' && !Array.isArray(item)) {
-            return { ...item, type: item.type || 'image' };
-          }
-          return item;
-        }).filter(Boolean);
+        args[key] = val
+          .map((item: any) => {
+            if (typeof item === 'string') {
+              return { url: item, type: 'image' };
+            }
+            if (item && typeof item === 'object' && !Array.isArray(item)) {
+              return { ...item, type: item.type || 'image' };
+            }
+            return item;
+          })
+          .filter(Boolean);
         continue;
       }
 
@@ -619,7 +656,9 @@ Example: ["Create a new post", "View my scheduled posts", "Check my analytics"]`
         items.push({
           id: f.id,
           url,
-          thumbnailUrl: this.isValidMediaUrl(f.thumbnailLink) ? f.thumbnailLink : undefined,
+          thumbnailUrl: this.isValidMediaUrl(f.thumbnailLink)
+            ? f.thumbnailLink
+            : undefined,
           alt: f.name,
           source: 'Google Drive',
           mimeType: f.mimeType,
@@ -635,7 +674,9 @@ Example: ["Create a new post", "View my scheduled posts", "Check my analytics"]`
         items.push({
           id: f.id,
           url,
-          thumbnailUrl: this.isValidMediaUrl(f.thumbnails?.small?.url) ? f.thumbnails.small.url : undefined,
+          thumbnailUrl: this.isValidMediaUrl(f.thumbnails?.small?.url)
+            ? f.thumbnails.small.url
+            : undefined,
           alt: f.name,
           width: f.image?.width,
           height: f.image?.height,
@@ -700,7 +741,9 @@ Example: ["Create a new post", "View my scheduled posts", "Check my analytics"]`
         items.push({
           id: item.id,
           url: item.fileUrl,
-          thumbnailUrl: this.isValidMediaUrl(item.thumbnailUrl) ? item.thumbnailUrl : item.fileUrl,
+          thumbnailUrl: this.isValidMediaUrl(item.thumbnailUrl)
+            ? item.thumbnailUrl
+            : item.fileUrl,
           alt: item.name || item.description,
           width: item.width,
           height: item.height,
@@ -766,10 +809,15 @@ Example: ["Create a new post", "View my scheduled posts", "Check my analytics"]`
    * Only triggers for preview_post — create_post does not emit previews
    * since the user already reviewed the preview before confirming.
    */
-  private extractPostPreviews(toolName: string, result: any): PostPreviewData[] {
-    if (toolName !== 'preview_post' || !result?.success || !result?.data) return [];
+  private extractPostPreviews(
+    toolName: string,
+    result: any,
+  ): PostPreviewData[] {
+    if (toolName !== 'preview_post' || !result?.success || !result?.data)
+      return [];
 
-    const { id, content, status, scheduledAt, targets, mediaItems, metadata } = result.data;
+    const { id, content, status, scheduledAt, targets, mediaItems, metadata } =
+      result.data;
     if (!targets || !Array.isArray(targets)) return [];
 
     // Extract hashtags from content
@@ -802,7 +850,9 @@ Example: ["Create a new post", "View my scheduled posts", "Check my analytics"]`
     mediaItems: MediaItem[],
   ): Array<{ type: string; payload: Record<string, any> }> {
     // Only generate actions for external media (not already in user's library)
-    const externalItems = mediaItems.filter((m) => m.source !== 'Media Library');
+    const externalItems = mediaItems.filter(
+      (m) => m.source !== 'Media Library',
+    );
     if (externalItems.length === 0) return [];
 
     const actions: Array<{ type: string; payload: Record<string, any> }> = [];

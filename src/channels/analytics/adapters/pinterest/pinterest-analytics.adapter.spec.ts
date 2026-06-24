@@ -13,7 +13,9 @@ describe('PinterestAnalyticsAdapter', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    adapter = new PinterestAnalyticsAdapter(client as unknown as PinterestApiClient);
+    adapter = new PinterestAnalyticsAdapter(
+      client as unknown as PinterestApiClient,
+    );
   });
 
   it('exposes platform=pinterest with correct capabilities and vocabulary', () => {
@@ -72,7 +74,9 @@ describe('PinterestAnalyticsAdapter', () => {
       expect(result.data.totalPostsCount).toBeNull();
       expect(result.data.platformMetrics.username).toBe('myboard');
       expect(result.data.platformMetrics.accountType).toBe('BUSINESS');
-      expect(result.data.platformMetrics.profileImage).toBe('https://i.pinimg.com/pic.jpg');
+      expect(result.data.platformMetrics.profileImage).toBe(
+        'https://i.pinimg.com/pic.jpg',
+      );
       expect(result.data.platformMetrics.websiteUrl).toBe('https://mysite.com');
       expect(result.data.platformMetrics.businessName).toBe('My Co');
     }
@@ -246,7 +250,9 @@ describe('PinterestAnalyticsAdapter', () => {
       expect(post.metrics.sharesCount).toBeNull();
       expect(post.metrics.impressionsCount).toBeNull();
       expect(post.metrics.platformMetrics.boardId).toBe('board-123');
-      expect(post.metrics.platformMetrics.link).toBe('https://example.com/recipe');
+      expect(post.metrics.platformMetrics.link).toBe(
+        'https://example.com/recipe',
+      );
       expect(post.metrics.platformMetrics.altText).toBe('Food photo');
     }
   });
@@ -273,7 +279,9 @@ describe('PinterestAnalyticsAdapter', () => {
 
     expect(result.status).toBe('success');
     if (result.status === 'success') {
-      expect(result.data.posts[0].mediaUrl).toBe('https://i.pinimg.com/1200x/img.jpg');
+      expect(result.data.posts[0].mediaUrl).toBe(
+        'https://i.pinimg.com/1200x/img.jpg',
+      );
     }
   });
 

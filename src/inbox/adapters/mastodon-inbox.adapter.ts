@@ -25,7 +25,8 @@ export class MastodonInboxAdapter implements PlatformInboxAdapter {
     since?: Date,
   ): Promise<FetchedComment[]> {
     const instanceUrl = resolveInstanceUrl(channel);
-    if (!instanceUrl) throw new Error('Mastodon channel is missing instanceUrl');
+    if (!instanceUrl)
+      throw new Error('Mastodon channel is missing instanceUrl');
 
     const { descendants } = await this.mastodon.getStatusContext(
       instanceUrl,
@@ -67,7 +68,8 @@ export class MastodonInboxAdapter implements PlatformInboxAdapter {
     text: string,
   ): Promise<CreatedComment> {
     const instanceUrl = resolveInstanceUrl(channel);
-    if (!instanceUrl) throw new Error('Mastodon channel is missing instanceUrl');
+    if (!instanceUrl)
+      throw new Error('Mastodon channel is missing instanceUrl');
 
     const created = await this.mastodon.createStatus(
       instanceUrl,
@@ -90,7 +92,8 @@ export class MastodonInboxAdapter implements PlatformInboxAdapter {
     text: string,
   ): Promise<CreatedComment> {
     const instanceUrl = resolveInstanceUrl(channel);
-    if (!instanceUrl) throw new Error('Mastodon channel is missing instanceUrl');
+    if (!instanceUrl)
+      throw new Error('Mastodon channel is missing instanceUrl');
 
     const created = await this.mastodon.createStatus(
       instanceUrl,
@@ -116,7 +119,8 @@ export class MastodonInboxAdapter implements PlatformInboxAdapter {
     platformItemId: string,
   ): Promise<boolean> {
     const instanceUrl = resolveInstanceUrl(channel);
-    if (!instanceUrl) throw new Error('Mastodon channel is missing instanceUrl');
+    if (!instanceUrl)
+      throw new Error('Mastodon channel is missing instanceUrl');
     await this.mastodon.deleteStatus(
       instanceUrl,
       channel.accessToken,

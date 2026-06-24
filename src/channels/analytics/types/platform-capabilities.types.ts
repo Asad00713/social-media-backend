@@ -2,9 +2,24 @@ import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema'
 import type { ComposerCapabilities } from '../../../posts/composer/types/composer-capabilities.types';
 
 export type ContentType =
-  | 'post' | 'video' | 'short' | 'story' | 'reel' | 'pin' | 'thread' | 'article';
+  | 'post'
+  | 'video'
+  | 'short'
+  | 'story'
+  | 'reel'
+  | 'pin'
+  | 'thread'
+  | 'article';
 
-export type AgeBucket = '30m' | '1h' | '6h' | '24h' | '3d' | '7d' | '30d' | 'final';
+export type AgeBucket =
+  | '30m'
+  | '1h'
+  | '6h'
+  | '24h'
+  | '3d'
+  | '7d'
+  | '30d'
+  | 'final';
 
 export interface PlatformVocabulary {
   follower: string;

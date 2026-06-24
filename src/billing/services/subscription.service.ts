@@ -3,8 +3,10 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import Stripe from 'stripe';
+import { buildSubscriptionSync } from './subscription-sync.util';
+import { upsertInvoiceFromStripe } from './invoice-sync.util';
 import { StripeService } from '../../stripe/stripe.service';
 import { CustomerService } from './customer.service';
 import { db } from '../../drizzle/db';
@@ -118,23 +120,27 @@ export class SubscriptionService {
       );
     }
 
-    // 7. Get or create Stripe price for the plan
-    let stripePriceId = selectedPlan.stripePriceId;
+    // 7. Read the provisioned Stripe price for the plan (read-only — prices are
+    //    provisioned out-of-band by the stripe-provision script; FREE returned
+    //    above at step 5, so only paid plans reach here).
+    const stripePriceId = selectedPlan.stripePriceId;
 
     if (!stripePriceId) {
-      // Dynamically create price in Stripe if not configured
-      stripePriceId = await this.stripeService.getOrCreatePriceForPlan({
-        planCode: selectedPlan.code,
-        planName: selectedPlan.name,
-        priceCents: selectedPlan.basePriceCents,
-        interval: 'month',
-      });
+      throw new BadRequestException(
+        `Plan "${selectedPlan.code}" is not provisioned in Stripe — run the pricing provision script (npx ts-node src/drizzle/seeds/stripe-provision.ts)`,
+      );
+    }
 
-      // Optionally update the plan in database with the new price ID
-      await db
-        .update(plans)
-        .set({ stripePriceId })
-        .where(eq(plans.code, selectedPlan.code));
+    // Guard: a paid subscription must have a card. FREE→paid goes through
+    // Checkout; this direct path must never create an incomplete subscription.
+    if (!dto.paymentMethodId) {
+      const hasCard =
+        await this.stripeService.customerHasPaymentMethod(stripeCustomerId);
+      if (!hasCard) {
+        throw new BadRequestException(
+          'A payment method is required for a paid plan — subscribe via Checkout',
+        );
+      }
     }
 
     // 8. Create Stripe subscription
@@ -266,9 +272,7 @@ export class SubscriptionService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(
-        and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)),
-      )
+      .where(and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)))
       .limit(1);
 
     if (ws.length === 0) {
@@ -311,6 +315,169 @@ export class SubscriptionService {
     };
   }
 
+  async createCheckoutSession(dto: {
+    workspaceId: string;
+    userId: string;
+    planCode: string;
+  }): Promise<{ url: string }> {
+    // 1. Validate workspace exists and user is owner (mirror createSubscription).
+    const ws = await db
+      .select()
+      .from(workspace)
+      .where(
+        and(
+          eq(workspace.id, dto.workspaceId),
+          eq(workspace.ownerId, dto.userId),
+        ),
+      )
+      .limit(1);
+    if (ws.length === 0) {
+      throw new NotFoundException(
+        'Workspace not found or you are not the owner',
+      );
+    }
+
+    // 2. Resolve the plan and ensure it is paid + provisioned.
+    const planRows = await db
+      .select()
+      .from(plans)
+      .where(eq(plans.code, dto.planCode))
+      .limit(1);
+    const plan = planRows[0];
+    if (!plan) throw new NotFoundException('Plan not found');
+    if (plan.basePriceCents <= 0) {
+      throw new BadRequestException('FREE plan does not require checkout');
+    }
+    if (!plan.stripePriceId) {
+      throw new BadRequestException(
+        `Plan "${plan.code}" is not provisioned in Stripe — run the pricing provision script`,
+      );
+    }
+
+    // 3. Stripe customer + redirect URLs.
+    const { stripeCustomerId } =
+      await this.customerService.getOrCreateStripeCustomer(dto.userId);
+    const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:3001';
+    // Frontend workspace routes live under `/w/:workspaceId/*`
+    // (see frontend lib/workspace-path.ts WORKSPACE_ROUTE_PREFIX).
+    const base = `${frontendUrl}/w/${dto.workspaceId}/settings/plans`;
+
+    const session = await this.stripeService.createCheckoutSession({
+      customerId: stripeCustomerId,
+      priceId: plan.stripePriceId,
+      successUrl: `${base}?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancelUrl: `${base}?checkout=cancelled`,
+      metadata: {
+        workspaceId: dto.workspaceId,
+        userId: dto.userId,
+        planCode: dto.planCode,
+      },
+    });
+
+    if (!session.url) {
+      throw new BadRequestException('Failed to create checkout session');
+    }
+    return { url: session.url };
+  }
+
+  /**
+   * Idempotently persist a Stripe subscription into our DB (subscriptions +
+   * BASE_PLAN item + workspace_usage). Used by the checkout webhook and any
+   * direct path. Upserts on the workspace's existing row (FREE→paid updates the
+   * pre-existing FREE row rather than inserting a duplicate).
+   */
+  async persistStripeSubscription(input: {
+    workspaceId: string;
+    planCode: string;
+    stripeCustomerId: string;
+    stripeSubscription: Stripe.Subscription;
+  }): Promise<void> {
+    const planRows = await db
+      .select()
+      .from(plans)
+      .where(eq(plans.code, input.planCode))
+      .limit(1);
+    const plan = planRows[0];
+    if (!plan) {
+      throw new NotFoundException(`Plan "${input.planCode}" not found`);
+    }
+
+    const { subscriptionRow, baseItem, usageRow } = buildSubscriptionSync({
+      workspaceId: input.workspaceId,
+      planCode: input.planCode,
+      plan,
+      stripeCustomerId: input.stripeCustomerId,
+      stripeSubscription: input.stripeSubscription,
+    });
+
+    // 1. Upsert the subscriptions row (UNIQUE workspace_id → updates FREE row).
+    const subSet: Record<string, unknown> = {
+      stripeCustomerId: sql`excluded.stripe_customer_id`,
+      stripeSubscriptionId: sql`excluded.stripe_subscription_id`,
+      planCode: sql`excluded.plan_code`,
+      status: sql`excluded.status`,
+      currentPeriodStart: sql`excluded.current_period_start`,
+      currentPeriodEnd: sql`excluded.current_period_end`,
+      cancelAtPeriodEnd: sql`excluded.cancel_at_period_end`,
+      updatedAt: new Date(),
+    };
+    if ('trialEnd' in subscriptionRow) {
+      subSet.trialEnd = sql`excluded.trial_end`;
+    }
+    await db
+      .insert(subscriptions)
+      .values(subscriptionRow as NewSubscription)
+      .onConflictDoUpdate({ target: subscriptions.workspaceId, set: subSet });
+
+    // 2. Get the subscription id for the item upsert.
+    const savedRows = await db
+      .select({ id: subscriptions.id })
+      .from(subscriptions)
+      .where(eq(subscriptions.workspaceId, input.workspaceId))
+      .limit(1);
+    const subscriptionId = savedRows[0].id;
+
+    // 3. Upsert the BASE_PLAN item (UNIQUE subscription_id + item_type).
+    await db
+      .insert(subscriptionItems)
+      .values({ ...baseItem, subscriptionId } as NewSubscriptionItem)
+      .onConflictDoUpdate({
+        target: [subscriptionItems.subscriptionId, subscriptionItems.itemType],
+        set: {
+          stripeSubscriptionItemId: sql`excluded.stripe_subscription_item_id`,
+          stripePriceId: sql`excluded.stripe_price_id`,
+          quantity: sql`excluded.quantity`,
+          unitPriceCents: sql`excluded.unit_price_cents`,
+          updatedAt: new Date(),
+        },
+      });
+
+    // 4. Upsert workspace_usage limits (UNIQUE workspace_id).
+    await db
+      .insert(workspaceUsage)
+      .values(usageRow as NewWorkspaceUsage)
+      .onConflictDoUpdate({
+        target: workspaceUsage.workspaceId,
+        set: {
+          channelsLimit: sql`excluded.channels_limit`,
+          membersLimit: sql`excluded.members_limit`,
+          aiTokensLimit: sql`excluded.ai_tokens_limit`,
+          updatedAt: new Date(),
+        },
+      });
+
+    // 5. Persist the subscription's first invoice now, while we hold the fully
+    // expanded Stripe subscription (getSubscription expands `latest_invoice`).
+    // Stripe often emits `invoice.*` webhooks BEFORE `checkout.session.completed`,
+    // so relying on those events alone would miss the signup invoice (the sub
+    // row doesn't exist yet when they arrive). Capturing it here makes checkout
+    // the authoritative path, independent of webhook ordering.
+    const latestInvoice = input.stripeSubscription.latest_invoice;
+    if (latestInvoice && typeof latestInvoice !== 'string') {
+      await upsertInvoiceFromStripe(latestInvoice, subscriptionId);
+    }
+  }
+
   async getSubscriptionByWorkspaceId(workspaceId: string) {
     const subscription = await db
       .select()
@@ -337,13 +504,13 @@ export class SubscriptionService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(
-        and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)),
-      )
+      .where(and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)))
       .limit(1);
 
     if (ws.length === 0) {
-      throw new NotFoundException('Workspace not found or you are not the owner');
+      throw new NotFoundException(
+        'Workspace not found or you are not the owner',
+      );
     }
 
     // Handle FREE plan

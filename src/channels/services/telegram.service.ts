@@ -1,8 +1,4 @@
-import {
-  BadRequestException,
-  Injectable,
-  Logger,
-} from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
 interface TgResponse<T> {
@@ -24,19 +20,73 @@ export interface TgUser {
 export interface TgMessage {
   message_id: number;
   date: number;
-  chat: { id: number; type: 'private' | 'group' | 'supergroup' | 'channel'; title?: string; username?: string; first_name?: string; last_name?: string };
+  chat: {
+    id: number;
+    type: 'private' | 'group' | 'supergroup' | 'channel';
+    title?: string;
+    username?: string;
+    first_name?: string;
+    last_name?: string;
+  };
   from?: TgUser;
   text?: string;
   caption?: string;
   entities?: TgEntity[];
   caption_entities?: TgEntity[];
-  photo?: Array<{ file_id: string; file_unique_id: string; width: number; height: number; file_size?: number }>;
-  voice?: { file_id: string; file_unique_id: string; duration: number; mime_type?: string; file_size?: number };
-  audio?: { file_id: string; file_unique_id: string; duration: number; mime_type?: string; file_size?: number; title?: string; performer?: string; file_name?: string };
-  video?: { file_id: string; file_unique_id: string; width: number; height: number; duration: number; mime_type?: string; file_size?: number; file_name?: string };
-  video_note?: { file_id: string; file_unique_id: string; length: number; duration: number; file_size?: number };
-  document?: { file_id: string; file_unique_id: string; file_name?: string; mime_type?: string; file_size?: number };
-  sticker?: { file_id: string; file_unique_id: string; file_size?: number; mime_type?: string };
+  photo?: Array<{
+    file_id: string;
+    file_unique_id: string;
+    width: number;
+    height: number;
+    file_size?: number;
+  }>;
+  voice?: {
+    file_id: string;
+    file_unique_id: string;
+    duration: number;
+    mime_type?: string;
+    file_size?: number;
+  };
+  audio?: {
+    file_id: string;
+    file_unique_id: string;
+    duration: number;
+    mime_type?: string;
+    file_size?: number;
+    title?: string;
+    performer?: string;
+    file_name?: string;
+  };
+  video?: {
+    file_id: string;
+    file_unique_id: string;
+    width: number;
+    height: number;
+    duration: number;
+    mime_type?: string;
+    file_size?: number;
+    file_name?: string;
+  };
+  video_note?: {
+    file_id: string;
+    file_unique_id: string;
+    length: number;
+    duration: number;
+    file_size?: number;
+  };
+  document?: {
+    file_id: string;
+    file_unique_id: string;
+    file_name?: string;
+    mime_type?: string;
+    file_size?: number;
+  };
+  sticker?: {
+    file_id: string;
+    file_unique_id: string;
+    file_size?: number;
+    mime_type?: string;
+  };
   reply_to_message?: TgMessage;
 }
 
@@ -84,10 +134,7 @@ export class TelegramClient {
     return json.result;
   }
 
-  private async callMultipart<T>(
-    method: string,
-    form: FormData,
-  ): Promise<T> {
+  private async callMultipart<T>(method: string, form: FormData): Promise<T> {
     const res = await fetch(`${this.baseUrl}/${method}`, {
       method: 'POST',
       body: form,
@@ -109,7 +156,12 @@ export class TelegramClient {
     return this.callJson<true>('setWebhook', {
       url,
       secret_token: secretToken,
-      allowed_updates: ['message', 'edited_message', 'callback_query', 'my_chat_member'],
+      allowed_updates: [
+        'message',
+        'edited_message',
+        'callback_query',
+        'my_chat_member',
+      ],
     });
   }
 
@@ -125,7 +177,9 @@ export class TelegramClient {
     return this.callJson<TgMessage>('sendMessage', {
       chat_id: chatId,
       text,
-      ...(options.replyToMessageId && { reply_to_message_id: options.replyToMessageId }),
+      ...(options.replyToMessageId && {
+        reply_to_message_id: options.replyToMessageId,
+      }),
       ...(options.replyMarkup && { reply_markup: options.replyMarkup }),
       ...(options.parseMode && { parse_mode: options.parseMode }),
     });
@@ -176,7 +230,9 @@ export class TelegramClient {
     return this.callJson('getChatAdministrators', { chat_id: chatId });
   }
 
-  async getFile(fileId: string): Promise<{ file_path: string; file_size?: number }> {
+  async getFile(
+    fileId: string,
+  ): Promise<{ file_path: string; file_size?: number }> {
     return this.callJson('getFile', { file_id: fileId });
   }
 
@@ -225,7 +281,13 @@ export class TelegramClient {
 
   private buildMediaForm(
     chatId: string | number,
-    fieldName: 'photo' | 'voice' | 'audio' | 'video' | 'video_note' | 'document',
+    fieldName:
+      | 'photo'
+      | 'voice'
+      | 'audio'
+      | 'video'
+      | 'video_note'
+      | 'document',
     buffer: Buffer,
     filename: string,
     contentType: string,
@@ -239,24 +301,104 @@ export class TelegramClient {
     return form;
   }
 
-  async sendPhoto(chatId: string | number, buffer: Buffer, filename: string, contentType: string, caption?: string): Promise<TgMessage> {
-    return this.callMultipart<TgMessage>('sendPhoto', this.buildMediaForm(chatId, 'photo', buffer, filename, contentType, caption));
+  async sendPhoto(
+    chatId: string | number,
+    buffer: Buffer,
+    filename: string,
+    contentType: string,
+    caption?: string,
+  ): Promise<TgMessage> {
+    return this.callMultipart<TgMessage>(
+      'sendPhoto',
+      this.buildMediaForm(
+        chatId,
+        'photo',
+        buffer,
+        filename,
+        contentType,
+        caption,
+      ),
+    );
   }
 
-  async sendVoice(chatId: string | number, buffer: Buffer, filename: string, contentType: string, caption?: string): Promise<TgMessage> {
-    return this.callMultipart<TgMessage>('sendVoice', this.buildMediaForm(chatId, 'voice', buffer, filename, contentType, caption));
+  async sendVoice(
+    chatId: string | number,
+    buffer: Buffer,
+    filename: string,
+    contentType: string,
+    caption?: string,
+  ): Promise<TgMessage> {
+    return this.callMultipart<TgMessage>(
+      'sendVoice',
+      this.buildMediaForm(
+        chatId,
+        'voice',
+        buffer,
+        filename,
+        contentType,
+        caption,
+      ),
+    );
   }
 
-  async sendAudio(chatId: string | number, buffer: Buffer, filename: string, contentType: string, caption?: string): Promise<TgMessage> {
-    return this.callMultipart<TgMessage>('sendAudio', this.buildMediaForm(chatId, 'audio', buffer, filename, contentType, caption));
+  async sendAudio(
+    chatId: string | number,
+    buffer: Buffer,
+    filename: string,
+    contentType: string,
+    caption?: string,
+  ): Promise<TgMessage> {
+    return this.callMultipart<TgMessage>(
+      'sendAudio',
+      this.buildMediaForm(
+        chatId,
+        'audio',
+        buffer,
+        filename,
+        contentType,
+        caption,
+      ),
+    );
   }
 
-  async sendVideo(chatId: string | number, buffer: Buffer, filename: string, contentType: string, caption?: string): Promise<TgMessage> {
-    return this.callMultipart<TgMessage>('sendVideo', this.buildMediaForm(chatId, 'video', buffer, filename, contentType, caption));
+  async sendVideo(
+    chatId: string | number,
+    buffer: Buffer,
+    filename: string,
+    contentType: string,
+    caption?: string,
+  ): Promise<TgMessage> {
+    return this.callMultipart<TgMessage>(
+      'sendVideo',
+      this.buildMediaForm(
+        chatId,
+        'video',
+        buffer,
+        filename,
+        contentType,
+        caption,
+      ),
+    );
   }
 
-  async sendDocument(chatId: string | number, buffer: Buffer, filename: string, contentType: string, caption?: string): Promise<TgMessage> {
-    return this.callMultipart<TgMessage>('sendDocument', this.buildMediaForm(chatId, 'document', buffer, filename, contentType, caption));
+  async sendDocument(
+    chatId: string | number,
+    buffer: Buffer,
+    filename: string,
+    contentType: string,
+    caption?: string,
+  ): Promise<TgMessage> {
+    return this.callMultipart<TgMessage>(
+      'sendDocument',
+      this.buildMediaForm(
+        chatId,
+        'document',
+        buffer,
+        filename,
+        contentType,
+        caption,
+      ),
+    );
   }
 
   /** Replace `text_mention` entity ranges with `@<first_name>` so the inbox
@@ -284,10 +426,15 @@ export class TelegramClient {
   }
 
   async deleteWebhook(): Promise<true> {
-    return this.callJson<true>('deleteWebhook', { drop_pending_updates: false });
+    return this.callJson<true>('deleteWebhook', {
+      drop_pending_updates: false,
+    });
   }
 
-  async getWebhookInfo(): Promise<{ url: string; last_error_message?: string }> {
+  async getWebhookInfo(): Promise<{
+    url: string;
+    last_error_message?: string;
+  }> {
     return this.callJson('getWebhookInfo', {});
   }
 }

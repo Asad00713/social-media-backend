@@ -28,7 +28,10 @@ import { PostsModule } from '../posts.module';
     DraftStoreService,
     ComposerSchedulingService,
     ChannelCredentialsAdapter,
-    { provide: CHANNEL_CREDENTIALS_LOOKUP, useExisting: ChannelCredentialsAdapter },
+    {
+      provide: CHANNEL_CREDENTIALS_LOOKUP,
+      useExisting: ChannelCredentialsAdapter,
+    },
   ],
   exports: [ComposerValidatorService, PayloadResolverService],
 })

@@ -29,7 +29,10 @@ const WARNING_THRESHOLD = 0.9;
 export class ComposerValidatorService {
   constructor(private readonly mediaValidator: MediaValidatorService) {}
 
-  validate(payload: PublicationPayload, caps: ComposerCapabilities): ComposerValidationResult {
+  validate(
+    payload: PublicationPayload,
+    caps: ComposerCapabilities,
+  ): ComposerValidationResult {
     const errors: ComposerValidationError[] = [];
     const warnings: ComposerValidationError[] = [];
 
@@ -64,7 +67,11 @@ export class ComposerValidatorService {
     }
 
     const title = (payload.platformSpecific.title as string | undefined) ?? '';
-    if (caps.supportsTitle && caps.maxCharsTitle && title.length > caps.maxCharsTitle) {
+    if (
+      caps.supportsTitle &&
+      caps.maxCharsTitle &&
+      title.length > caps.maxCharsTitle
+    ) {
       errors.push({
         kind: 'title_too_long',
         field: 'title',
@@ -72,7 +79,8 @@ export class ComposerValidatorService {
       });
     }
 
-    const desc = (payload.platformSpecific.description as string | undefined) ?? '';
+    const desc =
+      (payload.platformSpecific.description as string | undefined) ?? '';
     if (
       caps.supportsDescription &&
       caps.maxCharsDescription &&
@@ -85,9 +93,16 @@ export class ComposerValidatorService {
       });
     }
 
-    const mediaResult = this.mediaValidator.validate(payload.mediaItems, caps.mediaConstraints);
+    const mediaResult = this.mediaValidator.validate(
+      payload.mediaItems,
+      caps.mediaConstraints,
+    );
     for (const e of mediaResult.errors) {
-      errors.push({ kind: 'media_invalid', field: 'media', message: e.message });
+      errors.push({
+        kind: 'media_invalid',
+        field: 'media',
+        message: e.message,
+      });
     }
 
     return { ok: errors.length === 0, errors, warnings };
@@ -98,17 +113,23 @@ export class ComposerValidatorService {
       case 'body':
         return payload.text.trim().length > 0;
       case 'title':
-        return Boolean((payload.platformSpecific.title as string | undefined)?.trim());
+        return Boolean(
+          (payload.platformSpecific.title as string | undefined)?.trim(),
+        );
       case 'description':
-        return Boolean((payload.platformSpecific.description as string | undefined)?.trim());
+        return Boolean(
+          (payload.platformSpecific.description as string | undefined)?.trim(),
+        );
       case 'image':
         return payload.mediaItems.some((m) => m.type === 'image');
       case 'video':
         return payload.mediaItems.some((m) => m.type === 'video');
       case 'board':
-        return Boolean((payload.platformSpecific.boardId as string | undefined)?.trim());
+        return Boolean(
+          (payload.platformSpecific.boardId as string | undefined)?.trim(),
+        );
       default:
-        return Boolean((payload.platformSpecific as Record<string, unknown>)[field]);
+        return Boolean(payload.platformSpecific[field]);
     }
   }
 }

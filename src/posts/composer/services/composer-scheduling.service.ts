@@ -1,4 +1,9 @@
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
@@ -26,7 +31,8 @@ export class ComposerSchedulingService {
 
   constructor(
     @Inject(DRIZZLE) private readonly db: any,
-    @InjectQueue(QUEUES.POST_PUBLISHING) private readonly publishingQueue: Queue,
+    @InjectQueue(QUEUES.POST_PUBLISHING)
+    private readonly publishingQueue: Queue,
   ) {}
 
   async schedule(
@@ -42,21 +48,23 @@ export class ComposerSchedulingService {
       );
     }
     if (!dto.channels?.length) {
-      throw new BadRequestException('Draft must have at least one channel selected');
+      throw new BadRequestException(
+        'Draft must have at least one channel selected',
+      );
     }
 
     // Build the legacy posts.targets shape (PostTarget) — status='draft' per
     // channel until the worker fires, when PostService.publishPost flips
     // them to 'publishing' then 'published' / 'failed'.
-    const legacyTargets = dto.channels.map<
-      ChannelTarget & { status: string }
-    >((c) => ({
-      channelId: c.channelId,
-      platform: c.platform,
-      publishStatus: 'queued',
-      retryCount: 0,
-      status: 'draft', // legacy PostTarget.status — required by PostService.publishPost
-    }));
+    const legacyTargets = dto.channels.map<ChannelTarget & { status: string }>(
+      (c) => ({
+        channelId: c.channelId,
+        platform: c.platform,
+        publishStatus: 'queued',
+        retryCount: 0,
+        status: 'draft', // legacy PostTarget.status — required by PostService.publishPost
+      }),
+    );
 
     // Pull per-platform metadata (thread, polls) into post.metadata so the
     // existing publisher dispatch picks it up (TwitterPublisher reads
@@ -110,7 +118,9 @@ export class ComposerSchedulingService {
           metadata: metadata as any,
           updatedAt: new Date(),
         })
-        .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)));
+        .where(
+          and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)),
+        );
     }
 
     // Remove any prior delayed job for this draft (e.g. user re-schedules).
@@ -138,7 +148,10 @@ export class ComposerSchedulingService {
   }
 
   /** Cancels a scheduled draft — removes the BullMQ job and resets status. */
-  async cancel(workspaceId: string, draftId: string): Promise<{ success: true }> {
+  async cancel(
+    workspaceId: string,
+    draftId: string,
+  ): Promise<{ success: true }> {
     const jobId = `composer-publish-${draftId}`;
     const job = await this.publishingQueue.getJob(jobId);
     if (job) await job.remove();

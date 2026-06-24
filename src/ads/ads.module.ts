@@ -1,18 +1,18 @@
-import { Module } from '@nestjs/common'
-import { ChannelsModule } from '../channels/channels.module'
-import { RealtimeModule } from '../realtime/realtime.module'
-import { EmailModule } from '../email/email.module'
-import { QueueModule } from '../queue/queue.module'
-import { AdsController } from './ads.controller'
-import { LeadAdsController } from './lead-ads.controller'
-import { AdDraftsService } from './services/ad-drafts.service'
-import { LeadRouterService } from './services/lead-router.service'
-import { LeadDeliveryProcessor } from './processors/lead-delivery.processor'
-import { AdInsightsService } from './services/ad-insights.service'
-import { AdInsightsSyncProcessor } from './processors/ad-insights-sync.processor'
-import { AdInsightsSyncScheduler } from './schedulers/ad-insights-sync.scheduler'
-import { AdMutationsService } from './services/ad-mutations.service'
-import { BoostEditService } from './services/boost-edit.service'
+import { Module } from '@nestjs/common';
+import { ChannelsModule } from '../channels/channels.module';
+import { RealtimeModule } from '../realtime/realtime.module';
+import { EmailModule } from '../email/email.module';
+import { QueueModule } from '../queue/queue.module';
+import { AdsController } from './ads.controller';
+import { LeadAdsController } from './lead-ads.controller';
+import { AdDraftsService } from './services/ad-drafts.service';
+import { LeadRouterService } from './services/lead-router.service';
+import { LeadDeliveryProcessor } from './processors/lead-delivery.processor';
+import { AdInsightsService } from './services/ad-insights.service';
+import { AdInsightsSyncProcessor } from './processors/ad-insights-sync.processor';
+import { AdInsightsSyncScheduler } from './schedulers/ad-insights-sync.scheduler';
+import { AdMutationsService } from './services/ad-mutations.service';
+import { BoostEditService } from './services/boost-edit.service';
 
 /**
  * AdsModule — Meta Ads Phase 1

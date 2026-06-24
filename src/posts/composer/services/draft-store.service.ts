@@ -20,7 +20,11 @@ import type {
 export class DraftStoreService {
   constructor(@Inject(DRIZZLE) private readonly db: any) {}
 
-  async upsert(workspaceId: string, userId: string, dto: SaveDraftDto): Promise<Draft> {
+  async upsert(
+    workspaceId: string,
+    userId: string,
+    dto: SaveDraftDto,
+  ): Promise<Draft> {
     const existing = await this.db
       .select()
       .from(posts)
@@ -75,7 +79,8 @@ export class DraftStoreService {
       .from(posts)
       .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)))
       .limit(1);
-    if (rows.length === 0) throw new NotFoundException(`Draft ${draftId} not found`);
+    if (rows.length === 0)
+      throw new NotFoundException(`Draft ${draftId} not found`);
     return this.toDraft(rows[0]);
   }
 
@@ -94,7 +99,10 @@ export class DraftStoreService {
     return rows.map((r: any) => this.toDraft(r));
   }
 
-  async delete(workspaceId: string, draftId: string): Promise<{ success: true }> {
+  async delete(
+    workspaceId: string,
+    draftId: string,
+  ): Promise<{ success: true }> {
     await this.db
       .delete(posts)
       .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)));

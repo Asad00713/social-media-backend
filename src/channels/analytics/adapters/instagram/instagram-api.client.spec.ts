@@ -77,7 +77,9 @@ describe('InstagramApiClient', () => {
       }),
     });
 
-    await expect(client.getUser('ig-user-123', 'bad-token')).rejects.toMatchObject({
+    await expect(
+      client.getUser('ig-user-123', 'bad-token'),
+    ).rejects.toMatchObject({
       code: 'auth_failed',
       status: 400,
     });

@@ -15,7 +15,10 @@ import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { GroqService } from './groq.service';
-import { AiTokenService, AI_OPERATION_COSTS } from './services/ai-token.service';
+import {
+  AiTokenService,
+  AI_OPERATION_COSTS,
+} from './services/ai-token.service';
 import { ElevenLabsSttService } from './services/elevenlabs-stt.service';
 import {
   GeneratePostDto,
@@ -84,7 +87,10 @@ export class AiController {
   @HttpCode(HttpStatus.OK)
   async getWorkspaceUsage(@Param('workspaceId') workspaceId: string) {
     const usage = await this.aiTokenService.getWorkspaceAiUsage(workspaceId);
-    const recentLogs = await this.aiTokenService.getRecentUsageLogs(workspaceId, 10);
+    const recentLogs = await this.aiTokenService.getRecentUsageLogs(
+      workspaceId,
+      10,
+    );
 
     return {
       tokens: usage,
@@ -418,7 +424,10 @@ export class AiController {
           dto.platform,
           dto.count,
         );
-        return { result: variations, outputLength: variations.join(' ').length };
+        return {
+          result: variations,
+          outputLength: variations.join(' ').length,
+        };
       },
     );
 
@@ -442,7 +451,10 @@ export class AiController {
       dto.platform,
       `Analyze post: ${dto.content.substring(0, 100)}`,
       async () => {
-        const analysis = await this.groqService.analyzePost(dto.content, dto.platform);
+        const analysis = await this.groqService.analyzePost(
+          dto.content,
+          dto.platform,
+        );
         return { result: analysis };
       },
     );

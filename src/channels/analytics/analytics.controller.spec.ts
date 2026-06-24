@@ -7,7 +7,11 @@ import { DRIZZLE } from '../../drizzle/drizzle.module';
 
 describe('AnalyticsController', () => {
   let controller: AnalyticsController;
-  const fakeService = { getOverview: jest.fn(), getSyncState: jest.fn(), requestManualRefresh: jest.fn() };
+  const fakeService = {
+    getOverview: jest.fn(),
+    getSyncState: jest.fn(),
+    requestManualRefresh: jest.fn(),
+  };
   const fakeDb = {
     select: () => ({
       from: () => ({
@@ -27,8 +31,10 @@ describe('AnalyticsController', () => {
         { provide: DRIZZLE, useValue: fakeDb },
       ],
     })
-      .overrideGuard(AuthGuard('jwt')).useValue({ canActivate: () => true })
-      .overrideGuard(ChannelOwnershipGuard).useValue({ canActivate: () => true })
+      .overrideGuard(AuthGuard('jwt'))
+      .useValue({ canActivate: () => true })
+      .overrideGuard(ChannelOwnershipGuard)
+      .useValue({ canActivate: () => true })
       .compile();
 
     controller = module.get(AnalyticsController);
@@ -42,8 +48,9 @@ describe('AnalyticsController', () => {
   });
 
   it('getOverview rejects invalid range', async () => {
-    await expect(controller.getOverview('ws-1', '42', 'invalid' as any))
-      .rejects.toThrow(/Invalid range/);
+    await expect(
+      controller.getOverview('ws-1', '42', 'invalid' as any),
+    ).rejects.toThrow(/Invalid range/);
   });
 
   it('getSyncState delegates to service', async () => {

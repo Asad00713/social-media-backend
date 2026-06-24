@@ -5,7 +5,10 @@ import { and, desc, eq } from 'drizzle-orm';
 import { QUEUES } from '../../../queue/queue.module';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { posts } from '../../../drizzle/schema/posts.schema';
-import { socialMediaChannels, type SupportedPlatform } from '../../../drizzle/schema/channels.schema';
+import {
+  socialMediaChannels,
+  type SupportedPlatform,
+} from '../../../drizzle/schema/channels.schema';
 import { postMetricSnapshots } from '../../../drizzle/schema/post-metric-snapshots.schema';
 import { AdapterRegistryService } from '../services/adapter-registry.service';
 import { QuotaTrackerService } from '../services/quota-tracker.service';
@@ -45,11 +48,17 @@ export class PostMetricSnapshotHandler {
       .limit(1);
     const channel = channelRow[0];
     if (!channel || !this.registry.has(channel.platform as SupportedPlatform)) {
-      this.logger.log(`Post snapshot: no adapter for ${channel?.platform ?? 'unknown'}, skipping postId=${postId}`);
+      this.logger.log(
+        `Post snapshot: no adapter for ${channel?.platform ?? 'unknown'}, skipping postId=${postId}`,
+      );
       return { ok: true };
     }
 
-    const postRow = await this.db.select().from(posts).where(eq(posts.id, postId)).limit(1);
+    const postRow = await this.db
+      .select()
+      .from(posts)
+      .where(eq(posts.id, postId))
+      .limit(1);
     const post = postRow[0];
     if (!post) {
       this.logger.warn(`Post snapshot: post ${postId} not found, dropping`);
@@ -58,7 +67,10 @@ export class PostMetricSnapshotHandler {
 
     const adapter = this.registry.get(channel.platform as SupportedPlatform);
     const cost = adapter.estimateQuotaCost('fetchPostMetrics');
-    const quota = await this.quota.tryConsume(channel.platform as SupportedPlatform, cost);
+    const quota = await this.quota.tryConsume(
+      channel.platform as SupportedPlatform,
+      cost,
+    );
     if (!quota.allowed) {
       await this.queue.add(
         'post-metric-snapshot',
@@ -69,13 +81,19 @@ export class PostMetricSnapshotHandler {
     }
 
     // Extract platformPostId from targets array (per-channel storage)
-    const targets = (post.targets ?? []) as Array<{ channelId: string; platformPostId?: string; publishedAt?: string }>;
+    const targets = (post.targets ?? []) as Array<{
+      channelId: string;
+      platformPostId?: string;
+      publishedAt?: string;
+    }>;
     const target = targets.find((t) => Number(t.channelId) === channelId);
     const platformPostId = target?.platformPostId;
     const targetPublishedAt = target?.publishedAt ?? post.publishedAt;
 
     if (!platformPostId) {
-      this.logger.warn(`Post snapshot: post ${postId} has no platformPostId for channel ${channelId}, skipping`);
+      this.logger.warn(
+        `Post snapshot: post ${postId} has no platformPostId for channel ${channelId}, skipping`,
+      );
       return { ok: true };
     }
 
@@ -84,10 +102,12 @@ export class PostMetricSnapshotHandler {
       accessToken: decrypt(channel.accessToken),
       platformPostId,
       publishedAt: targetPublishedAt,
-    } as any);
+    });
 
     if (result.status === 'failed') {
-      this.logger.error(`Post snapshot failed postId=${postId}: ${result.error.message}`);
+      this.logger.error(
+        `Post snapshot failed postId=${postId}: ${result.error.message}`,
+      );
       return { ok: false };
     }
 
@@ -128,7 +148,9 @@ export class PostMetricSnapshotHandler {
     const VELOCITY_FOLLOWUP_DELAY_MS = 2 * 60 * 1000;
 
     try {
-      const ageMs = targetPublishedAt ? Date.now() - new Date(targetPublishedAt).getTime() : Number.POSITIVE_INFINITY;
+      const ageMs = targetPublishedAt
+        ? Date.now() - new Date(targetPublishedAt).getTime()
+        : Number.POSITIVE_INFINITY;
       if (ageMs < HOT_AGE_MAX_MS) {
         const recent = await this.db
           .select({
@@ -138,13 +160,21 @@ export class PostMetricSnapshotHandler {
             snapshotAt: postMetricSnapshots.snapshotAt,
           })
           .from(postMetricSnapshots)
-          .where(and(eq(postMetricSnapshots.postId, postId), eq(postMetricSnapshots.channelId, channelId)))
+          .where(
+            and(
+              eq(postMetricSnapshots.postId, postId),
+              eq(postMetricSnapshots.channelId, channelId),
+            ),
+          )
           .orderBy(desc(postMetricSnapshots.snapshotAt))
           .limit(2);
 
         if (recent.length === 2) {
           const [latest, previous] = recent;
-          const safeDelta = (curr: number | null | undefined, prev: number | null | undefined): number => {
+          const safeDelta = (
+            curr: number | null | undefined,
+            prev: number | null | undefined,
+          ): number => {
             const c = Number(curr ?? 0);
             const p = Number(prev ?? 0);
             if (p === 0 && c === 0) return 0;
@@ -163,13 +193,17 @@ export class PostMetricSnapshotHandler {
               { postId, channelId, ageBucket },
               { delay: VELOCITY_FOLLOWUP_DELAY_MS },
             );
-            this.logger.log(`Velocity boost: post ${postId} delta=${(maxDelta * 100).toFixed(1)}% — follow-up in 2 min`);
+            this.logger.log(
+              `Velocity boost: post ${postId} delta=${(maxDelta * 100).toFixed(1)}% — follow-up in 2 min`,
+            );
           }
         }
       }
     } catch (velocityErr) {
       // Never let velocity logic break the snapshot write path
-      this.logger.warn(`Velocity boost check failed for post ${postId}: ${(velocityErr as Error).message}`);
+      this.logger.warn(
+        `Velocity boost check failed for post ${postId}: ${(velocityErr as Error).message}`,
+      );
     }
 
     // Engagement-decay check: if last 3 snapshots show stable likes/comments/shares,
@@ -181,7 +215,12 @@ export class PostMetricSnapshotHandler {
         shares: postMetricSnapshots.sharesCount,
       })
       .from(postMetricSnapshots)
-      .where(and(eq(postMetricSnapshots.postId, postId), eq(postMetricSnapshots.channelId, channelId)))
+      .where(
+        and(
+          eq(postMetricSnapshots.postId, postId),
+          eq(postMetricSnapshots.channelId, channelId),
+        ),
+      )
       .orderBy(desc(postMetricSnapshots.snapshotAt))
       .limit(3);
 
@@ -198,9 +237,13 @@ export class PostMetricSnapshotHandler {
     // The TieredPollingScheduler picks this post up again at the next tick
     // based on its age tier. (cascade-style enqueue removed in Phase 0)
     if (stable) {
-      this.logger.log(`Post ${postId} bucket=${ageBucket}: metrics stable across last 3 snapshots (engagement likely plateaued)`);
+      this.logger.log(
+        `Post ${postId} bucket=${ageBucket}: metrics stable across last 3 snapshots (engagement likely plateaued)`,
+      );
     } else {
-      this.logger.log(`Post snapshot success postId=${postId} bucket=${ageBucket}`);
+      this.logger.log(
+        `Post snapshot success postId=${postId} bucket=${ageBucket}`,
+      );
     }
     return { ok: true };
   }

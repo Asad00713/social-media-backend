@@ -9,7 +9,10 @@ import type {
 } from '../../types/platform-adapter.types';
 import type { ChannelEntity } from '../../types/channel-entity.types';
 import type { PostEntity } from '../../types/post-entity.types';
-import type { PlatformCapabilities, PollingProfile } from '../../types/platform-capabilities.types';
+import type {
+  PlatformCapabilities,
+  PollingProfile,
+} from '../../types/platform-capabilities.types';
 import { getCapabilities } from '../../platform-capabilities.registry';
 import { PinterestApiClient, PinterestApiError } from './pinterest-api.client';
 
@@ -40,15 +43,23 @@ export class PinterestAnalyticsAdapter implements PlatformAnalyticsAdapter {
     return 0;
   }
 
-  async fetchProfileSnapshot(channel: ChannelEntity): Promise<ProfileSnapshotResult> {
+  async fetchProfileSnapshot(
+    channel: ChannelEntity,
+  ): Promise<ProfileSnapshotResult> {
     try {
       const today = new Date();
-      const startDate = isoDate(new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000));
+      const startDate = isoDate(
+        new Date(today.getTime() - 30 * 24 * 60 * 60 * 1000),
+      );
       const endDate = isoDate(today);
 
       const [account, analytics] = await Promise.allSettled([
         this.client.getUserAccount(channel.accessToken),
-        this.client.getUserAnalytics({ accessToken: channel.accessToken, startDate, endDate }),
+        this.client.getUserAnalytics({
+          accessToken: channel.accessToken,
+          startDate,
+          endDate,
+        }),
       ]);
 
       if (account.status === 'rejected') {
@@ -116,11 +127,18 @@ export class PinterestAnalyticsAdapter implements PlatformAnalyticsAdapter {
       const startDate = isoDate(published);
       const endDate = isoDate(today);
 
-      const analytics = await this.client.getPinAnalytics({ pinId, accessToken, startDate, endDate });
+      const analytics = await this.client.getPinAnalytics({
+        pinId,
+        accessToken,
+        startDate,
+        endDate,
+      });
       const summary = analytics.all?.summary_metrics ?? {};
       const lifetime = analytics.all?.lifetime_metrics ?? {};
       const get = (key: string): number | null =>
-        (summary[key] as number | undefined) ?? (lifetime[key] as number | undefined) ?? null;
+        (summary[key] as number | undefined) ??
+        (lifetime[key] as number | undefined) ??
+        null;
 
       return {
         status: 'success',
@@ -164,7 +182,9 @@ export class PinterestAnalyticsAdapter implements PlatformAnalyticsAdapter {
           publishedAt: new Date(p.created_at),
           content: p.title ?? p.description ?? '',
           mediaUrl:
-            p.media?.images?.['600x']?.url ?? p.media?.images?.['1200x']?.url ?? null,
+            p.media?.images?.['600x']?.url ??
+            p.media?.images?.['1200x']?.url ??
+            null,
           metrics: {
             likesCount: 0,
             commentsCount: 0,
@@ -185,9 +205,9 @@ export class PinterestAnalyticsAdapter implements PlatformAnalyticsAdapter {
     }
   }
 
-  private toFailedResult<T extends { status: string; error?: unknown; quotaCostUsed: number }>(
-    err: unknown,
-  ): T {
+  private toFailedResult<
+    T extends { status: string; error?: unknown; quotaCostUsed: number },
+  >(err: unknown): T {
     const pErr = err instanceof PinterestApiError ? err : null;
     return {
       status: 'failed',

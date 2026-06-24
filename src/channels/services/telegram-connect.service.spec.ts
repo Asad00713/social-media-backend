@@ -5,9 +5,16 @@ import { TelegramConnectService } from './telegram-connect.service';
 
 function makeClient(overrides: any = {}) {
   return {
-    getMe: jest.fn().mockResolvedValue({ id: 555, is_bot: true, first_name: 'My Bot', username: 'my_bot' }),
+    getMe: jest.fn().mockResolvedValue({
+      id: 555,
+      is_bot: true,
+      first_name: 'My Bot',
+      username: 'my_bot',
+    }),
     setWebhook: jest.fn().mockResolvedValue(true),
-    getWebhookInfo: jest.fn().mockResolvedValue({ url: 'https://api.example.com/webhooks/telegram/x' }),
+    getWebhookInfo: jest.fn().mockResolvedValue({
+      url: 'https://api.example.com/webhooks/telegram/x',
+    }),
     getUserProfilePhotoFileId: jest.fn().mockResolvedValue(null),
     ...overrides,
   };
@@ -23,21 +30,33 @@ describe('TelegramConnectService.connect', () => {
     telegram = { forToken: jest.fn() };
     channelService = {
       findChannelByPlatformAccountGlobal: jest.fn().mockResolvedValue(null),
-      createChannel: jest.fn().mockResolvedValue({ id: 10, platform: 'telegram' }),
+      createChannel: jest
+        .fn()
+        .mockResolvedValue({ id: 10, platform: 'telegram' }),
     };
     assertAccess = jest.fn().mockResolvedValue(undefined);
-    svc = new TelegramConnectService(telegram, channelService, { assertWorkspaceAccessPublic: assertAccess } as any);
+    svc = new TelegramConnectService(telegram, channelService, {
+      assertWorkspaceAccessPublic: assertAccess,
+    } as any);
   });
 
   it('rejects an invalid token', async () => {
-    telegram.forToken.mockReturnValue(makeClient({ getMe: jest.fn().mockRejectedValue(new Error('401')) }));
-    await expect(svc.connect('ws', 'u', 'bad')).rejects.toBeInstanceOf(BadRequestException);
+    telegram.forToken.mockReturnValue(
+      makeClient({ getMe: jest.fn().mockRejectedValue(new Error('401')) }),
+    );
+    await expect(svc.connect('ws', 'u', 'bad')).rejects.toBeInstanceOf(
+      BadRequestException,
+    );
   });
 
   it('rejects a bot already connected anywhere (409)', async () => {
     telegram.forToken.mockReturnValue(makeClient());
-    channelService.findChannelByPlatformAccountGlobal.mockResolvedValue({ id: 99 });
-    await expect(svc.connect('ws', 'u', 'tok')).rejects.toBeInstanceOf(ConflictException);
+    channelService.findChannelByPlatformAccountGlobal.mockResolvedValue({
+      id: 99,
+    });
+    await expect(svc.connect('ws', 'u', 'tok')).rejects.toBeInstanceOf(
+      ConflictException,
+    );
   });
 
   it('sets the webhook and creates an encrypted channel row', async () => {
@@ -45,7 +64,9 @@ describe('TelegramConnectService.connect', () => {
     telegram.forToken.mockReturnValue(client);
     const res = await svc.connect('ws', 'u', 'tok');
     expect(client.setWebhook).toHaveBeenCalledWith(
-      expect.stringMatching(/^https:\/\/api\.example\.com\/webhooks\/telegram\/[0-9a-f]{32}$/),
+      expect.stringMatching(
+        /^https:\/\/api\.example\.com\/webhooks\/telegram\/[0-9a-f]{32}$/,
+      ),
       expect.stringMatching(/^[0-9a-f]{64}$/),
     );
     const dto = channelService.createChannel.mock.calls[0][2];

@@ -151,15 +151,24 @@ export class DashboardService {
       usageData = {
         channelsCount: u.channelsCount,
         channelsLimit: totalChannels,
-        channelsPercentage: totalChannels > 0 ? Math.round((u.channelsCount / totalChannels) * 100) : 0,
+        channelsPercentage:
+          totalChannels > 0
+            ? Math.round((u.channelsCount / totalChannels) * 100)
+            : 0,
         membersCount: u.membersCount,
         membersLimit: totalMembers,
-        membersPercentage: totalMembers > 0 ? Math.round((u.membersCount / totalMembers) * 100) : 0,
+        membersPercentage:
+          totalMembers > 0
+            ? Math.round((u.membersCount / totalMembers) * 100)
+            : 0,
         extraChannelsPurchased: u.extraChannelsPurchased,
         extraMembersPurchased: u.extraMembersPurchased,
         aiTokensUsed: u.aiTokensUsedThisMonth,
         aiTokensLimit: totalAiTokens,
-        aiTokensPercentage: totalAiTokens > 0 ? Math.round((u.aiTokensUsedThisMonth / totalAiTokens) * 100) : 0,
+        aiTokensPercentage:
+          totalAiTokens > 0
+            ? Math.round((u.aiTokensUsedThisMonth / totalAiTokens) * 100)
+            : 0,
         extraAiTokensPurchased: u.extraAiTokensPurchased,
       };
     }

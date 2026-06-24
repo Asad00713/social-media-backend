@@ -9,7 +9,10 @@ import type {
 } from '../../types/platform-adapter.types';
 import type { ChannelEntity } from '../../types/channel-entity.types';
 import type { PostEntity } from '../../types/post-entity.types';
-import type { PlatformCapabilities, PollingProfile } from '../../types/platform-capabilities.types';
+import type {
+  PlatformCapabilities,
+  PollingProfile,
+} from '../../types/platform-capabilities.types';
 import { getCapabilities } from '../../platform-capabilities.registry';
 import { LinkedInApiClient, LinkedInApiError } from './linkedin-api.client';
 
@@ -38,7 +41,9 @@ export class LinkedInAnalyticsAdapter implements PlatformAnalyticsAdapter {
     return 0;
   }
 
-  async fetchProfileSnapshot(channel: ChannelEntity): Promise<ProfileSnapshotResult> {
+  async fetchProfileSnapshot(
+    channel: ChannelEntity,
+  ): Promise<ProfileSnapshotResult> {
     try {
       const info = await this.client.getUserInfo(channel.accessToken);
       // LinkedIn personal accounts do not expose follower count, following count, or
@@ -84,12 +89,16 @@ export class LinkedInAnalyticsAdapter implements PlatformAnalyticsAdapter {
       }
 
       try {
-        const actions = await this.client.getSocialActions(postUrn, accessToken);
+        const actions = await this.client.getSocialActions(
+          postUrn,
+          accessToken,
+        );
         return {
           status: 'success',
           data: {
             likesCount: actions.likesSummary?.aggregatedTotalLikes ?? 0,
-            commentsCount: actions.commentsSummary?.aggregatedTotalComments ?? 0,
+            commentsCount:
+              actions.commentsSummary?.aggregatedTotalComments ?? 0,
             sharesCount: actions.shareStatistics?.shareCount ?? null,
             impressionsCount: null,
             reachCount: null,
@@ -187,11 +196,14 @@ export class LinkedInAnalyticsAdapter implements PlatformAnalyticsAdapter {
     }
   }
 
-  private toFailedResult<T extends { status: string; error?: unknown; quotaCostUsed: number }>(
-    err: unknown,
-  ): T {
+  private toFailedResult<
+    T extends { status: string; error?: unknown; quotaCostUsed: number },
+  >(err: unknown): T {
     const liErr = err instanceof LinkedInApiError ? err : null;
-    const code = liErr?.code === 'access_denied' ? 'auth_failed' : (liErr?.code ?? 'transient');
+    const code =
+      liErr?.code === 'access_denied'
+        ? 'auth_failed'
+        : (liErr?.code ?? 'transient');
     return {
       status: 'failed',
       error: {

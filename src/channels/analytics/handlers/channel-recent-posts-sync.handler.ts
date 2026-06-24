@@ -3,7 +3,10 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { eq, sql as sqlOp } from 'drizzle-orm';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
-import { socialMediaChannels, type SupportedPlatform } from '../../../drizzle/schema/channels.schema';
+import {
+  socialMediaChannels,
+  type SupportedPlatform,
+} from '../../../drizzle/schema/channels.schema';
 import { posts as postsTable } from '../../../drizzle/schema/posts.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import { QUEUES } from '../../../queue/queue.module';
@@ -40,7 +43,9 @@ export class ChannelRecentPostsSyncHandler {
     @Inject(DRIZZLE) private readonly db: any,
   ) {}
 
-  async handle(data: ChannelRecentPostsSyncJob): Promise<{ ok: boolean; synced?: number; created?: number }> {
+  async handle(
+    data: ChannelRecentPostsSyncJob,
+  ): Promise<{ ok: boolean; synced?: number; created?: number }> {
     const { channelId, workspaceId } = data;
     const sinceDays = data.sinceDays ?? 7;
     const limit = data.limit ?? 50;
@@ -58,30 +63,44 @@ export class ChannelRecentPostsSyncHandler {
 
     const platform = channel.platform as SupportedPlatform;
     if (!this.registry.has(platform)) {
-      this.logger.log(`Recent posts sync: no adapter for ${platform}, skipping channel ${channelId}`);
+      this.logger.log(
+        `Recent posts sync: no adapter for ${platform}, skipping channel ${channelId}`,
+      );
       return { ok: true };
     }
 
     const adapter = this.registry.get(platform);
     if (!adapter.fetchRecentPosts) {
-      this.logger.log(`Recent posts sync: adapter for ${platform} doesn't support fetchRecentPosts, skipping`);
+      this.logger.log(
+        `Recent posts sync: adapter for ${platform} doesn't support fetchRecentPosts, skipping`,
+      );
       return { ok: true };
     }
 
     const cost = adapter.estimateQuotaCost('fetchRecentPosts');
     const quota = await this.quota.tryConsume(platform, cost);
     if (!quota.allowed) {
-      this.logger.warn(`Recent posts sync: quota exhausted for ${platform}, deferring`);
+      this.logger.warn(
+        `Recent posts sync: quota exhausted for ${platform}, deferring`,
+      );
       return { ok: false };
     }
 
-    const channelForAdapter = { ...channel, accessToken: decrypt(channel.accessToken) };
+    const channelForAdapter = {
+      ...channel,
+      accessToken: decrypt(channel.accessToken),
+    };
     const since = new Date(Date.now() - sinceDays * 24 * 60 * 60 * 1000);
 
-    const result = await adapter.fetchRecentPosts(channelForAdapter, { since, limit });
+    const result = await adapter.fetchRecentPosts(channelForAdapter, {
+      since,
+      limit,
+    });
 
     if (result.status === 'failed') {
-      this.logger.error(`Recent posts sync failed for channel ${channelId}: ${result.error.message}`);
+      this.logger.error(
+        `Recent posts sync failed for channel ${channelId}: ${result.error.message}`,
+      );
       return { ok: false };
     }
 
@@ -101,7 +120,13 @@ export class ChannelRecentPostsSyncHandler {
 
       // Insert new post row
       const mediaItems = rp.mediaUrl
-        ? [{ url: rp.mediaUrl, type: 'image' as const, thumbnailUrl: rp.mediaUrl }]
+        ? [
+            {
+              url: rp.mediaUrl,
+              type: 'image' as const,
+              thumbnailUrl: rp.mediaUrl,
+            },
+          ]
         : [];
 
       const target = {
@@ -122,7 +147,10 @@ export class ChannelRecentPostsSyncHandler {
           targets: [target],
           status: 'published',
           publishedAt: rp.publishedAt,
-          metadata: { syncedFrom: 'platform', syncedAt: new Date().toISOString() },
+          metadata: {
+            syncedFrom: 'platform',
+            syncedAt: new Date().toISOString(),
+          },
         })
         .returning({ id: postsTable.id });
 
@@ -131,7 +159,10 @@ export class ChannelRecentPostsSyncHandler {
 
       // Enqueue post-metric-snapshot trail starting at first bucket
       const pollingProfile = adapter.pollingProfile;
-      const buckets = pollingProfile.schedulePerContentType[pollingProfile.defaultContentType] ?? [];
+      const buckets =
+        pollingProfile.schedulePerContentType[
+          pollingProfile.defaultContentType
+        ] ?? [];
       if (buckets.length > 0) {
         const firstBucket = buckets[0];
         const delay = BUCKET_TO_DELAY_MS[firstBucket] ?? 60 * 60_000;

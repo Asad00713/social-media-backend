@@ -1,5 +1,8 @@
 import { IsEnum, IsOptional, IsString, IsObject } from 'class-validator';
-import { NOTIFICATION_TYPES, NOTIFICATION_PRIORITIES } from 'src/drizzle/schema';
+import {
+  NOTIFICATION_TYPES,
+  NOTIFICATION_PRIORITIES,
+} from 'src/drizzle/schema';
 
 export class CreateNotificationDto {
   @IsString()

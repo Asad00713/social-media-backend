@@ -39,7 +39,10 @@ export interface ChatbotTool {
   confirmationMessage?: (params: Record<string, any>) => string;
 
   /** Execute the tool with given parameters and context */
-  execute(params: Record<string, any>, context: ToolContext): Promise<ToolResult>;
+  execute(
+    params: Record<string, any>,
+    context: ToolContext,
+  ): Promise<ToolResult>;
 }
 
 /**

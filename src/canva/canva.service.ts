@@ -36,7 +36,16 @@ export interface CanvaExportJob {
 }
 
 export interface CreateDesignOptions {
-  designType?: 'Instagram Post' | 'Facebook Post' | 'Twitter Post' | 'Pinterest Pin' | 'YouTube Thumbnail' | 'Presentation' | 'Document' | 'Whiteboard' | 'Video';
+  designType?:
+    | 'Instagram Post'
+    | 'Facebook Post'
+    | 'Twitter Post'
+    | 'Pinterest Pin'
+    | 'YouTube Thumbnail'
+    | 'Presentation'
+    | 'Document'
+    | 'Whiteboard'
+    | 'Video';
   title?: string;
   assetId?: string; // Pre-fill with an uploaded asset
 }
@@ -48,7 +57,7 @@ const DESIGN_DIMENSIONS: Record<string, { width: number; height: number }> = {
   'Twitter Post': { width: 1200, height: 675 },
   'Pinterest Pin': { width: 1000, height: 1500 },
   'YouTube Thumbnail': { width: 1280, height: 720 },
-  'Video': { width: 1920, height: 1080 },
+  Video: { width: 1920, height: 1080 },
 };
 
 // Preset design types supported by Canva API
@@ -74,7 +83,9 @@ export class CanvaService {
     this.clientSecret = process.env.CANVA_CLIENT_SECRET || '';
 
     if (!this.clientId || !this.clientSecret) {
-      this.logger.warn('CANVA_CLIENT_ID or CANVA_CLIENT_SECRET not set - Canva integration will not work');
+      this.logger.warn(
+        'CANVA_CLIENT_ID or CANVA_CLIENT_SECRET not set - Canva integration will not work',
+      );
     }
   }
 
@@ -150,7 +161,9 @@ export class CanvaService {
 
     if (!response.ok) {
       this.logger.error(`Canva token exchange failed: ${responseText}`);
-      throw new BadRequestException(`Canva token exchange failed: ${responseText}`);
+      throw new BadRequestException(
+        `Canva token exchange failed: ${responseText}`,
+      );
     }
 
     const data = JSON.parse(responseText);
@@ -223,7 +236,11 @@ export class CanvaService {
     // Canva API returns profile info directly or nested
     return {
       userId: data.id || data.user?.id || data.profile?.id || 'unknown',
-      displayName: data.display_name || data.user?.display_name || data.profile?.display_name || 'Canva User',
+      displayName:
+        data.display_name ||
+        data.user?.display_name ||
+        data.profile?.display_name ||
+        'Canva User',
     };
   }
 
@@ -248,7 +265,8 @@ export class CanvaService {
       };
     } else {
       // Use custom dimensions for social media sizes
-      const dimensions = DESIGN_DIMENSIONS[designType] || DESIGN_DIMENSIONS['Instagram Post'];
+      const dimensions =
+        DESIGN_DIMENSIONS[designType] || DESIGN_DIMENSIONS['Instagram Post'];
       designTypeObj = {
         type: 'custom',
         width: dimensions.width,
@@ -268,7 +286,9 @@ export class CanvaService {
       body.asset_id = assetId;
     }
 
-    this.logger.log(`Creating Canva design: ${designType}, body: ${JSON.stringify(body)}`);
+    this.logger.log(
+      `Creating Canva design: ${designType}, body: ${JSON.stringify(body)}`,
+    );
 
     const response = await fetch(`${this.apiBaseUrl}/designs`, {
       method: 'POST',
@@ -295,11 +315,13 @@ export class CanvaService {
       title: design.title || title || 'Untitled',
       url: design.url,
       editUrl: design.edit_url || design.urls?.edit_url,
-      thumbnail: design.thumbnail ? {
-        url: design.thumbnail.url,
-        width: design.thumbnail.width,
-        height: design.thumbnail.height,
-      } : undefined,
+      thumbnail: design.thumbnail
+        ? {
+            url: design.thumbnail.url,
+            width: design.thumbnail.width,
+            height: design.thumbnail.height,
+          }
+        : undefined,
       createdAt: design.created_at,
       updatedAt: design.updated_at,
     };
@@ -329,11 +351,13 @@ export class CanvaService {
       title: design.title,
       url: design.url,
       editUrl: design.edit_url || design.urls?.edit_url,
-      thumbnail: design.thumbnail ? {
-        url: design.thumbnail.url,
-        width: design.thumbnail.width,
-        height: design.thumbnail.height,
-      } : undefined,
+      thumbnail: design.thumbnail
+        ? {
+            url: design.thumbnail.url,
+            width: design.thumbnail.width,
+            height: design.thumbnail.height,
+          }
+        : undefined,
       createdAt: design.created_at,
       updatedAt: design.updated_at,
     };
@@ -373,11 +397,13 @@ export class CanvaService {
         title: design.title,
         url: design.url,
         editUrl: design.edit_url || design.urls?.edit_url,
-        thumbnail: design.thumbnail ? {
-          url: design.thumbnail.url,
-          width: design.thumbnail.width,
-          height: design.thumbnail.height,
-        } : undefined,
+        thumbnail: design.thumbnail
+          ? {
+              url: design.thumbnail.url,
+              width: design.thumbnail.width,
+              height: design.thumbnail.height,
+            }
+          : undefined,
         createdAt: design.created_at,
         updatedAt: design.updated_at,
       })),
@@ -411,14 +437,17 @@ export class CanvaService {
 
     this.logger.log(`Exporting Canva design ${designId} as ${format}`);
 
-    const response = await fetch(`${this.apiBaseUrl}/designs/${designId}/exports`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
+    const response = await fetch(
+      `${this.apiBaseUrl}/designs/${designId}/exports`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(body),
       },
-      body: JSON.stringify(body),
-    });
+    );
 
     const responseText = await response.text();
     this.logger.log(`Canva export response: ${responseText}`);
@@ -486,7 +515,11 @@ export class CanvaService {
     const startTime = Date.now();
 
     while (Date.now() - startTime < maxWaitMs) {
-      const status = await this.getExportStatus(accessToken, designId, exportId);
+      const status = await this.getExportStatus(
+        accessToken,
+        designId,
+        exportId,
+      );
 
       if (status.status === 'completed' && status.urls) {
         return status.urls;

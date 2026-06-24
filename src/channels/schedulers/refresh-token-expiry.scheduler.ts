@@ -58,7 +58,9 @@ export class RefreshTokenExpiryScheduler {
       if (ttlDays === null) continue; // platform refresh tokens don't expire
       const issuedAt = new Date(r.refreshTokenIssuedAt).getTime();
       const expiresAt = issuedAt + ttlDays * 24 * 60 * 60 * 1000;
-      const daysLeft = Math.floor((expiresAt - Date.now()) / (24 * 60 * 60 * 1000));
+      const daysLeft = Math.floor(
+        (expiresAt - Date.now()) / (24 * 60 * 60 * 1000),
+      );
       if (daysLeft <= WARNING_THRESHOLD_DAYS) {
         expiringSoon.push({
           id: Number(r.id),

@@ -1,13 +1,13 @@
-import { Injectable, Logger } from '@nestjs/common'
-import { db } from '../../drizzle/db'
-import { adCampaigns, adSets, adInsightsDaily } from '../../drizzle/schema'
-import { eq, and, desc, gte } from 'drizzle-orm'
-import { MetaAdsClient } from './meta-ads.client'
-import { ChannelService } from '../../channels/services/channel.service'
+import { Injectable, Logger } from '@nestjs/common';
+import { db } from '../../drizzle/db';
+import { adCampaigns, adSets, adInsightsDaily } from '../../drizzle/schema';
+import { eq, and, desc, gte } from 'drizzle-orm';
+import { MetaAdsClient } from './meta-ads.client';
+import { ChannelService } from '../../channels/services/channel.service';
 
 @Injectable()
 export class AdInsightsService {
-  private readonly logger = new Logger(AdInsightsService.name)
+  private readonly logger = new Logger(AdInsightsService.name);
 
   constructor(
     private readonly meta: MetaAdsClient,
@@ -27,32 +27,46 @@ export class AdInsightsService {
       })
       .from(adSets)
       .innerJoin(adCampaigns, eq(adSets.campaignId, adCampaigns.id))
-      .where(and(eq(adSets.workspaceId, workspaceId), eq(adSets.status, 'ACTIVE')))
+      .where(
+        and(eq(adSets.workspaceId, workspaceId), eq(adSets.status, 'ACTIVE')),
+      );
 
     if (rows.length === 0) {
-      this.logger.verbose(`insights sync: no active ad sets for workspace=${workspaceId}`)
-      return
+      this.logger.verbose(
+        `insights sync: no active ad sets for workspace=${workspaceId}`,
+      );
+      return;
     }
 
-    this.logger.log(`insights sync: syncing ${rows.length} ad sets for workspace=${workspaceId}`)
+    this.logger.log(
+      `insights sync: syncing ${rows.length} ad sets for workspace=${workspaceId}`,
+    );
 
     for (const row of rows) {
       try {
-        const channel = await this.channelService.getChannelForPosting(row.channelId)
+        const channel = await this.channelService.getChannelForPosting(
+          row.channelId,
+        );
         if (!channel?.accessToken) {
-          this.logger.warn(`insights sync: no token for channelId=${row.channelId}, skipping adset=${row.adsetUuid}`)
-          continue
+          this.logger.warn(
+            `insights sync: no token for channelId=${row.channelId}, skipping adset=${row.adsetUuid}`,
+          );
+          continue;
         }
 
-        const yest = yesterday()
-        const insights = await this.meta.getInsights(row.metaAdsetId, channel.accessToken, {
-          since: yest,
-          until: yest,
-        })
+        const yest = yesterday();
+        const insights = await this.meta.getInsights(
+          row.metaAdsetId,
+          channel.accessToken,
+          {
+            since: yest,
+            until: yest,
+          },
+        );
 
         for (const i of insights) {
-          const spendMinor = Math.round(parseFloat(i.spend ?? '0') * 100)
-          const leadsCount = parseLeadCount(i.actions)
+          const spendMinor = Math.round(parseFloat(i.spend ?? '0') * 100);
+          const leadsCount = parseLeadCount(i.actions);
 
           await db
             .insert(adInsightsDaily)
@@ -66,7 +80,10 @@ export class AdInsightsService {
               spendMinor,
               leadsCount,
               actions: Object.fromEntries(
-                (i.actions ?? []).map((a) => [a.action_type, parseInt(a.value, 10) || 0]),
+                (i.actions ?? []).map((a) => [
+                  a.action_type,
+                  parseInt(a.value, 10) || 0,
+                ]),
               ),
             })
             .onConflictDoUpdate({
@@ -79,13 +96,13 @@ export class AdInsightsService {
                 leadsCount,
                 fetchedAt: new Date(),
               },
-            })
+            });
         }
       } catch (err) {
         // Log and continue so one bad ad set doesn't block the whole workspace sync
         this.logger.error(
           `insights sync: failed for adset=${row.adsetUuid}: ${(err as Error).message}`,
-        )
+        );
       }
     }
   }
@@ -94,7 +111,11 @@ export class AdInsightsService {
    * Return daily insights rows for all ad sets belonging to a campaign,
    * filtered by workspaceId and a since-date, sorted newest first.
    */
-  async getForCampaign(workspaceId: string, campaignId: string, sinceDate: string) {
+  async getForCampaign(
+    workspaceId: string,
+    campaignId: string,
+    sinceDate: string,
+  ) {
     return db
       .select()
       .from(adInsightsDaily)
@@ -106,7 +127,7 @@ export class AdInsightsService {
           gte(adInsightsDaily.date, sinceDate),
         ),
       )
-      .orderBy(desc(adInsightsDaily.date))
+      .orderBy(desc(adInsightsDaily.date));
   }
 }
 
@@ -116,9 +137,9 @@ export class AdInsightsService {
 
 /** Returns yesterday's date as YYYY-MM-DD (UTC). */
 function yesterday(): string {
-  const d = new Date()
-  d.setUTCDate(d.getUTCDate() - 1)
-  return d.toISOString().slice(0, 10)
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - 1);
+  return d.toISOString().slice(0, 10);
 }
 
 /**
@@ -129,9 +150,9 @@ function yesterday(): string {
 function parseLeadCount(
   actions?: Array<{ action_type: string; value: string }>,
 ): number {
-  if (!actions) return 0
+  if (!actions) return 0;
   const action = actions.find(
     (a) => a.action_type === 'lead' || a.action_type === 'leadgen.other',
-  )
-  return action ? parseInt(action.value, 10) || 0 : 0
+  );
+  return action ? parseInt(action.value, 10) || 0 : 0;
 }

@@ -96,7 +96,9 @@ export class TikTokMediaProxyService {
         'JWT_ACCESS_SECRET is not configured — cannot verify TikTok proxy token',
       );
     }
-    const decoded = this.jwtService.verify<MediaTokenPayload>(token, { secret });
+    const decoded = this.jwtService.verify<MediaTokenPayload>(token, {
+      secret,
+    });
     return decoded.url;
   }
 
@@ -133,7 +135,9 @@ export class TikTokMediaProxyService {
     // Write to disk
     fs.writeFileSync(filePath, Buffer.from(buffer));
 
-    const expiresAt = new Date(Date.now() + this.CACHE_DURATION_HOURS * 60 * 60 * 1000);
+    const expiresAt = new Date(
+      Date.now() + this.CACHE_DURATION_HOURS * 60 * 60 * 1000,
+    );
 
     // Store in memory cache
     this.mediaCache.set(mediaId, {
@@ -143,7 +147,8 @@ export class TikTokMediaProxyService {
       expiresAt,
     });
 
-    const appUrl = this.configService.get<string>('APP_URL') || 'http://localhost:3000';
+    const appUrl =
+      this.configService.get<string>('APP_URL') || 'http://localhost:3000';
     const localUrl = `${appUrl}/media/tiktok-proxy/${mediaId}`;
 
     this.logger.log(`Video cached: ${mediaId}, serves at: ${localUrl}`);

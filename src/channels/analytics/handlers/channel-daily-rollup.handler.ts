@@ -54,7 +54,8 @@ export class ChannelDailyRollupHandler {
     const totalLikes = Number(agg.total_likes ?? 0);
     const totalComments = Number(agg.total_comments ?? 0);
     const totalShares = Number(agg.total_shares ?? 0);
-    const totalImpressions = agg.total_impressions == null ? null : Number(agg.total_impressions);
+    const totalImpressions =
+      agg.total_impressions == null ? null : Number(agg.total_impressions);
     const totalReach = agg.total_reach == null ? null : Number(agg.total_reach);
 
     // Follower delta from channel_snapshots
@@ -65,12 +66,22 @@ export class ChannelDailyRollupHandler {
     const snapToday = await this.db
       .select({ followers: channelSnapshots.followersCount })
       .from(channelSnapshots)
-      .where(and(eq(channelSnapshots.channelId, channelId), eq(channelSnapshots.snapshotDate, date)))
+      .where(
+        and(
+          eq(channelSnapshots.channelId, channelId),
+          eq(channelSnapshots.snapshotDate, date),
+        ),
+      )
       .limit(1);
     const snapYesterday = await this.db
       .select({ followers: channelSnapshots.followersCount })
       .from(channelSnapshots)
-      .where(and(eq(channelSnapshots.channelId, channelId), eq(channelSnapshots.snapshotDate, yesterdayDate)))
+      .where(
+        and(
+          eq(channelSnapshots.channelId, channelId),
+          eq(channelSnapshots.snapshotDate, yesterdayDate),
+        ),
+      )
       .limit(1);
 
     const followersAtEndOfDay = snapToday[0]?.followers ?? null;
@@ -82,7 +93,12 @@ export class ChannelDailyRollupHandler {
 
     const engagementRate =
       totalReach && totalReach > 0
-        ? Number((((totalLikes + totalComments + totalShares) / totalReach) * 100).toFixed(2))
+        ? Number(
+            (
+              ((totalLikes + totalComments + totalShares) / totalReach) *
+              100
+            ).toFixed(2),
+          )
         : null;
 
     await this.db
@@ -112,12 +128,15 @@ export class ChannelDailyRollupHandler {
           totalReach,
           followersAtEndOfDay,
           followersGained,
-          engagementRate: engagementRate == null ? null : String(engagementRate),
+          engagementRate:
+            engagementRate == null ? null : String(engagementRate),
           computedAt: new Date(),
         },
       });
 
-    this.logger.log(`Daily rollup: channelId=${channelId} date=${date} posts=${postsCount} likes=${totalLikes}`);
+    this.logger.log(
+      `Daily rollup: channelId=${channelId} date=${date} posts=${postsCount} likes=${totalLikes}`,
+    );
     return { ok: true };
   }
 }

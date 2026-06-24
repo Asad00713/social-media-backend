@@ -97,8 +97,14 @@ export class CloudflareR2Service {
 
   constructor(private readonly config: ConfigService) {
     const accountId = this.config.get<string>('CLOUDFLARE_R2_ACCOUNT_ID', '');
-    const accessKeyId = this.config.get<string>('CLOUDFLARE_R2_ACCESS_KEY_ID', '');
-    const secret = this.config.get<string>('CLOUDFLARE_R2_SECRET_ACCESS_KEY', '');
+    const accessKeyId = this.config.get<string>(
+      'CLOUDFLARE_R2_ACCESS_KEY_ID',
+      '',
+    );
+    const secret = this.config.get<string>(
+      'CLOUDFLARE_R2_SECRET_ACCESS_KEY',
+      '',
+    );
     this.bucket = this.config.get<string>('CLOUDFLARE_R2_BUCKET', '');
     const customPublicUrl = this.config.get<string>(
       'CLOUDFLARE_R2_PUBLIC_URL',
@@ -173,7 +179,8 @@ export class CloudflareR2Service {
   }): Promise<PresignedUploadResult> {
     const client = this.getClient();
 
-    const { workspaceId, userId, kind, contentType, sizeBytes, filename } = input;
+    const { workspaceId, userId, kind, contentType, sizeBytes, filename } =
+      input;
 
     if (!ALLOWED_MIME[kind].test(contentType)) {
       throw new BadRequestException(
@@ -298,7 +305,9 @@ export class CloudflareR2Service {
       this.logger.error(
         `uploadBuffer failed — key=${key}, size=${buffer.length}: ${(err as Error).message}`,
       );
-      throw new InternalServerErrorException('Failed to upload media to storage.');
+      throw new InternalServerErrorException(
+        'Failed to upload media to storage.',
+      );
     }
 
     return { key, publicUrl: `${this.publicUrlBase}/${key}` };

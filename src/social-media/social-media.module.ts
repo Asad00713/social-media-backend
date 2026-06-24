@@ -7,4 +7,4 @@ import { FacebookService } from './services/facebook.service';
   providers: [FacebookService],
   exports: [FacebookService],
 })
-export class SocialMediaModule { }
+export class SocialMediaModule {}

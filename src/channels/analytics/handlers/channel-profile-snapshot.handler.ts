@@ -1,7 +1,10 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
-import { socialMediaChannels, type SupportedPlatform } from '../../../drizzle/schema/channels.schema';
+import {
+  socialMediaChannels,
+  type SupportedPlatform,
+} from '../../../drizzle/schema/channels.schema';
 import { channelSnapshots } from '../../../drizzle/schema/channel-snapshots.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import { AdapterRegistryService } from '../services/adapter-registry.service';
@@ -35,13 +38,17 @@ export class ChannelProfileSnapshotHandler {
       .limit(1);
     const channel = rows[0];
     if (!channel) {
-      this.logger.warn(`Profile snapshot: channel ${channelId} not found, skipping`);
+      this.logger.warn(
+        `Profile snapshot: channel ${channelId} not found, skipping`,
+      );
       return { ok: false };
     }
 
     const platform = channel.platform as SupportedPlatform;
     if (!this.registry.has(platform)) {
-      this.logger.log(`No adapter for platform ${platform}, skipping channel ${channelId}`);
+      this.logger.log(
+        `No adapter for platform ${platform}, skipping channel ${channelId}`,
+      );
       return { ok: true };
     }
 
@@ -49,11 +56,16 @@ export class ChannelProfileSnapshotHandler {
     const cost = adapter.estimateQuotaCost('fetchProfileSnapshot');
     const quota = await this.quota.tryConsume(platform, cost);
     if (!quota.allowed) {
-      this.logger.warn(`Quota exhausted for ${platform}, deferring channel ${channelId}`);
+      this.logger.warn(
+        `Quota exhausted for ${platform}, deferring channel ${channelId}`,
+      );
       return { ok: false };
     }
 
-    const channelForAdapter = { ...channel, accessToken: decrypt(channel.accessToken) };
+    const channelForAdapter = {
+      ...channel,
+      accessToken: decrypt(channel.accessToken),
+    };
     const result = await adapter.fetchProfileSnapshot(channelForAdapter);
     const today = new Date().toISOString().slice(0, 10);
 
@@ -73,7 +85,9 @@ export class ChannelProfileSnapshotHandler {
           syncStatus: result.status,
           syncError: null,
         })
-        .onConflictDoNothing({ target: [channelSnapshots.channelId, channelSnapshots.snapshotDate] });
+        .onConflictDoNothing({
+          target: [channelSnapshots.channelId, channelSnapshots.snapshotDate],
+        });
 
       // Update channels.metadata + lastSyncedAt so the UI header chips reflect fresh data.
       // The daily snapshot writes to channel_snapshots but the header reads from channels.metadata
@@ -91,9 +105,18 @@ export class ChannelProfileSnapshotHandler {
             followersCount: snapshotData.followersCount ?? null,
             videoCount: snapshotData.totalPostsCount ?? null,
             totalPostsCount: snapshotData.totalPostsCount ?? null,
-            viewCount: (platformMetricsData as any).viewCount ?? (channel.metadata as any)?.viewCount ?? null,
-            description: (platformMetricsData as any).description ?? (channel.metadata as any)?.description ?? null,
-            thumbnailUrl: (platformMetricsData as any).thumbnailUrl ?? (channel.metadata as any)?.thumbnailUrl ?? null,
+            viewCount:
+              (platformMetricsData as any).viewCount ??
+              channel.metadata?.viewCount ??
+              null,
+            description:
+              (platformMetricsData as any).description ??
+              channel.metadata?.description ??
+              null,
+            thumbnailUrl:
+              (platformMetricsData as any).thumbnailUrl ??
+              channel.metadata?.thumbnailUrl ??
+              null,
           },
           lastSyncedAt: new Date(),
         })
@@ -136,7 +159,9 @@ export class ChannelProfileSnapshotHandler {
         lastSyncedAt: new Date().toISOString(),
         consecutiveFailures: 0,
       });
-      this.logger.log(`Profile snapshot success: channelId=${channelId} followers=${snapshotData.followersCount ?? '?'}`);
+      this.logger.log(
+        `Profile snapshot success: channelId=${channelId} followers=${snapshotData.followersCount ?? '?'}`,
+      );
       return { ok: true };
     }
 
@@ -158,7 +183,8 @@ export class ChannelProfileSnapshotHandler {
       .values({
         channelId,
         lastProfileSyncAt: new Date(),
-        lastProfileSyncStatus: result.error.code === 'rate_limited' ? 'rate_limited' : 'failed',
+        lastProfileSyncStatus:
+          result.error.code === 'rate_limited' ? 'rate_limited' : 'failed',
         lastProfileSyncError: result.error.message,
         nextProfileSyncAt: nextDayAt2UTC(),
         consecutiveFailures: nextConsecutive,
@@ -167,7 +193,8 @@ export class ChannelProfileSnapshotHandler {
         target: channelSyncState.channelId,
         set: {
           lastProfileSyncAt: new Date(),
-          lastProfileSyncStatus: result.error.code === 'rate_limited' ? 'rate_limited' : 'failed',
+          lastProfileSyncStatus:
+            result.error.code === 'rate_limited' ? 'rate_limited' : 'failed',
           lastProfileSyncError: result.error.message,
           consecutiveFailures: nextConsecutive,
         },
@@ -189,7 +216,9 @@ export class ChannelProfileSnapshotHandler {
       );
     }
 
-    this.logger.error(`Profile snapshot failed: channelId=${channelId} ${result.error.message}`);
+    this.logger.error(
+      `Profile snapshot failed: channelId=${channelId} ${result.error.message}`,
+    );
     return { ok: false };
   }
 }

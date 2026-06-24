@@ -11,7 +11,9 @@ describe('LinkedInAnalyticsAdapter', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    adapter = new LinkedInAnalyticsAdapter(client as unknown as LinkedInApiClient);
+    adapter = new LinkedInAnalyticsAdapter(
+      client as unknown as LinkedInApiClient,
+    );
   });
 
   it('exposes platform=linkedin with correct capabilities and vocabulary', () => {
@@ -47,7 +49,8 @@ describe('LinkedInAnalyticsAdapter', () => {
     expect(postSchedule).toContain('30d');
     expect(adapter.pollingProfile.defaultContentType).toBe('post');
 
-    const articleSchedule = adapter.pollingProfile.schedulePerContentType?.article;
+    const articleSchedule =
+      adapter.pollingProfile.schedulePerContentType?.article;
     expect(articleSchedule).toBeDefined();
     expect(articleSchedule![articleSchedule!.length - 1]).toBe('final');
   });
@@ -82,8 +85,13 @@ describe('LinkedInAnalyticsAdapter', () => {
         expect(result.data.platformMetrics!['sub']).toBe('abc123');
         expect(result.data.platformMetrics!['name']).toBe('Jane Doe');
         expect(result.data.platformMetrics!['givenName']).toBe('Jane');
-        expect(result.data.platformMetrics!['picture']).toBe('https://media.licdn.com/pic.jpg');
-        expect(result.data.platformMetrics!['locale']).toEqual({ country: 'US', language: 'en' });
+        expect(result.data.platformMetrics!['picture']).toBe(
+          'https://media.licdn.com/pic.jpg',
+        );
+        expect(result.data.platformMetrics!['locale']).toEqual({
+          country: 'US',
+          language: 'en',
+        });
         expect(typeof result.data.platformMetrics!['note']).toBe('string');
       }
     });
@@ -147,7 +155,11 @@ describe('LinkedInAnalyticsAdapter', () => {
 
     it('returns partial (not failed) when socialActions gets 403 access_denied', async () => {
       client.getSocialActions.mockRejectedValue(
-        new LinkedInApiError('access_denied', 403, 'Forbidden — Marketing Developer Platform required'),
+        new LinkedInApiError(
+          'access_denied',
+          403,
+          'Forbidden — Marketing Developer Platform required',
+        ),
       );
 
       const result = await adapter.fetchPostMetrics({
@@ -213,7 +225,11 @@ describe('LinkedInAnalyticsAdapter', () => {
             visibility: 'PUBLIC',
             lifecycleState: 'PUBLISHED',
             content: {
-              article: { source: 'https://example.com', title: 'Article', thumbnail: 'https://img.com/t.jpg' },
+              article: {
+                source: 'https://example.com',
+                title: 'Article',
+                thumbnail: 'https://img.com/t.jpg',
+              },
             },
           },
           {
@@ -249,7 +265,11 @@ describe('LinkedInAnalyticsAdapter', () => {
 
     it('returns partial with empty posts list (not failed) when getMemberPosts gets 403', async () => {
       client.getMemberPosts.mockRejectedValue(
-        new LinkedInApiError('access_denied', 403, 'Forbidden — Members posts API requires higher access'),
+        new LinkedInApiError(
+          'access_denied',
+          403,
+          'Forbidden — Members posts API requires higher access',
+        ),
       );
 
       const result = await adapter.fetchRecentPosts(

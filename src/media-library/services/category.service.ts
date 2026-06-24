@@ -24,10 +24,7 @@ export class CategoryService {
   /**
    * Create a new category
    */
-  async create(
-    workspaceId: string,
-    dto: CreateCategoryDto,
-  ) {
+  async create(workspaceId: string, dto: CreateCategoryDto) {
     // Check for duplicate name within same type
     const existing = await db
       .select()
@@ -120,7 +117,7 @@ export class CategoryService {
     };
 
     for (const category of categories) {
-      const type = category.type as MediaLibraryType;
+      const type = category.type;
       if (grouped[type]) {
         grouped[type].push(category);
       }
@@ -169,7 +166,7 @@ export class CategoryService {
         .where(
           and(
             eq(mediaCategories.workspaceId, workspaceId),
-            eq(mediaCategories.type, existing.type as MediaLibraryType),
+            eq(mediaCategories.type, existing.type),
             eq(mediaCategories.name, dto.name),
           ),
         )
@@ -190,7 +187,8 @@ export class CategoryService {
     if (dto.description !== undefined) updateData.description = dto.description;
     if (dto.color !== undefined) updateData.color = dto.color;
     if (dto.icon !== undefined) updateData.icon = dto.icon;
-    if (dto.displayOrder !== undefined) updateData.displayOrder = dto.displayOrder;
+    if (dto.displayOrder !== undefined)
+      updateData.displayOrder = dto.displayOrder;
 
     const [updated] = await db
       .update(mediaCategories)
@@ -210,9 +208,7 @@ export class CategoryService {
   async delete(workspaceId: string, categoryId: string) {
     await this.findOne(workspaceId, categoryId);
 
-    await db
-      .delete(mediaCategories)
-      .where(eq(mediaCategories.id, categoryId));
+    await db.delete(mediaCategories).where(eq(mediaCategories.id, categoryId));
 
     this.logger.log(`Deleted category ${categoryId}`);
 

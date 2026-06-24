@@ -8,7 +8,11 @@ export interface YouTubeChannelResource {
     description: string;
     customUrl?: string;
     country?: string;
-    thumbnails?: { default?: { url: string }; medium?: { url: string }; high?: { url: string } };
+    thumbnails?: {
+      default?: { url: string };
+      medium?: { url: string };
+      high?: { url: string };
+    };
     publishedAt: string;
   };
   statistics?: {
@@ -33,7 +37,11 @@ export interface YouTubeVideoResource {
     publishedAt: string;
     title: string;
     description: string;
-    thumbnails?: { default?: { url: string }; medium?: { url: string }; high?: { url: string } };
+    thumbnails?: {
+      default?: { url: string };
+      medium?: { url: string };
+      high?: { url: string };
+    };
     channelId: string;
   };
   statistics?: {

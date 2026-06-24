@@ -126,7 +126,16 @@ export class DropboxService {
     const result = await this.listFolder(accessToken, options);
 
     // Filter for image files
-    const imageExtensions = ['.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.svg'];
+    const imageExtensions = [
+      '.jpg',
+      '.jpeg',
+      '.png',
+      '.gif',
+      '.webp',
+      '.bmp',
+      '.tiff',
+      '.svg',
+    ];
     const images = result.entries.filter((entry) => {
       if (entry['.tag'] !== 'file') return false;
       const ext = entry.name.toLowerCase().split('.').pop();
@@ -154,7 +163,16 @@ export class DropboxService {
     const result = await this.listFolder(accessToken, options);
 
     // Filter for video files
-    const videoExtensions = ['.mp4', '.mov', '.avi', '.mkv', '.wmv', '.flv', '.webm', '.m4v'];
+    const videoExtensions = [
+      '.mp4',
+      '.mov',
+      '.avi',
+      '.mkv',
+      '.wmv',
+      '.flv',
+      '.webm',
+      '.m4v',
+    ];
     const videos = result.entries.filter((entry) => {
       if (entry['.tag'] !== 'file') return false;
       const ext = entry.name.toLowerCase().split('.').pop();
@@ -183,8 +201,22 @@ export class DropboxService {
 
     // Filter for media files
     const mediaExtensions = [
-      '.jpg', '.jpeg', '.png', '.gif', '.webp', '.bmp', '.tiff', '.svg',
-      '.mp4', '.mov', '.avi', '.mkv', '.wmv', '.flv', '.webm', '.m4v',
+      '.jpg',
+      '.jpeg',
+      '.png',
+      '.gif',
+      '.webp',
+      '.bmp',
+      '.tiff',
+      '.svg',
+      '.mp4',
+      '.mov',
+      '.avi',
+      '.mkv',
+      '.wmv',
+      '.flv',
+      '.webm',
+      '.m4v',
     ];
     const media = result.entries.filter((entry) => {
       if (entry['.tag'] !== 'file') return false;
@@ -212,7 +244,9 @@ export class DropboxService {
   ): Promise<DropboxListResponse> {
     const result = await this.listFolder(accessToken, options);
 
-    const folders = result.entries.filter((entry) => entry['.tag'] === 'folder');
+    const folders = result.entries.filter(
+      (entry) => entry['.tag'] === 'folder',
+    );
 
     return {
       entries: folders,
@@ -321,14 +355,17 @@ export class DropboxService {
    * Get a temporary download link
    */
   async getTemporaryLink(accessToken: string, path: string): Promise<string> {
-    const response = await fetch(`${this.apiBaseUrl}/files/get_temporary_link`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
+    const response = await fetch(
+      `${this.apiBaseUrl}/files/get_temporary_link`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ path }),
       },
-      body: JSON.stringify({ path }),
-    });
+    );
 
     if (!response.ok) {
       const error = await response.text();
@@ -370,7 +407,16 @@ export class DropboxService {
     path: string,
     options: {
       format?: 'jpeg' | 'png';
-      size?: 'w32h32' | 'w64h64' | 'w128h128' | 'w256h256' | 'w480h320' | 'w640h480' | 'w960h640' | 'w1024h768' | 'w2048h1536';
+      size?:
+        | 'w32h32'
+        | 'w64h64'
+        | 'w128h128'
+        | 'w256h256'
+        | 'w480h320'
+        | 'w640h480'
+        | 'w960h640'
+        | 'w1024h768'
+        | 'w2048h1536';
       mode?: 'strict' | 'bestfit' | 'fitone_bestfit';
     } = {},
   ): Promise<Buffer> {
@@ -404,12 +450,15 @@ export class DropboxService {
    */
   async verifyAccess(accessToken: string): Promise<boolean> {
     try {
-      const response = await fetch(`${this.apiBaseUrl}/users/get_current_account`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
+      const response = await fetch(
+        `${this.apiBaseUrl}/users/get_current_account`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+          },
         },
-      });
+      );
 
       return response.ok;
     } catch {
@@ -433,12 +482,15 @@ export class DropboxService {
     profile_photo_url?: string;
     country?: string;
   }> {
-    const response = await fetch(`${this.apiBaseUrl}/users/get_current_account`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
+    const response = await fetch(
+      `${this.apiBaseUrl}/users/get_current_account`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
       },
-    });
+    );
 
     if (!response.ok) {
       const error = await response.text();

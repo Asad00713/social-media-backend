@@ -272,7 +272,11 @@ export class MediaLibraryController {
     @Param('templateId') templateId: string,
     @CurrentUser() user: { userId: string },
   ) {
-    return this.templateService.softDelete(workspaceId, templateId, user.userId);
+    return this.templateService.softDelete(
+      workspaceId,
+      templateId,
+      user.userId,
+    );
   }
 
   @Post('templates/:templateId/restore')
@@ -461,7 +465,13 @@ export class MediaLibraryController {
     // Get all deleted items based on type filter
     const results: any = {};
 
-    if (!type || type === 'image' || type === 'video' || type === 'gif' || type === 'document') {
+    if (
+      !type ||
+      type === 'image' ||
+      type === 'video' ||
+      type === 'gif' ||
+      type === 'document'
+    ) {
       const mediaResult = await this.mediaItemService.getRecycleBin(
         workspaceId,
         limit,

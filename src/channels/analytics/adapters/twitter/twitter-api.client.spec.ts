@@ -60,7 +60,11 @@ describe('TwitterApiClient', () => {
         ],
         includes: {
           media: [
-            { media_key: '3_media1', type: 'photo', url: 'https://example.com/img.jpg' },
+            {
+              media_key: '3_media1',
+              type: 'photo',
+              url: 'https://example.com/img.jpg',
+            },
           ],
         },
         meta: { result_count: 1 },
@@ -82,7 +86,9 @@ describe('TwitterApiClient', () => {
     expect(result.tweets[0].id).toBe('tweet1');
     // media map should be populated
     expect(result.media.has('3_media1')).toBe(true);
-    expect(result.media.get('3_media1')?.url).toBe('https://example.com/img.jpg');
+    expect(result.media.get('3_media1')?.url).toBe(
+      'https://example.com/img.jpg',
+    );
     expect(result.media.get('3_media1')?.type).toBe('photo');
   });
 
@@ -90,7 +96,9 @@ describe('TwitterApiClient', () => {
     mockFetch.mockResolvedValue({
       ok: false,
       status: 403,
-      json: async () => ({ detail: 'Your access level does not permit Basic tier fields' }),
+      json: async () => ({
+        detail: 'Your access level does not permit Basic tier fields',
+      }),
     });
 
     await expect(client.getMe('tok')).rejects.toMatchObject({

@@ -8,7 +8,12 @@ import type {
 
 export class PinterestApiError extends Error {
   constructor(
-    public code: 'rate_limited' | 'auth_failed' | 'not_found' | 'transient' | 'permanent',
+    public code:
+      | 'rate_limited'
+      | 'auth_failed'
+      | 'not_found'
+      | 'transient'
+      | 'permanent',
     public status: number,
     message: string,
   ) {
@@ -23,7 +28,10 @@ export class PinterestApiClient {
   constructor(private readonly fetchImpl: typeof fetch = fetch) {}
 
   async getUserAccount(accessToken: string): Promise<PinterestUserAccount> {
-    return this.request<PinterestUserAccount>(`${this.baseUrl}/user_account`, accessToken);
+    return this.request<PinterestUserAccount>(
+      `${this.baseUrl}/user_account`,
+      accessToken,
+    );
   }
 
   async getUserAnalytics(opts: {
@@ -34,7 +42,8 @@ export class PinterestApiClient {
     const params = new URLSearchParams({
       start_date: opts.startDate,
       end_date: opts.endDate,
-      metric_types: 'FOLLOWER_COUNT,IMPRESSION,SAVE,PIN_CLICK,OUTBOUND_CLICK,ENGAGEMENT',
+      metric_types:
+        'FOLLOWER_COUNT,IMPRESSION,SAVE,PIN_CLICK,OUTBOUND_CLICK,ENGAGEMENT',
     });
     return this.request<PinterestAnalyticsResponse>(
       `${this.baseUrl}/user_account/analytics?${params}`,
@@ -47,7 +56,9 @@ export class PinterestApiClient {
     pageSize?: number;
     bookmark?: string;
   }): Promise<PinterestPinsListResponse> {
-    const params = new URLSearchParams({ page_size: String(opts.pageSize ?? 25) });
+    const params = new URLSearchParams({
+      page_size: String(opts.pageSize ?? 25),
+    });
     if (opts.bookmark) params.set('bookmark', opts.bookmark);
     return this.request<PinterestPinsListResponse>(
       `${this.baseUrl}/pins?${params}`,
@@ -56,7 +67,10 @@ export class PinterestApiClient {
   }
 
   async getPin(pinId: string, accessToken: string): Promise<PinterestPin> {
-    return this.request<PinterestPin>(`${this.baseUrl}/pins/${pinId}`, accessToken);
+    return this.request<PinterestPin>(
+      `${this.baseUrl}/pins/${pinId}`,
+      accessToken,
+    );
   }
 
   async getPinAnalytics(opts: {
@@ -82,8 +96,12 @@ export class PinterestApiClient {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      const message = (body as any).message ?? (body as any).error ?? `HTTP ${res.status}`;
-      throw new PinterestApiError(this.mapCode(res.status), res.status, message);
+      const message = body.message ?? body.error ?? `HTTP ${res.status}`;
+      throw new PinterestApiError(
+        this.mapCode(res.status),
+        res.status,
+        message,
+      );
     }
     return res.json() as Promise<T>;
   }

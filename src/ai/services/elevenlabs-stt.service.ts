@@ -21,7 +21,15 @@ const MAX_DURATION_SECONDS = 180; // 3 minutes max
 const MIN_DURATION_SECONDS = 1; // At least 1 second
 
 // Supported audio formats
-const SUPPORTED_FORMATS = ['audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/webm', 'audio/ogg', 'audio/mp4', 'audio/m4a'];
+const SUPPORTED_FORMATS = [
+  'audio/mpeg',
+  'audio/mp3',
+  'audio/wav',
+  'audio/webm',
+  'audio/ogg',
+  'audio/mp4',
+  'audio/m4a',
+];
 
 @Injectable()
 export class ElevenLabsSttService {
@@ -32,7 +40,9 @@ export class ElevenLabsSttService {
   constructor(private readonly configService: ConfigService) {
     this.apiKey = this.configService.get<string>('ELEVENLABS_API_KEY');
     if (!this.apiKey) {
-      this.logger.warn('ELEVENLABS_API_KEY not configured - STT features will be unavailable');
+      this.logger.warn(
+        'ELEVENLABS_API_KEY not configured - STT features will be unavailable',
+      );
     } else {
       this.logger.log('ElevenLabs STT service initialized');
     }
@@ -133,8 +143,12 @@ export class ElevenLabsSttService {
 
       if (!response.ok) {
         const errorText = await response.text();
-        this.logger.error(`ElevenLabs STT error: ${response.status} - ${errorText}`);
-        throw new BadRequestException(`Transcription failed: ${response.statusText}`);
+        this.logger.error(
+          `ElevenLabs STT error: ${response.status} - ${errorText}`,
+        );
+        throw new BadRequestException(
+          `Transcription failed: ${response.statusText}`,
+        );
       }
 
       const data = await response.json();
@@ -173,7 +187,12 @@ export class ElevenLabsSttService {
       throw new BadRequestException(validation.error);
     }
 
-    return this.transcribe(file.buffer, file.originalname, file.mimetype, options);
+    return this.transcribe(
+      file.buffer,
+      file.originalname,
+      file.mimetype,
+      options,
+    );
   }
 
   /**

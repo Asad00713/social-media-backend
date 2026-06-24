@@ -30,11 +30,7 @@ export class PostPublishProcessor extends WorkerHost {
     try {
       // Get the post to find its workspace (with retry for transient failures)
       const [post] = await withRetry(() =>
-        db
-          .select()
-          .from(posts)
-          .where(eq(posts.id, postId))
-          .limit(1),
+        db.select().from(posts).where(eq(posts.id, postId)).limit(1),
       );
 
       if (!post) {
@@ -44,7 +40,9 @@ export class PostPublishProcessor extends WorkerHost {
 
       // Check if post is still scheduled (not already published/cancelled)
       if (post.status !== 'scheduled') {
-        this.logger.log(`Post ${postId} is no longer scheduled (status: ${post.status}), skipping`);
+        this.logger.log(
+          `Post ${postId} is no longer scheduled (status: ${post.status}), skipping`,
+        );
         return { skipped: true, reason: `Post status is ${post.status}` };
       }
 
@@ -64,7 +62,8 @@ export class PostPublishProcessor extends WorkerHost {
         targets: result.targets,
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Failed to publish post ${postId}: ${errorMessage}`);
 
       // Update post with error (with retry for transient failures)

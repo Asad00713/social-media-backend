@@ -24,9 +24,13 @@ export class LLMRouterService {
   ) {
     this.providers.set('groq', groqProvider);
     this.providers.set('claude', claudeProvider);
-    if (openaiProvider?.isAvailable()) this.providers.set('openai', openaiProvider);
-    if (geminiProvider?.isAvailable()) this.providers.set('gemini', geminiProvider);
-    this.logger.log(`Registered LLM providers: ${Array.from(this.providers.keys()).join(', ')}`);
+    if (openaiProvider?.isAvailable())
+      this.providers.set('openai', openaiProvider);
+    if (geminiProvider?.isAvailable())
+      this.providers.set('gemini', geminiProvider);
+    this.logger.log(
+      `Registered LLM providers: ${Array.from(this.providers.keys()).join(', ')}`,
+    );
   }
 
   /**
@@ -34,7 +38,10 @@ export class LLMRouterService {
    * v1: Always returns Groq provider.
    */
   getProvider(options?: { preferredProvider?: string }): BaseLLMProvider {
-    if (options?.preferredProvider && this.providers.has(options.preferredProvider)) {
+    if (
+      options?.preferredProvider &&
+      this.providers.has(options.preferredProvider)
+    ) {
       return this.providers.get(options.preferredProvider)!;
     }
     return this.groqProvider;
@@ -44,7 +51,9 @@ export class LLMRouterService {
    * Get the best model for the task type.
    * GPT-OSS-120B for tool calling & complex reasoning, Llama 3.1 8B for simple tasks.
    */
-  getModelForTask(taskType: 'simple' | 'complex' | 'tool_calling' = 'complex'): string {
+  getModelForTask(
+    taskType: 'simple' | 'complex' | 'tool_calling' = 'complex',
+  ): string {
     switch (taskType) {
       case 'simple':
         return 'llama-3.1-8b-instant';
@@ -74,17 +83,47 @@ export class LLMRouterService {
 
     // Tool-triggering keywords
     const toolKeywords = [
-      'post', 'schedule', 'create', 'delete', 'update', 'edit',
-      'channel', 'connect', 'disconnect',
-      'navigate', 'go to', 'open', 'take me',
-      'search', 'find', 'look for', 'show me',
-      'image', 'photo', 'video', 'picture', 'media',
-      'unsplash', 'pexels', 'canva',
-      'drive', 'onedrive', 'dropbox', 'google photos',
-      'media library', 'download',
-      'theme', 'dark mode', 'light mode',
-      'draft', 'publish', 'scheduled',
-      'workspace', 'profile', 'my name', 'my email',
+      'post',
+      'schedule',
+      'create',
+      'delete',
+      'update',
+      'edit',
+      'channel',
+      'connect',
+      'disconnect',
+      'navigate',
+      'go to',
+      'open',
+      'take me',
+      'search',
+      'find',
+      'look for',
+      'show me',
+      'image',
+      'photo',
+      'video',
+      'picture',
+      'media',
+      'unsplash',
+      'pexels',
+      'canva',
+      'drive',
+      'onedrive',
+      'dropbox',
+      'google photos',
+      'media library',
+      'download',
+      'theme',
+      'dark mode',
+      'light mode',
+      'draft',
+      'publish',
+      'scheduled',
+      'workspace',
+      'profile',
+      'my name',
+      'my email',
     ];
     if (toolKeywords.some((k) => msg.includes(k))) return 'tool_calling';
 
@@ -94,9 +133,14 @@ export class LLMRouterService {
   /**
    * Get the best model for a provider type.
    */
-  getModelForProvider(provider: string, taskType: 'simple' | 'complex' | 'tool_calling'): string {
+  getModelForProvider(
+    provider: string,
+    taskType: 'simple' | 'complex' | 'tool_calling',
+  ): string {
     if (provider === 'claude') {
-      return taskType === 'simple' ? 'claude-haiku-4-5-20251001' : 'claude-sonnet-4-5-20250929';
+      return taskType === 'simple'
+        ? 'claude-haiku-4-5-20251001'
+        : 'claude-sonnet-4-5-20250929';
     }
     if (provider === 'openai') {
       return taskType === 'simple' ? 'gpt-4o-mini' : 'gpt-4o';

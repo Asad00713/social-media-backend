@@ -20,7 +20,11 @@ import {
 import { StripeService } from '../../stripe/stripe.service';
 import { UsageService } from './usage.service';
 
-export type AddonType = 'EXTRA_CHANNEL' | 'EXTRA_MEMBER' | 'EXTRA_WORKSPACE' | 'EXTRA_AI_TOKENS';
+export type AddonType =
+  | 'EXTRA_CHANNEL'
+  | 'EXTRA_MEMBER'
+  | 'EXTRA_WORKSPACE'
+  | 'EXTRA_AI_TOKENS';
 
 export interface PurchaseAddonDto {
   workspaceId: string;
@@ -88,7 +92,9 @@ export class AddonService {
       .limit(1);
 
     if (subscription.length === 0) {
-      throw new NotFoundException('No active subscription found for this workspace');
+      throw new NotFoundException(
+        'No active subscription found for this workspace',
+      );
     }
 
     const sub = subscription[0];
@@ -165,24 +171,13 @@ export class AddonService {
       );
     }
 
-    // 3.5 Get or create Stripe price for this addon
-    let stripePriceId = addonPrice.stripePriceId;
+    // 3.5 Read the provisioned Stripe price for this addon (read-only — prices
+    //     are provisioned out-of-band by the stripe-provision script).
+    const stripePriceId = addonPrice.stripePriceId;
     if (!stripePriceId) {
-      this.logger.log(`Creating Stripe price for add-on ${addonType} on plan ${sub.planCode}`);
-      stripePriceId = await this.stripeService.getOrCreatePriceForAddon({
-        addonType,
-        planCode: sub.planCode,
-        priceCents: addonPrice.pricePerUnitCents,
-        interval: 'month',
-      });
-
-      // Update the addon_pricing record with the new Stripe price ID
-      await db
-        .update(addonPricing)
-        .set({ stripePriceId })
-        .where(eq(addonPricing.id, addonPrice.id));
-
-      this.logger.log(`Created Stripe price ${stripePriceId} for add-on ${addonType}`);
+      throw new BadRequestException(
+        `Add-on "${addonType}" for plan "${sub.planCode}" is not provisioned in Stripe — run the pricing provision script (npx ts-node src/drizzle/seeds/stripe-provision.ts)`,
+      );
     }
 
     // 4. Check if subscription item already exists for this addon type
@@ -274,7 +269,8 @@ export class AddonService {
     await db.insert(subscriptionChanges).values({
       subscriptionId: sub.id,
       changeType: existingItem.length > 0 ? 'ADDON_UPDATED' : 'ADDON_ADDED',
-      oldValue: existingItem.length > 0 ? { quantity: existingItem[0].quantity } : null,
+      oldValue:
+        existingItem.length > 0 ? { quantity: existingItem[0].quantity } : null,
       newValue: { addonType, quantity: finalQuantity },
       prorationAmountCents: addonPrice.pricePerUnitCents * quantity,
       changedByUserId: userId,
@@ -408,7 +404,9 @@ export class AddonService {
       // Delete the item entirely
       // Note: Credits from removal are automatically applied to next invoice by Stripe
       if (item.stripeSubscriptionItemId) {
-        await this.stripeService.deleteSubscriptionItem(item.stripeSubscriptionItemId);
+        await this.stripeService.deleteSubscriptionItem(
+          item.stripeSubscriptionItemId,
+        );
       }
 
       await db
@@ -433,7 +431,11 @@ export class AddonService {
     }
 
     // 6. Update workspace usage limits
-    await this.updateUsageLimitsForAddon(workspaceId, addonType, remainingQuantity);
+    await this.updateUsageLimitsForAddon(
+      workspaceId,
+      addonType,
+      remainingQuantity,
+    );
 
     // 7. Log change
     await db.insert(subscriptionChanges).values({
@@ -450,9 +452,10 @@ export class AddonService {
     );
 
     return {
-      message: remainingQuantity === 0
-        ? `${addonType} add-on removed completely`
-        : `Removed ${removeQty} ${addonType}. ${remainingQuantity} remaining.`,
+      message:
+        remainingQuantity === 0
+          ? `${addonType} add-on removed completely`
+          : `Removed ${removeQty} ${addonType}. ${remainingQuantity} remaining.`,
       remainingQuantity,
     };
   }

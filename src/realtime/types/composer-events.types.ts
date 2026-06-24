@@ -1,4 +1,7 @@
-import type { PublishStatus, PublishErrorCode } from '../../posts/composer/types/draft.types';
+import type {
+  PublishStatus,
+  PublishErrorCode,
+} from '../../posts/composer/types/draft.types';
 import type { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
 export interface ComposerPublishStateChangedPayload {

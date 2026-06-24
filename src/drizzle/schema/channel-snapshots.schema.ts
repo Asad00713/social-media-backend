@@ -28,15 +28,27 @@ export const channelSnapshots = pgTable(
     followingCount: integer('following_count'),
     totalPostsCount: integer('total_posts_count'),
     platformMetrics: jsonb('platform_metrics').default({}).notNull(),
-    metricsSchemaVersion: integer('metrics_schema_version').default(1).notNull(),
+    metricsSchemaVersion: integer('metrics_schema_version')
+      .default(1)
+      .notNull(),
     fetchedAt: timestamp('fetched_at', { withTimezone: true }).notNull(),
-    syncStatus: varchar('sync_status', { length: 16 }).notNull().$type<SyncStatus>(),
+    syncStatus: varchar('sync_status', { length: 16 })
+      .notNull()
+      .$type<SyncStatus>(),
     syncError: text('sync_error'),
-    createdAt: timestamp('created_at', { withTimezone: true }).defaultNow().notNull(),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
   },
   (t) => ({
-    channelDateUnique: unique('channel_snapshots_channel_date_unique').on(t.channelId, t.snapshotDate),
-    channelDateIdx: index('channel_snapshots_channel_date_idx').on(t.channelId, t.snapshotDate.desc()),
+    channelDateUnique: unique('channel_snapshots_channel_date_unique').on(
+      t.channelId,
+      t.snapshotDate,
+    ),
+    channelDateIdx: index('channel_snapshots_channel_date_idx').on(
+      t.channelId,
+      t.snapshotDate.desc(),
+    ),
   }),
 );
 

@@ -7,13 +7,8 @@ import { JwtModule } from '@nestjs/jwt';
 import { BillingModule } from 'src/billing/billing.module';
 
 @Module({
-  imports: [
-    PassportModule,
-    AuthModule,
-    JwtModule.register({}),
-    BillingModule,
-  ],
+  imports: [PassportModule, AuthModule, JwtModule.register({}), BillingModule],
   providers: [WorkspaceMembersService],
-  controllers: [WorkspaceMembersController]
+  controllers: [WorkspaceMembersController],
 })
-export class WorkspaceMembersModule { }
+export class WorkspaceMembersModule {}

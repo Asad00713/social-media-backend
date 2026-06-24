@@ -11,7 +11,9 @@ describe('MastodonAnalyticsAdapter', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    adapter = new MastodonAnalyticsAdapter(mockClient as unknown as MastodonApiClient);
+    adapter = new MastodonAnalyticsAdapter(
+      mockClient as unknown as MastodonApiClient,
+    );
   });
 
   it('exposes platform=mastodon + boost vocabulary + no impressions + null quota', () => {
@@ -57,8 +59,12 @@ describe('MastodonAnalyticsAdapter', () => {
       expect(result.data.followersCount).toBe(420);
       expect(result.data.followingCount).toBe(88);
       expect(result.data.totalPostsCount).toBe(73);
-      expect(result.data.platformMetrics.handle).toBe('testuser@mastodon.social');
-      expect(result.data.platformMetrics.instanceUrl).toBe('https://mastodon.social');
+      expect(result.data.platformMetrics.handle).toBe(
+        'testuser@mastodon.social',
+      );
+      expect(result.data.platformMetrics.instanceUrl).toBe(
+        'https://mastodon.social',
+      );
       // HTML stripped
       expect(result.data.platformMetrics.note).toBe('A bio with HTML');
       expect(result.quotaCostUsed).toBe(0);

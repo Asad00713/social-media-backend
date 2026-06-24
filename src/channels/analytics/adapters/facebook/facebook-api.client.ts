@@ -7,7 +7,12 @@ import type {
 
 export class FacebookApiError extends Error {
   constructor(
-    public code: 'rate_limited' | 'auth_failed' | 'not_found' | 'transient' | 'permanent',
+    public code:
+      | 'rate_limited'
+      | 'auth_failed'
+      | 'not_found'
+      | 'transient'
+      | 'permanent',
     public status: number,
     message: string,
   ) {
@@ -26,7 +31,10 @@ export class FacebookApiClient {
       fields:
         'id,name,fan_count,followers_count,about,picture.type(large),verification_status,category',
     });
-    return this.request<FacebookPage>(`${this.baseUrl}/${pageId}?${params}`, accessToken);
+    return this.request<FacebookPage>(
+      `${this.baseUrl}/${pageId}?${params}`,
+      accessToken,
+    );
   }
 
   async getPagePosts(opts: {
@@ -47,7 +55,10 @@ export class FacebookApiClient {
     );
   }
 
-  async getPost(postId: string, accessToken: string): Promise<FacebookPagePost> {
+  async getPost(
+    postId: string,
+    accessToken: string,
+  ): Promise<FacebookPagePost> {
     const params = new URLSearchParams({
       fields:
         'id,message,created_time,full_picture,permalink_url,reactions.summary(true),comments.summary(true),shares,likes.summary(true)',
@@ -58,7 +69,10 @@ export class FacebookApiClient {
     );
   }
 
-  async getPostInsights(postId: string, accessToken: string): Promise<FacebookPostInsights> {
+  async getPostInsights(
+    postId: string,
+    accessToken: string,
+  ): Promise<FacebookPostInsights> {
     const params = new URLSearchParams({
       metric: 'post_impressions,post_impressions_unique,post_engaged_users',
     });
@@ -74,9 +88,13 @@ export class FacebookApiClient {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      const fbError = (body as any).error ?? {};
+      const fbError = body.error ?? {};
       const message = fbError.message ?? `HTTP ${res.status}`;
-      throw new FacebookApiError(this.mapCode(res.status, fbError), res.status, message);
+      throw new FacebookApiError(
+        this.mapCode(res.status, fbError),
+        res.status,
+        message,
+      );
     }
     return res.json() as Promise<T>;
   }

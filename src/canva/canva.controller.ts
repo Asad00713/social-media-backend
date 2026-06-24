@@ -63,7 +63,11 @@ export class CanvaController {
       'profile:read',
     ];
 
-    const result = this.canvaService.generateAuthUrl(redirectUri, state, scopes);
+    const result = this.canvaService.generateAuthUrl(
+      redirectUri,
+      state,
+      scopes,
+    );
 
     // Calculate expiration (15 minutes)
     const expiresAt = new Date(Date.now() + 15 * 60 * 1000);
@@ -80,12 +84,15 @@ export class CanvaController {
       workspaceId,
       userId: user.userId,
       platform: 'canva',
-      redirectUrl: dto.redirectUrl || process.env.FRONTEND_URL || 'http://localhost:3001',
+      redirectUrl:
+        dto.redirectUrl || process.env.FRONTEND_URL || 'http://localhost:3001',
       codeVerifier: result.codeVerifier,
       expiresAt,
     } as NewOAuthState);
 
-    this.logger.log(`Canva OAuth initiated for user ${user.userId}, state: ${state.substring(0, 10)}...`);
+    this.logger.log(
+      `Canva OAuth initiated for user ${user.userId}, state: ${state.substring(0, 10)}...`,
+    );
 
     return {
       authorizationUrl: result.url,
@@ -104,9 +111,12 @@ export class CanvaController {
     @Query('error_description') errorDescription: string,
     @Res() res: Response,
   ) {
-    const defaultFrontendUrl = process.env.FRONTEND_URL || 'http://localhost:3001';
+    const defaultFrontendUrl =
+      process.env.FRONTEND_URL || 'http://localhost:3001';
 
-    this.logger.log(`Canva OAuth callback received. State: ${state?.substring(0, 10)}...`);
+    this.logger.log(
+      `Canva OAuth callback received. State: ${state?.substring(0, 10)}...`,
+    );
 
     // Look up state in database
     const stateRecords = await db
@@ -135,7 +145,9 @@ export class CanvaController {
 
     // Validate state
     if (!stateData) {
-      this.logger.error(`State token not found in database: ${state?.substring(0, 10)}...`);
+      this.logger.error(
+        `State token not found in database: ${state?.substring(0, 10)}...`,
+      );
       const errorUrl = `${frontendUrl}/canva/connect/error?error=invalid_state&description=OAuth state not found`;
       return res.redirect(errorUrl);
     }
@@ -147,7 +159,9 @@ export class CanvaController {
     }
 
     if (stateData.usedAt) {
-      this.logger.error(`State token already used: ${state?.substring(0, 10)}...`);
+      this.logger.error(
+        `State token already used: ${state?.substring(0, 10)}...`,
+      );
       const errorUrl = `${frontendUrl}/canva/connect/error?error=invalid_state&description=OAuth state already used`;
       return res.redirect(errorUrl);
     }
@@ -160,7 +174,9 @@ export class CanvaController {
 
     try {
       const redirectUri = `${process.env.APP_URL}/canva/oauth/callback`;
-      this.logger.log(`Exchanging code for tokens with redirect URI: ${redirectUri}`);
+      this.logger.log(
+        `Exchanging code for tokens with redirect URI: ${redirectUri}`,
+      );
 
       const tokens = await this.canvaService.exchangeCodeForTokens(
         code,
@@ -174,7 +190,8 @@ export class CanvaController {
       this.logger.log(`Canva OAuth successful for user: ${user.displayName}`);
 
       // Redirect to frontend with tokens
-      const successUrl = `${frontendUrl}/canva/connect/success?` +
+      const successUrl =
+        `${frontendUrl}/canva/connect/success?` +
         `accessToken=${encodeURIComponent(tokens.accessToken)}` +
         `&refreshToken=${encodeURIComponent(tokens.refreshToken)}` +
         `&expiresIn=${tokens.expiresIn}` +
@@ -235,7 +252,11 @@ export class CanvaController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listDesigns(@Body() dto: ListDesignsDto) {
-    return this.canvaService.listDesigns(dto.accessToken, dto.limit, dto.continuation);
+    return this.canvaService.listDesigns(
+      dto.accessToken,
+      dto.limit,
+      dto.continuation,
+    );
   }
 
   /**
@@ -294,11 +315,15 @@ export class CanvaController {
     @Body() dto: ExportDesignDto,
   ) {
     // Start export
-    const exportJob = await this.canvaService.exportDesign(dto.accessToken, designId, {
-      format: dto.format,
-      quality: dto.quality,
-      pages: dto.pages,
-    });
+    const exportJob = await this.canvaService.exportDesign(
+      dto.accessToken,
+      designId,
+      {
+        format: dto.format,
+        quality: dto.quality,
+        pages: dto.pages,
+      },
+    );
 
     // Wait for completion
     const urls = await this.canvaService.waitForExport(
@@ -326,7 +351,11 @@ export class CanvaController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async uploadAsset(@Body() dto: UploadAssetDto) {
-    return this.canvaService.uploadAsset(dto.accessToken, dto.name, dto.mediaUrl);
+    return this.canvaService.uploadAsset(
+      dto.accessToken,
+      dto.name,
+      dto.mediaUrl,
+    );
   }
 
   // ==========================================================================

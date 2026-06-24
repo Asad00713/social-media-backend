@@ -12,32 +12,35 @@ import {
   Post,
   Query,
   UseGuards,
-} from '@nestjs/common'
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'
-import { CurrentUser } from '../auth/decorators/current-user.decorator'
-import { AdAccountsService } from './services/ad-accounts.service'
-import { AdDraftsService } from './services/ad-drafts.service'
-import { BoostPostService } from './services/boost-post.service'
-import { BoostEditService } from './services/boost-edit.service'
-import { LeadCampaignService } from './services/lead-campaign.service'
-import { AdInsightsService } from './services/ad-insights.service'
-import { AdMutationsService } from './services/ad-mutations.service'
-import { MetaAdsClient } from './services/meta-ads.client'
-import { ChannelService } from '../channels/services/channel.service'
-import { UpsertDraftDto } from './dto/draft.dto'
-import { CreateBoostDto } from './dto/create-boost.dto'
-import { BoostEditDto } from './dto/boost-edit.dto'
-import { CreateLeadCampaignDto } from './dto/create-lead-campaign.dto'
-import { UpdateCampaignStatusDto, UpdateAdSetBudgetDto } from './dto/ad-mutations.dto'
-import { DeliveryEstimateDto } from './dto/delivery-estimate.dto'
-import { audienceToMetaTargeting } from './utils/audience-to-targeting'
-import { db } from '../drizzle/db'
-import { adAccounts, adCampaigns, adSets, leads } from '../drizzle/schema'
-import { eq, and, desc } from 'drizzle-orm'
+} from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { AdAccountsService } from './services/ad-accounts.service';
+import { AdDraftsService } from './services/ad-drafts.service';
+import { BoostPostService } from './services/boost-post.service';
+import { BoostEditService } from './services/boost-edit.service';
+import { LeadCampaignService } from './services/lead-campaign.service';
+import { AdInsightsService } from './services/ad-insights.service';
+import { AdMutationsService } from './services/ad-mutations.service';
+import { MetaAdsClient } from './services/meta-ads.client';
+import { ChannelService } from '../channels/services/channel.service';
+import { UpsertDraftDto } from './dto/draft.dto';
+import { CreateBoostDto } from './dto/create-boost.dto';
+import { BoostEditDto } from './dto/boost-edit.dto';
+import { CreateLeadCampaignDto } from './dto/create-lead-campaign.dto';
+import {
+  UpdateCampaignStatusDto,
+  UpdateAdSetBudgetDto,
+} from './dto/ad-mutations.dto';
+import { DeliveryEstimateDto } from './dto/delivery-estimate.dto';
+import { audienceToMetaTargeting } from './utils/audience-to-targeting';
+import { db } from '../drizzle/db';
+import { adAccounts, adCampaigns, adSets, leads } from '../drizzle/schema';
+import { eq, and, desc } from 'drizzle-orm';
 
 interface AuthUser {
-  userId: string
-  email: string
+  userId: string;
+  email: string;
 }
 
 @Controller('ads/workspaces/:workspaceId')
@@ -65,7 +68,7 @@ export class AdsController {
    */
   @Get('ad-accounts')
   async list(@Param('workspaceId') wid: string) {
-    const rows = await this.adAccounts.list(wid)
+    const rows = await this.adAccounts.list(wid);
     return {
       adAccounts: rows.map((r) => ({
         id: r.id,
@@ -79,7 +82,7 @@ export class AdsController {
         isBillingReady: !!(r.fundingSource as { id?: string } | null)?.id,
         channelId: r.channelId,
       })),
-    }
+    };
   }
 
   /**
@@ -91,8 +94,8 @@ export class AdsController {
     @Param('workspaceId') wid: string,
     @Param('channelId') channelId: string,
   ) {
-    await this.adAccounts.syncForChannel(wid, Number(channelId))
-    return { success: true }
+    await this.adAccounts.syncForChannel(wid, Number(channelId));
+    return { success: true };
   }
 
   /**
@@ -104,8 +107,11 @@ export class AdsController {
     @Param('workspaceId') wid: string,
     @Param('channelId') channelId: string,
   ) {
-    const posts = await this.adAccounts.listPagePostsForBoost(wid, Number(channelId))
-    return { posts }
+    const posts = await this.adAccounts.listPagePostsForBoost(
+      wid,
+      Number(channelId),
+    );
+    return { posts };
   }
 
   // ==========================================================================
@@ -117,11 +123,8 @@ export class AdsController {
    * GET /ads/workspaces/:workspaceId/drafts
    */
   @Get('drafts')
-  listDrafts(
-    @Param('workspaceId') wid: string,
-    @CurrentUser() user: AuthUser,
-  ) {
-    return this.drafts.list(wid, user.userId)
+  listDrafts(@Param('workspaceId') wid: string, @CurrentUser() user: AuthUser) {
+    return this.drafts.list(wid, user.userId);
   }
 
   /**
@@ -135,7 +138,7 @@ export class AdsController {
     @CurrentUser() user: AuthUser,
     @Body() body: UpsertDraftDto,
   ) {
-    return this.drafts.upsert(wid, user.userId, body)
+    return this.drafts.upsert(wid, user.userId, body);
   }
 
   /**
@@ -148,7 +151,7 @@ export class AdsController {
     @Param('id') id: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.drafts.get(wid, user.userId, id)
+    return this.drafts.get(wid, user.userId, id);
   }
 
   /**
@@ -162,7 +165,7 @@ export class AdsController {
     @Param('id') id: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.drafts.delete(wid, user.userId, id)
+    return this.drafts.delete(wid, user.userId, id);
   }
 
   // ==========================================================================
@@ -179,7 +182,7 @@ export class AdsController {
     @CurrentUser() user: AuthUser,
     @Body() body: CreateBoostDto,
   ) {
-    return this.boost.create(wid, user.userId, body)
+    return this.boost.create(wid, user.userId, body);
   }
 
   /**
@@ -194,15 +197,18 @@ export class AdsController {
     const [campaign] = await db
       .select()
       .from(adCampaigns)
-      .where(and(eq(adCampaigns.id, campaignId), eq(adCampaigns.workspaceId, wid)))
-      .limit(1)
-    if (!campaign || campaign.kind !== 'boost') throw new NotFoundException('Boost campaign not found')
+      .where(
+        and(eq(adCampaigns.id, campaignId), eq(adCampaigns.workspaceId, wid)),
+      )
+      .limit(1);
+    if (!campaign || campaign.kind !== 'boost')
+      throw new NotFoundException('Boost campaign not found');
     const [adset] = await db
       .select()
       .from(adSets)
       .where(eq(adSets.campaignId, campaign.id))
-      .limit(1)
-    if (!adset) throw new NotFoundException('Ad set not found')
+      .limit(1);
+    if (!adset) throw new NotFoundException('Ad set not found');
     return {
       campaign: {
         id: campaign.id,
@@ -221,7 +227,7 @@ export class AdsController {
         targeting: adset.targeting,
         promotedObject: adset.promotedObject,
       },
-    }
+    };
   }
 
   /**
@@ -234,7 +240,7 @@ export class AdsController {
     @Param('campaignId') campaignId: string,
     @Body() body: BoostEditDto,
   ) {
-    return this.boostEdit.apply(wid, campaignId, body)
+    return this.boostEdit.apply(wid, campaignId, body);
   }
 
   // ==========================================================================
@@ -251,7 +257,7 @@ export class AdsController {
     @CurrentUser() user: AuthUser,
     @Body() body: CreateLeadCampaignDto,
   ) {
-    return this.leadCampaign.create(wid, user.userId, body)
+    return this.leadCampaign.create(wid, user.userId, body);
   }
 
   // ==========================================================================
@@ -270,8 +276,8 @@ export class AdsController {
     @Param('campaignId') campaignId: string,
     @Query('since') since?: string,
   ) {
-    const sinceDate = since ?? defaultSince()
-    return this.insights.getForCampaign(wid, campaignId, sinceDate)
+    const sinceDate = since ?? defaultSince();
+    return this.insights.getForCampaign(wid, campaignId, sinceDate);
   }
 
   // ==========================================================================
@@ -288,8 +294,8 @@ export class AdsController {
       .select()
       .from(adCampaigns)
       .where(eq(adCampaigns.workspaceId, wid))
-      .orderBy(desc(adCampaigns.createdAt))
-    return { campaigns: rows }
+      .orderBy(desc(adCampaigns.createdAt));
+    return { campaigns: rows };
   }
 
   /**
@@ -303,7 +309,7 @@ export class AdsController {
     @Param('id') id: string,
     @Body() body: UpdateCampaignStatusDto,
   ) {
-    return this.mutations.setCampaignStatus(wid, id, body.status)
+    return this.mutations.setCampaignStatus(wid, id, body.status);
   }
 
   /**
@@ -317,7 +323,7 @@ export class AdsController {
     @Param('id') id: string,
     @Body() body: UpdateAdSetBudgetDto,
   ) {
-    return this.mutations.setAdSetBudget(wid, id, body.dailyBudgetMinor)
+    return this.mutations.setAdSetBudget(wid, id, body.dailyBudgetMinor);
   }
 
   // ==========================================================================
@@ -337,16 +343,16 @@ export class AdsController {
   ) {
     const condition = formId
       ? and(eq(leads.workspaceId, wid), eq(leads.leadFormId, formId))
-      : eq(leads.workspaceId, wid)
+      : eq(leads.workspaceId, wid);
 
     const rows = await db
       .select()
       .from(leads)
       .where(condition)
       .orderBy(desc(leads.capturedAt))
-      .limit(200)
+      .limit(200);
 
-    return { leads: rows }
+    return { leads: rows };
   }
 
   // ==========================================================================
@@ -366,14 +372,16 @@ export class AdsController {
     @Query('channelId') channelId: string,
   ) {
     if (!q || q.length < 2) {
-      return []
+      return [];
     }
-    const channel = await this.channelService.getChannelForPosting(Number(channelId))
+    const channel = await this.channelService.getChannelForPosting(
+      Number(channelId),
+    );
     if (channel.workspaceId !== wid) {
-      throw new ForbiddenException('Channel does not belong to this workspace')
+      throw new ForbiddenException('Channel does not belong to this workspace');
     }
-    const token = channel.accessToken ?? ''
-    return this.metaAdsClient.searchInterests(q, token)
+    const token = channel.accessToken ?? '';
+    return this.metaAdsClient.searchInterests(q, token);
   }
 
   /**
@@ -389,14 +397,16 @@ export class AdsController {
     @Query('channelId') channelId: string,
   ) {
     if (!q || q.length < 2) {
-      return []
+      return [];
     }
-    const channel = await this.channelService.getChannelForPosting(Number(channelId))
+    const channel = await this.channelService.getChannelForPosting(
+      Number(channelId),
+    );
     if (channel.workspaceId !== wid) {
-      throw new ForbiddenException('Channel does not belong to this workspace')
+      throw new ForbiddenException('Channel does not belong to this workspace');
     }
-    const token = channel.accessToken ?? ''
-    return this.metaAdsClient.searchGeoLocations(q, token)
+    const token = channel.accessToken ?? '';
+    return this.metaAdsClient.searchGeoLocations(q, token);
   }
 
   /**
@@ -412,14 +422,16 @@ export class AdsController {
     @Query('channelId') channelId: string,
   ) {
     if (!q || q.length < 2) {
-      return []
+      return [];
     }
-    const channel = await this.channelService.getChannelForPosting(Number(channelId))
+    const channel = await this.channelService.getChannelForPosting(
+      Number(channelId),
+    );
     if (channel.workspaceId !== wid) {
-      throw new ForbiddenException('Channel does not belong to this workspace')
+      throw new ForbiddenException('Channel does not belong to this workspace');
     }
-    const token = channel.accessToken ?? ''
-    return this.metaAdsClient.searchLanguages(q, token)
+    const token = channel.accessToken ?? '';
+    return this.metaAdsClient.searchLanguages(q, token);
   }
 
   /**
@@ -435,14 +447,16 @@ export class AdsController {
     @Query('channelId') channelId: string,
   ) {
     if (!q || q.length < 2) {
-      return []
+      return [];
     }
-    const channel = await this.channelService.getChannelForPosting(Number(channelId))
+    const channel = await this.channelService.getChannelForPosting(
+      Number(channelId),
+    );
     if (channel.workspaceId !== wid) {
-      throw new ForbiddenException('Channel does not belong to this workspace')
+      throw new ForbiddenException('Channel does not belong to this workspace');
     }
-    const token = channel.accessToken ?? ''
-    return this.metaAdsClient.searchBehaviors(q, token)
+    const token = channel.accessToken ?? '';
+    return this.metaAdsClient.searchBehaviors(q, token);
   }
 
   /**
@@ -458,14 +472,16 @@ export class AdsController {
     @Query('channelId') channelId: string,
   ) {
     if (!q || q.length < 2) {
-      return []
+      return [];
     }
-    const channel = await this.channelService.getChannelForPosting(Number(channelId))
+    const channel = await this.channelService.getChannelForPosting(
+      Number(channelId),
+    );
     if (channel.workspaceId !== wid) {
-      throw new ForbiddenException('Channel does not belong to this workspace')
+      throw new ForbiddenException('Channel does not belong to this workspace');
     }
-    const token = channel.accessToken ?? ''
-    return this.metaAdsClient.searchDemographics(q, token)
+    const token = channel.accessToken ?? '';
+    return this.metaAdsClient.searchDemographics(q, token);
   }
 
   /**
@@ -481,22 +497,29 @@ export class AdsController {
     const [account] = await db
       .select()
       .from(adAccounts)
-      .where(and(eq(adAccounts.id, body.adAccountId), eq(adAccounts.workspaceId, wid)))
-      .limit(1)
+      .where(
+        and(
+          eq(adAccounts.id, body.adAccountId),
+          eq(adAccounts.workspaceId, wid),
+        ),
+      )
+      .limit(1);
 
     if (!account) {
-      throw new NotFoundException('Ad account not found in this workspace')
+      throw new NotFoundException('Ad account not found in this workspace');
     }
 
-    const channel = await this.channelService.getChannelForPosting(body.channelId)
-    const token = channel.accessToken ?? ''
-    const targeting = audienceToMetaTargeting(body.audience)
+    const channel = await this.channelService.getChannelForPosting(
+      body.channelId,
+    );
+    const token = channel.accessToken ?? '';
+    const targeting = audienceToMetaTargeting(body.audience);
     return this.metaAdsClient.getDeliveryEstimate(
       account.metaAdAccountId,
       token,
       targeting,
       body.optimizationGoal,
-    )
+    );
   }
 }
 
@@ -506,7 +529,7 @@ export class AdsController {
 
 /** Returns the date 7 days ago as YYYY-MM-DD (UTC). */
 function defaultSince(): string {
-  const d = new Date()
-  d.setUTCDate(d.getUTCDate() - 7)
-  return d.toISOString().slice(0, 10)
+  const d = new Date();
+  d.setUTCDate(d.getUTCDate() - 7);
+  return d.toISOString().slice(0, 10);
 }

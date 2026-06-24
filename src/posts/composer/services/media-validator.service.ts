@@ -28,7 +28,10 @@ export interface MediaValidationResult {
 
 @Injectable()
 export class MediaValidatorService {
-  validate(items: DraftMediaItem[], constraints: MediaConstraints): MediaValidationResult {
+  validate(
+    items: DraftMediaItem[],
+    constraints: MediaConstraints,
+  ): MediaValidationResult {
     const errors: MediaValidationError[] = [];
     const warnings: MediaValidationError[] = [];
 
@@ -67,7 +70,11 @@ export class MediaValidatorService {
         constraints.imageAspectRatios.length > 0 &&
         img.width != null &&
         img.height != null &&
-        !this.matchesAspect(img.width, img.height, constraints.imageAspectRatios)
+        !this.matchesAspect(
+          img.width,
+          img.height,
+          constraints.imageAspectRatios,
+        )
       ) {
         errors.push({
           kind: 'image_aspect_mismatch',
@@ -92,7 +99,10 @@ export class MediaValidatorService {
           message: `Video ${sizeMB.toFixed(1)}MB exceeds ${constraints.videoMaxSizeMB}MB`,
         });
       }
-      if (v.durationSec != null && v.durationSec > constraints.videoMaxDurationSec) {
+      if (
+        v.durationSec != null &&
+        v.durationSec > constraints.videoMaxDurationSec
+      ) {
         errors.push({
           kind: 'video_too_long',
           mediaId: v.id,
@@ -127,7 +137,11 @@ export class MediaValidatorService {
     return { ok: errors.length === 0, errors, warnings };
   }
 
-  private matchesAspect(width: number, height: number, allowed: string[]): boolean {
+  private matchesAspect(
+    width: number,
+    height: number,
+    allowed: string[],
+  ): boolean {
     const actual = width / height;
     for (const ratio of allowed) {
       const [w, h] = ratio.split(':').map(Number);

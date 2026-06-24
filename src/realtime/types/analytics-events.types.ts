@@ -125,7 +125,12 @@ export interface InboxItemUpdatedPayload {
 export interface InboxCountsChangedPayload {
   workspaceId: string;
   perChannel: { channelId: number; comments: number; dms: number }[];
-  smartFolders: { all: number; unread: number; needs_reply: number; done: number };
+  smartFolders: {
+    all: number;
+    unread: number;
+    needs_reply: number;
+    done: number;
+  };
 }
 
 export type ScheduledInboxLifecycleStatus =

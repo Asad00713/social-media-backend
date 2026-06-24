@@ -42,7 +42,12 @@ import { TokenRefreshScheduler } from './schedulers/token-refresh.scheduler';
 import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.scheduler';
 
 @Module({
-  imports: [DrizzleModule, AnalyticsModule, QueueModule, forwardRef(() => InboxModule)],
+  imports: [
+    DrizzleModule,
+    AnalyticsModule,
+    QueueModule,
+    forwardRef(() => InboxModule),
+  ],
   controllers: [ChannelsController],
   providers: [
     ChannelService,

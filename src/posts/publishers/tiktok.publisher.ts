@@ -37,7 +37,7 @@ export class TikTokPublisher extends BasePublisher {
     raw: Record<string, any> | undefined,
   ): Record<string, any> {
     if (!raw) return {};
-    const m = raw as Record<string, any>;
+    const m = raw;
 
     const mapPrivacy = (p: unknown): string | undefined => {
       if (typeof p !== 'string') return undefined;
@@ -54,7 +54,9 @@ export class TikTokPublisher extends BasePublisher {
     };
 
     const privacyLevel =
-      typeof m.privacyLevel === 'string' ? m.privacyLevel : mapPrivacy(m.privacy);
+      typeof m.privacyLevel === 'string'
+        ? m.privacyLevel
+        : mapPrivacy(m.privacy);
 
     // allowX (positive) → disableX (negative). When neither is set, default
     // to "allowed" (matches TikTok's permissive default for missing fields).
@@ -138,8 +140,7 @@ export class TikTokPublisher extends BasePublisher {
     // We mint a signed token wrapping the original Cloudinary/R2 URL and
     // route through `${proxyBase}/api/tiktok-media/:token`, which streams
     // the upstream bytes through unmodified.
-    const proxyBase =
-      process.env.API_PUBLIC_URL ?? 'https://api.schedura.ai';
+    const proxyBase = process.env.API_PUBLIC_URL ?? 'https://api.schedura.ai';
 
     const postType = (metadata?.postType as string | undefined) ?? 'video';
 

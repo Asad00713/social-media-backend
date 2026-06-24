@@ -71,6 +71,11 @@ import { QUEUES } from '../queue/queue.module';
     ScheduledInboxProcessor,
     SlackBackfillService,
   ],
-  exports: [InboxService, InboxDispatcher, ScheduledMessagesService, SlackBackfillService],
+  exports: [
+    InboxService,
+    InboxDispatcher,
+    ScheduledMessagesService,
+    SlackBackfillService,
+  ],
 })
 export class InboxModule {}

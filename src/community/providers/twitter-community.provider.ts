@@ -75,9 +75,13 @@ export class TwitterCommunityProvider extends BaseCommunityProvider {
     let mediaIds: string[] | undefined;
     if (options.mediaUrls && options.mediaUrls.length > 0) {
       if (options.mediaUrls.length > 4) {
-        throw new BadRequestException('Twitter allows maximum 4 media items per reply');
+        throw new BadRequestException(
+          'Twitter allows maximum 4 media items per reply',
+        );
       }
-      const oauth1Credentials = this.getOAuth1Credentials(options.channelMetadata);
+      const oauth1Credentials = this.getOAuth1Credentials(
+        options.channelMetadata,
+      );
       mediaIds = await this.uploadMediaFromUrls(
         options.accessToken,
         options.mediaUrls,

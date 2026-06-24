@@ -12,7 +12,9 @@ describe('FacebookAnalyticsAdapter', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    adapter = new FacebookAnalyticsAdapter(client as unknown as FacebookApiClient);
+    adapter = new FacebookAnalyticsAdapter(
+      client as unknown as FacebookApiClient,
+    );
   });
 
   it('exposes platform=facebook and correct vocabulary', () => {
@@ -45,7 +47,9 @@ describe('FacebookAnalyticsAdapter', () => {
       expect(result.data.followersCount).toBe(9500); // prefers followers_count
       expect(result.data.followingCount).toBeNull();
       expect(result.data.platformMetrics.fanCount).toBe(10000);
-      expect(result.data.platformMetrics.pictureUrl).toBe('https://example.com/pic.jpg');
+      expect(result.data.platformMetrics.pictureUrl).toBe(
+        'https://example.com/pic.jpg',
+      );
       expect(result.data.platformMetrics.category).toBe('Software');
     }
   });
@@ -129,7 +133,9 @@ describe('FacebookAnalyticsAdapter', () => {
       expect(first.metrics.sharesCount).toBe(10);
       expect(first.metrics.impressionsCount).toBeNull();
       expect(first.metrics.reachCount).toBeNull();
-      expect(first.metrics.platformMetrics.permalinkUrl).toBe('https://facebook.com/post-1');
+      expect(first.metrics.platformMetrics.permalinkUrl).toBe(
+        'https://facebook.com/post-1',
+      );
 
       const second = result.data.posts[1];
       expect(second.platformPostId).toBe('post-2');
@@ -141,7 +147,11 @@ describe('FacebookAnalyticsAdapter', () => {
 
   it('fetchRecentPosts returns failed on API error', async () => {
     client.getPagePosts.mockRejectedValue(
-      new FacebookApiError('rate_limited', 400, 'Application request limit reached.'),
+      new FacebookApiError(
+        'rate_limited',
+        400,
+        'Application request limit reached.',
+      ),
     );
 
     const result = await adapter.fetchRecentPosts(
@@ -165,7 +175,11 @@ describe('FacebookAnalyticsAdapter', () => {
       permalink_url: 'https://facebook.com/post-1',
     });
     client.getPostInsights.mockRejectedValue(
-      new FacebookApiError('permanent', 400, 'Insights not available for this post type.'),
+      new FacebookApiError(
+        'permanent',
+        400,
+        'Insights not available for this post type.',
+      ),
     );
 
     const result = await adapter.fetchPostMetrics({
@@ -191,9 +205,21 @@ describe('FacebookAnalyticsAdapter', () => {
     });
     client.getPostInsights.mockResolvedValue({
       data: [
-        { name: 'post_impressions', period: 'lifetime', values: [{ value: 5000 }] },
-        { name: 'post_impressions_unique', period: 'lifetime', values: [{ value: 3200 }] },
-        { name: 'post_engaged_users', period: 'lifetime', values: [{ value: 800 }] },
+        {
+          name: 'post_impressions',
+          period: 'lifetime',
+          values: [{ value: 5000 }],
+        },
+        {
+          name: 'post_impressions_unique',
+          period: 'lifetime',
+          values: [{ value: 3200 }],
+        },
+        {
+          name: 'post_engaged_users',
+          period: 'lifetime',
+          values: [{ value: 800 }],
+        },
       ],
     });
 

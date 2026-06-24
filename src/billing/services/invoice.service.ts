@@ -149,7 +149,9 @@ export class InvoiceService {
   }
 
   // Get invoice by Stripe invoice ID
-  async getInvoiceByStripeId(stripeInvoiceId: string): Promise<InvoiceDetails | null> {
+  async getInvoiceByStripeId(
+    stripeInvoiceId: string,
+  ): Promise<InvoiceDetails | null> {
     const invoice = await db
       .select()
       .from(invoices)
@@ -168,7 +170,10 @@ export class InvoiceService {
     userId: string,
     limit: number = 10,
     offset: number = 0,
-  ): Promise<{ invoices: (InvoiceListItem & { workspaceName: string })[]; total: number }> {
+  ): Promise<{
+    invoices: (InvoiceListItem & { workspaceName: string })[];
+    total: number;
+  }> {
     // Get all user's workspaces
     const workspaces = await db
       .select()
@@ -242,7 +247,9 @@ export class InvoiceService {
     }
 
     // Otherwise fetch from Stripe
-    const stripeInvoice = await this.stripeService.getInvoice(invoice[0].stripeInvoiceId);
+    const stripeInvoice = await this.stripeService.getInvoice(
+      invoice[0].stripeInvoiceId,
+    );
 
     if (stripeInvoice.invoice_pdf) {
       // Cache the URL
@@ -380,7 +387,9 @@ export class InvoiceService {
         subtotalFormatted: `$${((inv.subtotal || 0) / 100).toFixed(2)}`,
         taxFormatted: `$${((inv.tax || 0) / 100).toFixed(2)}`,
         totalFormatted: `$${((inv.total || 0) / 100).toFixed(2)}`,
-        periodStart: inv.period_start ? new Date(inv.period_start * 1000) : null,
+        periodStart: inv.period_start
+          ? new Date(inv.period_start * 1000)
+          : null,
         periodEnd: inv.period_end ? new Date(inv.period_end * 1000) : null,
         lineItems: (inv.lines?.data || []).map((line: any) => ({
           description: line.description,

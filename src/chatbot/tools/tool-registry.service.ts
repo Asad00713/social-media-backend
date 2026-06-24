@@ -1,5 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { ChatbotTool, ToolContext, ToolResult, toToolDefinition } from './tool.interface';
+import {
+  ChatbotTool,
+  ToolContext,
+  ToolResult,
+  toToolDefinition,
+} from './tool.interface';
 import { LLMToolDefinition } from '../llm/llm-provider.interface';
 
 /**
@@ -18,7 +23,9 @@ export class ToolRegistryService {
    */
   register(tool: ChatbotTool): void {
     if (this.tools.has(tool.name)) {
-      this.logger.warn(`Tool "${tool.name}" is already registered, overwriting`);
+      this.logger.warn(
+        `Tool "${tool.name}" is already registered, overwriting`,
+      );
     }
     this.tools.set(tool.name, tool);
     this.logger.log(`Registered tool: ${tool.name}`);

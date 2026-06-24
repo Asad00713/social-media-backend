@@ -22,7 +22,7 @@ function getEncryptionKey(): Buffer {
   if (!key) {
     throw new Error(
       'ENCRYPTION_KEY environment variable is required. ' +
-        'Generate one with: node -e "console.log(require(\'crypto\').randomBytes(32).toString(\'hex\'))"',
+        "Generate one with: node -e \"console.log(require('crypto').randomBytes(32).toString('hex'))\"",
     );
   }
 

@@ -22,11 +22,14 @@ async function getIntegrationToken(
   platform: string,
 ): Promise<{ token: string; channelId: number } | { error: string }> {
   try {
-    const channels = await channelService.getWorkspaceChannels(context.workspaceId, {
-      platform: platform as any,
-      connectionStatus: 'connected',
-      isActive: true,
-    });
+    const channels = await channelService.getWorkspaceChannels(
+      context.workspaceId,
+      {
+        platform: platform as any,
+        connectionStatus: 'connected',
+        isActive: true,
+      },
+    );
 
     if (!channels.length) {
       const label = PLATFORM_LABELS[platform] || platform;
@@ -36,7 +39,10 @@ async function getIntegrationToken(
     }
 
     const channel = channels[0];
-    const token = await channelService.getAccessToken(channel.id, context.workspaceId);
+    const token = await channelService.getAccessToken(
+      channel.id,
+      context.workspaceId,
+    );
     return { token, channelId: channel.id };
   } catch (error) {
     const label = PLATFORM_LABELS[platform] || platform;
@@ -58,17 +64,19 @@ export function createCloudStorageTools(
     {
       name: 'search_google_drive',
       description:
-        'Search for files (images, videos, documents) in the user\'s connected Google Drive. Use this when the user mentions a file in their Drive or wants to find media from Google Drive for a post. Requires the user to have Google Drive connected.',
+        "Search for files (images, videos, documents) in the user's connected Google Drive. Use this when the user mentions a file in their Drive or wants to find media from Google Drive for a post. Requires the user to have Google Drive connected.",
       parameters: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'Search query — matches file names (e.g. "beach sunset", "logo", "product photo")',
+            description:
+              'Search query — matches file names (e.g. "beach sunset", "logo", "product photo")',
           },
           mediaOnly: {
             type: 'boolean',
-            description: 'If true, only return images and videos (default: true)',
+            description:
+              'If true, only return images and videos (default: true)',
           },
           maxResults: {
             type: 'number',
@@ -77,8 +85,15 @@ export function createCloudStorageTools(
         },
         required: ['query'],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
-        const auth = await getIntegrationToken(channelService, context, 'google_drive');
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
+        const auth = await getIntegrationToken(
+          channelService,
+          context,
+          'google_drive',
+        );
         if ('error' in auth) return { success: false, error: auth.error };
 
         try {
@@ -86,8 +101,14 @@ export function createCloudStorageTools(
           const mediaOnly = params.mediaOnly !== false;
 
           const result = mediaOnly
-            ? await googleDriveService.listMedia(auth.token, { query: params.query, pageSize: maxResults })
-            : await googleDriveService.listFiles(auth.token, { query: params.query, pageSize: maxResults });
+            ? await googleDriveService.listMedia(auth.token, {
+                query: params.query,
+                pageSize: maxResults,
+              })
+            : await googleDriveService.listFiles(auth.token, {
+                query: params.query,
+                pageSize: maxResults,
+              });
 
           return {
             success: true,
@@ -119,13 +140,14 @@ export function createCloudStorageTools(
     {
       name: 'search_onedrive',
       description:
-        'Search for files in the user\'s connected OneDrive. Use this when the user mentions a file in OneDrive or wants to find media from their Microsoft account. Requires OneDrive to be connected.',
+        "Search for files in the user's connected OneDrive. Use this when the user mentions a file in OneDrive or wants to find media from their Microsoft account. Requires OneDrive to be connected.",
       parameters: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'Search query — matches file names (e.g. "presentation", "team photo")',
+            description:
+              'Search query — matches file names (e.g. "presentation", "team photo")',
           },
           maxResults: {
             type: 'number',
@@ -134,13 +156,24 @@ export function createCloudStorageTools(
         },
         required: ['query'],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
-        const auth = await getIntegrationToken(channelService, context, 'onedrive');
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
+        const auth = await getIntegrationToken(
+          channelService,
+          context,
+          'onedrive',
+        );
         if ('error' in auth) return { success: false, error: auth.error };
 
         try {
           const maxResults = Math.min(params.maxResults || 10, 20);
-          const result = await oneDriveService.searchFiles(auth.token, params.query, { pageSize: maxResults });
+          const result = await oneDriveService.searchFiles(
+            auth.token,
+            params.query,
+            { pageSize: maxResults },
+          );
 
           return {
             success: true,
@@ -174,13 +207,14 @@ export function createCloudStorageTools(
     {
       name: 'search_dropbox',
       description:
-        'Search for files in the user\'s connected Dropbox. Use this when the user mentions a file in Dropbox or wants to find media stored there. Requires Dropbox to be connected.',
+        "Search for files in the user's connected Dropbox. Use this when the user mentions a file in Dropbox or wants to find media stored there. Requires Dropbox to be connected.",
       parameters: {
         type: 'object',
         properties: {
           query: {
             type: 'string',
-            description: 'Search query — full text search across file names (e.g. "logo design", "promo video")',
+            description:
+              'Search query — full text search across file names (e.g. "logo design", "promo video")',
           },
           maxResults: {
             type: 'number',
@@ -189,21 +223,33 @@ export function createCloudStorageTools(
           fileExtensions: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Filter by file extensions (e.g. ["jpg", "png", "mp4"])',
+            description:
+              'Filter by file extensions (e.g. ["jpg", "png", "mp4"])',
           },
         },
         required: ['query'],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
-        const auth = await getIntegrationToken(channelService, context, 'dropbox');
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
+        const auth = await getIntegrationToken(
+          channelService,
+          context,
+          'dropbox',
+        );
         if ('error' in auth) return { success: false, error: auth.error };
 
         try {
           const maxResults = Math.min(params.maxResults || 10, 20);
-          const result = await dropboxService.searchFiles(auth.token, params.query, {
-            maxResults,
-            fileExtensions: params.fileExtensions,
-          });
+          const result = await dropboxService.searchFiles(
+            auth.token,
+            params.query,
+            {
+              maxResults,
+              fileExtensions: params.fileExtensions,
+            },
+          );
 
           // Get temporary download links for each file in parallel
           const files = await Promise.all(
@@ -212,7 +258,10 @@ export function createCloudStorageTools(
               let downloadUrl: string | undefined;
               try {
                 if (f.is_downloadable && f.path_display) {
-                  downloadUrl = await dropboxService.getTemporaryLink(auth.token, f.path_display);
+                  downloadUrl = await dropboxService.getTemporaryLink(
+                    auth.token,
+                    f.path_display,
+                  );
                 }
               } catch {
                 // Temporary link failed — leave downloadUrl undefined
@@ -252,13 +301,14 @@ export function createCloudStorageTools(
     {
       name: 'search_google_photos',
       description:
-        'Browse photos and videos from the user\'s connected Google Photos library. Note: Google Photos does not support text search — it only supports filtering by media type (photo/video) and listing recent items. Use this when the user wants to browse their Google Photos. Requires Google Photos to be connected.',
+        "Browse photos and videos from the user's connected Google Photos library. Note: Google Photos does not support text search — it only supports filtering by media type (photo/video) and listing recent items. Use this when the user wants to browse their Google Photos. Requires Google Photos to be connected.",
       parameters: {
         type: 'object',
         properties: {
           mediaType: {
             type: 'string',
-            description: 'Filter by media type. Allowed values: "photo", "video", "all" (default: "all").',
+            description:
+              'Filter by media type. Allowed values: "photo", "video", "all" (default: "all").',
           },
           maxResults: {
             type: 'number',
@@ -267,14 +317,23 @@ export function createCloudStorageTools(
         },
         required: [],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
-        const auth = await getIntegrationToken(channelService, context, 'google_photos');
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
+        const auth = await getIntegrationToken(
+          channelService,
+          context,
+          'google_photos',
+        );
         if ('error' in auth) return { success: false, error: auth.error };
 
         try {
           const maxResults = Math.min(params.maxResults || 15, 25);
           const validMediaTypes = ['photo', 'video', 'all'];
-          const mediaType = validMediaTypes.includes(params.mediaType) ? params.mediaType : 'all';
+          const mediaType = validMediaTypes.includes(params.mediaType)
+            ? params.mediaType
+            : 'all';
 
           const filterMap: Record<string, 'ALL_MEDIA' | 'PHOTO' | 'VIDEO'> = {
             all: 'ALL_MEDIA',
@@ -282,10 +341,13 @@ export function createCloudStorageTools(
             video: 'VIDEO',
           };
 
-          const result = await googlePhotosService.searchMediaItems(auth.token, {
-            pageSize: maxResults,
-            filters: { mediaTypeFilter: filterMap[mediaType] || 'ALL_MEDIA' },
-          });
+          const result = await googlePhotosService.searchMediaItems(
+            auth.token,
+            {
+              pageSize: maxResults,
+              filters: { mediaTypeFilter: filterMap[mediaType] || 'ALL_MEDIA' },
+            },
+          );
 
           return {
             success: true,

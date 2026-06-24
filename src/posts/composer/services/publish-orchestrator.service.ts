@@ -1,4 +1,9 @@
-import { BadRequestException, Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { PayloadResolverService } from './payload-resolver.service';
 import { ComposerErrorMapperService } from './composer-error-mapper.service';
@@ -20,7 +25,10 @@ import type {
 export const CHANNEL_CREDENTIALS_LOOKUP = 'CHANNEL_CREDENTIALS_LOOKUP';
 
 export interface ChannelCredentialsLookup {
-  getCredentials(workspaceId: string, channelId: string): Promise<{
+  getCredentials(
+    workspaceId: string,
+    channelId: string,
+  ): Promise<{
     accessToken: string;
     platformAccountId: string;
     channelMetadata: Record<string, any>;
@@ -58,7 +66,8 @@ export class PublishOrchestratorService {
     private readonly errorMapper: ComposerErrorMapperService,
     private readonly publisherFactory: PublisherFactory,
     private readonly emitter: AnalyticsEventEmitter,
-    @Inject(CHANNEL_CREDENTIALS_LOOKUP) private readonly credentials: ChannelCredentialsLookup,
+    @Inject(CHANNEL_CREDENTIALS_LOOKUP)
+    private readonly credentials: ChannelCredentialsLookup,
     @Inject(DRIZZLE) private readonly db: any,
   ) {}
 
@@ -73,11 +82,15 @@ export class PublishOrchestratorService {
 
     const isRetry = Boolean(input.retryChannelIds?.length);
     const targets = isRetry
-      ? input.channels.filter((c) => input.retryChannelIds!.includes(c.channelId))
+      ? input.channels.filter((c) =>
+          input.retryChannelIds!.includes(c.channelId),
+        )
       : input.channels;
 
     if (isRetry && targets.length === 0) {
-      throw new BadRequestException('None of the specified channelIds match draft channels');
+      throw new BadRequestException(
+        'None of the specified channelIds match draft channels',
+      );
     }
 
     // Build the in-memory Draft object used by the resolver. We don't
@@ -124,8 +137,14 @@ export class PublishOrchestratorService {
       this.emitState(workspaceId, draft.id, next);
 
       try {
-        const payload = this.resolver.resolve({ ...draft, channels: input.channels }, target);
-        const creds = await this.credentials.getCredentials(workspaceId, target.channelId);
+        const payload = this.resolver.resolve(
+          { ...draft, channels: input.channels },
+          target,
+        );
+        const creds = await this.credentials.getCredentials(
+          workspaceId,
+          target.channelId,
+        );
         const publisher = this.publisherFactory.getPublisher(target.platform);
 
         const result = await publisher.publish({
@@ -181,7 +200,9 @@ export class PublishOrchestratorService {
         : draftStatus === 'partial_success'
           ? 'partially_published'
           : 'failed';
-    const anySuccess = finalChannels.some((c) => c.publishStatus === 'published');
+    const anySuccess = finalChannels.some(
+      (c) => c.publishStatus === 'published',
+    );
 
     await this.updateDraftStatus(workspaceId, draft.id, dbStatus, anySuccess);
     this.emitter.emit(workspaceId, 'composer.draft.status.changed', {
@@ -194,7 +215,11 @@ export class PublishOrchestratorService {
     return { draftStatus, channels: finalChannels, postId: draft.id };
   }
 
-  private emitState(workspaceId: string, draftId: string, target: ChannelTarget): void {
+  private emitState(
+    workspaceId: string,
+    draftId: string,
+    target: ChannelTarget,
+  ): void {
     this.emitter.emit(workspaceId, 'composer.publish.state.changed', {
       workspaceId,
       draftId,

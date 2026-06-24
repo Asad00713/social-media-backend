@@ -77,9 +77,8 @@ export class CustomerService {
     }
 
     // Get payment methods from Stripe
-    const paymentMethods = await this.stripeService.listPaymentMethods(
-      stripeCustomerId,
-    );
+    const paymentMethods =
+      await this.stripeService.listPaymentMethods(stripeCustomerId);
 
     // TODO: Sync with database payment_methods table
     // This will be implemented in Phase 6

@@ -57,7 +57,9 @@ export class ChatbotController {
         [
           {
             role: 'user',
-            content: message || 'Say "Hello! Claude API is working." in one short sentence.',
+            content:
+              message ||
+              'Say "Hello! Claude API is working." in one short sentence.',
           },
         ],
         {
@@ -227,7 +229,10 @@ export class ChatbotController {
     @CurrentUser() user: { userId: string; email: string },
     @Param('id') conversationId: string,
   ) {
-    const conversation = await this.chatbotService.togglePin(conversationId, user.userId);
+    const conversation = await this.chatbotService.togglePin(
+      conversationId,
+      user.userId,
+    );
     return { conversation };
   }
 
@@ -360,7 +365,9 @@ export class ChatbotController {
       )) {
         if (abortController.signal.aborted) break;
 
-        res.write(`event: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`);
+        res.write(
+          `event: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`,
+        );
       }
     } catch (error) {
       this.logger.error(`Regeneration stream error: ${error}`);
@@ -368,7 +375,8 @@ export class ChatbotController {
       if (!abortController.signal.aborted) {
         res.write(
           `event: error\ndata: ${JSON.stringify({
-            message: error instanceof Error ? error.message : 'Regeneration failed',
+            message:
+              error instanceof Error ? error.message : 'Regeneration failed',
           })}\n\n`,
         );
       }
@@ -484,7 +492,9 @@ export class ChatbotController {
       )) {
         if (abortController.signal.aborted) break;
 
-        res.write(`event: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`);
+        res.write(
+          `event: ${event.event}\ndata: ${JSON.stringify(event.data)}\n\n`,
+        );
       }
     } catch (error) {
       this.logger.error(`SSE stream error: ${error}`);
@@ -492,7 +502,10 @@ export class ChatbotController {
       if (!abortController.signal.aborted) {
         res.write(
           `event: error\ndata: ${JSON.stringify({
-            message: error instanceof Error ? error.message : 'An unexpected error occurred',
+            message:
+              error instanceof Error
+                ? error.message
+                : 'An unexpected error occurred',
           })}\n\n`,
         );
       }

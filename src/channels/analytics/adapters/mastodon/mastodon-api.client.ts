@@ -2,7 +2,12 @@ import type { MastodonAccount, MastodonStatus } from './mastodon.types';
 
 export class MastodonApiError extends Error {
   constructor(
-    public code: 'rate_limited' | 'auth_failed' | 'not_found' | 'transient' | 'permanent',
+    public code:
+      | 'rate_limited'
+      | 'auth_failed'
+      | 'not_found'
+      | 'transient'
+      | 'permanent',
     public status: number,
     message: string,
   ) {
@@ -18,7 +23,10 @@ export class MastodonApiError extends Error {
 export class MastodonApiClient {
   constructor(private readonly fetchImpl: typeof fetch = fetch) {}
 
-  async verifyCredentials(instanceUrl: string, accessToken: string): Promise<MastodonAccount> {
+  async verifyCredentials(
+    instanceUrl: string,
+    accessToken: string,
+  ): Promise<MastodonAccount> {
     return this.request<MastodonAccount>(
       `${this.normalizeInstance(instanceUrl)}/api/v1/accounts/verify_credentials`,
       accessToken,
@@ -57,7 +65,7 @@ export class MastodonApiClient {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      const message = (body as any).error ?? (body as any).message ?? `HTTP ${res.status}`;
+      const message = body.error ?? body.message ?? `HTTP ${res.status}`;
       throw new MastodonApiError(this.mapCode(res.status), res.status, message);
     }
     return res.json() as Promise<T>;

@@ -1,4 +1,10 @@
-import { HttpException, HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 
 const DAILY_TTL_SECONDS = 24 * 60 * 60;
 const PRE_AUDIT_USER_CAP = 5;
@@ -33,7 +39,9 @@ export interface TikTokQuotaRedis {
 export class TikTokQuotaService {
   private readonly logger = new Logger(TikTokQuotaService.name);
 
-  constructor(@Inject('REDIS_CLIENT') private readonly redis: TikTokQuotaRedis) {}
+  constructor(
+    @Inject('REDIS_CLIENT') private readonly redis: TikTokQuotaRedis,
+  ) {}
 
   private get isAudited(): boolean {
     return process.env.TIKTOK_APP_AUDITED === 'true';

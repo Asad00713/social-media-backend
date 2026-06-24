@@ -1,4 +1,12 @@
-import { IsBoolean, IsInt, IsOptional, IsString, MaxLength, Max, Min } from 'class-validator';
+import {
+  IsBoolean,
+  IsInt,
+  IsOptional,
+  IsString,
+  MaxLength,
+  Max,
+  Min,
+} from 'class-validator';
 import { Type } from 'class-transformer';
 
 // =============================================================================

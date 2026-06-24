@@ -1,8 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  BadRequestException,
-} from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import type {
   FetchedDm,
@@ -94,14 +90,17 @@ export class MastodonService {
         client_name: appName,
         redirect_uris: redirectUri,
         scopes: 'read write follow',
-        website: this.configService.get<string>('APP_URL') || 'https://schedura.com',
+        website:
+          this.configService.get<string>('APP_URL') || 'https://schedura.com',
       }),
     });
 
     if (!response.ok) {
       const errorData = await response.text();
       this.logger.error(`Failed to register Mastodon app: ${errorData}`);
-      throw new BadRequestException(`Failed to register app with Mastodon instance: ${errorData}`);
+      throw new BadRequestException(
+        `Failed to register app with Mastodon instance: ${errorData}`,
+      );
     }
 
     const data = await response.json();
@@ -145,7 +144,12 @@ export class MastodonService {
     clientSecret: string,
     code: string,
     redirectUri: string,
-  ): Promise<{ accessToken: string; tokenType: string; scope: string; createdAt: number }> {
+  ): Promise<{
+    accessToken: string;
+    tokenType: string;
+    scope: string;
+    createdAt: number;
+  }> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
 
     const response = await fetch(`${normalizedUrl}/oauth/token`, {
@@ -166,7 +170,9 @@ export class MastodonService {
     if (!response.ok) {
       const errorData = await response.text();
       this.logger.error(`Failed to exchange code for token: ${errorData}`);
-      throw new BadRequestException(`Failed to authenticate with Mastodon: ${errorData}`);
+      throw new BadRequestException(
+        `Failed to authenticate with Mastodon: ${errorData}`,
+      );
     }
 
     const data = await response.json();
@@ -307,7 +313,9 @@ export class MastodonService {
     if (!response.ok) {
       const errorData = await response.text();
       this.logger.error(`Failed to create Mastodon status: ${errorData}`);
-      throw new BadRequestException(`Failed to create post on Mastodon: ${errorData}`);
+      throw new BadRequestException(
+        `Failed to create post on Mastodon: ${errorData}`,
+      );
     }
 
     const data = await response.json();
@@ -370,7 +378,9 @@ export class MastodonService {
 
     // Add file field
     parts.push(`--${boundary}\r\n`);
-    parts.push(`Content-Disposition: form-data; name="file"; filename="${filename}"\r\n`);
+    parts.push(
+      `Content-Disposition: form-data; name="file"; filename="${filename}"\r\n`,
+    );
     parts.push(`Content-Type: ${mimeType}\r\n\r\n`);
     parts.push(mediaBuffer);
     parts.push('\r\n');
@@ -385,8 +395,8 @@ export class MastodonService {
     parts.push(`--${boundary}--\r\n`);
 
     // Combine all parts into a single buffer
-    const bodyParts = parts.map(part =>
-      typeof part === 'string' ? Buffer.from(part, 'utf-8') : part
+    const bodyParts = parts.map((part) =>
+      typeof part === 'string' ? Buffer.from(part, 'utf-8') : part,
     );
     const body = Buffer.concat(bodyParts);
 
@@ -402,7 +412,9 @@ export class MastodonService {
     if (!response.ok) {
       const errorData = await response.text();
       this.logger.error(`Failed to upload Mastodon media: ${errorData}`);
-      throw new BadRequestException(`Failed to upload media to Mastodon: ${errorData}`);
+      throw new BadRequestException(
+        `Failed to upload media to Mastodon: ${errorData}`,
+      );
     }
 
     const data = await response.json();
@@ -453,7 +465,7 @@ export class MastodonService {
       }
 
       // Wait 2 seconds before next attempt
-      await new Promise(resolve => setTimeout(resolve, 2000));
+      await new Promise((resolve) => setTimeout(resolve, 2000));
     }
 
     throw new BadRequestException('Media processing timed out');
@@ -475,7 +487,12 @@ export class MastodonService {
 
     for (let i = 0; i < imageUrls.length && i < 4; i++) {
       const altText = altTexts?.[i];
-      const media = await this.uploadMedia(instanceUrl, accessToken, imageUrls[i], altText);
+      const media = await this.uploadMedia(
+        instanceUrl,
+        accessToken,
+        imageUrls[i],
+        altText,
+      );
       mediaIds.push(media.id);
     }
 
@@ -498,7 +515,12 @@ export class MastodonService {
     visibility?: 'public' | 'unlisted' | 'private' | 'direct',
   ): Promise<MastodonStatus> {
     // Upload video
-    const media = await this.uploadMedia(instanceUrl, accessToken, videoUrl, description);
+    const media = await this.uploadMedia(
+      instanceUrl,
+      accessToken,
+      videoUrl,
+      description,
+    );
 
     // Create status with media
     return this.createStatus(instanceUrl, accessToken, text, {
@@ -548,7 +570,9 @@ export class MastodonService {
     nextMaxId?: string;
   }> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
-    const url = new URL(`${normalizedUrl}/api/v1/accounts/${accountId}/statuses`);
+    const url = new URL(
+      `${normalizedUrl}/api/v1/accounts/${accountId}/statuses`,
+    );
     url.searchParams.set('limit', Math.min(limit, 40).toString());
     if (maxId) {
       url.searchParams.set('max_id', maxId);
@@ -581,7 +605,8 @@ export class MastodonService {
 
     return {
       statuses,
-      nextMaxId: statuses.length > 0 ? statuses[statuses.length - 1].id : undefined,
+      nextMaxId:
+        statuses.length > 0 ? statuses[statuses.length - 1].id : undefined,
     };
   }
 
@@ -631,7 +656,9 @@ export class MastodonService {
     if (!response.ok) {
       const errorData = await response.text();
       this.logger.error(`Failed to get Mastodon instance info: ${errorData}`);
-      throw new BadRequestException('Failed to get Mastodon instance information');
+      throw new BadRequestException(
+        'Failed to get Mastodon instance information',
+      );
     }
 
     const data = await response.json();
@@ -640,7 +667,10 @@ export class MastodonService {
       name: data.title || data.uri,
       description: data.short_description || data.description || '',
       version: data.version,
-      maxTootChars: data.configuration?.statuses?.max_characters || data.max_toot_chars || 500,
+      maxTootChars:
+        data.configuration?.statuses?.max_characters ||
+        data.max_toot_chars ||
+        500,
     };
   }
 
@@ -672,7 +702,9 @@ export class MastodonService {
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Failed to fetch Mastodon status context: ${errorData}`);
+      this.logger.error(
+        `Failed to fetch Mastodon status context: ${errorData}`,
+      );
       throw new BadRequestException('Failed to fetch Mastodon status context');
     }
 
@@ -780,10 +812,10 @@ export class MastodonService {
 
       if (!response.ok) {
         const errorData = await response.text();
-        this.logger.error(`Failed to list Mastodon conversations: ${errorData}`);
-        throw new BadRequestException(
-          'Failed to list Mastodon conversations',
+        this.logger.error(
+          `Failed to list Mastodon conversations: ${errorData}`,
         );
+        throw new BadRequestException('Failed to list Mastodon conversations');
       }
 
       const data = (await response.json()) as MastodonConversation[];
@@ -851,17 +883,20 @@ export class MastodonService {
 
       if (!response.ok) {
         const errorData = await response.text();
-        this.logger.error(`Failed to list Mastodon conversations: ${errorData}`);
-        throw new BadRequestException(
-          'Failed to list Mastodon conversations',
+        this.logger.error(
+          `Failed to list Mastodon conversations: ${errorData}`,
         );
+        throw new BadRequestException('Failed to list Mastodon conversations');
       }
 
       const data = (await response.json()) as MastodonConversation[];
       if (!Array.isArray(data) || data.length === 0) break;
 
       for (const convo of data) {
-        if (this.buildSyntheticConvoId(channel, convo.accounts) === syntheticConvoId) {
+        if (
+          this.buildSyntheticConvoId(channel, convo.accounts) ===
+          syntheticConvoId
+        ) {
           matching.push(convo);
         }
       }
@@ -888,21 +923,25 @@ export class MastodonService {
     // status object. Each entry has type (image/video/gifv/audio), url, and
     // preview_url. We normalize to our DmAttachment shape.
     const rawMedia = Array.isArray(
-      (status as MastodonStatusContextEntry & {
-        media_attachments?: Array<{
-          type?: string;
-          url?: string;
-          preview_url?: string;
-        }>;
-      }).media_attachments,
-    )
-      ? (status as MastodonStatusContextEntry & {
-          media_attachments: Array<{
+      (
+        status as MastodonStatusContextEntry & {
+          media_attachments?: Array<{
             type?: string;
             url?: string;
             preview_url?: string;
           }>;
-        }).media_attachments
+        }
+      ).media_attachments,
+    )
+      ? (
+          status as MastodonStatusContextEntry & {
+            media_attachments: Array<{
+              type?: string;
+              url?: string;
+              preview_url?: string;
+            }>;
+          }
+        ).media_attachments
       : [];
 
     const attachments = rawMedia
@@ -932,8 +971,7 @@ export class MastodonService {
         : {
             platformId: status.account.id,
             handle: status.account.acct || status.account.username,
-            displayName:
-              status.account.display_name || status.account.username,
+            displayName: status.account.display_name || status.account.username,
             avatarUrl: status.account.avatar,
           },
       text,
@@ -993,8 +1031,12 @@ export class MastodonService {
     for (const [syntheticId, convos] of groups) {
       // Sort newest-first so summary reflects the latest activity.
       convos.sort((a, b) => {
-        const aT = a.last_status ? new Date(a.last_status.created_at).getTime() : 0;
-        const bT = b.last_status ? new Date(b.last_status.created_at).getTime() : 0;
+        const aT = a.last_status
+          ? new Date(a.last_status.created_at).getTime()
+          : 0;
+        const bT = b.last_status
+          ? new Date(b.last_status.created_at).getTime()
+          : 0;
         return bT - aT;
       });
       const latestConvo = convos[0];
@@ -1004,8 +1046,7 @@ export class MastodonService {
       const others = (latestConvo.accounts ?? []).filter(
         (a) => a.id !== channel.platformAccountId,
       );
-      const participantAcct =
-        others[0] ?? latestConvo.accounts?.[0] ?? null;
+      const participantAcct = others[0] ?? latestConvo.accounts?.[0] ?? null;
       if (!participantAcct) continue;
 
       const lastMessageAt = new Date(lastStatus.created_at);
@@ -1016,14 +1057,12 @@ export class MastodonService {
         participant: {
           platformId: participantAcct.id,
           handle: participantAcct.acct || participantAcct.username,
-          displayName:
-            participantAcct.display_name || participantAcct.username,
+          displayName: participantAcct.display_name || participantAcct.username,
           avatarUrl: participantAcct.avatar,
         },
         lastMessageText: this.toDisplayText(lastStatus.content ?? ''),
         lastMessageAt,
-        lastMessageFromMe:
-          lastStatus.account?.id === channel.platformAccountId,
+        lastMessageFromMe: lastStatus.account?.id === channel.platformAccountId,
         // Aggregate unread across all merged Mastodon conversations.
         unreadCount: convos.reduce((n, c) => n + (c.unread ? 1 : 0), 0),
         metadata: {
@@ -1109,8 +1148,7 @@ export class MastodonService {
     });
 
     unique.sort(
-      (a, b) =>
-        a.platformCreatedAt.getTime() - b.platformCreatedAt.getTime(),
+      (a, b) => a.platformCreatedAt.getTime() - b.platformCreatedAt.getTime(),
     );
     return unique;
   }
@@ -1222,8 +1260,12 @@ export class MastodonService {
         );
       }
       matching.sort((a, b) => {
-        const aT = a.last_status ? new Date(a.last_status.created_at).getTime() : 0;
-        const bT = b.last_status ? new Date(b.last_status.created_at).getTime() : 0;
+        const aT = a.last_status
+          ? new Date(a.last_status.created_at).getTime()
+          : 0;
+        const bT = b.last_status
+          ? new Date(b.last_status.created_at).getTime()
+          : 0;
         return bT - aT;
       });
       conversation = matching[0];
@@ -1322,8 +1364,12 @@ export class MastodonService {
         );
       }
       matching.sort((a, b) => {
-        const aT = a.last_status ? new Date(a.last_status.created_at).getTime() : 0;
-        const bT = b.last_status ? new Date(b.last_status.created_at).getTime() : 0;
+        const aT = a.last_status
+          ? new Date(a.last_status.created_at).getTime()
+          : 0;
+        const bT = b.last_status
+          ? new Date(b.last_status.created_at).getTime()
+          : 0;
         return bT - aT;
       });
       conversation = matching[0];
@@ -1415,9 +1461,11 @@ interface MastodonConversation {
     display_name: string;
     avatar: string;
   }>;
-  last_status: (MastodonStatusContextEntry & {
-    visibility?: 'public' | 'unlisted' | 'private' | 'direct';
-  }) | null;
+  last_status:
+    | (MastodonStatusContextEntry & {
+        visibility?: 'public' | 'unlisted' | 'private' | 'direct';
+      })
+    | null;
 }
 
 export interface MastodonStatusContextEntry {

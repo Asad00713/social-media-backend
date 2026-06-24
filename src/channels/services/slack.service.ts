@@ -196,9 +196,7 @@ export class SlackService {
     const client = new WebClient(botToken);
     const res = await client.conversations.open({ users: userId });
     if (!res.ok || !res.channel?.id)
-      throw new BadRequestException(
-        `conversations.open failed: ${res.error}`,
-      );
+      throw new BadRequestException(`conversations.open failed: ${res.error}`);
     return res.channel.id;
   }
 
@@ -209,7 +207,10 @@ export class SlackService {
     text: string,
   ): Promise<{ conversationId: string; ts: string }> {
     const conversationId = await this.openDm(botToken, userId);
-    const res = await this.postMessage(botToken, { channel: conversationId, text });
+    const res = await this.postMessage(botToken, {
+      channel: conversationId,
+      text,
+    });
     return { conversationId, ts: res.ts };
   }
 
@@ -222,11 +223,13 @@ export class SlackService {
     const res = await client.conversations.join({ channel: channelId });
     if (!res.ok) {
       // Slack returns method_not_supported_for_channel_type for IMs/MPIMs/private channels.
-      throw new BadRequestException(
-        `conversations.join failed: ${res.error}`,
-      );
+      throw new BadRequestException(`conversations.join failed: ${res.error}`);
     }
-    return { already_in_channel: (res as any).already_in_channel as boolean | undefined };
+    return {
+      already_in_channel: (res as any).already_in_channel as
+        | boolean
+        | undefined,
+    };
   }
 
   /** Create a new channel. Bot becomes a member automatically as the creator.

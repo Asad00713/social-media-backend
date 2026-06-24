@@ -25,10 +25,22 @@ describe('MediaValidatorService', () => {
   };
 
   function img(sizeMB: number, width = 1080, height = 1080): DraftMediaItem {
-    return { id: 'm', type: 'image', url: 'x', sizeBytes: sizeMB * 1024 * 1024, width, height };
+    return {
+      id: 'm',
+      type: 'image',
+      url: 'x',
+      sizeBytes: sizeMB * 1024 * 1024,
+      width,
+      height,
+    };
   }
 
-  function video(sizeMB: number, durSec: number, width = 1920, height = 1080): DraftMediaItem {
+  function video(
+    sizeMB: number,
+    durSec: number,
+    width = 1920,
+    height = 1080,
+  ): DraftMediaItem {
     return {
       id: 'm',
       type: 'video',
@@ -53,7 +65,9 @@ describe('MediaValidatorService', () => {
   it('rejects oversize Twitter image', () => {
     const result = service.validate([img(8)], twitterImageConstraints);
     expect(result.ok).toBe(false);
-    expect(result.errors).toContainEqual(expect.objectContaining({ kind: 'image_too_large' }));
+    expect(result.errors).toContainEqual(
+      expect.objectContaining({ kind: 'image_too_large' }),
+    );
   });
 
   it('rejects too many Twitter images', () => {
@@ -62,29 +76,43 @@ describe('MediaValidatorService', () => {
       twitterImageConstraints,
     );
     expect(result.ok).toBe(false);
-    expect(result.errors).toContainEqual(expect.objectContaining({ kind: 'image_count_exceeded' }));
+    expect(result.errors).toContainEqual(
+      expect.objectContaining({ kind: 'image_count_exceeded' }),
+    );
   });
 
   it('rejects video exceeding IG Reel duration', () => {
     const result = service.validate([video(200, 120)], igReelConstraints);
     expect(result.ok).toBe(false);
-    expect(result.errors).toContainEqual(expect.objectContaining({ kind: 'video_too_long' }));
+    expect(result.errors).toContainEqual(
+      expect.objectContaining({ kind: 'video_too_long' }),
+    );
   });
 
   it('rejects video with wrong aspect ratio for IG Reel', () => {
-    const result = service.validate([video(100, 30, 1920, 1080)], igReelConstraints);
+    const result = service.validate(
+      [video(100, 30, 1920, 1080)],
+      igReelConstraints,
+    );
     expect(result.ok).toBe(false);
-    expect(result.errors).toContainEqual(expect.objectContaining({ kind: 'video_aspect_mismatch' }));
+    expect(result.errors).toContainEqual(
+      expect.objectContaining({ kind: 'video_aspect_mismatch' }),
+    );
   });
 
   it('rejects when platform requires video but only image present', () => {
     const result = service.validate([img(2)], igReelConstraints);
     expect(result.ok).toBe(false);
-    expect(result.errors).toContainEqual(expect.objectContaining({ kind: 'media_type_required' }));
+    expect(result.errors).toContainEqual(
+      expect.objectContaining({ kind: 'media_type_required' }),
+    );
   });
 
   it('passes valid IG Reel video', () => {
-    const result = service.validate([video(50, 60, 1080, 1920)], igReelConstraints);
+    const result = service.validate(
+      [video(50, 60, 1080, 1920)],
+      igReelConstraints,
+    );
     expect(result.ok).toBe(true);
   });
 });

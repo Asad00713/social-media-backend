@@ -19,5 +19,4 @@ import { UsersModule } from 'src/users/users.module';
   providers: [WorkspaceService],
   exports: [WorkspaceService],
 })
-
-export class WorkspaceModule { }
+export class WorkspaceModule {}

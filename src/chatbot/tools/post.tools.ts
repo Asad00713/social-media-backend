@@ -6,7 +6,12 @@ import { ChatbotTool, ToolContext, ToolResult } from './tool.interface';
  * Normalize a mediaItems parameter — LLMs may pass strings instead of objects,
  * omit the `type` field, or use other unexpected shapes.
  */
-function normalizeMediaItems(raw: any): Array<{ url: string; type: string; thumbnailUrl?: string; altText?: string }> {
+function normalizeMediaItems(raw: any): Array<{
+  url: string;
+  type: string;
+  thumbnailUrl?: string;
+  altText?: string;
+}> {
   if (!raw || !Array.isArray(raw)) return [];
   return raw
     .map((item: any) => {
@@ -42,7 +47,8 @@ export function createPostTools(
         properties: {
           status: {
             type: 'string',
-            description: 'Filter by status: "draft", "scheduled", "publishing", "published", "failed", "partially_published"',
+            description:
+              'Filter by status: "draft", "scheduled", "publishing", "published", "failed", "partially_published"',
           },
           channelId: {
             type: 'string',
@@ -50,19 +56,26 @@ export function createPostTools(
           },
           limit: {
             type: 'number',
-            description: 'Maximum number of posts to return (default: 10, max: 25)',
+            description:
+              'Maximum number of posts to return (default: 10, max: 25)',
           },
         },
         required: [],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
           const limit = Math.min(params.limit || 10, 25);
-          const result = await postService.getWorkspacePosts(context.workspaceId, {
-            status: params.status,
-            channelId: params.channelId,
-            limit,
-          });
+          const result = await postService.getWorkspacePosts(
+            context.workspaceId,
+            {
+              status: params.status,
+              channelId: params.channelId,
+              limit,
+            },
+          );
           return {
             success: true,
             data: {
@@ -101,9 +114,15 @@ export function createPostTools(
         },
         required: ['postId'],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
-          const post = await postService.getPost(params.postId, context.workspaceId);
+          const post = await postService.getPost(
+            params.postId,
+            context.workspaceId,
+          );
           return {
             success: true,
             data: {
@@ -142,20 +161,26 @@ export function createPostTools(
           targetChannelIds: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Array of channel IDs to publish to (use list_channels to find IDs)',
+            description:
+              'Array of channel IDs to publish to (use list_channels to find IDs)',
           },
           mediaItems: {
             type: 'array',
-            description: 'Media to attach. Pass an array of objects like [{url: "https://...", type: "image"}] or an array of URL strings. Use URLs from previous search_unsplash, search_pexels, or search_media_library results.',
+            description:
+              'Media to attach. Pass an array of objects like [{url: "https://...", type: "image"}] or an array of URL strings. Use URLs from previous search_unsplash, search_pexels, or search_media_library results.',
           },
           scheduledAt: {
             type: 'string',
-            description: 'ISO 8601 date-time if scheduling (e.g. "2026-03-15T14:00:00Z"). Omit for draft.',
+            description:
+              'ISO 8601 date-time if scheduling (e.g. "2026-03-15T14:00:00Z"). Omit for draft.',
           },
         },
         required: ['content', 'targetChannelIds'],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
           const channelDetails = await Promise.all(
             (params.targetChannelIds || []).map(async (channelId: string) => {
@@ -219,20 +244,26 @@ export function createPostTools(
           targetChannelIds: {
             type: 'array',
             items: { type: 'string' },
-            description: 'Array of channel IDs to publish to (use list_channels to find IDs)',
+            description:
+              'Array of channel IDs to publish to (use list_channels to find IDs)',
           },
           mediaItems: {
             type: 'array',
-            description: 'Media to attach. Pass an array of objects like [{url: "https://...", type: "image"}] or an array of URL strings. Use URLs from previous search_unsplash, search_pexels, or search_media_library results.',
+            description:
+              'Media to attach. Pass an array of objects like [{url: "https://...", type: "image"}] or an array of URL strings. Use URLs from previous search_unsplash, search_pexels, or search_media_library results.',
           },
           scheduledAt: {
             type: 'string',
-            description: 'ISO 8601 date-time to schedule the post (e.g. "2026-03-15T14:00:00Z"). If omitted, creates as draft.',
+            description:
+              'ISO 8601 date-time to schedule the post (e.g. "2026-03-15T14:00:00Z"). If omitted, creates as draft.',
           },
         },
         required: ['content', 'targetChannelIds'],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
           const dto: any = {
             content: params.content,
@@ -245,7 +276,11 @@ export function createPostTools(
           if (params.scheduledAt) {
             dto.scheduledAt = new Date(params.scheduledAt);
           }
-          const post = await postService.createPost(context.workspaceId, context.userId, dto);
+          const post = await postService.createPost(
+            context.workspaceId,
+            context.userId,
+            dto,
+          );
 
           // Look up channel details for each target to enrich the preview
           const targets = post.targets as Array<{
@@ -320,7 +355,8 @@ export function createPostTools(
           },
           mediaItems: {
             type: 'array',
-            description: 'New media items to replace existing ones. Pass an array of objects like [{url: "https://...", type: "image"}] or an array of URL strings. Use URLs from search_unsplash, search_pexels, or search_media_library.',
+            description:
+              'New media items to replace existing ones. Pass an array of objects like [{url: "https://...", type: "image"}] or an array of URL strings. Use URLs from search_unsplash, search_pexels, or search_media_library.',
           },
           targetChannelIds: {
             type: 'array',
@@ -329,23 +365,35 @@ export function createPostTools(
           },
           scheduledAt: {
             type: 'string',
-            description: 'New scheduled date-time (ISO 8601) or null to unschedule',
+            description:
+              'New scheduled date-time (ISO 8601) or null to unschedule',
           },
         },
         required: ['postId'],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
           const dto: any = {};
           if (params.content !== undefined) dto.content = params.content;
           if (params.mediaItems !== undefined) {
             dto.mediaItems = normalizeMediaItems(params.mediaItems);
           }
-          if (params.targetChannelIds !== undefined) dto.targetChannelIds = params.targetChannelIds;
+          if (params.targetChannelIds !== undefined)
+            dto.targetChannelIds = params.targetChannelIds;
           if (params.scheduledAt !== undefined) {
-            dto.scheduledAt = params.scheduledAt ? new Date(params.scheduledAt) : null;
+            dto.scheduledAt = params.scheduledAt
+              ? new Date(params.scheduledAt)
+              : null;
           }
-          const post = await postService.updatePost(params.postId, context.workspaceId, context.userId, dto);
+          const post = await postService.updatePost(
+            params.postId,
+            context.workspaceId,
+            context.userId,
+            dto,
+          );
           return {
             success: true,
             data: {
@@ -382,14 +430,22 @@ export function createPostTools(
           },
           confirmed: {
             type: 'boolean',
-            description: 'Set to true only after the user has explicitly confirmed deletion',
+            description:
+              'Set to true only after the user has explicitly confirmed deletion',
           },
         },
         required: ['postId'],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
-          await postService.deletePost(params.postId, context.workspaceId, context.userId);
+          await postService.deletePost(
+            params.postId,
+            context.workspaceId,
+            context.userId,
+          );
           return {
             success: true,
             data: { deleted: true, postId: params.postId },
@@ -405,22 +461,27 @@ export function createPostTools(
     {
       name: 'list_scheduled_posts',
       description:
-        'List posts scheduled within a specific date range. Useful for checking what\'s coming up on the calendar. Use this when the user asks about upcoming or scheduled posts.',
+        "List posts scheduled within a specific date range. Useful for checking what's coming up on the calendar. Use this when the user asks about upcoming or scheduled posts.",
       parameters: {
         type: 'object',
         properties: {
           fromDate: {
             type: 'string',
-            description: 'Start date in ISO 8601 format (e.g. "2026-02-12T00:00:00Z")',
+            description:
+              'Start date in ISO 8601 format (e.g. "2026-02-12T00:00:00Z")',
           },
           toDate: {
             type: 'string',
-            description: 'End date in ISO 8601 format (e.g. "2026-02-19T23:59:59Z")',
+            description:
+              'End date in ISO 8601 format (e.g. "2026-02-19T23:59:59Z")',
           },
         },
         required: ['fromDate', 'toDate'],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
           const posts = await postService.getScheduledPosts(
             context.workspaceId,

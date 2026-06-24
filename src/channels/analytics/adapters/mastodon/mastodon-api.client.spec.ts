@@ -28,7 +28,10 @@ describe('MastodonApiClient', () => {
       }),
     });
 
-    const account = await client.verifyCredentials('mastodon.social', 'fake-token');
+    const account = await client.verifyCredentials(
+      'mastodon.social',
+      'fake-token',
+    );
 
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const [url, opts] = mockFetch.mock.calls[0];
@@ -42,7 +45,7 @@ describe('MastodonApiClient', () => {
   it('getAccountStatuses includes limit param and normalises instance URL with trailing slash', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
-      json: async () => ([]),
+      json: async () => [],
     });
 
     await client.getAccountStatuses({
@@ -61,7 +64,7 @@ describe('MastodonApiClient', () => {
   });
 
   it('getAccountStatuses includes since_id when provided', async () => {
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ([]) });
+    mockFetch.mockResolvedValue({ ok: true, json: async () => [] });
 
     await client.getAccountStatuses({
       instanceUrl: 'mastodon.social',
@@ -81,8 +84,9 @@ describe('MastodonApiClient', () => {
       json: async () => ({ error: 'The access token is invalid' }),
     });
 
-    await expect(client.verifyCredentials('mastodon.social', 'bad-token'))
-      .rejects.toMatchObject({ code: 'auth_failed', status: 401 });
+    await expect(
+      client.verifyCredentials('mastodon.social', 'bad-token'),
+    ).rejects.toMatchObject({ code: 'auth_failed', status: 401 });
   });
 
   it('throws MastodonApiError with rate_limited on 429', async () => {
@@ -92,8 +96,9 @@ describe('MastodonApiClient', () => {
       json: async () => ({ error: 'Too many requests' }),
     });
 
-    await expect(client.verifyCredentials('mastodon.social', 'token'))
-      .rejects.toMatchObject({ code: 'rate_limited', status: 429 });
+    await expect(
+      client.verifyCredentials('mastodon.social', 'token'),
+    ).rejects.toMatchObject({ code: 'rate_limited', status: 429 });
   });
 
   it('throws MastodonApiError with transient on 500', async () => {
@@ -103,8 +108,9 @@ describe('MastodonApiClient', () => {
       json: async () => ({ error: 'Internal Server Error' }),
     });
 
-    await expect(client.verifyCredentials('mastodon.social', 'token'))
-      .rejects.toMatchObject({ code: 'transient', status: 500 });
+    await expect(
+      client.verifyCredentials('mastodon.social', 'token'),
+    ).rejects.toMatchObject({ code: 'transient', status: 500 });
   });
 
   it('getStatus hits /api/v1/statuses/{id}', async () => {

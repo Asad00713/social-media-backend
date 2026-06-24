@@ -28,7 +28,11 @@ import {
 import { workspaceUsage } from '../../drizzle/schema';
 import { channelSyncState } from '../../drizzle/schema/channel-sync-state.schema';
 import { posts, type PostTarget } from '../../drizzle/schema/posts.schema';
-import { encrypt, decrypt, maskSensitiveData } from '../../common/utils/encryption.util';
+import {
+  encrypt,
+  decrypt,
+  maskSensitiveData,
+} from '../../common/utils/encryption.util';
 import {
   CreateChannelDto,
   UpdateChannelDto,
@@ -139,7 +143,10 @@ export class ChannelService {
         .returning();
 
       // Re-fire lifecycle hook to reset sync state and enqueue fresh backfill
-      await this.syncLifecycle.onChannelConnected(existingChannel.id, workspaceId);
+      await this.syncLifecycle.onChannelConnected(
+        existingChannel.id,
+        workspaceId,
+      );
 
       this.logger.log(
         `Reconnected ${dto.platform} channel ${existingChannel.id} for workspace ${workspaceId}`,
@@ -152,7 +159,7 @@ export class ChannelService {
     await this.enforceChannelLimit(workspaceId);
 
     // Get platform config for defaults
-    const platformConfig = PLATFORM_CONFIG[dto.platform as SupportedPlatform];
+    const platformConfig = PLATFORM_CONFIG[dto.platform];
 
     // Get max display order for this workspace
     const maxOrderResult = await db
@@ -190,12 +197,14 @@ export class ChannelService {
       timezone: dto.timezone || 'UTC',
     };
     if (dto.username) newChannel.username = dto.username;
-    if (dto.profilePictureUrl) newChannel.profilePictureUrl = dto.profilePictureUrl;
+    if (dto.profilePictureUrl)
+      newChannel.profilePictureUrl = dto.profilePictureUrl;
     if (dto.refreshToken) {
       newChannel.refreshToken = encrypt(dto.refreshToken);
       newChannel.refreshTokenIssuedAt = new Date();
     }
-    if (dto.tokenExpiresAt) newChannel.tokenExpiresAt = new Date(dto.tokenExpiresAt);
+    if (dto.tokenExpiresAt)
+      newChannel.tokenExpiresAt = new Date(dto.tokenExpiresAt);
     if (dto.tokenScope) newChannel.tokenScope = dto.tokenScope;
     if (dto.color) newChannel.color = dto.color;
     if (dto.telegramWebhookRouteId !== undefined) {
@@ -290,7 +299,7 @@ export class ChannelService {
 
     let updated = 0;
     for (const post of candidates) {
-      const targets = (post.targets ?? []) as PostTarget[];
+      const targets = post.targets ?? [];
       let dirty = false;
       const next: PostTarget[] = targets.map((t) => {
         if (t.platform !== platform) return t;
@@ -349,7 +358,7 @@ export class ChannelService {
     workspaceId: string,
     query?: ChannelQueryDto,
   ): Promise<ChannelResponseDto[]> {
-    let conditions = [eq(socialMediaChannels.workspaceId, workspaceId)];
+    const conditions = [eq(socialMediaChannels.workspaceId, workspaceId)];
 
     if (query?.platform) {
       conditions.push(eq(socialMediaChannels.platform, query.platform));
@@ -496,7 +505,8 @@ export class ChannelService {
     if (dto.profilePictureUrl !== undefined)
       updateData.profilePictureUrl = dto.profilePictureUrl;
     if (dto.isActive !== undefined) updateData.isActive = dto.isActive;
-    if (dto.displayOrder !== undefined) updateData.displayOrder = dto.displayOrder;
+    if (dto.displayOrder !== undefined)
+      updateData.displayOrder = dto.displayOrder;
     if (dto.timezone !== undefined) updateData.timezone = dto.timezone;
     if (dto.color !== undefined) updateData.color = dto.color;
     if (dto.metadata !== undefined) {
@@ -629,7 +639,8 @@ export class ChannelService {
       updatedAt: new Date(),
     };
     if (dto.refreshToken) updateData.refreshToken = encrypt(dto.refreshToken);
-    if (dto.tokenExpiresAt) updateData.tokenExpiresAt = new Date(dto.tokenExpiresAt);
+    if (dto.tokenExpiresAt)
+      updateData.tokenExpiresAt = new Date(dto.tokenExpiresAt);
 
     await db
       .update(socialMediaChannels)
@@ -642,8 +653,11 @@ export class ChannelService {
       status: 'success',
     };
     if (oldExpiresAt) refreshLogData.oldExpiresAt = oldExpiresAt;
-    if (dto.tokenExpiresAt) refreshLogData.newExpiresAt = new Date(dto.tokenExpiresAt);
-    await db.insert(tokenRefreshLogs).values(refreshLogData as NewTokenRefreshLog);
+    if (dto.tokenExpiresAt)
+      refreshLogData.newExpiresAt = new Date(dto.tokenExpiresAt);
+    await db
+      .insert(tokenRefreshLogs)
+      .values(refreshLogData as NewTokenRefreshLog);
 
     this.logger.log(`Updated tokens for channel ${channelId}`);
   }
@@ -651,7 +665,10 @@ export class ChannelService {
   /**
    * Get decrypted access token for a channel (with automatic refresh)
    */
-  async getAccessToken(channelId: number, workspaceId: string): Promise<string> {
+  async getAccessToken(
+    channelId: number,
+    workspaceId: string,
+  ): Promise<string> {
     const channel = await db
       .select()
       .from(socialMediaChannels)
@@ -681,16 +698,27 @@ export class ChannelService {
     // Check if token is expired or about to expire
     const now = new Date();
     const bufferTime = new Date(now.getTime() + this.TOKEN_REFRESH_BUFFER_MS);
-    const isExpired = channelData.tokenExpiresAt && channelData.tokenExpiresAt < now;
-    const isAboutToExpire = channelData.tokenExpiresAt && channelData.tokenExpiresAt < bufferTime;
+    const isExpired =
+      channelData.tokenExpiresAt && channelData.tokenExpiresAt < now;
+    const isAboutToExpire =
+      channelData.tokenExpiresAt && channelData.tokenExpiresAt < bufferTime;
 
     // If token is expired or about to expire, try to refresh it
-    if ((isExpired || isAboutToExpire) && channelData.refreshToken && platformConfig?.supportsRefreshToken) {
-      this.logger.log(`Token for channel ${channelId} (${platform}) is ${isExpired ? 'expired' : 'about to expire'}, attempting refresh...`);
+    if (
+      (isExpired || isAboutToExpire) &&
+      channelData.refreshToken &&
+      platformConfig?.supportsRefreshToken
+    ) {
+      this.logger.log(
+        `Token for channel ${channelId} (${platform}) is ${isExpired ? 'expired' : 'about to expire'}, attempting refresh...`,
+      );
 
       try {
         const refreshToken = decrypt(channelData.refreshToken);
-        const refreshedTokens = await this.oauthService.refreshAccessToken(platform, refreshToken);
+        const refreshedTokens = await this.oauthService.refreshAccessToken(
+          platform,
+          refreshToken,
+        );
 
         // Calculate new expiration time
         const newExpiresAt = refreshedTokens.expiresIn
@@ -745,13 +773,19 @@ export class ChannelService {
         if (newExpiresAt) {
           refreshLogData.newExpiresAt = newExpiresAt;
         }
-        await db.insert(tokenRefreshLogs).values(refreshLogData as NewTokenRefreshLog);
+        await db
+          .insert(tokenRefreshLogs)
+          .values(refreshLogData as NewTokenRefreshLog);
 
-        this.logger.log(`Successfully refreshed token for channel ${channelId} (${platform})`);
+        this.logger.log(
+          `Successfully refreshed token for channel ${channelId} (${platform})`,
+        );
 
         return refreshedTokens.accessToken;
       } catch (error) {
-        this.logger.error(`Failed to refresh token for channel ${channelId}: ${error}`);
+        this.logger.error(
+          `Failed to refresh token for channel ${channelId}: ${error}`,
+        );
 
         // Log the failed refresh - build conditionally to avoid null timestamps
         const failedRefreshLogData: any = {
@@ -762,7 +796,9 @@ export class ChannelService {
         if (channelData.tokenExpiresAt) {
           failedRefreshLogData.oldExpiresAt = channelData.tokenExpiresAt;
         }
-        await db.insert(tokenRefreshLogs).values(failedRefreshLogData as NewTokenRefreshLog);
+        await db
+          .insert(tokenRefreshLogs)
+          .values(failedRefreshLogData as NewTokenRefreshLog);
 
         // If token is expired (not just about to expire), throw error
         if (isExpired) {
@@ -911,7 +947,10 @@ export class ChannelService {
    * Force refresh access token regardless of expiration status.
    * Useful when a 401 is received from the platform API.
    */
-  async forceRefreshToken(channelId: number, workspaceId: string): Promise<string> {
+  async forceRefreshToken(
+    channelId: number,
+    workspaceId: string,
+  ): Promise<string> {
     const channel = await db
       .select()
       .from(socialMediaChannels)
@@ -937,10 +976,15 @@ export class ChannelService {
       );
     }
 
-    this.logger.log(`Force refreshing token for channel ${channelId} (${platform})`);
+    this.logger.log(
+      `Force refreshing token for channel ${channelId} (${platform})`,
+    );
 
     const refreshToken = decrypt(channelData.refreshToken);
-    const refreshedTokens = await this.oauthService.refreshAccessToken(platform, refreshToken);
+    const refreshedTokens = await this.oauthService.refreshAccessToken(
+      platform,
+      refreshToken,
+    );
 
     const newExpiresAt = refreshedTokens.expiresIn
       ? new Date(Date.now() + refreshedTokens.expiresIn * 1000)
@@ -980,7 +1024,9 @@ export class ChannelService {
       `);
     }
 
-    this.logger.log(`Force refresh successful for channel ${channelId} (${platform})`);
+    this.logger.log(
+      `Force refresh successful for channel ${channelId} (${platform})`,
+    );
 
     return refreshedTokens.accessToken;
   }
@@ -1086,7 +1132,9 @@ export class ChannelService {
   /**
    * Get child channels for a parent channel
    */
-  async getChildChannels(parentChannelId: number): Promise<ChannelResponseDto[]> {
+  async getChildChannels(
+    parentChannelId: number,
+  ): Promise<ChannelResponseDto[]> {
     const relationships = await db
       .select()
       .from(channelRelationships)
@@ -1145,7 +1193,9 @@ export class ChannelService {
   /**
    * Get channels with expiring tokens
    */
-  async getExpiringChannels(daysUntilExpiry: number = 7): Promise<ChannelResponseDto[]> {
+  async getExpiringChannels(
+    daysUntilExpiry: number = 7,
+  ): Promise<ChannelResponseDto[]> {
     const expiryDate = new Date();
     expiryDate.setDate(expiryDate.getDate() + daysUntilExpiry);
 
@@ -1238,7 +1288,9 @@ export class ChannelService {
 
     const refreshTokenExpiresInDays = (() => {
       if (!channel.refreshToken || !channel.refreshTokenIssuedAt) return null;
-      const ttlDays = getRefreshTokenTtlDays(channel.platform as SupportedPlatform);
+      const ttlDays = getRefreshTokenTtlDays(
+        channel.platform as SupportedPlatform,
+      );
       if (ttlDays === null) return null;
       const issuedAt = new Date(channel.refreshTokenIssuedAt).getTime();
       const expiresAt = issuedAt + ttlDays * 24 * 60 * 60 * 1000;

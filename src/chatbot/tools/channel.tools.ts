@@ -2,11 +2,14 @@ import type { ChannelService } from '../../channels/services/channel.service';
 import { ChatbotTool, ToolContext, ToolResult } from './tool.interface';
 
 function sanitizeChannel(channel: any) {
-  const { accessToken, refreshToken, tokenScope, tokenExpiresAt, ...safe } = channel;
+  const { accessToken, refreshToken, tokenScope, tokenExpiresAt, ...safe } =
+    channel;
   return safe;
 }
 
-export function createChannelTools(channelService: ChannelService): ChatbotTool[] {
+export function createChannelTools(
+  channelService: ChannelService,
+): ChatbotTool[] {
   return [
     {
       name: 'list_channels',
@@ -17,22 +20,30 @@ export function createChannelTools(channelService: ChannelService): ChatbotTool[
         properties: {
           platform: {
             type: 'string',
-            description: 'Filter by platform (e.g. "instagram", "twitter", "facebook", "youtube", "tiktok", "linkedin", "pinterest", "threads", "bluesky", "mastodon")',
+            description:
+              'Filter by platform (e.g. "instagram", "twitter", "facebook", "youtube", "tiktok", "linkedin", "pinterest", "threads", "bluesky", "mastodon")',
           },
           status: {
             type: 'string',
-            description: 'Filter by connection status: "connected", "expired", "revoked", "error"',
+            description:
+              'Filter by connection status: "connected", "expired", "revoked", "error"',
           },
         },
         required: [],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
           const query: any = {};
           if (params.platform) query.platform = params.platform;
           if (params.status) query.connectionStatus = params.status;
 
-          const channels = await channelService.getWorkspaceChannels(context.workspaceId, query);
+          const channels = await channelService.getWorkspaceChannels(
+            context.workspaceId,
+            query,
+          );
           return {
             success: true,
             data: {
@@ -62,9 +73,15 @@ export function createChannelTools(channelService: ChannelService): ChatbotTool[
         },
         required: ['channelId'],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
-          const channel = await channelService.getChannelById(params.channelId, context.workspaceId);
+          const channel = await channelService.getChannelById(
+            params.channelId,
+            context.workspaceId,
+          );
           return {
             success: true,
             data: sanitizeChannel(channel),

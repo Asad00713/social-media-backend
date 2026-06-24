@@ -27,7 +27,9 @@ import { InitiateOAuthDto, OAuthUrlResponseDto } from '../dto/channel.dto';
  *   already-connected Page channel. Requesting ALL scopes again
  *   would force the user through the full consent screen unnecessarily.
  */
-export function facebookScopesFor(intent: 'connect' | 'ads' = 'connect'): string[] {
+export function facebookScopesFor(
+  intent: 'connect' | 'ads' = 'connect',
+): string[] {
   if (intent === 'ads') {
     return [
       'public_profile',
@@ -90,9 +92,10 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
   pinterest: {
     authorizationUrl: 'https://www.pinterest.com/oauth/',
     // Use sandbox token URL when PINTEREST_USE_SANDBOX=true
-    tokenUrl: process.env.PINTEREST_USE_SANDBOX === 'true'
-      ? 'https://api-sandbox.pinterest.com/v5/oauth/token'
-      : 'https://api.pinterest.com/v5/oauth/token',
+    tokenUrl:
+      process.env.PINTEREST_USE_SANDBOX === 'true'
+        ? 'https://api-sandbox.pinterest.com/v5/oauth/token'
+        : 'https://api.pinterest.com/v5/oauth/token',
     scopes: PLATFORM_CONFIG.pinterest.oauthScopes,
     usePKCE: false,
   },
@@ -273,7 +276,9 @@ export class OAuthService {
 
     // Calculate expiration
     const expiresAt = new Date();
-    expiresAt.setMinutes(expiresAt.getMinutes() + this.STATE_EXPIRATION_MINUTES);
+    expiresAt.setMinutes(
+      expiresAt.getMinutes() + this.STATE_EXPIRATION_MINUTES,
+    );
 
     // Build redirect URI BEFORE saving state so we can store it
     const redirectUri = this.getRedirectUri(platform);
@@ -299,7 +304,8 @@ export class OAuthService {
     const authUrl = new URL(oauthConfig.authorizationUrl);
 
     // Resolve effective scopes — Facebook supports intent-based scope subsets
-    const intent = (dto.additionalData?.intent as 'connect' | 'ads') ?? 'connect';
+    const intent =
+      (dto.additionalData?.intent as 'connect' | 'ads') ?? 'connect';
     const effectiveScopes =
       platform === 'facebook' ? facebookScopesFor(intent) : oauthConfig.scopes;
 
@@ -339,9 +345,20 @@ export class OAuthService {
     this.logger.log(`Authorization URL: ${finalAuthUrl}`);
     this.logger.log(`Redirect URI configured: ${redirectUri}`);
     this.logger.log(`Redirect URI length: ${redirectUri.length}`);
-    this.logger.log(`Redirect URI char codes: ${redirectUri.split('').map(c => c.charCodeAt(0)).join(',')}`);
-    this.logger.log(`APP_URL env: "${process.env.APP_URL}" (length: ${process.env.APP_URL?.length})`);
-    this.logger.log(`APP_URL char codes: ${process.env.APP_URL?.split('').map(c => c.charCodeAt(0)).join(',')}`);
+    this.logger.log(
+      `Redirect URI char codes: ${redirectUri
+        .split('')
+        .map((c) => c.charCodeAt(0))
+        .join(',')}`,
+    );
+    this.logger.log(
+      `APP_URL env: "${process.env.APP_URL}" (length: ${process.env.APP_URL?.length})`,
+    );
+    this.logger.log(
+      `APP_URL char codes: ${process.env.APP_URL?.split('')
+        .map((c) => c.charCodeAt(0))
+        .join(',')}`,
+    );
 
     return {
       authorizationUrl: finalAuthUrl,
@@ -353,9 +370,7 @@ export class OAuthService {
   /**
    * Validate OAuth state token and return the state data
    */
-  async validateState(
-    stateToken: string,
-  ): Promise<{
+  async validateState(stateToken: string): Promise<{
     workspaceId: string;
     userId: string;
     platform: SupportedPlatform;
@@ -363,7 +378,9 @@ export class OAuthService {
     redirectUrl: string | null;
     additionalData: Record<string, any> | null;
   }> {
-    this.logger.log(`Validating state token: ${stateToken.substring(0, 10)}...`);
+    this.logger.log(
+      `Validating state token: ${stateToken.substring(0, 10)}...`,
+    );
 
     // First, check if the state token exists at all (ignoring expiration)
     const allStates = await db
@@ -373,7 +390,9 @@ export class OAuthService {
       .limit(1);
 
     if (allStates.length === 0) {
-      this.logger.error(`State token not found in database: ${stateToken.substring(0, 10)}...`);
+      this.logger.error(
+        `State token not found in database: ${stateToken.substring(0, 10)}...`,
+      );
       // Log recent states for debugging
       const recentStates = await db
         .select({
@@ -386,17 +405,27 @@ export class OAuthService {
         .from(oauthStates)
         .orderBy(oauthStates.createdAt)
         .limit(5);
-      this.logger.log(`Recent states in DB: ${JSON.stringify(recentStates.map(s => ({ token: s.stateToken.substring(0, 10), platform: s.platform, expires: s.expiresAt })))}`);
-      throw new UnauthorizedException('Invalid or expired OAuth state - token not found');
+      this.logger.log(
+        `Recent states in DB: ${JSON.stringify(recentStates.map((s) => ({ token: s.stateToken.substring(0, 10), platform: s.platform, expires: s.expiresAt })))}`,
+      );
+      throw new UnauthorizedException(
+        'Invalid or expired OAuth state - token not found',
+      );
     }
 
     const foundState = allStates[0];
-    this.logger.log(`Found state: platform=${foundState.platform}, expiresAt=${foundState.expiresAt}, usedAt=${foundState.usedAt}`);
+    this.logger.log(
+      `Found state: platform=${foundState.platform}, expiresAt=${foundState.expiresAt}, usedAt=${foundState.usedAt}`,
+    );
 
     // Check if expired
     if (new Date(foundState.expiresAt) < new Date()) {
-      this.logger.error(`State token expired: expiresAt=${foundState.expiresAt}, now=${new Date().toISOString()}`);
-      throw new UnauthorizedException('Invalid or expired OAuth state - token expired');
+      this.logger.error(
+        `State token expired: expiresAt=${foundState.expiresAt}, now=${new Date().toISOString()}`,
+      );
+      throw new UnauthorizedException(
+        'Invalid or expired OAuth state - token expired',
+      );
     }
 
     if (foundState.usedAt) {
@@ -418,7 +447,7 @@ export class OAuthService {
       platform: foundState.platform as SupportedPlatform,
       codeVerifier: foundState.codeVerifier,
       redirectUrl: foundState.redirectUrl,
-      additionalData: foundState.additionalData as Record<string, any> | null,
+      additionalData: foundState.additionalData,
     };
   }
 
@@ -445,18 +474,33 @@ export class OAuthService {
     this.logger.log(`Token exchange for ${platform}:`);
     this.logger.log(`  - Token URL: ${oauthConfig.tokenUrl}`);
     this.logger.log(`  - Redirect URI: ${redirectUri}`);
-    this.logger.log(`  - Redirect URI (from stored): ${storedRedirectUri ? 'YES' : 'NO'}`);
+    this.logger.log(
+      `  - Redirect URI (from stored): ${storedRedirectUri ? 'YES' : 'NO'}`,
+    );
     this.logger.log(`  - Redirect URI length: ${redirectUri.length}`);
-    this.logger.log(`  - Redirect URI char codes: ${redirectUri.split('').map(c => c.charCodeAt(0)).join(',')}`);
-    this.logger.log(`  - Client ID: ${credentials.clientId.substring(0, 10)}...`);
-    this.logger.log(`  - APP_URL env: "${process.env.APP_URL}" (length: ${process.env.APP_URL?.length})`);
+    this.logger.log(
+      `  - Redirect URI char codes: ${redirectUri
+        .split('')
+        .map((c) => c.charCodeAt(0))
+        .join(',')}`,
+    );
+    this.logger.log(
+      `  - Client ID: ${credentials.clientId.substring(0, 10)}...`,
+    );
+    this.logger.log(
+      `  - APP_URL env: "${process.env.APP_URL}" (length: ${process.env.APP_URL?.length})`,
+    );
 
     // Instagram Business Login token exchange
     if (platform === 'instagram') {
-      this.logger.log(`Instagram token exchange - trying URLSearchParams approach`);
+      this.logger.log(
+        `Instagram token exchange - trying URLSearchParams approach`,
+      );
       this.logger.log(`  - redirect_uri value: ${redirectUri}`);
       this.logger.log(`  - Client ID: ${credentials.clientId}`);
-      this.logger.log(`  - Client Secret (first 10): ${credentials.clientSecret.substring(0, 10)}...`);
+      this.logger.log(
+        `  - Client Secret (first 10): ${credentials.clientSecret.substring(0, 10)}...`,
+      );
       this.logger.log(`  - Code (first 50 chars): ${code.substring(0, 50)}...`);
       this.logger.log(`  - Code length: ${code.length}`);
 
@@ -484,7 +528,9 @@ export class OAuthService {
 
       if (!response.ok) {
         const errorData = await response.text();
-        this.logger.error(`Token exchange failed for ${platform}: ${errorData}`);
+        this.logger.error(
+          `Token exchange failed for ${platform}: ${errorData}`,
+        );
         let errorMessage = `Failed to exchange authorization code: ${response.status}`;
         try {
           const errorJson = JSON.parse(errorData);
@@ -525,7 +571,11 @@ export class OAuthService {
     };
 
     // Pinterest, Twitter, and Reddit require Basic Authentication header
-    if (platform === 'pinterest' || platform === 'twitter' || platform === 'reddit') {
+    if (
+      platform === 'pinterest' ||
+      platform === 'twitter' ||
+      platform === 'reddit'
+    ) {
       const basicAuth = Buffer.from(
         `${credentials.clientId}:${credentials.clientSecret}`,
       ).toString('base64');
@@ -550,7 +600,9 @@ export class OAuthService {
     }
 
     const requestBody = tokenParams.toString();
-    this.logger.log(`Token exchange request body (first 500 chars): ${requestBody.substring(0, 500)}`);
+    this.logger.log(
+      `Token exchange request body (first 500 chars): ${requestBody.substring(0, 500)}`,
+    );
 
     const response = await fetch(oauthConfig.tokenUrl, {
       method: 'POST',
@@ -685,19 +737,27 @@ export class OAuthService {
 
     if (platform === 'instagram') {
       envPrefix = 'INSTAGRAM';
-      hint = 'Instagram Business Login. Set INSTAGRAM_CLIENT_ID and INSTAGRAM_CLIENT_SECRET.';
+      hint =
+        'Instagram Business Login. Set INSTAGRAM_CLIENT_ID and INSTAGRAM_CLIENT_SECRET.';
     } else if (platform === 'threads') {
       envPrefix = 'THREADS';
       hint = 'Threads API. Set THREADS_CLIENT_ID and THREADS_CLIENT_SECRET.';
-    } else if (platform === 'google_drive' || platform === 'google_photos' || platform === 'google_calendar') {
+    } else if (
+      platform === 'google_drive' ||
+      platform === 'google_photos' ||
+      platform === 'google_calendar'
+    ) {
       envPrefix = 'YOUTUBE'; // Google Drive/Photos/Calendar share the same Google OAuth app as YouTube
-      hint = 'Google services use YouTube credentials. Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET.';
+      hint =
+        'Google services use YouTube credentials. Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET.';
     } else if (platform === 'onedrive') {
       envPrefix = 'ONEDRIVE'; // Microsoft Azure AD app
-      hint = 'OneDrive uses Microsoft credentials. Set ONEDRIVE_CLIENT_ID and ONEDRIVE_CLIENT_SECRET.';
+      hint =
+        'OneDrive uses Microsoft credentials. Set ONEDRIVE_CLIENT_ID and ONEDRIVE_CLIENT_SECRET.';
     } else if (platform === 'dropbox') {
       envPrefix = 'DROPBOX'; // Dropbox app
-      hint = 'Dropbox uses Dropbox App credentials. Set DROPBOX_CLIENT_ID and DROPBOX_CLIENT_SECRET.';
+      hint =
+        'Dropbox uses Dropbox App credentials. Set DROPBOX_CLIENT_ID and DROPBOX_CLIENT_SECRET.';
     } else {
       envPrefix = platform.toUpperCase();
       hint = `Set ${envPrefix}_CLIENT_ID and ${envPrefix}_CLIENT_SECRET environment variables.`;

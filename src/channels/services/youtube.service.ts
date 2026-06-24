@@ -98,7 +98,10 @@ export class YouTubeService {
       title: snippet.title,
       description: snippet.description,
       customUrl: snippet.customUrl || null,
-      thumbnailUrl: snippet.thumbnails?.high?.url || snippet.thumbnails?.default?.url || null,
+      thumbnailUrl:
+        snippet.thumbnails?.high?.url ||
+        snippet.thumbnails?.default?.url ||
+        null,
       subscriberCount: parseInt(statistics.subscriberCount, 10) || 0,
       videoCount: parseInt(statistics.videoCount, 10) || 0,
       viewCount: parseInt(statistics.viewCount, 10) || 0,
@@ -120,9 +123,7 @@ export class YouTubeService {
   /**
    * Get channel playlists (for organizing videos)
    */
-  async getPlaylists(
-    accessToken: string,
-  ): Promise<
+  async getPlaylists(accessToken: string): Promise<
     Array<{
       id: string;
       title: string;
@@ -185,14 +186,19 @@ export class YouTubeService {
     this.logger.log(`Downloading video from: ${videoUrl}`);
     const videoResponse = await fetch(videoUrl);
     if (!videoResponse.ok) {
-      throw new BadRequestException(`Failed to download video from ${videoUrl}`);
+      throw new BadRequestException(
+        `Failed to download video from ${videoUrl}`,
+      );
     }
 
     const videoBuffer = await videoResponse.arrayBuffer();
     const videoSize = videoBuffer.byteLength;
-    const contentType = videoResponse.headers.get('content-type') || 'video/mp4';
+    const contentType =
+      videoResponse.headers.get('content-type') || 'video/mp4';
 
-    this.logger.log(`Video downloaded: ${videoSize} bytes, type: ${contentType}`);
+    this.logger.log(
+      `Video downloaded: ${videoSize} bytes, type: ${contentType}`,
+    );
 
     // Step 2: Initialize resumable upload session
     const uploadUrl = await this.initResumableUpload(
@@ -214,18 +220,30 @@ export class YouTubeService {
     this.logger.log(`Resumable upload initialized: ${uploadUrl}`);
 
     // Step 3: Upload the video
-    const result = await this.uploadVideoData(uploadUrl, videoBuffer, contentType);
+    const result = await this.uploadVideoData(
+      uploadUrl,
+      videoBuffer,
+      contentType,
+    );
 
     this.logger.log(`Video uploaded successfully: ${result.videoId}`);
 
     // Step 4: Upload thumbnail if provided
     if (options.thumbnailUrl) {
-      await this.uploadThumbnail(accessToken, result.videoId, options.thumbnailUrl);
+      await this.uploadThumbnail(
+        accessToken,
+        result.videoId,
+        options.thumbnailUrl,
+      );
     }
 
     // Step 5: Add to playlist if specified
     if (options.playlistId) {
-      await this.addVideoToPlaylist(accessToken, result.videoId, options.playlistId);
+      await this.addVideoToPlaylist(
+        accessToken,
+        result.videoId,
+        options.playlistId,
+      );
     }
 
     return result;
@@ -250,7 +268,8 @@ export class YouTubeService {
       }
 
       const thumbnailBuffer = await thumbnailResponse.arrayBuffer();
-      const contentType = thumbnailResponse.headers.get('content-type') || 'image/jpeg';
+      const contentType =
+        thumbnailResponse.headers.get('content-type') || 'image/jpeg';
 
       // Validate thumbnail (YouTube requirements: JPEG, PNG, GIF, BMP, max 2MB)
       const maxSize = 2 * 1024 * 1024; // 2MB
@@ -303,7 +322,8 @@ export class YouTubeService {
     contentType: string,
     contentLength: number,
   ): Promise<string> {
-    const url = 'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status';
+    const url =
+      'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status';
 
     const metadata = {
       snippet,
@@ -548,7 +568,9 @@ export class YouTubeService {
         );
         this.logger.error(
           `YouTube comment auth failed (status ${response.status}). Token scopes: ${
-            grantedScopes ? JSON.stringify(grantedScopes) : '<tokeninfo call failed>'
+            grantedScopes
+              ? JSON.stringify(grantedScopes)
+              : '<tokeninfo call failed>'
           }`,
         );
         const hasForceSsl = grantedScopes?.some((s) =>
@@ -583,7 +605,9 @@ export class YouTubeService {
     const res = await fetch(url);
     if (!res.ok) return [];
     const data = (await res.json()) as { scope?: string };
-    return typeof data.scope === 'string' ? data.scope.split(' ').filter(Boolean) : [];
+    return typeof data.scope === 'string'
+      ? data.scope.split(' ').filter(Boolean)
+      : [];
   }
 
   // ==========================================================================
@@ -608,7 +632,9 @@ export class YouTubeService {
     const maxPages = 5;
 
     while (pages < maxPages) {
-      const url = new URL('https://www.googleapis.com/youtube/v3/commentThreads');
+      const url = new URL(
+        'https://www.googleapis.com/youtube/v3/commentThreads',
+      );
       url.searchParams.set('part', 'snippet,replies');
       url.searchParams.set('videoId', videoId);
       url.searchParams.set('maxResults', '100');

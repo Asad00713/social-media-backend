@@ -24,11 +24,7 @@ export class TextSnippetService {
   /**
    * Create a new text snippet
    */
-  async create(
-    workspaceId: string,
-    userId: string,
-    dto: CreateTextSnippetDto,
-  ) {
+  async create(workspaceId: string, userId: string, dto: CreateTextSnippetDto) {
     // Validate category if provided
     if (dto.categoryId) {
       const category = await db

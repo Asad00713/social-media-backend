@@ -43,17 +43,25 @@ export class MastodonAnalyticsAdapter implements PlatformAnalyticsAdapter {
     return 0; // Mastodon has no quota for read-only per-instance API
   }
 
-  async fetchProfileSnapshot(channel: ChannelEntity): Promise<ProfileSnapshotResult> {
+  async fetchProfileSnapshot(
+    channel: ChannelEntity,
+  ): Promise<ProfileSnapshotResult> {
     try {
       const instanceUrl = this.getInstanceUrl(channel);
       if (!instanceUrl) {
         return {
           status: 'failed',
-          error: { code: 'not_found', message: 'No instanceUrl in channel metadata' },
+          error: {
+            code: 'not_found',
+            message: 'No instanceUrl in channel metadata',
+          },
           quotaCostUsed: 0,
         };
       }
-      const account = await this.client.verifyCredentials(instanceUrl, channel.accessToken);
+      const account = await this.client.verifyCredentials(
+        instanceUrl,
+        channel.accessToken,
+      );
       return {
         status: 'success',
         data: {
@@ -85,11 +93,18 @@ export class MastodonAnalyticsAdapter implements PlatformAnalyticsAdapter {
       if (!statusId || !accessToken || !instanceUrl) {
         return {
           status: 'failed',
-          error: { code: 'not_found', message: 'Missing statusId/token/instance' },
+          error: {
+            code: 'not_found',
+            message: 'Missing statusId/token/instance',
+          },
           quotaCostUsed: 0,
         };
       }
-      const status = await this.client.getStatus({ instanceUrl, statusId, accessToken });
+      const status = await this.client.getStatus({
+        instanceUrl,
+        statusId,
+        accessToken,
+      });
       return {
         status: 'success',
         data: {
@@ -116,7 +131,10 @@ export class MastodonAnalyticsAdapter implements PlatformAnalyticsAdapter {
       if (!instanceUrl) {
         return {
           status: 'failed',
-          error: { code: 'not_found', message: 'No instanceUrl in channel metadata' },
+          error: {
+            code: 'not_found',
+            message: 'No instanceUrl in channel metadata',
+          },
           quotaCostUsed: 0,
         };
       }
@@ -156,7 +174,7 @@ export class MastodonAnalyticsAdapter implements PlatformAnalyticsAdapter {
   }
 
   private getInstanceUrl(channel: ChannelEntity): string | null {
-    const meta = (channel.metadata ?? {}) as Record<string, any>;
+    const meta = channel.metadata ?? {};
     return typeof meta.instanceUrl === 'string' && meta.instanceUrl.length > 0
       ? meta.instanceUrl
       : null;
@@ -166,6 +184,10 @@ export class MastodonAnalyticsAdapter implements PlatformAnalyticsAdapter {
     const mErr = err as MastodonApiError;
     const code: AdapterError['code'] = mErr?.code ?? 'transient';
     const message = (err as Error)?.message ?? 'Unknown error';
-    return { status: 'failed', error: { code, message }, quotaCostUsed: 0 } as unknown as T;
+    return {
+      status: 'failed',
+      error: { code, message },
+      quotaCostUsed: 0,
+    } as unknown as T;
   }
 }

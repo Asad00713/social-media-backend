@@ -29,6 +29,16 @@ import { NotificationsModule } from '../notifications/notifications.module';
     PaymentMethodService,
   ],
   controllers: [BillingController],
-  exports: [CustomerService, SubscriptionService, WebhookService, UsageService, AddonService, PlanChangeService, DashboardService, InvoiceService, PaymentMethodService],
+  exports: [
+    CustomerService,
+    SubscriptionService,
+    WebhookService,
+    UsageService,
+    AddonService,
+    PlanChangeService,
+    DashboardService,
+    InvoiceService,
+    PaymentMethodService,
+  ],
 })
 export class BillingModule {}

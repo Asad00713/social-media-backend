@@ -172,7 +172,10 @@ Twitter: 140s, 512MB | LinkedIn: 10min, 5GB | Pinterest: 60s, 2GB
           tool_call_id: (msg.metadata as any)?.toolCallId || '',
           name: (msg.metadata as any)?.toolName || '',
         });
-      } else if (msg.role === 'assistant' && (msg.metadata as any)?.toolCalls?.length) {
+      } else if (
+        msg.role === 'assistant' &&
+        (msg.metadata as any)?.toolCalls?.length
+      ) {
         llmMessages.push({
           role: 'assistant',
           content: msg.content || '',
@@ -215,7 +218,7 @@ Twitter: 140s, 512MB | LinkedIn: 10min, 5GB | Pinterest: 60s, 2GB
         });
       } else {
         llmMessages.push({
-          role: msg.role as 'user' | 'assistant' | 'system',
+          role: msg.role,
           content: msg.content || '',
         });
       }

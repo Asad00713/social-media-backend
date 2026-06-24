@@ -38,7 +38,11 @@ describe('ThreadsApiClient', () => {
     const listData = { data: [], paging: {} };
     mockFetch.mockResolvedValue({ ok: true, json: async () => listData });
 
-    await client.getMyThreads({ accessToken: 'tok', limit: 10, since: 1700000000 });
+    await client.getMyThreads({
+      accessToken: 'tok',
+      limit: 10,
+      since: 1700000000,
+    });
 
     const [url] = mockFetch.mock.calls[0];
     expect(url).toContain('me/threads');
@@ -71,10 +75,14 @@ describe('ThreadsApiClient', () => {
     mockFetch.mockResolvedValue({
       ok: false,
       status: 400,
-      json: async () => ({ error: { code: 4, message: 'App request limit reached.' } }),
+      json: async () => ({
+        error: { code: 4, message: 'App request limit reached.' },
+      }),
     });
 
-    await expect(client.getMe('tok')).rejects.toMatchObject({ code: 'rate_limited' });
+    await expect(client.getMe('tok')).rejects.toMatchObject({
+      code: 'rate_limited',
+    });
   });
 
   it('maps HTTP 404 to not_found', async () => {
@@ -97,7 +105,9 @@ describe('ThreadsApiClient', () => {
       json: async () => ({ error: {} }),
     });
 
-    await expect(client.getMe('tok')).rejects.toMatchObject({ code: 'transient' });
+    await expect(client.getMe('tok')).rejects.toMatchObject({
+      code: 'transient',
+    });
   });
 
   it('getThreadInsights requests correct metrics', async () => {

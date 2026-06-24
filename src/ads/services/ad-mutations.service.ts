@@ -3,17 +3,17 @@ import {
   Logger,
   NotFoundException,
   ForbiddenException,
-} from '@nestjs/common'
-import { eq, and } from 'drizzle-orm'
-import { db } from '../../drizzle/db'
-import { adCampaigns, adSets } from '../../drizzle/schema'
-import { MetaAdsClient } from './meta-ads.client'
-import { ChannelService } from '../../channels/services/channel.service'
-import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service'
+} from '@nestjs/common';
+import { eq, and } from 'drizzle-orm';
+import { db } from '../../drizzle/db';
+import { adCampaigns, adSets } from '../../drizzle/schema';
+import { MetaAdsClient } from './meta-ads.client';
+import { ChannelService } from '../../channels/services/channel.service';
+import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
 
 @Injectable()
 export class AdMutationsService {
-  private readonly logger = new Logger(AdMutationsService.name)
+  private readonly logger = new Logger(AdMutationsService.name);
 
   constructor(
     private readonly meta: MetaAdsClient,
@@ -35,26 +35,39 @@ export class AdMutationsService {
     const [campaign] = await db
       .select()
       .from(adCampaigns)
-      .where(and(eq(adCampaigns.id, campaignId), eq(adCampaigns.workspaceId, workspaceId)))
-      .limit(1)
+      .where(
+        and(
+          eq(adCampaigns.id, campaignId),
+          eq(adCampaigns.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
 
-    if (!campaign) throw new NotFoundException('Campaign not found')
+    if (!campaign) throw new NotFoundException('Campaign not found');
 
     // Get decrypted access token via channel
-    const channel = await this.channelService.getChannelForPosting(campaign.channelId)
-    if (!channel) throw new NotFoundException('Channel not found')
-    if (channel.workspaceId !== workspaceId) throw new ForbiddenException('Channel does not belong to this workspace')
-    if (!channel.accessToken) throw new NotFoundException('No access token for channel')
+    const channel = await this.channelService.getChannelForPosting(
+      campaign.channelId,
+    );
+    if (!channel) throw new NotFoundException('Channel not found');
+    if (channel.workspaceId !== workspaceId)
+      throw new ForbiddenException('Channel does not belong to this workspace');
+    if (!channel.accessToken)
+      throw new NotFoundException('No access token for channel');
 
     // 1. Push status change to Meta
-    await this.meta.updateEntityStatus(campaign.metaCampaignId, channel.accessToken, status)
-    this.logger.log(`Campaign ${campaign.metaCampaignId} status → ${status}`)
+    await this.meta.updateEntityStatus(
+      campaign.metaCampaignId,
+      channel.accessToken,
+      status,
+    );
+    this.logger.log(`Campaign ${campaign.metaCampaignId} status → ${status}`);
 
     // 2. Persist in DB
     await db
       .update(adCampaigns)
       .set({ status, updatedAt: new Date() })
-      .where(eq(adCampaigns.id, campaignId))
+      .where(eq(adCampaigns.id, campaignId));
 
     // 3. Emit SSE so the frontend updates in real-time
     this.events.emit(workspaceId, 'ad.status.changed', {
@@ -62,9 +75,9 @@ export class AdMutationsService {
       campaignId,
       entity: 'campaign',
       status,
-    })
+    });
 
-    return { id: campaignId, status }
+    return { id: campaignId, status };
   }
 
   /**
@@ -88,26 +101,36 @@ export class AdMutationsService {
       .from(adSets)
       .innerJoin(adCampaigns, eq(adSets.campaignId, adCampaigns.id))
       .where(and(eq(adSets.id, adsetId), eq(adSets.workspaceId, workspaceId)))
-      .limit(1)
+      .limit(1);
 
-    if (!adset) throw new NotFoundException('Ad set not found')
+    if (!adset) throw new NotFoundException('Ad set not found');
 
     // Get decrypted access token via channel
-    const channel = await this.channelService.getChannelForPosting(adset.channelId)
-    if (!channel) throw new NotFoundException('Channel not found')
-    if (channel.workspaceId !== workspaceId) throw new ForbiddenException('Channel does not belong to this workspace')
-    if (!channel.accessToken) throw new NotFoundException('No access token for channel')
+    const channel = await this.channelService.getChannelForPosting(
+      adset.channelId,
+    );
+    if (!channel) throw new NotFoundException('Channel not found');
+    if (channel.workspaceId !== workspaceId)
+      throw new ForbiddenException('Channel does not belong to this workspace');
+    if (!channel.accessToken)
+      throw new NotFoundException('No access token for channel');
 
     // 1. Push budget change to Meta
-    await this.meta.updateAdSetBudget(adset.metaAdsetId, channel.accessToken, dailyBudgetMinor)
-    this.logger.log(`Ad set ${adset.metaAdsetId} dailyBudgetMinor → ${dailyBudgetMinor}`)
+    await this.meta.updateAdSetBudget(
+      adset.metaAdsetId,
+      channel.accessToken,
+      dailyBudgetMinor,
+    );
+    this.logger.log(
+      `Ad set ${adset.metaAdsetId} dailyBudgetMinor → ${dailyBudgetMinor}`,
+    );
 
     // 2. Persist in DB
     await db
       .update(adSets)
       .set({ dailyBudgetMinor, updatedAt: new Date() })
-      .where(eq(adSets.id, adsetId))
+      .where(eq(adSets.id, adsetId));
 
-    return { id: adsetId, dailyBudgetMinor }
+    return { id: adsetId, dailyBudgetMinor };
   }
 }

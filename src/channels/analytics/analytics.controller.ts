@@ -10,8 +10,14 @@ import {
 import { AuthGuard } from '@nestjs/passport';
 import { eq } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
-import { socialMediaChannels, type SupportedPlatform } from '../../drizzle/schema/channels.schema';
-import { AnalyticsService, type AnalyticsRange } from './services/analytics.service';
+import {
+  socialMediaChannels,
+  type SupportedPlatform,
+} from '../../drizzle/schema/channels.schema';
+import {
+  AnalyticsService,
+  type AnalyticsRange,
+} from './services/analytics.service';
 import { ChannelOwnershipGuard } from './guards/channel-ownership.guard';
 import { OverviewResponseDto } from './dto/overview-response.dto';
 
@@ -32,7 +38,9 @@ export class AnalyticsController {
     @Query('range') range: AnalyticsRange = '30d',
   ): Promise<OverviewResponseDto> {
     if (!VALID_RANGES.includes(range)) {
-      throw new BadRequestException(`Invalid range. Must be one of: ${VALID_RANGES.join(', ')}`);
+      throw new BadRequestException(
+        `Invalid range. Must be one of: ${VALID_RANGES.join(', ')}`,
+      );
     }
     const channelId = Number(channelIdParam);
     const rows = await this.db
@@ -63,7 +71,10 @@ export class AnalyticsController {
     @Param('wsId') wsId: string,
     @Param('channelId') channelIdParam: string,
     @Query('range') range: AnalyticsRange = '30d',
-  ): Promise<{ data: Array<{ ageGroup: string; gender: string; viewerPercentage: number }>; supported: boolean }> {
+  ): Promise<{
+    data: Array<{ ageGroup: string; gender: string; viewerPercentage: number }>;
+    supported: boolean;
+  }> {
     return this.analytics.getDemographics(Number(channelIdParam), range, wsId);
   }
 
@@ -72,7 +83,14 @@ export class AnalyticsController {
     @Param('wsId') wsId: string,
     @Param('channelId') channelIdParam: string,
     @Query('range') range: AnalyticsRange = '30d',
-  ): Promise<{ data: Array<{ sourceType: string; views: number }>; supported: boolean }> {
-    return this.analytics.getTrafficSources(Number(channelIdParam), range, wsId);
+  ): Promise<{
+    data: Array<{ sourceType: string; views: number }>;
+    supported: boolean;
+  }> {
+    return this.analytics.getTrafficSources(
+      Number(channelIdParam),
+      range,
+      wsId,
+    );
   }
 }

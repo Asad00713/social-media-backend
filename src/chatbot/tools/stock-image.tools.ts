@@ -23,7 +23,8 @@ export function createStockImageTools(
         properties: {
           query: {
             type: 'string',
-            description: 'Search query (e.g. "summer fashion", "beach sunset", "coffee shop")',
+            description:
+              'Search query (e.g. "summer fashion", "beach sunset", "coffee shop")',
           },
           perPage: {
             type: 'number',
@@ -43,7 +44,10 @@ export function createStockImageTools(
         },
         required: ['query'],
       },
-      execute: async (params: Record<string, any>, _context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        params: Record<string, any>,
+        _context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
           const perPage = Math.min(params.perPage || 3, 30);
           const page = Math.max(params.page || 1, 1);
@@ -99,7 +103,8 @@ export function createStockImageTools(
         properties: {
           query: {
             type: 'string',
-            description: 'Search query (e.g. "nature", "business meeting", "food photography")',
+            description:
+              'Search query (e.g. "nature", "business meeting", "food photography")',
           },
           perPage: {
             type: 'number',
@@ -113,7 +118,8 @@ export function createStockImageTools(
           },
           type: {
             type: 'string',
-            description: 'Search for photos or videos. Allowed values: "photo" (default), "video".',
+            description:
+              'Search for photos or videos. Allowed values: "photo" (default), "video".',
           },
           page: {
             type: 'number',
@@ -123,11 +129,16 @@ export function createStockImageTools(
         },
         required: ['query'],
       },
-      execute: async (params: Record<string, any>, _context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        params: Record<string, any>,
+        _context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
           const perPage = Math.min(params.perPage || 3, 30);
           const page = Math.max(params.page || 1, 1);
-          const searchType = ['photo', 'video'].includes(params.type) ? params.type : 'photo';
+          const searchType = ['photo', 'video'].includes(params.type)
+            ? params.type
+            : 'photo';
           // Normalize orientation — LLMs sometimes pass invalid values
           const validOrientations = ['landscape', 'portrait', 'square'];
           const orientation = validOrientations.includes(params.orientation)
@@ -162,8 +173,7 @@ export function createStockImageTools(
                 photographer: video.user?.name,
               }))
               .filter(
-                (v: any) =>
-                  isValidUrl(v.image) || v.videoFiles?.length > 0,
+                (v: any) => isValidUrl(v.image) || v.videoFiles?.length > 0,
               );
 
             return {

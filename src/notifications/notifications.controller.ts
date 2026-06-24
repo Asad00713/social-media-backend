@@ -46,7 +46,9 @@ export class NotificationsController {
    */
   @Get('unread-count')
   async getUnreadCount(@Request() req) {
-    const count = await this.notificationsService.getUnreadCount(req.user.userId);
+    const count = await this.notificationsService.getUnreadCount(
+      req.user.userId,
+    );
     return { unreadCount: count };
   }
 
@@ -54,10 +56,7 @@ export class NotificationsController {
    * Mark a single notification as read
    */
   @Patch(':id/read')
-  async markAsRead(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Request() req,
-  ) {
+  async markAsRead(@Param('id', ParseUUIDPipe) id: string, @Request() req) {
     const notification = await this.notificationsService.markAsRead(
       id,
       req.user.userId,
@@ -67,7 +66,10 @@ export class NotificationsController {
     const unreadCount = await this.notificationsService.getUnreadCount(
       req.user.userId,
     );
-    this.notificationsGateway.sendUnreadCountUpdate(req.user.userId, unreadCount);
+    this.notificationsGateway.sendUnreadCountUpdate(
+      req.user.userId,
+      unreadCount,
+    );
 
     return notification;
   }
@@ -89,7 +91,10 @@ export class NotificationsController {
     const unreadCount = await this.notificationsService.getUnreadCount(
       req.user.userId,
     );
-    this.notificationsGateway.sendUnreadCountUpdate(req.user.userId, unreadCount);
+    this.notificationsGateway.sendUnreadCountUpdate(
+      req.user.userId,
+      unreadCount,
+    );
 
     return { markedCount: count };
   }
@@ -99,7 +104,9 @@ export class NotificationsController {
    */
   @Patch('mark-all-read')
   async markAllAsRead(@Request() req) {
-    const count = await this.notificationsService.markAllAsRead(req.user.userId);
+    const count = await this.notificationsService.markAllAsRead(
+      req.user.userId,
+    );
 
     // Send updated unread count via WebSocket
     this.notificationsGateway.sendUnreadCountUpdate(req.user.userId, 0);
@@ -111,17 +118,17 @@ export class NotificationsController {
    * Delete a notification
    */
   @Delete(':id')
-  async delete(
-    @Param('id', ParseUUIDPipe) id: string,
-    @Request() req,
-  ) {
+  async delete(@Param('id', ParseUUIDPipe) id: string, @Request() req) {
     const deleted = await this.notificationsService.delete(id, req.user.userId);
 
     // Send updated unread count via WebSocket
     const unreadCount = await this.notificationsService.getUnreadCount(
       req.user.userId,
     );
-    this.notificationsGateway.sendUnreadCountUpdate(req.user.userId, unreadCount);
+    this.notificationsGateway.sendUnreadCountUpdate(
+      req.user.userId,
+      unreadCount,
+    );
 
     return { deleted };
   }

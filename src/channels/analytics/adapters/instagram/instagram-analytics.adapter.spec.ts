@@ -12,7 +12,9 @@ describe('InstagramAnalyticsAdapter', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    adapter = new InstagramAnalyticsAdapter(client as unknown as InstagramApiClient);
+    adapter = new InstagramAnalyticsAdapter(
+      client as unknown as InstagramApiClient,
+    );
   });
 
   it('exposes platform=instagram with correct capabilities and vocabulary', () => {
@@ -64,7 +66,9 @@ describe('InstagramAnalyticsAdapter', () => {
       expect(result.data.followingCount).toBe(500);
       expect(result.data.totalPostsCount).toBe(150);
       expect(result.data.platformMetrics.username).toBe('testaccount');
-      expect(result.data.platformMetrics.profilePictureUrl).toBe('https://example.com/pic.jpg');
+      expect(result.data.platformMetrics.profilePictureUrl).toBe(
+        'https://example.com/pic.jpg',
+      );
       expect(result.data.platformMetrics.biography).toBe('Test bio');
       expect(result.data.platformMetrics.website).toBe('https://example.com');
     }
@@ -118,7 +122,9 @@ describe('InstagramAnalyticsAdapter', () => {
       expect(result.data.reachCount).toBe(3500);
       expect(result.data.platformMetrics.saved).toBe(45);
       expect(result.data.platformMetrics.engagement).toBe(250);
-      expect(result.data.platformMetrics.permalink).toBe('https://www.instagram.com/p/abc123/');
+      expect(result.data.platformMetrics.permalink).toBe(
+        'https://www.instagram.com/p/abc123/',
+      );
     }
   });
 
@@ -131,7 +137,11 @@ describe('InstagramAnalyticsAdapter', () => {
       comments_count: 80,
     });
     client.getMediaInsights.mockRejectedValue(
-      new InstagramApiError('permanent', 400, 'Insights not available for this media type.'),
+      new InstagramApiError(
+        'permanent',
+        400,
+        'Insights not available for this media type.',
+      ),
     );
 
     const result = await adapter.fetchPostMetrics({
@@ -212,13 +222,19 @@ describe('InstagramAnalyticsAdapter', () => {
       expect(post.metrics.sharesCount).toBeNull();
       expect(post.metrics.impressionsCount).toBeNull();
       expect(post.metrics.platformMetrics.mediaType).toBe('REEL');
-      expect(post.metrics.platformMetrics.permalink).toBe('https://www.instagram.com/reel/abc/');
+      expect(post.metrics.platformMetrics.permalink).toBe(
+        'https://www.instagram.com/reel/abc/',
+      );
     }
   });
 
   it('fetchRecentPosts returns failed on rate_limited error', async () => {
     client.getUserMedia.mockRejectedValue(
-      new InstagramApiError('rate_limited', 400, 'Application request limit reached.'),
+      new InstagramApiError(
+        'rate_limited',
+        400,
+        'Application request limit reached.',
+      ),
     );
 
     const result = await adapter.fetchRecentPosts(

@@ -1,12 +1,14 @@
 import type { MediaItemService } from '../../media-library/services/media-item.service';
 import { ChatbotTool, ToolContext, ToolResult } from './tool.interface';
 
-export function createMediaLibraryTools(mediaItemService: MediaItemService): ChatbotTool[] {
+export function createMediaLibraryTools(
+  mediaItemService: MediaItemService,
+): ChatbotTool[] {
   return [
     {
       name: 'search_media_library',
       description:
-        'Search the workspace\'s internal media library for uploaded images, videos, templates, and other assets. Use this when the user wants to reuse existing media they\'ve previously uploaded, or browse their saved assets.',
+        "Search the workspace's internal media library for uploaded images, videos, templates, and other assets. Use this when the user wants to reuse existing media they've previously uploaded, or browse their saved assets.",
       parameters: {
         type: 'object',
         properties: {
@@ -16,7 +18,8 @@ export function createMediaLibraryTools(mediaItemService: MediaItemService): Cha
           },
           type: {
             type: 'string',
-            description: 'Filter by media type. Allowed values: "image", "video", "gif", "document".',
+            description:
+              'Filter by media type. Allowed values: "image", "video", "gif", "document".',
           },
           limit: {
             type: 'number',
@@ -25,11 +28,16 @@ export function createMediaLibraryTools(mediaItemService: MediaItemService): Cha
         },
         required: [],
       },
-      execute: async (params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
           const limit = Math.min(params.limit || 15, 30);
           const validTypes = ['image', 'video', 'gif', 'document'];
-          const type = validTypes.includes(params.type) ? params.type : undefined;
+          const type = validTypes.includes(params.type)
+            ? params.type
+            : undefined;
           const result = await mediaItemService.findAll(context.workspaceId, {
             search: params.search,
             type,

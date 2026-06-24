@@ -150,14 +150,19 @@ export class PostService {
 
     // Schedule job if post is scheduled
     if (dto.scheduledAt) {
-      const jobId = await this.schedulePublishJob(post.id, new Date(dto.scheduledAt));
+      const jobId = await this.schedulePublishJob(
+        post.id,
+        new Date(dto.scheduledAt),
+      );
       // Return the updated post with jobId
       const [updatedPost] = await db
         .select()
         .from(posts)
         .where(eq(posts.id, post.id));
 
-      this.logger.log(`Post ${post.id} created with status ${status}, jobId: ${jobId}`);
+      this.logger.log(
+        `Post ${post.id} created with status ${status}, jobId: ${jobId}`,
+      );
       return updatedPost;
     }
 
@@ -302,10 +307,7 @@ export class PostService {
     // If we need to clear scheduledAt, use raw SQL to avoid Drizzle timestamp null error
     if (clearScheduledAt) {
       // First do the regular update without scheduledAt
-      await db
-        .update(posts)
-        .set(updateData)
-        .where(eq(posts.id, postId));
+      await db.update(posts).set(updateData).where(eq(posts.id, postId));
 
       // Then clear scheduledAt with raw SQL
       await db.execute(sql`
@@ -315,7 +317,10 @@ export class PostService {
       `);
 
       // Re-fetch the post since we used raw SQL
-      const [refetched] = await db.select().from(posts).where(eq(posts.id, postId));
+      const [refetched] = await db
+        .select()
+        .from(posts)
+        .where(eq(posts.id, postId));
       updatedPost = refetched;
     } else {
       const [result] = await db
@@ -432,7 +437,9 @@ export class PostService {
     for (const target of post.targets) {
       try {
         // Check global rate limit for this platform
-        const globalRateLimit = await this.rateLimiterService.checkRateLimit(target.platform);
+        const globalRateLimit = await this.rateLimiterService.checkRateLimit(
+          target.platform,
+        );
         if (!globalRateLimit.allowed) {
           this.logger.warn(
             `Rate limit exceeded for platform ${target.platform}. Retry after ${globalRateLimit.retryAfterMs}ms`,
@@ -462,10 +469,11 @@ export class PostService {
         }
 
         // Check per-channel rate limit
-        const channelRateLimit = await this.rateLimiterService.checkChannelRateLimit(
-          target.platform,
-          target.channelId,
-        );
+        const channelRateLimit =
+          await this.rateLimiterService.checkChannelRateLimit(
+            target.platform,
+            target.channelId,
+          );
         if (!channelRateLimit.allowed) {
           this.logger.warn(
             `Channel rate limit exceeded for ${target.platform}:${target.channelId}. Retry after ${channelRateLimit.retryAfterMs}ms`,
@@ -499,7 +507,10 @@ export class PostService {
         // Record the request for rate limiting tracking (both global and per-channel)
         await Promise.all([
           this.rateLimiterService.recordRequest(target.platform),
-          this.rateLimiterService.recordChannelRequest(target.platform, target.channelId),
+          this.rateLimiterService.recordChannelRequest(
+            target.platform,
+            target.channelId,
+          ),
         ]);
 
         updatedTargets.push({
@@ -599,7 +610,9 @@ export class PostService {
       triggeredByUserId: userId,
     });
 
-    this.logger.log(`Post ${postId} publishing completed with status: ${finalStatus}`);
+    this.logger.log(
+      `Post ${postId} publishing completed with status: ${finalStatus}`,
+    );
     return updatedPost;
   }
 
@@ -617,7 +630,7 @@ export class PostService {
     const profile = adapter.pollingProfile;
     const buckets = profile.schedulePerContentType[profile.defaultContentType];
     if (!buckets || buckets.length === 0) return;
-    const firstBucket = buckets[0] as AgeBucket;
+    const firstBucket = buckets[0];
     const delayMap: Record<string, number> = {
       '30m': 30 * 60_000,
       '1h': 60 * 60_000,
@@ -662,7 +675,9 @@ export class PostService {
     }
 
     if (channel.connectionStatus !== 'connected') {
-      throw new Error(`Channel is not connected (status: ${channel.connectionStatus})`);
+      throw new Error(
+        `Channel is not connected (status: ${channel.connectionStatus})`,
+      );
     }
 
     // Get platform-specific content or use default
@@ -703,7 +718,7 @@ export class PostService {
       metadata: mergedMetadata,
       accessToken,
       platformAccountId: channel.platformAccountId,
-      channelMetadata: (channel.metadata as Record<string, any>) || {},
+      channelMetadata: channel.metadata || {},
     });
   }
 
@@ -797,12 +812,18 @@ export class PostService {
   /**
    * Schedule a publish job for a post
    */
-  private async schedulePublishJob(postId: string, scheduledAt: Date): Promise<string> {
+  private async schedulePublishJob(
+    postId: string,
+    scheduledAt: Date,
+  ): Promise<string> {
     // Ensure scheduledAt is a Date object
-    const scheduleDate = scheduledAt instanceof Date ? scheduledAt : new Date(scheduledAt);
+    const scheduleDate =
+      scheduledAt instanceof Date ? scheduledAt : new Date(scheduledAt);
     const delay = scheduleDate.getTime() - Date.now();
 
-    this.logger.log(`Scheduling job for post ${postId}: scheduledAt=${scheduleDate.toISOString()}, delay=${delay}ms`);
+    this.logger.log(
+      `Scheduling job for post ${postId}: scheduledAt=${scheduleDate.toISOString()}, delay=${delay}ms`,
+    );
 
     if (delay < 0) {
       throw new BadRequestException('Cannot schedule a post in the past');
@@ -830,7 +851,9 @@ export class PostService {
       .set({ jobId: job.id as string })
       .where(eq(posts.id, postId));
 
-    this.logger.log(`Scheduled job ${job.id} for post ${postId} at ${scheduledAt.toISOString()}`);
+    this.logger.log(
+      `Scheduled job ${job.id} for post ${postId} at ${scheduledAt.toISOString()}`,
+    );
 
     return job.id as string;
   }

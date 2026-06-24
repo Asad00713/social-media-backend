@@ -43,8 +43,15 @@ import { TwitterApiClient } from './adapters/twitter/twitter-api.client';
 import { TwitterAnalyticsAdapter } from './adapters/twitter/twitter-analytics.adapter';
 
 @Module({
-  imports: [ConfigModule, BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS })],
-  controllers: [AnalyticsController, ChannelRefreshController, YouTubePubSubHubbubController],
+  imports: [
+    ConfigModule,
+    BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS }),
+  ],
+  controllers: [
+    AnalyticsController,
+    ChannelRefreshController,
+    YouTubePubSubHubbubController,
+  ],
   providers: [
     QuotaTrackerService,
     AnalyticsService,
@@ -61,7 +68,10 @@ import { TwitterAnalyticsAdapter } from './adapters/twitter/twitter-analytics.ad
     ChannelSyncLifecycleService,
     YouTubePubSubHubbubService,
     { provide: YouTubeDataApiClient, useValue: new YouTubeDataApiClient() },
-    { provide: YouTubeAnalyticsApiClient, useValue: new YouTubeAnalyticsApiClient() },
+    {
+      provide: YouTubeAnalyticsApiClient,
+      useValue: new YouTubeAnalyticsApiClient(),
+    },
     YouTubeAnalyticsAdapter,
     { provide: BlueskyApiClient, useValue: new BlueskyApiClient() },
     BlueskyAnalyticsAdapter,
@@ -83,6 +93,11 @@ import { TwitterAnalyticsAdapter } from './adapters/twitter/twitter-analytics.ad
     TwitterAnalyticsAdapter,
     AdapterRegistryService,
   ],
-  exports: [QuotaTrackerService, AnalyticsService, ChannelSyncLifecycleService, AdapterRegistryService],
+  exports: [
+    QuotaTrackerService,
+    AnalyticsService,
+    ChannelSyncLifecycleService,
+    AdapterRegistryService,
+  ],
 })
 export class AnalyticsModule {}

@@ -7,7 +7,12 @@ import type {
 
 export class TikTokApiError extends Error {
   constructor(
-    public code: 'rate_limited' | 'auth_failed' | 'not_found' | 'transient' | 'permanent',
+    public code:
+      | 'rate_limited'
+      | 'auth_failed'
+      | 'not_found'
+      | 'transient'
+      | 'permanent',
     public status: number,
     message: string,
   ) {
@@ -30,13 +35,20 @@ export class TikTokApiClient {
   async getUserInfo(accessToken: string): Promise<TikTokUserInfo> {
     const fields =
       'open_id,union_id,avatar_url,display_name,bio_description,profile_deep_link,is_verified,follower_count,following_count,likes_count,video_count';
-    const res = await this.fetchImpl(`${this.baseUrl}/user/info/?fields=${fields}`, {
-      headers: { Authorization: `Bearer ${accessToken}` },
-    });
+    const res = await this.fetchImpl(
+      `${this.baseUrl}/user/info/?fields=${fields}`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+    );
     const body = (await res.json().catch(() => ({}))) as TikTokUserInfoResponse;
     if (!res.ok || (body.error?.code && body.error.code !== 'ok')) {
       const msg = body.error?.message ?? `HTTP ${res.status}`;
-      throw new TikTokApiError(this.mapCode(res.status, body.error?.code), res.status, msg);
+      throw new TikTokApiError(
+        this.mapCode(res.status, body.error?.code),
+        res.status,
+        msg,
+      );
     }
     return body.data.user;
   }
@@ -55,9 +67,14 @@ export class TikTokApiClient {
         Authorization: `Bearer ${opts.accessToken}`,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ max_count: opts.maxCount ?? 20, cursor: opts.cursor ?? 0 }),
+      body: JSON.stringify({
+        max_count: opts.maxCount ?? 20,
+        cursor: opts.cursor ?? 0,
+      }),
     });
-    const body = (await res.json().catch(() => ({}))) as TikTokVideoListResponse;
+    const body = (await res
+      .json()
+      .catch(() => ({}))) as TikTokVideoListResponse;
     if (!res.ok || (body.error?.code && body.error.code !== 'ok')) {
       throw new TikTokApiError(
         this.mapCode(res.status, body.error?.code),
@@ -72,7 +89,10 @@ export class TikTokApiClient {
     };
   }
 
-  async queryVideos(opts: { accessToken: string; videoIds: string[] }): Promise<TikTokVideo[]> {
+  async queryVideos(opts: {
+    accessToken: string;
+    videoIds: string[];
+  }): Promise<TikTokVideo[]> {
     const fields =
       'id,title,video_description,create_time,cover_image_url,share_url,duration,view_count,like_count,comment_count,share_count';
     const url = `${this.baseUrl}/video/query/?fields=${fields}`;
@@ -84,7 +104,9 @@ export class TikTokApiClient {
       },
       body: JSON.stringify({ filters: { video_ids: opts.videoIds } }),
     });
-    const body = (await res.json().catch(() => ({}))) as TikTokVideoListResponse;
+    const body = (await res
+      .json()
+      .catch(() => ({}))) as TikTokVideoListResponse;
     if (!res.ok || (body.error?.code && body.error.code !== 'ok')) {
       throw new TikTokApiError(
         this.mapCode(res.status, body.error?.code),
@@ -97,7 +119,8 @@ export class TikTokApiClient {
 
   private mapCode(status: number, errorCode?: string): TikTokApiError['code'] {
     if (errorCode === 'rate_limit_exceeded') return 'rate_limited';
-    if (errorCode === 'access_token_invalid' || errorCode === 'unauthorized') return 'auth_failed';
+    if (errorCode === 'access_token_invalid' || errorCode === 'unauthorized')
+      return 'auth_failed';
     if (errorCode === 'not_found') return 'not_found';
     if (status === 401 || status === 403) return 'auth_failed';
     if (status === 429) return 'rate_limited';

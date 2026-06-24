@@ -40,7 +40,11 @@ export class BlueskyDmAdapter implements PlatformDmAdapter {
     conversationId: string,
     since?: Date,
   ): Promise<FetchedDm[]> {
-    return this.blueskyService.getChatConvoMessages(channel, conversationId, since);
+    return this.blueskyService.getChatConvoMessages(
+      channel,
+      conversationId,
+      since,
+    );
   }
 
   async sendDm(

@@ -61,16 +61,24 @@ export class ChannelSnapshotsScheduler {
 
     const eligible = rows.filter(
       (r: { isActive: boolean; platform: string }) =>
-        r.isActive && (SOCIAL_PLATFORMS as readonly string[]).includes(r.platform),
+        r.isActive &&
+        (SOCIAL_PLATFORMS as readonly string[]).includes(r.platform),
     );
 
-    this.logger.log(`Enqueuing recent-posts-sync for ${eligible.length} active channels`);
+    this.logger.log(
+      `Enqueuing recent-posts-sync for ${eligible.length} active channels`,
+    );
 
     for (let i = 0; i < eligible.length; i++) {
       const r = eligible[i];
       await this.queue.add(
         'channel-recent-posts-sync',
-        { channelId: r.id, workspaceId: r.workspaceId, sinceDays: 7, limit: 50 },
+        {
+          channelId: r.id,
+          workspaceId: r.workspaceId,
+          sinceDays: 7,
+          limit: 50,
+        },
         { delay: i * 100 },
       );
     }
@@ -88,7 +96,8 @@ export class ChannelSnapshotsScheduler {
 
     const eligible = rows.filter(
       (r: { isActive: boolean; platform: string }) =>
-        r.isActive && (SOCIAL_PLATFORMS as readonly string[]).includes(r.platform),
+        r.isActive &&
+        (SOCIAL_PLATFORMS as readonly string[]).includes(r.platform),
     );
 
     const yesterday = new Date();
@@ -124,7 +133,10 @@ export class ChannelSnapshotsScheduler {
         platformAccountId: socialMediaChannels.platformAccountId,
       })
       .from(socialMediaChannels)
-      .leftJoin(channelSyncState, eq(channelSyncState.channelId, socialMediaChannels.id))
+      .leftJoin(
+        channelSyncState,
+        eq(channelSyncState.channelId, socialMediaChannels.id),
+      )
       .where(
         and(
           eq(socialMediaChannels.platform, 'youtube'),

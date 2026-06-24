@@ -40,7 +40,9 @@ export const conversations = pgTable(
     isPinned: boolean('is_pinned').default(false).notNull(),
 
     // Sharing — when true, all workspace members can read this conversation
-    sharedWithWorkspace: boolean('shared_with_workspace').default(false).notNull(),
+    sharedWithWorkspace: boolean('shared_with_workspace')
+      .default(false)
+      .notNull(),
     sharedAt: timestamp('shared_at', { withTimezone: true }),
 
     createdAt: timestamp('created_at', { withTimezone: true })
@@ -54,7 +56,10 @@ export const conversations = pgTable(
     index('conversations_user_id_idx').on(table.userId),
     index('conversations_workspace_id_idx').on(table.workspaceId),
     index('conversations_created_at_idx').on(table.createdAt),
-    index('conversations_shared_idx').on(table.workspaceId, table.sharedWithWorkspace),
+    index('conversations_shared_idx').on(
+      table.workspaceId,
+      table.sharedWithWorkspace,
+    ),
   ],
 );
 
@@ -124,17 +129,20 @@ export const chatMessages = pgTable(
 );
 
 // Relations
-export const conversationsRelations = relations(conversations, ({ one, many }) => ({
-  user: one(users, {
-    fields: [conversations.userId],
-    references: [users.id],
+export const conversationsRelations = relations(
+  conversations,
+  ({ one, many }) => ({
+    user: one(users, {
+      fields: [conversations.userId],
+      references: [users.id],
+    }),
+    workspace: one(workspace, {
+      fields: [conversations.workspaceId],
+      references: [workspace.id],
+    }),
+    messages: many(chatMessages),
   }),
-  workspace: one(workspace, {
-    fields: [conversations.workspaceId],
-    references: [workspace.id],
-  }),
-  messages: many(chatMessages),
-}));
+);
 
 export const chatMessagesRelations = relations(chatMessages, ({ one }) => ({
   conversation: one(conversations, {

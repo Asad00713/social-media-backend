@@ -39,9 +39,14 @@ export class FacebookAnalyticsAdapter implements PlatformAnalyticsAdapter {
     return 0;
   }
 
-  async fetchProfileSnapshot(channel: ChannelEntity): Promise<ProfileSnapshotResult> {
+  async fetchProfileSnapshot(
+    channel: ChannelEntity,
+  ): Promise<ProfileSnapshotResult> {
     try {
-      const page = await this.client.getPage(channel.platformAccountId, channel.accessToken);
+      const page = await this.client.getPage(
+        channel.platformAccountId,
+        channel.accessToken,
+      );
       return {
         status: 'success',
         data: {
@@ -72,14 +77,20 @@ export class FacebookAnalyticsAdapter implements PlatformAnalyticsAdapter {
       if (!postId) {
         return {
           status: 'failed',
-          error: { code: 'not_found', message: 'Missing platformPostId on post' },
+          error: {
+            code: 'not_found',
+            message: 'Missing platformPostId on post',
+          },
           quotaCostUsed: 0,
         };
       }
       if (!accessToken) {
         return {
           status: 'failed',
-          error: { code: 'auth_failed', message: 'Missing accessToken on post' },
+          error: {
+            code: 'auth_failed',
+            message: 'Missing accessToken on post',
+          },
           quotaCostUsed: 0,
         };
       }
@@ -102,9 +113,12 @@ export class FacebookAnalyticsAdapter implements PlatformAnalyticsAdapter {
       if (insightsData.status === 'fulfilled') {
         for (const m of insightsData.value.data) {
           const val = m.values[0]?.value;
-          if (m.name === 'post_impressions' && typeof val === 'number') impressions = val;
-          if (m.name === 'post_impressions_unique' && typeof val === 'number') reach = val;
-          if (m.name === 'post_engaged_users' && typeof val === 'number') engagedUsers = val;
+          if (m.name === 'post_impressions' && typeof val === 'number')
+            impressions = val;
+          if (m.name === 'post_impressions_unique' && typeof val === 'number')
+            reach = val;
+          if (m.name === 'post_engaged_users' && typeof val === 'number')
+            engagedUsers = val;
         }
       } else {
         this.logger.warn(
@@ -113,7 +127,10 @@ export class FacebookAnalyticsAdapter implements PlatformAnalyticsAdapter {
       }
 
       const data = {
-        likesCount: p.likes?.summary?.total_count ?? p.reactions?.summary?.total_count ?? 0,
+        likesCount:
+          p.likes?.summary?.total_count ??
+          p.reactions?.summary?.total_count ??
+          0,
         commentsCount: p.comments?.summary?.total_count ?? 0,
         sharesCount: p.shares?.count ?? 0,
         impressionsCount: impressions,
@@ -128,7 +145,11 @@ export class FacebookAnalyticsAdapter implements PlatformAnalyticsAdapter {
         return {
           status: 'partial',
           data,
-          missing: ['post_impressions', 'post_impressions_unique', 'post_engaged_users'],
+          missing: [
+            'post_impressions',
+            'post_impressions_unique',
+            'post_engaged_users',
+          ],
           quotaCostUsed: 0,
         };
       }
@@ -158,7 +179,10 @@ export class FacebookAnalyticsAdapter implements PlatformAnalyticsAdapter {
         content: p.message ?? '',
         mediaUrl: p.full_picture ?? null,
         metrics: {
-          likesCount: p.likes?.summary?.total_count ?? p.reactions?.summary?.total_count ?? 0,
+          likesCount:
+            p.likes?.summary?.total_count ??
+            p.reactions?.summary?.total_count ??
+            0,
           commentsCount: p.comments?.summary?.total_count ?? 0,
           sharesCount: p.shares?.count ?? 0,
           impressionsCount: null,
@@ -173,9 +197,9 @@ export class FacebookAnalyticsAdapter implements PlatformAnalyticsAdapter {
     }
   }
 
-  private toFailedResult<T extends { status: string; error?: unknown; quotaCostUsed: number }>(
-    err: unknown,
-  ): T {
+  private toFailedResult<
+    T extends { status: string; error?: unknown; quotaCostUsed: number },
+  >(err: unknown): T {
     const fbErr = err instanceof FacebookApiError ? err : null;
     return {
       status: 'failed',

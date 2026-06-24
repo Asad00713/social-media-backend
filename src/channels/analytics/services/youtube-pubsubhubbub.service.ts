@@ -110,9 +110,7 @@ export class YouTubePubSubHubbubService {
    * Parse the Atom XML body sent by the hub when a video is uploaded or
    * updated. Uses simple regex — the Atom payload is small and predictable.
    */
-  parseAtomFeed(
-    body: string,
-  ): { videoId: string; channelId: string } | null {
+  parseAtomFeed(body: string): { videoId: string; channelId: string } | null {
     const videoIdMatch = body.match(/<yt:videoId>([^<]+)<\/yt:videoId>/);
     const channelIdMatch = body.match(/<yt:channelId>([^<]+)<\/yt:channelId>/);
     if (!videoIdMatch || !channelIdMatch) return null;

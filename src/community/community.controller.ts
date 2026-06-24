@@ -74,14 +74,10 @@ export class CommunityController {
     @Param('workspaceId') workspaceId: string,
     @Body() dto: GetMentionsDto,
   ) {
-    return this.communityService.getMentions(
-      dto.channelId,
-      workspaceId,
-      {
-        paginationToken: dto.paginationToken,
-        sinceId: dto.sinceId,
-      },
-    );
+    return this.communityService.getMentions(dto.channelId, workspaceId, {
+      paginationToken: dto.paginationToken,
+      sinceId: dto.sinceId,
+    });
   }
 
   /**

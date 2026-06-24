@@ -37,7 +37,9 @@ export class ChannelSyncLifecycleService {
         removed += 1;
       }
     }
-    this.logger.log(`Disconnect for channelId=${channelId}: removed ${removed} queued jobs`);
+    this.logger.log(
+      `Disconnect for channelId=${channelId}: removed ${removed} queued jobs`,
+    );
 
     await this.db
       .update(channelSyncState)
@@ -45,7 +47,10 @@ export class ChannelSyncLifecycleService {
       .where(eq(channelSyncState.channelId, channelId));
   }
 
-  async onChannelConnected(channelId: number, workspaceId: string): Promise<void> {
+  async onChannelConnected(
+    channelId: number,
+    workspaceId: string,
+  ): Promise<void> {
     await this.db
       .insert(channelSyncState)
       .values({
@@ -81,8 +86,13 @@ export class ChannelSyncLifecycleService {
       );
     }
 
-    await this.queue.add('channel-initial-backfill', { channelId, workspaceId });
-    this.logger.log(`Connect for channelId=${channelId}: sync state initialized + backfill enqueued`);
+    await this.queue.add('channel-initial-backfill', {
+      channelId,
+      workspaceId,
+    });
+    this.logger.log(
+      `Connect for channelId=${channelId}: sync state initialized + backfill enqueued`,
+    );
 
     // For YouTube channels, subscribe to PubSubHubbub for instant upload notifications.
     // Look up the platform and platformAccountId to avoid requiring callers to pass them.
@@ -100,11 +110,13 @@ export class ChannelSyncLifecycleService {
       | undefined;
 
     if (ch?.platform === 'youtube' && ch.platformAccountId) {
-      void this.pubsub.subscribe(channelId, ch.platformAccountId).catch((e: Error) => {
-        this.logger.warn(
-          `PubSubHubbub auto-subscribe failed for channelId=${channelId}: ${e.message}`,
-        );
-      });
+      void this.pubsub
+        .subscribe(channelId, ch.platformAccountId)
+        .catch((e: Error) => {
+          this.logger.warn(
+            `PubSubHubbub auto-subscribe failed for channelId=${channelId}: ${e.message}`,
+          );
+        });
     }
   }
 }

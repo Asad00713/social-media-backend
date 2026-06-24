@@ -60,8 +60,7 @@ export class ScheduledInboxProcessor
       `Claimed scheduled ${scheduledId} (type=${claimed.type}, channel=${claimed.channelId}, thread=${claimed.threadKey}) — dispatching now.`,
     );
 
-    const isFinalAttempt =
-      job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+    const isFinalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
 
     try {
       const userId = claimed.createdByUserId;
@@ -115,7 +114,10 @@ export class ScheduledInboxProcessor
         await this.scheduledService.markFailed(scheduledId, message);
       } else {
         // BullMQ will retry — flip back to pending so the next attempt can claim.
-        await this.scheduledService.resetToPendingForRetry(scheduledId, message);
+        await this.scheduledService.resetToPendingForRetry(
+          scheduledId,
+          message,
+        );
       }
       throw err;
     }

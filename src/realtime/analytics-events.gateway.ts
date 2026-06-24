@@ -33,7 +33,9 @@ interface AuthedSocket extends Socket {
   },
   transports: ['websocket', 'polling'],
 })
-export class AnalyticsEventsGateway implements OnGatewayConnection, OnGatewayDisconnect {
+export class AnalyticsEventsGateway
+  implements OnGatewayConnection, OnGatewayDisconnect
+{
   private readonly logger = new Logger(AnalyticsEventsGateway.name);
 
   @WebSocketServer()
@@ -48,7 +50,9 @@ export class AnalyticsEventsGateway implements OnGatewayConnection, OnGatewayDis
     try {
       const token = this.extractToken(socket);
       if (!token) {
-        this.logger.warn(`Socket ${socket.id} connecting without token, disconnecting`);
+        this.logger.warn(
+          `Socket ${socket.id} connecting without token, disconnecting`,
+        );
         socket.disconnect(true);
         return;
       }
@@ -59,15 +63,21 @@ export class AnalyticsEventsGateway implements OnGatewayConnection, OnGatewayDis
 
       socket.userId = payload.sub ?? payload.userId;
       socket.email = payload.email;
-      this.logger.log(`Socket ${socket.id} connected for user ${socket.userId}`);
+      this.logger.log(
+        `Socket ${socket.id} connected for user ${socket.userId}`,
+      );
     } catch (err) {
-      this.logger.warn(`Socket ${socket.id} auth failed: ${(err as Error).message}`);
+      this.logger.warn(
+        `Socket ${socket.id} auth failed: ${(err as Error).message}`,
+      );
       socket.disconnect(true);
     }
   }
 
   handleDisconnect(socket: AuthedSocket): void {
-    this.logger.log(`Socket ${socket.id} disconnected (user ${socket.userId ?? 'unknown'})`);
+    this.logger.log(
+      `Socket ${socket.id} disconnected (user ${socket.userId ?? 'unknown'})`,
+    );
   }
 
   @SubscribeMessage('subscribe:workspace')
@@ -76,7 +86,8 @@ export class AnalyticsEventsGateway implements OnGatewayConnection, OnGatewayDis
     @MessageBody() data: { workspaceId: string },
   ): Promise<{ ok: boolean; reason?: string }> {
     if (!socket.userId) return { ok: false, reason: 'unauthenticated' };
-    if (!data?.workspaceId) return { ok: false, reason: 'missing_workspace_id' };
+    if (!data?.workspaceId)
+      return { ok: false, reason: 'missing_workspace_id' };
 
     const hasAccess = await this.userHasWorkspaceAccess(
       data.workspaceId,
@@ -102,7 +113,10 @@ export class AnalyticsEventsGateway implements OnGatewayConnection, OnGatewayDis
   ): Promise<boolean> {
     try {
       const owned = await db.query.workspace.findFirst({
-        where: and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)),
+        where: and(
+          eq(workspace.id, workspaceId),
+          eq(workspace.ownerId, userId),
+        ),
         columns: { id: true },
       });
       if (owned) return true;

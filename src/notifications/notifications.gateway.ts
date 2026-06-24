@@ -47,8 +47,7 @@ export class NotificationsGateway
     try {
       // Get token from handshake auth or query
       const token =
-        client.handshake.auth?.token ||
-        client.handshake.query?.token;
+        client.handshake.auth?.token || client.handshake.query?.token;
 
       if (!token) {
         this.logger.warn(`Client ${client.id} connected without token`);

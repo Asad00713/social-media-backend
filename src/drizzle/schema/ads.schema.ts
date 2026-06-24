@@ -63,14 +63,20 @@ export const adAccounts = pgTable(
     businessId: varchar('business_id', { length: 64 }),
     disableReason: integer('disable_reason'),
     capabilities: jsonb('capabilities').$type<string[]>().default([]),
-    fundingSource: jsonb('funding_source').$type<Record<string, unknown> | null>(),
+    fundingSource: jsonb('funding_source').$type<Record<
+      string,
+      unknown
+    > | null>(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
     lastSyncedAt: timestamp('last_synced_at'),
   },
   (t) => ({
     workspaceIdx: index('ad_accounts_workspace_idx').on(t.workspaceId),
-    metaIdUniq: uniqueIndex('ad_accounts_meta_id_uniq').on(t.workspaceId, t.metaAdAccountId),
+    metaIdUniq: uniqueIndex('ad_accounts_meta_id_uniq').on(
+      t.workspaceId,
+      t.metaAdAccountId,
+    ),
   }),
 );
 
@@ -92,7 +98,9 @@ export const adCampaigns = pgTable(
     objective: adObjectiveEnum('objective').notNull(),
     kind: adKindEnum('kind').notNull(),
     status: adEntityStatusEnum('status').notNull(),
-    specialAdCategories: jsonb('special_ad_categories').$type<string[]>().default([]),
+    specialAdCategories: jsonb('special_ad_categories')
+      .$type<string[]>()
+      .default([]),
     createdByUserId: uuid('created_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
@@ -100,8 +108,14 @@ export const adCampaigns = pgTable(
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (t) => ({
-    workspaceStatusIdx: index('ad_campaigns_workspace_status_idx').on(t.workspaceId, t.status),
-    metaIdUniq: uniqueIndex('ad_campaigns_meta_id_uniq').on(t.adAccountId, t.metaCampaignId),
+    workspaceStatusIdx: index('ad_campaigns_workspace_status_idx').on(
+      t.workspaceId,
+      t.status,
+    ),
+    metaIdUniq: uniqueIndex('ad_campaigns_meta_id_uniq').on(
+      t.adAccountId,
+      t.metaCampaignId,
+    ),
   }),
 );
 
@@ -118,14 +132,19 @@ export const adSets = pgTable(
     metaAdsetId: varchar('meta_adset_id', { length: 64 }).notNull(),
     name: varchar('name', { length: 400 }).notNull(),
     status: adEntityStatusEnum('status').notNull(),
-    dailyBudgetMinor: bigint('daily_budget_minor', { mode: 'number' }).notNull(),
+    dailyBudgetMinor: bigint('daily_budget_minor', {
+      mode: 'number',
+    }).notNull(),
     currency: varchar('currency', { length: 8 }).notNull(),
     startTime: timestamp('start_time'),
     endTime: timestamp('end_time'),
     optimizationGoal: varchar('optimization_goal', { length: 64 }).notNull(),
     billingEvent: varchar('billing_event', { length: 64 }).notNull(),
     targeting: jsonb('targeting').$type<Record<string, unknown>>().notNull(),
-    promotedObject: jsonb('promoted_object').$type<Record<string, unknown> | null>(),
+    promotedObject: jsonb('promoted_object').$type<Record<
+      string,
+      unknown
+    > | null>(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -149,7 +168,9 @@ export const ads = pgTable(
     name: varchar('name', { length: 400 }).notNull(),
     status: adEntityStatusEnum('status').notNull(),
     metaCreativeId: varchar('meta_creative_id', { length: 64 }).notNull(),
-    creativeSnapshot: jsonb('creative_snapshot').$type<Record<string, unknown>>().notNull(),
+    creativeSnapshot: jsonb('creative_snapshot')
+      .$type<Record<string, unknown>>()
+      .notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
@@ -179,7 +200,10 @@ export const leadForms = pgTable(
     thankYouSnapshot: jsonb('thank_you_snapshot')
       .$type<Record<string, unknown>>()
       .notNull(),
-    introSnapshot: jsonb('intro_snapshot').$type<Record<string, unknown> | null>(),
+    introSnapshot: jsonb('intro_snapshot').$type<Record<
+      string,
+      unknown
+    > | null>(),
     status: varchar('status', { length: 32 }).default('active').notNull(),
     createdAt: timestamp('created_at').defaultNow().notNull(),
   },
@@ -226,10 +250,17 @@ export const leads = pgTable(
       .notNull(),
     isOrganic: boolean('is_organic').default(false).notNull(),
     capturedAt: timestamp('captured_at').notNull(),
-    deliveryStatus: leadDeliveryStatusEnum('delivery_status').default('pending').notNull(),
+    deliveryStatus: leadDeliveryStatusEnum('delivery_status')
+      .default('pending')
+      .notNull(),
     deliveryAttempts: jsonb('delivery_attempts')
       .$type<
-        Array<{ type: string; status: 'success' | 'failed'; at: string; error?: string }>
+        Array<{
+          type: string;
+          status: 'success' | 'failed';
+          at: string;
+          error?: string;
+        }>
       >()
       .default([])
       .notNull(),
@@ -259,11 +290,17 @@ export const adInsightsDaily = pgTable(
     clicks: bigint('clicks', { mode: 'number' }).default(0).notNull(),
     spendMinor: bigint('spend_minor', { mode: 'number' }).default(0).notNull(),
     leadsCount: bigint('leads_count', { mode: 'number' }).default(0).notNull(),
-    actions: jsonb('actions').$type<Record<string, number>>().default({}).notNull(),
+    actions: jsonb('actions')
+      .$type<Record<string, number>>()
+      .default({})
+      .notNull(),
     fetchedAt: timestamp('fetched_at').defaultNow().notNull(),
   },
   (t) => ({
-    adsetDateUniq: uniqueIndex('ad_insights_adset_date_uniq').on(t.adsetId, t.date),
+    adsetDateUniq: uniqueIndex('ad_insights_adset_date_uniq').on(
+      t.adsetId,
+      t.date,
+    ),
   }),
 );
 

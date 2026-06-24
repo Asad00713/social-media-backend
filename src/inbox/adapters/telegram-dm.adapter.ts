@@ -81,20 +81,50 @@ export class TelegramDmAdapter implements PlatformDmAdapter {
       let sent;
       switch (att.kind) {
         case 'image':
-          sent = await client.sendPhoto(conversationId, buffer, filename, att.contentType, caption);
+          sent = await client.sendPhoto(
+            conversationId,
+            buffer,
+            filename,
+            att.contentType,
+            caption,
+          );
           break;
         case 'voice':
-          sent = await client.sendVoice(conversationId, buffer, filename, att.contentType, caption);
+          sent = await client.sendVoice(
+            conversationId,
+            buffer,
+            filename,
+            att.contentType,
+            caption,
+          );
           break;
         case 'audio':
-          sent = await client.sendAudio(conversationId, buffer, filename, att.contentType, caption);
+          sent = await client.sendAudio(
+            conversationId,
+            buffer,
+            filename,
+            att.contentType,
+            caption,
+          );
           break;
         case 'video':
-          sent = await client.sendVideo(conversationId, buffer, filename, att.contentType, caption);
+          sent = await client.sendVideo(
+            conversationId,
+            buffer,
+            filename,
+            att.contentType,
+            caption,
+          );
           break;
         case 'file':
         default:
-          sent = await client.sendDocument(conversationId, buffer, filename, att.contentType, caption);
+          sent = await client.sendDocument(
+            conversationId,
+            buffer,
+            filename,
+            att.contentType,
+            caption,
+          );
           break;
       }
       lastMessageId = sent.message_id;

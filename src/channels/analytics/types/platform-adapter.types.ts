@@ -11,14 +11,24 @@ export type AdapterOperation =
   | 'fetchRecentPosts';
 
 export interface AdapterError {
-  code: 'rate_limited' | 'auth_failed' | 'not_found' | 'transient' | 'permanent';
+  code:
+    | 'rate_limited'
+    | 'auth_failed'
+    | 'not_found'
+    | 'transient'
+    | 'permanent';
   message: string;
   retryAfterSeconds?: number;
 }
 
 export type SnapshotResult<T> =
   | { status: 'success'; data: T; quotaCostUsed: number }
-  | { status: 'partial'; data: Partial<T>; missing: string[]; quotaCostUsed: number }
+  | {
+      status: 'partial';
+      data: Partial<T>;
+      missing: string[];
+      quotaCostUsed: number;
+    }
   | { status: 'failed'; error: AdapterError; quotaCostUsed: number };
 
 export interface ProfileSnapshotData {

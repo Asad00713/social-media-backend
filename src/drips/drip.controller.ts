@@ -217,15 +217,11 @@ export class DripController {
     @Param('campaignId') campaignId: string,
     @Query() query: DripPostQueryDto,
   ) {
-    const posts = await this.dripService.getDripPosts(
-      campaignId,
-      workspaceId,
-      {
-        status: query.status,
-        limit: query.limit,
-        offset: query.offset,
-      },
-    );
+    const posts = await this.dripService.getDripPosts(campaignId, workspaceId, {
+      status: query.status,
+      limit: query.limit,
+      offset: query.offset,
+    });
 
     return {
       posts,

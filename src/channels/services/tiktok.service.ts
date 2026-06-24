@@ -14,7 +14,11 @@ export interface TikTokUser {
 
 export interface TikTokVideoUploadOptions {
   title: string;
-  privacyLevel?: 'PUBLIC_TO_EVERYONE' | 'MUTUAL_FOLLOW_FRIENDS' | 'FOLLOWER_OF_CREATOR' | 'SELF_ONLY';
+  privacyLevel?:
+    | 'PUBLIC_TO_EVERYONE'
+    | 'MUTUAL_FOLLOW_FRIENDS'
+    | 'FOLLOWER_OF_CREATOR'
+    | 'SELF_ONLY';
   disableDuet?: boolean;
   disableStitch?: boolean;
   disableComment?: boolean;
@@ -111,8 +115,11 @@ export class TikTokService {
 
     if (!response.ok || (data.error?.code && data.error.code !== 'ok')) {
       this.logger.error(`TikTok creator info error: ${JSON.stringify(data)}`);
-      const errorMsg = data.error?.message || data.message || `HTTP ${response.status}`;
-      throw new BadRequestException(`TikTok API error: ${errorMsg} (code: ${data.error?.code || 'unknown'})`);
+      const errorMsg =
+        data.error?.message || data.message || `HTTP ${response.status}`;
+      throw new BadRequestException(
+        `TikTok API error: ${errorMsg} (code: ${data.error?.code || 'unknown'})`,
+      );
     }
 
     const info = data.data;
@@ -210,10 +217,14 @@ export class TikTokService {
 
     if (!data.data?.publish_id) {
       this.logger.error(`No publish_id in response: ${responseText}`);
-      throw new BadRequestException(`No publish ID returned from TikTok. Response: ${JSON.stringify(data)}`);
+      throw new BadRequestException(
+        `No publish ID returned from TikTok. Response: ${JSON.stringify(data)}`,
+      );
     }
 
-    this.logger.log(`Video post initiated with publish_id: ${data.data.publish_id}`);
+    this.logger.log(
+      `Video post initiated with publish_id: ${data.data.publish_id}`,
+    );
 
     return {
       publishId: data.data.publish_id,
@@ -242,7 +253,9 @@ export class TikTokService {
     // total_chunk_count must equal ceil(video_size / chunk_size)
     const calculatedChunks = Math.ceil(videoSize / chunkSize);
     if (totalChunkCount !== calculatedChunks) {
-      this.logger.warn(`Correcting chunk count: provided=${totalChunkCount}, calculated=${calculatedChunks}`);
+      this.logger.warn(
+        `Correcting chunk count: provided=${totalChunkCount}, calculated=${calculatedChunks}`,
+      );
       totalChunkCount = calculatedChunks;
     }
 
@@ -255,7 +268,9 @@ export class TikTokService {
       },
     };
 
-    this.logger.log(`Initializing file upload: size=${videoSize}, chunkSize=${chunkSize}, chunks=${totalChunkCount}`);
+    this.logger.log(
+      `Initializing file upload: size=${videoSize}, chunkSize=${chunkSize}, chunks=${totalChunkCount}`,
+    );
 
     const response = await fetch(
       `${this.apiBaseUrl}/post/publish/inbox/video/init/`,
@@ -324,7 +339,9 @@ export class TikTokService {
     if (!response.ok) {
       const errorText = await response.text();
       this.logger.error(`Failed to upload chunk: ${errorText}`);
-      throw new BadRequestException(`Failed to upload video chunk: ${response.status}`);
+      throw new BadRequestException(
+        `Failed to upload video chunk: ${response.status}`,
+      );
     }
 
     this.logger.log(`Chunk uploaded successfully`);
@@ -407,7 +424,9 @@ export class TikTokService {
 
     const videoResponse = await fetch(videoUrl);
     if (!videoResponse.ok) {
-      throw new BadRequestException(`Failed to download video from ${videoUrl}`);
+      throw new BadRequestException(
+        `Failed to download video from ${videoUrl}`,
+      );
     }
 
     const videoBuffer = await videoResponse.arrayBuffer();
@@ -448,11 +467,17 @@ export class TikTokService {
       }
 
       totalChunkCount = Math.ceil(videoSize / chunkSize);
-      this.logger.log(`Using multi-chunk upload: ${totalChunkCount} chunks of ${chunkSize} bytes`);
+      this.logger.log(
+        `Using multi-chunk upload: ${totalChunkCount} chunks of ${chunkSize} bytes`,
+      );
     }
 
-    this.logger.log(`Video size: ${videoSize}, Chunk size: ${chunkSize}, Total chunks: ${totalChunkCount}`);
-    this.logger.log(`Verification: ceil(${videoSize} / ${chunkSize}) = ${Math.ceil(videoSize / chunkSize)}`);
+    this.logger.log(
+      `Video size: ${videoSize}, Chunk size: ${chunkSize}, Total chunks: ${totalChunkCount}`,
+    );
+    this.logger.log(
+      `Verification: ceil(${videoSize} / ${chunkSize}) = ${Math.ceil(videoSize / chunkSize)}`,
+    );
 
     // Initialize the upload to Creator Inbox
     const { publishId, uploadUrl } = await this.initializeFileUpload(
@@ -468,14 +493,20 @@ export class TikTokService {
       const end = Math.min(start + chunkSize, videoSize);
       const chunk = videoBuffer.slice(start, end);
 
-      this.logger.log(`Uploading chunk ${i + 1}/${totalChunkCount}: bytes ${start}-${end - 1}`);
+      this.logger.log(
+        `Uploading chunk ${i + 1}/${totalChunkCount}: bytes ${start}-${end - 1}`,
+      );
       await this.uploadVideoChunk(uploadUrl, chunk, start, end, videoSize);
     }
 
     // For inbox uploads, video is automatically sent to Creator Inbox after all chunks are uploaded
     // No separate publish step needed - user will see it in their TikTok app inbox
-    this.logger.log(`Video uploaded to Creator Inbox. publish_id: ${publishId}`);
-    this.logger.log(`User must open TikTok app to add title/description and publish manually.`);
+    this.logger.log(
+      `Video uploaded to Creator Inbox. publish_id: ${publishId}`,
+    );
+    this.logger.log(
+      `User must open TikTok app to add title/description and publish manually.`,
+    );
 
     return { publishId };
   }
@@ -519,10 +550,14 @@ export class TikTokService {
     } = options;
 
     if (!Array.isArray(imageUrls) || imageUrls.length === 0) {
-      throw new BadRequestException('TikTok photo post requires at least 1 image URL');
+      throw new BadRequestException(
+        'TikTok photo post requires at least 1 image URL',
+      );
     }
     if (imageUrls.length > 35) {
-      throw new BadRequestException('TikTok photo post allows at most 35 images');
+      throw new BadRequestException(
+        'TikTok photo post allows at most 35 images',
+      );
     }
 
     const body = {
@@ -568,7 +603,9 @@ export class TikTokService {
     }
 
     if (!data.data?.publish_id) {
-      throw new BadRequestException('TikTok returned no publish_id for photo post');
+      throw new BadRequestException(
+        'TikTok returned no publish_id for photo post',
+      );
     }
 
     this.logger.log(`TikTok photo post initialized: ${data.data.publish_id}`);
@@ -701,7 +738,8 @@ export class TikTokService {
   }> {
     const body: Record<string, any> = {
       max_count: maxCount,
-      fields: 'id,title,cover_image_url,share_url,view_count,like_count,comment_count,share_count,create_time',
+      fields:
+        'id,title,cover_image_url,share_url,view_count,like_count,comment_count,share_count,create_time',
     };
 
     if (cursor) {

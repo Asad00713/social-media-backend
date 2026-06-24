@@ -1,11 +1,16 @@
-import { Injectable, BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common'
-import { db } from '../../drizzle/db'
-import { adAccounts, adCampaigns, adSets, ads } from '../../drizzle/schema'
-import { eq, and } from 'drizzle-orm'
-import { MetaAdsClient } from './meta-ads.client'
-import { ChannelService } from '../../channels/services/channel.service'
-import { audienceToMetaTargeting } from '../utils/audience-to-targeting'
-import type { CreateBoostDto } from '../dto/create-boost.dto'
+import {
+  Injectable,
+  BadRequestException,
+  ForbiddenException,
+  NotFoundException,
+} from '@nestjs/common';
+import { db } from '../../drizzle/db';
+import { adAccounts, adCampaigns, adSets, ads } from '../../drizzle/schema';
+import { eq, and } from 'drizzle-orm';
+import { MetaAdsClient } from './meta-ads.client';
+import { ChannelService } from '../../channels/services/channel.service';
+import { audienceToMetaTargeting } from '../utils/audience-to-targeting';
+import type { CreateBoostDto } from '../dto/create-boost.dto';
 
 @Injectable()
 export class BoostPostService {
@@ -19,55 +24,93 @@ export class BoostPostService {
     const [acct] = await db
       .select()
       .from(adAccounts)
-      .where(and(eq(adAccounts.id, dto.adAccountId), eq(adAccounts.workspaceId, workspaceId)))
-    if (!acct) throw new NotFoundException('Ad account not found')
-    if (acct.accountStatus !== 1) throw new BadRequestException('Ad account is not active')
+      .where(
+        and(
+          eq(adAccounts.id, dto.adAccountId),
+          eq(adAccounts.workspaceId, workspaceId),
+        ),
+      );
+    if (!acct) throw new NotFoundException('Ad account not found');
+    if (acct.accountStatus !== 1)
+      throw new BadRequestException('Ad account is not active');
 
     // Resolve channel (includes decrypted accessToken + platformAccountId)
-    const channel = await this.channelService.getChannelForPosting(dto.channelId)
-    if (!channel) throw new NotFoundException('Channel not found')
-    if (channel.workspaceId !== workspaceId) throw new ForbiddenException('Channel does not belong to this workspace')
-    if (channel.platform !== 'facebook') throw new BadRequestException('Only FB Page posts supported in Phase 1')
-    if (!channel.accessToken) throw new BadRequestException('No access token for channel')
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
+    if (!channel) throw new NotFoundException('Channel not found');
+    if (channel.workspaceId !== workspaceId)
+      throw new ForbiddenException('Channel does not belong to this workspace');
+    if (channel.platform !== 'facebook')
+      throw new BadRequestException('Only FB Page posts supported in Phase 1');
+    if (!channel.accessToken)
+      throw new BadRequestException('No access token for channel');
 
     // Same as lead-campaign.service: ad-account endpoints need a USER token,
     // not the Page token. Prefer cached user token from connect-time, fall
     // back to page token (will surface clearer errors than (#3) capability).
-    const cachedUserToken = (channel.metadata as Record<string, unknown> | null)?.['fbUserAccessToken']
+    const cachedUserToken = (
+      channel.metadata as Record<string, unknown> | null
+    )?.['fbUserAccessToken'];
     const userToken =
       typeof cachedUserToken === 'string' && cachedUserToken.length > 0
         ? cachedUserToken
-        : channel.accessToken
+        : channel.accessToken;
     if (!userToken) {
       throw new BadRequestException(
         'No ads-capable access token for this channel. Please reconnect the Facebook page with ads permissions.',
-      )
+      );
     }
 
     // 1) Campaign — created PAUSED so child entities create cleanly without going live mid-build
-    const camp = await this.meta.createCampaign(acct.metaAdAccountId, userToken, {
-      name: `Boost — ${dto.platformPostId} — ${new Date().toISOString().slice(0, 10)}`,
-      objective: dto.objective,
-      status: 'PAUSED',
-      special_ad_categories: [],
-    })
+    const camp = await this.meta.createCampaign(
+      acct.metaAdAccountId,
+      userToken,
+      {
+        name: `Boost — ${dto.platformPostId} — ${new Date().toISOString().slice(0, 10)}`,
+        objective: dto.objective,
+        status: 'PAUSED',
+        special_ad_categories: [],
+      },
+    );
 
     // 2) Ad Set
-    const targeting = audienceToMetaTargeting(dto.audience)
+    const targeting = audienceToMetaTargeting(dto.audience);
     // ODAX (v21+) — each objective maps to specific optimization_goal +
     // billing_event + destination_type. Choices below are the conservative
     // defaults Meta uses in Boost Post UI; advanced users can swap in 2A.4.
-    const goalMap: Record<typeof dto.objective, {
-      optimization_goal: 'POST_ENGAGEMENT' | 'REACH' | 'LINK_CLICKS' | 'THRUPLAY'
-      destination_type?: 'ON_POST' | 'ON_AD' | 'WEBSITE'
-      billing_event: 'IMPRESSIONS' | 'LINK_CLICKS'
-    }> = {
-      OUTCOME_ENGAGEMENT: { optimization_goal: 'POST_ENGAGEMENT', destination_type: 'ON_POST', billing_event: 'IMPRESSIONS' },
-      OUTCOME_AWARENESS: { optimization_goal: 'REACH', billing_event: 'IMPRESSIONS' },
-      OUTCOME_TRAFFIC: { optimization_goal: 'LINK_CLICKS', destination_type: 'WEBSITE', billing_event: 'IMPRESSIONS' },
-      OUTCOME_VIDEO_VIEWS: { optimization_goal: 'THRUPLAY', billing_event: 'IMPRESSIONS' },
-    }
-    const goal = goalMap[dto.objective]
+    const goalMap: Record<
+      typeof dto.objective,
+      {
+        optimization_goal:
+          | 'POST_ENGAGEMENT'
+          | 'REACH'
+          | 'LINK_CLICKS'
+          | 'THRUPLAY';
+        destination_type?: 'ON_POST' | 'ON_AD' | 'WEBSITE';
+        billing_event: 'IMPRESSIONS' | 'LINK_CLICKS';
+      }
+    > = {
+      OUTCOME_ENGAGEMENT: {
+        optimization_goal: 'POST_ENGAGEMENT',
+        destination_type: 'ON_POST',
+        billing_event: 'IMPRESSIONS',
+      },
+      OUTCOME_AWARENESS: {
+        optimization_goal: 'REACH',
+        billing_event: 'IMPRESSIONS',
+      },
+      OUTCOME_TRAFFIC: {
+        optimization_goal: 'LINK_CLICKS',
+        destination_type: 'WEBSITE',
+        billing_event: 'IMPRESSIONS',
+      },
+      OUTCOME_VIDEO_VIEWS: {
+        optimization_goal: 'THRUPLAY',
+        billing_event: 'IMPRESSIONS',
+      },
+    };
+    const goal = goalMap[dto.objective];
 
     const adset = await this.meta.createAdSet(acct.metaAdAccountId, userToken, {
       name: `${camp.id} adset`,
@@ -81,43 +124,52 @@ export class BoostPostService {
       end_time: dto.endTime,
       status: 'PAUSED',
       promoted_object: { page_id: channel.platformAccountId },
-    })
+    });
 
     // 3) Creative — branch on whether the caller supplied ad-copy overrides.
     // When overrides are present we use object_story_spec (link_data) which
     // lets Meta render a fresh creative with the custom text/headline/link.
     // Without overrides we use object_story_id which re-uses the original post
     // as-is (cheapest path, no extra copy needed).
-    const hasOverrides = !!(dto.adMessage || dto.adHeadline || dto.adDescription || dto.adLinkUrl)
+    const hasOverrides = !!(
+      dto.adMessage ||
+      dto.adHeadline ||
+      dto.adDescription ||
+      dto.adLinkUrl
+    );
     // platformPostId is `<page_id>_<post_id>`; split on the first underscore so
     // we don't break on post IDs that contain additional underscores.
-    const [postPageId, ...postIdParts] = dto.platformPostId.split('_')
-    const postPermalink = `https://www.facebook.com/${postPageId}/posts/${postIdParts.join('_')}`
-    const resolvedLink = dto.adLinkUrl ?? postPermalink
+    const [postPageId, ...postIdParts] = dto.platformPostId.split('_');
+    const postPermalink = `https://www.facebook.com/${postPageId}/posts/${postIdParts.join('_')}`;
+    const resolvedLink = dto.adLinkUrl ?? postPermalink;
 
     const creative = hasOverrides
-      ? await this.meta.createCreativeBoostWithOverrides(acct.metaAdAccountId, userToken, {
-          name: `${camp.id} creative`,
-          object_story_spec: {
-            page_id: channel.platformAccountId,
-            link_data: {
-              message: dto.adMessage ?? '',
-              link: resolvedLink,
-              name: dto.adHeadline,
-              description: dto.adDescription,
-              call_to_action:
-                dto.objective === 'OUTCOME_TRAFFIC'
-                  ? { type: 'LEARN_MORE', value: { link: resolvedLink } }
-                  : undefined,
+      ? await this.meta.createCreativeBoostWithOverrides(
+          acct.metaAdAccountId,
+          userToken,
+          {
+            name: `${camp.id} creative`,
+            object_story_spec: {
+              page_id: channel.platformAccountId,
+              link_data: {
+                message: dto.adMessage ?? '',
+                link: resolvedLink,
+                name: dto.adHeadline,
+                description: dto.adDescription,
+                call_to_action:
+                  dto.objective === 'OUTCOME_TRAFFIC'
+                    ? { type: 'LEARN_MORE', value: { link: resolvedLink } }
+                    : undefined,
+              },
             },
           },
-        })
+        )
       : await this.meta.createCreativeBoost(acct.metaAdAccountId, userToken, {
           name: `${camp.id} creative`,
           object_story_id: dto.platformPostId,
-        })
+        });
 
-    const finalStatus = dto.activateImmediately ? 'ACTIVE' : 'PAUSED'
+    const finalStatus = dto.activateImmediately ? 'ACTIVE' : 'PAUSED';
 
     // 4) Ad (status follows the caller's choice — PAUSED by default)
     const ad = await this.meta.createAd(acct.metaAdAccountId, userToken, {
@@ -125,14 +177,14 @@ export class BoostPostService {
       adset_id: adset.id,
       creative: { creative_id: creative.id },
       status: finalStatus,
-    })
+    });
 
     // 5) Only flip campaign + ad set to ACTIVE when caller opted in.
     // Otherwise everything stays PAUSED — Meta won't spend until the user
     // activates manually from the Ads overview.
     if (dto.activateImmediately) {
-      await this.meta.updateEntityStatus(camp.id, userToken, 'ACTIVE')
-      await this.meta.updateEntityStatus(adset.id, userToken, 'ACTIVE')
+      await this.meta.updateEntityStatus(camp.id, userToken, 'ACTIVE');
+      await this.meta.updateEntityStatus(adset.id, userToken, 'ACTIVE');
     }
 
     // 6) Persist mirrors to DB with the actual status
@@ -149,7 +201,7 @@ export class BoostPostService {
         status: finalStatus,
         createdByUserId: userId,
       })
-      .returning()
+      .returning();
 
     const [adsetRow] = await db
       .insert(adSets)
@@ -168,7 +220,7 @@ export class BoostPostService {
         targeting: targeting as Record<string, unknown>,
         promotedObject: { page_id: channel.platformAccountId },
       })
-      .returning()
+      .returning();
 
     await db.insert(ads).values({
       workspaceId,
@@ -184,8 +236,8 @@ export class BoostPostService {
         adDescription: dto.adDescription,
         adLinkUrl: dto.adLinkUrl,
       },
-    })
+    });
 
-    return { campaignId: campRow.id, metaCampaignId: camp.id }
+    return { campaignId: campRow.id, metaCampaignId: camp.id };
   }
 }

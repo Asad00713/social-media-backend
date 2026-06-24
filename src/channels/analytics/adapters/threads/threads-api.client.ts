@@ -7,7 +7,12 @@ import type {
 
 export class ThreadsApiError extends Error {
   constructor(
-    public code: 'rate_limited' | 'auth_failed' | 'not_found' | 'transient' | 'permanent',
+    public code:
+      | 'rate_limited'
+      | 'auth_failed'
+      | 'not_found'
+      | 'transient'
+      | 'permanent',
     public status: number,
     message: string,
   ) {
@@ -25,7 +30,10 @@ export class ThreadsApiClient {
     const params = new URLSearchParams({
       fields: 'id,username,name,threads_profile_picture_url,threads_biography',
     });
-    return this.request<ThreadsUser>(`${this.baseUrl}/me?${params}`, accessToken);
+    return this.request<ThreadsUser>(
+      `${this.baseUrl}/me?${params}`,
+      accessToken,
+    );
   }
 
   async getMyThreads(opts: {
@@ -34,22 +42,35 @@ export class ThreadsApiClient {
     since?: number;
   }): Promise<ThreadsListResponse> {
     const params = new URLSearchParams({
-      fields: 'id,media_type,media_url,permalink,text,timestamp,thumbnail_url,is_quote_post',
+      fields:
+        'id,media_type,media_url,permalink,text,timestamp,thumbnail_url,is_quote_post',
       limit: String(opts.limit ?? 25),
     });
     if (opts.since) params.set('since', String(opts.since));
-    return this.request<ThreadsListResponse>(`${this.baseUrl}/me/threads?${params}`, opts.accessToken);
+    return this.request<ThreadsListResponse>(
+      `${this.baseUrl}/me/threads?${params}`,
+      opts.accessToken,
+    );
   }
 
   async getThread(threadId: string, accessToken: string): Promise<ThreadsPost> {
     const params = new URLSearchParams({
-      fields: 'id,media_type,media_url,permalink,text,timestamp,thumbnail_url,is_quote_post',
+      fields:
+        'id,media_type,media_url,permalink,text,timestamp,thumbnail_url,is_quote_post',
     });
-    return this.request<ThreadsPost>(`${this.baseUrl}/${threadId}?${params}`, accessToken);
+    return this.request<ThreadsPost>(
+      `${this.baseUrl}/${threadId}?${params}`,
+      accessToken,
+    );
   }
 
-  async getThreadInsights(threadId: string, accessToken: string): Promise<ThreadsInsightsResponse> {
-    const params = new URLSearchParams({ metric: 'views,likes,replies,reposts,quotes' });
+  async getThreadInsights(
+    threadId: string,
+    accessToken: string,
+  ): Promise<ThreadsInsightsResponse> {
+    const params = new URLSearchParams({
+      metric: 'views,likes,replies,reposts,quotes',
+    });
     return this.request<ThreadsInsightsResponse>(
       `${this.baseUrl}/${threadId}/insights?${params}`,
       accessToken,
@@ -75,7 +96,7 @@ export class ThreadsApiClient {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      const err = (body as any).error ?? {};
+      const err = body.error ?? {};
       throw new ThreadsApiError(
         this.mapCode(res.status, err),
         res.status,
@@ -89,7 +110,13 @@ export class ThreadsApiClient {
     status: number,
     err: { code?: number },
   ): ThreadsApiError['code'] {
-    if (err.code === 4 || err.code === 17 || err.code === 32 || err.code === 613) return 'rate_limited';
+    if (
+      err.code === 4 ||
+      err.code === 17 ||
+      err.code === 32 ||
+      err.code === 613
+    )
+      return 'rate_limited';
     if (err.code === 190 || err.code === 102) return 'auth_failed';
     if (status === 401 || status === 403) return 'auth_failed';
     if (status === 429) return 'rate_limited';
