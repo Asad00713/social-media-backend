@@ -78,6 +78,21 @@ export class BillingController {
     });
   }
 
+  @Post('workspaces/:workspaceId/checkout-session')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async createCheckoutSession(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
+    @Body() body: { planCode: string },
+  ) {
+    return await this.subscriptionService.createCheckoutSession({
+      workspaceId,
+      userId: user.userId,
+      planCode: body.planCode,
+    });
+  }
+
   @Get('workspaces/:workspaceId/subscription')
   @UseGuards(JwtAuthGuard)
   async getSubscription(@Param('workspaceId') workspaceId: string) {

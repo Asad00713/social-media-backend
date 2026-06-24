@@ -301,6 +301,69 @@ export class SubscriptionService {
     };
   }
 
+  async createCheckoutSession(dto: {
+    workspaceId: string;
+    userId: string;
+    planCode: string;
+  }): Promise<{ url: string }> {
+    // 1. Validate workspace exists and user is owner (mirror createSubscription).
+    const ws = await db
+      .select()
+      .from(workspace)
+      .where(
+        and(
+          eq(workspace.id, dto.workspaceId),
+          eq(workspace.ownerId, dto.userId),
+        ),
+      )
+      .limit(1);
+    if (ws.length === 0) {
+      throw new NotFoundException(
+        'Workspace not found or you are not the owner',
+      );
+    }
+
+    // 2. Resolve the plan and ensure it is paid + provisioned.
+    const planRows = await db
+      .select()
+      .from(plans)
+      .where(eq(plans.code, dto.planCode))
+      .limit(1);
+    const plan = planRows[0];
+    if (!plan) throw new NotFoundException('Plan not found');
+    if (plan.basePriceCents <= 0) {
+      throw new BadRequestException('FREE plan does not require checkout');
+    }
+    if (!plan.stripePriceId) {
+      throw new BadRequestException(
+        `Plan "${plan.code}" is not provisioned in Stripe — run the pricing provision script`,
+      );
+    }
+
+    // 3. Stripe customer + redirect URLs.
+    const { stripeCustomerId } =
+      await this.customerService.getOrCreateStripeCustomer(dto.userId);
+    const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:3001';
+    const base = `${frontendUrl}/dashboard/${dto.workspaceId}/settings/plans`;
+
+    const session = await this.stripeService.createCheckoutSession({
+      customerId: stripeCustomerId,
+      priceId: plan.stripePriceId,
+      successUrl: `${base}?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
+      cancelUrl: `${base}?checkout=cancelled`,
+      metadata: {
+        workspaceId: dto.workspaceId,
+        userId: dto.userId,
+        planCode: dto.planCode,
+      },
+    });
+
+    if (!session.url) {
+      throw new BadRequestException('Failed to create checkout session');
+    }
+    return { url: session.url };
+  }
+
   async getSubscriptionByWorkspaceId(workspaceId: string) {
     const subscription = await db
       .select()

@@ -88,6 +88,25 @@ export class StripeService implements OnModuleInit {
     return await this.stripe.subscriptions.create(subscriptionParams);
   }
 
+  async createCheckoutSession(params: {
+    customerId: string;
+    priceId: string;
+    successUrl: string;
+    cancelUrl: string;
+    metadata: Record<string, string>;
+  }): Promise<Stripe.Checkout.Session> {
+    return await this.stripe.checkout.sessions.create({
+      mode: 'subscription',
+      customer: params.customerId,
+      line_items: [{ price: params.priceId, quantity: 1 }],
+      success_url: params.successUrl,
+      cancel_url: params.cancelUrl,
+      metadata: params.metadata,
+      subscription_data: { metadata: params.metadata },
+      allow_promotion_codes: false,
+    });
+  }
+
   async getSubscription(subscriptionId: string): Promise<Stripe.Subscription> {
     return await this.stripe.subscriptions.retrieve(subscriptionId, {
       expand: ['default_payment_method', 'latest_invoice'],
