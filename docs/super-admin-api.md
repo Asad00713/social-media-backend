@@ -1401,3 +1401,49 @@ The following suspension reasons are supported for both users and workspaces:
   "message": "User is already suspended"
 }
 ```
+
+---
+
+## Pricing & Stripe Operations
+
+Billing prices are **provisioned**, not created at runtime. The app reads the
+stored `stripePriceId` at checkout and throws if a paid plan/addon is not
+provisioned. Stripe Prices are immutable; identity is the stable `lookup_key`
+(`plan_<code>_monthly`, `addon_<type>_<plan>`).
+
+### Provisioning (first-time setup, or new Stripe account/mode)
+
+1. Seed plans/addons: `npx ts-node src/drizzle/seeds/plans.seed.ts`
+2. Provision Stripe prices into the account/mode that `STRIPE_SECRET_KEY`
+   points at: `npx ts-node src/drizzle/seeds/stripe-provision.ts`
+   - The script prints the **account id + TEST/LIVE mode** before writing —
+     confirm it is the intended account.
+   - It is idempotent: it keys off whether a price with each `lookup_key`
+     already exists **in that account**, not off DB state. Re-running is safe.
+3. **Switching Stripe accounts** (e.g. old test account -> new live account):
+   set `STRIPE_SECRET_KEY` to the new account's key and re-run step 2. The new
+   account has no matching lookup_keys, so fresh prices are created there and
+   the DB `stripePriceId` columns are overwritten. Run once per mode (test key,
+   then live key).
+
+### Changing a plan or addon price (prices are immutable)
+
+1. **Never** edit a Stripe price amount in the dashboard, and **never** create
+   prices at runtime — only via the provision script.
+2. To change a price (e.g. PRO $10 -> $12):
+   - Update the amount in the DB (`plans.base_price_cents` or
+     `addon_pricing.price_per_unit_cents`). Keep the seed file in sync so a
+     fresh DB matches.
+   - Run `stripe-provision.ts`. It takes the **reprice path**: creates a new
+     Stripe Price with the new amount, runs `transfer_lookup_key=true` to move
+     the stable key onto it, **deactivates** the old price, and updates the DB
+     `stripe_price_id` to the new id.
+3. **Existing subscribers keep their old price** (their Stripe subscription
+   still references the old price id) until explicitly migrated; **new**
+   checkouts use the new price automatically.
+4. (Optional) Migrate existing subscribers via a Stripe subscription update with
+   your chosen proration behavior.
+5. Do this in **both** test and live modes (run the script with each mode's key).
+6. Display amounts (`base_price_cents` / `price_per_unit_cents`) mirror the
+   Stripe price — after any change the DB and Stripe must agree; the provision
+   script keeps them in sync.
