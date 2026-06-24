@@ -357,7 +357,9 @@ export class SubscriptionService {
     const { stripeCustomerId } =
       await this.customerService.getOrCreateStripeCustomer(dto.userId);
     const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:3001';
-    const base = `${frontendUrl}/dashboard/${dto.workspaceId}/settings/plans`;
+    // Frontend workspace routes live under `/w/:workspaceId/*`
+    // (see frontend lib/workspace-path.ts WORKSPACE_ROUTE_PREFIX).
+    const base = `${frontendUrl}/w/${dto.workspaceId}/settings/plans`;
 
     const session = await this.stripeService.createCheckoutSession({
       customerId: stripeCustomerId,
