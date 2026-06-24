@@ -31,6 +31,25 @@ export async function seedPlans() {
       isActive: true,
     },
     {
+      code: 'BASIC',
+      name: 'Basic Plan',
+      basePriceCents: 500, // $5.00
+      channelsPerWorkspace: 5,
+      membersPerWorkspace: 2,
+      maxWorkspaces: 1,
+      aiTokensPerMonth: 1000, // 1000 AI tokens per month
+      features: {
+        basicScheduling: true,
+        analytics: true,
+        advancedScheduling: true,
+        apiAccess: false,
+        prioritySupport: false,
+        whiteLabel: false,
+        aiFeatures: true,
+      },
+      isActive: true,
+    },
+    {
       code: 'PRO',
       name: 'Pro Plan',
       basePriceCents: 1000, // $10.00
