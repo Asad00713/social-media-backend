@@ -32,7 +32,8 @@ export class FacebookPublisher extends BasePublisher {
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
-    const { content, mediaItems, accessToken, platformAccountId, metadata } = options;
+    const { content, mediaItems, accessToken, platformAccountId, metadata } =
+      options;
 
     this.validate(options);
 
@@ -69,7 +70,9 @@ export class FacebookPublisher extends BasePublisher {
           item.url,
         );
       } else {
-        throw new Error(`Facebook Stories don't support media type: ${item.type}`);
+        throw new Error(
+          `Facebook Stories don't support media type: ${item.type}`,
+        );
       }
     } else if (mediaItems.length > 0 && mediaItems[0].type === 'image') {
       result = await this.facebookService.postPhotoToPage(
@@ -95,9 +98,10 @@ export class FacebookPublisher extends BasePublisher {
 
     // Soft action: post first comment if provided. Failure here is logged
     // and surfaced as a warning — the main post stays "published".
-    const firstComment = typeof metadata?.firstComment === 'string'
-      ? metadata.firstComment.trim()
-      : '';
+    const firstComment =
+      typeof metadata?.firstComment === 'string'
+        ? metadata.firstComment.trim()
+        : '';
     if (firstComment.length > 0) {
       try {
         const comment = await this.facebookService.postComment(

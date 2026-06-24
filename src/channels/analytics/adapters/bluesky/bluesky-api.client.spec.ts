@@ -30,7 +30,12 @@ describe('BlueskyApiClient', () => {
 
   it('getAuthorFeed includes limit + cursor', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({ feed: [] }) });
-    await client.getAuthorFeed({ actor: 'asad.bsky.social', accessJwt: 'jwt', limit: 25, cursor: 'abc' });
+    await client.getAuthorFeed({
+      actor: 'asad.bsky.social',
+      accessJwt: 'jwt',
+      limit: 25,
+      cursor: 'abc',
+    });
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const [url] = mockFetch.mock.calls[0];
     expect(url).toContain('limit=25');
@@ -43,8 +48,9 @@ describe('BlueskyApiClient', () => {
       status: 401,
       json: async () => ({ message: 'invalid jwt' }),
     });
-    await expect(client.getProfile('asad.bsky.social', 'bad-jwt'))
-      .rejects.toMatchObject({ code: 'auth_failed', status: 401 });
+    await expect(
+      client.getProfile('asad.bsky.social', 'bad-jwt'),
+    ).rejects.toMatchObject({ code: 'auth_failed', status: 401 });
   });
 
   it('throws BlueskyApiError with rate_limited on 429', async () => {
@@ -53,15 +59,29 @@ describe('BlueskyApiClient', () => {
       status: 429,
       json: async () => ({ message: 'rate limited' }),
     });
-    await expect(client.getProfile('asad.bsky.social', 'jwt'))
-      .rejects.toMatchObject({ code: 'rate_limited', status: 429 });
+    await expect(
+      client.getProfile('asad.bsky.social', 'jwt'),
+    ).rejects.toMatchObject({ code: 'rate_limited', status: 429 });
   });
 
   it('getPostThread includes uri param + depth=0', async () => {
     const atUri = 'at://did:plc:abc/app.bsky.feed.post/rkey123';
     mockFetch.mockResolvedValue({
       ok: true,
-      json: async () => ({ thread: { post: { uri: atUri, cid: 'cid1', likeCount: 5, repostCount: 2, replyCount: 1, indexedAt: '2024-01-01T00:00:00Z', author: { did: 'did:plc:abc', handle: 'test.bsky.social' }, record: { text: 'hello', createdAt: '2024-01-01T00:00:00Z' } } } }),
+      json: async () => ({
+        thread: {
+          post: {
+            uri: atUri,
+            cid: 'cid1',
+            likeCount: 5,
+            repostCount: 2,
+            replyCount: 1,
+            indexedAt: '2024-01-01T00:00:00Z',
+            author: { did: 'did:plc:abc', handle: 'test.bsky.social' },
+            record: { text: 'hello', createdAt: '2024-01-01T00:00:00Z' },
+          },
+        },
+      }),
     });
     await client.getPostThread(atUri, 'jwt');
     const [url] = mockFetch.mock.calls[0];

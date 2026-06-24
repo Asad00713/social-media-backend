@@ -10,7 +10,12 @@ export interface InstagramUser {
   website?: string;
 }
 
-export type InstagramMediaType = 'IMAGE' | 'VIDEO' | 'CAROUSEL_ALBUM' | 'REEL' | 'STORY';
+export type InstagramMediaType =
+  | 'IMAGE'
+  | 'VIDEO'
+  | 'CAROUSEL_ALBUM'
+  | 'REEL'
+  | 'STORY';
 
 export interface InstagramMedia {
   id: string;

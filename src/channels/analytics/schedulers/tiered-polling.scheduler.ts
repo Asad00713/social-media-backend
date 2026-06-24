@@ -5,7 +5,10 @@ import { Queue } from 'bullmq';
 import { sql as sqlOp } from 'drizzle-orm';
 import { QUEUES } from '../../../queue/queue.module';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
-import { socialMediaChannels, type SupportedPlatform } from '../../../drizzle/schema/channels.schema';
+import {
+  socialMediaChannels,
+  type SupportedPlatform,
+} from '../../../drizzle/schema/channels.schema';
 import { posts as postsTable } from '../../../drizzle/schema/posts.schema';
 import { postMetricSnapshots } from '../../../drizzle/schema/post-metric-snapshots.schema';
 import { AdapterRegistryService } from '../services/adapter-registry.service';
@@ -39,7 +42,10 @@ export class TieredPollingScheduler {
   ) {}
 
   /** Every 5 minutes — enqueue post metric snapshots based on age tiers */
-  @Cron(CronExpression.EVERY_5_MINUTES, { timeZone: 'UTC', name: 'tieredPostMetrics' })
+  @Cron(CronExpression.EVERY_5_MINUTES, {
+    timeZone: 'UTC',
+    name: 'tieredPostMetrics',
+  })
   async enqueuePostMetricsByTier(): Promise<void> {
     // Find all published posts on adapter-supported channels in the last 30 days,
     // plus a sample of older ones (cold tier).
@@ -95,7 +101,9 @@ export class TieredPollingScheduler {
       const ageMs = now - publishedAt;
       const tier = pickTier(POST_POLLING_TIERS, ageMs);
 
-      const lastSnapshotAt = r.last_snapshot_at ? new Date(r.last_snapshot_at).getTime() : 0;
+      const lastSnapshotAt = r.last_snapshot_at
+        ? new Date(r.last_snapshot_at).getTime()
+        : 0;
       const elapsedSinceLast = now - lastSnapshotAt;
       if (elapsedSinceLast < tier.intervalMs) continue; // not yet due
 
@@ -106,17 +114,22 @@ export class TieredPollingScheduler {
           channelId: Number(r.channel_id),
           ageBucket: tierToAgeBucket(tier),
         },
-        { delay: (i++) * 100 }, // stagger 100ms apart to spread API load
+        { delay: i++ * 100 }, // stagger 100ms apart to spread API load
       );
       enqueued++;
     }
     if (enqueued > 0) {
-      this.logger.log(`Tiered post metrics: enqueued ${enqueued} snapshot jobs (of ${rows.length} eligible posts)`);
+      this.logger.log(
+        `Tiered post metrics: enqueued ${enqueued} snapshot jobs (of ${rows.length} eligible posts)`,
+      );
     }
   }
 
   /** Every 5 minutes — enqueue channel profile snapshots based on age/activity tier */
-  @Cron(CronExpression.EVERY_5_MINUTES, { timeZone: 'UTC', name: 'tieredProfileSnapshots' })
+  @Cron(CronExpression.EVERY_5_MINUTES, {
+    timeZone: 'UTC',
+    name: 'tieredProfileSnapshots',
+  })
   async enqueueProfileSnapshotsByTier(): Promise<void> {
     // NOTE: channels.schema.ts uses `createdAt` (not `connected_at`) for the
     // channel creation timestamp. We use it as the proxy for "channel age".
@@ -155,26 +168,32 @@ export class TieredPollingScheduler {
       if (!this.registry.has(platform)) continue;
 
       // Use the smaller of: channel age (createdAt) or latest-post age
-      const channelAgeMs = r.created_at ? now - new Date(r.created_at).getTime() : Number.POSITIVE_INFINITY;
+      const channelAgeMs = r.created_at
+        ? now - new Date(r.created_at).getTime()
+        : Number.POSITIVE_INFINITY;
       const latestPostAgeMs = r.latest_post_at
         ? now - new Date(r.latest_post_at).getTime()
         : Number.POSITIVE_INFINITY;
       const referenceAgeMs = Math.min(channelAgeMs, latestPostAgeMs);
       const tier = pickTier(CHANNEL_PROFILE_TIERS, referenceAgeMs);
 
-      const lastSyncedAtMs = r.last_synced_at ? new Date(r.last_synced_at).getTime() : 0;
+      const lastSyncedAtMs = r.last_synced_at
+        ? new Date(r.last_synced_at).getTime()
+        : 0;
       const elapsedSinceLast = now - lastSyncedAtMs;
       if (elapsedSinceLast < tier.intervalMs) continue;
 
       await this.queue.add(
         'channel-profile-snapshot',
         { channelId: Number(r.channel_id), workspaceId: r.workspace_id },
-        { delay: (i++) * 100 },
+        { delay: i++ * 100 },
       );
       enqueued++;
     }
     if (enqueued > 0) {
-      this.logger.log(`Tiered profile snapshots: enqueued ${enqueued} jobs (of ${rows.length} eligible channels)`);
+      this.logger.log(
+        `Tiered profile snapshots: enqueued ${enqueued} jobs (of ${rows.length} eligible channels)`,
+      );
     }
   }
 }

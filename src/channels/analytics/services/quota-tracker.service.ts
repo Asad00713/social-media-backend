@@ -25,7 +25,10 @@ export class QuotaTrackerService {
 
   constructor(@Inject('REDIS_CLIENT') private readonly redis: RedisLike) {}
 
-  async tryConsume(platform: SupportedPlatform, cost: number): Promise<QuotaConsumeResult> {
+  async tryConsume(
+    platform: SupportedPlatform,
+    cost: number,
+  ): Promise<QuotaConsumeResult> {
     const budget = this.getBudget(platform);
     if (budget === null) {
       return { allowed: true, remaining: Number.POSITIVE_INFINITY };
@@ -36,7 +39,9 @@ export class QuotaTrackerService {
     const threshold = Math.floor(budget * 0.95);
 
     if (current + cost > threshold) {
-      this.logger.warn(`Quota near-exhausted for ${platform}: ${current}/${budget} (threshold ${threshold})`);
+      this.logger.warn(
+        `Quota near-exhausted for ${platform}: ${current}/${budget} (threshold ${threshold})`,
+      );
       return { allowed: false, remaining: budget - current };
     }
 

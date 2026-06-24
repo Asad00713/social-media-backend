@@ -64,7 +64,8 @@ export class RedditService {
   private readonly logger = new Logger(RedditService.name);
 
   constructor(private readonly config: ConfigService) {
-    this.userAgent = this.config.get<string>('REDDIT_USER_AGENT') ?? 'Schedura/1.0';
+    this.userAgent =
+      this.config.get<string>('REDDIT_USER_AGENT') ?? 'Schedura/1.0';
     this.clientId = this.config.get<string>('REDDIT_CLIENT_ID') ?? '';
     this.clientSecret = this.config.get<string>('REDDIT_CLIENT_SECRET') ?? '';
   }
@@ -141,7 +142,9 @@ export class RedditService {
     opts: SubmitOptions,
   ): Promise<{ id: string; name: string; url: string }> {
     if (!opts.title || opts.title.length > 300) {
-      throw new BadRequestException('Reddit post title is required and ≤300 chars');
+      throw new BadRequestException(
+        'Reddit post title is required and ≤300 chars',
+      );
     }
     if (!opts.subreddit) {
       throw new BadRequestException('Reddit post requires a subreddit');
@@ -173,14 +176,18 @@ export class RedditService {
 
     if (!response.ok) {
       const errorText = await response.text();
-      this.logger.error(`Reddit submit failed: ${response.status} ${errorText}`);
+      this.logger.error(
+        `Reddit submit failed: ${response.status} ${errorText}`,
+      );
       throw new BadRequestException(
         `Reddit API error (${response.status}): ${errorText.slice(0, 200)}`,
       );
     }
 
     const body = await response.json();
-    const errors = body?.json?.errors as Array<[string, string, string]> | undefined;
+    const errors = body?.json?.errors as
+      | Array<[string, string, string]>
+      | undefined;
     if (errors && errors.length > 0) {
       const [code, message] = errors[0];
       throw new BadRequestException(`${code}: ${message}`);
@@ -202,9 +209,9 @@ export class RedditService {
     if (!this.clientId || !this.clientSecret) {
       throw new Error('REDDIT_CLIENT_ID and REDDIT_CLIENT_SECRET must be set');
     }
-    const basicAuth = Buffer.from(`${this.clientId}:${this.clientSecret}`).toString(
-      'base64',
-    );
+    const basicAuth = Buffer.from(
+      `${this.clientId}:${this.clientSecret}`,
+    ).toString('base64');
     const params = new URLSearchParams();
     params.set('grant_type', 'refresh_token');
     params.set('refresh_token', refreshToken);
@@ -222,7 +229,9 @@ export class RedditService {
 
     if (!response.ok) {
       const errorText = await response.text();
-      throw new Error(`Reddit token refresh failed: ${response.status} ${errorText}`);
+      throw new Error(
+        `Reddit token refresh failed: ${response.status} ${errorText}`,
+      );
     }
 
     const data = await response.json();
@@ -252,7 +261,9 @@ export class RedditService {
     });
     if (!response.ok) {
       const text = await response.text();
-      throw new Error(`Reddit API ${path} failed: ${response.status} ${text.slice(0, 200)}`);
+      throw new Error(
+        `Reddit API ${path} failed: ${response.status} ${text.slice(0, 200)}`,
+      );
     }
     return response.json();
   }

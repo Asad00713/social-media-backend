@@ -122,7 +122,7 @@ export class ScheduledMessagesService {
       id: row.id,
       workspaceId: row.workspaceId,
       channelId: row.channelId,
-      type: row.type as ScheduledInboxType,
+      type: row.type,
       threadKey: row.threadKey,
       parentItemId: row.parentItemId,
       platformPostId: row.platformPostId,
@@ -132,7 +132,7 @@ export class ScheduledMessagesService {
       textPreview: this.stripHtml(row.text).slice(0, 280),
       scheduledAt: row.scheduledAt.toISOString(),
       timezone: row.timezone,
-      status: row.status as ScheduledInboxStatus,
+      status: row.status,
       createdByUserId: row.createdByUserId,
       sentInboxItemId: row.sentInboxItemId,
       errorMessage: row.errorMessage,
@@ -148,9 +148,9 @@ export class ScheduledMessagesService {
       id: row.id,
       workspaceId: row.workspaceId,
       channelId: row.channelId,
-      type: row.type as 'comment' | 'dm',
+      type: row.type,
       threadKey: row.threadKey,
-      status: row.status as ScheduledInboxStatus,
+      status: row.status,
       scheduledAt: row.scheduledAt.toISOString(),
       textPreview: this.stripHtml(row.text).slice(0, 280),
       targetLabel: row.targetLabel,
@@ -214,7 +214,10 @@ export class ScheduledMessagesService {
       if (!parent) {
         throw new NotFoundException('Parent comment not found');
       }
-      const channel = await this.getChannelOrThrow(workspaceId, parent.channelId);
+      const channel = await this.getChannelOrThrow(
+        workspaceId,
+        parent.channelId,
+      );
       return {
         channelId: parent.channelId,
         platform: channel.platform as SupportedPlatform,
@@ -486,7 +489,8 @@ export class ScheduledMessagesService {
     const conditions = [eq(scheduledInboxMessages.workspaceId, workspaceId)];
     if (options.channelId && options.channelId !== 'all') {
       const n = Number(options.channelId);
-      if (Number.isFinite(n)) conditions.push(eq(scheduledInboxMessages.channelId, n));
+      if (Number.isFinite(n))
+        conditions.push(eq(scheduledInboxMessages.channelId, n));
     }
     if (options.threadKey) {
       conditions.push(eq(scheduledInboxMessages.threadKey, options.threadKey));
@@ -550,7 +554,8 @@ export class ScheduledMessagesService {
     const perChannel: Record<string, number> = {};
     for (const r of rows) {
       perThread[r.threadKey] = (perThread[r.threadKey] ?? 0) + 1;
-      perChannel[String(r.channelId)] = (perChannel[String(r.channelId)] ?? 0) + 1;
+      perChannel[String(r.channelId)] =
+        (perChannel[String(r.channelId)] ?? 0) + 1;
     }
     return { total: rows.length, perThread, perChannel };
   }

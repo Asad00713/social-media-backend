@@ -50,73 +50,55 @@ export class WebhookService {
     try {
       switch (event.type) {
         case 'customer.subscription.created':
-          await this.handleSubscriptionCreated(
-            event.data.object as Stripe.Subscription,
-          );
+          await this.handleSubscriptionCreated(event.data.object);
           break;
 
         case 'customer.subscription.updated':
-          await this.handleSubscriptionUpdated(
-            event.data.object as Stripe.Subscription,
-          );
+          await this.handleSubscriptionUpdated(event.data.object);
           break;
 
         case 'customer.subscription.deleted':
-          await this.handleSubscriptionDeleted(
-            event.data.object as Stripe.Subscription,
-          );
+          await this.handleSubscriptionDeleted(event.data.object);
           break;
 
         case 'invoice.created':
-          await this.handleInvoiceCreated(event.data.object as Stripe.Invoice);
+          await this.handleInvoiceCreated(event.data.object);
           break;
 
         case 'invoice.finalized':
-          await this.handleInvoiceFinalized(
-            event.data.object as Stripe.Invoice,
-          );
+          await this.handleInvoiceFinalized(event.data.object);
           break;
 
         case 'invoice.paid':
-          await this.handleInvoicePaid(event.data.object as Stripe.Invoice);
+          await this.handleInvoicePaid(event.data.object);
           break;
 
         case 'invoice.payment_failed':
-          await this.handleInvoicePaymentFailed(
-            event.data.object as Stripe.Invoice,
-          );
+          await this.handleInvoicePaymentFailed(event.data.object);
           break;
 
         case 'invoice.payment_succeeded':
-          await this.handleInvoicePaymentSucceeded(
-            event.data.object as Stripe.Invoice,
-          );
+          await this.handleInvoicePaymentSucceeded(event.data.object);
           break;
 
         case 'customer.subscription.trial_will_end':
-          await this.handleTrialWillEnd(
-            event.data.object as Stripe.Subscription,
-          );
+          await this.handleTrialWillEnd(event.data.object);
           break;
 
         case 'payment_method.attached':
-          await this.handlePaymentMethodAttached(
-            event.data.object as Stripe.PaymentMethod,
-          );
+          await this.handlePaymentMethodAttached(event.data.object);
           break;
 
         case 'payment_method.detached':
-          await this.handlePaymentMethodDetached(
-            event.data.object as Stripe.PaymentMethod,
-          );
+          await this.handlePaymentMethodDetached(event.data.object);
           break;
 
         case 'charge.refunded':
-          await this.handleChargeRefunded(event.data.object as Stripe.Charge);
+          await this.handleChargeRefunded(event.data.object);
           break;
 
         case 'charge.dispute.created':
-          await this.handleDisputeCreated(event.data.object as Stripe.Dispute);
+          await this.handleDisputeCreated(event.data.object);
           break;
 
         default:
@@ -167,9 +149,7 @@ export class WebhookService {
       .limit(1);
 
     if (existingSub.length === 0) {
-      this.logger.warn(
-        `Subscription ${subscription.id} not found in database`,
-      );
+      this.logger.warn(`Subscription ${subscription.id} not found in database`);
       return;
     }
 
@@ -317,7 +297,9 @@ export class WebhookService {
         if (lineItem.period?.end) {
           lineItemData.periodEnd = new Date(lineItem.period.end * 1000);
         }
-        await db.insert(invoiceLineItems).values(lineItemData as NewInvoiceLineItem);
+        await db
+          .insert(invoiceLineItems)
+          .values(lineItemData as NewInvoiceLineItem);
       }
     }
   }
@@ -392,7 +374,7 @@ export class WebhookService {
     }
 
     // First find or create the invoice in our database to get its ID
-    let invoiceRecord = await db
+    const invoiceRecord = await db
       .select()
       .from(invoices)
       .where(eq(invoices.stripeInvoiceId, invoice.id))
@@ -465,7 +447,9 @@ export class WebhookService {
       const subscription = await db
         .select()
         .from(subscriptions)
-        .where(eq(subscriptions.stripeSubscriptionId, inv.subscription as string))
+        .where(
+          eq(subscriptions.stripeSubscriptionId, inv.subscription as string),
+        )
         .limit(1);
 
       if (subscription.length > 0) {

@@ -159,7 +159,8 @@ export class RateLimiterService {
     if (currentCount >= limit.maxRequests) {
       // Get the oldest entry to calculate when it expires
       const oldestEntries = await this.redis.zrange(key, 0, 0, 'WITHSCORES');
-      const oldestTimestamp = oldestEntries.length >= 2 ? parseInt(oldestEntries[1], 10) : now;
+      const oldestTimestamp =
+        oldestEntries.length >= 2 ? parseInt(oldestEntries[1], 10) : now;
       const resetAt = new Date(oldestTimestamp + limit.windowMs);
       const retryAfterMs = resetAt.getTime() - now;
 
@@ -209,7 +210,9 @@ export class RateLimiterService {
     channelId: string,
   ): Promise<RateLimitResult> {
     // Per-channel limits (more restrictive for individual accounts)
-    const perChannelLimits: Partial<Record<SupportedPlatform, { maxRequests: number; windowMs: number }>> = {
+    const perChannelLimits: Partial<
+      Record<SupportedPlatform, { maxRequests: number; windowMs: number }>
+    > = {
       instagram: { maxRequests: 10, windowMs: 24 * 60 * 60 * 1000 }, // 10 per day per account
       tiktok: { maxRequests: 5, windowMs: 24 * 60 * 60 * 1000 }, // 5 per day per account
       twitter: { maxRequests: 50, windowMs: 60 * 60 * 1000 }, // 50 per hour per account
@@ -229,7 +232,8 @@ export class RateLimiterService {
 
     if (currentCount >= limit.maxRequests) {
       const oldestEntries = await this.redis.zrange(key, 0, 0, 'WITHSCORES');
-      const oldestTimestamp = oldestEntries.length >= 2 ? parseInt(oldestEntries[1], 10) : now;
+      const oldestTimestamp =
+        oldestEntries.length >= 2 ? parseInt(oldestEntries[1], 10) : now;
       const resetAt = new Date(oldestTimestamp + limit.windowMs);
 
       return {
@@ -250,7 +254,10 @@ export class RateLimiterService {
   /**
    * Record a request for a specific channel
    */
-  async recordChannelRequest(platform: SupportedPlatform, channelId: string): Promise<void> {
+  async recordChannelRequest(
+    platform: SupportedPlatform,
+    channelId: string,
+  ): Promise<void> {
     const key = `ratelimit:channel:${platform}:${channelId}`;
     const now = Date.now();
     const uniqueId = `${now}-${Math.random().toString(36).substring(2, 11)}`;
@@ -263,7 +270,10 @@ export class RateLimiterService {
    * Get current rate limit status for all platforms
    */
   async getAllRateLimitStatus(): Promise<
-    Record<SupportedPlatform, { current: number; max: number; remaining: number; windowMs: number }>
+    Record<
+      SupportedPlatform,
+      { current: number; max: number; remaining: number; windowMs: number }
+    >
   > {
     const status: any = {};
 

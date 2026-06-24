@@ -9,13 +9,8 @@ import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 import { EmailModule } from '../email/email.module';
 
 @Module({
-  imports: [
-    UsersModule,
-    PassportModule,
-    JwtModule.register({}),
-    EmailModule,
-  ],
+  imports: [UsersModule, PassportModule, JwtModule.register({}), EmailModule],
   providers: [AuthService, JwtStrategy, JwtRefreshStrategy],
-  controllers: [AuthController]
+  controllers: [AuthController],
 })
-export class AuthModule { }
+export class AuthModule {}

@@ -17,7 +17,12 @@ export interface TikTokComplianceInput {
  * Mirrors Point 3 of TikTok's Content Sharing Guidelines.
  */
 export function assertTikTokCompliance(input: TikTokComplianceInput): void {
-  const { privacyLevel, brandContentToggle, brandOrganicToggle, discloseContent } = input;
+  const {
+    privacyLevel,
+    brandContentToggle,
+    brandOrganicToggle,
+    discloseContent,
+  } = input;
 
   if (discloseContent && !brandContentToggle && !brandOrganicToggle) {
     throw new TikTokComplianceError(

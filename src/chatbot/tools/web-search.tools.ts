@@ -1,12 +1,14 @@
 import type { TavilyService } from '../../ai/services/tavily.service';
 import { ChatbotTool, ToolContext, ToolResult } from './tool.interface';
 
-export function createWebSearchTools(tavilyService: TavilyService): ChatbotTool[] {
+export function createWebSearchTools(
+  tavilyService: TavilyService,
+): ChatbotTool[] {
   return [
     {
       name: 'web_search',
       description:
-        'Search the web for current, up-to-date information. Use this when the user asks about trending topics, news, social media best practices, competitor analysis, content ideas, or anything that requires live information beyond what\'s stored in the app.',
+        "Search the web for current, up-to-date information. Use this when the user asks about trending topics, news, social media best practices, competitor analysis, content ideas, or anything that requires live information beyond what's stored in the app.",
       parameters: {
         type: 'object',
         properties: {
@@ -16,12 +18,16 @@ export function createWebSearchTools(tavilyService: TavilyService): ChatbotTool[
           },
           maxResults: {
             type: 'number',
-            description: 'Maximum number of results to return (default: 5, max: 10)',
+            description:
+              'Maximum number of results to return (default: 5, max: 10)',
           },
         },
         required: ['query'],
       },
-      execute: async (params: Record<string, any>, _context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        params: Record<string, any>,
+        _context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
           if (!tavilyService.isConfigured()) {
             return {
@@ -31,7 +37,9 @@ export function createWebSearchTools(tavilyService: TavilyService): ChatbotTool[
           }
 
           const maxResults = Math.min(params.maxResults || 5, 10);
-          const response = await tavilyService.search(params.query, { maxResults });
+          const response = await tavilyService.search(params.query, {
+            maxResults,
+          });
 
           return {
             success: true,

@@ -25,15 +25,20 @@ export class LinkedInPublisher extends BasePublisher {
 
     if (metadata?.postType === 'poll') {
       // Polls don't need text/media; question + 2 options is enough.
-      const q = typeof metadata.pollQuestion === 'string' ? metadata.pollQuestion.trim() : '';
+      const q =
+        typeof metadata.pollQuestion === 'string'
+          ? metadata.pollQuestion.trim()
+          : '';
       const opts = Array.isArray(metadata.pollOptions)
         ? (metadata.pollOptions as unknown[]).filter(
             (o): o is string => typeof o === 'string' && o.trim().length > 0,
           )
         : [];
       if (!q) throw new Error('LinkedIn poll requires a question');
-      if (opts.length < 2) throw new Error('LinkedIn poll requires at least 2 options');
-      if (opts.length > 4) throw new Error('LinkedIn poll allows at most 4 options');
+      if (opts.length < 2)
+        throw new Error('LinkedIn poll requires at least 2 options');
+      if (opts.length > 4)
+        throw new Error('LinkedIn poll allows at most 4 options');
       return;
     }
 
@@ -44,7 +49,9 @@ export class LinkedInPublisher extends BasePublisher {
 
     // Check character limit (LinkedIn allows up to 3000 chars)
     if (content && content.length > 3000) {
-      throw new Error(`LinkedIn content exceeds 3000 character limit (${content.length} chars)`);
+      throw new Error(
+        `LinkedIn content exceeds 3000 character limit (${content.length} chars)`,
+      );
     }
   }
 
@@ -54,7 +61,14 @@ export class LinkedInPublisher extends BasePublisher {
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
-    const { content, mediaItems, accessToken, platformAccountId, channelMetadata, metadata } = options;
+    const {
+      content,
+      mediaItems,
+      accessToken,
+      platformAccountId,
+      channelMetadata,
+      metadata,
+    } = options;
 
     this.validate(options);
 
@@ -67,13 +81,13 @@ export class LinkedInPublisher extends BasePublisher {
       const actorUrn = isOrganization
         ? `urn:li:organization:${platformAccountId}`
         : `urn:li:person:${platformAccountId}`;
-      const opts = (metadata!.pollOptions as string[])
+      const opts = (metadata.pollOptions as string[])
         .map((o) => o.trim())
         .filter((o) => o.length > 0);
       const result = await this.linkedinService.createPollPost(
         accessToken,
         actorUrn,
-        metadata!.pollQuestion as string,
+        metadata.pollQuestion as string,
         opts,
         (metadata?.pollDurationDays as number | undefined) ?? 7,
         content ?? '',
@@ -93,9 +107,10 @@ export class LinkedInPublisher extends BasePublisher {
     // do — the headline becomes the visually prominent first line in feed.)
     let effectiveContent = content ?? '';
     if (postType === 'article') {
-      const headline = typeof metadata?.articleHeadline === 'string'
-        ? metadata.articleHeadline.trim()
-        : '';
+      const headline =
+        typeof metadata?.articleHeadline === 'string'
+          ? metadata.articleHeadline.trim()
+          : '';
       if (headline) {
         effectiveContent = effectiveContent.trim()
           ? `${headline}\n\n${effectiveContent}`
@@ -198,9 +213,10 @@ export class LinkedInPublisher extends BasePublisher {
       platformPostUrl: `https://www.linkedin.com/feed/update/${result.postId}`,
     };
 
-    const firstComment = typeof metadata?.firstComment === 'string'
-      ? metadata.firstComment.trim()
-      : '';
+    const firstComment =
+      typeof metadata?.firstComment === 'string'
+        ? metadata.firstComment.trim()
+        : '';
     if (firstComment.length > 0) {
       try {
         const actorUrn = isOrganization

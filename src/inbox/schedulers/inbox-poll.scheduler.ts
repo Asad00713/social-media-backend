@@ -40,7 +40,9 @@ export class InboxPollScheduler {
     'facebook',
   ] as const;
 
-  constructor(@InjectQueue(QUEUES.INBOX_POLLING) private readonly queue: Queue) {}
+  constructor(
+    @InjectQueue(QUEUES.INBOX_POLLING) private readonly queue: Queue,
+  ) {}
 
   @Cron('*/30 * * * * *', { timeZone: 'UTC', name: 'enqueueInboxPolling' })
   async enqueueInboxPolling(): Promise<void> {

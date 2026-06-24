@@ -15,7 +15,14 @@ const baseInput = (): InlinePublishInput => ({
   draftId: 'd1',
   base: { text: 'hello world', mediaItems: [], hashtags: [], mentions: [] },
   perPlatform: {},
-  channels: [{ channelId: 'c1', platform: 'twitter', publishStatus: 'queued', retryCount: 0 }],
+  channels: [
+    {
+      channelId: 'c1',
+      platform: 'twitter',
+      publishStatus: 'queued',
+      retryCount: 0,
+    },
+  ],
   schedule: { mode: 'now' },
 });
 
@@ -68,7 +75,10 @@ describe('PublishOrchestratorService.publishInline', () => {
             }),
           },
         },
-        { provide: ComposerErrorMapperService, useValue: new ComposerErrorMapperService() },
+        {
+          provide: ComposerErrorMapperService,
+          useValue: new ComposerErrorMapperService(),
+        },
         { provide: PublisherFactory, useValue: factory },
         { provide: AnalyticsEventEmitter, useValue: emitter },
         { provide: CHANNEL_CREDENTIALS_LOOKUP, useValue: credentials },
@@ -124,8 +134,18 @@ describe('PublishOrchestratorService.publishInline', () => {
     const input: InlinePublishInput = {
       ...baseInput(),
       channels: [
-        { channelId: 'c1', platform: 'twitter', publishStatus: 'queued', retryCount: 0 },
-        { channelId: 'c2', platform: 'twitter', publishStatus: 'queued', retryCount: 0 },
+        {
+          channelId: 'c1',
+          platform: 'twitter',
+          publishStatus: 'queued',
+          retryCount: 0,
+        },
+        {
+          channelId: 'c2',
+          platform: 'twitter',
+          publishStatus: 'queued',
+          retryCount: 0,
+        },
       ],
     };
 
@@ -138,7 +158,10 @@ describe('PublishOrchestratorService.publishInline', () => {
   });
 
   it('retry filters to specified channelIds and increments retryCount', async () => {
-    publisher.publish.mockResolvedValue({ platformPostId: 'tid_2', platformPostUrl: 'u2' });
+    publisher.publish.mockResolvedValue({
+      platformPostId: 'tid_2',
+      platformPostUrl: 'u2',
+    });
 
     const input: InlinePublishInput = {
       ...baseInput(),
@@ -164,9 +187,15 @@ describe('PublishOrchestratorService.publishInline', () => {
     const result = await svc.publishInline('w1', 'u1', input);
 
     expect(publisher.publish).toHaveBeenCalledTimes(1);
-    expect(result.channels.find((c) => c.channelId === 'c2')?.retryCount).toBe(2);
-    expect(result.channels.find((c) => c.channelId === 'c2')?.publishStatus).toBe('published');
-    expect(result.channels.find((c) => c.channelId === 'c1')?.publishStatus).toBe('published');
+    expect(result.channels.find((c) => c.channelId === 'c2')?.retryCount).toBe(
+      2,
+    );
+    expect(
+      result.channels.find((c) => c.channelId === 'c2')?.publishStatus,
+    ).toBe('published');
+    expect(
+      result.channels.find((c) => c.channelId === 'c1')?.publishStatus,
+    ).toBe('published');
   });
 
   it('throws if input has no channels', async () => {

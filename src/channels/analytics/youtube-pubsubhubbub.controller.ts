@@ -115,9 +115,7 @@ export class YouTubePubSubHubbubController {
       .where(eq(socialMediaChannels.platformAccountId, parsed.channelId))
       .limit(1);
 
-    const channel = rows[0] as
-      | { id: number; workspaceId: string }
-      | undefined;
+    const channel = rows[0] as { id: number; workspaceId: string } | undefined;
 
     if (!channel) {
       this.logger.warn(
@@ -150,7 +148,10 @@ export class YouTubePubSubHubbubController {
 function readStream(req: Request): Promise<string> {
   return new Promise<string>((resolve, reject) => {
     const chunks: Buffer[] = [];
-    const timeout = setTimeout(() => resolve(Buffer.concat(chunks).toString('utf-8')), 10_000);
+    const timeout = setTimeout(
+      () => resolve(Buffer.concat(chunks).toString('utf-8')),
+      10_000,
+    );
     req.on('data', (chunk: Buffer) => chunks.push(chunk));
     req.on('end', () => {
       clearTimeout(timeout);

@@ -69,7 +69,9 @@ export class PaymentMethodService {
   }
 
   // Get default payment method for a user
-  async getDefaultPaymentMethod(userId: string): Promise<PaymentMethodDetails | null> {
+  async getDefaultPaymentMethod(
+    userId: string,
+  ): Promise<PaymentMethodDetails | null> {
     // Get user's Stripe customer ID
     const customer = await db
       .select()
@@ -120,7 +122,9 @@ export class PaymentMethodService {
       .limit(1);
 
     if (customer.length === 0) {
-      throw new NotFoundException('Stripe customer not found. Please create a subscription first.');
+      throw new NotFoundException(
+        'Stripe customer not found. Please create a subscription first.',
+      );
     }
 
     // Attach payment method to customer in Stripe
@@ -145,7 +149,9 @@ export class PaymentMethodService {
       await db
         .update(paymentMethods)
         .set({ isDefault: false, updatedAt: new Date() })
-        .where(eq(paymentMethods.stripeCustomerId, customer[0].stripeCustomerId));
+        .where(
+          eq(paymentMethods.stripeCustomerId, customer[0].stripeCustomerId),
+        );
     }
 
     // Set as default in Stripe if needed
@@ -173,7 +179,9 @@ export class PaymentMethodService {
       .values(newPaymentMethod)
       .returning();
 
-    this.logger.log(`Added payment method ${stripePaymentMethodId} for user ${userId}`);
+    this.logger.log(
+      `Added payment method ${stripePaymentMethodId} for user ${userId}`,
+    );
 
     return {
       paymentMethod: {
@@ -219,7 +227,9 @@ export class PaymentMethodService {
     }
 
     if (method[0].stripeCustomerId !== customer[0].stripeCustomerId) {
-      throw new ForbiddenException('Payment method does not belong to this user');
+      throw new ForbiddenException(
+        'Payment method does not belong to this user',
+      );
     }
 
     // Update in Stripe
@@ -240,7 +250,9 @@ export class PaymentMethodService {
       .set({ isDefault: true, updatedAt: new Date() })
       .where(eq(paymentMethods.id, paymentMethodId));
 
-    this.logger.log(`Set payment method ${paymentMethodId} as default for user ${userId}`);
+    this.logger.log(
+      `Set payment method ${paymentMethodId} as default for user ${userId}`,
+    );
 
     return {
       id: method[0].id,
@@ -283,7 +295,9 @@ export class PaymentMethodService {
     }
 
     if (method[0].stripeCustomerId !== customer[0].stripeCustomerId) {
-      throw new ForbiddenException('Payment method does not belong to this user');
+      throw new ForbiddenException(
+        'Payment method does not belong to this user',
+      );
     }
 
     // Check if it's the only payment method
@@ -314,14 +328,18 @@ export class PaymentMethodService {
     }
 
     // Detach from Stripe
-    await this.stripeService.detachPaymentMethod(method[0].stripePaymentMethodId);
+    await this.stripeService.detachPaymentMethod(
+      method[0].stripePaymentMethodId,
+    );
 
     // Remove from database
     await db
       .delete(paymentMethods)
       .where(eq(paymentMethods.id, paymentMethodId));
 
-    this.logger.log(`Removed payment method ${paymentMethodId} for user ${userId}`);
+    this.logger.log(
+      `Removed payment method ${paymentMethodId} for user ${userId}`,
+    );
 
     return {
       success: true,
@@ -352,7 +370,8 @@ export class PaymentMethodService {
       customer[0].stripeCustomerId,
     );
     const cust: any = stripeCustomer;
-    const defaultPaymentMethodId = cust.invoice_settings?.default_payment_method;
+    const defaultPaymentMethodId =
+      cust.invoice_settings?.default_payment_method;
 
     // Delete all existing local payment methods
     await db
@@ -374,7 +393,9 @@ export class PaymentMethodService {
       });
     }
 
-    this.logger.log(`Synced ${stripeMethods.length} payment methods for user ${userId}`);
+    this.logger.log(
+      `Synced ${stripeMethods.length} payment methods for user ${userId}`,
+    );
   }
 
   // Create setup intent for adding payment method (frontend uses this)

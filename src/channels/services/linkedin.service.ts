@@ -49,7 +49,8 @@ export class LinkedInService {
       id: userInfo.sub,
       firstName: userInfo.given_name || '',
       lastName: userInfo.family_name || '',
-      fullName: userInfo.name || `${userInfo.given_name} ${userInfo.family_name}`,
+      fullName:
+        userInfo.name || `${userInfo.given_name} ${userInfo.family_name}`,
       profilePictureUrl: userInfo.picture || null,
       email: userInfo.email || null,
       vanityName: null, // Not available in userinfo endpoint
@@ -90,7 +91,9 @@ export class LinkedInService {
           id: org.id.toString(),
           name: org.localizedName,
           vanityName: org.vanityName || null,
-          logoUrl: org.logoV2?.['original~']?.elements?.[0]?.identifiers?.[0]?.identifier || null,
+          logoUrl:
+            org.logoV2?.['original~']?.elements?.[0]?.identifiers?.[0]
+              ?.identifier || null,
           followerCount: 0, // Would need separate API call
         });
       }
@@ -159,7 +162,10 @@ export class LinkedInService {
     visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
   ): Promise<{ postId: string }> {
     // Step 1: Register the image upload
-    const registerResponse = await this.registerImageUpload(accessToken, `urn:li:person:${authorId}`);
+    const registerResponse = await this.registerImageUpload(
+      accessToken,
+      `urn:li:person:${authorId}`,
+    );
 
     // Step 2: Upload the image
     await this.uploadImageToLinkedIn(imageUrl, registerResponse.uploadUrl);
@@ -206,7 +212,9 @@ export class LinkedInService {
     if (!response.ok) {
       const errorData = await response.text();
       this.logger.error(`Failed to create LinkedIn image post: ${errorData}`);
-      throw new BadRequestException('Failed to create LinkedIn post with image');
+      throw new BadRequestException(
+        'Failed to create LinkedIn post with image',
+      );
     }
 
     const result = await response.json();
@@ -337,7 +345,10 @@ export class LinkedInService {
     visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
   ): Promise<{ postId: string }> {
     // Step 1: Register the video upload
-    const registerResponse = await this.registerVideoUpload(accessToken, `urn:li:person:${authorId}`);
+    const registerResponse = await this.registerVideoUpload(
+      accessToken,
+      `urn:li:person:${authorId}`,
+    );
 
     // Step 2: Upload the video
     await this.uploadVideoToLinkedIn(videoUrl, registerResponse.uploadUrl);
@@ -381,7 +392,9 @@ export class LinkedInService {
     if (!response.ok) {
       const errorData = await response.text();
       this.logger.error(`Failed to create LinkedIn video post: ${errorData}`);
-      throw new BadRequestException('Failed to create LinkedIn post with video');
+      throw new BadRequestException(
+        'Failed to create LinkedIn post with video',
+      );
     }
 
     const result = await response.json();
@@ -410,24 +423,32 @@ export class LinkedInService {
       },
     };
 
-    const response = await fetch(`${this.apiBaseUrl}/assets?action=registerUpload`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        'X-Restli-Protocol-Version': '2.0.0',
+    const response = await fetch(
+      `${this.apiBaseUrl}/assets?action=registerUpload`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'X-Restli-Protocol-Version': '2.0.0',
+        },
+        body: JSON.stringify(registerData),
       },
-      body: JSON.stringify(registerData),
-    });
+    );
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Failed to register LinkedIn video upload: ${errorData}`);
+      this.logger.error(
+        `Failed to register LinkedIn video upload: ${errorData}`,
+      );
       throw new BadRequestException('Failed to register video upload');
     }
 
     const data = await response.json();
-    const uploadMechanism = data.value.uploadMechanism['com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest'];
+    const uploadMechanism =
+      data.value.uploadMechanism[
+        'com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest'
+      ];
 
     return {
       uploadUrl: uploadMechanism.uploadUrl,
@@ -449,13 +470,19 @@ export class LinkedInService {
       videoResponse = await fetch(videoUrl);
     } catch (error) {
       this.logger.error(`Network error downloading video: ${error}`);
-      throw new BadRequestException(`Failed to download video from ${videoUrl}: Network error`);
+      throw new BadRequestException(
+        `Failed to download video from ${videoUrl}: Network error`,
+      );
     }
 
     if (!videoResponse.ok) {
       const errorText = await videoResponse.text().catch(() => 'No error body');
-      this.logger.error(`Failed to download video. Status: ${videoResponse.status}, Body: ${errorText}`);
-      throw new BadRequestException(`Failed to download video from ${videoUrl}`);
+      this.logger.error(
+        `Failed to download video. Status: ${videoResponse.status}, Body: ${errorText}`,
+      );
+      throw new BadRequestException(
+        `Failed to download video from ${videoUrl}`,
+      );
     }
 
     const videoBuffer = await videoResponse.arrayBuffer();
@@ -499,24 +526,32 @@ export class LinkedInService {
       },
     };
 
-    const response = await fetch(`${this.apiBaseUrl}/assets?action=registerUpload`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        'X-Restli-Protocol-Version': '2.0.0',
+    const response = await fetch(
+      `${this.apiBaseUrl}/assets?action=registerUpload`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+          'X-Restli-Protocol-Version': '2.0.0',
+        },
+        body: JSON.stringify(registerData),
       },
-      body: JSON.stringify(registerData),
-    });
+    );
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Failed to register LinkedIn image upload: ${errorData}`);
+      this.logger.error(
+        `Failed to register LinkedIn image upload: ${errorData}`,
+      );
       throw new BadRequestException('Failed to register image upload');
     }
 
     const data = await response.json();
-    const uploadMechanism = data.value.uploadMechanism['com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest'];
+    const uploadMechanism =
+      data.value.uploadMechanism[
+        'com.linkedin.digitalmedia.uploading.MediaUploadHttpRequest'
+      ];
 
     return {
       uploadUrl: uploadMechanism.uploadUrl,
@@ -538,13 +573,19 @@ export class LinkedInService {
       imageResponse = await fetch(imageUrl);
     } catch (error) {
       this.logger.error(`Network error downloading image: ${error}`);
-      throw new BadRequestException(`Failed to download image from ${imageUrl}: Network error`);
+      throw new BadRequestException(
+        `Failed to download image from ${imageUrl}: Network error`,
+      );
     }
 
     if (!imageResponse.ok) {
       const errorText = await imageResponse.text().catch(() => 'No error body');
-      this.logger.error(`Failed to download image. Status: ${imageResponse.status}, Body: ${errorText}`);
-      throw new BadRequestException(`Failed to download image from ${imageUrl}`);
+      this.logger.error(
+        `Failed to download image. Status: ${imageResponse.status}, Body: ${errorText}`,
+      );
+      throw new BadRequestException(
+        `Failed to download image from ${imageUrl}`,
+      );
     }
 
     const imageBuffer = await imageResponse.arrayBuffer();
@@ -580,7 +621,10 @@ export class LinkedInService {
     visibility: 'PUBLIC' = 'PUBLIC',
   ): Promise<{ postId: string }> {
     // Step 1: Register the image upload
-    const registerResponse = await this.registerImageUpload(accessToken, `urn:li:organization:${organizationId}`);
+    const registerResponse = await this.registerImageUpload(
+      accessToken,
+      `urn:li:organization:${organizationId}`,
+    );
 
     // Step 2: Upload the image
     await this.uploadImageToLinkedIn(imageUrl, registerResponse.uploadUrl);
@@ -626,8 +670,12 @@ export class LinkedInService {
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Failed to create LinkedIn org image post: ${errorData}`);
-      throw new BadRequestException('Failed to create organization post with image');
+      this.logger.error(
+        `Failed to create LinkedIn org image post: ${errorData}`,
+      );
+      throw new BadRequestException(
+        'Failed to create organization post with image',
+      );
     }
 
     const result = await response.json();
@@ -648,7 +696,10 @@ export class LinkedInService {
     visibility: 'PUBLIC' = 'PUBLIC',
   ): Promise<{ postId: string }> {
     // Step 1: Register the video upload
-    const registerResponse = await this.registerVideoUpload(accessToken, `urn:li:organization:${organizationId}`);
+    const registerResponse = await this.registerVideoUpload(
+      accessToken,
+      `urn:li:organization:${organizationId}`,
+    );
 
     // Step 2: Upload the video
     await this.uploadVideoToLinkedIn(videoUrl, registerResponse.uploadUrl);
@@ -691,8 +742,12 @@ export class LinkedInService {
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Failed to create LinkedIn org video post: ${errorData}`);
-      throw new BadRequestException('Failed to create organization post with video');
+      this.logger.error(
+        `Failed to create LinkedIn org video post: ${errorData}`,
+      );
+      throw new BadRequestException(
+        'Failed to create organization post with video',
+      );
     }
 
     const result = await response.json();
@@ -753,8 +808,12 @@ export class LinkedInService {
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Failed to create LinkedIn org link post: ${errorData}`);
-      throw new BadRequestException('Failed to create organization post with link');
+      this.logger.error(
+        `Failed to create LinkedIn org link post: ${errorData}`,
+      );
+      throw new BadRequestException(
+        'Failed to create organization post with link',
+      );
     }
 
     const result = await response.json();
@@ -847,7 +906,9 @@ export class LinkedInService {
     // or in the response body as $URN. Try both.
     let commentUrn = response.headers.get('x-restli-id') ?? '';
     if (!commentUrn) {
-      const data = (await response.json().catch(() => ({}))) as { $URN?: string };
+      const data = (await response.json().catch(() => ({}))) as {
+        $URN?: string;
+      };
       commentUrn = data['$URN'] ?? '';
     }
     if (!commentUrn) {
@@ -878,7 +939,8 @@ export class LinkedInService {
     commentary: string = '',
     visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
   ): Promise<{ postId: string }> {
-    if (!question || !question.trim()) throw new Error('Poll question is required');
+    if (!question || !question.trim())
+      throw new Error('Poll question is required');
     if (!Array.isArray(options) || options.length < 2) {
       throw new Error('Poll requires at least 2 options');
     }
@@ -938,7 +1000,8 @@ export class LinkedInService {
     if (!postId) {
       // Some response shapes return it in the body
       const data = (await response.json().catch(() => ({}))) as { id?: string };
-      if (!data.id) throw new BadRequestException('LinkedIn returned no poll post ID');
+      if (!data.id)
+        throw new BadRequestException('LinkedIn returned no poll post ID');
       return { postId: data.id };
     }
     return { postId };

@@ -1,8 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  BadRequestException,
-} from '@nestjs/common';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import type {
   FetchedDm,
   CreatedDm,
@@ -66,7 +62,8 @@ function normalizeReply(
   ref: BlueskyReplyRef | undefined,
 ): { root: BlueskyPostRef; parent: BlueskyPostRef } | undefined {
   if (!ref) return undefined;
-  if ('root' in ref && 'parent' in ref) return { root: ref.root, parent: ref.parent };
+  if ('root' in ref && 'parent' in ref)
+    return { root: ref.root, parent: ref.parent };
   return { root: ref, parent: ref };
 }
 
@@ -102,10 +99,14 @@ export class BlueskyService {
       this.logger.error(`Failed to create Bluesky session: ${errorData}`);
 
       if (response.status === 401) {
-        throw new BadRequestException('Invalid Bluesky credentials. Make sure you\'re using an App Password, not your account password.');
+        throw new BadRequestException(
+          "Invalid Bluesky credentials. Make sure you're using an App Password, not your account password.",
+        );
       }
 
-      throw new BadRequestException(`Failed to authenticate with Bluesky: ${errorData}`);
+      throw new BadRequestException(
+        `Failed to authenticate with Bluesky: ${errorData}`,
+      );
     }
 
     const data = await response.json();
@@ -135,7 +136,9 @@ export class BlueskyService {
     if (!response.ok) {
       const errorData = await response.text();
       this.logger.error(`Failed to refresh Bluesky session: ${errorData}`);
-      throw new BadRequestException('Failed to refresh Bluesky session. Please reconnect your account.');
+      throw new BadRequestException(
+        'Failed to refresh Bluesky session. Please reconnect your account.',
+      );
     }
 
     const data = await response.json();
@@ -235,7 +238,8 @@ export class BlueskyService {
       }
 
       const imageBuffer = Buffer.from(await imageResponse.arrayBuffer());
-      const mimeType = imageResponse.headers.get('content-type') || 'image/jpeg';
+      const mimeType =
+        imageResponse.headers.get('content-type') || 'image/jpeg';
 
       // Upload to Bluesky
       const blob = await this.uploadBlob(accessJwt, imageBuffer, mimeType);
@@ -518,7 +522,9 @@ export class BlueskyService {
           'Bluesky requires email verification before video uploads. Sign in to bsky.app, go to Settings → Account → Email, and confirm your email — then RECONNECT your Bluesky channel here (the cached session token needs to be refreshed after verification), then retry.',
         );
       }
-      throw new BadRequestException(`Bluesky video upload failed: ${job.error}`);
+      throw new BadRequestException(
+        `Bluesky video upload failed: ${job.error}`,
+      );
     }
 
     if (isAlreadyProcessed) {
@@ -578,7 +584,9 @@ export class BlueskyService {
             'Bluesky requires email verification before video uploads. Confirm your email at bsky.app, then RECONNECT the channel here.',
           );
         }
-        throw new BadRequestException(`Bluesky video processing failed: ${reason}`);
+        throw new BadRequestException(
+          `Bluesky video processing failed: ${reason}`,
+        );
       }
       if (js.blob) {
         blob = js.blob;
@@ -623,7 +631,8 @@ export class BlueskyService {
         const thumbResponse = await fetch(linkThumbUrl);
         if (thumbResponse.ok) {
           const thumbBuffer = Buffer.from(await thumbResponse.arrayBuffer());
-          const mimeType = thumbResponse.headers.get('content-type') || 'image/jpeg';
+          const mimeType =
+            thumbResponse.headers.get('content-type') || 'image/jpeg';
           const blob = await this.uploadBlob(accessJwt, thumbBuffer, mimeType);
           external.thumb = blob;
         }
@@ -675,7 +684,9 @@ export class BlueskyService {
     if (!response.ok) {
       const errorData = await response.text();
       this.logger.error(`Failed to upload blob to Bluesky: ${errorData}`);
-      throw new BadRequestException(`Failed to upload media to Bluesky: ${errorData}`);
+      throw new BadRequestException(
+        `Failed to upload media to Bluesky: ${errorData}`,
+      );
     }
 
     const result = await response.json();
@@ -710,7 +721,9 @@ export class BlueskyService {
     if (!response.ok) {
       const errorData = await response.text();
       this.logger.error(`Failed to create Bluesky record: ${errorData}`);
-      throw new BadRequestException(`Failed to create post on Bluesky: ${errorData}`);
+      throw new BadRequestException(
+        `Failed to create post on Bluesky: ${errorData}`,
+      );
     }
 
     const data = await response.json();
@@ -724,7 +737,11 @@ export class BlueskyService {
   /**
    * Delete a post
    */
-  async deletePost(accessJwt: string, did: string, postUri: string): Promise<void> {
+  async deletePost(
+    accessJwt: string,
+    did: string,
+    postUri: string,
+  ): Promise<void> {
     // Extract rkey from URI: at://did:plc:xxx/app.bsky.feed.post/rkey
     const parts = postUri.split('/');
     const rkey = parts[parts.length - 1];
@@ -836,7 +853,8 @@ export class BlueskyService {
     }
 
     // Parse mentions (@handle or @handle.bsky.social)
-    const mentionRegex = /@([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?/g;
+    const mentionRegex =
+      /@([a-zA-Z0-9]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?\.)+[a-zA-Z]([a-zA-Z0-9-]{0,61}[a-zA-Z0-9])?/g;
     while ((match = mentionRegex.exec(text)) !== null) {
       const mention = match[0];
       const handle = mention.slice(1); // Remove @
@@ -959,12 +977,22 @@ export class BlueskyService {
   async getPosts(
     accessJwt: string,
     uris: string[],
-  ): Promise<Array<{ uri: string; cid: string; record: Record<string, any>; author: BlueskyAuthor }>> {
+  ): Promise<
+    Array<{
+      uri: string;
+      cid: string;
+      record: Record<string, any>;
+      author: BlueskyAuthor;
+    }>
+  > {
     if (uris.length === 0) return [];
     const qs = uris.map((u) => `uris=${encodeURIComponent(u)}`).join('&');
-    const response = await fetch(`${this.apiBaseUrl}/app.bsky.feed.getPosts?${qs}`, {
-      headers: { Authorization: `Bearer ${accessJwt}` },
-    });
+    const response = await fetch(
+      `${this.apiBaseUrl}/app.bsky.feed.getPosts?${qs}`,
+      {
+        headers: { Authorization: `Bearer ${accessJwt}` },
+      },
+    );
 
     if (!response.ok) {
       const errorData = await response.text();
@@ -1061,7 +1089,9 @@ export class BlueskyService {
 
       const lastMessage = convo.lastMessage;
       const lastSentAtRaw = lastMessage?.sentAt;
-      const lastMessageAt = lastSentAtRaw ? new Date(lastSentAtRaw) : new Date(0);
+      const lastMessageAt = lastSentAtRaw
+        ? new Date(lastSentAtRaw)
+        : new Date(0);
 
       if (sinceMs !== undefined && lastMessageAt.getTime() < sinceMs) {
         continue;
@@ -1175,13 +1205,13 @@ export class BlueskyService {
         author: fromMe
           ? null
           : senderDid
-          ? {
-              platformId: senderDid,
-              handle: undefined,
-              displayName: undefined,
-              avatarUrl: undefined,
-            }
-          : null,
+            ? {
+                platformId: senderDid,
+                handle: undefined,
+                displayName: undefined,
+                avatarUrl: undefined,
+              }
+            : null,
         text: message.text ?? '',
         platformCreatedAt: sentAt,
         fromMe,

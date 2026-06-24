@@ -145,11 +145,7 @@ export class NotificationEmitterService {
 
   // ==================== Billing ====================
 
-  async paymentSuccessful(
-    userId: string,
-    amount: number,
-    planName: string,
-  ) {
+  async paymentSuccessful(userId: string, amount: number, planName: string) {
     return this.emitNotification(
       userId,
       'payment_successful',
@@ -159,11 +155,7 @@ export class NotificationEmitterService {
     );
   }
 
-  async paymentFailed(
-    userId: string,
-    amount: number,
-    reason?: string,
-  ) {
+  async paymentFailed(userId: string, amount: number, reason?: string) {
     return this.emitNotification(
       userId,
       'payment_failed',
@@ -183,15 +175,15 @@ export class NotificationEmitterService {
       'subscription_expiring',
       'Subscription Expiring Soon',
       `Your ${planName} subscription will expire in ${daysRemaining} day${daysRemaining > 1 ? 's' : ''}. Renew now to avoid interruption.`,
-      { priority: 'high', metadata: { daysRemaining, planName }, actionUrl: '/billing' },
+      {
+        priority: 'high',
+        metadata: { daysRemaining, planName },
+        actionUrl: '/billing',
+      },
     );
   }
 
-  async planChanged(
-    userId: string,
-    oldPlan: string,
-    newPlan: string,
-  ) {
+  async planChanged(userId: string, oldPlan: string, newPlan: string) {
     return this.emitNotification(
       userId,
       'plan_changed',
@@ -233,27 +225,23 @@ export class NotificationEmitterService {
     );
   }
 
-  async tokenExpired(
-    userId: string,
-    platform: string,
-    accountName: string,
-  ) {
+  async tokenExpired(userId: string, platform: string, accountName: string) {
     return this.emitNotification(
       userId,
       'token_expired',
       'Reconnection Required',
       `Your ${platform} account "${accountName}" needs to be reconnected. The authorization has expired.`,
-      { priority: 'high', metadata: { platform, accountName }, actionUrl: '/channels' },
+      {
+        priority: 'high',
+        metadata: { platform, accountName },
+        actionUrl: '/channels',
+      },
     );
   }
 
   // ==================== Posts ====================
 
-  async postPublished(
-    userId: string,
-    platform: string,
-    postTitle?: string,
-  ) {
+  async postPublished(userId: string, platform: string, postTitle?: string) {
     return this.emitNotification(
       userId,
       'post_published',
@@ -363,7 +351,11 @@ export class NotificationEmitterService {
       'new_feedback_submitted',
       'New Feedback Received',
       `${userName} submitted ${rating}-star feedback.`,
-      { priority: 'medium', metadata: { rating, userName }, actionUrl: '/admin/feedback' },
+      {
+        priority: 'medium',
+        metadata: { rating, userName },
+        actionUrl: '/admin/feedback',
+      },
     );
   }
 

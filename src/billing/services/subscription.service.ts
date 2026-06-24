@@ -266,9 +266,7 @@ export class SubscriptionService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(
-        and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)),
-      )
+      .where(and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)))
       .limit(1);
 
     if (ws.length === 0) {
@@ -337,13 +335,13 @@ export class SubscriptionService {
     const ws = await db
       .select()
       .from(workspace)
-      .where(
-        and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)),
-      )
+      .where(and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)))
       .limit(1);
 
     if (ws.length === 0) {
-      throw new NotFoundException('Workspace not found or you are not the owner');
+      throw new NotFoundException(
+        'Workspace not found or you are not the owner',
+      );
     }
 
     // Handle FREE plan

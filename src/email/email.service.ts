@@ -29,17 +29,28 @@ export class EmailService {
 
   constructor(private readonly configService: ConfigService) {
     const apiKey = this.configService.get<string>('RESEND_API_KEY');
-    this.fromEmail = this.configService.get<string>('RESEND_FROM_EMAIL', 'noreply@yourdomain.com');
+    this.fromEmail = this.configService.get<string>(
+      'RESEND_FROM_EMAIL',
+      'noreply@yourdomain.com',
+    );
     // FRONTEND_URL for auth links (verification, password reset)
-    this.frontendUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:3000');
+    this.frontendUrl = this.configService.get<string>(
+      'FRONTEND_URL',
+      'http://localhost:3000',
+    );
     // APP_URL for backend links (drip notifications, etc.)
-    this.appUrl = this.configService.get<string>('APP_URL', 'http://localhost:3000');
+    this.appUrl = this.configService.get<string>(
+      'APP_URL',
+      'http://localhost:3000',
+    );
 
     if (apiKey) {
       this.resend = new Resend(apiKey);
       this.logger.log('Resend email service initialized');
     } else {
-      this.logger.warn('RESEND_API_KEY not configured - emails will be logged only');
+      this.logger.warn(
+        'RESEND_API_KEY not configured - emails will be logged only',
+      );
     }
   }
 
@@ -71,7 +82,9 @@ export class EmailService {
     // Build platform content summary
     const platformSummary = Object.entries(platformContent)
       .map(([platform, content]) => {
-        const hashtags = content.hashtags?.length ? ` (${content.hashtags.length} hashtags)` : '';
+        const hashtags = content.hashtags?.length
+          ? ` (${content.hashtags.length} hashtags)`
+          : '';
         return `• ${platform.charAt(0).toUpperCase() + platform.slice(1)}: ${content.text.substring(0, 100)}...${hashtags}`;
       })
       .join('\n');
@@ -118,7 +131,9 @@ export class EmailService {
 
     if (!this.resend) {
       // Log the email instead of sending
-      this.logger.log(`[EMAIL NOT SENT - No API Key] To: ${to}, Subject: ${subject}`);
+      this.logger.log(
+        `[EMAIL NOT SENT - No API Key] To: ${to}, Subject: ${subject}`,
+      );
       this.logger.debug(`Email content: ${text || html.substring(0, 200)}`);
       return {
         success: true,
@@ -149,7 +164,8 @@ export class EmailService {
         messageId: result.data?.id,
       };
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Email send failed: ${errorMessage}`);
       return {
         success: false,
@@ -690,7 +706,10 @@ This email was sent by your Social Media Automation tool.
 
     return this.sendEmail({
       to: email,
-      subject: '⚠️ URGENT: Your Account Will Be Deleted in ' + daysUntilDeletion + ' Days',
+      subject:
+        '⚠️ URGENT: Your Account Will Be Deleted in ' +
+        daysUntilDeletion +
+        ' Days',
       html,
       text,
     });

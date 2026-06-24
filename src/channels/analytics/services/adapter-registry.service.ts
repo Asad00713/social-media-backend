@@ -18,7 +18,10 @@ import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema'
  */
 @Injectable()
 export class AdapterRegistryService {
-  private readonly adapters = new Map<SupportedPlatform, PlatformAnalyticsAdapter>();
+  private readonly adapters = new Map<
+    SupportedPlatform,
+    PlatformAnalyticsAdapter
+  >();
 
   constructor(
     private readonly youtube: YouTubeAnalyticsAdapter,
@@ -47,7 +50,9 @@ export class AdapterRegistryService {
   get(platform: SupportedPlatform): PlatformAnalyticsAdapter {
     const adapter = this.adapters.get(platform);
     if (!adapter) {
-      throw new NotFoundException(`No adapter registered for platform: ${platform}`);
+      throw new NotFoundException(
+        `No adapter registered for platform: ${platform}`,
+      );
     }
     return adapter;
   }

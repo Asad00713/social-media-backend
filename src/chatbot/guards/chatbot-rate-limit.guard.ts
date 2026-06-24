@@ -58,7 +58,8 @@ export class ChatbotRateLimitGuard implements CanActivate, OnModuleDestroy {
         throw new HttpException(
           {
             statusCode: HttpStatus.TOO_MANY_REQUESTS,
-            message: 'Too many requests. Please wait a moment before sending another message.',
+            message:
+              'Too many requests. Please wait a moment before sending another message.',
             retryAfter: Math.ceil(WINDOW_MS / 1000),
           },
           HttpStatus.TOO_MANY_REQUESTS,

@@ -126,7 +126,11 @@ export class InboxController {
     @Param('threadKey') threadKey: string,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.inboxService.markThreadRead(workspaceId, user.userId, threadKey);
+    return this.inboxService.markThreadRead(
+      workspaceId,
+      user.userId,
+      threadKey,
+    );
   }
 
   @Get('counts')
@@ -208,7 +212,7 @@ export class InboxController {
       threadKey,
       dto.text,
       dto.attachments?.map((a) => ({
-        kind: a.kind === 'voice' ? 'audio' : (a.kind as 'image' | 'video' | 'audio' | 'file'),
+        kind: a.kind === 'voice' ? 'audio' : a.kind,
         url: a.url,
         contentType: a.contentType,
       })),
@@ -306,7 +310,10 @@ export class InboxController {
   ) {
     // Workspace access check piggybacks on the inboxService — keeps the rule
     // in one place. Any non-member gets a 403 before R2 is touched.
-    await this.inboxService.assertWorkspaceAccessPublic(workspaceId, user.userId);
+    await this.inboxService.assertWorkspaceAccessPublic(
+      workspaceId,
+      user.userId,
+    );
     return this.r2Service.createPresignedUpload({
       workspaceId,
       userId: user.userId,

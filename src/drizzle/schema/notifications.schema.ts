@@ -51,12 +51,18 @@ export const NOTIFICATION_TYPES = [
 ] as const;
 
 export type NotificationType = (typeof NOTIFICATION_TYPES)[number];
-export const notificationTypeEnum = pgEnum('notification_type', NOTIFICATION_TYPES);
+export const notificationTypeEnum = pgEnum(
+  'notification_type',
+  NOTIFICATION_TYPES,
+);
 
 // Notification priority
 export const NOTIFICATION_PRIORITIES = ['low', 'medium', 'high'] as const;
 export type NotificationPriority = (typeof NOTIFICATION_PRIORITIES)[number];
-export const notificationPriorityEnum = pgEnum('notification_priority', NOTIFICATION_PRIORITIES);
+export const notificationPriorityEnum = pgEnum(
+  'notification_priority',
+  NOTIFICATION_PRIORITIES,
+);
 
 export const notifications = pgTable('notifications', {
   id: uuid('id').primaryKey().defaultRandom(),

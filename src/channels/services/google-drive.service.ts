@@ -69,7 +69,8 @@ export class GoogleDriveService {
 
     const params = new URLSearchParams({
       pageSize: pageSize.toString(),
-      fields: 'nextPageToken,files(id,name,mimeType,thumbnailLink,webContentLink,webViewLink,size,createdTime,modifiedTime)',
+      fields:
+        'nextPageToken,files(id,name,mimeType,thumbnailLink,webContentLink,webViewLink,size,createdTime,modifiedTime)',
       orderBy: 'modifiedTime desc',
     });
 
@@ -213,14 +214,18 @@ export class GoogleDriveService {
    */
   async getFile(accessToken: string, fileId: string): Promise<DriveFile> {
     const params = new URLSearchParams({
-      fields: 'id,name,mimeType,thumbnailLink,webContentLink,webViewLink,size,createdTime,modifiedTime',
+      fields:
+        'id,name,mimeType,thumbnailLink,webContentLink,webViewLink,size,createdTime,modifiedTime',
     });
 
-    const response = await fetch(`${this.apiBaseUrl}/files/${fileId}?${params}`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
+    const response = await fetch(
+      `${this.apiBaseUrl}/files/${fileId}?${params}`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
       },
-    });
+    );
 
     if (!response.ok) {
       const error = await response.text();

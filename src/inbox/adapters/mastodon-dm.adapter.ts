@@ -49,7 +49,11 @@ export class MastodonDmAdapter implements PlatformDmAdapter {
     conversationId: string,
     text: string,
   ): Promise<CreatedDm> {
-    return this.mastodonService.sendDirectMessage(channel, conversationId, text);
+    return this.mastodonService.sendDirectMessage(
+      channel,
+      conversationId,
+      text,
+    );
   }
 
   async getReplyWindowState(): Promise<{

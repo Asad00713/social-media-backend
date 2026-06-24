@@ -71,9 +71,11 @@ export class DiscordService {
   async listGuildChannels(
     guildId: string,
   ): Promise<{ id: string; name: string; type: number }[]> {
-    const channels = (await this.rest.get(
-      Routes.guildChannels(guildId),
-    )) as { id: string; name: string; type: number }[];
+    const channels = (await this.rest.get(Routes.guildChannels(guildId))) as {
+      id: string;
+      name: string;
+      type: number;
+    }[];
     return channels
       .filter((c) => c.type === 0 || c.type === 5)
       .map((c) => ({ id: c.id, name: c.name, type: c.type }));

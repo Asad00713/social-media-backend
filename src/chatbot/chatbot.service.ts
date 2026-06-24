@@ -4,7 +4,12 @@ import { db } from '../drizzle/db';
 import { workspace, subscriptions } from '../drizzle/schema';
 import { ConversationService } from './services/conversation.service';
 import { ContextBuilderService } from './services/context-builder.service';
-import { AgentService, AgentSSEEvent, MediaItem, PostPreviewData } from './services/agent.service';
+import {
+  AgentService,
+  AgentSSEEvent,
+  MediaItem,
+  PostPreviewData,
+} from './services/agent.service';
 import { TokenTrackingService } from './services/token-tracking.service';
 import { LLMRouterService } from './llm/llm-router.service';
 import { LLMMessage } from './llm/llm-provider.interface';
@@ -52,10 +57,18 @@ export class ChatbotService {
     options: ProcessMessageOptions,
     signal?: AbortSignal,
   ): AsyncGenerator<AgentSSEEvent> {
-    const { conversationId, userId, workspaceId, message, currentRoute, replyToMessageId } = options;
+    const {
+      conversationId,
+      userId,
+      workspaceId,
+      message,
+      currentRoute,
+      replyToMessageId,
+    } = options;
 
     // Validate conversation ownership
-    const conversation = await this.conversationService.findById(conversationId);
+    const conversation =
+      await this.conversationService.findById(conversationId);
     if (conversation.userId !== userId) {
       throw new NotFoundException('Conversation not found');
     }
@@ -96,19 +109,23 @@ export class ChatbotService {
     );
 
     // Load conversation history
-    const recentMessages = await this.conversationService.getRecentMessages(
-      conversationId,
-    );
-    const historyMessages = this.contextBuilder.buildMessageHistory(recentMessages);
+    const recentMessages =
+      await this.conversationService.getRecentMessages(conversationId);
+    const historyMessages =
+      this.contextBuilder.buildMessageHistory(recentMessages);
 
     // If the user is replying to a specific message, prepend the quoted context
     // directly into the user's message so the LLM can't miss it
     if (replyToMessageId) {
-      const quotedMsg = await this.conversationService.findMessageById(replyToMessageId);
+      const quotedMsg =
+        await this.conversationService.findMessageById(replyToMessageId);
       if (quotedMsg && historyMessages.length > 0) {
         const lastMsg = historyMessages[historyMessages.length - 1];
         if (lastMsg.role === 'user') {
-          lastMsg.content = this.buildReplyToUserMessage(quotedMsg, lastMsg.content || '');
+          lastMsg.content = this.buildReplyToUserMessage(
+            quotedMsg,
+            lastMsg.content || '',
+          );
         }
       }
     }
@@ -129,10 +146,14 @@ export class ChatbotService {
     let assistantContent = '';
     let followups: string[] = [];
     let actions: Array<{ type: string; payload: Record<string, any> }> = [];
-    let thinkingSteps: string[] = [];
-    let toolCalls: Array<{ id: string; name: string; arguments: Record<string, any> }> = [];
-    let media: MediaItem[] = [];
-    let postPreviews: PostPreviewData[] = [];
+    const thinkingSteps: string[] = [];
+    const toolCalls: Array<{
+      id: string;
+      name: string;
+      arguments: Record<string, any>;
+    }> = [];
+    const media: MediaItem[] = [];
+    const postPreviews: PostPreviewData[] = [];
     let saved = false;
 
     try {
@@ -188,7 +209,9 @@ export class ChatbotService {
           }
 
           // Record token usage (non-blocking)
-          const estimatedTokens = Math.ceil((assistantContent.length + message.length) / 4);
+          const estimatedTokens = Math.ceil(
+            (assistantContent.length + message.length) / 4,
+          );
           this.tokenTracking
             .recordUsage(workspaceId, userId, estimatedTokens, 'chat', {
               inputSummary: message.substring(0, 200),
@@ -210,7 +233,9 @@ export class ChatbotService {
               // Fallback to truncated message
               await this.conversationService.updateTitle(
                 conversationId,
-                message.length > 50 ? message.substring(0, 47) + '...' : message,
+                message.length > 50
+                  ? message.substring(0, 47) + '...'
+                  : message,
               );
             }
           }
@@ -241,7 +266,9 @@ export class ChatbotService {
             replyToMessageId,
           );
         } catch (error) {
-          this.logger.error(`Failed to save assistant message (fallback): ${error}`);
+          this.logger.error(
+            `Failed to save assistant message (fallback): ${error}`,
+          );
         }
 
         // Fallback title generation
@@ -258,7 +285,11 @@ export class ChatbotService {
   /**
    * Create a new conversation.
    */
-  async createConversation(userId: string, workspaceId: string, title?: string) {
+  async createConversation(
+    userId: string,
+    workspaceId: string,
+    title?: string,
+  ) {
     return this.conversationService.create(userId, workspaceId, title);
   }
 
@@ -289,7 +320,8 @@ export class ChatbotService {
       .limit(1);
 
     if (!ws) throw new NotFoundException('Workspace not found');
-    if (ws.ownerId !== userId) throw new NotFoundException('Workspace not found');
+    if (ws.ownerId !== userId)
+      throw new NotFoundException('Workspace not found');
 
     await db
       .update(workspace)
@@ -313,7 +345,8 @@ export class ChatbotService {
    * Get a single conversation with its messages.
    */
   async getConversation(conversationId: string, userId: string) {
-    const conversation = await this.conversationService.findById(conversationId);
+    const conversation =
+      await this.conversationService.findById(conversationId);
     if (conversation.userId !== userId) {
       throw new NotFoundException('Conversation not found');
     }
@@ -338,7 +371,8 @@ export class ChatbotService {
     limit?: number,
     offset?: number,
   ) {
-    const conversation = await this.conversationService.findById(conversationId);
+    const conversation =
+      await this.conversationService.findById(conversationId);
     if (conversation.userId !== userId) {
       throw new NotFoundException('Conversation not found');
     }
@@ -356,7 +390,8 @@ export class ChatbotService {
     rating: 'good' | 'bad',
     comment?: string,
   ) {
-    const conversation = await this.conversationService.findById(conversationId);
+    const conversation =
+      await this.conversationService.findById(conversationId);
     if (conversation.userId !== userId) {
       throw new NotFoundException('Conversation not found');
     }
@@ -367,7 +402,12 @@ export class ChatbotService {
   /**
    * Search conversations by message content or title.
    */
-  async searchConversations(userId: string, workspaceId: string, query: string, limit?: number) {
+  async searchConversations(
+    userId: string,
+    workspaceId: string,
+    query: string,
+    limit?: number,
+  ) {
     return this.conversationService.search(userId, workspaceId, query, limit);
   }
 
@@ -386,7 +426,11 @@ export class ChatbotService {
     userId: string,
     format: 'json' | 'markdown' = 'json',
   ) {
-    return this.conversationService.exportConversation(conversationId, userId, format);
+    return this.conversationService.exportConversation(
+      conversationId,
+      userId,
+      format,
+    );
   }
 
   /**
@@ -406,7 +450,11 @@ export class ChatbotService {
   /**
    * List shared conversations in a workspace.
    */
-  async listSharedConversations(workspaceId: string, limit?: number, offset?: number) {
+  async listSharedConversations(
+    workspaceId: string,
+    limit?: number,
+    offset?: number,
+  ) {
     return this.conversationService.listShared(workspaceId, limit, offset);
   }
 
@@ -436,7 +484,8 @@ export class ChatbotService {
     currentRoute?: string,
     signal?: AbortSignal,
   ): AsyncGenerator<AgentSSEEvent> {
-    const conversation = await this.conversationService.findById(conversationId);
+    const conversation =
+      await this.conversationService.findById(conversationId);
     if (conversation.userId !== userId) {
       throw new NotFoundException('Conversation not found');
     }
@@ -456,10 +505,10 @@ export class ChatbotService {
       currentRoute,
     );
 
-    const recentMessages = await this.conversationService.getRecentMessages(
-      conversationId,
-    );
-    const historyMessages = this.contextBuilder.buildMessageHistory(recentMessages);
+    const recentMessages =
+      await this.conversationService.getRecentMessages(conversationId);
+    const historyMessages =
+      this.contextBuilder.buildMessageHistory(recentMessages);
 
     const mediaSummary = this.contextBuilder.buildMediaSummary(recentMessages);
 
@@ -472,10 +521,14 @@ export class ChatbotService {
     let assistantContent = '';
     let followups: string[] = [];
     let actions: Array<{ type: string; payload: Record<string, any> }> = [];
-    let thinkingSteps: string[] = [];
-    let toolCalls: Array<{ id: string; name: string; arguments: Record<string, any> }> = [];
-    let media: MediaItem[] = [];
-    let postPreviews: PostPreviewData[] = [];
+    const thinkingSteps: string[] = [];
+    const toolCalls: Array<{
+      id: string;
+      name: string;
+      arguments: Record<string, any>;
+    }> = [];
+    const media: MediaItem[] = [];
+    const postPreviews: PostPreviewData[] = [];
     let saved = false;
 
     try {
@@ -547,7 +600,9 @@ export class ChatbotService {
             },
           );
         } catch (error) {
-          this.logger.error(`Failed to save regenerated message (fallback): ${error}`);
+          this.logger.error(
+            `Failed to save regenerated message (fallback): ${error}`,
+          );
         }
       }
     }
@@ -563,7 +618,9 @@ export class ChatbotService {
     userText: string,
   ): string {
     const role =
-      quotedMsg.role === 'assistant' ? 'your earlier response' : 'my earlier message';
+      quotedMsg.role === 'assistant'
+        ? 'your earlier response'
+        : 'my earlier message';
     const meta = quotedMsg.metadata as Record<string, any> | null;
 
     const parts: string[] = [
@@ -599,7 +656,9 @@ export class ChatbotService {
   /**
    * Resolve the preferred LLM provider for a workspace, gated by plan tier.
    */
-  private async resolveProvider(workspaceId: string): Promise<string | undefined> {
+  private async resolveProvider(
+    workspaceId: string,
+  ): Promise<string | undefined> {
     try {
       // Get workspace preferred provider
       const [ws] = await db

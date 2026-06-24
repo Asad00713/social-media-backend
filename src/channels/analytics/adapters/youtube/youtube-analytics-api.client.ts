@@ -24,7 +24,14 @@ export interface TrafficSourceRow {
 /** YouTube Analytics API v2 — requires yt-analytics.readonly OAuth scope. */
 export class YouTubeAnalyticsApiClient {
   private readonly baseUrl = 'https://youtubeanalytics.googleapis.com/v2';
-  private readonly metricNames = ['views', 'likes', 'comments', 'shares', 'estimatedMinutesWatched', 'averageViewDuration'];
+  private readonly metricNames = [
+    'views',
+    'likes',
+    'comments',
+    'shares',
+    'estimatedMinutesWatched',
+    'averageViewDuration',
+  ];
 
   constructor(private readonly fetchImpl: typeof fetch = fetch) {}
 
@@ -47,8 +54,14 @@ export class YouTubeAnalyticsApiClient {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      const message = (body as { error?: { message?: string } }).error?.message ?? `HTTP ${res.status}`;
-      throw new YouTubeApiError(this.mapCode(res.status, message), res.status, message);
+      const message =
+        (body as { error?: { message?: string } }).error?.message ??
+        `HTTP ${res.status}`;
+      throw new YouTubeApiError(
+        this.mapCode(res.status, message),
+        res.status,
+        message,
+      );
     }
     const data = (await res.json()) as YouTubeAnalyticsQueryResponse;
     const row = data.rows?.[0];
@@ -80,8 +93,14 @@ export class YouTubeAnalyticsApiClient {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      const message = (body as { error?: { message?: string } }).error?.message ?? `HTTP ${res.status}`;
-      throw new YouTubeApiError(this.mapCode(res.status, message), res.status, message);
+      const message =
+        (body as { error?: { message?: string } }).error?.message ??
+        `HTTP ${res.status}`;
+      throw new YouTubeApiError(
+        this.mapCode(res.status, message),
+        res.status,
+        message,
+      );
     }
     const data = (await res.json()) as YouTubeAnalyticsQueryResponse;
     return (data.rows ?? []).map((r) => ({
@@ -109,8 +128,14 @@ export class YouTubeAnalyticsApiClient {
     });
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
-      const message = (body as { error?: { message?: string } }).error?.message ?? `HTTP ${res.status}`;
-      throw new YouTubeApiError(this.mapCode(res.status, message), res.status, message);
+      const message =
+        (body as { error?: { message?: string } }).error?.message ??
+        `HTTP ${res.status}`;
+      throw new YouTubeApiError(
+        this.mapCode(res.status, message),
+        res.status,
+        message,
+      );
     }
     const data = (await res.json()) as YouTubeAnalyticsQueryResponse;
     return (data.rows ?? []).map((r) => ({

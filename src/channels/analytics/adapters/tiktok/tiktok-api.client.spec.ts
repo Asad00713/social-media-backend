@@ -39,16 +39,18 @@ describe('TikTokApiClient', () => {
       ok: true,
       json: async () => ({
         data: {
-          videos: [
-            { id: 'v1', create_time: 1700000000, view_count: 1000 },
-          ],
+          videos: [{ id: 'v1', create_time: 1700000000, view_count: 1000 }],
           cursor: 20,
           has_more: false,
         },
         error: { code: 'ok', message: '' },
       }),
     });
-    const result = await client.getVideoList({ accessToken: 'tok', maxCount: 10, cursor: 5 });
+    const result = await client.getVideoList({
+      accessToken: 'tok',
+      maxCount: 10,
+      cursor: 5,
+    });
     expect(mockFetch).toHaveBeenCalledTimes(1);
     const [url, opts] = mockFetch.mock.calls[0];
     expect(url).toContain('/video/list/?fields=');
@@ -82,7 +84,10 @@ describe('TikTokApiClient', () => {
         error: { code: 'ok', message: '' },
       }),
     });
-    const videos = await client.queryVideos({ accessToken: 'tok', videoIds: ['v1', 'v2'] });
+    const videos = await client.queryVideos({
+      accessToken: 'tok',
+      videoIds: ['v1', 'v2'],
+    });
     const [url, opts] = mockFetch.mock.calls[0];
     expect(url).toContain('/video/query/?fields=');
     expect(opts.method).toBe('POST');
@@ -96,7 +101,9 @@ describe('TikTokApiClient', () => {
     mockFetch.mockResolvedValue({
       ok: false,
       status: 429,
-      json: async () => ({ error: { code: 'rate_limit_exceeded', message: 'Too many requests' } }),
+      json: async () => ({
+        error: { code: 'rate_limit_exceeded', message: 'Too many requests' },
+      }),
     });
     await expect(client.getUserInfo('tok')).rejects.toMatchObject({
       code: 'rate_limited',
@@ -108,7 +115,9 @@ describe('TikTokApiClient', () => {
     mockFetch.mockResolvedValue({
       ok: false,
       status: 401,
-      json: async () => ({ error: { code: 'access_token_invalid', message: 'Invalid token' } }),
+      json: async () => ({
+        error: { code: 'access_token_invalid', message: 'Invalid token' },
+      }),
     });
     await expect(client.getUserInfo('bad-tok')).rejects.toMatchObject({
       code: 'auth_failed',

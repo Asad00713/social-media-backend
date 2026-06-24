@@ -19,7 +19,9 @@ export interface BlueskyFeedItem {
     cid: string;
     author: { did: string; handle: string };
     record: { text?: string; createdAt: string; embed?: any };
-    embed?: { images?: Array<{ thumb: string; fullsize: string; alt?: string }> };
+    embed?: {
+      images?: Array<{ thumb: string; fullsize: string; alt?: string }>;
+    };
     likeCount?: number;
     repostCount?: number;
     replyCount?: number;

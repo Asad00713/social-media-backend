@@ -32,7 +32,7 @@ export class RedditPublisher extends BasePublisher {
     const { content, mediaItems, metadata } = options;
     const title = metadata?.title as string | undefined;
     const subreddit = metadata?.subreddit as string | undefined;
-    const postType = ((metadata?.postType as RedditKind | undefined) ?? 'self');
+    const postType = (metadata?.postType as RedditKind | undefined) ?? 'self';
 
     if (!subreddit) {
       throw new Error('Reddit post requires a subreddit');
@@ -41,7 +41,9 @@ export class RedditPublisher extends BasePublisher {
       throw new Error('Reddit post requires a title');
     }
     if (title.length > 300) {
-      throw new Error(`Reddit title exceeds 300 character limit (${title.length} chars)`);
+      throw new Error(
+        `Reddit title exceeds 300 character limit (${title.length} chars)`,
+      );
     }
 
     if (postType === 'image') {
@@ -72,7 +74,7 @@ export class RedditPublisher extends BasePublisher {
     const { content, mediaItems, accessToken, metadata } = options;
     this.validate(options);
 
-    const kind = ((metadata?.postType as RedditKind | undefined) ?? 'self');
+    const kind = (metadata?.postType as RedditKind | undefined) ?? 'self';
     const subreddit = (metadata?.subreddit as string).replace(/^r\//, '');
     const title = metadata?.title as string;
 

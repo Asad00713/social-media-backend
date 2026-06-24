@@ -24,11 +24,7 @@ export class TemplateService {
   /**
    * Create a new template
    */
-  async create(
-    workspaceId: string,
-    userId: string,
-    dto: CreateTemplateDto,
-  ) {
+  async create(workspaceId: string, userId: string, dto: CreateTemplateDto) {
     // Validate category if provided
     if (dto.categoryId) {
       const category = await db
@@ -114,7 +110,7 @@ export class TemplateService {
       );
     }
 
-    let baseQuery = db
+    const baseQuery = db
       .select({
         template: mediaTemplates,
         category: mediaCategories,
@@ -223,10 +219,12 @@ export class TemplateService {
 
     if (dto.name !== undefined) updateData.name = dto.name;
     if (dto.description !== undefined) updateData.description = dto.description;
-    if (dto.templateType !== undefined) updateData.templateType = dto.templateType;
+    if (dto.templateType !== undefined)
+      updateData.templateType = dto.templateType;
     if (dto.platforms !== undefined) updateData.platforms = dto.platforms;
     if (dto.content !== undefined) updateData.content = dto.content;
-    if (dto.thumbnailUrl !== undefined) updateData.thumbnailUrl = dto.thumbnailUrl;
+    if (dto.thumbnailUrl !== undefined)
+      updateData.thumbnailUrl = dto.thumbnailUrl;
     if (dto.categoryId !== undefined) updateData.categoryId = dto.categoryId;
     if (dto.tags !== undefined) updateData.tags = dto.tags;
     if (dto.isStarred !== undefined) updateData.isStarred = dto.isStarred;

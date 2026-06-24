@@ -40,7 +40,9 @@ export class TwitterAnalyticsAdapter implements PlatformAnalyticsAdapter {
     return op === 'fetchRecentPosts' ? 2 : 1;
   }
 
-  async fetchProfileSnapshot(channel: ChannelEntity): Promise<ProfileSnapshotResult> {
+  async fetchProfileSnapshot(
+    channel: ChannelEntity,
+  ): Promise<ProfileSnapshotResult> {
     try {
       const user = await this.client.getMe(channel.accessToken);
       return {
@@ -107,9 +109,11 @@ export class TwitterAnalyticsAdapter implements PlatformAnalyticsAdapter {
         pub.impression_count ??
         null;
 
-      const hasDetailedMetrics = !!tweet.non_public_metrics || !!tweet.organic_metrics;
+      const hasDetailedMetrics =
+        !!tweet.non_public_metrics || !!tweet.organic_metrics;
       const missing: string[] = [];
-      if (!hasDetailedMetrics && impressions === null) missing.push('impressions');
+      if (!hasDetailedMetrics && impressions === null)
+        missing.push('impressions');
 
       const result: PostMetricsResult = {
         status: missing.length > 0 ? 'partial' : 'success',
@@ -194,11 +198,17 @@ export class TwitterAnalyticsAdapter implements PlatformAnalyticsAdapter {
     }
   }
 
-  private toFailedResult(err: unknown): { status: 'failed'; error: AdapterError; quotaCostUsed: number } {
+  private toFailedResult(err: unknown): {
+    status: 'failed';
+    error: AdapterError;
+    quotaCostUsed: number;
+  } {
     const tErr = err as TwitterApiError;
     // Map tier_required → auth_failed since AdapterError doesn't expose tier_required
     const code: AdapterError['code'] =
-      tErr?.code === 'tier_required' ? 'auth_failed' : (tErr?.code ?? 'transient');
+      tErr?.code === 'tier_required'
+        ? 'auth_failed'
+        : (tErr?.code ?? 'transient');
     const message = (err as Error)?.message ?? 'Unknown error';
     this.logger.warn(`Twitter API error [${code}]: ${message}`);
     return { status: 'failed', error: { code, message }, quotaCostUsed: 0 };

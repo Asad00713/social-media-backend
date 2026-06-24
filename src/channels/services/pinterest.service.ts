@@ -27,9 +27,10 @@ export class PinterestService {
   private readonly logger = new Logger(PinterestService.name);
   // Use sandbox API for trial/development, production API for approved apps
   // Set PINTEREST_USE_SANDBOX=true in .env to use sandbox
-  private readonly apiUrl = process.env.PINTEREST_USE_SANDBOX === 'true'
-    ? 'https://api-sandbox.pinterest.com/v5'
-    : 'https://api.pinterest.com/v5';
+  private readonly apiUrl =
+    process.env.PINTEREST_USE_SANDBOX === 'true'
+      ? 'https://api-sandbox.pinterest.com/v5'
+      : 'https://api.pinterest.com/v5';
 
   /**
    * Get current Pinterest user info
@@ -110,11 +111,7 @@ export class PinterestService {
    */
   async listBoards(
     accessToken: string,
-  ): Promise<
-    Array<
-      PinterestBoard & { image_thumbnail_url: string | null }
-    >
-  > {
+  ): Promise<Array<PinterestBoard & { image_thumbnail_url: string | null }>> {
     const response = await fetch(`${this.apiUrl}/boards`, {
       headers: {
         Authorization: `Bearer ${accessToken}`,
@@ -175,9 +172,7 @@ export class PinterestService {
     if (!response.ok) {
       const error = await response.json();
       this.logger.error('Failed to create Pinterest board:', error);
-      throw new BadRequestException(
-        error.message || 'Failed to create board',
-      );
+      throw new BadRequestException(error.message || 'Failed to create board');
     }
 
     const board = await response.json();
@@ -209,7 +204,8 @@ export class PinterestService {
   ): Promise<PinterestBoard> {
     const body: Record<string, unknown> = {};
     if (typeof patch.name === 'string') body.name = patch.name;
-    if (typeof patch.description === 'string') body.description = patch.description;
+    if (typeof patch.description === 'string')
+      body.description = patch.description;
     if (patch.privacy) body.privacy = patch.privacy;
 
     if (Object.keys(body).length === 0) {
@@ -228,9 +224,7 @@ export class PinterestService {
     if (!response.ok) {
       const error = await response.json().catch(() => ({}));
       this.logger.error('Failed to update Pinterest board:', error);
-      throw new BadRequestException(
-        error.message || 'Failed to update board',
-      );
+      throw new BadRequestException(error.message || 'Failed to update board');
     }
 
     const board = await response.json();
@@ -266,9 +260,7 @@ export class PinterestService {
     if (!response.ok && response.status !== 204) {
       const error = await response.json().catch(() => ({}));
       this.logger.error('Failed to delete Pinterest board:', error);
-      throw new BadRequestException(
-        error.message || 'Failed to delete board',
-      );
+      throw new BadRequestException(error.message || 'Failed to delete board');
     }
 
     this.logger.log(`Pinterest board deleted: ${boardId}`);
@@ -298,7 +290,8 @@ export class PinterestService {
       media_source: isVideo
         ? {
             source_type: 'video_id',
-            cover_image_url: options?.videoCoverImageUrl || mediaUrl.replace('.mp4', '.jpg'),
+            cover_image_url:
+              options?.videoCoverImageUrl || mediaUrl.replace('.mp4', '.jpg'),
             media_id: '', // Will be set after video upload
           }
         : {
@@ -313,7 +306,14 @@ export class PinterestService {
 
     // For videos, we need to use the video upload flow
     if (isVideo) {
-      return this.createVideoPin(accessToken, boardId, title, description, mediaUrl, options);
+      return this.createVideoPin(
+        accessToken,
+        boardId,
+        title,
+        description,
+        mediaUrl,
+        options,
+      );
     }
 
     const response = await fetch(`${this.apiUrl}/pins`, {
@@ -328,9 +328,7 @@ export class PinterestService {
     if (!response.ok) {
       const error = await response.json();
       this.logger.error('Failed to create Pinterest pin:', error);
-      throw new BadRequestException(
-        error.message || 'Failed to create pin',
-      );
+      throw new BadRequestException(error.message || 'Failed to create pin');
     }
 
     const data = await response.json();
@@ -386,7 +384,9 @@ export class PinterestService {
     // Step 2: Download video and upload to Pinterest
     const videoResponse = await fetch(videoUrl);
     if (!videoResponse.ok) {
-      throw new BadRequestException(`Failed to download video from ${videoUrl}`);
+      throw new BadRequestException(
+        `Failed to download video from ${videoUrl}`,
+      );
     }
 
     const videoBuffer = await videoResponse.arrayBuffer();

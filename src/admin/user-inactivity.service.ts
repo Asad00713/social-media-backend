@@ -55,9 +55,13 @@ export class UserInactivityService {
         actionUrl: '/admin/users',
       });
 
-      this.logger.log(`Sent ${type} notification to ${adminIds.length} super admin(s)`);
+      this.logger.log(
+        `Sent ${type} notification to ${adminIds.length} super admin(s)`,
+      );
     } catch (error) {
-      this.logger.error(`Failed to send notification to super admins: ${error.message}`);
+      this.logger.error(
+        `Failed to send notification to super admins: ${error.message}`,
+      );
     }
   }
 
@@ -80,7 +84,10 @@ export class UserInactivityService {
 
       this.logger.log('User inactivity check completed');
     } catch (error) {
-      this.logger.error(`User inactivity check failed: ${error.message}`, error.stack);
+      this.logger.error(
+        `User inactivity check failed: ${error.message}`,
+        error.stack,
+      );
     }
   }
 
@@ -114,7 +121,9 @@ export class UserInactivityService {
         ),
       );
 
-    this.logger.log(`Found ${inactiveUsers.length} users inactive for 15+ days`);
+    this.logger.log(
+      `Found ${inactiveUsers.length} users inactive for 15+ days`,
+    );
 
     const processedUsers: string[] = [];
     for (const user of inactiveUsers) {
@@ -138,10 +147,14 @@ export class UserInactivityService {
           processedUsers.push(user.email);
           this.logger.log(`Sent 15-day inactivity email to ${user.email}`);
         } else {
-          this.logger.error(`Failed to send 15-day email to ${user.email}: ${result.error}`);
+          this.logger.error(
+            `Failed to send 15-day email to ${user.email}: ${result.error}`,
+          );
         }
       } catch (error) {
-        this.logger.error(`Error processing 15-day inactive user ${user.email}: ${error.message}`);
+        this.logger.error(
+          `Error processing 15-day inactive user ${user.email}: ${error.message}`,
+        );
       }
     }
 
@@ -179,7 +192,9 @@ export class UserInactivityService {
         ),
       );
 
-    this.logger.log(`Found ${inactiveUsers.length} users inactive for 25+ days`);
+    this.logger.log(
+      `Found ${inactiveUsers.length} users inactive for 25+ days`,
+    );
 
     const processedUsers: string[] = [];
     for (const user of inactiveUsers) {
@@ -201,10 +216,14 @@ export class UserInactivityService {
           processedUsers.push(user.email);
           this.logger.log(`Sent 25-day inactivity email to ${user.email}`);
         } else {
-          this.logger.error(`Failed to send 25-day email to ${user.email}: ${result.error}`);
+          this.logger.error(
+            `Failed to send 25-day email to ${user.email}: ${result.error}`,
+          );
         }
       } catch (error) {
-        this.logger.error(`Error processing 25-day inactive user ${user.email}: ${error.message}`);
+        this.logger.error(
+          `Error processing 25-day inactive user ${user.email}: ${error.message}`,
+        );
       }
     }
 
@@ -242,7 +261,9 @@ export class UserInactivityService {
         ),
       );
 
-    this.logger.log(`Found ${inactiveUsers.length} users inactive for 30+ days (will be deactivated)`);
+    this.logger.log(
+      `Found ${inactiveUsers.length} users inactive for 30+ days (will be deactivated)`,
+    );
 
     const deactivatedUsers: string[] = [];
     for (const user of inactiveUsers) {
@@ -268,12 +289,18 @@ export class UserInactivityService {
 
         deactivatedUsers.push(user.email);
         if (result.success) {
-          this.logger.log(`Deactivated user ${user.email} due to 30 days inactivity (email sent)`);
+          this.logger.log(
+            `Deactivated user ${user.email} due to 30 days inactivity (email sent)`,
+          );
         } else {
-          this.logger.warn(`Deactivated user ${user.email} but email failed: ${result.error}`);
+          this.logger.warn(
+            `Deactivated user ${user.email} but email failed: ${result.error}`,
+          );
         }
       } catch (error) {
-        this.logger.error(`Error processing 30-day inactive user ${user.email}: ${error.message}`);
+        this.logger.error(
+          `Error processing 30-day inactive user ${user.email}: ${error.message}`,
+        );
       }
     }
 
@@ -338,7 +365,9 @@ export class UserInactivityService {
         ),
       );
 
-    this.logger.log(`Found ${usersToDelete.length} users inactive for 365+ days (will be deleted)`);
+    this.logger.log(
+      `Found ${usersToDelete.length} users inactive for 365+ days (will be deleted)`,
+    );
 
     const deletedUsers: string[] = [];
     for (const user of usersToDelete) {
@@ -346,9 +375,13 @@ export class UserInactivityService {
         // Delete the user
         await this.db.delete(users).where(eq(users.id, user.id));
         deletedUsers.push(user.email);
-        this.logger.log(`Permanently deleted user ${user.email} due to 1 year inactivity`);
+        this.logger.log(
+          `Permanently deleted user ${user.email} due to 1 year inactivity`,
+        );
       } catch (error) {
-        this.logger.error(`Error deleting inactive user ${user.email}: ${error.message}`);
+        this.logger.error(
+          `Error deleting inactive user ${user.email}: ${error.message}`,
+        );
       }
     }
 
@@ -378,47 +411,46 @@ export class UserInactivityService {
   async getInactivityStats() {
     const now = new Date();
     const fifteenDaysAgo = new Date(now.getTime() - 15 * 24 * 60 * 60 * 1000);
-    const twentyFiveDaysAgo = new Date(now.getTime() - 25 * 24 * 60 * 60 * 1000);
+    const twentyFiveDaysAgo = new Date(
+      now.getTime() - 25 * 24 * 60 * 60 * 1000,
+    );
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
 
-    const [
-      inactive15Days,
-      inactive25Days,
-      deactivatedUsers,
-    ] = await Promise.all([
-      // Users inactive 15-24 days
-      this.db
-        .select({ count: sql<number>`count(*)` })
-        .from(users)
-        .where(
-          and(
-            eq(users.isActive, true),
-            sql`COALESCE(${users.lastLoginAt}, ${users.createdAt}) <= ${fifteenDaysAgo}`,
-            sql`COALESCE(${users.lastLoginAt}, ${users.createdAt}) > ${twentyFiveDaysAgo}`,
+    const [inactive15Days, inactive25Days, deactivatedUsers] =
+      await Promise.all([
+        // Users inactive 15-24 days
+        this.db
+          .select({ count: sql<number>`count(*)` })
+          .from(users)
+          .where(
+            and(
+              eq(users.isActive, true),
+              sql`COALESCE(${users.lastLoginAt}, ${users.createdAt}) <= ${fifteenDaysAgo}`,
+              sql`COALESCE(${users.lastLoginAt}, ${users.createdAt}) > ${twentyFiveDaysAgo}`,
+            ),
           ),
-        ),
-      // Users inactive 25-29 days
-      this.db
-        .select({ count: sql<number>`count(*)` })
-        .from(users)
-        .where(
-          and(
-            eq(users.isActive, true),
-            sql`COALESCE(${users.lastLoginAt}, ${users.createdAt}) <= ${twentyFiveDaysAgo}`,
-            sql`COALESCE(${users.lastLoginAt}, ${users.createdAt}) > ${thirtyDaysAgo}`,
+        // Users inactive 25-29 days
+        this.db
+          .select({ count: sql<number>`count(*)` })
+          .from(users)
+          .where(
+            and(
+              eq(users.isActive, true),
+              sql`COALESCE(${users.lastLoginAt}, ${users.createdAt}) <= ${twentyFiveDaysAgo}`,
+              sql`COALESCE(${users.lastLoginAt}, ${users.createdAt}) > ${thirtyDaysAgo}`,
+            ),
           ),
-        ),
-      // Users deactivated due to inactivity
-      this.db
-        .select({ count: sql<number>`count(*)` })
-        .from(users)
-        .where(
-          and(
-            eq(users.isActive, false),
-            eq(users.suspendedReason, 'inactivity'),
+        // Users deactivated due to inactivity
+        this.db
+          .select({ count: sql<number>`count(*)` })
+          .from(users)
+          .where(
+            and(
+              eq(users.isActive, false),
+              eq(users.suspendedReason, 'inactivity'),
+            ),
           ),
-        ),
-    ]);
+      ]);
 
     return {
       inactive15to24Days: Number(inactive15Days[0]?.count) || 0,
@@ -484,15 +516,18 @@ export class UserInactivityService {
       .where(eq(workspaceInvitation.status, 'ACCEPTED'));
 
     // Build workspace stats map
-    const workspaceStatsMap = new Map<string, {
-      workspaceId: string;
-      workspaceName: string;
-      emails15Days: number;
-      emails25Days: number;
-      emails30Days: number;
-      totalEmails: number;
-      affectedUsers: { email: string; name: string | null; status: string }[];
-    }>();
+    const workspaceStatsMap = new Map<
+      string,
+      {
+        workspaceId: string;
+        workspaceName: string;
+        emails15Days: number;
+        emails25Days: number;
+        emails30Days: number;
+        totalEmails: number;
+        affectedUsers: { email: string; name: string | null; status: string }[];
+      }
+    >();
 
     // Initialize workspaces
     for (const ws of workspacesByOwner) {
@@ -541,7 +576,9 @@ export class UserInactivityService {
           stats.totalEmails += userEmailCount;
 
           // Add user to affected users list if not already there
-          const existingUser = stats.affectedUsers.find(u => u.email === user.email);
+          const existingUser = stats.affectedUsers.find(
+            (u) => u.email === user.email,
+          );
           if (!existingUser) {
             stats.affectedUsers.push({
               email: user.email,
@@ -555,7 +592,7 @@ export class UserInactivityService {
 
     // Convert map to array and sort by total emails
     const workspaceStats = Array.from(workspaceStatsMap.values())
-      .filter(ws => ws.totalEmails > 0)
+      .filter((ws) => ws.totalEmails > 0)
       .sort((a, b) => b.totalEmails - a.totalEmails);
 
     return {
@@ -570,14 +607,14 @@ export class UserInactivityService {
       },
       byWorkspace: workspaceStats,
       usersWithNoWorkspace: usersWithEmails
-        .filter(user => {
+        .filter((user) => {
           // Check if user has any workspace
           const hasWorkspace =
-            workspacesByOwner.some(ws => ws.ownerId === user.userId) ||
-            memberships.some(m => m.userId === user.userId);
+            workspacesByOwner.some((ws) => ws.ownerId === user.userId) ||
+            memberships.some((m) => m.userId === user.userId);
           return !hasWorkspace;
         })
-        .map(user => ({
+        .map((user) => ({
           email: user.email,
           name: user.name,
           emails15Days: user.email15DaysSentAt ? 1 : 0,

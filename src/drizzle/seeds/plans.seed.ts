@@ -96,82 +96,85 @@ export async function seedAddonPricing() {
   console.log('Seeding addon pricing...');
 
   // Insert addon pricing for PRO plan
-  await db.insert(addonPricing).values([
-    // PRO Plan Add-ons
-    {
-      planCode: 'PRO',
-      addonType: 'EXTRA_CHANNEL',
-      pricePerUnitCents: 500, // $5.00
-      stripePriceId: '', // Will be set after creating in Stripe
-      minQuantity: 1,
-      maxQuantity: null,
-      isActive: true,
-    },
-    {
-      planCode: 'PRO',
-      addonType: 'EXTRA_MEMBER',
-      pricePerUnitCents: 300, // $3.00
-      stripePriceId: '', // Will be set after creating in Stripe
-      minQuantity: 1,
-      maxQuantity: null,
-      isActive: true,
-    },
-    {
-      planCode: 'PRO',
-      addonType: 'EXTRA_WORKSPACE',
-      pricePerUnitCents: 800, // $8.00
-      stripePriceId: '', // Will be set after creating in Stripe
-      minQuantity: 1,
-      maxQuantity: null,
-      isActive: true,
-    },
-    {
-      planCode: 'PRO',
-      addonType: 'AI_TOKENS', // 500 extra AI tokens pack
-      pricePerUnitCents: 500, // $5.00 per 500 tokens
-      stripePriceId: '', // Will be set after creating in Stripe
-      minQuantity: 1,
-      maxQuantity: null, // Unlimited purchases allowed
-      isActive: true,
-    },
-    // MAX Plan Add-ons
-    {
-      planCode: 'MAX',
-      addonType: 'EXTRA_CHANNEL',
-      pricePerUnitCents: 300, // $3.00
-      stripePriceId: '', // Will be set after creating in Stripe
-      minQuantity: 1,
-      maxQuantity: null,
-      isActive: true,
-    },
-    {
-      planCode: 'MAX',
-      addonType: 'EXTRA_MEMBER',
-      pricePerUnitCents: 200, // $2.00
-      stripePriceId: '', // Will be set after creating in Stripe
-      minQuantity: 1,
-      maxQuantity: null,
-      isActive: true,
-    },
-    {
-      planCode: 'MAX',
-      addonType: 'EXTRA_WORKSPACE',
-      pricePerUnitCents: 500, // $5.00
-      stripePriceId: '', // Will be set after creating in Stripe
-      minQuantity: 1,
-      maxQuantity: null,
-      isActive: true,
-    },
-    {
-      planCode: 'MAX',
-      addonType: 'AI_TOKENS', // 500 extra AI tokens pack (discounted for MAX)
-      pricePerUnitCents: 400, // $4.00 per 500 tokens (discounted)
-      stripePriceId: '', // Will be set after creating in Stripe
-      minQuantity: 1,
-      maxQuantity: null, // Unlimited purchases allowed
-      isActive: true,
-    },
-  ]).onConflictDoNothing();
+  await db
+    .insert(addonPricing)
+    .values([
+      // PRO Plan Add-ons
+      {
+        planCode: 'PRO',
+        addonType: 'EXTRA_CHANNEL',
+        pricePerUnitCents: 500, // $5.00
+        stripePriceId: '', // Will be set after creating in Stripe
+        minQuantity: 1,
+        maxQuantity: null,
+        isActive: true,
+      },
+      {
+        planCode: 'PRO',
+        addonType: 'EXTRA_MEMBER',
+        pricePerUnitCents: 300, // $3.00
+        stripePriceId: '', // Will be set after creating in Stripe
+        minQuantity: 1,
+        maxQuantity: null,
+        isActive: true,
+      },
+      {
+        planCode: 'PRO',
+        addonType: 'EXTRA_WORKSPACE',
+        pricePerUnitCents: 800, // $8.00
+        stripePriceId: '', // Will be set after creating in Stripe
+        minQuantity: 1,
+        maxQuantity: null,
+        isActive: true,
+      },
+      {
+        planCode: 'PRO',
+        addonType: 'AI_TOKENS', // 500 extra AI tokens pack
+        pricePerUnitCents: 500, // $5.00 per 500 tokens
+        stripePriceId: '', // Will be set after creating in Stripe
+        minQuantity: 1,
+        maxQuantity: null, // Unlimited purchases allowed
+        isActive: true,
+      },
+      // MAX Plan Add-ons
+      {
+        planCode: 'MAX',
+        addonType: 'EXTRA_CHANNEL',
+        pricePerUnitCents: 300, // $3.00
+        stripePriceId: '', // Will be set after creating in Stripe
+        minQuantity: 1,
+        maxQuantity: null,
+        isActive: true,
+      },
+      {
+        planCode: 'MAX',
+        addonType: 'EXTRA_MEMBER',
+        pricePerUnitCents: 200, // $2.00
+        stripePriceId: '', // Will be set after creating in Stripe
+        minQuantity: 1,
+        maxQuantity: null,
+        isActive: true,
+      },
+      {
+        planCode: 'MAX',
+        addonType: 'EXTRA_WORKSPACE',
+        pricePerUnitCents: 500, // $5.00
+        stripePriceId: '', // Will be set after creating in Stripe
+        minQuantity: 1,
+        maxQuantity: null,
+        isActive: true,
+      },
+      {
+        planCode: 'MAX',
+        addonType: 'AI_TOKENS', // 500 extra AI tokens pack (discounted for MAX)
+        pricePerUnitCents: 400, // $4.00 per 500 tokens (discounted)
+        stripePriceId: '', // Will be set after creating in Stripe
+        minQuantity: 1,
+        maxQuantity: null, // Unlimited purchases allowed
+        isActive: true,
+      },
+    ])
+    .onConflictDoNothing();
 
   console.log('Addon pricing seeded successfully!');
 }

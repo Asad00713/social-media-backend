@@ -1,4 +1,9 @@
-import { BadRequestException, ConflictException, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { TelegramService } from './telegram.service';
 import { ChannelService } from './channel.service';
 import { InboxService } from '../../inbox/inbox.service';
@@ -38,10 +43,11 @@ export class TelegramConnectService {
     }
 
     // 2. Global uniqueness — Telegram allows exactly one webhook per bot.
-    const existing = await this.channelService.findChannelByPlatformAccountGlobal(
-      'telegram',
-      String(me.id),
-    );
+    const existing =
+      await this.channelService.findChannelByPlatformAccountGlobal(
+        'telegram',
+        String(me.id),
+      );
     if (existing) {
       throw new ConflictException(
         'This bot is already connected. Disconnect it first, or use a different bot.',

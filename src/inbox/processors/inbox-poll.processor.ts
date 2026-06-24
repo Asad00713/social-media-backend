@@ -74,7 +74,9 @@ export class InboxPollProcessor extends WorkerHost {
     super();
   }
 
-  async process(job: Job<InboxPollJob>): Promise<{ ok: boolean; ingested: number }> {
+  async process(
+    job: Job<InboxPollJob>,
+  ): Promise<{ ok: boolean; ingested: number }> {
     if (job.name !== 'poll') return { ok: true, ingested: 0 };
     const { channelId } = job.data;
 
@@ -111,7 +113,7 @@ export class InboxPollProcessor extends WorkerHost {
         platform,
         platformAccountId: channelRow.platformAccountId,
         accessToken,
-        metadata: (channelRow.metadata ?? {}) as Record<string, any>,
+        metadata: channelRow.metadata ?? {},
         username: channelRow.username,
         accountName: channelRow.accountName,
         profilePictureUrl: channelRow.profilePictureUrl,
@@ -138,7 +140,9 @@ export class InboxPollProcessor extends WorkerHost {
     }
 
     // Pull the most recent published posts targeting this channel within window.
-    const windowStart = new Date(Date.now() - POLLING_WINDOW_DAYS * 24 * 60 * 60 * 1000);
+    const windowStart = new Date(
+      Date.now() - POLLING_WINDOW_DAYS * 24 * 60 * 60 * 1000,
+    );
     const recent = await db
       .select({
         id: posts.id,
@@ -276,16 +280,16 @@ export class InboxPollProcessor extends WorkerHost {
                 msg.author?.platformId === convo.participant.platformId;
               const authorHandle =
                 msg.author?.handle ??
-                (isFromParticipant ? convo.participant.handle ?? null : null);
+                (isFromParticipant ? (convo.participant.handle ?? null) : null);
               const authorDisplayName =
                 msg.author?.displayName ??
                 (isFromParticipant
-                  ? convo.participant.displayName ?? null
+                  ? (convo.participant.displayName ?? null)
                   : null);
               const authorAvatarUrl =
                 msg.author?.avatarUrl ??
                 (isFromParticipant
-                  ? convo.participant.avatarUrl ?? null
+                  ? (convo.participant.avatarUrl ?? null)
                   : null);
 
               const inserted = await this.inboxService.upsertDm({
@@ -394,7 +398,10 @@ function deriveMediaType(
 }
 
 function deriveThumbnail(
-  items: { url?: string; thumbnailUrl?: string; type?: string }[] | null | undefined,
+  items:
+    | { url?: string; thumbnailUrl?: string; type?: string }[]
+    | null
+    | undefined,
 ): string | undefined {
   if (!items?.length) return undefined;
   const first = items[0];

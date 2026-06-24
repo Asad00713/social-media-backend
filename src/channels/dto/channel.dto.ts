@@ -483,8 +483,17 @@ export class PostTikTokVideoDto {
 
   @IsString()
   @IsOptional()
-  @IsEnum(['PUBLIC_TO_EVERYONE', 'MUTUAL_FOLLOW_FRIENDS', 'FOLLOWER_OF_CREATOR', 'SELF_ONLY'])
-  privacyLevel?: 'PUBLIC_TO_EVERYONE' | 'MUTUAL_FOLLOW_FRIENDS' | 'FOLLOWER_OF_CREATOR' | 'SELF_ONLY';
+  @IsEnum([
+    'PUBLIC_TO_EVERYONE',
+    'MUTUAL_FOLLOW_FRIENDS',
+    'FOLLOWER_OF_CREATOR',
+    'SELF_ONLY',
+  ])
+  privacyLevel?:
+    | 'PUBLIC_TO_EVERYONE'
+    | 'MUTUAL_FOLLOW_FRIENDS'
+    | 'FOLLOWER_OF_CREATOR'
+    | 'SELF_ONLY';
 
   @IsBoolean()
   @IsOptional()

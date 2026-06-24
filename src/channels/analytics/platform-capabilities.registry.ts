@@ -478,7 +478,9 @@ const YOUTUBE_CAPABILITIES: PlatformCapabilities = {
   composer: YOUTUBE_COMPOSER,
 };
 
-function placeholderCapabilities(platform: SupportedPlatform): PlatformCapabilities {
+function placeholderCapabilities(
+  platform: SupportedPlatform,
+): PlatformCapabilities {
   return {
     platform,
     hasFollowerCount: true,
@@ -698,7 +700,9 @@ const PINTEREST_CAPABILITIES: PlatformCapabilities = {
   composer: PINTEREST_COMPOSER,
 };
 
-export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCapabilities>> = {
+export const PLATFORM_CAPABILITIES: Partial<
+  Record<SupportedPlatform, PlatformCapabilities>
+> = {
   ...Object.fromEntries(
     SOCIAL_PLATFORMS.map((p) => [p, placeholderCapabilities(p)]),
   ),
@@ -715,7 +719,9 @@ export const PLATFORM_CAPABILITIES: Partial<Record<SupportedPlatform, PlatformCa
   reddit: REDDIT_CAPABILITIES,
 };
 
-export function getCapabilities(platform: SupportedPlatform): PlatformCapabilities {
+export function getCapabilities(
+  platform: SupportedPlatform,
+): PlatformCapabilities {
   // Reject non-social platforms explicitly
   if (!SOCIAL_PLATFORMS.includes(platform as any)) {
     throw new Error(

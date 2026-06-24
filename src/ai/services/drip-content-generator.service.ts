@@ -1,7 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Groq from 'groq-sdk';
-import { TavilyService, TavilySearchResponse, TavilyImage } from './tavily.service';
+import {
+  TavilyService,
+  TavilySearchResponse,
+  TavilyImage,
+} from './tavily.service';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
 export interface GeneratedDripContent {
@@ -113,10 +117,21 @@ export class DripContentGeneratorService {
    * Generate content for a drip post using web search + AI
    * This is the main method called by the drip processor
    */
-  async generateDripContent(options: DripContentOptions): Promise<GeneratedDripContent> {
-    const { niche, targetPlatforms, tone = 'professional', language = 'en', additionalPrompt, date } = options;
+  async generateDripContent(
+    options: DripContentOptions,
+  ): Promise<GeneratedDripContent> {
+    const {
+      niche,
+      targetPlatforms,
+      tone = 'professional',
+      language = 'en',
+      additionalPrompt,
+      date,
+    } = options;
 
-    this.logger.log(`Generating drip content for niche: ${niche}, platforms: ${targetPlatforms.join(', ')}`);
+    this.logger.log(
+      `Generating drip content for niche: ${niche}, platforms: ${targetPlatforms.join(', ')}`,
+    );
 
     // Step 1: Search for fresh content
     const searchResults = await this.searchForContent(niche, date);
@@ -138,7 +153,10 @@ export class DripContentGeneratorService {
     }
 
     // Step 3: Generate main content (summary)
-    const mainContent = this.extractMainContent(platformContent, targetPlatforms[0]);
+    const mainContent = this.extractMainContent(
+      platformContent,
+      targetPlatforms[0],
+    );
 
     return {
       mainContent,
@@ -154,7 +172,10 @@ export class DripContentGeneratorService {
   /**
    * Search for fresh content related to the niche
    */
-  private async searchForContent(niche: string, date?: Date): Promise<TavilySearchResponse> {
+  private async searchForContent(
+    niche: string,
+    date?: Date,
+  ): Promise<TavilySearchResponse> {
     if (!this.tavilyService.isConfigured()) {
       this.logger.warn('Tavily not configured, using fallback');
       return {
@@ -168,7 +189,13 @@ export class DripContentGeneratorService {
 
     try {
       // Search for today's news in this niche
-      const dateStr = date ? date.toLocaleDateString('en-US', { month: 'long', day: 'numeric', year: 'numeric' }) : 'today';
+      const dateStr = date
+        ? date.toLocaleDateString('en-US', {
+            month: 'long',
+            day: 'numeric',
+            year: 'numeric',
+          })
+        : 'today';
 
       return await this.tavilyService.searchNews(niche, {
         maxResults: 5,
@@ -197,7 +224,8 @@ export class DripContentGeneratorService {
     language: string;
     additionalPrompt?: string;
   }): Promise<{ text: string; hashtags: string[]; characterCount: number }> {
-    const { niche, platform, searchResults, tone, language, additionalPrompt } = options;
+    const { niche, platform, searchResults, tone, language, additionalPrompt } =
+      options;
 
     if (!this.groqClient) {
       throw new Error('Groq API not configured');
@@ -206,12 +234,16 @@ export class DripContentGeneratorService {
     const config = PLATFORM_CONFIG[platform] || PLATFORM_CONFIG.twitter;
 
     // Build context from search results
-    const searchContext = searchResults.results.length > 0
-      ? searchResults.results
-          .slice(0, 3)
-          .map((r, i) => `${i + 1}. ${r.title}: ${r.content.substring(0, 200)}...`)
-          .join('\n')
-      : `General ${niche} content`;
+    const searchContext =
+      searchResults.results.length > 0
+        ? searchResults.results
+            .slice(0, 3)
+            .map(
+              (r, i) =>
+                `${i + 1}. ${r.title}: ${r.content.substring(0, 200)}...`,
+            )
+            .join('\n')
+        : `General ${niche} content`;
 
     const systemPrompt = `You are an expert social media content creator specializing in ${niche}.
 You create engaging, authentic content that drives engagement.
@@ -320,7 +352,9 @@ Respond with ONLY the post content (including hashtags). No explanations or meta
     options: DripContentOptions & { platform: SupportedPlatform },
     existingSearchResults?: TavilySearchResponse,
   ): Promise<{ text: string; hashtags: string[]; characterCount: number }> {
-    const searchResults = existingSearchResults || (await this.searchForContent(options.niche, options.date));
+    const searchResults =
+      existingSearchResults ||
+      (await this.searchForContent(options.niche, options.date));
 
     return this.generatePlatformContent({
       niche: options.niche,

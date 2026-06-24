@@ -125,7 +125,8 @@ export class AiTokenService {
         usedThisMonth: 0,
         extraPurchased: 0,
         resetsAt: null,
-        message: 'Your plan does not include AI features. Please upgrade to Pro or Max.',
+        message:
+          'Your plan does not include AI features. Please upgrade to Pro or Max.',
       };
     }
 

@@ -9,11 +9,21 @@ import {
   dripPosts,
   dripCampaignHistory,
 } from '../../drizzle/schema/drips.schema';
-import { posts, PostTarget, PostStatus } from '../../drizzle/schema/posts.schema';
-import { socialMediaChannels, SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import {
+  posts,
+  PostTarget,
+  PostStatus,
+} from '../../drizzle/schema/posts.schema';
+import {
+  socialMediaChannels,
+  SupportedPlatform,
+} from '../../drizzle/schema/channels.schema';
 import { users } from '../../drizzle/schema/users.schema';
 import { QUEUES } from '../../queue/queue.module';
-import { DripContentGeneratorService, GeneratedDripContent } from '../../ai/services/drip-content-generator.service';
+import {
+  DripContentGeneratorService,
+  GeneratedDripContent,
+} from '../../ai/services/drip-content-generator.service';
 import { PostService } from '../../posts/services/post.service';
 import { EmailService } from '../../email/email.service';
 
@@ -58,8 +68,11 @@ export class DripProcessor extends WorkerHost {
           return { skipped: true, reason: 'Not a drip job' };
       }
     } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      this.logger.error(`Drip job ${job.name} failed for post ${dripPostId}: ${errorMessage}`);
+      const errorMessage =
+        error instanceof Error ? error.message : 'Unknown error';
+      this.logger.error(
+        `Drip job ${job.name} failed for post ${dripPostId}: ${errorMessage}`,
+      );
 
       // Update drip post with error
       await this.updateDripPostError(dripPostId, errorMessage);
@@ -75,15 +88,15 @@ export class DripProcessor extends WorkerHost {
   /**
    * Handle AI content generation for a drip post
    */
-  private async handleGenerateContent(dripPostId: string, campaignId: string): Promise<any> {
+  private async handleGenerateContent(
+    dripPostId: string,
+    campaignId: string,
+  ): Promise<any> {
     this.logger.log(`Generating AI content for drip post ${dripPostId}`);
 
     // Get drip post and campaign (with retry for transient failures)
     const [dripPost] = await withRetry(() =>
-      db
-        .select()
-        .from(dripPosts)
-        .where(eq(dripPosts.id, dripPostId)),
+      db.select().from(dripPosts).where(eq(dripPosts.id, dripPostId)),
     );
 
     if (!dripPost) {
@@ -92,15 +105,14 @@ export class DripProcessor extends WorkerHost {
 
     // Check if already generated
     if (dripPost.status !== 'pending') {
-      this.logger.log(`Drip post ${dripPostId} already processed (status: ${dripPost.status})`);
+      this.logger.log(
+        `Drip post ${dripPostId} already processed (status: ${dripPost.status})`,
+      );
       return { skipped: true, reason: `Status is ${dripPost.status}` };
     }
 
     const [campaign] = await withRetry(() =>
-      db
-        .select()
-        .from(dripCampaigns)
-        .where(eq(dripCampaigns.id, campaignId)),
+      db.select().from(dripCampaigns).where(eq(dripCampaigns.id, campaignId)),
     );
 
     if (!campaign) {
@@ -109,7 +121,9 @@ export class DripProcessor extends WorkerHost {
 
     // Check if campaign is still active
     if (campaign.status !== 'active') {
-      this.logger.log(`Campaign ${campaignId} is not active (status: ${campaign.status})`);
+      this.logger.log(
+        `Campaign ${campaignId} is not active (status: ${campaign.status})`,
+      );
       return { skipped: true, reason: `Campaign status is ${campaign.status}` };
     }
 
@@ -121,10 +135,16 @@ export class DripProcessor extends WorkerHost {
         .where(eq(dripPosts.id, dripPostId)),
     );
 
-    await this.recordHistory(campaignId, dripPostId, 'generating_started', 'pending', 'generating');
+    await this.recordHistory(
+      campaignId,
+      dripPostId,
+      'generating_started',
+      'pending',
+      'generating',
+    );
 
     // Get target platforms from channels
-    const targetChannelIds = campaign.targetChannelIds as string[];
+    const targetChannelIds = campaign.targetChannelIds;
     const channels = await withRetry(() =>
       db
         .select()
@@ -157,7 +177,10 @@ export class DripProcessor extends WorkerHost {
         .update(dripPosts)
         .set({
           status: 'failed',
-          lastError: genError instanceof Error ? genError.message : 'AI generation failed',
+          lastError:
+            genError instanceof Error
+              ? genError.message
+              : 'AI generation failed',
           lastErrorAt: new Date(),
           updatedAt: new Date(),
         })
@@ -194,10 +217,18 @@ export class DripProcessor extends WorkerHost {
       })
       .where(eq(dripPosts.id, dripPostId));
 
-    await this.recordHistory(campaignId, dripPostId, 'content_generated', 'generating', newStatus, undefined, {
-      platforms: targetPlatforms,
-      autoApproved: campaign.autoApprove,
-    });
+    await this.recordHistory(
+      campaignId,
+      dripPostId,
+      'content_generated',
+      'generating',
+      newStatus,
+      undefined,
+      {
+        platforms: targetPlatforms,
+        autoApproved: campaign.autoApprove,
+      },
+    );
 
     this.logger.log(
       `Generated content for drip post ${dripPostId}, status: ${newStatus}, images found: ${generatedContent.images.length}`,
@@ -208,7 +239,10 @@ export class DripProcessor extends WorkerHost {
       status: newStatus,
       platforms: targetPlatforms,
       characterCounts: Object.fromEntries(
-        Object.entries(generatedContent.platformContent).map(([p, c]) => [p, c.characterCount]),
+        Object.entries(generatedContent.platformContent).map(([p, c]) => [
+          p,
+          c.characterCount,
+        ]),
       ),
       imagesFound: generatedContent.images.length,
     };
@@ -217,7 +251,10 @@ export class DripProcessor extends WorkerHost {
   /**
    * Handle email notification for a drip post
    */
-  private async handleSendNotification(dripPostId: string, campaignId: string): Promise<any> {
+  private async handleSendNotification(
+    dripPostId: string,
+    campaignId: string,
+  ): Promise<any> {
     this.logger.log(`Sending notification for drip post ${dripPostId}`);
 
     // Get drip post
@@ -232,7 +269,9 @@ export class DripProcessor extends WorkerHost {
 
     // Only send notification if post is in pending_review status
     if (dripPost.status !== 'pending_review') {
-      this.logger.log(`Drip post ${dripPostId} is not pending review (status: ${dripPost.status}), skipping notification`);
+      this.logger.log(
+        `Drip post ${dripPostId} is not pending review (status: ${dripPost.status}), skipping notification`,
+      );
       return { skipped: true, reason: `Status is ${dripPost.status}` };
     }
 
@@ -252,12 +291,17 @@ export class DripProcessor extends WorkerHost {
       .where(eq(users.id, campaign.createdById));
 
     if (!user) {
-      this.logger.warn(`User ${campaign.createdById} not found, skipping email notification`);
+      this.logger.warn(
+        `User ${campaign.createdById} not found, skipping email notification`,
+      );
       return { skipped: true, reason: 'User not found' };
     }
 
     // Prepare platform content for email
-    const platformContent = dripPost.platformContent as Record<string, { text: string; hashtags?: string[] }>;
+    const platformContent = dripPost.platformContent as Record<
+      string,
+      { text: string; hashtags?: string[] }
+    >;
 
     // Send email notification
     const emailResult = await this.emailService.sendDripNotification({
@@ -270,19 +314,31 @@ export class DripProcessor extends WorkerHost {
       platformContent,
     });
 
-    await this.recordHistory(campaignId, dripPostId, 'notification_sent', dripPost.status, dripPost.status, undefined, {
-      notificationType: 'email',
-      emailTo: user.email,
-      emailSuccess: emailResult.success,
-      emailMessageId: emailResult.messageId,
-      scheduledAt: dripPost.scheduledAt.toISOString(),
-    });
+    await this.recordHistory(
+      campaignId,
+      dripPostId,
+      'notification_sent',
+      dripPost.status,
+      dripPost.status,
+      undefined,
+      {
+        notificationType: 'email',
+        emailTo: user.email,
+        emailSuccess: emailResult.success,
+        emailMessageId: emailResult.messageId,
+        scheduledAt: dripPost.scheduledAt.toISOString(),
+      },
+    );
 
     if (!emailResult.success) {
-      this.logger.error(`Failed to send notification email: ${emailResult.error}`);
+      this.logger.error(
+        `Failed to send notification email: ${emailResult.error}`,
+      );
       // Don't throw - email failure shouldn't block the post from publishing
     } else {
-      this.logger.log(`Notification email sent to ${user.email} for drip post ${dripPostId}`);
+      this.logger.log(
+        `Notification email sent to ${user.email} for drip post ${dripPostId}`,
+      );
     }
 
     return {
@@ -296,7 +352,10 @@ export class DripProcessor extends WorkerHost {
   /**
    * Handle publishing a drip post
    */
-  private async handlePublishPost(dripPostId: string, campaignId: string): Promise<any> {
+  private async handlePublishPost(
+    dripPostId: string,
+    campaignId: string,
+  ): Promise<any> {
     this.logger.log(`Publishing drip post ${dripPostId}`);
 
     // Get drip post
@@ -312,7 +371,9 @@ export class DripProcessor extends WorkerHost {
     // Check if post can be published
     const publishableStatuses = ['approved', 'pending_review']; // pending_review auto-approves at publish time
     if (!publishableStatuses.includes(dripPost.status)) {
-      this.logger.log(`Drip post ${dripPostId} cannot be published (status: ${dripPost.status})`);
+      this.logger.log(
+        `Drip post ${dripPostId} cannot be published (status: ${dripPost.status})`,
+      );
 
       // If still generating, reschedule with shorter delay
       if (dripPost.status === 'generating') {
@@ -345,13 +406,15 @@ export class DripProcessor extends WorkerHost {
       .where(eq(dripPosts.id, dripPostId));
 
     // Get target channels
-    const targetChannelIds = campaign.targetChannelIds as string[];
+    const targetChannelIds = campaign.targetChannelIds;
     const channels = await db
       .select()
       .from(socialMediaChannels)
       .where(eq(socialMediaChannels.workspaceId, campaign.workspaceId));
 
-    const targetChannels = channels.filter((c) => targetChannelIds.includes(String(c.id)));
+    const targetChannels = channels.filter((c) =>
+      targetChannelIds.includes(String(c.id)),
+    );
 
     if (targetChannels.length === 0) {
       throw new Error('No valid target channels found');
@@ -366,7 +429,10 @@ export class DripProcessor extends WorkerHost {
 
     // Build platform content for the post
     const platformContent: Record<string, { text?: string }> = {};
-    const dripPlatformContent = dripPost.platformContent as Record<string, { text: string; hashtags?: string[] }>;
+    const dripPlatformContent = dripPost.platformContent as Record<
+      string,
+      { text: string; hashtags?: string[] }
+    >;
 
     for (const [platform, content] of Object.entries(dripPlatformContent)) {
       platformContent[platform] = { text: content.text };
@@ -406,7 +472,8 @@ export class DripProcessor extends WorkerHost {
       );
 
       // Update drip post status based on publish result
-      const finalStatus = publishedPost.status === 'published' ? 'published' : 'failed';
+      const finalStatus =
+        publishedPost.status === 'published' ? 'published' : 'failed';
 
       // Build update data conditionally to avoid Drizzle null timestamp errors
       const dripPostUpdateData: any = {
@@ -439,13 +506,23 @@ export class DripProcessor extends WorkerHost {
         await this.handlePublishFailure(campaign, dripPostId);
       }
 
-      await this.recordHistory(campaignId, dripPostId, 'published', 'publishing', finalStatus, undefined, {
-        postId: newPost.id,
-        publishStatus: publishedPost.status,
-        targets: publishedPost.targets,
-      });
+      await this.recordHistory(
+        campaignId,
+        dripPostId,
+        'published',
+        'publishing',
+        finalStatus,
+        undefined,
+        {
+          postId: newPost.id,
+          publishStatus: publishedPost.status,
+          targets: publishedPost.targets,
+        },
+      );
 
-      this.logger.log(`Drip post ${dripPostId} published with status: ${finalStatus}`);
+      this.logger.log(
+        `Drip post ${dripPostId} published with status: ${finalStatus}`,
+      );
 
       return {
         success: finalStatus === 'published',
@@ -459,7 +536,10 @@ export class DripProcessor extends WorkerHost {
         .update(dripPosts)
         .set({
           status: 'failed',
-          lastError: publishError instanceof Error ? publishError.message : 'Publishing failed',
+          lastError:
+            publishError instanceof Error
+              ? publishError.message
+              : 'Publishing failed',
           lastErrorAt: new Date(),
           updatedAt: new Date(),
         })
@@ -494,7 +574,9 @@ export class DripProcessor extends WorkerHost {
 
     // Pause campaign if too many consecutive errors
     if (newConsecutiveErrors >= campaign.maxConsecutiveErrors) {
-      this.logger.warn(`Campaign ${campaign.id} reached max consecutive errors (${newConsecutiveErrors}), pausing`);
+      this.logger.warn(
+        `Campaign ${campaign.id} reached max consecutive errors (${newConsecutiveErrors}), pausing`,
+      );
       updates.status = 'error';
       updates.pausedAt = new Date();
     }
@@ -505,22 +587,30 @@ export class DripProcessor extends WorkerHost {
       .where(eq(dripCampaigns.id, campaign.id));
 
     if (updates.status === 'error') {
-      await this.recordHistory(campaign.id, dripPostId, 'auto_paused', 'active', 'error', undefined, {
-        reason: `Max consecutive errors (${campaign.maxConsecutiveErrors}) reached`,
-        consecutiveErrors: newConsecutiveErrors,
-      });
+      await this.recordHistory(
+        campaign.id,
+        dripPostId,
+        'auto_paused',
+        'active',
+        'error',
+        undefined,
+        {
+          reason: `Max consecutive errors (${campaign.maxConsecutiveErrors}) reached`,
+          consecutiveErrors: newConsecutiveErrors,
+        },
+      );
     }
   }
 
   /**
    * Update drip post with error
    */
-  private async updateDripPostError(dripPostId: string, errorMessage: string): Promise<void> {
+  private async updateDripPostError(
+    dripPostId: string,
+    errorMessage: string,
+  ): Promise<void> {
     const [dripPost] = await withRetry(() =>
-      db
-        .select()
-        .from(dripPosts)
-        .where(eq(dripPosts.id, dripPostId)),
+      db.select().from(dripPosts).where(eq(dripPosts.id, dripPostId)),
     );
 
     if (dripPost) {
@@ -573,7 +663,9 @@ export class DripProcessor extends WorkerHost {
   @OnWorkerEvent('completed')
   onCompleted(job: Job<DripJobData>) {
     if (job.name.startsWith('drip-')) {
-      this.logger.log(`Drip job ${job.id} (${job.name}) completed for post ${job.data.dripPostId}`);
+      this.logger.log(
+        `Drip job ${job.id} (${job.name}) completed for post ${job.data.dripPostId}`,
+      );
     }
   }
 
@@ -589,7 +681,9 @@ export class DripProcessor extends WorkerHost {
   @OnWorkerEvent('active')
   onActive(job: Job<DripJobData>) {
     if (job.name.startsWith('drip-')) {
-      this.logger.log(`Drip job ${job.id} (${job.name}) started for post ${job.data.dripPostId}`);
+      this.logger.log(
+        `Drip job ${job.id} (${job.name}) started for post ${job.data.dripPostId}`,
+      );
     }
   }
 

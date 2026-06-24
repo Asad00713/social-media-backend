@@ -48,7 +48,9 @@ export class ThreadsPublisher extends BasePublisher {
 
     // Check character limit
     if (content && content.length > 500) {
-      throw new Error(`Threads content exceeds 500 character limit (${content.length} chars)`);
+      throw new Error(
+        `Threads content exceeds 500 character limit (${content.length} chars)`,
+      );
     }
 
     // Check media limit
@@ -63,7 +65,8 @@ export class ThreadsPublisher extends BasePublisher {
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
-    const { content, mediaItems, accessToken, platformAccountId, metadata } = options;
+    const { content, mediaItems, accessToken, platformAccountId, metadata } =
+      options;
 
     this.validate(options);
 
@@ -179,7 +182,8 @@ export class ThreadsPublisher extends BasePublisher {
             accessToken,
             platformAccountId,
             media.map((m) => ({
-              type: m.type === 'video' ? ('VIDEO' as const) : ('IMAGE' as const),
+              type:
+                m.type === 'video' ? ('VIDEO' as const) : ('IMAGE' as const),
               url: m.url,
             })),
             post.text,
@@ -190,7 +194,9 @@ export class ThreadsPublisher extends BasePublisher {
         if (!rootId) rootId = res.postId;
         replyToId = res.postId;
         postedIds.push(res.postId);
-        this.logger.log(`Thread post ${i + 1}/${posts.length} published: ${res.postId}`);
+        this.logger.log(
+          `Thread post ${i + 1}/${posts.length} published: ${res.postId}`,
+        );
       } catch (err) {
         this.logger.error(
           `Thread broke at post ${i + 1}/${posts.length}. Published so far: ${postedIds.join(',')}`,

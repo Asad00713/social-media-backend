@@ -13,7 +13,9 @@ describe('ThreadsAnalyticsAdapter', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    adapter = new ThreadsAnalyticsAdapter(client as unknown as ThreadsApiClient);
+    adapter = new ThreadsAnalyticsAdapter(
+      client as unknown as ThreadsApiClient,
+    );
   });
 
   it('exposes platform=threads and correct vocabulary', () => {
@@ -37,7 +39,11 @@ describe('ThreadsAnalyticsAdapter', () => {
     });
     client.getUserInsights.mockResolvedValue({
       data: [
-        { name: 'followers_count', period: 'lifetime', values: [{ value: 4200 }] },
+        {
+          name: 'followers_count',
+          period: 'lifetime',
+          values: [{ value: 4200 }],
+        },
         { name: 'views', period: 'day', values: [{ value: 500 }] },
       ],
     });

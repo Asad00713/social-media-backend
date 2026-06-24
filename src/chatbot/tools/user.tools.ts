@@ -10,13 +10,16 @@ export function createUserTools(
     {
       name: 'get_user_profile',
       description:
-        'Get the current user\'s profile information including name, email, and role. Use this when the user asks about their account, name, email, or profile.',
+        "Get the current user's profile information including name, email, and role. Use this when the user asks about their account, name, email, or profile.",
       parameters: {
         type: 'object',
         properties: {},
         required: [],
       },
-      execute: async (_params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        _params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
           const user = await usersService.findOne(context.userId);
           return {
@@ -45,9 +48,15 @@ export function createUserTools(
         properties: {},
         required: [],
       },
-      execute: async (_params: Record<string, any>, context: ToolContext): Promise<ToolResult> => {
+      execute: async (
+        _params: Record<string, any>,
+        context: ToolContext,
+      ): Promise<ToolResult> => {
         try {
-          const workspace = await workspaceService.findOne(context.workspaceId, context.userId);
+          const workspace = await workspaceService.findOne(
+            context.workspaceId,
+            context.userId,
+          );
           return {
             success: true,
             data: {

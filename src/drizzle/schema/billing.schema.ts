@@ -1,4 +1,15 @@
-import { pgTable, uuid, text, timestamp, varchar, integer, boolean, jsonb, bigserial, unique } from 'drizzle-orm/pg-core';
+import {
+  pgTable,
+  uuid,
+  text,
+  timestamp,
+  varchar,
+  integer,
+  boolean,
+  jsonb,
+  bigserial,
+  unique,
+} from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { users } from './users.schema';
 import { workspace } from './workspace.schema';
@@ -6,8 +17,13 @@ import { workspace } from './workspace.schema';
 // 1. Stripe Customers - Links users to Stripe customers
 export const stripeCustomers = pgTable('stripe_customers', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
-  userId: uuid('user_id').notNull().unique().references(() => users.id, { onDelete: 'cascade' }),
-  stripeCustomerId: varchar('stripe_customer_id', { length: 255 }).notNull().unique(),
+  userId: uuid('user_id')
+    .notNull()
+    .unique()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  stripeCustomerId: varchar('stripe_customer_id', { length: 255 })
+    .notNull()
+    .unique(),
   email: varchar('email', { length: 255 }),
   createdAt: timestamp('created_at').defaultNow().notNull(),
 });
@@ -30,29 +46,42 @@ export const plans = pgTable('plans', {
 });
 
 // 3. Add-on Pricing - Defines pricing for add-ons per plan
-export const addonPricing = pgTable('addon_pricing', {
-  id: bigserial('id', { mode: 'number' }).primaryKey(),
-  planCode: varchar('plan_code', { length: 20 }).notNull().references(() => plans.code, { onDelete: 'cascade' }),
-  addonType: varchar('addon_type', { length: 30 }).notNull(), // EXTRA_CHANNEL, EXTRA_MEMBER, EXTRA_WORKSPACE
-  pricePerUnitCents: integer('price_per_unit_cents').notNull(),
-  stripePriceId: varchar('stripe_price_id', { length: 255 }).notNull(),
-  minQuantity: integer('min_quantity').default(1),
-  maxQuantity: integer('max_quantity'), // NULL = unlimited
-  isActive: boolean('is_active').default(true).notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-}, (table) => {
-  return {
-    uniquePlanAddon: unique().on(table.planCode, table.addonType),
-  };
-});
+export const addonPricing = pgTable(
+  'addon_pricing',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    planCode: varchar('plan_code', { length: 20 })
+      .notNull()
+      .references(() => plans.code, { onDelete: 'cascade' }),
+    addonType: varchar('addon_type', { length: 30 }).notNull(), // EXTRA_CHANNEL, EXTRA_MEMBER, EXTRA_WORKSPACE
+    pricePerUnitCents: integer('price_per_unit_cents').notNull(),
+    stripePriceId: varchar('stripe_price_id', { length: 255 }).notNull(),
+    minQuantity: integer('min_quantity').default(1),
+    maxQuantity: integer('max_quantity'), // NULL = unlimited
+    isActive: boolean('is_active').default(true).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+  },
+  (table) => {
+    return {
+      uniquePlanAddon: unique().on(table.planCode, table.addonType),
+    };
+  },
+);
 
 // 4. Subscriptions - Per-workspace subscriptions
 export const subscriptions = pgTable('subscriptions', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
-  workspaceId: uuid('workspace_id').notNull().unique().references(() => workspace.id, { onDelete: 'cascade' }),
+  workspaceId: uuid('workspace_id')
+    .notNull()
+    .unique()
+    .references(() => workspace.id, { onDelete: 'cascade' }),
   stripeCustomerId: varchar('stripe_customer_id', { length: 255 }).notNull(),
-  stripeSubscriptionId: varchar('stripe_subscription_id', { length: 255 }).unique(),
-  planCode: varchar('plan_code', { length: 20 }).notNull().references(() => plans.code),
+  stripeSubscriptionId: varchar('stripe_subscription_id', {
+    length: 255,
+  }).unique(),
+  planCode: varchar('plan_code', { length: 20 })
+    .notNull()
+    .references(() => plans.code),
   status: varchar('status', { length: 20 }).notNull(), // active, past_due, canceled, trialing
   currentPeriodStart: timestamp('current_period_start'),
   currentPeriodEnd: timestamp('current_period_end'),
@@ -64,36 +93,55 @@ export const subscriptions = pgTable('subscriptions', {
 });
 
 // 5. Subscription Items - Tracks base plan + all add-ons
-export const subscriptionItems = pgTable('subscription_items', {
-  id: bigserial('id', { mode: 'number' }).primaryKey(),
-  subscriptionId: integer('subscription_id').notNull().references(() => subscriptions.id, { onDelete: 'cascade' }),
-  stripeSubscriptionItemId: varchar('stripe_subscription_item_id', { length: 255 }).unique(),
-  itemType: varchar('item_type', { length: 30 }).notNull(), // BASE_PLAN, EXTRA_CHANNEL, EXTRA_MEMBER, EXTRA_WORKSPACE
-  stripePriceId: varchar('stripe_price_id', { length: 255 }).notNull(),
-  quantity: integer('quantity').default(1).notNull(),
-  unitPriceCents: integer('unit_price_cents').notNull(),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-}, (table) => {
-  return {
-    uniqueSubscriptionItem: unique().on(table.subscriptionId, table.itemType),
-  };
-});
+export const subscriptionItems = pgTable(
+  'subscription_items',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    subscriptionId: integer('subscription_id')
+      .notNull()
+      .references(() => subscriptions.id, { onDelete: 'cascade' }),
+    stripeSubscriptionItemId: varchar('stripe_subscription_item_id', {
+      length: 255,
+    }).unique(),
+    itemType: varchar('item_type', { length: 30 }).notNull(), // BASE_PLAN, EXTRA_CHANNEL, EXTRA_MEMBER, EXTRA_WORKSPACE
+    stripePriceId: varchar('stripe_price_id', { length: 255 }).notNull(),
+    quantity: integer('quantity').default(1).notNull(),
+    unitPriceCents: integer('unit_price_cents').notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => {
+    return {
+      uniqueSubscriptionItem: unique().on(table.subscriptionId, table.itemType),
+    };
+  },
+);
 
 // 6. Workspace Usage - Real-time usage tracking for enforcement
 export const workspaceUsage = pgTable('workspace_usage', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
-  workspaceId: uuid('workspace_id').notNull().unique().references(() => workspace.id, { onDelete: 'cascade' }),
+  workspaceId: uuid('workspace_id')
+    .notNull()
+    .unique()
+    .references(() => workspace.id, { onDelete: 'cascade' }),
   channelsCount: integer('channels_count').default(0).notNull(),
   channelsLimit: integer('channels_limit').notNull(),
-  extraChannelsPurchased: integer('extra_channels_purchased').default(0).notNull(),
+  extraChannelsPurchased: integer('extra_channels_purchased')
+    .default(0)
+    .notNull(),
   membersCount: integer('members_count').default(0).notNull(),
   membersLimit: integer('members_limit').notNull(),
-  extraMembersPurchased: integer('extra_members_purchased').default(0).notNull(),
+  extraMembersPurchased: integer('extra_members_purchased')
+    .default(0)
+    .notNull(),
   // AI Token tracking
-  aiTokensUsedThisMonth: integer('ai_tokens_used_this_month').default(0).notNull(),
+  aiTokensUsedThisMonth: integer('ai_tokens_used_this_month')
+    .default(0)
+    .notNull(),
   aiTokensLimit: integer('ai_tokens_limit').default(0).notNull(), // From plan
-  extraAiTokensPurchased: integer('extra_ai_tokens_purchased').default(0).notNull(), // From add-on packs
+  extraAiTokensPurchased: integer('extra_ai_tokens_purchased')
+    .default(0)
+    .notNull(), // From add-on packs
   aiTokensResetDate: timestamp('ai_tokens_reset_date'),
   lastCalculatedAt: timestamp('last_calculated_at').defaultNow(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -103,7 +151,9 @@ export const workspaceUsage = pgTable('workspace_usage', {
 // 7. Usage Events - Audit trail of all usage changes
 export const usageEvents = pgTable('usage_events', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
-  workspaceId: uuid('workspace_id').notNull().references(() => workspace.id, { onDelete: 'cascade' }),
+  workspaceId: uuid('workspace_id')
+    .notNull()
+    .references(() => workspace.id, { onDelete: 'cascade' }),
   eventType: varchar('event_type', { length: 50 }).notNull(), // CHANNEL_ADDED, CHANNEL_REMOVED, MEMBER_ADDED, etc.
   resourceType: varchar('resource_type', { length: 30 }).notNull(), // CHANNEL, MEMBER
   resourceId: uuid('resource_id'),
@@ -118,8 +168,12 @@ export const usageEvents = pgTable('usage_events', {
 // 8. AI Usage Log - Detailed tracking of AI operations (who, where, when, how much)
 export const aiUsageLog = pgTable('ai_usage_log', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
-  workspaceId: uuid('workspace_id').notNull().references(() => workspace.id, { onDelete: 'cascade' }),
-  userId: uuid('user_id').notNull().references(() => users.id, { onDelete: 'cascade' }),
+  workspaceId: uuid('workspace_id')
+    .notNull()
+    .references(() => workspace.id, { onDelete: 'cascade' }),
+  userId: uuid('user_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
   operation: varchar('operation', { length: 50 }).notNull(), // generate_post, generate_caption, etc.
   tokensUsed: integer('tokens_used').notNull(),
   platform: varchar('platform', { length: 30 }), // twitter, linkedin, etc.
@@ -136,8 +190,13 @@ export const aiUsageLog = pgTable('ai_usage_log', {
 // 9. Invoices - Mirror of Stripe invoices
 export const invoices = pgTable('invoices', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
-  subscriptionId: integer('subscription_id').references(() => subscriptions.id, { onDelete: 'set null' }),
-  stripeInvoiceId: varchar('stripe_invoice_id', { length: 255 }).notNull().unique(),
+  subscriptionId: integer('subscription_id').references(
+    () => subscriptions.id,
+    { onDelete: 'set null' },
+  ),
+  stripeInvoiceId: varchar('stripe_invoice_id', { length: 255 })
+    .notNull()
+    .unique(),
   subtotalCents: integer('subtotal_cents').notNull(),
   taxCents: integer('tax_cents').default(0).notNull(),
   totalCents: integer('total_cents').notNull(),
@@ -158,7 +217,9 @@ export const invoices = pgTable('invoices', {
 // 9. Invoice Line Items - Breakdown of what user is paying for
 export const invoiceLineItems = pgTable('invoice_line_items', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
-  invoiceId: integer('invoice_id').notNull().references(() => invoices.id, { onDelete: 'cascade' }),
+  invoiceId: integer('invoice_id')
+    .notNull()
+    .references(() => invoices.id, { onDelete: 'cascade' }),
   stripeLineItemId: varchar('stripe_line_item_id', { length: 255 }),
   description: text('description').notNull(),
   itemType: varchar('item_type', { length: 30 }),
@@ -188,7 +249,9 @@ export const billingEvents = pgTable('billing_events', {
 // 11. Subscription Changes - Log of all subscription modifications
 export const subscriptionChanges = pgTable('subscription_changes', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
-  subscriptionId: integer('subscription_id').notNull().references(() => subscriptions.id, { onDelete: 'cascade' }),
+  subscriptionId: integer('subscription_id')
+    .notNull()
+    .references(() => subscriptions.id, { onDelete: 'cascade' }),
   changeType: varchar('change_type', { length: 50 }).notNull(), // PLAN_UPGRADED, ADDON_ADDED, etc.
   oldValue: jsonb('old_value'),
   newValue: jsonb('new_value'),
@@ -203,7 +266,9 @@ export const subscriptionChanges = pgTable('subscription_changes', {
 export const paymentMethods = pgTable('payment_methods', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
   stripeCustomerId: varchar('stripe_customer_id', { length: 255 }).notNull(),
-  stripePaymentMethodId: varchar('stripe_payment_method_id', { length: 255 }).notNull().unique(),
+  stripePaymentMethodId: varchar('stripe_payment_method_id', { length: 255 })
+    .notNull()
+    .unique(),
   type: varchar('type', { length: 20 }).notNull(), // card, bank_account
   isDefault: boolean('is_default').default(false).notNull(),
   cardBrand: varchar('card_brand', { length: 20 }),
@@ -217,8 +282,12 @@ export const paymentMethods = pgTable('payment_methods', {
 // 13. Failed Payments - Track payment failures and restrictions
 export const failedPayments = pgTable('failed_payments', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
-  subscriptionId: integer('subscription_id').notNull().references(() => subscriptions.id, { onDelete: 'cascade' }),
-  invoiceId: integer('invoice_id').references(() => invoices.id, { onDelete: 'set null' }),
+  subscriptionId: integer('subscription_id')
+    .notNull()
+    .references(() => subscriptions.id, { onDelete: 'cascade' }),
+  invoiceId: integer('invoice_id').references(() => invoices.id, {
+    onDelete: 'set null',
+  }),
   failureReason: text('failure_reason'),
   attemptCount: integer('attempt_count').default(1).notNull(),
   userNotified: boolean('user_notified').default(false).notNull(),
@@ -230,34 +299,43 @@ export const failedPayments = pgTable('failed_payments', {
 });
 
 // Relations
-export const stripeCustomersRelations = relations(stripeCustomers, ({ one }) => ({
-  user: one(users, {
-    fields: [stripeCustomers.userId],
-    references: [users.id],
+export const stripeCustomersRelations = relations(
+  stripeCustomers,
+  ({ one }) => ({
+    user: one(users, {
+      fields: [stripeCustomers.userId],
+      references: [users.id],
+    }),
   }),
-}));
+);
 
-export const subscriptionsRelations = relations(subscriptions, ({ one, many }) => ({
-  workspace: one(workspace, {
-    fields: [subscriptions.workspaceId],
-    references: [workspace.id],
+export const subscriptionsRelations = relations(
+  subscriptions,
+  ({ one, many }) => ({
+    workspace: one(workspace, {
+      fields: [subscriptions.workspaceId],
+      references: [workspace.id],
+    }),
+    plan: one(plans, {
+      fields: [subscriptions.planCode],
+      references: [plans.code],
+    }),
+    subscriptionItems: many(subscriptionItems),
+    invoices: many(invoices),
+    subscriptionChanges: many(subscriptionChanges),
+    failedPayments: many(failedPayments),
   }),
-  plan: one(plans, {
-    fields: [subscriptions.planCode],
-    references: [plans.code],
-  }),
-  subscriptionItems: many(subscriptionItems),
-  invoices: many(invoices),
-  subscriptionChanges: many(subscriptionChanges),
-  failedPayments: many(failedPayments),
-}));
+);
 
-export const subscriptionItemsRelations = relations(subscriptionItems, ({ one }) => ({
-  subscription: one(subscriptions, {
-    fields: [subscriptionItems.subscriptionId],
-    references: [subscriptions.id],
+export const subscriptionItemsRelations = relations(
+  subscriptionItems,
+  ({ one }) => ({
+    subscription: one(subscriptions, {
+      fields: [subscriptionItems.subscriptionId],
+      references: [subscriptions.id],
+    }),
   }),
-}));
+);
 
 export const workspaceUsageRelations = relations(workspaceUsage, ({ one }) => ({
   workspace: one(workspace, {
@@ -296,12 +374,15 @@ export const invoicesRelations = relations(invoices, ({ one, many }) => ({
   lineItems: many(invoiceLineItems),
 }));
 
-export const invoiceLineItemsRelations = relations(invoiceLineItems, ({ one }) => ({
-  invoice: one(invoices, {
-    fields: [invoiceLineItems.invoiceId],
-    references: [invoices.id],
+export const invoiceLineItemsRelations = relations(
+  invoiceLineItems,
+  ({ one }) => ({
+    invoice: one(invoices, {
+      fields: [invoiceLineItems.invoiceId],
+      references: [invoices.id],
+    }),
   }),
-}));
+);
 
 export const plansRelations = relations(plans, ({ many }) => ({
   subscriptions: many(subscriptions),
@@ -322,16 +403,19 @@ export const billingEventsRelations = relations(billingEvents, ({ one }) => ({
   }),
 }));
 
-export const subscriptionChangesRelations = relations(subscriptionChanges, ({ one }) => ({
-  subscription: one(subscriptions, {
-    fields: [subscriptionChanges.subscriptionId],
-    references: [subscriptions.id],
+export const subscriptionChangesRelations = relations(
+  subscriptionChanges,
+  ({ one }) => ({
+    subscription: one(subscriptions, {
+      fields: [subscriptionChanges.subscriptionId],
+      references: [subscriptions.id],
+    }),
+    changedByUser: one(users, {
+      fields: [subscriptionChanges.changedByUserId],
+      references: [users.id],
+    }),
   }),
-  changedByUser: one(users, {
-    fields: [subscriptionChanges.changedByUserId],
-    references: [users.id],
-  }),
-}));
+);
 
 export const failedPaymentsRelations = relations(failedPayments, ({ one }) => ({
   subscription: one(subscriptions, {

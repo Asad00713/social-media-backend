@@ -11,7 +11,9 @@ describe('TwitterAnalyticsAdapter', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    adapter = new TwitterAnalyticsAdapter(mockClient as unknown as TwitterApiClient);
+    adapter = new TwitterAnalyticsAdapter(
+      mockClient as unknown as TwitterApiClient,
+    );
   });
 
   it('exposes platform=twitter with correct vocabulary and capabilities', () => {
@@ -146,7 +148,11 @@ describe('TwitterAnalyticsAdapter', () => {
 
   it('fetchPostMetrics maps tier_required to auth_failed in error result', async () => {
     mockClient.getTweet.mockRejectedValue(
-      new TwitterApiError('tier_required', 403, 'Your access level does not permit this'),
+      new TwitterApiError(
+        'tier_required',
+        403,
+        'Your access level does not permit this',
+      ),
     );
 
     const result = await adapter.fetchPostMetrics({
@@ -188,7 +194,12 @@ describe('TwitterAnalyticsAdapter', () => {
           },
         },
       ],
-      media: new Map([['16_media1', { url: 'https://pbs.twimg.com/media/img.jpg', type: 'photo' }]]),
+      media: new Map([
+        [
+          '16_media1',
+          { url: 'https://pbs.twimg.com/media/img.jpg', type: 'photo' },
+        ],
+      ]),
     });
 
     const result = await adapter.fetchRecentPosts(

@@ -22,9 +22,15 @@ describe('ComposerValidatorService', () => {
     replyControlOptions: [],
     maxCharsBody: 280,
     mediaConstraints: {
-      imageMaxCount: 4, imageMaxSizeMB: 5, imageAllowedTypes: [], imageAspectRatios: [],
-      videoMaxCount: 1, videoMaxSizeMB: 512, videoMaxDurationSec: 140,
-      videoAllowedTypes: [], videoAspectRatios: [],
+      imageMaxCount: 4,
+      imageMaxSizeMB: 5,
+      imageAllowedTypes: [],
+      imageAspectRatios: [],
+      videoMaxCount: 1,
+      videoMaxSizeMB: 512,
+      videoMaxDurationSec: 140,
+      videoAllowedTypes: [],
+      videoAspectRatios: [],
     },
     requiredFields: ['body'],
   };
@@ -64,19 +70,28 @@ describe('ComposerValidatorService', () => {
   it('rejects body over char limit', () => {
     const r = service.validate(payload('x'.repeat(281)), twitterCaps);
     expect(r.ok).toBe(false);
-    expect(r.errors).toContainEqual(expect.objectContaining({ kind: 'body_too_long' }));
+    expect(r.errors).toContainEqual(
+      expect.objectContaining({ kind: 'body_too_long' }),
+    );
   });
 
   it('warns near char limit (>=90%)', () => {
     const r = service.validate(payload('x'.repeat(260)), twitterCaps);
     expect(r.ok).toBe(true);
-    expect(r.warnings).toContainEqual(expect.objectContaining({ kind: 'body_near_limit' }));
+    expect(r.warnings).toContainEqual(
+      expect.objectContaining({ kind: 'body_near_limit' }),
+    );
   });
 
   it('rejects empty body when required', () => {
     const r = service.validate(payload(''), twitterCaps);
     expect(r.ok).toBe(false);
-    expect(r.errors).toContainEqual(expect.objectContaining({ kind: 'required_field_missing', field: 'body' }));
+    expect(r.errors).toContainEqual(
+      expect.objectContaining({
+        kind: 'required_field_missing',
+        field: 'body',
+      }),
+    );
   });
 
   it('rejects YT payload missing title', () => {
@@ -86,15 +101,23 @@ describe('ComposerValidatorService', () => {
     );
     expect(r.ok).toBe(false);
     expect(r.errors).toContainEqual(
-      expect.objectContaining({ kind: 'required_field_missing', field: 'title' }),
+      expect.objectContaining({
+        kind: 'required_field_missing',
+        field: 'title',
+      }),
     );
   });
 
   it('rejects YT title over 100 chars', () => {
     const r = service.validate(
-      { ...payload(''), platformSpecific: { title: 'x'.repeat(101), description: 'd' } },
+      {
+        ...payload(''),
+        platformSpecific: { title: 'x'.repeat(101), description: 'd' },
+      },
       ytCaps,
     );
-    expect(r.errors).toContainEqual(expect.objectContaining({ kind: 'title_too_long' }));
+    expect(r.errors).toContainEqual(
+      expect.objectContaining({ kind: 'title_too_long' }),
+    );
   });
 });

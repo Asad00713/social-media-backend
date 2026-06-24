@@ -173,7 +173,9 @@ export class GooglePhotosService {
     if (!response.ok) {
       const error = await response.text();
       this.logger.error(`Failed to search Photos media items: ${error}`);
-      throw new BadRequestException('Failed to search Google Photos media items');
+      throw new BadRequestException(
+        'Failed to search Google Photos media items',
+      );
     }
 
     const data = await response.json();
@@ -265,12 +267,18 @@ export class GooglePhotosService {
   /**
    * Get a specific media item by ID
    */
-  async getMediaItem(accessToken: string, mediaItemId: string): Promise<PhotosMediaItem> {
-    const response = await fetch(`${this.apiBaseUrl}/mediaItems/${mediaItemId}`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
+  async getMediaItem(
+    accessToken: string,
+    mediaItemId: string,
+  ): Promise<PhotosMediaItem> {
+    const response = await fetch(
+      `${this.apiBaseUrl}/mediaItems/${mediaItemId}`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
       },
-    });
+    );
 
     if (!response.ok) {
       const error = await response.text();
@@ -291,22 +299,29 @@ export class GooglePhotosService {
     const params = new URLSearchParams();
     mediaItemIds.forEach((id) => params.append('mediaItemIds', id));
 
-    const response = await fetch(`${this.apiBaseUrl}/mediaItems:batchGet?${params}`, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
+    const response = await fetch(
+      `${this.apiBaseUrl}/mediaItems:batchGet?${params}`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
       },
-    });
+    );
 
     if (!response.ok) {
       const error = await response.text();
       this.logger.error(`Failed to batch get Photos media items: ${error}`);
-      throw new BadRequestException('Failed to batch get Google Photos media items');
+      throw new BadRequestException(
+        'Failed to batch get Google Photos media items',
+      );
     }
 
     const data = await response.json();
-    return data.mediaItemResults
-      ?.filter((result: any) => result.mediaItem)
-      .map((result: any) => result.mediaItem) || [];
+    return (
+      data.mediaItemResults
+        ?.filter((result: any) => result.mediaItem)
+        .map((result: any) => result.mediaItem) || []
+    );
   }
 
   /**
@@ -314,7 +329,10 @@ export class GooglePhotosService {
    * For photos: baseUrl + '=d' for original quality download
    * For videos: baseUrl + '=dv' for video download
    */
-  getDownloadUrl(mediaItem: PhotosMediaItem, options?: { width?: number; height?: number }): string {
+  getDownloadUrl(
+    mediaItem: PhotosMediaItem,
+    options?: { width?: number; height?: number },
+  ): string {
     const { baseUrl, mediaMetadata } = mediaItem;
 
     // Check if it's a video
@@ -349,7 +367,9 @@ export class GooglePhotosService {
     if (!response.ok) {
       const error = await response.text();
       this.logger.error(`Failed to download Photos media item: ${error}`);
-      throw new BadRequestException('Failed to download Google Photos media item');
+      throw new BadRequestException(
+        'Failed to download Google Photos media item',
+      );
     }
 
     const arrayBuffer = await response.arrayBuffer();

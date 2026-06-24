@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { eq, and, desc, asc } from 'drizzle-orm';
@@ -92,11 +97,15 @@ export class DripService {
     );
 
     if (totalOccurrences === 0) {
-      throw new BadRequestException('No occurrences would be generated with these settings');
+      throw new BadRequestException(
+        'No occurrences would be generated with these settings',
+      );
     }
 
     if (totalOccurrences > 365) {
-      throw new BadRequestException('Maximum 365 occurrences allowed per campaign');
+      throw new BadRequestException(
+        'Maximum 365 occurrences allowed per campaign',
+      );
     }
 
     // Create the campaign
@@ -129,9 +138,18 @@ export class DripService {
       .returning();
 
     // Record history
-    await this.recordHistory(campaign.id, null, 'created', null, 'draft', userId);
+    await this.recordHistory(
+      campaign.id,
+      null,
+      'created',
+      null,
+      'draft',
+      userId,
+    );
 
-    this.logger.log(`Created drip campaign ${campaign.id} with ${totalOccurrences} occurrences`);
+    this.logger.log(
+      `Created drip campaign ${campaign.id} with ${totalOccurrences} occurrences`,
+    );
 
     return campaign;
   }
@@ -147,7 +165,9 @@ export class DripService {
     const campaign = await this.getDripCampaign(campaignId, workspaceId);
 
     if (campaign.status !== 'draft' && campaign.status !== 'paused') {
-      throw new BadRequestException(`Cannot activate campaign with status: ${campaign.status}`);
+      throw new BadRequestException(
+        `Cannot activate campaign with status: ${campaign.status}`,
+      );
     }
 
     // Generate all drip posts for the campaign
@@ -167,7 +187,14 @@ export class DripService {
       .where(eq(dripCampaigns.id, campaignId))
       .returning();
 
-    await this.recordHistory(campaignId, null, 'activated', campaign.status, 'active', userId);
+    await this.recordHistory(
+      campaignId,
+      null,
+      'activated',
+      campaign.status,
+      'active',
+      userId,
+    );
 
     this.logger.log(`Activated drip campaign ${campaignId}`);
 
@@ -202,7 +229,14 @@ export class DripService {
       .where(eq(dripCampaigns.id, campaignId))
       .returning();
 
-    await this.recordHistory(campaignId, null, 'paused', 'active', 'paused', userId);
+    await this.recordHistory(
+      campaignId,
+      null,
+      'paused',
+      'active',
+      'paused',
+      userId,
+    );
 
     this.logger.log(`Paused drip campaign ${campaignId}`);
 
@@ -247,7 +281,14 @@ export class DripService {
       .where(eq(dripCampaigns.id, campaignId))
       .returning();
 
-    await this.recordHistory(campaignId, null, 'cancelled', campaign.status, 'cancelled', userId);
+    await this.recordHistory(
+      campaignId,
+      null,
+      'cancelled',
+      campaign.status,
+      'cancelled',
+      userId,
+    );
 
     this.logger.log(`Cancelled drip campaign ${campaignId}`);
 
@@ -288,7 +329,10 @@ export class DripService {
       limit?: number;
       offset?: number;
     },
-  ): Promise<{ campaigns: (typeof dripCampaigns.$inferSelect)[]; total: number }> {
+  ): Promise<{
+    campaigns: (typeof dripCampaigns.$inferSelect)[];
+    total: number;
+  }> {
     const conditions = [eq(dripCampaigns.workspaceId, workspaceId)];
 
     if (options?.status) {
@@ -379,7 +423,9 @@ export class DripService {
     const post = await this.getDripPost(dripPostId, workspaceId);
 
     if (post.status !== 'pending_review') {
-      throw new BadRequestException('Can only edit posts in pending_review status');
+      throw new BadRequestException(
+        'Can only edit posts in pending_review status',
+      );
     }
 
     // Track user edits
@@ -403,7 +449,14 @@ export class DripService {
       .where(eq(dripPosts.id, dripPostId))
       .returning();
 
-    await this.recordHistory(post.dripCampaignId, dripPostId, 'edited', 'pending_review', 'approved', userId);
+    await this.recordHistory(
+      post.dripCampaignId,
+      dripPostId,
+      'edited',
+      'pending_review',
+      'approved',
+      userId,
+    );
 
     return updatedPost;
   }
@@ -419,7 +472,9 @@ export class DripService {
     const post = await this.getDripPost(dripPostId, workspaceId);
 
     if (post.status !== 'pending_review') {
-      throw new BadRequestException('Can only approve posts in pending_review status');
+      throw new BadRequestException(
+        'Can only approve posts in pending_review status',
+      );
     }
 
     const [updatedPost] = await db
@@ -433,7 +488,14 @@ export class DripService {
       .where(eq(dripPosts.id, dripPostId))
       .returning();
 
-    await this.recordHistory(post.dripCampaignId, dripPostId, 'approved', 'pending_review', 'approved', userId);
+    await this.recordHistory(
+      post.dripCampaignId,
+      dripPostId,
+      'approved',
+      'pending_review',
+      'approved',
+      userId,
+    );
 
     return updatedPost;
   }
@@ -449,7 +511,9 @@ export class DripService {
     const post = await this.getDripPost(dripPostId, workspaceId);
 
     if (['published', 'cancelled', 'skipped'].includes(post.status)) {
-      throw new BadRequestException(`Cannot skip post with status: ${post.status}`);
+      throw new BadRequestException(
+        `Cannot skip post with status: ${post.status}`,
+      );
     }
 
     // Cancel any scheduled jobs
@@ -472,7 +536,14 @@ export class DripService {
       .where(eq(dripPosts.id, dripPostId))
       .returning();
 
-    await this.recordHistory(post.dripCampaignId, dripPostId, 'skipped', post.status, 'skipped', userId);
+    await this.recordHistory(
+      post.dripCampaignId,
+      dripPostId,
+      'skipped',
+      post.status,
+      'skipped',
+      userId,
+    );
 
     return updatedPost;
   }
@@ -490,9 +561,17 @@ export class DripService {
 
     // Only allow updating certain fields for non-draft campaigns
     if (campaign.status !== 'draft') {
-      const allowedFields = ['name', 'description', 'additionalPrompt', 'tone', 'autoApprove'];
+      const allowedFields = [
+        'name',
+        'description',
+        'additionalPrompt',
+        'tone',
+        'autoApprove',
+      ];
       const attemptedFields = Object.keys(dto);
-      const disallowedFields = attemptedFields.filter((f) => !allowedFields.includes(f));
+      const disallowedFields = attemptedFields.filter(
+        (f) => !allowedFields.includes(f),
+      );
 
       if (disallowedFields.length > 0) {
         throw new BadRequestException(
@@ -510,9 +589,17 @@ export class DripService {
       .where(eq(dripCampaigns.id, campaignId))
       .returning();
 
-    await this.recordHistory(campaignId, null, 'updated', campaign.status, campaign.status, userId, {
-      updatedFields: Object.keys(dto),
-    });
+    await this.recordHistory(
+      campaignId,
+      null,
+      'updated',
+      campaign.status,
+      campaign.status,
+      userId,
+      {
+        updatedFields: Object.keys(dto),
+      },
+    );
 
     return updatedCampaign;
   }
@@ -582,14 +669,20 @@ export class DripService {
 
     // Find next scheduled post
     const pendingPosts = posts
-      .filter((p) => ['pending', 'pending_review', 'approved', 'scheduled'].includes(p.status))
+      .filter((p) =>
+        ['pending', 'pending_review', 'approved', 'scheduled'].includes(
+          p.status,
+        ),
+      )
       .sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime());
 
-    const nextScheduled = pendingPosts.length > 0 ? pendingPosts[0].scheduledAt : null;
+    const nextScheduled =
+      pendingPosts.length > 0 ? pendingPosts[0].scheduledAt : null;
 
     // Calculate completion rate
     const completedPosts = posts.filter((p) => p.status === 'published').length;
-    const completionRate = posts.length > 0 ? (completedPosts / posts.length) * 100 : 0;
+    const completionRate =
+      posts.length > 0 ? (completedPosts / posts.length) * 100 : 0;
 
     return {
       totalPosts: posts.length,
@@ -620,7 +713,11 @@ export class DripService {
       if (occurrenceType === 'daily') {
         count++;
         current.setDate(current.getDate() + 1);
-      } else if (occurrenceType === 'weekly' && weeklyDays && weeklyDays.length > 0) {
+      } else if (
+        occurrenceType === 'weekly' &&
+        weeklyDays &&
+        weeklyDays.length > 0
+      ) {
         if (weeklyDays.includes(current.getDay())) {
           count++;
         }
@@ -639,7 +736,9 @@ export class DripService {
   /**
    * Generate drip post entries for all occurrences
    */
-  private async generateDripPosts(campaign: typeof dripCampaigns.$inferSelect): Promise<void> {
+  private async generateDripPosts(
+    campaign: typeof dripCampaigns.$inferSelect,
+  ): Promise<void> {
     const startDate = new Date(campaign.startDate);
     const endDate = new Date(campaign.endDate);
     const [hours, minutes] = campaign.publishTime.split(':').map(Number);
@@ -667,10 +766,15 @@ export class DripService {
         scheduledAt.setHours(hours, minutes, 0, 0);
 
         // AI generation time (X minutes before publish)
-        const aiGenerationAt = new Date(scheduledAt.getTime() - campaign.aiGenerationLeadTime * 60 * 1000);
+        const aiGenerationAt = new Date(
+          scheduledAt.getTime() - campaign.aiGenerationLeadTime * 60 * 1000,
+        );
 
         // Email notification time (X minutes before publish)
-        const emailNotificationAt = new Date(scheduledAt.getTime() - campaign.emailNotificationLeadTime * 60 * 1000);
+        const emailNotificationAt = new Date(
+          scheduledAt.getTime() -
+            campaign.emailNotificationLeadTime * 60 * 1000,
+        );
 
         postsToCreate.push({
           dripCampaignId: campaign.id,
@@ -697,14 +801,18 @@ export class DripService {
     // Batch insert all drip posts
     if (postsToCreate.length > 0) {
       await db.insert(dripPosts).values(postsToCreate);
-      this.logger.log(`Created ${postsToCreate.length} drip posts for campaign ${campaign.id}`);
+      this.logger.log(
+        `Created ${postsToCreate.length} drip posts for campaign ${campaign.id}`,
+      );
     }
   }
 
   /**
    * Schedule BullMQ jobs for all pending drip posts
    */
-  private async scheduleAllDripJobs(campaign: typeof dripCampaigns.$inferSelect): Promise<void> {
+  private async scheduleAllDripJobs(
+    campaign: typeof dripCampaigns.$inferSelect,
+  ): Promise<void> {
     const posts = await db
       .select()
       .from(dripPosts)
@@ -720,7 +828,9 @@ export class DripService {
       await this.scheduleDripPostJobs(post, campaign);
     }
 
-    this.logger.log(`Scheduled jobs for ${posts.length} drip posts in campaign ${campaign.id}`);
+    this.logger.log(
+      `Scheduled jobs for ${posts.length} drip posts in campaign ${campaign.id}`,
+    );
   }
 
   /**
@@ -816,7 +926,8 @@ export class DripService {
 
     for (const post of posts) {
       if (post.aiGenerationJobId) await this.cancelJob(post.aiGenerationJobId);
-      if (post.emailNotificationJobId) await this.cancelJob(post.emailNotificationJobId);
+      if (post.emailNotificationJobId)
+        await this.cancelJob(post.emailNotificationJobId);
       if (post.publishJobId) await this.cancelJob(post.publishJobId);
     }
   }
@@ -839,7 +950,10 @@ export class DripService {
   /**
    * Validate channels belong to workspace
    */
-  private async validateChannels(workspaceId: string, channelIds: string[]): Promise<void> {
+  private async validateChannels(
+    workspaceId: string,
+    channelIds: string[],
+  ): Promise<void> {
     if (channelIds.length === 0) {
       throw new BadRequestException('At least one target channel is required');
     }
@@ -855,7 +969,9 @@ export class DripService {
     const invalidIds = numericIds.filter((id) => !validIds.includes(id));
 
     if (invalidIds.length > 0) {
-      throw new BadRequestException(`Invalid channel IDs: ${invalidIds.join(', ')}`);
+      throw new BadRequestException(
+        `Invalid channel IDs: ${invalidIds.join(', ')}`,
+      );
     }
   }
 

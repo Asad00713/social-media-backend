@@ -236,7 +236,9 @@ export class BlueskyInboxAdapter implements PlatformInboxAdapter {
 }
 
 function resolveDid(channel: ResolvedChannel): string | undefined {
-  return (channel.metadata?.did as string | undefined) ?? channel.platformAccountId;
+  return (
+    (channel.metadata?.did as string | undefined) ?? channel.platformAccountId
+  );
 }
 
 function findPostByUri(

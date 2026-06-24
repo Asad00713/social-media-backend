@@ -52,7 +52,9 @@ export class ThreadsAnalyticsAdapter implements PlatformAnalyticsAdapter {
     return 0;
   }
 
-  async fetchProfileSnapshot(channel: ChannelEntity): Promise<ProfileSnapshotResult> {
+  async fetchProfileSnapshot(
+    channel: ChannelEntity,
+  ): Promise<ProfileSnapshotResult> {
     try {
       const [user, insights] = await Promise.allSettled([
         this.client.getMe(channel.accessToken),
@@ -109,19 +111,28 @@ export class ThreadsAnalyticsAdapter implements PlatformAnalyticsAdapter {
       if (!threadId) {
         return {
           status: 'failed',
-          error: { code: 'not_found', message: 'Missing platformPostId on post' },
+          error: {
+            code: 'not_found',
+            message: 'Missing platformPostId on post',
+          },
           quotaCostUsed: 0,
         };
       }
       if (!accessToken) {
         return {
           status: 'failed',
-          error: { code: 'auth_failed', message: 'Missing accessToken on post' },
+          error: {
+            code: 'auth_failed',
+            message: 'Missing accessToken on post',
+          },
           quotaCostUsed: 0,
         };
       }
 
-      const insights = await this.client.getThreadInsights(threadId, accessToken);
+      const insights = await this.client.getThreadInsights(
+        threadId,
+        accessToken,
+      );
 
       return {
         status: 'success',
@@ -177,9 +188,9 @@ export class ThreadsAnalyticsAdapter implements PlatformAnalyticsAdapter {
     }
   }
 
-  private toFailedResult<T extends { status: string; error?: unknown; quotaCostUsed: number }>(
-    err: unknown,
-  ): T {
+  private toFailedResult<
+    T extends { status: string; error?: unknown; quotaCostUsed: number },
+  >(err: unknown): T {
     const tErr = err instanceof ThreadsApiError ? err : null;
     return {
       status: 'failed',

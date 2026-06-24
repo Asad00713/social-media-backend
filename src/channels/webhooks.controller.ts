@@ -184,7 +184,7 @@ export class WebhooksController {
           );
           try {
             await this.ingestMetaMessagingEvent(
-              source as 'facebook' | 'instagram',
+              source,
               accountId,
               event,
               eventTime,
@@ -244,7 +244,9 @@ export class WebhooksController {
           } else if (source === 'threads' && field === 'replies') {
             await this.ingestThreadsReply(accountId, value, eventTime);
           } else {
-            this.logger.verbose(`Ignoring ${source} field '${field}' in Phase 1`);
+            this.logger.verbose(
+              `Ignoring ${source} field '${field}' in Phase 1`,
+            );
           }
         } catch (err) {
           this.logger.error(
@@ -440,7 +442,9 @@ export class WebhooksController {
     const platformItemId = value.comment_id as string | undefined;
     const postId = value.post_id as string | undefined;
     if (!platformItemId || !postId) {
-      this.logger.warn('Facebook comment webhook missing comment_id or post_id');
+      this.logger.warn(
+        'Facebook comment webhook missing comment_id or post_id',
+      );
       return;
     }
 
@@ -628,7 +632,8 @@ export class WebhooksController {
   @HttpCode(HttpStatus.OK)
   async receiveTelegramUpdate(
     @Param('routeId') routeId: string,
-    @Headers('x-telegram-bot-api-secret-token') headerSecret: string | undefined,
+    @Headers('x-telegram-bot-api-secret-token')
+    headerSecret: string | undefined,
     @Body() update: Record<string, unknown>,
   ) {
     const channel = await this.inbox.findTelegramChannelByRouteId(routeId);
@@ -637,7 +642,9 @@ export class WebhooksController {
       return { ok: true };
     }
     if (!verifyTelegramWebhookSecret(routeId, headerSecret)) {
-      this.logger.warn(`Telegram webhook secret mismatch for routeId ${routeId}`);
+      this.logger.warn(
+        `Telegram webhook secret mismatch for routeId ${routeId}`,
+      );
       throw new HttpException('Forbidden', HttpStatus.FORBIDDEN);
     }
     await this.telegramQueue.add(

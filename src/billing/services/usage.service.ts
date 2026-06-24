@@ -61,7 +61,9 @@ export class UsageService {
       .limit(1);
 
     if (usage.length === 0) {
-      throw new NotFoundException('Workspace usage not found. Ensure subscription is active.');
+      throw new NotFoundException(
+        'Workspace usage not found. Ensure subscription is active.',
+      );
     }
 
     const u = usage[0];
@@ -69,10 +71,12 @@ export class UsageService {
     return {
       channelsLimit: u.channelsLimit + u.extraChannelsPurchased,
       channelsCount: u.channelsCount,
-      channelsAvailable: u.channelsLimit + u.extraChannelsPurchased - u.channelsCount,
+      channelsAvailable:
+        u.channelsLimit + u.extraChannelsPurchased - u.channelsCount,
       membersLimit: u.membersLimit + u.extraMembersPurchased,
       membersCount: u.membersCount,
-      membersAvailable: u.membersLimit + u.extraMembersPurchased - u.membersCount,
+      membersAvailable:
+        u.membersLimit + u.extraMembersPurchased - u.membersCount,
       extraChannelsPurchased: u.extraChannelsPurchased,
       extraMembersPurchased: u.extraMembersPurchased,
       aiTokensUsedThisMonth: u.aiTokensUsedThisMonth,
@@ -386,7 +390,9 @@ export class UsageService {
       })
       .where(eq(workspaceUsage.id, currentUsage[0].id));
 
-    this.logger.log(`Recalculated usage for workspace ${workspaceId}: ${membersCount} members`);
+    this.logger.log(
+      `Recalculated usage for workspace ${workspaceId}: ${membersCount} members`,
+    );
   }
 
   // Update limits when subscription changes (e.g., add-ons purchased)

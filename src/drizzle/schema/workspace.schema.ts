@@ -1,5 +1,12 @@
-import { pgTable, uuid, timestamp, varchar, boolean, text } from "drizzle-orm/pg-core";
-import { users } from "./users.schema";
+import {
+  pgTable,
+  uuid,
+  timestamp,
+  varchar,
+  boolean,
+  text,
+} from 'drizzle-orm/pg-core';
+import { users } from './users.schema';
 
 export const workspace = pgTable('workspace', {
   id: uuid('id').primaryKey().defaultRandom(),
@@ -7,8 +14,10 @@ export const workspace = pgTable('workspace', {
   slug: text('slug').notNull().unique(),
   description: text('description'),
   logo: text('logo'),
-  ownerId: uuid("owner_id").notNull().references(() => users.id, { onDelete: 'cascade' }),
-  timezone: text("timezone").notNull().default("UTC"),
+  ownerId: uuid('owner_id')
+    .notNull()
+    .references(() => users.id, { onDelete: 'cascade' }),
+  timezone: text('timezone').notNull().default('UTC'),
 
   // AI provider preference (null = system default)
   preferredAiProvider: varchar('preferred_ai_provider', { length: 20 }),

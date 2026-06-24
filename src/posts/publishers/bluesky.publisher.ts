@@ -32,7 +32,9 @@ export class BlueskyPublisher extends BasePublisher {
       thread.forEach((t, i) => {
         const media = t.mediaItems ?? [];
         if (!t.text && media.length === 0) {
-          throw new Error(`Bluesky thread post ${i + 1} must have content or media`);
+          throw new Error(
+            `Bluesky thread post ${i + 1} must have content or media`,
+          );
         }
         if (t.text && t.text.length > 300) {
           throw new Error(
@@ -46,7 +48,9 @@ export class BlueskyPublisher extends BasePublisher {
           );
         }
         if (!hasVideo && media.length > 4) {
-          throw new Error(`Bluesky thread post ${i + 1} has more than 4 images`);
+          throw new Error(
+            `Bluesky thread post ${i + 1} has more than 4 images`,
+          );
         }
       });
       return;
@@ -56,11 +60,15 @@ export class BlueskyPublisher extends BasePublisher {
       throw new Error('Bluesky post must have text, images, or a video');
     }
     if (content && content.length > 300) {
-      throw new Error(`Bluesky post exceeds 300 character limit (${content.length} chars)`);
+      throw new Error(
+        `Bluesky post exceeds 300 character limit (${content.length} chars)`,
+      );
     }
     const hasVideo = mediaItems.some((m) => m.type === 'video');
     if (hasVideo && mediaItems.length > 1) {
-      throw new Error('Bluesky posts can include either images OR one video — not both');
+      throw new Error(
+        'Bluesky posts can include either images OR one video — not both',
+      );
     }
     if (!hasVideo && mediaItems.length > 4) {
       throw new Error('Bluesky allows maximum 4 images per post');
@@ -72,17 +80,22 @@ export class BlueskyPublisher extends BasePublisher {
     // Mixed media (image + video) is NOT supported — must be one or the other.
     if (mediaItems.length === 0) return true;
     const allImages = mediaItems.every((m) => m.type === 'image');
-    const isSingleVideo = mediaItems.length === 1 && mediaItems[0].type === 'video';
+    const isSingleVideo =
+      mediaItems.length === 1 && mediaItems[0].type === 'video';
     return allImages || isSingleVideo;
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
-    const { content, mediaItems, accessToken, channelMetadata, metadata } = options;
+    const { content, mediaItems, accessToken, channelMetadata, metadata } =
+      options;
     this.validate(options);
 
-    const did = (channelMetadata?.did as string | undefined) ?? options.platformAccountId;
+    const did =
+      (channelMetadata?.did as string | undefined) ?? options.platformAccountId;
     if (!did) {
-      throw new Error('Bluesky channel is missing DID — re-connect the account');
+      throw new Error(
+        'Bluesky channel is missing DID — re-connect the account',
+      );
     }
 
     const thread = metadata?.thread as ThreadPost[] | undefined;
@@ -96,7 +109,11 @@ export class BlueskyPublisher extends BasePublisher {
     // - 1-4 images → image post(s)
     let post: { uri: string; cid: string };
     if (mediaItems.length === 0) {
-      post = await this.blueskyService.createTextPost(accessToken, did, content ?? '');
+      post = await this.blueskyService.createTextPost(
+        accessToken,
+        did,
+        content ?? '',
+      );
     } else if (mediaItems.length === 1 && mediaItems[0].type === 'video') {
       const v = mediaItems[0];
       post = await this.blueskyService.createVideoPost(
@@ -184,7 +201,9 @@ export class BlueskyPublisher extends BasePublisher {
         }
         parentRef = ref;
         postedUris.push(created.uri);
-        this.logger.log(`Bluesky thread post ${i + 1}/${posts.length}: ${created.uri}`);
+        this.logger.log(
+          `Bluesky thread post ${i + 1}/${posts.length}: ${created.uri}`,
+        );
       } catch (err) {
         this.logger.error(
           `Bluesky thread broke at ${i + 1}/${posts.length}. Posted so far: ${postedUris.join(',')}`,

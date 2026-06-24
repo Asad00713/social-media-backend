@@ -151,7 +151,9 @@ export class PostsController {
     const successCount = post.targets.filter(
       (t) => t.status === 'published',
     ).length;
-    const failedCount = post.targets.filter((t) => t.status === 'failed').length;
+    const failedCount = post.targets.filter(
+      (t) => t.status === 'failed',
+    ).length;
 
     return {
       post,

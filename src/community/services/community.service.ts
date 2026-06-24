@@ -30,8 +30,10 @@ export class CommunityService {
       maxResults?: number;
     },
   ): Promise<CommunityCommentsResponse> {
-    const { platformAccountId, platform } =
-      await this.resolveChannel(channelId, workspaceId);
+    const { platformAccountId, platform } = await this.resolveChannel(
+      channelId,
+      workspaceId,
+    );
 
     const provider = this.providerFactory.getProvider(platform);
 
@@ -108,14 +110,14 @@ export class CommunityService {
       maxResults?: number;
     },
   ): Promise<CommunityCommentsResponse> {
-    const { platformAccountId, platform } =
-      await this.resolveChannel(channelId, workspaceId);
+    const { platformAccountId, platform } = await this.resolveChannel(
+      channelId,
+      workspaceId,
+    );
 
     const provider = this.providerFactory.getProvider(platform);
 
-    this.logger.log(
-      `Fetching mentions for ${platform} channel ${channelId}`,
-    );
+    this.logger.log(`Fetching mentions for ${platform} channel ${channelId}`);
 
     const callProvider = (token: string) =>
       provider.getMentions({
@@ -139,8 +141,10 @@ export class CommunityService {
     text: string,
     mediaUrls?: string[],
   ): Promise<CommunityReplyResponse> {
-    const { platform, channelMetadata } =
-      await this.resolveChannel(channelId, workspaceId);
+    const { platform, channelMetadata } = await this.resolveChannel(
+      channelId,
+      workspaceId,
+    );
 
     const provider = this.providerFactory.getProvider(platform);
 
@@ -186,8 +190,7 @@ export class CommunityService {
     try {
       return await callProvider(accessToken);
     } catch (error) {
-      const message =
-        error instanceof Error ? error.message : String(error);
+      const message = error instanceof Error ? error.message : String(error);
 
       // Check if error is token-related (expired/invalid)
       const isTokenError =
@@ -237,8 +240,7 @@ export class CommunityService {
       profileImageUrl: string | null;
     };
   }> {
-    const channel =
-      await this.channelService.getChannelForPosting(channelId);
+    const channel = await this.channelService.getChannelForPosting(channelId);
 
     if (channel.workspaceId !== workspaceId) {
       throw new BadRequestException(
@@ -246,7 +248,7 @@ export class CommunityService {
       );
     }
 
-    const platform = channel.platform as SupportedPlatform;
+    const platform = channel.platform;
 
     // Validate platform is supported for community features
     this.providerFactory.getProvider(platform);

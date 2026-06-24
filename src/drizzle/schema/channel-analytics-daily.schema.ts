@@ -31,10 +31,17 @@ export const channelAnalyticsDaily = pgTable(
     computedAt: timestamp('computed_at', { withTimezone: true }).notNull(),
   },
   (t) => ({
-    channelDateUnique: unique('channel_analytics_daily_channel_date_unique').on(t.channelId, t.date),
-    channelDateIdx: index('channel_analytics_daily_channel_date_idx').on(t.channelId, t.date.desc()),
+    channelDateUnique: unique('channel_analytics_daily_channel_date_unique').on(
+      t.channelId,
+      t.date,
+    ),
+    channelDateIdx: index('channel_analytics_daily_channel_date_idx').on(
+      t.channelId,
+      t.date.desc(),
+    ),
   }),
 );
 
 export type ChannelAnalyticsDaily = typeof channelAnalyticsDaily.$inferSelect;
-export type NewChannelAnalyticsDaily = typeof channelAnalyticsDaily.$inferInsert;
+export type NewChannelAnalyticsDaily =
+  typeof channelAnalyticsDaily.$inferInsert;

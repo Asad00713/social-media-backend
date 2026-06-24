@@ -12,7 +12,9 @@ describe('YouTubeDataApiClient', () => {
   it('getChannelById hits channels.list with snippet,statistics,contentDetails parts', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
-      json: async () => ({ items: [{ id: 'UC123', snippet: { title: 'Test' } }] }),
+      json: async () => ({
+        items: [{ id: 'UC123', snippet: { title: 'Test' } }],
+      }),
     });
     await client.getChannelById('UC123', 'fake-token');
     expect(mockFetch).toHaveBeenCalledTimes(1);
@@ -24,7 +26,10 @@ describe('YouTubeDataApiClient', () => {
   });
 
   it('listChannelVideos hits search.list filtered by channelId', async () => {
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ items: [] }) });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [] }),
+    });
     await client.listChannelVideos('UC123', 'fake-token', { maxResults: 25 });
     const [url] = mockFetch.mock.calls[0];
     expect(url).toContain('/search?');
@@ -35,10 +40,12 @@ describe('YouTubeDataApiClient', () => {
 
   it('throws YouTubeApiError with rate_limited code on 403 quota response', async () => {
     mockFetch.mockResolvedValue({
-      ok: false, status: 403,
+      ok: false,
+      status: 403,
       json: async () => ({ error: { message: 'quotaExceeded' } }),
     });
-    await expect(client.getChannelById('UC123', 'fake-token'))
-      .rejects.toMatchObject({ code: 'rate_limited', status: 403 });
+    await expect(
+      client.getChannelById('UC123', 'fake-token'),
+    ).rejects.toMatchObject({ code: 'rate_limited', status: 403 });
   });
 });

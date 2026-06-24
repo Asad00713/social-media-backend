@@ -53,9 +53,7 @@ export const scheduledInboxMessages = pgTable(
       .notNull()
       .references(() => socialMediaChannels.id, { onDelete: 'cascade' }),
 
-    type: varchar('type', { length: 10 })
-      .$type<ScheduledInboxType>()
-      .notNull(),
+    type: varchar('type', { length: 10 }).$type<ScheduledInboxType>().notNull(),
 
     threadKey: varchar('thread_key', { length: 255 }).notNull(),
 
@@ -89,9 +87,12 @@ export const scheduledInboxMessages = pgTable(
       onDelete: 'set null',
     }),
 
-    sentInboxItemId: uuid('sent_inbox_item_id').references(() => inboxItems.id, {
-      onDelete: 'set null',
-    }),
+    sentInboxItemId: uuid('sent_inbox_item_id').references(
+      () => inboxItems.id,
+      {
+        onDelete: 'set null',
+      },
+    ),
 
     errorMessage: text('error_message'),
     attempts: integer('attempts').default(0).notNull(),
@@ -108,7 +109,9 @@ export const scheduledInboxMessages = pgTable(
       table.channelId,
       table.status,
     ),
-    scheduledAtIdx: index('scheduled_inbox_scheduled_at_idx').on(table.scheduledAt),
+    scheduledAtIdx: index('scheduled_inbox_scheduled_at_idx').on(
+      table.scheduledAt,
+    ),
     threadKeyIdx: index('scheduled_inbox_thread_key_idx').on(
       table.workspaceId,
       table.threadKey,

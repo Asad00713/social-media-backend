@@ -9,7 +9,13 @@ import {
   ValidateNested,
 } from 'class-validator';
 
-export const DM_ATTACHMENT_KINDS = ['image', 'voice', 'audio', 'video', 'file'] as const;
+export const DM_ATTACHMENT_KINDS = [
+  'image',
+  'voice',
+  'audio',
+  'video',
+  'file',
+] as const;
 export type DmAttachmentKindDto = (typeof DM_ATTACHMENT_KINDS)[number];
 
 export class DmAttachmentDto {

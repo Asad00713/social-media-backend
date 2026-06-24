@@ -31,7 +31,9 @@ export class TavilyService {
   constructor(private readonly configService: ConfigService) {
     const apiKey = this.configService.get<string>('TAVILY_API_KEY');
     if (!apiKey) {
-      this.logger.warn('TAVILY_API_KEY not configured. Web search will not work.');
+      this.logger.warn(
+        'TAVILY_API_KEY not configured. Web search will not work.',
+      );
     } else {
       this.client = tavily({ apiKey });
     }
@@ -132,7 +134,12 @@ export class TavilyService {
       searchDepth: 'basic',
       topic: 'news',
       // Exclude social media to get original sources
-      excludeDomains: ['twitter.com', 'facebook.com', 'instagram.com', 'reddit.com'],
+      excludeDomains: [
+        'twitter.com',
+        'facebook.com',
+        'instagram.com',
+        'reddit.com',
+      ],
     });
   }
 

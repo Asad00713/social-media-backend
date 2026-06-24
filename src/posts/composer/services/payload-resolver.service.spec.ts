@@ -59,7 +59,11 @@ describe('PayloadResolverService', () => {
     const draft: Draft = {
       ...baseDraft,
       perPlatform: {
-        twitter: { inheritsFromBase: true, overrides: {}, platformSpecific: {} },
+        twitter: {
+          inheritsFromBase: true,
+          overrides: {},
+          platformSpecific: {},
+        },
       },
     };
     const payload = service.resolve(draft, twitterChannel);
@@ -94,7 +98,10 @@ describe('PayloadResolverService', () => {
         youtube: {
           inheritsFromBase: true,
           overrides: {},
-          platformSpecific: { title: 'My Video', privacyStatus: 'public' } as any,
+          platformSpecific: {
+            title: 'My Video',
+            privacyStatus: 'public',
+          } as any,
         },
       },
     };
@@ -105,7 +112,10 @@ describe('PayloadResolverService', () => {
       retryCount: 0,
     };
     const payload = service.resolve(draft, ytChannel);
-    expect(payload.platformSpecific).toEqual({ title: 'My Video', privacyStatus: 'public' });
+    expect(payload.platformSpecific).toEqual({
+      title: 'My Video',
+      privacyStatus: 'public',
+    });
   });
 
   it('uses channel scheduleAt when set', () => {

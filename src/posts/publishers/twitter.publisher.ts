@@ -46,7 +46,9 @@ export class TwitterPublisher extends BasePublisher {
       throw new Error('Twitter post must have content or media');
     }
     if (content && content.length > 280) {
-      throw new Error(`Twitter content exceeds 280 character limit (${content.length} chars)`);
+      throw new Error(
+        `Twitter content exceeds 280 character limit (${content.length} chars)`,
+      );
     }
     if (mediaItems.length > 4) {
       throw new Error('Twitter allows maximum 4 media items per post');
@@ -58,17 +60,27 @@ export class TwitterPublisher extends BasePublisher {
       if (mediaItems.length > 0) {
         throw new Error('Twitter polls cannot be combined with media');
       }
-      if (!Array.isArray(poll.options) || poll.options.length < 2 || poll.options.length > 4) {
+      if (
+        !Array.isArray(poll.options) ||
+        poll.options.length < 2 ||
+        poll.options.length > 4
+      ) {
         throw new Error('Twitter polls must have 2-4 options');
       }
       for (const option of poll.options) {
-        if (typeof option !== 'string' || option.length < 1 || option.length > 25) {
+        if (
+          typeof option !== 'string' ||
+          option.length < 1 ||
+          option.length > 25
+        ) {
           throw new Error('Each poll option must be 1-25 characters');
         }
       }
       const duration = poll.durationMinutes;
       if (typeof duration !== 'number' || duration < 5 || duration > 10080) {
-        throw new Error('Poll duration must be between 5 and 10080 minutes (7 days)');
+        throw new Error(
+          'Poll duration must be between 5 and 10080 minutes (7 days)',
+        );
       }
     }
   }
@@ -79,7 +91,8 @@ export class TwitterPublisher extends BasePublisher {
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
-    const { content, mediaItems, accessToken, channelMetadata, metadata } = options;
+    const { content, mediaItems, accessToken, channelMetadata, metadata } =
+      options;
 
     this.validate(options);
 
@@ -99,12 +112,19 @@ export class TwitterPublisher extends BasePublisher {
     // Single-tweet mode (default)
     let mediaIds: string[] | undefined;
     if (mediaItems && mediaItems.length > 0) {
-      mediaIds = await this.uploadMediaItems(accessToken, mediaItems, oauth1Credentials);
+      mediaIds = await this.uploadMediaItems(
+        accessToken,
+        mediaItems,
+        oauth1Credentials,
+      );
     }
 
     const pollData = metadata?.poll;
     const poll = pollData
-      ? { options: pollData.options as string[], durationMinutes: pollData.durationMinutes as number }
+      ? {
+          options: pollData.options as string[],
+          durationMinutes: pollData.durationMinutes as number,
+        }
       : undefined;
 
     const result = await this.twitterService.createTweet(accessToken, content, {
@@ -149,14 +169,20 @@ export class TwitterPublisher extends BasePublisher {
       }
 
       try {
-        const result = await this.twitterService.createTweet(accessToken, tweet.text, {
-          mediaIds,
-          replyToTweetId: replyToId,
-        });
+        const result = await this.twitterService.createTweet(
+          accessToken,
+          tweet.text,
+          {
+            mediaIds,
+            replyToTweetId: replyToId,
+          },
+        );
         if (!rootId) rootId = result.id;
         replyToId = result.id;
         postedIds.push(result.id);
-        this.logger.log(`Thread tweet ${i + 1}/${tweets.length} posted: ${result.id}`);
+        this.logger.log(
+          `Thread tweet ${i + 1}/${tweets.length} posted: ${result.id}`,
+        );
       } catch (err) {
         this.logger.error(
           `Thread broke at tweet ${i + 1}/${tweets.length}. Posted so far: ${postedIds.join(',')}`,

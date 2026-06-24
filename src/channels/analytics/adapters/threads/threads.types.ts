@@ -9,7 +9,13 @@ export interface ThreadsUser {
 export interface ThreadsPost {
   id: string;
   text?: string;
-  media_type?: 'TEXT' | 'IMAGE' | 'VIDEO' | 'CAROUSEL_ALBUM' | 'AUDIO' | 'REPOST';
+  media_type?:
+    | 'TEXT'
+    | 'IMAGE'
+    | 'VIDEO'
+    | 'CAROUSEL_ALBUM'
+    | 'AUDIO'
+    | 'REPOST';
   media_url?: string;
   thumbnail_url?: string;
   permalink?: string;

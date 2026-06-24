@@ -1,7 +1,23 @@
-import { Injectable, Inject, NotFoundException, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Inject,
+  NotFoundException,
+  BadRequestException,
+} from '@nestjs/common';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
-import { eq, sql, count, sum, and, gte, lte, desc, isNull, isNotNull } from 'drizzle-orm';
+import {
+  eq,
+  sql,
+  count,
+  sum,
+  and,
+  gte,
+  lte,
+  desc,
+  isNull,
+  isNotNull,
+} from 'drizzle-orm';
 import {
   users,
   workspace,
@@ -58,13 +74,22 @@ export class AdminService {
       // Total users
       this.db.select({ count: count() }).from(users),
       // Active users (not suspended)
-      this.db.select({ count: count() }).from(users).where(eq(users.isActive, true)),
+      this.db
+        .select({ count: count() })
+        .from(users)
+        .where(eq(users.isActive, true)),
       // New users in last 30 days
-      this.db.select({ count: count() }).from(users).where(gte(users.createdAt, thirtyDaysAgo)),
+      this.db
+        .select({ count: count() })
+        .from(users)
+        .where(gte(users.createdAt, thirtyDaysAgo)),
       // Total workspaces
       this.db.select({ count: count() }).from(workspace),
       // Active workspaces (not suspended)
-      this.db.select({ count: count() }).from(workspace).where(eq(workspace.isActive, true)),
+      this.db
+        .select({ count: count() })
+        .from(workspace)
+        .where(eq(workspace.isActive, true)),
       // Total channels
       this.db.select({ count: count() }).from(socialMediaChannels),
       // Connected channels
@@ -75,11 +100,20 @@ export class AdminService {
       // Total posts
       this.db.select({ count: count() }).from(posts),
       // Published posts
-      this.db.select({ count: count() }).from(posts).where(eq(posts.status, 'published')),
+      this.db
+        .select({ count: count() })
+        .from(posts)
+        .where(eq(posts.status, 'published')),
       // Scheduled posts
-      this.db.select({ count: count() }).from(posts).where(eq(posts.status, 'scheduled')),
+      this.db
+        .select({ count: count() })
+        .from(posts)
+        .where(eq(posts.status, 'scheduled')),
       // Failed posts
-      this.db.select({ count: count() }).from(posts).where(eq(posts.status, 'failed')),
+      this.db
+        .select({ count: count() })
+        .from(posts)
+        .where(eq(posts.status, 'failed')),
     ]);
 
     return {
@@ -92,12 +126,14 @@ export class AdminService {
       workspaces: {
         total: totalWorkspaces[0]?.count || 0,
         active: activeWorkspaces[0]?.count || 0,
-        suspended: (totalWorkspaces[0]?.count || 0) - (activeWorkspaces[0]?.count || 0),
+        suspended:
+          (totalWorkspaces[0]?.count || 0) - (activeWorkspaces[0]?.count || 0),
       },
       channels: {
         total: totalChannels[0]?.count || 0,
         connected: connectedChannels[0]?.count || 0,
-        disconnected: (totalChannels[0]?.count || 0) - (connectedChannels[0]?.count || 0),
+        disconnected:
+          (totalChannels[0]?.count || 0) - (connectedChannels[0]?.count || 0),
       },
       posts: {
         total: totalPosts[0]?.count || 0,
@@ -641,10 +677,7 @@ export class AdminService {
       })
       .from(invoices)
       .where(
-        and(
-          eq(invoices.status, 'paid'),
-          gte(invoices.paidAt, thirtyDaysAgo),
-        ),
+        and(eq(invoices.status, 'paid'), gte(invoices.paidAt, thirtyDaysAgo)),
       );
 
     // Recent failed payments
@@ -683,24 +716,21 @@ export class AdminService {
 
   async getSystemHealth() {
     // Get counts of various issues
-    const [
-      expiredChannels,
-      failedPostsCount,
-      unresolvedPayments,
-    ] = await Promise.all([
-      this.db
-        .select({ count: count() })
-        .from(socialMediaChannels)
-        .where(eq(socialMediaChannels.connectionStatus, 'expired')),
-      this.db
-        .select({ count: count() })
-        .from(posts)
-        .where(eq(posts.status, 'failed')),
-      this.db
-        .select({ count: count() })
-        .from(failedPayments)
-        .where(eq(failedPayments.resolved, false)),
-    ]);
+    const [expiredChannels, failedPostsCount, unresolvedPayments] =
+      await Promise.all([
+        this.db
+          .select({ count: count() })
+          .from(socialMediaChannels)
+          .where(eq(socialMediaChannels.connectionStatus, 'expired')),
+        this.db
+          .select({ count: count() })
+          .from(posts)
+          .where(eq(posts.status, 'failed')),
+        this.db
+          .select({ count: count() })
+          .from(failedPayments)
+          .where(eq(failedPayments.resolved, false)),
+      ]);
 
     return {
       status: 'healthy', // Can be enhanced with actual health checks

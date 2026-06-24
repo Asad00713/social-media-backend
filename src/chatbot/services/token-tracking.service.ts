@@ -2,7 +2,10 @@ import { Injectable, Inject, Logger } from '@nestjs/common';
 import { eq, sql } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import type { DbType } from '../../drizzle/db';
-import { workspaceUsage, aiUsageLog } from '../../drizzle/schema/billing.schema';
+import {
+  workspaceUsage,
+  aiUsageLog,
+} from '../../drizzle/schema/billing.schema';
 
 export interface TokenBudgetStatus {
   used: number;
@@ -32,7 +35,13 @@ export class TokenTrackingService {
 
     if (!usage) {
       // No usage record = no plan configured, allow by default
-      return { used: 0, limit: 0, remaining: 0, exceeded: false, resetDate: null };
+      return {
+        used: 0,
+        limit: 0,
+        remaining: 0,
+        exceeded: false,
+        resetDate: null,
+      };
     }
 
     const totalLimit = usage.aiTokensLimit + usage.extraAiTokensPurchased;

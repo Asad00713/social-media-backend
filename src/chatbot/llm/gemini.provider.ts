@@ -36,7 +36,9 @@ export class GeminiChatProvider extends BaseLLMProvider {
       this.genAI = new GoogleGenerativeAI(apiKey);
       this.logger.log('Gemini chat provider initialized');
     } else {
-      this.logger.warn('No GOOGLE_AI_API_KEY configured - Gemini provider unavailable');
+      this.logger.warn(
+        'No GOOGLE_AI_API_KEY configured - Gemini provider unavailable',
+      );
     }
   }
 
@@ -51,7 +53,10 @@ export class GeminiChatProvider extends BaseLLMProvider {
     return this.genAI;
   }
 
-  private getModel(modelName: string, options?: LLMChatOptions): GenerativeModel {
+  private getModel(
+    modelName: string,
+    options?: LLMChatOptions,
+  ): GenerativeModel {
     const genAI = this.ensureGenAI();
 
     const tools = this.formatTools(options);
@@ -61,7 +66,14 @@ export class GeminiChatProvider extends BaseLLMProvider {
         temperature: options?.temperature ?? 0.7,
         maxOutputTokens: options?.maxTokens ?? 4096,
       },
-      ...(tools ? { tools, toolConfig: { functionCallingConfig: { mode: FunctionCallingMode.AUTO } } } : {}),
+      ...(tools
+        ? {
+            tools,
+            toolConfig: {
+              functionCallingConfig: { mode: FunctionCallingMode.AUTO },
+            },
+          }
+        : {}),
     });
   }
 
@@ -121,10 +133,7 @@ export class GeminiChatProvider extends BaseLLMProvider {
         };
 
         // Group with previous tool results if last content is already a function response
-        if (
-          lastContent &&
-          lastContent.role === 'function' as any
-        ) {
+        if (lastContent && lastContent.role === ('function' as any)) {
           lastContent.parts.push(functionResponse);
         } else {
           contents.push({
@@ -139,9 +148,7 @@ export class GeminiChatProvider extends BaseLLMProvider {
     return { systemInstruction, contents };
   }
 
-  private formatTools(
-    options?: LLMChatOptions,
-  ): GeminiTool[] | undefined {
+  private formatTools(options?: LLMChatOptions): GeminiTool[] | undefined {
     if (!options?.tools?.length) return undefined;
 
     const functionDeclarations: FunctionDeclaration[] = options.tools.map(
@@ -155,7 +162,10 @@ export class GeminiChatProvider extends BaseLLMProvider {
     return [{ functionDeclarations }];
   }
 
-  async chat(messages: LLMMessage[], options?: LLMChatOptions): Promise<LLMResponse> {
+  async chat(
+    messages: LLMMessage[],
+    options?: LLMChatOptions,
+  ): Promise<LLMResponse> {
     const modelName = options?.model || this.defaultModel;
     const model = this.getModel(modelName, options);
     const { systemInstruction, contents } = this.formatMessages(messages);

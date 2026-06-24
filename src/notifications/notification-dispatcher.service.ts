@@ -48,7 +48,10 @@ export class NotificationDispatcherService implements OnModuleInit {
     );
   }
 
-  private async handle(eventType: DispatchableEvent, payload: unknown): Promise<void> {
+  private async handle(
+    eventType: DispatchableEvent,
+    payload: unknown,
+  ): Promise<void> {
     const p = payload as Record<string, unknown>;
     const workspaceId = p?.workspaceId;
     if (typeof workspaceId !== 'string' || !workspaceId) return;

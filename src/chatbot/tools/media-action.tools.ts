@@ -15,7 +15,8 @@ export function createMediaActionTools(): ChatbotTool[] {
         properties: {
           url: {
             type: 'string',
-            description: 'The exact media URL to download (from Previously Returned Media list)',
+            description:
+              'The exact media URL to download (from Previously Returned Media list)',
           },
           filename: {
             type: 'string',
@@ -38,8 +39,7 @@ export function createMediaActionTools(): ChatbotTool[] {
         }
 
         // Derive a usable filename from the URL if none provided
-        const fallbackName =
-          url.split('/').pop()?.split('?')[0] || 'download';
+        const fallbackName = url.split('/').pop()?.split('?')[0] || 'download';
 
         return {
           success: true,

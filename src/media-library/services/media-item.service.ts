@@ -4,7 +4,17 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { eq, and, desc, asc, like, or, isNull, sql, inArray } from 'drizzle-orm';
+import {
+  eq,
+  and,
+  desc,
+  asc,
+  like,
+  or,
+  isNull,
+  sql,
+  inArray,
+} from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
   mediaItems,
@@ -28,11 +38,7 @@ export class MediaItemService {
   /**
    * Create a new media item
    */
-  async create(
-    workspaceId: string,
-    userId: string,
-    dto: CreateMediaItemDto,
-  ) {
+  async create(workspaceId: string, userId: string, dto: CreateMediaItemDto) {
     // Validate category if provided
     if (dto.categoryId) {
       const category = await db
@@ -77,12 +83,11 @@ export class MediaItemService {
       tags: dto.tags || [],
     };
 
-    const [created] = await db
-      .insert(mediaItems)
-      .values(newItem)
-      .returning();
+    const [created] = await db.insert(mediaItems).values(newItem).returning();
 
-    this.logger.log(`Created media item "${dto.name}" for workspace ${workspaceId}`);
+    this.logger.log(
+      `Created media item "${dto.name}" for workspace ${workspaceId}`,
+    );
 
     return created;
   }
@@ -200,10 +205,7 @@ export class MediaItemService {
       .from(mediaItems)
       .leftJoin(mediaCategories, eq(mediaItems.categoryId, mediaCategories.id))
       .where(
-        and(
-          eq(mediaItems.id, itemId),
-          eq(mediaItems.workspaceId, workspaceId),
-        ),
+        and(eq(mediaItems.id, itemId), eq(mediaItems.workspaceId, workspaceId)),
       )
       .limit(1);
 
@@ -220,11 +222,7 @@ export class MediaItemService {
   /**
    * Update a media item
    */
-  async update(
-    workspaceId: string,
-    itemId: string,
-    dto: UpdateMediaItemDto,
-  ) {
+  async update(workspaceId: string, itemId: string, dto: UpdateMediaItemDto) {
     const existing = await this.findOne(workspaceId, itemId);
 
     // Validate category if changing
@@ -344,9 +342,7 @@ export class MediaItemService {
           item.cloudinaryPublicId,
           resourceType,
         );
-        this.logger.log(
-          `Deleted from Cloudinary: ${item.cloudinaryPublicId}`,
-        );
+        this.logger.log(`Deleted from Cloudinary: ${item.cloudinaryPublicId}`);
       } catch (error) {
         this.logger.warn(
           `Failed to delete from Cloudinary: ${item.cloudinaryPublicId}`,
@@ -365,11 +361,7 @@ export class MediaItemService {
   /**
    * Bulk actions on media items
    */
-  async bulkAction(
-    workspaceId: string,
-    userId: string,
-    dto: BulkActionDto,
-  ) {
+  async bulkAction(workspaceId: string, userId: string, dto: BulkActionDto) {
     const { ids, action, categoryId } = dto;
 
     // Verify all items belong to this workspace

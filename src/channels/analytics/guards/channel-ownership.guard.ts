@@ -11,7 +11,9 @@ import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
 
 export interface ChannelLookupRepo {
-  findChannel(channelId: number): Promise<{ id: number; workspaceId: string } | null>;
+  findChannel(
+    channelId: number,
+  ): Promise<{ id: number; workspaceId: string } | null>;
 }
 
 export const CHANNEL_LOOKUP_REPO = 'CHANNEL_LOOKUP_REPO';
@@ -25,10 +27,14 @@ export const CHANNEL_LOOKUP_REPO = 'CHANNEL_LOOKUP_REPO';
  */
 @Injectable()
 export class ChannelOwnershipGuard implements CanActivate {
-  constructor(@Inject(CHANNEL_LOOKUP_REPO) private readonly repo: ChannelLookupRepo) {}
+  constructor(
+    @Inject(CHANNEL_LOOKUP_REPO) private readonly repo: ChannelLookupRepo,
+  ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const req = context.switchToHttp().getRequest<{ params: { wsId: string; channelId: string } }>();
+    const req = context
+      .switchToHttp()
+      .getRequest<{ params: { wsId: string; channelId: string } }>();
     const channelId = Number(req.params.channelId);
     if (!Number.isFinite(channelId)) {
       throw new NotFoundException('Channel not found');
@@ -48,7 +54,10 @@ export const ChannelLookupRepoProvider = {
   useFactory: (db: any): ChannelLookupRepo => ({
     async findChannel(channelId: number) {
       const rows = await db
-        .select({ id: socialMediaChannels.id, workspaceId: socialMediaChannels.workspaceId })
+        .select({
+          id: socialMediaChannels.id,
+          workspaceId: socialMediaChannels.workspaceId,
+        })
         .from(socialMediaChannels)
         .where(eq(socialMediaChannels.id, channelId))
         .limit(1);

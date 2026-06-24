@@ -41,7 +41,9 @@ export class TikTokAnalyticsAdapter implements PlatformAnalyticsAdapter {
     return op === 'fetchRecentPosts' ? 2 : 1;
   }
 
-  async fetchProfileSnapshot(channel: ChannelEntity): Promise<ProfileSnapshotResult> {
+  async fetchProfileSnapshot(
+    channel: ChannelEntity,
+  ): Promise<ProfileSnapshotResult> {
     try {
       const user = await this.client.getUserInfo(channel.accessToken);
       return {
@@ -79,7 +81,10 @@ export class TikTokAnalyticsAdapter implements PlatformAnalyticsAdapter {
           quotaCostUsed: 0,
         };
       }
-      const videos = await this.client.queryVideos({ accessToken, videoIds: [videoId] });
+      const videos = await this.client.queryVideos({
+        accessToken,
+        videoIds: [videoId],
+      });
       const video = videos[0];
       if (!video) {
         return {
@@ -144,7 +149,11 @@ export class TikTokAnalyticsAdapter implements PlatformAnalyticsAdapter {
     }
   }
 
-  private toFailedResult(err: unknown): { status: 'failed'; error: AdapterError; quotaCostUsed: number } {
+  private toFailedResult(err: unknown): {
+    status: 'failed';
+    error: AdapterError;
+    quotaCostUsed: number;
+  } {
     const tErr = err as TikTokApiError;
     const code: AdapterError['code'] = tErr?.code ?? 'transient';
     const message = (err as Error)?.message ?? 'Unknown error';

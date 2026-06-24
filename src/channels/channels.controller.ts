@@ -69,7 +69,11 @@ import {
   CreateLinkedInPostDto,
   PostTikTokVideoDto,
 } from './dto/channel.dto';
-import { SupportedPlatform, PLATFORM_CONFIG, oauthStates } from '../drizzle/schema/channels.schema';
+import {
+  SupportedPlatform,
+  PLATFORM_CONFIG,
+  oauthStates,
+} from '../drizzle/schema/channels.schema';
 import { db } from '../drizzle/db';
 import { eq, and, isNull, gt } from 'drizzle-orm';
 import * as crypto from 'crypto';
@@ -222,8 +226,12 @@ export class ChannelsController {
 
     // Log incoming callback for debugging
     console.log(`[OAuth Callback] Platform: ${platform}`);
-    console.log(`[OAuth Callback] ALL Query params: ${JSON.stringify(allQuery)}`);
-    console.log(`[OAuth Callback] State token received: ${state ? state.substring(0, 10) + '...' : 'MISSING'}`);
+    console.log(
+      `[OAuth Callback] ALL Query params: ${JSON.stringify(allQuery)}`,
+    );
+    console.log(
+      `[OAuth Callback] State token received: ${state ? state.substring(0, 10) + '...' : 'MISSING'}`,
+    );
     console.log(`[OAuth Callback] Code received: ${code ? 'YES' : 'NO'}`);
     console.log(`[OAuth Callback] Error: ${error || 'none'}`);
 
@@ -236,14 +244,18 @@ export class ChannelsController {
 
       // Check for Facebook-specific error format (error_code, error_message)
       if (errorCode || errorMessage) {
-        console.log(`[OAuth Callback] Facebook error: code=${errorCode}, message=${errorMessage}`);
+        console.log(
+          `[OAuth Callback] Facebook error: code=${errorCode}, message=${errorMessage}`,
+        );
         const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent(errorCode || 'facebook_error')}&description=${encodeURIComponent(errorMessage || 'Unknown Facebook error')}`;
         return res.redirect(errorUrl);
       }
 
       // Check if state is missing
       if (!state) {
-        console.log('[OAuth Callback] ERROR: State token is missing from callback');
+        console.log(
+          '[OAuth Callback] ERROR: State token is missing from callback',
+        );
         const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('State token missing')}&description=${encodeURIComponent('The platform did not return the state parameter. This may be a configuration issue.')}`;
         return res.redirect(errorUrl);
       }
@@ -251,19 +263,32 @@ export class ChannelsController {
       // Validate state and get stored data
       console.log(`[OAuth Callback] Validating state token...`);
       const stateData = await this.oauthService.validateState(state);
-      console.log(`[OAuth Callback] State validated successfully for workspace: ${stateData.workspaceId}`);
+      console.log(
+        `[OAuth Callback] State validated successfully for workspace: ${stateData.workspaceId}`,
+      );
 
       // Get the stored redirect_uri to ensure exact match during token exchange
-      const storedRedirectUri = stateData.additionalData?._oauthRedirectUri as string | undefined;
-      console.log(`[OAuth Callback] Stored redirect_uri: ${storedRedirectUri || 'NOT FOUND'}`);
+      const storedRedirectUri = stateData.additionalData?._oauthRedirectUri as
+        | string
+        | undefined;
+      console.log(
+        `[OAuth Callback] Stored redirect_uri: ${storedRedirectUri || 'NOT FOUND'}`,
+      );
 
       // Slack: intercept before generic token exchange — uses its own Web API SDK
       if (platform === 'slack') {
         try {
-          console.log('[OAuth Callback] Slack: exchanging code for bot token...');
-          const slackRedirectUri = storedRedirectUri || `${(process.env.APP_URL || 'http://localhost:3000').trim().replace(/\/+$/, '')}/channels/oauth/slack/callback`;
+          console.log(
+            '[OAuth Callback] Slack: exchanging code for bot token...',
+          );
+          const slackRedirectUri =
+            storedRedirectUri ||
+            `${(process.env.APP_URL || 'http://localhost:3000').trim().replace(/\/+$/, '')}/channels/oauth/slack/callback`;
 
-          const tokenResp = await this.slackService.exchangeCode(code, slackRedirectUri);
+          const tokenResp = await this.slackService.exchangeCode(
+            code,
+            slackRedirectUri,
+          );
 
           const botProfile = await this.slackService.getBotProfile(
             tokenResp.access_token,
@@ -321,10 +346,15 @@ export class ChannelsController {
       if (platform === 'discord') {
         try {
           console.log('[OAuth Callback] Discord: exchanging code for guild...');
-          const discordRedirectUri = storedRedirectUri || `${(process.env.APP_URL || 'http://localhost:3000').trim().replace(/\/+$/, '')}/channels/oauth/discord/callback`;
+          const discordRedirectUri =
+            storedRedirectUri ||
+            `${(process.env.APP_URL || 'http://localhost:3000').trim().replace(/\/+$/, '')}/channels/oauth/discord/callback`;
 
           const { guildId, guildName, guildIconUrl, accessToken } =
-            await this.discordService.exchangeOAuthCode(code, discordRedirectUri);
+            await this.discordService.exchangeOAuthCode(
+              code,
+              discordRedirectUri,
+            );
 
           const channel = await this.channelService.createChannel(
             stateData.workspaceId,
@@ -357,7 +387,9 @@ export class ChannelsController {
             },
           );
 
-          console.log(`[OAuth Callback] Discord channel created: ${channel.id}`);
+          console.log(
+            `[OAuth Callback] Discord channel created: ${channel.id}`,
+          );
           const discordSuccessUrl = `${frontendUrl}/channels/connect/success?platform=discord&channelId=${channel.id}`;
           return res.redirect(discordSuccessUrl);
         } catch (discordError) {
@@ -379,16 +411,22 @@ export class ChannelsController {
       let tokenExpiresAt: Date | null = null;
       if (tokens.expiresIn) {
         tokenExpiresAt = new Date();
-        tokenExpiresAt.setSeconds(tokenExpiresAt.getSeconds() + tokens.expiresIn);
+        tokenExpiresAt.setSeconds(
+          tokenExpiresAt.getSeconds() + tokens.expiresIn,
+        );
       }
 
       // Special handling for Twitter: auto-create channel and chain to OAuth 1.0a
       if (platform === 'twitter') {
         try {
-          console.log('[OAuth Callback] Twitter: Auto-creating channel and initiating OAuth 1.0a...');
+          console.log(
+            '[OAuth Callback] Twitter: Auto-creating channel and initiating OAuth 1.0a...',
+          );
 
           // Get Twitter user profile
-          const twitterUser = await this.twitterService.getCurrentUser(tokens.accessToken);
+          const twitterUser = await this.twitterService.getCurrentUser(
+            tokens.accessToken,
+          );
 
           // Create the Twitter channel automatically
           const channel = await this.channelService.createChannel(
@@ -427,11 +465,14 @@ export class ChannelsController {
             },
           );
 
-          console.log(`[OAuth Callback] Twitter channel created: ${channel.id}`);
+          console.log(
+            `[OAuth Callback] Twitter channel created: ${channel.id}`,
+          );
 
           // Initiate OAuth 1.0a for media upload support
           const oauth1CallbackUrl = `${backendUrl}/channels/oauth/twitter/oauth1/callback`;
-          const oauth1Result = await this.twitterService.getOAuth1RequestToken(oauth1CallbackUrl);
+          const oauth1Result =
+            await this.twitterService.getOAuth1RequestToken(oauth1CallbackUrl);
 
           // Store OAuth 1.0a state with channel ID
           await this.channelService.createOAuthState(
@@ -444,12 +485,17 @@ export class ChannelsController {
             { channelId: channel.id.toString() },
           );
 
-          console.log('[OAuth Callback] Twitter: Redirecting to OAuth 1.0a authorization...');
+          console.log(
+            '[OAuth Callback] Twitter: Redirecting to OAuth 1.0a authorization...',
+          );
 
           // Redirect directly to Twitter OAuth 1.0a authorization
           return res.redirect(oauth1Result.authorizationUrl);
         } catch (twitterError) {
-          console.error('[OAuth Callback] Twitter auto-setup failed:', twitterError);
+          console.error(
+            '[OAuth Callback] Twitter auto-setup failed:',
+            twitterError,
+          );
           // Fall through to normal flow if Twitter-specific handling fails
           const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Twitter setup failed: ' + (twitterError instanceof Error ? twitterError.message : 'Unknown error'))}`;
           return res.redirect(errorUrl);
@@ -459,19 +505,29 @@ export class ChannelsController {
       // Instagram Business Login: Auto-create channel
       if (platform === 'instagram') {
         try {
-          console.log('[OAuth Callback] Instagram Business Login: Auto-creating channel...');
+          console.log(
+            '[OAuth Callback] Instagram Business Login: Auto-creating channel...',
+          );
 
           // Instagram Business Login returns short-lived token (1 hour)
           // Exchange for long-lived token (60 days)
-          const longLivedTokenData = await this.instagramService.exchangeForLongLivedToken(tokens.accessToken);
+          const longLivedTokenData =
+            await this.instagramService.exchangeForLongLivedToken(
+              tokens.accessToken,
+            );
           const longLivedAccessToken = longLivedTokenData.accessToken;
 
           // Calculate expiration for long-lived token
           const longLivedExpiresAt = new Date();
-          longLivedExpiresAt.setSeconds(longLivedExpiresAt.getSeconds() + longLivedTokenData.expiresIn);
+          longLivedExpiresAt.setSeconds(
+            longLivedExpiresAt.getSeconds() + longLivedTokenData.expiresIn,
+          );
 
           // Get Instagram user profile using the long-lived token
-          const instagramUser = await this.instagramService.getAccountInfoWithUserToken(longLivedAccessToken);
+          const instagramUser =
+            await this.instagramService.getAccountInfoWithUserToken(
+              longLivedAccessToken,
+            );
 
           // Create the Instagram channel automatically
           const channel = await this.channelService.createChannel(
@@ -507,7 +563,9 @@ export class ChannelsController {
             },
           );
 
-          console.log(`[OAuth Callback] Instagram channel created: ${channel.id}`);
+          console.log(
+            `[OAuth Callback] Instagram channel created: ${channel.id}`,
+          );
 
           // Redirect to frontend success page
           const successUrl = `${frontendUrl}/channels/connect/success?platform=instagram&channelId=${channel.id}`;
@@ -525,7 +583,9 @@ export class ChannelsController {
           console.log('[OAuth Callback] Threads: Auto-creating channel...');
 
           // Get Threads user profile
-          const threadsUser = await this.threadsService.getUserProfile(tokens.accessToken);
+          const threadsUser = await this.threadsService.getUserProfile(
+            tokens.accessToken,
+          );
 
           // Create the Threads channel automatically
           const channel = await this.channelService.createChannel(
@@ -559,7 +619,9 @@ export class ChannelsController {
             },
           );
 
-          console.log(`[OAuth Callback] Threads channel created: ${channel.id}`);
+          console.log(
+            `[OAuth Callback] Threads channel created: ${channel.id}`,
+          );
 
           // Redirect to frontend success page
           const successUrl = `${frontendUrl}/channels/connect/success?platform=threads&channelId=${channel.id}`;
@@ -575,10 +637,14 @@ export class ChannelsController {
       if (platform === 'tiktok') {
         try {
           console.log('[OAuth Callback] TikTok: Auto-creating channel...');
-          console.log(`[OAuth Callback] TikTok tokens - accessToken: ${tokens.accessToken ? 'YES' : 'NO'}, refreshToken: ${tokens.refreshToken ? 'YES' : 'NO'}, expiresIn: ${tokens.expiresIn}`);
+          console.log(
+            `[OAuth Callback] TikTok tokens - accessToken: ${tokens.accessToken ? 'YES' : 'NO'}, refreshToken: ${tokens.refreshToken ? 'YES' : 'NO'}, expiresIn: ${tokens.expiresIn}`,
+          );
 
           // Get TikTok user profile
-          const tiktokUser = await this.tiktokService.getCurrentUser(tokens.accessToken);
+          const tiktokUser = await this.tiktokService.getCurrentUser(
+            tokens.accessToken,
+          );
 
           // Create the TikTok channel automatically
           const channel = await this.channelService.createChannel(
@@ -660,7 +726,11 @@ export class ChannelsController {
     @CurrentUser() user: { userId: string; email: string },
     @Body() dto: CreateChannelDto,
   ) {
-    return await this.channelService.createChannel(workspaceId, user.userId, dto);
+    return await this.channelService.createChannel(
+      workspaceId,
+      user.userId,
+      dto,
+    );
   }
 
   // ==========================================================================
@@ -951,9 +1021,10 @@ export class ChannelsController {
       userInfo: meData,
       pagesResponse: accountsData,
       scopes: debugData.data?.scopes || [],
-      hint: accountsData.data?.length === 0
-        ? 'Empty pages array. You need to add yourself as a Test User in Meta App Dashboard -> App Roles -> Roles'
-        : null,
+      hint:
+        accountsData.data?.length === 0
+          ? 'Empty pages array. You need to add yourself as a Test User in Meta App Dashboard -> App Roles -> Roles'
+          : null,
     };
   }
 
@@ -1011,7 +1082,9 @@ export class ChannelsController {
       },
     );
 
-    let igChannel: Awaited<ReturnType<typeof this.channelService.createChannel>> | null = null;
+    let igChannel: Awaited<
+      ReturnType<typeof this.channelService.createChannel>
+    > | null = null;
 
     // If Instagram is connected and user wants it, create Instagram channel too
     if (dto.includeInstagram && page.instagramBusinessAccount) {
@@ -1145,10 +1218,13 @@ export class ChannelsController {
   async connectPinterest(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
+    @Body()
+    dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
   ) {
     // Get Pinterest user info
-    const pinterestUser = await this.pinterestService.getCurrentUser(dto.accessToken);
+    const pinterestUser = await this.pinterestService.getCurrentUser(
+      dto.accessToken,
+    );
 
     // Create the Pinterest channel
     const channel = await this.channelService.createChannel(
@@ -1156,7 +1232,10 @@ export class ChannelsController {
       user.userId,
       {
         platform: 'pinterest',
-        accountType: pinterestUser.accountType === 'BUSINESS' ? 'business_account' : 'profile',
+        accountType:
+          pinterestUser.accountType === 'BUSINESS'
+            ? 'business_account'
+            : 'profile',
         platformAccountId: pinterestUser.id,
         accountName: pinterestUser.businessName || pinterestUser.username,
         username: pinterestUser.username,
@@ -1251,13 +1330,19 @@ export class ChannelsController {
     @Param('channelId') channelId: string,
   ) {
     const numericId = parseInt(channelId, 10);
-    const channel = await this.channelService.getChannelById(numericId, workspaceId);
+    const channel = await this.channelService.getChannelById(
+      numericId,
+      workspaceId,
+    );
     if (channel.platform !== 'reddit') {
       throw new BadRequestException(
         `Channel ${channelId} is a ${channel.platform} channel, not a Reddit channel`,
       );
     }
-    const accessToken = await this.channelService.getAccessToken(numericId, workspaceId);
+    const accessToken = await this.channelService.getAccessToken(
+      numericId,
+      workspaceId,
+    );
     return this.redditService.listSubredditsMine(accessToken);
   }
 
@@ -1275,13 +1360,19 @@ export class ChannelsController {
       throw new BadRequestException('subreddit query param required');
     }
     const numericId = parseInt(channelId, 10);
-    const channel = await this.channelService.getChannelById(numericId, workspaceId);
+    const channel = await this.channelService.getChannelById(
+      numericId,
+      workspaceId,
+    );
     if (channel.platform !== 'reddit') {
       throw new BadRequestException(
         `Channel ${channelId} is a ${channel.platform} channel, not a Reddit channel`,
       );
     }
-    const accessToken = await this.channelService.getAccessToken(numericId, workspaceId);
+    const accessToken = await this.channelService.getAccessToken(
+      numericId,
+      workspaceId,
+    );
     return this.redditService.getSubredditFlairs(accessToken, subreddit);
   }
 
@@ -1405,10 +1496,13 @@ export class ChannelsController {
   async connectYouTube(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
+    @Body()
+    dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
   ) {
     // Get YouTube channel info
-    const youtubeChannel = await this.youtubeService.getCurrentChannel(dto.accessToken);
+    const youtubeChannel = await this.youtubeService.getCurrentChannel(
+      dto.accessToken,
+    );
 
     // Create the YouTube channel
     const channel = await this.channelService.createChannel(
@@ -1480,7 +1574,10 @@ export class ChannelsController {
     @Body() dto: FetchPagesDto,
     @Query('regionCode') regionCode?: string,
   ) {
-    return await this.youtubeService.getCategories(dto.accessToken, regionCode || 'US');
+    return await this.youtubeService.getCategories(
+      dto.accessToken,
+      regionCode || 'US',
+    );
   }
 
   /**
@@ -1557,10 +1654,13 @@ export class ChannelsController {
   async connectLinkedIn(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
+    @Body()
+    dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
   ) {
     // Get LinkedIn profile info
-    const linkedinProfile = await this.linkedinService.getCurrentUser(dto.accessToken);
+    const linkedinProfile = await this.linkedinService.getCurrentUser(
+      dto.accessToken,
+    );
 
     // Create the LinkedIn channel
     const channel = await this.channelService.createChannel(
@@ -1643,8 +1743,9 @@ export class ChannelsController {
       workspaceId,
     );
 
-    const isOrganization = channel.accountType === 'organization' ||
-      (channel.metadata as Record<string, any>)?.isOrganization;
+    const isOrganization =
+      channel.accountType === 'organization' ||
+      channel.metadata?.isOrganization;
     const visibility = dto.visibility || 'PUBLIC';
 
     let result: { postId: string };
@@ -1749,7 +1850,8 @@ export class ChannelsController {
   async connectTikTok(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
+    @Body()
+    dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
   ) {
     // Get TikTok profile info
     const tiktokUser = await this.tiktokService.getCurrentUser(dto.accessToken);
@@ -1869,7 +1971,9 @@ export class ChannelsController {
     let result: { publishId: string };
 
     // Convert thumbnailTime (seconds) to videoCoverTimestampMs if provided
-    const videoCoverTimestampMs = dto.videoCoverTimestampMs || (dto.thumbnailTime ? dto.thumbnailTime * 1000 : undefined);
+    const videoCoverTimestampMs =
+      dto.videoCoverTimestampMs ||
+      (dto.thumbnailTime ? dto.thumbnailTime * 1000 : undefined);
 
     if (dto.useDirectUpload) {
       // Download and upload directly to TikTok (more reliable but slower)
@@ -1907,7 +2011,8 @@ export class ChannelsController {
 
     return {
       publishId: result.publishId,
-      message: 'Video upload initiated. Use the status endpoint to check progress.',
+      message:
+        'Video upload initiated. Use the status endpoint to check progress.',
       statusEndpoint: `/channels/workspaces/${workspaceId}/${channelId}/tiktok/status/${result.publishId}`,
     };
   }
@@ -1928,14 +2033,19 @@ export class ChannelsController {
       workspaceId,
     );
 
-    const status = await this.tiktokService.getPublishStatus(accessToken, publishId);
+    const status = await this.tiktokService.getPublishStatus(
+      accessToken,
+      publishId,
+    );
 
     return {
       publishId,
       status: status.status,
       videoId: status.videoId,
       failReason: status.failReason,
-      videoUrl: status.videoId ? `https://www.tiktok.com/@/video/${status.videoId}` : null,
+      videoUrl: status.videoId
+        ? `https://www.tiktok.com/@/video/${status.videoId}`
+        : null,
     };
   }
 
@@ -1968,7 +2078,9 @@ export class ChannelsController {
       status: result.status,
       videoId: result.videoId,
       failReason: result.failReason,
-      videoUrl: result.videoId ? `https://www.tiktok.com/@/video/${result.videoId}` : null,
+      videoUrl: result.videoId
+        ? `https://www.tiktok.com/@/video/${result.videoId}`
+        : null,
     };
   }
 
@@ -1986,10 +2098,17 @@ export class ChannelsController {
   async connectTwitter(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string; enableMediaUpload?: boolean },
+    @Body()
+    dto: FetchPagesDto & {
+      refreshToken?: string;
+      tokenExpiresAt?: string;
+      enableMediaUpload?: boolean;
+    },
   ) {
     // Get Twitter profile info
-    const twitterUser = await this.twitterService.getCurrentUser(dto.accessToken);
+    const twitterUser = await this.twitterService.getCurrentUser(
+      dto.accessToken,
+    );
 
     // Create the Twitter channel
     const channel = await this.channelService.createChannel(
@@ -2035,7 +2154,8 @@ export class ChannelsController {
         const appUrl = process.env.APP_URL || 'http://localhost:3001';
         const callbackUrl = `${appUrl}/channels/oauth/twitter/oauth1/callback`;
 
-        const oauth1Result = await this.twitterService.getOAuth1RequestToken(callbackUrl);
+        const oauth1Result =
+          await this.twitterService.getOAuth1RequestToken(callbackUrl);
 
         // Store the OAuth 1.0a state
         await this.channelService.createOAuthState(
@@ -2050,7 +2170,10 @@ export class ChannelsController {
 
         oauth1AuthUrl = oauth1Result.authorizationUrl;
       } catch (error) {
-        console.error('Failed to initiate OAuth 1.0a for Twitter media uploads:', error);
+        console.error(
+          'Failed to initiate OAuth 1.0a for Twitter media uploads:',
+          error,
+        );
         // Don't fail the whole connection, just skip OAuth 1.0a
       }
     }
@@ -2071,10 +2194,10 @@ export class ChannelsController {
   @Post('twitter/me')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getTwitterProfile(
-    @Body() dto: { channelId: number },
-  ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+  async getTwitterProfile(@Body() dto: { channelId: number }) {
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'twitter') {
       throw new BadRequestException('Channel is not a Twitter channel');
@@ -2099,7 +2222,9 @@ export class ChannelsController {
     @Body() dto: { channelId: number },
     @Query('paginationToken') paginationToken?: string,
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'twitter') {
       throw new BadRequestException('Channel is not a Twitter channel');
@@ -2171,18 +2296,25 @@ export class ChannelsController {
     try {
       // Check if user denied access
       if (denied) {
-        return res.redirect(`${frontendUrl}/channels/connect/error?error=User%20denied%20Twitter%20access`);
+        return res.redirect(
+          `${frontendUrl}/channels/connect/error?error=User%20denied%20Twitter%20access`,
+        );
       }
 
       if (!oauthToken || !oauthVerifier) {
-        return res.redirect(`${frontendUrl}/channels/connect/error?error=Missing%20OAuth%20parameters`);
+        return res.redirect(
+          `${frontendUrl}/channels/connect/error?error=Missing%20OAuth%20parameters`,
+        );
       }
 
       // Get the stored oauth state
-      const oauthState = await this.channelService.getOAuthStateByToken(oauthToken);
+      const oauthState =
+        await this.channelService.getOAuthStateByToken(oauthToken);
 
       if (!oauthState) {
-        return res.redirect(`${frontendUrl}/channels/connect/error?error=OAuth%20state%20not%20found%20or%20expired`);
+        return res.redirect(
+          `${frontendUrl}/channels/connect/error?error=OAuth%20state%20not%20found%20or%20expired`,
+        );
       }
 
       // Exchange for access tokens
@@ -2193,11 +2325,15 @@ export class ChannelsController {
       );
 
       // Get the channelId from stored state
-      const additionalData = oauthState.additionalData as { channelId?: string } | null;
+      const additionalData = oauthState.additionalData as {
+        channelId?: string;
+      } | null;
       const channelId = additionalData?.channelId;
 
       if (!channelId) {
-        return res.redirect(`${frontendUrl}/channels/connect/error?error=Channel%20ID%20not%20found`);
+        return res.redirect(
+          `${frontendUrl}/channels/connect/error?error=Channel%20ID%20not%20found`,
+        );
       }
 
       // Update the channel's metadata with OAuth 1.0a tokens
@@ -2207,11 +2343,13 @@ export class ChannelsController {
       );
 
       if (!channel) {
-        return res.redirect(`${frontendUrl}/channels/connect/error?error=Channel%20not%20found`);
+        return res.redirect(
+          `${frontendUrl}/channels/connect/error?error=Channel%20not%20found`,
+        );
       }
 
       const updatedMetadata = {
-        ...(channel.metadata as Record<string, any> || {}),
+        ...(channel.metadata || {}),
         oauthToken: credentials.oauthToken,
         oauthTokenSecret: credentials.oauthTokenSecret,
       };
@@ -2226,10 +2364,14 @@ export class ChannelsController {
       await this.channelService.markOAuthStateUsed(oauthToken);
 
       // Redirect to success page
-      return res.redirect(`${frontendUrl}/channels/connect/success?platform=twitter&oauth1=true&channelId=${channelId}`);
+      return res.redirect(
+        `${frontendUrl}/channels/connect/success?platform=twitter&oauth1=true&channelId=${channelId}`,
+      );
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
-      return res.redirect(`${frontendUrl}/channels/connect/error?error=${encodeURIComponent(errorMessage)}`);
+      return res.redirect(
+        `${frontendUrl}/channels/connect/error?error=${encodeURIComponent(errorMessage)}`,
+      );
     }
   }
 
@@ -2324,10 +2466,10 @@ export class ChannelsController {
   @Post('instagram/me/token')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getInstagramProfileWithToken(
-    @Body() dto: { accessToken: string },
-  ) {
-    return await this.instagramService.getAccountInfoWithUserToken(dto.accessToken);
+  async getInstagramProfileWithToken(@Body() dto: { accessToken: string }) {
+    return await this.instagramService.getAccountInfoWithUserToken(
+      dto.accessToken,
+    );
   }
 
   /**
@@ -2348,9 +2490,8 @@ export class ChannelsController {
     @Body() dto: { accessToken: string },
   ) {
     // Get Instagram account info using User Access Token
-    const instagramUser = await this.instagramService.getAccountInfoWithUserToken(
-      dto.accessToken,
-    );
+    const instagramUser =
+      await this.instagramService.getAccountInfoWithUserToken(dto.accessToken);
 
     // Create the Instagram channel
     const channel = await this.channelService.createChannel(
@@ -2402,7 +2543,8 @@ export class ChannelsController {
 
     return {
       channel,
-      message: 'Instagram account connected successfully using User Access Token',
+      message:
+        'Instagram account connected successfully using User Access Token',
     };
   }
 
@@ -2473,7 +2615,9 @@ export class ChannelsController {
     },
   ) {
     // Get channel to retrieve access token and account ID
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'instagram') {
       throw new BadRequestException('Channel is not an Instagram channel');
@@ -2484,7 +2628,8 @@ export class ChannelsController {
     }
 
     // Check if this is an Instagram Business Login channel
-    const isInstagramBusinessLogin = (channel.metadata as any)?.tokenType === 'instagram_business_login';
+    const isInstagramBusinessLogin =
+      (channel.metadata as any)?.tokenType === 'instagram_business_login';
 
     let result: { postId: string };
 
@@ -2532,7 +2677,9 @@ export class ChannelsController {
       isReel?: boolean;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'instagram') {
       throw new BadRequestException('Channel is not an Instagram channel');
@@ -2543,7 +2690,8 @@ export class ChannelsController {
     }
 
     // Check if this is an Instagram Business Login channel
-    const isInstagramBusinessLogin = (channel.metadata as any)?.tokenType === 'instagram_business_login';
+    const isInstagramBusinessLogin =
+      (channel.metadata as any)?.tokenType === 'instagram_business_login';
 
     let result: { postId: string };
 
@@ -2592,7 +2740,9 @@ export class ChannelsController {
       caption?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'instagram') {
       throw new BadRequestException('Channel is not an Instagram channel');
@@ -2603,7 +2753,8 @@ export class ChannelsController {
     }
 
     // Check if this is an Instagram Business Login channel
-    const isInstagramBusinessLogin = (channel.metadata as any)?.tokenType === 'instagram_business_login';
+    const isInstagramBusinessLogin =
+      (channel.metadata as any)?.tokenType === 'instagram_business_login';
 
     let result: { postId: string };
 
@@ -2650,7 +2801,9 @@ export class ChannelsController {
       mediaType: 'IMAGE' | 'VIDEO';
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'instagram') {
       throw new BadRequestException('Channel is not an Instagram channel');
@@ -2661,7 +2814,8 @@ export class ChannelsController {
     }
 
     // Check if this is an Instagram Business Login channel
-    const isInstagramBusinessLogin = (channel.metadata as any)?.tokenType === 'instagram_business_login';
+    const isInstagramBusinessLogin =
+      (channel.metadata as any)?.tokenType === 'instagram_business_login';
 
     let result: { postId: string };
 
@@ -2707,7 +2861,9 @@ export class ChannelsController {
       mediaType: 'IMAGE' | 'VIDEO';
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'facebook') {
       throw new BadRequestException('Channel is not a Facebook channel');
@@ -2750,7 +2906,10 @@ export class ChannelsController {
   @Post('instagram/deauthorize')
   @HttpCode(HttpStatus.OK)
   async instagramDeauthorize(@Body() body: any) {
-    console.log('[Instagram Deauthorize] Received webhook:', JSON.stringify(body));
+    console.log(
+      '[Instagram Deauthorize] Received webhook:',
+      JSON.stringify(body),
+    );
     // Meta sends a signed_request with user info
     // TODO: Parse signed_request, find channel by platform account ID, mark as revoked
     return { success: true };
@@ -2772,7 +2931,9 @@ export class ChannelsController {
     @Body() dto: FetchPagesDto,
   ) {
     // Get Threads profile info
-    const threadsUser = await this.threadsService.getUserProfile(dto.accessToken);
+    const threadsUser = await this.threadsService.getUserProfile(
+      dto.accessToken,
+    );
 
     // Create the Threads channel
     const channel = await this.channelService.createChannel(
@@ -2844,9 +3005,7 @@ export class ChannelsController {
   @Post('threads/insights')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getThreadInsights(
-    @Body() dto: FetchPagesDto & { threadId: string },
-  ) {
+  async getThreadInsights(@Body() dto: FetchPagesDto & { threadId: string }) {
     return await this.threadsService.getThreadInsights(
       dto.accessToken,
       dto.threadId,
@@ -2871,7 +3030,9 @@ export class ChannelsController {
       replyToId?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'threads') {
       throw new BadRequestException('Channel is not a Threads channel');
@@ -2912,7 +3073,9 @@ export class ChannelsController {
       replyToId?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'threads') {
       throw new BadRequestException('Channel is not a Threads channel');
@@ -2954,7 +3117,9 @@ export class ChannelsController {
       replyToId?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'threads') {
       throw new BadRequestException('Channel is not a Threads channel');
@@ -2996,7 +3161,9 @@ export class ChannelsController {
       replyToId?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'threads') {
       throw new BadRequestException('Channel is not a Threads channel');
@@ -3031,7 +3198,10 @@ export class ChannelsController {
   @Post('threads/deauthorize')
   @HttpCode(HttpStatus.OK)
   async threadsDeauthorize(@Body() body: any) {
-    console.log('[Threads Deauthorize] Received webhook:', JSON.stringify(body));
+    console.log(
+      '[Threads Deauthorize] Received webhook:',
+      JSON.stringify(body),
+    );
     // Meta sends a signed_request with user info
     // TODO: Parse signed_request, find channel by platform account ID, mark as revoked
     return { success: true };
@@ -3118,9 +3288,7 @@ export class ChannelsController {
   @Post('bluesky/me')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getBlueskyProfile(
-    @Body() dto: FetchPagesDto & { did: string },
-  ) {
+  async getBlueskyProfile(@Body() dto: FetchPagesDto & { did: string }) {
     return await this.blueskyService.getProfile(dto.accessToken, dto.did);
   }
 
@@ -3131,7 +3299,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async getBlueskyPosts(
-    @Body() dto: FetchPagesDto & { actor: string; limit?: number; cursor?: string },
+    @Body()
+    dto: FetchPagesDto & { actor: string; limit?: number; cursor?: string },
   ) {
     return await this.blueskyService.getAuthorFeed(
       dto.accessToken,
@@ -3147,10 +3316,10 @@ export class ChannelsController {
   @Post('bluesky/refresh')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async refreshBlueskySession(
-    @Body() dto: { channelId: number },
-  ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+  async refreshBlueskySession(@Body() dto: { channelId: number }) {
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'bluesky') {
       throw new BadRequestException('Channel is not a Bluesky channel');
@@ -3163,10 +3332,14 @@ export class ChannelsController {
 
     // Get refresh token from channel
     if (!channel.refreshToken) {
-      throw new BadRequestException('No refresh token available. Please reconnect the account.');
+      throw new BadRequestException(
+        'No refresh token available. Please reconnect the account.',
+      );
     }
 
-    const newSession = await this.blueskyService.refreshSession(channel.refreshToken);
+    const newSession = await this.blueskyService.refreshSession(
+      channel.refreshToken,
+    );
 
     // Update channel with new tokens
     await this.channelService.updateChannelTokens(
@@ -3199,7 +3372,9 @@ export class ChannelsController {
       replyTo?: { uri: string; cid: string };
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'bluesky') {
       throw new BadRequestException('Channel is not a Bluesky channel');
@@ -3246,7 +3421,9 @@ export class ChannelsController {
       altTexts?: string[];
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'bluesky') {
       throw new BadRequestException('Channel is not a Bluesky channel');
@@ -3266,7 +3443,9 @@ export class ChannelsController {
     }
 
     if (dto.imageUrls.length > 4) {
-      throw new BadRequestException('Bluesky allows a maximum of 4 images per post');
+      throw new BadRequestException(
+        'Bluesky allows a maximum of 4 images per post',
+      );
     }
 
     const result = await this.blueskyService.createImagePost(
@@ -3302,7 +3481,9 @@ export class ChannelsController {
       altText?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'bluesky') {
       throw new BadRequestException('Channel is not a Bluesky channel');
@@ -3352,7 +3533,9 @@ export class ChannelsController {
       linkThumbUrl?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'bluesky') {
       throw new BadRequestException('Channel is not a Bluesky channel');
@@ -3400,7 +3583,9 @@ export class ChannelsController {
       postUri: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'bluesky') {
       throw new BadRequestException('Channel is not a Bluesky channel');
@@ -3589,9 +3774,12 @@ export class ChannelsController {
       );
 
       // Redirect to frontend
-      const redirectUrl = stateRecord.redirectUrl || '/channels/connect/success';
+      const redirectUrl =
+        stateRecord.redirectUrl || '/channels/connect/success';
       const separator = redirectUrl.includes('?') ? '&' : '?';
-      return res.redirect(`${redirectUrl}${separator}platform=mastodon&success=true`);
+      return res.redirect(
+        `${redirectUrl}${separator}platform=mastodon&success=true`,
+      );
     } catch (error) {
       console.error('[Mastodon OAuth] Error:', error);
       const redirectUrl = stateRecord.redirectUrl || '/channels/connect/error';
@@ -3608,10 +3796,10 @@ export class ChannelsController {
   @Post('mastodon/me')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getMastodonProfile(
-    @Body() dto: { channelId: number },
-  ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+  async getMastodonProfile(@Body() dto: { channelId: number }) {
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'mastodon') {
       throw new BadRequestException('Channel is not a Mastodon channel');
@@ -3637,7 +3825,9 @@ export class ChannelsController {
   async getMastodonPosts(
     @Body() dto: { channelId: number; limit?: number; maxId?: string },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'mastodon') {
       throw new BadRequestException('Channel is not a Mastodon channel');
@@ -3678,7 +3868,9 @@ export class ChannelsController {
       spoilerText?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'mastodon') {
       throw new BadRequestException('Channel is not a Mastodon channel');
@@ -3731,7 +3923,9 @@ export class ChannelsController {
       visibility?: 'public' | 'unlisted' | 'private' | 'direct';
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'mastodon') {
       throw new BadRequestException('Channel is not a Mastodon channel');
@@ -3751,7 +3945,9 @@ export class ChannelsController {
     }
 
     if (dto.imageUrls.length > 4) {
-      throw new BadRequestException('Mastodon allows a maximum of 4 images per post');
+      throw new BadRequestException(
+        'Mastodon allows a maximum of 4 images per post',
+      );
     }
 
     const result = await this.mastodonService.createImagePost(
@@ -3789,7 +3985,9 @@ export class ChannelsController {
       visibility?: 'public' | 'unlisted' | 'private' | 'direct';
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'mastodon') {
       throw new BadRequestException('Channel is not a Mastodon channel');
@@ -3836,7 +4034,9 @@ export class ChannelsController {
       postId: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(dto.channelId);
+    const channel = await this.channelService.getChannelForPosting(
+      dto.channelId,
+    );
 
     if (channel.platform !== 'mastodon') {
       throw new BadRequestException('Channel is not a Mastodon channel');
@@ -3868,9 +4068,7 @@ export class ChannelsController {
    */
   @Post('mastodon/instance')
   @HttpCode(HttpStatus.OK)
-  async getMastodonInstanceInfo(
-    @Body() dto: { instanceUrl: string },
-  ) {
+  async getMastodonInstanceInfo(@Body() dto: { instanceUrl: string }) {
     return await this.mastodonService.getInstanceInfo(dto.instanceUrl);
   }
 
@@ -3885,7 +4083,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listDriveMedia(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       folderId?: string;
       query?: string;
       pageSize?: number;
@@ -3907,7 +4106,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listDriveImages(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       folderId?: string;
       query?: string;
       pageSize?: number;
@@ -3929,7 +4129,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listDriveVideos(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       folderId?: string;
       query?: string;
       pageSize?: number;
@@ -3951,7 +4152,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listDriveFolders(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       parentId?: string;
       pageSize?: number;
       pageToken?: string;
@@ -3994,7 +4196,9 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async verifyDriveAccess(@Body() dto: FetchPagesDto) {
-    const hasAccess = await this.googleDriveService.verifyAccess(dto.accessToken);
+    const hasAccess = await this.googleDriveService.verifyAccess(
+      dto.accessToken,
+    );
     return { hasAccess };
   }
 
@@ -4009,7 +4213,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listPhotosMedia(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       pageSize?: number;
       pageToken?: string;
       albumId?: string;
@@ -4031,7 +4236,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listPhotosOnly(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       pageSize?: number;
       pageToken?: string;
       albumId?: string;
@@ -4051,7 +4257,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listPhotosVideos(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       pageSize?: number;
       pageToken?: string;
       albumId?: string;
@@ -4071,7 +4278,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listPhotosAlbums(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       pageSize?: number;
       pageToken?: string;
     },
@@ -4092,7 +4300,10 @@ export class ChannelsController {
     @Param('mediaItemId') mediaItemId: string,
     @Body() dto: FetchPagesDto,
   ) {
-    return await this.googlePhotosService.getMediaItem(dto.accessToken, mediaItemId);
+    return await this.googlePhotosService.getMediaItem(
+      dto.accessToken,
+      mediaItemId,
+    );
   }
 
   /**
@@ -4102,7 +4313,9 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async verifyPhotosAccess(@Body() dto: FetchPagesDto) {
-    const hasAccess = await this.googlePhotosService.verifyAccess(dto.accessToken);
+    const hasAccess = await this.googlePhotosService.verifyAccess(
+      dto.accessToken,
+    );
     return { hasAccess };
   }
 
@@ -4137,7 +4350,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listCalendarEvents(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       calendarId?: string;
       timeMin?: string;
       timeMax?: string;
@@ -4161,7 +4375,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async createCalendarEvent(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       summary: string;
       description?: string;
       startTime: string;
@@ -4189,7 +4404,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async createPostCalendarEvent(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       postId: string;
       platforms: string[];
       caption: string;
@@ -4221,7 +4437,8 @@ export class ChannelsController {
   @HttpCode(HttpStatus.OK)
   async updateCalendarEvent(
     @Param('eventId') eventId: string,
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       summary?: string;
       description?: string;
       startTime?: string;
@@ -4322,7 +4539,9 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async verifyCalendarAccess(@Body() dto: FetchPagesDto) {
-    const hasAccess = await this.googleCalendarService.verifyAccess(dto.accessToken);
+    const hasAccess = await this.googleCalendarService.verifyAccess(
+      dto.accessToken,
+    );
     return { hasAccess };
   }
 
@@ -4339,11 +4558,14 @@ export class ChannelsController {
   async connectOneDrive(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
+    @Body()
+    dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
   ) {
     // Decode tokens in case they're URL-encoded
     const accessToken = decodeURIComponent(dto.accessToken);
-    const refreshToken = dto.refreshToken ? decodeURIComponent(dto.refreshToken) : undefined;
+    const refreshToken = dto.refreshToken
+      ? decodeURIComponent(dto.refreshToken)
+      : undefined;
 
     // Get OneDrive user info
     const driveInfo = await this.oneDriveService.getUserInfo(accessToken);
@@ -4402,7 +4624,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listOneDriveMedia(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       folderId?: string;
       pageSize?: number;
       nextLink?: string;
@@ -4422,7 +4645,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listOneDriveImages(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       folderId?: string;
       pageSize?: number;
       nextLink?: string;
@@ -4442,7 +4666,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listOneDriveVideos(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       folderId?: string;
       pageSize?: number;
       nextLink?: string;
@@ -4462,7 +4687,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listOneDriveFolders(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       parentId?: string;
       pageSize?: number;
       nextLink?: string;
@@ -4482,7 +4708,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async searchOneDrive(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       query: string;
       pageSize?: number;
       nextLink?: string;
@@ -4517,7 +4744,10 @@ export class ChannelsController {
     @Param('itemId') itemId: string,
     @Body() dto: FetchPagesDto,
   ) {
-    const url = await this.oneDriveService.getDownloadUrl(dto.accessToken, itemId);
+    const url = await this.oneDriveService.getDownloadUrl(
+      dto.accessToken,
+      itemId,
+    );
     return { downloadUrl: url };
   }
 
@@ -4545,11 +4775,14 @@ export class ChannelsController {
   async connectDropbox(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
+    @Body()
+    dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
   ) {
     // Decode tokens in case they're URL-encoded
     const accessToken = decodeURIComponent(dto.accessToken);
-    const refreshToken = dto.refreshToken ? decodeURIComponent(dto.refreshToken) : undefined;
+    const refreshToken = dto.refreshToken
+      ? decodeURIComponent(dto.refreshToken)
+      : undefined;
 
     // Get Dropbox user info
     const dropboxUser = await this.dropboxService.getUserInfo(accessToken);
@@ -4620,7 +4853,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listDropboxFolder(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       path?: string;
       limit?: number;
       cursor?: string;
@@ -4642,7 +4876,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listDropboxMedia(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       path?: string;
       limit?: number;
       cursor?: string;
@@ -4662,7 +4897,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listDropboxImages(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       path?: string;
       limit?: number;
       cursor?: string;
@@ -4682,7 +4918,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listDropboxVideos(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       path?: string;
       limit?: number;
       cursor?: string;
@@ -4702,7 +4939,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async listDropboxFolders(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       path?: string;
       limit?: number;
       cursor?: string;
@@ -4722,7 +4960,8 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async searchDropbox(
-    @Body() dto: FetchPagesDto & {
+    @Body()
+    dto: FetchPagesDto & {
       query: string;
       path?: string;
       maxResults?: number;
@@ -4744,9 +4983,7 @@ export class ChannelsController {
   @Post('dropbox/metadata')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getDropboxMetadata(
-    @Body() dto: FetchPagesDto & { path: string },
-  ) {
+  async getDropboxMetadata(@Body() dto: FetchPagesDto & { path: string }) {
     return await this.dropboxService.getMetadata(dto.accessToken, dto.path);
   }
 
@@ -4756,10 +4993,11 @@ export class ChannelsController {
   @Post('dropbox/download-link')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getDropboxDownloadLink(
-    @Body() dto: FetchPagesDto & { path: string },
-  ) {
-    const link = await this.dropboxService.getTemporaryLink(dto.accessToken, dto.path);
+  async getDropboxDownloadLink(@Body() dto: FetchPagesDto & { path: string }) {
+    const link = await this.dropboxService.getTemporaryLink(
+      dto.accessToken,
+      dto.path,
+    );
     return { downloadLink: link };
   }
 
@@ -4854,9 +5092,7 @@ export class ChannelsController {
   @Post('unsplash/download')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async trackUnsplashDownload(
-    @Body() dto: { downloadLocation: string },
-  ) {
+  async trackUnsplashDownload(@Body() dto: { downloadLocation: string }) {
     if (!dto.downloadLocation) {
       throw new BadRequestException('downloadLocation is required');
     }
@@ -4879,7 +5115,10 @@ export class ChannelsController {
     @Param('channelId') channelId: string,
     @Query() query: ListSlackChannelsQueryDto,
   ) {
-    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    const channel = await this.channelService.getChannelById(
+      Number(channelId),
+      wid,
+    );
     if (channel.platform !== 'slack') {
       throw new ForbiddenException('Slack channel not found in this workspace');
     }
@@ -4902,7 +5141,10 @@ export class ChannelsController {
     @Param('channelId') channelId: string,
     @Query() query: ListSlackMembersQueryDto,
   ) {
-    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    const channel = await this.channelService.getChannelById(
+      Number(channelId),
+      wid,
+    );
     if (channel.platform !== 'slack') {
       throw new ForbiddenException('Slack channel not found in this workspace');
     }
@@ -4922,13 +5164,24 @@ export class ChannelsController {
     @Param('channelId') channelId: string,
     @Body() body: JoinSlackChannelBodyDto,
   ) {
-    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    const channel = await this.channelService.getChannelById(
+      Number(channelId),
+      wid,
+    );
     if (channel.platform !== 'slack') {
       throw new ForbiddenException('Slack channel not found in this workspace');
     }
     const token = await this.channelService.getAccessToken(channel.id, wid);
-    const joinResult = await this.slackService.joinChannel(token, body.conversationId);
-    const backfill = await this.slackBackfill.backfillConversation(wid, channel.id, body.conversationId, 50);
+    const joinResult = await this.slackService.joinChannel(
+      token,
+      body.conversationId,
+    );
+    const backfill = await this.slackBackfill.backfillConversation(
+      wid,
+      channel.id,
+      body.conversationId,
+      50,
+    );
     return { ok: true, ...joinResult, backfilled: backfill.ingested };
   }
 
@@ -4943,16 +5196,25 @@ export class ChannelsController {
     @Param('channelId') channelId: string,
     @Body() body: StartSlackDmBodyDto,
   ) {
-    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    const channel = await this.channelService.getChannelById(
+      Number(channelId),
+      wid,
+    );
     if (channel.platform !== 'slack') {
       throw new ForbiddenException('Slack channel not found in this workspace');
     }
     const token = await this.channelService.getAccessToken(channel.id, wid);
-    const { conversationId, ts } = await this.slackService.openDmAndSendFirst(token, body.userId, body.text);
+    const { conversationId, ts } = await this.slackService.openDmAndSendFirst(
+      token,
+      body.userId,
+      body.text,
+    );
     // Fetch the recipient's profile so the inbox conversation has a real
     // participant identity from the very first outbound message. Without this
     // the conversation row shows "Unknown" until the recipient replies.
-    const recipient = await this.slackService.getUserInfo(token, body.userId).catch(() => null);
+    const recipient = await this.slackService
+      .getUserInfo(token, body.userId)
+      .catch(() => null);
     await this.inboxService.upsertDm({
       workspaceId: wid,
       channelId: channel.id,
@@ -4981,7 +5243,10 @@ export class ChannelsController {
     @Param('channelId') channelId: string,
     @Body() body: CreateSlackChannelBodyDto,
   ) {
-    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    const channel = await this.channelService.getChannelById(
+      Number(channelId),
+      wid,
+    );
     if (channel.platform !== 'slack') {
       throw new ForbiddenException('Slack channel not found in this workspace');
     }
@@ -5007,9 +5272,14 @@ export class ChannelsController {
     @Param('workspaceId') wid: string,
     @Param('channelId') channelId: string,
   ) {
-    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    const channel = await this.channelService.getChannelById(
+      Number(channelId),
+      wid,
+    );
     if (channel.platform !== 'discord') {
-      throw new ForbiddenException('Discord channel not found in this workspace');
+      throw new ForbiddenException(
+        'Discord channel not found in this workspace',
+      );
     }
     const channels = await this.discordService.listGuildChannels(
       channel.platformAccountId,
@@ -5025,9 +5295,14 @@ export class ChannelsController {
     @Param('channelId') channelId: string,
     @Body() body: SendDiscordMessageBodyDto,
   ) {
-    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    const channel = await this.channelService.getChannelById(
+      Number(channelId),
+      wid,
+    );
     if (channel.platform !== 'discord') {
-      throw new ForbiddenException('Discord channel not found in this workspace');
+      throw new ForbiddenException(
+        'Discord channel not found in this workspace',
+      );
     }
     const res = await this.discordService.createMessage(body.conversationId, {
       content: body.text,
@@ -5045,9 +5320,14 @@ export class ChannelsController {
     @Param('channelId') channelId: string,
     @Body() body: CreateDiscordChannelBodyDto,
   ) {
-    const channel = await this.channelService.getChannelById(Number(channelId), wid);
+    const channel = await this.channelService.getChannelById(
+      Number(channelId),
+      wid,
+    );
     if (channel.platform !== 'discord') {
-      throw new ForbiddenException('Discord channel not found in this workspace');
+      throw new ForbiddenException(
+        'Discord channel not found in this workspace',
+      );
     }
     const created = await this.discordService.createGuildChannel(
       channel.platformAccountId,
@@ -5068,7 +5348,10 @@ export class ChannelsController {
     @Body() dto: ConnectTelegramBotDto,
     @CurrentUser() user: { userId: string; email: string },
   ) {
-    return this.telegramConnectService.connect(workspaceId, user.userId, dto.token);
+    return this.telegramConnectService.connect(
+      workspaceId,
+      user.userId,
+      dto.token,
+    );
   }
-
 }

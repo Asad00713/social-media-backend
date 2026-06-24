@@ -41,7 +41,10 @@ describe('PinterestApiClient', () => {
           title: 'Test Pin',
           description: 'A great pin',
           board_id: 'board-1',
-          media: { media_type: 'image', images: { '600x': { url: 'https://i.pinimg.com/600x/img.jpg' } } },
+          media: {
+            media_type: 'image',
+            images: { '600x': { url: 'https://i.pinimg.com/600x/img.jpg' } },
+          },
         },
       ],
       bookmark: 'next-cursor',
@@ -59,7 +62,10 @@ describe('PinterestApiClient', () => {
   });
 
   it('getPins defaults page_size to 25 when not provided', async () => {
-    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ items: [] }) });
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ items: [] }),
+    });
 
     await client.getPins({ accessToken: 'tok' });
 
@@ -156,7 +162,9 @@ describe('PinterestApiClient', () => {
   it('getUserAnalytics builds correct query params with metric_types', async () => {
     mockFetch.mockResolvedValue({
       ok: true,
-      json: async () => ({ all: { summary_metrics: { FOLLOWER_COUNT: 5000 } } }),
+      json: async () => ({
+        all: { summary_metrics: { FOLLOWER_COUNT: 5000 } },
+      }),
     });
 
     await client.getUserAnalytics({

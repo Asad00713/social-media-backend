@@ -1,9 +1,4 @@
-import {
-  Controller,
-  Param,
-  Post,
-  UseGuards,
-} from '@nestjs/common';
+import { Controller, Param, Post, UseGuards } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
 import { AnalyticsService } from './services/analytics.service';
 import { ChannelOwnershipGuard } from './guards/channel-ownership.guard';

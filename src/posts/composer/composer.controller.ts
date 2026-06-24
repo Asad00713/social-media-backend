@@ -45,18 +45,27 @@ export class ComposerController {
   }
 
   @Get('drafts')
-  async listDrafts(@Param('wsId') wsId: string, @Query('limit') limitStr?: string) {
+  async listDrafts(
+    @Param('wsId') wsId: string,
+    @Query('limit') limitStr?: string,
+  ) {
     const limit = limitStr ? Number(limitStr) : 50;
     return this.drafts.listDrafts(wsId, limit);
   }
 
   @Get('drafts/:draftId')
-  async getDraft(@Param('wsId') wsId: string, @Param('draftId') draftId: string) {
+  async getDraft(
+    @Param('wsId') wsId: string,
+    @Param('draftId') draftId: string,
+  ) {
     return this.drafts.findById(wsId, draftId);
   }
 
   @Delete('drafts/:draftId')
-  async deleteDraft(@Param('wsId') wsId: string, @Param('draftId') draftId: string) {
+  async deleteDraft(
+    @Param('wsId') wsId: string,
+    @Param('draftId') draftId: string,
+  ) {
     return this.drafts.delete(wsId, draftId);
   }
 
@@ -70,7 +79,10 @@ export class ComposerController {
   }
 
   @Delete('schedule/:draftId')
-  async cancelSchedule(@Param('wsId') wsId: string, @Param('draftId') draftId: string) {
+  async cancelSchedule(
+    @Param('wsId') wsId: string,
+    @Param('draftId') draftId: string,
+  ) {
     return this.scheduling.cancel(wsId, draftId);
   }
 

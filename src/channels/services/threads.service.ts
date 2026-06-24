@@ -407,9 +407,7 @@ export class ThreadsService {
     accessToken: string,
     creationId: string,
   ): Promise<{ postId: string }> {
-    const publishUrl = new URL(
-      `${this.graphApiUrl}/${userId}/threads_publish`,
-    );
+    const publishUrl = new URL(`${this.graphApiUrl}/${userId}/threads_publish`);
 
     const publishResponse = await fetch(publishUrl.toString(), {
       method: 'POST',

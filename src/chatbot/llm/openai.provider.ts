@@ -28,7 +28,9 @@ export class OpenAIChatProvider extends BaseLLMProvider {
       this.client = new OpenAI({ apiKey });
       this.logger.log('OpenAI chat provider initialized');
     } else {
-      this.logger.warn('No OPENAI_API_KEY configured - OpenAI provider unavailable');
+      this.logger.warn(
+        'No OPENAI_API_KEY configured - OpenAI provider unavailable',
+      );
     }
   }
 
@@ -71,7 +73,7 @@ export class OpenAIChatProvider extends BaseLLMProvider {
       }
 
       return {
-        role: msg.role as 'system' | 'user' | 'assistant',
+        role: msg.role,
         content: msg.content || '',
       };
     });
@@ -92,7 +94,10 @@ export class OpenAIChatProvider extends BaseLLMProvider {
     }));
   }
 
-  async chat(messages: LLMMessage[], options?: LLMChatOptions): Promise<LLMResponse> {
+  async chat(
+    messages: LLMMessage[],
+    options?: LLMChatOptions,
+  ): Promise<LLMResponse> {
     const client = this.ensureClient();
     const model = options?.model || this.defaultModel;
 
@@ -109,7 +114,10 @@ export class OpenAIChatProvider extends BaseLLMProvider {
     return {
       content: choice?.message?.content || null,
       toolCalls: (choice?.message?.tool_calls || [])
-        .filter((tc): tc is Extract<typeof tc, { type: 'function' }> => tc.type === 'function')
+        .filter(
+          (tc): tc is Extract<typeof tc, { type: 'function' }> =>
+            tc.type === 'function',
+        )
         .map((tc) => ({
           id: tc.id,
           type: 'function' as const,
@@ -169,7 +177,8 @@ export class OpenAIChatProvider extends BaseLLMProvider {
           const existing = toolCallsMap.get(tc.index)!;
           if (tc.id) existing.id = tc.id;
           if (tc.function?.name) existing.name += tc.function.name;
-          if (tc.function?.arguments) existing.arguments += tc.function.arguments;
+          if (tc.function?.arguments)
+            existing.arguments += tc.function.arguments;
         }
       }
 

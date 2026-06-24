@@ -9,10 +9,7 @@ import {
   type SupportedPlatform,
 } from '../../drizzle/schema/channels.schema';
 import { OAuthService } from '../services/oauth.service';
-import {
-  encrypt,
-  decrypt,
-} from '../../common/utils/encryption.util';
+import { encrypt, decrypt } from '../../common/utils/encryption.util';
 
 export interface TokenRefreshJob {
   channelId: number;

@@ -11,12 +11,18 @@ export class ChannelCredentialsAdapter implements ChannelCredentialsLookup {
     if (!Number.isFinite(numericId)) {
       throw new BadRequestException(`Invalid channelId: ${channelId}`);
     }
-    const channel = await this.channelService.getChannelById(numericId, workspaceId);
-    const accessToken = await this.channelService.getAccessToken(numericId, workspaceId);
+    const channel = await this.channelService.getChannelById(
+      numericId,
+      workspaceId,
+    );
+    const accessToken = await this.channelService.getAccessToken(
+      numericId,
+      workspaceId,
+    );
     return {
       accessToken,
       platformAccountId: channel.platformAccountId,
-      channelMetadata: (channel.metadata as Record<string, any>) ?? {},
+      channelMetadata: channel.metadata ?? {},
     };
   }
 }

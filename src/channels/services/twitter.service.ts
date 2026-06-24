@@ -68,7 +68,10 @@ export class TwitterService {
       },
       signature_method: 'HMAC-SHA1',
       hash_function(baseString: string, key: string) {
-        return crypto.createHmac('sha1', key).update(baseString).digest('base64');
+        return crypto
+          .createHmac('sha1', key)
+          .update(baseString)
+          .digest('base64');
       },
     });
   }
@@ -96,7 +99,9 @@ export class TwitterService {
 
     if (data.errors) {
       this.logger.error(`Twitter API error: ${JSON.stringify(data.errors)}`);
-      throw new BadRequestException(data.errors[0]?.message || 'Twitter API error');
+      throw new BadRequestException(
+        data.errors[0]?.message || 'Twitter API error',
+      );
     }
 
     const user = data.data;
@@ -170,13 +175,21 @@ export class TwitterService {
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Failed to create tweet: ${response.status} - ${errorData}`);
+      this.logger.error(
+        `Failed to create tweet: ${response.status} - ${errorData}`,
+      );
 
       // Parse error for more specific message
       try {
         const errorJson = JSON.parse(errorData);
-        const errorMessage = errorJson.detail || errorJson.errors?.[0]?.message || errorJson.title || errorData;
-        throw new BadRequestException(`Failed to create tweet: ${errorMessage}`);
+        const errorMessage =
+          errorJson.detail ||
+          errorJson.errors?.[0]?.message ||
+          errorJson.title ||
+          errorData;
+        throw new BadRequestException(
+          `Failed to create tweet: ${errorMessage}`,
+        );
       } catch (parseError) {
         if (parseError instanceof BadRequestException) throw parseError;
         throw new BadRequestException(`Failed to create tweet: ${errorData}`);
@@ -186,7 +199,9 @@ export class TwitterService {
     const data = await response.json();
 
     if (data.errors) {
-      throw new BadRequestException(data.errors[0]?.message || 'Twitter API error');
+      throw new BadRequestException(
+        data.errors[0]?.message || 'Twitter API error',
+      );
     }
 
     return {
@@ -255,7 +270,9 @@ export class TwitterService {
     const data = await response.json();
 
     if (data.errors) {
-      throw new BadRequestException(data.errors[0]?.message || 'Twitter API error');
+      throw new BadRequestException(
+        data.errors[0]?.message || 'Twitter API error',
+      );
     }
 
     return {
@@ -331,7 +348,9 @@ export class TwitterService {
     const data = await response.json();
 
     if (data.errors) {
-      throw new BadRequestException(data.errors[0]?.message || 'Twitter API error');
+      throw new BadRequestException(
+        data.errors[0]?.message || 'Twitter API error',
+      );
     }
 
     // Filter tweets that belong to this conversation and are replies (not the root tweet)
@@ -387,10 +406,7 @@ export class TwitterService {
       'id,text,created_at,public_metrics,author_id,conversation_id,in_reply_to_user_id',
     );
     url.searchParams.set('expansions', 'author_id');
-    url.searchParams.set(
-      'user.fields',
-      'id,name,username,profile_image_url',
-    );
+    url.searchParams.set('user.fields', 'id,name,username,profile_image_url');
 
     if (paginationToken) {
       url.searchParams.set('pagination_token', paginationToken);
@@ -432,11 +448,21 @@ export class TwitterService {
     const data = await response.json();
 
     if (data.errors) {
-      throw new BadRequestException(data.errors[0]?.message || 'Twitter API error');
+      throw new BadRequestException(
+        data.errors[0]?.message || 'Twitter API error',
+      );
     }
 
     // Build author lookup map from includes
-    const authorMap = new Map<string, { id: string; name: string; username: string; profileImageUrl: string | null }>();
+    const authorMap = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        username: string;
+        profileImageUrl: string | null;
+      }
+    >();
     if (data.includes?.users) {
       for (const user of data.includes.users) {
         authorMap.set(user.id, {
@@ -500,10 +526,7 @@ export class TwitterService {
       'id,text,created_at,public_metrics,author_id,conversation_id,in_reply_to_user_id',
     );
     url.searchParams.set('expansions', 'author_id');
-    url.searchParams.set(
-      'user.fields',
-      'id,name,username,profile_image_url',
-    );
+    url.searchParams.set('user.fields', 'id,name,username,profile_image_url');
 
     if (paginationToken) {
       url.searchParams.set('next_token', paginationToken);
@@ -545,11 +568,21 @@ export class TwitterService {
     const data = await response.json();
 
     if (data.errors) {
-      throw new BadRequestException(data.errors[0]?.message || 'Twitter API error');
+      throw new BadRequestException(
+        data.errors[0]?.message || 'Twitter API error',
+      );
     }
 
     // Build author lookup map from includes
-    const authorMap = new Map<string, { id: string; name: string; username: string; profileImageUrl: string | null }>();
+    const authorMap = new Map<
+      string,
+      {
+        id: string;
+        name: string;
+        username: string;
+        profileImageUrl: string | null;
+      }
+    >();
     if (data.includes?.users) {
       for (const user of data.includes.users) {
         authorMap.set(user.id, {
@@ -602,7 +635,9 @@ export class TwitterService {
     const fileSizeBytes = mediaData.length;
     const CHUNK_SIZE_THRESHOLD = 5 * 1024 * 1024; // 5MB
 
-    this.logger.log(`Uploading media to Twitter: ${mediaType}, size: ${fileSizeBytes} bytes`);
+    this.logger.log(
+      `Uploading media to Twitter: ${mediaType}, size: ${fileSizeBytes} bytes`,
+    );
 
     // Use chunked upload for large files (>5MB) or videos
     if (fileSizeBytes > CHUNK_SIZE_THRESHOLD || mediaType === 'video/mp4') {
@@ -619,7 +654,11 @@ export class TwitterService {
 
     // If OAuth 1.0a credentials are provided, use them for media upload
     if (oauth1Credentials) {
-      return this.uploadMediaWithOAuth1(uploadUrl, mediaBase64, oauth1Credentials);
+      return this.uploadMediaWithOAuth1(
+        uploadUrl,
+        mediaBase64,
+        oauth1Credentials,
+      );
     }
 
     // Fallback to OAuth 2.0 Bearer token (may not work for all accounts)
@@ -637,11 +676,13 @@ export class TwitterService {
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Failed to upload media to Twitter: ${response.status} - ${errorData}`);
+      this.logger.error(
+        `Failed to upload media to Twitter: ${response.status} - ${errorData}`,
+      );
 
       if (response.status === 401 || response.status === 403) {
         throw new BadRequestException(
-          'Twitter media upload failed. Please ensure your Twitter app has OAuth 1.0a credentials configured.'
+          'Twitter media upload failed. Please ensure your Twitter app has OAuth 1.0a credentials configured.',
         );
       }
 
@@ -668,10 +709,16 @@ export class TwitterService {
     const CHUNK_SIZE = 4 * 1024 * 1024; // 4MB chunks
 
     // Determine media category based on type
-    const mediaCategory = mediaType === 'video/mp4' ? 'tweet_video' :
-                         mediaType === 'image/gif' ? 'tweet_gif' : 'tweet_image';
+    const mediaCategory =
+      mediaType === 'video/mp4'
+        ? 'tweet_video'
+        : mediaType === 'image/gif'
+          ? 'tweet_gif'
+          : 'tweet_image';
 
-    this.logger.log(`Starting chunked upload: ${mediaType}, ${totalBytes} bytes, category: ${mediaCategory}`);
+    this.logger.log(
+      `Starting chunked upload: ${mediaType}, ${totalBytes} bytes, category: ${mediaCategory}`,
+    );
 
     // Step 1: INIT - Initialize the upload
     const initMediaId = await this.chunkedUploadInit(
@@ -687,14 +734,29 @@ export class TwitterService {
     // Step 2: APPEND - Upload chunks
     let segmentIndex = 0;
     for (let offset = 0; offset < totalBytes; offset += CHUNK_SIZE) {
-      const chunk = mediaData.subarray(offset, Math.min(offset + CHUNK_SIZE, totalBytes));
-      await this.chunkedUploadAppend(uploadUrl, initMediaId, segmentIndex, chunk, credentials);
-      this.logger.log(`Uploaded chunk ${segmentIndex + 1}, bytes ${offset}-${offset + chunk.length}`);
+      const chunk = mediaData.subarray(
+        offset,
+        Math.min(offset + CHUNK_SIZE, totalBytes),
+      );
+      await this.chunkedUploadAppend(
+        uploadUrl,
+        initMediaId,
+        segmentIndex,
+        chunk,
+        credentials,
+      );
+      this.logger.log(
+        `Uploaded chunk ${segmentIndex + 1}, bytes ${offset}-${offset + chunk.length}`,
+      );
       segmentIndex++;
     }
 
     // Step 3: FINALIZE - Complete the upload
-    const finalizeResult = await this.chunkedUploadFinalize(uploadUrl, initMediaId, credentials);
+    const finalizeResult = await this.chunkedUploadFinalize(
+      uploadUrl,
+      initMediaId,
+      credentials,
+    );
 
     // Step 4: STATUS - Poll for processing completion (for videos)
     if (finalizeResult.processing_info) {
@@ -733,10 +795,14 @@ export class TwitterService {
       data: params,
     };
 
-    const authHeader = this.oauth.toHeader(this.oauth.authorize(requestData, token));
+    const authHeader = this.oauth.toHeader(
+      this.oauth.authorize(requestData, token),
+    );
 
     const formData = new URLSearchParams();
-    Object.entries(params).forEach(([key, value]) => formData.append(key, value));
+    Object.entries(params).forEach(([key, value]) =>
+      formData.append(key, value),
+    );
 
     const response = await fetch(uploadUrl, {
       method: 'POST',
@@ -749,8 +815,12 @@ export class TwitterService {
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Chunked upload INIT failed: ${response.status} - ${errorData}`);
-      throw new BadRequestException(`Failed to initialize media upload: ${errorData}`);
+      this.logger.error(
+        `Chunked upload INIT failed: ${response.status} - ${errorData}`,
+      );
+      throw new BadRequestException(
+        `Failed to initialize media upload: ${errorData}`,
+      );
     }
 
     const data = await response.json();
@@ -780,7 +850,9 @@ export class TwitterService {
       method: 'POST' as const,
     };
 
-    const authHeader = this.oauth.toHeader(this.oauth.authorize(requestData, token));
+    const authHeader = this.oauth.toHeader(
+      this.oauth.authorize(requestData, token),
+    );
 
     // Use multipart/form-data for chunked upload APPEND
     const boundary = `----WebKitFormBoundary${Date.now().toString(16)}`;
@@ -806,7 +878,9 @@ export class TwitterService {
 
     // Add media chunk (as binary)
     parts.push(`--${boundary}`);
-    parts.push('Content-Disposition: form-data; name="media"; filename="chunk.mp4"');
+    parts.push(
+      'Content-Disposition: form-data; name="media"; filename="chunk.mp4"',
+    );
     parts.push('Content-Type: application/octet-stream');
     parts.push('');
 
@@ -830,8 +904,12 @@ export class TwitterService {
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Chunked upload APPEND failed: ${response.status} - ${errorData}`);
-      throw new BadRequestException(`Failed to upload media chunk: ${errorData}`);
+      this.logger.error(
+        `Chunked upload APPEND failed: ${response.status} - ${errorData}`,
+      );
+      throw new BadRequestException(
+        `Failed to upload media chunk: ${errorData}`,
+      );
     }
   }
 
@@ -842,7 +920,10 @@ export class TwitterService {
     uploadUrl: string,
     mediaId: string,
     credentials: TwitterOAuth1Credentials,
-  ): Promise<{ media_id_string: string; processing_info?: { state: string; check_after_secs?: number } }> {
+  ): Promise<{
+    media_id_string: string;
+    processing_info?: { state: string; check_after_secs?: number };
+  }> {
     const token = {
       key: credentials.oauthToken,
       secret: credentials.oauthTokenSecret,
@@ -859,10 +940,14 @@ export class TwitterService {
       data: params,
     };
 
-    const authHeader = this.oauth.toHeader(this.oauth.authorize(requestData, token));
+    const authHeader = this.oauth.toHeader(
+      this.oauth.authorize(requestData, token),
+    );
 
     const formData = new URLSearchParams();
-    Object.entries(params).forEach(([key, value]) => formData.append(key, value));
+    Object.entries(params).forEach(([key, value]) =>
+      formData.append(key, value),
+    );
 
     const response = await fetch(uploadUrl, {
       method: 'POST',
@@ -875,8 +960,12 @@ export class TwitterService {
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Chunked upload FINALIZE failed: ${response.status} - ${errorData}`);
-      throw new BadRequestException(`Failed to finalize media upload: ${errorData}`);
+      this.logger.error(
+        `Chunked upload FINALIZE failed: ${response.status} - ${errorData}`,
+      );
+      throw new BadRequestException(
+        `Failed to finalize media upload: ${errorData}`,
+      );
     }
 
     return await response.json();
@@ -906,7 +995,9 @@ export class TwitterService {
         method: 'GET' as const,
       };
 
-      const authHeader = this.oauth.toHeader(this.oauth.authorize(requestData, token));
+      const authHeader = this.oauth.toHeader(
+        this.oauth.authorize(requestData, token),
+      );
 
       const response = await fetch(statusUrl, {
         method: 'GET',
@@ -917,8 +1008,12 @@ export class TwitterService {
 
       if (!response.ok) {
         const errorData = await response.text();
-        this.logger.error(`Chunked upload STATUS failed: ${response.status} - ${errorData}`);
-        throw new BadRequestException(`Failed to check media upload status: ${errorData}`);
+        this.logger.error(
+          `Chunked upload STATUS failed: ${response.status} - ${errorData}`,
+        );
+        throw new BadRequestException(
+          `Failed to check media upload status: ${errorData}`,
+        );
       }
 
       const data = await response.json();
@@ -930,14 +1025,17 @@ export class TwitterService {
       }
 
       const state = processingInfo.state;
-      this.logger.log(`Video processing status: ${state}, progress: ${processingInfo.progress_percent || 0}%`);
+      this.logger.log(
+        `Video processing status: ${state}, progress: ${processingInfo.progress_percent || 0}%`,
+      );
 
       if (state === 'succeeded') {
         return;
       }
 
       if (state === 'failed') {
-        const error = processingInfo.error?.message || 'Video processing failed';
+        const error =
+          processingInfo.error?.message || 'Video processing failed';
         throw new BadRequestException(`Video processing failed: ${error}`);
       }
 
@@ -970,7 +1068,9 @@ export class TwitterService {
     };
 
     // Generate OAuth authorization header
-    const authHeader = this.oauth.toHeader(this.oauth.authorize(requestData, token));
+    const authHeader = this.oauth.toHeader(
+      this.oauth.authorize(requestData, token),
+    );
 
     const formData = new URLSearchParams();
     formData.append('media_data', mediaBase64);
@@ -986,12 +1086,16 @@ export class TwitterService {
 
     if (!response.ok) {
       const errorData = await response.text();
-      this.logger.error(`Failed to upload media with OAuth 1.0a: ${response.status} - ${errorData}`);
+      this.logger.error(
+        `Failed to upload media with OAuth 1.0a: ${response.status} - ${errorData}`,
+      );
       throw new BadRequestException(`Failed to upload media: ${errorData}`);
     }
 
     const data = await response.json();
-    this.logger.log(`Media uploaded successfully with OAuth 1.0a: ${data.media_id_string}`);
+    this.logger.log(
+      `Media uploaded successfully with OAuth 1.0a: ${data.media_id_string}`,
+    );
     return data.media_id_string;
   }
 
@@ -1016,7 +1120,9 @@ export class TwitterService {
       data: { oauth_verifier: oauthVerifier },
     };
 
-    const authHeader = this.oauth.toHeader(this.oauth.authorize(requestData, token));
+    const authHeader = this.oauth.toHeader(
+      this.oauth.authorize(requestData, token),
+    );
 
     const response = await fetch(url, {
       method: 'POST',
@@ -1030,7 +1136,9 @@ export class TwitterService {
     if (!response.ok) {
       const errorData = await response.text();
       this.logger.error(`Failed to get OAuth 1.0a access token: ${errorData}`);
-      throw new BadRequestException('Failed to complete Twitter OAuth 1.0a authentication');
+      throw new BadRequestException(
+        'Failed to complete Twitter OAuth 1.0a authentication',
+      );
     }
 
     const responseText = await response.text();
@@ -1072,7 +1180,9 @@ export class TwitterService {
     if (!response.ok) {
       const errorData = await response.text();
       this.logger.error(`Failed to get OAuth 1.0a request token: ${errorData}`);
-      throw new BadRequestException('Failed to initiate Twitter OAuth 1.0a authentication');
+      throw new BadRequestException(
+        'Failed to initiate Twitter OAuth 1.0a authentication',
+      );
     }
 
     const responseText = await response.text();

@@ -124,7 +124,9 @@ export class FacebookService {
     );
 
     this.logger.log(`Fetching pages from: ${this.graphApiUrl}/me/accounts`);
-    this.logger.log(`Token (first 20 chars): ${userAccessToken.substring(0, 20)}...`);
+    this.logger.log(
+      `Token (first 20 chars): ${userAccessToken.substring(0, 20)}...`,
+    );
 
     const response = await fetch(url.toString());
     const responseText = await response.text();
@@ -154,9 +156,8 @@ export class FacebookService {
       this.logger.log(
         'me/accounts returned empty — trying granular_scopes fallback (FLB)',
       );
-      const grantedPageIds = await this.getGrantedPageIdsFromToken(
-        userAccessToken,
-      );
+      const grantedPageIds =
+        await this.getGrantedPageIdsFromToken(userAccessToken);
       this.logger.log(
         `Granted page IDs from token: ${JSON.stringify(grantedPageIds)}`,
       );
@@ -195,10 +196,7 @@ export class FacebookService {
       const response = await fetch(url.toString());
       const data = await response.json();
       if (!response.ok || !data.data) {
-        this.logger.error(
-          'debug_token call failed:',
-          JSON.stringify(data),
-        );
+        this.logger.error('debug_token call failed:', JSON.stringify(data));
         return [];
       }
 
@@ -326,9 +324,11 @@ export class FacebookService {
   /**
    * Verify a Page Access Token is valid
    */
-  async verifyPageToken(
-    pageAccessToken: string,
-  ): Promise<{ valid: boolean; pageId: string | null; expiresAt: Date | null }> {
+  async verifyPageToken(pageAccessToken: string): Promise<{
+    valid: boolean;
+    pageId: string | null;
+    expiresAt: Date | null;
+  }> {
     const url = new URL(`${this.graphApiUrl}/debug_token`);
     url.searchParams.set('input_token', pageAccessToken);
     url.searchParams.set('access_token', pageAccessToken); // Can use the same token
@@ -495,7 +495,9 @@ export class FacebookService {
     }
 
     const storyData = await storyResponse.json();
-    this.logger.log(`Facebook photo story published: ${storyData.post_id || storyData.id}`);
+    this.logger.log(
+      `Facebook photo story published: ${storyData.post_id || storyData.id}`,
+    );
     return { postId: storyData.post_id || storyData.id };
   }
 
@@ -583,7 +585,9 @@ export class FacebookService {
     }
 
     const finishData = await finishResponse.json();
-    this.logger.log(`Facebook video story published: ${finishData.post_id || finishData.id}`);
+    this.logger.log(
+      `Facebook video story published: ${finishData.post_id || finishData.id}`,
+    );
     return { postId: finishData.post_id || finishData.id };
   }
 
@@ -613,14 +617,21 @@ export class FacebookService {
     startUrl.searchParams.set('access_token', pageAccessToken);
     const startRes = await fetch(startUrl.toString(), { method: 'POST' });
     if (!startRes.ok) {
-      const err = (await startRes.json().catch(() => ({}))) as { error?: { message?: string } };
+      const err = (await startRes.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
       throw new BadRequestException(
         `Facebook Reel init failed: ${err?.error?.message ?? `HTTP ${startRes.status}`}`,
       );
     }
-    const startData = (await startRes.json()) as { video_id?: string; upload_url?: string };
+    const startData = (await startRes.json()) as {
+      video_id?: string;
+      upload_url?: string;
+    };
     if (!startData.video_id || !startData.upload_url) {
-      throw new BadRequestException('Facebook Reel start phase returned no video_id/upload_url');
+      throw new BadRequestException(
+        'Facebook Reel start phase returned no video_id/upload_url',
+      );
     }
 
     // Phase 2: transfer via file_url (Facebook pulls the video from the URL)
@@ -634,9 +645,13 @@ export class FacebookService {
     if (!uploadRes.ok) {
       const errText = await uploadRes.text();
       this.logger.error(`Facebook Reel transfer failed: ${errText}`);
-      throw new BadRequestException(`Facebook Reel transfer failed: HTTP ${uploadRes.status}`);
+      throw new BadRequestException(
+        `Facebook Reel transfer failed: HTTP ${uploadRes.status}`,
+      );
     }
-    const uploadData = (await uploadRes.json().catch(() => ({}))) as { success?: boolean };
+    const uploadData = (await uploadRes.json().catch(() => ({}))) as {
+      success?: boolean;
+    };
     if (uploadData.success === false) {
       throw new BadRequestException('Facebook Reel transfer reported failure');
     }
@@ -650,12 +665,16 @@ export class FacebookService {
     finishUrl.searchParams.set('access_token', pageAccessToken);
     const finishRes = await fetch(finishUrl.toString(), { method: 'POST' });
     if (!finishRes.ok) {
-      const err = (await finishRes.json().catch(() => ({}))) as { error?: { message?: string } };
+      const err = (await finishRes.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
       throw new BadRequestException(
         `Facebook Reel finish failed: ${err?.error?.message ?? `HTTP ${finishRes.status}`}`,
       );
     }
-    const finishData = (await finishRes.json().catch(() => ({}))) as { success?: boolean };
+    const finishData = (await finishRes.json().catch(() => ({}))) as {
+      success?: boolean;
+    };
     if (finishData.success === false) {
       throw new BadRequestException('Facebook Reel finish reported failure');
     }
@@ -775,15 +794,19 @@ export class FacebookService {
       // so the operator can immediately tell whether pages_manage_engagement
       // was actually granted or silently stripped by Meta App Console.
       if (code === 200 || /sufficient permissions/i.test(reason)) {
-        const grantedScopes = await this.debugTokenScopes(pageAccessToken).catch(
-          () => null,
-        );
+        const grantedScopes = await this.debugTokenScopes(
+          pageAccessToken,
+        ).catch(() => null);
         this.logger.error(
           `Facebook comment permission denied. Token scopes from /debug_token: ${
-            grantedScopes ? JSON.stringify(grantedScopes) : '<debug_token call failed>'
+            grantedScopes
+              ? JSON.stringify(grantedScopes)
+              : '<debug_token call failed>'
           }`,
         );
-        const hasEngagement = grantedScopes?.includes('pages_manage_engagement');
+        const hasEngagement = grantedScopes?.includes(
+          'pages_manage_engagement',
+        );
         const hint = hasEngagement
           ? 'Token DOES have pages_manage_engagement — verify the user has admin/editor role on the Page.'
           : 'Token is MISSING pages_manage_engagement. Enable it in Meta App Console (Permissions and Features) and reconnect the Facebook channel.';
@@ -840,7 +863,11 @@ export class FacebookService {
   ): Promise<FacebookComment[]> {
     const out: FacebookComment[] = [];
     const rootIds: string[] = [];
-    let nextUrl: string | null = this.buildCommentsUrl(postId, pageAccessToken, since);
+    let nextUrl: string | null = this.buildCommentsUrl(
+      postId,
+      pageAccessToken,
+      since,
+    );
 
     // Cap at 5 pages to bound quota; Pages with massive comment counts are rare.
     for (let i = 0; i < 5 && nextUrl; i++) {
@@ -904,10 +931,7 @@ export class FacebookService {
         while (queue.length > 0) {
           const { id, depth } = queue.shift()!;
           if (depth >= MAX_NESTED_DEPTH) continue;
-          const replies = await this.fetchCommentReplies(
-            pageAccessToken,
-            id,
-          );
+          const replies = await this.fetchCommentReplies(pageAccessToken, id);
           for (const reply of replies) {
             if (visited.has(reply.id)) continue;
             visited.add(reply.id);
@@ -940,7 +964,14 @@ export class FacebookService {
     url.searchParams.set('access_token', pageAccessToken);
     url.searchParams.set(
       'fields',
-      ['id', 'message', 'created_time', 'like_count', 'from{id,name,picture}', 'parent{id}'].join(','),
+      [
+        'id',
+        'message',
+        'created_time',
+        'like_count',
+        'from{id,name,picture}',
+        'parent{id}',
+      ].join(','),
     );
     url.searchParams.set('limit', '100');
 
@@ -951,7 +982,8 @@ export class FacebookService {
         const errText = await res.text();
         if (
           res.status === 400 &&
-          (/code"\s*:\s*100/.test(errText) || /nonexisting field/i.test(errText))
+          (/code"\s*:\s*100/.test(errText) ||
+            /nonexisting field/i.test(errText))
         ) {
           return out;
         }
@@ -1038,11 +1070,15 @@ export class FacebookService {
     const res = await fetch(url.toString(), { method: 'POST' });
     if (!res.ok) {
       const err = await res.text();
-      this.logger.error(`FB subscribePageToWebhooks failed for ${pageId}: ${err}`);
+      this.logger.error(
+        `FB subscribePageToWebhooks failed for ${pageId}: ${err}`,
+      );
       throw new Error(`FB webhook subscription failed: ${res.status} ${err}`);
     }
     const data = (await res.json()) as { success?: boolean };
-    this.logger.log(`FB Page ${pageId} subscribed to webhook fields [${fields.join(',')}]`);
+    this.logger.log(
+      `FB Page ${pageId} subscribed to webhook fields [${fields.join(',')}]`,
+    );
     return { success: data.success ?? true };
   }
 
@@ -1292,10 +1328,7 @@ export class FacebookService {
         .map((a) => {
           const mime = a.mime_type ?? '';
           const url =
-            a.image_data?.url ??
-            a.video_data?.url ??
-            a.file_url ??
-            '';
+            a.image_data?.url ?? a.video_data?.url ?? a.file_url ?? '';
           if (!url) return null;
           const kind: 'image' | 'video' | 'audio' | 'file' = mime.startsWith(
             'image/',
@@ -1310,7 +1343,8 @@ export class FacebookService {
             kind,
             url,
             contentType: mime || undefined,
-            thumbnailUrl: a.image_data?.preview_url ?? a.video_data?.preview_url,
+            thumbnailUrl:
+              a.image_data?.preview_url ?? a.video_data?.preview_url,
           };
         })
         .filter((x): x is NonNullable<typeof x> => x !== null);
@@ -1326,7 +1360,9 @@ export class FacebookService {
               displayName: m.from?.name ?? undefined,
             },
         text: m.message ?? '',
-        platformCreatedAt: m.created_time ? new Date(m.created_time) : new Date(),
+        platformCreatedAt: m.created_time
+          ? new Date(m.created_time)
+          : new Date(),
         fromMe,
         attachments: attachments.length > 0 ? attachments : undefined,
       });
@@ -1476,7 +1512,9 @@ export class FacebookService {
       attachmentsType?: string;
     }[]
   > {
-    const url = new URL('https://graph.facebook.com/v21.0/' + pageId + '/posts');
+    const url = new URL(
+      'https://graph.facebook.com/v21.0/' + pageId + '/posts',
+    );
     url.searchParams.set('access_token', pageAccessToken);
     url.searchParams.set(
       'fields',
@@ -1490,7 +1528,9 @@ export class FacebookService {
         error?: { message?: string };
       };
       const reason = err?.error?.message ?? `HTTP ${res.status}`;
-      this.logger.error(`listPagePostsForBoost failed for page ${pageId}: ${reason}`);
+      this.logger.error(
+        `listPagePostsForBoost failed for page ${pageId}: ${reason}`,
+      );
       throw new BadRequestException(`Failed to fetch page posts: ${reason}`);
     }
 

@@ -17,7 +17,11 @@ describe('DiscordGatewayService.shouldIngest', () => {
   it('ingests a guild message that @mentions the bot', () => {
     expect(
       svc.shouldIngest(
-        { guild_id: 'g1', author: { id: 'u1', bot: false }, mentions: [{ id: BOT }] },
+        {
+          guild_id: 'g1',
+          author: { id: 'u1', bot: false },
+          mentions: [{ id: BOT }],
+        },
         BOT,
       ),
     ).toBe(true);

@@ -49,7 +49,9 @@ export const inboxItems = pgTable(
       .notNull()
       .references(() => socialMediaChannels.id, { onDelete: 'cascade' }),
 
-    platform: varchar('platform', { length: 20 }).$type<SupportedPlatform>().notNull(),
+    platform: varchar('platform', { length: 20 })
+      .$type<SupportedPlatform>()
+      .notNull(),
     type: varchar('type', { length: 10 }).$type<InboxItemType>().notNull(),
 
     // Platform-side identifiers
@@ -64,7 +66,9 @@ export const inboxItems = pgTable(
     conversationId: varchar('conversation_id', { length: 255 }),
 
     // If this comment is on a post we published through Schedura, link it.
-    ourPostId: uuid('our_post_id').references(() => posts.id, { onDelete: 'set null' }),
+    ourPostId: uuid('our_post_id').references(() => posts.id, {
+      onDelete: 'set null',
+    }),
 
     // Author info (the person who left the comment)
     authorPlatformId: varchar('author_platform_id', { length: 255 }),
@@ -84,9 +88,13 @@ export const inboxItems = pgTable(
     fromMe: boolean('from_me').default(false).notNull(),
 
     // Time the comment was created on the platform.
-    platformCreatedAt: timestamp('platform_created_at', { withTimezone: true }).notNull(),
+    platformCreatedAt: timestamp('platform_created_at', {
+      withTimezone: true,
+    }).notNull(),
     // Time we first ingested it.
-    fetchedAt: timestamp('fetched_at', { withTimezone: true }).defaultNow().notNull(),
+    fetchedAt: timestamp('fetched_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
 
     // If a user replied to this from Schedura, track who + when.
     repliedByUserId: uuid('replied_by_user_id').references(() => users.id, {

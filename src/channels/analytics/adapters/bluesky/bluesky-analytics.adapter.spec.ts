@@ -13,7 +13,9 @@ describe('BlueskyAnalyticsAdapter', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    adapter = new BlueskyAnalyticsAdapter(mockClient as unknown as BlueskyApiClient);
+    adapter = new BlueskyAnalyticsAdapter(
+      mockClient as unknown as BlueskyApiClient,
+    );
   });
 
   it('exposes platform=bluesky + repost vocabulary', () => {
@@ -61,7 +63,9 @@ describe('BlueskyAnalyticsAdapter', () => {
   });
 
   it('fetchProfileSnapshot returns failed on BlueskyApiError auth_failed', async () => {
-    mockClient.getProfile.mockRejectedValue(new BlueskyApiError('auth_failed', 401, 'invalid jwt'));
+    mockClient.getProfile.mockRejectedValue(
+      new BlueskyApiError('auth_failed', 401, 'invalid jwt'),
+    );
     const result = await adapter.fetchProfileSnapshot({
       platformAccountId: 'did:plc:abc123',
       username: 'asad289.bsky.social',
@@ -77,7 +81,9 @@ describe('BlueskyAnalyticsAdapter', () => {
   });
 
   it('fetchPostMetrics returns not_found when no platformPostId', async () => {
-    const result = await adapter.fetchPostMetrics({ accessToken: 'jwt' } as any);
+    const result = await adapter.fetchPostMetrics({
+      accessToken: 'jwt',
+    } as any);
     expect(result.status).toBe('failed');
     if (result.status === 'failed') {
       expect(result.error.code).toBe('not_found');

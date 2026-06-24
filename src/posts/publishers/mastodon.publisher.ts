@@ -27,7 +27,9 @@ export class MastodonPublisher extends BasePublisher {
       throw new Error('Mastodon post must have text or media');
     }
     if (content && content.length > 500) {
-      throw new Error(`Mastodon toot exceeds 500 character limit (${content.length} chars)`);
+      throw new Error(
+        `Mastodon toot exceeds 500 character limit (${content.length} chars)`,
+      );
     }
     if (mediaItems.length > 4) {
       throw new Error('Mastodon allows maximum 4 media items per post');
@@ -35,29 +37,34 @@ export class MastodonPublisher extends BasePublisher {
   }
 
   supportsMediaTypes(mediaItems: MediaItem[]): boolean {
-    return mediaItems.every((m) =>
-      ['image', 'video', 'gif'].includes(m.type),
-    );
+    return mediaItems.every((m) => ['image', 'video', 'gif'].includes(m.type));
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
-    const { content, mediaItems, accessToken, channelMetadata, metadata } = options;
+    const { content, mediaItems, accessToken, channelMetadata, metadata } =
+      options;
     this.validate(options);
 
     const instanceUrl = channelMetadata?.instanceUrl as string | undefined;
     if (!instanceUrl) {
-      throw new Error('Mastodon channel is missing instanceUrl — re-connect the account');
+      throw new Error(
+        'Mastodon channel is missing instanceUrl — re-connect the account',
+      );
     }
 
     // Thread mode: if metadata.thread is a non-empty array > 1, publish as a reply chain
     const thread = metadata?.thread as
-      | Array<{ text: string; mediaItems?: Array<{ url: string; altText?: string }> }>
+      | Array<{
+          text: string;
+          mediaItems?: Array<{ url: string; altText?: string }>;
+        }>
       | undefined;
     if (Array.isArray(thread) && thread.length > 1) {
       return this.publishThread(instanceUrl, accessToken, thread, {
         visibility:
           (metadata?.visibility as MastodonVisibility | undefined) ?? 'public',
-        sensitive: Boolean(metadata?.sensitive) || Boolean(metadata?.contentWarning),
+        sensitive:
+          Boolean(metadata?.sensitive) || Boolean(metadata?.contentWarning),
         spoilerText: metadata?.contentWarning as string | undefined,
       });
     }
@@ -78,7 +85,8 @@ export class MastodonPublisher extends BasePublisher {
       }
     }
 
-    const visibility = (metadata?.visibility as MastodonVisibility | undefined) ?? 'public';
+    const visibility =
+      (metadata?.visibility as MastodonVisibility | undefined) ?? 'public';
     const contentWarning = metadata?.contentWarning as string | undefined;
     const sensitive = Boolean(metadata?.sensitive) || Boolean(contentWarning);
 
@@ -103,7 +111,10 @@ export class MastodonPublisher extends BasePublisher {
   private async publishThread(
     instanceUrl: string,
     accessToken: string,
-    posts: Array<{ text: string; mediaItems?: Array<{ url: string; altText?: string }> }>,
+    posts: Array<{
+      text: string;
+      mediaItems?: Array<{ url: string; altText?: string }>;
+    }>,
     baseOptions: {
       visibility: MastodonVisibility;
       sensitive: boolean;
@@ -152,7 +163,9 @@ export class MastodonPublisher extends BasePublisher {
         }
         replyToId = status.id;
         postedIds.push(status.id);
-        this.logger.log(`Mastodon thread post ${i + 1}/${posts.length}: ${status.id}`);
+        this.logger.log(
+          `Mastodon thread post ${i + 1}/${posts.length}: ${status.id}`,
+        );
       } catch (err) {
         this.logger.error(
           `Mastodon thread broke at ${i + 1}/${posts.length}. Posted so far: ${postedIds.join(',')}`,

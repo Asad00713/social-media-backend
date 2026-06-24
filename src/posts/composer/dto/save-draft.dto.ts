@@ -1,4 +1,10 @@
-import { IsArray, IsObject, IsOptional, IsString, IsUUID } from 'class-validator';
+import {
+  IsArray,
+  IsObject,
+  IsOptional,
+  IsString,
+  IsUUID,
+} from 'class-validator';
 import type {
   BaseContent,
   ChannelTarget,

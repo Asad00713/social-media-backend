@@ -79,7 +79,8 @@ export class MediaController {
   getTikTokProxyStatus() {
     return {
       ...this.tiktokProxyService.getCacheStats(),
-      message: 'TikTok media proxy is ready. Cache videos here to use PULL_FROM_URL.',
+      message:
+        'TikTok media proxy is ready. Cache videos here to use PULL_FROM_URL.',
     };
   }
 
@@ -179,11 +180,14 @@ export class MediaController {
       throw new BadRequestException('No file provided');
     }
 
-    const result = await this.bunnyCDNService.uploadVideoFromBuffer(file.buffer, {
-      folder: folder || 'tiktok-videos',
-      filename,
-      contentType: file.mimetype,
-    });
+    const result = await this.bunnyCDNService.uploadVideoFromBuffer(
+      file.buffer,
+      {
+        folder: folder || 'tiktok-videos',
+        filename,
+        contentType: file.mimetype,
+      },
+    );
 
     return {
       message: 'Video uploaded to BunnyCDN successfully',
@@ -344,7 +348,9 @@ export class MediaController {
 
     return {
       success,
-      message: success ? 'Media deleted successfully' : 'Failed to delete media',
+      message: success
+        ? 'Media deleted successfully'
+        : 'Failed to delete media',
     };
   }
 

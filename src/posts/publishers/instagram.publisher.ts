@@ -16,12 +16,15 @@ export class InstagramPublisher extends BasePublisher {
 
   validate(options: PublishOptions): void {
     const { content, mediaItems, metadata } = options;
-    const postType = (metadata?.postType as InstagramPostType | undefined) ?? 'feed';
+    const postType =
+      (metadata?.postType as InstagramPostType | undefined) ?? 'feed';
 
     // Caption length check is global (Stories don't honour captions but the
     // API still accepts the field; we keep the check to surface UX errors).
     if (content && content.length > 2200) {
-      throw new Error(`Instagram caption exceeds 2200 character limit (${content.length} chars)`);
+      throw new Error(
+        `Instagram caption exceeds 2200 character limit (${content.length} chars)`,
+      );
     }
 
     switch (postType) {
@@ -42,17 +45,23 @@ export class InstagramPublisher extends BasePublisher {
       }
       case 'carousel': {
         if (mediaItems.length < 2 || mediaItems.length > 10) {
-          throw new Error('Instagram carousels require between 2 and 10 media items');
+          throw new Error(
+            'Instagram carousels require between 2 and 10 media items',
+          );
         }
         break;
       }
       case 'feed':
       default: {
         if (mediaItems.length === 0) {
-          throw new Error('Instagram posts require at least one image or video');
+          throw new Error(
+            'Instagram posts require at least one image or video',
+          );
         }
         if (mediaItems.length > 10) {
-          throw new Error('Instagram allows maximum 10 media items per carousel');
+          throw new Error(
+            'Instagram allows maximum 10 media items per carousel',
+          );
         }
         break;
       }
@@ -65,7 +74,8 @@ export class InstagramPublisher extends BasePublisher {
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
-    const { content, mediaItems, accessToken, platformAccountId, metadata } = options;
+    const { content, mediaItems, accessToken, platformAccountId, metadata } =
+      options;
 
     this.validate(options);
 
@@ -149,9 +159,10 @@ export class InstagramPublisher extends BasePublisher {
     };
 
     // Story posts cannot receive comments — skip firstComment for Story
-    const firstComment = typeof metadata?.firstComment === 'string'
-      ? metadata.firstComment.trim()
-      : '';
+    const firstComment =
+      typeof metadata?.firstComment === 'string'
+        ? metadata.firstComment.trim()
+        : '';
     if (firstComment.length > 0 && postType !== 'story') {
       try {
         const comment = await this.instagramService.postCommentWithUserToken(
@@ -179,7 +190,8 @@ export class InstagramPublisher extends BasePublisher {
     } else if (firstComment.length > 0 && postType === 'story') {
       publishResult.metadata = {
         ...(publishResult.metadata ?? {}),
-        firstCommentWarning: 'Instagram Stories do not support comments — first comment skipped',
+        firstCommentWarning:
+          'Instagram Stories do not support comments — first comment skipped',
       };
     }
 

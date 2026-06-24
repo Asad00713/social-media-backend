@@ -11,7 +11,9 @@ describe('TikTokAnalyticsAdapter', () => {
 
   beforeEach(() => {
     jest.clearAllMocks();
-    adapter = new TikTokAnalyticsAdapter(mockClient as unknown as TikTokApiClient);
+    adapter = new TikTokAnalyticsAdapter(
+      mockClient as unknown as TikTokApiClient,
+    );
   });
 
   it('exposes platform=tiktok and followers vocabulary', () => {
@@ -90,8 +92,22 @@ describe('TikTokAnalyticsAdapter', () => {
 
     mockClient.getVideoList.mockResolvedValue({
       videos: [
-        { id: 'new', create_time: sinceUnix + 3600, view_count: 1000, like_count: 50, comment_count: 5, share_count: 2 },
-        { id: 'old', create_time: sinceUnix - 3600, view_count: 500, like_count: 20, comment_count: 2, share_count: 1 },
+        {
+          id: 'new',
+          create_time: sinceUnix + 3600,
+          view_count: 1000,
+          like_count: 50,
+          comment_count: 5,
+          share_count: 2,
+        },
+        {
+          id: 'old',
+          create_time: sinceUnix - 3600,
+          view_count: 500,
+          like_count: 20,
+          comment_count: 2,
+          share_count: 1,
+        },
       ],
       cursor: 20,
       hasMore: false,
@@ -111,7 +127,9 @@ describe('TikTokAnalyticsAdapter', () => {
   });
 
   it('fetchProfileSnapshot returns failed on TikTokApiError', async () => {
-    mockClient.getUserInfo.mockRejectedValue(new TikTokApiError('rate_limited', 429, 'Too many requests'));
+    mockClient.getUserInfo.mockRejectedValue(
+      new TikTokApiError('rate_limited', 429, 'Too many requests'),
+    );
 
     const result = await adapter.fetchProfileSnapshot({
       accessToken: 'tok',

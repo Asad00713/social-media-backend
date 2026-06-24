@@ -7,7 +7,11 @@ import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { inboxItems } from '../../drizzle/schema/inbox.schema';
 import { QUEUES } from '../../queue/queue.module';
 import { InboxService } from '../inbox.service';
-import { TelegramService, TelegramClient, type TgMessage } from '../../channels/services/telegram.service';
+import {
+  TelegramService,
+  TelegramClient,
+  type TgMessage,
+} from '../../channels/services/telegram.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import type { R2MediaKind } from '../../media/cloudflare-r2.service';
 import { ChannelService } from '../../channels/services/channel.service';
@@ -49,7 +53,10 @@ export class TelegramIngestProcessor extends WorkerHost {
       return;
     }
     const botId = Number(channel.platformAccountId);
-    const token = await this.channelService.getAccessToken(channelId, workspaceId);
+    const token = await this.channelService.getAccessToken(
+      channelId,
+      workspaceId,
+    );
     const tg = this.telegram.forToken(token);
 
     const message = update.message as TgMessage | undefined;
@@ -99,7 +106,14 @@ export class TelegramIngestProcessor extends WorkerHost {
     const rehosted: RehostedAttachment[] = [];
 
     type MediaRef = {
-      field: 'photo' | 'voice' | 'audio' | 'video' | 'video_note' | 'document' | 'sticker';
+      field:
+        | 'photo'
+        | 'voice'
+        | 'audio'
+        | 'video'
+        | 'video_note'
+        | 'document'
+        | 'sticker';
       fileId: string;
       size?: number;
       mime?: string;
@@ -108,14 +122,56 @@ export class TelegramIngestProcessor extends WorkerHost {
     const mediaRefs: MediaRef[] = [];
     if (Array.isArray(message.photo) && message.photo.length > 0) {
       const largest = message.photo[message.photo.length - 1];
-      mediaRefs.push({ field: 'photo', fileId: largest.file_id, size: largest.file_size });
+      mediaRefs.push({
+        field: 'photo',
+        fileId: largest.file_id,
+        size: largest.file_size,
+      });
     }
-    if (message.voice) mediaRefs.push({ field: 'voice', fileId: message.voice.file_id, size: message.voice.file_size, mime: message.voice.mime_type });
-    if (message.audio) mediaRefs.push({ field: 'audio', fileId: message.audio.file_id, size: message.audio.file_size, mime: message.audio.mime_type, filename: message.audio.file_name });
-    if (message.video) mediaRefs.push({ field: 'video', fileId: message.video.file_id, size: message.video.file_size, mime: message.video.mime_type, filename: message.video.file_name });
-    if (message.video_note) mediaRefs.push({ field: 'video_note', fileId: message.video_note.file_id, size: message.video_note.file_size });
-    if (message.document) mediaRefs.push({ field: 'document', fileId: message.document.file_id, size: message.document.file_size, mime: message.document.mime_type, filename: message.document.file_name });
-    if (message.sticker) mediaRefs.push({ field: 'sticker', fileId: message.sticker.file_id, size: message.sticker.file_size, mime: message.sticker.mime_type });
+    if (message.voice)
+      mediaRefs.push({
+        field: 'voice',
+        fileId: message.voice.file_id,
+        size: message.voice.file_size,
+        mime: message.voice.mime_type,
+      });
+    if (message.audio)
+      mediaRefs.push({
+        field: 'audio',
+        fileId: message.audio.file_id,
+        size: message.audio.file_size,
+        mime: message.audio.mime_type,
+        filename: message.audio.file_name,
+      });
+    if (message.video)
+      mediaRefs.push({
+        field: 'video',
+        fileId: message.video.file_id,
+        size: message.video.file_size,
+        mime: message.video.mime_type,
+        filename: message.video.file_name,
+      });
+    if (message.video_note)
+      mediaRefs.push({
+        field: 'video_note',
+        fileId: message.video_note.file_id,
+        size: message.video_note.file_size,
+      });
+    if (message.document)
+      mediaRefs.push({
+        field: 'document',
+        fileId: message.document.file_id,
+        size: message.document.file_size,
+        mime: message.document.mime_type,
+        filename: message.document.file_name,
+      });
+    if (message.sticker)
+      mediaRefs.push({
+        field: 'sticker',
+        fileId: message.sticker.file_id,
+        size: message.sticker.file_size,
+        mime: message.sticker.mime_type,
+      });
 
     for (const ref of mediaRefs) {
       if (ref.size && ref.size > MAX_DOWNLOAD_BYTES) {
@@ -128,8 +184,14 @@ export class TelegramIngestProcessor extends WorkerHost {
         const file = await tg.getFile(ref.fileId);
         if (!file.file_path) continue;
         const downloaded = await tg.downloadFile(file.file_path);
-        const { r2Kind, dmKind } = this.classifyTelegramMedia(ref.field, ref.mime ?? downloaded.contentType);
-        const filename = ref.filename ?? file.file_path.split('/').pop() ?? `telegram-${ref.fileId}`;
+        const { r2Kind, dmKind } = this.classifyTelegramMedia(
+          ref.field,
+          ref.mime ?? downloaded.contentType,
+        );
+        const filename =
+          ref.filename ??
+          file.file_path.split('/').pop() ??
+          `telegram-${ref.fileId}`;
         const finalContentType = ref.mime ?? downloaded.contentType;
         const { publicUrl } = await this.r2.uploadBuffer({
           kind: r2Kind,
@@ -138,7 +200,11 @@ export class TelegramIngestProcessor extends WorkerHost {
           contentType: finalContentType,
           filename,
         });
-        rehosted.push({ kind: dmKind, url: publicUrl, contentType: finalContentType });
+        rehosted.push({
+          kind: dmKind,
+          url: publicUrl,
+          contentType: finalContentType,
+        });
       } catch (err) {
         this.logger.error(
           `Failed to rehost Telegram ${ref.field} ${ref.fileId} for chat ${message.chat.id}: ${(err as Error).message}`,
@@ -245,9 +311,19 @@ export class TelegramIngestProcessor extends WorkerHost {
   /** Map a Telegram message media field to our R2 storage kind + the DM
    *  attachment kind the frontend renders. */
   private classifyTelegramMedia(
-    field: 'photo' | 'voice' | 'audio' | 'video' | 'video_note' | 'document' | 'sticker',
+    field:
+      | 'photo'
+      | 'voice'
+      | 'audio'
+      | 'video'
+      | 'video_note'
+      | 'document'
+      | 'sticker',
     mimeType?: string,
-  ): { r2Kind: R2MediaKind; dmKind: 'image' | 'video' | 'audio' | 'voice' | 'file' } {
+  ): {
+    r2Kind: R2MediaKind;
+    dmKind: 'image' | 'video' | 'audio' | 'voice' | 'file';
+  } {
     switch (field) {
       case 'photo':
         return { r2Kind: 'image', dmKind: 'image' };
@@ -260,9 +336,12 @@ export class TelegramIngestProcessor extends WorkerHost {
         return { r2Kind: 'video', dmKind: 'video' };
       case 'document': {
         const mime = (mimeType ?? '').toLowerCase();
-        if (mime.startsWith('image/')) return { r2Kind: 'image', dmKind: 'image' };
-        if (mime.startsWith('video/')) return { r2Kind: 'video', dmKind: 'video' };
-        if (mime.startsWith('audio/')) return { r2Kind: 'voice', dmKind: 'audio' };
+        if (mime.startsWith('image/'))
+          return { r2Kind: 'image', dmKind: 'image' };
+        if (mime.startsWith('video/'))
+          return { r2Kind: 'video', dmKind: 'video' };
+        if (mime.startsWith('audio/'))
+          return { r2Kind: 'voice', dmKind: 'audio' };
         return { r2Kind: 'file', dmKind: 'file' };
       }
       case 'sticker':

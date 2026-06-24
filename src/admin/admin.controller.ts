@@ -13,10 +13,17 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
-import { AdminService, SuspensionReason, SUSPENSION_REASONS } from './admin.service';
+import {
+  AdminService,
+  SuspensionReason,
+  SUSPENSION_REASONS,
+} from './admin.service';
 import { UserInactivityService } from './user-inactivity.service';
 import { QueueMonitorService } from './queue-monitor.service';
-import { RateLimiterService, PLATFORM_RATE_LIMITS } from '../queue/rate-limiter.service';
+import {
+  RateLimiterService,
+  PLATFORM_RATE_LIMITS,
+} from '../queue/rate-limiter.service';
 import { SupportedPlatform } from '../drizzle/schema/channels.schema';
 import { QUEUES } from '../queue/queue.module';
 
@@ -94,7 +101,10 @@ export class AdminController {
       page: query.page ? Number(query.page) : 1,
       limit: query.limit ? Number(query.limit) : 20,
       search: query.search,
-      isActive: query.isActive !== undefined ? query.isActive === true || query.isActive === ('true' as any) : undefined,
+      isActive:
+        query.isActive !== undefined
+          ? query.isActive === true || query.isActive === ('true' as any)
+          : undefined,
       role: query.role,
     });
   }
@@ -118,7 +128,12 @@ export class AdminController {
         validReasons: SUSPENSION_REASONS,
       };
     }
-    return this.adminService.suspendUser(userId, admin.userId, dto.reason, dto.note);
+    return this.adminService.suspendUser(
+      userId,
+      admin.userId,
+      dto.reason,
+      dto.note,
+    );
   }
 
   @Post('users/:userId/reactivate')
@@ -138,7 +153,10 @@ export class AdminController {
       page: query.page ? Number(query.page) : 1,
       limit: query.limit ? Number(query.limit) : 20,
       search: query.search,
-      isActive: query.isActive !== undefined ? query.isActive === true || query.isActive === ('true' as any) : undefined,
+      isActive:
+        query.isActive !== undefined
+          ? query.isActive === true || query.isActive === ('true' as any)
+          : undefined,
     });
   }
 
@@ -161,7 +179,12 @@ export class AdminController {
         validReasons: SUSPENSION_REASONS,
       };
     }
-    return this.adminService.suspendWorkspace(workspaceId, admin.userId, dto.reason, dto.note);
+    return this.adminService.suspendWorkspace(
+      workspaceId,
+      admin.userId,
+      dto.reason,
+      dto.note,
+    );
   }
 
   @Post('workspaces/:workspaceId/reactivate')
@@ -427,7 +450,11 @@ export class AdminController {
     }
 
     const gracePeriodMs = (dto.gracePeriodHours || 24) * 60 * 60 * 1000;
-    return this.queueMonitorService.cleanQueue(queueName, dto.type, gracePeriodMs);
+    return this.queueMonitorService.cleanQueue(
+      queueName,
+      dto.type,
+      gracePeriodMs,
+    );
   }
 
   /**

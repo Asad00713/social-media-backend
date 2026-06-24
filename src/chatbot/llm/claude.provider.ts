@@ -16,10 +16,7 @@ export class ClaudeChatProvider extends BaseLLMProvider {
   private readonly client: Anthropic | null = null;
 
   readonly name = 'claude';
-  readonly models = [
-    'claude-sonnet-4-5-20250929',
-    'claude-haiku-4-5-20251001',
-  ];
+  readonly models = ['claude-sonnet-4-5-20250929', 'claude-haiku-4-5-20251001'];
 
   private readonly defaultModel = 'claude-sonnet-4-5-20250929';
 
@@ -31,7 +28,9 @@ export class ClaudeChatProvider extends BaseLLMProvider {
       this.client = new Anthropic({ apiKey });
       this.logger.log('Claude chat provider initialized');
     } else {
-      this.logger.warn('No ANTHROPIC_API_KEY configured - Claude provider unavailable');
+      this.logger.warn(
+        'No ANTHROPIC_API_KEY configured - Claude provider unavailable',
+      );
     }
   }
 
@@ -96,7 +95,7 @@ export class ClaudeChatProvider extends BaseLLMProvider {
       }
 
       formatted.push({
-        role: msg.role as 'user' | 'assistant',
+        role: msg.role,
         content: msg.content || '',
       });
     }
@@ -104,9 +103,7 @@ export class ClaudeChatProvider extends BaseLLMProvider {
     return { system, messages: formatted };
   }
 
-  private formatTools(
-    options?: LLMChatOptions,
-  ): Anthropic.Tool[] | undefined {
+  private formatTools(options?: LLMChatOptions): Anthropic.Tool[] | undefined {
     if (!options?.tools?.length) return undefined;
 
     return options.tools.map((tool) => ({
@@ -116,7 +113,10 @@ export class ClaudeChatProvider extends BaseLLMProvider {
     }));
   }
 
-  async chat(messages: LLMMessage[], options?: LLMChatOptions): Promise<LLMResponse> {
+  async chat(
+    messages: LLMMessage[],
+    options?: LLMChatOptions,
+  ): Promise<LLMResponse> {
     const client = this.ensureClient();
     const model = options?.model || this.defaultModel;
     const { system, messages: formatted } = this.formatMessages(messages);
@@ -157,7 +157,8 @@ export class ClaudeChatProvider extends BaseLLMProvider {
         ? {
             promptTokens: response.usage.input_tokens,
             completionTokens: response.usage.output_tokens,
-            totalTokens: response.usage.input_tokens + response.usage.output_tokens,
+            totalTokens:
+              response.usage.input_tokens + response.usage.output_tokens,
           }
         : undefined,
     };
@@ -216,13 +217,13 @@ export class ClaudeChatProvider extends BaseLLMProvider {
 
       if (event.type === 'message_stop') {
         if (toolCallsMap.size > 0) {
-          const toolCalls: LLMToolCall[] = Array.from(toolCallsMap.values()).map(
-            (tc) => ({
-              id: tc.id,
-              type: 'function' as const,
-              function: { name: tc.name, arguments: tc.input },
-            }),
-          );
+          const toolCalls: LLMToolCall[] = Array.from(
+            toolCallsMap.values(),
+          ).map((tc) => ({
+            id: tc.id,
+            type: 'function' as const,
+            function: { name: tc.name, arguments: tc.input },
+          }));
           yield { type: 'tool_calls', toolCalls };
         }
       }

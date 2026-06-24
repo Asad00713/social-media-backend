@@ -118,7 +118,10 @@ export class NotificationsService {
   /**
    * Mark a single notification as read
    */
-  async markAsRead(notificationId: string, userId: string): Promise<Notification | null> {
+  async markAsRead(
+    notificationId: string,
+    userId: string,
+  ): Promise<Notification | null> {
     const [updated] = await this.db
       .update(notifications)
       .set({
@@ -139,7 +142,10 @@ export class NotificationsService {
   /**
    * Mark multiple notifications as read
    */
-  async markMultipleAsRead(notificationIds: string[], userId: string): Promise<number> {
+  async markMultipleAsRead(
+    notificationIds: string[],
+    userId: string,
+  ): Promise<number> {
     const result = await this.db
       .update(notifications)
       .set({

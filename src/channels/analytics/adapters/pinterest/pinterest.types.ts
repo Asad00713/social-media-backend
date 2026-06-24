@@ -9,7 +9,12 @@ export interface PinterestUserAccount {
 
 export interface PinterestAnalyticsResponse {
   all?: {
-    daily_metrics?: Array<{ date: string; data_status: string; metric: string; value: number }>;
+    daily_metrics?: Array<{
+      date: string;
+      data_status: string;
+      metric: string;
+      value: number;
+    }>;
     lifetime_metrics?: Record<string, number>;
     summary_metrics?: Record<string, number>;
   };

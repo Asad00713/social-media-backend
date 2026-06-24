@@ -91,7 +91,9 @@ export const socialMediaChannels = pgTable(
     // Platform identification
     platform: varchar('platform', { length: 20 }).notNull(), // facebook, instagram, etc.
     accountType: varchar('account_type', { length: 30 }).notNull(), // page, profile, channel, etc.
-    platformAccountId: varchar('platform_account_id', { length: 255 }).notNull(), // ID from the platform
+    platformAccountId: varchar('platform_account_id', {
+      length: 255,
+    }).notNull(), // ID from the platform
 
     // Display information
     accountName: varchar('account_name', { length: 255 }).notNull(),
@@ -105,7 +107,9 @@ export const socialMediaChannels = pgTable(
     accessToken: text('access_token').notNull(),
     refreshToken: text('refresh_token'),
     tokenExpiresAt: timestamp('token_expires_at'),
-    refreshTokenIssuedAt: timestamp('refresh_token_issued_at', { withTimezone: true }),
+    refreshTokenIssuedAt: timestamp('refresh_token_issued_at', {
+      withTimezone: true,
+    }),
     tokenScope: text('token_scope'), // Granted OAuth scopes
 
     // Permissions and capabilities
@@ -353,7 +357,9 @@ export type NewPlatformCredential = typeof platformCredentials.$inferInsert;
  *   YOUTUBE_REFRESH_TOKEN_TTL_DAYS=36500   (published Google OAuth app)
  *   GOOGLE_BUSINESS_REFRESH_TOKEN_TTL_DAYS=36500
  */
-export function getRefreshTokenTtlDays(platform: SupportedPlatform): number | null {
+export function getRefreshTokenTtlDays(
+  platform: SupportedPlatform,
+): number | null {
   const envKey = `${platform.toUpperCase().replace(/-/g, '_')}_REFRESH_TOKEN_TTL_DAYS`;
   const envValue = process.env[envKey];
   if (envValue) {
@@ -475,7 +481,13 @@ export const PLATFORM_CONFIG: Record<
     maxMediaPerPost: 1,
     maxTextLength: 500,
     supportedMediaTypes: ['image', 'video'],
-    oauthScopes: ['user_accounts:read', 'boards:read', 'boards:write', 'pins:read', 'pins:write'],
+    oauthScopes: [
+      'user_accounts:read',
+      'boards:read',
+      'boards:write',
+      'pins:read',
+      'pins:write',
+    ],
   },
   twitter: {
     name: 'X (Twitter)',
@@ -573,9 +585,7 @@ export const PLATFORM_CONFIG: Record<
     maxMediaPerPost: 0, // Not a posting platform
     maxTextLength: 0,
     supportedMediaTypes: ['image', 'video', 'document'],
-    oauthScopes: [
-      'https://www.googleapis.com/auth/drive.readonly',
-    ],
+    oauthScopes: ['https://www.googleapis.com/auth/drive.readonly'],
   },
   google_photos: {
     name: 'Google Photos',
@@ -586,9 +596,7 @@ export const PLATFORM_CONFIG: Record<
     maxMediaPerPost: 0, // Not a posting platform
     maxTextLength: 0,
     supportedMediaTypes: ['image', 'video'],
-    oauthScopes: [
-      'https://www.googleapis.com/auth/photoslibrary.readonly',
-    ],
+    oauthScopes: ['https://www.googleapis.com/auth/photoslibrary.readonly'],
   },
   google_calendar: {
     name: 'Google Calendar',
@@ -674,10 +682,6 @@ export const PLATFORM_CONFIG: Record<
     maxMediaPerPost: 0, // Inbox/notification platform, not a publishing target
     maxTextLength: 2000,
     supportedMediaTypes: [],
-    oauthScopes: [
-      'bot',
-      'guilds',
-      'messages.read',
-    ],
+    oauthScopes: ['bot', 'guilds', 'messages.read'],
   },
 };

@@ -1,6 +1,10 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { v2 as cloudinary, UploadApiResponse, UploadApiErrorResponse } from 'cloudinary';
+import {
+  v2 as cloudinary,
+  UploadApiResponse,
+  UploadApiErrorResponse,
+} from 'cloudinary';
 
 export interface UploadResult {
   publicId: string;
@@ -44,7 +48,9 @@ export class CloudinaryService {
       this.logger.log('Cloudinary configured successfully');
     } else {
       this.isConfigured = false;
-      this.logger.warn('Cloudinary not configured - missing environment variables');
+      this.logger.warn(
+        'Cloudinary not configured - missing environment variables',
+      );
     }
   }
 
@@ -198,10 +204,17 @@ export class CloudinaryService {
 
       const uploadStream = cloudinary.uploader.upload_stream(
         uploadOptions,
-        (error: UploadApiErrorResponse | undefined, result: UploadApiResponse | undefined) => {
+        (
+          error: UploadApiErrorResponse | undefined,
+          result: UploadApiResponse | undefined,
+        ) => {
           if (error) {
             this.logger.error(`Buffer upload failed: ${error.message}`);
-            reject(new BadRequestException(`Failed to upload media: ${error.message}`));
+            reject(
+              new BadRequestException(
+                `Failed to upload media: ${error.message}`,
+              ),
+            );
           } else if (result) {
             this.logger.log(`Upload successful: ${result.public_id}`);
             resolve(this.mapUploadResult(result));
@@ -243,9 +256,7 @@ export class CloudinaryService {
   /**
    * Generate a signed upload URL for direct client-side uploads
    */
-  generateSignedUploadParams(
-    options: UploadOptions = {},
-  ): {
+  generateSignedUploadParams(options: UploadOptions = {}): {
     signature: string;
     timestamp: number;
     cloudName: string;
@@ -291,7 +302,13 @@ export class CloudinaryService {
       format?: string;
     } = {},
   ): string {
-    const { width, height, crop = 'fill', quality = 'auto', format = 'auto' } = options;
+    const {
+      width,
+      height,
+      crop = 'fill',
+      quality = 'auto',
+      format = 'auto',
+    } = options;
 
     const transformations: string[] = [];
 

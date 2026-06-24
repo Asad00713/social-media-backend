@@ -14,14 +14,8 @@ import {
   IsNumberString,
 } from 'class-validator';
 import { Type } from 'class-transformer';
-import {
-  MEDIA_TYPES,
-  POST_STATUSES,
-} from '../../drizzle/schema/posts.schema';
-import type {
-  MediaType,
-  PostStatus,
-} from '../../drizzle/schema/posts.schema';
+import { MEDIA_TYPES, POST_STATUSES } from '../../drizzle/schema/posts.schema';
+import type { MediaType, PostStatus } from '../../drizzle/schema/posts.schema';
 import type { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
 export class MediaItemDto {
@@ -80,7 +74,13 @@ export class CreatePostDto {
   mediaItems?: MediaItemDto[];
 
   @IsArray()
-  @IsNumberString({}, { each: true, message: 'each value in targetChannelIds must be a number string' })
+  @IsNumberString(
+    {},
+    {
+      each: true,
+      message: 'each value in targetChannelIds must be a number string',
+    },
+  )
   targetChannelIds: string[];
 
   @IsOptional()
@@ -109,7 +109,13 @@ export class UpdatePostDto {
 
   @IsOptional()
   @IsArray()
-  @IsNumberString({}, { each: true, message: 'each value in targetChannelIds must be a number string' })
+  @IsNumberString(
+    {},
+    {
+      each: true,
+      message: 'each value in targetChannelIds must be a number string',
+    },
+  )
   targetChannelIds?: string[];
 
   @IsOptional()

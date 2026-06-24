@@ -6,7 +6,13 @@ import type {
 
 export class LinkedInApiError extends Error {
   constructor(
-    public code: 'rate_limited' | 'auth_failed' | 'not_found' | 'transient' | 'permanent' | 'access_denied',
+    public code:
+      | 'rate_limited'
+      | 'auth_failed'
+      | 'not_found'
+      | 'transient'
+      | 'permanent'
+      | 'access_denied',
     public status: number,
     message: string,
   ) {
@@ -21,7 +27,10 @@ export class LinkedInApiClient {
   constructor(private readonly fetchImpl: typeof fetch = fetch) {}
 
   async getUserInfo(accessToken: string): Promise<LinkedInUserInfo> {
-    return this.request<LinkedInUserInfo>(`${this.baseUrl}/v2/userinfo`, accessToken);
+    return this.request<LinkedInUserInfo>(
+      `${this.baseUrl}/v2/userinfo`,
+      accessToken,
+    );
   }
 
   async getMemberPosts(opts: {
@@ -41,7 +50,10 @@ export class LinkedInApiClient {
     );
   }
 
-  async getSocialActions(postUrn: string, accessToken: string): Promise<LinkedInSocialActions> {
+  async getSocialActions(
+    postUrn: string,
+    accessToken: string,
+  ): Promise<LinkedInSocialActions> {
     return this.request<LinkedInSocialActions>(
       `${this.baseUrl}/rest/socialActions/${encodeURIComponent(postUrn)}`,
       accessToken,
@@ -49,7 +61,11 @@ export class LinkedInApiClient {
     );
   }
 
-  private async request<T>(url: string, accessToken: string, useRestApi = false): Promise<T> {
+  private async request<T>(
+    url: string,
+    accessToken: string,
+    useRestApi = false,
+  ): Promise<T> {
     const headers: Record<string, string> = {
       Authorization: `Bearer ${accessToken}`,
     };
@@ -61,7 +77,7 @@ export class LinkedInApiClient {
     if (!res.ok) {
       const body = await res.json().catch(() => ({}));
       const message =
-        (body as any).message ?? (body as any).error_description ?? `HTTP ${res.status}`;
+        body.message ?? body.error_description ?? `HTTP ${res.status}`;
       throw new LinkedInApiError(this.mapCode(res.status), res.status, message);
     }
     return res.json() as Promise<T>;

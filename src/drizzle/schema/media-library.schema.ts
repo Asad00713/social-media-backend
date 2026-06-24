@@ -155,12 +155,7 @@ export const mediaItems = pgTable(
 // Media Templates - Reusable post templates with placeholders
 // =============================================================================
 
-export const TEMPLATE_TYPES = [
-  'post',
-  'story',
-  'reel',
-  'carousel',
-] as const;
+export const TEMPLATE_TYPES = ['post', 'story', 'reel', 'carousel'] as const;
 
 export type TemplateType = (typeof TEMPLATE_TYPES)[number];
 

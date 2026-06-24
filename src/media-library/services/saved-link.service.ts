@@ -79,11 +79,7 @@ export class SavedLinkService {
   /**
    * Create a new saved link
    */
-  async create(
-    workspaceId: string,
-    userId: string,
-    dto: CreateSavedLinkDto,
-  ) {
+  async create(workspaceId: string, userId: string, dto: CreateSavedLinkDto) {
     // Validate category if provided
     if (dto.categoryId) {
       const category = await db
@@ -120,10 +116,7 @@ export class SavedLinkService {
       tags: dto.tags || [],
     };
 
-    const [created] = await db
-      .insert(savedLinks)
-      .values(newLink)
-      .returning();
+    const [created] = await db.insert(savedLinks).values(newLink).returning();
 
     this.logger.log(
       `Created saved link "${dto.name}" for workspace ${workspaceId}`,
@@ -209,10 +202,7 @@ export class SavedLinkService {
       .from(savedLinks)
       .leftJoin(mediaCategories, eq(savedLinks.categoryId, mediaCategories.id))
       .where(
-        and(
-          eq(savedLinks.id, linkId),
-          eq(savedLinks.workspaceId, workspaceId),
-        ),
+        and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
       )
       .limit(1);
 
@@ -229,11 +219,7 @@ export class SavedLinkService {
   /**
    * Update a saved link
    */
-  async update(
-    workspaceId: string,
-    linkId: string,
-    dto: UpdateSavedLinkDto,
-  ) {
+  async update(workspaceId: string, linkId: string, dto: UpdateSavedLinkDto) {
     const existing = await this.findOne(workspaceId, linkId);
 
     // Validate category if changing

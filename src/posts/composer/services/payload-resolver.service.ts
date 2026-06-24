@@ -1,5 +1,9 @@
 import { Injectable } from '@nestjs/common';
-import type { Draft, ChannelTarget, PlatformOverride } from '../types/draft.types';
+import type {
+  Draft,
+  ChannelTarget,
+  PlatformOverride,
+} from '../types/draft.types';
 import type { PublicationPayload } from '../types/publication-payload.types';
 
 /**
@@ -23,7 +27,10 @@ export class PayloadResolverService {
       hashtags: ov.hashtags ?? draft.base.hashtags,
       mentions: ov.mentions ?? draft.base.mentions,
       linkPreview: ov.linkPreview ?? draft.base.linkPreview,
-      platformSpecific: (override?.platformSpecific ?? {}) as Record<string, unknown>,
+      platformSpecific: (override?.platformSpecific ?? {}) as Record<
+        string,
+        unknown
+      >,
       scheduleAt: channel.scheduleAt ?? draft.schedule.scheduleAt,
     };
   }

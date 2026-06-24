@@ -73,7 +73,11 @@ export class InstagramDmAdapter implements PlatformDmAdapter {
     const mapKind = (
       k: DmAttachmentInput['kind'],
     ): 'image' | 'video' | 'audio' =>
-      k === 'voice' || k === 'audio' ? 'audio' : k === 'video' ? 'video' : 'image';
+      k === 'voice' || k === 'audio'
+        ? 'audio'
+        : k === 'video'
+          ? 'video'
+          : 'image';
 
     const [first, ...rest] = attachments;
     const created = await this.instagramService.sendDirectAttachmentMessage(

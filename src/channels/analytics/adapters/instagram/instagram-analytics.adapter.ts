@@ -43,9 +43,14 @@ export class InstagramAnalyticsAdapter implements PlatformAnalyticsAdapter {
     return 0;
   }
 
-  async fetchProfileSnapshot(channel: ChannelEntity): Promise<ProfileSnapshotResult> {
+  async fetchProfileSnapshot(
+    channel: ChannelEntity,
+  ): Promise<ProfileSnapshotResult> {
     try {
-      const user = await this.client.getUser(channel.platformAccountId, channel.accessToken);
+      const user = await this.client.getUser(
+        channel.platformAccountId,
+        channel.accessToken,
+      );
       return {
         status: 'success',
         data: {
@@ -86,7 +91,11 @@ export class InstagramAnalyticsAdapter implements PlatformAnalyticsAdapter {
       const missing: string[] = [];
 
       try {
-        insights = await this.client.getMediaInsights(mediaId, mediaData.media_type, accessToken);
+        insights = await this.client.getMediaInsights(
+          mediaId,
+          mediaData.media_type,
+          accessToken,
+        );
       } catch (insightErr) {
         missing.push('impressions', 'reach', 'engagement', 'saved');
         this.logger.warn(
@@ -103,7 +112,8 @@ export class InstagramAnalyticsAdapter implements PlatformAnalyticsAdapter {
 
       const data = {
         likesCount: mediaData.like_count ?? insightValue('likes') ?? 0,
-        commentsCount: mediaData.comments_count ?? insightValue('comments') ?? 0,
+        commentsCount:
+          mediaData.comments_count ?? insightValue('comments') ?? 0,
         sharesCount: insightValue('shares'),
         impressionsCount: insightValue('impressions') ?? insightValue('plays'),
         reachCount: insightValue('reach'),
@@ -163,9 +173,9 @@ export class InstagramAnalyticsAdapter implements PlatformAnalyticsAdapter {
     }
   }
 
-  private toFailedResult<T extends { status: string; error?: unknown; quotaCostUsed: number }>(
-    err: unknown,
-  ): T {
+  private toFailedResult<
+    T extends { status: string; error?: unknown; quotaCostUsed: number },
+  >(err: unknown): T {
     const igErr = err instanceof InstagramApiError ? err : null;
     return {
       status: 'failed',

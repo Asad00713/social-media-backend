@@ -15,8 +15,12 @@ describe('QuotaTrackerService', () => {
       this.store.set(key, next);
       return next;
     },
-    async expire(_key: string, _seconds: number) { return 1; },
-    clear() { this.store.clear(); },
+    async expire(_key: string, _seconds: number) {
+      return 1;
+    },
+    clear() {
+      this.store.clear();
+    },
   };
 
   beforeEach(async () => {

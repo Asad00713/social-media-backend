@@ -17,7 +17,7 @@ async function bootstrap() {
       process.env.FRONTEND_URL,
     ].filter(Boolean),
     credentials: true,
-  })
+  });
 
   // Slack Events API: capture raw body BEFORE the global JSON parser so that
   // HMAC-SHA256 signature verification has the exact bytes Slack signed.

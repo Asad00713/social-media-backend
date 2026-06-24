@@ -2,7 +2,13 @@ import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import Stripe from 'stripe';
 import { db } from '../drizzle/db';
-import { invoices, invoiceLineItems, subscriptions, paymentMethods, stripeCustomers } from '../drizzle/schema';
+import {
+  invoices,
+  invoiceLineItems,
+  subscriptions,
+  paymentMethods,
+  stripeCustomers,
+} from '../drizzle/schema';
 import { eq } from 'drizzle-orm';
 
 @Injectable()
@@ -16,7 +22,9 @@ export class StripeService implements OnModuleInit {
     const apiKey = this.configService.get<string>('STRIPE_SECRET_KEY');
 
     if (!apiKey) {
-      throw new Error('STRIPE_SECRET_KEY is not defined in environment variables');
+      throw new Error(
+        'STRIPE_SECRET_KEY is not defined in environment variables',
+      );
     }
 
     this.stripe = new Stripe(apiKey, {
@@ -43,7 +51,9 @@ export class StripeService implements OnModuleInit {
   }
 
   async getCustomer(customerId: string): Promise<Stripe.Customer> {
-    return await this.stripe.customers.retrieve(customerId) as Stripe.Customer;
+    return (await this.stripe.customers.retrieve(
+      customerId,
+    )) as Stripe.Customer;
   }
 
   async updateCustomer(
@@ -111,24 +121,37 @@ export class StripeService implements OnModuleInit {
     priceId: string;
     quantity: number;
   }): Promise<Stripe.SubscriptionItem> {
-    this.logger.log(`addSubscriptionItem called with: subscriptionId=${params.subscriptionId}, priceId=${params.priceId}, quantity=${params.quantity}`);
+    this.logger.log(
+      `addSubscriptionItem called with: subscriptionId=${params.subscriptionId}, priceId=${params.priceId}, quantity=${params.quantity}`,
+    );
 
     // Get the subscription to find the customer ID
-    const subscription = await this.stripe.subscriptions.retrieve(params.subscriptionId, {
-      expand: ['default_payment_method'],
-    });
-    const customerId = typeof subscription.customer === 'string'
-      ? subscription.customer
-      : subscription.customer.id;
+    const subscription = await this.stripe.subscriptions.retrieve(
+      params.subscriptionId,
+      {
+        expand: ['default_payment_method'],
+      },
+    );
+    const customerId =
+      typeof subscription.customer === 'string'
+        ? subscription.customer
+        : subscription.customer.id;
 
     // Get the payment method from subscription
-    const paymentMethodId = typeof subscription.default_payment_method === 'string'
-      ? subscription.default_payment_method
-      : subscription.default_payment_method?.id;
+    const paymentMethodId =
+      typeof subscription.default_payment_method === 'string'
+        ? subscription.default_payment_method
+        : subscription.default_payment_method?.id;
 
     // Save payment method to database if present
-    if (subscription.default_payment_method && typeof subscription.default_payment_method !== 'string') {
-      await this.savePaymentMethodToDatabase(customerId, subscription.default_payment_method);
+    if (
+      subscription.default_payment_method &&
+      typeof subscription.default_payment_method !== 'string'
+    ) {
+      await this.savePaymentMethodToDatabase(
+        customerId,
+        subscription.default_payment_method,
+      );
     }
 
     // Add the subscription item WITHOUT proration (it will be billed starting next cycle)
@@ -144,7 +167,9 @@ export class StripeService implements OnModuleInit {
     const unitAmount = price.unit_amount || 0;
     const totalAmount = unitAmount * params.quantity;
 
-    this.logger.log(`Add-on price: ${unitAmount} cents, quantity: ${params.quantity}, total: ${totalAmount} cents`);
+    this.logger.log(
+      `Add-on price: ${unitAmount} cents, quantity: ${params.quantity}, total: ${totalAmount} cents`,
+    );
 
     if (totalAmount > 0) {
       // Create a draft invoice FIRST
@@ -165,12 +190,18 @@ export class StripeService implements OnModuleInit {
         description: `Add-on: ${params.quantity}x (first month charge)`,
       });
 
-      this.logger.log(`Created invoice item: ${invoiceItem.id} for ${totalAmount} cents, attached to invoice ${invoice.id}`);
+      this.logger.log(
+        `Created invoice item: ${invoiceItem.id} for ${totalAmount} cents, attached to invoice ${invoice.id}`,
+      );
 
       // Finalize the invoice to lock in the amount
-      const finalizedInvoice = await this.stripe.invoices.finalizeInvoice(invoice.id);
+      const finalizedInvoice = await this.stripe.invoices.finalizeInvoice(
+        invoice.id,
+      );
 
-      this.logger.log(`Finalized invoice: ${finalizedInvoice.id}, amount_due: ${finalizedInvoice.amount_due}`);
+      this.logger.log(
+        `Finalized invoice: ${finalizedInvoice.id}, amount_due: ${finalizedInvoice.amount_due}`,
+      );
 
       // Now pay the invoice
       let paidInvoice = finalizedInvoice;
@@ -179,15 +210,23 @@ export class StripeService implements OnModuleInit {
           paidInvoice = await this.stripe.invoices.pay(finalizedInvoice.id, {
             payment_method: paymentMethodId,
           });
-          this.logger.log(`Paid invoice ${finalizedInvoice.id} with payment method ${paymentMethodId}`);
+          this.logger.log(
+            `Paid invoice ${finalizedInvoice.id} with payment method ${paymentMethodId}`,
+          );
         } else {
           paidInvoice = await this.stripe.invoices.pay(finalizedInvoice.id);
-          this.logger.log(`Paid invoice ${finalizedInvoice.id} with default payment method`);
+          this.logger.log(
+            `Paid invoice ${finalizedInvoice.id} with default payment method`,
+          );
         }
       }
 
       // Save invoice to database
-      await this.saveInvoiceToDatabase(paidInvoice, params.subscriptionId, invoiceItem);
+      await this.saveInvoiceToDatabase(
+        paidInvoice,
+        params.subscriptionId,
+        invoiceItem,
+      );
     }
 
     return item;
@@ -209,7 +248,8 @@ export class StripeService implements OnModuleInit {
         .where(eq(subscriptions.stripeSubscriptionId, stripeSubscriptionId))
         .limit(1);
 
-      const subscriptionId = subscription.length > 0 ? subscription[0].id : null;
+      const subscriptionId =
+        subscription.length > 0 ? subscription[0].id : null;
 
       // Insert invoice
       const [savedInvoice] = await db
@@ -224,15 +264,21 @@ export class StripeService implements OnModuleInit {
           amountDueCents: stripeInvoice.amount_due || 0,
           currency: stripeInvoice.currency || 'usd',
           status: stripeInvoice.status || 'paid',
-          periodStart: stripeInvoice.period_start ? new Date(stripeInvoice.period_start * 1000) : null,
-          periodEnd: stripeInvoice.period_end ? new Date(stripeInvoice.period_end * 1000) : null,
+          periodStart: stripeInvoice.period_start
+            ? new Date(stripeInvoice.period_start * 1000)
+            : null,
+          periodEnd: stripeInvoice.period_end
+            ? new Date(stripeInvoice.period_end * 1000)
+            : null,
           paidAt: stripeInvoice.status === 'paid' ? new Date() : null,
           invoicePdfUrl: stripeInvoice.invoice_pdf || null,
           hostedInvoiceUrl: stripeInvoice.hosted_invoice_url || null,
         })
         .returning();
 
-      this.logger.log(`Saved invoice ${stripeInvoice.id} to database with ID ${savedInvoice.id}`);
+      this.logger.log(
+        `Saved invoice ${stripeInvoice.id} to database with ID ${savedInvoice.id}`,
+      );
 
       // Insert line item
       await db.insert(invoiceLineItems).values({
@@ -248,7 +294,10 @@ export class StripeService implements OnModuleInit {
 
       this.logger.log(`Saved invoice line item for invoice ${savedInvoice.id}`);
     } catch (error) {
-      this.logger.error(`Failed to save invoice to database: ${error.message}`, error.stack);
+      this.logger.error(
+        `Failed to save invoice to database: ${error.message}`,
+        error.stack,
+      );
       // Don't throw - invoice was already paid in Stripe, we just failed to save locally
     }
   }
@@ -283,24 +332,37 @@ export class StripeService implements OnModuleInit {
    * Creates and pays an invoice immediately for any pending proration charges
    * Industry standard approach for immediate billing of add-ons/upgrades
    */
-  private async invoiceSubscriptionImmediately(subscriptionId: string): Promise<Stripe.Invoice | null> {
+  private async invoiceSubscriptionImmediately(
+    subscriptionId: string,
+  ): Promise<Stripe.Invoice | null> {
     try {
       // First, get the subscription to find the customer ID and payment method
-      const subscription = await this.stripe.subscriptions.retrieve(subscriptionId, {
-        expand: ['default_payment_method'],
-      });
-      const customerId = typeof subscription.customer === 'string'
-        ? subscription.customer
-        : subscription.customer.id;
+      const subscription = await this.stripe.subscriptions.retrieve(
+        subscriptionId,
+        {
+          expand: ['default_payment_method'],
+        },
+      );
+      const customerId =
+        typeof subscription.customer === 'string'
+          ? subscription.customer
+          : subscription.customer.id;
 
       // Get the payment method from subscription (where it's saved via 'on_subscription')
-      const paymentMethodId = typeof subscription.default_payment_method === 'string'
-        ? subscription.default_payment_method
-        : subscription.default_payment_method?.id;
+      const paymentMethodId =
+        typeof subscription.default_payment_method === 'string'
+          ? subscription.default_payment_method
+          : subscription.default_payment_method?.id;
 
       // Save payment method to database if present
-      if (subscription.default_payment_method && typeof subscription.default_payment_method !== 'string') {
-        await this.savePaymentMethodToDatabase(customerId, subscription.default_payment_method);
+      if (
+        subscription.default_payment_method &&
+        typeof subscription.default_payment_method !== 'string'
+      ) {
+        await this.savePaymentMethodToDatabase(
+          customerId,
+          subscription.default_payment_method,
+        );
       }
 
       // Create an invoice for any pending invoice items (prorations)
@@ -317,7 +379,10 @@ export class StripeService implements OnModuleInit {
         if (paymentMethodId) {
           payParams.payment_method = paymentMethodId;
         }
-        const paidInvoice = await this.stripe.invoices.pay(invoice.id, payParams);
+        const paidInvoice = await this.stripe.invoices.pay(
+          invoice.id,
+          payParams,
+        );
 
         // Save invoice to database
         await this.saveProrationInvoiceToDatabase(paidInvoice, subscriptionId);
@@ -363,7 +428,8 @@ export class StripeService implements OnModuleInit {
         .where(eq(subscriptions.stripeSubscriptionId, stripeSubscriptionId))
         .limit(1);
 
-      const subscriptionId = subscription.length > 0 ? subscription[0].id : null;
+      const subscriptionId =
+        subscription.length > 0 ? subscription[0].id : null;
 
       // Insert invoice
       const [savedInvoice] = await db
@@ -378,20 +444,29 @@ export class StripeService implements OnModuleInit {
           amountDueCents: stripeInvoice.amount_due || 0,
           currency: stripeInvoice.currency || 'usd',
           status: stripeInvoice.status || 'paid',
-          periodStart: stripeInvoice.period_start ? new Date(stripeInvoice.period_start * 1000) : null,
-          periodEnd: stripeInvoice.period_end ? new Date(stripeInvoice.period_end * 1000) : null,
+          periodStart: stripeInvoice.period_start
+            ? new Date(stripeInvoice.period_start * 1000)
+            : null,
+          periodEnd: stripeInvoice.period_end
+            ? new Date(stripeInvoice.period_end * 1000)
+            : null,
           paidAt: stripeInvoice.status === 'paid' ? new Date() : null,
           invoicePdfUrl: stripeInvoice.invoice_pdf || null,
           hostedInvoiceUrl: stripeInvoice.hosted_invoice_url || null,
         })
         .returning();
 
-      this.logger.log(`Saved proration invoice ${stripeInvoice.id} to database with ID ${savedInvoice.id}`);
+      this.logger.log(
+        `Saved proration invoice ${stripeInvoice.id} to database with ID ${savedInvoice.id}`,
+      );
 
       // Save line items from the invoice
-      const invoiceWithLines = await this.stripe.invoices.retrieve(stripeInvoice.id, {
-        expand: ['lines.data'],
-      });
+      const invoiceWithLines = await this.stripe.invoices.retrieve(
+        stripeInvoice.id,
+        {
+          expand: ['lines.data'],
+        },
+      );
 
       if (invoiceWithLines.lines?.data) {
         for (const line of invoiceWithLines.lines.data) {
@@ -405,15 +480,24 @@ export class StripeService implements OnModuleInit {
             quantity: line.quantity || 1,
             unitPriceCents: line.amount || 0,
             totalCents: line.amount || 0,
-            periodStart: line.period?.start ? new Date(line.period.start * 1000) : null,
-            periodEnd: line.period?.end ? new Date(line.period.end * 1000) : null,
+            periodStart: line.period?.start
+              ? new Date(line.period.start * 1000)
+              : null,
+            periodEnd: line.period?.end
+              ? new Date(line.period.end * 1000)
+              : null,
             isProration,
           });
         }
-        this.logger.log(`Saved ${invoiceWithLines.lines.data.length} line items for invoice ${savedInvoice.id}`);
+        this.logger.log(
+          `Saved ${invoiceWithLines.lines.data.length} line items for invoice ${savedInvoice.id}`,
+        );
       }
     } catch (error) {
-      this.logger.error(`Failed to save proration invoice to database: ${error.message}`, error.stack);
+      this.logger.error(
+        `Failed to save proration invoice to database: ${error.message}`,
+        error.stack,
+      );
     }
   }
 
@@ -527,7 +611,10 @@ export class StripeService implements OnModuleInit {
     interval?: 'month' | 'year';
   }): Promise<string> {
     const addonKey = `${params.planCode}_${params.addonType}`;
-    const addonName = this.getAddonDisplayName(params.addonType, params.planCode);
+    const addonName = this.getAddonDisplayName(
+      params.addonType,
+      params.planCode,
+    );
 
     // Search for existing product by metadata
     const existingProducts = await this.stripe.products.search({
@@ -655,7 +742,9 @@ export class StripeService implements OnModuleInit {
     payload: string | Buffer,
     signature: string,
   ): Stripe.Event {
-    const webhookSecret = this.configService.get<string>('STRIPE_WEBHOOK_SECRET');
+    const webhookSecret = this.configService.get<string>(
+      'STRIPE_WEBHOOK_SECRET',
+    );
 
     if (!webhookSecret) {
       throw new Error('STRIPE_WEBHOOK_SECRET is not defined');
@@ -674,11 +763,13 @@ export class StripeService implements OnModuleInit {
     subscriptionId?: string;
     subscriptionItems?: any;
   }): Promise<Stripe.Invoice> {
-    return await this.stripe.invoices.list({
-      customer: params.customerId,
-      subscription: params.subscriptionId,
-      limit: 1,
-    }).then(invoices => invoices.data[0]);
+    return await this.stripe.invoices
+      .list({
+        customer: params.customerId,
+        subscription: params.subscriptionId,
+        limit: 1,
+      })
+      .then((invoices) => invoices.data[0]);
   }
 
   /**
@@ -697,7 +788,9 @@ export class StripeService implements OnModuleInit {
         .limit(1);
 
       if (existing.length > 0) {
-        this.logger.log(`Payment method ${paymentMethod.id} already exists in database`);
+        this.logger.log(
+          `Payment method ${paymentMethod.id} already exists in database`,
+        );
         return;
       }
 
@@ -709,7 +802,9 @@ export class StripeService implements OnModuleInit {
         .limit(1);
 
       if (customer.length === 0) {
-        this.logger.warn(`Stripe customer ${stripeCustomerId} not found in database, skipping payment method save`);
+        this.logger.warn(
+          `Stripe customer ${stripeCustomerId} not found in database, skipping payment method save`,
+        );
         return;
       }
 
@@ -734,9 +829,14 @@ export class StripeService implements OnModuleInit {
         isDefault: isFirstMethod, // First payment method is default
       });
 
-      this.logger.log(`Saved payment method ${paymentMethod.id} to database (isDefault: ${isFirstMethod})`);
+      this.logger.log(
+        `Saved payment method ${paymentMethod.id} to database (isDefault: ${isFirstMethod})`,
+      );
     } catch (error) {
-      this.logger.error(`Failed to save payment method to database: ${error.message}`, error.stack);
+      this.logger.error(
+        `Failed to save payment method to database: ${error.message}`,
+        error.stack,
+      );
     }
   }
 }

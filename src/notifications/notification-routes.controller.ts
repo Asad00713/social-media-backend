@@ -1,7 +1,19 @@
-import { Body, Controller, Delete, Get, Param, Patch, Post, UseGuards } from '@nestjs/common'
-import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard'
-import { NotificationRoutesService } from './notification-routes.service'
-import { CreateNotificationRouteDto, UpdateNotificationRouteDto } from './dto/notification-route.dto'
+import {
+  Body,
+  Controller,
+  Delete,
+  Get,
+  Param,
+  Patch,
+  Post,
+  UseGuards,
+} from '@nestjs/common';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { NotificationRoutesService } from './notification-routes.service';
+import {
+  CreateNotificationRouteDto,
+  UpdateNotificationRouteDto,
+} from './dto/notification-route.dto';
 
 @Controller('notifications/workspaces/:workspaceId/routes')
 @UseGuards(JwtAuthGuard)
@@ -10,21 +22,28 @@ export class NotificationRoutesController {
 
   @Get()
   list(@Param('workspaceId') wid: string) {
-    return this.routes.list(wid)
+    return this.routes.list(wid);
   }
 
   @Post()
-  create(@Param('workspaceId') wid: string, @Body() body: CreateNotificationRouteDto) {
-    return this.routes.create(wid, body)
+  create(
+    @Param('workspaceId') wid: string,
+    @Body() body: CreateNotificationRouteDto,
+  ) {
+    return this.routes.create(wid, body);
   }
 
   @Patch(':id')
-  update(@Param('workspaceId') wid: string, @Param('id') id: string, @Body() body: UpdateNotificationRouteDto) {
-    return this.routes.update(wid, id, body)
+  update(
+    @Param('workspaceId') wid: string,
+    @Param('id') id: string,
+    @Body() body: UpdateNotificationRouteDto,
+  ) {
+    return this.routes.update(wid, id, body);
   }
 
   @Delete(':id')
   delete(@Param('workspaceId') wid: string, @Param('id') id: string) {
-    return this.routes.delete(wid, id)
+    return this.routes.delete(wid, id);
   }
 }
