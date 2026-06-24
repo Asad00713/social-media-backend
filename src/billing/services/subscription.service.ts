@@ -3,8 +3,9 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, sql } from 'drizzle-orm';
 import Stripe from 'stripe';
+import { buildSubscriptionSync } from './subscription-sync.util';
 import { StripeService } from '../../stripe/stripe.service';
 import { CustomerService } from './customer.service';
 import { db } from '../../drizzle/db';
@@ -362,6 +363,93 @@ export class SubscriptionService {
       throw new BadRequestException('Failed to create checkout session');
     }
     return { url: session.url };
+  }
+
+  /**
+   * Idempotently persist a Stripe subscription into our DB (subscriptions +
+   * BASE_PLAN item + workspace_usage). Used by the checkout webhook and any
+   * direct path. Upserts on the workspace's existing row (FREE→paid updates the
+   * pre-existing FREE row rather than inserting a duplicate).
+   */
+  async persistStripeSubscription(input: {
+    workspaceId: string;
+    planCode: string;
+    stripeCustomerId: string;
+    stripeSubscription: Stripe.Subscription;
+  }): Promise<void> {
+    const planRows = await db
+      .select()
+      .from(plans)
+      .where(eq(plans.code, input.planCode))
+      .limit(1);
+    const plan = planRows[0];
+    if (!plan) {
+      throw new NotFoundException(`Plan "${input.planCode}" not found`);
+    }
+
+    const { subscriptionRow, baseItem, usageRow } = buildSubscriptionSync({
+      workspaceId: input.workspaceId,
+      planCode: input.planCode,
+      plan,
+      stripeCustomerId: input.stripeCustomerId,
+      stripeSubscription: input.stripeSubscription,
+    });
+
+    // 1. Upsert the subscriptions row (UNIQUE workspace_id → updates FREE row).
+    const subSet: Record<string, unknown> = {
+      stripeCustomerId: sql`excluded.stripe_customer_id`,
+      stripeSubscriptionId: sql`excluded.stripe_subscription_id`,
+      planCode: sql`excluded.plan_code`,
+      status: sql`excluded.status`,
+      currentPeriodStart: sql`excluded.current_period_start`,
+      currentPeriodEnd: sql`excluded.current_period_end`,
+      cancelAtPeriodEnd: sql`excluded.cancel_at_period_end`,
+      updatedAt: new Date(),
+    };
+    if ('trialEnd' in subscriptionRow) {
+      subSet.trialEnd = sql`excluded.trial_end`;
+    }
+    await db
+      .insert(subscriptions)
+      .values(subscriptionRow as NewSubscription)
+      .onConflictDoUpdate({ target: subscriptions.workspaceId, set: subSet });
+
+    // 2. Get the subscription id for the item upsert.
+    const savedRows = await db
+      .select({ id: subscriptions.id })
+      .from(subscriptions)
+      .where(eq(subscriptions.workspaceId, input.workspaceId))
+      .limit(1);
+    const subscriptionId = savedRows[0].id;
+
+    // 3. Upsert the BASE_PLAN item (UNIQUE subscription_id + item_type).
+    await db
+      .insert(subscriptionItems)
+      .values({ ...baseItem, subscriptionId } as NewSubscriptionItem)
+      .onConflictDoUpdate({
+        target: [subscriptionItems.subscriptionId, subscriptionItems.itemType],
+        set: {
+          stripeSubscriptionItemId: sql`excluded.stripe_subscription_item_id`,
+          stripePriceId: sql`excluded.stripe_price_id`,
+          quantity: sql`excluded.quantity`,
+          unitPriceCents: sql`excluded.unit_price_cents`,
+          updatedAt: new Date(),
+        },
+      });
+
+    // 4. Upsert workspace_usage limits (UNIQUE workspace_id).
+    await db
+      .insert(workspaceUsage)
+      .values(usageRow as NewWorkspaceUsage)
+      .onConflictDoUpdate({
+        target: workspaceUsage.workspaceId,
+        set: {
+          channelsLimit: sql`excluded.channels_limit`,
+          membersLimit: sql`excluded.members_limit`,
+          aiTokensLimit: sql`excluded.ai_tokens_limit`,
+          updatedAt: new Date(),
+        },
+      });
   }
 
   async getSubscriptionByWorkspaceId(workspaceId: string) {
