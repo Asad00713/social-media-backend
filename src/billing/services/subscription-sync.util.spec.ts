@@ -17,7 +17,7 @@ function makeStripeSub(overrides: any = {}) {
     current_period_end: 1_702_000_000,
     items: { data: [{ id: 'si_123', price: { id: 'price_123' } }] },
     ...overrides,
-  } as any;
+  };
 }
 
 describe('buildSubscriptionSync', () => {

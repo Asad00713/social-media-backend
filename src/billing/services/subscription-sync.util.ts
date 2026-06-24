@@ -20,6 +20,28 @@ export interface SubscriptionSyncValues {
 }
 
 /**
+ * Read the current billing period from a Stripe subscription.
+ *
+ * Stripe API `2025-12-15.clover` removed the top-level
+ * `subscription.current_period_start/end`; they now live on each subscription
+ * item (`items.data[].current_period_*`). We read the item first and fall back
+ * to the legacy top-level fields for safety. Returns `null` when unavailable.
+ */
+export function getSubscriptionPeriod(stripeSubscription: Stripe.Subscription): {
+  start: Date | null;
+  end: Date | null;
+} {
+  const sub = stripeSubscription as any;
+  const item = sub.items?.data?.[0];
+  const startUnix = item?.current_period_start ?? sub.current_period_start;
+  const endUnix = item?.current_period_end ?? sub.current_period_end;
+  return {
+    start: startUnix ? new Date(startUnix * 1000) : null,
+    end: endUnix ? new Date(endUnix * 1000) : null,
+  };
+}
+
+/**
  * Pure mapping from a Stripe subscription + our plan into the DB row values
  * used to upsert `subscriptions`, the BASE_PLAN `subscription_items` row, and
  * `workspace_usage`. No DB access — unit-testable. Null timestamps are omitted
@@ -30,6 +52,7 @@ export function buildSubscriptionSync(
 ): SubscriptionSyncValues {
   const sub = input.stripeSubscription as any;
   const baseStripeItem = sub.items?.data?.[0];
+  const period = getSubscriptionPeriod(input.stripeSubscription);
 
   const subscriptionRow: Record<string, unknown> = {
     workspaceId: input.workspaceId,
@@ -37,12 +60,8 @@ export function buildSubscriptionSync(
     stripeSubscriptionId: sub.id,
     planCode: input.planCode,
     status: sub.status,
-    currentPeriodStart: sub.current_period_start
-      ? new Date(sub.current_period_start * 1000)
-      : new Date(),
-    currentPeriodEnd: sub.current_period_end
-      ? new Date(sub.current_period_end * 1000)
-      : null,
+    currentPeriodStart: period.start ?? new Date(),
+    currentPeriodEnd: period.end,
     cancelAtPeriodEnd: Boolean(sub.cancel_at_period_end),
   };
   if (sub.trial_end) {

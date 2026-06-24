@@ -41,6 +41,10 @@ lerna-debug.log*
 .env.test.local
 .env.production.local
 .env.local
+.env.backup
+
+# Local admin artifacts (never commit) — e.g. Railway proxy CA cert
+railway-ca.pem
 
 # temp directory
 .temp

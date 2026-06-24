@@ -63,11 +63,15 @@ export interface PlanChangeResult {
 export class PlanChangeService {
   private readonly logger = new Logger(PlanChangeService.name);
 
-  // Plan hierarchy for determining upgrade vs downgrade
+  // Plan hierarchy for determining upgrade vs downgrade. Must stay in sync with
+  // the frontend `PLAN_HIERARCHY` (plan-helpers.ts). A missing tier resolves to
+  // `undefined`, which silently breaks every upgrade/downgrade comparison.
   private readonly planHierarchy: Record<string, number> = {
     FREE: 0,
-    PRO: 1,
-    MAX: 2,
+    BASIC: 1,
+    PRO: 2,
+    MAX: 3,
+    ENTERPRISE: 4,
   };
 
   constructor(
@@ -216,6 +220,12 @@ export class PlanChangeService {
       `[DEBUG] === changePlan START === workspace=${workspaceId}, newPlan=${newPlanCode}`,
     );
 
+    // Downgrades to FREE cancel the Stripe subscription entirely — delegate to
+    // the dedicated path (which also defers the cancellation to period end).
+    if (newPlanCode === 'FREE') {
+      return await this.downgradeToFree(workspaceId, userId);
+    }
+
     // 1. Preview to validate
     this.logger.log(`[DEBUG] Step 1: Getting preview...`);
     const preview = await this.previewPlanChange(
@@ -298,6 +308,21 @@ export class PlanChangeService {
     if (!targetPriceId && target.basePriceCents > 0) {
       throw new BadRequestException(
         `Plan "${target.code}" is not provisioned in Stripe — run the pricing provision script (npx ts-node src/drizzle/seeds/stripe-provision.ts)`,
+      );
+    }
+
+    // DOWNGRADE (paid → lower paid tier): defer to period end. The customer
+    // keeps their current plan + limits until `currentPeriodEnd`; we swap the
+    // Stripe price now with NO proration (so the next invoice bills the lower
+    // price), and the webhook flips our plan/limits once the period rolls over.
+    if (!preview.isUpgrade && sub.stripeSubscriptionId && targetPriceId) {
+      return await this.scheduleDowngrade(
+        sub,
+        userId,
+        target,
+        targetPriceId,
+        oldPlanCode,
+        preview,
       );
     }
 
@@ -403,6 +428,9 @@ export class PlanChangeService {
     this.logger.log(`[DEBUG] Step 6: Updating subscription in DB...`);
     const subscriptionUpdateData: any = {
       planCode: newPlanCode,
+      // Upgrading immediately clears any previously-scheduled downgrade.
+      scheduledPlanCode: null,
+      scheduledChangeAt: null,
       updatedAt: new Date(),
     };
 
@@ -680,15 +708,7 @@ export class PlanChangeService {
       );
     }
 
-    // Cancel Stripe subscription if exists
-    if (sub.stripeSubscriptionId) {
-      await this.stripeService.cancelSubscription(
-        sub.stripeSubscriptionId,
-        false,
-      );
-    }
-
-    // Get FREE plan limits
+    // Get FREE plan limits (used for both the scheduled and immediate paths).
     const freePlan = await db
       .select()
       .from(plans)
@@ -696,47 +716,90 @@ export class PlanChangeService {
       .limit(1);
 
     const free = freePlan[0];
+    const freeLimits = {
+      channelsPerWorkspace: free.channelsPerWorkspace,
+      membersPerWorkspace: free.membersPerWorkspace,
+      maxWorkspaces: free.maxWorkspaces,
+    };
 
-    // Update subscription to FREE
+    // No Stripe subscription means nothing is being billed — flip to FREE now.
+    if (!sub.stripeSubscriptionId) {
+      await db
+        .update(subscriptions)
+        .set({
+          planCode: 'FREE',
+          status: 'active',
+          cancelAtPeriodEnd: false,
+          scheduledPlanCode: null,
+          scheduledChangeAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(subscriptions.id, sub.id));
+
+      await db
+        .update(workspaceUsage)
+        .set({
+          channelsLimit: free.channelsPerWorkspace,
+          membersLimit: free.membersPerWorkspace,
+          extraChannelsPurchased: 0,
+          extraMembersPurchased: 0,
+          updatedAt: new Date(),
+        })
+        .where(eq(workspaceUsage.workspaceId, workspaceId));
+
+      await db
+        .delete(subscriptionItems)
+        .where(eq(subscriptionItems.subscriptionId, sub.id));
+
+      await db.insert(subscriptionChanges).values({
+        subscriptionId: sub.id,
+        changeType: 'PLAN_DOWNGRADED',
+        oldValue: { planCode: sub.planCode },
+        newValue: { planCode: 'FREE' },
+        changedByUserId: userId,
+        reason: 'Downgraded to FREE plan',
+      } as NewSubscriptionChange);
+
+      this.logger.log(`Workspace ${workspaceId} downgraded to FREE plan`);
+
+      return {
+        success: true,
+        subscriptionId: sub.id,
+        oldPlan: sub.planCode,
+        newPlan: 'FREE',
+        isUpgrade: false,
+        proratedAmountCents: 0,
+        newLimits: freeLimits,
+      };
+    }
+
+    // Has a paid Stripe subscription: cancel at period end. The customer keeps
+    // their paid plan until the period they already paid for ends, then Stripe
+    // fires `customer.subscription.deleted` and the webhook resets us to FREE.
+    await this.stripeService.cancelSubscription(sub.stripeSubscriptionId, true);
+
     await db
       .update(subscriptions)
       .set({
-        planCode: 'FREE',
-        stripeSubscriptionId: null,
-        status: 'active',
-        cancelAtPeriodEnd: false,
+        cancelAtPeriodEnd: true,
+        scheduledPlanCode: 'FREE',
+        scheduledChangeAt: sub.currentPeriodEnd,
         updatedAt: new Date(),
       })
       .where(eq(subscriptions.id, sub.id));
 
-    // Update usage limits
-    await db
-      .update(workspaceUsage)
-      .set({
-        channelsLimit: free.channelsPerWorkspace,
-        membersLimit: free.membersPerWorkspace,
-        extraChannelsPurchased: 0,
-        extraMembersPurchased: 0,
-        updatedAt: new Date(),
-      })
-      .where(eq(workspaceUsage.workspaceId, workspaceId));
-
-    // Remove all add-on subscription items
-    await db
-      .delete(subscriptionItems)
-      .where(eq(subscriptionItems.subscriptionId, sub.id));
-
-    // Log change
     await db.insert(subscriptionChanges).values({
       subscriptionId: sub.id,
       changeType: 'PLAN_DOWNGRADED',
       oldValue: { planCode: sub.planCode },
       newValue: { planCode: 'FREE' },
       changedByUserId: userId,
-      reason: 'Downgraded to FREE plan',
+      reason: 'Scheduled downgrade to FREE at period end',
     } as NewSubscriptionChange);
 
-    this.logger.log(`Workspace ${workspaceId} downgraded to FREE plan`);
+    this.logger.log(
+      `Workspace ${workspaceId} scheduled downgrade to FREE at ${sub.currentPeriodEnd?.toISOString() ?? 'period end'}`,
+    );
 
     return {
       success: true,
@@ -745,10 +808,105 @@ export class PlanChangeService {
       newPlan: 'FREE',
       isUpgrade: false,
       proratedAmountCents: 0,
+      newLimits: freeLimits,
+    };
+  }
+
+  /**
+   * Schedule a paid → paid downgrade for the end of the current billing period.
+   *
+   * Swaps the Stripe price now with `proration_behavior: 'none'` — the current
+   * period stays paid at the old price, and the next invoice bills the lower
+   * price — but leaves our plan/limits untouched. The pending change is recorded
+   * on the subscription row; `WebhookService.handleSubscriptionUpdated` flips the
+   * plan + limits when the period rolls over.
+   */
+  private async scheduleDowngrade(
+    sub: typeof subscriptions.$inferSelect,
+    userId: string,
+    target: typeof plans.$inferSelect,
+    targetPriceId: string,
+    oldPlanCode: string,
+    preview: PlanChangePreview,
+  ): Promise<PlanChangeResult> {
+    // Swap the Stripe price now (no proration). Harmless mid-period because the
+    // current period was already invoiced at the old price.
+    const baseItem = await db
+      .select()
+      .from(subscriptionItems)
+      .where(
+        and(
+          eq(subscriptionItems.subscriptionId, sub.id),
+          eq(subscriptionItems.itemType, 'BASE_PLAN'),
+        ),
+      )
+      .limit(1);
+
+    if (baseItem.length > 0 && baseItem[0].stripeSubscriptionItemId) {
+      const stripeSubscription = await this.stripeService.getSubscription(
+        sub.stripeSubscriptionId as string,
+      );
+      const stripeItem: any = stripeSubscription.items.data.find(
+        (item: any) => item.id === baseItem[0].stripeSubscriptionItemId,
+      );
+      if (stripeItem) {
+        await this.stripeService.updateSubscription(
+          sub.stripeSubscriptionId as string,
+          {
+            items: [{ id: stripeItem.id, price: targetPriceId }],
+            proration_behavior: 'none',
+          },
+        );
+      }
+    }
+
+    // Record the pending downgrade — plan/limits stay as-is until period end.
+    await db
+      .update(subscriptions)
+      .set({
+        scheduledPlanCode: target.code,
+        scheduledChangeAt: sub.currentPeriodEnd,
+        updatedAt: new Date(),
+      })
+      .where(eq(subscriptions.id, sub.id));
+
+    await db.insert(subscriptionChanges).values({
+      subscriptionId: sub.id,
+      changeType: 'PLAN_DOWNGRADED',
+      oldValue: { planCode: oldPlanCode },
+      newValue: { planCode: target.code },
+      prorationAmountCents: 0,
+      changedByUserId: userId,
+      reason: `Scheduled downgrade from ${preview.currentPlan.name} to ${preview.newPlan.name} at period end`,
+    } as NewSubscriptionChange);
+
+    this.logger.log(
+      `Scheduled downgrade for workspace ${sub.workspaceId}: ${oldPlanCode} -> ${target.code} at ${sub.currentPeriodEnd?.toISOString() ?? 'period end'}`,
+    );
+
+    try {
+      await this.notificationEmitter.planChanged(
+        userId,
+        preview.currentPlan.name,
+        preview.newPlan.name,
+      );
+    } catch (error: any) {
+      this.logger.error(
+        `Failed to send plan change notification: ${error.message}`,
+      );
+    }
+
+    return {
+      success: true,
+      subscriptionId: sub.id,
+      oldPlan: oldPlanCode,
+      newPlan: target.code,
+      isUpgrade: false,
+      proratedAmountCents: 0,
       newLimits: {
-        channelsPerWorkspace: free.channelsPerWorkspace,
-        membersPerWorkspace: free.membersPerWorkspace,
-        maxWorkspaces: free.maxWorkspaces,
+        channelsPerWorkspace: target.channelsPerWorkspace,
+        membersPerWorkspace: target.membersPerWorkspace,
+        maxWorkspaces: target.maxWorkspaces,
       },
     };
   }

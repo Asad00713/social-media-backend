@@ -6,6 +6,7 @@ import {
 import { eq, and, sql } from 'drizzle-orm';
 import Stripe from 'stripe';
 import { buildSubscriptionSync } from './subscription-sync.util';
+import { upsertInvoiceFromStripe } from './invoice-sync.util';
 import { StripeService } from '../../stripe/stripe.service';
 import { CustomerService } from './customer.service';
 import { db } from '../../drizzle/db';
@@ -464,6 +465,17 @@ export class SubscriptionService {
           updatedAt: new Date(),
         },
       });
+
+    // 5. Persist the subscription's first invoice now, while we hold the fully
+    // expanded Stripe subscription (getSubscription expands `latest_invoice`).
+    // Stripe often emits `invoice.*` webhooks BEFORE `checkout.session.completed`,
+    // so relying on those events alone would miss the signup invoice (the sub
+    // row doesn't exist yet when they arrive). Capturing it here makes checkout
+    // the authoritative path, independent of webhook ordering.
+    const latestInvoice = input.stripeSubscription.latest_invoice;
+    if (latestInvoice && typeof latestInvoice !== 'string') {
+      await upsertInvoiceFromStripe(latestInvoice, subscriptionId);
+    }
   }
 
   async getSubscriptionByWorkspaceId(workspaceId: string) {

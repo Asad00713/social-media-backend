@@ -21,7 +21,9 @@ describe('lookup key helpers', () => {
   });
 
   it('produces human display names for all addon types', () => {
-    expect(addonDisplayName('EXTRA_CHANNEL', 'PRO')).toBe('Extra Channel (PRO)');
+    expect(addonDisplayName('EXTRA_CHANNEL', 'PRO')).toBe(
+      'Extra Channel (PRO)',
+    );
     expect(addonDisplayName('AI_TOKENS', 'MAX')).toBe('AI Tokens (MAX)');
     expect(addonDisplayName('UNKNOWN_X', 'PRO')).toBe('UNKNOWN_X (PRO)');
   });
@@ -56,9 +58,7 @@ function makeFakeStripe(initialPrices: any[] = []) {
           recurring: args.recurring,
           lookup_key: args.lookup_key ?? null,
           product:
-            typeof args.product === 'string'
-              ? args.product
-              : args.product?.id,
+            typeof args.product === 'string' ? args.product : args.product?.id,
         };
         prices.push(price);
         return price;

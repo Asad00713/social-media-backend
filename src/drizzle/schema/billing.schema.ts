@@ -88,6 +88,12 @@ export const subscriptions = pgTable('subscriptions', {
   trialEnd: timestamp('trial_end'),
   cancelAtPeriodEnd: boolean('cancel_at_period_end').default(false).notNull(),
   canceledAt: timestamp('canceled_at'),
+  // Pending downgrade: industry standard is to defer downgrades (and cancels)
+  // to the end of the paid period the customer already paid for. When set, the
+  // workspace keeps its CURRENT plan + limits until `scheduledChangeAt`; the
+  // webhook then flips it to `scheduledPlanCode`. Null = no pending change.
+  scheduledPlanCode: varchar('scheduled_plan_code', { length: 20 }),
+  scheduledChangeAt: timestamp('scheduled_change_at'),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });

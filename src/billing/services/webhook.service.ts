@@ -5,18 +5,22 @@ import { db } from '../../drizzle/db';
 import {
   billingEvents,
   subscriptions,
+  subscriptionItems,
   invoices,
-  invoiceLineItems,
   failedPayments,
   workspaceUsage,
   paymentMethods,
   stripeCustomers,
+  plans,
   NewBillingEvent,
-  NewInvoice,
-  NewInvoiceLineItem,
   NewFailedPayment,
 } from '../../drizzle/schema';
 import { SubscriptionService } from './subscription.service';
+import {
+  getInvoiceSubscriptionId,
+  upsertInvoiceFromStripe,
+} from './invoice-sync.util';
+import { getSubscriptionPeriod } from './subscription-sync.util';
 import { StripeService } from '../../stripe/stripe.service';
 
 @Injectable()
@@ -57,9 +61,7 @@ export class WebhookService {
     try {
       switch (event.type) {
         case 'checkout.session.completed':
-          await this.handleCheckoutSessionCompleted(
-            event.data.object as Stripe.Checkout.Session,
-          );
+          await this.handleCheckoutSessionCompleted(event.data.object);
           break;
 
         case 'customer.subscription.created':
@@ -214,15 +216,17 @@ export class WebhookService {
       return;
     }
 
-    // Update subscription details
+    // Update subscription details. Period now lives on the subscription item
+    // (Clover API), so read it via the shared helper.
     const sub: any = subscription;
+    const period = getSubscriptionPeriod(subscription);
     const updateData: any = {
       status: subscription.status,
-      currentPeriodStart: new Date(sub.current_period_start * 1000),
-      currentPeriodEnd: new Date(sub.current_period_end * 1000),
       cancelAtPeriodEnd: sub.cancel_at_period_end,
       updatedAt: new Date(),
     };
+    if (period.start) updateData.currentPeriodStart = period.start;
+    if (period.end) updateData.currentPeriodEnd = period.end;
     // Only add canceledAt if it exists (avoid explicit null for timestamps)
     if (sub.canceled_at) {
       updateData.canceledAt = new Date(sub.canceled_at * 1000);
@@ -231,6 +235,78 @@ export class WebhookService {
       .update(subscriptions)
       .set(updateData)
       .where(eq(subscriptions.id, existingSub[0].id));
+
+    // If a paid→paid downgrade was scheduled, apply it once the period rolls over.
+    await this.applyScheduledDowngradeIfDue(existingSub[0], period.start);
+  }
+
+  /**
+   * Apply a pending paid→paid downgrade once the billing period has rolled over
+   * to/past `scheduledChangeAt`. Flips the plan + usage limits and clears the
+   * schedule. Downgrades to FREE are handled by cancellation (the
+   * `customer.subscription.deleted` path), not here.
+   */
+  private async applyScheduledDowngradeIfDue(
+    existing: typeof subscriptions.$inferSelect,
+    newPeriodStart: Date | null,
+  ): Promise<void> {
+    const { scheduledPlanCode, scheduledChangeAt } = existing;
+    if (!scheduledPlanCode || !scheduledChangeAt || !newPeriodStart) return;
+    if (scheduledPlanCode === 'FREE') return; // handled by cancellation
+
+    // The immediate price-swap event carries the OLD period start (well before
+    // scheduledChangeAt); only the renewal event reaches it. A small tolerance
+    // absorbs rounding between period_end and the next period_start.
+    const TOLERANCE_MS = 60 * 1000;
+    if (newPeriodStart.getTime() < scheduledChangeAt.getTime() - TOLERANCE_MS) {
+      return;
+    }
+
+    const planRows = await db
+      .select()
+      .from(plans)
+      .where(eq(plans.code, scheduledPlanCode))
+      .limit(1);
+    const plan = planRows[0];
+
+    if (!plan) {
+      this.logger.error(
+        `Scheduled downgrade plan "${scheduledPlanCode}" not found — clearing schedule for subscription ${existing.id}`,
+      );
+      await db
+        .update(subscriptions)
+        .set({
+          scheduledPlanCode: null,
+          scheduledChangeAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(subscriptions.id, existing.id));
+      return;
+    }
+
+    await db
+      .update(subscriptions)
+      .set({
+        planCode: scheduledPlanCode,
+        scheduledPlanCode: null,
+        scheduledChangeAt: null,
+        updatedAt: new Date(),
+      })
+      .where(eq(subscriptions.id, existing.id));
+
+    await db
+      .update(workspaceUsage)
+      .set({
+        channelsLimit: plan.channelsPerWorkspace,
+        membersLimit: plan.membersPerWorkspace,
+        aiTokensLimit: plan.aiTokensPerMonth,
+        updatedAt: new Date(),
+      })
+      .where(eq(workspaceUsage.workspaceId, existing.workspaceId));
+
+    this.logger.log(
+      `Applied scheduled downgrade for workspace ${existing.workspaceId} -> ${scheduledPlanCode}`,
+    );
   }
 
   private async handleSubscriptionDeleted(
@@ -238,7 +314,6 @@ export class WebhookService {
   ): Promise<void> {
     this.logger.log(`Subscription deleted: ${subscription.id}`);
 
-    // Update subscription status
     const existingSub = await db
       .select()
       .from(subscriptions)
@@ -248,152 +323,102 @@ export class WebhookService {
     if (existingSub.length === 0) {
       return;
     }
+    const existing = existingSub[0];
+
+    // A deleted Stripe subscription means the paid period has fully ended, so
+    // the workspace falls back to FREE: reset the plan, drop limits to FREE,
+    // clear any schedule, and remove add-on items referencing the dead sub.
+    const freeRows = await db
+      .select()
+      .from(plans)
+      .where(eq(plans.code, 'FREE'))
+      .limit(1);
+    const free = freeRows[0];
 
     await db
       .update(subscriptions)
       .set({
-        status: 'canceled',
+        planCode: 'FREE',
+        stripeSubscriptionId: null,
+        status: 'active',
+        cancelAtPeriodEnd: false,
+        scheduledPlanCode: null,
+        scheduledChangeAt: null,
         canceledAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(subscriptions.id, existingSub[0].id));
+      .where(eq(subscriptions.id, existing.id));
+
+    if (free) {
+      await db
+        .update(workspaceUsage)
+        .set({
+          channelsLimit: free.channelsPerWorkspace,
+          membersLimit: free.membersPerWorkspace,
+          aiTokensLimit: free.aiTokensPerMonth,
+          extraChannelsPurchased: 0,
+          extraMembersPurchased: 0,
+          updatedAt: new Date(),
+        })
+        .where(eq(workspaceUsage.workspaceId, existing.workspaceId));
+    }
+
+    await db
+      .delete(subscriptionItems)
+      .where(eq(subscriptionItems.subscriptionId, existing.id));
+
+    this.logger.log(
+      `Workspace ${existing.workspaceId} reset to FREE after subscription ${subscription.id} ended`,
+    );
+  }
+
+  /**
+   * Look up our subscription row for an invoice (if it exists yet) and upsert the
+   * invoice header + line items. Centralizes the `created`/`finalized`/`paid`
+   * handlers — the upsert is idempotent, so out-of-order or duplicate webhook
+   * deliveries just refresh the same row. The subscription link may be null when
+   * an invoice event lands before `checkout.session.completed` persists the sub;
+   * the checkout path later fills it in.
+   */
+  private async persistInvoiceEvent(invoice: Stripe.Invoice): Promise<void> {
+    const stripeSubId = getInvoiceSubscriptionId(invoice);
+    let subscriptionDbId: number | null = null;
+    if (stripeSubId) {
+      const sub = await db
+        .select({ id: subscriptions.id })
+        .from(subscriptions)
+        .where(eq(subscriptions.stripeSubscriptionId, stripeSubId))
+        .limit(1);
+      subscriptionDbId = sub[0]?.id ?? null;
+    }
+    await upsertInvoiceFromStripe(invoice, subscriptionDbId);
   }
 
   private async handleInvoiceCreated(invoice: Stripe.Invoice): Promise<void> {
     this.logger.log(`Invoice created: ${invoice.id}`);
-
-    const inv: any = invoice;
-
-    // Get subscription from database
-    if (!inv.subscription) {
-      return;
-    }
-
-    const sub = await db
-      .select()
-      .from(subscriptions)
-      .where(eq(subscriptions.stripeSubscriptionId, inv.subscription as string))
-      .limit(1);
-
-    if (sub.length === 0) {
-      return;
-    }
-
-    // Save invoice to database
-    // Build invoice data, omitting null timestamps to avoid Drizzle errors
-    const invoiceData: any = {
-      subscriptionId: sub[0].id,
-      stripeInvoiceId: invoice.id,
-      subtotalCents: inv.subtotal || 0,
-      taxCents: inv.tax || 0,
-      totalCents: inv.total || 0,
-      amountDueCents: inv.amount_due || 0,
-      amountPaidCents: inv.amount_paid || 0,
-      currency: invoice.currency,
-      status: invoice.status || 'draft',
-    };
-    if (inv.period_start) {
-      invoiceData.periodStart = new Date(inv.period_start * 1000);
-    }
-    if (inv.period_end) {
-      invoiceData.periodEnd = new Date(inv.period_end * 1000);
-    }
-    if (inv.invoice_pdf) {
-      invoiceData.invoicePdfUrl = inv.invoice_pdf;
-    }
-    if (inv.hosted_invoice_url) {
-      invoiceData.hostedInvoiceUrl = inv.hosted_invoice_url;
-    }
-    await db.insert(invoices).values(invoiceData as NewInvoice);
+    await this.persistInvoiceEvent(invoice);
   }
 
   private async handleInvoiceFinalized(invoice: Stripe.Invoice): Promise<void> {
     this.logger.log(`Invoice finalized: ${invoice.id}`);
-
-    // Update invoice in database
-    const existingInvoice = await db
-      .select()
-      .from(invoices)
-      .where(eq(invoices.stripeInvoiceId, invoice.id))
-      .limit(1);
-
-    if (existingInvoice.length === 0) {
-      // Create if doesn't exist
-      await this.handleInvoiceCreated(invoice);
-      return;
-    }
-
-    // Update invoice
-    const inv: any = invoice;
-    await db
-      .update(invoices)
-      .set({
-        status: invoice.status || 'open',
-        invoicePdfUrl: inv.invoice_pdf || null,
-        hostedInvoiceUrl: inv.hosted_invoice_url || null,
-        updatedAt: new Date(),
-      })
-      .where(eq(invoices.id, existingInvoice[0].id));
-
-    // Save line items
-    if (inv.lines && inv.lines.data) {
-      for (const line of inv.lines.data) {
-        const lineItem: any = line;
-        // Build line item data, conditionally adding timestamps to avoid Drizzle null errors
-        const lineItemData: any = {
-          invoiceId: existingInvoice[0].id,
-          stripeLineItemId: line.id,
-          description: line.description || 'No description',
-          quantity: line.quantity || 1,
-          unitPriceCents: lineItem.price?.unit_amount || 0,
-          totalCents: line.amount || 0,
-          isProration: lineItem.proration || false,
-        };
-        if (line.metadata?.item_type) {
-          lineItemData.itemType = line.metadata.item_type;
-        }
-        if (lineItem.period?.start) {
-          lineItemData.periodStart = new Date(lineItem.period.start * 1000);
-        }
-        if (lineItem.period?.end) {
-          lineItemData.periodEnd = new Date(lineItem.period.end * 1000);
-        }
-        await db
-          .insert(invoiceLineItems)
-          .values(lineItemData as NewInvoiceLineItem);
-      }
-    }
+    await this.persistInvoiceEvent(invoice);
   }
 
   private async handleInvoicePaid(invoice: Stripe.Invoice): Promise<void> {
     this.logger.log(`Invoice paid: ${invoice.id}`);
-
-    const existingInvoice = await db
-      .select()
-      .from(invoices)
-      .where(eq(invoices.stripeInvoiceId, invoice.id))
-      .limit(1);
-
-    if (existingInvoice.length === 0) {
-      return;
-    }
-
-    const inv: any = invoice;
-    await db
-      .update(invoices)
-      .set({
-        status: 'paid',
-        amountPaidCents: inv.amount_paid || 0,
-        paidAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(invoices.id, existingInvoice[0].id));
+    // The upsert reads paid status + paidAt from `status_transitions`, so this
+    // both creates the invoice (if an earlier event was missed) and marks it paid.
+    await this.persistInvoiceEvent(invoice);
   }
 
   private async handleInvoicePaymentFailed(
     invoice: Stripe.Invoice,
   ): Promise<void> {
     this.logger.error(`Invoice payment failed: ${invoice.id}`);
+
+    // Ensure the invoice row exists before we record the failure against it
+    // (the failure event can arrive before any create/finalize event).
+    await this.persistInvoiceEvent(invoice);
 
     const existingInvoice = await db
       .select()
@@ -503,14 +528,12 @@ export class WebhookService {
     this.logger.log(`Invoice payment succeeded: ${invoice.id}`);
 
     // Find and resolve any failed payment records for this invoice
-    const inv: any = invoice;
-    if (inv.subscription) {
+    const stripeSubId = getInvoiceSubscriptionId(invoice);
+    if (stripeSubId) {
       const subscription = await db
         .select()
         .from(subscriptions)
-        .where(
-          eq(subscriptions.stripeSubscriptionId, inv.subscription as string),
-        )
+        .where(eq(subscriptions.stripeSubscriptionId, stripeSubId))
         .limit(1);
 
       if (subscription.length > 0) {
