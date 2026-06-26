@@ -80,6 +80,7 @@ import * as crypto from 'crypto';
 import { TelegramConnectService } from './services/telegram-connect.service';
 import { TelegramService } from './services/telegram.service';
 import { ConnectTelegramBotDto } from './dto/telegram-connect.dto';
+import { ConnectWhatsAppDto } from './dto/connect-whatsapp.dto';
 
 @Controller('channels')
 export class ChannelsController {
@@ -5353,5 +5354,64 @@ export class ChannelsController {
       user.userId,
       dto.token,
     );
+  }
+
+  // ==========================================================================
+  // WhatsApp — Manual connect (Phase-1 onboarding)
+  // ==========================================================================
+
+  @Post('workspaces/:workspaceId/whatsapp/connect')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async connectWhatsApp(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: ConnectWhatsAppDto,
+    @CurrentUser() user: { userId: string; email: string },
+  ) {
+    // Enforce workspace ownership (same guard used by Telegram/Slack connect).
+    await this.inboxService.assertWorkspaceAccessPublic(
+      workspaceId,
+      user.userId,
+    );
+
+    // Validate the token + phone number id against Meta before persisting.
+    const metaUrl = `https://graph.facebook.com/v21.0/${dto.phoneNumberId}?fields=display_phone_number,verified_name`;
+    let verifiedName: string | undefined;
+    let displayPhoneNumber: string | undefined;
+
+    const metaRes = await fetch(metaUrl, {
+      headers: { Authorization: `Bearer ${dto.accessToken}` },
+    });
+
+    if (!metaRes.ok) {
+      throw new BadRequestException(
+        'Could not verify this WhatsApp number/token with Meta — check the phone number id and token.',
+      );
+    }
+
+    const metaData = (await metaRes.json()) as {
+      display_phone_number?: string;
+      verified_name?: string;
+    };
+    verifiedName = metaData.verified_name;
+    displayPhoneNumber = metaData.display_phone_number;
+
+    // Fall back to caller-supplied values when Meta returns nothing.
+    const accountName = dto.accountName || verifiedName || dto.phoneNumberId;
+    const resolvedDisplayPhone =
+      dto.displayPhoneNumber || displayPhoneNumber || dto.phoneNumberId;
+
+    // Build and persist the channel row (createChannel encrypts the token).
+    return this.channelService.createChannel(workspaceId, user.userId, {
+      platform: 'whatsapp',
+      accountType: 'business_account',
+      platformAccountId: dto.phoneNumberId,
+      accountName,
+      accessToken: dto.accessToken,
+      metadata: {
+        wabaId: dto.wabaId,
+        displayPhoneNumber: resolvedDisplayPhone,
+      },
+    });
   }
 }
