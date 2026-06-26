@@ -112,9 +112,12 @@ export const PLATFORM_RATE_LIMITS: Record<
     description: '50 requests per second',
   },
   whatsapp: {
-    maxRequests: 80, // WhatsApp Business API: 80 messages per second per business account
+    // Placeholder. Real WhatsApp Cloud API limits are tier/day-based (1k/10k/100k
+    // messages per day by phone-number tier), not a fixed per-second rate. Revisit
+    // when outbound volume matters (Phase 2 templates/notifications).
+    maxRequests: 80,
     windowMs: 1000, // 1 second
-    description: '80 requests per second',
+    description: 'placeholder ~80 req/s (real limits are day/tier-based)',
   },
 };
 
