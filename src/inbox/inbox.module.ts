@@ -20,6 +20,8 @@ import { DiscordDmAdapter } from './adapters/discord-dm.adapter';
 import { SlackIngestProcessor } from './processors/slack-ingest.processor';
 import { TelegramIngestProcessor } from './processors/telegram-ingest.processor';
 import { DiscordIngestProcessor } from './processors/discord-ingest.processor';
+import { WhatsAppIngestProcessor } from './processors/whatsapp-ingest.processor';
+import { WhatsAppIngestService } from './services/whatsapp-ingest.service';
 import { InboxPollProcessor } from './processors/inbox-poll.processor';
 import { InboxPollScheduler } from './schedulers/inbox-poll.scheduler';
 import { ScheduledInboxProcessor } from './processors/scheduled-inbox.processor';
@@ -43,6 +45,7 @@ import { QUEUES } from '../queue/queue.module';
       { name: QUEUES.SLACK_INGEST },
       { name: QUEUES.TELEGRAM_INGEST },
       { name: QUEUES.DISCORD_INGEST },
+      { name: QUEUES.WHATSAPP_INGEST },
     ),
   ],
   controllers: [InboxController, WebhooksController],
@@ -65,6 +68,8 @@ import { QUEUES } from '../queue/queue.module';
     SlackIngestProcessor,
     TelegramIngestProcessor,
     DiscordIngestProcessor,
+    WhatsAppIngestService,
+    WhatsAppIngestProcessor,
     InboxPollProcessor,
     InboxPollScheduler,
     ScheduledMessagesService,
