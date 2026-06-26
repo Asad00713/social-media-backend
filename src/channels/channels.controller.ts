@@ -5379,7 +5379,8 @@ export class ChannelsController {
     let verifiedName: string | undefined;
     let displayPhoneNumber: string | undefined;
 
-    let metaRes: Response;
+    // Note: `Response` in this file is Express's type — use the fetch Response.
+    let metaRes: Awaited<ReturnType<typeof fetch>>;
     try {
       metaRes = await fetch(metaUrl, {
         headers: { Authorization: `Bearer ${dto.accessToken}` },
