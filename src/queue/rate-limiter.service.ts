@@ -111,6 +111,11 @@ export const PLATFORM_RATE_LIMITS: Record<
     windowMs: 1000, // 1 second
     description: '50 requests per second',
   },
+  whatsapp: {
+    maxRequests: 80, // WhatsApp Business API: 80 messages per second per business account
+    windowMs: 1000, // 1 second
+    description: '80 requests per second',
+  },
 };
 
 export interface RateLimitResult {
