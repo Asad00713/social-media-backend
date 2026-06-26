@@ -17,12 +17,19 @@ export class WhatsAppDmAdapter implements PlatformDmAdapter {
   constructor(private readonly whatsapp: WhatsAppService) {}
 
   /** No read API — WhatsApp history is delivered by webhook only. */
-  async listConversations(): Promise<DmConversationSummary[]> {
+  async listConversations(
+    _channel: ResolvedChannel,
+    _since?: Date,
+  ): Promise<DmConversationSummary[]> {
     return [];
   }
 
   /** No read API — see listConversations. */
-  async fetchConversationMessages(): Promise<FetchedDm[]> {
+  async fetchConversationMessages(
+    _channel: ResolvedChannel,
+    _conversationId: string,
+    _since?: Date,
+  ): Promise<FetchedDm[]> {
     return [];
   }
 
@@ -60,7 +67,7 @@ export class WhatsAppDmAdapter implements PlatformDmAdapter {
       };
     }
     const expires = new Date(lastIncomingAt.getTime() + WINDOW_MS);
-    if (Date.now() > expires.getTime()) {
+    if (Date.now() >= expires.getTime()) {
       return {
         canReply: false,
         reason:
