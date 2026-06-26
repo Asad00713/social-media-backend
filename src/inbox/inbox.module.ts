@@ -17,6 +17,8 @@ import { MastodonDmAdapter } from './adapters/mastodon-dm.adapter';
 import { SlackDmAdapter } from './adapters/slack-dm.adapter';
 import { TelegramDmAdapter } from './adapters/telegram-dm.adapter';
 import { DiscordDmAdapter } from './adapters/discord-dm.adapter';
+import { WhatsAppDmAdapter } from './adapters/whatsapp-dm.adapter';
+import { WhatsAppService } from '../channels/services/whatsapp.service';
 import { SlackIngestProcessor } from './processors/slack-ingest.processor';
 import { TelegramIngestProcessor } from './processors/telegram-ingest.processor';
 import { DiscordIngestProcessor } from './processors/discord-ingest.processor';
@@ -65,6 +67,8 @@ import { QUEUES } from '../queue/queue.module';
     SlackDmAdapter,
     TelegramDmAdapter,
     DiscordDmAdapter,
+    WhatsAppDmAdapter,
+    WhatsAppService,
     SlackIngestProcessor,
     TelegramIngestProcessor,
     DiscordIngestProcessor,
