@@ -5379,9 +5379,16 @@ export class ChannelsController {
     let verifiedName: string | undefined;
     let displayPhoneNumber: string | undefined;
 
-    const metaRes = await fetch(metaUrl, {
-      headers: { Authorization: `Bearer ${dto.accessToken}` },
-    });
+    let metaRes: Response;
+    try {
+      metaRes = await fetch(metaUrl, {
+        headers: { Authorization: `Bearer ${dto.accessToken}` },
+      });
+    } catch {
+      throw new BadRequestException(
+        'Could not reach Meta to verify the WhatsApp number. Please try again.',
+      );
+    }
 
     if (!metaRes.ok) {
       throw new BadRequestException(
