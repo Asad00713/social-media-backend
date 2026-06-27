@@ -246,6 +246,7 @@ export class MaestroService {
     userId: string;
     message: string;
     confirmBeforeSend?: boolean;
+    sourceChannel?: 'telegram' | 'whatsapp';
   }): Promise<HeadlessTurnResult> {
     const controller = new AbortController();
     let streamed = '';
@@ -258,6 +259,7 @@ export class MaestroService {
         userId: params.userId,
         message: params.message,
         confirmBeforeSend: params.confirmBeforeSend ?? true,
+        sourceChannel: params.sourceChannel,
       },
       controller.signal,
     )) {
@@ -352,6 +354,8 @@ export class MaestroService {
       webSearch?: boolean;
       /** Files (images/PDF) attached to this turn. */
       attachments?: MaestroAttachment[];
+      /** External channel this turn came from (bridge), if any. */
+      sourceChannel?: 'telegram' | 'whatsapp';
     },
     signal: AbortSignal,
   ): AsyncGenerator<MaestroSseEvent> {
@@ -389,13 +393,16 @@ export class MaestroService {
       return;
     }
 
-    // Persist the user turn (with attachment metadata so the bubble re-renders
-    // on reload), then load history (excluding the message just saved).
+    // Persist the user turn (with attachment + source metadata so the bubble
+    // re-renders on reload), then load history (excluding the message just saved).
+    const userMeta: Record<string, unknown> = {};
+    if (attachments) userMeta.maestroAttachments = attachments;
+    if (params.sourceChannel) userMeta.maestroSource = params.sourceChannel;
     await this.conversations.addMessage(
       conversationId,
       'user',
       message,
-      attachments ? { maestroAttachments: attachments } : undefined,
+      Object.keys(userMeta).length > 0 ? userMeta : undefined,
     );
     const recent = await this.conversations.getRecentMessages(
       conversationId,

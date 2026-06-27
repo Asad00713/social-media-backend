@@ -139,7 +139,7 @@ export class MaestroBridgeProcessor extends WorkerHost {
       await this.showWorkspaceSwitch(replier, link);
       return;
     }
-    await this.safeRun(replier, link, text);
+    await this.safeRun(replier, link, text, 'telegram');
   }
 
   private async handleTelegramCallback(
@@ -159,7 +159,13 @@ export class MaestroBridgeProcessor extends WorkerHost {
     if (!pending || !match) return; // stale tap — ignore
     const index = Number(match[1]);
     if (index < 0 || index >= pending.items.length) return;
-    await this.applyChoice(this.telegramReplier(chatId), link, pending, index);
+    await this.applyChoice(
+      this.telegramReplier(chatId),
+      link,
+      pending,
+      index,
+      'telegram',
+    );
   }
 
   private telegramName(from: TelegramFrom): string {
@@ -245,13 +251,13 @@ export class MaestroBridgeProcessor extends WorkerHost {
     if (pending) {
       const index = this.resolveChoice(pending, text);
       if (index !== null) {
-        await this.applyChoice(replier, link, pending, index);
+        await this.applyChoice(replier, link, pending, index, 'whatsapp');
         return;
       }
       // Not a choice — fall through and treat as a fresh message.
       await this.links.setPending(link.id, null);
     }
-    await this.safeRun(replier, link, text);
+    await this.safeRun(replier, link, text, 'whatsapp');
   }
 
   /** Map a free-text WhatsApp reply onto a pending choice index, or null. */
@@ -310,9 +316,10 @@ export class MaestroBridgeProcessor extends WorkerHost {
     replier: BridgeReplier,
     link: MaestroChannelLink,
     message: string,
+    channel: 'telegram' | 'whatsapp',
   ): Promise<void> {
     try {
-      await this.runAndReply(replier, link, message);
+      await this.runAndReply(replier, link, message, channel);
     } catch (err) {
       this.logger.error(
         `bridge run failed: ${err instanceof Error ? err.message : String(err)}`,
@@ -328,6 +335,7 @@ export class MaestroBridgeProcessor extends WorkerHost {
     replier: BridgeReplier,
     link: MaestroChannelLink,
     message: string,
+    channel: 'telegram' | 'whatsapp',
   ): Promise<void> {
     // One shared thread per (user, workspace) — every linked number/channel for
     // this workspace continues the same conversation.
@@ -352,6 +360,7 @@ export class MaestroBridgeProcessor extends WorkerHost {
       userId: link.userId,
       message,
       confirmBeforeSend: true,
+      sourceChannel: channel,
     });
     await this.renderResult(replier, link, result);
   }
@@ -401,6 +410,7 @@ export class MaestroBridgeProcessor extends WorkerHost {
     link: MaestroChannelLink,
     pending: PendingChoice,
     index: number,
+    channel: 'telegram' | 'whatsapp',
   ): Promise<void> {
     await this.links.setPending(link.id, null);
     const value = pending.items[index];
@@ -416,7 +426,7 @@ export class MaestroBridgeProcessor extends WorkerHost {
 
     // Question — feed the chosen option back as the next turn. The model re-calls
     // the pending tool with confirmed:true / the answer (history carries the ask).
-    await this.safeRun(replier, link, value);
+    await this.safeRun(replier, link, value, channel);
   }
 
   /** Offer the user's workspaces as a choice to pick the active one. */
