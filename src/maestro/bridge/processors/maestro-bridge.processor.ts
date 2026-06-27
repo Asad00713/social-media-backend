@@ -329,14 +329,23 @@ export class MaestroBridgeProcessor extends WorkerHost {
     link: MaestroChannelLink,
     message: string,
   ): Promise<void> {
-    let conversationId = link.conversationId;
+    // One shared thread per (user, workspace) — every linked number/channel for
+    // this workspace continues the same conversation.
+    let conversationId = await this.links.findThreadConversation(
+      link.userId,
+      link.defaultWorkspaceId,
+    );
     if (!conversationId) {
       const conv = await this.maestro.createConversation(
         link.userId,
         link.defaultWorkspaceId,
       );
       conversationId = conv.id;
-      await this.links.setConversation(link.id, conversationId);
+      await this.links.setThreadConversation(
+        link.userId,
+        link.defaultWorkspaceId,
+        conversationId,
+      );
     }
     const result = await this.maestro.runHeadlessTurn({
       conversationId,
@@ -399,8 +408,8 @@ export class MaestroBridgeProcessor extends WorkerHost {
 
     if (pending.kind === 'workspace') {
       await this.links.setDefaultWorkspace(link.id, value);
-      // Fresh conversation so context belongs to the newly-selected workspace.
-      await this.links.setConversation(link.id, null);
+      // No conversation reset needed — each workspace resolves its own shared
+      // thread on the next message.
       await replier.sendText(`✅ Switched to ${label}. Send me anything.`);
       return;
     }

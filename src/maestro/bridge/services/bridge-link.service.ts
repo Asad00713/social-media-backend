@@ -8,6 +8,7 @@ import {
   type MaestroBridgeChannel,
   type MaestroChannelLink,
 } from '../../../drizzle/schema/maestro-links.schema';
+import { maestroBridgeThreads } from '../../../drizzle/schema/maestro-bridge-threads.schema';
 import { secureCompare } from '../../../common/utils/encryption.util';
 
 /** Connect links are short-lived so a leaked URL can't be reused later. */
@@ -174,5 +175,45 @@ export class BridgeLinkService {
       .update(maestroChannelLinks)
       .set({ status: 'revoked', updatedAt: new Date() })
       .where(eq(maestroChannelLinks.id, linkId));
+  }
+
+  /**
+   * The shared Maestro conversation for a (user, workspace) — all of the user's
+   * linked numbers/channels in that workspace use this one thread, so Maestro
+   * keeps one continuous memory. Returns null if none exists yet.
+   */
+  async findThreadConversation(
+    userId: string,
+    workspaceId: string,
+  ): Promise<string | null> {
+    const [row] = await db
+      .select({ conversationId: maestroBridgeThreads.conversationId })
+      .from(maestroBridgeThreads)
+      .where(
+        and(
+          eq(maestroBridgeThreads.userId, userId),
+          eq(maestroBridgeThreads.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
+    return row?.conversationId ?? null;
+  }
+
+  /** Upsert the (user, workspace) → conversation mapping. */
+  async setThreadConversation(
+    userId: string,
+    workspaceId: string,
+    conversationId: string,
+  ): Promise<void> {
+    await db
+      .insert(maestroBridgeThreads)
+      .values({ userId, workspaceId, conversationId })
+      .onConflictDoUpdate({
+        target: [
+          maestroBridgeThreads.userId,
+          maestroBridgeThreads.workspaceId,
+        ],
+        set: { conversationId, updatedAt: new Date() },
+      });
   }
 }
