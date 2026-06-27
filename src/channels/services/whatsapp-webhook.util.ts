@@ -1,3 +1,11 @@
+export interface ParsedWhatsAppMedia {
+  mediaId: string;
+  kind: 'image' | 'video' | 'audio' | 'voice' | 'file';
+  mimeType?: string;
+  caption?: string;
+  filename?: string;
+}
+
 export interface ParsedWhatsAppMessage {
   phoneNumberId: string;
   fromWaId: string;
@@ -6,6 +14,10 @@ export interface ParsedWhatsAppMessage {
   timestamp: Date;
   authorName?: string;
   isText: boolean;
+  /** Present for image/video/audio/voice/document/sticker messages. */
+  media?: ParsedWhatsAppMedia;
+  /** Placeholder text for non-media, non-text messages (location/contacts). */
+  note?: string;
   referral?: Record<string, any>;
 }
 
@@ -26,19 +38,61 @@ export function parseWhatsAppMessages(payload: any): ParsedWhatsAppMessage[] {
         if (c?.wa_id && c?.profile?.name) nameByWaId.set(c.wa_id, c.profile.name);
       }
       for (const msg of messages) {
-        const isText = msg?.type === 'text' && typeof msg?.text?.body === 'string';
-        out.push({
+        const base = {
           phoneNumberId: String(phoneNumberId),
           fromWaId: String(msg?.from ?? ''),
           messageId: String(msg?.id ?? ''),
-          text: isText ? String(msg.text.body) : '',
           timestamp: msg?.timestamp
             ? new Date(Number(msg.timestamp) * 1000)
             : new Date(),
           authorName: nameByWaId.get(String(msg?.from ?? '')),
-          isText,
           referral: msg?.referral,
-        });
+        };
+        const type = msg?.type as string | undefined;
+
+        if (type === 'text' && typeof msg?.text?.body === 'string') {
+          out.push({ ...base, text: String(msg.text.body), isText: true });
+        } else if (
+          type === 'image' ||
+          type === 'video' ||
+          type === 'audio' ||
+          type === 'document' ||
+          type === 'sticker'
+        ) {
+          const node = msg[type] ?? {};
+          const kind: ParsedWhatsAppMedia['kind'] =
+            type === 'image' || type === 'sticker'
+              ? 'image'
+              : type === 'video'
+                ? 'video'
+                : type === 'document'
+                  ? 'file'
+                  : node?.voice === true
+                    ? 'voice'
+                    : 'audio';
+          const caption =
+            typeof node?.caption === 'string' ? node.caption : undefined;
+          out.push({
+            ...base,
+            text: caption ?? '',
+            isText: false,
+            media: {
+              mediaId: String(node?.id ?? ''),
+              kind,
+              mimeType: node?.mime_type ? String(node.mime_type) : undefined,
+              caption,
+              filename:
+                type === 'document' && node?.filename
+                  ? String(node.filename)
+                  : undefined,
+            },
+          });
+        } else if (type === 'location') {
+          out.push({ ...base, text: '', isText: false, note: '📍 Location' });
+        } else if (type === 'contacts') {
+          out.push({ ...base, text: '', isText: false, note: '👤 Contact' });
+        }
+        // else: unsupported (reaction/button/system/...) — skip
       }
     }
   }
