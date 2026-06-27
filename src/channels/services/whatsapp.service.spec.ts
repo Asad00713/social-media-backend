@@ -37,3 +37,89 @@ describe('WhatsAppService.sendText', () => {
     );
   });
 });
+
+describe('WhatsAppService.downloadMedia', () => {
+  const svc = new WhatsAppService();
+  afterEach(() => jest.restoreAllMocks());
+
+  it('resolves the media url then downloads the binary with the bearer', async () => {
+    const fetchMock = jest
+      .spyOn(global, 'fetch' as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({ url: 'https://lookaside.fbsbx.com/x', mime_type: 'image/jpeg' }),
+      } as any)
+      .mockResolvedValueOnce({
+        ok: true,
+        headers: { get: () => 'image/jpeg' },
+        arrayBuffer: async () => new Uint8Array([1, 2, 3]).buffer,
+      } as any);
+
+    const out = await svc.downloadMedia('tok', 'media123');
+
+    expect(out.contentType).toBe('image/jpeg');
+    expect(Buffer.isBuffer(out.buffer)).toBe(true);
+    expect(out.buffer.length).toBe(3);
+    expect(fetchMock.mock.calls[0][0]).toBe('https://graph.facebook.com/v21.0/media123');
+    expect((fetchMock.mock.calls[0][1] as any).headers.Authorization).toBe('Bearer tok');
+    expect(fetchMock.mock.calls[1][0]).toBe('https://lookaside.fbsbx.com/x');
+    expect((fetchMock.mock.calls[1][1] as any).headers.Authorization).toBe('Bearer tok');
+  });
+
+  it('throws when the media lookup fails', async () => {
+    jest.spyOn(global, 'fetch' as any).mockResolvedValue({
+      ok: false,
+      status: 404,
+      json: async () => ({ error: { message: 'media not found' } }),
+    } as any);
+    await expect(svc.downloadMedia('tok', 'bad')).rejects.toThrow('media not found');
+  });
+});
+
+describe('WhatsAppService.sendMedia', () => {
+  const svc = new WhatsAppService();
+  afterEach(() => jest.restoreAllMocks());
+
+  it('sends an image with a caption', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch' as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ messages: [{ id: 'wamid.IMG' }] }),
+    } as any);
+
+    const res = await svc.sendMedia('tok', '1010', '15551234567', {
+      type: 'image',
+      link: 'https://r2.example/x.jpg',
+      caption: 'here you go',
+    });
+
+    expect(res).toEqual({ messageId: 'wamid.IMG' });
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as any).body)).toEqual({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: '15551234567',
+      type: 'image',
+      image: { link: 'https://r2.example/x.jpg', caption: 'here you go' },
+    });
+  });
+
+  it('omits caption for audio', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch' as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ messages: [{ id: 'wamid.AUD' }] }),
+    } as any);
+
+    await svc.sendMedia('tok', '1010', '15551234567', {
+      type: 'audio',
+      link: 'https://r2.example/v.ogg',
+      caption: 'ignored',
+    });
+
+    expect(JSON.parse((fetchMock.mock.calls[0][1] as any).body)).toEqual({
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: '15551234567',
+      type: 'audio',
+      audio: { link: 'https://r2.example/v.ogg' },
+    });
+  });
+});
