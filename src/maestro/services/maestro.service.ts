@@ -95,6 +95,30 @@ export interface MaestroBudget {
   resetDate: string | null;
 }
 
+/** One question (confirm card or ask_user) surfaced from a headless turn. */
+export interface HeadlessQuestionItem {
+  header: string;
+  question: string;
+  options: string[];
+  multiSelect: boolean;
+}
+
+export interface HeadlessQuestionSet {
+  questions: HeadlessQuestionItem[];
+}
+
+export interface HeadlessMediaItem {
+  url: string;
+  title?: string;
+}
+
+/** Result of a headless turn — text plus any question/media the agent emitted. */
+export interface HeadlessTurnResult {
+  text: string;
+  question?: HeadlessQuestionSet;
+  media?: HeadlessMediaItem[];
+}
+
 /**
  * Orchestrates one Maestro chat turn: authorize → persist user message → replay
  * history → run the agent runtime → translate `AgentEvent`s to SSE → persist the
@@ -212,20 +236,22 @@ export class MaestroService {
   /**
    * Run one turn HEADLESS (no SSE) — for the external bridge (Telegram/WhatsApp).
    * Reuses `streamMessage` so history replay, budget enforcement, tool wiring and
-   * persistence are identical to the in-app path; we just collect the final
-   * assistant text instead of streaming it. Confirm-before-send defaults ON
-   * (unattended surface). Rich results (questions → buttons, media → photos) are
-   * Plan B; here we return plain text.
+   * persistence are identical to the in-app path; we just collect the result
+   * instead of streaming it. Confirm-before-send defaults ON (unattended
+   * surface). Captures any question (confirm card / ask_user) and media so the
+   * channel can render buttons / image previews.
    */
   async runHeadlessTurn(params: {
     conversationId: string;
     userId: string;
     message: string;
     confirmBeforeSend?: boolean;
-  }): Promise<{ text: string }> {
+  }): Promise<HeadlessTurnResult> {
     const controller = new AbortController();
     let streamed = '';
     let final = '';
+    let question: HeadlessQuestionSet | undefined;
+    let media: HeadlessMediaItem[] | undefined;
     for await (const ev of this.streamMessage(
       {
         conversationId: params.conversationId,
@@ -235,17 +261,59 @@ export class MaestroService {
       },
       controller.signal,
     )) {
-      if (ev.event === 'message_stream') streamed += ev.data.token;
-      else if (ev.event === 'message_complete') final = ev.data.content;
-      else if (ev.event === 'error') {
+      if (ev.event === 'message_stream') {
+        streamed += ev.data.token;
+      } else if (ev.event === 'message_complete') {
+        final = ev.data.content;
+      } else if (ev.event === 'tool_result' && !ev.data.isError) {
+        const data = this.parseToolPayload(ev.data.output);
+        if (!data) continue;
+        if (data.kind === 'question') {
+          const qs = this.normalizeHeadlessQuestions(data);
+          if (qs) question = qs;
+        } else if (data.kind === 'media' && Array.isArray(data.items)) {
+          const items = (data.items as Record<string, unknown>[])
+            .map((it) => ({
+              url: String(it.url ?? it.src ?? ''),
+              title: it.title ? String(it.title) : undefined,
+            }))
+            .filter((it) => it.url);
+          if (items.length) media = items;
+        }
+      } else if (ev.event === 'error') {
         return {
           text:
             (final || streamed).trim() ||
             "Sorry — I hit an error and couldn't finish that.",
+          question,
+          media,
         };
       }
     }
-    return { text: (final || streamed).trim() };
+    return { text: (final || streamed).trim(), question, media };
+  }
+
+  /** Normalize an ask_user / confirm-card payload into a headless question set. */
+  private normalizeHeadlessQuestions(
+    data: Record<string, unknown>,
+  ): HeadlessQuestionSet | null {
+    const raw = Array.isArray(data.questions) ? data.questions : [];
+    const questions = (raw as Record<string, unknown>[])
+      .map((q) => {
+        const question = String(q.question ?? '').trim();
+        const options = Array.isArray(q.options)
+          ? (q.options as unknown[]).map(String).filter(Boolean)
+          : [];
+        const header = String(q.header ?? '').trim() || question.slice(0, 24);
+        return {
+          header,
+          question,
+          options,
+          multiSelect: Boolean(q.multiSelect),
+        };
+      })
+      .filter((q) => q.question && q.options.length > 0);
+    return questions.length ? { questions } : null;
   }
 
   /** Tool results arrive as MCP content blocks: [{ type:'text', text:'<json>' }]. */

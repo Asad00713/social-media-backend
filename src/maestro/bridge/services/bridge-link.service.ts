@@ -19,6 +19,15 @@ interface LinkPayload {
   exp: number;
 }
 
+/** A choice prompt awaiting a button tap (stored on the link's metadata). */
+export interface PendingChoice {
+  kind: 'question' | 'workspace';
+  /** Values to act on: option text (question) or workspace id (switch). */
+  items: string[];
+  /** Button captions shown to the user. */
+  labels: string[];
+}
+
 /**
  * Issues/verifies the HMAC-signed deep-link tokens used to bind an external
  * identity (Telegram user, …) to a Schedura account, and owns CRUD over
@@ -131,10 +140,32 @@ export class BridgeLinkService {
       .where(eq(maestroChannelLinks.id, linkId));
   }
 
-  async setConversation(linkId: string, conversationId: string): Promise<void> {
+  async setConversation(
+    linkId: string,
+    conversationId: string | null,
+  ): Promise<void> {
     await db
       .update(maestroChannelLinks)
       .set({ conversationId, updatedAt: new Date() })
+      .where(eq(maestroChannelLinks.id, linkId));
+  }
+
+  /**
+   * Stash a pending choice prompt (the options/workspaces last shown as inline
+   * buttons) on the link so a `callback_query` tap can be resolved back to the
+   * chosen value. `labels` are the button captions, `items` the values to act on
+   * (option text for questions, workspace id for switch). Pass null to clear.
+   */
+  async setPending(
+    linkId: string,
+    pending: PendingChoice | null,
+  ): Promise<void> {
+    await db
+      .update(maestroChannelLinks)
+      .set({
+        metadata: pending ? { pending } : {},
+        updatedAt: new Date(),
+      })
       .where(eq(maestroChannelLinks.id, linkId));
   }
 
