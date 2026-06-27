@@ -28,7 +28,12 @@ export class WhatsAppIngestService {
         conversationId: `${m.phoneNumberId}:${m.fromWaId}`,
         platformItemId: m.messageId,
         authorPlatformId: m.fromWaId,
-        authorDisplayName: m.authorName ?? m.fromWaId,
+        // WhatsApp has no usernames — the wa_id IS the customer's phone number.
+        // Surface it (E.164-formatted) as the handle so the inbox shows the
+        // number instead of "unknown". Profile pictures are not exposed by the
+        // Cloud API, so authorAvatarUrl stays null (initials avatar).
+        authorHandle: m.fromWaId ? `+${m.fromWaId}` : undefined,
+        authorDisplayName: m.authorName ?? `+${m.fromWaId}`,
         text: m.text,
         fromMe: false,
         platformCreatedAt: m.timestamp,
