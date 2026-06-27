@@ -7,6 +7,7 @@ import { TelegramService } from '../../../channels/services/telegram.service';
 import { WhatsAppService } from '../../../channels/services/whatsapp.service';
 import { parseWhatsAppMessages } from '../../../channels/services/whatsapp-webhook.util';
 import { WorkspaceService } from '../../../workspace/workspace.service';
+import { AnalyticsEventEmitter } from '../../../realtime/analytics-event-emitter.service';
 import {
   MaestroService,
   type HeadlessTurnResult,
@@ -63,6 +64,7 @@ export class MaestroBridgeProcessor extends WorkerHost {
     private readonly telegram: TelegramService,
     private readonly whatsapp: WhatsAppService,
     private readonly workspaces: WorkspaceService,
+    private readonly events: AnalyticsEventEmitter,
     private readonly config: ConfigService,
   ) {
     super();
@@ -379,6 +381,13 @@ export class MaestroBridgeProcessor extends WorkerHost {
       sourceChannel: channel,
     });
     await this.renderResult(replier, link, result);
+
+    // Nudge any open Maestro panel on this conversation to refresh live.
+    this.events.emit(link.defaultWorkspaceId, 'maestro.bridge.message', {
+      workspaceId: link.defaultWorkspaceId,
+      conversationId,
+      channel,
+    });
   }
 
   /** Send text + media previews, and render any question as a choice prompt. */
