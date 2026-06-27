@@ -22,6 +22,7 @@ import {
 } from '../common/utils/webhook-signature.util';
 import { verifyTelegramWebhookSecret } from './utils/telegram-webhook-secret.util';
 import { secureCompare } from '../common/utils/encryption.util';
+import { parseWhatsAppMessages } from './services/whatsapp-webhook.util';
 import { InboxService } from '../inbox/inbox.service';
 import { FacebookService } from './services/facebook.service';
 import { InstagramService } from './services/instagram.service';
@@ -190,6 +191,23 @@ export class WebhooksController {
     // ACK fast, then process async.
     res.status(200).send('EVENT_RECEIVED');
     try {
+      // One Meta app = one webhook URL. If this payload is for the dedicated
+      // Maestro number, divert it to the bridge instead of the inbox ingest so a
+      // single callback URL can serve both.
+      const maestroPnid = process.env.MAESTRO_WHATSAPP_PHONE_NUMBER_ID;
+      const forMaestro =
+        !!maestroPnid &&
+        parseWhatsAppMessages(req.body).some(
+          (m) => m.phoneNumberId === maestroPnid,
+        );
+      if (forMaestro) {
+        await this.maestroBridgeQueue.add(
+          'whatsapp-update',
+          { channel: 'whatsapp', payload: req.body },
+          { removeOnComplete: true, removeOnFail: 100, attempts: 2 },
+        );
+        return;
+      }
       await this.whatsappIngestQueue.add(
         'whatsapp-ingest',
         { payload: req.body },
