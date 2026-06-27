@@ -178,16 +178,20 @@ export class BridgeLinkService {
   }
 
   /**
-   * The shared Maestro conversation for a (user, workspace) — all of the user's
-   * linked numbers/channels in that workspace use this one thread, so Maestro
-   * keeps one continuous memory. Returns null if none exists yet.
+   * The shared Maestro thread for a (user, workspace) with its last-activity time
+   * — all of the user's linked numbers/channels in that workspace use this one
+   * conversation, so Maestro keeps one continuous memory. `updatedAt` drives the
+   * inactivity auto-reset. Returns null if none exists yet.
    */
-  async findThreadConversation(
+  async getThread(
     userId: string,
     workspaceId: string,
-  ): Promise<string | null> {
+  ): Promise<{ conversationId: string; updatedAt: Date } | null> {
     const [row] = await db
-      .select({ conversationId: maestroBridgeThreads.conversationId })
+      .select({
+        conversationId: maestroBridgeThreads.conversationId,
+        updatedAt: maestroBridgeThreads.updatedAt,
+      })
       .from(maestroBridgeThreads)
       .where(
         and(
@@ -196,7 +200,32 @@ export class BridgeLinkService {
         ),
       )
       .limit(1);
-    return row?.conversationId ?? null;
+    return row ?? null;
+  }
+
+  /** Bump the thread's last-activity time (keeps the current session alive). */
+  async touchThread(userId: string, workspaceId: string): Promise<void> {
+    await db
+      .update(maestroBridgeThreads)
+      .set({ updatedAt: new Date() })
+      .where(
+        and(
+          eq(maestroBridgeThreads.userId, userId),
+          eq(maestroBridgeThreads.workspaceId, workspaceId),
+        ),
+      );
+  }
+
+  /** Drop the thread mapping so the next message starts a fresh session. */
+  async resetThread(userId: string, workspaceId: string): Promise<void> {
+    await db
+      .delete(maestroBridgeThreads)
+      .where(
+        and(
+          eq(maestroBridgeThreads.userId, userId),
+          eq(maestroBridgeThreads.workspaceId, workspaceId),
+        ),
+      );
   }
 
   /** Upsert the (user, workspace) → conversation mapping. */

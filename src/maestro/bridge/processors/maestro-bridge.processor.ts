@@ -17,6 +17,9 @@ import {
 } from '../services/bridge-link.service';
 import type { MaestroChannelLink } from '../../../drizzle/schema/maestro-links.schema';
 
+/** Idle gap after which the next bridge message starts a fresh session/thread. */
+const SESSION_GAP_MS = 12 * 60 * 60 * 1000;
+
 interface TelegramFrom {
   id: number;
   first_name?: string;
@@ -139,6 +142,10 @@ export class MaestroBridgeProcessor extends WorkerHost {
       await this.showWorkspaceSwitch(replier, link);
       return;
     }
+    if (text === '/new') {
+      await this.startNewSession(replier, link);
+      return;
+    }
     await this.safeRun(replier, link, text, 'telegram');
   }
 
@@ -245,6 +252,10 @@ export class MaestroBridgeProcessor extends WorkerHost {
       await this.showWorkspaceSwitch(replier, link);
       return;
     }
+    if (text === '/new') {
+      await this.startNewSession(replier, link);
+      return;
+    }
 
     // If a choice is pending, try to resolve the reply (number or label).
     const pending = (link.metadata as { pending?: PendingChoice }).pending;
@@ -308,7 +319,7 @@ export class MaestroBridgeProcessor extends WorkerHost {
       defaultWorkspaceId: verified.workspaceId,
     });
     await replier.sendText(
-      '✅ Connected to Schedura. Send me anything — I can check your inbox, draft and publish posts, and more.\n\nTip: send /switch to change which workspace I act on.',
+      '✅ Connected to Schedura. Send me anything — I can check your inbox, draft and publish posts, and more.\n\nTips: /switch to change workspace · /new for a fresh chat.',
     );
   }
 
@@ -338,12 +349,17 @@ export class MaestroBridgeProcessor extends WorkerHost {
     channel: 'telegram' | 'whatsapp',
   ): Promise<void> {
     // One shared thread per (user, workspace) — every linked number/channel for
-    // this workspace continues the same conversation.
-    let conversationId = await this.links.findThreadConversation(
+    // this workspace continues the same conversation, until it goes idle past
+    // SESSION_GAP_MS (then the next message rolls a fresh session).
+    const existing = await this.links.getThread(
       link.userId,
       link.defaultWorkspaceId,
     );
-    if (!conversationId) {
+    let conversationId: string;
+    if (existing && Date.now() - existing.updatedAt.getTime() < SESSION_GAP_MS) {
+      conversationId = existing.conversationId;
+      await this.links.touchThread(link.userId, link.defaultWorkspaceId);
+    } else {
       const conv = await this.maestro.createConversation(
         link.userId,
         link.defaultWorkspaceId,
@@ -427,6 +443,17 @@ export class MaestroBridgeProcessor extends WorkerHost {
     // Question — feed the chosen option back as the next turn. The model re-calls
     // the pending tool with confirmed:true / the answer (history carries the ask).
     await this.safeRun(replier, link, value, channel);
+  }
+
+  /** Roll a fresh session — the next message starts a new conversation. */
+  private async startNewSession(
+    replier: BridgeReplier,
+    link: MaestroChannelLink,
+  ): Promise<void> {
+    await this.links.resetThread(link.userId, link.defaultWorkspaceId);
+    await replier.sendText(
+      '🆕 Started a fresh session. Your previous chat is saved in Schedura.',
+    );
   }
 
   /** Offer the user's workspaces as a choice to pick the active one. */
