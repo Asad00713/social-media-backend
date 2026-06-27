@@ -81,6 +81,7 @@ import { TelegramConnectService } from './services/telegram-connect.service';
 import { TelegramService } from './services/telegram.service';
 import { ConnectTelegramBotDto } from './dto/telegram-connect.dto';
 import { ConnectWhatsAppDto } from './dto/connect-whatsapp.dto';
+import { WhatsAppService } from './services/whatsapp.service';
 
 @Controller('channels')
 export class ChannelsController {
@@ -113,6 +114,7 @@ export class ChannelsController {
     private readonly inboxService: InboxService,
     private readonly telegramConnectService: TelegramConnectService,
     private readonly telegramService: TelegramService,
+    private readonly whatsappService: WhatsAppService,
   ) {}
 
   // ==========================================================================
@@ -5410,16 +5412,32 @@ export class ChannelsController {
       dto.displayPhoneNumber || displayPhoneNumber || dto.phoneNumberId;
 
     // Build and persist the channel row (createChannel encrypts the token).
-    return this.channelService.createChannel(workspaceId, user.userId, {
-      platform: 'whatsapp',
-      accountType: 'business_account',
-      platformAccountId: dto.phoneNumberId,
-      accountName,
-      accessToken: dto.accessToken,
-      metadata: {
-        wabaId: dto.wabaId,
-        displayPhoneNumber: resolvedDisplayPhone,
+    const channel = await this.channelService.createChannel(
+      workspaceId,
+      user.userId,
+      {
+        platform: 'whatsapp',
+        accountType: 'business_account',
+        platformAccountId: dto.phoneNumberId,
+        accountName,
+        accessToken: dto.accessToken,
+        metadata: {
+          wabaId: dto.wabaId,
+          displayPhoneNumber: resolvedDisplayPhone,
+        },
       },
-    });
+    );
+
+    // Subscribe this app to the WABA so inbound message webhooks are delivered.
+    // Best-effort: never block the connect on a subscribe failure.
+    try {
+      await this.whatsappService.subscribeWaba(dto.accessToken, dto.wabaId);
+    } catch (err) {
+      this.logger.warn(
+        `WABA subscribe failed for waba=${dto.wabaId}: ${(err as Error).message}`,
+      );
+    }
+
+    return channel;
   }
 }

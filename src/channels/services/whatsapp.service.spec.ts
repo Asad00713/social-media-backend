@@ -123,3 +123,26 @@ describe('WhatsAppService.sendMedia', () => {
     });
   });
 });
+
+describe('WhatsAppService.subscribeWaba', () => {
+  const svc = new WhatsAppService();
+  afterEach(() => jest.restoreAllMocks());
+
+  it('POSTs to the WABA subscribed_apps edge', async () => {
+    const fetchMock = jest.spyOn(global, 'fetch' as any).mockResolvedValue({
+      ok: true,
+      json: async () => ({ success: true }),
+    } as any);
+    await svc.subscribeWaba('tok', '12345');
+    expect(fetchMock.mock.calls[0][0]).toBe('https://graph.facebook.com/v21.0/12345/subscribed_apps');
+    expect((fetchMock.mock.calls[0][1] as any).method).toBe('POST');
+    expect((fetchMock.mock.calls[0][1] as any).headers.Authorization).toBe('Bearer tok');
+  });
+
+  it('throws on API failure', async () => {
+    jest.spyOn(global, 'fetch' as any).mockResolvedValue({
+      ok: false, status: 400, json: async () => ({ error: { message: 'no perms' } }),
+    } as any);
+    await expect(svc.subscribeWaba('tok', '12345')).rejects.toThrow('no perms');
+  });
+});

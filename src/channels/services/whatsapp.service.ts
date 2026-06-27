@@ -91,6 +91,27 @@ export class WhatsAppService {
   }
 
   /**
+   * Subscribe this app to the WABA so inbound message webhooks are delivered.
+   * Manual webhook config alone does NOT route a specific WABA's events — the
+   * WABA must list the app under subscribed_apps. Throws so the caller can log.
+   */
+  async subscribeWaba(accessToken: string, wabaId: string): Promise<void> {
+    const res = await fetch(
+      `${WHATSAPP_GRAPH_BASE}/${wabaId}/subscribed_apps`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || data?.success === false) {
+      const msg =
+        data?.error?.message || `WABA subscribe failed (${res.status})`;
+      throw new Error(msg);
+    }
+  }
+
+  /**
    * Send a media message by public link (R2 URL). Captions are valid only on
    * image/video/document; `filename` only on document. 24h window applies.
    */
