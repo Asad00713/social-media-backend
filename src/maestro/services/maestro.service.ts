@@ -247,6 +247,8 @@ export class MaestroService {
     message: string;
     confirmBeforeSend?: boolean;
     sourceChannel?: 'telegram' | 'whatsapp';
+    /** Fired the instant the inbound user turn is persisted (before the reply). */
+    onUserMessagePersisted?: () => void;
   }): Promise<HeadlessTurnResult> {
     const controller = new AbortController();
     let streamed = '';
@@ -356,6 +358,9 @@ export class MaestroService {
       attachments?: MaestroAttachment[];
       /** External channel this turn came from (bridge), if any. */
       sourceChannel?: 'telegram' | 'whatsapp';
+      /** Fired the instant the inbound user turn is persisted (before the model
+       *  runs) — bridge channels use this to push the user bubble live. */
+      onUserMessagePersisted?: () => void;
     },
     signal: AbortSignal,
   ): AsyncGenerator<MaestroSseEvent> {
@@ -404,6 +409,15 @@ export class MaestroService {
       message,
       Object.keys(userMeta).length > 0 ? userMeta : undefined,
     );
+    // Signal listeners (bridge) that the user turn is now in the DB so an open
+    // panel can show it immediately, without waiting for the model's reply.
+    if (params.onUserMessagePersisted) {
+      try {
+        params.onUserMessagePersisted();
+      } catch {
+        // a notification hook must never break the turn
+      }
+    }
     const recent = await this.conversations.getRecentMessages(
       conversationId,
       HISTORY_LIMIT,

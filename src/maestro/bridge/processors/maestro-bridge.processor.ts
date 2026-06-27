@@ -373,21 +373,27 @@ export class MaestroBridgeProcessor extends WorkerHost {
         conversationId,
       );
     }
+    // Push an open Maestro panel a live nudge to refresh. We fire it twice:
+    // once the moment the user's inbound turn is persisted (so the incoming
+    // bubble appears instantly, not after the model finishes), and again once
+    // the assistant's reply lands.
+    const nudge = () =>
+      this.events.emit(link.defaultWorkspaceId, 'maestro.bridge.message', {
+        workspaceId: link.defaultWorkspaceId,
+        conversationId,
+        channel,
+      });
+
     const result = await this.maestro.runHeadlessTurn({
       conversationId,
       userId: link.userId,
       message,
       confirmBeforeSend: true,
       sourceChannel: channel,
+      onUserMessagePersisted: nudge,
     });
     await this.renderResult(replier, link, result);
-
-    // Nudge any open Maestro panel on this conversation to refresh live.
-    this.events.emit(link.defaultWorkspaceId, 'maestro.bridge.message', {
-      workspaceId: link.defaultWorkspaceId,
-      conversationId,
-      channel,
-    });
+    nudge();
   }
 
   /** Send text + media previews, and render any question as a choice prompt. */

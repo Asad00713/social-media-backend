@@ -57,12 +57,16 @@ export class DiscordGatewayService implements OnModuleInit, OnModuleDestroy {
   private readonly logger = new Logger(DiscordGatewayService.name);
   private client: Client | null = null;
   private botUserId = '';
+  /** When true, ingest ALL guild channel messages (not just @mentions). Requires
+   *  the privileged Message Content intent enabled in the Discord Developer Portal. */
+  private ingestChannelMessages = false;
 
   constructor(
     @InjectQueue(QUEUES.DISCORD_INGEST) private readonly queue: Queue,
   ) {}
 
   /** Pure filter: ingest DMs to the bot, or guild messages mentioning the bot.
+   *  When `ingestAllGuildMessages` is on, ingest every guild channel message.
    *  Never ingest the bot's own messages. */
   shouldIngest(
     msg: {
@@ -71,9 +75,11 @@ export class DiscordGatewayService implements OnModuleInit, OnModuleDestroy {
       mentions: { id: string }[];
     },
     botUserId: string,
+    ingestAllGuildMessages = false,
   ): boolean {
     if (msg.author.bot && msg.author.id === botUserId) return false;
     if (!msg.guild_id) return true; // DM channel
+    if (ingestAllGuildMessages) return true; // every channel message
     return msg.mentions.some((m) => m.id === botUserId);
   }
 
@@ -85,19 +91,29 @@ export class DiscordGatewayService implements OnModuleInit, OnModuleDestroy {
       return;
     }
 
+    // DMs + @mentions work WITHOUT the privileged Message Content intent (Discord
+    // exempts them). To ingest ALL channel messages we additionally request the
+    // MessageContent intent — gated behind DISCORD_INGEST_CHANNEL_MESSAGES so the
+    // bot never requests a disallowed intent (which fails login) unless the Portal
+    // toggle is on. Enable order: Portal "Message Content Intent" ON → set the env
+    // flag → restart. (At 100+ servers Discord requires review for this intent.)
+    this.ingestChannelMessages =
+      process.env.DISCORD_INGEST_CHANNEL_MESSAGES === 'true';
+
+    const intents = [
+      GatewayIntentBits.Guilds,
+      GatewayIntentBits.GuildMessages,
+      GatewayIntentBits.DirectMessages,
+    ];
+    if (this.ingestChannelMessages) {
+      intents.push(GatewayIntentBits.MessageContent);
+      this.logger.log(
+        'DISCORD_INGEST_CHANNEL_MESSAGES=true — requesting MessageContent intent (all channel messages will be ingested)',
+      );
+    }
+
     this.client = new Client({
-      // NOTE: MessageContent is deliberately NOT requested. Phase 1 only needs
-      // DMs + @mentions, and Discord exempts both from the privileged Message
-      // Content intent — content is delivered for DMs received and for messages
-      // that mention the bot without it. Requesting it fails with "Used
-      // disallowed intents" unless toggled on in the Developer Portal, and at
-      // 100+ servers it requires Discord review. Keeping it off keeps Phase 1
-      // unprivileged. (All-channel reading is Phase 2 and would need it.)
-      intents: [
-        GatewayIntentBits.Guilds,
-        GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.DirectMessages,
-      ],
+      intents,
       // Required to receive DMs (the DM channel is otherwise uncached).
       partials: [Partials.Channel],
     });
@@ -207,7 +223,8 @@ export class DiscordGatewayService implements OnModuleInit, OnModuleDestroy {
   private async forward(type: 'create' | 'update', m: any): Promise<void> {
     try {
       const raw = this.toRaw(m);
-      if (!this.shouldIngest(raw, this.botUserId)) return;
+      if (!this.shouldIngest(raw, this.botUserId, this.ingestChannelMessages))
+        return;
       await this.queue.add(
         type,
         { type, message: raw },

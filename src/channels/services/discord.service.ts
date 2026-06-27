@@ -94,6 +94,39 @@ export class DiscordService {
     return { id: created.id, name: created.name };
   }
 
+  /** List the most recent messages in a channel (newest first), for reading.
+   *  Requires READ_MESSAGE_HISTORY; content needs the message-content intent
+   *  (already enabled for the gateway). `limit` is clamped to 1-50. */
+  async listChannelMessages(
+    channelId: string,
+    limit = 10,
+  ): Promise<
+    { id: string; authorName: string; bot: boolean; content: string; timestamp: string }[]
+  > {
+    const query = new URLSearchParams({
+      limit: String(Math.min(Math.max(limit, 1), 50)),
+    });
+    const msgs = (await this.rest.get(Routes.channelMessages(channelId), {
+      query,
+    })) as {
+      id: string;
+      content: string;
+      timestamp: string;
+      author: {
+        username: string;
+        global_name?: string | null;
+        bot?: boolean;
+      };
+    }[];
+    return msgs.map((m) => ({
+      id: m.id,
+      authorName: m.author.global_name || m.author.username,
+      bot: Boolean(m.author.bot),
+      content: m.content,
+      timestamp: m.timestamp,
+    }));
+  }
+
   /** Fetch a user's public profile for inbox author display. */
   async getUser(userId: string): Promise<{
     id: string;
