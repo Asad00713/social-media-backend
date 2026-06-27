@@ -21,6 +21,7 @@ import {
   verifyMetaSignature,
 } from '../common/utils/webhook-signature.util';
 import { verifyTelegramWebhookSecret } from './utils/telegram-webhook-secret.util';
+import { secureCompare } from '../common/utils/encryption.util';
 import { InboxService } from '../inbox/inbox.service';
 import { FacebookService } from './services/facebook.service';
 import { InstagramService } from './services/instagram.service';
@@ -61,6 +62,8 @@ export class WebhooksController {
     @InjectQueue(QUEUES.TELEGRAM_INGEST) private readonly telegramQueue: Queue,
     @InjectQueue(QUEUES.WHATSAPP_INGEST)
     private readonly whatsappIngestQueue: Queue,
+    @InjectQueue(QUEUES.MAESTRO_BRIDGE)
+    private readonly maestroBridgeQueue: Queue,
   ) {}
 
   // ==========================================================================
@@ -701,6 +704,36 @@ export class WebhooksController {
       'update',
       { channelId: channel.id, workspaceId: channel.workspaceId, update },
       { removeOnComplete: true, attempts: 3 },
+    );
+    return { ok: true };
+  }
+
+  // ==========================================================================
+  // Maestro bridge — central assistant bot (separate from inbox bots)
+  // ==========================================================================
+
+  /**
+   * Inbound updates for the CENTRAL Maestro Telegram bot (the owner's private
+   * line to their assistant). Distinct from the per-workspace inbox bot route
+   * above: one static secret, no routeId, no channel lookup. Verifies the
+   * secret then enqueues the raw update for the bridge processor.
+   */
+  @Post('maestro/telegram')
+  @HttpCode(HttpStatus.OK)
+  async receiveMaestroTelegram(
+    @Headers('x-telegram-bot-api-secret-token')
+    headerSecret: string | undefined,
+    @Body() update: Record<string, unknown>,
+  ) {
+    const expected = process.env.MAESTRO_TELEGRAM_WEBHOOK_SECRET || '';
+    if (!expected || !headerSecret || !secureCompare(headerSecret, expected)) {
+      // Don't leak which check failed; drop quietly (Telegram won't usefully retry).
+      return { ok: true };
+    }
+    await this.maestroBridgeQueue.add(
+      'telegram-update',
+      { update },
+      { removeOnComplete: true, removeOnFail: 100, attempts: 2 },
     );
     return { ok: true };
   }

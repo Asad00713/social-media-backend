@@ -18,6 +18,7 @@ export const QUEUES = {
   TELEGRAM_INGEST: 'telegram-ingest',
   DISCORD_INGEST: 'discord-ingest',
   WHATSAPP_INGEST: 'whatsapp-ingest',
+  MAESTRO_BRIDGE: 'maestro-bridge',
 } as const;
 
 @Module({
@@ -70,6 +71,7 @@ export const QUEUES = {
       { name: QUEUES.TELEGRAM_INGEST },
       { name: QUEUES.DISCORD_INGEST },
       { name: QUEUES.WHATSAPP_INGEST },
+      { name: QUEUES.MAESTRO_BRIDGE },
     ),
   ],
   providers: [RateLimiterService],

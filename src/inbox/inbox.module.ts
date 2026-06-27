@@ -48,6 +48,7 @@ import { QUEUES } from '../queue/queue.module';
       { name: QUEUES.TELEGRAM_INGEST },
       { name: QUEUES.DISCORD_INGEST },
       { name: QUEUES.WHATSAPP_INGEST },
+      { name: QUEUES.MAESTRO_BRIDGE },
     ),
   ],
   controllers: [InboxController, WebhooksController],
