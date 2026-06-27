@@ -37,3 +37,25 @@ export function verifySlackSignature(opts: {
   if (a.length !== b.length) return false;
   return timingSafeEqual(a, b);
 }
+
+/**
+ * Meta webhook signature verification (WhatsApp / Messenger / IG).
+ * Meta signs the raw request body with HMAC-SHA256 keyed by the App Secret and
+ * sends `X-Hub-Signature-256: sha256=<hex>`. Uses timing-safe comparison.
+ */
+export function verifyMetaSignature(opts: {
+  appSecret: string;
+  signatureHeader: string | undefined;
+  rawBody: string | Buffer;
+}): boolean {
+  const { appSecret, signatureHeader, rawBody } = opts;
+  if (!signatureHeader || !signatureHeader.startsWith('sha256=')) return false;
+
+  const expected =
+    'sha256=' + createHmac('sha256', appSecret).update(rawBody).digest('hex');
+
+  const a = Buffer.from(expected);
+  const b = Buffer.from(signatureHeader);
+  if (a.length !== b.length) return false;
+  return timingSafeEqual(a, b);
+}

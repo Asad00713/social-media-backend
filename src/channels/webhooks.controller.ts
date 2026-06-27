@@ -16,7 +16,10 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import type { Request as ExpressRequest, Response } from 'express';
-import { verifySlackSignature } from '../common/utils/webhook-signature.util';
+import {
+  verifySlackSignature,
+  verifyMetaSignature,
+} from '../common/utils/webhook-signature.util';
 import { verifyTelegramWebhookSecret } from './utils/telegram-webhook-secret.util';
 import { InboxService } from '../inbox/inbox.service';
 import { FacebookService } from './services/facebook.service';
@@ -44,6 +47,8 @@ export class WebhooksController {
   private readonly META_VERIFY_TOKEN =
     process.env.META_WEBHOOK_VERIFY_TOKEN || 'webondev_verify_123';
 
+  private readonly META_APP_SECRET = process.env.META_APP_SECRET || '';
+
   private readonly SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET!;
 
   constructor(
@@ -54,6 +59,8 @@ export class WebhooksController {
     @InjectQueue(QUEUES.LEAD_INTAKE) private readonly leadIntakeQueue: Queue,
     @InjectQueue(QUEUES.SLACK_INGEST) private readonly slackQueue: Queue,
     @InjectQueue(QUEUES.TELEGRAM_INGEST) private readonly telegramQueue: Queue,
+    @InjectQueue(QUEUES.WHATSAPP_INGEST)
+    private readonly whatsappIngestQueue: Queue,
   ) {}
 
   // ==========================================================================
@@ -91,6 +98,17 @@ export class WebhooksController {
     @Res() res: Response,
   ) {
     return this.respondToVerify('threads', mode, token, challenge, res);
+  }
+
+  @Get('whatsapp')
+  @HttpCode(HttpStatus.OK)
+  verifyWhatsAppWebhook(
+    @Query('hub.mode') mode: string,
+    @Query('hub.verify_token') token: string,
+    @Query('hub.challenge') challenge: string,
+    @Res() res: Response,
+  ) {
+    return this.respondToVerify('whatsapp', mode, token, challenge, res);
   }
 
   private respondToVerify(
@@ -146,6 +164,38 @@ export class WebhooksController {
       await this.processMetaWebhook(body, 'threads');
     } catch (error) {
       this.logger.error('Error processing Threads webhook:', error);
+    }
+  }
+
+  @Post('whatsapp')
+  @HttpCode(HttpStatus.OK)
+  async handleWhatsAppWebhook(@Req() req: ExpressRequest, @Res() res: Response) {
+    const sig = req.headers['x-hub-signature-256'] as string | undefined;
+    const raw = (req as any).rawBody as Buffer | undefined;
+    const ok =
+      !!this.META_APP_SECRET &&
+      !!raw &&
+      verifyMetaSignature({
+        appSecret: this.META_APP_SECRET,
+        signatureHeader: sig,
+        rawBody: raw,
+      });
+    if (!ok) {
+      this.logger.warn('WhatsApp webhook signature verification failed');
+      return res.status(401).send('invalid signature');
+    }
+    // ACK fast, then process async.
+    res.status(200).send('EVENT_RECEIVED');
+    try {
+      await this.whatsappIngestQueue.add(
+        'whatsapp-ingest',
+        { payload: req.body },
+        { attempts: 3, backoff: { type: 'exponential', delay: 5000 } },
+      );
+    } catch (err) {
+      this.logger.error(
+        `WhatsApp webhook enqueue failed: ${(err as Error).message}`,
+      );
     }
   }
 

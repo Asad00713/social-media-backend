@@ -235,6 +235,13 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
     usePKCE: false,
     additionalParams: { permissions: '101392' },
   },
+  // WhatsApp Business - uses OAuth 2.0 via Meta (formerly Facebook)
+  whatsapp: {
+    authorizationUrl: 'https://www.facebook.com/v18.0/dialog/oauth',
+    tokenUrl: 'https://graph.facebook.com/v18.0/oauth/access_token',
+    scopes: PLATFORM_CONFIG.whatsapp.oauthScopes,
+    usePKCE: false,
+  },
 };
 
 @Injectable()
