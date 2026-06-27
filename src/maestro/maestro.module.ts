@@ -36,6 +36,9 @@ import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 // Telegram REST client — env-config only (ConfigService); provided directly like
 // DiscordService/SlackService to avoid pulling in the heavier ChannelsModule.
 import { TelegramService } from '../channels/services/telegram.service';
+// WhatsApp REST client — stateless (no constructor deps); provided directly so
+// the bridge processor can reply on the central Maestro number.
+import { WhatsAppService } from '../channels/services/whatsapp.service';
 // Maestro bridge (talk to Maestro from external channels). Providers declared
 // here directly so the processor can use MaestroService without a forwardRef.
 import { BridgeLinkService } from './bridge/services/bridge-link.service';
@@ -64,6 +67,7 @@ import { MaestroBridgeProcessor } from './bridge/processors/maestro-bridge.proce
     SlackService,
     CloudflareR2Service,
     TelegramService,
+    WhatsAppService,
     BridgeLinkService,
     BridgeService,
     MaestroBridgeProcessor,

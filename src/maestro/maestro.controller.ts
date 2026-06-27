@@ -57,6 +57,20 @@ export class MaestroController {
     return { deepLink };
   }
 
+  /** Issue a WhatsApp connect deep link for the in-app "Connect WhatsApp" button. */
+  @Post('bridge/whatsapp/link-token')
+  @HttpCode(HttpStatus.OK)
+  async createWhatsAppLinkToken(
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: TelegramLinkTokenDto,
+  ) {
+    const deepLink = await this.bridge.whatsappDeepLink(
+      user.userId,
+      dto.workspaceId,
+    );
+    return { deepLink };
+  }
+
   /** Create a new Maestro conversation. */
   @Post('conversations')
   @HttpCode(HttpStatus.CREATED)

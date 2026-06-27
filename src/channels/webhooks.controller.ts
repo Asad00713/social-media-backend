@@ -732,9 +732,71 @@ export class WebhooksController {
     }
     await this.maestroBridgeQueue.add(
       'telegram-update',
-      { update },
+      { channel: 'telegram', update },
       { removeOnComplete: true, removeOnFail: 100, attempts: 2 },
     );
     return { ok: true };
+  }
+
+  /** GET verification challenge for the central Maestro WhatsApp number. */
+  @Get('maestro/whatsapp')
+  @HttpCode(HttpStatus.OK)
+  verifyMaestroWhatsApp(
+    @Query('hub.mode') mode: string,
+    @Query('hub.verify_token') token: string,
+    @Query('hub.challenge') challenge: string,
+    @Res() res: Response,
+  ) {
+    const expected =
+      process.env.MAESTRO_WHATSAPP_VERIFY_TOKEN ||
+      process.env.META_WEBHOOK_VERIFY_TOKEN ||
+      '';
+    if (mode === 'subscribe' && !!expected && token === expected) {
+      return res.status(HttpStatus.OK).send(challenge);
+    }
+    return res.status(HttpStatus.FORBIDDEN).send('Verification failed');
+  }
+
+  /**
+   * Inbound messages for the CENTRAL Maestro WhatsApp number. Separate from the
+   * inbox WhatsApp webhook; the processor filters by phone_number_id so foreign
+   * numbers are ignored. Meta-signature verified, then enqueued for the bridge.
+   */
+  @Post('maestro/whatsapp')
+  @HttpCode(HttpStatus.OK)
+  async receiveMaestroWhatsApp(
+    @Req() req: ExpressRequest,
+    @Res() res: Response,
+  ) {
+    const sig = req.headers['x-hub-signature-256'] as string | undefined;
+    const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
+    const secret =
+      process.env.MAESTRO_WHATSAPP_APP_SECRET || process.env.META_APP_SECRET || '';
+    const ok =
+      !!secret &&
+      !!raw &&
+      verifyMetaSignature({
+        appSecret: secret,
+        signatureHeader: sig,
+        rawBody: raw,
+      });
+    if (!ok) {
+      this.logger.warn('Maestro WhatsApp webhook signature verification failed');
+      return res.status(HttpStatus.UNAUTHORIZED).send('invalid signature');
+    }
+    res.status(HttpStatus.OK).send('EVENT_RECEIVED');
+    try {
+      await this.maestroBridgeQueue.add(
+        'whatsapp-update',
+        { channel: 'whatsapp', payload: req.body },
+        { removeOnComplete: true, removeOnFail: 100, attempts: 2 },
+      );
+    } catch (err) {
+      this.logger.error(
+        `Failed to enqueue Maestro WhatsApp update: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 }

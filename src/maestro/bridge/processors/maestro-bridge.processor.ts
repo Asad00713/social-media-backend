@@ -4,8 +4,13 @@ import { ConfigService } from '@nestjs/config';
 import { Job } from 'bullmq';
 import { QUEUES } from '../../../queue/queue.module';
 import { TelegramService } from '../../../channels/services/telegram.service';
+import { WhatsAppService } from '../../../channels/services/whatsapp.service';
+import { parseWhatsAppMessages } from '../../../channels/services/whatsapp-webhook.util';
 import { WorkspaceService } from '../../../workspace/workspace.service';
-import { MaestroService } from '../../services/maestro.service';
+import {
+  MaestroService,
+  type HeadlessTurnResult,
+} from '../../services/maestro.service';
 import {
   BridgeLinkService,
   type PendingChoice,
@@ -32,15 +37,18 @@ interface TelegramCallbackQuery {
   data?: string;
 }
 
+/** Channel-agnostic way to push a reply / a choice prompt back to the user. */
+interface BridgeReplier {
+  sendText(text: string): Promise<void>;
+  /** Render a list of options (inline buttons on Telegram, numbered on WhatsApp). */
+  sendChoices(prompt: string, labels: string[]): Promise<void>;
+}
+
 /**
- * Consumes inbound updates from the central Maestro Telegram bot:
- *  - `/start <token>` → verify the connect token, bind this Telegram user.
- *  - `/switch` → choose which workspace Maestro acts on (inline buttons).
- *  - any other text → run a headless Maestro turn and reply; questions/confirm
- *    cards render as inline keyboard buttons, media as link previews.
- *  - `callback_query` (a button tap) → resolve the stored pending choice and
- *    either feed the option back as the next turn or switch workspace.
- * Unlinked senders get a "connect first" nudge (no run billed).
+ * Consumes inbound updates from the central Maestro bots (Telegram + WhatsApp).
+ * Linking, headless runs, questions/confirm and `/switch` are channel-agnostic;
+ * only the transport (how a message/choice is sent and parsed) differs per
+ * channel. Unlinked senders get a "connect first" nudge (no run billed).
  */
 @Processor(QUEUES.MAESTRO_BRIDGE)
 export class MaestroBridgeProcessor extends WorkerHost {
@@ -50,11 +58,31 @@ export class MaestroBridgeProcessor extends WorkerHost {
     private readonly links: BridgeLinkService,
     private readonly maestro: MaestroService,
     private readonly telegram: TelegramService,
+    private readonly whatsapp: WhatsAppService,
     private readonly workspaces: WorkspaceService,
     private readonly config: ConfigService,
   ) {
     super();
   }
+
+  async process(
+    job: Job<{
+      channel?: 'telegram' | 'whatsapp';
+      update?: Record<string, unknown>;
+      payload?: Record<string, unknown>;
+    }>,
+  ): Promise<void> {
+    const channel = job.data.channel ?? 'telegram';
+    if (channel === 'whatsapp') {
+      await this.handleWhatsApp(job.data.payload ?? {});
+      return;
+    }
+    await this.handleTelegram(job.data.update ?? {});
+  }
+
+  // ==========================================================================
+  // Telegram transport
+  // ==========================================================================
 
   /** Central-bot client (its own token; falls back to the env default bot). */
   private tg() {
@@ -63,11 +91,28 @@ export class MaestroBridgeProcessor extends WorkerHost {
     );
   }
 
-  async process(job: Job<{ update: Record<string, unknown> }>): Promise<void> {
-    const update = job.data.update ?? {};
+  private telegramReplier(chatId: number): BridgeReplier {
+    const tg = this.tg();
+    return {
+      sendText: async (text) => {
+        await tg.sendMessage(chatId, text);
+      },
+      sendChoices: async (prompt, labels) => {
+        await tg.sendMessage(chatId, prompt, {
+          replyMarkup: {
+            inline_keyboard: labels.map((l, i) => [
+              { text: l, callback_data: `p:${i}` },
+            ]),
+          },
+        });
+      },
+    };
+  }
+
+  private async handleTelegram(update: Record<string, unknown>): Promise<void> {
     const callback = update.callback_query as TelegramCallbackQuery | undefined;
     if (callback) {
-      await this.handleCallback(callback);
+      await this.handleTelegramCallback(callback);
       return;
     }
 
@@ -77,91 +122,35 @@ export class MaestroBridgeProcessor extends WorkerHost {
     const fromId = String(msg.from.id);
     const text = String(msg.text ?? '').trim();
     if (!text) return;
+    const replier = this.telegramReplier(chatId);
 
     if (text.startsWith('/start')) {
-      await this.handleStart(chatId, fromId, msg.from, text);
+      const token = text.slice('/start'.length).trim();
+      await this.linkAccount(replier, 'telegram', fromId, token, this.telegramName(msg.from));
       return;
     }
-    await this.handleMessage(chatId, fromId, text);
-  }
 
-  private async handleStart(
-    chatId: number,
-    fromId: string,
-    from: TelegramFrom,
-    text: string,
-  ): Promise<void> {
-    const token = text.slice('/start'.length).trim();
-    const verified = token ? this.links.verifyLinkToken(token) : null;
-    if (!verified) {
-      await this.tg().sendMessage(
-        chatId,
-        'That connect link has expired. Open Schedura → Maestro → Connect Telegram to get a fresh link.',
-      );
-      return;
-    }
-    const displayName =
-      [from.first_name, from.last_name].filter(Boolean).join(' ') ||
-      from.username ||
-      'Telegram user';
-    await this.links.upsertLink({
-      userId: verified.userId,
-      channel: 'telegram',
-      externalId: fromId,
-      displayName,
-      defaultWorkspaceId: verified.workspaceId,
-    });
-    await this.tg().sendMessage(
-      chatId,
-      '✅ Connected to Schedura. Send me anything — I can check your inbox, draft and publish posts, and more.\n\nTip: /switch to change which workspace I act on.',
-    );
-  }
-
-  private async handleMessage(
-    chatId: number,
-    fromId: string,
-    text: string,
-  ): Promise<void> {
     const link = await this.links.findLink('telegram', fromId);
     if (!link) {
-      const app =
-        this.config.get<string>('APP_URL') ||
-        this.config.get<string>('FRONTEND_URL') ||
-        '';
-      await this.tg().sendMessage(
-        chatId,
-        `You're not connected yet. Open Schedura → Maestro → Connect Telegram${
-          app ? ` (${app})` : ''
-        } to link your account.`,
-      );
+      await replier.sendText(this.connectNudge());
       return;
     }
-
     if (text === '/switch') {
-      await this.showWorkspaceSwitch(chatId, link);
+      await this.showWorkspaceSwitch(replier, link);
       return;
     }
-
-    try {
-      await this.runAndReply(chatId, link, text);
-    } catch (err) {
-      this.logger.error(
-        `bridge run failed: ${err instanceof Error ? err.message : String(err)}`,
-      );
-      await this.tg().sendMessage(
-        chatId,
-        'Sorry — something went wrong on my end. Try again in a moment.',
-      );
-    }
+    await this.safeRun(replier, link, text);
   }
 
-  private async handleCallback(cb: TelegramCallbackQuery): Promise<void> {
-    const tg = this.tg();
-    await tg.answerCallbackQuery(cb.id).catch(() => undefined);
+  private async handleTelegramCallback(
+    cb: TelegramCallbackQuery,
+  ): Promise<void> {
+    await this.tg()
+      .answerCallbackQuery(cb.id)
+      .catch(() => undefined);
     const fromId = String(cb.from?.id ?? '');
     const chatId = cb.message?.chat?.id;
     if (!fromId || !chatId) return;
-
     const link = await this.links.findLink('telegram', fromId);
     if (!link) return;
 
@@ -170,42 +159,173 @@ export class MaestroBridgeProcessor extends WorkerHost {
     if (!pending || !match) return; // stale tap — ignore
     const index = Number(match[1]);
     if (index < 0 || index >= pending.items.length) return;
-    const value = pending.items[index];
-    const label = pending.labels[index] ?? value;
+    await this.applyChoice(this.telegramReplier(chatId), link, pending, index);
+  }
 
-    await this.links.setPending(link.id, null);
+  private telegramName(from: TelegramFrom): string {
+    return (
+      [from.first_name, from.last_name].filter(Boolean).join(' ') ||
+      from.username ||
+      'Telegram user'
+    );
+  }
 
-    if (pending.kind === 'workspace') {
-      await this.links.setDefaultWorkspace(link.id, value);
-      // Fresh conversation so context belongs to the newly-selected workspace.
-      await this.links.setConversation(link.id, null);
-      await tg.sendMessage(
-        chatId,
-        `✅ Switched to ${label}. Send me anything.`,
+  // ==========================================================================
+  // WhatsApp transport
+  // ==========================================================================
+
+  private whatsappReplier(waId: string): BridgeReplier {
+    const token = this.config.get<string>('MAESTRO_WHATSAPP_TOKEN') || '';
+    const pnid =
+      this.config.get<string>('MAESTRO_WHATSAPP_PHONE_NUMBER_ID') || '';
+    const send = (text: string) =>
+      this.whatsapp.sendText(token, pnid, waId, text);
+    return {
+      sendText: async (text) => {
+        await send(text);
+      },
+      sendChoices: async (prompt, labels) => {
+        const list = labels.map((l, i) => `${i + 1}. ${l}`).join('\n');
+        await send(`${prompt}\n\n${list}\n\nReply with the number.`);
+      },
+    };
+  }
+
+  private async handleWhatsApp(payload: Record<string, unknown>): Promise<void> {
+    const pnid = this.config.get<string>('MAESTRO_WHATSAPP_PHONE_NUMBER_ID');
+    if (!pnid) return; // bridge not configured
+    const messages = parseWhatsAppMessages(payload).filter(
+      (m) => m.isText && m.phoneNumberId === pnid && m.fromWaId,
+    );
+    for (const m of messages) {
+      try {
+        await this.handleWhatsAppMessage(m.fromWaId, m.text.trim(), m.authorName);
+      } catch (err) {
+        this.logger.error(
+          `whatsapp bridge failed: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
+  }
+
+  private async handleWhatsAppMessage(
+    waId: string,
+    text: string,
+    authorName?: string,
+  ): Promise<void> {
+    const replier = this.whatsappReplier(waId);
+    if (!text) return;
+
+    if (text.toLowerCase().startsWith('connect ')) {
+      const token = text.slice('connect '.length).trim();
+      await this.linkAccount(
+        replier,
+        'whatsapp',
+        waId,
+        token,
+        authorName || 'WhatsApp user',
       );
       return;
     }
 
-    // Question — feed the chosen option back as the next turn. The model re-calls
-    // the pending tool with confirmed:true / the answer (history carries the ask).
+    const link = await this.links.findLink('whatsapp', waId);
+    if (!link) {
+      await replier.sendText(this.connectNudge());
+      return;
+    }
+    if (text === '/switch') {
+      await this.showWorkspaceSwitch(replier, link);
+      return;
+    }
+
+    // If a choice is pending, try to resolve the reply (number or label).
+    const pending = (link.metadata as { pending?: PendingChoice }).pending;
+    if (pending) {
+      const index = this.resolveChoice(pending, text);
+      if (index !== null) {
+        await this.applyChoice(replier, link, pending, index);
+        return;
+      }
+      // Not a choice — fall through and treat as a fresh message.
+      await this.links.setPending(link.id, null);
+    }
+    await this.safeRun(replier, link, text);
+  }
+
+  /** Map a free-text WhatsApp reply onto a pending choice index, or null. */
+  private resolveChoice(pending: PendingChoice, text: string): number | null {
+    const t = text.trim().toLowerCase();
+    const num = Number(t);
+    if (Number.isInteger(num) && num >= 1 && num <= pending.items.length) {
+      return num - 1;
+    }
+    const byLabel = pending.labels.findIndex((l) => l.toLowerCase() === t);
+    return byLabel >= 0 ? byLabel : null;
+  }
+
+  // ==========================================================================
+  // Channel-agnostic core
+  // ==========================================================================
+
+  private connectNudge(): string {
+    const app =
+      this.config.get<string>('APP_URL') ||
+      this.config.get<string>('FRONTEND_URL') ||
+      '';
+    return `You're not connected yet. Open Schedura → Maestro → Connect${
+      app ? ` (${app})` : ''
+    } to link your account.`;
+  }
+
+  /** Verify a connect token and bind this external identity to the account. */
+  private async linkAccount(
+    replier: BridgeReplier,
+    channel: 'telegram' | 'whatsapp',
+    externalId: string,
+    token: string,
+    displayName: string,
+  ): Promise<void> {
+    const verified = token ? this.links.verifyLinkToken(token) : null;
+    if (!verified) {
+      await replier.sendText(
+        'That connect link has expired. Open Schedura → Maestro → Connect to get a fresh link.',
+      );
+      return;
+    }
+    await this.links.upsertLink({
+      userId: verified.userId,
+      channel,
+      externalId,
+      displayName,
+      defaultWorkspaceId: verified.workspaceId,
+    });
+    await replier.sendText(
+      '✅ Connected to Schedura. Send me anything — I can check your inbox, draft and publish posts, and more.\n\nTip: send /switch to change which workspace I act on.',
+    );
+  }
+
+  private async safeRun(
+    replier: BridgeReplier,
+    link: MaestroChannelLink,
+    message: string,
+  ): Promise<void> {
     try {
-      await this.runAndReply(chatId, link, value);
+      await this.runAndReply(replier, link, message);
     } catch (err) {
       this.logger.error(
-        `bridge callback run failed: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `bridge run failed: ${err instanceof Error ? err.message : String(err)}`,
       );
-      await tg.sendMessage(
-        chatId,
+      await replier.sendText(
         'Sorry — something went wrong on my end. Try again in a moment.',
       );
     }
   }
 
-  /** Run a turn and render the result: text, media previews, question buttons. */
+  /** Ensure a conversation, run a headless turn, render the result. */
   private async runAndReply(
-    chatId: number,
+    replier: BridgeReplier,
     link: MaestroChannelLink,
     message: string,
   ): Promise<void> {
@@ -218,25 +338,31 @@ export class MaestroBridgeProcessor extends WorkerHost {
       conversationId = conv.id;
       await this.links.setConversation(link.id, conversationId);
     }
-
     const result = await this.maestro.runHeadlessTurn({
       conversationId,
       userId: link.userId,
       message,
       confirmBeforeSend: true,
     });
+    await this.renderResult(replier, link, result);
+  }
 
-    const tg = this.tg();
-    let sentSomething = false;
+  /** Send text + media previews, and render any question as a choice prompt. */
+  private async renderResult(
+    replier: BridgeReplier,
+    link: MaestroChannelLink,
+    result: HeadlessTurnResult,
+  ): Promise<void> {
+    let sent = false;
     if (result.text) {
-      await tg.sendMessage(chatId, result.text);
-      sentSomething = true;
+      await replier.sendText(result.text);
+      sent = true;
     }
     if (result.media?.length) {
       for (const m of result.media) {
-        await tg.sendMessage(chatId, m.url);
+        await replier.sendText(m.url);
       }
-      sentSomething = true;
+      sent = true;
     }
 
     const question = result.question?.questions[0];
@@ -246,16 +372,9 @@ export class MaestroBridgeProcessor extends WorkerHost {
         items: question.options,
         labels: question.options,
       });
-      await tg.sendMessage(chatId, question.question, {
-        replyMarkup: {
-          inline_keyboard: question.options.map((opt, i) => [
-            { text: opt, callback_data: `p:${i}` },
-          ]),
-        },
-      });
-      sentSomething = true;
+      await replier.sendChoices(question.question, question.options);
+      sent = true;
       if ((result.question?.questions.length ?? 0) > 1) {
-        // v1: only the first question is interactive on Telegram.
         this.logger.warn(
           `bridge: ${result.question?.questions.length} questions; rendered first only`,
         );
@@ -264,30 +383,46 @@ export class MaestroBridgeProcessor extends WorkerHost {
       await this.links.setPending(link.id, null);
     }
 
-    if (!sentSomething) {
-      await tg.sendMessage(chatId, '…');
-    }
+    if (!sent) await replier.sendText('…');
   }
 
-  /** Offer the user's workspaces as inline buttons to pick the active one. */
+  /** Resolve a tapped/typed choice: switch workspace, or feed the option back. */
+  private async applyChoice(
+    replier: BridgeReplier,
+    link: MaestroChannelLink,
+    pending: PendingChoice,
+    index: number,
+  ): Promise<void> {
+    await this.links.setPending(link.id, null);
+    const value = pending.items[index];
+    const label = pending.labels[index] ?? value;
+
+    if (pending.kind === 'workspace') {
+      await this.links.setDefaultWorkspace(link.id, value);
+      // Fresh conversation so context belongs to the newly-selected workspace.
+      await this.links.setConversation(link.id, null);
+      await replier.sendText(`✅ Switched to ${label}. Send me anything.`);
+      return;
+    }
+
+    // Question — feed the chosen option back as the next turn. The model re-calls
+    // the pending tool with confirmed:true / the answer (history carries the ask).
+    await this.safeRun(replier, link, value);
+  }
+
+  /** Offer the user's workspaces as a choice to pick the active one. */
   private async showWorkspaceSwitch(
-    chatId: number,
+    replier: BridgeReplier,
     link: MaestroChannelLink,
   ): Promise<void> {
     const spaces = await this.workspaces.findAllByUser(link.userId);
     if (!spaces.length) {
-      await this.tg().sendMessage(chatId, 'No workspaces found on your account.');
+      await replier.sendText('No workspaces found on your account.');
       return;
     }
     const items = spaces.map((s) => s.id);
     const labels = spaces.map((s) => s.name || 'Workspace');
     await this.links.setPending(link.id, { kind: 'workspace', items, labels });
-    await this.tg().sendMessage(chatId, 'Which workspace should I act on?', {
-      replyMarkup: {
-        inline_keyboard: labels.map((l, i) => [
-          { text: l, callback_data: `p:${i}` },
-        ]),
-      },
-    });
+    await replier.sendChoices('Which workspace should I act on?', labels);
   }
 }
