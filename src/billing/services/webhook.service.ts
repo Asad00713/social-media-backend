@@ -358,6 +358,7 @@ export class WebhookService {
           aiTokensLimit: free.aiTokensPerMonth,
           extraChannelsPurchased: 0,
           extraMembersPurchased: 0,
+          extraAiTokensPurchased: 0,
           updatedAt: new Date(),
         })
         .where(eq(workspaceUsage.workspaceId, existing.workspaceId));

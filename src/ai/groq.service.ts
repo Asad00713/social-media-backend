@@ -160,6 +160,31 @@ export class GroqService {
   }
 
   /**
+   * Generate a short, descriptive title for a chat conversation from the
+   * user's first message. Cheap + fast (small token budget). Returns a cleaned
+   * 3-6 word Title-Case string.
+   */
+  async generateConversationTitle(firstMessage: string): Promise<string> {
+    const system =
+      'You generate short, descriptive titles for chat conversations. ' +
+      'Reply with ONLY the title: 3 to 6 words, Title Case, no surrounding ' +
+      'quotes, no trailing punctuation, no emojis.';
+    const user = `First message:\n"""${firstMessage.slice(0, 500)}"""\n\nTitle:`;
+
+    const raw = await this.generateCompletion(system, user, {
+      temperature: 0.3,
+      maxTokens: 24,
+    });
+
+    return raw
+      .replace(/^["'#\s]+/, '')
+      .replace(/["'\s]+$/, '')
+      .replace(/[.!?]+$/, '')
+      .slice(0, 60)
+      .trim();
+  }
+
+  /**
    * Generate a social media post
    */
   async generatePost(options: GeneratePostOptions): Promise<string> {

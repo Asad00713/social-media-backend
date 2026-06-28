@@ -37,6 +37,7 @@ export const SUPPORTED_PLATFORMS = [
   'slack',
   'telegram',
   'discord',
+  'whatsapp',
 ] as const;
 
 export type SupportedPlatform = (typeof SUPPORTED_PLATFORMS)[number];
@@ -683,5 +684,16 @@ export const PLATFORM_CONFIG: Record<
     maxTextLength: 2000,
     supportedMediaTypes: [],
     oauthScopes: ['bot', 'guilds', 'messages.read'],
+  },
+  whatsapp: {
+    name: 'WhatsApp',
+    accountTypes: ['business_account'],
+    supportsRefreshToken: false,
+    tokenExpirationDays: null,
+    refreshTokenTtlDays: null,
+    maxMediaPerPost: 0,
+    maxTextLength: 4096,
+    supportedMediaTypes: [],
+    oauthScopes: ['whatsapp_business_messaging', 'whatsapp_business_management'],
   },
 };

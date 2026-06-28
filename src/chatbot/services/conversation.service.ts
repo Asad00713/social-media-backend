@@ -130,6 +130,27 @@ export class ConversationService {
   }
 
   /**
+   * Set (or clear) a user's 👍/👎 feedback on a message they own.
+   */
+  async setMessageFeedback(
+    messageId: string,
+    userId: string,
+    feedback: 'good' | 'bad' | null,
+  ) {
+    const message = await this.db.query.chatMessages.findFirst({
+      where: eq(chatMessages.id, messageId),
+      with: { conversation: { columns: { userId: true } } },
+    });
+    if (!message || message.conversation?.userId !== userId) {
+      throw new NotFoundException(`Message ${messageId} not found`);
+    }
+    await this.db
+      .update(chatMessages)
+      .set({ feedback })
+      .where(eq(chatMessages.id, messageId));
+  }
+
+  /**
    * Find a single message by ID.
    */
   async findMessageById(messageId: string) {

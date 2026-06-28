@@ -262,8 +262,13 @@ export class AddonService {
       subscriptionItemId = newItem.id;
     }
 
-    // 5. Update workspace usage limits
-    await this.updateUsageLimitsForAddon(workspaceId, addonType, finalQuantity);
+    // 5. Update workspace usage limits (pack size converts qty → resource units)
+    await this.updateUsageLimitsForAddon(
+      workspaceId,
+      addonType,
+      finalQuantity,
+      addonPrice.unitsPerQuantity,
+    );
 
     // 6. Log subscription change
     await db.insert(subscriptionChanges).values({
@@ -430,11 +435,24 @@ export class AddonService {
         .where(eq(subscriptionItems.id, item.id));
     }
 
-    // 6. Update workspace usage limits
+    // 6. Update workspace usage limits. Look up the pack size so AI-token
+    //    removals subtract tokens (×500), not pack count. Defaults to 1.
+    const [removePricing] = await db
+      .select({ unitsPerQuantity: addonPricing.unitsPerQuantity })
+      .from(addonPricing)
+      .where(
+        and(
+          eq(addonPricing.planCode, sub.planCode),
+          eq(addonPricing.addonType, addonType),
+        ),
+      )
+      .limit(1);
+
     await this.updateUsageLimitsForAddon(
       workspaceId,
       addonType,
       remainingQuantity,
+      removePricing?.unitsPerQuantity ?? 1,
     );
 
     // 7. Log change
@@ -507,6 +525,9 @@ export class AddonService {
       addonType: addon.addonType,
       pricePerUnitCents: addon.pricePerUnitCents,
       pricePerUnitFormatted: `$${(addon.pricePerUnitCents / 100).toFixed(2)}/month`,
+      // Resource units granted per purchased quantity (5000 for an AI-token
+      // pack, 1 otherwise) — lets the UI show "5000 tokens / $price".
+      unitsPerQuantity: addon.unitsPerQuantity,
       minQuantity: addon.minQuantity,
       maxQuantity: addon.maxQuantity,
       currentQuantity: itemMap.get(addon.addonType) || 0,
@@ -552,11 +573,15 @@ export class AddonService {
       }));
   }
 
-  // Helper to update usage limits when add-ons change
+  // Helper to update usage limits when add-ons change.
+  // `unitsPerQuantity` converts purchased quantity → granted resource units:
+  // 1 for seats/channels/workspaces, 5000 for an AI-token pack. Without it the
+  // AI-token limit grew by the pack COUNT (e.g. +1) instead of +5000 tokens.
   private async updateUsageLimitsForAddon(
     workspaceId: string,
     addonType: AddonType,
     newQuantity: number,
+    unitsPerQuantity = 1,
   ): Promise<void> {
     const updates: Record<string, number> = {};
 
@@ -565,7 +590,7 @@ export class AddonService {
     } else if (addonType === 'EXTRA_MEMBER') {
       updates['extraMembersPurchased'] = newQuantity;
     } else if (addonType === 'EXTRA_AI_TOKENS') {
-      updates['extraAiTokensPurchased'] = newQuantity;
+      updates['extraAiTokensPurchased'] = newQuantity * unitsPerQuantity;
     }
 
     if (Object.keys(updates).length > 0) {

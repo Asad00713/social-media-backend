@@ -17,6 +17,7 @@ import { MastodonDmAdapter } from '../adapters/mastodon-dm.adapter';
 import { SlackDmAdapter } from '../adapters/slack-dm.adapter';
 import { TelegramDmAdapter } from '../adapters/telegram-dm.adapter';
 import { DiscordDmAdapter } from '../adapters/discord-dm.adapter';
+import { WhatsAppDmAdapter } from '../adapters/whatsapp-dm.adapter';
 
 /**
  * Picks the right adapter for a given platform. Unsupported platforms throw
@@ -45,6 +46,7 @@ export class InboxDispatcher {
     private readonly slackDm: SlackDmAdapter,
     private readonly telegramDm: TelegramDmAdapter,
     private readonly discordDm: DiscordDmAdapter,
+    private readonly whatsappDm: WhatsAppDmAdapter,
   ) {
     this.adapters = new Map<SupportedPlatform, PlatformInboxAdapter>([
       ['bluesky', this.bluesky],
@@ -63,6 +65,7 @@ export class InboxDispatcher {
       ['slack', this.slackDm],
       ['telegram', this.telegramDm],
       ['discord', this.discordDm],
+      ['whatsapp', this.whatsappDm],
     ]);
   }
 

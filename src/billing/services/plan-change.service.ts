@@ -509,6 +509,11 @@ export class PlanChangeService {
       .set({
         channelsLimit: target.channelsPerWorkspace,
         membersLimit: target.membersPerWorkspace,
+        // Keep the AI-token allowance in lockstep with the plan — without this
+        // an upgrade/downgrade left the old limit, so the Maestro meter never
+        // reflected the new plan. `aiTokensUsedThisMonth` is intentionally NOT
+        // reset (no free refill on every plan switch); the monthly reset does that.
+        aiTokensLimit: target.aiTokensPerMonth,
         updatedAt: new Date(),
       })
       .where(eq(workspaceUsage.workspaceId, workspaceId));
@@ -743,8 +748,11 @@ export class PlanChangeService {
         .set({
           channelsLimit: free.channelsPerWorkspace,
           membersLimit: free.membersPerWorkspace,
+          // FREE has no AI allowance and add-ons don't carry over.
+          aiTokensLimit: free.aiTokensPerMonth,
           extraChannelsPurchased: 0,
           extraMembersPurchased: 0,
+          extraAiTokensPurchased: 0,
           updatedAt: new Date(),
         })
         .where(eq(workspaceUsage.workspaceId, workspaceId));

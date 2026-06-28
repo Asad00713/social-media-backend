@@ -16,8 +16,13 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import type { Request as ExpressRequest, Response } from 'express';
-import { verifySlackSignature } from '../common/utils/webhook-signature.util';
+import {
+  verifySlackSignature,
+  verifyMetaSignature,
+} from '../common/utils/webhook-signature.util';
 import { verifyTelegramWebhookSecret } from './utils/telegram-webhook-secret.util';
+import { secureCompare } from '../common/utils/encryption.util';
+import { parseWhatsAppMessages } from './services/whatsapp-webhook.util';
 import { InboxService } from '../inbox/inbox.service';
 import { FacebookService } from './services/facebook.service';
 import { InstagramService } from './services/instagram.service';
@@ -44,6 +49,8 @@ export class WebhooksController {
   private readonly META_VERIFY_TOKEN =
     process.env.META_WEBHOOK_VERIFY_TOKEN || 'webondev_verify_123';
 
+  private readonly META_APP_SECRET = process.env.META_APP_SECRET || '';
+
   private readonly SLACK_SIGNING_SECRET = process.env.SLACK_SIGNING_SECRET!;
 
   constructor(
@@ -54,6 +61,10 @@ export class WebhooksController {
     @InjectQueue(QUEUES.LEAD_INTAKE) private readonly leadIntakeQueue: Queue,
     @InjectQueue(QUEUES.SLACK_INGEST) private readonly slackQueue: Queue,
     @InjectQueue(QUEUES.TELEGRAM_INGEST) private readonly telegramQueue: Queue,
+    @InjectQueue(QUEUES.WHATSAPP_INGEST)
+    private readonly whatsappIngestQueue: Queue,
+    @InjectQueue(QUEUES.MAESTRO_BRIDGE)
+    private readonly maestroBridgeQueue: Queue,
   ) {}
 
   // ==========================================================================
@@ -91,6 +102,17 @@ export class WebhooksController {
     @Res() res: Response,
   ) {
     return this.respondToVerify('threads', mode, token, challenge, res);
+  }
+
+  @Get('whatsapp')
+  @HttpCode(HttpStatus.OK)
+  verifyWhatsAppWebhook(
+    @Query('hub.mode') mode: string,
+    @Query('hub.verify_token') token: string,
+    @Query('hub.challenge') challenge: string,
+    @Res() res: Response,
+  ) {
+    return this.respondToVerify('whatsapp', mode, token, challenge, res);
   }
 
   private respondToVerify(
@@ -146,6 +168,55 @@ export class WebhooksController {
       await this.processMetaWebhook(body, 'threads');
     } catch (error) {
       this.logger.error('Error processing Threads webhook:', error);
+    }
+  }
+
+  @Post('whatsapp')
+  @HttpCode(HttpStatus.OK)
+  async handleWhatsAppWebhook(@Req() req: ExpressRequest, @Res() res: Response) {
+    const sig = req.headers['x-hub-signature-256'] as string | undefined;
+    const raw = (req as any).rawBody as Buffer | undefined;
+    const ok =
+      !!this.META_APP_SECRET &&
+      !!raw &&
+      verifyMetaSignature({
+        appSecret: this.META_APP_SECRET,
+        signatureHeader: sig,
+        rawBody: raw,
+      });
+    if (!ok) {
+      this.logger.warn('WhatsApp webhook signature verification failed');
+      return res.status(401).send('invalid signature');
+    }
+    // ACK fast, then process async.
+    res.status(200).send('EVENT_RECEIVED');
+    try {
+      // One Meta app = one webhook URL. If this payload is for the dedicated
+      // Maestro number, divert it to the bridge instead of the inbox ingest so a
+      // single callback URL can serve both.
+      const maestroPnid = process.env.MAESTRO_WHATSAPP_PHONE_NUMBER_ID;
+      const forMaestro =
+        !!maestroPnid &&
+        parseWhatsAppMessages(req.body).some(
+          (m) => m.phoneNumberId === maestroPnid,
+        );
+      if (forMaestro) {
+        await this.maestroBridgeQueue.add(
+          'whatsapp-update',
+          { channel: 'whatsapp', payload: req.body },
+          { removeOnComplete: true, removeOnFail: 100, attempts: 2 },
+        );
+        return;
+      }
+      await this.whatsappIngestQueue.add(
+        'whatsapp-ingest',
+        { payload: req.body },
+        { attempts: 3, backoff: { type: 'exponential', delay: 5000 } },
+      );
+    } catch (err) {
+      this.logger.error(
+        `WhatsApp webhook enqueue failed: ${(err as Error).message}`,
+      );
     }
   }
 
@@ -653,5 +724,97 @@ export class WebhooksController {
       { removeOnComplete: true, attempts: 3 },
     );
     return { ok: true };
+  }
+
+  // ==========================================================================
+  // Maestro bridge — central assistant bot (separate from inbox bots)
+  // ==========================================================================
+
+  /**
+   * Inbound updates for the CENTRAL Maestro Telegram bot (the owner's private
+   * line to their assistant). Distinct from the per-workspace inbox bot route
+   * above: one static secret, no routeId, no channel lookup. Verifies the
+   * secret then enqueues the raw update for the bridge processor.
+   */
+  @Post('maestro/telegram')
+  @HttpCode(HttpStatus.OK)
+  async receiveMaestroTelegram(
+    @Headers('x-telegram-bot-api-secret-token')
+    headerSecret: string | undefined,
+    @Body() update: Record<string, unknown>,
+  ) {
+    const expected = process.env.MAESTRO_TELEGRAM_WEBHOOK_SECRET || '';
+    if (!expected || !headerSecret || !secureCompare(headerSecret, expected)) {
+      // Don't leak which check failed; drop quietly (Telegram won't usefully retry).
+      return { ok: true };
+    }
+    await this.maestroBridgeQueue.add(
+      'telegram-update',
+      { channel: 'telegram', update },
+      { removeOnComplete: true, removeOnFail: 100, attempts: 2 },
+    );
+    return { ok: true };
+  }
+
+  /** GET verification challenge for the central Maestro WhatsApp number. */
+  @Get('maestro/whatsapp')
+  @HttpCode(HttpStatus.OK)
+  verifyMaestroWhatsApp(
+    @Query('hub.mode') mode: string,
+    @Query('hub.verify_token') token: string,
+    @Query('hub.challenge') challenge: string,
+    @Res() res: Response,
+  ) {
+    const expected =
+      process.env.MAESTRO_WHATSAPP_VERIFY_TOKEN ||
+      process.env.META_WEBHOOK_VERIFY_TOKEN ||
+      '';
+    if (mode === 'subscribe' && !!expected && token === expected) {
+      return res.status(HttpStatus.OK).send(challenge);
+    }
+    return res.status(HttpStatus.FORBIDDEN).send('Verification failed');
+  }
+
+  /**
+   * Inbound messages for the CENTRAL Maestro WhatsApp number. Separate from the
+   * inbox WhatsApp webhook; the processor filters by phone_number_id so foreign
+   * numbers are ignored. Meta-signature verified, then enqueued for the bridge.
+   */
+  @Post('maestro/whatsapp')
+  @HttpCode(HttpStatus.OK)
+  async receiveMaestroWhatsApp(
+    @Req() req: ExpressRequest,
+    @Res() res: Response,
+  ) {
+    const sig = req.headers['x-hub-signature-256'] as string | undefined;
+    const raw = (req as unknown as { rawBody?: Buffer }).rawBody;
+    const secret =
+      process.env.MAESTRO_WHATSAPP_APP_SECRET || process.env.META_APP_SECRET || '';
+    const ok =
+      !!secret &&
+      !!raw &&
+      verifyMetaSignature({
+        appSecret: secret,
+        signatureHeader: sig,
+        rawBody: raw,
+      });
+    if (!ok) {
+      this.logger.warn('Maestro WhatsApp webhook signature verification failed');
+      return res.status(HttpStatus.UNAUTHORIZED).send('invalid signature');
+    }
+    res.status(HttpStatus.OK).send('EVENT_RECEIVED');
+    try {
+      await this.maestroBridgeQueue.add(
+        'whatsapp-update',
+        { channel: 'whatsapp', payload: req.body },
+        { removeOnComplete: true, removeOnFail: 100, attempts: 2 },
+      );
+    } catch (err) {
+      this.logger.error(
+        `Failed to enqueue Maestro WhatsApp update: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
   }
 }

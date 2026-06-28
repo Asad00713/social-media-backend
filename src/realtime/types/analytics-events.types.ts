@@ -22,7 +22,8 @@ export type AnalyticsEventName =
   | 'ad.status.changed'
   | 'ad.insights.updated'
   | 'lead.created'
-  | 'lead.delivered';
+  | 'lead.delivered'
+  | 'maestro.bridge.message';
 
 export interface ChannelSnapshotUpdatedPayload {
   workspaceId: string;
@@ -205,6 +206,20 @@ export interface LeadDeliveredPayload {
   error?: string;
 }
 
+/** A Maestro turn arrived from an external bridge channel (Telegram/WhatsApp) —
+ *  signals an open Maestro panel on the same conversation to refresh live. */
+export interface MaestroBridgeMessagePayload {
+  workspaceId: string;
+  conversationId: string;
+  channel: 'telegram' | 'whatsapp';
+  /** `inbound` = the user's message just landed (carries its text so the panel
+   *  shows it instantly + a thinking placeholder); `reply` = Maestro answered
+   *  (panel re-syncs from the DB, dropping the placeholder). */
+  phase: 'inbound' | 'reply';
+  /** The user's message text — present on `inbound` only. */
+  text?: string;
+}
+
 export type AnalyticsEventPayloadMap = {
   'channel.snapshot.updated': ChannelSnapshotUpdatedPayload;
   'post.metrics.updated': PostMetricsUpdatedPayload;
@@ -225,4 +240,5 @@ export type AnalyticsEventPayloadMap = {
   'ad.insights.updated': AdInsightsUpdatedPayload;
   'lead.created': LeadCreatedPayload;
   'lead.delivered': LeadDeliveredPayload;
+  'maestro.bridge.message': MaestroBridgeMessagePayload;
 };

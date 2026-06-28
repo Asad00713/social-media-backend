@@ -55,6 +55,10 @@ export const addonPricing = pgTable(
       .references(() => plans.code, { onDelete: 'cascade' }),
     addonType: varchar('addon_type', { length: 30 }).notNull(), // EXTRA_CHANNEL, EXTRA_MEMBER, EXTRA_WORKSPACE
     pricePerUnitCents: integer('price_per_unit_cents').notNull(),
+    // How many units of the underlying resource ONE purchased quantity grants.
+    // 1 for seats/channels/workspaces; for EXTRA_AI_TOKENS one pack = 5k tokens.
+    // Drives both the usage-limit math and the "X tokens / $price" UI label.
+    unitsPerQuantity: integer('units_per_quantity').default(1).notNull(),
     stripePriceId: varchar('stripe_price_id', { length: 255 }).notNull(),
     minQuantity: integer('min_quantity').default(1),
     maxQuantity: integer('max_quantity'), // NULL = unlimited

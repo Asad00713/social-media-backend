@@ -2345,6 +2345,84 @@ export class InboxService {
     return row;
   }
 
+  /**
+   * Record a Discord CHANNEL message the bot just sent (e.g. via Maestro) into
+   * the inbox thread for that channel, so it shows up alongside the ingested
+   * messages (which the gateway stores as DM-type rows keyed by the Discord
+   * channel id). The actual send happens in the caller (DiscordService); this
+   * only persists the `fromMe` row + emits the realtime/count events.
+   */
+  async recordOutgoingDiscordMessage(input: {
+    workspaceId: string;
+    /** socialMediaChannels.id of the connected Discord row. */
+    channelId: number;
+    /** The Discord text-channel id (== inbox conversationId). */
+    conversationId: string;
+    /** The id Discord returned for the sent message. */
+    platformItemId: string;
+    text: string;
+    platformCreatedAt?: Date;
+    attachments?: Array<{
+      kind: 'image' | 'voice' | 'video' | 'file' | 'audio';
+      url: string;
+      contentType?: string;
+    }>;
+  }): Promise<void> {
+    const myIdentity = await this.loadMyDmIdentity(input.channelId);
+    await this.upsertDm({
+      workspaceId: input.workspaceId,
+      channelId: input.channelId,
+      platform: 'discord',
+      conversationId: input.conversationId,
+      platformItemId: input.platformItemId,
+      authorPlatformId: myIdentity.platformId,
+      authorHandle: myIdentity.handle,
+      authorDisplayName: myIdentity.displayName,
+      authorAvatarUrl: myIdentity.avatarUrl,
+      text: input.text,
+      fromMe: true,
+      platformCreatedAt: input.platformCreatedAt ?? new Date(),
+      attachments: input.attachments,
+    });
+  }
+
+  /**
+   * Resolve a workspace's connected channel for a platform + a usable (decrypted)
+   * access token. Used by Maestro's platform tools (e.g. Slack) for read/resolve
+   * ops that call the platform API directly. Outward SENDS go through `sendDm`,
+   * which resolves the token + persists the `fromMe` row itself.
+   */
+  async resolveWorkspaceChannelToken(
+    workspaceId: string,
+    platform: SupportedPlatform,
+  ): Promise<{
+    channelId: number;
+    platformAccountId: string;
+    accountName: string;
+    accessToken: string;
+  } | null> {
+    const row = await db.query.socialMediaChannels.findFirst({
+      where: and(
+        eq(socialMediaChannels.workspaceId, workspaceId),
+        eq(socialMediaChannels.platform, platform),
+      ),
+    });
+    if (!row) return null;
+    if (row.connectionStatus && row.connectionStatus !== 'connected') {
+      return null;
+    }
+    const accessToken = await this.channelService.getAccessToken(
+      row.id,
+      workspaceId,
+    );
+    return {
+      channelId: row.id,
+      platformAccountId: row.platformAccountId,
+      accountName: row.accountName,
+      accessToken,
+    };
+  }
+
   /** Soft-delete a DM identified by its platform message id — used by the
    *  Discord gateway when a message is deleted on the platform side (we don't
    *  have our internal id there). Flips text→'[deleted]', status→'done', and

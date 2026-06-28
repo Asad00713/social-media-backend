@@ -3,7 +3,7 @@ config({ path: '.env' });
 
 import { db } from '../db';
 import { plans, addonPricing } from '../schema';
-import { sql } from 'drizzle-orm';
+import { sql, eq } from 'drizzle-orm';
 
 export async function seedPlans() {
   console.log('Seeding plans...');
@@ -37,7 +37,7 @@ export async function seedPlans() {
       channelsPerWorkspace: 5,
       membersPerWorkspace: 2,
       maxWorkspaces: 1,
-      aiTokensPerMonth: 1000, // 1000 AI tokens per month
+      aiTokensPerMonth: 10000, // 10k AI tokens per month
       features: {
         basicScheduling: true,
         analytics: true,
@@ -56,7 +56,7 @@ export async function seedPlans() {
       channelsPerWorkspace: 8,
       membersPerWorkspace: 5,
       maxWorkspaces: 3,
-      aiTokensPerMonth: 2000, // 2000 AI tokens per month
+      aiTokensPerMonth: 20000, // 20k AI tokens per month
       features: {
         basicScheduling: true,
         analytics: true,
@@ -75,7 +75,7 @@ export async function seedPlans() {
       channelsPerWorkspace: 50,
       membersPerWorkspace: 25,
       maxWorkspaces: 10,
-      aiTokensPerMonth: 5000, // 5000 AI tokens per month
+      aiTokensPerMonth: 50000, // 50k AI tokens per month
       features: {
         basicScheduling: true,
         analytics: true,
@@ -114,10 +114,53 @@ export async function seedPlans() {
 export async function seedAddonPricing() {
   console.log('Seeding addon pricing...');
 
-  // Insert addon pricing for PRO plan
+  // One-time cleanup: older seeds used 'AI_TOKENS'; the canonical addon type is
+  // 'EXTRA_AI_TOKENS' (matches AddonService + the frontend AddonType). Remove the
+  // stale rows so they don't linger alongside the corrected ones.
+  await db.delete(addonPricing).where(eq(addonPricing.addonType, 'AI_TOKENS'));
+
+  // Insert addon pricing per paid plan
   await db
     .insert(addonPricing)
     .values([
+      // BASIC Plan Add-ons (mirror PRO pricing)
+      {
+        planCode: 'BASIC',
+        addonType: 'EXTRA_CHANNEL',
+        pricePerUnitCents: 500, // $5.00
+        stripePriceId: '', // Will be set after creating in Stripe
+        minQuantity: 1,
+        maxQuantity: null,
+        isActive: true,
+      },
+      {
+        planCode: 'BASIC',
+        addonType: 'EXTRA_MEMBER',
+        pricePerUnitCents: 300, // $3.00
+        stripePriceId: '', // Will be set after creating in Stripe
+        minQuantity: 1,
+        maxQuantity: null,
+        isActive: true,
+      },
+      {
+        planCode: 'BASIC',
+        addonType: 'EXTRA_WORKSPACE',
+        pricePerUnitCents: 800, // $8.00
+        stripePriceId: '', // Will be set after creating in Stripe
+        minQuantity: 1,
+        maxQuantity: null,
+        isActive: true,
+      },
+      {
+        planCode: 'BASIC',
+        addonType: 'EXTRA_AI_TOKENS', // 5k extra AI tokens pack
+        pricePerUnitCents: 500, // $5.00 per 5k tokens
+        unitsPerQuantity: 5000, // 1 purchased qty = 5k tokens
+        stripePriceId: '', // Will be set after creating in Stripe
+        minQuantity: 1,
+        maxQuantity: null, // Unlimited purchases allowed
+        isActive: true,
+      },
       // PRO Plan Add-ons
       {
         planCode: 'PRO',
@@ -148,8 +191,9 @@ export async function seedAddonPricing() {
       },
       {
         planCode: 'PRO',
-        addonType: 'AI_TOKENS', // 500 extra AI tokens pack
-        pricePerUnitCents: 500, // $5.00 per 500 tokens
+        addonType: 'EXTRA_AI_TOKENS', // 5k extra AI tokens pack
+        pricePerUnitCents: 500, // $5.00 per 5k tokens
+        unitsPerQuantity: 5000, // 1 purchased qty = 5k tokens
         stripePriceId: '', // Will be set after creating in Stripe
         minQuantity: 1,
         maxQuantity: null, // Unlimited purchases allowed
@@ -185,8 +229,9 @@ export async function seedAddonPricing() {
       },
       {
         planCode: 'MAX',
-        addonType: 'AI_TOKENS', // 500 extra AI tokens pack (discounted for MAX)
-        pricePerUnitCents: 400, // $4.00 per 500 tokens (discounted)
+        addonType: 'EXTRA_AI_TOKENS', // 5k extra AI tokens pack (discounted for MAX)
+        pricePerUnitCents: 400, // $4.00 per 5k tokens (discounted)
+        unitsPerQuantity: 5000, // 1 purchased qty = 5k tokens
         stripePriceId: '', // Will be set after creating in Stripe
         minQuantity: 1,
         maxQuantity: null, // Unlimited purchases allowed
@@ -194,6 +239,14 @@ export async function seedAddonPricing() {
       },
     ])
     .onConflictDoNothing();
+
+  // Self-heal: keep AI-token pack size in sync (one pack = 5k tokens) for
+  // rows that predate this value. Drives usage-limit math and the UI label.
+  // Idempotent.
+  await db
+    .update(addonPricing)
+    .set({ unitsPerQuantity: 5000 })
+    .where(eq(addonPricing.addonType, 'EXTRA_AI_TOKENS'));
 
   console.log('Addon pricing seeded successfully!');
 }

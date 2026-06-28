@@ -14,7 +14,7 @@ const ADDON_DISPLAY_NAMES: Record<string, string> = {
   EXTRA_CHANNEL: 'Extra Channel',
   EXTRA_MEMBER: 'Extra Team Member',
   EXTRA_WORKSPACE: 'Extra Workspace',
-  AI_TOKENS: 'AI Tokens',
+  EXTRA_AI_TOKENS: 'Extra AI Tokens',
 };
 
 /** Human-readable product name for an addon. */
