@@ -35,9 +35,10 @@ export class BridgeService {
   }
 
   /**
-   * Issue a `wa.me` deep link that prefills `connect <token>` to the central
-   * Maestro WhatsApp number. The user just taps Send; the webhook binds their
-   * wa_id to this user + workspace. Validates workspace ownership first.
+   * Issue a `wa.me` deep link that prefills `/connect <token>` to the central
+   * Maestro WhatsApp number — same command shape as Telegram's `/start`. The
+   * user just taps Send; the webhook binds their wa_id to this user + workspace.
+   * Validates workspace ownership first.
    */
   async whatsappDeepLink(userId: string, workspaceId: string): Promise<string> {
     await this.workspaces.findOne(workspaceId, userId);
@@ -45,7 +46,7 @@ export class BridgeService {
     const number = (
       this.config.get<string>('MAESTRO_WHATSAPP_NUMBER') || ''
     ).replace(/\D/g, '');
-    const text = encodeURIComponent(`connect ${token}`);
+    const text = encodeURIComponent(`/connect ${token}`);
     return `https://wa.me/${number}?text=${text}`;
   }
 

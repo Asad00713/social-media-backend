@@ -129,9 +129,15 @@ export class MaestroBridgeProcessor extends WorkerHost {
     if (!text) return;
     const replier = this.telegramReplier(chatId);
 
-    if (text.startsWith('/start')) {
-      const token = text.slice('/start'.length).trim();
-      await this.linkAccount(replier, 'telegram', fromId, token, this.telegramName(msg.from));
+    const tgToken = this.parseConnectToken(text);
+    if (tgToken !== null) {
+      await this.linkAccount(
+        replier,
+        'telegram',
+        fromId,
+        tgToken,
+        this.telegramName(msg.from),
+      );
       return;
     }
 
@@ -233,13 +239,13 @@ export class MaestroBridgeProcessor extends WorkerHost {
     const replier = this.whatsappReplier(waId);
     if (!text) return;
 
-    if (text.toLowerCase().startsWith('connect ')) {
-      const token = text.slice('connect '.length).trim();
+    const waToken = this.parseConnectToken(text);
+    if (waToken !== null) {
       await this.linkAccount(
         replier,
         'whatsapp',
         waId,
-        token,
+        waToken,
         authorName || 'WhatsApp user',
       );
       return;
@@ -287,6 +293,21 @@ export class MaestroBridgeProcessor extends WorkerHost {
   // ==========================================================================
   // Channel-agnostic core
   // ==========================================================================
+
+  /**
+   * Recognise a connect command on EITHER channel so both feel the same:
+   * `/start`, `/connect`, or the bare `start`/`connect` keyword, optionally
+   * followed by the signed link token. Telegram's deep link fires `/start
+   * <token>` natively; WhatsApp's prefills `/connect <token>`. Returns the token
+   * (possibly empty → treated as expired) or null when it isn't a connect
+   * command. The token must be a single non-space run, so a normal sentence like
+   * "connect my instagram account" is NOT mistaken for a connect command.
+   */
+  private parseConnectToken(text: string): string | null {
+    const m = /^\/?(?:start|connect)(?:\s+(\S+))?\s*$/i.exec(text.trim());
+    if (!m) return null;
+    return (m[1] ?? '').trim();
+  }
 
   private connectNudge(): string {
     const app =
