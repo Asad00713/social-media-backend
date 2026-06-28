@@ -31,6 +31,7 @@ import { resolveAgentAuth } from '../auth/agent-auth';
 import {
   STATIC_SYSTEM_PROMPT,
   CONFIRM_BEFORE_SEND_POLICY,
+  bridgeChannelPolicy,
 } from '../prompt/system-prompt';
 import type {
   AgentRunInput,
@@ -470,9 +471,15 @@ export class MaestroService {
     const abortController = new AbortController();
     signal.addEventListener('abort', () => abortController.abort());
 
-    const systemPrompt = confirmBeforeSend
-      ? [STATIC_SYSTEM_PROMPT, CONFIRM_BEFORE_SEND_POLICY]
-      : STATIC_SYSTEM_PROMPT;
+    // STATIC stays first (cache-stable prefix). The bridge policy comes LAST so
+    // it overrides the web-oriented "buttons/cards" wording for Telegram/WhatsApp.
+    const promptParts: string[] = [STATIC_SYSTEM_PROMPT];
+    if (confirmBeforeSend) promptParts.push(CONFIRM_BEFORE_SEND_POLICY);
+    if (params.sourceChannel) {
+      promptParts.push(bridgeChannelPolicy(params.sourceChannel));
+    }
+    const systemPrompt: string | string[] =
+      promptParts.length === 1 ? promptParts[0] : promptParts;
 
     const input: AgentRunInput = {
       ctx,

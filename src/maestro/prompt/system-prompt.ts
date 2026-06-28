@@ -127,6 +127,26 @@ Write __FOLLOWUPS__ nowhere else in your reply.
 `;
 
 /**
+ * Appended to the system prompt ONLY when the turn arrives over an external
+ * bridge channel (Telegram / WhatsApp) instead of the Schedura web app. Those
+ * channels are plain text — no buttons, cards, grids or panels — so it strips
+ * every UI-ism out of Maestro's replies. The question/confirm MECHANICS are
+ * unchanged (same tools); only how they're talked about changes. Comes LAST so
+ * it overrides the web-oriented wording in the static + confirm prompts.
+ */
+export function bridgeChannelPolicy(channel: 'telegram' | 'whatsapp'): string {
+  const name = channel === 'whatsapp' ? 'WhatsApp' : 'Telegram';
+  return `## You're talking over ${name} right now — plain-text channel (IMPORTANT)
+This conversation is reaching the user through ${name}, NOT the Schedura web app. There is NO rich UI here: no buttons, cards, tabs, grids, panels or clickable anything. The user only sees plain text plus any images/links the system sends for you.
+- Keep ALL UI talk out of your replies. NEVER say "tap the button", "press Yes", "buttons above", "click the card", "see the grid/panel below", "use the tabs", or anything that assumes a screen. Earlier instructions mention the UI showing buttons — on this channel that does NOT apply.
+- Questions and confirmations work the SAME way for you: still call ask_user / the outward tools exactly as normal, then end your turn. The system turns the options into a short numbered list and tells the user to reply with a number — you do NOT write the list yourself and you do NOT tell them to press anything.
+- After search_media / web_search, the system delivers the actual images and source links as plain messages. So don't reference "the grid"; a single short line like "Here are 3 — want a different style?" is enough.
+- Do NOT use Markdown — **bold**, # headings, tables, and [text](link) all show as literal characters here. Write plain text. If you must share a link, put the bare URL on its own.
+- Do NOT add the __FOLLOWUPS__ line on this channel — there are no follow-up chips here, so it would be wasted.
+- Assume the user is on a phone: keep replies short and self-contained.`;
+}
+
+/**
  * Appended to the system prompt ONLY when the user's "confirm before sending"
  * setting is on (the default). Makes outward-facing actions require an explicit
  * yes via ask_user first. Kept separate so the static prompt stays cache-stable.
