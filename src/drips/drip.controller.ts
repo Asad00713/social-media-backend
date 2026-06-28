@@ -20,6 +20,7 @@ import {
   DripCampaignQueryDto,
   DripPostQueryDto,
   UpdateDripPostContentDto,
+  DripScheduledPostsQueryDto,
 } from './dto/drip.dto';
 
 @Controller('drips')
@@ -76,6 +77,22 @@ export class DripController {
       limit: query.limit || 50,
       offset: query.offset || 0,
     };
+  }
+
+  /**
+   * Scheduled drip posts across the workspace for the calendar.
+   */
+  @Get('workspaces/:workspaceId/scheduled-posts')
+  async getWorkspaceScheduledDripPosts(
+    @Param('workspaceId') workspaceId: string,
+    @Query() query: DripScheduledPostsQueryDto,
+  ) {
+    const posts = await this.dripService.getWorkspaceScheduledDripPosts(
+      workspaceId,
+      new Date(query.from),
+      new Date(query.to),
+    );
+    return { posts, total: posts.length };
   }
 
   /**
