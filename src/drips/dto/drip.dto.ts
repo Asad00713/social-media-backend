@@ -12,6 +12,7 @@ import {
   Matches,
   ArrayMinSize,
   IsISO8601,
+  IsNotEmpty,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import {
@@ -200,9 +201,11 @@ export class UpdateDripPostContentDto {
 }
 
 export class DripScheduledPostsQueryDto {
+  @IsNotEmpty()
   @IsISO8601()
   from: string;
 
+  @IsNotEmpty()
   @IsISO8601()
   to: string;
 }
