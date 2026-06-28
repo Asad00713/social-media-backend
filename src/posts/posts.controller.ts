@@ -72,6 +72,48 @@ export class PostsController {
   }
 
   /**
+   * Get scheduled posts for calendar view.
+   * MUST be declared before the ':postId' routes below — otherwise NestJS
+   * matches the literal "calendar" segment as a :postId and the query fails
+   * with "invalid input syntax for type uuid: calendar".
+   */
+  @Get('workspaces/:workspaceId/calendar')
+  async getCalendarPosts(
+    @Param('workspaceId') workspaceId: string,
+    @Query('from') from: string,
+    @Query('to') to: string,
+  ) {
+    if (!from || !to) {
+      throw new Error('from and to date parameters are required');
+    }
+
+    const scheduledPosts = await this.postService.getScheduledPosts(
+      workspaceId,
+      new Date(from),
+      new Date(to),
+    );
+
+    // Group by date for calendar display
+    const byDate: Record<string, typeof scheduledPosts> = {};
+
+    for (const post of scheduledPosts) {
+      if (post.scheduledAt) {
+        const dateKey = post.scheduledAt.toISOString().split('T')[0];
+        if (!byDate[dateKey]) {
+          byDate[dateKey] = [];
+        }
+        byDate[dateKey].push(post);
+      }
+    }
+
+    return {
+      posts: scheduledPosts,
+      byDate,
+      total: scheduledPosts.length,
+    };
+  }
+
+  /**
    * Get a single post by ID
    */
   @Get('workspaces/:workspaceId/:postId')
@@ -168,49 +210,6 @@ export class PostsController {
         published: successCount,
         failed: failedCount,
       },
-    };
-  }
-
-  // ==========================================================================
-  // Calendar & Scheduling
-  // ==========================================================================
-
-  /**
-   * Get scheduled posts for calendar view
-   */
-  @Get('workspaces/:workspaceId/calendar')
-  async getCalendarPosts(
-    @Param('workspaceId') workspaceId: string,
-    @Query('from') from: string,
-    @Query('to') to: string,
-  ) {
-    if (!from || !to) {
-      throw new Error('from and to date parameters are required');
-    }
-
-    const scheduledPosts = await this.postService.getScheduledPosts(
-      workspaceId,
-      new Date(from),
-      new Date(to),
-    );
-
-    // Group by date for calendar display
-    const byDate: Record<string, typeof scheduledPosts> = {};
-
-    for (const post of scheduledPosts) {
-      if (post.scheduledAt) {
-        const dateKey = post.scheduledAt.toISOString().split('T')[0];
-        if (!byDate[dateKey]) {
-          byDate[dateKey] = [];
-        }
-        byDate[dateKey].push(post);
-      }
-    }
-
-    return {
-      posts: scheduledPosts,
-      byDate,
-      total: scheduledPosts.length,
     };
   }
 
