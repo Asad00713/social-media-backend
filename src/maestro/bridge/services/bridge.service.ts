@@ -27,10 +27,16 @@ export class BridgeService {
   async telegramDeepLink(userId: string, workspaceId: string): Promise<string> {
     await this.workspaces.findOne(workspaceId, userId);
     const token = this.links.issueLinkToken(userId, workspaceId);
-    const bot = this.config.get<string>(
-      'MAESTRO_TELEGRAM_BOT_USERNAME',
-      'ScheduraMaestroBot',
-    );
+    // BotFather usernames are bare (no `@`); a stray `@` or surrounding spaces in
+    // the env would yield `t.me/@name` → "username not found". Normalise here.
+    const bot = (
+      this.config.get<string>(
+        'MAESTRO_TELEGRAM_BOT_USERNAME',
+        'ScheduraMaestroBot',
+      ) || ''
+    )
+      .trim()
+      .replace(/^@+/, '');
     return `https://t.me/${bot}?start=${token}`;
   }
 
