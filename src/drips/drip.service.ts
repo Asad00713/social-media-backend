@@ -6,7 +6,7 @@ import {
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { eq, and, desc, asc } from 'drizzle-orm';
+import { eq, and, desc, asc, gte, lte, inArray } from 'drizzle-orm';
 import { db } from '../drizzle/db';
 import {
   dripCampaigns,
@@ -999,5 +999,84 @@ export class DripService {
       details,
       errorMessage,
     });
+  }
+
+  /**
+   * All upcoming drip posts across a workspace's campaigns within [from, to].
+   * Returns a calendar-friendly shape (campaign name + resolved platforms),
+   * so the frontend calendar can render drips without N per-campaign fetches.
+   */
+  async getWorkspaceScheduledDripPosts(
+    workspaceId: string,
+    from: Date,
+    to: Date,
+  ): Promise<
+    Array<{
+      id: string;
+      campaignId: string;
+      campaignName: string;
+      scheduledAt: string;
+      status: string;
+      platforms: string[];
+      content: string | null;
+    }>
+  > {
+    const UPCOMING = [
+      'pending',
+      'generating',
+      'pending_review',
+      'approved',
+      'scheduled',
+    ];
+
+    const rows = await db
+      .select({
+        id: dripPosts.id,
+        campaignId: dripPosts.dripCampaignId,
+        campaignName: dripCampaigns.name,
+        scheduledAt: dripPosts.scheduledAt,
+        status: dripPosts.status,
+        content: dripPosts.generatedContent,
+        targetChannelIds: dripCampaigns.targetChannelIds,
+      })
+      .from(dripPosts)
+      .innerJoin(dripCampaigns, eq(dripPosts.dripCampaignId, dripCampaigns.id))
+      .where(
+        and(
+          eq(dripCampaigns.workspaceId, workspaceId),
+          gte(dripPosts.scheduledAt, from),
+          lte(dripPosts.scheduledAt, to),
+          inArray(dripPosts.status, UPCOMING),
+        ),
+      )
+      .orderBy(dripPosts.scheduledAt);
+
+    // Resolve channel ids → platforms once for the whole workspace.
+    const wsChannels = await db
+      .select({
+        id: socialMediaChannels.id,
+        platform: socialMediaChannels.platform,
+      })
+      .from(socialMediaChannels)
+      .where(eq(socialMediaChannels.workspaceId, workspaceId));
+    const platformById = new Map(
+      wsChannels.map((c) => [String(c.id), c.platform]),
+    );
+
+    return rows.map((r) => ({
+      id: r.id,
+      campaignId: r.campaignId,
+      campaignName: r.campaignName,
+      scheduledAt: r.scheduledAt.toISOString(),
+      status: r.status,
+      platforms: Array.from(
+        new Set(
+          ((r.targetChannelIds as unknown[]) ?? [])
+            .map((cid) => platformById.get(String(cid)))
+            .filter((p): p is string => Boolean(p)),
+        ),
+      ),
+      content: r.content ?? null,
+    }));
   }
 }

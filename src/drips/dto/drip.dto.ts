@@ -11,6 +11,7 @@ import {
   IsObject,
   Matches,
   ArrayMinSize,
+  IsISO8601,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import {
@@ -196,4 +197,12 @@ export class UpdateDripPostContentDto {
   @IsOptional()
   @IsObject()
   platformContent?: Record<string, PlatformContentItemDto>;
+}
+
+export class DripScheduledPostsQueryDto {
+  @IsISO8601()
+  from: string;
+
+  @IsISO8601()
+  to: string;
 }
