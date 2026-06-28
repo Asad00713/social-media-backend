@@ -212,6 +212,12 @@ export interface MaestroBridgeMessagePayload {
   workspaceId: string;
   conversationId: string;
   channel: 'telegram' | 'whatsapp';
+  /** `inbound` = the user's message just landed (carries its text so the panel
+   *  shows it instantly + a thinking placeholder); `reply` = Maestro answered
+   *  (panel re-syncs from the DB, dropping the placeholder). */
+  phase: 'inbound' | 'reply';
+  /** The user's message text — present on `inbound` only. */
+  text?: string;
 }
 
 export type AnalyticsEventPayloadMap = {
