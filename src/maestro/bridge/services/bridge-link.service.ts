@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { createHmac } from 'crypto';
+import { createHmac, timingSafeEqual } from 'crypto';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../../../drizzle/db';
 import {
@@ -9,15 +9,30 @@ import {
   type MaestroChannelLink,
 } from '../../../drizzle/schema/maestro-links.schema';
 import { maestroBridgeThreads } from '../../../drizzle/schema/maestro-bridge-threads.schema';
-import { secureCompare } from '../../../common/utils/encryption.util';
 
 /** Connect links are short-lived so a leaked URL can't be reused later. */
 const TOKEN_TTL_MS = 10 * 60 * 1000;
 
-interface LinkPayload {
-  u: string;
-  w: string;
-  exp: number;
+/** Bytes of the truncated HMAC kept in the token (80-bit tag — ample for a
+ *  10-minute, single-purpose link). */
+const SIG_BYTES = 10;
+const UUID_RE = /^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$/;
+
+/** UUID (with dashes) → 16 raw bytes. Throws if the id isn't a UUID. */
+function uuidToBytes(uuid: string): Buffer {
+  if (!UUID_RE.test(uuid)) {
+    throw new Error('connect token: id must be a UUID');
+  }
+  return Buffer.from(uuid.replace(/-/g, ''), 'hex');
+}
+
+/** 16 raw bytes → canonical dashed UUID string. */
+function bytesToUuid(buf: Buffer): string {
+  const h = buf.toString('hex');
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-${h.slice(12, 16)}-${h.slice(
+    16,
+    20,
+  )}-${h.slice(20)}`;
 }
 
 /** A choice prompt awaiting a button tap (stored on the link's metadata). */
@@ -30,10 +45,17 @@ export interface PendingChoice {
 }
 
 /**
- * Issues/verifies the HMAC-signed deep-link tokens used to bind an external
- * identity (Telegram user, …) to a Schedura account, and owns CRUD over
+ * Issues/verifies the signed deep-link tokens used to bind an external identity
+ * (Telegram user, …) to a Schedura account, and owns CRUD over
  * `maestro_channel_links`. The token is stateless (no DB round-trip to verify) —
- * tamper-proof via HMAC, time-boxed via `exp`.
+ * tamper-proof via a truncated HMAC, time-boxed via an embedded expiry.
+ *
+ * Layout (binary, then base64url): userId(16) ++ workspaceId(16) ++ exp:u32(4)
+ * ++ HMAC-SHA256(secret, the 36-byte head)[0..10) = 46 bytes → 62 base64url
+ * chars. This is deliberately compact: Telegram's `?start=` deep-link parameter
+ * is capped at 64 chars and allows only [A-Za-z0-9_-] (no `.`), which the old
+ * JSON-payload token (≈175 chars, with a `.`) silently violated — Telegram
+ * dropped it, so the bot opened with no token and connect never happened.
  */
 @Injectable()
 export class BridgeLinkService {
@@ -47,37 +69,40 @@ export class BridgeLinkService {
     );
   }
 
-  private sign(body: string): string {
-    return createHmac('sha256', this.secret()).update(body).digest('hex');
+  /** HMAC over the token head, truncated to SIG_BYTES. */
+  private tag(head: Buffer): Buffer {
+    return createHmac('sha256', this.secret())
+      .update(head)
+      .digest()
+      .subarray(0, SIG_BYTES);
   }
 
   issueLinkToken(userId: string, workspaceId: string): string {
-    const payload: LinkPayload = {
-      u: userId,
-      w: workspaceId,
-      exp: Date.now() + TOKEN_TTL_MS,
-    };
-    const body = Buffer.from(JSON.stringify(payload)).toString('base64url');
-    return `${body}.${this.sign(body)}`;
+    const head = Buffer.alloc(36);
+    uuidToBytes(userId).copy(head, 0);
+    uuidToBytes(workspaceId).copy(head, 16);
+    head.writeUInt32BE(Math.floor((Date.now() + TOKEN_TTL_MS) / 1000), 32);
+    return Buffer.concat([head, this.tag(head)]).toString('base64url');
   }
 
   verifyLinkToken(
     token: string,
   ): { userId: string; workspaceId: string } | null {
-    const dot = token.lastIndexOf('.');
-    if (dot <= 0) return null;
-    const body = token.slice(0, dot);
-    const sig = token.slice(dot + 1);
-    if (!secureCompare(sig, this.sign(body))) return null;
     try {
-      const payload = JSON.parse(
-        Buffer.from(body, 'base64url').toString('utf8'),
-      ) as LinkPayload;
-      if (!payload.u || !payload.w || typeof payload.exp !== 'number') {
+      const buf = Buffer.from(token, 'base64url');
+      if (buf.length !== 36 + SIG_BYTES) return null;
+      const head = buf.subarray(0, 36);
+      const sig = buf.subarray(36);
+      const expected = this.tag(head);
+      if (sig.length !== expected.length || !timingSafeEqual(sig, expected)) {
         return null;
       }
-      if (Date.now() > payload.exp) return null;
-      return { userId: payload.u, workspaceId: payload.w };
+      const exp = head.readUInt32BE(32);
+      if (Math.floor(Date.now() / 1000) > exp) return null;
+      return {
+        userId: bytesToUuid(head.subarray(0, 16)),
+        workspaceId: bytesToUuid(head.subarray(16, 32)),
+      };
     } catch {
       return null;
     }
