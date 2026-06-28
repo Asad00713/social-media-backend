@@ -262,6 +262,7 @@ export class MaestroService {
         message: params.message,
         confirmBeforeSend: params.confirmBeforeSend ?? true,
         sourceChannel: params.sourceChannel,
+        onUserMessagePersisted: params.onUserMessagePersisted,
       },
       controller.signal,
     )) {
