@@ -14,6 +14,7 @@ import { WorkspaceMembersModule } from './workspace-members/workspace-members.mo
 import { BillingModule } from './billing/billing.module';
 import { StripeModule } from './stripe/stripe.module';
 import { ChannelsModule } from './channels/channels.module';
+import { MessagingOverviewModule } from './channels/messaging-overview/messaging-overview.module';
 import { MediaModule } from './media/media.module';
 import { DripModule } from './drips/drip.module';
 import { FeedbackModule } from './feedback/feedback.module';
@@ -51,6 +52,7 @@ import { QUEUES } from './queue/queue.module';
     WorkspaceMembersModule,
     BillingModule,
     ChannelsModule,
+    MessagingOverviewModule,
     PostsModule,
     MediaModule,
     MediaLibraryModule,
