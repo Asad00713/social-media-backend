@@ -69,12 +69,12 @@ export class MessagingOverviewService {
     // Messages per day over the selected range.
     const activityRows = await this.db
       .select({
-        date: sql<string>`to_char(${inboxItems.platformCreatedAt}, 'YYYY-MM-DD')`,
+        date: sql<string>`to_char(${inboxItems.platformCreatedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`,
         count: sql<number>`count(*)::int`,
       })
       .from(inboxItems)
       .where(and(baseWhere, gte(inboxItems.platformCreatedAt, rangeStart)))
-      .groupBy(sql`to_char(${inboxItems.platformCreatedAt}, 'YYYY-MM-DD')`);
+      .groupBy(sql`to_char(${inboxItems.platformCreatedAt} AT TIME ZONE 'UTC', 'YYYY-MM-DD')`);
 
     // Top channels by message volume over the selected range.
     const topRows = await this.db

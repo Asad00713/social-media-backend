@@ -16,7 +16,7 @@ describe('rangeToDays', () => {
 
 describe('buildActivitySeries', () => {
   it('0-fills missing days, oldest to newest', () => {
-    const today = new Date('2026-07-03T12:00:00');
+    const today = new Date('2026-07-03T12:00:00Z');
     const rows = [
       { date: '2026-07-03', count: 5 },
       { date: '2026-07-01', count: 2 },

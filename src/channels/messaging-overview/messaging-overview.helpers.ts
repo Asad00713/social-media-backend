@@ -13,14 +13,14 @@ export function rangeToDays(range: MessagingRange): number {
 }
 
 function toYmd(d: Date): string {
-  const y = d.getFullYear();
-  const m = String(d.getMonth() + 1).padStart(2, '0');
-  const day = String(d.getDate()).padStart(2, '0');
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, '0');
+  const day = String(d.getUTCDate()).padStart(2, '0');
   return `${y}-${m}-${day}`;
 }
 
 function formatDayLabel(d: Date): string {
-  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', timeZone: 'UTC' });
 }
 
 export interface DayCountRow {
@@ -38,7 +38,7 @@ export function buildActivitySeries(
   const out: MessagingActivityPointDto[] = [];
   for (let i = days - 1; i >= 0; i--) {
     const d = new Date(today);
-    d.setDate(d.getDate() - i);
+    d.setUTCDate(d.getUTCDate() - i);
     out.push({ label: formatDayLabel(d), messages: byDate.get(toYmd(d)) ?? 0 });
   }
   return out;
