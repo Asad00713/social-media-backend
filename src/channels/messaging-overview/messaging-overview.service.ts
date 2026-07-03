@@ -5,7 +5,7 @@ import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { inboxItems } from '../../drizzle/schema/inbox.schema';
 import { SlackService } from '../services/slack.service';
 import { ChannelService } from '../services/channel.service';
-import { MESSAGING_REDIS } from './messaging-overview.module';
+import { MESSAGING_REDIS } from './messaging-overview.constants';
 import { MessagingOverviewResponseDto } from './dto/messaging-overview-response.dto';
 import {
   rangeToDays,

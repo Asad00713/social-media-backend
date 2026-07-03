@@ -1,0 +1,1 @@
+export const MESSAGING_REDIS = 'MESSAGING_REDIS';

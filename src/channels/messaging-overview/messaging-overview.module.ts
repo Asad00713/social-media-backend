@@ -5,8 +5,7 @@ import { ChannelsModule } from '../channels.module';
 import { InboxModule } from '../../inbox/inbox.module';
 import { MessagingOverviewController } from './messaging-overview.controller';
 import { MessagingOverviewService } from './messaging-overview.service';
-
-export const MESSAGING_REDIS = 'MESSAGING_REDIS';
+import { MESSAGING_REDIS } from './messaging-overview.constants';
 
 const MessagingRedisProvider: Provider = {
   provide: MESSAGING_REDIS,
