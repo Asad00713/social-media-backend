@@ -16,6 +16,13 @@ import {
   type ChannelInfo,
 } from './messaging-overview.helpers';
 
+type SlackChannel = {
+  id: string;
+  name: string;
+  isMember: boolean;
+  isPrivate: boolean;
+};
+
 interface SlackDerived {
   channels: { total: number; public: number; private: number };
   botActiveIn: number;
@@ -129,24 +136,19 @@ export class MessagingOverviewService {
 
     const token = await this.channels.getAccessToken(channelId, workspaceId);
 
-    // Paginate all public + private channels the bot can see.
-    const allChannels: Array<{
-      id: string;
-      name: string;
-      isMember: boolean;
-      isPrivate: boolean;
-    }> = [];
-    let cursor: string | undefined;
-    let pages = 0;
-    do {
-      const res = await this.slack.listAllChannels(token, {
-        includePrivate: true,
-        cursor,
-        limit: 200,
-      });
-      allChannels.push(...res.channels);
-      cursor = res.nextCursor ?? undefined;
-    } while (cursor && ++pages < 20);
+    // All public + private channels the bot can see. If the bot lacks the
+    // private-channel scope (groups:read), degrade to public-only rather than
+    // failing the whole overview.
+    let allChannels: SlackChannel[];
+    try {
+      allChannels = await this.fetchAllChannels(token, true);
+    } catch (err) {
+      if (!this.isMissingScope(err)) throw err;
+      this.logger.warn(
+        `Slack bot lacks private-channel scope (groups:read) for channel ${channelId}; showing public channels only.`,
+      );
+      allChannels = await this.fetchAllChannels(token, false);
+    }
 
     // Paginate members (count only).
     let membersTotal = 0;
@@ -176,5 +178,34 @@ export class MessagingOverviewService {
 
     await this.redis.set(cacheKey, JSON.stringify(derived), 'EX', this.CACHE_TTL);
     return derived;
+  }
+
+  /** Paginate every channel of the requested visibility (public, or public + private). */
+  private async fetchAllChannels(
+    token: string,
+    includePrivate: boolean,
+  ): Promise<SlackChannel[]> {
+    const out: SlackChannel[] = [];
+    let cursor: string | undefined;
+    let pages = 0;
+    do {
+      const res = await this.slack.listAllChannels(token, {
+        includePrivate,
+        cursor,
+        limit: 200,
+      });
+      out.push(...res.channels);
+      cursor = res.nextCursor ?? undefined;
+    } while (cursor && ++pages < 20);
+    return out;
+  }
+
+  /** True when a Slack WebClient error is a `missing_scope` platform error. */
+  private isMissingScope(err: unknown): boolean {
+    const e = err as { code?: string; data?: { error?: string } };
+    return (
+      e?.code === 'slack_webapi_platform_error' &&
+      e?.data?.error === 'missing_scope'
+    );
   }
 }

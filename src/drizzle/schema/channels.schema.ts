@@ -655,12 +655,31 @@ export const PLATFORM_CONFIG: Record<
     maxTextLength: 40000,
     supportedMediaTypes: [],
     oauthScopes: [
-      'channels:history',
+      // Public channels
       'channels:read',
-      'chat:write',
-      'im:history',
+      'channels:history',
+      'channels:join',
+      'channels:manage',
+      // Private channels (groups)
+      'groups:read',
+      'groups:history',
+      'groups:write',
+      // Direct messages
       'im:read',
+      'im:history',
+      'im:write',
+      // Group direct messages (mpim)
+      'mpim:read',
+      'mpim:history',
+      'mpim:write',
+      // Posting + files
+      'chat:write',
+      'chat:write.public',
+      'files:write',
+      // Users / mentions / workspace
       'users:read',
+      'app_mentions:read',
+      'team:read',
     ],
   },
   telegram: {
