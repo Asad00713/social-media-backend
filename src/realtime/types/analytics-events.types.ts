@@ -120,6 +120,8 @@ export interface InboxItemUpdatedPayload {
     status: InboxItemStatus;
     repliedAt: string | null;
     repliedByUserId: string | null;
+    /** Threads moderation (`manage_reply`) — reply hidden/unhidden state. */
+    isHidden: boolean;
   }>;
 }
 

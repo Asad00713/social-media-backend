@@ -233,6 +233,34 @@ export class InboxPollProcessor extends WorkerHost {
       }
     }
 
+    // Threads mentions ingest as account-level items (not tied to a post).
+    if (adapter.fetchMentions) {
+      try {
+        const mentions = await adapter.fetchMentions(channel, since);
+        for (const m of mentions) {
+          const inserted = await this.inboxService.upsertMention({
+            workspaceId: channelRow.workspaceId,
+            channelId,
+            platform,
+            platformItemId: m.platformItemId,
+            platformParentId: m.platformParentId,
+            authorHandle: m.authorHandle,
+            authorDisplayName: m.authorDisplayName,
+            authorAvatarUrl: m.authorAvatarUrl,
+            text: m.text,
+            platformCreatedAt: m.platformCreatedAt,
+            fromMe: m.fromMe,
+            metadata: m.metadata,
+          });
+          if (inserted) ingested += 1;
+        }
+      } catch (err) {
+        this.logger.warn(
+          `Mentions poll failed (channel=${channelId}): ${(err as Error).message}`,
+        );
+      }
+    }
+
     // ──────────────────────────────────────────────────────────────────────
     // DM polling — Phase 2.1
     //
