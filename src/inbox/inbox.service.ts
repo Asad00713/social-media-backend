@@ -82,6 +82,8 @@ export interface CommentNodeDto {
   status: InboxItemStatus;
   /** Read-only like/favourite count surfaced by the platform. */
   likeCount: number;
+  /** Whether this reply is hidden on the platform (threads_manage_replies). */
+  isHidden: boolean;
   replies: CommentNodeDto[];
 }
 
@@ -679,6 +681,7 @@ export class InboxService {
         status: item.status,
         likeCount:
           typeof itemMeta.likeCount === 'number' ? itemMeta.likeCount : 0,
+        isHidden: item.isHidden,
         replies: [],
       });
     }
@@ -719,6 +722,7 @@ export class InboxService {
       platformItemId: item.platformItemId,
       status: item.status,
       likeCount: typeof meta.likeCount === 'number' ? meta.likeCount : 0,
+      isHidden: item.isHidden,
       replies: [],
     };
   }
