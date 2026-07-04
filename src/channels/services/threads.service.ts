@@ -664,6 +664,30 @@ export class ThreadsService {
   }
 
   /**
+   * Hide (or unhide) a reply on one of our posts. Requires
+   * `threads_manage_replies`. Hiding auto-hides all nested replies.
+   */
+  async manageReply(
+    accessToken: string,
+    replyId: string,
+    hide: boolean,
+  ): Promise<void> {
+    const url = new URL(`${this.graphApiUrl}/${replyId}/manage_reply`);
+    const response = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_token: accessToken, hide }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      this.logger.error('manageReply failed:', error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to hide/unhide reply',
+      );
+    }
+  }
+
+  /**
    * Verify token is valid
    */
   async verifyToken(accessToken: string): Promise<boolean> {
