@@ -113,6 +113,26 @@ export interface PlatformInboxAdapter {
     channel: ResolvedChannel,
     platformItemId: string,
   ): Promise<boolean>;
+
+  /**
+   * Hide (or unhide) a reply on our post. Only implemented by platforms that
+   * support server-side moderation (Threads). Service checks existence first.
+   */
+  hideComment?(
+    channel: ResolvedChannel,
+    platformItemId: string,
+    hidden: boolean,
+  ): Promise<void>;
+
+  /**
+   * Fetch posts that @mention our account. Only implemented by platforms with
+   * a mentions API (Threads). Returns one FetchedComment per mention (no post
+   * grouping — mentions ingest as inbox items of type 'mention').
+   */
+  fetchMentions?(
+    channel: ResolvedChannel,
+    since?: Date,
+  ): Promise<FetchedComment[]>;
 }
 
 // ============================================================================

@@ -108,4 +108,33 @@ export class ThreadsInboxAdapter implements PlatformInboxAdapter {
       platformCreatedAt: new Date(),
     };
   }
+
+  async hideComment(
+    channel: ResolvedChannel,
+    platformItemId: string,
+    hidden: boolean,
+  ): Promise<void> {
+    await this.threads.manageReply(channel.accessToken, platformItemId, hidden);
+  }
+
+  async fetchMentions(
+    channel: ResolvedChannel,
+    since?: Date,
+  ): Promise<FetchedComment[]> {
+    const mentions = await this.threads.getMentions(
+      channel.accessToken,
+      channel.platformAccountId,
+      since,
+    );
+    return mentions.map((m) => ({
+      platformItemId: m.id,
+      platformParentId: null,
+      authorHandle: m.authorUsername ?? undefined,
+      authorDisplayName: m.authorUsername ?? undefined,
+      text: m.text ?? '',
+      platformCreatedAt: new Date(m.timestamp),
+      fromMe: false,
+      metadata: { permalink: m.permalink, mediaType: m.mediaType },
+    }));
+  }
 }
