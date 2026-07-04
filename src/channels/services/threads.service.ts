@@ -42,6 +42,15 @@ export interface ThreadsInsights {
   quotes: number;
 }
 
+export interface ThreadsMention {
+  id: string;
+  text: string | null;
+  authorUsername: string | null;
+  permalink: string | null;
+  timestamp: string;
+  mediaType: string | null;
+}
+
 @Injectable()
 export class ThreadsService {
   private readonly logger = new Logger(ThreadsService.name);
@@ -609,6 +618,49 @@ export class ThreadsService {
     }
 
     return out;
+  }
+
+  /**
+   * Posts that @mention the connected account. Requires `threads_manage_mentions`.
+   * Returns [] on permission errors so channels connected before the scope was
+   * added degrade gracefully instead of failing the whole poll.
+   */
+  async getMentions(
+    accessToken: string,
+    userId: string,
+    since?: Date,
+  ): Promise<ThreadsMention[]> {
+    const url = new URL(`${this.graphApiUrl}/${userId}/mentions`);
+    url.searchParams.set('access_token', accessToken);
+    url.searchParams.set(
+      'fields',
+      'id,text,username,permalink,timestamp,media_type',
+    );
+    // API lower bound is 2023-07-05 (1688540400); never send anything earlier.
+    if (since) {
+      const sinceSec = Math.max(Math.floor(since.getTime() / 1000), 1688540400);
+      url.searchParams.set('since', String(sinceSec));
+    }
+
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      this.logger.warn(
+        `getMentions failed (userId=${userId}): ${error.error?.message ?? response.status}`,
+      );
+      return [];
+    }
+
+    const body = await response.json();
+    const data: any[] = Array.isArray(body.data) ? body.data : [];
+    return data.map((m) => ({
+      id: String(m.id),
+      text: m.text ?? null,
+      authorUsername: m.username ?? null,
+      permalink: m.permalink ?? null,
+      timestamp: m.timestamp,
+      mediaType: m.media_type ?? null,
+    }));
   }
 
   /**
