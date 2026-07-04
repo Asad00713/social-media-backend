@@ -169,6 +169,13 @@
       "when": 1781432362905,
       "tag": "0023_large_wallop",
       "breakpoints": true
+    },
+    {
+      "idx": 24,
+      "version": "7",
+      "when": 1783154913315,
+      "tag": "0024_complete_junta",
+      "breakpoints": true
     }
   ]
 }

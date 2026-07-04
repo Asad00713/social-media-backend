@@ -18,7 +18,7 @@ import { posts } from './posts.schema';
 
 // type — Phase 1 only stores 'comment'. 'dm' reserved for Phase 2 so we don't
 // need a schema migration later.
-export const INBOX_ITEM_TYPES = ['comment', 'dm'] as const;
+export const INBOX_ITEM_TYPES = ['comment', 'dm', 'mention'] as const;
 export type InboxItemType = (typeof INBOX_ITEM_TYPES)[number];
 
 export const INBOX_ITEM_STATUSES = [
@@ -86,6 +86,9 @@ export const inboxItems = pgTable(
     // True when authored by our connected account (e.g. our reply via Schedura,
     // or a manual reply we made on the platform itself).
     fromMe: boolean('from_me').default(false).notNull(),
+
+    // Platform-side hidden state for a reply we moderated (Threads manage_reply).
+    isHidden: boolean('is_hidden').default(false).notNull(),
 
     // Time the comment was created on the platform.
     platformCreatedAt: timestamp('platform_created_at', {

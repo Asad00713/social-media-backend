@@ -87,7 +87,7 @@ export interface PostStatusChangedPayload {
   triggeredByUserId: string | null;
 }
 
-export type InboxItemType = 'comment' | 'dm';
+export type InboxItemType = 'comment' | 'dm' | 'mention';
 export type InboxItemStatus = 'unread' | 'needs_reply' | 'replied' | 'done';
 
 export interface InboxItemEventBase {
