@@ -20,6 +20,7 @@ import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { ListCommentsDto } from './dto/list-comments.dto';
 import { ReplyDto } from './dto/reply.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
+import { HideDto } from './dto/hide.dto';
 import { CreateScheduledMessageDto } from './dto/create-scheduled-message.dto';
 import { UpdateScheduledMessageDto } from './dto/update-scheduled-message.dto';
 import { ListScheduledMessagesDto } from './dto/list-scheduled-messages.dto';
@@ -47,6 +48,22 @@ export class InboxController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.inboxService.listCommentThreads(workspaceId, user.userId, {
+      channelId: query.channelId,
+      folder: query.folder,
+      status: query.status,
+      cursor: query.cursor,
+      limit: query.limit,
+    });
+  }
+
+  /** Flat list of @mentions (account-level, not tied to a post/thread). */
+  @Get('mentions')
+  async mentions(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Query() query: ListCommentsDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.inboxService.listMentions(workspaceId, user.userId, {
       channelId: query.channelId,
       folder: query.folder,
       status: query.status,
@@ -101,6 +118,25 @@ export class InboxController {
       user.userId,
       itemId,
       dto.status,
+    );
+  }
+
+  /**
+   * Moderate a reply on our own post (Threads `manage_reply` today; other
+   * platforms reject with a 400 via `inboxService.hideComment`).
+   */
+  @Patch('comments/:itemId/hide')
+  async hide(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('itemId', ParseUUIDPipe) itemId: string,
+    @Body() dto: HideDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.inboxService.hideComment(
+      workspaceId,
+      user.userId,
+      itemId,
+      dto.hidden,
     );
   }
 

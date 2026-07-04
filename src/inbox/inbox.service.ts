@@ -90,6 +90,25 @@ export interface CommentThreadDetail extends CommentThreadSummary {
 }
 
 // ============================================================================
+// Mentions — flat list (not grouped by post; see `listMentions`)
+// ============================================================================
+
+export interface MentionItemDto {
+  id: string;
+  author: {
+    handle: string;
+    displayName: string;
+    avatarUrl?: string;
+  };
+  text: string;
+  timestamp: string;
+  /** Link back to the mention on the platform, when the adapter captured one. */
+  permalink?: string;
+  platformItemId: string;
+  isHidden: boolean;
+}
+
+// ============================================================================
 // DM types — Phase 2.1
 // ============================================================================
 
@@ -425,6 +444,89 @@ export class InboxService {
 
     return {
       threads: sliced.map((s) => s.summary),
+      nextCursor,
+    };
+  }
+
+  // ==========================================================================
+  // List mentions (flat — @mentions ingest as account-level items, not tied
+  // to a post, so there's no thread to group them into. Same filter/cursor
+  // shape as `listCommentThreads` above, minus the grouping step.)
+  // ==========================================================================
+
+  async listMentions(
+    workspaceId: string,
+    userId: string,
+    options: {
+      channelId?: string;
+      folder?: InboxFolder;
+      status?: InboxItemStatus;
+      cursor?: string;
+      limit?: number;
+    },
+  ): Promise<{ mentions: MentionItemDto[]; nextCursor: string | null }> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+
+    const limit = Math.min(options.limit ?? 20, 100);
+    const conditions = [
+      eq(inboxItems.workspaceId, workspaceId),
+      eq(inboxItems.type, 'mention'),
+      isNull(inboxItems.archivedAt),
+    ];
+
+    if (options.channelId && options.channelId !== 'all') {
+      const channelIdNum = Number(options.channelId);
+      if (Number.isFinite(channelIdNum)) {
+        conditions.push(eq(inboxItems.channelId, channelIdNum));
+      }
+    }
+
+    // Folder → status mapping. 'all' = no extra filter.
+    const statusFilter = options.status ?? this.folderToStatus(options.folder);
+    if (statusFilter) {
+      conditions.push(eq(inboxItems.status, statusFilter));
+    }
+
+    if (options.cursor) {
+      const cursorDate = new Date(options.cursor);
+      if (!Number.isNaN(cursorDate.getTime())) {
+        conditions.push(lt(inboxItems.platformCreatedAt, cursorDate));
+      }
+    }
+
+    // Flat list — fetch one extra row past `limit` to know if there's a next
+    // page, instead of the `limit * 10` over-fetch `listCommentThreads` needs
+    // for its in-memory grouping.
+    const rows = await db
+      .select()
+      .from(inboxItems)
+      .where(and(...conditions))
+      .orderBy(desc(inboxItems.platformCreatedAt))
+      .limit(limit + 1);
+
+    const sliced = rows.slice(0, limit);
+    const nextCursor =
+      rows.length > limit
+        ? sliced[sliced.length - 1].platformCreatedAt.toISOString()
+        : null;
+
+    return {
+      mentions: sliced.map((row) => ({
+        id: row.id,
+        author: {
+          handle: row.authorHandle?.trim() || 'unknown',
+          displayName:
+            row.authorDisplayName?.trim() ||
+            row.authorHandle?.trim() ||
+            'Unknown',
+          avatarUrl: row.authorAvatarUrl ?? undefined,
+        },
+        text: row.text ?? '',
+        timestamp: row.platformCreatedAt.toISOString(),
+        permalink: row.metadata?.permalink,
+        platformItemId: row.platformItemId,
+        isHidden: row.isHidden,
+      })),
       nextCursor,
     };
   }
