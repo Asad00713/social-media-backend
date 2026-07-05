@@ -32,6 +32,8 @@ export class ThreadsInboxAdapter implements PlatformInboxAdapter {
     const myAccountId = channel.platformAccountId;
     const myHandle =
       channel.username?.replace(/^@+/, '').trim() || channel.accountName;
+    const myUsername = (channel.username?.replace(/^@+/, '').trim() || '')
+      .toLowerCase();
     const myDisplay = channel.accountName;
     const myAvatar = channel.profilePictureUrl ?? undefined;
     const out: FetchedComment[] = [];
@@ -43,14 +45,15 @@ export class ThreadsInboxAdapter implements PlatformInboxAdapter {
       const createdAt = new Date(entry.timestamp);
       if (since && createdAt <= since) continue;
 
-      // Threads' /conversation endpoint omits `from` on the original poster's
-      // own chained replies (the first-comment we ship with each Schedura
-      // post). Without this fallback those rows surface as "Unknown" in the
-      // inbox. Heuristic: missing-from on a reply to a thread we own == our
-      // own reply, so attribute to the channel identity.
+      // Threads exposes a reply's author as a flat `username` — only for PUBLIC
+      // repliers and our own account (private repliers omit it). Decide "ours"
+      // by matching that username to our own handle. NEVER treat a missing
+      // author as ours: the /conversation endpoint returns author-less rows for
+      // private users (and did for everyone while we requested the wrong field),
+      // and labelling those "you" hid the moderation actions gated on `!fromMe`.
+      const replyUsername = entry.authorUsername?.replace(/^@+/, '').trim();
       const isOurs =
-        (!!entry.authorId && entry.authorId === myAccountId) ||
-        (!entry.authorId && !entry.authorUsername);
+        !!replyUsername && replyUsername.toLowerCase() === myUsername;
 
       out.push({
         platformItemId: entry.id,
@@ -58,7 +61,7 @@ export class ThreadsInboxAdapter implements PlatformInboxAdapter {
         authorPlatformId: entry.authorId ?? (isOurs ? myAccountId : undefined),
         authorHandle: entry.authorUsername ?? (isOurs ? myHandle : undefined),
         authorDisplayName:
-          entry.authorUsername ?? (isOurs ? myDisplay : undefined),
+          entry.authorUsername ?? (isOurs ? myDisplay : 'Private user'),
         authorAvatarUrl: isOurs ? myAvatar : undefined,
         text: entry.text ?? '',
         platformCreatedAt: createdAt,
@@ -107,5 +110,34 @@ export class ThreadsInboxAdapter implements PlatformInboxAdapter {
       text,
       platformCreatedAt: new Date(),
     };
+  }
+
+  async hideComment(
+    channel: ResolvedChannel,
+    platformItemId: string,
+    hidden: boolean,
+  ): Promise<void> {
+    await this.threads.manageReply(channel.accessToken, platformItemId, hidden);
+  }
+
+  async fetchMentions(
+    channel: ResolvedChannel,
+    since?: Date,
+  ): Promise<FetchedComment[]> {
+    const mentions = await this.threads.getMentions(
+      channel.accessToken,
+      channel.platformAccountId,
+      since,
+    );
+    return mentions.map((m) => ({
+      platformItemId: m.id,
+      platformParentId: null,
+      authorHandle: m.authorUsername ?? undefined,
+      authorDisplayName: m.authorUsername ?? undefined,
+      text: m.text ?? '',
+      platformCreatedAt: new Date(m.timestamp),
+      fromMe: false,
+      metadata: { permalink: m.permalink, mediaType: m.mediaType },
+    }));
   }
 }

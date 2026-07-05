@@ -165,7 +165,9 @@ export class WebhooksController {
   async handleThreadsWebhook(@Body() body: any, @Res() res: Response) {
     res.status(200).send('EVENT_RECEIVED');
     try {
-      await this.processMetaWebhook(body, 'threads');
+      // Threads uses its OWN flat payload shape — NOT the FB/IG
+      // `{ object, entry[].changes[] }` — so it needs a dedicated parser.
+      await this.processThreadsWebhook(body);
     } catch (error) {
       this.logger.error('Error processing Threads webhook:', error);
     }
@@ -312,8 +314,6 @@ export class WebhooksController {
             (field === 'feed' || field === 'comments')
           ) {
             await this.ingestFacebookFeedEvent(accountId, value, eventTime);
-          } else if (source === 'threads' && field === 'replies') {
-            await this.ingestThreadsReply(accountId, value, eventTime);
           } else {
             this.logger.verbose(
               `Ignoring ${source} field '${field}' in Phase 1`,
@@ -542,37 +542,104 @@ export class WebhooksController {
   }
 
   // ──────────────────────────────────────────────────────────────────────
-  // Threads — `replies` field. Shape (per Meta docs):
-  //   { id, text, timestamp, root_post_id, replied_to{id}, from{id,username} }
+  // Threads webhooks use their OWN flat payload shape (NOT the FB/IG
+  // `{ object, entry[].changes[] }`):
+  //   { topic, target_id, time, values: [ { field: 'replies', value: {
+  //       id, username, text, timestamp, permalink, profile_picture_url,
+  //       replied_to:{ id }, root_post:{ id, owner_id, username } } } ] }
   // ──────────────────────────────────────────────────────────────────────
-  private async ingestThreadsReply(
-    threadsUserId: string,
-    value: any,
-    eventTime: Date,
-  ): Promise<void> {
-    const platformItemId = value.id as string | undefined;
-    const rootPostId = (value.root_post_id ?? value.replied_to_id) as
-      | string
-      | undefined;
-    if (!platformItemId || !rootPostId) {
-      this.logger.warn('Threads reply webhook missing id or root_post_id');
+  private async processThreadsWebhook(payload: any): Promise<void> {
+    const values = Array.isArray(payload?.values) ? payload.values : [];
+    this.logger.log(
+      `threads webhook: topic=${payload?.topic} target=${payload?.target_id} values=${values.length}`,
+    );
+    for (const v of values) {
+      if (v?.field !== 'replies' || !v?.value) continue;
+      try {
+        await this.ingestThreadsWebhookReply(v.value);
+      } catch (err) {
+        this.logger.error(
+          `Threads reply webhook handler failed: ${(err as Error).message}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * Ingest a single Threads `replies` webhook value. Author arrives as a flat
+   * `username` (Threads has no `from{}` object); the post owner is
+   * `root_post.owner_id` (matches our connected channel) and a reply whose
+   * username equals `root_post.username` is our own. Only replies on
+   * Schedura-published posts are ingested (Phase 1 scope), same as the poller.
+   */
+  private async ingestThreadsWebhookReply(value: any): Promise<void> {
+    const platformItemId = value?.id as string | undefined;
+    const rootPost = value?.root_post ?? {};
+    const ownerId = rootPost.owner_id as string | undefined;
+    const platformPostId = rootPost.id as string | undefined;
+    if (!platformItemId || !ownerId || !platformPostId) {
+      this.logger.warn(
+        'Threads reply webhook missing id / root_post.owner_id / root_post.id',
+      );
       return;
     }
 
-    const createdAt = value.timestamp ? new Date(value.timestamp) : eventTime;
+    const channel = await this.inbox.findChannelByPlatformAccount(
+      'threads',
+      ownerId,
+    );
+    if (!channel) {
+      this.logger.warn(
+        `Threads reply webhook: no connected channel for owner_id ${ownerId}`,
+      );
+      return;
+    }
 
-    await this.ingestFromWebhook({
+    // Only ingest replies on posts we published via Schedura (Phase 1 scope).
+    const ourPostId = await this.inbox.findOurPostId(channel.id, platformPostId);
+    if (!ourPostId) {
+      this.logger.verbose(
+        `Threads reply webhook ignored: post ${platformPostId} not from Schedura`,
+      );
+      return;
+    }
+
+    // `replied_to.id === root post` marks a top-level comment — normalize to null.
+    let parentId = (value?.replied_to?.id as string | undefined) ?? null;
+    if (parentId === platformPostId) parentId = null;
+
+    const authorUsername = value?.username as string | undefined;
+    const fromMe =
+      !!authorUsername && authorUsername === (rootPost.username as string);
+
+    const createdAt = value?.timestamp
+      ? new Date(value.timestamp as string)
+      : new Date();
+
+    await this.inbox.upsertComment({
+      workspaceId: channel.workspaceId,
+      channelId: channel.id,
       platform: 'threads',
-      platformAccountIdToMatch: threadsUserId,
       platformItemId,
-      platformParentId: (value.replied_to?.id as string | undefined) ?? null,
-      platformPostId: rootPostId,
-      authorPlatformId: value.from?.id,
-      authorHandle: value.from?.username,
-      authorDisplayName: value.from?.username,
-      text: (value.text as string | undefined) ?? '',
-      eventTime: createdAt,
+      platformParentId: parentId,
+      platformPostId,
+      ourPostId,
+      authorHandle: authorUsername ?? null,
+      authorDisplayName: authorUsername ?? null,
+      authorAvatarUrl:
+        (value?.profile_picture_url as string | undefined) ?? null,
+      text: (value?.text as string | undefined) ?? '',
+      fromMe,
+      platformCreatedAt: createdAt,
+      metadata: {
+        permalink: value?.permalink,
+        shortcode: value?.shortcode,
+      },
     });
+
+    this.logger.log(
+      `Threads reply webhook ingested: reply=${platformItemId} post=${platformPostId} fromMe=${fromMe}`,
+    );
   }
 
   // ──────────────────────────────────────────────────────────────────────

@@ -42,6 +42,15 @@ export interface ThreadsInsights {
   quotes: number;
 }
 
+export interface ThreadsMention {
+  id: string;
+  text: string | null;
+  authorUsername: string | null;
+  permalink: string | null;
+  timestamp: string;
+  mediaType: string | null;
+}
+
 @Injectable()
 export class ThreadsService {
   private readonly logger = new Logger(ThreadsService.name);
@@ -573,9 +582,13 @@ export class ThreadsService {
     for (let page = 0; page < 5; page++) {
       const url = new URL(`${this.graphApiUrl}/${threadId}/conversation`);
       url.searchParams.set('access_token', accessToken);
+      // Threads reply objects expose the author as a FLAT `username` field —
+      // NOT a nested `from{id,username}` object (that IG/FB syntax returns null
+      // on Threads, which mislabels every reply). `username` is only returned
+      // for PUBLIC repliers and our own account (private repliers omit it).
       url.searchParams.set(
         'fields',
-        'id,text,timestamp,permalink,from{id,username},replied_to{id},shortcode,like_count',
+        'id,text,timestamp,permalink,username,replied_to{id},shortcode,like_count',
       );
       url.searchParams.set('limit', '100');
       if (after) url.searchParams.set('after', after);
@@ -598,7 +611,7 @@ export class ThreadsService {
             permalink: entry.permalink ?? null,
             repliedToId: entry.replied_to?.id ?? null,
             authorId: entry.from?.id ?? null,
-            authorUsername: entry.from?.username ?? null,
+            authorUsername: entry.username ?? entry.from?.username ?? null,
             shortcode: entry.shortcode ?? null,
             likeCount: entry.like_count ?? 0,
           });
@@ -609,6 +622,73 @@ export class ThreadsService {
     }
 
     return out;
+  }
+
+  /**
+   * Posts that @mention the connected account. Requires `threads_manage_mentions`.
+   * Returns [] on permission errors so channels connected before the scope was
+   * added degrade gracefully instead of failing the whole poll.
+   */
+  async getMentions(
+    accessToken: string,
+    userId: string,
+    since?: Date,
+  ): Promise<ThreadsMention[]> {
+    const url = new URL(`${this.graphApiUrl}/${userId}/mentions`);
+    url.searchParams.set('access_token', accessToken);
+    url.searchParams.set(
+      'fields',
+      'id,text,username,permalink,timestamp,media_type',
+    );
+    // API lower bound is 2023-07-05 (1688540400); never send anything earlier.
+    if (since) {
+      const sinceSec = Math.max(Math.floor(since.getTime() / 1000), 1688540400);
+      url.searchParams.set('since', String(sinceSec));
+    }
+
+    const response = await fetch(url.toString());
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      this.logger.warn(
+        `getMentions failed (userId=${userId}): ${error.error?.message ?? response.status}`,
+      );
+      return [];
+    }
+
+    const body = await response.json();
+    const data: any[] = Array.isArray(body.data) ? body.data : [];
+    return data.map((m) => ({
+      id: String(m.id),
+      text: m.text ?? null,
+      authorUsername: m.username ?? null,
+      permalink: m.permalink ?? null,
+      timestamp: m.timestamp,
+      mediaType: m.media_type ?? null,
+    }));
+  }
+
+  /**
+   * Hide (or unhide) a reply on one of our posts. Requires
+   * `threads_manage_replies`. Hiding auto-hides all nested replies.
+   */
+  async manageReply(
+    accessToken: string,
+    replyId: string,
+    hide: boolean,
+  ): Promise<void> {
+    const url = new URL(`${this.graphApiUrl}/${replyId}/manage_reply`);
+    const response = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ access_token: accessToken, hide }),
+    });
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      this.logger.error('manageReply failed:', error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to hide/unhide reply',
+      );
+    }
   }
 
   /**

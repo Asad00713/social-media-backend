@@ -530,6 +530,10 @@ export const PLATFORM_CONFIG: Record<
       'threads_manage_replies',
       // Required to read replies on our Threads posts (inbox feature).
       'threads_read_replies',
+      // Required to read account + per-post analytics (insights dashboard).
+      'threads_manage_insights',
+      // Required to read/reply to posts that @mention our account (mentions tab).
+      'threads_manage_mentions',
     ],
   },
   bluesky: {

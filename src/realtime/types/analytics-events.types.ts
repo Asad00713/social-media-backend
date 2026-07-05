@@ -87,7 +87,7 @@ export interface PostStatusChangedPayload {
   triggeredByUserId: string | null;
 }
 
-export type InboxItemType = 'comment' | 'dm';
+export type InboxItemType = 'comment' | 'dm' | 'mention';
 export type InboxItemStatus = 'unread' | 'needs_reply' | 'replied' | 'done';
 
 export interface InboxItemEventBase {
@@ -120,6 +120,8 @@ export interface InboxItemUpdatedPayload {
     status: InboxItemStatus;
     repliedAt: string | null;
     repliedByUserId: string | null;
+    /** Threads moderation (`manage_reply`) — reply hidden/unhidden state. */
+    isHidden: boolean;
   }>;
 }
 

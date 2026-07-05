@@ -11,6 +11,7 @@ import {
   inboxItems,
   InboxItem,
   InboxItemStatus,
+  InboxItemType,
   NewInboxItem,
 } from '../drizzle/schema/inbox.schema';
 import {
@@ -81,11 +82,32 @@ export interface CommentNodeDto {
   status: InboxItemStatus;
   /** Read-only like/favourite count surfaced by the platform. */
   likeCount: number;
+  /** Whether this reply is hidden on the platform (threads_manage_replies). */
+  isHidden: boolean;
   replies: CommentNodeDto[];
 }
 
 export interface CommentThreadDetail extends CommentThreadSummary {
   rootComments: CommentNodeDto[];
+}
+
+// ============================================================================
+// Mentions — flat list (not grouped by post; see `listMentions`)
+// ============================================================================
+
+export interface MentionItemDto {
+  id: string;
+  author: {
+    handle: string;
+    displayName: string;
+    avatarUrl?: string;
+  };
+  text: string;
+  timestamp: string;
+  /** Link back to the mention on the platform, when the adapter captured one. */
+  permalink?: string;
+  platformItemId: string;
+  isHidden: boolean;
 }
 
 // ============================================================================
@@ -165,9 +187,10 @@ export interface UpsertCommentInput {
   workspaceId: string;
   channelId: number;
   platform: SupportedPlatform;
+  /** Optional — mentions (ingested via `upsertMention`) carry no post linkage. */
+  platformPostId?: string;
   platformItemId: string;
   platformParentId?: string | null;
-  platformPostId: string;
   ourPostId?: string | null;
   authorPlatformId?: string | null;
   authorHandle?: string | null;
@@ -182,6 +205,16 @@ export interface UpsertCommentInput {
   postSnapshot?: Partial<CommentThreadSummary['post']>;
   metadata?: Record<string, any>;
 }
+
+/**
+ * Input for `upsertMention` — the same shape as `UpsertCommentInput` minus the
+ * post-linkage fields, which are always null for @mentions (they ingest as
+ * account-level items, not grouped under a post thread).
+ */
+export type UpsertMentionInput = Omit<
+  UpsertCommentInput,
+  'platformPostId' | 'ourPostId' | 'postSnapshot' | 'likeCount'
+>;
 
 @Injectable()
 export class InboxService {
@@ -417,6 +450,89 @@ export class InboxService {
     };
   }
 
+  // ==========================================================================
+  // List mentions (flat — @mentions ingest as account-level items, not tied
+  // to a post, so there's no thread to group them into. Same filter/cursor
+  // shape as `listCommentThreads` above, minus the grouping step.)
+  // ==========================================================================
+
+  async listMentions(
+    workspaceId: string,
+    userId: string,
+    options: {
+      channelId?: string;
+      folder?: InboxFolder;
+      status?: InboxItemStatus;
+      cursor?: string;
+      limit?: number;
+    },
+  ): Promise<{ mentions: MentionItemDto[]; nextCursor: string | null }> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+
+    const limit = Math.min(options.limit ?? 20, 100);
+    const conditions = [
+      eq(inboxItems.workspaceId, workspaceId),
+      eq(inboxItems.type, 'mention'),
+      isNull(inboxItems.archivedAt),
+    ];
+
+    if (options.channelId && options.channelId !== 'all') {
+      const channelIdNum = Number(options.channelId);
+      if (Number.isFinite(channelIdNum)) {
+        conditions.push(eq(inboxItems.channelId, channelIdNum));
+      }
+    }
+
+    // Folder → status mapping. 'all' = no extra filter.
+    const statusFilter = options.status ?? this.folderToStatus(options.folder);
+    if (statusFilter) {
+      conditions.push(eq(inboxItems.status, statusFilter));
+    }
+
+    if (options.cursor) {
+      const cursorDate = new Date(options.cursor);
+      if (!Number.isNaN(cursorDate.getTime())) {
+        conditions.push(lt(inboxItems.platformCreatedAt, cursorDate));
+      }
+    }
+
+    // Flat list — fetch one extra row past `limit` to know if there's a next
+    // page, instead of the `limit * 10` over-fetch `listCommentThreads` needs
+    // for its in-memory grouping.
+    const rows = await db
+      .select()
+      .from(inboxItems)
+      .where(and(...conditions))
+      .orderBy(desc(inboxItems.platformCreatedAt))
+      .limit(limit + 1);
+
+    const sliced = rows.slice(0, limit);
+    const nextCursor =
+      rows.length > limit
+        ? sliced[sliced.length - 1].platformCreatedAt.toISOString()
+        : null;
+
+    return {
+      mentions: sliced.map((row) => ({
+        id: row.id,
+        author: {
+          handle: row.authorHandle?.trim() || 'unknown',
+          displayName:
+            row.authorDisplayName?.trim() ||
+            row.authorHandle?.trim() ||
+            'Unknown',
+          avatarUrl: row.authorAvatarUrl ?? undefined,
+        },
+        text: row.text ?? '',
+        timestamp: row.platformCreatedAt.toISOString(),
+        permalink: row.metadata?.permalink,
+        platformItemId: row.platformItemId,
+        isHidden: row.isHidden,
+      })),
+      nextCursor,
+    };
+  }
+
   private folderToStatus(folder?: InboxFolder): InboxItemStatus | undefined {
     if (!folder || folder === 'all') return undefined;
     if (folder === 'unread') return 'unread';
@@ -565,6 +681,7 @@ export class InboxService {
         status: item.status,
         likeCount:
           typeof itemMeta.likeCount === 'number' ? itemMeta.likeCount : 0,
+        isHidden: item.isHidden,
         replies: [],
       });
     }
@@ -605,6 +722,7 @@ export class InboxService {
       platformItemId: item.platformItemId,
       status: item.status,
       likeCount: typeof meta.likeCount === 'number' ? meta.likeCount : 0,
+      isHidden: item.isHidden,
       replies: [],
     };
   }
@@ -1054,6 +1172,60 @@ export class InboxService {
     return { success: true, deletedAt: now.toISOString() };
   }
 
+  /**
+   * Hide (or unhide) a reply on one of our posts via platform-side moderation.
+   * Only Threads implements this today (`manage_reply`) — other platforms'
+   * adapters simply don't expose `hideComment`, so we reject with a clear 400.
+   */
+  async hideComment(
+    workspaceId: string,
+    userId: string,
+    itemId: string,
+    hidden: boolean,
+  ): Promise<{ success: true; isHidden: boolean }> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+
+    const row = await db.query.inboxItems.findFirst({
+      where: and(
+        eq(inboxItems.id, itemId),
+        eq(inboxItems.workspaceId, workspaceId),
+      ),
+    });
+    if (!row) throw new NotFoundException('Comment not found');
+
+    const channel = await this.resolveChannel(row.channelId, workspaceId);
+    const adapter = this.dispatcher.get(row.platform);
+    if (!adapter.hideComment) {
+      throw new BadRequestException(`Hide is not supported on ${row.platform}`);
+    }
+
+    try {
+      await adapter.hideComment(channel, row.platformItemId, hidden);
+    } catch (err) {
+      this.logger.error(
+        `Hide failed (channel=${row.channelId}, item=${row.platformItemId}): ${(err as Error).message}`,
+      );
+      throw new BadRequestException(
+        `Platform refused hide: ${(err as Error).message}`,
+      );
+    }
+
+    await db
+      .update(inboxItems)
+      .set({ isHidden: hidden, updatedAt: new Date() })
+      .where(eq(inboxItems.id, row.id));
+
+    this.emitter.emit(workspaceId, 'inbox.item.updated', {
+      id: row.id,
+      workspaceId,
+      channelId: row.channelId,
+      changes: { isHidden: hidden },
+    });
+    void this.emitCounts(workspaceId);
+
+    return { success: true, isHidden: hidden };
+  }
+
   async deleteDm(
     workspaceId: string,
     userId: string,
@@ -1220,6 +1392,27 @@ export class InboxService {
    * unique constraint — webhook redelivery + polling won't dup.
    */
   async upsertComment(input: UpsertCommentInput): Promise<InboxItem | null> {
+    return this.upsertInboxItem(input, 'comment');
+  }
+
+  /**
+   * Upsert an @mention row (Threads mentions API). Identical dedup + merge
+   * behavior to `upsertComment`, but stored as type='mention' with no post
+   * linkage — mentions surface as account-level inbox items, not grouped
+   * under a post thread.
+   */
+  async upsertMention(input: UpsertMentionInput): Promise<InboxItem | null> {
+    return this.upsertInboxItem(
+      { ...input, platformPostId: undefined, ourPostId: null },
+      'mention',
+    );
+  }
+
+  /** Shared upsert logic for `upsertComment` and `upsertMention`. */
+  private async upsertInboxItem(
+    input: UpsertCommentInput,
+    itemType: InboxItemType,
+  ): Promise<InboxItem | null> {
     const metadata: Record<string, any> = { ...(input.metadata ?? {}) };
     if (input.postSnapshot) metadata.post = input.postSnapshot;
     if (typeof input.likeCount === 'number') {
@@ -1230,10 +1423,10 @@ export class InboxService {
       workspaceId: input.workspaceId,
       channelId: input.channelId,
       platform: input.platform,
-      type: 'comment',
+      type: itemType,
       platformItemId: input.platformItemId,
       platformParentId: input.platformParentId ?? null,
-      platformPostId: input.platformPostId,
+      platformPostId: input.platformPostId ?? null,
       ourPostId: input.ourPostId ?? null,
       authorPlatformId: input.authorPlatformId ?? null,
       authorHandle: input.authorHandle ?? null,
