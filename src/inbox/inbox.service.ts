@@ -1446,17 +1446,25 @@ export class InboxService {
     // without needing a manual cleanup. Status / text are NOT overwritten —
     // those are user-mutable, first writer wins.
     //
-    // `platformPostId` IS overwritten on conflict — adapters can re-canonicalize
-    // it (e.g. Bluesky remapping a chained-reply URI to the root). Without
-    // this, comments ingested before the canonical-root fix would stay stuck
-    // under the wrong post id forever.
+    // `platformPostId` prefers a non-null EXCLUDED value (COALESCE) so adapters
+    // can re-canonicalize it (e.g. Bluesky remapping a chained-reply URI to the
+    // root) while a linkage-less mentions re-poll can't null out a comment's
+    // post id. `type` upgrades toward 'comment' — see the set clause below.
     const inserted = await db
       .insert(inboxItems)
       .values(values)
       .onConflictDoUpdate({
         target: [inboxItems.channelId, inboxItems.platformItemId],
         set: {
-          platformPostId: sql`EXCLUDED.platform_post_id`,
+          // A Threads reply that @mentions us is returned by BOTH the comment
+          // poll (type='comment', post-linked) and the mentions poll
+          // (type='mention', no linkage) under ONE platform_item_id, so they
+          // collapse into a single row. The comment classification wins — it
+          // carries the post thread context — so `type` only upgrades toward
+          // 'comment', never downgrades. A pure mention the comment poll never
+          // sees stays type='mention' and surfaces only in the Mentions tab.
+          type: sql`CASE WHEN EXCLUDED."type" = 'comment' THEN 'comment' ELSE ${inboxItems.type} END`,
+          platformPostId: sql`COALESCE(EXCLUDED.platform_post_id, ${inboxItems.platformPostId})`,
           platformParentId: sql`COALESCE(EXCLUDED.platform_parent_id, ${inboxItems.platformParentId})`,
           authorPlatformId: sql`COALESCE(${inboxItems.authorPlatformId}, EXCLUDED.author_platform_id)`,
           authorHandle: sql`COALESCE(${inboxItems.authorHandle}, EXCLUDED.author_handle)`,
