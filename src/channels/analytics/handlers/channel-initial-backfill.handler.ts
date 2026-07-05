@@ -109,6 +109,10 @@ export class ChannelInitialBackfillHandler {
       workspaceId: data.workspaceId,
       sinceDays: 90,
       limit: 50,
+      // Connect-time: fetch each post's first metrics immediately (no bucket
+      // delay) so engagement appears within seconds and the overview
+      // auto-refreshes via post.metrics.updated.
+      immediate: true,
     });
     this.logger.log(
       `Initial backfill: recent-posts-sync returned ${JSON.stringify(syncResult)}`,

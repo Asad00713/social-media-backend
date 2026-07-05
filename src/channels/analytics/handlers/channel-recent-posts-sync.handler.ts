@@ -20,6 +20,12 @@ export interface ChannelRecentPostsSyncJob {
   workspaceId: string;
   sinceDays?: number; // default 7; backfill passes 90
   limit?: number; // default 50
+  // When true (initial connect backfill), fetch each new post's first metric
+  // snapshot immediately (delay 0) instead of waiting for the first polling
+  // bucket — so engagement (likes/comments) appears within seconds of connect
+  // and emits post.metrics.updated → the overview auto-refreshes. Ongoing
+  // polling is unaffected (driven by TieredPollingScheduler).
+  immediate?: boolean;
 }
 
 const BUCKET_TO_DELAY_MS: Partial<Record<AgeBucket, number>> = {
@@ -49,6 +55,7 @@ export class ChannelRecentPostsSyncHandler {
     const { channelId, workspaceId } = data;
     const sinceDays = data.sinceDays ?? 7;
     const limit = data.limit ?? 50;
+    const immediate = data.immediate ?? false;
 
     const rows = await this.db
       .select()
@@ -165,7 +172,11 @@ export class ChannelRecentPostsSyncHandler {
         ] ?? [];
       if (buckets.length > 0) {
         const firstBucket = buckets[0];
-        const delay = BUCKET_TO_DELAY_MS[firstBucket] ?? 60 * 60_000;
+        // On initial connect backfill, fire the first snapshot immediately so
+        // engagement shows within seconds; otherwise wait for the bucket window.
+        const delay = immediate
+          ? 0
+          : (BUCKET_TO_DELAY_MS[firstBucket] ?? 60 * 60_000);
         await this.queue.add(
           'post-metric-snapshot',
           { postId: newPostId, channelId, ageBucket: firstBucket },
