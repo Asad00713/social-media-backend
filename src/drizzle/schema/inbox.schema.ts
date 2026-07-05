@@ -90,6 +90,11 @@ export const inboxItems = pgTable(
     // Platform-side hidden state for a reply we moderated (Threads manage_reply).
     isHidden: boolean('is_hidden').default(false).notNull(),
 
+    // True when this item @mentions our connected account (Threads mentions
+    // API). Decoupled from `type` so one row can be BOTH a comment on our post
+    // AND a mention — the Mentions tab filters on this flag, not on `type`.
+    isMention: boolean('is_mention').default(false).notNull(),
+
     // Time the comment was created on the platform.
     platformCreatedAt: timestamp('platform_created_at', {
       withTimezone: true,

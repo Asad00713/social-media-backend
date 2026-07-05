@@ -451,9 +451,9 @@ export class InboxService {
   }
 
   // ==========================================================================
-  // List mentions (flat — @mentions ingest as account-level items, not tied
-  // to a post, so there's no thread to group them into. Same filter/cursor
-  // shape as `listCommentThreads` above, minus the grouping step.)
+  // List mentions (flat — every item flagged is_mention, whether it's a pure
+  // account-level mention or a comment on our post that also @mentions us.
+  // Same filter/cursor shape as `listCommentThreads`, minus the grouping step.)
   // ==========================================================================
 
   async listMentions(
@@ -472,7 +472,10 @@ export class InboxService {
     const limit = Math.min(options.limit ?? 20, 100);
     const conditions = [
       eq(inboxItems.workspaceId, workspaceId),
-      eq(inboxItems.type, 'mention'),
+      // Flag-based, not type-based: a reply on our post that @mentions us is a
+      // comment (type='comment') AND a mention (is_mention=true), so it surfaces
+      // in BOTH tabs. Pure mentions (type='mention') are also is_mention=true.
+      eq(inboxItems.isMention, true),
       isNull(inboxItems.archivedAt),
     ];
 
@@ -1397,9 +1400,10 @@ export class InboxService {
 
   /**
    * Upsert an @mention row (Threads mentions API). Identical dedup + merge
-   * behavior to `upsertComment`, but stored as type='mention' with no post
-   * linkage — mentions surface as account-level inbox items, not grouped
-   * under a post thread.
+   * behavior to `upsertComment`, but flagged is_mention=true and inserted as
+   * type='mention' with no post linkage. If the same platform item was already
+   * ingested as a comment on our post, the conflict merge keeps type='comment'
+   * (post grouping) while setting is_mention=true — so it shows in both tabs.
    */
   async upsertMention(input: UpsertMentionInput): Promise<InboxItem | null> {
     return this.upsertInboxItem(
@@ -1435,6 +1439,7 @@ export class InboxService {
       text: input.text,
       status: input.fromMe ? 'replied' : 'unread',
       fromMe: input.fromMe ?? false,
+      isMention: itemType === 'mention',
       platformCreatedAt: input.platformCreatedAt,
       metadata,
     };
@@ -1473,6 +1478,10 @@ export class InboxService {
           // fromMe can only upgrade false→true (never downgrade): if a later
           // poll discovers it's actually our reply, mark it as such.
           fromMe: sql`${inboxItems.fromMe} OR EXCLUDED.from_me`,
+          // mention-ness only upgrades false→true: once the mentions poll flags
+          // an item as @mentioning us it stays flagged, even when the comment
+          // poll re-ingests the same row with is_mention=false.
+          isMention: sql`${inboxItems.isMention} OR EXCLUDED.is_mention`,
           // jsonb `||` does a shallow merge with the right side winning on
           // duplicate keys — so likeCount (and any other transient counters)
           // refresh every poll, while post snapshot survives because the new
