@@ -612,6 +612,20 @@ export class WebhooksController {
     const fromMe =
       !!authorUsername && authorUsername === (rootPost.username as string);
 
+    // A reply on our post that literally @mentions our handle is BOTH a comment
+    // and a mention. Detect it here so it reaches the Mentions tab instantly on
+    // the webhook, instead of waiting for the (≤30s) mentions poll to flag it.
+    const ourUsername = (rootPost.username as string | undefined)
+      ?.replace(/^@+/, '')
+      .trim();
+    const isMention =
+      !fromMe &&
+      !!ourUsername &&
+      new RegExp(
+        `@${ourUsername.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?![A-Za-z0-9_.])`,
+        'i',
+      ).test((value?.text as string | undefined) ?? '');
+
     const createdAt = value?.timestamp
       ? new Date(value.timestamp as string)
       : new Date();
@@ -630,6 +644,7 @@ export class WebhooksController {
         (value?.profile_picture_url as string | undefined) ?? null,
       text: (value?.text as string | undefined) ?? '',
       fromMe,
+      isMention,
       platformCreatedAt: createdAt,
       metadata: {
         permalink: value?.permalink,
@@ -638,7 +653,7 @@ export class WebhooksController {
     });
 
     this.logger.log(
-      `Threads reply webhook ingested: reply=${platformItemId} post=${platformPostId} fromMe=${fromMe}`,
+      `Threads reply webhook ingested: reply=${platformItemId} post=${platformPostId} fromMe=${fromMe} isMention=${isMention}`,
     );
   }
 

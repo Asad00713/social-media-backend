@@ -198,6 +198,11 @@ export interface UpsertCommentInput {
   authorAvatarUrl?: string | null;
   text: string;
   fromMe?: boolean;
+  /** Explicit @mention flag. When omitted, defaults to true only for the
+   *  mention-poll path (itemType==='mention'). The Threads reply webhook sets
+   *  this true when the reply text @mentions our handle, so a reply-mention
+   *  reaches the Mentions tab instantly instead of waiting for the poll. */
+  isMention?: boolean;
   /** Platform-reported like count — stored under metadata.likeCount. */
   likeCount?: number;
   platformCreatedAt: Date;
@@ -1439,7 +1444,7 @@ export class InboxService {
       text: input.text,
       status: input.fromMe ? 'replied' : 'unread',
       fromMe: input.fromMe ?? false,
-      isMention: itemType === 'mention',
+      isMention: input.isMention ?? itemType === 'mention',
       platformCreatedAt: input.platformCreatedAt,
       metadata,
     };
@@ -1501,7 +1506,12 @@ export class InboxService {
     // equals updatedAt within a few ms means it was just inserted.
     const wasNewInsert =
       Math.abs(row.createdAt.getTime() - row.updatedAt.getTime()) < 1000;
-    if (!wasNewInsert) return null;
+    // Emit for brand-new items, and also when the mentions poll re-attaches an
+    // is_mention flag to an already-ingested comment row (an UPDATE, not a new
+    // insert). Without the latter, a reply we only learned was a @mention from
+    // the poll would never nudge the Mentions tab to refetch. getMentions is
+    // since-based, so a given mention flips ~once — no re-emit spam.
+    if (!wasNewInsert && itemType !== 'mention') return null;
 
     this.emitter.emit(input.workspaceId, 'inbox.item.created', {
       id: row.id,
