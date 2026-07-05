@@ -582,9 +582,13 @@ export class ThreadsService {
     for (let page = 0; page < 5; page++) {
       const url = new URL(`${this.graphApiUrl}/${threadId}/conversation`);
       url.searchParams.set('access_token', accessToken);
+      // Threads reply objects expose the author as a FLAT `username` field —
+      // NOT a nested `from{id,username}` object (that IG/FB syntax returns null
+      // on Threads, which mislabels every reply). `username` is only returned
+      // for PUBLIC repliers and our own account (private repliers omit it).
       url.searchParams.set(
         'fields',
-        'id,text,timestamp,permalink,from{id,username},replied_to{id},shortcode,like_count',
+        'id,text,timestamp,permalink,username,replied_to{id},shortcode,like_count',
       );
       url.searchParams.set('limit', '100');
       if (after) url.searchParams.set('after', after);
@@ -607,7 +611,7 @@ export class ThreadsService {
             permalink: entry.permalink ?? null,
             repliedToId: entry.replied_to?.id ?? null,
             authorId: entry.from?.id ?? null,
-            authorUsername: entry.from?.username ?? null,
+            authorUsername: entry.username ?? entry.from?.username ?? null,
             shortcode: entry.shortcode ?? null,
             likeCount: entry.like_count ?? 0,
           });
