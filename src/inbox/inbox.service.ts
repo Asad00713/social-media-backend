@@ -198,6 +198,11 @@ export interface UpsertCommentInput {
   authorAvatarUrl?: string | null;
   text: string;
   fromMe?: boolean;
+  /** Explicit @mention flag. When omitted, defaults to true only for the
+   *  mention-poll path (itemType==='mention'). The Threads reply webhook sets
+   *  this true when the reply text @mentions our handle, so a reply-mention
+   *  reaches the Mentions tab instantly instead of waiting for the poll. */
+  isMention?: boolean;
   /** Platform-reported like count — stored under metadata.likeCount. */
   likeCount?: number;
   platformCreatedAt: Date;
@@ -451,9 +456,9 @@ export class InboxService {
   }
 
   // ==========================================================================
-  // List mentions (flat — @mentions ingest as account-level items, not tied
-  // to a post, so there's no thread to group them into. Same filter/cursor
-  // shape as `listCommentThreads` above, minus the grouping step.)
+  // List mentions (flat — every item flagged is_mention, whether it's a pure
+  // account-level mention or a comment on our post that also @mentions us.
+  // Same filter/cursor shape as `listCommentThreads`, minus the grouping step.)
   // ==========================================================================
 
   async listMentions(
@@ -472,7 +477,10 @@ export class InboxService {
     const limit = Math.min(options.limit ?? 20, 100);
     const conditions = [
       eq(inboxItems.workspaceId, workspaceId),
-      eq(inboxItems.type, 'mention'),
+      // Flag-based, not type-based: a reply on our post that @mentions us is a
+      // comment (type='comment') AND a mention (is_mention=true), so it surfaces
+      // in BOTH tabs. Pure mentions (type='mention') are also is_mention=true.
+      eq(inboxItems.isMention, true),
       isNull(inboxItems.archivedAt),
     ];
 
@@ -1397,9 +1405,10 @@ export class InboxService {
 
   /**
    * Upsert an @mention row (Threads mentions API). Identical dedup + merge
-   * behavior to `upsertComment`, but stored as type='mention' with no post
-   * linkage — mentions surface as account-level inbox items, not grouped
-   * under a post thread.
+   * behavior to `upsertComment`, but flagged is_mention=true and inserted as
+   * type='mention' with no post linkage. If the same platform item was already
+   * ingested as a comment on our post, the conflict merge keeps type='comment'
+   * (post grouping) while setting is_mention=true — so it shows in both tabs.
    */
   async upsertMention(input: UpsertMentionInput): Promise<InboxItem | null> {
     return this.upsertInboxItem(
@@ -1435,6 +1444,7 @@ export class InboxService {
       text: input.text,
       status: input.fromMe ? 'replied' : 'unread',
       fromMe: input.fromMe ?? false,
+      isMention: input.isMention ?? itemType === 'mention',
       platformCreatedAt: input.platformCreatedAt,
       metadata,
     };
@@ -1446,17 +1456,25 @@ export class InboxService {
     // without needing a manual cleanup. Status / text are NOT overwritten —
     // those are user-mutable, first writer wins.
     //
-    // `platformPostId` IS overwritten on conflict — adapters can re-canonicalize
-    // it (e.g. Bluesky remapping a chained-reply URI to the root). Without
-    // this, comments ingested before the canonical-root fix would stay stuck
-    // under the wrong post id forever.
+    // `platformPostId` prefers a non-null EXCLUDED value (COALESCE) so adapters
+    // can re-canonicalize it (e.g. Bluesky remapping a chained-reply URI to the
+    // root) while a linkage-less mentions re-poll can't null out a comment's
+    // post id. `type` upgrades toward 'comment' — see the set clause below.
     const inserted = await db
       .insert(inboxItems)
       .values(values)
       .onConflictDoUpdate({
         target: [inboxItems.channelId, inboxItems.platformItemId],
         set: {
-          platformPostId: sql`EXCLUDED.platform_post_id`,
+          // A Threads reply that @mentions us is returned by BOTH the comment
+          // poll (type='comment', post-linked) and the mentions poll
+          // (type='mention', no linkage) under ONE platform_item_id, so they
+          // collapse into a single row. The comment classification wins — it
+          // carries the post thread context — so `type` only upgrades toward
+          // 'comment', never downgrades. A pure mention the comment poll never
+          // sees stays type='mention' and surfaces only in the Mentions tab.
+          type: sql`CASE WHEN EXCLUDED."type" = 'comment' THEN 'comment' ELSE ${inboxItems.type} END`,
+          platformPostId: sql`COALESCE(EXCLUDED.platform_post_id, ${inboxItems.platformPostId})`,
           platformParentId: sql`COALESCE(EXCLUDED.platform_parent_id, ${inboxItems.platformParentId})`,
           authorPlatformId: sql`COALESCE(${inboxItems.authorPlatformId}, EXCLUDED.author_platform_id)`,
           authorHandle: sql`COALESCE(${inboxItems.authorHandle}, EXCLUDED.author_handle)`,
@@ -1465,6 +1483,10 @@ export class InboxService {
           // fromMe can only upgrade false→true (never downgrade): if a later
           // poll discovers it's actually our reply, mark it as such.
           fromMe: sql`${inboxItems.fromMe} OR EXCLUDED.from_me`,
+          // mention-ness only upgrades false→true: once the mentions poll flags
+          // an item as @mentioning us it stays flagged, even when the comment
+          // poll re-ingests the same row with is_mention=false.
+          isMention: sql`${inboxItems.isMention} OR EXCLUDED.is_mention`,
           // jsonb `||` does a shallow merge with the right side winning on
           // duplicate keys — so likeCount (and any other transient counters)
           // refresh every poll, while post snapshot survives because the new
@@ -1484,7 +1506,12 @@ export class InboxService {
     // equals updatedAt within a few ms means it was just inserted.
     const wasNewInsert =
       Math.abs(row.createdAt.getTime() - row.updatedAt.getTime()) < 1000;
-    if (!wasNewInsert) return null;
+    // Emit for brand-new items, and also when the mentions poll re-attaches an
+    // is_mention flag to an already-ingested comment row (an UPDATE, not a new
+    // insert). Without the latter, a reply we only learned was a @mention from
+    // the poll would never nudge the Mentions tab to refetch. getMentions is
+    // since-based, so a given mention flips ~once — no re-emit spam.
+    if (!wasNewInsert && itemType !== 'mention') return null;
 
     this.emitter.emit(input.workspaceId, 'inbox.item.created', {
       id: row.id,
