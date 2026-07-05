@@ -91,6 +91,47 @@ export class AnalyticsService {
     `);
     const topRows = (topResult.rows ?? topResult) as any[];
 
+    // Engagement summary — aggregate the LATEST snapshot per post (same basis
+    // as topPosts). The daily-rollup table (`channel_analytics_daily`) is
+    // written once a day for the *previous* day only, so it's empty right after
+    // connect and a full day behind otherwise; and summing its cumulative
+    // per-day rows double-counts a post across every day it was snapshotted.
+    // Reading the latest snapshot per post yields correct current totals within
+    // one poll tick.
+    const summaryResult: any = await this.db.execute(sql`
+      WITH latest AS (
+        SELECT DISTINCT ON (post_id)
+          post_id, likes_count, comments_count, shares_count,
+          impressions_count, reach_count
+        FROM ${postMetricSnapshots}
+        WHERE channel_id = ${channelId}
+          AND snapshot_at >= ${new Date(start + 'T00:00:00Z')}
+        ORDER BY post_id, snapshot_at DESC
+      )
+      SELECT
+        COALESCE(SUM(likes_count), 0)::int AS likes,
+        COALESCE(SUM(comments_count), 0)::int AS comments,
+        COALESCE(SUM(shares_count), 0)::int AS shares,
+        SUM(impressions_count)::int AS impressions,
+        SUM(reach_count)::int AS reach
+      FROM latest
+    `);
+    const snap = (summaryResult.rows ?? summaryResult)[0] ?? {};
+    const snapLikes = Number(snap.likes ?? 0);
+    const snapComments = Number(snap.comments ?? 0);
+    const snapShares = Number(snap.shares ?? 0);
+    const snapImpressions =
+      snap.impressions == null ? null : Number(snap.impressions);
+    const snapReach = snap.reach == null ? null : Number(snap.reach);
+    // Engagement rate = engagements / (reach preferred, else impressions) × 100.
+    // Threads exposes no reach, so it falls back to impressions (views).
+    const engagements = snapLikes + snapComments + snapShares;
+    const engDenom = snapReach ?? snapImpressions;
+    const engagementRate =
+      engDenom && engDenom > 0
+        ? Math.round((engagements / engDenom) * 1000) / 10
+        : null;
+
     // Direct count from posts table — accurate immediately, doesn't depend on daily rollups
     // (daily rollup cron at 03:00 UTC, so new posts show 0 until next morning otherwise).
     // Tolerate both shapes: legacy PostTarget uses `status`, new composer
@@ -133,32 +174,9 @@ export class AnalyticsService {
       0,
     );
     const sumPosts = directPostsCount > 0 ? directPostsCount : rollupPosts;
-    const sumLikes = dailyRows.reduce(
-      (a: number, r: any) => a + Number(r.totalLikes ?? 0),
-      0,
-    );
-    const sumComments = dailyRows.reduce(
-      (a: number, r: any) => a + Number(r.totalComments ?? 0),
-      0,
-    );
-    const sumShares = dailyRows.reduce(
-      (a: number, r: any) => a + Number(r.totalShares ?? 0),
-      0,
-    );
-    const hasImpr = dailyRows.some((r: any) => r.totalImpressions != null);
-    const sumImpressions = hasImpr
-      ? dailyRows.reduce(
-          (a: number, r: any) => a + Number(r.totalImpressions ?? 0),
-          0,
-        )
-      : null;
-    const hasReach = dailyRows.some((r: any) => r.totalReach != null);
-    const sumReach = hasReach
-      ? dailyRows.reduce(
-          (a: number, r: any) => a + Number(r.totalReach ?? 0),
-          0,
-        )
-      : null;
+    // likes / comments / shares / impressions / reach now come from `snap*`
+    // above (latest snapshot per post) — the daily-rollup sums were empty +
+    // cross-day double-counted.
     const followersGained = dailyRows.reduce(
       (a: number | null, r: any) =>
         r.followersGained == null ? a : (a ?? 0) + Number(r.followersGained),
@@ -179,12 +197,12 @@ export class AnalyticsService {
       capabilities,
       summary: {
         posts: { value: sumPosts, deltaPct: null },
-        likes: { value: sumLikes, deltaPct: null },
-        comments: { value: sumComments, deltaPct: null },
-        shares: { value: sumShares, deltaPct: null },
-        impressions: { value: sumImpressions, deltaPct: null },
-        reach: { value: sumReach, deltaPct: null },
-        engagementRate: { value: null, deltaPct: null },
+        likes: { value: snapLikes, deltaPct: null },
+        comments: { value: snapComments, deltaPct: null },
+        shares: { value: snapShares, deltaPct: null },
+        impressions: { value: snapImpressions, deltaPct: null },
+        reach: { value: snapReach, deltaPct: null },
+        engagementRate: { value: engagementRate, deltaPct: null },
         followersGained: { value: followersGained, deltaPct: null },
       },
       timeseries: {
