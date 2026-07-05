@@ -91,6 +91,47 @@ export class AnalyticsService {
     `);
     const topRows = (topResult.rows ?? topResult) as any[];
 
+    // Engagement summary — aggregate the LATEST snapshot per post (same basis
+    // as topPosts). The daily-rollup table (`channel_analytics_daily`) is
+    // written once a day for the *previous* day only, so it's empty right after
+    // connect and a full day behind otherwise; and summing its cumulative
+    // per-day rows double-counts a post across every day it was snapshotted.
+    // Reading the latest snapshot per post yields correct current totals within
+    // one poll tick.
+    const summaryResult: any = await this.db.execute(sql`
+      WITH latest AS (
+        SELECT DISTINCT ON (post_id)
+          post_id, likes_count, comments_count, shares_count,
+          impressions_count, reach_count
+        FROM ${postMetricSnapshots}
+        WHERE channel_id = ${channelId}
+          AND snapshot_at >= ${new Date(start + 'T00:00:00Z')}
+        ORDER BY post_id, snapshot_at DESC
+      )
+      SELECT
+        COALESCE(SUM(likes_count), 0)::int AS likes,
+        COALESCE(SUM(comments_count), 0)::int AS comments,
+        COALESCE(SUM(shares_count), 0)::int AS shares,
+        SUM(impressions_count)::int AS impressions,
+        SUM(reach_count)::int AS reach
+      FROM latest
+    `);
+    const snap = (summaryResult.rows ?? summaryResult)[0] ?? {};
+    const snapLikes = Number(snap.likes ?? 0);
+    const snapComments = Number(snap.comments ?? 0);
+    const snapShares = Number(snap.shares ?? 0);
+    const snapImpressions =
+      snap.impressions == null ? null : Number(snap.impressions);
+    const snapReach = snap.reach == null ? null : Number(snap.reach);
+    // Engagement rate = engagements / (reach preferred, else impressions) × 100.
+    // Threads exposes no reach, so it falls back to impressions (views).
+    const engagements = snapLikes + snapComments + snapShares;
+    const engDenom = snapReach ?? snapImpressions;
+    const engagementRate =
+      engDenom && engDenom > 0
+        ? Math.round((engagements / engDenom) * 1000) / 10
+        : null;
+
     // Direct count from posts table — accurate immediately, doesn't depend on daily rollups
     // (daily rollup cron at 03:00 UTC, so new posts show 0 until next morning otherwise).
     // Tolerate both shapes: legacy PostTarget uses `status`, new composer
@@ -118,6 +159,68 @@ export class AnalyticsService {
       ((postsCountResult.rows ?? postsCountResult)[0] ?? {}).count ?? 0,
     );
 
+    // Per-day published counts — direct from `posts`. The Threads Published
+    // graph previously read `channel_analytics_daily`, which is empty right
+    // after connect (rollup cron at 03:00 UTC, previous day only). Bucket by
+    // UTC day so keys line up with `fullDates` (UTC date strings).
+    const postsPerDayResult: any = await this.db.execute(sql`
+      SELECT to_char(published_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS d,
+             COUNT(*)::int AS count
+      FROM posts
+      WHERE workspace_id = (SELECT workspace_id FROM social_media_channels WHERE id = ${channelId})
+        AND status = 'published'
+        AND (
+          targets @> ${targetMatchLegacy}::jsonb
+          OR targets @> ${targetMatchComposer}::jsonb
+        )
+        AND published_at >= ${new Date(start + 'T00:00:00Z')}
+        AND published_at <= ${new Date(end + 'T23:59:59.999Z')}
+      GROUP BY d
+    `);
+    const postsPerDayMap = new Map<string, number>(
+      ((postsPerDayResult.rows ?? postsPerDayResult) as any[]).map((r) => [
+        r.d,
+        Number(r.count ?? 0),
+      ]),
+    );
+
+    // Per-day engagement — latest snapshot per post per UTC day, summed. Same
+    // basis as the summary cards (`post_metric_snapshots`), so the Engagement
+    // graph stops reading the empty daily-rollup table. Sparse until the poller
+    // has run across multiple days.
+    const engagementPerDayResult: any = await this.db.execute(sql`
+      WITH daily_latest AS (
+        SELECT DISTINCT ON (post_id, to_char(snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'))
+          to_char(snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS d,
+          post_id, likes_count, comments_count, shares_count
+        FROM ${postMetricSnapshots}
+        WHERE channel_id = ${channelId}
+          AND snapshot_at >= ${new Date(start + 'T00:00:00Z')}
+        ORDER BY post_id, to_char(snapshot_at AT TIME ZONE 'UTC', 'YYYY-MM-DD'), snapshot_at DESC
+      )
+      SELECT d,
+        COALESCE(SUM(likes_count), 0)::int AS likes,
+        COALESCE(SUM(comments_count), 0)::int AS comments,
+        COALESCE(SUM(shares_count), 0)::int AS shares
+      FROM daily_latest
+      GROUP BY d
+    `);
+    const engagementPerDayMap = new Map<
+      string,
+      { likes: number; comments: number; shares: number }
+    >(
+      ((engagementPerDayResult.rows ?? engagementPerDayResult) as any[]).map(
+        (r) => [
+          r.d,
+          {
+            likes: Number(r.likes ?? 0),
+            comments: Number(r.comments ?? 0),
+            shares: Number(r.shares ?? 0),
+          },
+        ],
+      ),
+    );
+
     const fullDates = buildDateRange(start, end);
     const dailyMap = new Map<string, any>(
       dailyRows.map((r: any) => [r.date, r]),
@@ -133,32 +236,9 @@ export class AnalyticsService {
       0,
     );
     const sumPosts = directPostsCount > 0 ? directPostsCount : rollupPosts;
-    const sumLikes = dailyRows.reduce(
-      (a: number, r: any) => a + Number(r.totalLikes ?? 0),
-      0,
-    );
-    const sumComments = dailyRows.reduce(
-      (a: number, r: any) => a + Number(r.totalComments ?? 0),
-      0,
-    );
-    const sumShares = dailyRows.reduce(
-      (a: number, r: any) => a + Number(r.totalShares ?? 0),
-      0,
-    );
-    const hasImpr = dailyRows.some((r: any) => r.totalImpressions != null);
-    const sumImpressions = hasImpr
-      ? dailyRows.reduce(
-          (a: number, r: any) => a + Number(r.totalImpressions ?? 0),
-          0,
-        )
-      : null;
-    const hasReach = dailyRows.some((r: any) => r.totalReach != null);
-    const sumReach = hasReach
-      ? dailyRows.reduce(
-          (a: number, r: any) => a + Number(r.totalReach ?? 0),
-          0,
-        )
-      : null;
+    // likes / comments / shares / impressions / reach now come from `snap*`
+    // above (latest snapshot per post) — the daily-rollup sums were empty +
+    // cross-day double-counted.
     const followersGained = dailyRows.reduce(
       (a: number | null, r: any) =>
         r.followersGained == null ? a : (a ?? 0) + Number(r.followersGained),
@@ -179,12 +259,12 @@ export class AnalyticsService {
       capabilities,
       summary: {
         posts: { value: sumPosts, deltaPct: null },
-        likes: { value: sumLikes, deltaPct: null },
-        comments: { value: sumComments, deltaPct: null },
-        shares: { value: sumShares, deltaPct: null },
-        impressions: { value: sumImpressions, deltaPct: null },
-        reach: { value: sumReach, deltaPct: null },
-        engagementRate: { value: null, deltaPct: null },
+        likes: { value: snapLikes, deltaPct: null },
+        comments: { value: snapComments, deltaPct: null },
+        shares: { value: snapShares, deltaPct: null },
+        impressions: { value: snapImpressions, deltaPct: null },
+        reach: { value: snapReach, deltaPct: null },
+        engagementRate: { value: engagementRate, deltaPct: null },
         followersGained: { value: followersGained, deltaPct: null },
       },
       timeseries: {
@@ -194,14 +274,20 @@ export class AnalyticsService {
         })),
         posts: fullDates.map((d) => ({
           date: d,
-          value: Number(dailyMap.get(d)?.postsPublished ?? 0),
+          // Prefer the direct per-day count; fall back to the rollup for
+          // platforms/days where it's populated.
+          value: postsPerDayMap.get(d) ?? Number(dailyMap.get(d)?.postsPublished ?? 0),
         })),
-        engagement: fullDates.map((d) => ({
-          date: d,
-          likes: Number(dailyMap.get(d)?.totalLikes ?? 0),
-          comments: Number(dailyMap.get(d)?.totalComments ?? 0),
-          shares: Number(dailyMap.get(d)?.totalShares ?? 0),
-        })),
+        engagement: fullDates.map((d) => {
+          // Prefer per-day snapshot aggregation; fall back to the rollup.
+          const e = engagementPerDayMap.get(d);
+          return {
+            date: d,
+            likes: e ? e.likes : Number(dailyMap.get(d)?.totalLikes ?? 0),
+            comments: e ? e.comments : Number(dailyMap.get(d)?.totalComments ?? 0),
+            shares: e ? e.shares : Number(dailyMap.get(d)?.totalShares ?? 0),
+          };
+        }),
         reach: fullDates.map((d) => ({
           date: d,
           value:
