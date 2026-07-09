@@ -84,6 +84,10 @@ import { ConnectWhatsAppDto } from './dto/connect-whatsapp.dto';
 import { WhatsAppService } from './services/whatsapp.service';
 import { EmbeddedSignupWhatsAppDto } from './dto/embedded-signup-whatsapp.dto';
 import { WhatsAppOnboardingService } from './services/whatsapp-onboarding.service';
+import {
+  readEmbeddedSignupConfig,
+  type EmbeddedSignupConfig,
+} from './services/embedded-signup-config';
 
 @Controller('channels')
 export class ChannelsController {
@@ -5364,6 +5368,19 @@ export class ChannelsController {
   // ==========================================================================
   // WhatsApp — Manual connect (Phase-1 onboarding)
   // ==========================================================================
+
+  /**
+   * Public (non-secret) client config for launching WhatsApp Embedded Signup —
+   * `app_id` + `config_id` are visible in Meta's consent-dialog URL anyway, so
+   * exposing them here (behind auth) avoids duplicating them into a frontend
+   * `VITE_*` build-time var. App-level route (no `:workspaceId`): the config
+   * is per-deployment, not per-workspace.
+   */
+  @Get('whatsapp/embedded-signup-config')
+  @UseGuards(JwtAuthGuard)
+  getWhatsAppEmbeddedSignupConfig(): EmbeddedSignupConfig {
+    return readEmbeddedSignupConfig(process.env);
+  }
 
   @Post('workspaces/:workspaceId/whatsapp/connect')
   @UseGuards(JwtAuthGuard)
