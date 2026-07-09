@@ -1,4 +1,4 @@
-import { WhatsAppService } from './whatsapp.service';
+import { WhatsAppService, GRAPH_API_VERSION } from './whatsapp.service';
 
 describe('WhatsAppService.sendText', () => {
   const svc = new WhatsAppService();
@@ -144,5 +144,101 @@ describe('WhatsAppService.subscribeWaba', () => {
       ok: false, status: 400, json: async () => ({ error: { message: 'no perms' } }),
     } as any);
     await expect(svc.subscribeWaba('tok', '12345')).rejects.toThrow('no perms');
+  });
+});
+
+describe('WhatsAppService — Embedded Signup Graph methods', () => {
+  let service: WhatsAppService;
+  const OLD_ENV = process.env;
+
+  beforeEach(() => {
+    service = new WhatsAppService();
+    process.env = { ...OLD_ENV, META_APP_ID: 'app123', META_APP_SECRET: 'secret456' };
+    global.fetch = jest.fn();
+  });
+  afterEach(() => {
+    process.env = OLD_ENV;
+    jest.resetAllMocks();
+  });
+
+  it('pins Graph API version to v21.0', () => {
+    expect(GRAPH_API_VERSION).toBe('v21.0');
+  });
+
+  it('exchangeCodeForBusinessToken hits oauth/access_token with app creds + code', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ access_token: 'biz-token', expires_in: 5184000 }),
+    });
+    const res = await service.exchangeCodeForBusinessToken('the-code');
+    expect(res).toEqual({ accessToken: 'biz-token', expiresIn: 5184000 });
+    const url = (global.fetch as jest.Mock).mock.calls[0][0] as string;
+    expect(url).toContain(`/${GRAPH_API_VERSION}/oauth/access_token`);
+    expect(url).toContain('client_id=app123');
+    expect(url).toContain('client_secret=secret456');
+    expect(url).toContain('code=the-code');
+  });
+
+  it('exchangeCodeForBusinessToken returns null expiresIn when Meta omits it (never-expiring config)', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({ access_token: 'biz-token' }),
+    });
+    const res = await service.exchangeCodeForBusinessToken('c');
+    expect(res).toEqual({ accessToken: 'biz-token', expiresIn: null });
+  });
+
+  it('exchangeCodeForBusinessToken throws the Meta error message on failure', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: { message: 'Invalid code' } }),
+    });
+    await expect(service.exchangeCodeForBusinessToken('bad')).rejects.toThrow('Invalid code');
+  });
+
+  it('registerPhoneNumber posts messaging_product + pin', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({ ok: true, json: async () => ({ success: true }) });
+    await service.registerPhoneNumber('tok', '111', '123456');
+    const [url, init] = (global.fetch as jest.Mock).mock.calls[0];
+    expect(url).toBe(`https://graph.facebook.com/${GRAPH_API_VERSION}/111/register`);
+    expect(JSON.parse((init as any).body)).toEqual({ messaging_product: 'whatsapp', pin: '123456' });
+  });
+
+  it('registerPhoneNumber treats "already registered" as success', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: { message: 'Phone number already registered', code: 100 } }),
+    });
+    await expect(service.registerPhoneNumber('tok', '111', '123456')).resolves.toBeUndefined();
+  });
+
+  it('registerPhoneNumber throws on a genuine failure', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: false,
+      status: 400,
+      json: async () => ({ error: { message: 'Two-step verification pin mismatch' } }),
+    });
+    await expect(service.registerPhoneNumber('tok', '111', '000000')).rejects.toThrow(
+      'Two-step verification pin mismatch',
+    );
+  });
+
+  it('getWabaPhoneNumbers maps the Graph response', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [
+          { id: '111', display_phone_number: '+1 555', verified_name: 'Acme' },
+          { id: '222', display_phone_number: null, verified_name: null },
+        ],
+      }),
+    });
+    const res = await service.getWabaPhoneNumbers('tok', 'waba1');
+    expect(res).toEqual([
+      { id: '111', displayPhoneNumber: '+1 555', verifiedName: 'Acme' },
+      { id: '222', displayPhoneNumber: null, verifiedName: null },
+    ]);
   });
 });
