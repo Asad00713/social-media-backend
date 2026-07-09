@@ -27,9 +27,9 @@ export class WhatsAppOnboardingService {
   ) {}
 
   /**
-   * Complete WhatsApp Embedded Signup (Tech Provider flow): exchange the code
-   * for a business token, register the phone number, subscribe our app to the
-   * WABA, guard cross-workspace duplicates, then persist the channel.
+   * Complete WhatsApp Embedded Signup (Tech Provider flow): guard cross-workspace
+   * duplicates, exchange the code for a business token, register the phone
+   * number, subscribe our app to the WABA, then persist the channel.
    */
   async completeEmbeddedSignup(
     workspaceId: string,
@@ -38,7 +38,23 @@ export class WhatsAppOnboardingService {
   ): Promise<ChannelResponseDto> {
     await this.inbox.assertWorkspaceAccessPublic(workspaceId, userId);
 
-    // 1. Exchange the short-lived code for a customer-scoped business token.
+    // 1. Cross-workspace guard: reject if this phone number is already owned by
+    //    a DIFFERENT workspace (webhook routing is keyed on phone_number_id).
+    //    Runs BEFORE any mutating Meta call so a cross-workspace collision never
+    //    triggers registerPhoneNumber/subscribeWaba against the caller's token.
+    const existing =
+      await this.channels.findChannelsByPlatformAccountAllWorkspaces(
+        'whatsapp',
+        input.phoneNumberId,
+      );
+    const otherWorkspace = existing.find((c) => c.workspaceId !== workspaceId);
+    if (otherWorkspace) {
+      throw new ConflictException(
+        'This WhatsApp number is already connected to another workspace. Disconnect it there first.',
+      );
+    }
+
+    // 2. Exchange the short-lived code for a customer-scoped business token.
     let accessToken: string;
     let expiresIn: number | null;
     try {
@@ -53,7 +69,7 @@ export class WhatsAppOnboardingService {
       );
     }
 
-    // 2. Resolve display name / verified name (also validates the number).
+    // 3. Resolve display name / verified name (also validates the number).
     let displayPhoneNumber: string | null = null;
     let verifiedName: string | null = null;
     try {
@@ -67,30 +83,16 @@ export class WhatsAppOnboardingService {
       );
     }
 
-    // 3. Register the phone number for Cloud API (idempotent).
+    // 4. Register the phone number for Cloud API (idempotent).
     await this.whatsapp.registerPhoneNumber(
       accessToken,
       input.phoneNumberId,
       input.pin ?? '000000',
     );
 
-    // 4. Subscribe our app to the WABA — BLOCKING. A channel that never
+    // 5. Subscribe our app to the WABA — BLOCKING. A channel that never
     //    receives webhooks is worse than a visible failure.
     await this.whatsapp.subscribeWaba(accessToken, input.wabaId);
-
-    // 5. Cross-workspace guard: reject if this phone number is already owned by
-    //    a DIFFERENT workspace (webhook routing is keyed on phone_number_id).
-    const existing =
-      await this.channels.findChannelsByPlatformAccountAllWorkspaces(
-        'whatsapp',
-        input.phoneNumberId,
-      );
-    const otherWorkspace = existing.find((c) => c.workspaceId !== workspaceId);
-    if (otherWorkspace) {
-      throw new ConflictException(
-        'This WhatsApp number is already connected to another workspace. Disconnect it there first.',
-      );
-    }
 
     // 6. Persist. createChannel encrypts the token and, for a same-workspace
     //    broken row, reconnects in place (a healthy same-workspace duplicate

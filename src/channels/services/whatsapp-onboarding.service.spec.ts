@@ -57,7 +57,7 @@ describe('WhatsAppOnboardingService.completeEmbeddedSignup', () => {
   });
 
   it('rejects when the phone number is already connected in another workspace', async () => {
-    const { service } = makeService({
+    const { service, whatsapp } = makeService({
       channels: {
         findChannelsByPlatformAccountAllWorkspaces: jest
           .fn()
@@ -67,6 +67,8 @@ describe('WhatsAppOnboardingService.completeEmbeddedSignup', () => {
     await expect(
       service.completeEmbeddedSignup('ws-A', 'u1', input),
     ).rejects.toBeInstanceOf(ConflictException);
+    // The guard must short-circuit before any mutating Meta call.
+    expect(whatsapp.exchangeCodeForBusinessToken).not.toHaveBeenCalled();
   });
 
   it('allows re-connecting a number already in the SAME workspace (delegates to createChannel)', async () => {
@@ -95,7 +97,7 @@ describe('WhatsAppOnboardingService.completeEmbeddedSignup', () => {
   });
 
   it('fails the connect when WABA subscribe fails (blocking, not best-effort)', async () => {
-    const { service } = makeService({
+    const { service, channels } = makeService({
       whatsapp: {
         subscribeWaba: jest.fn().mockRejectedValue(new Error('subscribe boom')),
       },
@@ -103,5 +105,7 @@ describe('WhatsAppOnboardingService.completeEmbeddedSignup', () => {
     await expect(
       service.completeEmbeddedSignup('ws-A', 'u1', input),
     ).rejects.toThrow('subscribe boom');
+    // No persistence should occur when subscribe fails before createChannel.
+    expect(channels.createChannel).not.toHaveBeenCalled();
   });
 });
