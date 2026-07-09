@@ -82,6 +82,12 @@ import { TelegramService } from './services/telegram.service';
 import { ConnectTelegramBotDto } from './dto/telegram-connect.dto';
 import { ConnectWhatsAppDto } from './dto/connect-whatsapp.dto';
 import { WhatsAppService } from './services/whatsapp.service';
+import { EmbeddedSignupWhatsAppDto } from './dto/embedded-signup-whatsapp.dto';
+import { WhatsAppOnboardingService } from './services/whatsapp-onboarding.service';
+import {
+  readEmbeddedSignupConfig,
+  type EmbeddedSignupConfig,
+} from './services/embedded-signup-config';
 
 @Controller('channels')
 export class ChannelsController {
@@ -115,6 +121,7 @@ export class ChannelsController {
     private readonly telegramConnectService: TelegramConnectService,
     private readonly telegramService: TelegramService,
     private readonly whatsappService: WhatsAppService,
+    private readonly whatsappOnboardingService: WhatsAppOnboardingService,
   ) {}
 
   // ==========================================================================
@@ -5362,6 +5369,19 @@ export class ChannelsController {
   // WhatsApp — Manual connect (Phase-1 onboarding)
   // ==========================================================================
 
+  /**
+   * Public (non-secret) client config for launching WhatsApp Embedded Signup —
+   * `app_id` + `config_id` are visible in Meta's consent-dialog URL anyway, so
+   * exposing them here (behind auth) avoids duplicating them into a frontend
+   * `VITE_*` build-time var. App-level route (no `:workspaceId`): the config
+   * is per-deployment, not per-workspace.
+   */
+  @Get('whatsapp/embedded-signup-config')
+  @UseGuards(JwtAuthGuard)
+  getWhatsAppEmbeddedSignupConfig(): EmbeddedSignupConfig {
+    return readEmbeddedSignupConfig(process.env);
+  }
+
   @Post('workspaces/:workspaceId/whatsapp/connect')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
@@ -5439,5 +5459,29 @@ export class ChannelsController {
     }
 
     return channel;
+  }
+
+  // ==========================================================================
+  // WhatsApp — Embedded Signup (Tech Provider flow)
+  // ==========================================================================
+
+  @Post('workspaces/:workspaceId/whatsapp/embedded-signup')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async connectWhatsAppEmbeddedSignup(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: EmbeddedSignupWhatsAppDto,
+    @CurrentUser() user: { userId: string; email: string },
+  ) {
+    return this.whatsappOnboardingService.completeEmbeddedSignup(
+      workspaceId,
+      user.userId,
+      {
+        code: dto.code,
+        wabaId: dto.wabaId,
+        phoneNumberId: dto.phoneNumberId,
+        pin: dto.pin,
+      },
+    );
   }
 }

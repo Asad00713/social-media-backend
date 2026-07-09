@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 
-export const WHATSAPP_GRAPH_BASE = 'https://graph.facebook.com/v21.0';
+export const GRAPH_API_VERSION = 'v21.0';
+export const WHATSAPP_GRAPH_BASE = `https://graph.facebook.com/${GRAPH_API_VERSION}`;
 
 @Injectable()
 export class WhatsAppService {
@@ -109,6 +110,86 @@ export class WhatsAppService {
         data?.error?.message || `WABA subscribe failed (${res.status})`;
       throw new Error(msg);
     }
+  }
+
+  /**
+   * Exchange the short-lived Embedded Signup code (valid ~30s) for a
+   * customer-scoped business access token. Tech Provider server-to-server call.
+   */
+  async exchangeCodeForBusinessToken(
+    code: string,
+  ): Promise<{ accessToken: string; expiresIn: number | null }> {
+    const appId = process.env.META_APP_ID;
+    const appSecret = process.env.META_APP_SECRET;
+    if (!appId || !appSecret) {
+      throw new Error('META_APP_ID / META_APP_SECRET are not configured');
+    }
+    const url =
+      `${WHATSAPP_GRAPH_BASE}/oauth/access_token` +
+      `?client_id=${encodeURIComponent(appId)}` +
+      `&client_secret=${encodeURIComponent(appSecret)}` +
+      `&code=${encodeURIComponent(code)}`;
+    const res = await fetch(url);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data?.access_token) {
+      const msg = data?.error?.message || `Code exchange failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return {
+      accessToken: data.access_token as string,
+      expiresIn: typeof data.expires_in === 'number' ? data.expires_in : null,
+    };
+  }
+
+  /**
+   * Register the customer's business phone number for Cloud API use. `pin` is
+   * the 6-digit two-step-verification PIN. If the number is already registered
+   * (idempotent re-run) we treat it as success.
+   */
+  async registerPhoneNumber(
+    accessToken: string,
+    phoneNumberId: string,
+    pin: string,
+  ): Promise<void> {
+    const res = await fetch(`${WHATSAPP_GRAPH_BASE}/${phoneNumberId}/register`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ messaging_product: 'whatsapp', pin }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok) return;
+    const msg = (data?.error?.message as string) || '';
+    if (/already\s+registered/i.test(msg)) return; // idempotent
+    throw new Error(msg || `Phone number register failed (${res.status})`);
+  }
+
+  /**
+   * List the phone numbers on a WABA — fallback when the Embedded Signup
+   * message event omits the phone_number_id, and to read verified_name.
+   */
+  async getWabaPhoneNumbers(
+    accessToken: string,
+    wabaId: string,
+  ): Promise<
+    Array<{ id: string; displayPhoneNumber: string | null; verifiedName: string | null }>
+  > {
+    const res = await fetch(
+      `${WHATSAPP_GRAPH_BASE}/${wabaId}/phone_numbers?fields=id,display_phone_number,verified_name`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg = data?.error?.message || `WABA phone lookup failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return ((data?.data as any[]) ?? []).map((p) => ({
+      id: String(p.id),
+      displayPhoneNumber: p.display_phone_number ?? null,
+      verifiedName: p.verified_name ?? null,
+    }));
   }
 
   /**

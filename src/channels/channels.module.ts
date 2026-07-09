@@ -27,6 +27,7 @@ import { DiscordService } from './services/discord.service';
 import { DiscordGatewayService } from './services/discord-gateway.service';
 import { TelegramConnectService } from './services/telegram-connect.service';
 import { WhatsAppService } from './services/whatsapp.service';
+import { WhatsAppOnboardingService } from './services/whatsapp-onboarding.service';
 import { MetaAdsClient } from '../ads/services/meta-ads.client';
 import { AdAccountsService } from '../ads/services/ad-accounts.service';
 import { BoostPostService } from '../ads/services/boost-post.service';
@@ -76,6 +77,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     TelegramService,
     TelegramConnectService,
     WhatsAppService,
+    WhatsAppOnboardingService,
     DiscordService,
     DiscordGatewayService,
     TokenRefreshProcessor,

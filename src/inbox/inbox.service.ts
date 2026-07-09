@@ -1843,12 +1843,19 @@ export class InboxService {
     platform: SupportedPlatform,
     platformAccountId: string,
   ) {
-    return db.query.socialMediaChannels.findFirst({
+    const matches = await db.query.socialMediaChannels.findMany({
       where: and(
         eq(socialMediaChannels.platform, platform),
         eq(socialMediaChannels.platformAccountId, platformAccountId),
       ),
+      orderBy: (c, { asc }) => asc(c.id),
     });
+    if (matches.length > 1) {
+      this.logger.warn(
+        `findChannelByPlatformAccount: ${matches.length} rows for ${platform}/${platformAccountId} — routing to the lowest channel id (${matches[0].id}). This should not happen; a cross-workspace duplicate slipped past the connect guard.`,
+      );
+    }
+    return matches[0];
   }
 
   async findTelegramChannelByRouteId(
