@@ -82,6 +82,8 @@ import { TelegramService } from './services/telegram.service';
 import { ConnectTelegramBotDto } from './dto/telegram-connect.dto';
 import { ConnectWhatsAppDto } from './dto/connect-whatsapp.dto';
 import { WhatsAppService } from './services/whatsapp.service';
+import { EmbeddedSignupWhatsAppDto } from './dto/embedded-signup-whatsapp.dto';
+import { WhatsAppOnboardingService } from './services/whatsapp-onboarding.service';
 
 @Controller('channels')
 export class ChannelsController {
@@ -115,6 +117,7 @@ export class ChannelsController {
     private readonly telegramConnectService: TelegramConnectService,
     private readonly telegramService: TelegramService,
     private readonly whatsappService: WhatsAppService,
+    private readonly whatsappOnboardingService: WhatsAppOnboardingService,
   ) {}
 
   // ==========================================================================
@@ -5439,5 +5442,29 @@ export class ChannelsController {
     }
 
     return channel;
+  }
+
+  // ==========================================================================
+  // WhatsApp — Embedded Signup (Tech Provider flow)
+  // ==========================================================================
+
+  @Post('workspaces/:workspaceId/whatsapp/embedded-signup')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async connectWhatsAppEmbeddedSignup(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: EmbeddedSignupWhatsAppDto,
+    @CurrentUser() user: { userId: string; email: string },
+  ) {
+    return this.whatsappOnboardingService.completeEmbeddedSignup(
+      workspaceId,
+      user.userId,
+      {
+        code: dto.code,
+        wabaId: dto.wabaId,
+        phoneNumberId: dto.phoneNumberId,
+        pin: dto.pin,
+      },
+    );
   }
 }
