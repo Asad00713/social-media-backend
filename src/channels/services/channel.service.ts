@@ -352,6 +352,30 @@ export class ChannelService {
   }
 
   /**
+   * Every channel row (across ALL workspaces) that holds this platform account.
+   * Used by WhatsApp Embedded Signup to reject connecting a phone number that
+   * another workspace already owns (webhook routing is keyed on the account id).
+   */
+  async findChannelsByPlatformAccountAllWorkspaces(
+    platform: SupportedPlatform,
+    platformAccountId: string,
+  ): Promise<Array<{ id: number; workspaceId: string }>> {
+    return db
+      .select({
+        id: socialMediaChannels.id,
+        workspaceId: socialMediaChannels.workspaceId,
+      })
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.platform, platform),
+          eq(socialMediaChannels.platformAccountId, platformAccountId),
+        ),
+      )
+      .orderBy(asc(socialMediaChannels.id));
+  }
+
+  /**
    * Get all channels for a workspace
    */
   async getWorkspaceChannels(
