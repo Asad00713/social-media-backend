@@ -42,6 +42,29 @@ import {
   ChannelStatsResponseDto,
 } from '../dto/channel.dto';
 
+/**
+ * Shared "is this channel usable right now" predicate. A channel counts as
+ * healthy when it's marked connected, active, and its token (if any) hasn't
+ * expired. Used both by `createChannel`'s duplicate-connect guard and by
+ * platform-specific pre-flight guards (e.g. WhatsApp Embedded Signup) that
+ * need to short-circuit a healthy same-workspace duplicate before making any
+ * external API calls.
+ */
+export function isChannelHealthy(channel: {
+  connectionStatus: string | null;
+  isActive: boolean | null;
+  tokenExpiresAt: Date | string | null;
+}): boolean {
+  const tokenStillValid =
+    !channel.tokenExpiresAt ||
+    new Date(channel.tokenExpiresAt).getTime() > Date.now();
+  return (
+    channel.connectionStatus === 'connected' &&
+    !!channel.isActive &&
+    tokenStillValid
+  );
+}
+
 @Injectable()
 export class ChannelService {
   private readonly logger = new Logger(ChannelService.name);
@@ -84,16 +107,7 @@ export class ChannelService {
       const existingChannel = existing[0];
 
       // Genuine duplicate: channel is healthy — protect against double-connect
-      const tokenStillValid =
-        !existingChannel.tokenExpiresAt ||
-        new Date(existingChannel.tokenExpiresAt).getTime() > Date.now();
-
-      const isHealthyConnection =
-        existingChannel.connectionStatus === 'connected' &&
-        existingChannel.isActive &&
-        tokenStillValid;
-
-      if (isHealthyConnection) {
+      if (isChannelHealthy(existingChannel)) {
         throw new ConflictException(
           `This ${dto.platform} account is already connected to this workspace`,
         );
@@ -359,11 +373,22 @@ export class ChannelService {
   async findChannelsByPlatformAccountAllWorkspaces(
     platform: SupportedPlatform,
     platformAccountId: string,
-  ): Promise<Array<{ id: number; workspaceId: string }>> {
+  ): Promise<
+    Array<{
+      id: number;
+      workspaceId: string;
+      connectionStatus: string | null;
+      isActive: boolean | null;
+      tokenExpiresAt: Date | null;
+    }>
+  > {
     return db
       .select({
         id: socialMediaChannels.id,
         workspaceId: socialMediaChannels.workspaceId,
+        connectionStatus: socialMediaChannels.connectionStatus,
+        isActive: socialMediaChannels.isActive,
+        tokenExpiresAt: socialMediaChannels.tokenExpiresAt,
       })
       .from(socialMediaChannels)
       .where(

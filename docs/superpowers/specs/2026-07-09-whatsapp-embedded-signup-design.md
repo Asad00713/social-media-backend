@@ -161,8 +161,10 @@ callback `authResponse.code`, POSTs to the new endpoint via a
 - 2FA PIN mismatch on `register`: 400 → "This number has two-step verification
   enabled; disable it in WhatsApp Manager and retry."
 - Re-running ES for an already-connected number **in the same workspace**:
-  update-in-place (today `createChannel` throws a hard `ConflictException` — for
-  whatsapp treat a healthy same-workspace duplicate as a reconnect/update).
+  a **healthy** duplicate (connected, active, token not expired) returns 409
+  early — before any Meta call — consistent with every other platform's
+  connect path. A **broken/expired** same-workspace channel falls through and
+  is reconnected in place by `createChannel`'s existing reconnect branch.
 - Same number in a **different** workspace: 409 with a clear tenancy message.
 - `subscribeWaba` failure: **fail the connect** (blocking) with a retry-able
   error — a channel that never receives messages is worse than a visible error.

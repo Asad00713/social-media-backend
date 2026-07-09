@@ -5,7 +5,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { WhatsAppService } from './whatsapp.service';
-import { ChannelService } from './channel.service';
+import { ChannelService, isChannelHealthy } from './channel.service';
 import { InboxService } from '../../inbox/inbox.service';
 import type { ChannelResponseDto } from '../dto/channel.dto';
 
@@ -28,8 +28,9 @@ export class WhatsAppOnboardingService {
 
   /**
    * Complete WhatsApp Embedded Signup (Tech Provider flow): guard cross-workspace
-   * duplicates, exchange the code for a business token, register the phone
-   * number, subscribe our app to the WABA, then persist the channel.
+   * and healthy same-workspace duplicates, exchange the code for a business
+   * token, register the phone number, subscribe our app to the WABA, then
+   * persist the channel.
    */
   async completeEmbeddedSignup(
     workspaceId: string,
@@ -51,6 +52,19 @@ export class WhatsAppOnboardingService {
     if (otherWorkspace) {
       throw new ConflictException(
         'This WhatsApp number is already connected to another workspace. Disconnect it there first.',
+      );
+    }
+
+    // A healthy channel in THIS workspace means there is nothing to do — reject before
+    // burning the (idempotent but rate-limited) Meta calls. A broken/expired channel
+    // falls through so the Meta calls can mint a fresh token and createChannel's
+    // reconnect branch updates it in place.
+    const healthySameWorkspace = existing.find(
+      (c) => c.workspaceId === workspaceId && isChannelHealthy(c),
+    );
+    if (healthySameWorkspace) {
+      throw new ConflictException(
+        'This WhatsApp number is already connected to this workspace.',
       );
     }
 
@@ -94,9 +108,9 @@ export class WhatsAppOnboardingService {
     //    receives webhooks is worse than a visible failure.
     await this.whatsapp.subscribeWaba(accessToken, input.wabaId);
 
-    // 6. Persist. createChannel encrypts the token and, for a same-workspace
-    //    broken row, reconnects in place (a healthy same-workspace duplicate
-    //    still throws ConflictException — expected).
+    // 6. Persist. A healthy same-workspace duplicate was already rejected above
+    //    (step 1.5), so any same-workspace row reaching here is broken/expired —
+    //    createChannel's reconnect branch refreshes it in place.
     const accountName = verifiedName || input.phoneNumberId;
     return this.channels.createChannel(workspaceId, userId, {
       platform: 'whatsapp',

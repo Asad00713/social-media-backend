@@ -2,8 +2,20 @@ import { ChannelService } from './channel.service';
 
 // Minimal fake db that records the query builder chain and returns canned rows.
 const rows = [
-  { id: 7, workspaceId: 'ws-A' },
-  { id: 3, workspaceId: 'ws-B' },
+  {
+    id: 7,
+    workspaceId: 'ws-A',
+    connectionStatus: 'connected',
+    isActive: true,
+    tokenExpiresAt: null,
+  },
+  {
+    id: 3,
+    workspaceId: 'ws-B',
+    connectionStatus: 'connected',
+    isActive: true,
+    tokenExpiresAt: null,
+  },
 ];
 jest.mock('../../drizzle/db', () => ({
   db: {
