@@ -13,7 +13,7 @@ import type {
 export interface StockSearchParams {
   provider: StockProvider;
   type: StockMediaType;
-  q: string;
+  q?: string;
   page: number;
   perPage: number;
 }
@@ -28,14 +28,20 @@ export class StockMediaService {
   ) {}
 
   async search(params: StockSearchParams): Promise<StockSearchResponse> {
-    const { provider, type, q, page, perPage } = params;
+    const { provider, type, page, perPage } = params;
+    const q = params.q?.trim() ?? '';
+
+    if (provider === 'unsplash' && type === 'video') {
+      throw new BadRequestException(
+        'Unsplash does not support video search.',
+      );
+    }
+
+    if (!q) {
+      return this.curated(provider, type, page, perPage);
+    }
 
     if (provider === 'unsplash') {
-      if (type === 'video') {
-        throw new BadRequestException(
-          'Unsplash does not support video search.',
-        );
-      }
       const result = await this.unsplash.searchPhotos(q, page, perPage);
       return {
         items: result.results.map(mapUnsplashPhoto),
@@ -58,6 +64,41 @@ export class StockMediaService {
       );
     }
     const result = await this.pexels.searchPhotos({ query: q, page, perPage });
+    return this.fromPexels(
+      result.items.map(mapPexelsPhoto),
+      page,
+      result.nextPage,
+    );
+  }
+
+  /**
+   * Default/curated feed when no search term is given (like Unsplash/Pexels
+   * home): Unsplash editorial picks, or Pexels curated photos / popular
+   * videos. `provider === 'unsplash' && type === 'video'` is already
+   * rejected by the caller before this is reached.
+   */
+  private async curated(
+    provider: StockProvider,
+    type: StockMediaType,
+    page: number,
+    perPage: number,
+  ): Promise<StockSearchResponse> {
+    if (provider === 'unsplash') {
+      const photos = await this.unsplash.getCuratedPhotos(page, perPage);
+      const items = photos.map(mapUnsplashPhoto);
+      // Unsplash curated returns a plain array with no total; a full page
+      // implies there may be more.
+      return { items, page, hasMore: items.length >= perPage };
+    }
+    if (type === 'video') {
+      const result = await this.pexels.getPopularVideos(page, perPage);
+      return this.fromPexels(
+        result.items.map(mapPexelsVideo),
+        page,
+        result.nextPage,
+      );
+    }
+    const result = await this.pexels.getCuratedPhotos(page, perPage);
     return this.fromPexels(
       result.items.map(mapPexelsPhoto),
       page,

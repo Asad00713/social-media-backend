@@ -1,13 +1,5 @@
 import { Type } from 'class-transformer';
-import {
-  IsIn,
-  IsInt,
-  IsOptional,
-  IsString,
-  Max,
-  Min,
-  MinLength,
-} from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 import type { StockMediaType, StockProvider } from '../stock-media.types';
 
 export class SearchStockDto {
@@ -17,9 +9,9 @@ export class SearchStockDto {
   @IsIn(['image', 'video'])
   type: StockMediaType;
 
+  @IsOptional()
   @IsString()
-  @MinLength(1)
-  q: string;
+  q?: string;
 
   @IsOptional()
   @Type(() => Number)

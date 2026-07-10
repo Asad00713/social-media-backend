@@ -9,12 +9,15 @@ function makeService(
 ) {
   const unsplash = {
     searchPhotos: jest.fn(),
+    getCuratedPhotos: jest.fn(),
     trackDownload: jest.fn().mockResolvedValue(undefined),
     ...overrides.unsplash,
   };
   const pexels = {
     searchPhotos: jest.fn(),
     searchVideos: jest.fn(),
+    getCuratedPhotos: jest.fn(),
+    getPopularVideos: jest.fn(),
     ...overrides.pexels,
   };
   const service = new StockMediaService(unsplash as any, pexels as any);
@@ -200,6 +203,155 @@ describe('StockMediaService.search', () => {
     });
     expect(res.items[0].type).toBe('video');
     expect(res.hasMore).toBe(false);
+  });
+});
+
+describe('StockMediaService.search — curated (no query)', () => {
+  it('returns Unsplash curated photos when q is empty', async () => {
+    const { service, unsplash } = makeService({
+      unsplash: {
+        getCuratedPhotos: jest
+          .fn()
+          .mockResolvedValue(unsplashResult.results),
+      },
+    });
+    const res = await service.search({
+      provider: 'unsplash',
+      type: 'image',
+      q: '',
+      page: 1,
+      perPage: 24,
+    });
+    expect(unsplash.getCuratedPhotos).toHaveBeenCalledWith(1, 24);
+    expect(unsplash.searchPhotos).not.toHaveBeenCalled();
+    expect(res.items[0].provider).toBe('unsplash');
+  });
+
+  it('returns Pexels curated photos when q is empty', async () => {
+    const { service, pexels } = makeService({
+      pexels: {
+        getCuratedPhotos: jest.fn().mockResolvedValue({
+          items: [
+            {
+              id: 1,
+              width: 1,
+              height: 1,
+              url: 'u',
+              photographer: 'P',
+              photographerUrl: 'pu',
+              photographerId: 1,
+              avgColor: '',
+              src: {
+                original: 'o',
+                large2x: 'l2',
+                large: 'l',
+                medium: 'm',
+                small: 's',
+                portrait: 'p',
+                landscape: 'ld',
+                tiny: 't',
+              },
+              alt: '',
+            },
+          ],
+          totalResults: 30,
+          page: 1,
+          perPage: 24,
+          nextPage: 'x',
+          prevPage: null,
+        }),
+      },
+    });
+    const res = await service.search({
+      provider: 'pexels',
+      type: 'image',
+      q: '',
+      page: 1,
+      perPage: 24,
+    });
+    expect(pexels.getCuratedPhotos).toHaveBeenCalledWith(1, 24);
+    expect(pexels.searchPhotos).not.toHaveBeenCalled();
+    expect(res.hasMore).toBe(true);
+  });
+
+  it('returns Pexels popular videos when q is empty and type is video', async () => {
+    const { service, pexels } = makeService({
+      pexels: {
+        getPopularVideos: jest.fn().mockResolvedValue({
+          items: [
+            {
+              id: 2,
+              width: 2,
+              height: 2,
+              url: 'vu',
+              image: 'img',
+              duration: 5,
+              user: { id: 1, name: 'V', url: 'vurl' },
+              videoFiles: [
+                {
+                  id: 1,
+                  quality: 'hd',
+                  fileType: 'video/mp4',
+                  width: 2,
+                  height: 2,
+                  fps: 30,
+                  link: 'l.mp4',
+                },
+              ],
+              videoPictures: [],
+            },
+          ],
+          totalResults: 5,
+          page: 1,
+          perPage: 24,
+          nextPage: null,
+          prevPage: null,
+        }),
+      },
+    });
+    const res = await service.search({
+      provider: 'pexels',
+      type: 'video',
+      q: '',
+      page: 1,
+      perPage: 24,
+    });
+    expect(pexels.getPopularVideos).toHaveBeenCalledWith(1, 24);
+    expect(res.items[0].type).toBe('video');
+    expect(res.hasMore).toBe(false);
+  });
+
+  it('still rejects unsplash + video even with empty q', async () => {
+    const { service } = makeService();
+    await expect(
+      service.search({
+        provider: 'unsplash',
+        type: 'video',
+        q: '',
+        page: 1,
+        perPage: 24,
+      }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('treats a whitespace-only q as empty (curated)', async () => {
+    const { service, unsplash } = makeService({
+      unsplash: {
+        getCuratedPhotos: jest
+          .fn()
+          .mockResolvedValue(unsplashResult.results),
+      },
+    });
+    const res = await service.search({
+      provider: 'unsplash',
+      type: 'image',
+      q: '   ',
+      page: 1,
+      perPage: 24,
+    });
+    expect(unsplash.getCuratedPhotos).toHaveBeenCalledWith(1, 24);
+    expect(unsplash.searchPhotos).not.toHaveBeenCalled();
+    expect(res.items[0].provider).toBe('unsplash');
   });
 });
 
