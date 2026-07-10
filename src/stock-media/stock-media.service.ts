@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { UnsplashService } from '../channels/services/unsplash.service';
 import { PexelsService } from '../pexels/pexels.service';
 import { mapUnsplashPhoto } from './mappers/unsplash.mapper';
@@ -20,6 +20,8 @@ export interface StockSearchParams {
 
 @Injectable()
 export class StockMediaService {
+  private readonly logger = new Logger(StockMediaService.name);
+
   constructor(
     private readonly unsplash: UnsplashService,
     private readonly pexels: PexelsService,
@@ -30,7 +32,9 @@ export class StockMediaService {
 
     if (provider === 'unsplash') {
       if (type === 'video') {
-        throw new BadRequestException('Unsplash does not support video search.');
+        throw new BadRequestException(
+          'Unsplash does not support video search.',
+        );
       }
       const result = await this.unsplash.searchPhotos(q, page, perPage);
       return {
@@ -42,11 +46,23 @@ export class StockMediaService {
 
     // provider === 'pexels'
     if (type === 'video') {
-      const result = await this.pexels.searchVideos({ query: q, page, perPage });
-      return this.fromPexels(result.items.map(mapPexelsVideo), page, result.nextPage);
+      const result = await this.pexels.searchVideos({
+        query: q,
+        page,
+        perPage,
+      });
+      return this.fromPexels(
+        result.items.map(mapPexelsVideo),
+        page,
+        result.nextPage,
+      );
     }
     const result = await this.pexels.searchPhotos({ query: q, page, perPage });
-    return this.fromPexels(result.items.map(mapPexelsPhoto), page, result.nextPage);
+    return this.fromPexels(
+      result.items.map(mapPexelsPhoto),
+      page,
+      result.nextPage,
+    );
   }
 
   private fromPexels(
@@ -60,8 +76,10 @@ export class StockMediaService {
   /**
    * Fire Unsplash's required download event server-side. Fail-closed: only
    * genuine `api.unsplash.com` download-location URLs are forwarded, so the
-   * endpoint can't be turned into an open request proxy. Never throws — the
-   * ping is best-effort and must not block the user's attach action.
+   * endpoint can't be turned into an open request proxy. Best-effort ping —
+   * any failure (network error, missing Unsplash credentials, etc.) is
+   * swallowed and logged so it never blocks or breaks the user's attach
+   * action. This method never throws.
    */
   async track(downloadTriggerUrl: string): Promise<void> {
     let host: string;
@@ -71,6 +89,14 @@ export class StockMediaService {
       return;
     }
     if (host !== 'api.unsplash.com') return;
-    await this.unsplash.trackDownload(downloadTriggerUrl);
+    try {
+      await this.unsplash.trackDownload(downloadTriggerUrl);
+    } catch (error) {
+      this.logger.warn(
+        `Unsplash download tracking ping failed (non-fatal): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 }
