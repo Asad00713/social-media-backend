@@ -11,6 +11,7 @@ import { mapOneDriveItem, mapOneDriveFolder } from './mappers/onedrive.mapper';
 import { mapPhotosItem, mapPhotosAlbum } from './mappers/photos.mapper';
 import type {
   CloudBrowseResult,
+  CloudImportResult,
   CloudStoragePlatform,
   BrowseKind,
 } from './media-sources.types';
@@ -21,6 +22,11 @@ interface BrowseArgs {
   query?: string;
   cursor?: string;
   limit?: number;
+}
+
+interface ImportArgs {
+  fileId: string;
+  kind: 'image' | 'video';
 }
 
 @Injectable()
@@ -68,6 +74,59 @@ export class MediaSourcesService {
         return this.browseOneDrive(token, args);
       case 'google_photos':
         return this.browsePhotos(token, args);
+    }
+  }
+
+  async import(
+    workspaceId: string,
+    channelId: number,
+    args: ImportArgs,
+  ): Promise<CloudImportResult> {
+    const channel = await this.channelService.getChannelById(
+      channelId,
+      workspaceId,
+    );
+    const platform = channel.platform as CloudStoragePlatform;
+    if (!this.CLOUD.has(platform)) {
+      throw new BadRequestException('Channel is not a cloud storage source');
+    }
+    const token = await this.channelService.getAccessToken(
+      channelId,
+      workspaceId,
+    );
+
+    const buffer = await this.downloadBuffer(platform, token, args.fileId);
+    const up = await this.cloudinary.uploadFromBuffer(buffer, {
+      folder: 'composer/cloud',
+      resourceType: args.kind,
+    });
+
+    return {
+      url: up.secureUrl,
+      type: args.kind,
+      width: up.width,
+      height: up.height,
+      durationSec: up.duration,
+      sizeBytes: up.bytes,
+    };
+  }
+
+  private async downloadBuffer(
+    platform: CloudStoragePlatform,
+    token: string,
+    fileId: string,
+  ): Promise<Buffer> {
+    switch (platform) {
+      case 'dropbox':
+        return this.dropbox.downloadFile(token, fileId);
+      case 'google_drive':
+        return this.drive.downloadFile(token, fileId);
+      case 'onedrive':
+        return this.onedrive.downloadFile(token, fileId);
+      case 'google_photos': {
+        const mediaItem = await this.photos.getMediaItem(token, fileId);
+        return this.photos.downloadMediaItem(token, mediaItem);
+      }
     }
   }
 
