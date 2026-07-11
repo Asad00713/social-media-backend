@@ -95,17 +95,21 @@ export class MediaSourcesService {
         cursor: a.cursor,
       });
       return {
-        items: res.matches.map(mapDropboxItem),
+        items: res.matches
+          .filter((e) => e['.tag'] === 'file')
+          .map(mapDropboxItem),
         folders: [],
         nextCursor: res.has_more ? res.cursor : undefined,
       };
     }
 
-    const res = await this.dropbox.listMedia(token, {
-      path: a.path,
-      limit: a.limit,
-      cursor: a.cursor,
-    });
+    const options = { path: a.path, limit: a.limit, cursor: a.cursor };
+    const res =
+      a.kind === 'images'
+        ? await this.dropbox.listImages(token, options)
+        : a.kind === 'videos'
+          ? await this.dropbox.listVideos(token, options)
+          : await this.dropbox.listMedia(token, options);
     return {
       items: res.entries.map(mapDropboxItem),
       folders: [],
@@ -130,12 +134,20 @@ export class MediaSourcesService {
       };
     }
 
-    const res = await this.drive.listMedia(token, {
+    const options = {
       folderId: a.path,
-      query: a.kind === 'search' ? a.query : undefined,
       pageSize: a.limit,
       pageToken: a.cursor,
-    });
+    };
+    const res =
+      a.kind === 'images'
+        ? await this.drive.listImages(token, options)
+        : a.kind === 'videos'
+          ? await this.drive.listVideos(token, options)
+          : await this.drive.listMedia(token, {
+              ...options,
+              query: a.kind === 'search' ? a.query : undefined,
+            });
     return {
       items: res.files.map(mapDriveItem),
       folders: [],
@@ -166,17 +178,23 @@ export class MediaSourcesService {
         nextLink: a.cursor,
       });
       return {
-        items: res.items.map(mapOneDriveItem),
+        items: res.items.filter((i) => !!i.file).map(mapOneDriveItem),
         folders: [],
         nextCursor: res.nextLink,
       };
     }
 
-    const res = await this.onedrive.listMedia(token, {
+    const options = {
       folderId: a.path,
       pageSize: a.limit,
       nextLink: a.cursor,
-    });
+    };
+    const res =
+      a.kind === 'images'
+        ? await this.onedrive.listImages(token, options)
+        : a.kind === 'videos'
+          ? await this.onedrive.listVideos(token, options)
+          : await this.onedrive.listMedia(token, options);
     return {
       items: res.items.map(mapOneDriveItem),
       folders: [],
@@ -201,11 +219,17 @@ export class MediaSourcesService {
     }
 
     // 'search' has no text-filter concept for Photos; treat as listMediaItems.
-    const res = await this.photos.listMediaItems(token, {
+    const options = {
       pageSize: a.limit,
       pageToken: a.cursor,
       albumId: a.path,
-    });
+    };
+    const res =
+      a.kind === 'images'
+        ? await this.photos.listPhotos(token, options)
+        : a.kind === 'videos'
+          ? await this.photos.listVideos(token, options)
+          : await this.photos.listMediaItems(token, options);
     return {
       items: res.mediaItems.map(mapPhotosItem),
       folders: [],
