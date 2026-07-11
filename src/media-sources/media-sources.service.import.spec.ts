@@ -41,8 +41,19 @@ it('import downloads provider buffer and uploads to cloudinary', async () => {
   const svc = await build();
   const res = await svc.import('ws', 5, { fileId: '/x.jpg', kind: 'image' });
   expect(dropbox.downloadFile).toHaveBeenCalledWith('TKN', '/x.jpg');
-  expect(cloudinary.uploadFromBuffer).toHaveBeenCalledWith(expect.any(Buffer), { folder: 'composer/cloud', resourceType: 'image' });
+  expect(cloudinary.uploadFromBuffer).toHaveBeenCalledWith(expect.any(Buffer), { folder: 'composer/cloud', resourceType: 'auto' });
   expect(res).toEqual({ url: 'https://cdn/x.jpg', type: 'image', width: 800, height: 600, durationSec: undefined, sizeBytes: 1234 });
+});
+
+it('import derives type from the cloudinary upload result, ignoring a mismatched client-supplied kind', async () => {
+  channelService.getChannelById.mockResolvedValue({ platform: 'dropbox' });
+  dropbox.downloadFile.mockResolvedValue(Buffer.from('x'));
+  cloudinary.uploadFromBuffer.mockResolvedValue({ secureUrl: 'https://cdn/x.mp4', width: 800, height: 600, duration: 5, bytes: 1234, resourceType: 'video', publicId: 'p' });
+  const svc = await build();
+  // Client claims 'image' but Cloudinary detected a video — result must reflect Cloudinary's detection.
+  const res = await svc.import('ws', 5, { fileId: '/x.mp4', kind: 'image' });
+  expect(cloudinary.uploadFromBuffer).toHaveBeenCalledWith(expect.any(Buffer), { folder: 'composer/cloud', resourceType: 'auto' });
+  expect(res.type).toBe('video');
 });
 
 it('import on google_photos fetches media item then downloads it', async () => {
@@ -55,7 +66,7 @@ it('import on google_photos fetches media item then downloads it', async () => {
   const res = await svc.import('ws', 9, { fileId: 'm1', kind: 'video' });
   expect(photos.getMediaItem).toHaveBeenCalledWith('TKN', 'm1');
   expect(photos.downloadMediaItem).toHaveBeenCalledWith('TKN', mediaItem);
-  expect(cloudinary.uploadFromBuffer).toHaveBeenCalledWith(expect.any(Buffer), { folder: 'composer/cloud', resourceType: 'video' });
+  expect(cloudinary.uploadFromBuffer).toHaveBeenCalledWith(expect.any(Buffer), { folder: 'composer/cloud', resourceType: 'auto' });
   expect(res).toEqual({ url: 'https://cdn/y.mp4', type: 'video', width: undefined, height: undefined, durationSec: 12, sizeBytes: 42 });
 });
 

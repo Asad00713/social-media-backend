@@ -110,6 +110,40 @@ it('dropbox search excludes folder matches from items', async () => {
   expect(res.items[0]).toMatchObject({ id: '/a.jpg', name: 'a.jpg' });
 });
 
+// FIX 1 — OneDrive cursor must be validated against the Graph API origin to
+// prevent SSRF / bearer-token exfiltration via a client-controlled cursor.
+
+it('rejects a malicious OneDrive cursor and never calls the provider', async () => {
+  channelService.getChannelById.mockResolvedValue({ platform: 'onedrive' });
+  const svc = await build();
+  await expect(
+    svc.browse('ws', 1, { kind: 'media', cursor: 'https://attacker.example/x' }),
+  ).rejects.toBeInstanceOf(BadRequestException);
+  expect(onedrive.listMedia).not.toHaveBeenCalled();
+});
+
+it('rejects a malformed OneDrive cursor and never calls the provider', async () => {
+  channelService.getChannelById.mockResolvedValue({ platform: 'onedrive' });
+  const svc = await build();
+  await expect(
+    svc.browse('ws', 1, { kind: 'media', cursor: 'not a url' }),
+  ).rejects.toBeInstanceOf(BadRequestException);
+  expect(onedrive.listMedia).not.toHaveBeenCalled();
+});
+
+it('accepts a valid Microsoft Graph OneDrive cursor', async () => {
+  channelService.getChannelById.mockResolvedValue({ platform: 'onedrive' });
+  onedrive.listMedia.mockResolvedValue({ items: [] });
+  const svc = await build();
+  const cursor = 'https://graph.microsoft.com/v1.0/me/drive/root/children?$skiptoken=abc';
+  await svc.browse('ws', 1, { kind: 'media', cursor });
+  expect(onedrive.listMedia).toHaveBeenCalledWith('TKN', {
+    folderId: undefined,
+    pageSize: undefined,
+    nextLink: cursor,
+  });
+});
+
 it('onedrive search excludes folder matches from items', async () => {
   channelService.getChannelById.mockResolvedValue({ platform: 'onedrive' });
   onedrive.searchFiles.mockResolvedValue({

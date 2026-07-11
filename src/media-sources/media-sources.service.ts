@@ -98,12 +98,13 @@ export class MediaSourcesService {
     const buffer = await this.downloadBuffer(platform, token, args.fileId);
     const up = await this.cloudinary.uploadFromBuffer(buffer, {
       folder: 'composer/cloud',
-      resourceType: args.kind,
+      resourceType: 'auto',
     });
+    const type = up.resourceType === 'video' ? 'video' : 'image';
 
     return {
       url: up.secureUrl,
-      type: args.kind,
+      type,
       width: up.width,
       height: up.height,
       durationSec: up.duration,
@@ -155,7 +156,7 @@ export class MediaSourcesService {
       });
       return {
         items: res.matches
-          .filter((e) => e['.tag'] === 'file')
+          .filter((e) => !!e && e['.tag'] === 'file')
           .map(mapDropboxItem),
         folders: [],
         nextCursor: res.has_more ? res.cursor : undefined,
@@ -214,10 +215,33 @@ export class MediaSourcesService {
     };
   }
 
+  /**
+   * OneDrive's browse relays Microsoft Graph's raw `@odata.nextLink` URL to the
+   * client as `nextCursor`, and the client sends it back as `cursor`. Since
+   * OneDriveService uses that value verbatim as the fetch URL (with the
+   * user's OAuth bearer token attached), an unvalidated cursor lets a
+   * malicious client redirect the server's OneDrive access token to an
+   * arbitrary host (SSRF + token exfiltration). Only forward cursors that
+   * are well-formed URLs pointing at the real Graph API host.
+   */
+  private assertGraphCursor(cursor?: string): void {
+    if (!cursor) return;
+    let url: URL;
+    try {
+      url = new URL(cursor);
+    } catch {
+      throw new BadRequestException('Invalid OneDrive pagination cursor');
+    }
+    if (url.origin !== 'https://graph.microsoft.com') {
+      throw new BadRequestException('Invalid OneDrive pagination cursor');
+    }
+  }
+
   private async browseOneDrive(
     token: string,
     a: BrowseArgs,
   ): Promise<CloudBrowseResult> {
+    this.assertGraphCursor(a.cursor);
     if (a.kind === 'folders') {
       const res = await this.onedrive.listFolders(token, {
         parentId: a.path,
