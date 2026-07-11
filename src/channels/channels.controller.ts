@@ -4087,6 +4087,64 @@ export class ChannelsController {
   // ==========================================================================
 
   /**
+   * Connect Google Drive account
+   */
+  @Post('workspaces/:workspaceId/google-drive/connect')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async connectGoogleDrive(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+    @Body()
+    dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
+  ) {
+    // Decode tokens in case they're URL-encoded
+    const accessToken = decodeURIComponent(dto.accessToken);
+    const refreshToken = dto.refreshToken
+      ? decodeURIComponent(dto.refreshToken)
+      : undefined;
+
+    // Get Google Drive user info
+    const driveInfo = await this.googleDriveService.getUserInfo(accessToken);
+
+    // Create the Google Drive channel
+    const channel = await this.channelService.createChannel(
+      workspaceId,
+      user.userId,
+      {
+        platform: 'google_drive',
+        accountType: 'storage',
+        platformAccountId: driveInfo.email,
+        accountName: driveInfo.displayName || driveInfo.email || 'Google Drive',
+        username: driveInfo.email || undefined,
+        profilePictureUrl: driveInfo.photoLink || undefined,
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        tokenExpiresAt: dto.tokenExpiresAt,
+        permissions: PLATFORM_CONFIG.google_drive.oauthScopes,
+        capabilities: {
+          canPost: false,
+          canSchedule: false,
+          canReadAnalytics: false,
+          canReply: false,
+          canDelete: false,
+          supportedMediaTypes: ['image', 'video', 'document'],
+          maxMediaPerPost: 0,
+          maxTextLength: 0,
+        },
+        metadata: {
+          email: driveInfo.email,
+        },
+      },
+    );
+
+    return {
+      channel,
+      message: 'Google Drive connected successfully',
+    };
+  }
+
+  /**
    * List media files from Google Drive (images and videos)
    */
   @Post('google-drive/media')
@@ -4215,6 +4273,65 @@ export class ChannelsController {
   // ==========================================================================
   // Google Photos Endpoints
   // ==========================================================================
+
+  /**
+   * Connect Google Photos account
+   */
+  @Post('workspaces/:workspaceId/google-photos/connect')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async connectGooglePhotos(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+    @Body()
+    dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
+  ) {
+    // Decode tokens in case they're URL-encoded
+    const accessToken = decodeURIComponent(dto.accessToken);
+    const refreshToken = dto.refreshToken
+      ? decodeURIComponent(dto.refreshToken)
+      : undefined;
+
+    // Google Photos API has no user-info endpoint; verify the token works
+    const hasAccess = await this.googlePhotosService.verifyAccess(accessToken);
+    if (!hasAccess) {
+      throw new BadRequestException('Could not verify Google Photos access');
+    }
+
+    // Google Photos yields no account identity, so we use a stable
+    // per-workspace id (one Google Photos connection per workspace; a
+    // reconnect updates the existing channel). Accepted v1 limitation.
+    const channel = await this.channelService.createChannel(
+      workspaceId,
+      user.userId,
+      {
+        platform: 'google_photos',
+        accountType: 'storage',
+        platformAccountId: `google_photos:${workspaceId}`,
+        accountName: 'Google Photos',
+        accessToken: accessToken,
+        refreshToken: refreshToken,
+        tokenExpiresAt: dto.tokenExpiresAt,
+        permissions: PLATFORM_CONFIG.google_photos.oauthScopes,
+        capabilities: {
+          canPost: false,
+          canSchedule: false,
+          canReadAnalytics: false,
+          canReply: false,
+          canDelete: false,
+          supportedMediaTypes: ['image', 'video', 'document'],
+          maxMediaPerPost: 0,
+          maxTextLength: 0,
+        },
+        metadata: {},
+      },
+    );
+
+    return {
+      channel,
+      message: 'Google Photos connected successfully',
+    };
+  }
 
   /**
    * List media items from Google Photos
