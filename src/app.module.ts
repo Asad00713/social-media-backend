@@ -20,6 +20,7 @@ import { DripModule } from './drips/drip.module';
 import { FeedbackModule } from './feedback/feedback.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PexelsModule } from './pexels/pexels.module';
+import { StockMediaModule } from './stock-media/stock-media.module';
 import { CanvaModule } from './canva/canva.module';
 import { MediaLibraryModule } from './media-library/media-library.module';
 import { AdminModule } from './admin/admin.module';
@@ -61,6 +62,7 @@ import { QUEUES } from './queue/queue.module';
     FeedbackModule,
     NotificationsModule,
     PexelsModule,
+    StockMediaModule,
     CanvaModule,
     AdminModule,
     CommunityModule,
