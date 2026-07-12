@@ -1,8 +1,16 @@
 import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { UnsplashService } from '../channels/services/unsplash.service';
 import { PexelsService } from '../pexels/pexels.service';
+import { PixabayService } from './providers/pixabay.service';
+import { GiphyService } from './providers/giphy.service';
+import { CoverrService } from './providers/coverr.service';
+import { FlickrService } from './providers/flickr.service';
 import { mapUnsplashPhoto } from './mappers/unsplash.mapper';
 import { mapPexelsPhoto, mapPexelsVideo } from './mappers/pexels.mapper';
+import { mapPixabayImage, mapPixabayVideo } from './mappers/pixabay.mapper';
+import { mapGiphyGif } from './mappers/giphy.mapper';
+import { mapCoverrVideo } from './mappers/coverr.mapper';
+import { mapFlickrPhoto, hasUsableUrl } from './mappers/flickr.mapper';
 import type {
   StockMediaItem,
   StockMediaType,
@@ -18,6 +26,24 @@ export interface StockSearchParams {
   perPage: number;
 }
 
+/**
+ * Which media types each provider can serve. Used to reject impossible
+ * provider×type combinations up front (e.g. video from image-only Unsplash,
+ * or an image from video-only Coverr) with a clear 400 instead of a confusing
+ * empty result or an upstream error.
+ */
+const PROVIDER_CAPABILITIES: Record<
+  StockProvider,
+  { image: boolean; video: boolean }
+> = {
+  unsplash: { image: true, video: false },
+  pexels: { image: true, video: true },
+  pixabay: { image: true, video: true },
+  giphy: { image: true, video: false },
+  coverr: { image: false, video: true },
+  flickr: { image: true, video: false },
+};
+
 @Injectable()
 export class StockMediaService {
   private readonly logger = new Logger(StockMediaService.name);
@@ -25,15 +51,25 @@ export class StockMediaService {
   constructor(
     private readonly unsplash: UnsplashService,
     private readonly pexels: PexelsService,
+    private readonly pixabay: PixabayService,
+    private readonly giphy: GiphyService,
+    private readonly coverr: CoverrService,
+    private readonly flickr: FlickrService,
   ) {}
 
   async search(params: StockSearchParams): Promise<StockSearchResponse> {
     const { provider, type, page, perPage } = params;
     const q = params.q?.trim() ?? '';
 
-    if (provider === 'unsplash' && type === 'video') {
+    const caps = PROVIDER_CAPABILITIES[provider];
+    if (type === 'video' && !caps.video) {
       throw new BadRequestException(
-        'Unsplash does not support video search.',
+        `${provider} does not support video search.`,
+      );
+    }
+    if (type === 'image' && !caps.image) {
+      throw new BadRequestException(
+        `${provider} does not support image search.`,
       );
     }
 
@@ -41,41 +77,86 @@ export class StockMediaService {
       return this.curated(provider, type, page, perPage);
     }
 
-    if (provider === 'unsplash') {
-      const result = await this.unsplash.searchPhotos(q, page, perPage);
-      return {
-        items: result.results.map(mapUnsplashPhoto),
-        page,
-        hasMore: page < result.totalPages,
-      };
+    switch (provider) {
+      case 'unsplash': {
+        const result = await this.unsplash.searchPhotos(q, page, perPage);
+        return {
+          items: result.results.map(mapUnsplashPhoto),
+          page,
+          hasMore: page < result.totalPages,
+        };
+      }
+      case 'pexels': {
+        if (type === 'video') {
+          const result = await this.pexels.searchVideos({
+            query: q,
+            page,
+            perPage,
+          });
+          return this.fromPexels(
+            result.items.map(mapPexelsVideo),
+            page,
+            result.nextPage,
+          );
+        }
+        const result = await this.pexels.searchPhotos({
+          query: q,
+          page,
+          perPage,
+        });
+        return this.fromPexels(
+          result.items.map(mapPexelsPhoto),
+          page,
+          result.nextPage,
+        );
+      }
+      case 'pixabay': {
+        if (type === 'video') {
+          const { items, hasMore } = await this.pixabay.searchVideos(
+            q,
+            page,
+            perPage,
+          );
+          return { items: items.map(mapPixabayVideo), page, hasMore };
+        }
+        const { items, hasMore } = await this.pixabay.searchImages(
+          q,
+          page,
+          perPage,
+        );
+        return { items: items.map(mapPixabayImage), page, hasMore };
+      }
+      case 'giphy': {
+        const { items, hasMore } = await this.giphy.search(q, page, perPage);
+        return { items: items.map(mapGiphyGif), page, hasMore };
+      }
+      case 'coverr': {
+        const { items, hasMore } = await this.coverr.searchVideos(
+          q,
+          page,
+          perPage,
+        );
+        return { items: items.map(mapCoverrVideo), page, hasMore };
+      }
+      case 'flickr': {
+        const { items, hasMore } = await this.flickr.searchPhotos(
+          q,
+          page,
+          perPage,
+        );
+        return {
+          items: items.filter(hasUsableUrl).map(mapFlickrPhoto),
+          page,
+          hasMore,
+        };
+      }
     }
-
-    // provider === 'pexels'
-    if (type === 'video') {
-      const result = await this.pexels.searchVideos({
-        query: q,
-        page,
-        perPage,
-      });
-      return this.fromPexels(
-        result.items.map(mapPexelsVideo),
-        page,
-        result.nextPage,
-      );
-    }
-    const result = await this.pexels.searchPhotos({ query: q, page, perPage });
-    return this.fromPexels(
-      result.items.map(mapPexelsPhoto),
-      page,
-      result.nextPage,
-    );
   }
 
   /**
-   * Default/curated feed when no search term is given (like Unsplash/Pexels
-   * home): Unsplash editorial picks, or Pexels curated photos / popular
-   * videos. `provider === 'unsplash' && type === 'video'` is already
-   * rejected by the caller before this is reached.
+   * Default/curated feed when no search term is given (like each provider's
+   * home): editorial/popular/trending picks. Impossible provider×type combos
+   * are already rejected by the caller before this is reached.
    */
   private async curated(
     provider: StockProvider,
@@ -83,27 +164,64 @@ export class StockMediaService {
     page: number,
     perPage: number,
   ): Promise<StockSearchResponse> {
-    if (provider === 'unsplash') {
-      const photos = await this.unsplash.getCuratedPhotos(page, perPage);
-      const items = photos.map(mapUnsplashPhoto);
-      // Unsplash curated returns a plain array with no total; a full page
-      // implies there may be more.
-      return { items, page, hasMore: items.length >= perPage };
+    switch (provider) {
+      case 'unsplash': {
+        const photos = await this.unsplash.getCuratedPhotos(page, perPage);
+        const items = photos.map(mapUnsplashPhoto);
+        // Unsplash curated returns a plain array with no total; a full page
+        // implies there may be more.
+        return { items, page, hasMore: items.length >= perPage };
+      }
+      case 'pexels': {
+        if (type === 'video') {
+          const result = await this.pexels.getPopularVideos(page, perPage);
+          return this.fromPexels(
+            result.items.map(mapPexelsVideo),
+            page,
+            result.nextPage,
+          );
+        }
+        const result = await this.pexels.getCuratedPhotos(page, perPage);
+        return this.fromPexels(
+          result.items.map(mapPexelsPhoto),
+          page,
+          result.nextPage,
+        );
+      }
+      case 'pixabay': {
+        if (type === 'video') {
+          const { items, hasMore } = await this.pixabay.popularVideos(
+            page,
+            perPage,
+          );
+          return { items: items.map(mapPixabayVideo), page, hasMore };
+        }
+        const { items, hasMore } = await this.pixabay.popularImages(
+          page,
+          perPage,
+        );
+        return { items: items.map(mapPixabayImage), page, hasMore };
+      }
+      case 'giphy': {
+        const { items, hasMore } = await this.giphy.trending(page, perPage);
+        return { items: items.map(mapGiphyGif), page, hasMore };
+      }
+      case 'coverr': {
+        const { items, hasMore } = await this.coverr.popularVideos(
+          page,
+          perPage,
+        );
+        return { items: items.map(mapCoverrVideo), page, hasMore };
+      }
+      case 'flickr': {
+        const { items, hasMore } = await this.flickr.interesting(page, perPage);
+        return {
+          items: items.filter(hasUsableUrl).map(mapFlickrPhoto),
+          page,
+          hasMore,
+        };
+      }
     }
-    if (type === 'video') {
-      const result = await this.pexels.getPopularVideos(page, perPage);
-      return this.fromPexels(
-        result.items.map(mapPexelsVideo),
-        page,
-        result.nextPage,
-      );
-    }
-    const result = await this.pexels.getCuratedPhotos(page, perPage);
-    return this.fromPexels(
-      result.items.map(mapPexelsPhoto),
-      page,
-      result.nextPage,
-    );
   }
 
   private fromPexels(

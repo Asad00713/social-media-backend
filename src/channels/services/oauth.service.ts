@@ -172,12 +172,17 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
       prompt: 'consent',
     },
   },
-  // OneDrive - Live Connect API for personal Microsoft accounts
+  // OneDrive - Microsoft Graph via Azure AD v2.0 endpoint.
+  // The legacy Live Connect API (login.live.com + wl.* scopes) is end-of-life
+  // (Nov 2018) and its tokens do NOT work against Microsoft Graph, which the
+  // OneDrive provider service uses for all file listing. The `/common/` tenant
+  // supports both personal (MSA) and work/school accounts.
   onedrive: {
-    authorizationUrl: 'https://login.live.com/oauth20_authorize.srf',
-    tokenUrl: 'https://login.live.com/oauth20_token.srf',
+    authorizationUrl:
+      'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+    tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
     scopes: PLATFORM_CONFIG.onedrive.oauthScopes,
-    usePKCE: false, // Live Connect doesn't support PKCE
+    usePKCE: true, // Azure AD v2.0 supports PKCE alongside a confidential client
     additionalParams: {
       response_type: 'code',
     },

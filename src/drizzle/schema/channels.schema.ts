@@ -627,11 +627,13 @@ export const PLATFORM_CONFIG: Record<
     maxTextLength: 0,
     supportedMediaTypes: ['image', 'video', 'document'],
     oauthScopes: [
-      // Consumer OneDrive scopes (wl.* scopes for personal accounts)
-      'wl.signin',
-      'wl.skydrive',
-      'wl.skydrive_update',
-      'wl.offline_access',
+      // Microsoft Graph delegated scopes (Azure AD v2.0). Replaces the dead
+      // Live Connect wl.* scopes. `Files.Read` grants read access to the
+      // user's OneDrive (drive metadata + file listing/download via Graph),
+      // `offline_access` yields a refresh token, `User.Read` covers /me.
+      'Files.Read',
+      'offline_access',
+      'User.Read',
     ],
   },
   dropbox: {

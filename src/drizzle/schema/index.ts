@@ -21,3 +21,4 @@ export * from './notification-routes.schema';
 export * from './telegram-bindings.schema';
 export * from './maestro-links.schema';
 export * from './maestro-bridge-threads.schema';
+export * from './canva.schema';
