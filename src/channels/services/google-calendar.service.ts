@@ -27,6 +27,9 @@ export interface CalendarEvent {
   colorId?: string;
   htmlLink?: string;
   status?: string;
+  // Provider concurrency token (Google `etag`). Present on API responses; used
+  // by the calendar-sync push service for If-Match guards + echo suppression.
+  etag?: string;
 }
 
 export interface Calendar {
@@ -47,6 +50,13 @@ export interface CreateEventOptions {
   timeZone?: string;
   colorId?: string;
   calendarId?: string;
+  // Ownership tags written to the provider so two-way write-back only ever
+  // touches events we created. Google stores these under
+  // `extendedProperties.private`. Optional + additive — existing callers unaffected.
+  privateProps?: Record<string, string>;
+  // Optional provider etag for optimistic concurrency on update (sent as the
+  // `If-Match` header). Ignored on create.
+  ifMatch?: string;
 }
 
 export interface PostEventData {
@@ -106,12 +116,13 @@ export class GoogleCalendarService {
       timeZone = 'UTC',
       colorId,
       calendarId = 'primary',
+      privateProps,
     } = options;
 
     // Default event duration is 30 minutes
     const end = endTime || new Date(startTime.getTime() + 30 * 60 * 1000);
 
-    const event = {
+    const event: Record<string, any> = {
       summary,
       description,
       start: {
@@ -124,6 +135,11 @@ export class GoogleCalendarService {
       },
       colorId,
     };
+
+    // Ownership tags → Google extendedProperties.private
+    if (privateProps && Object.keys(privateProps).length > 0) {
+      event.extendedProperties = { private: privateProps };
+    }
 
     const response = await fetch(
       `${this.apiBaseUrl}/calendars/${encodeURIComponent(calendarId)}/events`,
@@ -183,14 +199,25 @@ export class GoogleCalendarService {
       updatedEvent.colorId = updates.colorId;
     }
 
+    // Re-assert ownership tags on update (Google merges private props).
+    if (updates.privateProps && Object.keys(updates.privateProps).length > 0) {
+      updatedEvent.extendedProperties = { private: updates.privateProps };
+    }
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    };
+    // Optimistic concurrency guard: fail with 412 if the event changed remotely.
+    if (updates.ifMatch) {
+      headers['If-Match'] = updates.ifMatch;
+    }
+
     const response = await fetch(
       `${this.apiBaseUrl}/calendars/${encodeURIComponent(calendarId)}/events/${encodeURIComponent(eventId)}`,
       {
         method: 'PUT',
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-          'Content-Type': 'application/json',
-        },
+        headers,
         body: JSON.stringify(updatedEvent),
       },
     );

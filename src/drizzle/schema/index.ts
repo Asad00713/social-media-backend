@@ -22,3 +22,4 @@ export * from './telegram-bindings.schema';
 export * from './maestro-links.schema';
 export * from './maestro-bridge-threads.schema';
 export * from './canva.schema';
+export * from './calendar-sync.schema';

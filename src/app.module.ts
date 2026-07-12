@@ -34,6 +34,7 @@ import { ComposerModule } from './posts/composer/composer.module';
 import { InboxModule } from './inbox/inbox.module';
 import { AdsModule } from './ads/ads.module';
 import { MediaSourcesModule } from './media-sources/media-sources.module';
+import { CalendarSyncModule } from './calendar-sync/calendar-sync.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
@@ -75,6 +76,7 @@ import { QUEUES } from './queue/queue.module';
     InboxModule,
     AdsModule,
     MediaSourcesModule,
+    CalendarSyncModule,
     BullBoardModule.forRoot({
       route: '/admin/queues',
       adapter: ExpressAdapter,

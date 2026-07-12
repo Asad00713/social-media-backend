@@ -1,4 +1,10 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import {
+  GRAPH_POST_ID_PROP_ID,
+  GRAPH_WORKSPACE_ID_PROP_ID,
+  SCHEDURA_POST_ID_PROP,
+  SCHEDURA_WORKSPACE_ID_PROP,
+} from '../../calendar-sync/calendar-sync.constants';
 
 // Platform categories for Outlook calendar events.
 // Microsoft Graph events do not support Google's numeric colorId; instead they
@@ -31,6 +37,9 @@ export interface CalendarEvent {
   colorId?: string;
   htmlLink?: string;
   status?: string;
+  // Provider concurrency token (Graph `@odata.etag`). Used by calendar-sync for
+  // If-Match guards + echo suppression.
+  etag?: string;
 }
 
 export interface Calendar {
@@ -51,6 +60,13 @@ export interface CreateEventOptions {
   timeZone?: string;
   colorId?: string;
   calendarId?: string;
+  // Ownership tags. On Graph these are written as singleValueExtendedProperties
+  // keyed by GRAPH_POST_ID_PROP_ID / GRAPH_WORKSPACE_ID_PROP_ID. Optional +
+  // additive — existing callers unaffected.
+  privateProps?: Record<string, string>;
+  // Optional Graph changeKey/etag for optimistic concurrency on update (sent as
+  // the `If-Match` header). Ignored on create.
+  ifMatch?: string;
 }
 
 export interface PostEventData {
@@ -67,6 +83,7 @@ export interface PostEventData {
  */
 interface GraphEvent {
   id: string;
+  '@odata.etag'?: string;
   subject?: string;
   body?: {
     contentType?: string;
@@ -153,6 +170,7 @@ export class OutlookCalendarService {
       endTime,
       colorId,
       calendarId = 'primary',
+      privateProps,
     } = options;
 
     // Default event duration is 30 minutes
@@ -180,6 +198,12 @@ export class OutlookCalendarService {
     // Graph has no numeric colorId; map the caller's colorId to a named category.
     if (colorId) {
       event.categories = [colorId];
+    }
+
+    // Ownership tags → Graph singleValueExtendedProperties (named MAPI props).
+    const svep = this.buildExtendedProps(privateProps);
+    if (svep) {
+      event.singleValueExtendedProperties = svep;
     }
 
     const response = await fetch(this.eventsPath(calendarId), {
@@ -243,12 +267,24 @@ export class OutlookCalendarService {
       patch.categories = [updates.colorId];
     }
 
+    // Re-assert ownership tags on update.
+    const svep = this.buildExtendedProps(updates.privateProps);
+    if (svep) {
+      patch.singleValueExtendedProperties = svep;
+    }
+
+    const headers: Record<string, string> = {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+    };
+    // Optimistic concurrency guard: Graph fails with 412 if the event changed.
+    if (updates.ifMatch) {
+      headers['If-Match'] = updates.ifMatch;
+    }
+
     const response = await fetch(this.eventPath(eventId, calendarId), {
       method: 'PATCH',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-      },
+      headers,
       body: JSON.stringify(patch),
     });
 
@@ -585,6 +621,27 @@ export class OutlookCalendarService {
   }
 
   /**
+   * Translate our generic `privateProps` map into Graph
+   * singleValueExtendedProperties entries keyed by the fixed named MAPI
+   * property GUIDs. Returns undefined when there is nothing to write.
+   */
+  private buildExtendedProps(
+    privateProps?: Record<string, string>,
+  ): Array<{ id: string; value: string }> | undefined {
+    if (!privateProps) return undefined;
+    const entries: Array<{ id: string; value: string }> = [];
+    const postId = privateProps[SCHEDURA_POST_ID_PROP];
+    if (postId) {
+      entries.push({ id: GRAPH_POST_ID_PROP_ID, value: postId });
+    }
+    const workspaceId = privateProps[SCHEDURA_WORKSPACE_ID_PROP];
+    if (workspaceId) {
+      entries.push({ id: GRAPH_WORKSPACE_ID_PROP_ID, value: workspaceId });
+    }
+    return entries.length > 0 ? entries : undefined;
+  }
+
+  /**
    * Map a Microsoft Graph event to the Google-Calendar-shaped CalendarEvent so
    * the controller/consumers stay identical across both providers.
    */
@@ -602,6 +659,7 @@ export class OutlookCalendarService {
         timeZone: evt.end?.timeZone,
       },
       htmlLink: evt.webLink,
+      etag: evt['@odata.etag'],
     };
   }
 
