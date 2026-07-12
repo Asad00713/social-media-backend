@@ -1,4 +1,10 @@
-export type StockProvider = 'unsplash' | 'pexels';
+export type StockProvider =
+  | 'unsplash'
+  | 'pexels'
+  | 'pixabay'
+  | 'giphy'
+  | 'coverr'
+  | 'flickr';
 export type StockMediaType = 'image' | 'video';
 
 export interface StockMediaItem {

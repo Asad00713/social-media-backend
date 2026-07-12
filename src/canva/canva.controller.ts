@@ -14,6 +14,7 @@ import {
 import type { Response } from 'express';
 import { eq } from 'drizzle-orm';
 import { CanvaService } from './canva.service';
+import { CanvaConnectionService } from './canva-connection.service';
 import {
   InitiateCanvaOAuthDto,
   RefreshCanvaTokenDto,
@@ -34,7 +35,10 @@ import { oauthStates, NewOAuthState } from '../drizzle/schema/channels.schema';
 export class CanvaController {
   private readonly logger = new Logger(CanvaController.name);
 
-  constructor(private readonly canvaService: CanvaService) {}
+  constructor(
+    private readonly canvaService: CanvaService,
+    private readonly canvaConnectionService: CanvaConnectionService,
+  ) {}
 
   // ==========================================================================
   // OAuth Endpoints
@@ -189,14 +193,24 @@ export class CanvaController {
 
       this.logger.log(`Canva OAuth successful for user: ${user.displayName}`);
 
-      // Redirect to frontend with tokens
-      const successUrl =
-        `${frontendUrl}/canva/connect/success?` +
-        `accessToken=${encodeURIComponent(tokens.accessToken)}` +
-        `&refreshToken=${encodeURIComponent(tokens.refreshToken)}` +
-        `&expiresIn=${tokens.expiresIn}` +
-        `&userId=${encodeURIComponent(user.userId)}` +
-        `&displayName=${encodeURIComponent(user.displayName)}`;
+      // SECURITY: the callback contract changed — tokens used to be appended
+      // to this redirect URL for the frontend to pick up (browser-token
+      // model). They now live server-side only: persisted via
+      // CanvaConnectionService.upsert and injected into Canva API calls by
+      // CanvaComposerController. The redirect below carries no token params.
+      await this.canvaConnectionService.upsert(
+        stateData.workspaceId,
+        stateData.userId,
+        {
+          canvaUserId: user.userId,
+          displayName: user.displayName,
+          accessToken: tokens.accessToken,
+          refreshToken: tokens.refreshToken,
+          expiresIn: tokens.expiresIn,
+        },
+      );
+
+      const successUrl = `${frontendUrl}/canva/connect/success?status=success`;
 
       return res.redirect(successUrl);
     } catch (err) {

@@ -3,7 +3,7 @@ import { IsIn, IsInt, IsOptional, IsString, Max, Min } from 'class-validator';
 import type { StockMediaType, StockProvider } from '../stock-media.types';
 
 export class SearchStockDto {
-  @IsIn(['unsplash', 'pexels'])
+  @IsIn(['unsplash', 'pexels', 'pixabay', 'giphy', 'coverr', 'flickr'])
   provider: StockProvider;
 
   @IsIn(['image', 'video'])

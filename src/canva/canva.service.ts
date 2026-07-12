@@ -30,7 +30,7 @@ export interface CanvaDesign {
 
 export interface CanvaExportJob {
   id: string;
-  status: 'pending' | 'in_progress' | 'completed' | 'failed';
+  status: 'pending' | 'in_progress' | 'success' | 'completed' | 'failed';
   urls?: string[];
   error?: string;
 }
@@ -370,11 +370,18 @@ export class CanvaService {
     accessToken: string,
     limit = 20,
     continuation?: string,
+    query?: string,
   ): Promise<{ designs: CanvaDesign[]; continuation?: string }> {
     const url = new URL(`${this.apiBaseUrl}/designs`);
     url.searchParams.set('limit', Math.min(limit, 100).toString());
     if (continuation) {
       url.searchParams.set('continuation', continuation);
+    }
+    const trimmedQuery = query?.trim();
+    if (trimmedQuery) {
+      url.searchParams.set('query', trimmedQuery);
+      // Canva requires sort_by=relevance whenever a search query is supplied.
+      url.searchParams.set('sort_by', 'relevance');
     }
 
     const response = await fetch(url.toString(), {
@@ -421,13 +428,19 @@ export class CanvaService {
   ): Promise<CanvaExportJob> {
     const { format, quality = 'high', pages } = options;
 
+    // Canva Connect export API: the design id goes in the request body and the
+    // job is created at the top-level `/exports` endpoint (NOT the old
+    // `/designs/{id}/exports`, which now returns endpoint_not_found).
     const body: Record<string, any> = {
+      design_id: designId,
       format: {
         type: format,
       },
     };
 
-    if (quality && format !== 'pdf') {
+    // Only add `quality` for formats that accept it (PNG's format object does
+    // not — an unknown field is rejected by the strict `/exports` endpoint).
+    if (quality && format !== 'pdf' && format !== 'png') {
       body.format.quality = quality;
     }
 
@@ -438,7 +451,7 @@ export class CanvaService {
     this.logger.log(`Exporting Canva design ${designId} as ${format}`);
 
     const response = await fetch(
-      `${this.apiBaseUrl}/designs/${designId}/exports`,
+      `${this.apiBaseUrl}/exports`,
       {
         method: 'POST',
         headers: {
@@ -476,8 +489,9 @@ export class CanvaService {
     designId: string,
     exportId: string,
   ): Promise<CanvaExportJob> {
+    // Poll the top-level export job (design id not part of the path).
     const response = await fetch(
-      `${this.apiBaseUrl}/designs/${designId}/exports/${exportId}`,
+      `${this.apiBaseUrl}/exports/${exportId}`,
       {
         headers: {
           Authorization: `Bearer ${accessToken}`,
@@ -521,7 +535,12 @@ export class CanvaService {
         exportId,
       );
 
-      if (status.status === 'completed' && status.urls) {
+      // Canva Connect export jobs end in `success` (not `completed`); accept
+      // both defensively in case of API variance.
+      if (
+        (status.status === 'success' || status.status === 'completed') &&
+        status.urls
+      ) {
         return status.urls;
       }
 
