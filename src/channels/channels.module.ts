@@ -17,6 +17,7 @@ import { MastodonService } from './services/mastodon.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
+import { OutlookCalendarService } from './services/outlook-calendar.service';
 import { OneDriveService } from './services/onedrive.service';
 import { DropboxService } from './services/dropbox.service';
 import { UnsplashService } from './services/unsplash.service';
@@ -69,6 +70,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     GoogleDriveService,
     GooglePhotosService,
     GoogleCalendarService,
+    OutlookCalendarService,
     OneDriveService,
     DropboxService,
     UnsplashService,
@@ -108,6 +110,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     GoogleDriveService,
     GooglePhotosService,
     GoogleCalendarService,
+    OutlookCalendarService,
     OneDriveService,
     DropboxService,
     UnsplashService,

@@ -13,6 +13,7 @@ const INTEGRATION_PLATFORMS = new Set([
   'google_drive',
   'google_photos',
   'google_calendar',
+  'outlook_calendar',
   'onedrive',
   'dropbox',
 ]);

@@ -81,6 +81,11 @@ export const PLATFORM_RATE_LIMITS: Record<
     windowMs: 60 * 60 * 1000, // 1 hour
     description: '1000 requests per hour',
   },
+  outlook_calendar: {
+    maxRequests: 1000, // Outlook Calendar (Microsoft Graph) has generous limits
+    windowMs: 60 * 60 * 1000, // 1 hour
+    description: '1000 requests per hour',
+  },
   onedrive: {
     maxRequests: 10000, // Microsoft Graph has generous limits
     windowMs: 10 * 60 * 1000, // 10 minutes
