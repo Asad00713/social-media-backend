@@ -281,7 +281,7 @@ export class CalendarPushSyncService {
   private async removeLink(link: CalendarPostLink): Promise<void> {
     const platform =
       link.provider === 'google' ? 'google_calendar' : 'outlook_calendar';
-    const { service } = this.providerFor(platform as CalendarPlatform);
+    const { service } = this.providerFor(platform);
     try {
       const accessToken = await this.channelService.getAccessToken(
         link.channelId,
@@ -312,9 +312,7 @@ export class CalendarPushSyncService {
     }
 
     // Confirmed gone → safe to drop the link.
-    await db
-      .delete(calendarPostLinks)
-      .where(eq(calendarPostLinks.id, link.id));
+    await db.delete(calendarPostLinks).where(eq(calendarPostLinks.id, link.id));
   }
 
   /**
@@ -342,7 +340,7 @@ export class CalendarPushSyncService {
     for (const link of links) {
       const platform =
         link.provider === 'google' ? 'google_calendar' : 'outlook_calendar';
-      const { service } = this.providerFor(platform as CalendarPlatform);
+      const { service } = this.providerFor(platform);
       try {
         const accessToken = await this.channelService.getAccessToken(
           link.channelId,
@@ -375,9 +373,7 @@ export class CalendarPushSyncService {
     const [owned] = await db
       .select({ id: workspace.id })
       .from(workspace)
-      .where(
-        and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)),
-      );
+      .where(and(eq(workspace.id, workspaceId), eq(workspace.ownerId, userId)));
     if (owned) return;
 
     const [member] = await db

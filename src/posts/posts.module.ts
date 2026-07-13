@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { PostsController } from './posts.controller';
 import { PostService } from './services/post.service';
@@ -34,7 +34,9 @@ import { PostPublishProcessor } from './processors/post-publish.processor';
     BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS }),
     AnalyticsModule,
     MediaModule,
-    CalendarSyncModule,
+    // Circular by design: posts push to calendars (CalendarPushSyncService) and
+    // calendars write back to posts (CalendarPullSyncService → PostService).
+    forwardRef(() => CalendarSyncModule),
   ],
   controllers: [PostsController],
   providers: [

@@ -106,3 +106,13 @@ DO $$ BEGIN
     ADD CONSTRAINT "calendar_sync_state_channel_id_social_media_channels_id_fk"
     FOREIGN KEY ("channel_id") REFERENCES "social_media_channels"("id") ON DELETE cascade;
 EXCEPTION WHEN duplicate_object THEN null; END $$;
+
+-- Webhook lookup paths. Every UNAUTHENTICATED provider notification resolves its
+-- channel through exactly one of these two columns (Google: watch_channel_id via
+-- X-Goog-Channel-ID; Graph: subscription_id via the notification's
+-- subscriptionId), so both must be indexed or each hit seq-scans the table.
+CREATE INDEX IF NOT EXISTS "css_watch_channel_ix"
+  ON "calendar_sync_state" ("watch_channel_id");
+
+CREATE INDEX IF NOT EXISTS "css_subscription_ix"
+  ON "calendar_sync_state" ("subscription_id");

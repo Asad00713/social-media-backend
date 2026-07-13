@@ -1,8 +1,10 @@
 import {
   Controller,
+  Get,
   Post,
   Param,
   ParseUUIDPipe,
+  Query,
   UseGuards,
   HttpCode,
   HttpStatus,
@@ -11,13 +13,21 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { CalendarPushSyncService } from './services/calendar-push-sync.service';
+import {
+  ExternalEventDto,
+  ExternalEventsService,
+} from './services/external-events.service';
+import { ListExternalEventsDto } from './dto/list-external-events.dto';
 
 @Controller('calendar-sync')
 @UseGuards(JwtAuthGuard)
 export class CalendarSyncController {
   private readonly logger = new Logger(CalendarSyncController.name);
 
-  constructor(private readonly pushSyncService: CalendarPushSyncService) {}
+  constructor(
+    private readonly pushSyncService: CalendarPushSyncService,
+    private readonly externalEventsService: ExternalEventsService,
+  ) {}
 
   /**
    * Backfill: push every currently-scheduled future post of a workspace to its
@@ -51,5 +61,30 @@ export class CalendarSyncController {
     });
 
     return { status: 'accepted' };
+  }
+
+  /**
+   * The workspace's IMPORTED external calendar events (the user's OTHER events,
+   * i.e. the ones Schedura did not write) overlapping `[from, to]`. Read-only
+   * mirror maintained by CalendarPullSyncService — this endpoint never touches a
+   * provider.
+   *
+   * Auth: same membership check as the backfill endpoint — workspace owner or an
+   * ACCEPTED member; otherwise 403.
+   */
+  @Get('workspaces/:workspaceId/external-events')
+  async listExternalEvents(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Query() query: ListExternalEventsDto,
+    @CurrentUser() user: { userId: string; email: string },
+  ): Promise<ExternalEventDto[]> {
+    // IDOR guard — a workspace's calendar events are private to its members.
+    await this.pushSyncService.assertWorkspaceAccess(workspaceId, user.userId);
+
+    return this.externalEventsService.listExternalEvents(
+      workspaceId,
+      query.from,
+      query.to,
+    );
   }
 }

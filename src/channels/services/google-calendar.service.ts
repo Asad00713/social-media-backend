@@ -1,4 +1,5 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { CalendarPreconditionFailedError } from './calendar-precondition.error';
 
 // Platform colors for calendar events
 const PLATFORM_COLORS: Record<string, string> = {
@@ -30,6 +31,9 @@ export interface CalendarEvent {
   // Provider concurrency token (Google `etag`). Present on API responses; used
   // by the calendar-sync push service for If-Match guards + echo suppression.
   etag?: string;
+  // Provider last-modified timestamp (Google `updated`, RFC3339). Present on API
+  // responses; used by calendar-sync's conflict engine (last-write-wins).
+  updated?: string;
 }
 
 export interface Calendar {
@@ -225,6 +229,12 @@ export class GoogleCalendarService {
     if (!response.ok) {
       const error = await response.text();
       this.logger.error(`Failed to update calendar event: ${error}`);
+      // The If-Match guard failed: the event changed remotely since we read it.
+      // Surfaced as a distinct error so calendar-sync can re-fetch + re-resolve
+      // instead of blindly retrying (all other statuses keep the old behaviour).
+      if (response.status === 412) {
+        throw new CalendarPreconditionFailedError('google', eventId);
+      }
       throw new BadRequestException('Failed to update calendar event');
     }
 

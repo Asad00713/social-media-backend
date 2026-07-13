@@ -107,25 +107,34 @@ export const externalCalendarEvents = pgTable(
 //    incremental delta cursor (Google syncToken / Graph deltaLink) + the push
 //    subscription/watch ids + expiry for webhook renewal.
 // -----------------------------------------------------------------------------
-export const calendarSyncState = pgTable('calendar_sync_state', {
-  id: uuid('id').primaryKey().defaultRandom(),
-  channelId: integer('channel_id')
-    .notNull()
-    .unique()
-    .references(() => socialMediaChannels.id, { onDelete: 'cascade' }),
-  provider: varchar('provider', { length: 20 }).notNull(),
-  syncToken: text('sync_token'), // Google
-  deltaLink: text('delta_link'), // Outlook / Graph
-  watchChannelId: varchar('watch_channel_id', { length: 255 }), // Google push channel id
-  watchResourceId: varchar('watch_resource_id', { length: 512 }),
-  watchExpiration: timestamp('watch_expiration'),
-  subscriptionId: varchar('subscription_id', { length: 255 }), // Graph subscription id
-  subscriptionExpiration: timestamp('subscription_expiration'),
-  lastFullSyncAt: timestamp('last_full_sync_at'),
-  lastIncrementalSyncAt: timestamp('last_incremental_sync_at'),
-  createdAt: timestamp('created_at').defaultNow().notNull(),
-  updatedAt: timestamp('updated_at').defaultNow().notNull(),
-});
+export const calendarSyncState = pgTable(
+  'calendar_sync_state',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    channelId: integer('channel_id')
+      .notNull()
+      .unique()
+      .references(() => socialMediaChannels.id, { onDelete: 'cascade' }),
+    provider: varchar('provider', { length: 20 }).notNull(),
+    syncToken: text('sync_token'), // Google
+    deltaLink: text('delta_link'), // Outlook / Graph
+    watchChannelId: varchar('watch_channel_id', { length: 255 }), // Google push channel id
+    watchResourceId: varchar('watch_resource_id', { length: 512 }),
+    watchExpiration: timestamp('watch_expiration'),
+    subscriptionId: varchar('subscription_id', { length: 255 }), // Graph subscription id
+    subscriptionExpiration: timestamp('subscription_expiration'),
+    lastFullSyncAt: timestamp('last_full_sync_at'),
+    lastIncrementalSyncAt: timestamp('last_incremental_sync_at'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (t) => ({
+    // The two columns the UNAUTHENTICATED provider webhooks look a row up by, on
+    // every single notification. Without these each hit is a seq scan.
+    ixWatchChannel: index('css_watch_channel_ix').on(t.watchChannelId),
+    ixSubscription: index('css_subscription_ix').on(t.subscriptionId),
+  }),
+);
 
 // =============================================================================
 // Relations

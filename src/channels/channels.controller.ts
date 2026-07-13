@@ -15,8 +15,18 @@ import {
   BadRequestException,
   ForbiddenException,
   Logger,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import type { Response } from 'express';
+import { CalendarSubscriptionService } from '../calendar-sync/services/calendar-subscription.service';
+import { CalendarPushSyncService } from '../calendar-sync/services/calendar-push-sync.service';
+import {
+  CALENDAR_RECONCILE_JOB,
+  CALENDAR_RECONCILE_QUEUE,
+} from '../calendar-sync/calendar-sync.constants';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ChannelService } from './services/channel.service';
@@ -124,6 +134,14 @@ export class ChannelsController {
     private readonly telegramService: TelegramService,
     private readonly whatsappService: WhatsAppService,
     private readonly whatsappOnboardingService: WhatsAppOnboardingService,
+    // Calendar two-way sync (Task E). Circular module pair
+    // (ChannelsModule ↔ CalendarSyncModule) → forwardRef on the provider tokens.
+    @Inject(forwardRef(() => CalendarSubscriptionService))
+    private readonly calendarSubscriptionService: CalendarSubscriptionService,
+    @Inject(forwardRef(() => CalendarPushSyncService))
+    private readonly calendarPushSyncService: CalendarPushSyncService,
+    @InjectQueue(CALENDAR_RECONCILE_QUEUE)
+    private readonly calendarReconcileQueue: Queue,
   ) {}
 
   // ==========================================================================
@@ -771,6 +789,42 @@ export class ChannelsController {
           `[OAuth Callback] ${platform} channel created: ${channel.id}`,
         );
 
+        // Calendar two-way sync — arm it immediately, but NEVER at the cost of
+        // the connect flow: all three are fire-and-forget.
+        //   1. subscribe   → provider push notifications (needs a public HTTPS
+        //                    callback; silently skipped in local dev)
+        //   2. reconcile   → first delta pull, so the user's existing events
+        //                    show up in the calendar right away
+        //   3. backfill    → push already-scheduled posts onto the new calendar
+        // If (1) fails, the 15-min reconcile poll still keeps the sync correct.
+        void this.calendarSubscriptionService
+          .subscribe(channel.id)
+          .catch((err) =>
+            this.logger.warn(
+              `Calendar push subscription failed for channel ${channel.id} (non-blocking — the reconcile poll covers it): ${(err as Error).message}`,
+            ),
+          );
+
+        void this.calendarReconcileQueue
+          .add(
+            CALENDAR_RECONCILE_JOB,
+            { channelId: channel.id },
+            { jobId: `calendar-reconcile-${channel.id}-connect-${Date.now()}` },
+          )
+          .catch((err: Error) =>
+            this.logger.warn(
+              `Initial calendar reconcile enqueue failed for channel ${channel.id}: ${err.message}`,
+            ),
+          );
+
+        void this.calendarPushSyncService
+          .backfillWorkspace(stateData.workspaceId)
+          .catch((err) =>
+            this.logger.warn(
+              `Calendar backfill failed for workspace ${stateData.workspaceId}: ${(err as Error).message}`,
+            ),
+          );
+
         return res.redirect(
           `${frontendUrl}/channels/connect/success?platform=${platform}&channelId=${channel.id}`,
         );
@@ -877,15 +931,26 @@ export class ChannelsController {
     const id = parseInt(channelId, 10);
     // Telegram: best-effort remove the bot's webhook before deleting the row,
     // so a re-add of the same bot can set a fresh webhook cleanly.
+    //
+    // Calendar (Google/Outlook): stop the provider push subscription BEFORE the
+    // row is deleted — the stop/DELETE call needs the channel's access token,
+    // which the delete takes with it. `teardown()` never throws (a stale
+    // provider-side channel just 404s on delivery and expires on its own).
     try {
       const channel = await this.channelService.getChannelById(id, workspaceId);
       if (channel.platform === 'telegram') {
         const token = await this.channelService.getAccessToken(id, workspaceId);
         await this.telegramService.forToken(token).deleteWebhook();
       }
+      if (
+        channel.platform === 'google_calendar' ||
+        channel.platform === 'outlook_calendar'
+      ) {
+        await this.calendarSubscriptionService.teardown(id);
+      }
     } catch (err) {
       this.logger.warn(
-        `Telegram deleteWebhook on disconnect failed (non-blocking): ${(err as Error).message}`,
+        `Webhook teardown on disconnect failed (non-blocking): ${(err as Error).message}`,
       );
     }
     await this.channelService.deleteChannel(id, workspaceId);

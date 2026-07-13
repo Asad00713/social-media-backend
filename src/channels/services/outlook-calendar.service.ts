@@ -1,4 +1,5 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { CalendarPreconditionFailedError } from './calendar-precondition.error';
 import {
   GRAPH_POST_ID_PROP_ID,
   GRAPH_WORKSPACE_ID_PROP_ID,
@@ -40,6 +41,9 @@ export interface CalendarEvent {
   // Provider concurrency token (Graph `@odata.etag`). Used by calendar-sync for
   // If-Match guards + echo suppression.
   etag?: string;
+  // Provider last-modified timestamp (Graph `lastModifiedDateTime`, ISO-8601 UTC).
+  // Used by calendar-sync's conflict engine (last-write-wins).
+  updated?: string;
 }
 
 export interface Calendar {
@@ -84,6 +88,7 @@ export interface PostEventData {
 interface GraphEvent {
   id: string;
   '@odata.etag'?: string;
+  lastModifiedDateTime?: string;
   subject?: string;
   body?: {
     contentType?: string;
@@ -291,6 +296,12 @@ export class OutlookCalendarService {
     if (!response.ok) {
       const error = await response.text();
       this.logger.error(`Failed to update calendar event: ${error}`);
+      // The If-Match guard failed: the event changed remotely since we read it.
+      // Surfaced as a distinct error so calendar-sync can re-fetch + re-resolve
+      // instead of blindly retrying (all other statuses keep the old behaviour).
+      if (response.status === 412) {
+        throw new CalendarPreconditionFailedError('outlook', eventId);
+      }
       throw new BadRequestException('Failed to update calendar event');
     }
 
@@ -660,6 +671,7 @@ export class OutlookCalendarService {
       },
       htmlLink: evt.webLink,
       etag: evt['@odata.etag'],
+      updated: evt.lastModifiedDateTime,
     };
   }
 
