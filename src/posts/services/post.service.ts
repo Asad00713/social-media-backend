@@ -396,7 +396,7 @@ export class PostService {
     }
 
     // Load the calendar link rows into memory BEFORE deleting the post:
-    // calendar_post_links cascade-delete with the post, so afterwards we'd lose
+    // calendar_item_links cascade-delete with the post, so afterwards we'd lose
     // the external event ids. This is a fast DB read; if it fails we still
     // delete the post (calendar cleanup is best-effort and self-heals via
     // reconcile). The provider deletes themselves run in the BACKGROUND below,

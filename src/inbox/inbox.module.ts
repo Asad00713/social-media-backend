@@ -31,6 +31,7 @@ import { ScheduledMessagesService } from './services/scheduled-messages.service'
 import { SlackBackfillService } from './services/slack-backfill.service';
 import { ChannelsModule } from '../channels/channels.module';
 import { MediaModule } from '../media/media.module';
+import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
 import { QUEUES } from '../queue/queue.module';
 
 @Module({
@@ -40,6 +41,11 @@ import { QUEUES } from '../queue/queue.module';
   imports: [
     forwardRef(() => ChannelsModule),
     MediaModule,
+    // Circular by design: scheduled messages push to calendars
+    // (CalendarPushSyncService) and calendars write back to scheduled messages
+    // (CalendarPullSyncService → ScheduledMessagesService). Same shape as
+    // PostsModule ↔ CalendarSyncModule.
+    forwardRef(() => CalendarSyncModule),
     BullModule.registerQueue(
       { name: QUEUES.INBOX_POLLING },
       { name: QUEUES.SCHEDULED_INBOX },

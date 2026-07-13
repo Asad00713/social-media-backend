@@ -1,5 +1,8 @@
 import { Logger } from '@nestjs/common';
-import { SCHEDURA_POST_ID_PROP } from '../calendar-sync.constants';
+import {
+  SCHEDURA_MESSAGE_ID_PROP,
+  SCHEDURA_POST_ID_PROP,
+} from '../calendar-sync.constants';
 import {
   CalendarDeltaOptions,
   CalendarDeltaResult,
@@ -203,6 +206,8 @@ function normalizeGoogleEvent(
   calendarId: string,
 ): NormalizedExternalEvent {
   const postId = item.extendedProperties?.private?.[SCHEDURA_POST_ID_PROP];
+  const messageId =
+    item.extendedProperties?.private?.[SCHEDURA_MESSAGE_ID_PROP];
   const isAllDay = Boolean(item.start?.date);
 
   return {
@@ -214,8 +219,9 @@ function normalizeGoogleEvent(
     isAllDay,
     htmlLink: item.htmlLink,
     externalUpdatedAt: item.updated ? toDateOrNull(item.updated) : null,
-    isOurs: Boolean(postId),
+    isOurs: Boolean(postId || messageId),
     postId: postId || undefined,
+    messageId: messageId || undefined,
     etag: item.etag,
     raw: item,
   };

@@ -4,8 +4,12 @@ import { db } from '../../drizzle/db';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { posts } from '../../drizzle/schema/posts.schema';
 import {
-  calendarPostLinks,
-  CalendarPostLink,
+  scheduledInboxMessages,
+  type ScheduledInboxMessage,
+} from '../../drizzle/schema/scheduled-inbox-messages.schema';
+import {
+  calendarItemLinks,
+  CalendarItemLink,
   calendarSyncState,
   CalendarSyncStateRow,
   externalCalendarEvents,
@@ -19,6 +23,7 @@ import {
 import { OutlookCalendarService } from '../../channels/services/outlook-calendar.service';
 import { CalendarPreconditionFailedError } from '../../channels/services/calendar-precondition.error';
 import { PostService } from '../../posts/services/post.service';
+import { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
 import { fetchGoogleCalendarDelta } from '../providers/google-delta.util';
 import { fetchOutlookCalendarDelta } from '../providers/outlook-delta.util';
 import {
@@ -28,7 +33,12 @@ import {
   fullSyncWindow,
 } from '../providers/delta.types';
 import { ConflictEvent, resolveConflict } from '../calendar-conflict';
-import { contentHash, postToEventInput } from '../calendar-sync.mapper';
+import {
+  EventInput,
+  contentHash,
+  messageToEventInput,
+  postToEventInput,
+} from '../calendar-sync.mapper';
 import { CalendarPushSyncService } from './calendar-push-sync.service';
 
 // Calendar channel platforms that participate in the pull (external import).
@@ -40,8 +50,17 @@ type CalendarChannel = typeof socialMediaChannels.$inferSelect;
 type Post = typeof posts.$inferSelect;
 
 /**
- * Same guard the calendar UI applies when a user drags a post: a reschedule must
- * land in the future with enough lead time for the publish job to be queued.
+ * The app-side item a link points at. Exactly one arc of `calendar_item_links`
+ * is populated, so a loaded link resolves to exactly one of these.
+ */
+type LinkedItem =
+  | { kind: 'post'; post: Post }
+  | { kind: 'message'; message: ScheduledInboxMessage };
+
+/**
+ * Same guard the calendar UI applies when a user drags a post or a scheduled
+ * reply: a reschedule must land in the future with enough lead time for the
+ * publish/send job to be queued. (Matches `ScheduledMessagesService.MIN_LEAD_MS`.)
  */
 const MIN_RESCHEDULE_LEAD_MS = 2 * 60 * 1000; // 2 minutes
 
@@ -83,11 +102,13 @@ interface CalendarWriteService {
  * (Google `syncToken` / Graph `deltaLink`) on `calendar_sync_state`, and falls
  * back to a bounded full list whenever the provider rejects the stored cursor.
  *
- * Events carrying our ownership tag (`schedura_post_id`) are the two-way
- * write-back surface (Task D): each one is matched to its `calendar_post_links`
- * row, run through the pure `resolveConflict()` engine, and applied — an
- * external MOVE reschedules the post, an external DELETE sends it back to draft
- * (never a hard delete), and an app-newer edit is re-pushed to the provider.
+ * Events carrying one of our ownership tags (`schedura_post_id` /
+ * `schedura_message_id`) are the two-way write-back surface (Task D): each one is
+ * matched to its `calendar_item_links` row, run through the pure
+ * `resolveConflict()` engine, and applied — an external MOVE reschedules the
+ * linked item, an external DELETE unschedules a post (→ draft) or CANCELS a
+ * scheduled message, and an app-newer edit is re-pushed to the provider. Neither
+ * a post nor a message is ever hard-deleted.
  *
  * `reconcile()` never throws: it is driven by BullMQ/webhooks where one broken
  * connection must not stall the others. Every per-event apply is likewise
@@ -106,6 +127,9 @@ export class CalendarPullSyncService {
     // calendars, calendars write back to posts) → forwardRef.
     @Inject(forwardRef(() => PostService))
     private readonly postService: PostService,
+    // InboxModule ↔ CalendarSyncModule is circular for the same reason.
+    @Inject(forwardRef(() => ScheduledMessagesService))
+    private readonly scheduledMessages: ScheduledMessagesService,
   ) {}
 
   /**
@@ -238,10 +262,10 @@ export class CalendarPullSyncService {
     delta: CalendarDeltaResult,
   ): Promise<string[]> {
     // AUTHORITATIVE ownership check: an event is OURS when a
-    // `calendar_post_links` row points at it, regardless of what the provider
+    // `calendar_item_links` row points at it, regardless of what the provider
     // payload says. This is not merely defence-in-depth — for Outlook it is the
     // ONLY signal, because Graph refuses `$expand` on its delta endpoints and so
-    // never returns our MAPI ownership tag (`isOurs` is always false there).
+    // never returns our MAPI ownership tags (`isOurs` is always false there).
     // Without this an event we wrote would be re-imported as an "external" event
     // and shown twice.
     const linkedIds = await this.loadLinkedEventIds(
@@ -281,12 +305,15 @@ export class CalendarPullSyncService {
   }
 
   // ==========================================================================
-  // Two-way write-back (events carrying our `schedura_post_id` tag)
+  // Two-way write-back (events carrying one of our ownership tags)
   // ==========================================================================
 
   /**
    * Apply one inbound change to an event WE wrote. Isolated: any failure is
    * logged and swallowed so the rest of the delta still applies.
+   *
+   * The link decides which app-side item the event belongs to (post OR scheduled
+   * message — an exclusive arc), and every branch below dispatches on that.
    */
   private async applyOwnedChange(
     channel: CalendarChannel,
@@ -303,9 +330,9 @@ export class CalendarPullSyncService {
         return;
       }
 
-      const post = await this.loadPost(link.postId);
-      if (!post) {
-        // Post is gone (hard-deleted elsewhere) → the link is dead weight.
+      const item = await this.loadItem(link);
+      if (!item) {
+        // The item is gone (hard-deleted elsewhere) → the link is dead weight.
         await this.deleteLink(link.id);
         return;
       }
@@ -313,21 +340,21 @@ export class CalendarPullSyncService {
       const decision = resolveConflict({
         link,
         event: toConflictEvent(event),
-        post,
+        post: toConflictItem(item),
       });
 
       switch (decision) {
         case 'skip_echo':
         case 'noop':
           this.logger.debug(
-            `Conflict for post ${post.id} on channel ${channel.id}: ${decision}`,
+            `Conflict for ${describeItem(item)} on channel ${channel.id}: ${decision}`,
           );
           return;
         case 'apply_external':
-          await this.applyExternalMove(channel, link, post, event);
+          await this.applyExternalMove(channel, link, item, event);
           return;
         case 'repush_app':
-          await this.repushApp(channel, link, post, event.externalUpdatedAt);
+          await this.repushApp(channel, link, item, event.externalUpdatedAt);
           return;
       }
     } catch (error) {
@@ -339,8 +366,8 @@ export class CalendarPullSyncService {
   }
 
   /**
-   * Tombstones: any deleted event that is one of OURS unschedules its post back
-   * to draft. The post itself is NEVER deleted.
+   * Tombstones: a deleted event that is one of OURS unschedules its post back to
+   * draft, or CANCELS its scheduled message. Neither row is ever deleted.
    */
   private async applyOwnedDeletions(
     channel: CalendarChannel,
@@ -349,11 +376,11 @@ export class CalendarPullSyncService {
     for (const chunk of chunkIds(deletedIds, 200)) {
       const links = await db
         .select()
-        .from(calendarPostLinks)
+        .from(calendarItemLinks)
         .where(
           and(
-            eq(calendarPostLinks.channelId, channel.id),
-            inArray(calendarPostLinks.externalEventId, chunk),
+            eq(calendarItemLinks.channelId, channel.id),
+            inArray(calendarItemLinks.externalEventId, chunk),
           ),
         );
 
@@ -364,7 +391,7 @@ export class CalendarPullSyncService {
           const message =
             error instanceof Error ? error.message : String(error);
           this.logger.warn(
-            `External-delete write-back failed for post ${link.postId} on channel ${channel.id}: ${message}`,
+            `External-delete write-back failed for ${describeLink(link)} on channel ${channel.id}: ${message}`,
           );
         }
       }
@@ -372,13 +399,17 @@ export class CalendarPullSyncService {
   }
 
   /**
-   * External DELETE → the post goes back to draft/unscheduled via PostService's
-   * existing `updatePost({ scheduledAt: null })` path (which also cancels the
-   * queued publish job). NEVER a hard delete.
+   * External DELETE →
+   *   - post:    back to draft/unscheduled via PostService's existing
+   *              `updatePost({ scheduledAt: null })` path (which also cancels the
+   *              queued publish job).
+   *   - message: CANCELLED via ScheduledMessagesService's existing cancel path
+   *              (status → 'cancelled' + the BullMQ delayed job removed).
+   * NEVER a hard delete of either row.
    */
-  private async applyExternalDelete(link: CalendarPostLink): Promise<void> {
-    const post = await this.loadPost(link.postId);
-    if (!post) {
+  private async applyExternalDelete(link: CalendarItemLink): Promise<void> {
+    const item = await this.loadItem(link);
+    if (!item) {
       await this.deleteLink(link.id);
       return;
     }
@@ -387,25 +418,41 @@ export class CalendarPullSyncService {
     const decision = resolveConflict({
       link,
       event: { deleted: true },
-      post,
+      post: toConflictItem(item),
     });
     if (decision !== 'apply_external') {
       return;
     }
 
-    if (post.status === 'scheduled') {
-      // Reuses the existing unschedule path: status → 'draft', scheduledAt
-      // cleared, BullMQ publish job cancelled. Its fire-and-forget calendar push
-      // then removes the (now stale) events + links on every calendar.
-      await this.postService.updatePost(
-        post.id,
-        post.workspaceId,
-        post.createdById,
-        { scheduledAt: null },
-      );
-      this.logger.log(
-        `Post ${post.id} unscheduled → draft (its calendar event was deleted externally)`,
-      );
+    if (item.kind === 'post') {
+      const post = item.post;
+      if (post.status === 'scheduled') {
+        // Reuses the existing unschedule path: status → 'draft', scheduledAt
+        // cleared, BullMQ publish job cancelled. Its fire-and-forget calendar
+        // push then removes the (now stale) events + links on every calendar.
+        await this.postService.updatePost(
+          post.id,
+          post.workspaceId,
+          post.createdById,
+          { scheduledAt: null },
+        );
+        this.logger.log(
+          `Post ${post.id} unscheduled → draft (its calendar event was deleted externally)`,
+        );
+      }
+    } else {
+      const message = item.message;
+      if (message.status === 'pending') {
+        // Reuses ScheduledMessagesService's cancel path (BullMQ delayed job
+        // removed + status → 'cancelled' + realtime event). Never a hard delete.
+        await this.scheduledMessages.cancelFromCalendar(
+          message.workspaceId,
+          message.id,
+        );
+        this.logger.log(
+          `Scheduled message ${message.id} cancelled (its calendar event was deleted externally)`,
+        );
+      }
     }
 
     // Idempotent: the push path above may already have dropped it.
@@ -413,24 +460,27 @@ export class CalendarPullSyncService {
   }
 
   /**
-   * External MOVE → reschedule the post to the event's start via PostService's
-   * existing `updatePost({ scheduledAt })` path.
+   * External MOVE → reschedule the linked item to the event's start through its
+   * EXISTING app-side reschedule path (`PostService.updatePost({ scheduledAt })`
+   * for posts, `ScheduledMessagesService.updateFromCalendar({ scheduledAt })` for
+   * messages — the latter also re-arms the BullMQ delayed send job).
    *
    * Echo suppression: the link is stamped with the inbound etag AND the hash of
-   * what we WOULD have pushed for the new time BEFORE the post update runs, so
-   * the fire-and-forget push inside `updatePost` sees an unchanged hash and
-   * skips the provider write entirely (no ping-pong, no 412 from a stale etag).
+   * what we WOULD have pushed for the new time BEFORE the app update runs, so the
+   * fire-and-forget push inside that update sees an unchanged hash and skips the
+   * provider write entirely (no ping-pong, no 412 from a stale etag).
    */
   private async applyExternalMove(
     channel: CalendarChannel,
-    link: CalendarPostLink,
-    post: Post,
+    link: CalendarItemLink,
+    item: LinkedItem,
     event: ConflictEvent,
   ): Promise<void> {
-    // The post is no longer schedulable (published/failed/draft) → the event is
-    // stale. Let the push service reconcile it away instead of rescheduling.
-    if (post.status !== 'scheduled') {
-      await this.pushSync.syncPost(post.id);
+    // The item is no longer schedulable (published/failed/draft, or a message
+    // that is sending/sent/failed/cancelled) → the event is stale. Let the push
+    // service reconcile it away instead of rescheduling.
+    if (!isSchedulable(item)) {
+      await this.resyncItem(item);
       return;
     }
 
@@ -438,28 +488,21 @@ export class CalendarPullSyncService {
     if (!newStart) return;
 
     // Same rule as the calendar drag-reschedule: must be far enough in the
-    // future for the publish job. A violating move is NOT applied — we surface it
-    // and re-push the app's real time so the calendar stops lying.
+    // future for the publish/send job. A violating move is NOT applied — we
+    // surface it and re-push the app's real time so the calendar stops lying.
     if (newStart.getTime() - Date.now() < MIN_RESCHEDULE_LEAD_MS) {
       this.logger.warn(
-        `Rejecting external move of post ${post.id} to ${newStart.toISOString()}: must be at least 2 minutes in the future — re-pushing the app's schedule`,
+        `Rejecting external move of ${describeItem(item)} to ${newStart.toISOString()}: must be at least 2 minutes in the future — re-pushing the app's schedule`,
       );
       await this.markLinkError(
         link.id,
         `External move to ${newStart.toISOString()} rejected: must be at least 2 minutes in the future`,
       );
-      await this.repushApp(channel, link, post, event.externalUpdatedAt);
+      await this.repushApp(channel, link, item, event.externalUpdatedAt);
       return;
     }
 
-    const pushedHash = contentHash(
-      postToEventInput({
-        id: post.id,
-        workspaceId: post.workspaceId,
-        content: post.content,
-        scheduledAt: newStart,
-      }),
-    );
+    const pushedHash = contentHash(eventInputFor(item, newStart));
 
     // Stamp the link FIRST (see the doc comment above — this is what makes the
     // subsequent push a no-op instead of an echo).
@@ -472,17 +515,25 @@ export class CalendarPullSyncService {
     });
 
     try {
-      await this.postService.updatePost(
-        post.id,
-        post.workspaceId,
-        post.createdById,
-        { scheduledAt: newStart },
-      );
+      if (item.kind === 'post') {
+        await this.postService.updatePost(
+          item.post.id,
+          item.post.workspaceId,
+          item.post.createdById,
+          { scheduledAt: newStart },
+        );
+      } else {
+        await this.scheduledMessages.updateFromCalendar(
+          item.message.workspaceId,
+          item.message.id,
+          { scheduledAt: newStart.toISOString() },
+        );
+      }
       this.logger.log(
-        `Post ${post.id} rescheduled to ${newStart.toISOString()} from an external calendar move (channel ${channel.id})`,
+        `${describeItem(item)} rescheduled to ${newStart.toISOString()} from an external calendar move (channel ${channel.id})`,
       );
     } catch (error) {
-      // The post did not move → roll the link back so the next reconcile retries
+      // The item did not move → roll the link back so the next reconcile retries
       // rather than silently believing the two sides agree.
       const message = error instanceof Error ? error.message : String(error);
       await this.updateLink(link.id, {
@@ -493,13 +544,13 @@ export class CalendarPullSyncService {
         lastError: message.slice(0, 1000),
       });
       this.logger.warn(
-        `Failed to apply external move to post ${post.id}: ${message}`,
+        `Failed to apply external move to ${describeItem(item)}: ${message}`,
       );
     }
   }
 
   /**
-   * App wins → rewrite the provider event from the post, guarded by
+   * App wins → rewrite the provider event from the app-side item, guarded by
    * `If-Match: link.etag`.
    *
    * On **412 Precondition Failed** the event changed under us: re-fetch it,
@@ -508,25 +559,20 @@ export class CalendarPullSyncService {
    */
   private async repushApp(
     channel: CalendarChannel,
-    link: CalendarPostLink,
-    post: Post,
+    link: CalendarItemLink,
+    item: LinkedItem,
     externalUpdatedAt: Date | null | undefined,
     allowRefetch = true,
   ): Promise<void> {
     // Not schedulable anymore → the event should not exist at all; the push
     // service removes it (and the link) rather than us rewriting it.
-    if (post.status !== 'scheduled' || !post.scheduledAt) {
-      await this.pushSync.syncPost(post.id);
+    if (!isSchedulable(item)) {
+      await this.resyncItem(item);
       return;
     }
 
     const service = this.writeServiceFor(channel.platform as CalendarPlatform);
-    const eventInput = postToEventInput({
-      id: post.id,
-      workspaceId: post.workspaceId,
-      content: post.content,
-      scheduledAt: post.scheduledAt,
-    });
+    const eventInput = eventInputFor(item);
     const hash = contentHash(eventInput);
 
     const accessToken = await this.channelService.getAccessToken(
@@ -559,19 +605,19 @@ export class CalendarPullSyncService {
         lastError: null,
       });
       this.logger.log(
-        `Re-pushed post ${post.id}'s schedule over an older external edit (channel ${channel.id})`,
+        `Re-pushed ${describeItem(item)}'s schedule over an older external edit (channel ${channel.id})`,
       );
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
 
       if (error instanceof CalendarPreconditionFailedError && allowRefetch) {
-        await this.resolveAfterPrecondition(channel, link, post, service);
+        await this.resolveAfterPrecondition(channel, link, item, service);
         return;
       }
 
       await this.markLinkError(link.id, message);
       this.logger.warn(
-        `Re-push failed for post ${post.id} on channel ${channel.id}: ${message}`,
+        `Re-push failed for ${describeItem(item)} on channel ${channel.id}: ${message}`,
       );
     }
   }
@@ -583,8 +629,8 @@ export class CalendarPullSyncService {
    */
   private async resolveAfterPrecondition(
     channel: CalendarChannel,
-    link: CalendarPostLink,
-    post: Post,
+    link: CalendarItemLink,
+    item: LinkedItem,
     service: CalendarWriteService,
   ): Promise<void> {
     const accessToken = await this.channelService.getAccessToken(
@@ -597,14 +643,18 @@ export class CalendarPullSyncService {
       link.externalCalendarId ?? 'primary',
     );
     const freshEvent = toConflictEventFromProvider(fresh);
-    const freshLink: CalendarPostLink = {
+    const freshLink: CalendarItemLink = {
       ...link,
       etag: freshEvent.etag ?? link.etag,
     };
 
-    const decision = resolveConflict({ link, event: freshEvent, post });
+    const decision = resolveConflict({
+      link,
+      event: freshEvent,
+      post: toConflictItem(item),
+    });
     this.logger.debug(
-      `412 on post ${post.id} (channel ${channel.id}) → re-resolved as ${decision}`,
+      `412 on ${describeItem(item)} (channel ${channel.id}) → re-resolved as ${decision}`,
     );
 
     switch (decision) {
@@ -620,14 +670,14 @@ export class CalendarPullSyncService {
         });
         return;
       case 'apply_external':
-        await this.applyExternalMove(channel, freshLink, post, freshEvent);
+        await this.applyExternalMove(channel, freshLink, item, freshEvent);
         return;
       case 'repush_app':
         // ONE more attempt, now with the live etag. A 412 here → error + move on.
         await this.repushApp(
           channel,
           freshLink,
-          post,
+          item,
           freshEvent.externalUpdatedAt,
           false,
         );
@@ -636,28 +686,65 @@ export class CalendarPullSyncService {
   }
 
   // ==========================================================================
-  // Link + post helpers
+  // Link + item helpers
   // ==========================================================================
 
   private async loadLink(
     channelId: number,
     externalEventId: string,
-  ): Promise<CalendarPostLink | undefined> {
+  ): Promise<CalendarItemLink | undefined> {
     const [link] = await db
       .select()
-      .from(calendarPostLinks)
+      .from(calendarItemLinks)
       .where(
         and(
-          eq(calendarPostLinks.channelId, channelId),
-          eq(calendarPostLinks.externalEventId, externalEventId),
+          eq(calendarItemLinks.channelId, channelId),
+          eq(calendarItemLinks.externalEventId, externalEventId),
         ),
       );
     return link;
   }
 
+  /**
+   * Resolve a link's exclusive arc to the app-side row it points at. Returns
+   * null when that row no longer exists (→ the link is dead weight).
+   */
+  private async loadItem(link: CalendarItemLink): Promise<LinkedItem | null> {
+    if (link.postId) {
+      const post = await this.loadPost(link.postId);
+      return post ? { kind: 'post', post } : null;
+    }
+    if (link.messageId) {
+      const message = await this.loadMessage(link.messageId);
+      return message ? { kind: 'message', message } : null;
+    }
+    // Unreachable while `cil_exactly_one_owner` holds; treat as dead weight.
+    this.logger.warn(`Link ${link.id} has neither post_id nor message_id`);
+    return null;
+  }
+
   private async loadPost(postId: string): Promise<Post | undefined> {
     const [post] = await db.select().from(posts).where(eq(posts.id, postId));
     return post;
+  }
+
+  private async loadMessage(
+    messageId: string,
+  ): Promise<ScheduledInboxMessage | undefined> {
+    const [message] = await db
+      .select()
+      .from(scheduledInboxMessages)
+      .where(eq(scheduledInboxMessages.id, messageId));
+    return message;
+  }
+
+  /** Re-run the push side for an item that should no longer have an event. */
+  private async resyncItem(item: LinkedItem): Promise<void> {
+    if (item.kind === 'post') {
+      await this.pushSync.syncPost(item.post.id);
+    } else {
+      await this.pushSync.syncMessage(item.message.id);
+    }
   }
 
   private async updateLink(
@@ -671,9 +758,9 @@ export class CalendarPullSyncService {
     }>,
   ): Promise<void> {
     await db
-      .update(calendarPostLinks)
+      .update(calendarItemLinks)
       .set({ ...set, updatedAt: new Date() })
-      .where(eq(calendarPostLinks.id, linkId));
+      .where(eq(calendarItemLinks.id, linkId));
   }
 
   private async markLinkError(linkId: string, message: string): Promise<void> {
@@ -684,7 +771,7 @@ export class CalendarPullSyncService {
   }
 
   private async deleteLink(linkId: string): Promise<void> {
-    await db.delete(calendarPostLinks).where(eq(calendarPostLinks.id, linkId));
+    await db.delete(calendarItemLinks).where(eq(calendarItemLinks.id, linkId));
   }
 
   private writeServiceFor(platform: CalendarPlatform): CalendarWriteService {
@@ -769,7 +856,7 @@ export class CalendarPullSyncService {
 
   /**
    * External event ids of this channel that are already linked to one of our
-   * posts (i.e. events WE wrote).
+   * items — a post OR a scheduled message (i.e. events WE wrote).
    */
   private async loadLinkedEventIds(
     channelId: number,
@@ -780,12 +867,12 @@ export class CalendarPullSyncService {
     const found = new Set<string>();
     for (const chunk of chunkIds(externalEventIds, 200)) {
       const rows = await db
-        .select({ externalEventId: calendarPostLinks.externalEventId })
-        .from(calendarPostLinks)
+        .select({ externalEventId: calendarItemLinks.externalEventId })
+        .from(calendarItemLinks)
         .where(
           and(
-            eq(calendarPostLinks.channelId, channelId),
-            inArray(calendarPostLinks.externalEventId, chunk),
+            eq(calendarItemLinks.channelId, channelId),
+            inArray(calendarItemLinks.externalEventId, chunk),
           ),
         );
       for (const row of rows) found.add(row.externalEventId);
@@ -929,6 +1016,67 @@ export class CalendarPullSyncService {
       .set(set)
       .where(eq(calendarSyncState.id, stateId));
   }
+}
+
+// ============================================================================
+// Item helpers (pure) — the post/message dispatch table in one place.
+// ============================================================================
+
+/** Only a still-scheduled item may carry a live calendar event. */
+function isSchedulable(item: LinkedItem): boolean {
+  return item.kind === 'post'
+    ? item.post.status === 'scheduled' && !!item.post.scheduledAt
+    : item.message.status === 'pending' && !!item.message.scheduledAt;
+}
+
+/**
+ * The event body we WOULD push for this item (optionally at an overridden start,
+ * used to pre-compute the echo-suppression hash before an external move lands).
+ */
+function eventInputFor(item: LinkedItem, startOverride?: Date): EventInput {
+  if (item.kind === 'post') {
+    return postToEventInput({
+      id: item.post.id,
+      workspaceId: item.post.workspaceId,
+      content: item.post.content,
+      scheduledAt: startOverride ?? item.post.scheduledAt,
+    });
+  }
+  return messageToEventInput({
+    id: item.message.id,
+    workspaceId: item.message.workspaceId,
+    text: item.message.text,
+    targetLabel: item.message.targetLabel,
+    scheduledAt: startOverride ?? item.message.scheduledAt,
+  });
+}
+
+/**
+ * The two fields the pure conflict engine needs from the app-side item
+ * (`ConflictPost` is the historical name; it covers messages just the same).
+ */
+function toConflictItem(item: LinkedItem): {
+  updatedAt: Date | null;
+  scheduledAt: Date | null;
+} {
+  return item.kind === 'post'
+    ? { updatedAt: item.post.updatedAt, scheduledAt: item.post.scheduledAt }
+    : {
+        updatedAt: item.message.updatedAt,
+        scheduledAt: item.message.scheduledAt,
+      };
+}
+
+function describeItem(item: LinkedItem): string {
+  return item.kind === 'post'
+    ? `post ${item.post.id}`
+    : `scheduled message ${item.message.id}`;
+}
+
+function describeLink(link: CalendarItemLink): string {
+  return link.postId
+    ? `post ${link.postId}`
+    : `scheduled message ${link.messageId}`;
 }
 
 /** Delta event → the pure conflict engine's input shape. */
