@@ -403,17 +403,11 @@ export class OneDriveService {
       `Token length: ${cleanToken.length}, starts with: ${cleanToken.substring(0, 20)}...`,
     );
 
-    // Detect token type: MSA compact tokens start with "EwA" or "EwB" and don't have dots
-    // JWT tokens (for work/school accounts) have dots separating header.payload.signature
-    const isMsaToken = cleanToken.startsWith('Ew') && !cleanToken.includes('.');
-
-    if (isMsaToken) {
-      // Use Live Connect API for personal Microsoft accounts
-      this.logger.debug('Detected MSA token, using Live Connect API');
-      return this.getUserInfoFromLiveApi(cleanToken);
-    }
-
-    // Use Graph API for work/school accounts (JWT tokens)
+    // Always Microsoft Graph. Azure AD v2.0 issues *compact* access tokens for
+    // personal Microsoft accounts (they start with "Ew" and are not JWTs) — those
+    // are still valid Graph bearer tokens. The old Live Connect fallback that used
+    // to branch on that shape hit apis.live.net, which is end-of-life, so personal
+    // accounts failed here with "Failed to get OneDrive user info".
     const response = await fetch(`${this.apiBaseUrl}/me/drive`, {
       headers: {
         Authorization: `Bearer ${cleanToken}`,
@@ -448,67 +442,4 @@ export class OneDriveService {
     return response.json();
   }
 
-  /**
-   * Get user info using Live Connect API for personal Microsoft accounts
-   * Works with wl.* scopes (wl.signin, wl.skydrive)
-   */
-  private async getUserInfoFromLiveApi(accessToken: string): Promise<{
-    id: string;
-    driveType: string;
-    owner: {
-      user?: {
-        displayName: string;
-        email?: string;
-      };
-    };
-    quota?: {
-      total: number;
-      used: number;
-      remaining: number;
-    };
-  }> {
-    // Get user info from Live Connect API
-    const userResponse = await fetch(
-      `https://apis.live.net/v5.0/me?access_token=${encodeURIComponent(accessToken)}`,
-    );
-
-    if (!userResponse.ok) {
-      const error = await userResponse.text();
-      this.logger.error(`Failed to get Live Connect user info: ${error}`);
-      throw new BadRequestException('Failed to get OneDrive user info');
-    }
-
-    const userData = await userResponse.json();
-    this.logger.debug(`Live Connect user data: ${JSON.stringify(userData)}`);
-
-    // Get OneDrive quota
-    let quota: { total: number; used: number; remaining: number } | undefined;
-    try {
-      const quotaResponse = await fetch(
-        `https://apis.live.net/v5.0/me/skydrive/quota?access_token=${encodeURIComponent(accessToken)}`,
-      );
-      if (quotaResponse.ok) {
-        const quotaData = await quotaResponse.json();
-        quota = {
-          total: quotaData.quota || 0,
-          used: (quotaData.quota || 0) - (quotaData.available || 0),
-          remaining: quotaData.available || 0,
-        };
-      }
-    } catch (e) {
-      this.logger.warn('Could not fetch OneDrive quota');
-    }
-
-    return {
-      id: userData.id,
-      driveType: 'personal',
-      owner: {
-        user: {
-          displayName: userData.name || 'OneDrive User',
-          email: userData.emails?.account || userData.emails?.preferred,
-        },
-      },
-      quota,
-    };
-  }
 }
