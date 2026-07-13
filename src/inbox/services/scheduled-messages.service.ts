@@ -25,6 +25,7 @@ import { workspace } from '../../drizzle/schema/workspace.schema';
 import { workspaceInvitation } from '../../drizzle/schema/workspace-invitation.schema';
 import { QUEUES } from '../../queue/queue.module';
 import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
+import { CalendarPushSyncService } from '../../calendar-sync/services/calendar-push-sync.service';
 import type { CreateScheduledMessageDto } from '../dto/create-scheduled-message.dto';
 import type { UpdateScheduledMessageDto } from '../dto/update-scheduled-message.dto';
 import type { ListScheduledMessagesDto } from '../dto/list-scheduled-messages.dto';
@@ -69,7 +70,27 @@ export class ScheduledMessagesService {
   constructor(
     private readonly emitter: AnalyticsEventEmitter,
     @InjectQueue(QUEUES.SCHEDULED_INBOX) private readonly queue: Queue,
+    // InboxModule ↔ CalendarSyncModule is a circular module pair (scheduled
+    // messages push to calendars, calendars write back to scheduled messages)
+    // → forwardRef on both module imports. Mirrors PostService ↔ CalendarSync.
+    private readonly calendarPushSync: CalendarPushSyncService,
   ) {}
+
+  /**
+   * Fire-and-forget app→calendar push for a scheduled message. Never blocks or
+   * fails the originating inbox operation — calendar sync is best-effort and
+   * self-heals via backfill/reconcile. Errors are logged inside the push service.
+   * Mirrors `PostService.syncCalendarForPost`.
+   */
+  private syncCalendarForMessage(messageId: string): void {
+    void this.calendarPushSync.syncMessage(messageId).catch((error) => {
+      this.logger.warn(
+        `Calendar sync failed for scheduled message ${messageId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
+  }
 
   // ──────────────────────────────────────────────────────────────────────────
   // Workspace access (mirrors InboxService.assertWorkspaceAccess)
@@ -330,6 +351,9 @@ export class ScheduledMessagesService {
       this.toEventBase(refreshed),
     );
 
+    // Mirror the new scheduled message onto the workspace's connected calendars.
+    this.syncCalendarForMessage(row.id);
+
     return this.toDto(refreshed, target.platform);
   }
 
@@ -340,7 +364,33 @@ export class ScheduledMessagesService {
     dto: UpdateScheduledMessageDto,
   ): Promise<ScheduledMessageDto> {
     await this.assertWorkspaceAccess(workspaceId, userId);
+    return this.applyUpdate(workspaceId, id, dto);
+  }
 
+  /**
+   * SYSTEM-INTERNAL update — same behaviour as `update()` (validation, BullMQ job
+   * re-arm, realtime event, calendar push) but WITHOUT the per-user workspace
+   * access check, because the caller is not a user.
+   *
+   * Used by the calendar write-back path (`CalendarPullSyncService`): when the
+   * user drags one of our events in Google/Outlook, the reschedule arrives with
+   * no authenticated user, and `createdByUserId` is nullable so it cannot be
+   * relied on as a stand-in. The provider event is itself the authorization —
+   * it only exists because this workspace connected that calendar.
+   */
+  async updateFromCalendar(
+    workspaceId: string,
+    id: string,
+    dto: UpdateScheduledMessageDto,
+  ): Promise<ScheduledMessageDto> {
+    return this.applyUpdate(workspaceId, id, dto);
+  }
+
+  private async applyUpdate(
+    workspaceId: string,
+    id: string,
+    dto: UpdateScheduledMessageDto,
+  ): Promise<ScheduledMessageDto> {
     const existing = await db.query.scheduledInboxMessages.findFirst({
       where: and(
         eq(scheduledInboxMessages.id, id),
@@ -413,6 +463,11 @@ export class ScheduledMessagesService {
       this.toEventBase(row),
     );
 
+    // Reflect the new time/text on connected calendars. When the update ORIGINATED
+    // from a calendar move the pull service has already stamped the link with the
+    // hash of exactly this body, so this push is a no-op (no ping-pong).
+    this.syncCalendarForMessage(id);
+
     return this.toDto(row, channel?.platform as SupportedPlatform | undefined);
   }
 
@@ -422,6 +477,31 @@ export class ScheduledMessagesService {
     id: string,
   ): Promise<{ success: true }> {
     await this.assertWorkspaceAccess(workspaceId, userId);
+    return this.applyCancel(workspaceId, id);
+  }
+
+  /**
+   * SYSTEM-INTERNAL cancel — identical to `cancel()` (BullMQ delayed-job removal,
+   * status → 'cancelled', realtime event) minus the per-user access check. See
+   * `updateFromCalendar()` for why the calendar write-back path needs this.
+   *
+   * NOTE: no calendar push hook here — the caller (the pull service) is reacting
+   * to the event ALREADY being deleted in the provider, and it drops the link row
+   * itself. Pushing would only chase a 404.
+   */
+  async cancelFromCalendar(
+    workspaceId: string,
+    id: string,
+  ): Promise<{ success: true }> {
+    return this.applyCancel(workspaceId, id, { pushToCalendar: false });
+  }
+
+  private async applyCancel(
+    workspaceId: string,
+    id: string,
+    options: { pushToCalendar?: boolean } = {},
+  ): Promise<{ success: true }> {
+    const { pushToCalendar = true } = options;
 
     const existing = await db.query.scheduledInboxMessages.findFirst({
       where: and(
@@ -455,6 +535,12 @@ export class ScheduledMessagesService {
       channelId: existing.channelId,
       threadKey: existing.threadKey,
     });
+
+    // A cancelled message must NOT keep a live calendar event — syncMessage sees
+    // a non-pending row and removes the event + link on every calendar.
+    if (pushToCalendar) {
+      this.syncCalendarForMessage(id);
+    }
 
     return { success: true };
   }
@@ -594,6 +680,8 @@ export class ScheduledMessagesService {
       ...this.toEventBase(row),
       inboxItemId,
     });
+    // Sent → no longer a *scheduled* item; its calendar event is removed.
+    this.syncCalendarForMessage(id);
   }
 
   async markFailed(id: string, error: string): Promise<void> {
@@ -612,6 +700,8 @@ export class ScheduledMessagesService {
       ...this.toEventBase(row),
       errorMessage: row.errorMessage ?? error,
     });
+    // Terminally failed → the calendar event would be a lie; remove it.
+    this.syncCalendarForMessage(id);
   }
 
   /** Between BullMQ retries — keep the row claimable by the next attempt. */

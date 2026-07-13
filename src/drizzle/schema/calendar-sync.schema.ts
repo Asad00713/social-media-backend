@@ -8,28 +8,40 @@ import {
   jsonb,
   integer,
   unique,
+  uniqueIndex,
   index,
+  check,
 } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import { workspace } from './workspace.schema';
 import { socialMediaChannels } from './channels.schema';
 import { posts } from './posts.schema';
+import { scheduledInboxMessages } from './scheduled-inbox-messages.schema';
 
 // =============================================================================
 // Calendar Two-Way Sync
 // -----------------------------------------------------------------------------
 // NOTE on id types: `social_media_channels.id` is a bigserial (numeric) pk, so
 // every `channel_id` FK below is `integer` (mode: 'number'), NOT uuid. In
-// contrast `workspace.id` and `posts.id` are uuid pks, so those FKs stay uuid.
+// contrast `workspace.id`, `posts.id` and `scheduled_inbox_messages.id` are uuid
+// pks, so those FKs stay uuid.
 // =============================================================================
 
 // -----------------------------------------------------------------------------
-// 1. calendar_post_links — links a Schedura post to the external event we wrote
-//    on a connected calendar (one row per (channel, post)). Powers app→calendar
-//    push + two-way write-back (echo suppression via etag/lastPushedHash).
+// 1. calendar_item_links — links ONE Schedura calendar item to the external event
+//    we wrote on a connected calendar. The item is EITHER a scheduled post
+//    (`post_id`) OR a scheduled inbox message (`message_id`) — an exclusive arc,
+//    enforced by `cil_exactly_one_owner` (num_nonnulls(post_id, message_id) = 1).
+//    Powers app→calendar push + two-way write-back (echo suppression via
+//    etag/lastPushedHash).
+//
+//    HISTORY: this table was `calendar_post_links` (post_id NOT NULL). It is
+//    RENAMED in place (never dropped) — see
+//    docs/superpowers/plans/calendar-messages-migration.sql — because it holds
+//    live rows for events already sitting in real users' calendars.
 // -----------------------------------------------------------------------------
-export const calendarPostLinks = pgTable(
-  'calendar_post_links',
+export const calendarItemLinks = pgTable(
+  'calendar_item_links',
   {
     id: uuid('id').primaryKey().defaultRandom(),
     workspaceId: uuid('workspace_id')
@@ -39,9 +51,11 @@ export const calendarPostLinks = pgTable(
       .notNull()
       .references(() => socialMediaChannels.id, { onDelete: 'cascade' }),
     provider: varchar('provider', { length: 20 }).notNull(), // 'google' | 'outlook'
-    postId: uuid('post_id')
-      .notNull()
-      .references(() => posts.id, { onDelete: 'cascade' }),
+    // Exactly one of postId / messageId is set (see the CHECK below).
+    postId: uuid('post_id').references(() => posts.id, { onDelete: 'cascade' }),
+    messageId: uuid('message_id').references(() => scheduledInboxMessages.id, {
+      onDelete: 'cascade',
+    }),
     externalEventId: varchar('external_event_id', { length: 512 }).notNull(),
     externalCalendarId: varchar('external_calendar_id', { length: 512 }),
     etag: varchar('etag', { length: 512 }), // provider etag / changeKey
@@ -55,10 +69,22 @@ export const calendarPostLinks = pgTable(
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (t) => ({
-    uqChannelPost: unique('cpl_channel_post_uq').on(t.channelId, t.postId),
-    ixChannelEvent: index('cpl_channel_event_ix').on(
+    // PARTIAL uniques: a plain unique on (channel_id, post_id) would let many
+    // message rows share the (channel_id, NULL) key in Postgres anyway, but the
+    // partial form documents the intent and keeps each arc's index tight.
+    uqChannelPost: uniqueIndex('cil_channel_post_uq')
+      .on(t.channelId, t.postId)
+      .where(sql`${t.postId} IS NOT NULL`),
+    uqChannelMessage: uniqueIndex('cil_channel_message_uq')
+      .on(t.channelId, t.messageId)
+      .where(sql`${t.messageId} IS NOT NULL`),
+    ixChannelEvent: index('cil_channel_event_ix').on(
       t.channelId,
       t.externalEventId,
+    ),
+    ckExactlyOneOwner: check(
+      'cil_exactly_one_owner',
+      sql`num_nonnulls(${t.postId}, ${t.messageId}) = 1`,
     ),
   }),
 );
@@ -139,20 +165,24 @@ export const calendarSyncState = pgTable(
 // =============================================================================
 // Relations
 // =============================================================================
-export const calendarPostLinksRelations = relations(
-  calendarPostLinks,
+export const calendarItemLinksRelations = relations(
+  calendarItemLinks,
   ({ one }) => ({
     workspace: one(workspace, {
-      fields: [calendarPostLinks.workspaceId],
+      fields: [calendarItemLinks.workspaceId],
       references: [workspace.id],
     }),
     channel: one(socialMediaChannels, {
-      fields: [calendarPostLinks.channelId],
+      fields: [calendarItemLinks.channelId],
       references: [socialMediaChannels.id],
     }),
     post: one(posts, {
-      fields: [calendarPostLinks.postId],
+      fields: [calendarItemLinks.postId],
       references: [posts.id],
+    }),
+    message: one(scheduledInboxMessages, {
+      fields: [calendarItemLinks.messageId],
+      references: [scheduledInboxMessages.id],
     }),
   }),
 );
@@ -184,8 +214,8 @@ export const calendarSyncStateRelations = relations(
 // =============================================================================
 // Inferred types
 // =============================================================================
-export type CalendarPostLink = typeof calendarPostLinks.$inferSelect;
-export type NewCalendarPostLink = typeof calendarPostLinks.$inferInsert;
+export type CalendarItemLink = typeof calendarItemLinks.$inferSelect;
+export type NewCalendarItemLink = typeof calendarItemLinks.$inferInsert;
 export type ExternalCalendarEvent = typeof externalCalendarEvents.$inferSelect;
 export type NewExternalCalendarEvent =
   typeof externalCalendarEvents.$inferInsert;

@@ -48,6 +48,7 @@ import { ChannelService } from '../../channels/services/channel.service';
 import { GoogleCalendarService } from '../../channels/services/google-calendar.service';
 import { OutlookCalendarService } from '../../channels/services/outlook-calendar.service';
 import { PostService } from '../../posts/services/post.service';
+import { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import {
   calendarSyncState,
@@ -140,8 +141,15 @@ describe('CalendarPullSyncService.reconcile', () => {
       channelService,
       googleCalendarService,
       {} as OutlookCalendarService,
-      { syncPost: jest.fn() } as unknown as CalendarPushSyncService,
+      {
+        syncPost: jest.fn(),
+        syncMessage: jest.fn(),
+      } as unknown as CalendarPushSyncService,
       { updatePost: jest.fn() } as unknown as PostService,
+      {
+        updateFromCalendar: jest.fn(),
+        cancelFromCalendar: jest.fn(),
+      } as unknown as ScheduledMessagesService,
     );
   });
 

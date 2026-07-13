@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ChannelsModule } from '../channels/channels.module';
 import { PostsModule } from '../posts/posts.module';
+import { InboxModule } from '../inbox/inbox.module';
 import {
   CALENDAR_RECONCILE_QUEUE,
   CALENDAR_RENEWAL_QUEUE,
@@ -39,10 +40,17 @@ import { CalendarRenewalProcessor } from './processors/calendar-renewal.processo
 // polls every 15 min as the safety net. ChannelsController subscribes on connect
 // and tears down on disconnect, so ChannelsModule ↔ CalendarSyncModule is now
 // circular too → forwardRef on both sides.
+// Task F extends the same two-way machinery to SCHEDULED INBOX MESSAGES (comment
+// replies + DMs): the push service mirrors pending messages onto the calendars,
+// and the pull service applies external moves/deletes back via
+// ScheduledMessagesService's EXISTING update/cancel paths (which re-arm/remove
+// the BullMQ delayed send job). InboxModule ↔ CalendarSyncModule is therefore
+// circular for exactly the same reason PostsModule is → forwardRef on both sides.
 @Module({
   imports: [
     forwardRef(() => ChannelsModule),
     forwardRef(() => PostsModule),
+    forwardRef(() => InboxModule),
     BullModule.registerQueue(
       { name: CALENDAR_RECONCILE_QUEUE },
       { name: CALENDAR_RENEWAL_QUEUE },

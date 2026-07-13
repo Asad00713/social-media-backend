@@ -29,12 +29,14 @@ export interface NormalizedExternalEvent {
   externalUpdatedAt: Date | null;
   /**
    * True when the event carries OUR ownership tag (i.e. Schedura wrote it for a
-   * scheduled post). Such events are NOT imported as external events — they are
-   * the two-way write-back surface (Task D).
+   * scheduled post OR a scheduled inbox message). Such events are NOT imported as
+   * external events — they are the two-way write-back surface (Task D).
    */
   isOurs: boolean;
-  /** The tagged post id, when `isOurs`. */
+  /** The tagged post id, when the event is a POST event we wrote. */
   postId?: string;
+  /** The tagged scheduled-message id, when the event is a MESSAGE event we wrote. */
+  messageId?: string;
   /** Provider concurrency token (Google `etag`, Graph `@odata.etag`). */
   etag?: string;
   /** Raw provider payload (persisted to `external_calendar_events.raw`). */

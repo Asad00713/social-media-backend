@@ -1,5 +1,8 @@
 import { Logger } from '@nestjs/common';
-import { GRAPH_POST_ID_PROP_ID } from '../calendar-sync.constants';
+import {
+  GRAPH_MESSAGE_ID_PROP_ID,
+  GRAPH_POST_ID_PROP_ID,
+} from '../calendar-sync.constants';
 import {
   CalendarDeltaOptions,
   CalendarDeltaResult,
@@ -55,10 +58,10 @@ interface GraphDeltaResponse {
  * endpoints (a `$expand=singleValueExtendedProperties(...)` makes the request
  * 400), so the delta payload never carries our named MAPI tag and `isOurs` is
  * effectively always false here. Ownership for Outlook is therefore decided by
- * the AUTHORITATIVE `calendar_post_links` lookup in `CalendarPullSyncService`
+ * the AUTHORITATIVE `calendar_item_links` lookup in `CalendarPullSyncService`
  * (`loadLinkedEventIds` / `loadLink`), which treats any event with a link row as
- * ours. `readPostIdTag()` below is kept as a belt-and-braces reader for the rare
- * payloads (non-delta refetches) that do carry the property.
+ * ours. `readTag()` below is kept as a belt-and-braces reader for the rare
+ * payloads (non-delta refetches) that do carry the properties.
  */
 export async function fetchOutlookCalendarDelta(
   options: CalendarDeltaOptions,
@@ -160,7 +163,7 @@ export async function fetchOutlookCalendarDelta(
  * NO `$expand`: Microsoft Graph does not support `$expand` on the delta
  * endpoints — `/me/calendarView/delta?$expand=singleValueExtendedProperties(...)`
  * is rejected with a 400, which killed the entire Outlook pull. Ownership is
- * resolved from `calendar_post_links` in the pull service instead (see the
+ * resolved from `calendar_item_links` in the pull service instead (see the
  * module doc above).
  */
 function buildInitialUrl(now: Date): string {
@@ -194,7 +197,8 @@ function normalizeGraphEvent(
   item: GraphDeltaEvent,
   calendarId: string,
 ): NormalizedExternalEvent {
-  const postId = readPostIdTag(item);
+  const postId = readTag(item, GRAPH_POST_ID_PROP_ID);
+  const messageId = readTag(item, GRAPH_MESSAGE_ID_PROP_ID);
 
   return {
     externalEventId: item.id,
@@ -207,34 +211,35 @@ function normalizeGraphEvent(
     externalUpdatedAt: item.lastModifiedDateTime
       ? toDateOrNull(item.lastModifiedDateTime)
       : null,
-    isOurs: Boolean(postId),
+    isOurs: Boolean(postId || messageId),
     postId: postId || undefined,
+    messageId: messageId || undefined,
     etag: item['@odata.etag'],
     raw: item,
   };
 }
 
 /**
- * Read our ownership tag out of the extended properties WHEN Graph happens to
- * include them. The delta stream never does (no `$expand` support), so this
- * returns undefined there and `calendar_post_links` decides ownership — but a
- * non-delta payload can carry them, and reading it is free. Graph can echo the
- * property id with different casing/whitespace than we sent, so the match is
+ * Read one of our ownership tags out of the extended properties WHEN Graph
+ * happens to include them. The delta stream never does (no `$expand` support),
+ * so this returns undefined there and `calendar_item_links` decides ownership —
+ * but a non-delta payload can carry them, and reading it is free. Graph can echo
+ * the property id with different casing/whitespace than we sent, so the match is
  * case-insensitive on the `Name <prop>` suffix as well as exact.
  */
-function readPostIdTag(item: GraphDeltaEvent): string | undefined {
+function readTag(item: GraphDeltaEvent, propId: string): string | undefined {
   const props = item.singleValueExtendedProperties;
   if (!props?.length) return undefined;
 
-  const wantedSuffix = GRAPH_POST_ID_PROP_ID.slice(
-    GRAPH_POST_ID_PROP_ID.toLowerCase().indexOf('name '),
-  ).toLowerCase();
+  const wantedSuffix = propId
+    .slice(propId.toLowerCase().indexOf('name '))
+    .toLowerCase();
 
   const hit = props.find((prop) => {
     if (!prop?.id) return false;
     const id = prop.id.toLowerCase();
     return (
-      prop.id === GRAPH_POST_ID_PROP_ID ||
+      prop.id === propId ||
       (wantedSuffix.length > 0 && id.endsWith(wantedSuffix))
     );
   });

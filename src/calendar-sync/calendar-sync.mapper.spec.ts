@@ -1,9 +1,12 @@
 import {
   postToEventInput,
+  messageToEventInput,
   contentHash,
+  MessageForMapping,
   PostForMapping,
 } from './calendar-sync.mapper';
 import {
+  SCHEDURA_MESSAGE_ID_PROP,
   SCHEDURA_POST_ID_PROP,
   SCHEDURA_WORKSPACE_ID_PROP,
 } from './calendar-sync.constants';
@@ -12,6 +15,14 @@ const basePost: PostForMapping = {
   id: 'post-uuid-1',
   workspaceId: 'ws-uuid-1',
   content: 'Launch day! 🎉 Check out our new feature.',
+  scheduledAt: new Date('2026-08-01T10:00:00.000Z'),
+};
+
+const baseMessage: MessageForMapping = {
+  id: 'msg-uuid-1',
+  workspaceId: 'ws-uuid-1',
+  text: 'Thanks for the kind words!',
+  targetLabel: '@alex',
   scheduledAt: new Date('2026-08-01T10:00:00.000Z'),
 };
 
@@ -49,6 +60,70 @@ describe('calendar-sync.mapper', () => {
     it('throws when the post has no scheduledAt', () => {
       expect(() =>
         postToEventInput({ ...basePost, scheduledAt: null }),
+      ).toThrow(/scheduledAt/);
+    });
+  });
+
+  describe('messageToEventInput', () => {
+    it('tags the event with the MESSAGE id prop, never the post id prop', () => {
+      const input = messageToEventInput(baseMessage);
+      expect(input.privateProps[SCHEDURA_MESSAGE_ID_PROP]).toBe('msg-uuid-1');
+      expect(input.privateProps[SCHEDURA_WORKSPACE_ID_PROP]).toBe('ws-uuid-1');
+      // Backward compatibility: post events keep `schedura_post_id` to
+      // themselves — a message event must NEVER carry it.
+      expect(input.privateProps[SCHEDURA_POST_ID_PROP]).toBeUndefined();
+    });
+
+    it('maps scheduledAt to start and defaults end to start + 30min', () => {
+      const input = messageToEventInput(baseMessage);
+      expect(input.startTime.toISOString()).toBe('2026-08-01T10:00:00.000Z');
+      expect(input.endTime.toISOString()).toBe('2026-08-01T10:30:00.000Z');
+    });
+
+    it('reads like a calendar entry: "Reply to <label>: <excerpt>"', () => {
+      const input = messageToEventInput(baseMessage);
+      expect(input.summary).toBe('Reply to @alex: Thanks for the kind words!');
+    });
+
+    it('falls back to the label alone when there is no text', () => {
+      const input = messageToEventInput({ ...baseMessage, text: null });
+      expect(input.summary).toBe('Reply to @alex');
+    });
+
+    it('falls back to the excerpt alone when there is no label', () => {
+      const input = messageToEventInput({ ...baseMessage, targetLabel: null });
+      expect(input.summary).toBe('Reply: Thanks for the kind words!');
+    });
+
+    it('never produces an empty title when both label and text are missing', () => {
+      const input = messageToEventInput({
+        ...baseMessage,
+        text: null,
+        targetLabel: null,
+      });
+      expect(input.summary).toBe('Scheduled reply');
+    });
+
+    it('strips the composer HTML out of the excerpt', () => {
+      const input = messageToEventInput({
+        ...baseMessage,
+        text: '<p>Thanks &amp; welcome!</p>',
+      });
+      expect(input.summary).toBe('Reply to @alex: Thanks & welcome!');
+    });
+
+    it('truncates long text to <= 80 chars with an ellipsis', () => {
+      const input = messageToEventInput({
+        ...baseMessage,
+        text: 'x'.repeat(200),
+      });
+      expect(input.summary.length).toBeLessThanOrEqual(80);
+      expect(input.summary.endsWith('…')).toBe(true);
+    });
+
+    it('throws when the message has no scheduledAt', () => {
+      expect(() =>
+        messageToEventInput({ ...baseMessage, scheduledAt: null }),
       ).toThrow(/scheduledAt/);
     });
   });

@@ -1,8 +1,10 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { CalendarPreconditionFailedError } from './calendar-precondition.error';
 import {
+  GRAPH_MESSAGE_ID_PROP_ID,
   GRAPH_POST_ID_PROP_ID,
   GRAPH_WORKSPACE_ID_PROP_ID,
+  SCHEDURA_MESSAGE_ID_PROP,
   SCHEDURA_POST_ID_PROP,
   SCHEDURA_WORKSPACE_ID_PROP,
 } from '../../calendar-sync/calendar-sync.constants';
@@ -644,6 +646,10 @@ export class OutlookCalendarService {
     const postId = privateProps[SCHEDURA_POST_ID_PROP];
     if (postId) {
       entries.push({ id: GRAPH_POST_ID_PROP_ID, value: postId });
+    }
+    const messageId = privateProps[SCHEDURA_MESSAGE_ID_PROP];
+    if (messageId) {
+      entries.push({ id: GRAPH_MESSAGE_ID_PROP_ID, value: messageId });
     }
     const workspaceId = privateProps[SCHEDURA_WORKSPACE_ID_PROP];
     if (workspaceId) {

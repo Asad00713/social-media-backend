@@ -4,13 +4,20 @@ import { contentHash } from './calendar-sync.mapper';
 // Calendar conflict engine (PURE)
 // -----------------------------------------------------------------------------
 // Decides what to do with an inbound change to an event WE wrote (an event
-// carrying our `schedura_post_id` tag and backed by a `calendar_post_links` row).
+// carrying our `schedura_post_id` / `schedura_message_id` tag and backed by a
+// `calendar_item_links` row).
+//
+// The item is a scheduled POST or a scheduled INBOX MESSAGE; the truth table is
+// identical for both, so the engine only ever sees the two fields they share
+// (`updatedAt` + `scheduledAt`). The CALLER applies the decision and knows which
+// kind it holds (post -> draft, message -> cancelled).
 //
 // Last-write-wins by updated timestamp, guarded by etag + content-hash echo
 // suppression so our OWN writes coming back down the delta stream can never
 // bounce back up again (ping-pong):
 //
-//   1. the event was deleted externally        -> apply_external (post -> draft)
+//   1. the event was deleted externally        -> apply_external (post -> draft /
+//                                                 message -> cancelled)
 //   2. the event's etag is the one we stored   -> skip_echo   (this IS our write)
 //   3. the event's content is what we pushed   -> skip_echo   (etag drifted, same content)
 //   4. the external edit is newer than the post-> apply_external (reschedule post)
@@ -25,7 +32,7 @@ export type ConflictDecision =
   | 'repush_app'
   | 'noop';
 
-/** The `calendar_post_links` fields the decision depends on. */
+/** The `calendar_item_links` fields the decision depends on. */
 export interface ConflictLink {
   /** Provider etag/changeKey of the version WE last wrote. */
   etag?: string | null;
@@ -48,7 +55,11 @@ export interface ConflictEvent {
   externalUpdatedAt?: Date | null;
 }
 
-/** The post fields the decision depends on. */
+/**
+ * The app-side item fields the decision depends on. Named `ConflictPost` for
+ * historical reasons — a scheduled inbox message satisfies it structurally and
+ * is resolved through exactly the same truth table.
+ */
 export interface ConflictPost {
   updatedAt?: Date | null;
   scheduledAt?: Date | null;

@@ -3,7 +3,7 @@ import { and, asc, eq, gte, inArray, isNull, lte, or } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import {
-  calendarPostLinks,
+  calendarItemLinks,
   externalCalendarEvents,
 } from '../../drizzle/schema/calendar-sync.schema';
 
@@ -43,7 +43,7 @@ export class ExternalEventsService {
    * Overlap (not containment) so a multi-day/all-day event that starts before
    * the window still shows up inside it.
    *
-   * Rows that a `calendar_post_links` row claims are excluded at READ time. A
+   * Rows that a `calendar_item_links` row claims are excluded at READ time. A
    * post's own calendar event is already rendered as a post card, and there is a
    * narrow connect-time race in which the delta stream can observe an event we
    * just wrote BEFORE its link row commits — importing it as "external". This
@@ -84,11 +84,11 @@ export class ExternalEventsService {
       // an event WE wrote for a post is never an "external" event, even if a
       // raced delta managed to cache it as one.
       .leftJoin(
-        calendarPostLinks,
+        calendarItemLinks,
         and(
-          eq(calendarPostLinks.channelId, externalCalendarEvents.channelId),
+          eq(calendarItemLinks.channelId, externalCalendarEvents.channelId),
           eq(
-            calendarPostLinks.externalEventId,
+            calendarItemLinks.externalEventId,
             externalCalendarEvents.externalEventId,
           ),
         ),
@@ -99,7 +99,7 @@ export class ExternalEventsService {
           inArray(socialMediaChannels.platform, [...CALENDAR_PLATFORMS]),
           eq(socialMediaChannels.isActive, true),
           // The anti-join half: keep only the rows with NO matching link row.
-          isNull(calendarPostLinks.id),
+          isNull(calendarItemLinks.id),
           // Time-range overlap. Rows with a NULL start are excluded (a `lte`
           // against NULL is never true), which is what we want — they cannot be
           // placed on the grid.
