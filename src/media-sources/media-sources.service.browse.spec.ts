@@ -12,7 +12,7 @@ const channelService = {
   getChannelById: jest.fn(),
   getAccessToken: jest.fn().mockResolvedValue('TKN'),
 };
-const dropbox = { listMedia: jest.fn(), listImages: jest.fn(), listVideos: jest.fn(), searchFiles: jest.fn(), listFolders: jest.fn(), downloadFile: jest.fn() };
+const dropbox = { listMedia: jest.fn(), listImages: jest.fn(), listVideos: jest.fn(), searchFiles: jest.fn(), listFolders: jest.fn(), downloadFile: jest.fn(), getThumbnailBatch: jest.fn() };
 const drive = { listMedia: jest.fn(), listImages: jest.fn(), listVideos: jest.fn(), listFolders: jest.fn(), downloadFile: jest.fn() };
 const onedrive = { listMedia: jest.fn(), listImages: jest.fn(), listVideos: jest.fn(), searchFiles: jest.fn(), listFolders: jest.fn(), downloadFile: jest.fn() };
 const photos = { listMediaItems: jest.fn(), listPhotos: jest.fn(), listVideos: jest.fn(), listAlbums: jest.fn(), downloadMediaItem: jest.fn() };
@@ -33,7 +33,10 @@ async function build() {
   return mod.get(MediaSourcesService);
 }
 
-beforeEach(() => jest.clearAllMocks());
+beforeEach(() => {
+  jest.clearAllMocks();
+  dropbox.getThumbnailBatch.mockResolvedValue(new Map());
+});
 
 it('browse(media) on dropbox resolves token by channelId and maps entries', async () => {
   channelService.getChannelById.mockResolvedValue({ platform: 'dropbox' });
@@ -156,4 +159,57 @@ it('onedrive search excludes folder matches from items', async () => {
   const res = await svc.browse('ws', 1, { kind: 'search', query: 'a' });
   expect(res.items).toHaveLength(1);
   expect(res.items[0]).toMatchObject({ id: 'x', name: 'a.jpg' });
+});
+
+// Dropbox is the only provider whose listings carry no thumbnail URL, so the
+// mapper leaves `thumbnailUrl` empty and the service must backfill it. Without
+// this, every Dropbox file rendered as a "no preview" placeholder.
+
+it('browse(media) on dropbox backfills image thumbnails as data URIs', async () => {
+  channelService.getChannelById.mockResolvedValue({ platform: 'dropbox' });
+  dropbox.listMedia.mockResolvedValue({
+    entries: [
+      { '.tag': 'file', id: 'i1', name: 'a.jpg', path_lower: '/a.jpg', path_display: '/a.jpg', size: 10, media_info: { metadata: { '.tag': 'photo' } } },
+      { '.tag': 'file', id: 'i2', name: 'b.mp4', path_lower: '/b.mp4', path_display: '/b.mp4', size: 20, media_info: { metadata: { '.tag': 'video' } } },
+    ],
+    cursor: 'C', has_more: false,
+  });
+  dropbox.getThumbnailBatch.mockResolvedValue(new Map([['/a.jpg', 'data:image/jpeg;base64,AAA']]));
+
+  const svc = await build();
+  const res = await svc.browse('ws', 5, { kind: 'media' });
+
+  // Only the image is worth asking Dropbox to thumbnail — it cannot thumbnail video.
+  expect(dropbox.getThumbnailBatch).toHaveBeenCalledWith('TKN', ['/a.jpg']);
+  expect(res.items[0]).toMatchObject({ id: '/a.jpg', thumbnailUrl: 'data:image/jpeg;base64,AAA' });
+  expect(res.items[1]).toMatchObject({ id: '/b.mp4', kind: 'video', thumbnailUrl: '' });
+});
+
+it('browse(media) on dropbox still lists files when thumbnails fail', async () => {
+  channelService.getChannelById.mockResolvedValue({ platform: 'dropbox' });
+  dropbox.listMedia.mockResolvedValue({
+    entries: [{ '.tag': 'file', id: 'i1', name: 'a.jpg', path_lower: '/a.jpg', path_display: '/a.jpg', size: 10, media_info: { metadata: { '.tag': 'photo' } } }],
+    cursor: 'C', has_more: false,
+  });
+  dropbox.getThumbnailBatch.mockRejectedValue(new Error('dropbox is down'));
+
+  const svc = await build();
+  const res = await svc.browse('ws', 5, { kind: 'media' });
+
+  // A missing preview is cosmetic; it must never take the listing down with it.
+  expect(res.items).toHaveLength(1);
+  expect(res.items[0]).toMatchObject({ id: '/a.jpg', thumbnailUrl: '' });
+});
+
+it('browse(videos) on dropbox asks for no thumbnails at all', async () => {
+  channelService.getChannelById.mockResolvedValue({ platform: 'dropbox' });
+  dropbox.listVideos.mockResolvedValue({
+    entries: [{ '.tag': 'file', id: 'i2', name: 'b.mp4', path_lower: '/b.mp4', path_display: '/b.mp4', size: 20, media_info: { metadata: { '.tag': 'video' } } }],
+    has_more: false,
+  });
+
+  const svc = await build();
+  await svc.browse('ws', 5, { kind: 'videos' });
+
+  expect(dropbox.getThumbnailBatch).not.toHaveBeenCalled();
 });

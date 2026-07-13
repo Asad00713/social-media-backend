@@ -1,4 +1,4 @@
-import { Injectable, BadRequestException } from '@nestjs/common';
+import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { ChannelService } from '../channels/services/channel.service';
 import { DropboxService } from '../channels/services/dropbox.service';
 import { GoogleDriveService } from '../channels/services/google-drive.service';
@@ -12,6 +12,7 @@ import { mapPhotosItem, mapPhotosAlbum } from './mappers/photos.mapper';
 import type {
   CloudBrowseResult,
   CloudImportResult,
+  CloudMediaItem,
   CloudStoragePlatform,
   BrowseKind,
 } from './media-sources.types';
@@ -31,6 +32,8 @@ interface ImportArgs {
 
 @Injectable()
 export class MediaSourcesService {
+  private readonly logger = new Logger(MediaSourcesService.name);
+
   private readonly CLOUD = new Set<CloudStoragePlatform>([
     'dropbox',
     'google_drive',
@@ -155,9 +158,12 @@ export class MediaSourcesService {
         cursor: a.cursor,
       });
       return {
-        items: res.matches
-          .filter((e) => !!e && e['.tag'] === 'file')
-          .map(mapDropboxItem),
+        items: await this.withDropboxThumbnails(
+          token,
+          res.matches
+            .filter((e) => !!e && e['.tag'] === 'file')
+            .map(mapDropboxItem),
+        ),
         folders: [],
         nextCursor: res.has_more ? res.cursor : undefined,
       };
@@ -171,10 +177,43 @@ export class MediaSourcesService {
           ? await this.dropbox.listVideos(token, options)
           : await this.dropbox.listMedia(token, options);
     return {
-      items: res.entries.map(mapDropboxItem),
+      items: await this.withDropboxThumbnails(
+        token,
+        res.entries.map(mapDropboxItem),
+      ),
       folders: [],
       nextCursor: res.has_more ? res.cursor : undefined,
     };
+  }
+
+  /**
+   * Fill in the `thumbnailUrl` the Dropbox mapper cannot supply.
+   *
+   * Every other provider hands us a thumbnail URL alongside the file metadata;
+   * Dropbox hands us nothing, so its items arrive here with an empty
+   * `thumbnailUrl` and the picker renders them as named placeholders. One
+   * batched call backfills the image previews as inline `data:` URIs.
+   *
+   * Dropbox cannot thumbnail videos, so those keep the placeholder by design.
+   */
+  private async withDropboxThumbnails(
+    token: string,
+    items: CloudMediaItem[],
+  ): Promise<CloudMediaItem[]> {
+    const paths = items.filter((i) => i.kind === 'image').map((i) => i.id);
+    if (paths.length === 0) return items;
+
+    try {
+      const thumbnails = await this.dropbox.getThumbnailBatch(token, paths);
+      return items.map((item) => {
+        const thumbnailUrl = thumbnails.get(item.id);
+        return thumbnailUrl ? { ...item, thumbnailUrl } : item;
+      });
+    } catch (error) {
+      // Previews are decoration. If Dropbox refuses them, still show the files.
+      this.logger.warn(`Dropbox thumbnail backfill failed: ${error}`);
+      return items;
+    }
   }
 
   private async browseDrive(

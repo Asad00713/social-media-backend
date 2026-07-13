@@ -47,6 +47,20 @@ export interface DropboxThumbnail {
   thumbnail: string; // base64 encoded
 }
 
+export type DropboxThumbnailSize =
+  | 'w32h32'
+  | 'w64h64'
+  | 'w128h128'
+  | 'w256h256'
+  | 'w480h320'
+  | 'w640h480'
+  | 'w960h640'
+  | 'w1024h768'
+  | 'w2048h1536';
+
+// Dropbox rejects a get_thumbnail_batch call carrying more than 25 entries.
+const THUMBNAIL_BATCH_LIMIT = 25;
+
 @Injectable()
 export class DropboxService {
   private readonly logger = new Logger(DropboxService.name);
@@ -443,6 +457,74 @@ export class DropboxService {
 
     const arrayBuffer = await response.arrayBuffer();
     return Buffer.from(arrayBuffer);
+  }
+
+  /**
+   * Fetch thumbnails for many files at once, keyed by `path_lower`.
+   *
+   * Dropbox is the only cloud provider we support whose file listings carry no
+   * thumbnail URL — thumbnails exist solely as bytes behind an authenticated
+   * call. Returning them base64-encoded lets a caller inline them as `data:`
+   * URIs, so the browser renders previews without ever holding a Dropbox token.
+   *
+   * Dropbox can only thumbnail image formats (jpg/jpeg/png/tiff/tif/gif/webp/
+   * bmp). Videos, unsupported formats, and per-entry failures are simply absent
+   * from the returned map rather than throwing — a missing preview is a cosmetic
+   * loss and must never take a file listing down with it.
+   */
+  async getThumbnailBatch(
+    accessToken: string,
+    paths: string[],
+    size: DropboxThumbnailSize = 'w256h256',
+  ): Promise<Map<string, string>> {
+    const thumbnails = new Map<string, string>();
+
+    for (let i = 0; i < paths.length; i += THUMBNAIL_BATCH_LIMIT) {
+      const chunk = paths.slice(i, i + THUMBNAIL_BATCH_LIMIT);
+
+      const response = await fetch(
+        `${this.contentUrl}/files/get_thumbnail_batch`,
+        {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            entries: chunk.map((path) => ({
+              path,
+              format: 'jpeg',
+              size,
+              mode: 'bestfit',
+            })),
+          }),
+        },
+      );
+
+      if (!response.ok) {
+        const error = await response.text();
+        this.logger.warn(
+          `Dropbox thumbnail batch failed (${response.status}): ${error}`,
+        );
+        continue;
+      }
+
+      const data = (await response.json()) as {
+        entries?: Array<{
+          '.tag': string;
+          metadata?: { path_lower?: string };
+          thumbnail?: string;
+        }>;
+      };
+
+      for (const entry of data.entries ?? []) {
+        const path = entry.metadata?.path_lower;
+        if (entry['.tag'] !== 'success' || !path || !entry.thumbnail) continue;
+        thumbnails.set(path, `data:image/jpeg;base64,${entry.thumbnail}`);
+      }
+    }
+
+    return thumbnails;
   }
 
   /**
