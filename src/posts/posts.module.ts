@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { PostsController } from './posts.controller';
 import { PostService } from './services/post.service';
@@ -7,6 +7,7 @@ import { DrizzleModule } from '../drizzle/drizzle.module';
 import { QueueModule, QUEUES } from '../queue/queue.module';
 import { AnalyticsModule } from '../channels/analytics/analytics.module';
 import { MediaModule } from '../media/media.module';
+import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
 
 // Publishers
 import { PublisherFactory } from './publishers/publisher.factory';
@@ -33,6 +34,9 @@ import { PostPublishProcessor } from './processors/post-publish.processor';
     BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS }),
     AnalyticsModule,
     MediaModule,
+    // Circular by design: posts push to calendars (CalendarPushSyncService) and
+    // calendars write back to posts (CalendarPullSyncService → PostService).
+    forwardRef(() => CalendarSyncModule),
   ],
   controllers: [PostsController],
   providers: [

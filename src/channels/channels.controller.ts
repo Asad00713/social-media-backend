@@ -15,8 +15,18 @@ import {
   BadRequestException,
   ForbiddenException,
   Logger,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import type { Response } from 'express';
+import { CalendarSubscriptionService } from '../calendar-sync/services/calendar-subscription.service';
+import { CalendarPushSyncService } from '../calendar-sync/services/calendar-push-sync.service';
+import {
+  CALENDAR_RECONCILE_JOB,
+  CALENDAR_RECONCILE_QUEUE,
+} from '../calendar-sync/calendar-sync.constants';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { ChannelService } from './services/channel.service';
@@ -36,6 +46,7 @@ import { DiscordService } from './services/discord.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
+import { OutlookCalendarService } from './services/outlook-calendar.service';
 import { OneDriveService } from './services/onedrive.service';
 import { DropboxService } from './services/dropbox.service';
 import { UnsplashService } from './services/unsplash.service';
@@ -111,6 +122,7 @@ export class ChannelsController {
     private readonly googleDriveService: GoogleDriveService,
     private readonly googlePhotosService: GooglePhotosService,
     private readonly googleCalendarService: GoogleCalendarService,
+    private readonly outlookCalendarService: OutlookCalendarService,
     private readonly oneDriveService: OneDriveService,
     private readonly dropboxService: DropboxService,
     private readonly unsplashService: UnsplashService,
@@ -122,6 +134,14 @@ export class ChannelsController {
     private readonly telegramService: TelegramService,
     private readonly whatsappService: WhatsAppService,
     private readonly whatsappOnboardingService: WhatsAppOnboardingService,
+    // Calendar two-way sync (Task E). Circular module pair
+    // (ChannelsModule ↔ CalendarSyncModule) → forwardRef on the provider tokens.
+    @Inject(forwardRef(() => CalendarSubscriptionService))
+    private readonly calendarSubscriptionService: CalendarSubscriptionService,
+    @Inject(forwardRef(() => CalendarPushSyncService))
+    private readonly calendarPushSyncService: CalendarPushSyncService,
+    @InjectQueue(CALENDAR_RECONCILE_QUEUE)
+    private readonly calendarReconcileQueue: Queue,
   ) {}
 
   // ==========================================================================
@@ -703,6 +723,113 @@ export class ChannelsController {
         }
       }
 
+      // Calendar (Google / Outlook): Auto-create a storage-type channel so the
+      // connect flow actually completes. Calendar channels are NOT publishable
+      // (all posting capabilities false) — they mirror the cloud-storage shape.
+      if (platform === 'google_calendar' || platform === 'outlook_calendar') {
+        console.log(
+          `[OAuth Callback] ${platform}: Auto-creating calendar channel...`,
+        );
+
+        // Fetch a primary-calendar identity for a friendly account name.
+        // Let any failure propagate to the outer callback error handling.
+        const primaryCalendar =
+          platform === 'google_calendar'
+            ? await this.googleCalendarService.getPrimaryCalendar(
+                tokens.accessToken,
+              )
+            : await this.outlookCalendarService.getPrimaryCalendar(
+                tokens.accessToken,
+              );
+
+        // Calendar identities lack a stable account id, so use a stable
+        // per-workspace id (mirrors connectGooglePhotos). One calendar
+        // connection per provider per workspace; reconnect updates it.
+        const accountName =
+          primaryCalendar?.summary ||
+          (platform === 'google_calendar'
+            ? 'Google Calendar'
+            : 'Outlook Calendar');
+
+        const channel = await this.channelService.createChannel(
+          stateData.workspaceId,
+          stateData.userId,
+          {
+            platform,
+            accountType: 'storage',
+            platformAccountId: `${platform}:${stateData.workspaceId}`,
+            accountName,
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken || undefined,
+            tokenExpiresAt: tokenExpiresAt?.toISOString(),
+            permissions:
+              platform === 'google_calendar'
+                ? PLATFORM_CONFIG.google_calendar.oauthScopes
+                : PLATFORM_CONFIG.outlook_calendar.oauthScopes,
+            capabilities: {
+              canPost: false,
+              canSchedule: false,
+              canReadAnalytics: false,
+              canReply: false,
+              canDelete: false,
+              supportedMediaTypes: [],
+              maxMediaPerPost: 0,
+              maxTextLength: 0,
+            },
+            metadata: {
+              calendarId: primaryCalendar?.id ?? null,
+              calendarName: primaryCalendar?.summary ?? null,
+              platformAccountId: `${platform}:${stateData.workspaceId}`,
+              accountName,
+            },
+          },
+        );
+
+        console.log(
+          `[OAuth Callback] ${platform} channel created: ${channel.id}`,
+        );
+
+        // Calendar two-way sync — arm it immediately, but NEVER at the cost of
+        // the connect flow: all three are fire-and-forget.
+        //   1. subscribe   → provider push notifications (needs a public HTTPS
+        //                    callback; silently skipped in local dev)
+        //   2. reconcile   → first delta pull, so the user's existing events
+        //                    show up in the calendar right away
+        //   3. backfill    → push already-scheduled posts onto the new calendar
+        // If (1) fails, the 15-min reconcile poll still keeps the sync correct.
+        void this.calendarSubscriptionService
+          .subscribe(channel.id)
+          .catch((err) =>
+            this.logger.warn(
+              `Calendar push subscription failed for channel ${channel.id} (non-blocking — the reconcile poll covers it): ${(err as Error).message}`,
+            ),
+          );
+
+        void this.calendarReconcileQueue
+          .add(
+            CALENDAR_RECONCILE_JOB,
+            { channelId: channel.id },
+            { jobId: `calendar-reconcile-${channel.id}-connect-${Date.now()}` },
+          )
+          .catch((err: Error) =>
+            this.logger.warn(
+              `Initial calendar reconcile enqueue failed for channel ${channel.id}: ${err.message}`,
+            ),
+          );
+
+        void this.calendarPushSyncService
+          .backfillWorkspace(stateData.workspaceId)
+          .catch((err) =>
+            this.logger.warn(
+              `Calendar backfill failed for workspace ${stateData.workspaceId}: ${(err as Error).message}`,
+            ),
+          );
+
+        return res.redirect(
+          `${frontendUrl}/channels/connect/success?platform=${platform}&channelId=${channel.id}`,
+        );
+      }
+
       // Default flow for other platforms: Redirect to frontend with success and tokens
       // Frontend will fetch account info and complete the channel creation
       const successUrl = new URL(`${frontendUrl}/channels/connect/success`);
@@ -804,15 +931,26 @@ export class ChannelsController {
     const id = parseInt(channelId, 10);
     // Telegram: best-effort remove the bot's webhook before deleting the row,
     // so a re-add of the same bot can set a fresh webhook cleanly.
+    //
+    // Calendar (Google/Outlook): stop the provider push subscription BEFORE the
+    // row is deleted — the stop/DELETE call needs the channel's access token,
+    // which the delete takes with it. `teardown()` never throws (a stale
+    // provider-side channel just 404s on delivery and expires on its own).
     try {
       const channel = await this.channelService.getChannelById(id, workspaceId);
       if (channel.platform === 'telegram') {
         const token = await this.channelService.getAccessToken(id, workspaceId);
         await this.telegramService.forToken(token).deleteWebhook();
       }
+      if (
+        channel.platform === 'google_calendar' ||
+        channel.platform === 'outlook_calendar'
+      ) {
+        await this.calendarSubscriptionService.teardown(id);
+      }
     } catch (err) {
       this.logger.warn(
-        `Telegram deleteWebhook on disconnect failed (non-blocking): ${(err as Error).message}`,
+        `Webhook teardown on disconnect failed (non-blocking): ${(err as Error).message}`,
       );
     }
     await this.channelService.deleteChannel(id, workspaceId);
@@ -4667,6 +4805,234 @@ export class ChannelsController {
   @HttpCode(HttpStatus.OK)
   async verifyCalendarAccess(@Body() dto: FetchPagesDto) {
     const hasAccess = await this.googleCalendarService.verifyAccess(
+      dto.accessToken,
+    );
+    return { hasAccess };
+  }
+
+  // ==========================================================================
+  // Outlook Calendar Endpoints (Microsoft Graph — mirrors Google Calendar)
+  // ==========================================================================
+
+  /**
+   * List user's Outlook calendars
+   */
+  @Post('outlook-calendar/calendars')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listOutlookCalendars(@Body() dto: FetchPagesDto) {
+    return await this.outlookCalendarService.listCalendars(dto.accessToken);
+  }
+
+  /**
+   * Get primary Outlook calendar
+   */
+  @Post('outlook-calendar/primary')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getOutlookPrimaryCalendar(@Body() dto: FetchPagesDto) {
+    return await this.outlookCalendarService.getPrimaryCalendar(
+      dto.accessToken,
+    );
+  }
+
+  /**
+   * List Outlook calendar events
+   */
+  @Post('outlook-calendar/events')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async listOutlookCalendarEvents(
+    @Body()
+    dto: FetchPagesDto & {
+      calendarId?: string;
+      timeMin?: string;
+      timeMax?: string;
+      maxResults?: number;
+      pageToken?: string;
+    },
+  ) {
+    return await this.outlookCalendarService.listEvents(dto.accessToken, {
+      calendarId: dto.calendarId,
+      timeMin: dto.timeMin ? new Date(dto.timeMin) : undefined,
+      timeMax: dto.timeMax ? new Date(dto.timeMax) : undefined,
+      maxResults: dto.maxResults,
+      pageToken: dto.pageToken,
+    });
+  }
+
+  /**
+   * Create an Outlook calendar event
+   */
+  @Post('outlook-calendar/events/create')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async createOutlookCalendarEvent(
+    @Body()
+    dto: FetchPagesDto & {
+      summary: string;
+      description?: string;
+      startTime: string;
+      endTime?: string;
+      timeZone?: string;
+      colorId?: string;
+      calendarId?: string;
+    },
+  ) {
+    return await this.outlookCalendarService.createEvent(dto.accessToken, {
+      summary: dto.summary,
+      description: dto.description,
+      startTime: new Date(dto.startTime),
+      endTime: dto.endTime ? new Date(dto.endTime) : undefined,
+      timeZone: dto.timeZone,
+      colorId: dto.colorId,
+      calendarId: dto.calendarId,
+    });
+  }
+
+  /**
+   * Create an Outlook calendar event for a scheduled post
+   */
+  @Post('outlook-calendar/events/post')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async createOutlookPostCalendarEvent(
+    @Body()
+    dto: FetchPagesDto & {
+      postId: string;
+      platforms: string[];
+      caption: string;
+      scheduledAt: string;
+      mediaUrls?: string[];
+      workspaceName?: string;
+      calendarId?: string;
+    },
+  ) {
+    return await this.outlookCalendarService.createPostEvent(
+      dto.accessToken,
+      {
+        postId: dto.postId,
+        platforms: dto.platforms,
+        caption: dto.caption,
+        scheduledAt: new Date(dto.scheduledAt),
+        mediaUrls: dto.mediaUrls,
+        workspaceName: dto.workspaceName,
+      },
+      dto.calendarId,
+    );
+  }
+
+  /**
+   * Update an Outlook calendar event
+   */
+  @Post('outlook-calendar/events/:eventId/update')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async updateOutlookCalendarEvent(
+    @Param('eventId') eventId: string,
+    @Body()
+    dto: FetchPagesDto & {
+      summary?: string;
+      description?: string;
+      startTime?: string;
+      endTime?: string;
+      timeZone?: string;
+      colorId?: string;
+      calendarId?: string;
+    },
+  ) {
+    return await this.outlookCalendarService.updateEvent(
+      dto.accessToken,
+      eventId,
+      {
+        summary: dto.summary,
+        description: dto.description,
+        startTime: dto.startTime ? new Date(dto.startTime) : undefined,
+        endTime: dto.endTime ? new Date(dto.endTime) : undefined,
+        timeZone: dto.timeZone,
+        colorId: dto.colorId,
+      },
+      dto.calendarId,
+    );
+  }
+
+  /**
+   * Delete an Outlook calendar event
+   */
+  @Post('outlook-calendar/events/:eventId/delete')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async deleteOutlookCalendarEvent(
+    @Param('eventId') eventId: string,
+    @Body() dto: FetchPagesDto & { calendarId?: string },
+  ) {
+    await this.outlookCalendarService.deleteEvent(
+      dto.accessToken,
+      eventId,
+      dto.calendarId,
+    );
+    return { success: true };
+  }
+
+  /**
+   * Get a specific Outlook calendar event
+   */
+  @Post('outlook-calendar/events/:eventId')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async getOutlookCalendarEvent(
+    @Param('eventId') eventId: string,
+    @Body() dto: FetchPagesDto & { calendarId?: string },
+  ) {
+    return await this.outlookCalendarService.getEvent(
+      dto.accessToken,
+      eventId,
+      dto.calendarId,
+    );
+  }
+
+  /**
+   * Mark an Outlook calendar event as published
+   */
+  @Post('outlook-calendar/events/:eventId/published')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async markOutlookEventPublished(
+    @Param('eventId') eventId: string,
+    @Body() dto: FetchPagesDto & { calendarId?: string },
+  ) {
+    return await this.outlookCalendarService.markEventAsPublished(
+      dto.accessToken,
+      eventId,
+      dto.calendarId,
+    );
+  }
+
+  /**
+   * Mark an Outlook calendar event as failed
+   */
+  @Post('outlook-calendar/events/:eventId/failed')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async markOutlookEventFailed(
+    @Param('eventId') eventId: string,
+    @Body() dto: FetchPagesDto & { calendarId?: string },
+  ) {
+    return await this.outlookCalendarService.markEventAsFailed(
+      dto.accessToken,
+      eventId,
+      dto.calendarId,
+    );
+  }
+
+  /**
+   * Verify Outlook Calendar access
+   */
+  @Post('outlook-calendar/verify')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async verifyOutlookCalendarAccess(@Body() dto: FetchPagesDto) {
+    const hasAccess = await this.outlookCalendarService.verifyAccess(
       dto.accessToken,
     );
     return { hasAccess };

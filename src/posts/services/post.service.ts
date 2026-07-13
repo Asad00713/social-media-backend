@@ -27,6 +27,7 @@ import { RateLimiterService } from '../../queue/rate-limiter.service';
 import { AdapterRegistryService } from '../../channels/analytics/services/adapter-registry.service';
 import type { AgeBucket } from '../../channels/analytics/types/platform-capabilities.types';
 import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
+import { CalendarPushSyncService } from '../../calendar-sync/services/calendar-push-sync.service';
 import type {
   PostStatusChangedPayload,
   PostStatusChangedTarget,
@@ -64,7 +65,23 @@ export class PostService {
     private readonly snapshotQueue: Queue,
     private readonly adapters: AdapterRegistryService,
     private readonly realtimeEmitter: AnalyticsEventEmitter,
+    private readonly calendarPushSync: CalendarPushSyncService,
   ) {}
+
+  /**
+   * Fire-and-forget app→calendar push for a post. Never blocks or fails the
+   * originating post operation — calendar sync is best-effort and self-heals
+   * via backfill/reconcile. Errors are logged inside the push service.
+   */
+  private syncCalendarForPost(postId: string): void {
+    void this.calendarPushSync.syncPost(postId).catch((error) => {
+      this.logger.warn(
+        `Calendar sync failed for post ${postId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
+  }
 
   private serializeTargetsForEvent(
     targets: PostTarget[],
@@ -163,6 +180,9 @@ export class PostService {
       this.logger.log(
         `Post ${post.id} created with status ${status}, jobId: ${jobId}`,
       );
+
+      // Push the newly scheduled post to any connected calendars.
+      this.syncCalendarForPost(post.id);
       return updatedPost;
     }
 
@@ -346,6 +366,10 @@ export class PostService {
       userId,
     );
 
+    // Reflect the change on connected calendars: syncPost upserts the event for
+    // a still-scheduled post, or removes it when the post was unscheduled.
+    this.syncCalendarForPost(postId);
+
     return updatedPost;
   }
 
@@ -371,7 +395,41 @@ export class PostService {
       await this.cancelScheduledJob(post.jobId);
     }
 
+    // Load the calendar link rows into memory BEFORE deleting the post:
+    // calendar_post_links cascade-delete with the post, so afterwards we'd lose
+    // the external event ids. This is a fast DB read; if it fails we still
+    // delete the post (calendar cleanup is best-effort and self-heals via
+    // reconcile). The provider deletes themselves run in the BACKGROUND below,
+    // so a slow/hanging calendar API can never stall or abort the post delete.
+    let calendarLinks: Awaited<
+      ReturnType<typeof this.calendarPushSync.loadPostLinks>
+    > = [];
+    try {
+      calendarLinks = await this.calendarPushSync.loadPostLinks(postId);
+    } catch (error) {
+      this.logger.warn(
+        `Failed to load calendar links for deleting post ${postId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
     await db.delete(posts).where(eq(posts.id, postId));
+
+    // Fire-and-forget the provider-side event deletes using the in-memory link
+    // data (rows are already cascade-gone). Never awaited — the user's delete
+    // returns fast even if Google/Graph is slow or hanging.
+    if (calendarLinks.length > 0) {
+      void this.calendarPushSync
+        .deleteEventsForLinks(calendarLinks)
+        .catch((error) => {
+          this.logger.warn(
+            `Background calendar event removal failed for deleted post ${postId}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        });
+    }
 
     this.logger.log(`Post ${postId} deleted by user ${userId}`);
   }
@@ -609,6 +667,10 @@ export class PostService {
       triggeredBy,
       triggeredByUserId: userId,
     });
+
+    // Post has left 'scheduled' status; syncPost will remove the (now stale)
+    // calendar event since it is no longer a schedulable item.
+    this.syncCalendarForPost(postId);
 
     this.logger.log(
       `Post ${postId} publishing completed with status: ${finalStatus}`,

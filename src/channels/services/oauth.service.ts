@@ -172,6 +172,19 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
       prompt: 'consent',
     },
   },
+  // Outlook Calendar - Microsoft Graph via Azure AD v2.0 endpoint (same
+  // Azure AD app base as OneDrive). The `/common/` tenant supports both
+  // personal (MSA) and work/school accounts.
+  outlook_calendar: {
+    authorizationUrl:
+      'https://login.microsoftonline.com/common/oauth2/v2.0/authorize',
+    tokenUrl: 'https://login.microsoftonline.com/common/oauth2/v2.0/token',
+    scopes: PLATFORM_CONFIG.outlook_calendar.oauthScopes,
+    usePKCE: true,
+    additionalParams: {
+      response_type: 'code',
+    },
+  },
   // OneDrive - Microsoft Graph via Azure AD v2.0 endpoint.
   // The legacy Live Connect API (login.live.com + wl.* scopes) is end-of-life
   // (Nov 2018) and its tokens do NOT work against Microsoft Graph, which the
@@ -762,10 +775,10 @@ export class OAuthService {
       envPrefix = 'YOUTUBE'; // Google Drive/Photos/Calendar share the same Google OAuth app as YouTube
       hint =
         'Google services use YouTube credentials. Set YOUTUBE_CLIENT_ID and YOUTUBE_CLIENT_SECRET.';
-    } else if (platform === 'onedrive') {
-      envPrefix = 'ONEDRIVE'; // Microsoft Azure AD app
+    } else if (platform === 'onedrive' || platform === 'outlook_calendar') {
+      envPrefix = 'ONEDRIVE'; // Microsoft Azure AD app (OneDrive + Outlook Calendar share it)
       hint =
-        'OneDrive uses Microsoft credentials. Set ONEDRIVE_CLIENT_ID and ONEDRIVE_CLIENT_SECRET.';
+        'Microsoft services use OneDrive credentials. Set ONEDRIVE_CLIENT_ID and ONEDRIVE_CLIENT_SECRET.';
     } else if (platform === 'dropbox') {
       envPrefix = 'DROPBOX'; // Dropbox app
       hint =

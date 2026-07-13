@@ -31,6 +31,7 @@ export const SUPPORTED_PLATFORMS = [
   'google_drive',
   'google_photos',
   'google_calendar',
+  'outlook_calendar',
   'onedrive',
   'dropbox',
   'reddit',
@@ -615,6 +616,21 @@ export const PLATFORM_CONFIG: Record<
     oauthScopes: [
       'https://www.googleapis.com/auth/calendar.events', // Create/update/delete events
       'https://www.googleapis.com/auth/calendar.readonly', // Read calendars list
+    ],
+  },
+  outlook_calendar: {
+    name: 'Outlook Calendar',
+    accountTypes: ['storage'], // Utility service, not a posting platform
+    supportsRefreshToken: true,
+    tokenExpirationDays: null,
+    refreshTokenTtlDays: 60, // Microsoft consumer refresh tokens expire after ~90d inactivity; warn at 60
+    maxMediaPerPost: 0,
+    maxTextLength: 0,
+    supportedMediaTypes: [],
+    oauthScopes: [
+      'Calendars.ReadWrite', // Create/update/delete events on the user's calendars
+      'offline_access', // Refresh token
+      'User.Read', // /me
     ],
   },
   onedrive: {

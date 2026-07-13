@@ -17,6 +17,7 @@ import { MastodonService } from './services/mastodon.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
+import { OutlookCalendarService } from './services/outlook-calendar.service';
 import { OneDriveService } from './services/onedrive.service';
 import { DropboxService } from './services/dropbox.service';
 import { UnsplashService } from './services/unsplash.service';
@@ -39,16 +40,26 @@ import { InboxModule } from '../inbox/inbox.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { AnalyticsModule } from './analytics/analytics.module';
 import { QueueModule } from '../queue/queue.module';
+import { BullModule } from '@nestjs/bullmq';
+import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
+import { CALENDAR_RECONCILE_QUEUE } from '../calendar-sync/calendar-sync.constants';
 import { TokenRefreshProcessor } from './processors/token-refresh.processor';
 import { TokenRefreshScheduler } from './schedulers/token-refresh.scheduler';
 import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.scheduler';
 
+// CalendarSyncModule is imported (forwardRef — CalendarSyncModule imports this
+// one back) so the OAuth callback can arm the provider push subscription the
+// moment a calendar is connected, and the disconnect path can tear it down
+// before the token is deleted. The reconcile queue is registered here too so the
+// callback can kick an immediate first sync.
 @Module({
   imports: [
     DrizzleModule,
     AnalyticsModule,
     QueueModule,
     forwardRef(() => InboxModule),
+    forwardRef(() => CalendarSyncModule),
+    BullModule.registerQueue({ name: CALENDAR_RECONCILE_QUEUE }),
   ],
   controllers: [ChannelsController],
   providers: [
@@ -69,6 +80,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     GoogleDriveService,
     GooglePhotosService,
     GoogleCalendarService,
+    OutlookCalendarService,
     OneDriveService,
     DropboxService,
     UnsplashService,
@@ -108,6 +120,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     GoogleDriveService,
     GooglePhotosService,
     GoogleCalendarService,
+    OutlookCalendarService,
     OneDriveService,
     DropboxService,
     UnsplashService,
