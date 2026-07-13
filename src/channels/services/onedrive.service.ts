@@ -40,6 +40,16 @@ export interface OneDriveListResponse {
   nextLink?: string;
 }
 
+const isImage = (item: OneDriveItem): boolean =>
+  item.file?.mimeType?.startsWith('image/') ?? false;
+
+const isVideo = (item: OneDriveItem): boolean =>
+  item.file?.mimeType?.startsWith('video/') ?? false;
+
+// Graph caps $top on driveItem children at 200.
+const CHILDREN_FETCH_SIZE = 200;
+const MAX_CHILDREN_PAGES = 5;
+
 @Injectable()
 export class OneDriveService {
   private readonly logger = new Logger(OneDriveService.name);
@@ -88,6 +98,63 @@ export class OneDriveService {
   }
 
   /**
+   * Page through a folder's children, keeping only the items `matches` accepts.
+   *
+   * Graph does not support $filter on driveItem children — a mimeType filter
+   * comes back as `notSupported` — so the drive is paged unfiltered and matched
+   * in memory. Each call keeps following @odata.nextLink until it has at least
+   * `pageSize` matches, so a folder holding mostly non-media never returns an
+   * empty page while more media is still further down.
+   */
+  private async listMatchingChildren(
+    accessToken: string,
+    options: {
+      folderId?: string;
+      pageSize: number;
+      nextLink?: string;
+      matches: (item: OneDriveItem) => boolean;
+      label: string;
+    },
+  ): Promise<OneDriveListResponse> {
+    const { folderId, pageSize, matches, label } = options;
+
+    const basePath = folderId
+      ? `${this.apiBaseUrl}/me/drive/items/${folderId}/children`
+      : `${this.apiBaseUrl}/me/drive/root/children`;
+
+    let url =
+      options.nextLink ??
+      `${basePath}?$top=${CHILDREN_FETCH_SIZE}&$expand=thumbnails`;
+
+    const items: OneDriveItem[] = [];
+    let nextLink: string | undefined;
+
+    for (let page = 0; page < MAX_CHILDREN_PAGES; page++) {
+      const response = await fetch(url, {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        this.logger.error(`Failed to list OneDrive ${label}: ${error}`);
+        throw new BadRequestException(`Failed to list OneDrive ${label}`);
+      }
+
+      const data = await response.json();
+
+      items.push(...((data.value as OneDriveItem[]) ?? []).filter(matches));
+      nextLink = data['@odata.nextLink'];
+
+      if (!nextLink || items.length >= pageSize) break;
+      url = nextLink;
+    }
+
+    return { items, nextLink };
+  }
+
+  /**
    * List only images from OneDrive
    */
   async listImages(
@@ -98,38 +165,13 @@ export class OneDriveService {
       nextLink?: string;
     } = {},
   ): Promise<OneDriveListResponse> {
-    const { folderId, pageSize = 20, nextLink } = options;
-
-    let url: string;
-    if (nextLink) {
-      url = nextLink;
-    } else {
-      const basePath = folderId
-        ? `${this.apiBaseUrl}/me/drive/items/${folderId}/children`
-        : `${this.apiBaseUrl}/me/drive/root/children`;
-
-      // Filter for image files
-      url = `${basePath}?$top=${pageSize}&$expand=thumbnails&$filter=file ne null and startswith(file/mimeType,'image/')`;
-    }
-
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
+    return this.listMatchingChildren(accessToken, {
+      folderId: options.folderId,
+      pageSize: options.pageSize ?? 20,
+      nextLink: options.nextLink,
+      matches: isImage,
+      label: 'images',
     });
-
-    if (!response.ok) {
-      const error = await response.text();
-      this.logger.error(`Failed to list OneDrive images: ${error}`);
-      throw new BadRequestException('Failed to list OneDrive images');
-    }
-
-    const data = await response.json();
-
-    return {
-      items: data.value || [],
-      nextLink: data['@odata.nextLink'],
-    };
   }
 
   /**
@@ -143,38 +185,13 @@ export class OneDriveService {
       nextLink?: string;
     } = {},
   ): Promise<OneDriveListResponse> {
-    const { folderId, pageSize = 20, nextLink } = options;
-
-    let url: string;
-    if (nextLink) {
-      url = nextLink;
-    } else {
-      const basePath = folderId
-        ? `${this.apiBaseUrl}/me/drive/items/${folderId}/children`
-        : `${this.apiBaseUrl}/me/drive/root/children`;
-
-      // Filter for video files
-      url = `${basePath}?$top=${pageSize}&$expand=thumbnails&$filter=file ne null and startswith(file/mimeType,'video/')`;
-    }
-
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
+    return this.listMatchingChildren(accessToken, {
+      folderId: options.folderId,
+      pageSize: options.pageSize ?? 20,
+      nextLink: options.nextLink,
+      matches: isVideo,
+      label: 'videos',
     });
-
-    if (!response.ok) {
-      const error = await response.text();
-      this.logger.error(`Failed to list OneDrive videos: ${error}`);
-      throw new BadRequestException('Failed to list OneDrive videos');
-    }
-
-    const data = await response.json();
-
-    return {
-      items: data.value || [],
-      nextLink: data['@odata.nextLink'],
-    };
   }
 
   /**
@@ -188,38 +205,13 @@ export class OneDriveService {
       nextLink?: string;
     } = {},
   ): Promise<OneDriveListResponse> {
-    const { folderId, pageSize = 20, nextLink } = options;
-
-    let url: string;
-    if (nextLink) {
-      url = nextLink;
-    } else {
-      const basePath = folderId
-        ? `${this.apiBaseUrl}/me/drive/items/${folderId}/children`
-        : `${this.apiBaseUrl}/me/drive/root/children`;
-
-      // Filter for image and video files
-      url = `${basePath}?$top=${pageSize}&$expand=thumbnails&$filter=file ne null and (startswith(file/mimeType,'image/') or startswith(file/mimeType,'video/'))`;
-    }
-
-    const response = await fetch(url, {
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-      },
+    return this.listMatchingChildren(accessToken, {
+      folderId: options.folderId,
+      pageSize: options.pageSize ?? 20,
+      nextLink: options.nextLink,
+      matches: (item) => isImage(item) || isVideo(item),
+      label: 'media',
     });
-
-    if (!response.ok) {
-      const error = await response.text();
-      this.logger.error(`Failed to list OneDrive media: ${error}`);
-      throw new BadRequestException('Failed to list OneDrive media');
-    }
-
-    const data = await response.json();
-
-    return {
-      items: data.value || [],
-      nextLink: data['@odata.nextLink'],
-    };
   }
 
   /**
