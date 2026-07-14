@@ -23,7 +23,8 @@ export type AnalyticsEventName =
   | 'ad.insights.updated'
   | 'lead.created'
   | 'lead.delivered'
-  | 'maestro.bridge.message';
+  | 'maestro.bridge.message'
+  | 'calendar.external.changed';
 
 export interface ChannelSnapshotUpdatedPayload {
   workspaceId: string;
@@ -222,6 +223,24 @@ export interface MaestroBridgeMessagePayload {
   text?: string;
 }
 
+/**
+ * A pull from a connected Google/Outlook calendar brought back changes — the
+ * customer created, moved or deleted something on the provider's side, so an
+ * open calendar view is now stale.
+ *
+ * Deliberately carries no event data. The calendar view is a windowed query and
+ * the client already knows how to fetch its own window; all it needs is the
+ * signal to go do it.
+ */
+export interface CalendarExternalChangedPayload {
+  workspaceId: string;
+  channelId: number;
+  provider: 'google' | 'outlook';
+  /** Counts, for diagnosing a chatty channel from the logs — not for rendering. */
+  changed: number;
+  deleted: number;
+}
+
 export type AnalyticsEventPayloadMap = {
   'channel.snapshot.updated': ChannelSnapshotUpdatedPayload;
   'post.metrics.updated': PostMetricsUpdatedPayload;
@@ -243,4 +262,5 @@ export type AnalyticsEventPayloadMap = {
   'lead.created': LeadCreatedPayload;
   'lead.delivered': LeadDeliveredPayload;
   'maestro.bridge.message': MaestroBridgeMessagePayload;
+  'calendar.external.changed': CalendarExternalChangedPayload;
 };

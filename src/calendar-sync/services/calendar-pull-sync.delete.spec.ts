@@ -33,6 +33,7 @@ import { GoogleCalendarService } from '../../channels/services/google-calendar.s
 import { OutlookCalendarService } from '../../channels/services/outlook-calendar.service';
 import { PostService } from '../../posts/services/post.service';
 import { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
+import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
 import { posts } from '../../drizzle/schema/posts.schema';
 import { scheduledInboxMessages } from '../../drizzle/schema/scheduled-inbox-messages.schema';
 import {
@@ -141,6 +142,7 @@ describe('CalendarPullSyncService — external delete write-back (never hard-del
       pushSync,
       postService,
       scheduledMessages,
+      { emit: jest.fn() } as unknown as AnalyticsEventEmitter,
     ) as unknown as PullSyncInternals;
   });
 

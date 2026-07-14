@@ -24,6 +24,7 @@ import { OutlookCalendarService } from '../../channels/services/outlook-calendar
 import { CalendarPreconditionFailedError } from '../../channels/services/calendar-precondition.error';
 import { PostService } from '../../posts/services/post.service';
 import { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
+import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
 import { fetchGoogleCalendarDelta } from '../providers/google-delta.util';
 import { fetchOutlookCalendarDelta } from '../providers/outlook-delta.util';
 import {
@@ -130,6 +131,8 @@ export class CalendarPullSyncService {
     // InboxModule ↔ CalendarSyncModule is circular for the same reason.
     @Inject(forwardRef(() => ScheduledMessagesService))
     private readonly scheduledMessages: ScheduledMessagesService,
+    // RealtimeModule is @Global, so no module import is needed for this.
+    private readonly events: AnalyticsEventEmitter,
   ) {}
 
   /**
@@ -238,6 +241,25 @@ export class CalendarPullSyncService {
       this.logger.log(
         `Calendar pull for channel ${channelId} (${provider}): ${delta.changed.length} changed, ${delta.deleted.length} deleted, full=${isFullSync}, truncated=${delta.truncated}`,
       );
+
+      // Tell any open calendar view to refetch. Without this the browser only
+      // learns about a provider-side change when the tab regains focus, which is
+      // why a Google event created in the next tab never appeared until reload.
+      //
+      // The signal is intentionally coarse — it fires on the raw delta, so an
+      // event WE pushed and then read back echoes one redundant refetch. That is
+      // the cheap direction to be wrong in: invalidateQueries only refetches
+      // queries that are actually mounted, so a workspace with no calendar open
+      // pays nothing, and we never miss a real change.
+      if (delta.changed.length > 0 || delta.deleted.length > 0) {
+        this.events.emit(channel.workspaceId, 'calendar.external.changed', {
+          workspaceId: channel.workspaceId,
+          channelId,
+          provider,
+          changed: delta.changed.length,
+          deleted: delta.deleted.length,
+        });
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(

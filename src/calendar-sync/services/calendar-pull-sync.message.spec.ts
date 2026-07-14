@@ -37,6 +37,7 @@ import { GoogleCalendarService } from '../../channels/services/google-calendar.s
 import { OutlookCalendarService } from '../../channels/services/outlook-calendar.service';
 import { PostService } from '../../posts/services/post.service';
 import { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
+import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { posts } from '../../drizzle/schema/posts.schema';
 import { scheduledInboxMessages } from '../../drizzle/schema/scheduled-inbox-messages.schema';
@@ -188,6 +189,7 @@ describe('CalendarPullSyncService — owned-event dispatch (post vs scheduled me
         updateFromCalendar,
         cancelFromCalendar,
       } as unknown as ScheduledMessagesService,
+      { emit: jest.fn() } as unknown as AnalyticsEventEmitter,
     ) as unknown as PullSyncInternals;
   });
 
