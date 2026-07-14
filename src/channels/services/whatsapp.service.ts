@@ -3,6 +3,24 @@ import { Injectable, Logger } from '@nestjs/common';
 export const GRAPH_API_VERSION = 'v21.0';
 export const WHATSAPP_GRAPH_BASE = `https://graph.facebook.com/${GRAPH_API_VERSION}`;
 
+/** The number already has two-step verification on, and our PIN is not its PIN. */
+export const WA_ERROR_PIN_MISMATCH = 133005;
+
+/**
+ * A Graph error that carries Meta's numeric code. Callers branch on `code` rather
+ * than pattern-matching `message`, which is prose Meta is free to reword or
+ * localise.
+ */
+export class WhatsAppApiError extends Error {
+  constructor(
+    message: string,
+    readonly code: number | null,
+  ) {
+    super(message);
+    this.name = 'WhatsAppApiError';
+  }
+}
+
 @Injectable()
 export class WhatsAppService {
   private readonly logger = new Logger(WhatsAppService.name);
@@ -197,7 +215,11 @@ export class WhatsAppService {
     if (res.ok) return;
     const msg = (data?.error?.message as string) || '';
     if (/already\s+registered/i.test(msg)) return; // idempotent
-    throw new Error(msg || `Phone number register failed (${res.status})`);
+    const code = typeof data?.error?.code === 'number' ? data.error.code : null;
+    throw new WhatsAppApiError(
+      msg || `Phone number register failed (${res.status})`,
+      code,
+    );
   }
 
   /**

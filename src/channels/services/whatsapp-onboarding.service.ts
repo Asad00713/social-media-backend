@@ -4,10 +4,20 @@ import {
   ConflictException,
   BadRequestException,
 } from '@nestjs/common';
-import { WhatsAppService } from './whatsapp.service';
+import {
+  WhatsAppService,
+  WhatsAppApiError,
+  WA_ERROR_PIN_MISMATCH,
+} from './whatsapp.service';
 import { ChannelService, isChannelHealthy } from './channel.service';
 import { InboxService } from '../../inbox/inbox.service';
 import type { ChannelResponseDto } from '../dto/channel.dto';
+
+/**
+ * Machine-readable marker on the 400 body. The client keys the "enter your PIN"
+ * retry off this rather than the prose, which is free to change.
+ */
+export const WHATSAPP_PIN_REQUIRED = 'WHATSAPP_PIN_REQUIRED';
 
 export interface EmbeddedSignupInput {
   code: string;
@@ -111,11 +121,7 @@ export class WhatsAppOnboardingService {
     );
 
     // 5. Register the phone number for Cloud API (idempotent).
-    await this.whatsapp.registerPhoneNumber(
-      accessToken,
-      phoneNumberId,
-      input.pin ?? '000000',
-    );
+    await this.registerNumber(accessToken, phoneNumberId, input.pin);
 
     // 6. Subscribe our app to the WABA — BLOCKING. A channel that never
     //    receives webhooks is worse than a visible failure.
@@ -140,6 +146,45 @@ export class WhatsAppOnboardingService {
         connectMethod: 'embedded_signup',
       },
     });
+  }
+
+  /**
+   * Register the number for Cloud API. A number that already has two-step
+   * verification on rejects our PIN, and the customer is the only one who knows
+   * theirs — so that is a question to ask, not a 500 to bury. Everything else
+   * bubbles up unchanged.
+   *
+   * On a number with two-step verification OFF, Meta adopts whatever PIN we send
+   * as its PIN, which is why the default is a fixed '000000'.
+   */
+  private async registerNumber(
+    accessToken: string,
+    phoneNumberId: string,
+    pin: string | undefined,
+  ): Promise<void> {
+    try {
+      await this.whatsapp.registerPhoneNumber(
+        accessToken,
+        phoneNumberId,
+        pin ?? '000000',
+      );
+    } catch (err) {
+      const isPinMismatch =
+        err instanceof WhatsAppApiError && err.code === WA_ERROR_PIN_MISMATCH;
+      if (!isPinMismatch) throw err;
+
+      this.logger.warn(
+        `Register rejected our PIN for phone=${phoneNumberId} (two-step verification is on; pin ${
+          pin ? 'supplied' : 'defaulted'
+        })`,
+      );
+      throw new BadRequestException({
+        code: WHATSAPP_PIN_REQUIRED,
+        message: pin
+          ? "That PIN doesn't match this number's two-step verification PIN. Check it and try again."
+          : 'This number has two-step verification turned on. Enter its 6-digit PIN and connect again — or turn two-step verification off in WhatsApp Manager (Account tools → Phone numbers → gear icon).',
+      });
+    }
   }
 
   /**

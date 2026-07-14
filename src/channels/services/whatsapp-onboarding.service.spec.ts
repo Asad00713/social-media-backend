@@ -1,5 +1,9 @@
 import { ConflictException, BadRequestException } from '@nestjs/common';
-import { WhatsAppOnboardingService } from './whatsapp-onboarding.service';
+import {
+  WhatsAppOnboardingService,
+  WHATSAPP_PIN_REQUIRED,
+} from './whatsapp-onboarding.service';
+import { WhatsAppApiError, WA_ERROR_PIN_MISMATCH } from './whatsapp.service';
 import { isChannelHealthy } from './channel.service';
 
 function makeService(overrides: {
@@ -246,6 +250,67 @@ describe('WhatsAppOnboardingService.completeEmbeddedSignup', () => {
         // No verified_name available, so the channel falls back to the number id.
         expect.objectContaining({ accountName: '111', platformAccountId: '111' }),
       );
+    });
+  });
+
+  // A number with two-step verification on rejects our PIN, and only the customer
+  // knows theirs. That is a question to ask — never a 500 to bury.
+  describe('two-step verification PIN', () => {
+    const rejectsWithPinMismatch = () =>
+      jest
+        .fn()
+        .mockRejectedValue(
+          new WhatsAppApiError('Two step verification PIN Mismatch', WA_ERROR_PIN_MISMATCH),
+        );
+
+    it('asks for the PIN rather than failing the request outright', async () => {
+      const { service, channels } = makeService({
+        whatsapp: { registerPhoneNumber: rejectsWithPinMismatch() },
+      });
+      await expect(
+        service.completeEmbeddedSignup('ws-A', 'u1', input),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(channels.createChannel).not.toHaveBeenCalled();
+    });
+
+    it('marks the 400 so the client can reveal a PIN field', async () => {
+      const { service } = makeService({
+        whatsapp: { registerPhoneNumber: rejectsWithPinMismatch() },
+      });
+      const err: BadRequestException = await service
+        .completeEmbeddedSignup('ws-A', 'u1', input)
+        .catch((e) => e);
+      expect(err.getResponse()).toMatchObject({
+        code: WHATSAPP_PIN_REQUIRED,
+        message: expect.stringContaining('two-step verification'),
+      });
+    });
+
+    it('says the PIN was wrong when the caller already supplied one', async () => {
+      const { service, whatsapp } = makeService({
+        whatsapp: { registerPhoneNumber: rejectsWithPinMismatch() },
+      });
+      const err: BadRequestException = await service
+        .completeEmbeddedSignup('ws-A', 'u1', { ...input, pin: '123456' })
+        .catch((e) => e);
+      expect(whatsapp.registerPhoneNumber).toHaveBeenCalledWith('biz', '111', '123456');
+      expect(err.getResponse()).toMatchObject({
+        code: WHATSAPP_PIN_REQUIRED,
+        message: expect.stringMatching(/doesn't match/i),
+      });
+    });
+
+    it('leaves every other register failure alone', async () => {
+      const { service } = makeService({
+        whatsapp: {
+          registerPhoneNumber: jest
+            .fn()
+            .mockRejectedValue(new WhatsAppApiError('Rate limit hit', 4)),
+        },
+      });
+      await expect(
+        service.completeEmbeddedSignup('ws-A', 'u1', input),
+      ).rejects.toThrow('Rate limit hit');
     });
   });
 });
