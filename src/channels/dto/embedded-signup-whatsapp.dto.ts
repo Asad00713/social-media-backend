@@ -6,15 +6,19 @@ export class EmbeddedSignupWhatsAppDto {
   @IsNotEmpty()
   code!: string;
 
+  // Both ids are OPTIONAL. They only reach us when Meta's `WA_EMBEDDED_SIGNUP`
+  // postMessage actually lands in the browser, which is not guaranteed. When
+  // either is absent the onboarding service derives it from the business token,
+  // which is authoritative about what the customer granted.
   @IsString()
-  @IsNotEmpty()
+  @IsOptional()
   @Matches(/^\d+$/, { message: 'wabaId must be a numeric id' })
-  wabaId!: string;
+  wabaId?: string;
 
   @IsString()
-  @IsNotEmpty()
+  @IsOptional()
   @Matches(/^\d+$/, { message: 'phoneNumberId must be a numeric id' })
-  phoneNumberId!: string;
+  phoneNumberId?: string;
 
   // 6-digit two-step-verification PIN used to register the number. Defaults to
   // '000000' when the number has no two-step PIN set.

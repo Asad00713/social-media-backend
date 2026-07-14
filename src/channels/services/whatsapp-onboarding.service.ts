@@ -11,8 +11,10 @@ import type { ChannelResponseDto } from '../dto/channel.dto';
 
 export interface EmbeddedSignupInput {
   code: string;
-  wabaId: string;
-  phoneNumberId: string;
+  /** Present only when Meta's `WA_EMBEDDED_SIGNUP` postMessage reached the browser. */
+  wabaId?: string;
+  /** Same — and Meta omits it entirely on `FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING`. */
+  phoneNumberId?: string;
   pin?: string;
 }
 
@@ -31,6 +33,13 @@ export class WhatsAppOnboardingService {
    * and healthy same-workspace duplicates, exchange the code for a business
    * token, register the phone number, subscribe our app to the WABA, then
    * persist the channel.
+   *
+   * `wabaId` and `phoneNumberId` are best-effort inputs. Meta hands them to the
+   * browser over `postMessage`, which can silently never arrive — and its
+   * `FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING` event omits `phone_number_id`
+   * outright. So the code is the only input we insist on: the business token it
+   * mints is authoritative about which WABA the customer granted, and the WABA is
+   * authoritative about its own phone numbers. Anything missing is derived.
    */
   async completeEmbeddedSignup(
     workspaceId: string,
@@ -38,34 +47,17 @@ export class WhatsAppOnboardingService {
     input: EmbeddedSignupInput,
   ): Promise<ChannelResponseDto> {
     await this.inbox.assertWorkspaceAccessPublic(workspaceId, userId);
-
-    // 1. Cross-workspace guard: reject if this phone number is already owned by
-    //    a DIFFERENT workspace (webhook routing is keyed on phone_number_id).
-    //    Runs BEFORE any mutating Meta call so a cross-workspace collision never
-    //    triggers registerPhoneNumber/subscribeWaba against the caller's token.
-    const existing =
-      await this.channels.findChannelsByPlatformAccountAllWorkspaces(
-        'whatsapp',
-        input.phoneNumberId,
-      );
-    const otherWorkspace = existing.find((c) => c.workspaceId !== workspaceId);
-    if (otherWorkspace) {
-      throw new ConflictException(
-        'This WhatsApp number is already connected to another workspace. Disconnect it there first.',
-      );
-    }
-
-    // A healthy channel in THIS workspace means there is nothing to do — reject before
-    // burning the (idempotent but rate-limited) Meta calls. A broken/expired channel
-    // falls through so the Meta calls can mint a fresh token and createChannel's
-    // reconnect branch updates it in place.
-    const healthySameWorkspace = existing.find(
-      (c) => c.workspaceId === workspaceId && isChannelHealthy(c),
+    this.logger.log(
+      `Embedded Signup start: waba=${input.wabaId ?? '(not sent)'} phone=${
+        input.phoneNumberId ?? '(not sent)'
+      }`,
     );
-    if (healthySameWorkspace) {
-      throw new ConflictException(
-        'This WhatsApp number is already connected to this workspace.',
-      );
+
+    // 1. Duplicate guard. When Meta told us the phone number id we can run this
+    //    before even spending the code; otherwise it runs post-exchange, still
+    //    ahead of every mutating Meta call (see step 5).
+    if (input.phoneNumberId) {
+      await this.assertNoConflictingChannel(workspaceId, input.phoneNumberId);
     }
 
     // 2. Exchange the short-lived code for a customer-scoped business token.
@@ -83,49 +75,150 @@ export class WhatsAppOnboardingService {
       );
     }
 
-    // 3. Resolve display name / verified name (also validates the number).
-    let displayPhoneNumber: string | null = null;
-    let verifiedName: string | null = null;
+    // 3. Resolve the WABA — from the message if we got one, else off the token.
+    const wabaId = input.wabaId ?? (await this.resolveWabaId(accessToken));
+
+    // 4. Resolve the phone number, plus its verified name for the channel label.
+    //    This lookup is cosmetic when Meta already told us the id, but
+    //    load-bearing when it did not.
+    let phones: Array<{
+      id: string;
+      displayPhoneNumber: string | null;
+      verifiedName: string | null;
+    }> = [];
+    let phoneLookupError: string | null = null;
     try {
-      const phones = await this.whatsapp.getWabaPhoneNumbers(accessToken, input.wabaId);
-      const match = phones.find((p) => p.id === input.phoneNumberId) ?? phones[0];
-      displayPhoneNumber = match?.displayPhoneNumber ?? null;
-      verifiedName = match?.verifiedName ?? null;
+      phones = await this.whatsapp.getWabaPhoneNumbers(accessToken, wabaId);
     } catch (err) {
+      phoneLookupError = (err as Error).message;
       this.logger.warn(
-        `getWabaPhoneNumbers failed for waba=${input.wabaId}: ${(err as Error).message}`,
+        `getWabaPhoneNumbers failed for waba=${wabaId}: ${phoneLookupError}`,
       );
     }
 
-    // 4. Register the phone number for Cloud API (idempotent).
+    const phoneNumberId =
+      input.phoneNumberId ??
+      this.pickPhoneNumberId(phones, wabaId, phoneLookupError);
+    if (!input.phoneNumberId) {
+      await this.assertNoConflictingChannel(workspaceId, phoneNumberId);
+    }
+
+    const match = phones.find((p) => p.id === phoneNumberId) ?? phones[0];
+    const displayPhoneNumber = match?.displayPhoneNumber ?? null;
+    const verifiedName = match?.verifiedName ?? null;
+    this.logger.log(
+      `Embedded Signup resolved: waba=${wabaId} phone=${phoneNumberId}`,
+    );
+
+    // 5. Register the phone number for Cloud API (idempotent).
     await this.whatsapp.registerPhoneNumber(
       accessToken,
-      input.phoneNumberId,
+      phoneNumberId,
       input.pin ?? '000000',
     );
 
-    // 5. Subscribe our app to the WABA — BLOCKING. A channel that never
+    // 6. Subscribe our app to the WABA — BLOCKING. A channel that never
     //    receives webhooks is worse than a visible failure.
-    await this.whatsapp.subscribeWaba(accessToken, input.wabaId);
+    await this.whatsapp.subscribeWaba(accessToken, wabaId);
 
-    // 6. Persist. A healthy same-workspace duplicate was already rejected above
-    //    (step 1.5), so any same-workspace row reaching here is broken/expired —
-    //    createChannel's reconnect branch refreshes it in place.
-    const accountName = verifiedName || input.phoneNumberId;
+    // 7. Persist. A healthy same-workspace duplicate was already rejected, so any
+    //    same-workspace row reaching here is broken/expired — createChannel's
+    //    reconnect branch refreshes it in place.
+    const accountName = verifiedName || phoneNumberId;
     return this.channels.createChannel(workspaceId, userId, {
       platform: 'whatsapp',
       accountType: 'business_account',
-      platformAccountId: input.phoneNumberId,
+      platformAccountId: phoneNumberId,
       accountName,
       accessToken,
       tokenExpiresAt: expiresIn
         ? new Date(Date.now() + expiresIn * 1000).toISOString()
         : undefined,
       metadata: {
-        wabaId: input.wabaId,
-        displayPhoneNumber: displayPhoneNumber ?? input.phoneNumberId,
+        wabaId,
+        displayPhoneNumber: displayPhoneNumber ?? phoneNumberId,
         connectMethod: 'embedded_signup',
       },
     });
+  }
+
+  /**
+   * Reject a number already owned by a DIFFERENT workspace (webhook routing is
+   * keyed on phone_number_id), or already healthy in this one. Must run before
+   * any mutating Meta call.
+   */
+  private async assertNoConflictingChannel(
+    workspaceId: string,
+    phoneNumberId: string,
+  ): Promise<void> {
+    const existing =
+      await this.channels.findChannelsByPlatformAccountAllWorkspaces(
+        'whatsapp',
+        phoneNumberId,
+      );
+
+    if (existing.some((c) => c.workspaceId !== workspaceId)) {
+      throw new ConflictException(
+        'This WhatsApp number is already connected to another workspace. Disconnect it there first.',
+      );
+    }
+
+    // A healthy channel here means there is nothing to do — reject before burning
+    // the (idempotent but rate-limited) Meta calls. A broken/expired one falls
+    // through so those calls can mint a fresh token and createChannel's reconnect
+    // branch updates it in place.
+    if (
+      existing.some((c) => c.workspaceId === workspaceId && isChannelHealthy(c))
+    ) {
+      throw new ConflictException(
+        'This WhatsApp number is already connected to this workspace.',
+      );
+    }
+  }
+
+  /** Read the granted WABA off the business token when the browser never told us. */
+  private async resolveWabaId(accessToken: string): Promise<string> {
+    let granted: string[];
+    try {
+      granted = await this.whatsapp.getGrantedWabaIds(accessToken);
+    } catch (err) {
+      throw new BadRequestException(
+        `Could not read your WhatsApp Business account from the sign-in — ${
+          (err as Error).message
+        }. Please try connecting again.`,
+      );
+    }
+    if (granted.length === 0) {
+      throw new BadRequestException(
+        'The Facebook sign-in did not grant access to any WhatsApp Business account. Complete the WhatsApp steps in the popup, then try again.',
+      );
+    }
+    if (granted.length > 1) {
+      this.logger.warn(
+        `Token grants ${granted.length} WABAs (${granted.join(', ')}); using the most recently onboarded.`,
+      );
+    }
+    return granted[0]; // Meta lists the most recently onboarded WABA first.
+  }
+
+  /** Pick the WABA's phone number when the browser never told us which one. */
+  private pickPhoneNumberId(
+    phones: Array<{ id: string }>,
+    wabaId: string,
+    lookupError: string | null,
+  ): string {
+    if (phones.length === 0) {
+      throw new BadRequestException(
+        lookupError
+          ? `Could not read the phone numbers on WhatsApp Business account ${wabaId} — ${lookupError}. Please try connecting again.`
+          : `WhatsApp Business account ${wabaId} has no phone number yet. Add and verify a number in WhatsApp Manager, then connect again.`,
+      );
+    }
+    if (phones.length > 1) {
+      this.logger.warn(
+        `WABA ${wabaId} has ${phones.length} phone numbers and Meta sent none; using the first (${phones[0].id}).`,
+      );
+    }
+    return phones[0].id;
   }
 }
