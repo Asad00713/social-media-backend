@@ -49,13 +49,17 @@ import { GoogleCalendarService } from '../../channels/services/google-calendar.s
 import { OutlookCalendarService } from '../../channels/services/outlook-calendar.service';
 import { PostService } from '../../posts/services/post.service';
 import { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
+import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import {
   calendarSyncState,
   externalCalendarEvents,
 } from '../../drizzle/schema/calendar-sync.schema';
 import { fetchGoogleCalendarDelta } from '../providers/google-delta.util';
-import { CalendarDeltaResult } from '../providers/delta.types';
+import {
+  CalendarDeltaResult,
+  NormalizedExternalEvent,
+} from '../providers/delta.types';
 import { CalendarPushSyncService } from './calendar-push-sync.service';
 import { CalendarPullSyncService } from './calendar-pull-sync.service';
 
@@ -109,6 +113,22 @@ function deltaResult(
   };
 }
 
+/** A plain inbound event the customer created on their own calendar. */
+function externalEvent(externalEventId: string): NormalizedExternalEvent {
+  return {
+    externalEventId,
+    calendarId: 'primary',
+    title: 'Dentist',
+    startsAt: new Date(Date.now() + DAY_MS),
+    endsAt: new Date(Date.now() + DAY_MS + 30 * 60 * 1000),
+    isAllDay: false,
+    externalUpdatedAt: new Date(),
+    isOurs: false,
+    etag: 'etag-1',
+    raw: {},
+  };
+}
+
 /** The `set` payloads of every UPDATE against `calendar_sync_state`. */
 function syncStateUpdates(): Array<Record<string, unknown>> {
   return dbMock.__state.updates
@@ -118,6 +138,7 @@ function syncStateUpdates(): Array<Record<string, unknown>> {
 
 describe('CalendarPullSyncService.reconcile', () => {
   let service: CalendarPullSyncService;
+  let emit: jest.Mock;
 
   function seedState(over: Record<string, unknown> = {}) {
     dbMock.__state.selectByTable.set(socialMediaChannels, [CHANNEL]);
@@ -137,6 +158,8 @@ describe('CalendarPullSyncService.reconcile', () => {
       getPrimaryCalendar: jest.fn().mockResolvedValue({ id: 'primary' }),
     } as unknown as GoogleCalendarService;
 
+    emit = jest.fn();
+
     service = new CalendarPullSyncService(
       channelService,
       googleCalendarService,
@@ -150,6 +173,7 @@ describe('CalendarPullSyncService.reconcile', () => {
         updateFromCalendar: jest.fn(),
         cancelFromCalendar: jest.fn(),
       } as unknown as ScheduledMessagesService,
+      { emit } as unknown as AnalyticsEventEmitter,
     );
   });
 
@@ -240,5 +264,37 @@ describe('CalendarPullSyncService.reconcile', () => {
     const last = syncStateUpdates().at(-1);
     expect(last).toMatchObject({ syncToken: 'fresh-token' });
     expect(last?.lastFullSyncAt).toBeInstanceOf(Date);
+  });
+
+  // ===========================================================================
+  // Realtime signal — an open calendar view has no other way to learn that the
+  // customer changed something on Google/Outlook.
+  // ===========================================================================
+
+  it('signals the workspace when the pull brought back changes', async () => {
+    seedState();
+    fetchGoogleDeltaMock.mockResolvedValue(
+      deltaResult({ changed: [externalEvent('evt-1')], deleted: ['evt-gone'] }),
+    );
+
+    await service.reconcile(CHANNEL_ID);
+
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(emit).toHaveBeenCalledWith('ws-1', 'calendar.external.changed', {
+      workspaceId: 'ws-1',
+      channelId: CHANNEL_ID,
+      provider: 'google',
+      changed: 1,
+      deleted: 1,
+    });
+  });
+
+  it('stays silent on a quiet poll — no change, no refetch', async () => {
+    seedState();
+    fetchGoogleDeltaMock.mockResolvedValue(deltaResult()); // changed: [], deleted: []
+
+    await service.reconcile(CHANNEL_ID);
+
+    expect(emit).not.toHaveBeenCalled();
   });
 });
