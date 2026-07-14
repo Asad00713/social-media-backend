@@ -9,6 +9,7 @@ function makeService(overrides: {
 } = {}) {
   const whatsapp = {
     exchangeCodeForBusinessToken: jest.fn().mockResolvedValue({ accessToken: 'biz', expiresIn: 5184000 }),
+    getGrantedWabaIds: jest.fn().mockResolvedValue(['w1']),
     getWabaPhoneNumbers: jest.fn().mockResolvedValue([
       { id: '111', displayPhoneNumber: '+1 555', verifiedName: 'Acme' },
     ]),
@@ -136,6 +137,116 @@ describe('WhatsAppOnboardingService.completeEmbeddedSignup', () => {
     ).rejects.toThrow('subscribe boom');
     // No persistence should occur when subscribe fails before createChannel.
     expect(channels.createChannel).not.toHaveBeenCalled();
+  });
+
+  it('does not inspect the token when Meta already sent both ids', async () => {
+    const { service, whatsapp } = makeService();
+    await service.completeEmbeddedSignup('ws-A', 'u1', input);
+    expect(whatsapp.getGrantedWabaIds).not.toHaveBeenCalled();
+  });
+
+  // Meta's WA_EMBEDDED_SIGNUP postMessage can silently never arrive, and its
+  // FINISH_WHATSAPP_BUSINESS_APP_ONBOARDING event omits phone_number_id entirely.
+  // The business token is authoritative, so a code on its own must still connect.
+  describe('when Meta omits the session ids', () => {
+    it('derives both ids from the token and the WABA, and connects', async () => {
+      const { service, whatsapp, channels } = makeService();
+      await service.completeEmbeddedSignup('ws-A', 'u1', { code: 'c' });
+
+      expect(whatsapp.getGrantedWabaIds).toHaveBeenCalledWith('biz');
+      expect(whatsapp.getWabaPhoneNumbers).toHaveBeenCalledWith('biz', 'w1');
+      expect(whatsapp.registerPhoneNumber).toHaveBeenCalledWith('biz', '111', '000000');
+      expect(whatsapp.subscribeWaba).toHaveBeenCalledWith('biz', 'w1');
+      expect(channels.createChannel).toHaveBeenCalledWith(
+        'ws-A',
+        'u1',
+        expect.objectContaining({
+          platformAccountId: '111',
+          accountName: 'Acme',
+          metadata: expect.objectContaining({ wabaId: 'w1' }),
+        }),
+      );
+    });
+
+    it('derives only the phone number when Meta sent the WABA alone', async () => {
+      const { service, whatsapp } = makeService();
+      await service.completeEmbeddedSignup('ws-A', 'u1', { code: 'c', wabaId: 'w9' });
+      expect(whatsapp.getGrantedWabaIds).not.toHaveBeenCalled();
+      expect(whatsapp.getWabaPhoneNumbers).toHaveBeenCalledWith('biz', 'w9');
+      expect(whatsapp.registerPhoneNumber).toHaveBeenCalledWith('biz', '111', '000000');
+    });
+
+    it('takes the most recently onboarded WABA when the token grants several', async () => {
+      const { service, whatsapp } = makeService({
+        whatsapp: { getGrantedWabaIds: jest.fn().mockResolvedValue(['newest', 'older']) },
+      });
+      await service.completeEmbeddedSignup('ws-A', 'u1', { code: 'c' });
+      expect(whatsapp.getWabaPhoneNumbers).toHaveBeenCalledWith('biz', 'newest');
+    });
+
+    it('still enforces the cross-workspace guard on the DERIVED number', async () => {
+      const { service, whatsapp } = makeService({
+        channels: {
+          findChannelsByPlatformAccountAllWorkspaces: jest
+            .fn()
+            .mockResolvedValue([{ id: 9, workspaceId: 'ws-OTHER' }]),
+        },
+      });
+      await expect(
+        service.completeEmbeddedSignup('ws-A', 'u1', { code: 'c' }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      // The guard must still land ahead of every MUTATING Meta call.
+      expect(whatsapp.registerPhoneNumber).not.toHaveBeenCalled();
+      expect(whatsapp.subscribeWaba).not.toHaveBeenCalled();
+    });
+
+    it('explains the failure when the token granted no WABA at all', async () => {
+      const { service, channels } = makeService({
+        whatsapp: { getGrantedWabaIds: jest.fn().mockResolvedValue([]) },
+      });
+      await expect(
+        service.completeEmbeddedSignup('ws-A', 'u1', { code: 'c' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(channels.createChannel).not.toHaveBeenCalled();
+    });
+
+    it('explains the failure when the WABA has no phone number yet', async () => {
+      const { service, channels } = makeService({
+        whatsapp: { getWabaPhoneNumbers: jest.fn().mockResolvedValue([]) },
+      });
+      await expect(
+        service.completeEmbeddedSignup('ws-A', 'u1', { code: 'c' }),
+      ).rejects.toThrow(/no phone number yet/i);
+      expect(channels.createChannel).not.toHaveBeenCalled();
+    });
+
+    it('surfaces a failed phone lookup instead of connecting a half-built channel', async () => {
+      const { service, channels } = makeService({
+        whatsapp: {
+          getWabaPhoneNumbers: jest.fn().mockRejectedValue(new Error('graph down')),
+        },
+      });
+      await expect(
+        service.completeEmbeddedSignup('ws-A', 'u1', { code: 'c' }),
+      ).rejects.toThrow(/graph down/);
+      expect(channels.createChannel).not.toHaveBeenCalled();
+    });
+
+    // When Meta DID send the id, a cosmetic lookup failure must not block connect.
+    it('still connects when the phone lookup fails but Meta sent the id', async () => {
+      const { service, channels } = makeService({
+        whatsapp: {
+          getWabaPhoneNumbers: jest.fn().mockRejectedValue(new Error('graph down')),
+        },
+      });
+      await service.completeEmbeddedSignup('ws-A', 'u1', input);
+      expect(channels.createChannel).toHaveBeenCalledWith(
+        'ws-A',
+        'u1',
+        // No verified_name available, so the channel falls back to the number id.
+        expect.objectContaining({ accountName: '111', platformAccountId: '111' }),
+      );
+    });
   });
 });
 

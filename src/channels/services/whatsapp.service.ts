@@ -142,6 +142,40 @@ export class WhatsAppService {
   }
 
   /**
+   * WABA ids the customer actually granted us, read back off the business token
+   * itself.
+   *
+   * Embedded Signup is supposed to hand the browser a `WA_EMBEDDED_SIGNUP`
+   * message carrying `waba_id`, but that message is delivered by `postMessage`
+   * and can simply never arrive (browser policy, extensions, Meta-side quirks) —
+   * whereas the token is authoritative about what was granted. Meta lists the
+   * most recently onboarded WABA first, so callers want `[0]`.
+   */
+  async getGrantedWabaIds(accessToken: string): Promise<string[]> {
+    const appId = process.env.META_APP_ID;
+    const appSecret = process.env.META_APP_SECRET;
+    if (!appId || !appSecret) {
+      throw new Error('META_APP_ID / META_APP_SECRET are not configured');
+    }
+    const url =
+      `${WHATSAPP_GRAPH_BASE}/debug_token` +
+      `?input_token=${encodeURIComponent(accessToken)}` +
+      `&access_token=${encodeURIComponent(`${appId}|${appSecret}`)}`;
+    const res = await fetch(url);
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg =
+        data?.error?.message || `Token inspection failed (${res.status})`;
+      throw new Error(msg);
+    }
+    const scopes = (data?.data?.granular_scopes as any[]) ?? [];
+    const managed = scopes.find(
+      (s) => s?.scope === 'whatsapp_business_management',
+    );
+    return ((managed?.target_ids as any[]) ?? []).map((id) => String(id));
+  }
+
+  /**
    * Register the customer's business phone number for Cloud API use. `pin` is
    * the 6-digit two-step-verification PIN. If the number is already registered
    * (idempotent re-run) we treat it as success.
