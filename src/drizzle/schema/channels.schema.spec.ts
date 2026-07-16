@@ -25,14 +25,19 @@ const RESTRICTED_DRIVE_SCOPES = [
   'https://www.googleapis.com/auth/drive.photos.readonly',
 ];
 
-it('google_drive requests only the non-sensitive drive.file scope', () => {
-  expect(PLATFORM_CONFIG.google_drive.oauthScopes).toEqual([
-    'https://www.googleapis.com/auth/drive.file',
-  ]);
-});
+describe('Google Drive OAuth scopes', () => {
+  it('requests only the non-sensitive drive.file scope', () => {
+    expect(PLATFORM_CONFIG.google_drive.oauthScopes).toEqual([
+      'https://www.googleapis.com/auth/drive.file',
+    ]);
+  });
 
-it('google_drive requests no restricted Drive scope', () => {
-  for (const scope of PLATFORM_CONFIG.google_drive.oauthScopes) {
-    expect(RESTRICTED_DRIVE_SCOPES).not.toContain(scope);
-  }
+  // Deliberately independent of the test above: if someone widens the expected
+  // array there to admit a second scope, this still fails when that scope is a
+  // known-restricted one.
+  it('requests no restricted Drive scope', () => {
+    for (const scope of PLATFORM_CONFIG.google_drive.oauthScopes) {
+      expect(RESTRICTED_DRIVE_SCOPES).not.toContain(scope);
+    }
+  });
 });
