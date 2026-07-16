@@ -58,6 +58,7 @@
 **Files:**
 - Modify: `src/media-sources/media-sources.service.ts` (remove `browseDrive`, its `switch` arm, the `drive.mapper` import)
 - Modify: `src/channels/services/google-drive.service.ts` (delete `listFiles`, `listImages`, `listVideos`, `listMedia`, `listFolders` and the now-unused `DriveFolder` / `DriveListResponse` types)
+- Modify: `src/channels/channels.controller.ts` (delete the four legacy listing endpoints — see Step 5b)
 - Delete: `src/media-sources/mappers/drive.mapper.ts`
 - Test: `src/media-sources/media-sources.service.browse.spec.ts`
 
@@ -192,8 +193,23 @@ export interface DriveListResponse {
 
 Keep `DriveFile`, `getFile`, `getDownloadUrl`, `downloadFile`, `verifyAccess`, `getUserInfo`, `apiBaseUrl`, and `logger`.
 
+- [ ] **Step 5b: Delete the four legacy Drive listing endpoints**
+
+`src/channels/channels.controller.ts` exposes four routed endpoints that call the methods you just deleted:
+
+- `@Post('google-drive/media')` → `listDriveMedia` (calls `listMedia`)
+- `@Post('google-drive/images')` → `listDriveImages` (calls `listImages`)
+- `@Post('google-drive/videos')` → `listDriveVideos` (calls `listVideos`)
+- `@Post('google-drive/folders')` → `listDriveFolders` (calls `listFolders`)
+
+Delete all four handlers **and their doc comments** (the contiguous block from the `/** List media files from Google Drive (images and videos) */` comment through the closing `}` of `listDriveFolders`). They cannot function under `drive.file` — the Picker replaces them — and the frontend calls none of them (it only uses `google-drive/connect`).
+
+**Keep** the neighboring Drive endpoints, which call methods that survive: `google-drive/connect`, `google-drive/file/:fileId` (`getFile`), `google-drive/me` (`getUserInfo`), `google-drive/verify` (`verifyAccess`).
+
+- [ ] **Step 5c: Verify no callers remain**
+
 Run: `grep -rn "listFolders\|listImages\|listVideos\|listMedia\|listFiles\|DriveFolder\|DriveListResponse" src/ | grep -i drive`
-Expected: no output. Any hit outside Dropbox/OneDrive/Photos is a caller that must be handled — Task 4 removes the chatbot's Drive caller, so hits in `src/chatbot/tools/cloud-storage.tools.ts` are expected at this point and are fixed there. If a hit appears anywhere else, stop and report it.
+Expected: no output. Hits for Dropbox/OneDrive/Photos are fine — those providers keep their own listing methods. Any remaining **Drive** hit is a caller that must be handled: stop and report it.
 
 - [ ] **Step 6: Run tests and build**
 
