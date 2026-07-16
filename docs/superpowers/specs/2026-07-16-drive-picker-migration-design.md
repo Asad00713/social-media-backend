@@ -215,8 +215,18 @@ must allow them; verify during implementation.
 - Update chatbot tool tests/registry expectations for the removed Drive tool.
 - `npm run build` and `npm run test` must pass.
 
-**Frontend** (`socialmedia-frontend`): no test framework in this repo.
-- `npm run build` and `npm run lint` must pass.
+**Frontend** (`socialmedia-frontend`): the repo runs **Vitest** (`npm run test` →
+`vitest run`). There is no `@testing-library/react`; existing specs render via
+`renderToStaticMarkup` against a pre-seeded `QueryClient` — follow that harness
+rather than adding a testing dependency.
+- Extend `use-cloud-sources.spec.ts` (connected account email) and
+  `cloud-source-pane.spec.tsx` (a connected Drive renders the Picker launch
+  surface, not the browser). Unit-test the Picker-document mapper.
+- The Picker integration module itself is not unit-tested: it is entirely
+  browser-global side effects (script injection, Google's `gapi`/GIS
+  singletons), so a test could only assert against a hand-built mock of Google's
+  SDK. Its behavior is covered by the manual smoke below.
+- `npm run test`, `npm run build` and `npm run lint` must pass.
 - **Manual smoke (required):** connect Drive → open Picker → search inside it →
   pick multiple files → confirm they import and land in the draft as permanent
   URLs; then repeat picking a *different* Google account to confirm the
