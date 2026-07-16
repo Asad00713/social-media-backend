@@ -108,86 +108,33 @@ POST /channels/oauth/refresh
 
 Access user's files from Google Drive to use as media in posts.
 
+### Browsing a Drive is not an API call — it's the Google Picker
+
+Drive runs on the **`drive.file`** scope, which grants access only to files the
+user explicitly picks in **Google's own Picker dialog**. There is deliberately no
+endpoint that lists a user's Drive: the server cannot see a file until the user
+picks it. This is what keeps Drive off Google's *restricted* scope tier and out
+of an annual CASA security assessment.
+
+The composer opens the Picker in the browser, and only the chosen **file ids**
+reach us. To pull a picked file into our storage, use the cloud media-sources
+import endpoint:
+
+```
+POST /channels/workspaces/{workspaceId}/media-sources/{channelId}/import
+```
+
+The matching `browse` endpoint rejects `google_drive` with
+`400 — "Google Drive uses the Google Picker"`, for the same reason.
+
+> The endpoints `POST /channels/google-drive/media|images|videos|folders` were
+> removed when Drive moved to `drive.file`. They required the restricted
+> `drive.readonly` scope and cannot work under `drive.file`.
+
 ### Base URL
 All endpoints: `POST /channels/google-drive/...`
 
 ### Endpoints
-
-#### List Media Files (Images & Videos)
-```
-POST /channels/google-drive/media
-```
-
-**Body:**
-```json
-{
-  "accessToken": "ya29...",
-  "folderId": "optional-folder-id",
-  "query": "optional search term",
-  "pageSize": 20,
-  "pageToken": "optional-for-pagination"
-}
-```
-
-**Response:**
-```json
-{
-  "files": [
-    {
-      "id": "1abc123...",
-      "name": "photo.jpg",
-      "mimeType": "image/jpeg",
-      "thumbnailLink": "https://...",
-      "webContentLink": "https://...",
-      "webViewLink": "https://...",
-      "size": "1234567",
-      "createdTime": "2024-01-15T10:30:00Z",
-      "modifiedTime": "2024-01-15T10:30:00Z"
-    }
-  ],
-  "nextPageToken": "token-for-next-page"
-}
-```
-
-#### List Images Only
-```
-POST /channels/google-drive/images
-```
-Same body/response as `/media`
-
-#### List Videos Only
-```
-POST /channels/google-drive/videos
-```
-Same body/response as `/media`
-
-#### List Folders
-```
-POST /channels/google-drive/folders
-```
-
-**Body:**
-```json
-{
-  "accessToken": "ya29...",
-  "parentId": "optional-parent-folder-id",
-  "pageSize": 50,
-  "pageToken": "optional"
-}
-```
-
-**Response:**
-```json
-{
-  "folders": [
-    {
-      "id": "1xyz...",
-      "name": "My Photos"
-    }
-  ],
-  "nextPageToken": "..."
-}
-```
 
 #### Get Specific File
 ```
