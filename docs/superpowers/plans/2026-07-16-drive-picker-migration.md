@@ -1562,7 +1562,9 @@ Record in the task report: each step's actual observed result, the CSP finding f
 
 ## Notes for the implementer
 
-- **Backend first, then frontend.** Tasks 1-4 are backend (`_wt-drive-picker`), Tasks 5-8 are frontend (`_wt-drive-picker-fe`), Task 9 spans both. The branch is red between Task 1 and Task 4 (Task 1 deletes methods the chatbot tool still calls) — that is expected; Task 4 closes it. Do not leave the branch there.
+- **Execution order: 4 → 1 → 2 → 3 → 5 → 6 → 7 → 8 → 9.** Tasks 1-4 are backend (`_wt-drive-picker`), Tasks 5-8 are frontend (`_wt-drive-picker-fe`), Task 9 spans both.
+- **Task 4 runs before Task 1.** Task 4 consumes nothing from Task 1, and it removes the chatbot tool that is the *only* remaining caller of the Drive listing methods Task 1 deletes. Running it first means Task 1 deletes dead code with no callers and the branch stays green at every commit. (Doing it the other way round leaves the branch red across three tasks for no benefit.)
+- Because of that order, Task 1's Step 5 and Step 6 will find **no** remaining references in `src/chatbot/tools/cloud-storage.tools.ts` — the greps must come back empty and `npm run build` must pass. If either still shows Drive listing callers, stop and report: it means Task 4 was skipped or incomplete.
 - **Do not re-author provider services.** Changes to `google-drive.service.ts` are limited to deleting dead listing methods and adding `DriveApiError`.
 - **Google Photos stays exactly as-is** everywhere, including its dead scope and its commented-out entry in `cloud-sources.ts`.
 - **`CloudBrowser` is not modified** by any task in this plan.
