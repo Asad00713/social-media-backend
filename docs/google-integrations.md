@@ -72,7 +72,7 @@ GET /channels/oauth/google_drive/initiate?workspaceId=abc123&redirectUrl=https:/
 **Response:**
 ```json
 {
-  "authorizationUrl": "https://accounts.google.com/o/oauth2/v2/auth?client_id=...&scope=https://www.googleapis.com/auth/drive.readonly&..."
+  "authorizationUrl": "https://accounts.google.com/o/oauth2/v2/auth?client_id=...&scope=https://www.googleapis.com/auth/drive.file&..."
 }
 ```
 
