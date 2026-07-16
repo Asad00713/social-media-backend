@@ -591,7 +591,7 @@ export const PLATFORM_CONFIG: Record<
     maxMediaPerPost: 0, // Not a posting platform
     maxTextLength: 0,
     supportedMediaTypes: ['image', 'video', 'document'],
-    oauthScopes: ['https://www.googleapis.com/auth/drive.readonly'],
+    oauthScopes: ['https://www.googleapis.com/auth/drive.file'],
   },
   google_photos: {
     name: 'Google Photos',

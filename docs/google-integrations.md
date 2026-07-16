@@ -27,7 +27,7 @@ In Google Cloud Console → APIs & Services → OAuth consent screen → Edit Ap
 
 | Service | Scope | Purpose |
 |---------|-------|---------|
-| Google Drive | `https://www.googleapis.com/auth/drive.readonly` | Read files from Drive |
+| Google Drive | `https://www.googleapis.com/auth/drive.file` | Access only files the user selects via the Google Picker |
 | Google Photos | `https://www.googleapis.com/auth/photoslibrary.readonly` | Read photos and videos |
 | Google Calendar | `https://www.googleapis.com/auth/calendar.events` | Create/update/delete events |
 | Google Calendar | `https://www.googleapis.com/auth/calendar.readonly` | Read calendar list |
