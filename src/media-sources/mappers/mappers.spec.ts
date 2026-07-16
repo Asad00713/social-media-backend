@@ -1,5 +1,4 @@
 import { mapDropboxItem } from './dropbox.mapper';
-import { mapDriveItem } from './drive.mapper';
 import { mapOneDriveItem } from './onedrive.mapper';
 import { mapPhotosItem, mapPhotosAlbum } from './photos.mapper';
 
@@ -11,11 +10,6 @@ describe('cloud mappers', () => {
       media_info: { metadata: { '.tag': 'video', dimensions: { width: 1920, height: 1080 }, duration: 5000 } },
     } as any);
     expect(item).toEqual({ id: '/clip.mp4', kind: 'video', name: 'clip.mp4', thumbnailUrl: '', width: 1920, height: 1080, durationSec: 5, sizeBytes: 2048 });
-  });
-
-  it('maps a Drive image', () => {
-    const item = mapDriveItem({ id: 'd1', name: 'p.jpg', mimeType: 'image/jpeg', thumbnailLink: 'http://t/p', size: '999' } as any);
-    expect(item).toEqual({ id: 'd1', kind: 'image', name: 'p.jpg', thumbnailUrl: 'http://t/p', width: undefined, height: undefined, durationSec: undefined, sizeBytes: 999 });
   });
 
   it('maps a OneDrive video with duration in ms → seconds', () => {

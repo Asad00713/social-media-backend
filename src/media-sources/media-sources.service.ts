@@ -6,7 +6,6 @@ import { OneDriveService } from '../channels/services/onedrive.service';
 import { GooglePhotosService } from '../channels/services/google-photos.service';
 import { CloudinaryService } from '../media/cloudinary.service';
 import { mapDropboxItem, mapDropboxFolder } from './mappers/dropbox.mapper';
-import { mapDriveItem, mapDriveFolder } from './mappers/drive.mapper';
 import { mapOneDriveItem, mapOneDriveFolder } from './mappers/onedrive.mapper';
 import { mapPhotosItem, mapPhotosAlbum } from './mappers/photos.mapper';
 import type {
@@ -72,7 +71,9 @@ export class MediaSourcesService {
       case 'dropbox':
         return this.browseDropbox(token, args);
       case 'google_drive':
-        return this.browseDrive(token, args);
+        // Drive runs on drive.file: we can only reach files the user picked in
+        // Google's own Picker, so there is no server-side listing to return.
+        throw new BadRequestException('Google Drive uses the Google Picker');
       case 'onedrive':
         return this.browseOneDrive(token, args);
       case 'google_photos':
@@ -214,44 +215,6 @@ export class MediaSourcesService {
       this.logger.warn(`Dropbox thumbnail backfill failed: ${error}`);
       return items;
     }
-  }
-
-  private async browseDrive(
-    token: string,
-    a: BrowseArgs,
-  ): Promise<CloudBrowseResult> {
-    if (a.kind === 'folders') {
-      const res = await this.drive.listFolders(token, {
-        parentId: a.path,
-        pageSize: a.limit,
-        pageToken: a.cursor,
-      });
-      return {
-        items: [],
-        folders: res.folders.map(mapDriveFolder),
-        nextCursor: res.nextPageToken,
-      };
-    }
-
-    const options = {
-      folderId: a.path,
-      pageSize: a.limit,
-      pageToken: a.cursor,
-    };
-    const res =
-      a.kind === 'images'
-        ? await this.drive.listImages(token, options)
-        : a.kind === 'videos'
-          ? await this.drive.listVideos(token, options)
-          : await this.drive.listMedia(token, {
-              ...options,
-              query: a.kind === 'search' ? a.query : undefined,
-            });
-    return {
-      items: res.files.map(mapDriveItem),
-      folders: [],
-      nextCursor: res.nextPageToken,
-    };
   }
 
   /**
