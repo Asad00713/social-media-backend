@@ -18,7 +18,6 @@ import { PostService } from '../posts/services/post.service';
 import { ChannelService } from '../channels/services/channel.service';
 import { TavilyService } from '../ai/services/tavily.service';
 import { UnsplashService } from '../channels/services/unsplash.service';
-import { GoogleDriveService } from '../channels/services/google-drive.service';
 import { OneDriveService } from '../channels/services/onedrive.service';
 import { DropboxService } from '../channels/services/dropbox.service';
 import { GooglePhotosService } from '../channels/services/google-photos.service';
@@ -109,7 +108,6 @@ export class ChatbotModule implements OnModuleInit {
     private readonly tavilyService: TavilyService,
     private readonly unsplashService: UnsplashService,
     private readonly pexelsService: PexelsService,
-    private readonly googleDriveService: GoogleDriveService,
     private readonly oneDriveService: OneDriveService,
     private readonly dropboxService: DropboxService,
     private readonly googlePhotosService: GooglePhotosService,
@@ -126,7 +124,6 @@ export class ChatbotModule implements OnModuleInit {
       ...createStockImageTools(this.unsplashService, this.pexelsService),
       ...createCloudStorageTools(
         this.channelService,
-        this.googleDriveService,
         this.oneDriveService,
         this.dropboxService,
         this.googlePhotosService,

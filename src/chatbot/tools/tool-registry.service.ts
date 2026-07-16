@@ -137,7 +137,6 @@ export class ToolRegistryService {
       web_search: 'Searching the web',
       search_unsplash: 'Searching Unsplash for images',
       search_pexels: 'Searching Pexels for media',
-      search_google_drive: 'Searching Google Drive',
       search_onedrive: 'Searching OneDrive',
       search_dropbox: 'Searching Dropbox',
       search_google_photos: 'Browsing Google Photos',

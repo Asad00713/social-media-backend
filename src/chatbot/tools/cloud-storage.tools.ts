@@ -1,5 +1,4 @@
 import type { ChannelService } from '../../channels/services/channel.service';
-import type { GoogleDriveService } from '../../channels/services/google-drive.service';
 import type { OneDriveService } from '../../channels/services/onedrive.service';
 import type { DropboxService } from '../../channels/services/dropbox.service';
 import type { GooglePhotosService } from '../../channels/services/google-photos.service';
@@ -54,88 +53,11 @@ async function getIntegrationToken(
 
 export function createCloudStorageTools(
   channelService: ChannelService,
-  googleDriveService: GoogleDriveService,
   oneDriveService: OneDriveService,
   dropboxService: DropboxService,
   googlePhotosService: GooglePhotosService,
 ): ChatbotTool[] {
   return [
-    // ===== GOOGLE DRIVE =====
-    {
-      name: 'search_google_drive',
-      description:
-        "Search for files (images, videos, documents) in the user's connected Google Drive. Use this when the user mentions a file in their Drive or wants to find media from Google Drive for a post. Requires the user to have Google Drive connected.",
-      parameters: {
-        type: 'object',
-        properties: {
-          query: {
-            type: 'string',
-            description:
-              'Search query — matches file names (e.g. "beach sunset", "logo", "product photo")',
-          },
-          mediaOnly: {
-            type: 'boolean',
-            description:
-              'If true, only return images and videos (default: true)',
-          },
-          maxResults: {
-            type: 'number',
-            description: 'Maximum results to return (default: 10, max: 20)',
-          },
-        },
-        required: ['query'],
-      },
-      execute: async (
-        params: Record<string, any>,
-        context: ToolContext,
-      ): Promise<ToolResult> => {
-        const auth = await getIntegrationToken(
-          channelService,
-          context,
-          'google_drive',
-        );
-        if ('error' in auth) return { success: false, error: auth.error };
-
-        try {
-          const maxResults = Math.min(params.maxResults || 10, 20);
-          const mediaOnly = params.mediaOnly !== false;
-
-          const result = mediaOnly
-            ? await googleDriveService.listMedia(auth.token, {
-                query: params.query,
-                pageSize: maxResults,
-              })
-            : await googleDriveService.listFiles(auth.token, {
-                query: params.query,
-                pageSize: maxResults,
-              });
-
-          return {
-            success: true,
-            data: {
-              files: result.files.map((f: any) => ({
-                id: f.id,
-                name: f.name,
-                mimeType: f.mimeType,
-                thumbnailLink: f.thumbnailLink,
-                webViewLink: f.webViewLink,
-                webContentLink: f.webContentLink,
-                size: f.size,
-                modifiedTime: f.modifiedTime,
-              })),
-              total: result.files.length,
-              source: 'Google Drive',
-            },
-          };
-        } catch (error) {
-          return {
-            success: false,
-            error: `Google Drive search failed: ${error instanceof Error ? error.message : 'Unknown error'}`,
-          };
-        }
-      },
-    },
-
     // ===== ONEDRIVE =====
     {
       name: 'search_onedrive',

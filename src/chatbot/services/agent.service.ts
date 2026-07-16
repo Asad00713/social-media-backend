@@ -648,24 +648,6 @@ Example: ["Create a new post", "View my scheduled posts", "Check my analytics"]`
       }
     }
 
-    // Google Drive results
-    if (toolName === 'search_google_drive' && result.data.files) {
-      for (const f of result.data.files) {
-        const url = f.webContentLink || f.webViewLink;
-        if (!this.isValidMediaUrl(url)) continue;
-        items.push({
-          id: f.id,
-          url,
-          thumbnailUrl: this.isValidMediaUrl(f.thumbnailLink)
-            ? f.thumbnailLink
-            : undefined,
-          alt: f.name,
-          source: 'Google Drive',
-          mimeType: f.mimeType,
-        });
-      }
-    }
-
     // OneDrive results
     if (toolName === 'search_onedrive' && result.data.files) {
       for (const f of result.data.files) {
