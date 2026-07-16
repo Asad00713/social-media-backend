@@ -1,7 +1,10 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { ChannelService } from '../channels/services/channel.service';
 import { DropboxService } from '../channels/services/dropbox.service';
-import { GoogleDriveService } from '../channels/services/google-drive.service';
+import {
+  GoogleDriveService,
+  DriveApiError,
+} from '../channels/services/google-drive.service';
 import { OneDriveService } from '../channels/services/onedrive.service';
 import { GooglePhotosService } from '../channels/services/google-photos.service';
 import { CloudinaryService } from '../media/cloudinary.service';
@@ -99,7 +102,12 @@ export class MediaSourcesService {
       workspaceId,
     );
 
-    const buffer = await this.downloadBuffer(platform, token, args.fileId);
+    const buffer = await this.downloadPicked(
+      platform,
+      channel,
+      token,
+      args.fileId,
+    );
     const up = await this.cloudinary.uploadFromBuffer(buffer, {
       folder: 'composer/cloud',
       resourceType: 'auto',
@@ -132,6 +140,39 @@ export class MediaSourcesService {
         const mediaItem = await this.photos.getMediaItem(token, fileId);
         return this.photos.downloadMediaItem(token, mediaItem);
       }
+    }
+  }
+
+  /**
+   * Wraps the provider download so Drive's "this account can't see that file"
+   * answer becomes advice instead of a 500.
+   *
+   * Under drive.file our token only reaches files the user picked with the SAME
+   * Google account the channel was connected with. Picking from a second signed-in
+   * account is the most likely real-world failure, and Drive reports it as a plain
+   * 403/404 — indistinguishable from a bug unless we say so.
+   */
+  private async downloadPicked(
+    platform: CloudStoragePlatform,
+    channel: { accountName?: string | null },
+    token: string,
+    fileId: string,
+  ): Promise<Buffer> {
+    try {
+      return await this.downloadBuffer(platform, token, fileId);
+    } catch (error) {
+      if (
+        platform === 'google_drive' &&
+        error instanceof DriveApiError &&
+        (error.status === 403 || error.status === 404)
+      ) {
+        const account = channel.accountName ?? 'your connected account';
+        throw new BadRequestException(
+          `Choose files from your connected Google Drive account (${account}). ` +
+            `Schedura can only open files picked from that account.`,
+        );
+      }
+      throw error;
     }
   }
 

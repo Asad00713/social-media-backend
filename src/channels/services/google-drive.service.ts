@@ -12,6 +12,23 @@ export interface DriveFile {
   modifiedTime?: string;
 }
 
+/**
+ * A Drive API failure that keeps its HTTP status.
+ *
+ * Callers need the status to tell "you picked a file this account can't see"
+ * (403/404 — actionable) apart from "Drive is broken" (5xx — not the user's
+ * fault). A flat Error would collapse that distinction.
+ */
+export class DriveApiError extends Error {
+  constructor(
+    message: string,
+    readonly status: number,
+  ) {
+    super(message);
+    this.name = 'DriveApiError';
+  }
+}
+
 @Injectable()
 export class GoogleDriveService {
   private readonly logger = new Logger(GoogleDriveService.name);
@@ -66,7 +83,10 @@ export class GoogleDriveService {
     if (!response.ok) {
       const error = await response.text();
       this.logger.error(`Failed to download Drive file: ${error}`);
-      throw new BadRequestException('Failed to download Google Drive file');
+      throw new DriveApiError(
+        'Failed to download Google Drive file',
+        response.status,
+      );
     }
 
     const arrayBuffer = await response.arrayBuffer();
