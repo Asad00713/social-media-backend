@@ -154,7 +154,7 @@ export class MediaSourcesService {
    */
   private async downloadPicked(
     platform: CloudStoragePlatform,
-    channel: { accountName?: string | null },
+    channel: { username?: string | null; accountName?: string | null },
     token: string,
     fileId: string,
   ): Promise<Buffer> {
@@ -166,7 +166,12 @@ export class MediaSourcesService {
         error instanceof DriveApiError &&
         (error.status === 403 || error.status === 404)
       ) {
-        const account = channel.accountName ?? 'your connected account';
+        // Name the account by EMAIL (`username`), not display name: Google's
+        // account switcher lists emails, and the Picker's login hint and the
+        // pane's "Connected as" line both use the email too. Naming it three
+        // different ways is how the user ends up re-picking the wrong account.
+        const account =
+          channel.username ?? channel.accountName ?? 'your connected account';
         throw new BadRequestException(
           `Choose files from your connected Google Drive account (${account}). ` +
             `Schedura can only open files picked from that account.`,

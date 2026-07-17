@@ -94,6 +94,36 @@ it('import maps a Drive 404 to an actionable account-mismatch error', async () =
   );
 });
 
+// The advice only helps if it names the account the way Google does. The Picker's
+// login hint and the pane's "Connected as" line both use the email (`username`),
+// so the toast must not name a display name instead — three different names for
+// one account is how a user re-picks the wrong one.
+it('import names the connected account by email, not display name', async () => {
+  channelService.getChannelById.mockResolvedValue({
+    platform: 'google_drive',
+    username: 'someone@gmail.com',
+    accountName: 'Someone Nice',
+  });
+  drive.downloadFile.mockRejectedValue(new DriveApiError('File not found', 404));
+  const svc = await build();
+  await expect(svc.import('ws', 3, { fileId: 'f1', kind: 'image' })).rejects.toThrow(
+    /someone@gmail\.com/,
+  );
+});
+
+it('import falls back to the display name when the channel carries no email', async () => {
+  channelService.getChannelById.mockResolvedValue({
+    platform: 'google_drive',
+    username: null,
+    accountName: 'Someone Nice',
+  });
+  drive.downloadFile.mockRejectedValue(new DriveApiError('File not found', 404));
+  const svc = await build();
+  await expect(svc.import('ws', 3, { fileId: 'f1', kind: 'image' })).rejects.toThrow(
+    /Someone Nice/,
+  );
+});
+
 it('import maps a Drive 403 to the same actionable error', async () => {
   channelService.getChannelById.mockResolvedValue({ platform: 'google_drive' });
   drive.downloadFile.mockRejectedValue(new DriveApiError('Forbidden', 403));

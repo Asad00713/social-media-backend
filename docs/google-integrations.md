@@ -18,8 +18,13 @@ This document covers the Google Drive, Google Photos, and Google Calendar integr
 Go to [Google Cloud Console](https://console.cloud.google.com/apis/library) and enable:
 
 1. **Google Drive API** - For accessing user's Drive files
-2. **Photos Library API** - For accessing user's Google Photos
-3. **Google Calendar API** - For calendar sync
+2. **Google Picker API** - Required: Drive is browsed through Google's Picker (see [Google Drive API](#google-drive-api))
+3. **Photos Library API** - For accessing user's Google Photos
+4. **Google Calendar API** - For calendar sync
+
+Also create an **API key** (APIs & Services → Credentials → Create credentials →
+API key) and restrict it by HTTP referrer to the app's origins. The Picker needs
+it as its developer key.
 
 ### 2. Add Scopes to OAuth Consent Screen
 
@@ -40,6 +45,20 @@ All Google services use the same credentials as YouTube:
 YOUTUBE_CLIENT_ID=your-google-client-id
 YOUTUBE_CLIENT_SECRET=your-google-client-secret
 ```
+
+The **frontend** additionally needs these for the Drive Picker (all three are
+public by design — they ship to the browser):
+
+```env
+VITE_GOOGLE_CLIENT_ID=your-google-client-id
+VITE_GOOGLE_PICKER_API_KEY=your-referrer-restricted-api-key
+VITE_GOOGLE_PICKER_APP_ID=your-google-cloud-project-number
+```
+
+> **`VITE_GOOGLE_CLIENT_ID` must be the same value as `YOUTUBE_CLIENT_ID`.**
+> Drive/Photos/Calendar all share the YouTube OAuth app. If the Picker runs under
+> a different client id, the `drive.file` grant goes to that other client and
+> every server-side import fails with a 404 — with no obvious clue why.
 
 ---
 
