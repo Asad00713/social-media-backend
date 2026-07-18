@@ -30,9 +30,8 @@ export class YoutubeRetentionScheduler {
     } catch (err) {
       // Never rethrow from a cron handler — an unhandled rejection stops the
       // scheduler for every later tick, silently ending retention entirely.
-      this.logger.error(
-        `YouTube retention sweep failed: ${(err as Error).message}`,
-      );
+      const message = err instanceof Error ? err.message : String(err);
+      this.logger.error(`YouTube retention sweep failed: ${message}`);
     }
   }
 }
