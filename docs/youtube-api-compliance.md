@@ -1,9 +1,16 @@
 # YouTube API Services Compliance
 
 What we built to satisfy the YouTube Developer Policy, and the exact disclosure
-text the UI must render.
+text the UI must render. B4 (disclosure) is NOT built yet — see the status note
+below.
 
 ## Required disclosure
+
+> **STATUS: NOT YET RENDERED ANYWHERE.** This wording is agreed, but no UI shows
+> it. The frontend lives in a separate repository (`socialmedia-frontend`) and is
+> a separate phase that has not started. **The compliance audit cannot pass until
+> this is live** — B4 is the one obligation on this page that is specified but not
+> built. Do not read the rest of this document as evidence that it is done.
 
 Render this wherever YouTube data appears or is connected — the settings/legal
 surface and the YouTube connect flow at minimum:
