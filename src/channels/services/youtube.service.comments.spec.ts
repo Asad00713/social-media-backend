@@ -1,6 +1,7 @@
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { YouTubeService } from './youtube.service';
+import { QuotaTrackerService } from '../analytics/services/quota-tracker.service';
 
 /** Build a comment thread whose newest activity is at `iso`. */
 function thread(id: string, iso: string, replyIso?: string) {
@@ -42,6 +43,10 @@ async function build() {
     providers: [
       YouTubeService,
       { provide: ConfigService, useValue: { get: () => undefined } },
+      {
+        provide: QuotaTrackerService,
+        useValue: { tryConsume: async () => ({ allowed: true, remaining: 9999 }) },
+      },
     ],
   }).compile();
   return mod.get(YouTubeService);

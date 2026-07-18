@@ -1,4 +1,5 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { QuotaTrackerService } from '../analytics/services/quota-tracker.service';
 
 export interface YouTubeChannel {
   id: string;
@@ -34,6 +35,33 @@ export class YouTubeService {
   private readonly logger = new Logger(YouTubeService.name);
   private readonly apiBaseUrl = 'https://www.googleapis.com/youtube/v3';
 
+  constructor(private readonly quota: QuotaTrackerService) {}
+
+  /**
+   * Reserve quota before a YouTube API call, or throw.
+   *
+   * Costs are fixed by Google and documented per endpoint:
+   * commentThreads.list = 1, comments.insert / commentThreads.insert /
+   * comments.delete = 50, channels.list / videos.list = 1,
+   * thumbnails.set = 50, playlistItems.insert = 50.
+   *
+   * videos.insert is deliberately NOT tracked here — it costs ~100 units
+   * against its own ~100 calls/day bucket, entirely outside the 10,000-unit
+   * shared pool this tracker measures.
+   */
+  private async reserveQuota(
+    cost: number,
+    subsystem: 'publishing' | 'analytics' | 'inbox',
+    operation: string,
+  ): Promise<void> {
+    const result = await this.quota.tryConsume('youtube', cost, subsystem);
+    if (!result.allowed) {
+      throw new Error(
+        `YouTube ${subsystem} quota exhausted — skipping ${operation} (${result.remaining} units left)`,
+      );
+    }
+  }
+
   /**
    * Delete a YouTube comment authored by the connected channel. Phase 2.3.
    *
@@ -44,6 +72,7 @@ export class YouTubeService {
     accessToken: string,
     commentId: string,
   ): Promise<boolean> {
+    await this.reserveQuota(50, 'inbox', 'comments.delete');
     const url = new URL(`${this.apiBaseUrl}/comments`);
     url.searchParams.set('id', commentId);
     const res = await fetch(url.toString(), {
@@ -64,6 +93,7 @@ export class YouTubeService {
    * Get the authenticated user's YouTube channel
    */
   async getCurrentChannel(accessToken: string): Promise<YouTubeChannel> {
+    await this.reserveQuota(1, 'publishing', 'channels.list');
     const url = new URL(`${this.apiBaseUrl}/channels`);
     url.searchParams.set('part', 'snippet,statistics,contentDetails');
     url.searchParams.set('mine', 'true');
@@ -132,6 +162,7 @@ export class YouTubeService {
       itemCount: number;
     }>
   > {
+    await this.reserveQuota(1, 'analytics', 'playlists.list');
     const url = new URL(`${this.apiBaseUrl}/playlists`);
     url.searchParams.set('part', 'snippet,contentDetails');
     url.searchParams.set('mine', 'true');
@@ -259,6 +290,7 @@ export class YouTubeService {
     thumbnailUrl: string,
   ): Promise<void> {
     try {
+      await this.reserveQuota(50, 'publishing', 'thumbnails.set');
       // Download the thumbnail image
       this.logger.log(`Downloading thumbnail from: ${thumbnailUrl}`);
       const thumbnailResponse = await fetch(thumbnailUrl);
@@ -396,6 +428,7 @@ export class YouTubeService {
     videoId: string,
     playlistId: string,
   ): Promise<void> {
+    await this.reserveQuota(50, 'publishing', 'playlistItems.insert');
     const url = new URL(`${this.apiBaseUrl}/playlistItems`);
     url.searchParams.set('part', 'snippet');
 
@@ -437,6 +470,7 @@ export class YouTubeService {
     status: string;
     processingStatus: string;
   }> {
+    await this.reserveQuota(1, 'analytics', 'videos.list');
     const url = new URL(`${this.apiBaseUrl}/videos`);
     url.searchParams.set('part', 'snippet,status,processingDetails');
     url.searchParams.set('id', videoId);
@@ -477,6 +511,7 @@ export class YouTubeService {
     accessToken: string,
     regionCode: string = 'US',
   ): Promise<Array<{ id: string; title: string }>> {
+    await this.reserveQuota(1, 'analytics', 'videoCategories.list');
     const url = new URL(`${this.apiBaseUrl}/videoCategories`);
     url.searchParams.set('part', 'snippet');
     url.searchParams.set('regionCode', regionCode);
@@ -518,6 +553,7 @@ export class YouTubeService {
     videoId: string,
     text: string,
   ): Promise<{ commentId: string }> {
+    await this.reserveQuota(50, 'publishing', 'commentThreads.insert');
     if (!text || !text.trim()) {
       throw new Error('Comment text is required');
     }
@@ -641,6 +677,7 @@ export class YouTubeService {
     const sinceMs = since?.getTime();
 
     while (pages < maxPages) {
+      await this.reserveQuota(1, 'inbox', 'commentThreads.list');
       const url = new URL(
         'https://www.googleapis.com/youtube/v3/commentThreads',
       );
@@ -709,6 +746,7 @@ export class YouTubeService {
     parentCommentId: string,
     text: string,
   ): Promise<{ commentId: string }> {
+    await this.reserveQuota(50, 'inbox', 'comments.insert');
     const url = new URL('https://www.googleapis.com/youtube/v3/comments');
     url.searchParams.set('part', 'snippet');
 
