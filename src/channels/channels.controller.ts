@@ -99,6 +99,8 @@ import {
   readEmbeddedSignupConfig,
   type EmbeddedSignupConfig,
 } from './services/embedded-signup-config';
+import { YoutubeDataDeletionService } from './services/youtube-data-deletion.service';
+import { GoogleOauthRevokeService } from './services/google-oauth-revoke.service';
 
 @Controller('channels')
 export class ChannelsController {
@@ -142,6 +144,8 @@ export class ChannelsController {
     private readonly calendarPushSyncService: CalendarPushSyncService,
     @InjectQueue(CALENDAR_RECONCILE_QUEUE)
     private readonly calendarReconcileQueue: Queue,
+    private readonly youtubeDataDeletion: YoutubeDataDeletionService,
+    private readonly googleRevoke: GoogleOauthRevokeService,
   ) {}
 
   // ==========================================================================
@@ -954,6 +958,54 @@ export class ChannelsController {
       );
     }
     await this.channelService.deleteChannel(id, workspaceId);
+  }
+
+  /**
+   * Explicit user-initiated deletion of all YouTube data for a channel, without
+   * disconnecting it. Required by YouTube Developer Policy III.E.4, which wants
+   * a stated capability rather than a side-effect of disconnecting.
+   *
+   * Also revokes the Google grant when no other Google channel remains, matching
+   * the disconnect path — the user is withdrawing consent either way.
+   */
+  @Delete('workspaces/:workspaceId/:channelId/youtube-data')
+  @UseGuards(JwtAuthGuard)
+  async deleteYoutubeData(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+  ) {
+    const id = parseInt(channelId, 10);
+    const channel = await this.channelService.getChannelById(id, workspaceId);
+
+    if (channel.platform !== 'youtube') {
+      throw new BadRequestException('This channel is not a YouTube channel');
+    }
+
+    const summary = await this.youtubeDataDeletion.deleteAllYoutubeData(
+      id,
+      workspaceId,
+    );
+
+    try {
+      const accessToken = await this.channelService.getAccessToken(
+        id,
+        workspaceId,
+      );
+      await this.googleRevoke.revokeIfLastGoogleChannel(
+        id,
+        workspaceId,
+        'youtube',
+        accessToken,
+      );
+    } catch {
+      // Best effort — the data is already gone, which is what was requested.
+    }
+
+    return {
+      success: true,
+      message: 'All YouTube data for this channel has been deleted.',
+      deleted: summary,
+    };
   }
 
   /**

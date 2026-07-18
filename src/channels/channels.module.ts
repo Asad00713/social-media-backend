@@ -16,6 +16,7 @@ import { ThreadsService } from './services/threads.service';
 import { BlueskyService } from './services/bluesky.service';
 import { MastodonService } from './services/mastodon.service';
 import { GoogleOauthRevokeService } from './services/google-oauth-revoke.service';
+import { YoutubeDataDeletionService } from './services/youtube-data-deletion.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
@@ -82,6 +83,7 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
     BlueskyService,
     MastodonService,
     GoogleOauthRevokeService,
+    YoutubeDataDeletionService,
     GoogleDriveService,
     GooglePhotosService,
     GoogleCalendarService,

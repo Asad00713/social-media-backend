@@ -71,6 +71,11 @@ describe('ChannelsController - cloud storage connect routes', () => {
       noop, // telegramService
       noop, // whatsappService
       noop, // whatsappOnboardingService
+      noop, // calendarSubscriptionService
+      noop, // calendarPushSyncService
+      noop, // calendarReconcileQueue
+      noop, // youtubeDataDeletion
+      noop, // googleRevoke
     );
 
     return { controller, createChannel, googleDriveService, googlePhotosService };
