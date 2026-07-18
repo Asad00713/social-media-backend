@@ -48,6 +48,7 @@ import { CALENDAR_RECONCILE_QUEUE } from '../calendar-sync/calendar-sync.constan
 import { TokenRefreshProcessor } from './processors/token-refresh.processor';
 import { TokenRefreshScheduler } from './schedulers/token-refresh.scheduler';
 import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.scheduler';
+import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authorization-check.scheduler';
 
 // CalendarSyncModule is imported (forwardRef — CalendarSyncModule imports this
 // one back) so the OAuth callback can arm the provider push subscription the
@@ -99,6 +100,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     TokenRefreshProcessor,
     TokenRefreshScheduler,
     RefreshTokenExpiryScheduler,
+    YoutubeAuthorizationCheckScheduler,
     MetaAdsClient,
     AdAccountsService,
     BoostPostService,
