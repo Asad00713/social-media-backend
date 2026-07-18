@@ -85,7 +85,7 @@ export class ChannelRecentPostsSyncHandler {
     }
 
     const cost = adapter.estimateQuotaCost('fetchRecentPosts');
-    const quota = await this.quota.tryConsume(platform, cost);
+    const quota = await this.quota.tryConsume(platform, cost, 'analytics');
     if (!quota.allowed) {
       this.logger.warn(
         `Recent posts sync: quota exhausted for ${platform}, deferring`,

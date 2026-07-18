@@ -75,4 +75,22 @@ describe('QuotaTrackerService', () => {
     expect(result.allowed).toBe(true);
     expect(result.remaining).toBe(9900);
   });
+
+  // YouTube's quota resets at midnight Pacific, not UTC. This instant is
+  // 2026-07-18T04:00:00Z, which is 2026-07-17T21:00:00-07:00 in Los Angeles
+  // (PDT) — same instant, different calendar date in each timezone. The day
+  // bucket must follow Pacific, or a UTC-derived key would roll over 7-8
+  // hours before YouTube's own quota day actually resets.
+  it('buckets the day key by Pacific time, not UTC', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-07-18T04:00:00Z'));
+    try {
+      await service.tryConsume('youtube', 10, 'publishing');
+      const keys = [...fakeRedis.store.keys()];
+      expect(keys).toContain('quota:youtube:publishing:2026-07-17');
+      expect(keys).not.toContain('quota:youtube:publishing:2026-07-18');
+    } finally {
+      jest.useRealTimers();
+    }
+  });
 });

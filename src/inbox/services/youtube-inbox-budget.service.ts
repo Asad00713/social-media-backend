@@ -68,8 +68,20 @@ export class YoutubeInboxBudgetService {
     return Number.isFinite(raw) && raw > 0 ? raw : DEFAULT_DAILY_UNITS;
   }
 
+  /**
+   * YouTube's daily quota resets at midnight Pacific, not UTC. Deriving the
+   * bucket from `toISOString()` (UTC) would roll our counter over at
+   * 00:00 UTC — 16:00 or 17:00 Pacific — while YouTube's own quota day still
+   * has 7-8 hours left carrying whatever we already spent. That lets a
+   * single real YouTube quota day see up to 2x this allowance (once before
+   * our early UTC rollover, once after). Do NOT "simplify" this back to
+   * toISOString() — that reintroduces the double-spend window. Same
+   * rationale as QuotaTrackerService.dayKey.
+   */
   private dayKey(nowMs: number): string {
-    return new Date(nowMs).toISOString().slice(0, 10);
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Los_Angeles',
+    }).format(new Date(nowMs));
   }
 
   private unitsKey(nowMs: number): string {

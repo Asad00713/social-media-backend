@@ -54,7 +54,7 @@ export class ChannelProfileSnapshotHandler {
 
     const adapter = this.registry.get(platform);
     const cost = adapter.estimateQuotaCost('fetchProfileSnapshot');
-    const quota = await this.quota.tryConsume(platform, cost);
+    const quota = await this.quota.tryConsume(platform, cost, 'analytics');
     if (!quota.allowed) {
       this.logger.warn(
         `Quota exhausted for ${platform}, deferring channel ${channelId}`,

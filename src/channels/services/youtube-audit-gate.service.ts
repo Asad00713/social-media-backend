@@ -57,8 +57,12 @@ export class YoutubeAuditGateService {
 
     const channelKey = `youtube:uploads:channel:${channelId}:${day}`;
     const channelCount = await this.redis.incr(channelKey);
-    if (channelCount === 1)
-      await this.redis.expire(channelKey, DAILY_TTL_SECONDS);
+    // Apply unconditionally, not just when count === 1: if the process dies
+    // between incr and expire on the very first call of the day, the key is
+    // left with no TTL and never resets — capping this channel forever until
+    // someone manually clears Redis. Re-applying on every call is idempotent
+    // and cheap, and closes that window.
+    await this.redis.expire(channelKey, DAILY_TTL_SECONDS);
 
     if (channelCount > PER_CHANNEL_DAILY_UPLOADS) {
       await this.redis.decr(channelKey);
@@ -74,7 +78,8 @@ export class YoutubeAuditGateService {
     if (!this.isAudited) {
       const appKey = `youtube:uploads:app:${day}`;
       const appCount = await this.redis.incr(appKey);
-      if (appCount === 1) await this.redis.expire(appKey, DAILY_TTL_SECONDS);
+      // Same unconditional-expire fix as channelKey above — same hazard.
+      await this.redis.expire(appKey, DAILY_TTL_SECONDS);
 
       if (appCount > PRE_AUDIT_DAILY_UPLOADS) {
         await this.redis.decr(appKey);

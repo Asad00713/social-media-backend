@@ -190,7 +190,22 @@ export class InboxPollProcessor extends WorkerHost {
         .filter((c): c is { platformPostId: string; publishedAt: Date | null } =>
           Boolean(c),
         );
-      youtubeAllowed = await this.selectYoutubeTargets(channelId, candidates);
+      try {
+        youtubeAllowed = await this.selectYoutubeTargets(channelId, candidates);
+      } catch (err) {
+        // The budget gate lives in Redis; if Redis is unreachable here, fail
+        // toward polling everything (this cycle only) rather than polling
+        // nothing. Polling nothing degrades silently — a Redis blip would
+        // quietly stop YouTube comment ingestion with no error anywhere.
+        // Polling everything fails in the more observable direction: if it
+        // ever actually runs the channel out of quota, that shows up loudly
+        // as quotaExceeded errors elsewhere in this pipeline, which is a
+        // failure someone will notice and can act on.
+        this.logger.error(
+          `Inbox poll: YouTube budget gate failed for channel ${channelId}, polling all candidates this cycle: ${(err as Error).message}`,
+        );
+        youtubeAllowed = null;
+      }
     }
 
     for (const post of recent) {
@@ -215,15 +230,6 @@ export class InboxPollProcessor extends WorkerHost {
         );
 
         fetched += items.length;
-        // Mark AFTER a successful fetch — a throw leaves the video due, so
-        // the next cycle retries instead of skipping it for a whole interval.
-        if (platform === 'youtube') {
-          await this.youtubeBudget.markPolled(
-            channelId,
-            target.platformPostId,
-            Date.now(),
-          );
-        }
         for (const item of items) {
           const inserted = await this.inboxService.upsertComment({
             workspaceId: channelRow.workspaceId,
@@ -255,6 +261,23 @@ export class InboxPollProcessor extends WorkerHost {
           });
           if (inserted) ingested += 1;
           else duplicates += 1;
+        }
+        // Mark AFTER the fetch AND the upsert loop have both succeeded. If
+        // markPolled runs before the upserts and then throws, the surrounding
+        // catch logs "fetch failed" even though the fetch succeeded, and the
+        // comments that were already fetched and upserted above are fine —
+        // but running markPolled first meant a bookkeeping-only failure could
+        // previously discard them by being conflated with a fetch failure.
+        // Running it last means a markPolled throw only costs a redundant
+        // poll next cycle (the video stays "due"), never lost data. A throw
+        // leaves the video due either way, so the next cycle retries instead
+        // of skipping it for a whole interval.
+        if (platform === 'youtube') {
+          await this.youtubeBudget.markPolled(
+            channelId,
+            target.platformPostId,
+            Date.now(),
+          );
         }
       } catch (err) {
         this.logger.error(
