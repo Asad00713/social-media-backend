@@ -15,6 +15,14 @@ export interface PublishOptions {
   accessToken: string;
   platformAccountId: string;
   channelMetadata: Record<string, any>;
+  /**
+   * Internal DB channel id (numeric, not the platform account id). Most
+   * publishers ignore it; YouTubePublisher uses it to key its pre-audit /
+   * per-channel upload caps (see YoutubeAuditGateService). Required so every
+   * caller supplies a real id rather than the gate silently keying off
+   * `undefined`.
+   */
+  channelId: number;
 }
 
 export abstract class BasePublisher {
