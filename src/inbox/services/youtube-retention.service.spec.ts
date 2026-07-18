@@ -91,6 +91,19 @@ describe('YoutubeRetentionService', () => {
     expect(sql).not.toContain('DELETE');
   });
 
+  // YoutubeInboxAdapter stores the same channel id as a URL under
+  // metadata.authorChannelUrl (src/inbox/adapters/youtube-inbox.adapter.ts).
+  // Nulling author_platform_id but leaving that key in the surviving jsonb
+  // would leave the commenter fully identifiable — the whole point of this
+  // job would be defeated.
+  it('also strips metadata.authorChannelUrl, and selects rows that carry only that key', async () => {
+    const svc = await build();
+    await svc.wipeExpiredContent(new Date('2026-07-18T00:00:00Z'));
+    const sql = sqlText();
+    expect(sql).toContain("metadata = metadata - 'authorChannelUrl'");
+    expect(sql).toContain("metadata ? 'authorChannelUrl'");
+  });
+
   // Analytics is III.E.4.b data and may be kept indefinitely. Touching those
   // tables here would destroy the analytics product for no policy reason.
   it('never touches the analytics tables', async () => {

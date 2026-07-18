@@ -47,15 +47,26 @@ export interface RevokeOutcome {
  * would make revocation isolated — that requires new credentials and a reconnect
  * for every existing Google channel, so it is deliberately out of scope here.
  *
- * KNOWN LIMITATIONS of the workspace-scoped "last Google channel" check (both
- * accepted, not bugs):
+ * KNOWN LIMITATIONS of the "last Google channel" check (limitation 1 below is
+ * now MITIGATED for the common case; limitation 2 is unchanged and still
+ * real):
  *
- * 1. Cross-workspace blind spot. The "other Google channel" check only looks
- *    inside the current workspace, but a Google grant belongs to a Google
- *    ACCOUNT, not a workspace. If the same Google account connects YouTube in
- *    workspace A and Google Drive in workspace B, disconnecting YouTube in A
- *    finds no other Google channel in A and revokes — silently killing
- *    workspace B's Drive access too, even though nobody touched B.
+ * 1. Cross-workspace blind spot — MITIGATED for the same connecting user.
+ *    A Google grant belongs to a Google ACCOUNT, not a workspace, so a
+ *    workspace-only "other Google channel" check misses channels the same
+ *    person connected in a different workspace (agency scenario: one Google
+ *    account has YouTube in workspace A and Drive in workspace B). The check
+ *    now also counts other Google channels with the SAME
+ *    `connected_by_user_id` across every workspace, not just this one, so
+ *    disconnecting YouTube in A correctly sees Drive in B and skips the
+ *    revoke. This is still an approximation, not the real fix (see ROOT
+ *    CAUSE below): it assumes one person's Google channels all share one
+ *    Google account, which is usually true but not guaranteed. When the
+ *    channel being disconnected has no `connected_by_user_id` on record
+ *    (should not happen given the column's NOT NULL constraint, but legacy
+ *    data could still have it), the check falls back to the old
+ *    workspace-scoped behavior rather than grouping every NULL-owner channel
+ *    together as if they belonged to one account.
  *
  * 2. Same-workspace, different-account false negative. Conversely, if one
  *    workspace has YouTube on Google account X and Drive on Google account Y,
@@ -102,16 +113,42 @@ export class GoogleOauthRevokeService {
 
     let remaining: number;
     try {
+      // A Google grant belongs to a Google ACCOUNT connected by a specific
+      // user, not to a workspace, so "other Google channels" must be counted
+      // across every workspace that same user connected channels in — not
+      // just this one. Look up who connected the channel being disconnected
+      // first, then scope the count to that user. Only when that lookup
+      // comes back NULL (no connecting user on record) do we fall back to
+      // the old workspace-scoped approximation — grouping every NULL-owner
+      // channel together as though they shared one Google account would be
+      // wrong in the other direction.
+      const ownerResult: any = await this.db.execute(sql`
+        SELECT connected_by_user_id AS connected_by_user_id
+        FROM social_media_channels
+        WHERE id = ${channelId}
+      `);
+      const ownerRows = ownerResult?.rows ?? ownerResult ?? [];
+      const connectedByUserId: string | null =
+        ownerRows[0]?.connected_by_user_id ?? null;
+
       // GOOGLE_PLATFORMS is a module constant, never user input, but pass it as
       // a bound parameter anyway rather than interpolating it into the string.
-      const result: any = await this.db.execute(sql`
-        SELECT COUNT(*) AS count
-        FROM social_media_channels
-        WHERE workspace_id = ${workspaceId}
-          AND id <> ${channelId}
-          AND platform = ANY(${[...GOOGLE_PLATFORMS]})
-      `);
-      const rows = result?.rows ?? result ?? [];
+      const countResult: any = connectedByUserId
+        ? await this.db.execute(sql`
+            SELECT COUNT(*) AS count
+            FROM social_media_channels
+            WHERE connected_by_user_id = ${connectedByUserId}
+              AND id <> ${channelId}
+              AND platform = ANY(${[...GOOGLE_PLATFORMS]})
+          `)
+        : await this.db.execute(sql`
+            SELECT COUNT(*) AS count
+            FROM social_media_channels
+            WHERE workspace_id = ${workspaceId}
+              AND id <> ${channelId}
+              AND platform = ANY(${[...GOOGLE_PLATFORMS]})
+          `);
+      const rows = countResult?.rows ?? countResult ?? [];
       remaining = Number(rows[0]?.count ?? 0);
     } catch (err) {
       // If we cannot tell whether other Google channels exist, do NOT revoke —
@@ -123,7 +160,7 @@ export class GoogleOauthRevokeService {
     }
 
     if (remaining > 0) {
-      const reason = `${remaining} other Google channel(s) still connected in this workspace`;
+      const reason = `${remaining} other Google channel(s) still connected`;
       this.logger.log(
         `Google revoke skipped for channel ${channelId} (${platform}) — ${reason}. ` +
           `Revoking would take down the shared grant for all of them. ` +

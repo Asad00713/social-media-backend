@@ -23,7 +23,8 @@ import { YouTubeService } from '../services/youtube.service';
  *   indefinite analytics retention has no basis.
  *
  * Weekly sits comfortably inside both 30-day windows. Cost is 1 quota unit per
- * channel (channels.list via verifyToken), charged to the publishing subsystem.
+ * channel (channels.list via checkAuthorization), charged to the publishing
+ * subsystem.
  *
  * DELIBERATE TRADE-OFF: a failed check marks the channel 'expired' but does NOT
  * delete its data. A single failure is not proof of revocation — it could be a
@@ -75,26 +76,41 @@ export class YoutubeAuthorizationCheckScheduler {
             Number(row.id),
             row.workspace_id,
           );
-          const ok = await this.youtube.verifyToken(accessToken);
+          const check = await this.youtube.checkAuthorization(accessToken);
 
-          if (ok) {
+          if (check.authorized) {
             stillAuthorized++;
             continue;
           }
 
-          revoked++;
-          await this.db
-            .update(socialMediaChannels)
-            .set({
-              connectionStatus: 'expired',
-              lastError:
-                'YouTube authorization is no longer valid — reconnect to continue',
-              updatedAt: new Date(),
-            })
-            .where(eq(socialMediaChannels.id, Number(row.id)));
+          if (check.reason === 'unauthorized') {
+            // Genuine 401/403/invalid_grant — this IS proof the user revoked
+            // us, not a transient failure.
+            revoked++;
+            await this.db
+              .update(socialMediaChannels)
+              .set({
+                connectionStatus: 'expired',
+                lastError:
+                  'YouTube authorization is no longer valid — reconnect to continue',
+                updatedAt: new Date(),
+              })
+              .where(eq(socialMediaChannels.id, Number(row.id)));
 
+            this.logger.warn(
+              `YouTube channel ${row.id} is no longer authorized — marked expired`,
+            );
+            continue;
+          }
+
+          // reason === 'error': a network blip, a Google 5xx, or quota
+          // exhaustion. None of these prove revocation, so the channel is
+          // left exactly as it was — only counted as inconclusive.
+          errored++;
           this.logger.warn(
-            `YouTube channel ${row.id} is no longer authorized — marked expired`,
+            `YouTube authorization check inconclusive for channel ${row.id}: ${
+              check.message ?? 'unknown error'
+            }`,
           );
         } catch (err) {
           // One bad channel must not end the sweep for everyone else.

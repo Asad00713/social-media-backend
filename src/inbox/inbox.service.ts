@@ -1456,6 +1456,20 @@ export class InboxService {
     // without needing a manual cleanup. Status / text are NOT overwritten —
     // those are user-mutable, first writer wins.
     //
+    // RETENTION HAZARD: COALESCE(existing, EXCLUDED) means that once
+    // YoutubeRetentionService (src/inbox/services/youtube-retention.service.ts)
+    // nulls a YouTube row's author_platform_id / author_handle /
+    // author_display_name / author_avatar_url, the NEXT poll that re-fetches
+    // that same comment resurrects every one of those fields from EXCLUDED —
+    // `text` is the only author-identifying field safe here, because it is
+    // not part of this SET clause. This is harmless TODAY only because a
+    // comment can't be re-polled once its video has aged past the cold-tier
+    // cutoff in `src/inbox/utils/youtube-inbox-tier.util.ts` (default 30
+    // days), which lines up with the retention window. That dependency is
+    // NOT enforced by any code — raising the cold cutoff, adding a backfill
+    // job, or re-ingesting via a different path would silently resurrect
+    // wiped identifiers. If you change that cutoff, re-check this comment.
+    //
     // `platformPostId` prefers a non-null EXCLUDED value (COALESCE) so adapters
     // can re-canonicalize it (e.g. Bluesky remapping a chained-reply URI to the
     // root) while a linkage-less mentions re-poll can't null out a comment's

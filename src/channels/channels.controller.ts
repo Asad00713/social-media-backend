@@ -961,9 +961,19 @@ export class ChannelsController {
   }
 
   /**
-   * Explicit user-initiated deletion of all YouTube data for a channel, without
-   * disconnecting it. Required by YouTube Developer Policy III.E.4, which wants
-   * a stated capability rather than a side-effect of disconnecting.
+   * Explicit user-initiated deletion of all YouTube data for a channel.
+   * Required by YouTube Developer Policy III.E.4, which wants a stated
+   * capability rather than a side-effect of disconnecting.
+   *
+   * This does NOT delete the channel row itself (that stays `deleteChannel`'s
+   * job) — but it does deactivate the channel (connection_status='expired',
+   * is_active=false) as part of the same operation. Without that, the row
+   * stays a live, polled connection: `InboxPollScheduler` would re-ingest the
+   * very comments just deleted within ~30 seconds, and the dead refresh token
+   * left behind by the revoke below would silently fail every publish until
+   * the weekly authorization check notices, up to 7 days later. So the
+   * channel is NOT left "connected" after this call — reconnect it to resume
+   * using it.
    *
    * Also revokes the Google grant when no other Google channel remains, matching
    * the disconnect path — the user is withdrawing consent either way.
@@ -1001,9 +1011,16 @@ export class ChannelsController {
       // Best effort — the data is already gone, which is what was requested.
     }
 
+    // Deactivate LAST, after the revoke attempt has had a chance to read a
+    // still-valid access token. Stops InboxPollScheduler from re-ingesting
+    // the data just deleted and stops publishing from silently failing
+    // against a now-dead grant.
+    await this.youtubeDataDeletion.deactivateChannel(id, workspaceId);
+
     return {
       success: true,
-      message: 'All YouTube data for this channel has been deleted.',
+      message:
+        'Your YouTube inbox comments, metrics, and channel snapshots for this channel have been deleted. The channel has been deactivated to prevent re-ingestion — reconnect it if you want to resume using it.',
       deleted: summary,
     };
   }

@@ -112,4 +112,20 @@ describe('YoutubeDataDeletionService', () => {
       'connection lost',
     );
   });
+
+  // Finding 4: without this, InboxPollScheduler re-ingests the just-deleted
+  // comments within ~30 seconds, making the delete endpoint's success message
+  // false within moments — exactly the demo that fails a policy audit.
+  describe('deactivateChannel', () => {
+    it('marks the channel expired and inactive, scoped to the channel and workspace', async () => {
+      const svc = await build();
+      await svc.deactivateChannel(42, 'ws-abc');
+
+      const sql = JSON.stringify(execute.mock.calls[0][0]);
+      expect(sql).toContain("connection_status = 'expired'");
+      expect(sql).toContain('is_active = false');
+      expect(sql).toContain('42');
+      expect(sql).toContain('ws-abc');
+    });
+  });
 });

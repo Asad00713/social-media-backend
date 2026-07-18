@@ -11,7 +11,7 @@ const fakeDb = {
   update: () => ({ set: () => ({ where: update }) }),
 };
 const channelService = { getAccessToken: jest.fn() };
-const youtube = { verifyToken: jest.fn() };
+const youtube = { checkAuthorization: jest.fn() };
 
 async function build() {
   const mod = await Test.createTestingModule({
@@ -34,32 +34,73 @@ describe('YoutubeAuthorizationCheckScheduler', () => {
     execute.mockReset();
     update.mockReset();
     channelService.getAccessToken.mockReset().mockResolvedValue('TKN');
-    youtube.verifyToken.mockReset().mockResolvedValue(true);
+    youtube.checkAuthorization
+      .mockReset()
+      .mockResolvedValue({ authorized: true, reason: 'ok' });
   });
 
   it('does nothing when there are no YouTube channels', async () => {
     connectedChannels([]);
     const scheduler = await build();
     await scheduler.verifyYoutubeAuthorizations();
-    expect(youtube.verifyToken).not.toHaveBeenCalled();
+    expect(youtube.checkAuthorization).not.toHaveBeenCalled();
   });
 
   it('leaves a still-authorized channel alone', async () => {
     connectedChannels([{ id: 1, workspace_id: 'ws' }]);
-    youtube.verifyToken.mockResolvedValue(true);
+    youtube.checkAuthorization.mockResolvedValue({
+      authorized: true,
+      reason: 'ok',
+    });
     const scheduler = await build();
     await scheduler.verifyYoutubeAuthorizations();
-    expect(youtube.verifyToken).toHaveBeenCalledWith('TKN');
+    expect(youtube.checkAuthorization).toHaveBeenCalledWith('TKN');
+    expect(update).not.toHaveBeenCalled();
   });
 
   // The out-of-band revocation case: the user revoked us from Google's own
-  // security settings, so nothing we do will ever succeed again.
-  it('marks a channel expired when authorization is gone', async () => {
+  // security settings, so nothing we do will ever succeed again. This is the
+  // ONLY case that should flip the channel to 'expired'.
+  it('marks a channel expired on a genuine authorization failure', async () => {
     connectedChannels([{ id: 1, workspace_id: 'ws' }]);
-    youtube.verifyToken.mockResolvedValue(false);
+    youtube.checkAuthorization.mockResolvedValue({
+      authorized: false,
+      reason: 'unauthorized',
+      message: 'HTTP 401',
+    });
     const scheduler = await build();
     await scheduler.verifyYoutubeAuthorizations();
     expect(update).toHaveBeenCalled();
+  });
+
+  // CRITICAL regression case: a network blip / Google 5xx must NOT brick a
+  // healthy channel. Before this fix, verifyToken collapsed this into the
+  // same `false` as a genuine revocation.
+  it('does NOT mark a channel expired on a network/server error', async () => {
+    connectedChannels([{ id: 1, workspace_id: 'ws' }]);
+    youtube.checkAuthorization.mockResolvedValue({
+      authorized: false,
+      reason: 'error',
+      message: 'HTTP 500',
+    });
+    const scheduler = await build();
+    await scheduler.verifyYoutubeAuthorizations();
+    expect(update).not.toHaveBeenCalled();
+  });
+
+  // CRITICAL regression case: quota exhaustion (reserveQuota throwing inside
+  // getCurrentChannel) must NOT be mistaken for revocation either.
+  it('does NOT mark a channel expired on quota exhaustion', async () => {
+    connectedChannels([{ id: 1, workspace_id: 'ws' }]);
+    youtube.checkAuthorization.mockResolvedValue({
+      authorized: false,
+      reason: 'error',
+      message:
+        'YouTube publishing quota exhausted — skipping channels.list (0 units left)',
+    });
+    const scheduler = await build();
+    await scheduler.verifyYoutubeAuthorizations();
+    expect(update).not.toHaveBeenCalled();
   });
 
   // One bad channel must not stop the rest being checked — otherwise a single
@@ -74,7 +115,7 @@ describe('YoutubeAuthorizationCheckScheduler', () => {
       .mockResolvedValueOnce('TKN2');
     const scheduler = await build();
     await scheduler.verifyYoutubeAuthorizations();
-    expect(youtube.verifyToken).toHaveBeenCalledWith('TKN2');
+    expect(youtube.checkAuthorization).toHaveBeenCalledWith('TKN2');
   });
 
   it('swallows a top-level failure rather than throwing', async () => {

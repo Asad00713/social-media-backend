@@ -23,6 +23,13 @@ export interface RetentionResult {
  * threading pointers, timestamps — is kept, so a user's inbox history and the
  * fact that they replied to something are not destroyed by a policy job.
  *
+ * `metadata.authorChannelUrl` is also stripped. `YoutubeInboxAdapter` stores
+ * `https://www.youtube.com/channel/UC…` there (see
+ * `src/inbox/adapters/youtube-inbox.adapter.ts`), which is exactly the same
+ * identifying channel id as `author_platform_id` in URL form — nulling the
+ * column while leaving this key in the surviving jsonb would leave the
+ * commenter fully identifiable and defeat the whole wipe.
+ *
  * Two things here are load-bearing:
  *
  *   1. `platform = 'youtube'`. This obligation is YouTube's alone. Applying it
@@ -61,7 +68,8 @@ export class YoutubeRetentionService {
         author_display_name = NULL,
         author_avatar_url = NULL,
         author_handle = NULL,
-        author_platform_id = NULL
+        author_platform_id = NULL,
+        metadata = metadata - 'authorChannelUrl'
       WHERE platform = 'youtube'
         AND platform_created_at < ${cutoffIso}
         AND (
@@ -70,6 +78,7 @@ export class YoutubeRetentionService {
           OR author_avatar_url IS NOT NULL
           OR author_handle IS NOT NULL
           OR author_platform_id IS NOT NULL
+          OR metadata ? 'authorChannelUrl'
         )
     `);
 

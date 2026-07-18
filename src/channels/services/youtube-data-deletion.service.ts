@@ -101,4 +101,33 @@ export class YoutubeDataDeletionService {
 
     return summary;
   }
+
+  /**
+   * Deactivates the channel so ingestion actually stops after a data-deletion
+   * request.
+   *
+   * Deliberately a separate method rather than folded into
+   * `deleteAllYoutubeData` — that method's signature is depended on elsewhere
+   * and is not to change. Without this, `connection_status` stayed
+   * 'connected' and `is_active` stayed true, so `InboxPollScheduler` would
+   * re-ingest comments on the very next poll (~30s), making the delete
+   * endpoint's "your data has been deleted" response false within seconds —
+   * exactly the demo that fails a policy audit.
+   *
+   * This does not delete the channel row (that remains `deleteChannel`'s
+   * job) — it stops the row from acting as a live, polled connection.
+   */
+  async deactivateChannel(channelId: number, workspaceId: string): Promise<void> {
+    await this.db.execute(sql`
+      UPDATE social_media_channels
+      SET connection_status = 'expired',
+          is_active = false,
+          last_error = 'YouTube data was deleted by user request — channel deactivated to prevent re-ingestion. Reconnect to resume.',
+          updated_at = NOW()
+      WHERE id = ${channelId} AND workspace_id = ${workspaceId}
+    `);
+    this.logger.log(
+      `Channel ${channelId} (workspace ${workspaceId}) deactivated after YouTube data deletion request`,
+    );
+  }
 }

@@ -90,8 +90,60 @@ describe('GoogleOauthRevokeService', () => {
     const svc = await build();
     await svc.revokeIfLastGoogleChannel(42, 'ws', 'youtube', 'TKN');
 
-    // The query must say "other Google channels EXCEPT id 42" — otherwise the
-    // channel being disconnected counts itself and revoke never fires.
-    expect(JSON.stringify(execute.mock.calls[0][0])).toContain('42');
+    // The count query (the second SELECT — the first looks up the owner) must
+    // say "other Google channels EXCEPT id 42" — otherwise the channel being
+    // disconnected counts itself and revoke never fires.
+    const countQuery = execute.mock.calls[execute.mock.calls.length - 1][0];
+    expect(JSON.stringify(countQuery)).toContain('42');
+  });
+
+  // Finding 6: a Google grant belongs to a Google ACCOUNT, not a workspace.
+  // Agency scenario: one Google account has YouTube in workspace A and Drive
+  // in workspace B. Disconnecting YouTube in A must see Drive in B (same
+  // connected_by_user_id) and skip the revoke, not just look inside A.
+  describe('cross-workspace scoping by connected_by_user_id (Finding 6)', () => {
+    it('counts other Google channels across every workspace when the same user connected them', async () => {
+      execute
+        .mockResolvedValueOnce({ rows: [{ connected_by_user_id: 'user-1' }] }) // owner lookup
+        .mockResolvedValueOnce({ rows: [{ count: '1' }] }); // cross-workspace count
+      const svc = await build();
+
+      const result = await svc.revokeIfLastGoogleChannel(1, 'ws-a', 'youtube', 'TKN');
+
+      expect(result.revoked).toBe(false);
+      expect(global.fetch).not.toHaveBeenCalled();
+      const countQuery = JSON.stringify(execute.mock.calls[1][0]);
+      expect(countQuery).toContain('user-1');
+      // The cross-user-scoped query must NOT restrict by workspace, or it
+      // degenerates back into the workspace-scoped bug this fix addresses.
+      expect(countQuery).not.toContain('ws-a');
+    });
+
+    it('revokes when no other Google channel exists for that user, anywhere', async () => {
+      execute
+        .mockResolvedValueOnce({ rows: [{ connected_by_user_id: 'user-1' }] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      const svc = await build();
+
+      const result = await svc.revokeIfLastGoogleChannel(1, 'ws-a', 'youtube', 'TKN');
+
+      expect(result.revoked).toBe(true);
+    });
+
+    // The NULL fallback: grouping every NULL-owner channel together as if
+    // they shared one Google account would be wrong, so this must fall back
+    // to the old workspace-scoped behavior instead.
+    it('falls back to workspace-scoped counting when connected_by_user_id is NULL', async () => {
+      execute
+        .mockResolvedValueOnce({ rows: [{ connected_by_user_id: null }] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      const svc = await build();
+
+      const result = await svc.revokeIfLastGoogleChannel(1, 'ws-a', 'youtube', 'TKN');
+
+      expect(result.revoked).toBe(true);
+      const countQuery = JSON.stringify(execute.mock.calls[1][0]);
+      expect(countQuery).toContain('ws-a');
+    });
   });
 });
