@@ -44,7 +44,7 @@ expired data and destroy fresh data during any backfill.
 |---|---|---|
 | In-app disconnect | III.D.2.3.a | Data deleted immediately via cascade on channel delete. Google grant revoked when the same connecting user has no other Google channel left, in any workspace. |
 | Out-of-band revoke (user revokes from Google account settings) | III.D.2.3.b | Detected weekly by `YoutubeAuthorizationCheckScheduler`, which marks the channel `expired` — but only on a genuine 401/403/`invalid_grant`, never on a network error, a Google 5xx, or quota exhaustion. |
-| Explicit user request | III.E.4 | `DELETE /channels/workspaces/:workspaceId/:channelId/youtube-data` removes all YouTube-derived data, analytics included, reports the counts, and deactivates the channel so polling cannot immediately re-ingest what was just deleted. |
+| Explicit user request | III.E.4 | `DELETE /channels/workspaces/:workspaceId/:channelId/youtube-data` removes inbox items, post metric snapshots, channel snapshots, and channel analytics daily rows, reports the counts, and deactivates the channel so polling cannot immediately re-ingest what was just deleted. The channel's own cached `accountName` (channel title) and `profilePictureUrl` are not touched by this endpoint and remain on the `social_media_channels` row until the channel itself is deleted. |
 
 ### Why revocation is conditional
 
@@ -93,6 +93,17 @@ had the opposite and worse failure: one person with YouTube in workspace A and
 Drive in workspace B would lose B's Drive when disconnecting A's YouTube, with no
 warning to either. Keying on the connecting user rather than the workspace closed
 that. Do not narrow it back to workspace scope.
+
+**Same-Google-account, different-app-user false positive (over-revocation).**
+Keying the count on `connected_by_user_id` introduces a narrower edge case in
+the other direction: if two different app users in the same workspace each
+connected a Google channel using the **same** Google account, the user-scoped
+count no longer sees the sibling channel (it belongs to a different
+`connected_by_user_id`), so disconnecting one will revoke the shared Google
+grant and break the other user's connection. This is over-revocation — the
+same class of problem as the cross-workspace bug this scoping replaced, but
+much narrower, since it requires two distinct app users sharing one Google
+account inside one workspace.
 
 **Root cause:** we don't store a common Google account identifier to compare
 across platforms. `platformAccountId` is platform-specific and not comparable:

@@ -10,8 +10,12 @@ export interface YoutubeDeletionSummary {
 }
 
 /**
- * Deletes every piece of YouTube-derived data we hold for a channel, on the
- * user's explicit request.
+ * Deletes the YouTube-derived data we hold in `inbox_items`,
+ * `post_metric_snapshots`, `channel_snapshots`, and `channel_analytics_daily`
+ * for a channel, on the user's explicit request. It does NOT touch the
+ * `social_media_channels` row itself, so that channel's own cached
+ * `accountName` (channel title) and `profilePictureUrl` survive this call —
+ * they are only removed when the channel is deleted outright.
  *
  * YouTube Developer Policy III.E.4 requires a way for a user to request deletion
  * of their stored data, honored within 7 days. Disconnecting a channel already

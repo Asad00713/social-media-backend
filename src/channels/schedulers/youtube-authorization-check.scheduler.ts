@@ -26,12 +26,18 @@ import { YouTubeService } from '../services/youtube.service';
  * channel (channels.list via checkAuthorization), charged to the publishing
  * subsystem.
  *
- * DELIBERATE TRADE-OFF: a failed check marks the channel 'expired' but does NOT
- * delete its data. A single failure is not proof of revocation — it could be a
- * network blip — and auto-deleting on a false negative would destroy a paying
- * user's analytics history irreversibly. The 30-day deletion obligation is met
- * by the disconnect path once the user acts on the expired state, or by the
- * explicit deletion endpoint. Flagging is reversible; deleting is not.
+ * DELIBERATE TRADE-OFF: only a genuine 401/403/`invalid_grant` marks the
+ * channel 'expired'; a network blip, a Google 5xx, or quota exhaustion is
+ * counted as an inconclusive error and leaves the row untouched. An earlier
+ * version flagged the channel on ANY failure, which was wrong: this scheduler
+ * only ever re-checks channels that are still `connected`
+ * (`WHERE connection_status = 'connected'`), so a channel wrongly marked
+ * 'expired' by a transient failure would never be re-verified and never
+ * self-heal — it would sit bricked until the user noticed and manually
+ * reconnected, even though nothing was ever revoked. Classifying the failure
+ * first avoids permanently bricking healthy channels over a blip. This check
+ * never deletes data either way — that stays the job of the disconnect path
+ * or the explicit deletion endpoint.
  */
 @Injectable()
 export class YoutubeAuthorizationCheckScheduler {

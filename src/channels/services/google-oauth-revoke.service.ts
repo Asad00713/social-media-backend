@@ -38,10 +38,13 @@ export interface RevokeOutcome {
  * behalf of the associated user are revoked simultaneously."
  *
  * So revoking on YouTube disconnect would silently break the same user's Drive,
- * Photos and Calendar. Instead we revoke only once no other Google channel is
- * left in the workspace. The YouTube DATA is deleted immediately either way, by
- * the cascade on channel deletion, so the deletion obligation is met regardless;
- * the grant goes as soon as nothing else legitimately depends on it.
+ * Photos and Calendar. Instead we revoke only once the same connecting user
+ * (`connected_by_user_id`) has no other Google channel left, counted across
+ * every workspace they connected channels in — not just this one — with a
+ * workspace-scoped fallback for the rare row where that column is null. The
+ * YouTube DATA is deleted immediately either way, by the cascade on channel
+ * deletion, so the deletion obligation is met regardless; the grant goes as
+ * soon as nothing else legitimately depends on it.
  *
  * The proper structural fix is a separate OAuth client per Google service, which
  * would make revocation isolated — that requires new credentials and a reconnect
@@ -73,6 +76,17 @@ export interface RevokeOutcome {
  *    disconnecting YouTube counts Drive as an "other Google channel" and
  *    skips the revoke — even though X's grant has nothing left depending on
  *    it and the policy obligation to revoke it goes unmet indefinitely.
+ *
+ * 3. Same-account, different-app-user false positive (over-revocation) — NEW,
+ *    introduced by keying on `connected_by_user_id`. If two different app
+ *    users in the same workspace each connected a Google channel using the
+ *    SAME Google account, the user-scoped count no longer sees the sibling
+ *    channel (it belongs to a different `connected_by_user_id`), so
+ *    disconnecting one will revoke the shared grant and break the other
+ *    user's connection. This is over-revocation — the same class of problem
+ *    as limitation 1's pre-mitigation cross-workspace bug, but much narrower,
+ *    since it requires two distinct app users sharing one Google account
+ *    inside one workspace.
  *
  * ROOT CAUSE: we don't store a common Google account identifier to compare
  * against, so there is no way to tell whether two Google channels in play
