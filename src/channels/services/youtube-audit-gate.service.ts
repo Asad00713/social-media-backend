@@ -44,8 +44,19 @@ export class YoutubeAuditGateService {
     return process.env.YOUTUBE_APP_AUDITED === 'true';
   }
 
+  /**
+   * YouTube's daily quota resets at midnight Pacific, not UTC. Deriving the
+   * bucket from `toISOString()` (UTC) would roll our counter over at
+   * 00:00 UTC — 16:00 or 17:00 Pacific — while YouTube's own quota day still
+   * has 7-8 hours left carrying whatever we already spent. That lets a
+   * single real YouTube quota day see up to 2x every allowance (once before
+   * our early UTC rollover, once after). Do NOT "simplify" this back to
+   * toISOString() — that reintroduces the double-spend window.
+   */
   private dayKey(): string {
-    return new Date().toISOString().slice(0, 10);
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Los_Angeles',
+    }).format(new Date());
   }
 
   /**

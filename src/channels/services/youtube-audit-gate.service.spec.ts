@@ -77,7 +77,28 @@ describe('YoutubeAuditGateService', () => {
     for (let i = 0; i < 10; i++) await svc.reserveUpload(1);
     await expect(svc.reserveUpload(1)).rejects.toBeInstanceOf(HttpException);
     await expect(svc.reserveUpload(1)).rejects.toBeInstanceOf(HttpException);
-    const day = new Date().toISOString().slice(0, 10);
+    const day = new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Los_Angeles',
+    }).format(new Date());
     expect(fakeRedis.store.get(`youtube:uploads:channel:1:${day}`)).toBe(10);
+  });
+
+  // YouTube's quota resets at midnight Pacific, not UTC. This instant is
+  // 2026-07-18T04:00:00Z, which is 2026-07-17T21:00:00-07:00 in Los Angeles
+  // (PDT) — same instant, different calendar date in each timezone. The day
+  // bucket must follow Pacific, or a UTC-derived key would roll over 7-8
+  // hours before YouTube's own quota day actually resets.
+  it('buckets the day key by Pacific time, not UTC', async () => {
+    jest.useFakeTimers();
+    jest.setSystemTime(new Date('2026-07-18T04:00:00Z'));
+    try {
+      const svc = await build();
+      await svc.reserveUpload(1);
+      const keys = [...fakeRedis.store.keys()];
+      expect(keys).toContain('youtube:uploads:channel:1:2026-07-17');
+      expect(keys).not.toContain('youtube:uploads:channel:1:2026-07-18');
+    } finally {
+      jest.useRealTimers();
+    }
   });
 });
