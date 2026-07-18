@@ -1,12 +1,14 @@
 import { Injectable, BadRequestException, Logger } from '@nestjs/common';
 import { ChannelService } from '../channels/services/channel.service';
 import { DropboxService } from '../channels/services/dropbox.service';
-import { GoogleDriveService } from '../channels/services/google-drive.service';
+import {
+  GoogleDriveService,
+  DriveApiError,
+} from '../channels/services/google-drive.service';
 import { OneDriveService } from '../channels/services/onedrive.service';
 import { GooglePhotosService } from '../channels/services/google-photos.service';
 import { CloudinaryService } from '../media/cloudinary.service';
 import { mapDropboxItem, mapDropboxFolder } from './mappers/dropbox.mapper';
-import { mapDriveItem, mapDriveFolder } from './mappers/drive.mapper';
 import { mapOneDriveItem, mapOneDriveFolder } from './mappers/onedrive.mapper';
 import { mapPhotosItem, mapPhotosAlbum } from './mappers/photos.mapper';
 import type {
@@ -72,7 +74,9 @@ export class MediaSourcesService {
       case 'dropbox':
         return this.browseDropbox(token, args);
       case 'google_drive':
-        return this.browseDrive(token, args);
+        // Drive runs on drive.file: we can only reach files the user picked in
+        // Google's own Picker, so there is no server-side listing to return.
+        throw new BadRequestException('Google Drive uses the Google Picker');
       case 'onedrive':
         return this.browseOneDrive(token, args);
       case 'google_photos':
@@ -98,7 +102,12 @@ export class MediaSourcesService {
       workspaceId,
     );
 
-    const buffer = await this.downloadBuffer(platform, token, args.fileId);
+    const buffer = await this.downloadPicked(
+      platform,
+      channel,
+      token,
+      args.fileId,
+    );
     const up = await this.cloudinary.uploadFromBuffer(buffer, {
       folder: 'composer/cloud',
       resourceType: 'auto',
@@ -131,6 +140,44 @@ export class MediaSourcesService {
         const mediaItem = await this.photos.getMediaItem(token, fileId);
         return this.photos.downloadMediaItem(token, mediaItem);
       }
+    }
+  }
+
+  /**
+   * Wraps the provider download so Drive's "this account can't see that file"
+   * answer becomes advice instead of a 500.
+   *
+   * Under drive.file our token only reaches files the user picked with the SAME
+   * Google account the channel was connected with. Picking from a second signed-in
+   * account is the most likely real-world failure, and Drive reports it as a plain
+   * 403/404 — indistinguishable from a bug unless we say so.
+   */
+  private async downloadPicked(
+    platform: CloudStoragePlatform,
+    channel: { username?: string | null; accountName?: string | null },
+    token: string,
+    fileId: string,
+  ): Promise<Buffer> {
+    try {
+      return await this.downloadBuffer(platform, token, fileId);
+    } catch (error) {
+      if (
+        platform === 'google_drive' &&
+        error instanceof DriveApiError &&
+        (error.status === 403 || error.status === 404)
+      ) {
+        // Name the account by EMAIL (`username`), not display name: Google's
+        // account switcher lists emails, and the Picker's login hint and the
+        // pane's "Connected as" line both use the email too. Naming it three
+        // different ways is how the user ends up re-picking the wrong account.
+        const account =
+          channel.username ?? channel.accountName ?? 'your connected account';
+        throw new BadRequestException(
+          `Choose files from your connected Google Drive account (${account}). ` +
+            `Schedura can only open files picked from that account.`,
+        );
+      }
+      throw error;
     }
   }
 
@@ -214,44 +261,6 @@ export class MediaSourcesService {
       this.logger.warn(`Dropbox thumbnail backfill failed: ${error}`);
       return items;
     }
-  }
-
-  private async browseDrive(
-    token: string,
-    a: BrowseArgs,
-  ): Promise<CloudBrowseResult> {
-    if (a.kind === 'folders') {
-      const res = await this.drive.listFolders(token, {
-        parentId: a.path,
-        pageSize: a.limit,
-        pageToken: a.cursor,
-      });
-      return {
-        items: [],
-        folders: res.folders.map(mapDriveFolder),
-        nextCursor: res.nextPageToken,
-      };
-    }
-
-    const options = {
-      folderId: a.path,
-      pageSize: a.limit,
-      pageToken: a.cursor,
-    };
-    const res =
-      a.kind === 'images'
-        ? await this.drive.listImages(token, options)
-        : a.kind === 'videos'
-          ? await this.drive.listVideos(token, options)
-          : await this.drive.listMedia(token, {
-              ...options,
-              query: a.kind === 'search' ? a.query : undefined,
-            });
-    return {
-      items: res.files.map(mapDriveItem),
-      folders: [],
-      nextCursor: res.nextPageToken,
-    };
   }
 
   /**

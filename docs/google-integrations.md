@@ -18,8 +18,13 @@ This document covers the Google Drive, Google Photos, and Google Calendar integr
 Go to [Google Cloud Console](https://console.cloud.google.com/apis/library) and enable:
 
 1. **Google Drive API** - For accessing user's Drive files
-2. **Photos Library API** - For accessing user's Google Photos
-3. **Google Calendar API** - For calendar sync
+2. **Google Picker API** - Required: Drive is browsed through Google's Picker (see [Google Drive API](#google-drive-api))
+3. **Photos Library API** - For accessing user's Google Photos
+4. **Google Calendar API** - For calendar sync
+
+Also create an **API key** (APIs & Services → Credentials → Create credentials →
+API key) and restrict it by HTTP referrer to the app's origins. The Picker needs
+it as its developer key.
 
 ### 2. Add Scopes to OAuth Consent Screen
 
@@ -27,7 +32,7 @@ In Google Cloud Console → APIs & Services → OAuth consent screen → Edit Ap
 
 | Service | Scope | Purpose |
 |---------|-------|---------|
-| Google Drive | `https://www.googleapis.com/auth/drive.readonly` | Read files from Drive |
+| Google Drive | `https://www.googleapis.com/auth/drive.file` | Access only files the user selects via the Google Picker |
 | Google Photos | `https://www.googleapis.com/auth/photoslibrary.readonly` | Read photos and videos |
 | Google Calendar | `https://www.googleapis.com/auth/calendar.events` | Create/update/delete events |
 | Google Calendar | `https://www.googleapis.com/auth/calendar.readonly` | Read calendar list |
@@ -40,6 +45,20 @@ All Google services use the same credentials as YouTube:
 YOUTUBE_CLIENT_ID=your-google-client-id
 YOUTUBE_CLIENT_SECRET=your-google-client-secret
 ```
+
+The **frontend** additionally needs these for the Drive Picker (all three are
+public by design — they ship to the browser):
+
+```env
+VITE_GOOGLE_CLIENT_ID=your-google-client-id
+VITE_GOOGLE_PICKER_API_KEY=your-referrer-restricted-api-key
+VITE_GOOGLE_PICKER_APP_ID=your-google-cloud-project-number
+```
+
+> **`VITE_GOOGLE_CLIENT_ID` must be the same value as `YOUTUBE_CLIENT_ID`.**
+> Drive/Photos/Calendar all share the YouTube OAuth app. If the Picker runs under
+> a different client id, the `drive.file` grant goes to that other client and
+> every server-side import fails with a 404 — with no obvious clue why.
 
 ---
 
@@ -72,7 +91,7 @@ GET /channels/oauth/google_drive/initiate?workspaceId=abc123&redirectUrl=https:/
 **Response:**
 ```json
 {
-  "authorizationUrl": "https://accounts.google.com/o/oauth2/v2/auth?client_id=...&scope=https://www.googleapis.com/auth/drive.readonly&..."
+  "authorizationUrl": "https://accounts.google.com/o/oauth2/v2/auth?client_id=...&scope=https://www.googleapis.com/auth/drive.file&..."
 }
 ```
 
@@ -108,86 +127,33 @@ POST /channels/oauth/refresh
 
 Access user's files from Google Drive to use as media in posts.
 
+### Browsing a Drive is not an API call — it's the Google Picker
+
+Drive runs on the **`drive.file`** scope, which grants access only to files the
+user explicitly picks in **Google's own Picker dialog**. There is deliberately no
+endpoint that lists a user's Drive: the server cannot see a file until the user
+picks it. This is what keeps Drive off Google's *restricted* scope tier and out
+of an annual CASA security assessment.
+
+The composer opens the Picker in the browser, and only the chosen **file ids**
+reach us. To pull a picked file into our storage, use the cloud media-sources
+import endpoint:
+
+```
+POST /channels/workspaces/{workspaceId}/media-sources/{channelId}/import
+```
+
+The matching `browse` endpoint rejects `google_drive` with
+`400 — "Google Drive uses the Google Picker"`, for the same reason.
+
+> The endpoints `POST /channels/google-drive/media|images|videos|folders` were
+> removed when Drive moved to `drive.file`. They required the restricted
+> `drive.readonly` scope and cannot work under `drive.file`.
+
 ### Base URL
 All endpoints: `POST /channels/google-drive/...`
 
 ### Endpoints
-
-#### List Media Files (Images & Videos)
-```
-POST /channels/google-drive/media
-```
-
-**Body:**
-```json
-{
-  "accessToken": "ya29...",
-  "folderId": "optional-folder-id",
-  "query": "optional search term",
-  "pageSize": 20,
-  "pageToken": "optional-for-pagination"
-}
-```
-
-**Response:**
-```json
-{
-  "files": [
-    {
-      "id": "1abc123...",
-      "name": "photo.jpg",
-      "mimeType": "image/jpeg",
-      "thumbnailLink": "https://...",
-      "webContentLink": "https://...",
-      "webViewLink": "https://...",
-      "size": "1234567",
-      "createdTime": "2024-01-15T10:30:00Z",
-      "modifiedTime": "2024-01-15T10:30:00Z"
-    }
-  ],
-  "nextPageToken": "token-for-next-page"
-}
-```
-
-#### List Images Only
-```
-POST /channels/google-drive/images
-```
-Same body/response as `/media`
-
-#### List Videos Only
-```
-POST /channels/google-drive/videos
-```
-Same body/response as `/media`
-
-#### List Folders
-```
-POST /channels/google-drive/folders
-```
-
-**Body:**
-```json
-{
-  "accessToken": "ya29...",
-  "parentId": "optional-parent-folder-id",
-  "pageSize": 50,
-  "pageToken": "optional"
-}
-```
-
-**Response:**
-```json
-{
-  "folders": [
-    {
-      "id": "1xyz...",
-      "name": "My Photos"
-    }
-  ],
-  "nextPageToken": "..."
-}
-```
 
 #### Get Specific File
 ```

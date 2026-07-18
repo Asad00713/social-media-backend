@@ -13,7 +13,7 @@ const channelService = {
   getAccessToken: jest.fn().mockResolvedValue('TKN'),
 };
 const dropbox = { listMedia: jest.fn(), listImages: jest.fn(), listVideos: jest.fn(), searchFiles: jest.fn(), listFolders: jest.fn(), downloadFile: jest.fn(), getThumbnailBatch: jest.fn() };
-const drive = { listMedia: jest.fn(), listImages: jest.fn(), listVideos: jest.fn(), listFolders: jest.fn(), downloadFile: jest.fn() };
+const drive = { downloadFile: jest.fn() };
 const onedrive = { listMedia: jest.fn(), listImages: jest.fn(), listVideos: jest.fn(), searchFiles: jest.fn(), listFolders: jest.fn(), downloadFile: jest.fn() };
 const photos = { listMediaItems: jest.fn(), listPhotos: jest.fn(), listVideos: jest.fn(), listAlbums: jest.fn(), downloadMediaItem: jest.fn() };
 const cloudinary = { uploadFromBuffer: jest.fn() };
@@ -69,13 +69,24 @@ it("browse(videos) on dropbox calls listVideos, not listMedia", async () => {
   expect(dropbox.listMedia).not.toHaveBeenCalled();
 });
 
-it("browse(videos) on google_drive calls listVideos, not listMedia", async () => {
+// Drive moved to the Google Picker: the browser picks files inside Google's own
+// UI under drive.file, so we can no longer list a user's Drive server-side.
+// Browse must say so plainly rather than return a misleading empty listing.
+it('browse on google_drive rejects — Drive uses the Google Picker', async () => {
   channelService.getChannelById.mockResolvedValue({ platform: 'google_drive' });
-  drive.listVideos.mockResolvedValue({ files: [] });
   const svc = await build();
-  await svc.browse('ws', 1, { kind: 'videos' });
-  expect(drive.listVideos).toHaveBeenCalled();
-  expect(drive.listMedia).not.toHaveBeenCalled();
+  await expect(svc.browse('ws', 1, { kind: 'media' })).rejects.toThrow(
+    'Google Drive uses the Google Picker',
+  );
+});
+
+it('browse on google_drive never calls the Drive provider', async () => {
+  channelService.getChannelById.mockResolvedValue({ platform: 'google_drive' });
+  const svc = await build();
+  await expect(svc.browse('ws', 1, { kind: 'folders' })).rejects.toBeInstanceOf(
+    BadRequestException,
+  );
+  expect(drive.downloadFile).not.toHaveBeenCalled();
 });
 
 it("browse(videos) on onedrive calls listVideos, not listMedia", async () => {
