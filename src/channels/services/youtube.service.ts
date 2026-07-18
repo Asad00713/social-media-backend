@@ -615,21 +615,30 @@ export class YouTubeService {
   // ==========================================================================
 
   /**
-   * Fetch all comment threads on a video, including nested replies.
+   * Fetch comment threads on a video, including nested replies.
    * Uses commentThreads.list (1 quota unit per call) + paginates via nextPageToken.
    * Each thread carries up to 5 inline replies; for threads with more we'd need
    * a follow-up comments.list call, but that's rare and Phase 1 lives with it.
    *
-   * Cap: 5 pages = ~500 threads. Beyond that we stop to protect quota.
+   * `since` is an EARLY-EXIT hint, not a server-side filter: commentThreads.list
+   * has no publishedAfter parameter, so the only way to fetch incrementally is
+   * to stop paging early. `order=time` returns newest-first, so once an entire
+   * page holds nothing newer than `since`, no later page can either — that is
+   * the exit condition. Typically turns a 5-page walk into 1 page.
+   *
+   * Callers still filter the returned threads themselves; this only bounds how
+   * much we download. Hard cap remains 5 pages (~500 threads) for a cold start.
    */
   async fetchVideoComments(
     accessToken: string,
     videoId: string,
+    since?: Date,
   ): Promise<YouTubeCommentThread[]> {
     const out: YouTubeCommentThread[] = [];
     let pageToken: string | undefined;
     let pages = 0;
     const maxPages = 5;
+    const sinceMs = since?.getTime();
 
     while (pages < maxPages) {
       const url = new URL(
@@ -670,7 +679,19 @@ export class YouTubeService {
         items?: YouTubeCommentThread[];
         nextPageToken?: string;
       };
-      if (data.items?.length) out.push(...data.items);
+      const items = data.items ?? [];
+      if (items.length) out.push(...items);
+
+      // Early exit: nothing on this page is newer than `since`, and pages are
+      // newest-first, so every remaining page is older still.
+      if (
+        sinceMs !== undefined &&
+        items.length > 0 &&
+        !items.some((t) => threadLastActivityMs(t) > sinceMs)
+      ) {
+        break;
+      }
+
       if (!data.nextPageToken) break;
       pageToken = data.nextPageToken;
       pages += 1;
@@ -754,4 +775,27 @@ export interface YouTubeCommentThread {
     canReply: boolean;
   };
   replies?: { comments: YouTubeComment[] };
+}
+
+/**
+ * Newest activity on a comment thread, in epoch ms.
+ *
+ * A thread is "new" if ANY part of it is new — a two-year-old top-level
+ * comment with a reply from five minutes ago is new activity we must ingest.
+ * So this is the max over the top-level comment and every inline reply, of
+ * both publishedAt and updatedAt (an edited comment bumps updatedAt only).
+ */
+function threadLastActivityMs(thread: YouTubeCommentThread): number {
+  const stamps: string[] = [];
+  const top = thread.snippet?.topLevelComment?.snippet;
+  if (top) stamps.push(top.publishedAt, top.updatedAt);
+  for (const reply of thread.replies?.comments ?? []) {
+    stamps.push(reply.snippet.publishedAt, reply.snippet.updatedAt);
+  }
+  let newest = 0;
+  for (const s of stamps) {
+    const ms = Date.parse(s);
+    if (Number.isFinite(ms) && ms > newest) newest = ms;
+  }
+  return newest;
 }
