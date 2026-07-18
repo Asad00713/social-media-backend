@@ -76,7 +76,7 @@ existing Google channel, so it is deliberately deferred.
 
 The check that gates revocation (`GoogleOauthRevokeService.revokeIfLastGoogleChannel`)
 counts other Google-platform channels belonging to the same `connected_by_user_id`
-across all workspaces. One limitation remains:
+across all workspaces. Two limitations remain — one in each direction:
 
 **Same-user, different-Google-account false negative.** If one person connects
 YouTube on Google account X and Drive on Google account Y, disconnecting YouTube
@@ -84,9 +84,9 @@ counts Drive as "another Google channel" and skips the revoke — even though X'
 grant has nothing left depending on it, so the revoke obligation on X goes unmet
 indefinitely.
 
-This errs toward *under*-revoking: the consequence is a grant that lingers in the
-user's Google Account longer than the policy wants, not a working connection
-being destroyed. That is the correct direction to fail.
+This one errs toward *under*-revoking: the consequence is a grant that lingers in
+the user's Google Account longer than the policy wants, not a working connection
+being destroyed. That is the safer direction to fail.
 
 An earlier version of this check scoped the count to a single workspace, which
 had the opposite and worse failure: one person with YouTube in workspace A and
