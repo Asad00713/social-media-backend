@@ -68,4 +68,48 @@ describe('YoutubeDataDeletionService', () => {
     expect(spy).toHaveBeenCalled();
     spy.mockRestore();
   });
+
+  // Regression guard for Finding 1: post_metric_snapshots, channel_snapshots,
+  // and channel_analytics_daily have no workspace_id column of their own, so
+  // the workspace boundary must be enforced inside the SQL itself (via a
+  // subquery against social_media_channels), not by trusting the caller to
+  // have already validated channel ownership. If a future edit hoists these
+  // deletes back to a bare `channel_id = ...` predicate, this test must fail.
+  it('scopes the analytics deletes through social_media_channels so an out-of-workspace channel id deletes nothing', async () => {
+    const svc = await build();
+    await svc.deleteAllYoutubeData(999, 'ws-victim');
+    const calls = execute.mock.calls.map((c) => JSON.stringify(c[0]));
+
+    expect(calls).toHaveLength(4);
+    for (const statement of calls) {
+      expect(statement).toContain('ws-victim');
+    }
+
+    const analyticsStatements = calls.filter(
+      (s) => !s.includes('inbox_items'),
+    );
+    expect(analyticsStatements).toHaveLength(3);
+    for (const statement of analyticsStatements) {
+      expect(statement).toContain('social_media_channels');
+      expect(statement).toContain('workspace_id');
+    }
+  });
+
+  // Regression guard for Finding 2: the fake transaction has no rollback
+  // semantics, so a prior test only proved `transaction` was called, not that
+  // the deletes actually depend on running inside it. If someone later hoists
+  // the deletes out of the transaction closure (e.g. to call
+  // `this.db.execute` directly), this test must start failing.
+  it('rejects rather than returning a partial summary when a delete mid-transaction fails', async () => {
+    execute
+      .mockResolvedValueOnce({ rowCount: 3, rows: [] }) // inbox_items
+      .mockResolvedValueOnce({ rowCount: 3, rows: [] }) // post_metric_snapshots
+      .mockRejectedValueOnce(new Error('connection lost')); // channel_snapshots
+
+    const svc = await build();
+
+    await expect(svc.deleteAllYoutubeData(1, 'ws')).rejects.toThrow(
+      'connection lost',
+    );
+  });
 });
