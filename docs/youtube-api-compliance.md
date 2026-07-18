@@ -42,9 +42,9 @@ expired data and destroy fresh data during any backfill.
 
 | Path | Policy section | What we do |
 |---|---|---|
-| In-app disconnect | III.D.2.3.a | Data deleted immediately via cascade on channel delete. Google grant revoked when no other Google channel remains in the workspace. |
-| Out-of-band revoke (user revokes from Google account settings) | III.D.2.3.b | Detected weekly by `YoutubeAuthorizationCheckScheduler`, which marks the channel `expired`. |
-| Explicit user request | III.E.4 | `DELETE /channels/workspaces/:workspaceId/:channelId/youtube-data` removes all YouTube-derived data, analytics included, and reports the counts. |
+| In-app disconnect | III.D.2.3.a | Data deleted immediately via cascade on channel delete. Google grant revoked when the same connecting user has no other Google channel left, in any workspace. |
+| Out-of-band revoke (user revokes from Google account settings) | III.D.2.3.b | Detected weekly by `YoutubeAuthorizationCheckScheduler`, which marks the channel `expired` — but only on a genuine 401/403/`invalid_grant`, never on a network error, a Google 5xx, or quota exhaustion. |
+| Explicit user request | III.E.4 | `DELETE /channels/workspaces/:workspaceId/:channelId/youtube-data` removes all YouTube-derived data, analytics included, reports the counts, and deactivates the channel so polling cannot immediately re-ingest what was just deleted. |
 
 ### Why revocation is conditional
 
@@ -59,10 +59,14 @@ explicit:
 > simultaneously.
 
 So revoking on YouTube disconnect would silently break the same user's Drive,
-Photos and Calendar connections. We therefore revoke only once no other Google
-channel remains in the workspace. The YouTube **data** is deleted immediately
-either way, so the deletion obligation is met regardless; only the grant cleanup
-waits.
+Photos and Calendar connections. We therefore revoke only once **the same
+connecting user** (`connected_by_user_id`) has no other Google channel left in
+**any** workspace. The YouTube **data** is deleted immediately either way, so the
+deletion obligation is met regardless; only the grant cleanup waits.
+
+Where `connected_by_user_id` is null on the channel being disconnected, the check
+falls back to counting within the current workspace — grouping every null row
+together would wrongly treat unrelated channels as one user's.
 
 The structural fix is a separate OAuth client per Google service, which would
 make revocation isolated. That requires new credentials and a reconnect for every
@@ -71,20 +75,24 @@ existing Google channel, so it is deliberately deferred.
 ### Known limitations of the "last Google channel" check
 
 The check that gates revocation (`GoogleOauthRevokeService.revokeIfLastGoogleChannel`)
-counts other Google-platform channels **in the same workspace**. Two edge cases
-were found during implementation and deliberately accepted rather than fixed:
+counts other Google-platform channels belonging to the same `connected_by_user_id`
+across all workspaces. One limitation remains:
 
-1. **Cross-workspace blind spot.** A Google grant belongs to a Google *account*,
-   not a workspace. If the same Google account has YouTube connected in
-   workspace A and Google Drive connected in workspace B, disconnecting YouTube
-   in A finds no other Google channel in A and revokes — silently killing
-   workspace B's Drive access too, even though nobody touched B.
+**Same-user, different-Google-account false negative.** If one person connects
+YouTube on Google account X and Drive on Google account Y, disconnecting YouTube
+counts Drive as "another Google channel" and skips the revoke — even though X's
+grant has nothing left depending on it, so the revoke obligation on X goes unmet
+indefinitely.
 
-2. **Same-workspace, different-account false negative.** Conversely, if one
-   workspace has YouTube on Google account X and Drive on Google account Y,
-   disconnecting YouTube counts Drive as "another Google channel" and skips the
-   revoke — even though X's grant has nothing left depending on it, so the
-   revoke obligation on X goes unmet indefinitely.
+This errs toward *under*-revoking: the consequence is a grant that lingers in the
+user's Google Account longer than the policy wants, not a working connection
+being destroyed. That is the correct direction to fail.
+
+An earlier version of this check scoped the count to a single workspace, which
+had the opposite and worse failure: one person with YouTube in workspace A and
+Drive in workspace B would lose B's Drive when disconnecting A's YouTube, with no
+warning to either. Keying on the connecting user rather than the workspace closed
+that. Do not narrow it back to workspace scope.
 
 **Root cause:** we don't store a common Google account identifier to compare
 across platforms. `platformAccountId` is platform-specific and not comparable:
@@ -96,11 +104,12 @@ Google account."
 The proper fix is capturing Google's `sub` claim (from the `id_token`, or via
 the tokeninfo endpoint) at connect time across all four OAuth flows and storing
 it alongside the existing `platformAccountId`, then keying the "last Google
-channel" check off that instead of workspace membership. That is a separate
-migration effort, which is why the workspace-scoped approximation stands for
-now — it errs toward under-revoking (delaying grant cleanup) rather than
-over-revoking (breaking a working connection), since a disconnect must always
-succeed regardless of what Google's revoke endpoint reports.
+channel" check off the actual Google account rather than the connecting user.
+That is a separate effort; the `connected_by_user_id` approximation covers the
+realistic cases until then.
+
+A disconnect always succeeds regardless of what Google's revoke endpoint reports —
+the user's intent to disconnect wins, and a revoke failure is logged, never raised.
 
 ## Quota discipline
 
