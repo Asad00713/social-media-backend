@@ -47,6 +47,41 @@ export interface RevokeOutcome {
  * would make revocation isolated — that requires new credentials and a reconnect
  * for every existing Google channel, so it is deliberately out of scope here.
  *
+ * KNOWN LIMITATIONS of the workspace-scoped "last Google channel" check (both
+ * accepted, not bugs):
+ *
+ * 1. Cross-workspace blind spot. The "other Google channel" check only looks
+ *    inside the current workspace, but a Google grant belongs to a Google
+ *    ACCOUNT, not a workspace. If the same Google account connects YouTube in
+ *    workspace A and Google Drive in workspace B, disconnecting YouTube in A
+ *    finds no other Google channel in A and revokes — silently killing
+ *    workspace B's Drive access too, even though nobody touched B.
+ *
+ * 2. Same-workspace, different-account false negative. Conversely, if one
+ *    workspace has YouTube on Google account X and Drive on Google account Y,
+ *    disconnecting YouTube counts Drive as an "other Google channel" and
+ *    skips the revoke — even though X's grant has nothing left depending on
+ *    it and the policy obligation to revoke it goes unmet indefinitely.
+ *
+ * ROOT CAUSE: we don't store a common Google account identifier to compare
+ * against, so there is no way to tell whether two Google channels in play
+ * actually share a Google account. What we store in `platformAccountId` is
+ * platform-specific and not comparable across platforms:
+ *   - youtube: the YouTube channel id ("UC…") — channels.controller.ts:1662
+ *   - google_drive: the user's email address — channels.controller.ts:4255
+ *   - google_photos: a synthetic `google_photos:<workspaceId>` string —
+ *     channels.controller.ts:4358
+ *   - google_calendar: a synthetic `google_calendar:<workspaceId>` string
+ *     (shared code path with outlook_calendar) — channels.controller.ts:760
+ *
+ * None of those four values can be compared to each other to prove "same
+ * Google account." Fixing this properly means capturing Google's `sub` claim
+ * (from the `id_token`, or via the tokeninfo endpoint) at connect time across
+ * all four OAuth flows and storing it alongside the existing
+ * `platformAccountId`, then keying the "last Google channel" check off that
+ * instead of workspace membership. That is a separate migration effort, which
+ * is why the workspace-scoped approximation stands for now.
+ *
  * Never throws. A disconnect must succeed whatever Google says.
  */
 @Injectable()
