@@ -1,0 +1,109 @@
+import {
+  HttpException,
+  HttpStatus,
+  Inject,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
+
+const DAILY_TTL_SECONDS = 24 * 60 * 60;
+/** Half of videos.insert's ~100/day bucket, leaving headroom for retries. */
+const PRE_AUDIT_DAILY_UPLOADS = 50;
+const PER_CHANNEL_DAILY_UPLOADS = 10;
+
+/** Subset of ioredis used here — same pattern as TikTokQuotaService. */
+export interface YoutubeAuditGateRedis {
+  incr(key: string): Promise<number>;
+  decr(key: string): Promise<number>;
+  expire(key: string, seconds: number): Promise<number>;
+}
+
+/**
+ * Caps YouTube uploads while the project is on default API quota.
+ *
+ * Mirrors TikTokQuotaService, which does exactly this for TikTok's Direct Post
+ * audit gate. videos.insert draws on its own ~100 calls/day bucket, so an
+ * unbounded upload path exhausts a day's uploads for every workspace at once.
+ *
+ * Two caps:
+ *   1. Pre-audit (YOUTUBE_APP_AUDITED !== 'true'): 50 uploads/day app-wide.
+ *   2. Per-channel: 10 uploads/day, always — one workspace must not be able
+ *      to consume the whole app-wide allowance.
+ *
+ * The flag defaults to false, so a missing env var fails safe.
+ */
+@Injectable()
+export class YoutubeAuditGateService {
+  private readonly logger = new Logger(YoutubeAuditGateService.name);
+
+  constructor(
+    @Inject('REDIS_CLIENT') private readonly redis: YoutubeAuditGateRedis,
+  ) {}
+
+  private get isAudited(): boolean {
+    return process.env.YOUTUBE_APP_AUDITED === 'true';
+  }
+
+  /**
+   * YouTube's daily quota resets at midnight Pacific, not UTC. Deriving the
+   * bucket from `toISOString()` (UTC) would roll our counter over at
+   * 00:00 UTC — 16:00 or 17:00 Pacific — while YouTube's own quota day still
+   * has 7-8 hours left carrying whatever we already spent. That lets a
+   * single real YouTube quota day see up to 2x every allowance (once before
+   * our early UTC rollover, once after). Do NOT "simplify" this back to
+   * toISOString() — that reintroduces the double-spend window.
+   */
+  private dayKey(): string {
+    return new Intl.DateTimeFormat('en-CA', {
+      timeZone: 'America/Los_Angeles',
+    }).format(new Date());
+  }
+
+  /**
+   * Reserves an upload slot for a channel today.
+   * Throws HttpException 429 when either cap is exceeded.
+   */
+  async reserveUpload(channelId: number): Promise<void> {
+    const day = this.dayKey();
+
+    const channelKey = `youtube:uploads:channel:${channelId}:${day}`;
+    const channelCount = await this.redis.incr(channelKey);
+    // Apply unconditionally, not just when count === 1: if the process dies
+    // between incr and expire on the very first call of the day, the key is
+    // left with no TTL and never resets — capping this channel forever until
+    // someone manually clears Redis. Re-applying on every call is idempotent
+    // and cheap, and closes that window.
+    await this.redis.expire(channelKey, DAILY_TTL_SECONDS);
+
+    if (channelCount > PER_CHANNEL_DAILY_UPLOADS) {
+      await this.redis.decr(channelKey);
+      this.logger.warn(
+        `YouTube per-channel upload cap reached for channel ${channelId}: ${channelCount - 1}/${PER_CHANNEL_DAILY_UPLOADS}`,
+      );
+      throw new HttpException(
+        `Daily YouTube upload limit reached for this channel (${PER_CHANNEL_DAILY_UPLOADS}/day).`,
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+    }
+
+    if (!this.isAudited) {
+      const appKey = `youtube:uploads:app:${day}`;
+      const appCount = await this.redis.incr(appKey);
+      // Same unconditional-expire fix as channelKey above — same hazard.
+      await this.redis.expire(appKey, DAILY_TTL_SECONDS);
+
+      if (appCount > PRE_AUDIT_DAILY_UPLOADS) {
+        await this.redis.decr(appKey);
+        // Release the channel slot too — this attempt is not proceeding.
+        await this.redis.decr(channelKey);
+        this.logger.warn(
+          `YouTube pre-audit upload cap reached: ${appCount - 1}/${PRE_AUDIT_DAILY_UPLOADS} on ${day}`,
+        );
+        throw new HttpException(
+          'YouTube pre-audit cap reached: uploads are limited until our app is audited.',
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+    }
+  }
+}

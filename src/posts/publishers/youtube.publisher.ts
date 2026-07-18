@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import { YouTubeService } from '../../channels/services/youtube.service';
+import { YoutubeAuditGateService } from '../../channels/services/youtube-audit-gate.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
@@ -16,7 +17,10 @@ const MAX_VIDEO_SIZE_BYTES = 256 * 1024 * 1024 * 1024; // 256 GB standard
 export class YouTubePublisher extends BasePublisher {
   readonly platform: SupportedPlatform = 'youtube';
 
-  constructor(private readonly youtubeService: YouTubeService) {
+  constructor(
+    private readonly youtubeService: YouTubeService,
+    private readonly auditGate: YoutubeAuditGateService,
+  ) {
     super();
   }
 
@@ -105,9 +109,15 @@ export class YouTubePublisher extends BasePublisher {
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
-    const { content, mediaItems, accessToken, metadata } = options;
+    const { content, mediaItems, accessToken, metadata, channelId } = options;
 
     this.validate(options);
+
+    // Pre-audit + per-channel upload caps. Throws 429 when either is hit;
+    // reserving BEFORE any upload work begins (queryCreatorInfo-equivalent
+    // work / videos.insert) avoids burning a quota-metered API call on a
+    // request we are about to refuse.
+    await this.auditGate.reserveUpload(channelId);
 
     const isShort = metadata?.isShort === true;
 

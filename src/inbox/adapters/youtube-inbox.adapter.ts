@@ -32,9 +32,12 @@ export class YoutubeInboxAdapter implements PlatformInboxAdapter {
     platformPostId: string,
     since?: Date,
   ): Promise<FetchedComment[]> {
+    // `since` is an early-exit hint for pagination — the API has no time
+    // filter, so we still filter each comment in `toRow` below.
     const threads = await this.youtube.fetchVideoComments(
       channel.accessToken,
       platformPostId,
+      since,
     );
 
     const myChannelId = channel.platformAccountId;

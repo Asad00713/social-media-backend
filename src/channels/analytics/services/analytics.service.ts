@@ -406,7 +406,10 @@ export class AnalyticsService {
       .limit(1);
     const platform = channelRows[0]?.platform as SupportedPlatform | undefined;
     if (platform) {
-      const quotaPeek = await this.quota.tryConsume(platform, 0);
+      // Scoped to 'analytics' so this peek reads the same counter the
+      // enqueued channel-profile-snapshot job will actually spend from — a
+      // platform-wide peek would approve a refresh that the job then defers.
+      const quotaPeek = await this.quota.tryConsume(platform, 0, 'analytics');
       if (!quotaPeek.allowed) {
         return {
           accepted: false,

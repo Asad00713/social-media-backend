@@ -781,6 +781,7 @@ export class PostService {
       accessToken,
       platformAccountId: channel.platformAccountId,
       channelMetadata: channel.metadata || {},
+      channelId,
     });
   }
 

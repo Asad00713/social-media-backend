@@ -70,6 +70,7 @@ export class PostMetricSnapshotHandler {
     const quota = await this.quota.tryConsume(
       channel.platform as SupportedPlatform,
       cost,
+      'analytics',
     );
     if (!quota.allowed) {
       await this.queue.add(

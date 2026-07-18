@@ -15,6 +15,7 @@ import { InstagramService } from '../../channels/services/instagram.service';
 import { InboxDispatcher } from '../services/inbox-dispatcher.service';
 import { InboxService } from '../inbox.service';
 import type { ResolvedChannel } from '../adapters/inbox-adapter.interface';
+import { YoutubeInboxBudgetService } from '../services/youtube-inbox-budget.service';
 
 export interface InboxPollJob {
   channelId: number;
@@ -70,6 +71,7 @@ export class InboxPollProcessor extends WorkerHost {
     private readonly inboxService: InboxService,
     private readonly facebookService: FacebookService,
     private readonly instagramService: InstagramService,
+    private readonly youtubeBudget: YoutubeInboxBudgetService,
   ) {
     super();
   }
@@ -172,11 +174,46 @@ export class InboxPollProcessor extends WorkerHost {
     let fetched = 0;
     let duplicates = 0;
 
+    // YouTube: tier + budget gate. Every other platform polls every post
+    // every cycle, as before.
+    let youtubeAllowed: Set<string> | null = null;
+    if (platform === 'youtube') {
+      const candidates = recent
+        .map((post) => {
+          const t = (post.targets ?? []).find(
+            (x: PostTarget) => String(x.channelId) === String(channelId),
+          );
+          return t?.platformPostId
+            ? { platformPostId: t.platformPostId, publishedAt: post.publishedAt }
+            : null;
+        })
+        .filter((c): c is { platformPostId: string; publishedAt: Date | null } =>
+          Boolean(c),
+        );
+      try {
+        youtubeAllowed = await this.selectYoutubeTargets(channelId, candidates);
+      } catch (err) {
+        // The budget gate lives in Redis; if Redis is unreachable here, fail
+        // toward polling everything (this cycle only) rather than polling
+        // nothing. Polling nothing degrades silently — a Redis blip would
+        // quietly stop YouTube comment ingestion with no error anywhere.
+        // Polling everything fails in the more observable direction: if it
+        // ever actually runs the channel out of quota, that shows up loudly
+        // as quotaExceeded errors elsewhere in this pipeline, which is a
+        // failure someone will notice and can act on.
+        this.logger.error(
+          `Inbox poll: YouTube budget gate failed for channel ${channelId}, polling all candidates this cycle: ${(err as Error).message}`,
+        );
+        youtubeAllowed = null;
+      }
+    }
+
     for (const post of recent) {
       const target = (post.targets ?? []).find(
         (t: PostTarget) => String(t.channelId) === String(channelId),
       );
       if (!target?.platformPostId) continue;
+      if (youtubeAllowed && !youtubeAllowed.has(target.platformPostId)) continue;
 
       try {
         const items = await adapter.fetchComments(
@@ -224,6 +261,23 @@ export class InboxPollProcessor extends WorkerHost {
           });
           if (inserted) ingested += 1;
           else duplicates += 1;
+        }
+        // Mark AFTER the fetch AND the upsert loop have both succeeded. If
+        // markPolled runs before the upserts and then throws, the surrounding
+        // catch logs "fetch failed" even though the fetch succeeded, and the
+        // comments that were already fetched and upserted above are fine —
+        // but running markPolled first meant a bookkeeping-only failure could
+        // previously discard them by being conflated with a fetch failure.
+        // Running it last means a markPolled throw only costs a redundant
+        // poll next cycle (the video stays "due"), never lost data. A throw
+        // leaves the video due either way, so the next cycle retries instead
+        // of skipping it for a whole interval.
+        if (platform === 'youtube') {
+          await this.youtubeBudget.markPolled(
+            channelId,
+            target.platformPostId,
+            Date.now(),
+          );
         }
       } catch (err) {
         this.logger.error(
@@ -366,6 +420,36 @@ export class InboxPollProcessor extends WorkerHost {
     );
 
     return { ok: true, ingested: ingested + dmIngested };
+  }
+
+  /**
+   * Narrow a YouTube channel's candidate videos to the ones due for a comment
+   * poll right now and affordable within today's unit allowance.
+   *
+   * Returns the set of platformPostIds allowed through. Only YouTube goes
+   * through this gate — other platforms have different quota models and keep
+   * their existing every-cycle behavior.
+   */
+  private async selectYoutubeTargets(
+    channelId: number,
+    candidates: Array<{
+      platformPostId: string;
+      publishedAt: Date | null | undefined;
+    }>,
+  ): Promise<Set<string>> {
+    const now = Date.now();
+    const selection = await this.youtubeBudget.selectDue(
+      channelId,
+      candidates.map((c) => ({
+        videoId: c.platformPostId,
+        // No publishedAt means no age, so it cannot be tiered. Treat it as
+        // brand new: polling it once too often is far cheaper than dropping
+        // it and never polling it again.
+        publishedAtMs: c.publishedAt ? c.publishedAt.getTime() : now,
+      })),
+      now,
+    );
+    return new Set(selection.due.map((c) => c.videoId));
   }
 
   /**

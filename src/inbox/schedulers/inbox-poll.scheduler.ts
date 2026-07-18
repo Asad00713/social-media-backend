@@ -8,7 +8,16 @@ import { QUEUES } from '../../queue/queue.module';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 
 /**
- * Enqueues inbox polling jobs every 5 minutes.
+ * Enqueues inbox polling jobs every 30 seconds.
+ *
+ * Stays at 30s on purpose, even after the YouTube quota work: Bluesky and
+ * Mastodon direct messages are a chat-like surface, and slowing the cron
+ * down would hand them minutes of extra latency for no reason. YouTube does
+ * NOT need a slower cron to stay within its quota — it is protected
+ * independently by a per-video age tier and a daily unit budget enforced in
+ * `InboxPollProcessor`/`YoutubeInboxBudgetService`, which cap YouTube API
+ * spend regardless of how often this cron fires. Do not "fix" YouTube quota
+ * pressure by slowing this cron down again; tune the tier/budget instead.
  *
  * Coverage strategy per platform (Phase 1 — all 6 supported platforms poll):
  *   - YouTube, Bluesky, Mastodon: no webhooks at all, poll is the only path.
@@ -44,7 +53,10 @@ export class InboxPollScheduler {
     @InjectQueue(QUEUES.INBOX_POLLING) private readonly queue: Queue,
   ) {}
 
-  @Cron('*/30 * * * * *', { timeZone: 'UTC', name: 'enqueueInboxPolling' })
+  @Cron('*/30 * * * * *', {
+    timeZone: 'UTC',
+    name: 'enqueueInboxPolling',
+  })
   async enqueueInboxPolling(): Promise<void> {
     const rows = await db
       .select({ id: socialMediaChannels.id })

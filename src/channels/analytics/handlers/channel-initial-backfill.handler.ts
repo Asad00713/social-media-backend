@@ -76,6 +76,7 @@ export class ChannelInitialBackfillHandler {
       const pq = await this.quota.tryConsume(
         channel.platform as SupportedPlatform,
         profileCost,
+        'analytics',
       );
       if (pq.allowed) {
         const profile = await adapter.fetchProfileSnapshot(channelForAdapter);

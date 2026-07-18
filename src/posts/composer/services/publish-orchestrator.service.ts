@@ -154,6 +154,7 @@ export class PublishOrchestratorService {
           accessToken: creds.accessToken,
           platformAccountId: creds.platformAccountId,
           channelMetadata: creds.channelMetadata,
+          channelId: Number(target.channelId),
         });
 
         const ok: ChannelTarget = {
