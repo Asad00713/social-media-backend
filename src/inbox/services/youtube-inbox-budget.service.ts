@@ -8,8 +8,13 @@ import {
 /** Subset of ioredis used here — same pattern as TikTokQuotaService. */
 export interface YoutubeInboxBudgetRedis {
   mget(keys: string[]): Promise<(string | null)[]>;
-  get(key: string): Promise<string | null>;
   set(key: string, value: string): Promise<unknown>;
+  /**
+   * Also used with a negative `by` to give back units that were spent
+   * optimistically but did not fit under the daily allowance — same
+   * incr/decr-pair pattern as TikTokQuotaService, but a single atomic
+   * primitive (Redis INCRBY accepts negative deltas) instead of two.
+   */
   incrby(key: string, by: number): Promise<number>;
   expire(key: string, seconds: number): Promise<number>;
 }
@@ -111,11 +116,31 @@ export class YoutubeInboxBudgetService {
         TIER_ORDER.indexOf(a.tier.name) - TIER_ORDER.indexOf(b.tier.name),
     );
 
-    const spent = Number((await this.redis.get(this.unitsKey(nowMs))) ?? '0');
-    const affordable = Math.max(
-      0,
-      Math.floor((this.dailyUnits - spent) / UNITS_PER_VIDEO),
+    // Spend optimistically for every tier-eligible candidate in one atomic
+    // INCRBY, then trim back to the allowance using the total INCRBY
+    // returns. A GET-then-INCRBY here would let two channels' selectDue
+    // calls interleave: both read the same `spent`, both conclude they
+    // have headroom, and both spend against it, overrunning the daily
+    // allowance. INCRBY is atomic in Redis, so its return value is
+    // authoritative and race-free — no separate read is needed or safe.
+    const key = this.unitsKey(nowMs);
+    const requested = eligible.length * UNITS_PER_VIDEO;
+    const total = await this.redis.incrby(key, requested);
+    await this.redis.expire(key, UNITS_TTL_SECONDS);
+
+    // If the atomic spend overshot the allowance, give back the excess and
+    // trim the lowest-priority (already tier-sorted) tail of `eligible` —
+    // those become deferred instead of due.
+    const overshoot = Math.max(0, total - this.dailyUnits);
+    const deferredCount = Math.min(
+      eligible.length,
+      Math.ceil(overshoot / UNITS_PER_VIDEO),
     );
+    if (deferredCount > 0) {
+      await this.redis.incrby(key, -(deferredCount * UNITS_PER_VIDEO));
+    }
+    const affordable = eligible.length - deferredCount;
+    const spentBeforeThisCall = total - requested;
 
     const due = eligible.slice(0, affordable);
     const deferredEntries = eligible.slice(affordable);
@@ -124,20 +149,12 @@ export class YoutubeInboxBudgetService {
       deferredByTier[e.tier.name] = (deferredByTier[e.tier.name] ?? 0) + 1;
     }
 
-    if (due.length > 0) {
-      await this.redis.incrby(
-        this.unitsKey(nowMs),
-        due.length * UNITS_PER_VIDEO,
-      );
-      await this.redis.expire(this.unitsKey(nowMs), UNITS_TTL_SECONDS);
-    }
-
     // An adaptive scheduler that quietly stops polling looks exactly like one
     // that is working. Say so, with counts, every time we defer.
     if (deferredEntries.length > 0) {
       this.logger.warn(
         `YouTube inbox budget: channel ${channelId} deferred ${deferredEntries.length} videos ` +
-          `(${JSON.stringify(deferredByTier)}) — ${spent}/${this.dailyUnits} units spent today`,
+          `(${JSON.stringify(deferredByTier)}) — ${spentBeforeThisCall}/${this.dailyUnits} units spent today`,
       );
     }
 

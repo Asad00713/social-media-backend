@@ -7,9 +7,6 @@ const NOW = 1_000 * DAY;
 
 const fakeRedis = {
   store: new Map<string, string>(),
-  async get(key: string) {
-    return this.store.get(key) ?? null;
-  },
   async set(key: string, value: string) {
     this.store.set(key, value);
     return 'OK';
@@ -111,5 +108,48 @@ describe('YoutubeInboxBudgetService', () => {
     const sel = await svc.selectDue(1, videos(3200, 1 * MIN), NOW);
     expect(sel.due).toHaveLength(3000);
     expect(sel.deferred).toBe(200);
+  });
+
+  // Regression for the check-then-act race: the old implementation read
+  // `spent` with GET, decided in application code whether there was
+  // headroom, and only then wrote with INCRBY. Two channels' selectDue
+  // calls running concurrently (as they do under BullMQ worker concurrency
+  // > 1) could both GET the same stale `spent`, both conclude they had
+  // headroom, and both spend — overrunning the daily allowance.
+  //
+  // This fake Redis is single-threaded, but each selectDue call still
+  // suspends at every `await`, so Promise.all here genuinely interleaves
+  // the two calls' microtasks the same way two BullMQ jobs would interleave
+  // under real concurrency: under the old GET-then-INCRBY code, both calls'
+  // GETs would run (both reading 0) before either call's INCRBY landed, so
+  // both would compute full headroom and both would spend in full —
+  // combined due would be 16, blowing past the allowance of 10. The fix
+  // spends via INCRBY first and trims using its authoritative return value,
+  // so combined spend cannot exceed the allowance no matter how the two
+  // calls interleave.
+  it('does not let two concurrent selectDue calls jointly overspend the allowance', async () => {
+    process.env.YOUTUBE_INBOX_DAILY_UNITS = '10';
+    const svc = await build();
+
+    const [a, b] = await Promise.all([
+      svc.selectDue(1, videos(8, 1 * MIN, 'a'), NOW),
+      svc.selectDue(2, videos(8, 1 * MIN, 'b'), NOW),
+    ]);
+
+    const totalDue = a.due.length + b.due.length;
+    const totalDeferred = a.deferred + b.deferred;
+
+    // The old race would have produced totalDue === 16 (both calls spending
+    // their full 8 against a stale spent=0 read).
+    expect(totalDue).toBeLessThanOrEqual(10);
+    expect(totalDue).toBe(10);
+    expect(totalDeferred).toBe(6);
+
+    // A third, sequential call proves the units key itself reflects exactly
+    // what was actually served (10), not what was optimistically requested
+    // and partially given back (16) — no headroom should remain today.
+    const after = await svc.selectDue(3, videos(1, 1 * MIN, 'c'), NOW);
+    expect(after.due).toHaveLength(0);
+    expect(after.deferred).toBe(1);
   });
 });
