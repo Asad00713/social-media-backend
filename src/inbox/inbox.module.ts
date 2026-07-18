@@ -29,6 +29,8 @@ import { InboxPollScheduler } from './schedulers/inbox-poll.scheduler';
 import { ScheduledInboxProcessor } from './processors/scheduled-inbox.processor';
 import { ScheduledMessagesService } from './services/scheduled-messages.service';
 import { SlackBackfillService } from './services/slack-backfill.service';
+import { YoutubeInboxBudgetService } from './services/youtube-inbox-budget.service';
+import { RedisClientProvider } from '../channels/analytics/redis-client.provider';
 import { ChannelsModule } from '../channels/channels.module';
 import { MediaModule } from '../media/media.module';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
@@ -86,6 +88,8 @@ import { QUEUES } from '../queue/queue.module';
     ScheduledMessagesService,
     ScheduledInboxProcessor,
     SlackBackfillService,
+    YoutubeInboxBudgetService,
+    RedisClientProvider,
   ],
   exports: [
     InboxService,

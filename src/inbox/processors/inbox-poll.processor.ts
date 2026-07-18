@@ -15,6 +15,7 @@ import { InstagramService } from '../../channels/services/instagram.service';
 import { InboxDispatcher } from '../services/inbox-dispatcher.service';
 import { InboxService } from '../inbox.service';
 import type { ResolvedChannel } from '../adapters/inbox-adapter.interface';
+import { YoutubeInboxBudgetService } from '../services/youtube-inbox-budget.service';
 
 export interface InboxPollJob {
   channelId: number;
@@ -70,6 +71,7 @@ export class InboxPollProcessor extends WorkerHost {
     private readonly inboxService: InboxService,
     private readonly facebookService: FacebookService,
     private readonly instagramService: InstagramService,
+    private readonly youtubeBudget: YoutubeInboxBudgetService,
   ) {
     super();
   }
@@ -172,11 +174,31 @@ export class InboxPollProcessor extends WorkerHost {
     let fetched = 0;
     let duplicates = 0;
 
+    // YouTube: tier + budget gate. Every other platform polls every post
+    // every cycle, as before.
+    let youtubeAllowed: Set<string> | null = null;
+    if (platform === 'youtube') {
+      const candidates = recent
+        .map((post) => {
+          const t = (post.targets ?? []).find(
+            (x: PostTarget) => String(x.channelId) === String(channelId),
+          );
+          return t?.platformPostId
+            ? { platformPostId: t.platformPostId, publishedAt: post.publishedAt }
+            : null;
+        })
+        .filter((c): c is { platformPostId: string; publishedAt: Date | null } =>
+          Boolean(c),
+        );
+      youtubeAllowed = await this.selectYoutubeTargets(channelId, candidates);
+    }
+
     for (const post of recent) {
       const target = (post.targets ?? []).find(
         (t: PostTarget) => String(t.channelId) === String(channelId),
       );
       if (!target?.platformPostId) continue;
+      if (youtubeAllowed && !youtubeAllowed.has(target.platformPostId)) continue;
 
       try {
         const items = await adapter.fetchComments(
@@ -193,6 +215,15 @@ export class InboxPollProcessor extends WorkerHost {
         );
 
         fetched += items.length;
+        // Mark AFTER a successful fetch — a throw leaves the video due, so
+        // the next cycle retries instead of skipping it for a whole interval.
+        if (platform === 'youtube') {
+          await this.youtubeBudget.markPolled(
+            channelId,
+            target.platformPostId,
+            Date.now(),
+          );
+        }
         for (const item of items) {
           const inserted = await this.inboxService.upsertComment({
             workspaceId: channelRow.workspaceId,
@@ -366,6 +397,36 @@ export class InboxPollProcessor extends WorkerHost {
     );
 
     return { ok: true, ingested: ingested + dmIngested };
+  }
+
+  /**
+   * Narrow a YouTube channel's candidate videos to the ones due for a comment
+   * poll right now and affordable within today's unit allowance.
+   *
+   * Returns the set of platformPostIds allowed through. Only YouTube goes
+   * through this gate — other platforms have different quota models and keep
+   * their existing every-cycle behavior.
+   */
+  private async selectYoutubeTargets(
+    channelId: number,
+    candidates: Array<{
+      platformPostId: string;
+      publishedAt: Date | null | undefined;
+    }>,
+  ): Promise<Set<string>> {
+    const now = Date.now();
+    const selection = await this.youtubeBudget.selectDue(
+      channelId,
+      candidates.map((c) => ({
+        videoId: c.platformPostId,
+        // No publishedAt means no age, so it cannot be tiered. Treat it as
+        // brand new: polling it once too often is far cheaper than dropping
+        // it and never polling it again.
+        publishedAtMs: c.publishedAt ? c.publishedAt.getTime() : now,
+      })),
+      now,
+    );
+    return new Set(selection.due.map((c) => c.videoId));
   }
 
   /**

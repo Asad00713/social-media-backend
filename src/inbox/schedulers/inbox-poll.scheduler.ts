@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Cron } from '@nestjs/schedule';
+import { Cron, CronExpression } from '@nestjs/schedule';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { and, eq, inArray } from 'drizzle-orm';
@@ -9,6 +9,11 @@ import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 
 /**
  * Enqueues inbox polling jobs every 5 minutes.
+ *
+ * Was every 30 seconds, which cost YouTube 2,880 comment-list calls per video
+ * per day and exhausted the whole 10,000-unit shared quota at four published
+ * videos. YouTube additionally gates each video on an age tier and a daily
+ * unit allowance inside InboxPollProcessor; this cron only sets the ceiling.
  *
  * Coverage strategy per platform (Phase 1 — all 6 supported platforms poll):
  *   - YouTube, Bluesky, Mastodon: no webhooks at all, poll is the only path.
@@ -44,7 +49,10 @@ export class InboxPollScheduler {
     @InjectQueue(QUEUES.INBOX_POLLING) private readonly queue: Queue,
   ) {}
 
-  @Cron('*/30 * * * * *', { timeZone: 'UTC', name: 'enqueueInboxPolling' })
+  @Cron(CronExpression.EVERY_5_MINUTES, {
+    timeZone: 'UTC',
+    name: 'enqueueInboxPolling',
+  })
   async enqueueInboxPolling(): Promise<void> {
     const rows = await db
       .select({ id: socialMediaChannels.id })
