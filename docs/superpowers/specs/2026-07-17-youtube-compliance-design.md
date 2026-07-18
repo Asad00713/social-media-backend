@@ -150,9 +150,19 @@ Worked example at the default allowance, assuming one page per video:
 | 1 channel, 5 hot + 10 warm + 15 cool videos | 5×96 + 10×24 + 15×4 = 780 | Yes |
 | 10 channels, same shape each | 7,800 | No — hot served, cool deferred |
 
-At the second load the scheduler serves hot (4,800) and warm within budget and defers
-cool, rather than attempting all of it and failing mid-sweep. Deferral is logged with
-counts (see Risks).
+At the second load, demand (7,800) exceeds the allowance (3,000) outright — hot alone is
+4,800. An earlier draft of this spec claimed the scheduler "serves hot and warm within
+budget", which is arithmetically impossible and was corrected after implementation.
+
+What actually happens: the budget is a greedy per-cycle spender, not a daily planner. It
+serves whatever is due, hot tier first, until the allowance runs out — roughly 9 hours in
+at this load — and then **all YouTube inbox polling stops for the rest of the day**, hot
+videos and brand-new uploads included. That is the correct safety behavior (quota
+exhaustion would break publishing and analytics too), but it is a hard stop, not a
+graceful degradation, and it must be operated as such: at ten channels of this shape the
+allowance needs raising, or the tier intervals lengthening.
+
+Deferral is logged with counts (see Risks), so the stop is visible rather than inferred.
 
 ### A3. Early-exit pagination
 
