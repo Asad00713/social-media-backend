@@ -47,8 +47,13 @@ export class TieredPollingScheduler {
     name: 'tieredPostMetrics',
   })
   async enqueuePostMetricsByTier(): Promise<void> {
-    // Find all published posts on adapter-supported channels in the last 30 days,
-    // plus a sample of older ones (cold tier).
+    // Find all published posts on adapter-supported channels in the last 30 days.
+    //
+    // Deliberately excludes older posts: the cold tier in POST_POLLING_TIERS is
+    // unreachable from this query by design. An earlier version of this comment
+    // promised "plus a sample of older ones (cold tier)", which the SQL below has
+    // never done — the 30-day filter is what keeps this query bounded, so the
+    // comment was corrected rather than the code.
     const cutoff30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
     const result: any = await this.db.execute(sqlOp`
       WITH active_posts AS (
