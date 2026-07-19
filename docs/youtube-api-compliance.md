@@ -1,26 +1,47 @@
 # YouTube API Services Compliance
 
-What we built to satisfy the YouTube Developer Policy, and the exact disclosure
-text the UI must render. B4 (disclosure) is NOT built yet — see the status note
-below.
+What we built to satisfy the YouTube Developer Policy, across both this backend
+and the `socialmedia-frontend` repository.
 
 ## Required disclosure
 
-> **STATUS: NOT YET RENDERED ANYWHERE.** This wording is agreed, but no UI shows
-> it. The frontend lives in a separate repository (`socialmedia-frontend`) and is
-> a separate phase that has not started. **The compliance audit cannot pass until
-> this is live** — B4 is the one obligation on this page that is specified but not
-> built. Do not read the rest of this document as evidence that it is done.
+Disclosure is split across two surfaces, deliberately:
 
-Render this wherever YouTube data appears or is connected — the settings/legal
-surface and the YouTube connect flow at minimum:
+- **The marketing site** (outside both application repositories) carries the full
+  privacy policy and terms of service, including the YouTube data and deletion
+  sections. This is what the audit's "privacy policy linked from the homepage"
+  requirement points at, and it is maintained outside this codebase.
+- **The app** carries a short notice at the moment of consent —
+  `YouTubeApiDisclosure` in `socialmedia-frontend`, rendered on the YouTube
+  connect page directly beneath the Connect button. That is where a compliance
+  reviewer walking the OAuth flow will look.
 
-> Schedura uses YouTube API Services. By connecting your YouTube channel you
-> agree to the [YouTube Terms of Service](https://www.youtube.com/t/terms). See
-> the [Google Privacy Policy](https://policies.google.com/privacy) for how Google
+The in-app wording, which must stay in sync with this document:
+
+> Schedura uses YouTube API Services. By connecting your channel you agree to the
+> [YouTube Terms of Service](https://www.youtube.com/t/terms). See the
+> [Google Privacy Policy](https://policies.google.com/privacy) for how Google
 > handles your data.
 
-Both links are mandatory and must be live links, not plain text.
+Both links are mandatory and must be live links, not plain text. The component
+also carries the sentence verbatim in an `sr-only` span so it is findable as
+plain text during review.
+
+## Redacted content in the UI
+
+The retention job below nulls comment content, and the inbox API coalesces those
+nulls to `''` / `'unknown'` — so without a signal, a redacted comment would render
+as an empty body from "Unknown", indistinguishable from a bug.
+
+`InboxService` therefore exposes **`contentRedacted`** on comment, mention and
+thread-summary responses, computed as `platform === 'youtube' && text === null`
+*before* the coalescing (see the `isContentRedacted` helper). Note the strict
+`=== null`: a genuinely empty comment must report `false`.
+
+The frontend renders `RedactedCommentNotice` in place of the body when that flag
+is set, reading `Content removed — YouTube 30-day retention policy`, and drops
+the fabricated `@unknown` handle rather than showing it as if it were a real
+channel.
 
 ## Data retention
 
@@ -44,7 +65,20 @@ expired data and destroy fresh data during any backfill.
 |---|---|---|
 | In-app disconnect | III.D.2.3.a | Data deleted immediately via cascade on channel delete. Google grant revoked when the same connecting user has no other Google channel left, in any workspace. |
 | Out-of-band revoke (user revokes from Google account settings) | III.D.2.3.b | Detected weekly by `YoutubeAuthorizationCheckScheduler`, which marks the channel `expired` — but only on a genuine 401/403/`invalid_grant`, never on a network error, a Google 5xx, or quota exhaustion. |
-| Explicit user request | III.E.4 | `DELETE /channels/workspaces/:workspaceId/:channelId/youtube-data` removes inbox items, post metric snapshots, channel snapshots, and channel analytics daily rows, reports the counts, and deactivates the channel so polling cannot immediately re-ingest what was just deleted. The channel's own cached `accountName` (channel title) and `profilePictureUrl` are not touched by this endpoint and remain on the `social_media_channels` row until the channel itself is deleted. |
+| Explicit user request | III.E.4 | `DELETE /channels/workspaces/:workspaceId/:channelId/youtube-data` removes inbox items, post metric snapshots, channel snapshots, and channel analytics daily rows, reports the counts, and deactivates the channel so polling cannot immediately re-ingest what was just deleted. The channel's own cached `accountName` (channel title) and `profilePictureUrl` are not touched by this endpoint and remain on the `social_media_channels` row until the channel itself is deleted. **No in-app UI calls this endpoint today** — see below. |
+
+### The deletion endpoint has no in-app caller
+
+The user-facing "delete my data" request path lives on the marketing site, not in
+the app, so `DELETE .../youtube-data` is currently reachable only via the API. It
+exists so the capability is demonstrable to a reviewer and so the site's request
+path has something concrete to call.
+
+Two consequences worth stating rather than discovering later: it is untested
+against real traffic, and it will not appear in a UI walkthrough of the product.
+If a reviewer asks to see deletion honored in-product, either wire it into the
+channel row's menu in `socialmedia-frontend` or be ready to demonstrate the
+marketing-site request path end to end.
 
 ### Why revocation is conditional
 
