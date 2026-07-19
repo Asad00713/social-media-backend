@@ -61,6 +61,14 @@ export interface CommentThreadSummary {
   };
   status: InboxItemStatus;
   lastCommentText: string;
+  /**
+   * True when `lastCommentText` (and the wiped author fields) were nulled by
+   * the YouTube retention job (30d post-comment, per YouTube Developer Policy
+   * III.E.4.c) rather than genuinely empty. Lets the frontend render an
+   * honest "content removed for policy" state instead of a blank preview
+   * that looks like a bug.
+   */
+  contentRedacted: boolean;
   lastCommentAt: string;
   unreadCount: number;
   totalCommentCount: number;
@@ -75,6 +83,8 @@ export interface CommentNodeDto {
     avatarUrl?: string;
   };
   text: string;
+  /** See `CommentThreadSummary.contentRedacted` — same semantics, per-comment. */
+  contentRedacted: boolean;
   timestamp: string;
   fromMe: boolean;
   /** Platform identifier of this comment (FB/IG/YT comment id), useful for replying. */
@@ -103,6 +113,8 @@ export interface MentionItemDto {
     avatarUrl?: string;
   };
   text: string;
+  /** See `CommentThreadSummary.contentRedacted` — same semantics, per-mention. */
+  contentRedacted: boolean;
   timestamp: string;
   /** Link back to the mention on the platform, when the adapter captured one. */
   permalink?: string;
@@ -220,6 +232,27 @@ export type UpsertMentionInput = Omit<
   UpsertCommentInput,
   'platformPostId' | 'ourPostId' | 'postSnapshot' | 'likeCount'
 >;
+
+/**
+ * Whether an `inbox_items` row's `text` was destroyed by the YouTube
+ * retention job (see `src/inbox/services/youtube-retention.service.ts`,
+ * YouTube Developer Policy III.E.4.c) rather than genuinely empty.
+ *
+ * MUST be computed from the raw DB value BEFORE any `?? ''` / `|| 'unknown'`
+ * coalescing — those fallbacks make a wiped row and a legitimately empty row
+ * indistinguishable, which is exactly what this flag exists to undo. A naive
+ * falsy check (`!item.text`) would also be wrong here: it would flag a
+ * genuinely empty string ('') as redacted even though nothing was wiped.
+ *
+ * Exported as a pure function (rather than inlined per call site) so it's
+ * unit-testable without instantiating `InboxService`, which requires several
+ * injected collaborators.
+ */
+export function isContentRedacted(
+  item: Pick<InboxItem, 'platform' | 'text'>,
+): boolean {
+  return item.platform === 'youtube' && item.text === null;
+}
 
 @Injectable()
 export class InboxService {
@@ -433,6 +466,7 @@ export class InboxService {
           },
           status: this.deriveThreadStatus(items),
           lastCommentText: latest.text ?? '',
+          contentRedacted: isContentRedacted(latest),
           lastCommentAt: latest.platformCreatedAt.toISOString(),
           unreadCount: unread,
           totalCommentCount: items.length,
@@ -532,6 +566,7 @@ export class InboxService {
           avatarUrl: row.authorAvatarUrl ?? undefined,
         },
         text: row.text ?? '',
+        contentRedacted: isContentRedacted(row),
         timestamp: row.platformCreatedAt.toISOString(),
         permalink: row.metadata?.permalink,
         platformItemId: row.platformItemId,
@@ -626,6 +661,7 @@ export class InboxService {
       },
       status: this.deriveThreadStatus(items),
       lastCommentText: latest.text ?? '',
+      contentRedacted: isContentRedacted(latest),
       lastCommentAt: latest.platformCreatedAt.toISOString(),
       unreadCount: unread,
       totalCommentCount: items.length,
@@ -683,6 +719,7 @@ export class InboxService {
           avatarUrl: item.authorAvatarUrl ?? undefined,
         },
         text: item.text ?? '',
+        contentRedacted: isContentRedacted(item),
         timestamp: item.platformCreatedAt.toISOString(),
         fromMe: item.fromMe,
         platformItemId: item.platformItemId,
@@ -725,6 +762,7 @@ export class InboxService {
         avatarUrl: item.authorAvatarUrl ?? undefined,
       },
       text: item.text ?? '',
+      contentRedacted: isContentRedacted(item),
       timestamp: item.platformCreatedAt.toISOString(),
       fromMe: item.fromMe,
       platformItemId: item.platformItemId,
