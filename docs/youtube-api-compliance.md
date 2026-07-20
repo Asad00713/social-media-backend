@@ -43,6 +43,39 @@ is set, reading `Content removed — YouTube 30-day retention policy`, and drops
 the fabricated `@unknown` handle rather than showing it as if it were a real
 channel.
 
+## OAuth scopes and their justification
+
+Both the sensitive-scope verification and the compliance audit ask, per scope,
+why nothing narrower suffices. These are the answers. All three are *sensitive*,
+not *restricted*, so no CASA assessment applies.
+
+| Scope | What the user sees | Why we need it | Why nothing narrower works |
+|---|---|---|---|
+| `youtube.upload` | Manage your YouTube videos | `videos.insert` — publishing a scheduled video | This is the narrowest scope that permits upload. The alternatives (`youtube`, `youtubepartner`, `force-ssl`) are all broader. |
+| `yt-analytics.readonly` | View YouTube Analytics reports | Channel and video statistics on the insights dashboard | Read-only by definition; there is no narrower analytics scope. |
+| `youtube.force-ssl` | See, edit, and permanently delete your YouTube videos, ratings, comments and captions | `comments.insert` and `commentThreads.insert` — replying to comments from the inbox, and posting a first comment on publish. Also `comments.delete` for user-initiated comment moderation. | **This is the only scope that permits writing comments.** `youtube.readonly` can read them but not reply, and the broader `youtube` scope does not cover comment writes either — verified at runtime, not assumed. Replying is the inbox's entire purpose. |
+
+**On `force-ssl` and deletion.** This scope's consent text mentions permanently
+deleting videos. We never delete videos — there is no code path that calls
+`videos.delete`, and no product feature that exposes one. The only deletion we
+perform is `comments.delete`, and only when a user explicitly moderates a comment
+on their own channel. The delete capability is inherent to Google's scope design;
+it is not something we opted into, and we cannot obtain comment-write access
+without it.
+
+**Removed 2026-07-18: `https://www.googleapis.com/auth/youtube`** ("Manage your
+YouTube account"). Every call made under it — `channels.list`, `videos.list`,
+`playlists.list`, `playlistItems.insert`, `thumbnails.set` — also accepts
+`youtube.force-ssl`, which we already hold. It contributed a second alarming line
+to the consent screen and had no answer to "why is nothing narrower enough?".
+`channels.schema.spec.ts` carries a tripwire test so it cannot quietly return.
+
+Removing a scope does **not** invalidate existing tokens: already-connected
+channels keep the grant they were given. The reduced set applies only to new
+connections, which means any regression from this change surfaces first on a
+fresh connect — so it must be verified by connecting a new channel, not by
+testing an existing one.
+
 ## Data retention
 
 | Data | Policy section | What we do |

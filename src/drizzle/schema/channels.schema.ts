@@ -447,12 +447,27 @@ export const PLATFORM_CONFIG: Record<
     maxMediaPerPost: 1,
     maxTextLength: 5000,
     supportedMediaTypes: ['video'],
+    // Keep this list minimal. The compliance audit asks for a per-scope
+    // justification explaining why nothing narrower suffices, and a scope we
+    // cannot justify is a documented rejection reason. Every entry must map to
+    // a feature we ship — see docs/youtube-api-compliance.md for the table.
+    //
+    // Removed 2026-07-18: 'https://www.googleapis.com/auth/youtube' ("Manage
+    // your YouTube account"). Every call we made under it — channels.list,
+    // videos.list, playlists.list, playlistItems.insert, thumbnails.set — also
+    // accepts youtube.force-ssl, which we already hold for comment writes. It
+    // was redundancy that showed the user a second alarming consent line and
+    // that we could not have defended as "nothing narrower suffices".
     oauthScopes: [
+      // videos.insert. force-ssl would also cover this, but a scope literally
+      // named "upload" is self-evident to a reviewer for a publishing product.
       'https://www.googleapis.com/auth/youtube.upload',
-      'https://www.googleapis.com/auth/youtube',
+      // Insights — channel and video statistics.
       'https://www.googleapis.com/auth/yt-analytics.readonly',
-      // Required for commentThreads.insert (first-comment feature).
-      // The broader youtube scope does NOT cover comment writes — verified at runtime.
+      // Required for commentThreads.insert (first comment) and comments.insert
+      // (inbox replies). The broader youtube scope does NOT cover comment
+      // writes — verified at runtime. This is the only scope that permits
+      // replying, which is the entire point of the inbox.
       'https://www.googleapis.com/auth/youtube.force-ssl',
     ],
   },
