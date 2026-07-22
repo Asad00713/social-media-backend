@@ -936,7 +936,10 @@ export class PostService {
   }
 
   /**
-   * Get scheduled posts for calendar view
+   * Get scheduled posts only — upcoming work, nothing that already ran.
+   *
+   * Kept scheduled-only for the chatbot's "list scheduled posts" tool, which
+   * answers "what's coming up". The calendar uses `getCalendarPosts` below.
    */
   async getScheduledPosts(
     workspaceId: string,
@@ -955,6 +958,55 @@ export class PostService {
         ),
       )
       .orderBy(posts.scheduledAt);
+  }
+
+  /**
+   * Every post that occupies a point in time, for the calendar view.
+   *
+   * Deliberately broader than `getScheduledPosts`: the calendar used to receive
+   * `scheduled` only, which made it a forecast rather than a record — you could
+   * not see what actually went out. The frontend was already built for the full
+   * range (per-status colours, bar styling and a `?statuses=` filter) and simply
+   * never received it.
+   *
+   * `draft` is excluded on purpose: a draft has no date, so it cannot be placed
+   * on a grid. Drafts are listed separately in the calendar's own sidebar.
+   *
+   * Dates come from `COALESCE(published_at, scheduled_at)`, not `scheduled_at`
+   * alone. A post published immediately has no `scheduled_at` at all — its time
+   * lives only in `published_at` — so ranging on `scheduled_at` would have kept
+   * every "post now" invisible even after the status filter was lifted. Where a
+   * post was scheduled for one time and actually went out at another, the
+   * calendar shows when it *happened*, which is what a record means.
+   *
+   * A post with neither timestamp falls out of the range comparison, which is
+   * correct — it has no place on a calendar.
+   */
+  async getCalendarPosts(
+    workspaceId: string,
+    fromDate: Date,
+    toDate: Date,
+  ): Promise<(typeof posts.$inferSelect)[]> {
+    const occurredAt = sql`COALESCE(${posts.publishedAt}, ${posts.scheduledAt})`;
+
+    return await db
+      .select()
+      .from(posts)
+      .where(
+        and(
+          eq(posts.workspaceId, workspaceId),
+          inArray(posts.status, [
+            'scheduled',
+            'publishing',
+            'published',
+            'failed',
+            'partially_published',
+          ]),
+          gte(occurredAt, fromDate),
+          lte(occurredAt, toDate),
+        ),
+      )
+      .orderBy(occurredAt);
   }
 
   /**
