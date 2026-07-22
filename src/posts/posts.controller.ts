@@ -72,7 +72,9 @@ export class PostsController {
   }
 
   /**
-   * Get scheduled posts for calendar view.
+   * Get posts for the calendar view — scheduled, publishing, published, failed
+   * and partially published. Drafts are excluded: they carry no date.
+   *
    * MUST be declared before the ':postId' routes below — otherwise NestJS
    * matches the literal "calendar" segment as a :postId and the query fails
    * with "invalid input syntax for type uuid: calendar".
@@ -87,18 +89,21 @@ export class PostsController {
       throw new Error('from and to date parameters are required');
     }
 
-    const scheduledPosts = await this.postService.getScheduledPosts(
+    const calendarPosts = await this.postService.getCalendarPosts(
       workspaceId,
       new Date(from),
       new Date(to),
     );
 
-    // Group by date for calendar display
-    const byDate: Record<string, typeof scheduledPosts> = {};
+    // Group by the date the post actually occupies. `publishedAt` first: a post
+    // published immediately has no `scheduledAt`, so keying on that alone
+    // dropped every "post now" from this map entirely.
+    const byDate: Record<string, typeof calendarPosts> = {};
 
-    for (const post of scheduledPosts) {
-      if (post.scheduledAt) {
-        const dateKey = post.scheduledAt.toISOString().split('T')[0];
+    for (const post of calendarPosts) {
+      const occurredAt = post.publishedAt ?? post.scheduledAt;
+      if (occurredAt) {
+        const dateKey = occurredAt.toISOString().split('T')[0];
         if (!byDate[dateKey]) {
           byDate[dateKey] = [];
         }
@@ -107,9 +112,9 @@ export class PostsController {
     }
 
     return {
-      posts: scheduledPosts,
+      posts: calendarPosts,
       byDate,
-      total: scheduledPosts.length,
+      total: calendarPosts.length,
     };
   }
 
