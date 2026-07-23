@@ -151,6 +151,97 @@ export class YouTubeService {
   }
 
   /**
+   * Like `verifyToken`, but tells the caller WHY the check failed instead of
+   * collapsing everything to `false`.
+   *
+   * `verifyToken` (and `getCurrentChannel`, which it wraps) cannot be used by
+   * callers that need to act on a failure — a network blip, a Google 5xx, and
+   * genuine token revocation all come back identically as `false`/thrown. In
+   * particular `getCurrentChannel` reserves quota via `reserveQuota(1,
+   * 'publishing', ...)` BEFORE calling Google, so a channel with its daily
+   * publishing allowance spent throws for a reason that has nothing to do
+   * with authorization. A caller that treats "not ok" as "revoked" would
+   * incorrectly punish that channel.
+   *
+   * This method makes its own request (rather than delegating to
+   * `getCurrentChannel`) so it can inspect the actual HTTP status and only
+   * report `'unauthorized'` for a genuine 401/403 or Google's `invalid_grant`
+   * — every other failure (network error, Google 5xx, quota exhaustion) comes
+   * back as `'error'`, which callers should treat as inconclusive, not as
+   * proof of revocation.
+   *
+   * `verifyToken` is left untouched — other callers depend on its boolean
+   * shape and don't need this distinction.
+   */
+  async checkAuthorization(accessToken: string): Promise<{
+    authorized: boolean;
+    reason: 'ok' | 'unauthorized' | 'error';
+    message?: string;
+  }> {
+    try {
+      await this.reserveQuota(1, 'publishing', 'channels.list (authorization check)');
+    } catch (err) {
+      // Quota exhaustion is not evidence of revocation.
+      return {
+        authorized: false,
+        reason: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    const url = new URL(`${this.apiBaseUrl}/channels`);
+    url.searchParams.set('part', 'id');
+    url.searchParams.set('mine', 'true');
+
+    let response: Response;
+    try {
+      response = await fetch(url.toString(), {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          Accept: 'application/json',
+        },
+      });
+    } catch (err) {
+      // Network failure — not evidence of revocation.
+      return {
+        authorized: false,
+        reason: 'error',
+        message: err instanceof Error ? err.message : String(err),
+      };
+    }
+
+    if (response.ok) {
+      return { authorized: true, reason: 'ok' };
+    }
+
+    const bodyText = await response.text().catch(() => '');
+    const isAuthFailure =
+      response.status === 401 ||
+      response.status === 403 ||
+      /invalid_grant/i.test(bodyText);
+
+    if (isAuthFailure) {
+      this.logger.warn(
+        `YouTube authorization check: token rejected (status ${response.status})`,
+      );
+      return {
+        authorized: false,
+        reason: 'unauthorized',
+        message: bodyText || `HTTP ${response.status}`,
+      };
+    }
+
+    this.logger.error(
+      `YouTube authorization check failed with a non-auth error (status ${response.status}): ${bodyText}`,
+    );
+    return {
+      authorized: false,
+      reason: 'error',
+      message: bodyText || `HTTP ${response.status}`,
+    };
+  }
+
+  /**
    * Get channel playlists (for organizing videos)
    */
   async getPlaylists(accessToken: string): Promise<

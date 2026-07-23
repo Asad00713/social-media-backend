@@ -15,6 +15,8 @@ import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
 import { BlueskyService } from './services/bluesky.service';
 import { MastodonService } from './services/mastodon.service';
+import { GoogleOauthRevokeService } from './services/google-oauth-revoke.service';
+import { YoutubeDataDeletionService } from './services/youtube-data-deletion.service';
 import { GoogleDriveService } from './services/google-drive.service';
 import { GooglePhotosService } from './services/google-photos.service';
 import { GoogleCalendarService } from './services/google-calendar.service';
@@ -47,6 +49,7 @@ import { CALENDAR_RECONCILE_QUEUE } from '../calendar-sync/calendar-sync.constan
 import { TokenRefreshProcessor } from './processors/token-refresh.processor';
 import { TokenRefreshScheduler } from './schedulers/token-refresh.scheduler';
 import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.scheduler';
+import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authorization-check.scheduler';
 
 // CalendarSyncModule is imported (forwardRef — CalendarSyncModule imports this
 // one back) so the OAuth callback can arm the provider push subscription the
@@ -79,6 +82,8 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     ThreadsService,
     BlueskyService,
     MastodonService,
+    GoogleOauthRevokeService,
+    YoutubeDataDeletionService,
     GoogleDriveService,
     GooglePhotosService,
     GoogleCalendarService,
@@ -97,6 +102,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     TokenRefreshProcessor,
     TokenRefreshScheduler,
     RefreshTokenExpiryScheduler,
+    YoutubeAuthorizationCheckScheduler,
     MetaAdsClient,
     AdAccountsService,
     BoostPostService,
@@ -120,6 +126,7 @@ import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.s
     ThreadsService,
     BlueskyService,
     MastodonService,
+    GoogleOauthRevokeService,
     GoogleDriveService,
     GooglePhotosService,
     GoogleCalendarService,

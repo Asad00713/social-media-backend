@@ -10,6 +10,10 @@ import {
 } from '@nestjs/common';
 import { OAuthService } from './oauth.service';
 import { ChannelSyncLifecycleService } from '../analytics/services/channel-sync-lifecycle.service';
+import {
+  GoogleOauthRevokeService,
+  GOOGLE_PLATFORMS,
+} from './google-oauth-revoke.service';
 import { eq, and, desc, asc, sql } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
@@ -76,6 +80,7 @@ export class ChannelService {
     @Inject(forwardRef(() => OAuthService))
     private readonly oauthService: OAuthService,
     private readonly syncLifecycle: ChannelSyncLifecycleService,
+    private readonly googleRevoke: GoogleOauthRevokeService,
   ) {}
 
   // ==========================================================================
@@ -628,6 +633,25 @@ export class ChannelService {
 
     // Cancel pending snapshot jobs and null out next-sync window before deletion
     await this.syncLifecycle.onChannelDisconnected(channelId);
+
+    // Revoke the Google grant BEFORE deleting the row — afterwards we no longer
+    // have the token. Best-effort by design: a revoke failure must not stop the
+    // user disconnecting, and the data deletion below happens regardless.
+    if (GOOGLE_PLATFORMS.includes(channel[0].platform)) {
+      try {
+        const accessToken = await this.getAccessToken(channelId, workspaceId);
+        await this.googleRevoke.revokeIfLastGoogleChannel(
+          channelId,
+          workspaceId,
+          channel[0].platform,
+          accessToken,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Could not revoke Google grant for channel ${channelId}: ${(err as Error).message}`,
+        );
+      }
+    }
 
     await db
       .delete(socialMediaChannels)

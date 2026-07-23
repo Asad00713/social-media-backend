@@ -13,6 +13,37 @@ describe('Threads OAuth scopes', () => {
   });
 });
 
+// The compliance audit requires a per-scope justification explaining why
+// nothing narrower suffices. `auth/youtube` ("Manage your YouTube account")
+// has no such justification: every call we made under it also accepts
+// youtube.force-ssl, which we hold anyway for comment writes. Dropped
+// 2026-07-18. This is the tripwire — re-adding it to "fix" a permissions error
+// puts back a consent line we cannot defend, and the real cause of such an
+// error is almost always a missing force-ssl grant on an older token.
+describe('YouTube OAuth scopes', () => {
+  it('requests exactly the three scopes the shipped features need', () => {
+    expect(PLATFORM_CONFIG.youtube.oauthScopes).toEqual([
+      'https://www.googleapis.com/auth/youtube.upload',
+      'https://www.googleapis.com/auth/yt-analytics.readonly',
+      'https://www.googleapis.com/auth/youtube.force-ssl',
+    ]);
+  });
+
+  it('does not request the broad account-management scope', () => {
+    expect(PLATFORM_CONFIG.youtube.oauthScopes).not.toContain(
+      'https://www.googleapis.com/auth/youtube',
+    );
+  });
+
+  // Comment replies are the inbox's whole purpose and force-ssl is the only
+  // scope that permits them — dropping it would silently break replying.
+  it('keeps force-ssl, without which the inbox cannot reply', () => {
+    expect(PLATFORM_CONFIG.youtube.oauthScopes).toContain(
+      'https://www.googleapis.com/auth/youtube.force-ssl',
+    );
+  });
+});
+
 // Google classifies these as RESTRICTED: requesting any of them forces an
 // annual CASA security assessment. drive.file is non-sensitive. This test is
 // the tripwire for the whole Picker migration — if someone re-adds a broad

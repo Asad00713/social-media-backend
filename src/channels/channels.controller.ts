@@ -99,6 +99,8 @@ import {
   readEmbeddedSignupConfig,
   type EmbeddedSignupConfig,
 } from './services/embedded-signup-config';
+import { YoutubeDataDeletionService } from './services/youtube-data-deletion.service';
+import { GoogleOauthRevokeService } from './services/google-oauth-revoke.service';
 
 @Controller('channels')
 export class ChannelsController {
@@ -142,6 +144,8 @@ export class ChannelsController {
     private readonly calendarPushSyncService: CalendarPushSyncService,
     @InjectQueue(CALENDAR_RECONCILE_QUEUE)
     private readonly calendarReconcileQueue: Queue,
+    private readonly youtubeDataDeletion: YoutubeDataDeletionService,
+    private readonly googleRevoke: GoogleOauthRevokeService,
   ) {}
 
   // ==========================================================================
@@ -954,6 +958,71 @@ export class ChannelsController {
       );
     }
     await this.channelService.deleteChannel(id, workspaceId);
+  }
+
+  /**
+   * Explicit user-initiated deletion of all YouTube data for a channel.
+   * Required by YouTube Developer Policy III.E.4, which wants a stated
+   * capability rather than a side-effect of disconnecting.
+   *
+   * This does NOT delete the channel row itself (that stays `deleteChannel`'s
+   * job) — but it does deactivate the channel (connection_status='expired',
+   * is_active=false) as part of the same operation. Without that, the row
+   * stays a live, polled connection: `InboxPollScheduler` would re-ingest the
+   * very comments just deleted within ~30 seconds, and the dead refresh token
+   * left behind by the revoke below would silently fail every publish until
+   * the weekly authorization check notices, up to 7 days later. So the
+   * channel is NOT left "connected" after this call — reconnect it to resume
+   * using it.
+   *
+   * Also revokes the Google grant when no other Google channel remains, matching
+   * the disconnect path — the user is withdrawing consent either way.
+   */
+  @Delete('workspaces/:workspaceId/:channelId/youtube-data')
+  @UseGuards(JwtAuthGuard)
+  async deleteYoutubeData(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+  ) {
+    const id = parseInt(channelId, 10);
+    const channel = await this.channelService.getChannelById(id, workspaceId);
+
+    if (channel.platform !== 'youtube') {
+      throw new BadRequestException('This channel is not a YouTube channel');
+    }
+
+    const summary = await this.youtubeDataDeletion.deleteAllYoutubeData(
+      id,
+      workspaceId,
+    );
+
+    try {
+      const accessToken = await this.channelService.getAccessToken(
+        id,
+        workspaceId,
+      );
+      await this.googleRevoke.revokeIfLastGoogleChannel(
+        id,
+        workspaceId,
+        'youtube',
+        accessToken,
+      );
+    } catch {
+      // Best effort — the data is already gone, which is what was requested.
+    }
+
+    // Deactivate LAST, after the revoke attempt has had a chance to read a
+    // still-valid access token. Stops InboxPollScheduler from re-ingesting
+    // the data just deleted and stops publishing from silently failing
+    // against a now-dead grant.
+    await this.youtubeDataDeletion.deactivateChannel(id, workspaceId);
+
+    return {
+      success: true,
+      message:
+        'Your YouTube inbox comments, metrics, and channel snapshots for this channel have been deleted. The channel has been deactivated to prevent re-ingestion — reconnect it if you want to resume using it.',
+      deleted: summary,
+    };
   }
 
   /**
