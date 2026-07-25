@@ -12,6 +12,7 @@ import {
   Max,
   MaxLength,
   ValidateNested,
+  ValidateIf,
   IsIn,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
@@ -39,6 +40,7 @@ export class CreateCategoryDto {
   @IsString()
   description?: string;
 
+  // A folder belongs to exactly one asset type — required at creation.
   @IsEnum(MEDIA_LIBRARY_TYPES)
   type: MediaLibraryType;
 
@@ -158,9 +160,13 @@ export class UpdateMediaItemDto {
   @IsString()
   description?: string;
 
+  // `null` is meaningful here: it takes the item out of its folder. Only a
+  // non-null value is checked as a UUID, so "unfile" stays expressible —
+  // omitting the field still means "leave the folder as it is".
   @IsOptional()
+  @ValidateIf((_, value) => value !== null)
   @IsUUID()
-  categoryId?: string;
+  categoryId?: string | null;
 
   @IsOptional()
   @IsArray()
@@ -233,9 +239,14 @@ export class BulkActionDto {
   @IsEnum(['delete', 'restore', 'move', 'star', 'unstar', 'permanentDelete'])
   action: 'delete' | 'restore' | 'move' | 'star' | 'unstar' | 'permanentDelete';
 
+  // Only `move` reads this, and there `null` is a real instruction: take the
+  // selection out of its folders. Mirrors UpdateMediaItemDto so one item and a
+  // hundred can express the same thing — omit to leave folders alone, pass
+  // null to unfile, pass an id to file.
   @IsOptional()
+  @ValidateIf((_, value) => value !== null)
   @IsUUID()
-  categoryId?: string; // For move action
+  categoryId?: string | null; // For move action
 }
 
 // =============================================================================
@@ -257,18 +268,69 @@ export class TemplateMediaSlotDto {
   acceptedTypes: ('image' | 'video' | 'gif')[];
 }
 
+/**
+ * An asset saved into the template itself. Mirrors the composer's media item so
+ * applying a template is a copy, not a translation.
+ */
+export class TemplateMediaDto {
+  @IsString()
+  id: string;
+
+  @IsEnum(['image', 'video', 'gif'])
+  type: 'image' | 'video' | 'gif';
+
+  @IsUrl({ require_tld: false })
+  url: string;
+
+  @IsOptional()
+  @IsUrl({ require_tld: false })
+  thumbnailUrl?: string;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  width?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  height?: number;
+
+  // Seconds. Integer to match how durations are stored everywhere else here —
+  // browsers report a float, so callers round before sending.
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  durationSec?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  sizeBytes?: number;
+}
+
 export class TemplateContentDto {
   @IsString()
   text: string;
 
+  // Optional so a template that only bakes in media doesn't have to send an
+  // empty array to satisfy a field it never uses.
+  @IsOptional()
   @IsArray()
   @ValidateNested({ each: true })
   @Type(() => TemplateMediaSlotDto)
-  mediaSlots: TemplateMediaSlotDto[];
+  mediaSlots?: TemplateMediaSlotDto[];
 
+  @IsOptional()
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => TemplateMediaDto)
+  media?: TemplateMediaDto[];
+
+  @IsOptional()
   @IsArray()
   @IsString({ each: true })
-  hashtags: string[];
+  hashtags?: string[];
 
   @IsOptional()
   @IsString()

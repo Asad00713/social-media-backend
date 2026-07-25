@@ -197,6 +197,17 @@ export class MediaLibraryController {
     return this.mediaItemService.permanentDelete(workspaceId, itemId);
   }
 
+  /** Called when an asset is placed into a post, so the Library can show what
+   *  is actually being used. */
+  @Post('items/:itemId/use')
+  @HttpCode(HttpStatus.OK)
+  async recordMediaItemUsage(
+    @Param('workspaceId') workspaceId: string,
+    @Param('itemId') itemId: string,
+  ) {
+    return this.mediaItemService.incrementUsage(workspaceId, itemId);
+  }
+
   @Post('items/bulk')
   @HttpCode(HttpStatus.OK)
   async bulkActionMediaItems(
@@ -297,6 +308,17 @@ export class MediaLibraryController {
     return this.templateService.permanentDelete(workspaceId, templateId);
   }
 
+  /** Called when a template is applied to a post, so "Recently used" and the
+   *  "Most used" sort mean something for templates too. */
+  @Post('templates/:templateId/use')
+  @HttpCode(HttpStatus.OK)
+  async recordTemplateUsage(
+    @Param('workspaceId') workspaceId: string,
+    @Param('templateId') templateId: string,
+  ) {
+    return this.templateService.incrementUsage(workspaceId, templateId);
+  }
+
   // ==========================================================================
   // Text Snippets
   // ==========================================================================
@@ -369,6 +391,16 @@ export class MediaLibraryController {
     @Param('snippetId') snippetId: string,
   ) {
     return this.textSnippetService.permanentDelete(workspaceId, snippetId);
+  }
+
+  /** Called when a snippet is copied or inserted into a post. */
+  @Post('snippets/:snippetId/use')
+  @HttpCode(HttpStatus.OK)
+  async recordTextSnippetUsage(
+    @Param('workspaceId') workspaceId: string,
+    @Param('snippetId') snippetId: string,
+  ) {
+    return this.textSnippetService.incrementUsage(workspaceId, snippetId);
   }
 
   // ==========================================================================
@@ -448,6 +480,16 @@ export class MediaLibraryController {
     @Param('linkId') linkId: string,
   ) {
     return this.savedLinkService.permanentDelete(workspaceId, linkId);
+  }
+
+  /** Called when a saved link is opened or added to a post. */
+  @Post('links/:linkId/use')
+  @HttpCode(HttpStatus.OK)
+  async recordSavedLinkUsage(
+    @Param('workspaceId') workspaceId: string,
+    @Param('linkId') linkId: string,
+  ) {
+    return this.savedLinkService.incrementUsage(workspaceId, linkId);
   }
 
   // ==========================================================================

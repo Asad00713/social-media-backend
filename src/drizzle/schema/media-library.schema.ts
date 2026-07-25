@@ -46,6 +46,8 @@ export const mediaCategories = pgTable(
     // Category details
     name: varchar('name', { length: 100 }).notNull(),
     description: text('description'),
+    // A folder belongs to exactly one asset type — image folders live in the
+    // Images section, video folders in Videos, and so on. Required.
     type: varchar('type', { length: 50 }).$type<MediaLibraryType>().notNull(),
     color: varchar('color', { length: 20 }), // Hex color for UI
     icon: varchar('icon', { length: 50 }), // Icon name for UI
@@ -166,9 +168,39 @@ export interface TemplateMediaSlot {
   acceptedTypes: ('image' | 'video' | 'gif')[];
 }
 
+/**
+ * An asset saved into the template itself, so every post made from it starts
+ * with that picture already attached.
+ *
+ * Deliberately shaped like the composer's own media item — same fields, same
+ * names — so applying a template is a copy rather than a translation.
+ */
+export interface TemplateMedia {
+  /** Stable id for this attachment within the template. */
+  id: string;
+  type: 'image' | 'video' | 'gif';
+  url: string;
+  thumbnailUrl?: string;
+  width?: number;
+  height?: number;
+  durationSec?: number;
+  sizeBytes?: number;
+}
+
 export interface TemplateContent {
   text: string; // Can contain {{placeholders}}
+  /**
+   * Empty slots to be filled when the template is used. Distinct from `media`:
+   * a slot is a *prompt* ("Hero image, required"), while `media` is an asset
+   * that comes along every time.
+   */
   mediaSlots: TemplateMediaSlot[];
+  /**
+   * Assets baked into the template. Optional so every template written before
+   * this existed still parses — `content` is jsonb, so old rows simply have no
+   * such key.
+   */
+  media?: TemplateMedia[];
   hashtags: string[];
   defaultCaption?: string;
 }

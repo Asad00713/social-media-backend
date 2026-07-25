@@ -295,15 +295,28 @@ export class TextSnippetService {
   /**
    * Increment usage count when snippet is used
    */
-  async incrementUsage(snippetId: string) {
-    await db
+  async incrementUsage(workspaceId: string, snippetId: string) {
+    // Workspace-scoped so one workspace can't bump another's counter by id.
+    const [updated] = await db
       .update(textSnippets)
       .set({
         usageCount: sql`${textSnippets.usageCount} + 1`,
         lastUsedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(textSnippets.id, snippetId));
+      .where(
+        and(
+          eq(textSnippets.id, snippetId),
+          eq(textSnippets.workspaceId, workspaceId),
+        ),
+      )
+      .returning();
+
+    if (!updated) {
+      throw new NotFoundException('Snippet not found');
+    }
+
+    return updated;
   }
 
   /**

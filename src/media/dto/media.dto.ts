@@ -3,6 +3,7 @@ import {
   IsOptional,
   IsArray,
   IsEnum,
+  IsNumber,
   IsUrl,
   MaxLength,
 } from 'class-validator';
@@ -121,9 +122,12 @@ export class PresignComposerVideoDto {
   @IsOptional()
   filename?: string;
 
-  // Size validation (cap + non-negative) happens inside CloudflareR2Service
-  // — we just type it here. class-validator's number guards (IsInt, Min,
-  // Max) would reject the 4 GB cap as a precision issue without explicit
-  // coercion, and the service is the authoritative limit anyway.
+  // The bounds check (cap + non-negative) lives in CloudflareR2Service, which
+  // stays the authoritative limit. `@IsNumber` is here only so the field
+  // survives the global ValidationPipe: `whitelist: true` strips properties
+  // carrying no decorator and `forbidNonWhitelisted: true` then rejects the
+  // request, so an undecorated field failed every presign with
+  // "property sizeBytes should not exist".
+  @IsNumber()
   sizeBytes: number;
 }

@@ -10,12 +10,32 @@ import {
   mediaTemplates,
   mediaCategories,
   NewMediaTemplate,
+  TemplateContent,
 } from '../../drizzle/schema/media-library.schema';
 import {
   CreateTemplateDto,
+  TemplateContentDto,
   UpdateTemplateDto,
   TemplateQueryDto,
 } from '../dto/media-library.dto';
+
+/**
+ * Fill in the parts of `content` a caller left out.
+ *
+ * The DTO lets a template send only what it uses — a text-only template has no
+ * media slots, a media-only one has no hashtags — but what lands in the column
+ * is always the complete shape. Readers can then index into `mediaSlots` and
+ * `hashtags` without guarding every access.
+ */
+function normalizeContent(content: TemplateContentDto): TemplateContent {
+  return {
+    text: content.text,
+    mediaSlots: content.mediaSlots ?? [],
+    media: content.media ?? [],
+    hashtags: content.hashtags ?? [],
+    defaultCaption: content.defaultCaption,
+  };
+}
 
 @Injectable()
 export class TemplateService {
@@ -51,7 +71,7 @@ export class TemplateService {
       description: dto.description,
       templateType: dto.templateType,
       platforms: dto.platforms || [],
-      content: dto.content,
+      content: normalizeContent(dto.content),
       thumbnailUrl: dto.thumbnailUrl,
       categoryId: dto.categoryId,
       tags: dto.tags || [],
@@ -222,7 +242,8 @@ export class TemplateService {
     if (dto.templateType !== undefined)
       updateData.templateType = dto.templateType;
     if (dto.platforms !== undefined) updateData.platforms = dto.platforms;
-    if (dto.content !== undefined) updateData.content = dto.content;
+    if (dto.content !== undefined)
+      updateData.content = normalizeContent(dto.content);
     if (dto.thumbnailUrl !== undefined)
       updateData.thumbnailUrl = dto.thumbnailUrl;
     if (dto.categoryId !== undefined) updateData.categoryId = dto.categoryId;
@@ -348,15 +369,29 @@ export class TemplateService {
   /**
    * Increment usage count when template is used
    */
-  async incrementUsage(templateId: string) {
-    await db
+  async incrementUsage(workspaceId: string, templateId: string) {
+    // Workspace-scoped so one workspace can't bump another's counter by id —
+    // the same hole that was closed on media items.
+    const [updated] = await db
       .update(mediaTemplates)
       .set({
         usageCount: sql`${mediaTemplates.usageCount} + 1`,
         lastUsedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(mediaTemplates.id, templateId));
+      .where(
+        and(
+          eq(mediaTemplates.id, templateId),
+          eq(mediaTemplates.workspaceId, workspaceId),
+        ),
+      )
+      .returning();
+
+    if (!updated) {
+      throw new NotFoundException('Template not found');
+    }
+
+    return updated;
   }
 
   /**
