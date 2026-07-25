@@ -56,7 +56,8 @@ export class MediaItemService {
         throw new BadRequestException('Category not found');
       }
 
-      // Ensure category type matches item type
+      // A folder belongs to one type — an item can only be filed into a folder
+      // of its own type (an image can't live in a video folder).
       if (category[0].type !== dto.type) {
         throw new BadRequestException(
           `Category type "${category[0].type}" does not match item type "${dto.type}"`,
@@ -145,6 +146,21 @@ export class MediaItemService {
 
     const orderFn = sortOrder === 'asc' ? asc : desc;
 
+    // `lastUsedAt` stays null until an asset is used in a post, so "never used"
+    // belongs after everything that has been used. Postgres puts NULLS FIRST
+    // for DESC by default, which ranked untouched assets above used ones.
+    const primaryOrder =
+      sortBy === 'lastUsedAt'
+        ? sortOrder === 'asc'
+          ? sql`${mediaItems.lastUsedAt} ASC NULLS LAST`
+          : sql`${mediaItems.lastUsedAt} DESC NULLS LAST`
+        : orderFn(sortColumn);
+
+    // Ties need a deterministic tiebreaker. With every row sharing a null
+    // `lastUsedAt`, ordering on that column alone left Postgres free to return
+    // rows in heap order — and an UPDATE (starring an asset) rewrites the tuple
+    // at the end of the heap, so starring an image visibly threw it to the
+    // bottom of the grid. Stable secondary keys keep positions still.
     const items = await db
       .select({
         item: mediaItems,
@@ -153,7 +169,7 @@ export class MediaItemService {
       .from(mediaItems)
       .leftJoin(mediaCategories, eq(mediaItems.categoryId, mediaCategories.id))
       .where(and(...conditions))
-      .orderBy(orderFn(sortColumn))
+      .orderBy(primaryOrder, desc(mediaItems.createdAt), desc(mediaItems.id))
       .limit(limit)
       .offset(offset);
 
@@ -225,7 +241,9 @@ export class MediaItemService {
   async update(workspaceId: string, itemId: string, dto: UpdateMediaItemDto) {
     const existing = await this.findOne(workspaceId, itemId);
 
-    // Validate category if changing
+    // Validate category if changing. A null `categoryId` skips this on purpose:
+    // it means "take this out of its folder", and there is no target type to
+    // match against. `undefined` (field omitted) leaves the folder untouched.
     if (dto.categoryId && dto.categoryId !== existing.categoryId) {
       const category = await db
         .select()
@@ -404,15 +422,48 @@ export class MediaItemService {
           .where(inArray(mediaItems.id, ids));
         break;
 
-      case 'move':
-        if (!categoryId) {
+      case 'move': {
+        // `undefined` means the caller never said where to move things, which
+        // is not a move at all. `null` is a decision — unfile the selection —
+        // so the two are told apart here rather than lumped as falsy.
+        if (categoryId === undefined) {
           throw new BadRequestException('categoryId required for move action');
         }
+
+        if (categoryId !== null) {
+          const [category] = await db
+            .select()
+            .from(mediaCategories)
+            .where(
+              and(
+                eq(mediaCategories.id, categoryId),
+                eq(mediaCategories.workspaceId, workspaceId),
+              ),
+            )
+            .limit(1);
+
+          if (!category) {
+            throw new BadRequestException('Category not found');
+          }
+
+          // Folders belong to exactly one type, and single-item moves already
+          // enforce that. Without the same check here, a bulk move could file
+          // a video into an Images folder — where it would then be invisible
+          // to the Videos section that owns it.
+          const mismatched = items.find((item) => item.type !== category.type);
+          if (mismatched) {
+            throw new BadRequestException(
+              `Category type "${category.type}" does not match item type "${mismatched.type}"`,
+            );
+          }
+        }
+
         await db
           .update(mediaItems)
           .set({ categoryId, updatedAt: new Date() })
           .where(inArray(mediaItems.id, ids));
         break;
+      }
 
       case 'star':
         await db
@@ -461,17 +512,37 @@ export class MediaItemService {
   }
 
   /**
-   * Increment usage count when item is used in a post
+   * Record that an item was used in a post.
+   *
+   * Scoped to the workspace like every other write here: the id alone comes
+   * from the client, so without the workspace in the WHERE clause any
+   * authenticated user could bump the counters on someone else's asset.
+   *
+   * This is what fills `lastUsedAt`, which the "Recently used" view and the
+   * "Most used" sort both read — until something calls this, both are empty by
+   * construction.
    */
-  async incrementUsage(itemId: string) {
-    await db
+  async incrementUsage(workspaceId: string, itemId: string) {
+    const [updated] = await db
       .update(mediaItems)
       .set({
         usageCount: sql`${mediaItems.usageCount} + 1`,
         lastUsedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(mediaItems.id, itemId));
+      .where(
+        and(
+          eq(mediaItems.id, itemId),
+          eq(mediaItems.workspaceId, workspaceId),
+        ),
+      )
+      .returning();
+
+    if (!updated) {
+      throw new NotFoundException('Media item not found');
+    }
+
+    return updated;
   }
 
   /**

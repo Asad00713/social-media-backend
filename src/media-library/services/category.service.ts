@@ -25,7 +25,8 @@ export class CategoryService {
    * Create a new category
    */
   async create(workspaceId: string, dto: CreateCategoryDto) {
-    // Check for duplicate name within same type
+    // A folder belongs to one type, so a name is unique per (workspace, type):
+    // the same name may exist as an image folder and a video folder.
     const existing = await db
       .select()
       .from(mediaCategories)
@@ -40,11 +41,11 @@ export class CategoryService {
 
     if (existing.length > 0) {
       throw new ConflictException(
-        `Category "${dto.name}" already exists for type "${dto.type}"`,
+        `A ${dto.type} folder named "${dto.name}" already exists`,
       );
     }
 
-    // Get max display order
+    // Get max display order within this workspace + type
     const maxOrder = await db
       .select({ maxOrder: mediaCategories.displayOrder })
       .from(mediaCategories)
@@ -95,7 +96,7 @@ export class CategoryService {
       .select()
       .from(mediaCategories)
       .where(and(...conditions))
-      .orderBy(asc(mediaCategories.type), asc(mediaCategories.displayOrder));
+      .orderBy(asc(mediaCategories.displayOrder), asc(mediaCategories.name));
 
     return categories;
   }
@@ -118,7 +119,7 @@ export class CategoryService {
 
     for (const category of categories) {
       const type = category.type;
-      if (grouped[type]) {
+      if (type && grouped[type]) {
         grouped[type].push(category);
       }
     }
@@ -158,7 +159,8 @@ export class CategoryService {
   ) {
     const existing = await this.findOne(workspaceId, categoryId);
 
-    // Check for duplicate name if name is being changed
+    // Check for duplicate name if name is being changed (unique per
+    // workspace + type — the folder's type can't change on update).
     if (dto.name && dto.name !== existing.name) {
       const duplicate = await db
         .select()
@@ -174,7 +176,7 @@ export class CategoryService {
 
       if (duplicate.length > 0) {
         throw new ConflictException(
-          `Category "${dto.name}" already exists for type "${existing.type}"`,
+          `A ${existing.type} folder named "${dto.name}" already exists`,
         );
       }
     }

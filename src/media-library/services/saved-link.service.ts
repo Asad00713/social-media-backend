@@ -371,15 +371,25 @@ export class SavedLinkService {
   /**
    * Increment usage count when link is used
    */
-  async incrementUsage(linkId: string) {
-    await db
+  async incrementUsage(workspaceId: string, linkId: string) {
+    // Workspace-scoped so one workspace can't bump another's counter by id.
+    const [updated] = await db
       .update(savedLinks)
       .set({
         usageCount: sql`${savedLinks.usageCount} + 1`,
         lastUsedAt: new Date(),
         updatedAt: new Date(),
       })
-      .where(eq(savedLinks.id, linkId));
+      .where(
+        and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
+      )
+      .returning();
+
+    if (!updated) {
+      throw new NotFoundException('Link not found');
+    }
+
+    return updated;
   }
 
   /**
