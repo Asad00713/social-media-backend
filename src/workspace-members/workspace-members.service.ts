@@ -333,8 +333,17 @@ export class WorkspaceMembersService {
     // 9. Auto-verify email + complete onboarding — accepting this invitation
     // already proved inbox ownership (matching email + high-entropy token),
     // so an invited user skips the verify-email and create-workspace steps.
-    await this.usersService.verifyEmail(currentUserId);
-    await this.usersService.markOnboardingCompleted(currentUserId);
+    try {
+      await this.usersService.verifyEmail(currentUserId);
+      await this.usersService.markOnboardingCompleted(currentUserId);
+    } catch (error) {
+      // Log but don't fail — the invitation is already committed above, so
+      // a stamp failure here must never surface as a failed accept.
+      console.error(
+        `post-accept verify/onboarding stamp failed for user ${currentUserId}:`,
+        error,
+      );
+    }
 
     return {
       message: 'Invitation accepted successfully',
