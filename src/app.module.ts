@@ -1,6 +1,8 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
+import { WorkspaceSuspendedGuard } from './auth/guards/workspace-suspended.guard';
 import { SiteVerificationController } from './site-verification/site-verification.controller';
 import { SocialMediaModule } from './social-media/social-media.module';
 import { PostsModule } from './posts/posts.module';
@@ -90,6 +92,12 @@ import { QUEUES } from './queue/queue.module';
     ),
   ],
   controllers: [AppController, SiteVerificationController],
-  providers: [AppService],
+  providers: [
+    AppService,
+    // Global billing-suspension enforcement. A no-op for non-workspace routes
+    // and for routes marked @SkipSuspendCheck() (billing); only blocks requests
+    // to a workspace whose subscription is hard-suspended.
+    { provide: APP_GUARD, useClass: WorkspaceSuspendedGuard },
+  ],
 })
 export class AppModule {}

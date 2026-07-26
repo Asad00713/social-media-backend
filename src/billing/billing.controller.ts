@@ -25,7 +25,11 @@ import { PaymentMethodService } from './services/payment-method.service';
 import { StripeService } from '../stripe/stripe.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { SkipSuspendCheck } from '../auth/decorators/skip-suspend-check.decorator';
 
+// Billing stays reachable while a workspace is suspended — otherwise a
+// suspended user could never pay to recover. See WorkspaceSuspendedGuard.
+@SkipSuspendCheck()
 @Controller('billing')
 export class BillingController {
   constructor(
