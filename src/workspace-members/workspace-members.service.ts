@@ -212,7 +212,7 @@ export class WorkspaceMembersService {
     }
 
     // 5. Check if invitation email matches current user
-    if (currentUser.email !== invitation.email) {
+    if (currentUser.email.toLowerCase() !== invitation.email.toLowerCase()) {
       throw new ForbiddenException(
         'This invitation was sent to a different email address',
       );
@@ -285,7 +285,7 @@ export class WorkspaceMembersService {
       throw new NotFoundException('User not found');
     }
 
-    if (currentUser.email !== invitation.email) {
+    if (currentUser.email.toLowerCase() !== invitation.email.toLowerCase()) {
       throw new ForbiddenException(
         'This invitation was sent to a different email address',
       );
