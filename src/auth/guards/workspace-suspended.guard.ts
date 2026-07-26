@@ -14,16 +14,15 @@ import { SKIP_SUSPEND_CHECK } from '../decorators/skip-suspend-check.decorator';
 
 /**
  * Stripe statuses that HARD-suspend a workspace: billing has failed terminally
- * — dunning exhausted (`unpaid`), a cancellation took effect (`canceled`), or
- * the very first payment never completed (`incomplete_expired`). The soft grace
- * states (`past_due`, `incomplete`) are intentionally NOT here: the app warns
- * about them but stays usable, matching the frontend's two-tier gate.
+ * — dunning exhausted (`unpaid`) or the very first payment never completed
+ * (`incomplete_expired`). Deliberately excluded:
+ *   • `past_due` / `incomplete` — soft grace states; the app warns but stays
+ *     usable, matching the frontend's two-tier gate.
+ *   • `canceled` — a cancellation (voluntary or dunning-driven) is reset to the
+ *     FREE plan by the subscription-deleted webhook, so the workspace becomes a
+ *     free user, not a locked one.
  */
-export const SUSPENDED_STATUSES = [
-  'unpaid',
-  'canceled',
-  'incomplete_expired',
-] as const;
+export const SUSPENDED_STATUSES = ['unpaid', 'incomplete_expired'] as const;
 
 /**
  * Global guard (registered as an APP_GUARD) that blocks every workspace-scoped

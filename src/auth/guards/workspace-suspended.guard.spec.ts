@@ -54,7 +54,7 @@ describe('WorkspaceSuspendedGuard', () => {
     ).resolves.toBe(true);
   });
 
-  it.each(['active', 'trialing', 'past_due', 'incomplete'])(
+  it.each(['active', 'trialing', 'past_due', 'incomplete', 'canceled'])(
     'allows non-suspended status "%s"',
     async (status) => {
       const { db } = mockDb([{ status }]);
@@ -66,7 +66,7 @@ describe('WorkspaceSuspendedGuard', () => {
     },
   );
 
-  it.each(['unpaid', 'canceled', 'incomplete_expired'])(
+  it.each(['unpaid', 'incomplete_expired'])(
     'blocks suspended status "%s" with a WORKSPACE_SUSPENDED 403',
     async (status) => {
       const { db } = mockDb([{ status }]);
