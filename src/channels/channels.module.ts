@@ -46,6 +46,7 @@ import { QueueModule } from '../queue/queue.module';
 import { BullModule } from '@nestjs/bullmq';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
 import { CALENDAR_RECONCILE_QUEUE } from '../calendar-sync/calendar-sync.constants';
+import { WorkspaceMembersModule } from '../workspace-members/workspace-members.module';
 import { TokenRefreshProcessor } from './processors/token-refresh.processor';
 import { TokenRefreshScheduler } from './schedulers/token-refresh.scheduler';
 import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.scheduler';
@@ -64,6 +65,7 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
     forwardRef(() => InboxModule),
     forwardRef(() => CalendarSyncModule),
     BullModule.registerQueue({ name: CALENDAR_RECONCILE_QUEUE }),
+    WorkspaceMembersModule,
   ],
   controllers: [ChannelsController],
   providers: [
