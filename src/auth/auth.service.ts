@@ -12,7 +12,7 @@ import { UsersService, PublicUser } from '../users/users.service';
 import { EmailService } from '../email/email.service';
 import { LoginDto } from './dto/login.dto';
 import type { User, UserRole, Workspace } from '../drizzle/schema';
-import { users, workspace } from '../drizzle/schema';
+import { users, workspace, workspaceInvitation } from '../drizzle/schema';
 import { CreateUserDto } from '../users/dto/create-user.dto';
 import {
   generateOtp,
@@ -21,8 +21,12 @@ import {
 } from '../common/utils/encryption.util';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import type { DbType } from '../drizzle/db';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import { NotificationEmitterService } from '../notifications/notification-emitter.service';
+import {
+  mergeWorkspacesWithRoles,
+  type WorkspaceWithRole,
+} from './workspace-membership.util';
 
 // OTP expires in 10 minutes — short-lived because the code space is small (1M).
 const OTP_TTL_MS = 10 * 60 * 1000;
@@ -42,7 +46,7 @@ export interface AuthResponse {
 
 export interface MeResponse {
   user: PublicUser;
-  workspaces: Workspace[];
+  workspaces: WorkspaceWithRole[];
   lastAccessedWorkspace: Workspace | null;
 }
 
@@ -194,6 +198,22 @@ export class AuthService {
       orderBy: (workspace, { desc }) => [desc(workspace.createdAt)],
     });
 
+    // Get accepted memberships (workspaces the user belongs to but doesn't own)
+    const memberRows = await this.db.query.workspaceInvitation.findMany({
+      where: and(
+        eq(workspaceInvitation.userId, userId),
+        eq(workspaceInvitation.status, 'ACCEPTED'),
+      ),
+      with: { workspace: true },
+    });
+    const memberships = memberRows
+      .filter((r) => r.workspace)
+      .map((r) => ({
+        workspace: r.workspace!,
+        role: r.role as 'ADMIN' | 'MEMBER' | 'GUEST',
+      }));
+    const merged = mergeWorkspacesWithRoles(workspaces, memberships);
+
     // Get last accessed workspace if exists
     let lastAccessedWorkspace: Workspace | null = null;
     if (user.lastAccessedWorkspaceId) {
@@ -205,7 +225,7 @@ export class AuthService {
 
     return {
       user,
-      workspaces,
+      workspaces: merged,
       lastAccessedWorkspace,
     };
   }
