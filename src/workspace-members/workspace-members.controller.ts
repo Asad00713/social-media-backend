@@ -14,6 +14,7 @@ import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { UpdateMemberDto } from './dto/update-member.dto';
+import { BatchInviteDto } from './dto/batch-invite.dto';
 
 @Controller('workspace-members')
 @UseGuards(JwtAuthGuard)
@@ -31,6 +32,16 @@ export class WorkspaceMembersController {
       inviteMemberDto,
       user.userId,
     );
+  }
+
+  // Batch invite (seat-gated up front)
+  @Post(':workspaceId/invitations/batch')
+  batchInvite(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: BatchInviteDto,
+    @CurrentUser() user: { userId: string; email: string },
+  ) {
+    return this.membersService.batchInvite(workspaceId, dto.invites, user.userId);
   }
 
   // Get pending invitations for a workspace

@@ -164,6 +164,79 @@ export class WorkspaceMembersService {
     };
   }
 
+  // Step 1b: Batch invite (seat-gated up front)
+  async batchInvite(
+    workspaceId: string,
+    invites: { email: string; role?: 'ADMIN' | 'MEMBER' | 'GUEST' }[],
+    currentUserId: string,
+  ) {
+    // permission: owner or admin (same check as inviteMember)
+    const workspaceData = await this.db.query.workspace.findFirst({
+      where: eq(workspace.id, workspaceId),
+    });
+    if (!workspaceData) throw new NotFoundException('Workspace not found');
+    const isOwner = workspaceData.ownerId === currentUserId;
+    const isAdmin = await this.isUserAdmin(workspaceId, currentUserId);
+    if (!isOwner && !isAdmin) {
+      throw new ForbiddenException(
+        'Only workspace owner or admins can invite members',
+      );
+    }
+
+    // seat gate: reserved = accepted members + pending invitations
+    let membersLimit = 0;
+    let membersCount = 0;
+    try {
+      const usage = await this.usageService.getWorkspaceUsage(workspaceId);
+      membersLimit = usage.membersLimit;
+      membersCount = usage.membersCount;
+    } catch (error) {
+      // If no usage record exists, treat as no seats available (matches
+      // enforceMemberLimit's 404-tolerance style, but conservatively for a gate)
+      if (error.status !== 404) {
+        throw error;
+      }
+    }
+
+    const pending = await this.db.query.workspaceInvitation.findMany({
+      where: and(
+        eq(workspaceInvitation.workspaceId, workspaceId),
+        eq(workspaceInvitation.status, 'PENDING'),
+      ),
+    });
+    const reserved = membersCount + pending.length;
+    if (reserved + invites.length > membersLimit) {
+      const available = Math.max(0, membersLimit - reserved);
+      throw new ForbiddenException(
+        `SEAT_LIMIT_EXCEEDED: ${available} seat(s) left, ${invites.length} requested`,
+      );
+    }
+
+    // create each invite (reuse inviteMember for validation + email); collect results
+    const results: {
+      email: string;
+      status: 'invited' | 'skipped';
+      reason?: string;
+    }[] = [];
+    for (const item of invites) {
+      try {
+        await this.inviteMember(
+          workspaceId,
+          { email: item.email, role: item.role } as any,
+          currentUserId,
+        );
+        results.push({ email: item.email, status: 'invited' });
+      } catch (e: any) {
+        results.push({
+          email: item.email,
+          status: 'skipped',
+          reason: e?.message ?? 'skipped',
+        });
+      }
+    }
+    return { results };
+  }
+
   // Step 2: Accept invitation
   async acceptInvitation(token: string, currentUserId: string) {
     // 1. Find invitation by token

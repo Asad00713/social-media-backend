@@ -64,3 +64,30 @@ describe('WorkspaceMembersService.previewInvitation', () => {
     expect((res as any).token).toBeUndefined();
   });
 });
+
+describe('WorkspaceMembersService.batchInvite seat gate', () => {
+  it('rejects the whole batch when it exceeds remaining seats', async () => {
+    const db: any = {
+      query: {
+        workspace: { findFirst: jest.fn().mockResolvedValue({ id: 'w', ownerId: 'owner', name: 'Acme' }) },
+        users: { findFirst: jest.fn().mockResolvedValue(undefined) },
+        workspaceInvitation: {
+          findFirst: jest.fn().mockResolvedValue(undefined),
+          findMany: jest.fn().mockResolvedValue([]), // no pending
+        },
+      },
+      insert: () => ({ values: () => ({ returning: () => Promise.resolve([{ id: 'i', email: 'x', role: 'MEMBER', token: 't', expiresAt: new Date() }]) }) }),
+      // count of accepted members:
+      select: () => ({ from: () => ({ where: () => Promise.resolve([{ count: 1 }]) }) }),
+    };
+    const usageService: any = {
+      getWorkspaceUsage: jest.fn().mockResolvedValue({ membersLimit: 2, membersCount: 1, membersAvailable: 1 }),
+    };
+    const emailService: any = { sendWorkspaceInvitation: jest.fn().mockResolvedValue({ success: true }) };
+    const svc = new WorkspaceMembersService(db, usageService, emailService);
+    // reserved = membersCount(1) + pending(0) = 1; limit 2 → 1 seat left; batch of 2 → exceeds
+    await expect(
+      svc.batchInvite('w', [{ email: 'a@x.com', role: 'MEMBER' }, { email: 'b@x.com', role: 'MEMBER' }] as any, 'owner'),
+    ).rejects.toThrow(/SEAT_LIMIT_EXCEEDED/);
+  });
+});
