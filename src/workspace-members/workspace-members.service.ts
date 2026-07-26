@@ -16,12 +16,14 @@ import { users, workspace, workspaceInvitation } from 'src/drizzle/schema';
 import { UpdateMemberDto } from './dto/update-member.dto';
 import { MemberRole } from './dto/add-member.dto';
 import { UsageService } from 'src/billing/services/usage.service';
+import { EmailService } from 'src/email/email.service';
 
 @Injectable()
 export class WorkspaceMembersService {
   constructor(
     @Inject(DRIZZLE) private db: DbType,
     private usageService: UsageService,
+    private emailService: EmailService,
   ) {}
 
   // ==================== INVITATION FLOW ====================
@@ -131,9 +133,23 @@ export class WorkspaceMembersService {
       })
       .returning();
 
-    // TODO: Send email with invitation link
-    // const invitationLink = `${process.env.FRONTEND_URL}/accept-invitation?token=${token}`;
-    // await this.emailService.sendInvitation(inviteMemberDto.email, invitationLink);
+    // Send the invitation email (best-effort — the row exists regardless; resend covers retries)
+    const workspaceName = workspaceData.name ?? 'your workspace';
+    const inviterUser = await this.db.query.users.findFirst({
+      where: eq(users.id, currentUserId),
+      columns: { name: true },
+    });
+    try {
+      await this.emailService.sendWorkspaceInvitation(inviteMemberDto.email, {
+        workspaceName,
+        inviterName: inviterUser?.name ?? undefined,
+        role: invitation.role as 'ADMIN' | 'MEMBER' | 'GUEST',
+        token: invitation.token,
+        expiresAt: invitation.expiresAt,
+      });
+    } catch (err) {
+      console.error('Failed to send invitation email:', err);
+    }
 
     return {
       message: 'Invitation sent successfully',

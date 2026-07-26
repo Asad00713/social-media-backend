@@ -5,9 +5,16 @@ import { PassportModule } from '@nestjs/passport';
 import { AuthModule } from 'src/auth/auth.module';
 import { JwtModule } from '@nestjs/jwt';
 import { BillingModule } from 'src/billing/billing.module';
+import { EmailModule } from 'src/email/email.module';
 
 @Module({
-  imports: [PassportModule, AuthModule, JwtModule.register({}), BillingModule],
+  imports: [
+    PassportModule,
+    AuthModule,
+    JwtModule.register({}),
+    BillingModule,
+    EmailModule,
+  ],
   providers: [WorkspaceMembersService],
   controllers: [WorkspaceMembersController],
 })
