@@ -1,7 +1,6 @@
 import { Module } from '@nestjs/common';
 import { WorkspaceMembersService } from './workspace-members.service';
-import { WorkspaceRoleService } from './workspace-role.service';
-import { WorkspaceRoleGuard } from './workspace-role.guard';
+import { WorkspaceRoleModule } from './workspace-role.module';
 import { WorkspaceMembersController } from './workspace-members.controller';
 import { PublicInvitationsController } from './public-invitations.controller';
 import { PassportModule } from '@nestjs/passport';
@@ -17,9 +16,12 @@ import { EmailModule } from 'src/email/email.module';
     JwtModule.register({}),
     BillingModule,
     EmailModule,
+    WorkspaceRoleModule,
   ],
-  providers: [WorkspaceMembersService, WorkspaceRoleService, WorkspaceRoleGuard],
+  providers: [WorkspaceMembersService],
   controllers: [WorkspaceMembersController, PublicInvitationsController],
-  exports: [WorkspaceRoleService, WorkspaceRoleGuard],
+  // Re-export the role module so existing consumers of WorkspaceMembersModule
+  // keep receiving WorkspaceRoleService / WorkspaceRoleGuard.
+  exports: [WorkspaceRoleModule],
 })
 export class WorkspaceMembersModule {}
