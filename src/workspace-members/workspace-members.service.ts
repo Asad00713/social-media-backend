@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import * as crypto from 'crypto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { users, workspace, workspaceInvitation } from 'src/drizzle/schema';
@@ -428,11 +428,11 @@ export class WorkspaceMembersService {
 
     const invitations = await this.db.query.workspaceInvitation.findMany({
       where: and(
-        eq(workspaceInvitation.email, currentUser.email),
+        sql`lower(${workspaceInvitation.email}) = ${currentUser.email.toLowerCase()}`,
         eq(workspaceInvitation.status, 'PENDING'),
       ),
       with: {
-        workspace: true,
+        workspace: { columns: { id: true, name: true } },
         inviter: {
           columns: {
             id: true,
