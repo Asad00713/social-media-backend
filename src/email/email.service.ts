@@ -789,4 +789,72 @@ This email was sent by your Social Media Automation tool.
       text,
     });
   }
+
+  /**
+   * Send a workspace invitation email with an accept link.
+   */
+  async sendWorkspaceInvitation(
+    email: string,
+    data: {
+      workspaceName: string;
+      inviterName?: string;
+      role: 'ADMIN' | 'MEMBER' | 'GUEST';
+      token: string;
+      expiresAt: Date;
+    },
+  ): Promise<EmailResult> {
+    const acceptUrl = `${this.frontendUrl}/invite/accept?token=${data.token}`;
+    const inviter = data.inviterName
+      ? `${data.inviterName} invited you`
+      : 'You have been invited';
+    const roleLabel = data.role.charAt(0) + data.role.slice(1).toLowerCase();
+    const expires = data.expiresAt.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Workspace Invitation</title></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px 10px 0 0;">
+    <h1 style="color: white; margin: 0; font-size: 24px;">You're invited to ${data.workspaceName}</h1>
+  </div>
+  <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
+    <p style="font-size: 16px; margin-top: 0;">Hi there,</p>
+    <p>${inviter} to join <strong>${data.workspaceName}</strong> as a <strong>${roleLabel}</strong>.</p>
+    <div style="text-align: center; margin: 30px 0;">
+      <a href="${acceptUrl}" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: bold; font-size: 16px;">Accept invitation</a>
+    </div>
+    <p style="color: #6b7280; font-size: 14px;">This invitation expires on ${expires}.</p>
+    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+      <p style="color: #9ca3af; font-size: 12px; margin: 0;">If the button doesn't work, copy and paste this link:<br>
+        <a href="${acceptUrl}" style="color: #667eea; word-break: break-all;">${acceptUrl}</a>
+      </p>
+    </div>
+  </div>
+  <div style="text-align: center; padding: 20px; color: #9ca3af; font-size: 12px;"><p>This email was sent by Schedura.</p></div>
+</body>
+</html>`.trim();
+
+    const text = `
+${inviter} to join ${data.workspaceName} as a ${roleLabel}.
+
+Accept your invitation:
+${acceptUrl}
+
+This invitation expires on ${expires}.
+
+---
+This email was sent by Schedura.`.trim();
+
+    return this.sendEmail({
+      to: email,
+      subject: `You're invited to join ${data.workspaceName} on Schedura`,
+      html,
+      text,
+    });
+  }
 }
