@@ -17,6 +17,7 @@ import { UpdateMemberDto } from './dto/update-member.dto';
 import { MemberRole } from './dto/add-member.dto';
 import { UsageService } from 'src/billing/services/usage.service';
 import { EmailService } from 'src/email/email.service';
+import { UsersService } from 'src/users/users.service';
 
 @Injectable()
 export class WorkspaceMembersService {
@@ -24,6 +25,7 @@ export class WorkspaceMembersService {
     @Inject(DRIZZLE) private db: DbType,
     private usageService: UsageService,
     private emailService: EmailService,
+    private usersService: UsersService,
   ) {}
 
   // ==================== INVITATION FLOW ====================
@@ -327,6 +329,12 @@ export class WorkspaceMembersService {
       // Log but don't fail if usage tracking fails
       console.error('Failed to track member usage:', error);
     }
+
+    // 9. Auto-verify email + complete onboarding — accepting this invitation
+    // already proved inbox ownership (matching email + high-entropy token),
+    // so an invited user skips the verify-email and create-workspace steps.
+    await this.usersService.verifyEmail(currentUserId);
+    await this.usersService.markOnboardingCompleted(currentUserId);
 
     return {
       message: 'Invitation accepted successfully',

@@ -8,6 +8,7 @@ import { AuthModule } from 'src/auth/auth.module';
 import { JwtModule } from '@nestjs/jwt';
 import { BillingModule } from 'src/billing/billing.module';
 import { EmailModule } from 'src/email/email.module';
+import { UsersModule } from 'src/users/users.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { EmailModule } from 'src/email/email.module';
     JwtModule.register({}),
     BillingModule,
     EmailModule,
+    UsersModule,
     WorkspaceRoleModule,
   ],
   providers: [WorkspaceMembersService],
