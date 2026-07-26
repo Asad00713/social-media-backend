@@ -41,3 +41,26 @@ describe('WorkspaceMembersService.inviteMember email', () => {
     );
   });
 });
+
+describe('WorkspaceMembersService.previewInvitation', () => {
+  it('returns safe fields and an expired flag', async () => {
+    const past = new Date('2000-01-01T00:00:00Z');
+    const db: any = {
+      query: {
+        workspaceInvitation: {
+          findFirst: jest.fn().mockResolvedValue({
+            email: 'new@acme.com', role: 'MEMBER', status: 'PENDING', expiresAt: past,
+            workspace: { name: 'Acme' }, inviter: { name: 'Sam' },
+          }),
+        },
+      },
+    };
+    const service = new WorkspaceMembersService(db, {} as any, {} as any);
+    const res = await service.previewInvitation('tok123');
+    expect(res).toEqual({
+      workspaceName: 'Acme', inviterName: 'Sam', invitedEmail: 'new@acme.com',
+      role: 'MEMBER', status: 'PENDING', expired: true,
+    });
+    expect((res as any).token).toBeUndefined();
+  });
+});

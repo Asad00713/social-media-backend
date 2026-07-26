@@ -582,6 +582,28 @@ export class WorkspaceMembersService {
     return { message: 'Member removed successfully' };
   }
 
+  // Public: minimal invitation info by token (no auth, no sensitive fields)
+  async previewInvitation(token: string) {
+    const invitation = await this.db.query.workspaceInvitation.findFirst({
+      where: eq(workspaceInvitation.token, token),
+      with: {
+        workspace: { columns: { name: true } },
+        inviter: { columns: { name: true } },
+      },
+    });
+    if (!invitation) {
+      throw new NotFoundException('Invitation not found');
+    }
+    return {
+      workspaceName: invitation.workspace?.name ?? 'a workspace',
+      inviterName: invitation.inviter?.name ?? null,
+      invitedEmail: invitation.email,
+      role: invitation.role as 'ADMIN' | 'MEMBER' | 'GUEST',
+      status: invitation.status as 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'EXPIRED',
+      expired: new Date() > invitation.expiresAt,
+    };
+  }
+
   // Helper methods
   private async isUserMember(
     workspaceId: string,

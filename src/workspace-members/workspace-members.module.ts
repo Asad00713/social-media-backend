@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { WorkspaceMembersService } from './workspace-members.service';
 import { WorkspaceMembersController } from './workspace-members.controller';
+import { PublicInvitationsController } from './public-invitations.controller';
 import { PassportModule } from '@nestjs/passport';
 import { AuthModule } from 'src/auth/auth.module';
 import { JwtModule } from '@nestjs/jwt';
@@ -16,6 +17,6 @@ import { EmailModule } from 'src/email/email.module';
     EmailModule,
   ],
   providers: [WorkspaceMembersService],
-  controllers: [WorkspaceMembersController],
+  controllers: [WorkspaceMembersController, PublicInvitationsController],
 })
 export class WorkspaceMembersModule {}
