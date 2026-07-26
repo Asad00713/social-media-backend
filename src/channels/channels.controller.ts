@@ -166,8 +166,7 @@ export class ChannelsController {
    * Default intent is 'connect' (full base scopes for posting + inbox).
    */
   @Post('workspaces/:workspaceId/oauth/initiate')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.OK)
   async initiateOAuth(
@@ -864,8 +863,7 @@ export class ChannelsController {
    * Complete channel connection after OAuth (called by frontend with account data)
    */
   @Post('workspaces/:workspaceId/complete-oauth')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async completeOAuth(
@@ -915,8 +913,7 @@ export class ChannelsController {
    * Update a channel
    */
   @Put('workspaces/:workspaceId/:channelId')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   async updateChannel(
     @Param('workspaceId') workspaceId: string,
@@ -934,8 +931,7 @@ export class ChannelsController {
    * Delete a channel (disconnect)
    */
   @Delete('workspaces/:workspaceId/:channelId')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.NO_CONTENT)
   async deleteChannel(
@@ -989,8 +985,7 @@ export class ChannelsController {
    * the disconnect path — the user is withdrawing consent either way.
    */
   @Delete('workspaces/:workspaceId/:channelId/youtube-data')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   async deleteYoutubeData(
     @Param('workspaceId') workspaceId: string,
@@ -1041,8 +1036,7 @@ export class ChannelsController {
    * Reorder channels
    */
   @Put('workspaces/:workspaceId/reorder')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.OK)
   async reorderChannels(
@@ -1061,8 +1055,7 @@ export class ChannelsController {
    * Refresh tokens for a channel
    */
   @Post('workspaces/:workspaceId/:channelId/refresh-token')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.OK)
   async refreshToken(
@@ -1112,8 +1105,7 @@ export class ChannelsController {
    * Reconnect a channel (initiate new OAuth flow)
    */
   @Post('workspaces/:workspaceId/:channelId/reconnect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.OK)
   async reconnectChannel(
@@ -1140,8 +1132,7 @@ export class ChannelsController {
    * truly bad.
    */
   @Post('workspaces/:workspaceId/:channelId/force-connected')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.OK)
   async forceConnected(
@@ -1270,8 +1261,7 @@ export class ChannelsController {
    * Automatically creates the channel with the Page Access Token
    */
   @Post('workspaces/:workspaceId/facebook/connect-page')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectFacebookPage(
@@ -1452,8 +1442,7 @@ export class ChannelsController {
    * Get Pinterest user info and connect as channel
    */
   @Post('workspaces/:workspaceId/pinterest/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectPinterest(
@@ -1732,8 +1721,7 @@ export class ChannelsController {
    * Get YouTube channel info and connect as channel
    */
   @Post('workspaces/:workspaceId/youtube/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectYouTube(
@@ -1892,8 +1880,7 @@ export class ChannelsController {
    * Get LinkedIn profile info and connect as channel
    */
   @Post('workspaces/:workspaceId/linkedin/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectLinkedIn(
@@ -2090,8 +2077,7 @@ export class ChannelsController {
    * Get TikTok profile info and connect as channel
    */
   @Post('workspaces/:workspaceId/tiktok/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectTikTok(
@@ -2340,8 +2326,7 @@ export class ChannelsController {
    * Optionally initiates OAuth 1.0a flow for media upload support
    */
   @Post('workspaces/:workspaceId/twitter/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectTwitter(
@@ -2498,8 +2483,7 @@ export class ChannelsController {
    * Returns an authorization URL to redirect the user to
    */
   @Post('workspaces/:workspaceId/:channelId/twitter/oauth1/initiate')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.OK)
   async initiateTwitterOAuth1(
@@ -2635,8 +2619,7 @@ export class ChannelsController {
    * Instagram Business accounts are connected through Facebook Pages
    */
   @Post('workspaces/:workspaceId/instagram/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectInstagram(
@@ -2735,8 +2718,7 @@ export class ChannelsController {
    * use the Facebook OAuth flow with connectFacebookPage endpoint.
    */
   @Post('workspaces/:workspaceId/instagram/connect-with-token')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectInstagramWithUserToken(
@@ -3178,8 +3160,7 @@ export class ChannelsController {
    * Connect Threads account
    */
   @Post('workspaces/:workspaceId/threads/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectThreads(
@@ -3473,8 +3454,7 @@ export class ChannelsController {
    * Bluesky uses App Passwords instead of OAuth
    */
   @Post('workspaces/:workspaceId/bluesky/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectBluesky(
@@ -3880,8 +3860,7 @@ export class ChannelsController {
    * Mastodon requires per-instance app registration, so this handles that
    */
   @Post('workspaces/:workspaceId/mastodon/oauth/initiate')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.OK)
   async initiateMastodonOAuth(
@@ -4341,8 +4320,7 @@ export class ChannelsController {
    * Connect Google Drive account
    */
   @Post('workspaces/:workspaceId/google-drive/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectGoogleDrive(
@@ -4441,8 +4419,7 @@ export class ChannelsController {
    * Connect Google Photos account
    */
   @Post('workspaces/:workspaceId/google-photos/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectGooglePhotos(
@@ -5073,8 +5050,7 @@ export class ChannelsController {
    * Connect OneDrive account
    */
   @Post('workspaces/:workspaceId/onedrive/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectOneDrive(
@@ -5292,8 +5268,7 @@ export class ChannelsController {
    * Connect Dropbox account
    */
   @Post('workspaces/:workspaceId/dropbox/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.CREATED)
   async connectDropbox(
@@ -5865,8 +5840,7 @@ export class ChannelsController {
   // ==========================================================================
 
   @Post('workspaces/:workspaceId/telegram/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.OK)
   async connectTelegramBot(
@@ -5899,8 +5873,7 @@ export class ChannelsController {
   }
 
   @Post('workspaces/:workspaceId/whatsapp/connect')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.OK)
   async connectWhatsApp(
@@ -5984,8 +5957,7 @@ export class ChannelsController {
   // ==========================================================================
 
   @Post('workspaces/:workspaceId/whatsapp/embedded-signup')
-  @UseGuards(JwtAuthGuard)
-  @UseGuards(WorkspaceRoleGuard)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.OK)
   async connectWhatsAppEmbeddedSignup(
