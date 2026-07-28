@@ -4,7 +4,7 @@ import { IsEnum } from 'class-validator';
 export enum MemberRole {
   ADMIN = 'ADMIN',
   MEMBER = 'MEMBER',
-  VIEWER = 'VIEWER',
+  GUEST = 'GUEST',
 }
 
 export class AddMemberDto {

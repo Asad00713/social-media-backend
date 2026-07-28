@@ -9,19 +9,23 @@ import {
 } from '@nestjs/common';
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import * as crypto from 'crypto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { users, workspace, workspaceInvitation } from 'src/drizzle/schema';
 import { UpdateMemberDto } from './dto/update-member.dto';
 import { MemberRole } from './dto/add-member.dto';
 import { UsageService } from 'src/billing/services/usage.service';
+import { EmailService } from 'src/email/email.service';
+import { UsersService } from 'src/users/users.service';
 
 @Injectable()
 export class WorkspaceMembersService {
   constructor(
     @Inject(DRIZZLE) private db: DbType,
     private usageService: UsageService,
+    private emailService: EmailService,
+    private usersService: UsersService,
   ) {}
 
   // ==================== INVITATION FLOW ====================
@@ -131,9 +135,23 @@ export class WorkspaceMembersService {
       })
       .returning();
 
-    // TODO: Send email with invitation link
-    // const invitationLink = `${process.env.FRONTEND_URL}/accept-invitation?token=${token}`;
-    // await this.emailService.sendInvitation(inviteMemberDto.email, invitationLink);
+    // Send the invitation email (best-effort — the row exists regardless; resend covers retries)
+    const workspaceName = workspaceData.name ?? 'your workspace';
+    const inviterUser = await this.db.query.users.findFirst({
+      where: eq(users.id, currentUserId),
+      columns: { name: true },
+    });
+    try {
+      await this.emailService.sendWorkspaceInvitation(inviteMemberDto.email, {
+        workspaceName,
+        inviterName: inviterUser?.name ?? undefined,
+        role: invitation.role as 'ADMIN' | 'MEMBER' | 'GUEST',
+        token: invitation.token,
+        expiresAt: invitation.expiresAt,
+      });
+    } catch (err) {
+      console.error('Failed to send invitation email:', err);
+    }
 
     return {
       message: 'Invitation sent successfully',
@@ -146,6 +164,79 @@ export class WorkspaceMembersService {
         // token: invitation.token,
       },
     };
+  }
+
+  // Step 1b: Batch invite (seat-gated up front)
+  async batchInvite(
+    workspaceId: string,
+    invites: { email: string; role?: 'ADMIN' | 'MEMBER' | 'GUEST' }[],
+    currentUserId: string,
+  ) {
+    // permission: owner or admin (same check as inviteMember)
+    const workspaceData = await this.db.query.workspace.findFirst({
+      where: eq(workspace.id, workspaceId),
+    });
+    if (!workspaceData) throw new NotFoundException('Workspace not found');
+    const isOwner = workspaceData.ownerId === currentUserId;
+    const isAdmin = await this.isUserAdmin(workspaceId, currentUserId);
+    if (!isOwner && !isAdmin) {
+      throw new ForbiddenException(
+        'Only workspace owner or admins can invite members',
+      );
+    }
+
+    // seat gate: reserved = accepted members + pending invitations
+    let membersLimit = 0;
+    let membersCount = 0;
+    try {
+      const usage = await this.usageService.getWorkspaceUsage(workspaceId);
+      membersLimit = usage.membersLimit;
+      membersCount = usage.membersCount;
+    } catch (error) {
+      // If no usage record exists, treat as no seats available (matches
+      // enforceMemberLimit's 404-tolerance style, but conservatively for a gate)
+      if (error.status !== 404) {
+        throw error;
+      }
+    }
+
+    const pending = await this.db.query.workspaceInvitation.findMany({
+      where: and(
+        eq(workspaceInvitation.workspaceId, workspaceId),
+        eq(workspaceInvitation.status, 'PENDING'),
+      ),
+    });
+    const reserved = membersCount + pending.length;
+    if (reserved + invites.length > membersLimit) {
+      const available = Math.max(0, membersLimit - reserved);
+      throw new ForbiddenException(
+        `SEAT_LIMIT_EXCEEDED: ${available} seat(s) left, ${invites.length} requested`,
+      );
+    }
+
+    // create each invite (reuse inviteMember for validation + email); collect results
+    const results: {
+      email: string;
+      status: 'invited' | 'skipped';
+      reason?: string;
+    }[] = [];
+    for (const item of invites) {
+      try {
+        await this.inviteMember(
+          workspaceId,
+          { email: item.email, role: item.role } as any,
+          currentUserId,
+        );
+        results.push({ email: item.email, status: 'invited' });
+      } catch (e: any) {
+        results.push({
+          email: item.email,
+          status: 'skipped',
+          reason: e?.message ?? 'skipped',
+        });
+      }
+    }
+    return { results };
   }
 
   // Step 2: Accept invitation
@@ -196,7 +287,7 @@ export class WorkspaceMembersService {
     }
 
     // 5. Check if invitation email matches current user
-    if (currentUser.email !== invitation.email) {
+    if (currentUser.email.toLowerCase() !== invitation.email.toLowerCase()) {
       throw new ForbiddenException(
         'This invitation was sent to a different email address',
       );
@@ -239,6 +330,21 @@ export class WorkspaceMembersService {
       console.error('Failed to track member usage:', error);
     }
 
+    // 9. Auto-verify email + complete onboarding — accepting this invitation
+    // already proved inbox ownership (matching email + high-entropy token),
+    // so an invited user skips the verify-email and create-workspace steps.
+    try {
+      await this.usersService.verifyEmail(currentUserId);
+      await this.usersService.markOnboardingCompleted(currentUserId);
+    } catch (error) {
+      // Log but don't fail — the invitation is already committed above, so
+      // a stamp failure here must never surface as a failed accept.
+      console.error(
+        `post-accept verify/onboarding stamp failed for user ${currentUserId}:`,
+        error,
+      );
+    }
+
     return {
       message: 'Invitation accepted successfully',
       workspace: invitation.workspace,
@@ -269,7 +375,7 @@ export class WorkspaceMembersService {
       throw new NotFoundException('User not found');
     }
 
-    if (currentUser.email !== invitation.email) {
+    if (currentUser.email.toLowerCase() !== invitation.email.toLowerCase()) {
       throw new ForbiddenException(
         'This invitation was sent to a different email address',
       );
@@ -339,11 +445,11 @@ export class WorkspaceMembersService {
 
     const invitations = await this.db.query.workspaceInvitation.findMany({
       where: and(
-        eq(workspaceInvitation.email, currentUser.email),
+        sql`lower(${workspaceInvitation.email}) = ${currentUser.email.toLowerCase()}`,
         eq(workspaceInvitation.status, 'PENDING'),
       ),
       with: {
-        workspace: true,
+        workspace: { columns: { id: true, name: true } },
         inviter: {
           columns: {
             id: true,
@@ -564,6 +670,28 @@ export class WorkspaceMembersService {
     }
 
     return { message: 'Member removed successfully' };
+  }
+
+  // Public: minimal invitation info by token (no auth, no sensitive fields)
+  async previewInvitation(token: string) {
+    const invitation = await this.db.query.workspaceInvitation.findFirst({
+      where: eq(workspaceInvitation.token, token),
+      with: {
+        workspace: { columns: { name: true } },
+        inviter: { columns: { name: true } },
+      },
+    });
+    if (!invitation) {
+      throw new NotFoundException('Invitation not found');
+    }
+    return {
+      workspaceName: invitation.workspace?.name ?? 'a workspace',
+      inviterName: invitation.inviter?.name ?? null,
+      invitedEmail: invitation.email,
+      role: invitation.role as 'ADMIN' | 'MEMBER' | 'GUEST',
+      status: invitation.status as 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'EXPIRED',
+      expired: new Date() > invitation.expiresAt,
+    };
   }
 
   // Helper methods
