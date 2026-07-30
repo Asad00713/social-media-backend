@@ -671,6 +671,7 @@ export class WebhooksController {
     authorPlatformId?: string;
     authorHandle?: string;
     authorDisplayName?: string;
+    authorAvatarUrl?: string | null;
     text: string;
     eventTime: Date;
   }): Promise<void> {
@@ -697,6 +698,32 @@ export class WebhooksController {
       return;
     }
 
+    // Comment webhooks carry only the author's id + name, not their avatar, so
+    // realtime comments would render without a profile picture. Fetch it here —
+    // after the our-post check above, so we never spend an API call on foreign
+    // comments — to match the avatar that polling surfaces via `from{picture}`.
+    let authorAvatarUrl: string | null = args.authorAvatarUrl ?? null;
+    if (
+      !authorAvatarUrl &&
+      args.platform === 'facebook' &&
+      args.authorPlatformId
+    ) {
+      try {
+        const token = await this.channelService.getAccessToken(
+          channel.id,
+          channel.workspaceId,
+        );
+        authorAvatarUrl = await this.facebookService.getCommentAuthorPicture(
+          args.platformItemId,
+          token,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `Facebook comment avatar enrichment failed for ${args.platformItemId}: ${(err as Error).message}`,
+        );
+      }
+    }
+
     await this.inbox.upsertComment({
       workspaceId: channel.workspaceId,
       channelId: channel.id,
@@ -708,6 +735,7 @@ export class WebhooksController {
       authorPlatformId: args.authorPlatformId,
       authorHandle: args.authorHandle,
       authorDisplayName: args.authorDisplayName,
+      authorAvatarUrl,
       text: args.text,
       fromMe: false, // webhooks don't fire for our own comments; safe default
       platformCreatedAt: args.eventTime,
