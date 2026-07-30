@@ -1168,6 +1168,45 @@ export class FacebookService {
   }
 
   /**
+   * Fetch a comment author's profile picture URL.
+   *
+   * The FB `feed` comment webhook payload carries only `from.{id,name}` — no
+   * picture — so realtime, webhook-ingested comments would render without an
+   * avatar. Polling gets the picture via `from{picture}` on the comment edge;
+   * this mirrors that with a single `GET /{comment-id}?fields=from{picture}`
+   * so both paths surface the same avatar. Best-effort: returns null on any
+   * failure and the caller keeps the null (UI falls back to initials).
+   */
+  async getCommentAuthorPicture(
+    commentId: string,
+    pageAccessToken: string,
+  ): Promise<string | null> {
+    try {
+      const url = new URL(`${this.graphApiUrl}/${commentId}`);
+      url.searchParams.set('fields', 'from{picture}');
+      url.searchParams.set('access_token', pageAccessToken);
+
+      const res = await fetch(url.toString());
+      if (!res.ok) {
+        const err = await res.text();
+        this.logger.warn(
+          `getCommentAuthorPicture failed for comment=${commentId}: ${res.status} ${err}`,
+        );
+        return null;
+      }
+      const data = (await res.json()) as {
+        from?: { picture?: { data?: { url?: string } } };
+      };
+      return data.from?.picture?.data?.url ?? null;
+    } catch (err) {
+      this.logger.warn(
+        `getCommentAuthorPicture threw for comment=${commentId}: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
+
+  /**
    * List Messenger conversations on this Page.
    *
    * Endpoint: GET /<page-id>/conversations
