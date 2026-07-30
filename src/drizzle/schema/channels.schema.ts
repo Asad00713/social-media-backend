@@ -417,13 +417,13 @@ export const PLATFORM_CONFIG: Record<
       // Must be enabled in Meta App Console + submitted for App Review; existing
       // Facebook channels must RECONNECT to gain the scope.
       'pages_messaging',
-      // === Ads Phase 1 additions ===
-      // Must be approved in Meta App Console before existing users will see them.
-      'ads_management',
-      'ads_read',
-      'leads_retrieval',
-      'pages_manage_ads',
-      'business_management',
+      // Ads scopes (ads_management, ads_read, leads_retrieval, pages_manage_ads,
+      // business_management) are intentionally NOT requested at base connect.
+      // They live only in facebookScopesFor('ads') for the incremental ads/Boost
+      // upgrade of an already-connected Page. A Facebook app that has no ads use
+      // case configured rejects the whole base connect with "Invalid Scopes" if
+      // they are present here, so keeping them out lets publishing/comments/
+      // messenger connect cleanly on a publishing-only Facebook app.
     ],
   },
   instagram: {
