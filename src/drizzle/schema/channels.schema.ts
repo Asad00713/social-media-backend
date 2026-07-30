@@ -410,6 +410,13 @@ export const PLATFORM_CONFIG: Record<
       'pages_manage_engagement',
       // Required to read user-generated comments on Page posts (inbox feature).
       'pages_read_user_content',
+      // Required for the Facebook Messenger DM inbox (read conversations, send
+      // replies, unsend). The FacebookDmAdapter's Send/Conversations API calls
+      // fail with (#200) without this, so real users' Page tokens must carry it
+      // — the feature previously only worked with hand-generated tester tokens.
+      // Must be enabled in Meta App Console + submitted for App Review; existing
+      // Facebook channels must RECONNECT to gain the scope.
+      'pages_messaging',
       // === Ads Phase 1 additions ===
       // Must be approved in Meta App Console before existing users will see them.
       'ads_management',
