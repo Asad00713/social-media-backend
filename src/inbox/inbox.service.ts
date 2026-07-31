@@ -1891,22 +1891,43 @@ export class InboxService {
   // Lookup helpers used by webhook handlers
   // ==========================================================================
 
-  async findChannelByPlatformAccount(
+  /**
+   * Every channel row that holds this (platform, platformAccountId), across ALL
+   * workspaces, ordered by channel id.
+   *
+   * The same external account (e.g. one Facebook Page) can legitimately be
+   * connected to more than one workspace — an agency and its client are both
+   * admins of the same Page. Platform webhooks fire only ONCE per event, so any
+   * inbound-event handler MUST fan the event out to every matching channel here;
+   * resolving to a single row silently drops the event for every other workspace.
+   */
+  async findChannelsByPlatformAccount(
     platform: SupportedPlatform,
     platformAccountId: string,
   ) {
-    const matches = await db.query.socialMediaChannels.findMany({
+    return db.query.socialMediaChannels.findMany({
       where: and(
         eq(socialMediaChannels.platform, platform),
         eq(socialMediaChannels.platformAccountId, platformAccountId),
       ),
       orderBy: (c, { asc }) => asc(c.id),
     });
-    if (matches.length > 1) {
-      this.logger.warn(
-        `findChannelByPlatformAccount: ${matches.length} rows for ${platform}/${platformAccountId} — routing to the lowest channel id (${matches[0].id}). This should not happen; a cross-workspace duplicate slipped past the connect guard.`,
-      );
-    }
+  }
+
+  /**
+   * @deprecated Resolves to a single channel and therefore drops the event for
+   * every other workspace when the same account is connected more than once.
+   * Prefer {@link findChannelsByPlatformAccount} and fan out. Kept only for
+   * callers that are provably 1:1.
+   */
+  async findChannelByPlatformAccount(
+    platform: SupportedPlatform,
+    platformAccountId: string,
+  ) {
+    const matches = await this.findChannelsByPlatformAccount(
+      platform,
+      platformAccountId,
+    );
     return matches[0];
   }
 

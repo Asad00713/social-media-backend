@@ -38,26 +38,8 @@ export class SlackIngestProcessor extends WorkerHost {
 
     if (!teamId || !event) return;
 
-    // Resolve the Schedura channel row for this Slack workspace.
-    const [channel] = await db
-      .select()
-      .from(socialMediaChannels)
-      .where(
-        and(
-          eq(socialMediaChannels.platform, 'slack'),
-          eq(socialMediaChannels.platformAccountId, teamId),
-        ),
-      )
-      .limit(1);
-
-    if (!channel) {
-      this.logger.warn(
-        `No Schedura channel for Slack team ${teamId} — ignoring event`,
-      );
-      return;
-    }
-
-    // Skip bot messages (including our own).
+    // Skip channel-independent non-messages up front (identical for every
+    // workspace, so we test them once before fanning out).
     if (event.bot_id || event.subtype === 'bot_message') return;
 
     // We handle plain `message` events only in Phase 1.
@@ -67,6 +49,38 @@ export class SlackIngestProcessor extends WorkerHost {
     // carries a real user id and text, so we ingest it as a plain message).
     if (event.subtype && event.subtype !== 'channel_join') return;
 
+    // Fan out to EVERY Schedura channel connected to this Slack team — the same
+    // team can be installed by more than one workspace, and resolving a single
+    // channel would drop the event for the others.
+    const channels = await db
+      .select()
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.platform, 'slack'),
+          eq(socialMediaChannels.platformAccountId, teamId),
+        ),
+      );
+
+    if (channels.length === 0) {
+      this.logger.warn(
+        `No Schedura channel for Slack team ${teamId} — ignoring event`,
+      );
+      return;
+    }
+
+    for (const channel of channels) {
+      await this.ingestForChannel(channel, event);
+    }
+  }
+
+  /** Ingest one Slack `message` event into a single Schedura channel/workspace.
+   *  Called once per matching channel by {@link process} so a Slack team
+   *  installed by multiple workspaces reaches every inbox. */
+  private async ingestForChannel(
+    channel: { id: number; workspaceId: string },
+    event: any,
+  ): Promise<void> {
     // Decrypt the bot token before calling Slack APIs.
     const accessToken = await this.channelService
       .getAccessToken(channel.id, channel.workspaceId)

@@ -53,14 +53,29 @@ export class DiscordIngestProcessor extends WorkerHost {
   ): Promise<void> {
     const { type, message: msg } = job.data;
 
-    const channel = await this.resolveChannel(msg.guild_id);
-    if (!channel) {
+    const channels = await this.resolveChannels(msg.guild_id);
+    if (channels.length === 0) {
       this.logger.warn(
         `No Discord channel row for guild ${msg.guild_id ?? '(dm)'} — skipping`,
       );
       return;
     }
 
+    // Fan out to EVERY workspace this guild is connected to (a guild can be
+    // linked by more than one workspace); a single-row lookup would drop the
+    // message for the others.
+    for (const channel of channels) {
+      await this.ingestForChannel(channel, type, msg);
+    }
+  }
+
+  /** Ingest one Discord gateway event into a single channel/workspace. Called
+   *  once per matching channel by {@link process}. */
+  private async ingestForChannel(
+    channel: { id: number; workspaceId: string },
+    type: 'create' | 'update' | 'delete' | 'ask',
+    msg: any,
+  ): Promise<void> {
     if (type === 'delete') {
       await this.inbox.softDeleteDmByPlatformItemId({
         workspaceId: channel.workspaceId,
@@ -149,12 +164,14 @@ export class DiscordIngestProcessor extends WorkerHost {
     });
   }
 
-  /** Resolve the Schedura channel row for an event. Guild messages map by
-   *  `guild_id`; DMs (no guild) attribute to the most-recently-connected Discord
-   *  channel (Phase 1 routing — see design doc open question). */
-  private async resolveChannel(guildId?: string) {
+  /** Resolve the Schedura channel rows for an event. Guild messages fan out to
+   *  EVERY channel mapped to `guild_id`; DMs (no guild) can't be attributed to a
+   *  specific workspace with a shared bot, so they keep the Phase-1 behaviour of
+   *  the most-recently-connected Discord channel as a single-element list (proper
+   *  per-workspace DM routing needs per-workspace bots — tracked separately). */
+  private async resolveChannels(guildId?: string) {
     if (guildId) {
-      const [c] = await db
+      return db
         .select()
         .from(socialMediaChannels)
         .where(
@@ -162,9 +179,7 @@ export class DiscordIngestProcessor extends WorkerHost {
             eq(socialMediaChannels.platform, 'discord'),
             eq(socialMediaChannels.platformAccountId, guildId),
           ),
-        )
-        .limit(1);
-      return c ?? null;
+        );
     }
     const [c] = await db
       .select()
@@ -172,6 +187,6 @@ export class DiscordIngestProcessor extends WorkerHost {
       .where(eq(socialMediaChannels.platform, 'discord'))
       .orderBy(desc(socialMediaChannels.id))
       .limit(1);
-    return c ?? null;
+    return c ? [c] : [];
   }
 }

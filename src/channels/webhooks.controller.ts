@@ -373,12 +373,15 @@ export class WebhooksController {
     const otherPartyId = fromMe ? recipientId : senderId;
     const conversationId = `${accountId}:${otherPartyId}`;
 
-    // Look up channel + workspace by platform account id.
-    const channel = await this.inbox.findChannelByPlatformAccount(
+    // Fan out to EVERY workspace this account is connected to. Platform
+    // webhooks fire only once per event, so resolving a single channel would
+    // silently drop the DM for every other workspace that shares this account
+    // (e.g. an agency and its client both connect the same Page).
+    const channels = await this.inbox.findChannelsByPlatformAccount(
       source as SupportedPlatform,
       accountId,
     );
-    if (!channel) {
+    if (channels.length === 0) {
       this.logger.warn(
         `${source} DM webhook: NO CHANNEL FOUND for platform=${source} platformAccountId=${accountId}. ` +
           `Check that the connected channel's platformAccountId matches this id ` +
@@ -386,9 +389,6 @@ export class WebhooksController {
       );
       return;
     }
-    this.logger.log(
-      `${source} DM webhook: matched channel=${channel.id} workspace=${channel.workspaceId}`,
-    );
 
     // Timestamp parsing — FB Messenger sends ms, IG samples sometimes show
     // seconds. Auto-detect: anything below 10^12 is seconds.
@@ -401,9 +401,11 @@ export class WebhooksController {
     }
 
     // Enrich author info for inbound messages (not echoes). The webhook payload
-    // only contains the platform id of the sender — name + avatar come from
-    // the User Profile API. Best-effort: if the call fails, we still ingest
-    // the row with null author fields and surface "Unknown" in the UI.
+    // only contains the platform id of the sender — name + avatar come from the
+    // User Profile API. The profile is identical for every workspace, so we
+    // resolve it once (using any connected channel's token) instead of per
+    // workspace. Best-effort: on failure we ingest null author fields and
+    // surface "Unknown" in the UI.
     let authorHandle: string | null = null;
     let authorDisplayName: string | null = null;
     let authorAvatarUrl: string | null = null;
@@ -411,8 +413,8 @@ export class WebhooksController {
     if (!fromMe) {
       try {
         const token = await this.channelService.getAccessToken(
-          channel.id,
-          channel.workspaceId,
+          channels[0].id,
+          channels[0].workspaceId,
         );
         if (source === 'facebook') {
           const profile = await this.facebookService.getMessengerUserProfile(
@@ -442,25 +444,27 @@ export class WebhooksController {
       }
     }
 
-    await this.inbox.upsertDm({
-      workspaceId: channel.workspaceId,
-      channelId: channel.id,
-      platform: source as SupportedPlatform,
-      conversationId,
-      platformItemId: mid,
-      platformParentId: (message.reply_to?.mid as string | undefined) ?? null,
-      authorPlatformId: otherPartyId,
-      authorHandle,
-      authorDisplayName,
-      authorAvatarUrl,
-      text,
-      fromMe,
-      platformCreatedAt: createdAt,
-      metadata: { raw: event },
-    });
+    for (const channel of channels) {
+      await this.inbox.upsertDm({
+        workspaceId: channel.workspaceId,
+        channelId: channel.id,
+        platform: source as SupportedPlatform,
+        conversationId,
+        platformItemId: mid,
+        platformParentId: (message.reply_to?.mid as string | undefined) ?? null,
+        authorPlatformId: otherPartyId,
+        authorHandle,
+        authorDisplayName,
+        authorAvatarUrl,
+        text,
+        fromMe,
+        platformCreatedAt: createdAt,
+        metadata: { raw: event },
+      });
+    }
 
     this.logger.log(
-      `${source} DM ingested: convo=${conversationId} mid=${mid} fromMe=${fromMe}`,
+      `${source} DM ingested: convo=${conversationId} mid=${mid} fromMe=${fromMe} channels=${channels.length}`,
     );
   }
 
@@ -584,22 +588,16 @@ export class WebhooksController {
       return;
     }
 
-    const channel = await this.inbox.findChannelByPlatformAccount(
+    // Fan out to EVERY workspace this Threads account is connected to. The
+    // per-channel "our post" check routes the reply to whichever workspace(s)
+    // published the post.
+    const channels = await this.inbox.findChannelsByPlatformAccount(
       'threads',
       ownerId,
     );
-    if (!channel) {
+    if (channels.length === 0) {
       this.logger.warn(
         `Threads reply webhook: no connected channel for owner_id ${ownerId}`,
-      );
-      return;
-    }
-
-    // Only ingest replies on posts we published via Schedura (Phase 1 scope).
-    const ourPostId = await this.inbox.findOurPostId(channel.id, platformPostId);
-    if (!ourPostId) {
-      this.logger.verbose(
-        `Threads reply webhook ignored: post ${platformPostId} not from Schedura`,
       );
       return;
     }
@@ -630,30 +628,44 @@ export class WebhooksController {
       ? new Date(value.timestamp as string)
       : new Date();
 
-    await this.inbox.upsertComment({
-      workspaceId: channel.workspaceId,
-      channelId: channel.id,
-      platform: 'threads',
-      platformItemId,
-      platformParentId: parentId,
-      platformPostId,
-      ourPostId,
-      authorHandle: authorUsername ?? null,
-      authorDisplayName: authorUsername ?? null,
-      authorAvatarUrl:
-        (value?.profile_picture_url as string | undefined) ?? null,
-      text: (value?.text as string | undefined) ?? '',
-      fromMe,
-      isMention,
-      platformCreatedAt: createdAt,
-      metadata: {
-        permalink: value?.permalink,
-        shortcode: value?.shortcode,
-      },
-    });
+    for (const channel of channels) {
+      // Only ingest replies on posts THIS workspace published (Phase 1 scope).
+      const ourPostId = await this.inbox.findOurPostId(
+        channel.id,
+        platformPostId,
+      );
+      if (!ourPostId) {
+        this.logger.verbose(
+          `Threads reply webhook ignored: post ${platformPostId} not from Schedura (channel ${channel.id})`,
+        );
+        continue;
+      }
+
+      await this.inbox.upsertComment({
+        workspaceId: channel.workspaceId,
+        channelId: channel.id,
+        platform: 'threads',
+        platformItemId,
+        platformParentId: parentId,
+        platformPostId,
+        ourPostId,
+        authorHandle: authorUsername ?? null,
+        authorDisplayName: authorUsername ?? null,
+        authorAvatarUrl:
+          (value?.profile_picture_url as string | undefined) ?? null,
+        text: (value?.text as string | undefined) ?? '',
+        fromMe,
+        isMention,
+        platformCreatedAt: createdAt,
+        metadata: {
+          permalink: value?.permalink,
+          shortcode: value?.shortcode,
+        },
+      });
+    }
 
     this.logger.log(
-      `Threads reply webhook ingested: reply=${platformItemId} post=${platformPostId} fromMe=${fromMe} isMention=${isMention}`,
+      `Threads reply webhook ingested: reply=${platformItemId} post=${platformPostId} fromMe=${fromMe} isMention=${isMention} channels=${channels.length}`,
     );
   }
 
@@ -675,71 +687,77 @@ export class WebhooksController {
     text: string;
     eventTime: Date;
   }): Promise<void> {
-    const channel = await this.inbox.findChannelByPlatformAccount(
+    // Fan out to EVERY workspace this account is connected to. The per-channel
+    // "our post" check below routes the comment to whichever workspace(s)
+    // actually published the post — resolving a single channel would drop the
+    // comment entirely whenever the wrong workspace won the lookup.
+    const channels = await this.inbox.findChannelsByPlatformAccount(
       args.platform,
       args.platformAccountIdToMatch,
     );
-    if (!channel) {
+    if (channels.length === 0) {
       this.logger.warn(
         `Webhook for ${args.platform} account ${args.platformAccountIdToMatch}: channel not connected`,
       );
       return;
     }
 
-    // Only ingest comments on posts published via Schedura.
-    const ourPostId = await this.inbox.findOurPostId(
-      channel.id,
-      args.platformPostId,
-    );
-    if (!ourPostId) {
-      this.logger.verbose(
-        `Webhook ignored: ${args.platform} post ${args.platformPostId} not from Schedura`,
+    for (const channel of channels) {
+      // Only ingest comments on posts THIS workspace published via Schedura.
+      const ourPostId = await this.inbox.findOurPostId(
+        channel.id,
+        args.platformPostId,
       );
-      return;
-    }
-
-    // Comment webhooks carry only the author's id + name, not their avatar, so
-    // realtime comments would render without a profile picture. Fetch it here —
-    // after the our-post check above, so we never spend an API call on foreign
-    // comments — to match the avatar that polling surfaces via `from{picture}`.
-    let authorAvatarUrl: string | null = args.authorAvatarUrl ?? null;
-    if (
-      !authorAvatarUrl &&
-      args.platform === 'facebook' &&
-      args.authorPlatformId
-    ) {
-      try {
-        const token = await this.channelService.getAccessToken(
-          channel.id,
-          channel.workspaceId,
+      if (!ourPostId) {
+        this.logger.verbose(
+          `Webhook ignored: ${args.platform} post ${args.platformPostId} not from Schedura (channel ${channel.id})`,
         );
-        authorAvatarUrl = await this.facebookService.getCommentAuthorPicture(
-          args.platformItemId,
-          token,
-        );
-      } catch (err) {
-        this.logger.warn(
-          `Facebook comment avatar enrichment failed for ${args.platformItemId}: ${(err as Error).message}`,
-        );
+        continue;
       }
-    }
 
-    await this.inbox.upsertComment({
-      workspaceId: channel.workspaceId,
-      channelId: channel.id,
-      platform: args.platform,
-      platformItemId: args.platformItemId,
-      platformParentId: args.platformParentId,
-      platformPostId: args.platformPostId,
-      ourPostId,
-      authorPlatformId: args.authorPlatformId,
-      authorHandle: args.authorHandle,
-      authorDisplayName: args.authorDisplayName,
-      authorAvatarUrl,
-      text: args.text,
-      fromMe: false, // webhooks don't fire for our own comments; safe default
-      platformCreatedAt: args.eventTime,
-    });
+      // Comment webhooks carry only the author's id + name, not their avatar, so
+      // realtime comments would render without a profile picture. Fetch it here —
+      // after the our-post check above, so we never spend an API call on foreign
+      // comments — to match the avatar that polling surfaces via `from{picture}`.
+      let authorAvatarUrl: string | null = args.authorAvatarUrl ?? null;
+      if (
+        !authorAvatarUrl &&
+        args.platform === 'facebook' &&
+        args.authorPlatformId
+      ) {
+        try {
+          const token = await this.channelService.getAccessToken(
+            channel.id,
+            channel.workspaceId,
+          );
+          authorAvatarUrl = await this.facebookService.getCommentAuthorPicture(
+            args.platformItemId,
+            token,
+          );
+        } catch (err) {
+          this.logger.warn(
+            `Facebook comment avatar enrichment failed for ${args.platformItemId}: ${(err as Error).message}`,
+          );
+        }
+      }
+
+      await this.inbox.upsertComment({
+        workspaceId: channel.workspaceId,
+        channelId: channel.id,
+        platform: args.platform,
+        platformItemId: args.platformItemId,
+        platformParentId: args.platformParentId,
+        platformPostId: args.platformPostId,
+        ourPostId,
+        authorPlatformId: args.authorPlatformId,
+        authorHandle: args.authorHandle,
+        authorDisplayName: args.authorDisplayName,
+        authorAvatarUrl,
+        text: args.text,
+        fromMe: false, // webhooks don't fire for our own comments; safe default
+        platformCreatedAt: args.eventTime,
+      });
+    }
   }
 
   // ==========================================================================

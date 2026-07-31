@@ -106,18 +106,17 @@ export class YouTubePubSubHubbubController {
     );
 
     // Resolve to our internal channel
-    const rows = await this.db
+    const rows = (await this.db
       .select({
         id: socialMediaChannels.id,
         workspaceId: socialMediaChannels.workspaceId,
       })
       .from(socialMediaChannels)
-      .where(eq(socialMediaChannels.platformAccountId, parsed.channelId))
-      .limit(1);
+      .where(
+        eq(socialMediaChannels.platformAccountId, parsed.channelId),
+      )) as Array<{ id: number; workspaceId: string }>;
 
-    const channel = rows[0] as { id: number; workspaceId: string } | undefined;
-
-    if (!channel) {
+    if (rows.length === 0) {
       this.logger.warn(
         `PubSubHubbub POST: no channel found for ytChannelId=${parsed.channelId} — ignoring`,
       );
@@ -125,16 +124,21 @@ export class YouTubePubSubHubbubController {
       return;
     }
 
-    // Enqueue an immediate recent-posts-sync (sinceDays=1, limit=5)
-    await this.queue.add('channel-recent-posts-sync', {
-      channelId: Number(channel.id),
-      workspaceId: channel.workspaceId,
-      sinceDays: 1,
-      limit: 5,
-    });
+    // Fan out to EVERY workspace that connected this YouTube channel — the same
+    // channel can be connected by more than one workspace, and a single-row
+    // lookup would sync the new upload for only one of them.
+    for (const channel of rows) {
+      // Enqueue an immediate recent-posts-sync (sinceDays=1, limit=5)
+      await this.queue.add('channel-recent-posts-sync', {
+        channelId: Number(channel.id),
+        workspaceId: channel.workspaceId,
+        sinceDays: 1,
+        limit: 5,
+      });
+    }
 
     this.logger.log(
-      `PubSubHubbub POST: enqueued recent-posts-sync for channelId=${channel.id} (videoId=${parsed.videoId})`,
+      `PubSubHubbub POST: enqueued recent-posts-sync for ${rows.length} channel(s) (ytChannelId=${parsed.channelId}, videoId=${parsed.videoId})`,
     );
 
     res.status(200).send('ok');
