@@ -18,6 +18,11 @@ export class WhatsAppIngestService {
 
   async ingest(payload: any): Promise<void> {
     for (const m of parseWhatsAppMessages(payload)) {
+      // Single-channel resolution is intentional here (no cross-workspace
+      // fan-out): WhatsApp phone numbers are enforced globally unique at connect
+      // time — Embedded Signup rejects a phone_number_id another workspace
+      // already owns — so a number maps to exactly one channel. Fanning out would
+      // also re-download the same media per channel for zero benefit.
       const channel = await this.inbox.findChannelByPlatformAccount(
         'whatsapp',
         m.phoneNumberId,
