@@ -12,6 +12,7 @@ import { posts } from '../../../drizzle/schema/posts.schema';
 import { QUEUES } from '../../../queue/queue.module';
 import type { ScheduleDraftDto } from '../dto/schedule-draft.dto';
 import type { ChannelTarget } from '../types/draft.types';
+import { CalendarPushSyncService } from '../../../calendar-sync/services/calendar-push-sync.service';
 
 export interface ScheduleResult {
   postId: string;
@@ -33,7 +34,23 @@ export class ComposerSchedulingService {
     @Inject(DRIZZLE) private readonly db: any,
     @InjectQueue(QUEUES.POST_PUBLISHING)
     private readonly publishingQueue: Queue,
+    private readonly calendarPushSync: CalendarPushSyncService,
   ) {}
+
+  /**
+   * Fire-and-forget app→calendar push for a composer-scheduled draft. Mirrors
+   * PostService.syncCalendarForPost: never blocks or fails the schedule call —
+   * calendar sync is best-effort and self-heals via the 15-min reconcile poll.
+   */
+  private syncCalendarForPost(postId: string): void {
+    void this.calendarPushSync.syncPost(postId).catch((error) => {
+      this.logger.warn(
+        `Calendar sync failed for scheduled draft ${postId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
+  }
 
   async schedule(
     workspaceId: string,
@@ -140,6 +157,10 @@ export class ComposerSchedulingService {
       `Scheduled draft ${dto.draftId} for ${scheduledAt.toISOString()} (delay=${delay}ms)`,
     );
 
+    // Reflect the newly scheduled post on connected calendars immediately —
+    // otherwise it only appears on the next 15-min reconcile poll.
+    this.syncCalendarForPost(dto.draftId);
+
     return {
       postId: dto.draftId,
       scheduledAt: scheduledAt.toISOString(),
@@ -160,6 +181,16 @@ export class ComposerSchedulingService {
       .update(posts)
       .set({ status: 'draft', scheduledAt: null, updatedAt: new Date() })
       .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)));
+
+    // The draft is no longer scheduled — remove its calendar event(s) now
+    // instead of waiting for the reconcile poll to prune the stale event.
+    void this.calendarPushSync.removePostEvent(draftId).catch((error) => {
+      this.logger.warn(
+        `Calendar event removal failed for cancelled draft ${draftId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
 
     return { success: true };
   }

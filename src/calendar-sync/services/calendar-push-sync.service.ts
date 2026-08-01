@@ -62,6 +62,36 @@ type ItemRef =
   | { kind: 'message'; messageId: string };
 
 /**
+ * Best display title for a post whose caption (`content`) is empty. Title-only
+ * platforms keep their title in `platformContent.<platform>.platformSpecific.title`
+ * (YouTube, Pinterest); the composer also mirrors a draft-level title into
+ * `metadata.title`. Returns the first non-empty of those, else null so the
+ * mapper falls back to its generic placeholder.
+ */
+function resolvePostTitle(post: {
+  platformContent?: unknown;
+  metadata?: unknown;
+}): string | null {
+  const pc = post.platformContent as
+    | Record<string, { platformSpecific?: { title?: unknown } } | undefined>
+    | null
+    | undefined;
+  if (pc && typeof pc === 'object') {
+    for (const key of Object.keys(pc)) {
+      const title = pc[key]?.platformSpecific?.title;
+      if (typeof title === 'string' && title.trim().length > 0) {
+        return title.trim();
+      }
+    }
+  }
+  const meta = post.metadata as { title?: unknown } | null | undefined;
+  if (meta && typeof meta.title === 'string' && meta.title.trim().length > 0) {
+    return meta.title.trim();
+  }
+  return null;
+}
+
+/**
  * CalendarPushSyncService — app→calendar push.
  *
  * When a scheduled ITEM (a post, or a scheduled inbox message) is
@@ -129,6 +159,7 @@ export class CalendarPushSyncService {
       workspaceId: post.workspaceId,
       content: post.content,
       scheduledAt: post.scheduledAt,
+      fallbackTitle: resolvePostTitle(post),
     });
 
     await this.syncItem(

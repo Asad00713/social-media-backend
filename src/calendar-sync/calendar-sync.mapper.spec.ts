@@ -57,6 +57,24 @@ describe('calendar-sync.mapper', () => {
       expect(input.summary).toBe('(untitled post)');
     });
 
+    it('uses fallbackTitle when content is empty (e.g. YouTube title-only post)', () => {
+      const input = postToEventInput({
+        ...basePost,
+        content: null,
+        fallbackTitle: 'My YouTube video title',
+      });
+      expect(input.summary).toBe('My YouTube video title');
+    });
+
+    it('prefers content over fallbackTitle when both are present', () => {
+      const input = postToEventInput({
+        ...basePost,
+        content: 'Caption wins',
+        fallbackTitle: 'Ignored title',
+      });
+      expect(input.summary).toBe('Caption wins');
+    });
+
     it('throws when the post has no scheduledAt', () => {
       expect(() =>
         postToEventInput({ ...basePost, scheduledAt: null }),

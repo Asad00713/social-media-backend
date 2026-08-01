@@ -15,9 +15,19 @@ import { QueueModule } from '../../queue/queue.module';
 import { ChannelsModule } from '../../channels/channels.module';
 import { DrizzleModule } from '../../drizzle/drizzle.module';
 import { PostsModule } from '../posts.module';
+import { CalendarSyncModule } from '../../calendar-sync/calendar-sync.module';
 
 @Module({
-  imports: [DrizzleModule, ChannelsModule, PostsModule, QueueModule],
+  imports: [
+    DrizzleModule,
+    ChannelsModule,
+    PostsModule,
+    QueueModule,
+    // For CalendarPushSyncService — reflect composer-scheduled drafts on
+    // connected calendars immediately (ComposerModule is not part of the
+    // PostsModule <-> CalendarSyncModule cycle, so a plain import is safe).
+    CalendarSyncModule,
+  ],
   controllers: [ComposerController],
   providers: [
     ComposerValidatorService,

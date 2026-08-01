@@ -24,6 +24,10 @@ export interface PostForMapping {
   workspaceId: string;
   content: string | null;
   scheduledAt: Date | null;
+  // Used for the event title when `content` is empty. Title-only platforms
+  // (YouTube, Pinterest) keep their real title in platformContent, not in the
+  // shared caption — without this such posts show up as "(untitled post)".
+  fallbackTitle?: string | null;
 }
 
 // Minimal scheduled-inbox-message shape the mapper needs. Same rationale as
@@ -74,14 +78,20 @@ function truncate(collapsed: string): string {
 }
 
 /**
- * Derive a concise, single-line event title from post content.
+ * Derive a concise, single-line event title. Prefers the post's caption, then
+ * falls back to a platform/draft title (for title-only posts like YouTube whose
+ * caption is empty), then to a generic placeholder.
  */
-function toSummary(content: string | null): string {
+function toSummary(
+  content: string | null,
+  fallbackTitle?: string | null,
+): string {
   const collapsed = collapse(content);
-  if (collapsed.length === 0) {
+  const source = collapsed.length > 0 ? collapsed : collapse(fallbackTitle);
+  if (source.length === 0) {
     return EMPTY_SUMMARY_FALLBACK;
   }
-  return truncate(collapsed);
+  return truncate(source);
 }
 
 /**
@@ -123,7 +133,7 @@ export function postToEventInput(post: PostForMapping): EventInput {
   const endTime = new Date(startTime.getTime() + DEFAULT_EVENT_DURATION_MS);
 
   return {
-    summary: toSummary(post.content),
+    summary: toSummary(post.content, post.fallbackTitle),
     startTime,
     endTime,
     privateProps: {
