@@ -189,45 +189,50 @@ export class TikTokPublisher extends BasePublisher {
     // Video flow (existing)
     const videoItem = mediaItems[0];
     const title = content || metadata?.title || '';
-    const useDirectUpload = metadata?.useDirectUpload ?? true; // Default to direct upload for reliability
+    // TikTok exposes two publish paths:
+    //   Direct Post  (/post/publish/video/init/)        → lands on the profile
+    //                                                      with the privacy the
+    //                                                      user chose in Schedura.
+    //   Inbox upload (/post/publish/inbox/video/init/)   → lands as a DRAFT the
+    //                                                      user must open TikTok
+    //                                                      to finish and post.
+    // Schedura's whole point is publishing from the dashboard, so Direct Post is
+    // the default. Inbox upload is only used when a caller explicitly opts in
+    // (metadata.useDraftUpload === true).
+    const useDraftUpload = metadata?.useDraftUpload === true;
 
     this.logger.log(`Publishing TikTok video: ${videoItem.url}`);
 
+    const publishOptions = {
+      title,
+      privacyLevel,
+      disableDuet: metadata?.disableDuet ?? false,
+      disableStitch: metadata?.disableStitch ?? false,
+      disableComment: metadata?.disableComment ?? false,
+      videoCoverTimestampMs: metadata?.videoCoverTimestampMs ?? 1000,
+      brandContentToggle: metadata?.brandContentToggle ?? false,
+      brandOrganicToggle: metadata?.brandOrganicToggle ?? false,
+    };
+
     let result: { publishId: string };
 
-    if (useDirectUpload) {
-      // Download and upload directly to TikTok (more reliable)
+    if (useDraftUpload) {
+      // Opt-in: download and send to the Creator Inbox as a draft. Privacy and
+      // title are set by the user inside the TikTok app, not honored here.
       result = await this.tiktokService.uploadVideoFromUrl(
         accessToken,
         videoItem.url,
-        {
-          title,
-          privacyLevel,
-          disableDuet: metadata?.disableDuet ?? false,
-          disableStitch: metadata?.disableStitch ?? false,
-          disableComment: metadata?.disableComment ?? false,
-          videoCoverTimestampMs: metadata?.videoCoverTimestampMs ?? 1000,
-          brandContentToggle: metadata?.brandContentToggle ?? false,
-          brandOrganicToggle: metadata?.brandOrganicToggle ?? false,
-        },
+        publishOptions,
       );
     } else {
-      // Let TikTok pull from URL — must be on the verified domain, so wrap
-      // the original Cloudinary/R2 URL in a signed proxy token.
+      // Default: Direct Post. TikTok pulls from the URL, which must be on our
+      // verified domain, so wrap the original Cloudinary/R2 URL in a signed
+      // proxy token served from api.schedura.ai.
       const proxiedVideoUrl = `${proxyBase}/api/tiktok-media/${this.tiktokMediaProxy.mintProxyToken(videoItem.url)}`;
       result = await this.tiktokService.postVideoFromUrl(
         accessToken,
         proxiedVideoUrl,
-        {
-          title,
-          privacyLevel,
-          disableDuet: metadata?.disableDuet ?? false,
-          disableStitch: metadata?.disableStitch ?? false,
-          disableComment: metadata?.disableComment ?? false,
-          videoCoverTimestampMs: metadata?.videoCoverTimestampMs ?? 1000,
-          brandContentToggle: metadata?.brandContentToggle ?? false,
-          brandOrganicToggle: metadata?.brandOrganicToggle ?? false,
-        },
+        publishOptions,
       );
     }
 
