@@ -40,4 +40,15 @@ describe('SiteVerificationController', () => {
       'tiktok-developers-site-verification=uHAM3GjcFEfCi0gU2j3XQ9XEH8vpG7vh',
     );
   });
+
+  it('serves the Schedura-app sandbox TikTok verification file as plain text', async () => {
+    const res = await request(app.getHttpServer())
+      .get('/tiktok9tnGWZbYtSWe57MJnVjyU5Y3hJDAxuBG.txt')
+      .expect(200);
+
+    expect(res.headers['content-type']).toContain('text/plain');
+    expect(res.text).toBe(
+      'tiktok-developers-site-verification=9tnGWZbYtSWe57MJnVjyU5Y3hJDAxuBG',
+    );
+  });
 });

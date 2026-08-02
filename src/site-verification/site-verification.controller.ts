@@ -29,6 +29,13 @@ export class SiteVerificationController {
     process.env.TIKTOK_SITE_VERIFICATION_SCHEDURA ??
     'tiktok-developers-site-verification=uHAM3GjcFEfCi0gU2j3XQ9XEH8vpG7vh';
 
+  // The Schedura app's Sandbox environment verifies the same `api.schedura.ai`
+  // domain separately (its own token) so the end-to-end demo can run against
+  // PULL_FROM_URL before the production audit is approved.
+  private static readonly TIKTOK_VERIFICATION_SCHEDURA_SANDBOX =
+    process.env.TIKTOK_SITE_VERIFICATION_SCHEDURA_SANDBOX ??
+    'tiktok-developers-site-verification=9tnGWZbYtSWe57MJnVjyU5Y3hJDAxuBG';
+
   @Get('tiktokBWGOXBTMJ4RXb76i56qZc99OfEZIAzIi.txt')
   @Header('Content-Type', 'text/plain; charset=utf-8')
   @Header('Cache-Control', 'public, max-age=3600')
@@ -41,5 +48,12 @@ export class SiteVerificationController {
   @Header('Cache-Control', 'public, max-age=3600')
   getTikTokVerificationSchedura(): string {
     return SiteVerificationController.TIKTOK_VERIFICATION_SCHEDURA;
+  }
+
+  @Get('tiktok9tnGWZbYtSWe57MJnVjyU5Y3hJDAxuBG.txt')
+  @Header('Content-Type', 'text/plain; charset=utf-8')
+  @Header('Cache-Control', 'public, max-age=3600')
+  getTikTokVerificationScheduraSandbox(): string {
+    return SiteVerificationController.TIKTOK_VERIFICATION_SCHEDURA_SANDBOX;
   }
 }
