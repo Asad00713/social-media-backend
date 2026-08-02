@@ -8,6 +8,7 @@ import {
   type SupportedPlatform,
 } from '../../../drizzle/schema/channels.schema';
 import { posts as postsTable } from '../../../drizzle/schema/posts.schema';
+import { postMetricSnapshots } from '../../../drizzle/schema/post-metric-snapshots.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import { QUEUES } from '../../../queue/queue.module';
 import { AdapterRegistryService } from '../services/adapter-registry.service';
@@ -163,6 +164,30 @@ export class ChannelRecentPostsSyncHandler {
 
       created += 1;
       const newPostId = inserted[0].id as string;
+
+      // fetchRecentPosts already returned this post's engagement (likes /
+      // comments / shares / views) inline. Persist it as a first snapshot NOW so
+      // the overview graph and Top Videos populate immediately, instead of
+      // staying empty until the deferred per-post metric job runs (up to 1h
+      // later). The deferred trail below still runs and appends fresher points.
+      const m = rp.metrics;
+      if (m) {
+        await this.db.insert(postMetricSnapshots).values({
+          postId: newPostId,
+          channelId,
+          snapshotAt: new Date(),
+          ageBucket: '30m',
+          likesCount: m.likesCount ?? null,
+          commentsCount: m.commentsCount ?? null,
+          sharesCount: m.sharesCount ?? null,
+          impressionsCount: m.impressionsCount ?? null,
+          reachCount: m.reachCount ?? null,
+          platformMetrics: m.platformMetrics ?? {},
+          metricsSchemaVersion: 1,
+          fetchedAt: new Date(),
+          syncStatus: 'success',
+        });
+      }
 
       // Enqueue post-metric-snapshot trail starting at first bucket
       const pollingProfile = adapter.pollingProfile;

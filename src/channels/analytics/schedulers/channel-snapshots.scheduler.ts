@@ -76,7 +76,10 @@ export class ChannelSnapshotsScheduler {
         {
           channelId: r.id,
           workspaceId: r.workspaceId,
-          sinceDays: 7,
+          // Look back 30 days (not 7) so posts uploaded natively on the platform
+          // aren't missed if a day's run is skipped or the account posts in bursts.
+          // Dedup by platformPostId makes re-scanning already-known posts a no-op.
+          sinceDays: 30,
           limit: 50,
         },
         { delay: i * 100 },
