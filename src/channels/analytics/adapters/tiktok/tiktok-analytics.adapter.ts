@@ -123,9 +123,13 @@ export class TikTokAnalyticsAdapter implements PlatformAnalyticsAdapter {
         accessToken: channel.accessToken,
         maxCount: Math.min(opts.limit, 20),
       });
-      const sinceMs = opts.since.getTime();
+      // TikTok's /video/list already returns only PUBLIC videos, newest-first,
+      // capped at 20 per page. Do NOT drop by `opts.since` here: a creator's
+      // public catalogue is often older than any rolling window (e.g. videos
+      // posted months ago), and filtering them out leaves the channel looking
+      // empty even though public videos exist. The page cap is the bound; we
+      // surface whatever public videos TikTok returns.
       const posts: RecentPost[] = resp.videos
-        .filter((v) => v.create_time * 1000 >= sinceMs)
         .map((v) => ({
           platformPostId: v.id,
           publishedAt: new Date(v.create_time * 1000),

@@ -86,7 +86,11 @@ describe('TikTokAnalyticsAdapter', () => {
     }
   });
 
-  it('fetchRecentPosts filters videos by since timestamp', async () => {
+  it('fetchRecentPosts surfaces every public video TikTok returns, regardless of age', async () => {
+    // TikTok's /video/list returns only public videos, newest-first, capped at
+    // 20 — a creator's public catalogue is often older than any rolling window,
+    // so the adapter must NOT drop videos by `since` (that left channels
+    // looking empty even when public videos existed).
     const sinceDate = new Date('2024-01-15T00:00:00Z');
     const sinceUnix = sinceDate.getTime() / 1000;
 
@@ -102,7 +106,7 @@ describe('TikTokAnalyticsAdapter', () => {
         },
         {
           id: 'old',
-          create_time: sinceUnix - 3600,
+          create_time: sinceUnix - 3600, // months-old public video
           view_count: 500,
           like_count: 20,
           comment_count: 2,
@@ -120,8 +124,11 @@ describe('TikTokAnalyticsAdapter', () => {
 
     expect(result.status).toBe('success');
     if (result.status === 'success') {
-      expect(result.data.posts).toHaveLength(1);
-      expect(result.data.posts[0].platformPostId).toBe('new');
+      expect(result.data.posts).toHaveLength(2);
+      expect(result.data.posts.map((p) => p.platformPostId)).toEqual([
+        'new',
+        'old',
+      ]);
       expect(result.quotaCostUsed).toBe(2);
     }
   });
