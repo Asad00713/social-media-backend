@@ -96,6 +96,17 @@ export class ChannelProfileSnapshotHandler {
       // then override with the fresh counts. Both common aliases are written so the frontend
       // normalizer finds the right key regardless of platform.
       const platformMetricsData = snapshotData.platformMetrics ?? {};
+      // Write BOTH the singular and plural aliases for every count. Frontend
+      // normalizers differ per platform: YouTube reads `subscriberCount`,
+      // TikTok/Pinterest read the SINGULAR `followerCount` + `followingCount`
+      // + `likesCount` + `isVerified`. Previously only the plural
+      // `followersCount` and `videoCount` were written, so the TikTok header
+      // silently showed 0 for Followers/Following/Likes (only Videos matched).
+      const totalLikes =
+        (platformMetricsData as any).totalLikes ??
+        (platformMetricsData as any).likesCount ??
+        channel.metadata?.likesCount ??
+        null;
       await this.db
         .update(socialMediaChannels)
         .set({
@@ -103,6 +114,13 @@ export class ChannelProfileSnapshotHandler {
             ...(channel.metadata ?? {}),
             subscriberCount: snapshotData.followersCount ?? null,
             followersCount: snapshotData.followersCount ?? null,
+            followerCount: snapshotData.followersCount ?? null,
+            followingCount: snapshotData.followingCount ?? null,
+            likesCount: totalLikes,
+            isVerified:
+              (platformMetricsData as any).isVerified ??
+              channel.metadata?.isVerified ??
+              null,
             videoCount: snapshotData.totalPostsCount ?? null,
             totalPostsCount: snapshotData.totalPostsCount ?? null,
             viewCount:

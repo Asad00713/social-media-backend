@@ -434,7 +434,11 @@ export class AnalyticsService {
     await this.queue.add('channel-recent-posts-sync', {
       channelId,
       workspaceId,
-      sinceDays: 7,
+      // A user pressing "Refresh" expects to see everything recent, not just the
+      // last week — a public account whose newest posts are 2-3 weeks old would
+      // otherwise keep showing nothing. 30 days with the adapter's 20-item cap
+      // keeps the quota cost bounded.
+      sinceDays: 30,
       limit: 50,
     });
 
