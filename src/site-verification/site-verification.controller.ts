@@ -22,10 +22,24 @@ export class SiteVerificationController {
     process.env.TIKTOK_SITE_VERIFICATION ??
     'tiktok-developers-site-verification=BWGOXBTMJ4RXb76i56qZc99OfEZIAzIi';
 
+  // The "Schedura" TikTok app (Content Posting API, video.publish) verifies
+  // `api.schedura.ai` — the media-proxy domain TikTok pulls video from — via
+  // its own URL-prefix signature file, distinct from the legacy app above.
+  private static readonly TIKTOK_VERIFICATION_SCHEDURA =
+    process.env.TIKTOK_SITE_VERIFICATION_SCHEDURA ??
+    'tiktok-developers-site-verification=uHAM3GjcFEfCi0gU2j3XQ9XEH8vpG7vh';
+
   @Get('tiktokBWGOXBTMJ4RXb76i56qZc99OfEZIAzIi.txt')
   @Header('Content-Type', 'text/plain; charset=utf-8')
   @Header('Cache-Control', 'public, max-age=3600')
   getTikTokVerification(): string {
     return SiteVerificationController.TIKTOK_VERIFICATION;
+  }
+
+  @Get('tiktokuHAM3GjcFEfCi0gU2j3XQ9XEH8vpG7vh.txt')
+  @Header('Content-Type', 'text/plain; charset=utf-8')
+  @Header('Cache-Control', 'public, max-age=3600')
+  getTikTokVerificationSchedura(): string {
+    return SiteVerificationController.TIKTOK_VERIFICATION_SCHEDURA;
   }
 }
