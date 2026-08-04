@@ -215,6 +215,42 @@ export class CanvaService {
   }
 
   /**
+   * Revoke a Canva token (and its lineage) at Canva's end.
+   *
+   * Called when a workspace disconnects Canva so the granted access is torn
+   * down on Canva's side, not just forgotten locally. Best-effort: if Canva
+   * rejects the call (e.g. the token was already invalid) we log and swallow
+   * the error so the caller can still delete the local connection — the user
+   * asked to disconnect and must not be left stuck with a live row.
+   */
+  async revokeToken(token: string): Promise<void> {
+    if (!this.clientId || !this.clientSecret) {
+      throw new BadRequestException('Canva credentials not configured');
+    }
+    if (!token) {
+      return;
+    }
+
+    try {
+      const response = await fetch(`${this.apiBaseUrl}/oauth/revoke`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/x-www-form-urlencoded',
+          Authorization: `Basic ${Buffer.from(`${this.clientId}:${this.clientSecret}`).toString('base64')}`,
+        },
+        body: new URLSearchParams({ token }),
+      });
+
+      if (!response.ok) {
+        const error = await response.text();
+        this.logger.warn(`Canva token revocation returned ${response.status}: ${error}`);
+      }
+    } catch (err) {
+      this.logger.warn(`Canva token revocation failed: ${(err as Error).message}`);
+    }
+  }
+
+  /**
    * Get current user info
    */
   async getCurrentUser(accessToken: string): Promise<CanvaUser> {
