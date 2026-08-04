@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Body,
   Controller,
+  Delete,
   Get,
   HttpCode,
   HttpStatus,
@@ -54,6 +55,20 @@ export class CanvaComposerController {
       connected: true,
       displayName: connection.displayName ?? undefined,
     };
+  }
+
+  /**
+   * Disconnect Canva for this workspace: revoke the tokens at Canva and delete
+   * the stored connection. Idempotent — returns `{ connected: false }` whether
+   * or not a connection existed, so the client can treat it as the new status.
+   */
+  @Delete('connection')
+  @HttpCode(HttpStatus.OK)
+  async disconnect(
+    @Param('workspaceId') workspaceId: string,
+  ): Promise<ComposerCanvaStatus> {
+    await this.connectionService.disconnect(workspaceId);
+    return { connected: false };
   }
 
   @Post('designs')

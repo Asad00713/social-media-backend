@@ -2,6 +2,7 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { db } from '../drizzle/db';
 import { canvaConnections, CanvaConnection } from '../drizzle/schema/canva.schema';
+import { encrypt, decrypt } from '../common/utils/encryption.util';
 import { CanvaService } from './canva.service';
 
 export interface UpsertCanvaConnectionInput {
@@ -23,6 +24,12 @@ const EXPIRY_SKEW_MS = 60 * 1000;
  * which is used immediately for a single outbound Canva API call and never
  * echoed back to the browser (this is the security property the composer
  * integration was built to guarantee, unlike the legacy `src/canva` flow).
+ *
+ * Access and refresh tokens are encrypted at rest (AES-256-GCM via
+ * `encryption.util`) — the same protection the social-channel tokens get.
+ * They are encrypted on every write and decrypted only when handed to an
+ * outbound Canva call. `decrypt` tolerates legacy plaintext rows, so existing
+ * connections keep working and get re-encrypted on their next refresh.
  */
 @Injectable()
 export class CanvaConnectionService {
@@ -36,6 +43,8 @@ export class CanvaConnectionService {
     input: UpsertCanvaConnectionInput,
   ): Promise<CanvaConnection> {
     const tokenExpiresAt = new Date(Date.now() + input.expiresIn * 1000);
+    const accessToken = encrypt(input.accessToken);
+    const refreshToken = encrypt(input.refreshToken);
 
     const [row] = await db
       .insert(canvaConnections)
@@ -44,8 +53,8 @@ export class CanvaConnectionService {
         userId,
         canvaUserId: input.canvaUserId,
         displayName: input.displayName,
-        accessToken: input.accessToken,
-        refreshToken: input.refreshToken,
+        accessToken,
+        refreshToken,
         tokenExpiresAt,
       })
       .onConflictDoUpdate({
@@ -53,8 +62,8 @@ export class CanvaConnectionService {
         set: {
           canvaUserId: input.canvaUserId,
           displayName: input.displayName,
-          accessToken: input.accessToken,
-          refreshToken: input.refreshToken,
+          accessToken,
+          refreshToken,
           tokenExpiresAt,
           updatedAt: new Date(),
         },
@@ -86,27 +95,51 @@ export class CanvaConnectionService {
 
     const expiresAt = new Date(connection.tokenExpiresAt).getTime();
     if (expiresAt > Date.now() + EXPIRY_SKEW_MS) {
-      return connection.accessToken;
+      return decrypt(connection.accessToken);
     }
 
     this.logger.log(
       `Canva access token expired/expiring for workspace ${workspaceId}, refreshing`,
     );
     const refreshed = await this.canvaService.refreshAccessToken(
-      connection.refreshToken,
+      decrypt(connection.refreshToken),
     );
 
     const tokenExpiresAt = new Date(Date.now() + refreshed.expiresIn * 1000);
     await db
       .update(canvaConnections)
       .set({
-        accessToken: refreshed.accessToken,
-        refreshToken: refreshed.refreshToken,
+        accessToken: encrypt(refreshed.accessToken),
+        refreshToken: encrypt(refreshed.refreshToken),
         tokenExpiresAt,
         updatedAt: new Date(),
       })
       .where(eq(canvaConnections.workspaceId, workspaceId));
 
     return refreshed.accessToken;
+  }
+
+  /**
+   * Disconnect Canva for a workspace: revoke the tokens at Canva's end, then
+   * delete the stored connection. Revocation is best-effort (see
+   * `CanvaService.revokeToken`); the local row is deleted regardless so the
+   * user is never left with a stale connection they can't clear. Idempotent —
+   * returns quietly if nothing is connected.
+   */
+  async disconnect(workspaceId: string): Promise<void> {
+    const connection = await this.getByWorkspace(workspaceId);
+    if (!connection) {
+      return;
+    }
+
+    // Revoking the refresh token invalidates its whole lineage (the access
+    // token derived from it), so one call tears the grant down at Canva.
+    await this.canvaService.revokeToken(decrypt(connection.refreshToken));
+
+    await db
+      .delete(canvaConnections)
+      .where(eq(canvaConnections.workspaceId, workspaceId));
+
+    this.logger.log(`Canva connection disconnected for workspace ${workspaceId}`);
   }
 }
