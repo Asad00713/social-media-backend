@@ -131,6 +131,13 @@ export const socialMediaChannels = pgTable(
 
     // Platform identification
     platform: varchar('platform', { length: 20 }).notNull(), // facebook, instagram, etc.
+    // 'social' | 'messaging' | 'integration' — mirrors CHANNEL_CATEGORY, set on
+    // insert. Integrations do not count against the channel limit. Default keeps
+    // existing rows valid until the recompute; billable is the safe default.
+    category: varchar('category', { length: 20 })
+      .$type<ChannelCategory>()
+      .default('social')
+      .notNull(),
     accountType: varchar('account_type', { length: 30 }).notNull(), // page, profile, channel, etc.
     platformAccountId: varchar('platform_account_id', {
       length: 255,
