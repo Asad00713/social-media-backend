@@ -26,8 +26,10 @@ import {
   NewTokenRefreshLog,
   SupportedPlatform,
   PLATFORM_CONFIG,
+  CHANNEL_CATEGORY,
   ConnectionStatus,
   getRefreshTokenTtlDays,
+  isBillablePlatform,
 } from '../../drizzle/schema/channels.schema';
 import { workspaceUsage } from '../../drizzle/schema';
 import { channelSyncState } from '../../drizzle/schema/channel-sync-state.schema';
@@ -174,8 +176,12 @@ export class ChannelService {
       return this.toResponseDto(updated[0]);
     }
 
-    // No existing row — enforce channel limit before creating a new slot
-    await this.enforceChannelLimit(workspaceId);
+    // No existing row — enforce channel limit before creating a new slot.
+    // Integrations (cloud storage, calendars) never consume a paid slot — only
+    // enforce the limit for billable platforms.
+    if (isBillablePlatform(dto.platform as SupportedPlatform)) {
+      await this.enforceChannelLimit(workspaceId);
+    }
 
     // Get platform config for defaults
     const platformConfig = PLATFORM_CONFIG[dto.platform];
@@ -193,6 +199,7 @@ export class ChannelService {
     const newChannel: any = {
       workspaceId,
       platform: dto.platform,
+      category: CHANNEL_CATEGORY[dto.platform as SupportedPlatform],
       accountType: dto.accountType,
       platformAccountId: dto.platformAccountId,
       accountName: dto.accountName,
@@ -235,8 +242,10 @@ export class ChannelService {
       .values(newChannel)
       .returning();
 
-    // Update workspace usage count
-    await this.incrementChannelCount(workspaceId);
+    // Update workspace usage count — billable platforms only.
+    if (isBillablePlatform(dto.platform as SupportedPlatform)) {
+      await this.incrementChannelCount(workspaceId);
+    }
 
     // Initialize sync state and enqueue initial backfill
     await this.syncLifecycle.onChannelConnected(inserted[0].id, workspaceId);
@@ -657,8 +666,10 @@ export class ChannelService {
       .delete(socialMediaChannels)
       .where(eq(socialMediaChannels.id, channelId));
 
-    // Update workspace usage count
-    await this.decrementChannelCount(workspaceId);
+    // Only billable channels moved the counter up, so only they move it down.
+    if (isBillablePlatform(channel[0].platform as SupportedPlatform)) {
+      await this.decrementChannelCount(workspaceId);
+    }
 
     this.logger.log(
       `Deleted ${channel[0].platform} channel ${channelId} from workspace ${workspaceId}`,
