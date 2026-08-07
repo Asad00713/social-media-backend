@@ -43,6 +43,45 @@ export const SUPPORTED_PLATFORMS = [
 
 export type SupportedPlatform = (typeof SUPPORTED_PLATFORMS)[number];
 
+export type ChannelCategory = 'social' | 'messaging' | 'integration';
+
+/**
+ * Which bucket each platform belongs to. Source of truth for the billable
+ * boundary: social + messaging count against a workspace's channel limit,
+ * integrations (cloud storage + calendars) never do. Populates the persisted
+ * `category` column on write, so the column and this map cannot drift.
+ * Must cover every SUPPORTED_PLATFORMS member (see channel-category.spec.ts).
+ */
+export const CHANNEL_CATEGORY: Record<SupportedPlatform, ChannelCategory> = {
+  facebook: 'social',
+  instagram: 'social',
+  youtube: 'social',
+  tiktok: 'social',
+  pinterest: 'social',
+  twitter: 'social',
+  linkedin: 'social',
+  threads: 'social',
+  bluesky: 'social',
+  mastodon: 'social',
+  google_business: 'social',
+  reddit: 'social',
+  slack: 'messaging',
+  telegram: 'messaging',
+  discord: 'messaging',
+  whatsapp: 'messaging',
+  google_drive: 'integration',
+  google_photos: 'integration',
+  onedrive: 'integration',
+  dropbox: 'integration',
+  google_calendar: 'integration',
+  outlook_calendar: 'integration',
+};
+
+/** True when connecting/holding this platform consumes a paid channel slot. */
+export function isBillablePlatform(p: SupportedPlatform): boolean {
+  return CHANNEL_CATEGORY[p] !== 'integration';
+}
+
 // Account type enum values
 export const ACCOUNT_TYPES = [
   'page',
