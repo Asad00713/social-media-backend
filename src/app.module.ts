@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule } from '@nestjs/throttler';
 import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { WorkspaceSuspendedGuard } from './auth/guards/workspace-suspended.guard';
@@ -47,6 +48,11 @@ import { QUEUES } from './queue/queue.module';
     ConfigModule.forRoot({
       isGlobal: true,
     }),
+    // Registered with no global guard on purpose. Only routes carrying an
+    // explicit @Throttle decorator are limited — turning this on for every
+    // endpoint would silently start rejecting normal traffic on a platform
+    // that has never had rate limiting and has not been measured for it.
+    ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }]),
     ScheduleModule.forRoot(),
     SocialMediaModule,
     DrizzleModule,
