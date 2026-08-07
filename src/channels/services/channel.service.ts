@@ -26,6 +26,7 @@ import {
   NewTokenRefreshLog,
   SupportedPlatform,
   PLATFORM_CONFIG,
+  CHANNEL_CATEGORY,
   ConnectionStatus,
   getRefreshTokenTtlDays,
 } from '../../drizzle/schema/channels.schema';
@@ -193,6 +194,7 @@ export class ChannelService {
     const newChannel: any = {
       workspaceId,
       platform: dto.platform,
+      category: CHANNEL_CATEGORY[dto.platform as SupportedPlatform],
       accountType: dto.accountType,
       platformAccountId: dto.platformAccountId,
       accountName: dto.accountName,
