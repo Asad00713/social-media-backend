@@ -9,14 +9,17 @@ import { DRIZZLE } from '../drizzle/drizzle.module';
 import {
   eq,
   sql,
+  asc,
   count,
   sum,
   and,
   gte,
   lte,
   desc,
+  ilike,
   isNull,
   isNotNull,
+  or,
 } from 'drizzle-orm';
 import {
   users,
@@ -30,6 +33,7 @@ import {
   plans,
   aiUsageLog,
   workspaceUsage,
+  workspaceInvitation,
 } from '../drizzle/schema';
 
 // Suspension reasons
@@ -43,6 +47,42 @@ export const SUSPENSION_REASONS = [
 ] as const;
 
 export type SuspensionReason = (typeof SUSPENSION_REASONS)[number];
+
+/**
+ * What an operator sees in the status column.
+ *
+ * Not a stored column — `workspace` only has `isActive`. The distinction that
+ * matters is *who* switched the account off: the inactivity sweep leaves
+ * `suspendedReason: 'inactivity'`, everything else is a human decision. Those
+ * two need different handling (one is reversible by the customer coming back,
+ * the other is not) and lumping them together as "suspended" hides that.
+ */
+export const WORKSPACE_STATES = [
+  'active',
+  'deactivated',
+  'suspended',
+] as const;
+
+export type WorkspaceState = (typeof WORKSPACE_STATES)[number];
+
+export function deriveWorkspaceState(
+  isActive: boolean,
+  suspendedReason: string | null,
+): WorkspaceState {
+  if (isActive) return 'active';
+  return suspendedReason === 'inactivity' ? 'deactivated' : 'suspended';
+}
+
+/** Columns the list may be ordered by. Anything else falls back to createdAt. */
+export const WORKSPACE_SORT_FIELDS = [
+  'name',
+  'createdAt',
+  'channelsCount',
+  'membersCount',
+  'aiTokensUsedThisMonth',
+] as const;
+
+export type WorkspaceSortField = (typeof WORKSPACE_SORT_FIELDS)[number];
 
 @Injectable()
 export class AdminService {
@@ -158,7 +198,10 @@ export class AdminService {
     const { page = 1, limit = 20, search, isActive, role } = options;
     const offset = (page - 1) * limit;
 
-    // Build conditions
+    // Every filter, search included, goes into the WHERE clause. Search used
+    // to run in JS after the page was fetched — the note said drizzle made
+    // ILIKE awkward, but it exports `ilike` — so it only searched the twenty
+    // rows already on screen and found nothing beyond page one.
     const conditions: any[] = [];
     if (isActive !== undefined) {
       conditions.push(eq(users.isActive, isActive));
@@ -166,53 +209,45 @@ export class AdminService {
     if (role) {
       conditions.push(eq(users.role, role as any));
     }
-
-    // Get users with pagination
-    const usersQuery = this.db
-      .select({
-        id: users.id,
-        email: users.email,
-        name: users.name,
-        role: users.role,
-        isEmailVerified: users.isEmailVerified,
-        isActive: users.isActive,
-        suspendedAt: users.suspendedAt,
-        suspendedReason: users.suspendedReason,
-        lastLoginAt: users.lastLoginAt,
-        createdAt: users.createdAt,
-      })
-      .from(users)
-      .orderBy(desc(users.createdAt))
-      .limit(limit)
-      .offset(offset);
-
-    if (conditions.length > 0) {
-      usersQuery.where(and(...conditions));
+    if (search?.trim()) {
+      const term = `%${search.trim()}%`;
+      conditions.push(or(ilike(users.email, term), ilike(users.name, term)));
     }
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
 
     const [usersList, totalCount] = await Promise.all([
-      usersQuery,
-      this.db.select({ count: count() }).from(users),
+      this.db
+        .select({
+          id: users.id,
+          email: users.email,
+          name: users.name,
+          role: users.role,
+          isEmailVerified: users.isEmailVerified,
+          isActive: users.isActive,
+          suspendedAt: users.suspendedAt,
+          suspendedReason: users.suspendedReason,
+          lastLoginAt: users.lastLoginAt,
+          createdAt: users.createdAt,
+        })
+        .from(users)
+        .where(where)
+        .orderBy(desc(users.createdAt))
+        .limit(limit)
+        .offset(offset),
+      // Counted against the same WHERE — the old count ignored every filter,
+      // so filtering to suspended users still advertised the full user count.
+      this.db.select({ count: count() }).from(users).where(where),
     ]);
 
-    // Filter by search if provided (in JS since drizzle doesn't support ILIKE easily)
-    let filteredUsers = usersList;
-    if (search) {
-      const searchLower = search.toLowerCase();
-      filteredUsers = usersList.filter(
-        (u) =>
-          u.email.toLowerCase().includes(searchLower) ||
-          u.name?.toLowerCase().includes(searchLower),
-      );
-    }
+    const total = totalCount[0]?.count ?? 0;
 
     return {
-      users: filteredUsers,
+      users: usersList,
       pagination: {
         page,
         limit,
-        total: totalCount[0]?.count || 0,
-        totalPages: Math.ceil((totalCount[0]?.count || 0) / limit),
+        total,
+        totalPages: Math.ceil(total / limit),
       },
     };
   }
@@ -346,16 +381,98 @@ export class AdminService {
     limit?: number;
     search?: string;
     isActive?: boolean;
+    state?: WorkspaceState;
+    planCode?: string;
+    sortBy?: WorkspaceSortField;
+    sortOrder?: 'asc' | 'desc';
   }) {
-    const { page = 1, limit = 20, search, isActive } = options;
+    const {
+      page = 1,
+      limit = 20,
+      search,
+      isActive,
+      state,
+      planCode,
+      sortBy = 'createdAt',
+      sortOrder = 'desc',
+    } = options;
     const offset = (page - 1) * limit;
 
+    // Search and filters both belong in the WHERE clause. Search used to run
+    // in JS *after* the page had been fetched, which meant it only ever looked
+    // at the twenty rows already on screen — searching for a workspace sitting
+    // on page three returned nothing at all. Matching the owner's email is why
+    // the join is here rather than in a second pass.
     const conditions: any[] = [];
     if (isActive !== undefined) {
       conditions.push(eq(workspace.isActive, isActive));
     }
 
-    const workspacesQuery = this.db
+    // `state` is derived, not stored. There is no `deactivated` column — an
+    // account switched off by the inactivity sweep and one switched off by a
+    // human are the same two columns with a different reason, so the
+    // distinction has to be reconstructed here rather than read.
+    if (state === 'active') {
+      conditions.push(eq(workspace.isActive, true));
+    } else if (state === 'deactivated') {
+      conditions.push(
+        and(
+          eq(workspace.isActive, false),
+          eq(workspace.suspendedReason, 'inactivity'),
+        ),
+      );
+    } else if (state === 'suspended') {
+      conditions.push(
+        and(
+          eq(workspace.isActive, false),
+          // `ne` would drop rows where the reason is null, and a workspace
+          // switched off without one is still suspended.
+          or(
+            isNull(workspace.suspendedReason),
+            sql`${workspace.suspendedReason} <> 'inactivity'`,
+          ),
+        ),
+      );
+    }
+
+    if (planCode) {
+      conditions.push(eq(subscriptions.planCode, planCode));
+    }
+
+    if (search?.trim()) {
+      const term = `%${search.trim()}%`;
+      conditions.push(
+        or(
+          ilike(workspace.name, term),
+          ilike(workspace.slug, term),
+          ilike(users.email, term),
+        ),
+      );
+    }
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    // Whitelisted, never interpolated. `sortBy` arrives from a query string,
+    // and handing that to the ORM as a column name is how an order clause
+    // turns into an injection point.
+    const SORTABLE = {
+      name: workspace.name,
+      createdAt: workspace.createdAt,
+      channelsCount: workspaceUsage.channelsCount,
+      membersCount: workspaceUsage.membersCount,
+      aiTokensUsedThisMonth: workspaceUsage.aiTokensUsedThisMonth,
+    } as const;
+    const sortColumn = SORTABLE[sortBy] ?? workspace.createdAt;
+    const orderBy = sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn);
+
+    // One join instead of a query per row. The old code fetched owners in a
+    // loop, so a page of twenty workspaces cost twenty-one round trips.
+    //
+    // `workspace_usage` carries counts *and* the limits they are measured
+    // against, which is the difference between "7 channels" and "7 of 10" —
+    // the second one says whether this customer is about to need a bigger
+    // plan. Left-joined because a workspace that has never been calculated
+    // has no row, and it should still appear in the list.
+    const rows = await this.db
       .select({
         id: workspace.id,
         name: workspace.name,
@@ -365,51 +482,118 @@ export class AdminService {
         suspendedReason: workspace.suspendedReason,
         ownerId: workspace.ownerId,
         createdAt: workspace.createdAt,
+        ownerEmail: users.email,
+        ownerName: users.name,
+        channelsCount: workspaceUsage.channelsCount,
+        channelsLimit: workspaceUsage.channelsLimit,
+        extraChannelsPurchased: workspaceUsage.extraChannelsPurchased,
+        membersCount: workspaceUsage.membersCount,
+        membersLimit: workspaceUsage.membersLimit,
+        extraMembersPurchased: workspaceUsage.extraMembersPurchased,
+        aiTokensUsedThisMonth: workspaceUsage.aiTokensUsedThisMonth,
+        aiTokensLimit: workspaceUsage.aiTokensLimit,
+        extraAiTokensPurchased: workspaceUsage.extraAiTokensPurchased,
+        planCode: subscriptions.planCode,
+        subscriptionStatus: subscriptions.status,
+        trialEnd: subscriptions.trialEnd,
+        cancelAtPeriodEnd: subscriptions.cancelAtPeriodEnd,
+        currentPeriodEnd: subscriptions.currentPeriodEnd,
       })
       .from(workspace)
-      .orderBy(desc(workspace.createdAt))
+      .leftJoin(users, eq(users.id, workspace.ownerId))
+      .leftJoin(workspaceUsage, eq(workspaceUsage.workspaceId, workspace.id))
+      .leftJoin(subscriptions, eq(subscriptions.workspaceId, workspace.id))
+      .where(where)
+      .orderBy(orderBy)
       .limit(limit)
       .offset(offset);
 
-    if (conditions.length > 0) {
-      workspacesQuery.where(and(...conditions));
-    }
+    // Counted against the same WHERE and the same joins. The old count was of
+    // the whole table, so any filter left the pagination claiming pages that
+    // could not be opened.
+    const totalCount = await this.db
+      .select({ count: count() })
+      .from(workspace)
+      .leftJoin(users, eq(users.id, workspace.ownerId))
+      .leftJoin(workspaceUsage, eq(workspaceUsage.workspaceId, workspace.id))
+      .leftJoin(subscriptions, eq(subscriptions.workspaceId, workspace.id))
+      .where(where);
 
-    const [workspacesList, totalCount] = await Promise.all([
-      workspacesQuery,
-      this.db.select({ count: count() }).from(workspace),
-    ]);
-
-    // Get owner details for each workspace
-    const workspacesWithOwners = await Promise.all(
-      workspacesList.map(async (ws) => {
-        const owner = await this.db.query.users.findFirst({
-          where: eq(users.id, ws.ownerId),
-          columns: { id: true, email: true, name: true },
-        });
-        return { ...ws, owner };
-      }),
-    );
-
-    // Filter by search
-    let filteredWorkspaces = workspacesWithOwners;
-    if (search) {
-      const searchLower = search.toLowerCase();
-      filteredWorkspaces = workspacesWithOwners.filter(
-        (w) =>
-          w.name.toLowerCase().includes(searchLower) ||
-          w.slug.toLowerCase().includes(searchLower) ||
-          w.owner?.email?.toLowerCase().includes(searchLower),
-      );
-    }
+    const total = totalCount[0]?.count ?? 0;
 
     return {
-      workspaces: filteredWorkspaces,
+      workspaces: rows.map((row) => ({
+        id: row.id,
+        name: row.name,
+        slug: row.slug,
+        isActive: row.isActive,
+        suspendedAt: row.suspendedAt,
+        suspendedReason: row.suspendedReason,
+        // Resolved once, on the server, so every screen reading this list
+        // agrees on what "suspended" means.
+        state: deriveWorkspaceState(row.isActive, row.suspendedReason),
+        ownerId: row.ownerId,
+        createdAt: row.createdAt,
+        owner: row.ownerId
+          ? { id: row.ownerId, email: row.ownerEmail, name: row.ownerName }
+          : null,
+        usage: this.shapeUsage(row),
+        subscription: row.planCode
+          ? {
+              planCode: row.planCode,
+              status: row.subscriptionStatus,
+              trialEnd: row.trialEnd,
+              cancelAtPeriodEnd: row.cancelAtPeriodEnd,
+              currentPeriodEnd: row.currentPeriodEnd,
+            }
+          : null,
+      })),
       pagination: {
         page,
         limit,
-        total: totalCount[0]?.count || 0,
-        totalPages: Math.ceil((totalCount[0]?.count || 0) / limit),
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Turns a `workspace_usage` row into used/limit pairs.
+   *
+   * The limit is base plus whatever was bought on top, and that sum is the
+   * only number an operator can act on — a workspace sitting at 5 of 3 looks
+   * like a bug until you know two extra channels were purchased. Shared by
+   * the list and the detail view so the two can never disagree about it.
+   *
+   * A workspace with no usage row reads as zero of zero rather than null:
+   * the row is created lazily, and its absence means nothing has been used.
+   */
+  private shapeUsage(
+    usage: {
+      channelsCount?: number | null;
+      channelsLimit?: number | null;
+      extraChannelsPurchased?: number | null;
+      membersCount?: number | null;
+      membersLimit?: number | null;
+      extraMembersPurchased?: number | null;
+      aiTokensUsedThisMonth?: number | null;
+      aiTokensLimit?: number | null;
+      extraAiTokensPurchased?: number | null;
+    } | null | undefined,
+  ) {
+    return {
+      channels: {
+        used: usage?.channelsCount ?? 0,
+        limit: (usage?.channelsLimit ?? 0) + (usage?.extraChannelsPurchased ?? 0),
+      },
+      members: {
+        used: usage?.membersCount ?? 0,
+        limit: (usage?.membersLimit ?? 0) + (usage?.extraMembersPurchased ?? 0),
+      },
+      aiTokens: {
+        used: usage?.aiTokensUsedThisMonth ?? 0,
+        limit:
+          (usage?.aiTokensLimit ?? 0) + (usage?.extraAiTokensPurchased ?? 0),
       },
     };
   }
@@ -423,40 +607,138 @@ export class AdminService {
       throw new NotFoundException('Workspace not found');
     }
 
-    // Get owner
-    const owner = await this.db.query.users.findFirst({
-      where: eq(users.id, ws.ownerId),
-      columns: { id: true, email: true, name: true },
-    });
+    // Everything below is independent of everything else, so it goes out at
+    // once rather than in sequence. Awaited one after another this endpoint
+    // paid for seven round trips to open a single page.
+    const [
+      owner,
+      suspendedBy,
+      usage,
+      subscription,
+      channelList,
+      postsByStatus,
+      memberRows,
+    ] = await Promise.all([
+      this.db.query.users.findFirst({
+        where: eq(users.id, ws.ownerId),
+        columns: {
+          id: true,
+          email: true,
+          name: true,
+          lastLoginAt: true,
+          isActive: true,
+          createdAt: true,
+        },
+      }),
 
-    // Get channels count
-    const [channelsCount] = await this.db
-      .select({ count: count() })
-      .from(socialMediaChannels)
-      .where(eq(socialMediaChannels.workspaceId, workspaceId));
+      // Who switched it off. A name here is the difference between "this was
+      // a decision someone made" and "this happened".
+      ws.suspendedById
+        ? this.db.query.users.findFirst({
+            where: eq(users.id, ws.suspendedById),
+            columns: { id: true, email: true, name: true },
+          })
+        : Promise.resolve(null),
 
-    // Get posts count
-    const [postsCount] = await this.db
-      .select({ count: count() })
-      .from(posts)
-      .where(eq(posts.workspaceId, workspaceId));
+      this.db.query.workspaceUsage.findFirst({
+        where: eq(workspaceUsage.workspaceId, workspaceId),
+      }),
 
-    // Get subscription
-    const subscription = await this.db.query.subscriptions.findFirst({
-      where: eq(subscriptions.workspaceId, workspaceId),
-    });
+      this.db.query.subscriptions.findFirst({
+        where: eq(subscriptions.workspaceId, workspaceId),
+      }),
+
+      // The channels themselves, not a count. "3 channels" and "3 channels,
+      // two of which stopped authenticating" are different situations, and
+      // only the second one explains why a customer is complaining.
+      this.db
+        .select({
+          id: socialMediaChannels.id,
+          platform: socialMediaChannels.platform,
+          accountName: socialMediaChannels.accountName,
+          connectionStatus: socialMediaChannels.connectionStatus,
+          tokenExpiresAt: socialMediaChannels.tokenExpiresAt,
+          isActive: socialMediaChannels.isActive,
+        })
+        .from(socialMediaChannels)
+        .where(eq(socialMediaChannels.workspaceId, workspaceId)),
+
+      this.db
+        .select({ status: posts.status, count: count() })
+        .from(posts)
+        .where(eq(posts.workspaceId, workspaceId))
+        .groupBy(posts.status),
+
+      // Members are accepted invitations — there is no membership table, so
+      // counting `workspace_usage.membersCount` alone would give a number
+      // with nobody attached to it.
+      this.db
+        .select({
+          id: workspaceInvitation.id,
+          email: workspaceInvitation.email,
+          role: workspaceInvitation.role,
+          status: workspaceInvitation.status,
+          acceptedAt: workspaceInvitation.acceptedAt,
+          userId: workspaceInvitation.userId,
+          userName: users.name,
+        })
+        .from(workspaceInvitation)
+        .leftJoin(users, eq(users.id, workspaceInvitation.userId))
+        .where(eq(workspaceInvitation.workspaceId, workspaceId)),
+    ]);
+
+    const acceptedMembers = memberRows.filter((m) => m.status === 'ACCEPTED');
+    const pendingInvites = memberRows.filter((m) => m.status === 'PENDING');
+
+    const now = new Date();
+    const EXPIRING_SOON_MS = 7 * 24 * 60 * 60 * 1000;
+
+    const channelHealth = {
+      total: channelList.length,
+      connected: channelList.filter(
+        (c) => c.connectionStatus === 'connected' && c.isActive,
+      ).length,
+      // Anything not cleanly connected: revoked, errored, disconnected.
+      needsAttention: channelList.filter(
+        (c) => c.connectionStatus !== 'connected' || !c.isActive,
+      ).length,
+      // A token that lapses next week is not broken yet, which is exactly
+      // why it is worth surfacing now rather than after it breaks.
+      expiringSoon: channelList.filter(
+        (c) =>
+          c.tokenExpiresAt !== null &&
+          c.tokenExpiresAt.getTime() > now.getTime() &&
+          c.tokenExpiresAt.getTime() - now.getTime() < EXPIRING_SOON_MS,
+      ).length,
+    };
+
+    const postCounts = Object.fromEntries(
+      postsByStatus.map((row) => [row.status, row.count]),
+    ) as Record<string, number>;
 
     return {
       ...ws,
+      state: deriveWorkspaceState(ws.isActive, ws.suspendedReason),
       owner,
+      suspendedBy,
+      usage: this.shapeUsage(usage),
+      channels: channelList,
+      channelHealth,
+      members: acceptedMembers,
+      pendingInvitations: pendingInvites,
       stats: {
-        channelsCount: channelsCount?.count || 0,
-        postsCount: postsCount?.count || 0,
+        channelsCount: channelList.length,
+        membersCount: acceptedMembers.length,
+        pendingInvitationsCount: pendingInvites.length,
+        postsCount: postsByStatus.reduce((sum, row) => sum + row.count, 0),
+        postsByStatus: postCounts,
       },
       subscription: subscription
         ? {
             planCode: subscription.planCode,
             status: subscription.status,
+            trialEnd: subscription.trialEnd,
+            cancelAtPeriodEnd: subscription.cancelAtPeriodEnd,
             currentPeriodEnd: subscription.currentPeriodEnd,
           }
         : null,

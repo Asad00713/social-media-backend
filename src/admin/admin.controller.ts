@@ -14,9 +14,23 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import {
+  IsBoolean,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  Min,
+} from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import {
   AdminService,
   SuspensionReason,
   SUSPENSION_REASONS,
+  WORKSPACE_SORT_FIELDS,
+  WORKSPACE_STATES,
+  type WorkspaceSortField,
+  type WorkspaceState,
 } from './admin.service';
 import { UserInactivityService } from './user-inactivity.service';
 import { QueueMonitorService } from './queue-monitor.service';
@@ -41,11 +55,52 @@ class UserQueryDto {
   role?: string;
 }
 
+/**
+ * Decorated, unlike the other query DTOs in this file. The global
+ * ValidationPipe runs with `whitelist` and `forbidNonWhitelisted`, so a plain
+ * class with no decorators has no recognised properties at all — every query
+ * parameter would be stripped and the endpoint would quietly ignore the
+ * filters it was sent.
+ */
 class WorkspaceQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
   page?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  // Capped so a single request cannot ask for the entire table.
+  @Max(100)
+  @Type(() => Number)
   limit?: number;
+
+  @IsOptional()
+  @IsString()
   search?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === true || value === 'true')
   isActive?: boolean;
+
+  @IsOptional()
+  @IsIn(WORKSPACE_STATES)
+  state?: WorkspaceState;
+
+  @IsOptional()
+  @IsString()
+  planCode?: string;
+
+  @IsOptional()
+  @IsIn(WORKSPACE_SORT_FIELDS)
+  sortBy?: WorkspaceSortField;
+
+  @IsOptional()
+  @IsIn(['asc', 'desc'])
+  sortOrder?: 'asc' | 'desc';
 }
 
 // Queue action DTOs
@@ -122,11 +177,14 @@ export class AdminController {
     @CurrentUser() admin: { userId: string },
     @Body() dto: SuspendDto,
   ) {
+    // Thrown, not returned. Returning `{ error }` with a 200 told the caller
+    // the suspension had succeeded — a client checking the status code would
+    // show "user suspended" for an account that was never touched.
     if (!SUSPENSION_REASONS.includes(dto.reason)) {
-      return {
-        error: 'Invalid suspension reason',
+      throw new BadRequestException({
+        message: 'Invalid suspension reason',
         validReasons: SUSPENSION_REASONS,
-      };
+      });
     }
     return this.adminService.suspendUser(
       userId,
@@ -149,14 +207,19 @@ export class AdminController {
   @Get('workspaces')
   @HttpCode(HttpStatus.OK)
   async getWorkspaces(@Query() query: WorkspaceQueryDto) {
+    // The DTO's decorators already coerced and validated everything, so the
+    // hand-rolled Number() and 'true'-string juggling that used to live here
+    // is gone — it was doing the pipe's job, and doing it in two places is how
+    // the two drift apart.
     return this.adminService.getWorkspaces({
-      page: query.page ? Number(query.page) : 1,
-      limit: query.limit ? Number(query.limit) : 20,
+      page: query.page ?? 1,
+      limit: query.limit ?? 20,
       search: query.search,
-      isActive:
-        query.isActive !== undefined
-          ? query.isActive === true || query.isActive === ('true' as any)
-          : undefined,
+      isActive: query.isActive,
+      state: query.state,
+      planCode: query.planCode,
+      sortBy: query.sortBy,
+      sortOrder: query.sortOrder,
     });
   }
 
@@ -174,10 +237,10 @@ export class AdminController {
     @Body() dto: SuspendDto,
   ) {
     if (!SUSPENSION_REASONS.includes(dto.reason)) {
-      return {
-        error: 'Invalid suspension reason',
+      throw new BadRequestException({
+        message: 'Invalid suspension reason',
         validReasons: SUSPENSION_REASONS,
-      };
+      });
     }
     return this.adminService.suspendWorkspace(
       workspaceId,
