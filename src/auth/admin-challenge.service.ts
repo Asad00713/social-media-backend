@@ -35,6 +35,23 @@ export interface ChallengeTokenPayload {
   purpose: 'admin-login';
 }
 
+/**
+ * Thrown only for an address that really is a super admin, and only when a
+ * usable code was issued moments ago.
+ *
+ * This does leak one bit — a stranger who guessed the right address twice in a
+ * minute would see it. That is accepted deliberately: they must already know
+ * the address, and the alternative is telling the actual owner that mail is
+ * coming when none is. Silence there costs a real person ten minutes of
+ * staring at an empty inbox.
+ */
+export class ChallengeCooldownError extends Error {
+  constructor(public readonly retryAfterSeconds: number) {
+    super(`Wait ${retryAfterSeconds}s before requesting another code.`);
+    this.name = 'ChallengeCooldownError';
+  }
+}
+
 @Injectable()
 export class AdminChallengeService {
   private readonly logger = new Logger(AdminChallengeService.name);
@@ -70,9 +87,15 @@ export class AdminChallengeService {
       return;
     }
 
+    // `isNull(consumedAt)` matters as much as the time window. The cooldown
+    // exists to protect a code that is still usable — once one has been spent
+    // there is nothing left to protect, and holding the user back would trap
+    // them: a wrong password spends the code and returns them here, where a
+    // consumed-code cooldown would refuse the replacement they now need.
     const recent = await this.db.query.adminLoginChallenges.findFirst({
       where: and(
         eq(adminLoginChallenges.userId, user.id),
+        isNull(adminLoginChallenges.consumedAt),
         gt(
           adminLoginChallenges.createdAt,
           new Date(Date.now() - REQUEST_COOLDOWN_MS),
@@ -82,8 +105,18 @@ export class AdminChallengeService {
     });
 
     if (recent) {
-      // Inside the cooldown. Send nothing, say nothing different.
-      return;
+      // Inside the cooldown: the code already in their inbox is still valid,
+      // so reissuing would only invalidate the one they are about to type.
+      //
+      // This used to return silently, which produced the worst possible
+      // screen — "a code is on its way" while nothing was sent. A wrong
+      // password drops the form back to the email step, so anyone who
+      // mistyped once landed here immediately and waited on mail that was
+      // never coming. The caller is told to wait now, and told how long.
+      const waitMs =
+        REQUEST_COOLDOWN_MS - (Date.now() - recent.createdAt.getTime());
+
+      throw new ChallengeCooldownError(Math.max(1, Math.ceil(waitMs / 1000)));
     }
 
     const otp = generateOtp(6);
