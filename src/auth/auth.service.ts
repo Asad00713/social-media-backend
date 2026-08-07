@@ -23,6 +23,7 @@ import { DRIZZLE } from '../drizzle/drizzle.module';
 import type { DbType } from '../drizzle/db';
 import { and, eq } from 'drizzle-orm';
 import { NotificationEmitterService } from '../notifications/notification-emitter.service';
+import { AdminChallengeService } from './admin-challenge.service';
 import {
   mergeWorkspacesWithRoles,
   type WorkspaceWithRole,
@@ -59,6 +60,9 @@ export class AuthService {
     private configService: ConfigService,
     private emailService: EmailService,
     private notificationEmitter: NotificationEmitterService,
+    // One-way dependency: the challenge service knows nothing about AuthService,
+    // so this needs no forwardRef.
+    private adminChallengeService: AdminChallengeService,
   ) {}
 
   async register(registerDto: CreateUserDto): Promise<AuthResponse> {
@@ -116,6 +120,20 @@ export class AuthService {
     if (user.role === 'SUPER_ADMIN' && !user.isEmailVerified) {
       throw new UnauthorizedException(
         'Please verify your email before logging in. Check your inbox for the verification link.',
+      );
+    }
+
+    // Second factor, super admins only. A correct password on its own is not
+    // enough to reach an account that can read every customer's data — the
+    // caller must also have proved control of the mailbox in this same flow.
+    //
+    // Scoped to SUPER_ADMIN deliberately: making every customer type an
+    // emailed code on every sign-in would cost far more in abandoned logins
+    // than it buys, and their accounts are not the ones worth this friction.
+    if (user.role === 'SUPER_ADMIN') {
+      this.adminChallengeService.verifyChallengeToken(
+        loginDto.challengeToken,
+        user.id,
       );
     }
 

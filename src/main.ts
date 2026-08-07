@@ -16,9 +16,13 @@ async function bootstrap() {
       'http://localhost:3000',
       'http://localhost:3001',
       'http://localhost:3002',
+      // schedura-admin, the internal admin dashboard.
+      'http://localhost:3003',
+      'http://localhost:3010',
       'https://e36d-154-81-235-176.ngrok-free.app',
       process.env.APP_URL,
       process.env.FRONTEND_URL,
+      process.env.ADMIN_URL,
     ].filter(Boolean),
     credentials: true,
   });

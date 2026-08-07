@@ -4,12 +4,19 @@ import {
   Body,
   HttpCode,
   HttpStatus,
+  Ip,
   Res,
   UseGuards,
   Get,
 } from '@nestjs/common';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
+import { AdminChallengeService } from './admin-challenge.service';
+import {
+  RequestAdminChallengeDto,
+  VerifyAdminChallengeDto,
+} from './dto/admin-challenge.dto';
 import { LoginDto } from './dto/login.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { VerifyOtpDto } from './dto/verify-otp.dto';
@@ -23,7 +30,52 @@ import { CreateUserDto } from 'src/users/dto/create-user.dto';
 
 @Controller('auth')
 export class AuthController {
-  constructor(private readonly authService: AuthService) {}
+  constructor(
+    private readonly authService: AuthService,
+    private readonly adminChallengeService: AdminChallengeService,
+  ) {}
+
+  // ==================== Admin sign-in second factor ====================
+
+  /**
+   * Step one of super admin sign-in: email a one-time code.
+   *
+   * Public by design — it runs before anyone is authenticated. It answers
+   * identically for every address, so it cannot be used to find out which
+   * account owns the platform.
+   *
+   * Throttled hard. Without a ceiling this endpoint is a free way to send mail
+   * to an address of the caller's choosing, over and over.
+   */
+  @Post('admin/challenge')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  async requestAdminChallenge(
+    @Body() dto: RequestAdminChallengeDto,
+    @Ip() ip: string,
+  ) {
+    await this.adminChallengeService.requestChallenge(dto.email, ip);
+
+    // Always the same sentence, always a 200.
+    return {
+      message: 'If that address can sign in here, a code is on its way.',
+    };
+  }
+
+  /** Step two: trade a correct code for a short-lived token. */
+  @Post('admin/verify')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 10, ttl: 15 * 60 * 1000 } })
+  async verifyAdminChallenge(@Body() dto: VerifyAdminChallengeDto) {
+    const challengeToken = await this.adminChallengeService.verifyChallenge(
+      dto.email,
+      dto.otp,
+    );
+
+    return { challengeToken };
+  }
 
   @Post('register')
   @HttpCode(HttpStatus.CREATED)
