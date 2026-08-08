@@ -263,6 +263,12 @@ export class AdminController {
     return this.adminService.getWorkspaceById(workspaceId);
   }
 
+  @Get('workspaces/:workspaceId/billing')
+  @HttpCode(HttpStatus.OK)
+  async getWorkspaceBilling(@Param('workspaceId') workspaceId: string) {
+    return this.adminService.getWorkspaceBilling(workspaceId);
+  }
+
   @Post('workspaces/:workspaceId/suspend')
   @HttpCode(HttpStatus.OK)
   async suspendWorkspace(

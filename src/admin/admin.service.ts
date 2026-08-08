@@ -80,6 +80,7 @@ export const WORKSPACE_SORT_FIELDS = [
   'channelsCount',
   'membersCount',
   'aiTokensUsedThisMonth',
+  'lifetimeRevenueCents',
 ] as const;
 
 export type WorkspaceSortField = (typeof WORKSPACE_SORT_FIELDS)[number];
@@ -460,6 +461,17 @@ export class AdminService {
       channelsCount: workspaceUsage.channelsCount,
       membersCount: workspaceUsage.membersCount,
       aiTokensUsedThisMonth: workspaceUsage.aiTokensUsedThisMonth,
+      // Repeats the subquery in the selected column rather than referring to
+      // its alias: Postgres will not accept a select alias in ORDER BY here,
+      // and it plans the two occurrences as one anyway.
+      lifetimeRevenueCents: sql`(
+        SELECT COALESCE(SUM(${invoices.amountPaidCents}), 0)
+        FROM ${invoices}
+        INNER JOIN ${subscriptions} AS sort_sub
+          ON sort_sub.id = ${invoices.subscriptionId}
+        WHERE sort_sub.workspace_id = ${workspace.id}
+          AND ${invoices.status} = 'paid'
+      )`,
     } as const;
     const sortColumn = SORTABLE[sortBy] ?? workspace.createdAt;
     const orderBy = sortOrder === 'asc' ? asc(sortColumn) : desc(sortColumn);
@@ -498,6 +510,21 @@ export class AdminService {
         trialEnd: subscriptions.trialEnd,
         cancelAtPeriodEnd: subscriptions.cancelAtPeriodEnd,
         currentPeriodEnd: subscriptions.currentPeriodEnd,
+        // A subquery rather than another join. Invoices are many-per-
+        // workspace, so joining them would multiply each workspace into one
+        // row per invoice and every count on this page would inflate with it.
+        //
+        // COALESCE because a workspace that has never been billed sums to
+        // NULL, and a list column reading "—" where it means "nothing yet"
+        // is a distinction without a difference here.
+        lifetimeRevenueCents: sql<number>`(
+          SELECT COALESCE(SUM(${invoices.amountPaidCents}), 0)
+          FROM ${invoices}
+          INNER JOIN ${subscriptions} AS inv_sub
+            ON inv_sub.id = ${invoices.subscriptionId}
+          WHERE inv_sub.workspace_id = ${workspace.id}
+            AND ${invoices.status} = 'paid'
+        )`.mapWith(Number),
       })
       .from(workspace)
       .leftJoin(users, eq(users.id, workspace.ownerId))
@@ -538,6 +565,8 @@ export class AdminService {
           ? { id: row.ownerId, email: row.ownerEmail, name: row.ownerName }
           : null,
         usage: this.shapeUsage(row),
+        // Cents, like everywhere else money appears in this API.
+        lifetimeRevenueCents: row.lifetimeRevenueCents ?? 0,
         subscription: row.planCode
           ? {
               planCode: row.planCode,
@@ -742,6 +771,165 @@ export class AdminService {
             currentPeriodEnd: subscription.currentPeriodEnd,
           }
         : null,
+    };
+  }
+
+  /**
+   * What this workspace has paid us, and what it has consumed.
+   *
+   * Its own endpoint rather than more fields on the detail response: this is
+   * one tab out of six, and the invoice history behind it grows every month.
+   * Loading it to open the overview would make the common case pay for the
+   * rare one.
+   *
+   * Money is reported in cents throughout. Dividing here would hand the
+   * frontend a float to round a second time, and two roundings of the same
+   * figure are how a total stops matching the rows above it.
+   */
+  async getWorkspaceBilling(workspaceId: string) {
+    const ws = await this.db.query.workspace.findFirst({
+      where: eq(workspace.id, workspaceId),
+      columns: { id: true },
+    });
+
+    if (!ws) {
+      throw new NotFoundException('Workspace not found');
+    }
+
+    // Invoices hang off the subscription, not the workspace — there is no
+    // workspace_id on the table — so every invoice query here goes through
+    // this join.
+    const invoiceJoin = this.db
+      .select({
+        id: invoices.id,
+        totalCents: invoices.totalCents,
+        amountPaidCents: invoices.amountPaidCents,
+        amountDueCents: invoices.amountDueCents,
+        currency: invoices.currency,
+        status: invoices.status,
+        periodStart: invoices.periodStart,
+        periodEnd: invoices.periodEnd,
+        paidAt: invoices.paidAt,
+        hostedInvoiceUrl: invoices.hostedInvoiceUrl,
+        invoicePdfUrl: invoices.invoicePdfUrl,
+        createdAt: invoices.createdAt,
+      })
+      .from(invoices)
+      .innerJoin(subscriptions, eq(subscriptions.id, invoices.subscriptionId))
+      .where(eq(subscriptions.workspaceId, workspaceId));
+
+    const now = new Date();
+    const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
+    const startOfMonth = new Date(
+      Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1),
+    );
+
+    const [invoiceRows, aiByOperation, aiRecent, failedPaymentRows] =
+      await Promise.all([
+        invoiceJoin.orderBy(desc(invoices.createdAt)).limit(24),
+
+        // Where the tokens went. A single "693 used" figure says a workspace
+        // is active; this says what it is active doing, which is the half
+        // that tells you whether an upgrade would actually help them.
+        this.db
+          .select({
+            operation: aiUsageLog.operation,
+            tokens: sum(aiUsageLog.tokensUsed),
+            calls: count(),
+          })
+          .from(aiUsageLog)
+          .where(
+            and(
+              eq(aiUsageLog.workspaceId, workspaceId),
+              gte(aiUsageLog.createdAt, startOfMonth),
+            ),
+          )
+          .groupBy(aiUsageLog.operation),
+
+        this.db
+          .select({
+            tokens: sum(aiUsageLog.tokensUsed),
+            calls: count(),
+          })
+          .from(aiUsageLog)
+          .where(
+            and(
+              eq(aiUsageLog.workspaceId, workspaceId),
+              gte(aiUsageLog.createdAt, thirtyDaysAgo),
+            ),
+          ),
+
+        // Unresolved only. A card that failed in March and went through on
+        // the retry is history; a count that includes it reports a billing
+        // problem at a workspace that does not have one.
+        this.db
+          .select({ count: count() })
+          .from(failedPayments)
+          .innerJoin(
+            subscriptions,
+            eq(subscriptions.id, failedPayments.subscriptionId),
+          )
+          .where(
+            and(
+              eq(subscriptions.workspaceId, workspaceId),
+              eq(failedPayments.resolved, false),
+            ),
+          ),
+      ]);
+
+    const paid = invoiceRows.filter((row) => row.status === 'paid');
+
+    // `open` and `uncollectible` are both money we invoiced and have not been
+    // given. Counting only `open` would hide the invoices Stripe has already
+    // given up on, which are the ones worth knowing about.
+    const outstanding = invoiceRows.filter(
+      (row) => row.status === 'open' || row.status === 'uncollectible',
+    );
+
+    const lifetimeCents = paid.reduce(
+      (total, row) => total + row.amountPaidCents,
+      0,
+    );
+
+    const last30DaysCents = paid
+      .filter((row) => row.paidAt !== null && row.paidAt >= thirtyDaysAgo)
+      .reduce((total, row) => total + row.amountPaidCents, 0);
+
+    const outstandingCents = outstanding.reduce(
+      (total, row) => total + row.amountDueCents,
+      0,
+    );
+
+    return {
+      earnings: {
+        // Named for what it is: the sum of the invoices held here, not
+        // necessarily every invoice ever issued. See `invoicesTruncated`.
+        lifetimeCents,
+        last30DaysCents,
+        outstandingCents,
+        // Every invoice on this workspace shares a currency in practice, but
+        // reading it from the data beats hard-coding 'usd' into the UI.
+        currency: invoiceRows[0]?.currency ?? 'usd',
+        paidInvoiceCount: paid.length,
+        outstandingInvoiceCount: outstanding.length,
+        unresolvedFailedPayments: failedPaymentRows[0]?.count ?? 0,
+      },
+      // Says out loud that the totals above cover the rows below and no more.
+      // A "lifetime" figure quietly computed from the latest 24 invoices
+      // would be wrong for exactly the customers who matter most.
+      invoicesTruncated: invoiceRows.length === 24,
+      invoices: invoiceRows,
+      consumption: {
+        aiTokensLast30Days: Number(aiRecent[0]?.tokens ?? 0),
+        aiCallsLast30Days: aiRecent[0]?.calls ?? 0,
+        byOperation: aiByOperation
+          .map((row) => ({
+            operation: row.operation,
+            tokens: Number(row.tokens ?? 0),
+            calls: row.calls,
+          }))
+          .sort((a, b) => b.tokens - a.tokens),
+      },
     };
   }
 
