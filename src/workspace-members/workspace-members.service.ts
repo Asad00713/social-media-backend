@@ -493,8 +493,9 @@ export class WorkspaceMembersService {
     const isOwner = workspaceData.ownerId === currentUserId;
     const isAdmin = await this.isUserAdmin(workspaceId, currentUserId);
     const isInviter = invitation.invitedBy === currentUserId;
+    const isSuperAdmin = await this.isPlatformSuperAdmin(currentUserId);
 
-    if (!isOwner && !isAdmin && !isInviter) {
+    if (!isOwner && !isAdmin && !isInviter && !isSuperAdmin) {
       throw new ForbiddenException(
         'You do not have permission to cancel this invitation',
       );

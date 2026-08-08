@@ -492,6 +492,26 @@ export class AdminController {
     );
   }
 
+  /**
+   * Separate from removing a member because the underlying rows are in
+   * different states. `removeMember` only matches ACCEPTED invitations and
+   * decrements the member counter; a PENDING invitation was never counted, so
+   * cancelling it is a different operation on the same table.
+   */
+  @Delete('workspaces/:workspaceId/invitations/:invitationId')
+  @HttpCode(HttpStatus.OK)
+  async cancelWorkspaceInvitation(
+    @Param('workspaceId') workspaceId: string,
+    @Param('invitationId') invitationId: string,
+    @CurrentUser() admin: { userId: string },
+  ) {
+    return this.membersService.cancelInvitation(
+      workspaceId,
+      invitationId,
+      admin.userId,
+    );
+  }
+
   @Post('workspaces/:workspaceId/reactivate')
   @HttpCode(HttpStatus.OK)
   async reactivateWorkspace(@Param('workspaceId') workspaceId: string) {
