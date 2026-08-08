@@ -35,7 +35,9 @@ import {
   aiUsageLog,
   workspaceUsage,
   workspaceInvitation,
+  mediaItems,
 } from '../drizzle/schema';
+import { POST_STATUSES, type PostStatus } from '../drizzle/schema';
 
 // Suspension reasons
 export const SUSPENSION_REASONS = [
@@ -942,6 +944,236 @@ export class AdminService {
    * frontend a float to round a second time, and two roundings of the same
    * figure are how a total stops matching the rows above it.
    */
+  /**
+   * This workspace's posts, newest first, with per-channel outcomes.
+   *
+   * The reason a post failed lives inside the `targets` JSONB rather than in a
+   * column: a post going to four channels can succeed on three and fail on
+   * one, and the row's own `status` flattens that to
+   * `partially_published`. An operator answering "why didn't this go out"
+   * needs the channel and the message, so the targets are unpacked here.
+   */
+  async getWorkspacePosts(
+    workspaceId: string,
+    options: { page?: number; limit?: number; status?: PostStatus } = {},
+  ) {
+    const { page = 1, limit = 20, status } = options;
+    const offset = (page - 1) * limit;
+
+    const ws = await this.db.query.workspace.findFirst({
+      where: eq(workspace.id, workspaceId),
+      columns: { id: true },
+    });
+
+    if (!ws) {
+      throw new NotFoundException('Workspace not found');
+    }
+
+    const where = status
+      ? and(eq(posts.workspaceId, workspaceId), eq(posts.status, status))
+      : eq(posts.workspaceId, workspaceId);
+
+    const [rows, totalCount, statusCounts] = await Promise.all([
+      this.db
+        .select({
+          id: posts.id,
+          content: posts.content,
+          status: posts.status,
+          targets: posts.targets,
+          mediaItems: posts.mediaItems,
+          scheduledAt: posts.scheduledAt,
+          publishedAt: posts.publishedAt,
+          lastError: posts.lastError,
+          createdAt: posts.createdAt,
+          authorId: users.id,
+          authorEmail: users.email,
+          authorName: users.name,
+        })
+        .from(posts)
+        .leftJoin(users, eq(users.id, posts.createdById))
+        .where(where)
+        .orderBy(desc(posts.createdAt))
+        .limit(limit)
+        .offset(offset),
+
+      this.db.select({ count: count() }).from(posts).where(where),
+
+      // Counted across the whole workspace, not the filtered page — these
+      // drive the status tabs, which have to keep showing what is in the
+      // other tabs.
+      this.db
+        .select({ status: posts.status, count: count() })
+        .from(posts)
+        .where(eq(posts.workspaceId, workspaceId))
+        .groupBy(posts.status),
+    ]);
+
+    const total = totalCount[0]?.count ?? 0;
+
+    return {
+      posts: rows.map((row) => ({
+        id: row.id,
+        // Enough to recognise the post, not enough to read it here. The
+        // admin dashboard is for triage; the full text is the customer's.
+        excerpt: row.content ? row.content.slice(0, 200) : null,
+        contentLength: row.content?.length ?? 0,
+        status: row.status,
+        scheduledAt: row.scheduledAt,
+        publishedAt: row.publishedAt,
+        createdAt: row.createdAt,
+        lastError: row.lastError,
+        mediaCount: row.mediaItems?.length ?? 0,
+        author: row.authorId
+          ? { id: row.authorId, email: row.authorEmail, name: row.authorName }
+          : null,
+        targets: (row.targets ?? []).map((target) => ({
+          channelId: target.channelId,
+          platform: target.platform,
+          // The composer writes `publishStatus` while older rows carry
+          // `status`. Reading only one silently reports every post from the
+          // other era as having no outcome at all.
+          status:
+            (target as { publishStatus?: PostStatus }).publishStatus ??
+            target.status,
+          errorMessage: target.errorMessage ?? null,
+          platformPostUrl: target.platformPostUrl ?? null,
+          publishedAt: target.publishedAt ?? null,
+        })),
+      })),
+      statusCounts: Object.fromEntries(
+        statusCounts.map((row) => [row.status, row.count]),
+      ) as Record<string, number>,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * What this workspace stores, and what it costs us to keep.
+   *
+   * Deleted items are counted separately rather than excluded. The recycle
+   * bin still occupies real bytes on R2 and Cloudinary, and a workspace whose
+   * storage is mostly deleted files is a different conversation from one
+   * that is genuinely large.
+   */
+  async getWorkspaceMedia(
+    workspaceId: string,
+    options: { page?: number; limit?: number; includeDeleted?: boolean } = {},
+  ) {
+    const { page = 1, limit = 24, includeDeleted = false } = options;
+    const offset = (page - 1) * limit;
+
+    const ws = await this.db.query.workspace.findFirst({
+      where: eq(workspace.id, workspaceId),
+      columns: { id: true },
+    });
+
+    if (!ws) {
+      throw new NotFoundException('Workspace not found');
+    }
+
+    const listWhere = includeDeleted
+      ? eq(mediaItems.workspaceId, workspaceId)
+      : and(
+          eq(mediaItems.workspaceId, workspaceId),
+          eq(mediaItems.isDeleted, false),
+        );
+
+    const [rows, totalCount, byType, deletedTotals] = await Promise.all([
+      this.db
+        .select({
+          id: mediaItems.id,
+          name: mediaItems.name,
+          type: mediaItems.type,
+          thumbnailUrl: mediaItems.thumbnailUrl,
+          mimeType: mediaItems.mimeType,
+          fileSize: mediaItems.fileSize,
+          width: mediaItems.width,
+          height: mediaItems.height,
+          duration: mediaItems.duration,
+          usageCount: mediaItems.usageCount,
+          lastUsedAt: mediaItems.lastUsedAt,
+          isDeleted: mediaItems.isDeleted,
+          createdAt: mediaItems.createdAt,
+          // Which provider is holding the bytes. A Cloudinary public id means
+          // it is on Cloudinary; everything else is on our own storage.
+          cloudinaryPublicId: mediaItems.cloudinaryPublicId,
+          uploaderEmail: users.email,
+        })
+        .from(mediaItems)
+        .leftJoin(users, eq(users.id, mediaItems.uploadedById))
+        .where(listWhere)
+        .orderBy(desc(mediaItems.createdAt))
+        .limit(limit)
+        .offset(offset),
+
+      this.db.select({ count: count() }).from(mediaItems).where(listWhere),
+
+      this.db
+        .select({
+          type: mediaItems.type,
+          count: count(),
+          bytes: sum(mediaItems.fileSize),
+        })
+        .from(mediaItems)
+        .where(
+          and(
+            eq(mediaItems.workspaceId, workspaceId),
+            eq(mediaItems.isDeleted, false),
+          ),
+        )
+        .groupBy(mediaItems.type),
+
+      this.db
+        .select({ count: count(), bytes: sum(mediaItems.fileSize) })
+        .from(mediaItems)
+        .where(
+          and(
+            eq(mediaItems.workspaceId, workspaceId),
+            eq(mediaItems.isDeleted, true),
+          ),
+        ),
+    ]);
+
+    const total = totalCount[0]?.count ?? 0;
+
+    const liveBytes = byType.reduce(
+      (sum, row) => sum + Number(row.bytes ?? 0),
+      0,
+    );
+    const liveCount = byType.reduce((sum, row) => sum + row.count, 0);
+    const deletedBytes = Number(deletedTotals[0]?.bytes ?? 0);
+
+    return {
+      storage: {
+        liveBytes,
+        liveCount,
+        deletedBytes,
+        deletedCount: deletedTotals[0]?.count ?? 0,
+        // What the provider bills for: everything still stored, bin included.
+        totalBytes: liveBytes + deletedBytes,
+        byType: byType
+          .map((row) => ({
+            type: row.type,
+            count: row.count,
+            bytes: Number(row.bytes ?? 0),
+          }))
+          .sort((a, b) => b.bytes - a.bytes),
+      },
+      media: rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
   async getWorkspaceBilling(workspaceId: string) {
     const ws = await this.db.query.workspace.findFirst({
       where: eq(workspace.id, workspaceId),
@@ -1086,6 +1318,84 @@ export class AdminService {
           }))
           .sort((a, b) => b.tokens - a.tokens),
       },
+    };
+  }
+
+  /**
+   * Suspends several workspaces, reporting each one's outcome.
+   *
+   * Sequential rather than a single UPDATE, and deliberately so: each row
+   * goes through `suspendWorkspace`, which refuses one that is already
+   * suspended and records who did it. A bulk UPDATE would be one query and
+   * would silently overwrite the reason and author on rows that were already
+   * switched off for something else.
+   *
+   * One failure does not stop the rest. Selecting twelve workspaces and
+   * having the whole thing abort because the third was already suspended
+   * would be worse than doing the other eleven and saying so.
+   */
+  async bulkSuspendWorkspaces(
+    workspaceIds: string[],
+    adminId: string,
+    reason: SuspensionReason,
+    note?: string,
+  ) {
+    const results: Array<{
+      workspaceId: string;
+      success: boolean;
+      message?: string;
+    }> = [];
+
+    for (const workspaceId of workspaceIds) {
+      try {
+        await this.suspendWorkspace(workspaceId, adminId, reason, note);
+        results.push({ workspaceId, success: true });
+      } catch (error) {
+        results.push({
+          workspaceId,
+          success: false,
+          message:
+            error instanceof Error ? error.message : 'Could not suspend',
+        });
+      }
+    }
+
+    const succeeded = results.filter((r) => r.success).length;
+
+    return {
+      succeeded,
+      failed: results.length - succeeded,
+      results,
+    };
+  }
+
+  async bulkReactivateWorkspaces(workspaceIds: string[]) {
+    const results: Array<{
+      workspaceId: string;
+      success: boolean;
+      message?: string;
+    }> = [];
+
+    for (const workspaceId of workspaceIds) {
+      try {
+        await this.reactivateWorkspace(workspaceId);
+        results.push({ workspaceId, success: true });
+      } catch (error) {
+        results.push({
+          workspaceId,
+          success: false,
+          message:
+            error instanceof Error ? error.message : 'Could not reactivate',
+        });
+      }
+    }
+
+    const succeeded = results.filter((r) => r.success).length;
+
+    return {
+      succeeded,
+      failed: results.length - succeeded,
+      results,
     };
   }
 

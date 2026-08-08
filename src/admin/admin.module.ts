@@ -6,9 +6,23 @@ import { QueueMonitorService } from './queue-monitor.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { EmailModule } from '../email/email.module';
 import { QueueModule } from '../queue/queue.module';
+import { ChannelsModule } from '../channels/channels.module';
+import { WorkspaceMembersModule } from '../workspace-members/workspace-members.module';
 
 @Module({
-  imports: [DrizzleModule, EmailModule, QueueModule],
+  // Channels and members are imported for their services rather than
+  // reimplemented here. Disconnecting a channel cancels its sync jobs,
+  // revokes the Google grant while the token still exists, and decrements the
+  // billable channel counter; removing a member decrements the member
+  // counter. An admin-local copy would get the row deletion right and
+  // quietly skip all of that.
+  imports: [
+    DrizzleModule,
+    EmailModule,
+    QueueModule,
+    ChannelsModule,
+    WorkspaceMembersModule,
+  ],
   controllers: [AdminController],
   providers: [AdminService, UserInactivityService, QueueMonitorService],
   exports: [AdminService, UserInactivityService, QueueMonitorService],

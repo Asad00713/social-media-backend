@@ -2,6 +2,8 @@ import {
   Controller,
   Get,
   Post,
+  Patch,
+  Delete,
   Param,
   Body,
   Query,
@@ -9,17 +11,21 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
+  ParseIntPipe,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import {
+  ArrayMaxSize,
+  IsArray,
   IsBoolean,
   IsDate,
   IsIn,
   IsInt,
   IsOptional,
   IsString,
+  IsUUID,
   Max,
   MaxLength,
   Min,
@@ -41,6 +47,10 @@ import {
   type WorkspaceSortField,
   type WorkspaceState,
 } from './admin.service';
+import { POST_STATUSES, type PostStatus } from '../drizzle/schema';
+import { ChannelService } from '../channels/services/channel.service';
+import { WorkspaceMembersService } from '../workspace-members/workspace-members.service';
+import { UpdateMemberDto } from '../workspace-members/dto/update-member.dto';
 import { UserInactivityService } from './user-inactivity.service';
 import { QueueMonitorService } from './queue-monitor.service';
 import {
@@ -167,6 +177,65 @@ class WorkspaceQueryDto {
   sortOrder?: 'asc' | 'desc';
 }
 
+class BulkIdsDto {
+  @IsArray()
+  // Capped so one request cannot suspend the entire platform by accident.
+  // Fifty is more than a page of the table, which is where the selection
+  // comes from.
+  @ArrayMaxSize(50)
+  @IsUUID('4', { each: true })
+  workspaceIds: string[];
+}
+
+class BulkSuspendDto extends BulkIdsDto {
+  @IsIn(SUSPENSION_REASONS)
+  reason: SuspensionReason;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  note?: string;
+}
+
+class WorkspacePostsQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  page?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @Type(() => Number)
+  limit?: number;
+
+  @IsOptional()
+  @IsIn(POST_STATUSES)
+  status?: PostStatus;
+}
+
+class WorkspaceMediaQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  page?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @Type(() => Number)
+  limit?: number;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === true || value === 'true')
+  includeDeleted?: boolean;
+}
+
 // Queue action DTOs
 class RetryJobDto {
   @IsString()
@@ -192,6 +261,10 @@ export class AdminController {
     private readonly userInactivityService: UserInactivityService,
     private readonly queueMonitorService: QueueMonitorService,
     private readonly rateLimiterService: RateLimiterService,
+    // The customer-facing services, used directly rather than wrapped: the
+    // side effects an admin needs are already inside them.
+    private readonly channelService: ChannelService,
+    private readonly membersService: WorkspaceMembersService,
   ) {}
 
   // ==========================================================================
@@ -300,10 +373,61 @@ export class AdminController {
     return this.adminService.getWorkspaceById(workspaceId);
   }
 
+  @Get('workspaces/:workspaceId/posts')
+  @HttpCode(HttpStatus.OK)
+  async getWorkspacePosts(
+    @Param('workspaceId') workspaceId: string,
+    @Query() query: WorkspacePostsQueryDto,
+  ) {
+    return this.adminService.getWorkspacePosts(workspaceId, {
+      page: query.page,
+      limit: query.limit,
+      status: query.status,
+    });
+  }
+
+  @Get('workspaces/:workspaceId/media')
+  @HttpCode(HttpStatus.OK)
+  async getWorkspaceMedia(
+    @Param('workspaceId') workspaceId: string,
+    @Query() query: WorkspaceMediaQueryDto,
+  ) {
+    return this.adminService.getWorkspaceMedia(workspaceId, {
+      page: query.page,
+      limit: query.limit,
+      includeDeleted: query.includeDeleted,
+    });
+  }
+
   @Get('workspaces/:workspaceId/billing')
   @HttpCode(HttpStatus.OK)
   async getWorkspaceBilling(@Param('workspaceId') workspaceId: string) {
     return this.adminService.getWorkspaceBilling(workspaceId);
+  }
+
+  // The bulk routes sit above `workspaces/:workspaceId/...` deliberately.
+  // Express matches in declaration order, so with the parameterised route
+  // first, `/workspaces/bulk/suspend` binds `workspaceId = 'bulk'` and the
+  // bulk handler is never reached — a 404 on a workspace called "bulk"
+  // rather than anything that points at the routing.
+  @Post('workspaces/bulk/suspend')
+  @HttpCode(HttpStatus.OK)
+  async bulkSuspendWorkspaces(
+    @CurrentUser() admin: { userId: string },
+    @Body() dto: BulkSuspendDto,
+  ) {
+    return this.adminService.bulkSuspendWorkspaces(
+      dto.workspaceIds,
+      admin.userId,
+      dto.reason,
+      dto.note,
+    );
+  }
+
+  @Post('workspaces/bulk/reactivate')
+  @HttpCode(HttpStatus.OK)
+  async bulkReactivateWorkspaces(@Body() dto: BulkIdsDto) {
+    return this.adminService.bulkReactivateWorkspaces(dto.workspaceIds);
   }
 
   @Post('workspaces/:workspaceId/suspend')
@@ -319,6 +443,52 @@ export class AdminController {
       admin.userId,
       dto.reason,
       dto.note,
+    );
+  }
+
+  @Delete('workspaces/:workspaceId/channels/:channelId')
+  @HttpCode(HttpStatus.OK)
+  async disconnectWorkspaceChannel(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId', ParseIntPipe) channelId: number,
+  ) {
+    // The customer-facing service, not a local delete. It cancels the
+    // channel's sync jobs, revokes the Google grant while the token still
+    // exists, and moves the billable channel counter back down — none of
+    // which a row delete here would do.
+    await this.channelService.deleteChannel(channelId, workspaceId);
+    return { success: true, message: 'Channel disconnected' };
+  }
+
+  @Patch('workspaces/:workspaceId/members/:memberId')
+  @HttpCode(HttpStatus.OK)
+  async updateWorkspaceMemberRole(
+    @Param('workspaceId') workspaceId: string,
+    @Param('memberId') memberId: string,
+    @CurrentUser() admin: { userId: string },
+    // The members module's own DTO, so the roles the admin dashboard can set
+    // are exactly the roles the customer-facing endpoint accepts.
+    @Body() dto: UpdateMemberDto,
+  ) {
+    return this.membersService.updateMemberRole(
+      workspaceId,
+      memberId,
+      dto,
+      admin.userId,
+    );
+  }
+
+  @Delete('workspaces/:workspaceId/members/:memberId')
+  @HttpCode(HttpStatus.OK)
+  async removeWorkspaceMember(
+    @Param('workspaceId') workspaceId: string,
+    @Param('memberId') memberId: string,
+    @CurrentUser() admin: { userId: string },
+  ) {
+    return this.membersService.removeMember(
+      workspaceId,
+      memberId,
+      admin.userId,
     );
   }
 
