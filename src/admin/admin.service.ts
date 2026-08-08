@@ -5,6 +5,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import type { DbType } from '../drizzle/db';
+import type { AnyPgColumn } from 'drizzle-orm/pg-core';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import {
   eq,
@@ -84,6 +85,34 @@ export const WORKSPACE_SORT_FIELDS = [
 ] as const;
 
 export type WorkspaceSortField = (typeof WORKSPACE_SORT_FIELDS)[number];
+
+/**
+ * Which resource a workspace has run out of. `any` is the one an operator
+ * reaches for first — "who is about to need a bigger plan" rarely cares which
+ * limit they hit.
+ */
+export const WORKSPACE_LIMIT_FILTERS = [
+  'any',
+  'channels',
+  'members',
+  'aiTokens',
+] as const;
+
+export type WorkspaceLimitFilter = (typeof WORKSPACE_LIMIT_FILTERS)[number];
+
+/**
+ * `none` is separate from `healthy` on purpose. A workspace with no channels
+ * has nothing broken, but calling it healthy would bury the accounts that
+ * actually publish under ones that never set anything up.
+ */
+export const WORKSPACE_CHANNEL_HEALTH_FILTERS = [
+  'healthy',
+  'needs_attention',
+  'none',
+] as const;
+
+export type WorkspaceChannelHealthFilter =
+  (typeof WORKSPACE_CHANNEL_HEALTH_FILTERS)[number];
 
 @Injectable()
 export class AdminService {
@@ -384,6 +413,11 @@ export class AdminService {
     isActive?: boolean;
     state?: WorkspaceState;
     planCode?: string;
+    hasRevenue?: boolean;
+    atLimit?: WorkspaceLimitFilter;
+    channelHealth?: WorkspaceChannelHealthFilter;
+    createdAfter?: Date;
+    createdBefore?: Date;
     sortBy?: WorkspaceSortField;
     sortOrder?: 'asc' | 'desc';
   }) {
@@ -394,6 +428,11 @@ export class AdminService {
       isActive,
       state,
       planCode,
+      hasRevenue,
+      atLimit,
+      channelHealth,
+      createdAfter,
+      createdBefore,
       sortBy = 'createdAt',
       sortOrder = 'desc',
     } = options;
@@ -438,6 +477,123 @@ export class AdminService {
 
     if (planCode) {
       conditions.push(eq(subscriptions.planCode, planCode));
+    }
+
+    // Paying or not. `hasRevenue` is deliberately a boolean rather than a
+    // min/max pair: the useful cut is between customers who have given us
+    // money and ones who never have, and an amount range invites a precision
+    // this data does not have (a workspace on its first month and one three
+    // years in are not comparable by total).
+    if (hasRevenue !== undefined) {
+      const paidAnything = sql`EXISTS (
+        SELECT 1 FROM ${invoices}
+        INNER JOIN ${subscriptions} AS rev_sub
+          ON rev_sub.id = ${invoices.subscriptionId}
+        WHERE rev_sub.workspace_id = ${workspace.id}
+          AND ${invoices.status} = 'paid'
+          AND ${invoices.amountPaidCents} > 0
+      )`;
+      conditions.push(hasRevenue ? paidAnything : sql`NOT ${paidAnything}`);
+    }
+
+    // At or over a plan limit — the upgrade conversation, in other words.
+    // Compares against base plus purchased add-ons, because a workspace that
+    // bought two extra channels is not at its limit until it fills those too.
+    if (atLimit) {
+      // Each resource carries its own `limit > 0` guard, and it has to be its
+      // own rather than a check on the workspace as a whole.
+      //
+      // A limit of 0 means unlimited or not yet set, never "full". On a free
+      // plan `ai_tokens_limit` is 0 while channels are capped at 3, so a
+      // workspace-wide guard passes on the channel limit and then matches
+      // `0 tokens >= 0 limit` — reporting a brand-new empty workspace as
+      // being at its limit. That is exactly backwards from what this filter
+      // is for.
+      // `AnyPgColumn` because Drizzle gives every column its own literal type
+      // — naming one of them here would pin the helper to that single column.
+      const full = (
+        used: AnyPgColumn,
+        base: AnyPgColumn,
+        extra: AnyPgColumn,
+      ) => sql`(
+        (COALESCE(${base}, 0) + COALESCE(${extra}, 0)) > 0
+        AND ${used} >= (COALESCE(${base}, 0) + COALESCE(${extra}, 0))
+      )`;
+
+      const channelsFull = full(
+        workspaceUsage.channelsCount,
+        workspaceUsage.channelsLimit,
+        workspaceUsage.extraChannelsPurchased,
+      );
+      const membersFull = full(
+        workspaceUsage.membersCount,
+        workspaceUsage.membersLimit,
+        workspaceUsage.extraMembersPurchased,
+      );
+      const tokensFull = full(
+        workspaceUsage.aiTokensUsedThisMonth,
+        workspaceUsage.aiTokensLimit,
+        workspaceUsage.extraAiTokensPurchased,
+      );
+
+      const limitCondition =
+        atLimit === 'channels'
+          ? channelsFull
+          : atLimit === 'members'
+            ? membersFull
+            : atLimit === 'aiTokens'
+              ? tokensFull
+              : or(channelsFull, membersFull, tokensFull);
+
+      conditions.push(
+        // A workspace with no usage row has consumed nothing at all.
+        and(isNotNull(workspaceUsage.workspaceId), limitCondition),
+      );
+    }
+
+    // Channels that will not publish. Worth its own filter because nothing
+    // else surfaces it: the customer sees failures, we see a healthy-looking
+    // workspace until someone opens it.
+    if (channelHealth === 'needs_attention') {
+      conditions.push(sql`EXISTS (
+        SELECT 1 FROM ${socialMediaChannels}
+        WHERE ${socialMediaChannels.workspaceId} = ${workspace.id}
+          AND (
+            ${socialMediaChannels.connectionStatus} <> 'connected'
+            OR ${socialMediaChannels.isActive} = false
+          )
+      )`);
+    } else if (channelHealth === 'healthy') {
+      // Has channels, and none of them broken. A workspace with no channels
+      // at all is not "healthy" — it has nothing to be healthy about, and
+      // including it would bury the accounts this filter is asking after.
+      conditions.push(sql`(
+        EXISTS (
+          SELECT 1 FROM ${socialMediaChannels}
+          WHERE ${socialMediaChannels.workspaceId} = ${workspace.id}
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM ${socialMediaChannels}
+          WHERE ${socialMediaChannels.workspaceId} = ${workspace.id}
+            AND (
+              ${socialMediaChannels.connectionStatus} <> 'connected'
+              OR ${socialMediaChannels.isActive} = false
+            )
+        )
+      )`);
+    } else if (channelHealth === 'none') {
+      conditions.push(sql`NOT EXISTS (
+        SELECT 1 FROM ${socialMediaChannels}
+        WHERE ${socialMediaChannels.workspaceId} = ${workspace.id}
+      )`);
+    }
+
+    if (createdAfter) {
+      conditions.push(gte(workspace.createdAt, createdAfter));
+    }
+
+    if (createdBefore) {
+      conditions.push(lte(workspace.createdAt, createdBefore));
     }
 
     if (search?.trim()) {

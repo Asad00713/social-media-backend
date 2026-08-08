@@ -15,6 +15,7 @@ import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import {
   IsBoolean,
+  IsDate,
   IsIn,
   IsInt,
   IsOptional,
@@ -31,8 +32,12 @@ import {
   // that does not exist at runtime.
   type SuspensionReason,
   SUSPENSION_REASONS,
+  WORKSPACE_CHANNEL_HEALTH_FILTERS,
+  WORKSPACE_LIMIT_FILTERS,
   WORKSPACE_SORT_FIELDS,
   WORKSPACE_STATES,
+  type WorkspaceChannelHealthFilter,
+  type WorkspaceLimitFilter,
   type WorkspaceSortField,
   type WorkspaceState,
 } from './admin.service';
@@ -125,6 +130,33 @@ class WorkspaceQueryDto {
   @IsOptional()
   @IsString()
   planCode?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === true || value === 'true')
+  hasRevenue?: boolean;
+
+  @IsOptional()
+  @IsIn(WORKSPACE_LIMIT_FILTERS)
+  atLimit?: WorkspaceLimitFilter;
+
+  @IsOptional()
+  @IsIn(WORKSPACE_CHANNEL_HEALTH_FILTERS)
+  channelHealth?: WorkspaceChannelHealthFilter;
+
+  // Dates arrive as ISO strings on a query string. `@Type(() => Date)` does
+  // the conversion, and `@IsDate` rejects anything that did not parse — an
+  // Invalid Date reaching the query would produce an empty result set with
+  // nothing to explain it.
+  @IsOptional()
+  @IsDate()
+  @Type(() => Date)
+  createdAfter?: Date;
+
+  @IsOptional()
+  @IsDate()
+  @Type(() => Date)
+  createdBefore?: Date;
 
   @IsOptional()
   @IsIn(WORKSPACE_SORT_FIELDS)
@@ -252,6 +284,11 @@ export class AdminController {
       isActive: query.isActive,
       state: query.state,
       planCode: query.planCode,
+      hasRevenue: query.hasRevenue,
+      atLimit: query.atLimit,
+      channelHealth: query.channelHealth,
+      createdAfter: query.createdAfter,
+      createdBefore: query.createdBefore,
       sortBy: query.sortBy,
       sortOrder: query.sortOrder,
     });
