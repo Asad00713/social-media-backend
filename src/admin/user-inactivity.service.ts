@@ -1,5 +1,4 @@
 import { Injectable, Logger, Inject } from '@nestjs/common';
-import { Cron, CronExpression } from '@nestjs/schedule';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import { users, workspace, workspaceInvitation } from '../drizzle/schema';
@@ -66,13 +65,28 @@ export class UserInactivityService {
   }
 
   /**
-   * Run daily at 2 AM to check for inactive users
-   * - 15 days inactive: Send first reminder
-   * - 25 days inactive: Send second reminder
-   * - 30 days inactive: Send final notice + deactivate account
-   * - 365 days inactive: Permanently delete account
+   * DISABLED — the @Cron decorator is deliberately removed, not commented out
+   * with the schedule left in place, so nothing re-enables it by accident.
+   *
+   * It was suspending accounts that had no business being suspended. Two
+   * things made that worse than a bad flag:
+   *
+   *  - `lastLoginAt` is the only signal it reads. Someone using the product
+   *    through a live session, a scheduled post or a connected channel counts
+   *    as absent, because none of those touch that column.
+   *  - The 365-day step *deletes* the user row, and `users` cascades — so the
+   *    workspaces, channels and posts go with it. It selects on
+   *    `isActive = false`, which is precisely the state the 30-day step puts
+   *    people in. A wrong suspension today is a permanent deletion in a year.
+   *
+   * The 15 and 25 day reminder emails were harmless on their own, but they are
+   * the countdown that leads to the other two; sending them while the ending
+   * is switched off would promise consequences that no longer follow.
+   *
+   * Everything below still works and `runManualCheck()` still calls it, so
+   * this can be re-enabled once the activity signal is real (sessions, posts,
+   * channel use — not just logins) and deletion is separated from suspension.
    */
-  @Cron(CronExpression.EVERY_DAY_AT_2AM)
   async handleUserInactivity() {
     this.logger.log('Starting user inactivity check...');
 
@@ -397,12 +411,23 @@ export class UserInactivityService {
   }
 
   /**
-   * Manual trigger for testing (can be called via admin endpoint)
+   * Manual trigger, reachable at POST /admin/inactivity/run-check.
+   *
+   * Refuses for the same reason the schedule is off. Turning off the cron
+   * while leaving this callable would only mean the suspensions and deletions
+   * arrive when somebody presses a button instead of at 2 AM — the same
+   * damage, harder to explain afterwards.
    */
   async runManualCheck() {
-    this.logger.log('Manual inactivity check triggered');
-    await this.handleUserInactivity();
-    return { success: true, message: 'Inactivity check completed' };
+    this.logger.warn(
+      'Manual inactivity check refused: the inactivity sweep is disabled.',
+    );
+
+    return {
+      success: false,
+      message:
+        'The inactivity sweep is disabled. It suspends accounts on last-login alone, and its 365-day step deletes them along with their workspaces. Re-enable it once activity means more than a login and deletion is separated from suspension.',
+    };
   }
 
   /**

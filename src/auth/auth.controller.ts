@@ -3,6 +3,7 @@ import {
   Post,
   Body,
   HttpCode,
+  HttpException,
   HttpStatus,
   Ip,
   Res,
@@ -12,7 +13,10 @@ import {
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Response } from 'express';
 import { AuthService } from './auth.service';
-import { AdminChallengeService } from './admin-challenge.service';
+import {
+  AdminChallengeService,
+  ChallengeCooldownError,
+} from './admin-challenge.service';
 import {
   RequestAdminChallengeDto,
   VerifyAdminChallengeDto,
@@ -50,12 +54,33 @@ export class AuthController {
   @Post('admin/challenge')
   @HttpCode(HttpStatus.OK)
   @UseGuards(ThrottlerGuard)
-  @Throttle({ default: { limit: 5, ttl: 15 * 60 * 1000 } })
+  // Fifteen in fifteen minutes. The old limit of five was set against an
+  // imagined attacker rather than a real sign-in: a wrong password sends the
+  // form back to this step, so a couple of fumbled attempts plus the codes
+  // they each needed burned through five and left the owner locked out by a
+  // 429 the UI could only describe as "could not reach the server". The
+  // per-address cooldown below is what actually caps outbound mail; this is a
+  // backstop against a flood, and fifteen is still far below one.
+  @Throttle({ default: { limit: 15, ttl: 15 * 60 * 1000 } })
   async requestAdminChallenge(
     @Body() dto: RequestAdminChallengeDto,
     @Ip() ip: string,
   ) {
-    await this.adminChallengeService.requestChallenge(dto.email, ip);
+    try {
+      await this.adminChallengeService.requestChallenge(dto.email, ip);
+    } catch (error) {
+      if (error instanceof ChallengeCooldownError) {
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.TOO_MANY_REQUESTS,
+            message: `A code was just sent. Check your inbox, or try again in ${error.retryAfterSeconds}s.`,
+            retryAfterSeconds: error.retryAfterSeconds,
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
+        );
+      }
+      throw error;
+    }
 
     // Always the same sentence, always a 200.
     return {

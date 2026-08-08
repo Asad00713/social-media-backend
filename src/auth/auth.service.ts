@@ -66,10 +66,12 @@ export class AuthService {
   ) {}
 
   async register(registerDto: CreateUserDto): Promise<AuthResponse> {
-    // Determine role based on SUPER_ADMIN_EMAILS environment variable
-    const role = this.determineUserRole(registerDto.email);
-
-    const user = await this.usersService.create(registerDto, role);
+    // Signup always produces a plain user. Role is never derived from the
+    // address someone typed into a public form — SUPER_ADMIN_EMAILS used to do
+    // exactly that, which meant anyone who learned a listed address could grant
+    // themselves the platform by registering with it first. Promotion is a
+    // deliberate database change now, made by someone who already has access.
+    const user = await this.usersService.create(registerDto, 'USER');
 
     // Generate verification token and send email
     await this.sendVerificationEmailInternal(user.id, user.email, user.name);
@@ -84,30 +86,6 @@ export class AuthService {
     };
   }
 
-  /**
-   * Determine user role based on SUPER_ADMIN_EMAILS environment variable
-   */
-  private determineUserRole(email: string): UserRole {
-    const superAdminEmails = this.configService.get<string>(
-      'SUPER_ADMIN_EMAILS',
-      '',
-    );
-
-    if (!superAdminEmails) {
-      return 'USER';
-    }
-
-    const adminEmailList = superAdminEmails
-      .split(',')
-      .map((e) => e.trim().toLowerCase())
-      .filter((e) => e.length > 0);
-
-    if (adminEmailList.includes(email.toLowerCase())) {
-      return 'SUPER_ADMIN';
-    }
-
-    return 'USER';
-  }
 
   async login(loginDto: LoginDto): Promise<AuthResponse> {
     const user = await this.validateUser(loginDto.email, loginDto.password);

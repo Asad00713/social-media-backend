@@ -14,9 +14,32 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import {
+  IsBoolean,
+  IsDate,
+  IsIn,
+  IsInt,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
+import { Transform, Type } from 'class-transformer';
+import {
   AdminService,
-  SuspensionReason,
+  // Type-only: it now annotates a decorated property, and
+  // `emitDecoratorMetadata` would otherwise emit a runtime reference to a type
+  // that does not exist at runtime.
+  type SuspensionReason,
   SUSPENSION_REASONS,
+  WORKSPACE_CHANNEL_HEALTH_FILTERS,
+  WORKSPACE_LIMIT_FILTERS,
+  WORKSPACE_SORT_FIELDS,
+  WORKSPACE_STATES,
+  type WorkspaceChannelHealthFilter,
+  type WorkspaceLimitFilter,
+  type WorkspaceSortField,
+  type WorkspaceState,
 } from './admin.service';
 import { UserInactivityService } from './user-inactivity.service';
 import { QueueMonitorService } from './queue-monitor.service';
@@ -27,34 +50,137 @@ import {
 import { SupportedPlatform } from '../drizzle/schema/channels.schema';
 import { QUEUES } from '../queue/queue.module';
 
-// DTOs
+/**
+ * Every DTO in this file carries decorators, and has to.
+ *
+ * The global ValidationPipe runs with `whitelist` and `forbidNonWhitelisted`,
+ * which decide what is allowed by looking at the decorators on the class. A
+ * plain class has none, so it declares no properties at all: a query DTO ends
+ * up with every parameter silently stripped, and a body DTO rejects the whole
+ * request with "property reason should not exist". Both failure modes point
+ * away from the cause — the first looks like a filter that does not work, the
+ * second like a frontend sending the wrong shape.
+ */
 class SuspendDto {
+  @IsIn(SUSPENSION_REASONS)
   reason: SuspensionReason;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
   note?: string;
 }
 
 class UserQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
   page?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @Type(() => Number)
   limit?: number;
+
+  @IsOptional()
+  @IsString()
   search?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === true || value === 'true')
   isActive?: boolean;
+
+  @IsOptional()
+  @IsString()
   role?: string;
 }
 
 class WorkspaceQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
   page?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  // Capped so a single request cannot ask for the entire table.
+  @Max(100)
+  @Type(() => Number)
   limit?: number;
+
+  @IsOptional()
+  @IsString()
   search?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === true || value === 'true')
   isActive?: boolean;
+
+  @IsOptional()
+  @IsIn(WORKSPACE_STATES)
+  state?: WorkspaceState;
+
+  @IsOptional()
+  @IsString()
+  planCode?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === true || value === 'true')
+  hasRevenue?: boolean;
+
+  @IsOptional()
+  @IsIn(WORKSPACE_LIMIT_FILTERS)
+  atLimit?: WorkspaceLimitFilter;
+
+  @IsOptional()
+  @IsIn(WORKSPACE_CHANNEL_HEALTH_FILTERS)
+  channelHealth?: WorkspaceChannelHealthFilter;
+
+  // Dates arrive as ISO strings on a query string. `@Type(() => Date)` does
+  // the conversion, and `@IsDate` rejects anything that did not parse — an
+  // Invalid Date reaching the query would produce an empty result set with
+  // nothing to explain it.
+  @IsOptional()
+  @IsDate()
+  @Type(() => Date)
+  createdAfter?: Date;
+
+  @IsOptional()
+  @IsDate()
+  @Type(() => Date)
+  createdBefore?: Date;
+
+  @IsOptional()
+  @IsIn(WORKSPACE_SORT_FIELDS)
+  sortBy?: WorkspaceSortField;
+
+  @IsOptional()
+  @IsIn(['asc', 'desc'])
+  sortOrder?: 'asc' | 'desc';
 }
 
 // Queue action DTOs
 class RetryJobDto {
+  @IsString()
   jobId: string;
 }
 
 class CleanQueueDto {
+  @IsIn(['completed', 'failed', 'delayed', 'wait'])
   type: 'completed' | 'failed' | 'delayed' | 'wait';
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
   gracePeriodHours?: number;
 }
 
@@ -122,12 +248,10 @@ export class AdminController {
     @CurrentUser() admin: { userId: string },
     @Body() dto: SuspendDto,
   ) {
-    if (!SUSPENSION_REASONS.includes(dto.reason)) {
-      return {
-        error: 'Invalid suspension reason',
-        validReasons: SUSPENSION_REASONS,
-      };
-    }
+    // The reason is checked by `@IsIn(SUSPENSION_REASONS)` on the DTO, which
+    // runs before this method and returns a 400 naming the valid values. The
+    // hand-rolled check that used to sit here ran after validation had already
+    // passed, so it could never fire.
     return this.adminService.suspendUser(
       userId,
       admin.userId,
@@ -149,14 +273,24 @@ export class AdminController {
   @Get('workspaces')
   @HttpCode(HttpStatus.OK)
   async getWorkspaces(@Query() query: WorkspaceQueryDto) {
+    // The DTO's decorators already coerced and validated everything, so the
+    // hand-rolled Number() and 'true'-string juggling that used to live here
+    // is gone — it was doing the pipe's job, and doing it in two places is how
+    // the two drift apart.
     return this.adminService.getWorkspaces({
-      page: query.page ? Number(query.page) : 1,
-      limit: query.limit ? Number(query.limit) : 20,
+      page: query.page ?? 1,
+      limit: query.limit ?? 20,
       search: query.search,
-      isActive:
-        query.isActive !== undefined
-          ? query.isActive === true || query.isActive === ('true' as any)
-          : undefined,
+      isActive: query.isActive,
+      state: query.state,
+      planCode: query.planCode,
+      hasRevenue: query.hasRevenue,
+      atLimit: query.atLimit,
+      channelHealth: query.channelHealth,
+      createdAfter: query.createdAfter,
+      createdBefore: query.createdBefore,
+      sortBy: query.sortBy,
+      sortOrder: query.sortOrder,
     });
   }
 
@@ -166,6 +300,12 @@ export class AdminController {
     return this.adminService.getWorkspaceById(workspaceId);
   }
 
+  @Get('workspaces/:workspaceId/billing')
+  @HttpCode(HttpStatus.OK)
+  async getWorkspaceBilling(@Param('workspaceId') workspaceId: string) {
+    return this.adminService.getWorkspaceBilling(workspaceId);
+  }
+
   @Post('workspaces/:workspaceId/suspend')
   @HttpCode(HttpStatus.OK)
   async suspendWorkspace(
@@ -173,12 +313,7 @@ export class AdminController {
     @CurrentUser() admin: { userId: string },
     @Body() dto: SuspendDto,
   ) {
-    if (!SUSPENSION_REASONS.includes(dto.reason)) {
-      return {
-        error: 'Invalid suspension reason',
-        validReasons: SUSPENSION_REASONS,
-      };
-    }
+    // Reason validated by the DTO — see the note on `suspendUser`.
     return this.adminService.suspendWorkspace(
       workspaceId,
       admin.userId,
