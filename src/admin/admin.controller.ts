@@ -20,12 +20,16 @@ import {
   IsOptional,
   IsString,
   Max,
+  MaxLength,
   Min,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
 import {
   AdminService,
-  SuspensionReason,
+  // Type-only: it now annotates a decorated property, and
+  // `emitDecoratorMetadata` would otherwise emit a runtime reference to a type
+  // that does not exist at runtime.
+  type SuspensionReason,
   SUSPENSION_REASONS,
   WORKSPACE_SORT_FIELDS,
   WORKSPACE_STATES,
@@ -41,27 +45,55 @@ import {
 import { SupportedPlatform } from '../drizzle/schema/channels.schema';
 import { QUEUES } from '../queue/queue.module';
 
-// DTOs
+/**
+ * Every DTO in this file carries decorators, and has to.
+ *
+ * The global ValidationPipe runs with `whitelist` and `forbidNonWhitelisted`,
+ * which decide what is allowed by looking at the decorators on the class. A
+ * plain class has none, so it declares no properties at all: a query DTO ends
+ * up with every parameter silently stripped, and a body DTO rejects the whole
+ * request with "property reason should not exist". Both failure modes point
+ * away from the cause — the first looks like a filter that does not work, the
+ * second like a frontend sending the wrong shape.
+ */
 class SuspendDto {
+  @IsIn(SUSPENSION_REASONS)
   reason: SuspensionReason;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
   note?: string;
 }
 
 class UserQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
   page?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @Type(() => Number)
   limit?: number;
+
+  @IsOptional()
+  @IsString()
   search?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === true || value === 'true')
   isActive?: boolean;
+
+  @IsOptional()
+  @IsString()
   role?: string;
 }
 
-/**
- * Decorated, unlike the other query DTOs in this file. The global
- * ValidationPipe runs with `whitelist` and `forbidNonWhitelisted`, so a plain
- * class with no decorators has no recognised properties at all — every query
- * parameter would be stripped and the endpoint would quietly ignore the
- * filters it was sent.
- */
 class WorkspaceQueryDto {
   @IsOptional()
   @IsInt()
@@ -105,11 +137,18 @@ class WorkspaceQueryDto {
 
 // Queue action DTOs
 class RetryJobDto {
+  @IsString()
   jobId: string;
 }
 
 class CleanQueueDto {
+  @IsIn(['completed', 'failed', 'delayed', 'wait'])
   type: 'completed' | 'failed' | 'delayed' | 'wait';
+
+  @IsOptional()
+  @IsInt()
+  @Min(0)
+  @Type(() => Number)
   gracePeriodHours?: number;
 }
 
@@ -177,15 +216,10 @@ export class AdminController {
     @CurrentUser() admin: { userId: string },
     @Body() dto: SuspendDto,
   ) {
-    // Thrown, not returned. Returning `{ error }` with a 200 told the caller
-    // the suspension had succeeded — a client checking the status code would
-    // show "user suspended" for an account that was never touched.
-    if (!SUSPENSION_REASONS.includes(dto.reason)) {
-      throw new BadRequestException({
-        message: 'Invalid suspension reason',
-        validReasons: SUSPENSION_REASONS,
-      });
-    }
+    // The reason is checked by `@IsIn(SUSPENSION_REASONS)` on the DTO, which
+    // runs before this method and returns a 400 naming the valid values. The
+    // hand-rolled check that used to sit here ran after validation had already
+    // passed, so it could never fire.
     return this.adminService.suspendUser(
       userId,
       admin.userId,
@@ -236,12 +270,7 @@ export class AdminController {
     @CurrentUser() admin: { userId: string },
     @Body() dto: SuspendDto,
   ) {
-    if (!SUSPENSION_REASONS.includes(dto.reason)) {
-      throw new BadRequestException({
-        message: 'Invalid suspension reason',
-        validReasons: SUSPENSION_REASONS,
-      });
-    }
+    // Reason validated by the DTO — see the note on `suspendUser`.
     return this.adminService.suspendWorkspace(
       workspaceId,
       admin.userId,
