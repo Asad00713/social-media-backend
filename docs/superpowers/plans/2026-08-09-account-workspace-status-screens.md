@@ -37,7 +37,8 @@
 - Create: `src/pages/account-suspended.tsx` — thin page rendering the `user` variant from router state.
 - Modify: `src/router.tsx` — add `/account-suspended` top-level route.
 - Modify: `src/features/auth/hooks/use-login-mutation.ts` — detect `ACCOUNT_SUSPENDED` 401 → navigate to `/account-suspended`.
-- Modify: `src/features/billing/components/subscription-gate.tsx` — render `workspace-manual` variant when the workspace is manually suspended (403 reason ≠ billing).
+- Modify: `src/types/auth.ts` — type `isActive` / `suspendedReason` / `suspendedAt` on `Workspace` (already in the `/auth/me` payload).
+- Modify: `src/features/billing/components/subscription-gate.tsx` — render `workspace-manual` variant, read from `useAuth()` workspace data (zero new requests).
 - Modify: `src/contexts/auth-context.tsx` — on `/auth/me` 401 with `ACCOUNT_SUSPENDED`, surface the reason so a reload lands on the screen (not a blank logout).
 
 ---
@@ -253,12 +254,12 @@ describe('friendlySuspensionReason', () => {
 })
 ```
 
-> NOTE: the frontend HAS a test runner — Vitest (`npm run test` → `vitest run`). Write and run this spec normally. (Earlier docs said "no test framework"; that is stale — Vitest is configured.)
+> NOTE (verified 2026-08-09): the frontend HAS a test runner — **Vitest 4.1.9** (`npm run test` → `vitest run`). Write and run this spec normally. There is NO `@testing-library/react` installed, so pure-function specs like this one are fine, but do NOT add React render tests elsewhere without installing a testing library (out of scope for this effort).
 
-- [ ] **Step 2: Run test to verify it fails** (or confirm no runner — see note)
+- [ ] **Step 2: Run test to verify it fails**
 
-Run: `npm run test 2>/dev/null || echo "no test runner"`
-Expected: FAIL (module not found) — or "no test runner", in which case follow the note.
+Run: `npm run test src/features/billing/lib/suspension-reason.spec.ts`
+Expected: FAIL (module not found — the file does not exist yet).
 
 - [ ] **Step 3: Implement the map**
 
@@ -494,22 +495,84 @@ git commit -m "feat(auth): route suspended-account login to /account-suspended"
 ## Task 6: Auth bootstrap + SubscriptionGate handle suspension on reload (frontend)
 
 **Files:**
+- Modify: `src/types/auth.ts` (type the workspace suspension fields — prerequisite for Step 2)
 - Modify: `src/contexts/auth-context.tsx`
 - Modify: `src/features/billing/components/subscription-gate.tsx`
 
 **Interfaces:**
-- Consumes: the `ACCOUNT_SUSPENDED` 401 (Task 1) surfaced through `/auth/me`; the `WORKSPACE_SUSPENDED` 403 (Task 2) with `reason`.
+- Consumes: the `ACCOUNT_SUSPENDED` 401 (Task 1) surfaced through `/auth/me`; `workspace.isActive`/`suspendedReason` already present on `useAuth()` workspaces (typed in Step 2a).
 
 - [ ] **Step 1: auth-context — land a reloaded suspended user on the screen**
 
 In `auth-context.tsx`, where the `/auth/me` query error is handled (the `retry` at line ~79 already special-cases 401), detect the `ACCOUNT_SUSPENDED` code and redirect to `/account-suspended` (with reason) rather than a blank logged-out state. Keep it minimal: on a 401 whose `data.code === 'ACCOUNT_SUSPENDED'`, set the same navigation. If the context has no router access, expose the reason via context state that a top-level effect (or the existing ProtectedRoute) reads to redirect. Pick the smallest wiring consistent with how the context already reacts to a failed `me`.
 
-- [ ] **Step 2: SubscriptionGate — render workspace-manual variant**
+- [ ] **Step 2: SubscriptionGate — render workspace-manual variant (from `/auth/me` data, ZERO new requests)**
 
-In `subscription-gate.tsx`, the gate currently only reads `useWorkspaceSubscription`. Extend it so a manually-suspended workspace (guard 403 `WORKSPACE_SUSPENDED` with `reason !== 'billing'`) shows `AccountSuspendedScreen variant="workspace-manual" reason={reason}`, while the billing case keeps `variant="workspace-billing"`. Concretely: read the workspace-scoped request error the shell already produces (or add a light `useWorkspaceSuspension(workspaceId)` hook that calls a cheap workspace-detail endpoint and returns `{ suspended, reason }` by catching the structured 403). Branch:
-- `reason === 'billing'` OR `classifySubscription(status) === 'suspended'` → `workspace-billing` (unchanged).
-- workspace 403 with other reason → `workspace-manual`.
-Preserve the existing `isLoading` early-out (no flash-lock) and the billing allowlist paths.
+**VERIFIED APPROACH (2026-08-09):** `workspace.isActive` / `suspendedReason` are ALREADY in the `/auth/me` payload and exposed via `useAuth().workspaces` / `lastAccessedWorkspace` once Task 6.0 types them (see below). Do NOT add a `useWorkspaceSuspension` hook and do NOT catch a 403 — just read the already-loaded workspace object. This is simpler, needs no extra request, and works even when the manual-suspend guard 403 would otherwise blank the shell.
+
+- [ ] **Step 2a (prerequisite): type the fields on `Workspace`.**
+  In `src/types/auth.ts`, add to the `Workspace` interface (fields already present at runtime in the `/auth/me` response — see the `whoAmI` full-row select):
+  ```ts
+  isActive: boolean
+  suspendedReason: string | null
+  suspendedAt: string | null
+  ```
+
+- [ ] **Step 2b: branch the gate.**
+  Rewrite `subscription-gate.tsx` so that, after the existing `isLoading` early-out, it resolves the active workspace object from `useAuth()` and checks manual suspension BEFORE the billing-status check (manual admin suspend is the stronger lock). Keep the billing allowlist behaviour identical for the billing case. Concrete implementation:
+
+  ```tsx
+  import { Outlet, useLocation, useParams } from 'react-router'
+  import { useAuth } from '@/contexts/auth-context'
+  import { useWorkspaceSubscription } from '@/features/billing/hooks/use-workspace-subscription'
+  import { classifySubscription } from '@/features/billing/lib/subscription-status'
+  import { AccountSuspendedScreen } from '@/features/billing/components/account-suspended-screen'
+
+  const BILLING_ALLOWLIST = ['settings/billing', 'settings/plans']
+
+  function isBillingPath(pathname: string): boolean {
+    const subPath = pathname.replace(/^\/w\/[^/]+\/?/, '')
+    return BILLING_ALLOWLIST.some(
+      (p) => subPath === p || subPath.startsWith(`${p}/`),
+    )
+  }
+
+  export function SubscriptionGate() {
+    const { workspaceId } = useParams<{ workspaceId: string }>()
+    const { pathname } = useLocation()
+    const { workspaces, lastAccessedWorkspace } = useAuth()
+    const { subscription, isLoading } = useWorkspaceSubscription(workspaceId)
+
+    // Resolve the active workspace object from already-loaded /auth/me data.
+    const workspace =
+      (workspaceId && workspaces.find((w) => w.id === workspaceId)) ||
+      lastAccessedWorkspace ||
+      null
+
+    // Manual admin suspension is the strongest lock and is known synchronously
+    // from /auth/me — no request, no loading state. Check it first.
+    if (workspace && workspace.isActive === false && !isBillingPath(pathname)) {
+      return (
+        <AccountSuspendedScreen
+          variant="workspace-manual"
+          reason={workspace.suspendedReason}
+        />
+      )
+    }
+
+    // Billing suspension depends on the subscription query; keep the fail-open.
+    if (isLoading) return <Outlet />
+
+    const tier = classifySubscription(subscription?.status)
+    if (tier === 'suspended' && workspaceId && !isBillingPath(pathname)) {
+      return <AccountSuspendedScreen variant="workspace-billing" workspaceId={workspaceId} />
+    }
+
+    return <Outlet />
+  }
+  ```
+
+  Notes for the implementer: the existing billing call site changes from `<AccountSuspendedScreen workspaceId={workspaceId} />` to the explicit `variant="workspace-billing"` form (Task 4 keeps `workspace-billing` as the default, so either compiles, but be explicit). Do not remove the billing allowlist. The manual branch has no independent loading state because it reads synchronous context data.
 
 - [ ] **Step 3: Build**
 
@@ -533,5 +596,6 @@ git commit -m "feat(billing): handle suspension on reload + manual workspace-sus
 
 - **Spec coverage:** Task 1 = user structured error (login + jwt); Task 2 = manual workspace enforcement; Task 3 = reason map + support email; Task 4 = screen variants; Task 5 = route + login redirect; Task 6 = reload + gate. All spec sections covered.
 - **Type consistency:** the 401 body `{ code, reason }` produced in Task 1 is consumed unchanged in Task 5/6; `friendlySuspensionReason` (Task 3) consumed in Task 4; `AccountSuspendedScreen` variant prop (Task 4) consumed in Task 5/6.
-- **Open verification for the implementer (Task 6):** the exact wiring for how `SubscriptionGate` learns of a manual 403 depends on how the workspace shell loads the workspace — the implementer inspects that and picks the lighter of "read existing error" vs "small `useWorkspaceSuspension` hook". Flag to the reviewer as a ⚠️ cross-file item.
-- **No test framework on frontend** (per workspace CLAUDE.md): Task 3's spec is conditional; Tasks 4–6 rely on `npm run build` + explicit manual reasoning checks, recorded in each task report.
+- **RESOLVED (2026-08-09) — how `SubscriptionGate` learns of a manual suspend:** verified that `/auth/me` already returns `workspace.isActive`/`suspendedReason`, exposed via `useAuth()`. Task 6 Step 2 now reads that directly (zero new requests); the old "catch-the-403 hook" idea is dropped.
+- **Frontend test runner IS present — Vitest 4.1.9** (`npm run test`). Task 3 ships a real Vitest spec. Tasks 4–6 rely on `npm run build` + explicit manual reasoning checks (no `@testing-library/react` is installed, so no React render tests — adding one is out of scope).
+- **Task 1 status: ALREADY DONE** on this branch (commit `c879ca9` — jwt.strategy structured throw + `auth.service.login` isActive check + `jwt.strategy.spec.ts`). Executors must NOT re-dispatch Task 1; start at Task 2.
