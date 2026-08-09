@@ -94,6 +94,18 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    // Block login for suspended accounts. Without this, a suspended user
+    // "logs in" successfully, then immediately 401s on /auth/me — confusing.
+    if (!user.isActive) {
+      throw new UnauthorizedException({
+        statusCode: 401,
+        error: 'Unauthorized',
+        code: 'ACCOUNT_SUSPENDED',
+        reason: user.suspendedReason ?? 'manual',
+        message: 'Your account has been suspended.',
+      });
+    }
+
     // Block login if email is not verified (only for SUPER_ADMIN)
     if (user.role === 'SUPER_ADMIN' && !user.isEmailVerified) {
       throw new UnauthorizedException(

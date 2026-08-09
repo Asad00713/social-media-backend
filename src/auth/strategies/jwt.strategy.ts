@@ -46,9 +46,13 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
 
     // Check if user is suspended
     if (!user.isActive) {
-      throw new UnauthorizedException(
-        `Your account has been suspended. Reason: ${user.suspendedReason || 'Contact support for details.'}`,
-      );
+      throw new UnauthorizedException({
+        statusCode: 401,
+        error: 'Unauthorized',
+        code: 'ACCOUNT_SUSPENDED',
+        reason: user.suspendedReason ?? 'manual',
+        message: 'Your account has been suspended.',
+      });
     }
 
     return { userId: payload.sub, email: payload.email, role: user.role };
