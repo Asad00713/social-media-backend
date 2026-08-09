@@ -287,3 +287,225 @@ describe('CampaignsService.computeNextRun', () => {
     expect(next).not.toBeNull();
   });
 });
+
+// ==========================================================================
+// Write-half pure-logic tests — no DB. Exercises the union/AI-mock helpers
+// that back refreshChannelCache / generateAi / approveAi / skipAi.
+// ==========================================================================
+
+describe('CampaignsService.computeChannelIdUnion', () => {
+  const service = new CampaignsService();
+
+  it('returns the deduped set of channelIds across slot rows', () => {
+    const union = service.computeChannelIdUnion([
+      { channelId: '1' },
+      { channelId: '2' },
+      { channelId: '1' },
+    ]);
+    expect(union.sort()).toEqual(['1', '2']);
+  });
+
+  it('returns an empty array for no slots', () => {
+    expect(service.computeChannelIdUnion([])).toEqual([]);
+  });
+
+  it('preserves single-channel union of one', () => {
+    expect(service.computeChannelIdUnion([{ channelId: '42' }])).toEqual(['42']);
+  });
+});
+
+describe('CampaignsService.emptyChannelDayContent', () => {
+  const service = new CampaignsService();
+
+  it('builds a blank manual text slot by default', () => {
+    expect(service.emptyChannelDayContent('text')).toEqual({
+      mode: 'manual',
+      postType: 'text',
+      caption: '',
+      media: [],
+      threadParts: [],
+      templateIds: [],
+      poll: undefined,
+    });
+  });
+
+  it('includes a blank poll payload for postType "poll"', () => {
+    const content = service.emptyChannelDayContent('poll', 'manual');
+    expect(content.poll).toEqual({ question: '', options: ['', ''], durationDays: 1 });
+  });
+
+  it('respects the mode passed in (e.g. ai / library)', () => {
+    expect(service.emptyChannelDayContent('image', 'ai').mode).toBe('ai');
+    expect(service.emptyChannelDayContent('image', 'library').mode).toBe('library');
+  });
+});
+
+describe('CampaignsService.mockAiCaption', () => {
+  const service = new CampaignsService();
+
+  it('falls back to "your campaign" when brief is blank', () => {
+    expect(service.mockAiCaption('2026-08-10', null)).toBe(
+      'AI draft for 2026-08-10 — your campaign ✨',
+    );
+  });
+
+  it('includes the brief, tone hint, and CTA when configured', () => {
+    const caption = service.mockAiCaption('2026-08-10', {
+      brief: 'launch week',
+      tone: ['witty', 'casual'],
+      guardrails: { mustIncludeCta: true },
+    });
+    expect(caption).toBe(
+      'AI draft for 2026-08-10 — launch week in a witty, casual tone ✨ Learn more — link in bio!',
+    );
+  });
+
+  it('omits the tone hint when tone is empty', () => {
+    const caption = service.mockAiCaption('2026-08-10', { brief: 'x', tone: [] });
+    expect(caption).toBe('AI draft for 2026-08-10 — x ✨');
+  });
+});
+
+// ==========================================================================
+// Write-half DB-mocked tests — reproduce the mock store's error/reset
+// semantics using a minimal fake `db` (same pattern as
+// channels/services/channel.service.spec.ts), since a real Postgres
+// instance is not available in this sandbox. See task-3-report.md for the
+// DB-availability note.
+// ==========================================================================
+
+describe('CampaignsService write methods (mocked db)', () => {
+  const WORKSPACE_ID = 'ws-1';
+  const CAMPAIGN_ID = 'c-1';
+
+  function makeCampaignRow(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: CAMPAIGN_ID,
+      workspaceId: WORKSPACE_ID,
+      createdById: 'user-1',
+      name: 'Launch week',
+      description: null,
+      type: 'bulk',
+      status: 'draft',
+      schedule: {
+        type: 'bulk',
+        startDate: '2026-08-01',
+        endDate: '2026-08-31',
+        defaultTime: '09:00',
+        timezone: 'UTC',
+        blackoutDates: [],
+        skipWeekends: false,
+      },
+      contentSource: 'manual',
+      aiConfig: null,
+      libraryTemplateIds: [],
+      channelIds: [],
+      platforms: [],
+      createdAt: new Date('2026-08-01T00:00:00Z'),
+      updatedAt: new Date('2026-08-01T00:00:00Z'),
+      ...overrides,
+    };
+  }
+
+  /**
+   * Loads a fresh, isolated copy of the service module with `../drizzle/db`
+   * mocked to `fakeDb`. `jest.isolateModules` scopes the mock + require to
+   * this call only, so tests in this describe block don't leak mocks into
+   * each other or into the DB-free suites above.
+   */
+  function loadServiceWithFakeDb(fakeDb: unknown): InstanceType<typeof CampaignsService> {
+    let ServiceCtor!: typeof CampaignsService;
+    jest.isolateModules(() => {
+      jest.doMock('../drizzle/db', () => ({ db: fakeDb }));
+      // eslint-disable-next-line @typescript-eslint/no-var-requires
+      ServiceCtor = require('./campaigns.service').CampaignsService;
+    });
+    return new ServiceCtor();
+  }
+
+  afterEach(() => {
+    jest.dontMock('../drizzle/db');
+    jest.resetModules();
+  });
+
+  it('updateEvent 404s ("Campaign not found") when the campaign is not in this workspace', async () => {
+    const service = loadServiceWithFakeDb({
+      select: () => ({
+        from: () => ({
+          where: () => Promise.resolve([]), // getOne's workspace-scoped lookup finds nothing
+        }),
+      }),
+    });
+
+    await expect(
+      service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: '2026-08-10',
+        channelId: '1',
+        patch: { caption: 'hi' },
+      }),
+    ).rejects.toThrow('Campaign not found');
+  });
+
+  it('updateEvent 404s with "Event not found" when campaign exists but slot does not', async () => {
+    const campaignRow = makeCampaignRow();
+    let selectCall = 0;
+
+    const service = loadServiceWithFakeDb({
+      select: () => ({
+        from: () => ({
+          where: () => {
+            selectCall += 1;
+            // Call 1: getOne's campaign-by-workspace lookup -> found.
+            // Call 2: the slot lookup inside updateEvent -> empty.
+            if (selectCall === 1) return Promise.resolve([campaignRow]);
+            return Promise.resolve([]);
+          },
+        }),
+      }),
+    });
+
+    await expect(
+      service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: '2026-08-10',
+        channelId: '1',
+        patch: { caption: 'hi' },
+      }),
+    ).rejects.toThrow('Event not found');
+  });
+
+  it('duplicate resets status to draft on the copy even when the source is active', async () => {
+    const sourceRow = makeCampaignRow({ status: 'active', name: 'Launch week' });
+    const copyRow = makeCampaignRow({
+      id: 'c-2',
+      status: 'draft',
+      name: 'Launch week (copy)',
+    });
+
+    // `select().from().where()` is called, in order, for:
+    //   1. getOne's workspace-scoped campaign row lookup         -> [sourceRow]
+    //   2/3. getOne -> assembleFromRow(source) days + slots      -> []
+    //   4/5. duplicate's sourceDays + sourceSlots fetch           -> []
+    //   6. assembleCampaign(copy) row lookup                     -> [copyRow]
+    //   7/8. assembleFromRow(copy) days + slots                  -> []
+    const selectResults = [[sourceRow], [], [], [], [], [copyRow], [], []];
+    let selectCall = 0;
+
+    const service = loadServiceWithFakeDb({
+      select: () => ({
+        from: () => ({
+          where: () => Promise.resolve(selectResults[selectCall++] ?? []),
+        }),
+      }),
+      insert: () => ({
+        values: () => ({
+          returning: () => Promise.resolve([copyRow]),
+        }),
+      }),
+    });
+
+    const result = await service.duplicate(WORKSPACE_ID, 'user-1', CAMPAIGN_ID);
+
+    expect(result.status).toBe('draft');
+    expect(result.name).toBe('Launch week (copy)');
+  });
+});

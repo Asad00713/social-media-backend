@@ -12,6 +12,7 @@ import {
   type CampaignScheduleJson,
   type ChannelDayContentJson,
 } from '../drizzle/schema/campaigns.schema';
+import { socialMediaChannels } from '../drizzle/schema/channels.schema';
 
 // ==========================================================================
 // Response DTO — mirrors the frontend `Campaign` shape byte-for-byte so the
@@ -62,6 +63,64 @@ export type CampaignStatusCounts = Record<
   'all' | 'draft' | 'scheduled' | 'active' | 'paused' | 'completed' | 'failed',
   number
 >;
+
+// ==========================================================================
+// Write DTOs — mirror the frontend mock store's input shapes
+// (campaigns-mock-store.ts: CreateSimpleCampaignInput / UpdateCampaignPatch).
+// ==========================================================================
+
+export interface CreateSimpleCampaignDto {
+  name: string;
+  description?: string;
+  startDate: string; // yyyy-MM-dd
+  endDate: string; // yyyy-MM-dd
+  timezone: string;
+  defaultTime: string; // HH:mm
+  skipWeekends: boolean;
+}
+
+/** Fields the builder can patch on the campaign itself (not slot content). */
+export interface UpdateCampaignDto {
+  name?: string;
+  description?: string | null;
+  channelIds?: string[];
+  platforms?: string[];
+  contentSource?: string;
+  aiConfig?: Record<string, unknown> | null;
+  scheduleDefaultTime?: string;
+  skipWeekends?: boolean;
+  blackoutDates?: string[];
+}
+
+export interface AddEventDto {
+  date: string;
+  channelId: string;
+  postType?: string;
+  platform?: string;
+}
+
+export interface UpdateEventDto {
+  date: string;
+  channelId: string;
+  patch: Partial<ChannelDayContentJson>;
+}
+
+export interface RemoveEventDto {
+  date: string;
+  channelId: string;
+}
+
+/** Loose shape of the frontend `AiAutopilotConfig` — enough to reproduce
+ *  `mockAiCaption` server-side. Kept loose (matches `campaigns.aiConfig`
+ *  column typing) since the full shape lives in the frontend only. */
+interface AiAutopilotConfigJson {
+  brief?: string;
+  tone?: string[];
+  approvalMode?: 'auto' | 'preview';
+  guardrails?: {
+    mustIncludeCta?: boolean;
+  };
+}
 
 const ACTIVE_NEXT_RUN_STATUSES = new Set(['active', 'scheduled']);
 
@@ -278,6 +337,55 @@ export class CampaignsService {
     return base;
   }
 
+  /**
+   * Port of the frontend `emptyChannelDayContent` (slot-content.ts). Builds a
+   * blank slot payload for a freshly-added channel-day.
+   */
+  emptyChannelDayContent(
+    postType: string,
+    mode: string = 'manual',
+  ): ChannelDayContentJson {
+    return {
+      mode: mode as ChannelDayContentJson['mode'],
+      postType,
+      caption: '',
+      media: [],
+      threadParts: [],
+      templateIds: [],
+      poll:
+        postType === 'poll'
+          ? { question: '', options: ['', ''], durationDays: 1 }
+          : undefined,
+    };
+  }
+
+  /**
+   * Port of the frontend `mockAiCaption` (campaigns-mock-store.ts). Builds a
+   * mock-realistic AI caption from the campaign's Autopilot config.
+   */
+  mockAiCaption(
+    date: string,
+    aiConfig: AiAutopilotConfigJson | null | undefined,
+  ): string {
+    const brief = aiConfig?.brief?.trim() ? aiConfig.brief.trim() : 'your campaign';
+    const toneHint = aiConfig?.tone?.length
+      ? ` in a ${aiConfig.tone.join(', ')} tone`
+      : '';
+    const cta = aiConfig?.guardrails?.mustIncludeCta
+      ? ' Learn more — link in bio!'
+      : '';
+    return `AI draft for ${date} — ${brief}${toneHint} ✨${cta}`;
+  }
+
+  /**
+   * Union of `channelId` across a set of slot rows — the pure core of
+   * `refreshChannelCache`, extracted so it's directly unit-testable without a
+   * DB.
+   */
+  computeChannelIdUnion(slots: Pick<CampaignSlotContent, 'channelId'>[]): string[] {
+    return [...new Set(slots.map((s) => s.channelId))];
+  }
+
   // ==========================================================================
   // Assembly
   // ==========================================================================
@@ -448,6 +556,524 @@ export class CampaignsService {
     }
 
     return counts;
+  }
+
+  // ==========================================================================
+  // Write methods — CRUD, lifecycle, days & slots.
+  //
+  // Every method here re-derives a fresh `CampaignDto` via `assembleCampaign`
+  // after mutating, mirroring the frontend mock store's `return
+  // delay(snapshot(c))` pattern. Every method that isn't a bare insert first
+  // scopes to `workspaceId` via `getOne` (throws 404 if the campaign doesn't
+  // belong to the workspace) before touching any row.
+  // ==========================================================================
+
+  /** Creates a Simple (type `'bulk'`) campaign as a draft with no content
+   *  yet. Port of the mock store's `createSimpleCampaign`. */
+  async createSimple(
+    workspaceId: string,
+    userId: string,
+    dto: CreateSimpleCampaignDto,
+  ): Promise<CampaignDto> {
+    const schedule: CampaignScheduleJson = {
+      type: 'bulk',
+      startDate: dto.startDate,
+      endDate: dto.endDate,
+      defaultTime: dto.defaultTime,
+      timezone: dto.timezone,
+      blackoutDates: [],
+      skipWeekends: dto.skipWeekends,
+    };
+
+    const [row] = await db
+      .insert(campaigns)
+      .values({
+        workspaceId,
+        createdById: userId,
+        name: dto.name,
+        description: dto.description?.trim() ? dto.description.trim() : null,
+        type: 'bulk',
+        status: 'draft',
+        schedule,
+        contentSource: 'manual',
+        aiConfig: null,
+        libraryTemplateIds: [],
+        channelIds: [],
+        platforms: [],
+      })
+      .returning();
+
+    return this.assembleCampaign(row.id);
+  }
+
+  /**
+   * Patches name/description/contentSource/aiConfig + bulk-schedule fields
+   * (defaultTime/skipWeekends/blackoutDates). `channelIds`/`platforms` in the
+   * DTO are accepted but ignored — they're always recomputed by
+   * `refreshChannelCache` on the next slot change, same as the mock store
+   * (which only writes them from `addEvent`, never from `updateCampaign`
+   * directly — the patch fields exist on the type but the caller-facing
+   * builder never sends them for a live campaign).
+   */
+  async update(
+    workspaceId: string,
+    id: string,
+    patch: UpdateCampaignDto,
+  ): Promise<CampaignDto> {
+    const existing = await this.getOne(workspaceId, id);
+
+    const updates: Partial<Campaign> = {
+      updatedAt: new Date(),
+    };
+    if (patch.name !== undefined) updates.name = patch.name;
+    if (patch.description !== undefined) updates.description = patch.description;
+    if (patch.contentSource !== undefined) updates.contentSource = patch.contentSource;
+    if (patch.aiConfig !== undefined) updates.aiConfig = patch.aiConfig;
+
+    if (existing.schedule.type === 'bulk') {
+      const schedule: CampaignScheduleJson = { ...existing.schedule };
+      if (patch.scheduleDefaultTime !== undefined) {
+        schedule.defaultTime = patch.scheduleDefaultTime;
+      }
+      if (patch.skipWeekends !== undefined) {
+        schedule.skipWeekends = patch.skipWeekends;
+      }
+      if (patch.blackoutDates !== undefined) {
+        schedule.blackoutDates = patch.blackoutDates;
+      }
+      updates.schedule = schedule;
+    }
+
+    await db.update(campaigns).set(updates).where(eq(campaigns.id, id));
+
+    return this.assembleCampaign(id);
+  }
+
+  async remove(workspaceId: string, id: string): Promise<void> {
+    await this.getOne(workspaceId, id);
+    await db.delete(campaigns).where(eq(campaigns.id, id));
+  }
+
+  // ── Lifecycle ────────────────────────────────────────────────────────────
+
+  private async setStatus(
+    workspaceId: string,
+    id: string,
+    status: string,
+  ): Promise<CampaignDto> {
+    await this.getOne(workspaceId, id);
+    await db
+      .update(campaigns)
+      .set({ status, updatedAt: new Date() })
+      .where(eq(campaigns.id, id));
+    return this.assembleCampaign(id);
+  }
+
+  async launch(workspaceId: string, id: string): Promise<CampaignDto> {
+    return this.setStatus(workspaceId, id, 'active');
+  }
+
+  async pause(workspaceId: string, id: string): Promise<CampaignDto> {
+    return this.setStatus(workspaceId, id, 'paused');
+  }
+
+  async resume(workspaceId: string, id: string): Promise<CampaignDto> {
+    return this.setStatus(workspaceId, id, 'active');
+  }
+
+  /**
+   * Copies the campaign row + all its days + all its slots under a new id.
+   * Name gets a " (copy)" suffix, status resets to `draft`. Metrics aren't
+   * stored (they're computed on assembly) so there's nothing to reset there.
+   */
+  async duplicate(
+    workspaceId: string,
+    userId: string,
+    id: string,
+  ): Promise<CampaignDto> {
+    const source = await this.getOne(workspaceId, id);
+
+    const [copyRow] = await db
+      .insert(campaigns)
+      .values({
+        workspaceId,
+        createdById: userId,
+        name: `${source.name} (copy)`,
+        description: source.description,
+        type: source.type,
+        status: 'draft',
+        schedule: source.schedule,
+        contentSource: source.contentSource,
+        aiConfig: source.aiConfig,
+        libraryTemplateIds: source.libraryTemplateIds,
+        channelIds: source.channelIds,
+        platforms: source.platforms,
+      })
+      .returning();
+
+    const [sourceDays, sourceSlots] = await Promise.all([
+      db.select().from(campaignDays).where(eq(campaignDays.campaignId, id)),
+      db
+        .select()
+        .from(campaignSlotContent)
+        .where(eq(campaignSlotContent.campaignId, id)),
+    ]);
+
+    if (sourceDays.length > 0) {
+      await db.insert(campaignDays).values(
+        sourceDays.map((d) => ({
+          campaignId: copyRow.id,
+          date: d.date,
+          skip: d.skip,
+        })),
+      );
+    }
+
+    if (sourceSlots.length > 0) {
+      await db.insert(campaignSlotContent).values(
+        sourceSlots.map((s) => ({
+          campaignId: copyRow.id,
+          date: s.date,
+          channelId: s.channelId,
+          content: s.content,
+        })),
+      );
+    }
+
+    return this.assembleCampaign(copyRow.id);
+  }
+
+  // ── Days ──────────────────────────────────────────────────────────────────
+
+  private async ensureDayRow(campaignId: string, date: string): Promise<void> {
+    const [existing] = await db
+      .select({ id: campaignDays.id })
+      .from(campaignDays)
+      .where(
+        and(eq(campaignDays.campaignId, campaignId), eq(campaignDays.date, date)),
+      );
+
+    if (!existing) {
+      await db.insert(campaignDays).values({ campaignId, date });
+    }
+  }
+
+  async addDay(workspaceId: string, id: string, date: string): Promise<CampaignDto> {
+    await this.getOne(workspaceId, id);
+    await this.ensureDayRow(id, date);
+    await db
+      .update(campaigns)
+      .set({ updatedAt: new Date() })
+      .where(eq(campaigns.id, id));
+    return this.assembleCampaign(id);
+  }
+
+  async removeDay(workspaceId: string, id: string, date: string): Promise<CampaignDto> {
+    await this.getOne(workspaceId, id);
+    await db
+      .delete(campaignDays)
+      .where(and(eq(campaignDays.campaignId, id), eq(campaignDays.date, date)));
+    await db
+      .delete(campaignSlotContent)
+      .where(
+        and(eq(campaignSlotContent.campaignId, id), eq(campaignSlotContent.date, date)),
+      );
+    await db
+      .update(campaigns)
+      .set({ updatedAt: new Date() })
+      .where(eq(campaigns.id, id));
+    await this.refreshChannelCache(id);
+    return this.assembleCampaign(id);
+  }
+
+  async setDaySkip(
+    workspaceId: string,
+    id: string,
+    date: string,
+    skip: boolean,
+  ): Promise<CampaignDto> {
+    await this.getOne(workspaceId, id);
+    await this.ensureDayRow(id, date);
+    await db
+      .update(campaignDays)
+      .set({ skip })
+      .where(and(eq(campaignDays.campaignId, id), eq(campaignDays.date, date)));
+    await db
+      .update(campaigns)
+      .set({ updatedAt: new Date() })
+      .where(eq(campaigns.id, id));
+    return this.assembleCampaign(id);
+  }
+
+  // ── Events (slots) ───────────────────────────────────────────────────────
+
+  /**
+   * Upserts a slot row with a blank `emptyChannelDayContent` payload, ensures
+   * the day row exists, then refreshes the channel cache — channels are added
+   * per-day (no separate campaign-level picker), so the campaign's channel
+   * set is the union of channels used on any day (mock store comment,
+   * reproduced here).
+   */
+  async addEvent(
+    workspaceId: string,
+    id: string,
+    dto: AddEventDto,
+  ): Promise<CampaignDto> {
+    const campaign = await this.getOne(workspaceId, id);
+    await this.ensureDayRow(id, dto.date);
+
+    const content = this.emptyChannelDayContent(
+      dto.postType ?? 'text',
+      campaign.contentSource,
+    );
+
+    const [existingSlot] = await db
+      .select({ id: campaignSlotContent.id })
+      .from(campaignSlotContent)
+      .where(
+        and(
+          eq(campaignSlotContent.campaignId, id),
+          eq(campaignSlotContent.date, dto.date),
+          eq(campaignSlotContent.channelId, dto.channelId),
+        ),
+      );
+
+    if (existingSlot) {
+      await db
+        .update(campaignSlotContent)
+        .set({ content, updatedAt: new Date() })
+        .where(eq(campaignSlotContent.id, existingSlot.id));
+    } else {
+      await db.insert(campaignSlotContent).values({
+        campaignId: id,
+        date: dto.date,
+        channelId: dto.channelId,
+        content,
+      });
+    }
+
+    await db
+      .update(campaigns)
+      .set({ updatedAt: new Date() })
+      .where(eq(campaigns.id, id));
+
+    await this.refreshChannelCache(id);
+    return this.assembleCampaign(id);
+  }
+
+  /** Merges `patch` into the slot's `content` jsonb (shallow spread over the
+   *  existing content, mirroring the mock store's `{ ...existing, ...patch
+   *  }`). 404s if the slot doesn't exist. */
+  async updateEvent(
+    workspaceId: string,
+    id: string,
+    dto: UpdateEventDto,
+  ): Promise<CampaignDto> {
+    await this.getOne(workspaceId, id);
+
+    const [slot] = await db
+      .select()
+      .from(campaignSlotContent)
+      .where(
+        and(
+          eq(campaignSlotContent.campaignId, id),
+          eq(campaignSlotContent.date, dto.date),
+          eq(campaignSlotContent.channelId, dto.channelId),
+        ),
+      );
+
+    if (!slot) {
+      throw new NotFoundException('Event not found');
+    }
+
+    const mergedContent: ChannelDayContentJson = { ...slot.content, ...dto.patch };
+
+    await db
+      .update(campaignSlotContent)
+      .set({ content: mergedContent, updatedAt: new Date() })
+      .where(eq(campaignSlotContent.id, slot.id));
+
+    await db
+      .update(campaigns)
+      .set({ updatedAt: new Date() })
+      .where(eq(campaigns.id, id));
+
+    return this.assembleCampaign(id);
+  }
+
+  async removeEvent(
+    workspaceId: string,
+    id: string,
+    dto: RemoveEventDto,
+  ): Promise<CampaignDto> {
+    await this.getOne(workspaceId, id);
+
+    await db
+      .delete(campaignSlotContent)
+      .where(
+        and(
+          eq(campaignSlotContent.campaignId, id),
+          eq(campaignSlotContent.date, dto.date),
+          eq(campaignSlotContent.channelId, dto.channelId),
+        ),
+      );
+
+    await db
+      .update(campaigns)
+      .set({ updatedAt: new Date() })
+      .where(eq(campaigns.id, id));
+
+    await this.refreshChannelCache(id);
+    return this.assembleCampaign(id);
+  }
+
+  // ── AI mock (Phase 1) ────────────────────────────────────────────────────
+
+  private async loadSlotOrThrow(
+    campaignId: string,
+    date: string,
+    channelId: string,
+  ): Promise<CampaignSlotContent> {
+    const [slot] = await db
+      .select()
+      .from(campaignSlotContent)
+      .where(
+        and(
+          eq(campaignSlotContent.campaignId, campaignId),
+          eq(campaignSlotContent.date, date),
+          eq(campaignSlotContent.channelId, channelId),
+        ),
+      );
+
+    if (!slot) {
+      throw new NotFoundException('Event not found');
+    }
+
+    return slot;
+  }
+
+  private async writeSlotContent(
+    slotId: string,
+    content: ChannelDayContentJson,
+  ): Promise<void> {
+    await db
+      .update(campaignSlotContent)
+      .set({ content, updatedAt: new Date() })
+      .where(eq(campaignSlotContent.id, slotId));
+  }
+
+  /**
+   * Mock AI generation for one slot: fills a placeholder caption (only if
+   * blank — a hand-edited caption is preserved) and sets `mode: 'ai'`.
+   * Autopilot (`approvalMode: 'auto'`) campaigns mark it approved (ready to
+   * publish); ask-before (`preview`) leaves it `pending_review` so it
+   * surfaces in the approval queue. Phase 1: no real LLM call.
+   */
+  async generateAi(
+    workspaceId: string,
+    id: string,
+    date: string,
+    channelId: string,
+  ): Promise<CampaignDto> {
+    const campaign = await this.getOne(workspaceId, id);
+    const slot = await this.loadSlotOrThrow(id, date, channelId);
+
+    const aiConfig = campaign.aiConfig as AiAutopilotConfigJson | null;
+    const nextContent: ChannelDayContentJson = {
+      ...slot.content,
+      mode: 'ai',
+      caption:
+        slot.content.caption.trim().length > 0
+          ? slot.content.caption
+          : this.mockAiCaption(date, aiConfig),
+      aiSubState: aiConfig?.approvalMode === 'preview' ? 'pending_review' : 'approved',
+    };
+
+    await this.writeSlotContent(slot.id, nextContent);
+    await db
+      .update(campaigns)
+      .set({ updatedAt: new Date() })
+      .where(eq(campaigns.id, id));
+
+    return this.assembleCampaign(id);
+  }
+
+  /** User approved an AI-generated draft (or hand-edited and saved it) —
+   *  marks it ready to publish. */
+  async approveAi(
+    workspaceId: string,
+    id: string,
+    date: string,
+    channelId: string,
+  ): Promise<CampaignDto> {
+    await this.getOne(workspaceId, id);
+    const slot = await this.loadSlotOrThrow(id, date, channelId);
+
+    await this.writeSlotContent(slot.id, { ...slot.content, aiSubState: 'approved' });
+    await db
+      .update(campaigns)
+      .set({ updatedAt: new Date() })
+      .where(eq(campaigns.id, id));
+
+    return this.assembleCampaign(id);
+  }
+
+  /** User skipped an AI-generated draft — it won't publish for this slot. */
+  async skipAi(
+    workspaceId: string,
+    id: string,
+    date: string,
+    channelId: string,
+  ): Promise<CampaignDto> {
+    await this.getOne(workspaceId, id);
+    const slot = await this.loadSlotOrThrow(id, date, channelId);
+
+    await this.writeSlotContent(slot.id, { ...slot.content, aiSubState: 'skipped' });
+    await db
+      .update(campaigns)
+      .set({ updatedAt: new Date() })
+      .where(eq(campaigns.id, id));
+
+    return this.assembleCampaign(id);
+  }
+
+  // ── Channel cache ────────────────────────────────────────────────────────
+
+  /**
+   * Recomputes the campaign's `channelIds`/`platforms` cache columns as the
+   * union of `channelId` across its slot rows, resolving each channel's
+   * platform via `socialMediaChannels` (unresolved/deleted channels are
+   * skipped rather than failing the whole refresh). Called after any op that
+   * changes the slot set (`addEvent`/`removeEvent`/`removeDay`).
+   */
+  private async refreshChannelCache(campaignId: string): Promise<void> {
+    const slots = await db
+      .select({ channelId: campaignSlotContent.channelId })
+      .from(campaignSlotContent)
+      .where(eq(campaignSlotContent.campaignId, campaignId));
+
+    const channelIds = this.computeChannelIdUnion(slots);
+
+    let platforms: string[] = [];
+    if (channelIds.length > 0) {
+      const numericIds = channelIds
+        .map((cid) => Number(cid))
+        .filter((n) => Number.isFinite(n));
+
+      const channelRows = numericIds.length
+        ? await db
+            .select({ id: socialMediaChannels.id, platform: socialMediaChannels.platform })
+            .from(socialMediaChannels)
+            .where(inArray(socialMediaChannels.id, numericIds))
+        : [];
+
+      platforms = [...new Set(channelRows.map((r) => r.platform))];
+    }
+
+    await db
+      .update(campaigns)
+      .set({ channelIds, platforms })
+      .where(eq(campaigns.id, campaignId));
   }
 
   private groupBy<T, K>(items: T[], keyFn: (item: T) => K): Map<K, T[]> {
