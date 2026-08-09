@@ -24,3 +24,4 @@ export * from './maestro-bridge-threads.schema';
 export * from './canva.schema';
 export * from './calendar-sync.schema';
 export * from './admin-login-challenge.schema';
+export * from './campaigns.schema';
