@@ -7,6 +7,7 @@ import {
   IsEnum,
   IsObject,
   Matches,
+  ValidateIf,
 } from 'class-validator';
 import { CAMPAIGN_STATUSES } from '../../drizzle/schema/campaigns.schema';
 import type { ChannelDayContentJson } from '../../drizzle/schema/campaigns.schema';
@@ -47,6 +48,7 @@ export class UpdateCampaignDto {
   name?: string;
 
   @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
   @IsString()
   description?: string | null;
 

@@ -428,6 +428,41 @@ describe('CampaignsService write methods (mocked db)', () => {
     jest.resetModules();
   });
 
+  it('list() search matches on description alone when the name does not match', async () => {
+    const rows = [
+      makeCampaignRow({
+        id: 'c-1',
+        name: 'Launch week',
+        description: 'Back to school promo',
+      }),
+      makeCampaignRow({ id: 'c-2', name: 'Unrelated', description: null }),
+    ];
+
+    // list() issues 3 selects: campaigns (ends in .orderBy()), then
+    // campaignDays and campaignSlotContent (awaited straight off .where(),
+    // no .orderBy()). Track call order so the fake `where()` can return the
+    // right shape for each, same approach as the updateEvent tests above.
+    let selectCall = 0;
+    const service = loadServiceWithFakeDb({
+      select: () => ({
+        from: () => ({
+          where: () => {
+            selectCall += 1;
+            if (selectCall === 1) {
+              return { orderBy: () => Promise.resolve(rows) };
+            }
+            return Promise.resolve([]);
+          },
+        }),
+      }),
+    });
+
+    const result = await service.list(WORKSPACE_ID, { search: 'school' });
+
+    expect(result).toHaveLength(1);
+    expect(result[0].id).toBe('c-1');
+  });
+
   it('updateEvent 404s ("Campaign not found") when the campaign is not in this workspace', async () => {
     const service = loadServiceWithFakeDb({
       select: () => ({

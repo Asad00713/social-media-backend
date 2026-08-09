@@ -199,6 +199,8 @@ export class CampaignsService {
     schedule: CampaignScheduleJson,
     status: string,
   ): string | null {
+    // TODO(phase-2): honor schedule.timezone — currently uses server-local
+    // time; correct only on a UTC server. Display-only in Phase 1.
     if (!ACTIVE_NEXT_RUN_STATUSES.has(status)) return null;
 
     const now = new Date();
@@ -301,7 +303,6 @@ export class CampaignsService {
       }
 
       cursor = this.addDays(cursor, 1);
-      if (!end && i >= MAX_NEXT_RUN_SCAN_DAYS - 1) break;
     }
 
     return null;
@@ -488,9 +489,13 @@ export class CampaignsService {
       .orderBy(desc(campaigns.createdAt));
 
     const filteredRows = filters.search
-      ? rows.filter((r) =>
-          r.name.toLowerCase().includes(filters.search!.toLowerCase()),
-        )
+      ? rows.filter((r) => {
+          const q = filters.search!.toLowerCase().trim();
+          return (
+            r.name.toLowerCase().includes(q) ||
+            (r.description ?? '').toLowerCase().includes(q)
+          );
+        })
       : rows;
 
     if (filteredRows.length === 0) return [];
@@ -1056,6 +1061,9 @@ export class CampaignsService {
 
     let platforms: string[] = [];
     if (channelIds.length > 0) {
+      // Slot channelId is the stringified numeric channel id (frontend sends
+      // String(dto.id)); coerce back to number to match
+      // socialMediaChannels.id (bigserial). Non-numeric ids are skipped.
       const numericIds = channelIds
         .map((cid) => Number(cid))
         .filter((n) => Number.isFinite(n));
