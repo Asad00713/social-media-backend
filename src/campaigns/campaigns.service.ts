@@ -1,4 +1,4 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../drizzle/db';
 import {
@@ -13,6 +13,8 @@ import {
   type ChannelDayContentJson,
 } from '../drizzle/schema/campaigns.schema';
 import { socialMediaChannels } from '../drizzle/schema/channels.schema';
+import { computeSlotSchedule } from './campaign-schedule.util';
+import { CampaignPublishingService } from './campaign-publishing.service';
 
 // ==========================================================================
 // Response DTO — mirrors the frontend `Campaign` shape byte-for-byte so the
@@ -131,6 +133,8 @@ const MAX_NEXT_RUN_SCAN_DAYS = 3660; // ~10 years
 @Injectable()
 export class CampaignsService {
   private readonly logger = new Logger(CampaignsService.name);
+
+  constructor(private readonly publishing: CampaignPublishingService) {}
 
   // ==========================================================================
   // Pure helpers — no DB access. Exported as instance methods so they're
@@ -674,8 +678,132 @@ export class CampaignsService {
     return this.assembleCampaign(id);
   }
 
+  /**
+   * Loads a campaign's raw `createdById` column — not exposed on the public
+   * `CampaignDto` (see Task 4 note). Used by `launch` (and reused by
+   * `pause`/`resume`/rescheduling flows) whenever the write path needs the
+   * original creator rather than the DTO's caller-facing shape.
+   */
+  private async loadCreatedById(id: string): Promise<string> {
+    const [row] = await db
+      .select({ createdById: campaigns.createdById })
+      .from(campaigns)
+      .where(eq(campaigns.id, id));
+
+    if (!row) {
+      throw new NotFoundException('Campaign not found');
+    }
+
+    return row.createdById;
+  }
+
+  /** Publishable = slot is filled, its day is not skipped, and if AI-mode its
+   *  aiSubState is 'approved'. Returns slot id/date/channelId/content. */
+  private async collectPublishableSlots(campaignId: string): Promise<
+    { slotId: string; date: string; channelId: string; content: ChannelDayContentJson }[]
+  > {
+    const [days, slots] = await Promise.all([
+      db.select().from(campaignDays).where(eq(campaignDays.campaignId, campaignId)),
+      db
+        .select()
+        .from(campaignSlotContent)
+        .where(eq(campaignSlotContent.campaignId, campaignId)),
+    ]);
+    const skipped = new Set(days.filter((d) => d.skip).map((d) => d.date));
+    return slots
+      .filter((s) => !skipped.has(s.date))
+      .filter((s) => this.isSlotFilled(s.content))
+      .filter((s) => s.content.mode !== 'ai' || s.content.aiSubState === 'approved')
+      .map((s) => ({ slotId: s.id, date: s.date, channelId: s.channelId, content: s.content }));
+  }
+
+  /** channelId (stringified numeric) → platform. Missing/deleted channels are
+   *  absent from the map, so the caller skips them. */
+  private async resolveSlotChannels(channelIds: string[]): Promise<Map<string, string>> {
+    const unique = [...new Set(channelIds)];
+    const numericIds = unique.map((c) => Number(c)).filter((n) => Number.isFinite(n));
+    if (numericIds.length === 0) return new Map();
+    const rows = await db
+      .select({ id: socialMediaChannels.id, platform: socialMediaChannels.platform })
+      .from(socialMediaChannels)
+      .where(inArray(socialMediaChannels.id, numericIds));
+    return new Map(rows.map((r) => [String(r.id), r.platform]));
+  }
+
+  /**
+   * Preflights the campaign for publishable content, resolves each slot's
+   * channel to a platform, computes the due schedule per date (Task 2), then
+   * materializes + enqueues each due slot as a real post (Task 3). Past-due
+   * or excluded (blackout/weekend) dates and slots whose channel no longer
+   * resolves are marked `skipped` rather than blocking the whole launch.
+   * Sets the campaign to `active` with `launchedAt` once all slots are
+   * processed.
+   */
   async launch(workspaceId: string, id: string): Promise<CampaignDto> {
-    return this.setStatus(workspaceId, id, 'active');
+    const campaign = await this.getOne(workspaceId, id); // 404 if wrong workspace
+
+    // Preflight: gather publishable slots (filled + day not skipped + AI approved).
+    const publishable = await this.collectPublishableSlots(id);
+    if (publishable.length === 0) {
+      throw new BadRequestException(
+        'This campaign has no publishable content. Add at least one filled post before launching.',
+      );
+    }
+
+    const createdById = await this.loadCreatedById(id);
+
+    // Resolve platform per channel; reject if a referenced channel is gone.
+    const channelMap = await this.resolveSlotChannels(
+      publishable.map((s) => s.channelId),
+    );
+
+    const dates = [...new Set(publishable.map((s) => s.date))];
+    const { due, pastDue } = computeSlotSchedule(campaign.schedule, dates, new Date());
+    const dueByDate = new Map(due.map((d) => [d.date, d.scheduledAt]));
+    const pastDueSet = new Set(pastDue);
+
+    for (const slot of publishable) {
+      // Past-due (or blackout/weekend-excluded → not in `due`) → skip.
+      const scheduledAt = dueByDate.get(slot.date);
+      if (!scheduledAt || pastDueSet.has(slot.date)) {
+        await db
+          .update(campaignSlotContent)
+          .set({ slotStatus: 'skipped', updatedAt: new Date() })
+          .where(eq(campaignSlotContent.id, slot.slotId));
+        continue;
+      }
+      const platform = channelMap.get(slot.channelId);
+      if (!platform) {
+        await db
+          .update(campaignSlotContent)
+          .set({ slotStatus: 'skipped', lastError: 'Channel unavailable', updatedAt: new Date() })
+          .where(eq(campaignSlotContent.id, slot.slotId));
+        continue;
+      }
+
+      const { postId, jobId } = await this.publishing.materializeAndEnqueue({
+        workspaceId,
+        createdById,
+        campaignId: id,
+        date: slot.date,
+        channelId: slot.channelId,
+        content: slot.content,
+        platform,
+        scheduledAt,
+      });
+
+      await db
+        .update(campaignSlotContent)
+        .set({ postId, jobId, scheduledAt, slotStatus: 'scheduled', updatedAt: new Date() })
+        .where(eq(campaignSlotContent.id, slot.slotId));
+    }
+
+    await db
+      .update(campaigns)
+      .set({ status: 'active', launchedAt: new Date(), updatedAt: new Date() })
+      .where(eq(campaigns.id, id));
+
+    return this.assembleCampaign(id);
   }
 
   async pause(workspaceId: string, id: string): Promise<CampaignDto> {

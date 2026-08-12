@@ -1,3 +1,4 @@
+import { getTableName } from 'drizzle-orm';
 import { CampaignsService } from './campaigns.service';
 import type { ChannelDayContentJson } from '../drizzle/schema/campaigns.schema';
 import type { CampaignDay, CampaignSlotContent } from '../drizzle/schema/campaigns.schema';
@@ -22,7 +23,10 @@ function content(overrides: Partial<ChannelDayContentJson>): ChannelDayContentJs
 }
 
 describe('CampaignsService.isSlotFilled', () => {
-  const service = new CampaignsService();
+  // Pure-helper tests never touch the injected CampaignPublishingService —
+  // undefined is safe here, cast away since the constructor param is typed
+  // required for real (module-wired) construction.
+  const service = new CampaignsService(undefined as never);
 
   it('returns false for undefined content', () => {
     expect(service.isSlotFilled(undefined as unknown as ChannelDayContentJson)).toBe(false);
@@ -106,7 +110,10 @@ describe('CampaignsService.isSlotFilled', () => {
 });
 
 describe('CampaignsService.computeMetrics', () => {
-  const service = new CampaignsService();
+  // Pure-helper tests never touch the injected CampaignPublishingService —
+  // undefined is safe here, cast away since the constructor param is typed
+  // required for real (module-wired) construction.
+  const service = new CampaignsService(undefined as never);
 
   function day(date: string, skip = false): CampaignDay {
     return {
@@ -177,7 +184,10 @@ describe('CampaignsService.computeMetrics', () => {
 });
 
 describe('CampaignsService.computeNextRun', () => {
-  const service = new CampaignsService();
+  // Pure-helper tests never touch the injected CampaignPublishingService —
+  // undefined is safe here, cast away since the constructor param is typed
+  // required for real (module-wired) construction.
+  const service = new CampaignsService(undefined as never);
 
   const bulkSchedule = (start: string, end: string): CampaignScheduleJson => ({
     type: 'bulk',
@@ -300,7 +310,10 @@ describe('CampaignsService.computeNextRun', () => {
 // ==========================================================================
 
 describe('CampaignsService.computeChannelIdUnion', () => {
-  const service = new CampaignsService();
+  // Pure-helper tests never touch the injected CampaignPublishingService —
+  // undefined is safe here, cast away since the constructor param is typed
+  // required for real (module-wired) construction.
+  const service = new CampaignsService(undefined as never);
 
   it('returns the deduped set of channelIds across slot rows', () => {
     const union = service.computeChannelIdUnion([
@@ -321,7 +334,10 @@ describe('CampaignsService.computeChannelIdUnion', () => {
 });
 
 describe('CampaignsService.emptyChannelDayContent', () => {
-  const service = new CampaignsService();
+  // Pure-helper tests never touch the injected CampaignPublishingService —
+  // undefined is safe here, cast away since the constructor param is typed
+  // required for real (module-wired) construction.
+  const service = new CampaignsService(undefined as never);
 
   it('builds a blank manual text slot by default', () => {
     expect(service.emptyChannelDayContent('text')).toEqual({
@@ -347,7 +363,10 @@ describe('CampaignsService.emptyChannelDayContent', () => {
 });
 
 describe('CampaignsService.mockAiCaption', () => {
-  const service = new CampaignsService();
+  // Pure-helper tests never touch the injected CampaignPublishingService —
+  // undefined is safe here, cast away since the constructor param is typed
+  // required for real (module-wired) construction.
+  const service = new CampaignsService(undefined as never);
 
   it('falls back to "your campaign" when brief is blank', () => {
     expect(service.mockAiCaption('2026-08-10', null)).toBe(
@@ -417,16 +436,22 @@ describe('CampaignsService write methods (mocked db)', () => {
    * Loads a fresh, isolated copy of the service module with `../drizzle/db`
    * mocked to `fakeDb`. `jest.isolateModules` scopes the mock + require to
    * this call only, so tests in this describe block don't leak mocks into
-   * each other or into the DB-free suites above.
+   * each other or into the DB-free suites above. `publishing` is passed
+   * straight into the service's constructor (a mock `CampaignPublishingService`
+   * for the `launch` tests; unused — and safe to omit — by every other test
+   * in this block).
    */
-  function loadServiceWithFakeDb(fakeDb: unknown): InstanceType<typeof CampaignsService> {
+  function loadServiceWithFakeDb(
+    fakeDb: unknown,
+    publishing?: unknown,
+  ): InstanceType<typeof CampaignsService> {
     let ServiceCtor!: typeof CampaignsService;
     jest.isolateModules(() => {
       jest.doMock('../drizzle/db', () => ({ db: fakeDb }));
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       ServiceCtor = require('./campaigns.service').CampaignsService;
     });
-    return new ServiceCtor();
+    return new ServiceCtor(publishing as never);
   }
 
   afterEach(() => {
@@ -549,4 +574,232 @@ describe('CampaignsService write methods (mocked db)', () => {
     expect(result.status).toBe('draft');
     expect(result.name).toBe('Launch week (copy)');
   });
+
+  // ==========================================================================
+  // launch() — table-identity-routed fake db (rather than call-order indices,
+  // since launch's preflight + per-slot loop issues a variable number of
+  // selects/updates depending on how many slots are publishable). Compares
+  // the `from(table)` / `update(table)` argument by reference against the
+  // real schema table objects so each query resolves against its own
+  // in-memory fixture regardless of call order. Nested inside this describe
+  // block (rather than a sibling) so it can reuse `loadServiceWithFakeDb`.
+  // ==========================================================================
+
+  describe('launch', () => {
+  const WORKSPACE_ID = 'ws-1';
+  const CAMPAIGN_ID = 'c-1';
+
+  function makeCampaignRow(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: CAMPAIGN_ID,
+      workspaceId: WORKSPACE_ID,
+      createdById: 'user-1',
+      name: 'Launch week',
+      description: null,
+      type: 'bulk',
+      status: 'draft',
+      schedule: {
+        type: 'bulk',
+        startDate: '2020-01-01',
+        endDate: '2099-01-01',
+        defaultTime: '09:00',
+        timezone: 'UTC',
+        blackoutDates: [],
+        skipWeekends: false,
+      },
+      contentSource: 'manual',
+      aiConfig: null,
+      libraryTemplateIds: [],
+      channelIds: [],
+      platforms: [],
+      createdAt: new Date('2026-08-01T00:00:00Z'),
+      updatedAt: new Date('2026-08-01T00:00:00Z'),
+      ...overrides,
+    };
+  }
+
+  function makeSlotRow(overrides: Partial<Record<string, unknown>> = {}) {
+    return {
+      id: 'slot-1',
+      campaignId: CAMPAIGN_ID,
+      date: '2026-08-13',
+      channelId: '1',
+      content: content({ caption: 'Hello world' }),
+      scheduledAt: null,
+      slotStatus: 'pending',
+      postId: null,
+      jobId: null,
+      publishedAt: null,
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      ...overrides,
+    };
+  }
+
+  /**
+   * Table-name-routed fake db. `campaignRow`/`dayRows`/`slotRows`/
+   * `channelRows` back the respective `select` queries (matched via
+   * `getTableName()` on the table passed to `.from()` — NOT reference
+   * equality: `launch`'s service module is loaded through
+   * `jest.isolateModules`, which gives the schema module (and therefore its
+   * exported table objects) a distinct module instance from the one
+   * imported at the top of this file, so `table === campaigns` never
+   * matches even though it's "the same" table). Every `.update()` is
+   * recorded into `updates` (keyed by which table) so tests can assert on
+   * the written slot/campaign rows without modeling real persistence.
+   */
+  function buildFakeDb(fixture: {
+    campaignRow: ReturnType<typeof makeCampaignRow> | undefined;
+    dayRows?: Record<string, unknown>[];
+    slotRows?: Record<string, unknown>[];
+    channelRows?: { id: number; platform: string }[];
+  }) {
+    const updates: {
+      slotUpdates: { id: string; set: Record<string, unknown> }[];
+      campaignUpdates: Record<string, unknown>[];
+    } = { slotUpdates: [], campaignUpdates: [] };
+
+    const db = {
+      select: () => ({
+        from: (table: unknown) => ({
+          where: () => {
+            const name = getTableName(table as never);
+            if (name === 'campaigns') {
+              return Promise.resolve(fixture.campaignRow ? [fixture.campaignRow] : []);
+            }
+            if (name === 'campaign_days') {
+              return Promise.resolve(fixture.dayRows ?? []);
+            }
+            if (name === 'campaign_slot_content') {
+              return Promise.resolve(fixture.slotRows ?? []);
+            }
+            if (name === 'social_media_channels') {
+              return Promise.resolve(fixture.channelRows ?? []);
+            }
+            return Promise.resolve([]);
+          },
+        }),
+      }),
+      update: (table: unknown) => ({
+        set: (set: Record<string, unknown>) => ({
+          where: (whereCond: unknown) => {
+            const name = getTableName(table as never);
+            if (name === 'campaign_slot_content') {
+              const id = extractSlotIdFromWhere(whereCond);
+              updates.slotUpdates.push({ id, set });
+            } else if (name === 'campaigns') {
+              updates.campaignUpdates.push(set);
+              // Write through to the live fixture row so the final
+              // `assembleCampaign` re-select (status/launchedAt) reflects
+              // launch's own update, same as a real DB round-trip would.
+              if (fixture.campaignRow) Object.assign(fixture.campaignRow, set);
+            }
+            return Promise.resolve();
+          },
+        }),
+      }),
+    };
+
+    return { db, updates };
+  }
+
+  /** Pulls the `campaignSlotContent.id` value out of an `eq(campaignSlotContent.id, x)`
+   *  drizzle condition tree so the fake `update` can attribute a write to a slot. */
+  function extractSlotIdFromWhere(cond: unknown): string {
+    const node = cond as { queryChunks?: unknown[] };
+    const chunks = node?.queryChunks ?? [];
+    for (const chunk of chunks) {
+      const c = chunk as { value?: unknown };
+      if (typeof c?.value === 'string') return c.value;
+    }
+    return '';
+  }
+
+  function makePublishingMock() {
+    return {
+      materializeAndEnqueue: jest.fn().mockResolvedValue({ postId: 'p1', jobId: 'j1' }),
+      cancelSlotJob: jest.fn(),
+      buildJobId: jest.fn(),
+    };
+  }
+
+  it('rejects a campaign with no publishable slots', async () => {
+    const publishing = makePublishingMock();
+    const { db } = buildFakeDb({
+      campaignRow: makeCampaignRow(),
+      dayRows: [],
+      slotRows: [],
+    });
+    const service = loadServiceWithFakeDb(db, publishing);
+
+    await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow(/no publishable/i);
+    expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
+  });
+
+  it('materializes + enqueues each publishable slot and marks it scheduled', async () => {
+    const publishing = makePublishingMock();
+    const futureDate = '2099-06-15'; // far future -> always "due", never past-due
+    const { db, updates } = buildFakeDb({
+      campaignRow: makeCampaignRow(),
+      dayRows: [],
+      slotRows: [makeSlotRow({ date: futureDate, channelId: '1' })],
+      channelRows: [{ id: 1, platform: 'twitter' }],
+    });
+    const service = loadServiceWithFakeDb(db, publishing);
+
+    const result = await service.launch(WORKSPACE_ID, CAMPAIGN_ID);
+
+    expect(publishing.materializeAndEnqueue).toHaveBeenCalledTimes(1);
+    expect(publishing.materializeAndEnqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        workspaceId: WORKSPACE_ID,
+        createdById: 'user-1',
+        campaignId: CAMPAIGN_ID,
+        date: futureDate,
+        channelId: '1',
+        platform: 'twitter',
+      }),
+    );
+    expect(result.status).toBe('active');
+
+    const slotUpdate = updates.slotUpdates.find((u) => u.id === 'slot-1');
+    expect(slotUpdate?.set).toMatchObject({
+      postId: 'p1',
+      jobId: 'j1',
+      slotStatus: 'scheduled',
+    });
+    expect(updates.campaignUpdates[0]).toMatchObject({ status: 'active' });
+    expect(updates.campaignUpdates[0].launchedAt).toBeInstanceOf(Date);
+  });
+
+  it('skips past-due slots (marks skipped, does not enqueue)', async () => {
+    const publishing = makePublishingMock();
+    const pastDate = '2020-01-02'; // within schedule window but already elapsed
+    const { db, updates } = buildFakeDb({
+      campaignRow: makeCampaignRow(),
+      dayRows: [],
+      slotRows: [makeSlotRow({ date: pastDate, channelId: '1' })],
+      channelRows: [{ id: 1, platform: 'twitter' }],
+    });
+    const service = loadServiceWithFakeDb(db, publishing);
+
+    const result = await service.launch(WORKSPACE_ID, CAMPAIGN_ID);
+
+    expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
+    expect(result.status).toBe('active');
+
+    const slotUpdate = updates.slotUpdates.find((u) => u.id === 'slot-1');
+    expect(slotUpdate?.set).toMatchObject({ slotStatus: 'skipped' });
+  });
+
+  it('404s when the campaign does not belong to the workspace', async () => {
+    const publishing = makePublishingMock();
+    const { db } = buildFakeDb({ campaignRow: undefined });
+    const service = loadServiceWithFakeDb(db, publishing);
+
+    await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow('Campaign not found');
+  });
+  });
 });
+

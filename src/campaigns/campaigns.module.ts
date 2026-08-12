@@ -1,12 +1,20 @@
 import { Module } from '@nestjs/common';
+import { BullModule } from '@nestjs/bullmq';
 import { CampaignsController } from './campaigns.controller';
 import { CampaignsService } from './campaigns.service';
+import { CampaignPublishingService } from './campaign-publishing.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
+import { PostsModule } from '../posts/posts.module';
+import { QUEUES } from '../queue/queue.module';
 
 @Module({
-  imports: [DrizzleModule],
+  imports: [
+    DrizzleModule,
+    BullModule.registerQueue({ name: QUEUES.POST_PUBLISHING }),
+    PostsModule,
+  ],
   controllers: [CampaignsController],
-  providers: [CampaignsService],
+  providers: [CampaignsService, CampaignPublishingService],
   exports: [CampaignsService],
 })
 export class CampaignsModule {}
