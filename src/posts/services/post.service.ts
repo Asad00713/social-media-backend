@@ -663,6 +663,18 @@ export class PostService {
       .where(eq(posts.id, postId))
       .returning();
 
+    if (!updatedPost) {
+      // The post row is gone (e.g. campaign `pause` deleted it) even though
+      // publishing already completed above. Don't dereference a missing row
+      // — that would throw AFTER the content already went live, which would
+      // trip a BullMQ retry and publish a second time on `resume`. There's
+      // nothing left to update/sync/emit for a deleted post, so bail here.
+      this.logger.warn(
+        `Post ${postId} vanished during publish (likely paused/deleted); skipping post-publish bookkeeping`,
+      );
+      return post;
+    }
+
     // Sync the outcome back to the originating campaign slot (if this post
     // was materialized from one) and auto-complete the campaign when no
     // slots remain outstanding. No-ops internally when metadata.campaignId

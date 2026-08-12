@@ -694,7 +694,10 @@ export class CampaignsService {
     return row.createdById;
   }
 
-  /** Publishable = slot is filled, its day is not skipped, and if AI-mode its
+  /** Publishable = slot is filled, its day is not skipped, its slot isn't
+   *  already claimed by a prior launch/resume (`slotStatus` is `pending` —
+   *  the column is `NOT NULL DEFAULT 'pending'`, so a freshly-inserted slot
+   *  with no explicit status is still 'pending'), and if AI-mode its
    *  aiSubState is 'approved'. Returns slot id/date/channelId/content. */
   private async collectPublishableSlots(campaignId: string): Promise<
     { slotId: string; date: string; channelId: string; content: ChannelDayContentJson }[]
@@ -709,6 +712,7 @@ export class CampaignsService {
     const skipped = new Set(days.filter((d) => d.skip).map((d) => d.date));
     return slots
       .filter((s) => !skipped.has(s.date))
+      .filter((s) => s.slotStatus === 'pending' || s.slotStatus == null)
       .filter((s) => this.isSlotFilled(s.content))
       .filter((s) => s.content.mode !== 'ai' || s.content.aiSubState === 'approved')
       .map((s) => ({ slotId: s.id, date: s.date, channelId: s.channelId, content: s.content }));
@@ -738,6 +742,15 @@ export class CampaignsService {
    */
   async launch(workspaceId: string, id: string): Promise<CampaignDto> {
     const campaign = await this.getOne(workspaceId, id); // 404 if wrong workspace
+
+    // Idempotency guard: a campaign that's already active must not be
+    // relaunched (double-click, retry, launch->pause->launch race) — that
+    // would re-materialize every still-`scheduled` slot into a NEW orphan
+    // post and clobber the slot->post linkage. `collectPublishableSlots`
+    // also excludes non-`pending` slots as a second line of defense.
+    if (campaign.status === 'active') {
+      throw new BadRequestException('Campaign is already launched.');
+    }
 
     // Preflight: gather publishable slots (filled + day not skipped + AI approved).
     const publishable = await this.collectPublishableSlots(id);
@@ -822,8 +835,17 @@ export class CampaignsService {
 
     for (const slot of slots) {
       if (slot.jobId) await this.publishing.cancelSlotJob(slot.jobId);
-      // Remove the not-yet-published post so it can't fire, and reset the slot.
-      if (slot.postId) await db.delete(posts).where(eq(posts.id, slot.postId));
+      // Remove the not-yet-published post so it can't fire, and reset the
+      // slot. Guard on posts.status = 'scheduled' so we never delete a post
+      // that's already mid-publish (status flips to 'publishing' the moment
+      // the worker picks it up) — deleting an in-flight post would make the
+      // finalizer's `returning()` come back empty after the content already
+      // went live on the platform.
+      if (slot.postId) {
+        await db
+          .delete(posts)
+          .where(and(eq(posts.id, slot.postId), eq(posts.status, 'scheduled')));
+      }
       await db
         .update(campaignSlotContent)
         .set({

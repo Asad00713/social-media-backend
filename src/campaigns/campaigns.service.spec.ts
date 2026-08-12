@@ -671,6 +671,7 @@ describe('CampaignsService write methods (mocked db)', () => {
     dayRows?: Record<string, unknown>[];
     slotRows?: Record<string, unknown>[];
     channelRows?: { id: number; platform: string }[];
+    postRows?: { id: string; status: string }[];
   }) {
     const updates: {
       slotUpdates: { id: string; set: Record<string, unknown> }[];
@@ -732,7 +733,20 @@ describe('CampaignsService write methods (mocked db)', () => {
         where: (whereCond: unknown) => {
           const name = getTableName(table as never);
           if (name === 'posts') {
-            deletes.postIds.push(extractSlotIdFromWhere(whereCond));
+            // Mirror the real `and(eq(posts.id, x), eq(posts.status, 'scheduled'))`
+            // guard: only "delete" (record it) when the fixture's post row
+            // actually has status 'scheduled' — an in-flight ('publishing')
+            // post must survive, same as the real WHERE clause would leave
+            // it untouched.
+            const eqValues = extractEqValues(whereCond);
+            const postId = eqValues['id'] as string | undefined;
+            const requiredStatus = eqValues['status'] as string | undefined;
+            const postRow = (fixture.postRows ?? []).find((p) => p.id === postId);
+            const statusMatches =
+              requiredStatus === undefined || (postRow && postRow.status === requiredStatus);
+            if (postId && statusMatches) {
+              deletes.postIds.push(postId);
+            }
           }
           return Promise.resolve();
         },
@@ -869,6 +883,53 @@ describe('CampaignsService write methods (mocked db)', () => {
     await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow('Campaign not found');
   });
 
+  it('rejects relaunching an already-active campaign (idempotency guard)', async () => {
+    const publishing = makePublishingMock();
+    const futureDate = '2099-06-15';
+    const { db } = buildFakeDb({
+      campaignRow: makeCampaignRow({ status: 'active' }),
+      dayRows: [],
+      slotRows: [makeSlotRow({ date: futureDate, channelId: '1' })],
+      channelRows: [{ id: 1, platform: 'twitter' }],
+    });
+    const service = loadServiceWithFakeDb(db, publishing);
+
+    await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow(
+      'Campaign is already launched.',
+    );
+    expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
+  });
+
+  it('does not re-process a slot that is already scheduled (belt-and-suspenders on collectPublishableSlots)', async () => {
+    const publishing = makePublishingMock();
+    const futureDate = '2099-06-15';
+    // Campaign is draft (so it passes the top-level guard), but the slot
+    // itself is already `scheduled` from a prior launch — e.g. the campaign
+    // was paused and directly re-driven back to draft by some other path, or
+    // this is defense-in-depth for the guard above. Either way `launch` must
+    // not re-materialize a non-pending slot.
+    const { db, updates } = buildFakeDb({
+      campaignRow: makeCampaignRow({ status: 'draft' }),
+      dayRows: [],
+      slotRows: [
+        makeSlotRow({
+          id: 'slot-already-scheduled',
+          date: futureDate,
+          channelId: '1',
+          slotStatus: 'scheduled',
+          postId: 'existing-post',
+          jobId: 'existing-job',
+        }),
+      ],
+      channelRows: [{ id: 1, platform: 'twitter' }],
+    });
+    const service = loadServiceWithFakeDb(db, publishing);
+
+    await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow(/no publishable/i);
+    expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
+    expect(updates.slotUpdates.find((u) => u.id === 'slot-already-scheduled')).toBeUndefined();
+  });
+
   // ==========================================================================
   // pause() / resume() — reuse launch's table-routed `buildFakeDb` fixture
   // (declared above in this `describe('launch')` closure) since pause/resume
@@ -898,6 +959,9 @@ describe('CampaignsService write methods (mocked db)', () => {
         campaignRow: makeCampaignRow({ status: 'active' }),
         dayRows: [],
         slotRows: [scheduledSlot, publishedSlot],
+        // post-1 is still genuinely 'scheduled' (not yet picked up by a
+        // worker) so pause's status-guarded delete applies to it.
+        postRows: [{ id: 'post-1', status: 'scheduled' }],
       });
       const service = loadServiceWithFakeDb(db, publishing);
 
@@ -928,6 +992,65 @@ describe('CampaignsService write methods (mocked db)', () => {
       const service = loadServiceWithFakeDb(db, publishing);
 
       await expect(service.pause(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow('Campaign not found');
+    });
+
+    it('does not delete a post that is mid-publish (slot scheduled, post.status = publishing)', async () => {
+      const publishing = makePublishingMock();
+      // The slot is still `scheduled` — the live path never flips a slot to
+      // a distinct 'publishing' slotStatus — but the underlying post has
+      // already moved to 'publishing' because a worker picked it up. Pause
+      // must leave this post alone: deleting it mid-flight would make the
+      // finalizer's `returning()` come back empty after the content already
+      // went live on the real platform.
+      const inFlightSlot = makeSlotRow({
+        id: 'slot-inflight',
+        slotStatus: 'scheduled',
+        postId: 'post-inflight',
+        jobId: 'job-inflight',
+        scheduledAt: new Date('2026-08-13T09:00:00Z'),
+      });
+      const { db, updates, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [inFlightSlot],
+        postRows: [{ id: 'post-inflight', status: 'publishing' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      const result = await service.pause(WORKSPACE_ID, CAMPAIGN_ID);
+
+      // The job is still cancelled (BullMQ job cancellation is independent
+      // of the post's DB status), but the in-flight post itself survives.
+      expect(publishing.cancelSlotJob).toHaveBeenCalledWith('job-inflight');
+      expect(deletes.postIds).toEqual([]);
+      expect(result.status).toBe('paused');
+
+      // The slot is still reset to pending per the documented "keep it
+      // simple" behaviour — resume/sync reconciles it later.
+      const slotUpdate = updates.slotUpdates.find((u) => u.id === 'slot-inflight');
+      expect(slotUpdate?.set).toMatchObject({ slotStatus: 'pending', postId: null });
+    });
+
+    it('does delete a post that is genuinely still scheduled (not yet picked up)', async () => {
+      const publishing = makePublishingMock();
+      const scheduledSlot = makeSlotRow({
+        id: 'slot-not-yet-fired',
+        slotStatus: 'scheduled',
+        postId: 'post-not-yet-fired',
+        jobId: 'job-not-yet-fired',
+        scheduledAt: new Date('2026-08-13T09:00:00Z'),
+      });
+      const { db, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [scheduledSlot],
+        postRows: [{ id: 'post-not-yet-fired', status: 'scheduled' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.pause(WORKSPACE_ID, CAMPAIGN_ID);
+
+      expect(deletes.postIds).toEqual(['post-not-yet-fired']);
     });
   });
 
