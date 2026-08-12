@@ -223,7 +223,12 @@ export class PostService {
       offset?: number;
     },
   ): Promise<{ posts: (typeof posts.$inferSelect)[]; total: number }> {
-    const conditions = [eq(posts.workspaceId, workspaceId)];
+    const conditions = [
+      eq(posts.workspaceId, workspaceId),
+      // Exclude campaign-materialized posts from the normal post list —
+      // they still appear on the calendar (getCalendarPosts is unaffected).
+      sql`(${posts.metadata} ->> 'campaignId') is null`,
+    ];
 
     if (options?.status) {
       conditions.push(eq(posts.status, options.status));
