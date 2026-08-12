@@ -28,6 +28,16 @@ export const CAMPAIGN_STATUSES = [
 ] as const;
 export type CampaignStatusDb = (typeof CAMPAIGN_STATUSES)[number];
 
+export const CAMPAIGN_SLOT_STATUSES = [
+  'pending', // not yet launched (or paused back)
+  'scheduled', // materialized + enqueued, awaiting publish
+  'publishing',
+  'published',
+  'failed',
+  'skipped', // past-due at launch, or an unapproved AI slot
+] as const;
+export type CampaignSlotStatus = (typeof CAMPAIGN_SLOT_STATUSES)[number];
+
 // =============================================================================
 // Campaign Schedule JSON — mirrors the frontend `CampaignSchedule` union
 // (bulk / drip / evergreen). Field names reproduced verbatim so the API
@@ -133,6 +143,8 @@ export const campaigns = pgTable('campaigns', {
   channelIds: jsonb('channel_ids').$type<string[]>().default([]).notNull(),
   platforms: jsonb('platforms').$type<string[]>().default([]).notNull(),
 
+  launchedAt: timestamp('launched_at', { withTimezone: true }),
+
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
 });
@@ -176,6 +188,16 @@ export const campaignSlotContent = pgTable(
     channelId: varchar('channel_id', { length: 255 }).notNull(),
 
     content: jsonb('content').$type<ChannelDayContentJson>().notNull(),
+
+    scheduledAt: timestamp('scheduled_at', { withTimezone: true }),
+    slotStatus: varchar('slot_status', { length: 20 })
+      .$type<CampaignSlotStatus>()
+      .notNull()
+      .default('pending'),
+    postId: uuid('post_id'),
+    jobId: varchar('job_id', { length: 120 }),
+    publishedAt: timestamp('published_at', { withTimezone: true }),
+    lastError: text('last_error'),
 
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
