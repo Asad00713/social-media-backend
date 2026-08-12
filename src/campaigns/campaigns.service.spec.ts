@@ -172,6 +172,23 @@ describe('CampaignsService.computeMetrics', () => {
     expect(metrics.postsPlanned).toBe(1);
   });
 
+  it('reflects real slot statuses (published/failed/skipped) written by the sync listener', () => {
+    const days = [day('2026-08-10', false)];
+    const slots = [
+      { ...slot('2026-08-10', 'ch-1', { caption: 'Hello' }), slotStatus: 'published' as const },
+      { ...slot('2026-08-10', 'ch-2', { caption: 'World' }), slotStatus: 'failed' as const },
+      { ...slot('2026-08-10', 'ch-3', { caption: 'Skip me' }), slotStatus: 'skipped' as const },
+      { ...slot('2026-08-10', 'ch-4', { caption: 'Still pending' }), slotStatus: 'scheduled' as const },
+    ];
+
+    const metrics = service.computeMetrics(days, slots);
+
+    expect(metrics.postsPlanned).toBe(4);
+    expect(metrics.postsPublished).toBe(1);
+    expect(metrics.postsFailed).toBe(1);
+    expect(metrics.postsSkipped).toBe(1);
+  });
+
   it('returns all zero metrics for empty input', () => {
     const metrics = service.computeMetrics([], []);
     expect(metrics).toEqual({

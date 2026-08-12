@@ -28,6 +28,7 @@ import { AdapterRegistryService } from '../../channels/analytics/services/adapte
 import type { AgeBucket } from '../../channels/analytics/types/platform-capabilities.types';
 import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
 import { CalendarPushSyncService } from '../../calendar-sync/services/calendar-push-sync.service';
+import { CampaignStatusSyncListener } from '../../campaigns/campaign-status-sync.listener';
 import type {
   PostStatusChangedPayload,
   PostStatusChangedTarget,
@@ -66,6 +67,7 @@ export class PostService {
     private readonly adapters: AdapterRegistryService,
     private readonly realtimeEmitter: AnalyticsEventEmitter,
     private readonly calendarPushSync: CalendarPushSyncService,
+    private readonly campaignStatusSync: CampaignStatusSyncListener,
   ) {}
 
   /**
@@ -655,6 +657,12 @@ export class PostService {
       .set(postUpdateData)
       .where(eq(posts.id, postId))
       .returning();
+
+    // Sync the outcome back to the originating campaign slot (if this post
+    // was materialized from one) and auto-complete the campaign when no
+    // slots remain outstanding. No-ops internally when metadata.campaignId
+    // is absent.
+    await this.campaignStatusSync.syncFromPost(updatedPost);
 
     this.emitPostStatusChanged({
       workspaceId,

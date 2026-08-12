@@ -168,29 +168,38 @@ export class CampaignsService {
   /**
    * postsPlanned = count of filled slots whose date is a non-skipped day.
    * A date with no matching `campaignDays` row is treated as non-skipped
-   * (skip defaults to false). published/failed/skipped are always 0 in
-   * Phase 1 — nothing actually publishes yet, so there is no real counter
-   * to report (avoids drift between a stored count and reality).
+   * (skip defaults to false). published/failed/skipped are computed from
+   * each slot's real `slotStatus` (written by `CampaignStatusSyncListener`
+   * as posts actually publish/fail, and by `launch`/`resume` for
+   * past-due/unavailable-channel skips) — always computed-on-read, never
+   * stored as a separate counter, so it can't drift from the slot rows.
    */
   computeMetrics(
     days: Pick<CampaignDay, 'date' | 'skip'>[],
-    slots: Pick<CampaignSlotContent, 'date' | 'content'>[],
+    slots: Pick<CampaignSlotContent, 'date' | 'content' | 'slotStatus'>[],
   ): CampaignMetricsDto {
     const skippedDates = new Set(
       days.filter((d) => d.skip).map((d) => d.date),
     );
 
     let postsPlanned = 0;
+    let postsPublished = 0;
+    let postsFailed = 0;
+    let postsSkipped = 0;
     for (const slot of slots) {
       if (skippedDates.has(slot.date)) continue;
-      if (this.isSlotFilled(slot.content)) postsPlanned += 1;
+      if (!this.isSlotFilled(slot.content)) continue;
+      postsPlanned += 1;
+      if (slot.slotStatus === 'published') postsPublished += 1;
+      else if (slot.slotStatus === 'failed') postsFailed += 1;
+      else if (slot.slotStatus === 'skipped') postsSkipped += 1;
     }
 
     return {
       postsPlanned,
-      postsPublished: 0,
-      postsFailed: 0,
-      postsSkipped: 0,
+      postsPublished,
+      postsFailed,
+      postsSkipped,
     };
   }
 
