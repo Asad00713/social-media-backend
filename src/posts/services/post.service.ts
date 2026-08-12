@@ -661,8 +661,16 @@ export class PostService {
     // Sync the outcome back to the originating campaign slot (if this post
     // was materialized from one) and auto-complete the campaign when no
     // slots remain outstanding. No-ops internally when metadata.campaignId
-    // is absent.
-    await this.campaignStatusSync.syncFromPost(updatedPost);
+    // is absent. Never let a sync failure fail (or duplicate, via BullMQ
+    // retry) an otherwise-successful publish — same fire-and-forget
+    // error boundary as `syncCalendarForPost` above.
+    void this.campaignStatusSync.syncFromPost(updatedPost).catch((error) => {
+      this.logger.warn(
+        `Campaign slot sync failed for post ${postId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
 
     this.emitPostStatusChanged({
       workspaceId,

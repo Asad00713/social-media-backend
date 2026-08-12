@@ -233,4 +233,31 @@ describe('CampaignStatusSyncListener.syncFromPost', () => {
     expect(updates.campaignUpdates).toHaveLength(1);
     expect(updates.campaignUpdates[0].set).toMatchObject({ status: 'completed' });
   });
+
+  // ==========================================================================
+  // Failure propagation — documents that `syncFromPost` itself does NOT
+  // swallow a DB error; the non-propagation guard lives one layer up, in
+  // `PostService`'s publish finalizer (`post.service.ts`), which wraps this
+  // call in `void ...syncFromPost(...).catch(...)` so a transient failure
+  // here can never re-throw into `publishPost` and trigger a BullMQ retry
+  // that would re-publish already-succeeded targets. This test exists to
+  // pin down *why* that caller-side guard is required.
+  // ==========================================================================
+  it('propagates a DB error from the slot update (caller is responsible for not letting this fail the publish path)', async () => {
+    const db = {
+      select: () => ({
+        from: () => ({ where: () => Promise.resolve([]) }),
+      }),
+      update: () => ({
+        set: () => ({
+          where: () => Promise.reject(new Error('connection reset')),
+        }),
+      }),
+    };
+    const listener = loadListenerWithFakeDb(db);
+
+    await expect(listener.syncFromPost(makePostRow({ status: 'published' }) as never)).rejects.toThrow(
+      'connection reset',
+    );
+  });
 });
