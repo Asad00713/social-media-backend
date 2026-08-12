@@ -251,16 +251,35 @@ jest.mock('../drizzle/db', () => ({
 import { CampaignsController } from './campaigns.controller';
 // eslint-disable-next-line import/first
 import { CampaignsService } from './campaigns.service';
+// eslint-disable-next-line import/first
+import type { CampaignPublishingService } from './campaign-publishing.service';
 
 const WORKSPACE_ID = randomUUID();
 const USER = { userId: randomUUID(), email: 'owner@example.com' };
+
+/**
+ * `CampaignsService.launch` (Task 4) now depends on `CampaignPublishingService`,
+ * whose real implementation needs a live BullMQ `Queue` (`@InjectQueue`) — too
+ * heavy for this thin controller-delegation spec, and unnecessary: every
+ * `launch` exercised here uses a non-numeric `channelId` (e.g. `'channel-1'`),
+ * which `resolveSlotChannels` can never resolve to a platform, so the slot is
+ * always marked "Channel unavailable"/skipped and `materializeAndEnqueue` is
+ * never actually invoked. A minimal fake is enough to satisfy the constructor.
+ */
+function makeFakePublishing(): CampaignPublishingService {
+  return {
+    materializeAndEnqueue: jest.fn().mockResolvedValue({ postId: 'unused', jobId: 'unused' }),
+    cancelSlotJob: jest.fn(),
+    buildJobId: jest.fn(),
+  } as unknown as CampaignPublishingService;
+}
 
 describe('CampaignsController (DB-mocked happy path)', () => {
   let controller: CampaignsController;
 
   beforeEach(() => {
     resetTables();
-    controller = new CampaignsController(new CampaignsService());
+    controller = new CampaignsController(new CampaignsService(makeFakePublishing()));
   });
 
   it('create -> get -> addDay -> addEvent -> updateEvent -> launch assembles the expected Campaign shape', async () => {
@@ -354,6 +373,21 @@ describe('CampaignsController (DB-mocked happy path)', () => {
       timezone: 'UTC',
       defaultTime: '09:00',
       skipWeekends: false,
+    });
+    // launch's Task 4 preflight rejects a campaign with no publishable
+    // content, so give `second` a filled event before launching — this
+    // test is about statusCounts/list filtering, not the preflight itself
+    // (that's covered directly in campaigns.service.spec.ts).
+    await controller.addDay(WORKSPACE_ID, second.id, { date: '2026-09-01' });
+    await controller.addEvent(WORKSPACE_ID, second.id, {
+      date: '2026-09-01',
+      channelId: 'channel-1',
+      postType: 'text',
+    });
+    await controller.updateEvent(WORKSPACE_ID, second.id, {
+      date: '2026-09-01',
+      channelId: 'channel-1',
+      patch: { caption: 'Hello world!' },
     });
     await controller.launch(WORKSPACE_ID, second.id);
 
