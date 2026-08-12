@@ -129,6 +129,12 @@ describe('CampaignsService.computeMetrics', () => {
       date,
       channelId,
       content: content(contentOverrides),
+      scheduledAt: null,
+      slotStatus: 'pending',
+      postId: null,
+      jobId: null,
+      publishedAt: null,
+      lastError: null,
       createdAt: new Date(),
       updatedAt: new Date(),
     };
