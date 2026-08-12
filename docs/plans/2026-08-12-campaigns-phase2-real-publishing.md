@@ -758,8 +758,11 @@ async resume(workspaceId: string, id: string): Promise<CampaignDto> {
     .from(campaignSlotContent)
     .where(and(eq(campaignSlotContent.campaignId, id), eq(campaignSlotContent.slotStatus, 'pending')));
 
+  // Respect per-day skip exactly like launch (collectPublishableSlots does this).
+  const resumeDays = await db.select().from(campaignDays).where(eq(campaignDays.campaignId, id));
+  const skippedDates = new Set(resumeDays.filter((d) => d.skip).map((d) => d.date));
   const publishable = pendingSlots.filter(
-    (s) => this.isSlotFilled(s.content) && (s.content.mode !== 'ai' || s.content.aiSubState === 'approved'),
+    (s) => !skippedDates.has(s.date) && this.isSlotFilled(s.content) && (s.content.mode !== 'ai' || s.content.aiSubState === 'approved'),
   );
   const channelMap = await this.resolveSlotChannels(publishable.map((s) => s.channelId));
   const dates = [...new Set(publishable.map((s) => s.date))];
