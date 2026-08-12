@@ -971,6 +971,24 @@ describe('CampaignsService write methods (mocked db)', () => {
       expect(updates.slotUpdates.find((u) => u.id === 'slot-1')).toBeUndefined();
     });
 
+    it('does not re-enqueue a pending slot whose day is skipped (campaignDays.skip=true)', async () => {
+      const publishing = makePublishingMock();
+      const skippedDate = '2099-06-15'; // far future -> would otherwise be due
+      const { db, updates } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'paused' }),
+        dayRows: [{ id: 'day-1', campaignId: CAMPAIGN_ID, date: skippedDate, skip: true }],
+        slotRows: [makeSlotRow({ date: skippedDate, channelId: '1', slotStatus: 'pending' })],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      const result = await service.resume(WORKSPACE_ID, CAMPAIGN_ID);
+
+      expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
+      expect(result.status).toBe('active');
+      expect(updates.slotUpdates.find((u) => u.id === 'slot-1')).toBeUndefined();
+    });
+
     it('404s when the campaign does not belong to the workspace', async () => {
       const publishing = makePublishingMock();
       const { db } = buildFakeDb({ campaignRow: undefined });

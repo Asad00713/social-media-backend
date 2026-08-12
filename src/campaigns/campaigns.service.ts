@@ -833,24 +833,32 @@ export class CampaignsService {
 
   /**
    * Re-materializes + re-enqueues every `pending` slot that's still
-   * publishable (filled + AI-approved-or-not-AI) and whose date is due per
-   * the campaign's schedule. Past-due dates or slots whose channel no longer
-   * resolves are left `pending` (same skip behaviour as `launch`) rather than
-   * blocking the whole resume.
+   * publishable (filled + AI-approved-or-not-AI + its day not skipped — same
+   * publishable rule `collectPublishableSlots` applies for `launch`) and
+   * whose date is due per the campaign's schedule. Past-due dates or slots
+   * whose channel no longer resolves are left `pending` (same skip behaviour
+   * as `launch`) rather than blocking the whole resume.
    */
   async resume(workspaceId: string, id: string): Promise<CampaignDto> {
     const campaign = await this.getOne(workspaceId, id); // 404 if wrong workspace
     const createdById = await this.loadCreatedById(id);
 
-    const pendingSlots = await db
-      .select()
-      .from(campaignSlotContent)
-      .where(
-        and(eq(campaignSlotContent.campaignId, id), eq(campaignSlotContent.slotStatus, 'pending')),
-      );
+    const [days, pendingSlots] = await Promise.all([
+      db.select().from(campaignDays).where(eq(campaignDays.campaignId, id)),
+      db
+        .select()
+        .from(campaignSlotContent)
+        .where(
+          and(eq(campaignSlotContent.campaignId, id), eq(campaignSlotContent.slotStatus, 'pending')),
+        ),
+    ]);
+    const skipped = new Set(days.filter((d) => d.skip).map((d) => d.date));
 
     const publishable = pendingSlots.filter(
-      (s) => this.isSlotFilled(s.content) && (s.content.mode !== 'ai' || s.content.aiSubState === 'approved'),
+      (s) =>
+        !skipped.has(s.date) &&
+        this.isSlotFilled(s.content) &&
+        (s.content.mode !== 'ai' || s.content.aiSubState === 'approved'),
     );
 
     const channelMap = await this.resolveSlotChannels(publishable.map((s) => s.channelId));
