@@ -11,7 +11,7 @@ import * as bcrypt from 'bcrypt';
 import { UsersService, PublicUser } from '../users/users.service';
 import { EmailService } from '../email/email.service';
 import { LoginDto } from './dto/login.dto';
-import type { User, UserRole, Workspace } from '../drizzle/schema';
+import type { User, UserRole } from '../drizzle/schema';
 import { users, workspace, workspaceInvitation } from '../drizzle/schema';
 import { CreateUserDto } from '../users/dto/create-user.dto';
 import {
@@ -27,7 +27,27 @@ import { AdminChallengeService } from './admin-challenge.service';
 import {
   mergeWorkspacesWithRoles,
   type WorkspaceWithRole,
+  type PublicWorkspace,
 } from './workspace-membership.util';
+
+// Columns returned to the client for any workspace row reachable from
+// /auth/me. Deliberately excludes `suspensionNote` (admin-only note) and
+// `suspendedById` (admin user id) — never leak these to the client.
+const PUBLIC_WORKSPACE_COLUMNS = {
+  id: true,
+  name: true,
+  slug: true,
+  description: true,
+  logo: true,
+  ownerId: true,
+  timezone: true,
+  preferredAiProvider: true,
+  isActive: true,
+  suspendedReason: true,
+  suspendedAt: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
 
 // OTP expires in 10 minutes — short-lived because the code space is small (1M).
 const OTP_TTL_MS = 10 * 60 * 1000;
@@ -48,7 +68,7 @@ export interface AuthResponse {
 export interface MeResponse {
   user: PublicUser;
   workspaces: WorkspaceWithRole[];
-  lastAccessedWorkspace: Workspace | null;
+  lastAccessedWorkspace: PublicWorkspace | null;
 }
 
 @Injectable()
@@ -92,6 +112,18 @@ export class AuthService {
 
     if (!user) {
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    // Block login for suspended accounts. Without this, a suspended user
+    // "logs in" successfully, then immediately 401s on /auth/me — confusing.
+    if (!user.isActive) {
+      throw new UnauthorizedException({
+        statusCode: 401,
+        error: 'Unauthorized',
+        code: 'ACCOUNT_SUSPENDED',
+        reason: user.suspendedReason ?? 'manual',
+        message: 'Your account has been suspended.',
+      });
     }
 
     // Block login if email is not verified (only for SUPER_ADMIN)
@@ -192,6 +224,7 @@ export class AuthService {
     const workspaces = await this.db.query.workspace.findMany({
       where: eq(workspace.ownerId, userId),
       orderBy: (workspace, { desc }) => [desc(workspace.createdAt)],
+      columns: PUBLIC_WORKSPACE_COLUMNS,
     });
 
     // Get accepted memberships (workspaces the user belongs to but doesn't own)
@@ -200,7 +233,7 @@ export class AuthService {
         eq(workspaceInvitation.userId, userId),
         eq(workspaceInvitation.status, 'ACCEPTED'),
       ),
-      with: { workspace: true },
+      with: { workspace: { columns: PUBLIC_WORKSPACE_COLUMNS } },
     });
     const memberships = memberRows
       .filter((r) => r.workspace)
@@ -211,10 +244,11 @@ export class AuthService {
     const merged = mergeWorkspacesWithRoles(workspaces, memberships);
 
     // Get last accessed workspace if exists
-    let lastAccessedWorkspace: Workspace | null = null;
+    let lastAccessedWorkspace: PublicWorkspace | null = null;
     if (user.lastAccessedWorkspaceId) {
       const foundWorkspace = await this.db.query.workspace.findFirst({
         where: eq(workspace.id, user.lastAccessedWorkspaceId),
+        columns: PUBLIC_WORKSPACE_COLUMNS,
       });
       lastAccessedWorkspace = foundWorkspace || null;
     }

@@ -9,7 +9,7 @@ import { Reflector } from '@nestjs/core';
 import { eq } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
-import { subscriptions } from '../../drizzle/schema';
+import { subscriptions, workspace } from '../../drizzle/schema';
 import { SKIP_SUSPEND_CHECK } from '../decorators/skip-suspend-check.decorator';
 
 /**
@@ -26,19 +26,26 @@ export const SUSPENDED_STATUSES = ['unpaid', 'incomplete_expired'] as const;
 
 /**
  * Global guard (registered as an APP_GUARD) that blocks every workspace-scoped
- * request whose workspace is billing-suspended, returning a structured 403 the
- * frontend recognises (`code: 'WORKSPACE_SUSPENDED'`).
+ * request whose workspace is suspended — either manually (admin-driven
+ * `workspace.isActive = false`) or via billing — returning a structured 403
+ * the frontend recognises (`code: 'WORKSPACE_SUSPENDED'`, machine-readable
+ * `reason`).
  *
  * It is deliberately a broad no-op:
  *   • routes carrying `@SkipSuspendCheck()` (billing) always pass;
  *   • routes with no `:workspaceId` / `:wsId` param (auth, plan list, webhooks,
  *     health) are not workspace-scoped and always pass;
+ *   • a workspace with no row at all passes (nothing to enforce);
  *   • a workspace with no subscription row is FREE / never-subscribed and passes.
- * Only an active row in one of {@link SUSPENDED_STATUSES} is blocked, so the
- * blast radius is limited to genuinely-suspended workspaces.
+ * The manual check (`workspace.isActive === false`) runs first and
+ * short-circuits before the subscription query. Only an active subscription
+ * row in one of {@link SUSPENDED_STATUSES} is blocked on the billing path, so
+ * the blast radius is limited to genuinely-suspended workspaces. `reason` is
+ * `'billing'` for the billing path, else `workspace.suspendedReason` (falling
+ * back to `'manual'`).
  *
  * This is the app's first global guard — auth elsewhere is opt-in per route —
- * because billing enforcement is inherently cross-cutting: a suspended
+ * because suspension enforcement is inherently cross-cutting: a suspended
  * workspace must be locked everywhere, not one controller at a time.
  */
 @Injectable()
@@ -63,6 +70,23 @@ export class WorkspaceSuspendedGuard implements CanActivate {
       request.params?.workspaceId ?? request.params?.wsId ?? null;
     if (!workspaceId) return true;
 
+    const wsRows = await this.db
+      .select({ isActive: workspace.isActive, reason: workspace.suspendedReason })
+      .from(workspace)
+      .where(eq(workspace.id, workspaceId))
+      .limit(1);
+
+    const ws = wsRows[0];
+    if (ws && ws.isActive === false) {
+      throw new ForbiddenException({
+        statusCode: 403,
+        error: 'Forbidden',
+        code: 'WORKSPACE_SUSPENDED',
+        reason: ws.reason ?? 'manual',
+        message: 'This workspace has been suspended. Contact support for details.',
+      });
+    }
+
     const rows = await this.db
       .select({ status: subscriptions.status })
       .from(subscriptions)
@@ -77,6 +101,7 @@ export class WorkspaceSuspendedGuard implements CanActivate {
         statusCode: 403,
         error: 'Forbidden',
         code: 'WORKSPACE_SUSPENDED',
+        reason: 'billing',
         status,
         message:
           'This workspace is suspended because of a billing problem. Update your payment method to restore access.',
