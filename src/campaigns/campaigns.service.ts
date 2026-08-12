@@ -13,6 +13,7 @@ import {
   type ChannelDayContentJson,
 } from '../drizzle/schema/campaigns.schema';
 import { socialMediaChannels } from '../drizzle/schema/channels.schema';
+import { posts } from '../drizzle/schema/posts.schema';
 import { computeSlotSchedule } from './campaign-schedule.util';
 import { CampaignPublishingService } from './campaign-publishing.service';
 
@@ -665,19 +666,6 @@ export class CampaignsService {
 
   // ── Lifecycle ────────────────────────────────────────────────────────────
 
-  private async setStatus(
-    workspaceId: string,
-    id: string,
-    status: string,
-  ): Promise<CampaignDto> {
-    await this.getOne(workspaceId, id);
-    await db
-      .update(campaigns)
-      .set({ status, updatedAt: new Date() })
-      .where(eq(campaigns.id, id));
-    return this.assembleCampaign(id);
-  }
-
   /**
    * Loads a campaign's raw `createdById` column — not exposed on the public
    * `CampaignDto` (see Task 4 note). Used by `launch` (and reused by
@@ -806,12 +794,94 @@ export class CampaignsService {
     return this.assembleCampaign(id);
   }
 
+  /**
+   * Cancels the still-pending BullMQ job (and deletes the not-yet-published
+   * `posts` row) behind every `scheduled` slot, then resets those slots back
+   * to `pending` so `resume` can re-materialize them later. Already
+   * `published`/`publishing`/`failed`/`skipped` slots are left untouched —
+   * pause only pulls back work that hasn't fired yet.
+   */
   async pause(workspaceId: string, id: string): Promise<CampaignDto> {
-    return this.setStatus(workspaceId, id, 'paused');
+    await this.getOne(workspaceId, id); // 404 if wrong workspace
+
+    const slots = await db
+      .select()
+      .from(campaignSlotContent)
+      .where(
+        and(eq(campaignSlotContent.campaignId, id), eq(campaignSlotContent.slotStatus, 'scheduled')),
+      );
+
+    for (const slot of slots) {
+      if (slot.jobId) await this.publishing.cancelSlotJob(slot.jobId);
+      // Remove the not-yet-published post so it can't fire, and reset the slot.
+      if (slot.postId) await db.delete(posts).where(eq(posts.id, slot.postId));
+      await db
+        .update(campaignSlotContent)
+        .set({
+          slotStatus: 'pending',
+          postId: null,
+          jobId: null,
+          scheduledAt: null,
+          updatedAt: new Date(),
+        })
+        .where(eq(campaignSlotContent.id, slot.id));
+    }
+
+    await db.update(campaigns).set({ status: 'paused', updatedAt: new Date() }).where(eq(campaigns.id, id));
+    return this.assembleCampaign(id);
   }
 
+  /**
+   * Re-materializes + re-enqueues every `pending` slot that's still
+   * publishable (filled + AI-approved-or-not-AI) and whose date is due per
+   * the campaign's schedule. Past-due dates or slots whose channel no longer
+   * resolves are left `pending` (same skip behaviour as `launch`) rather than
+   * blocking the whole resume.
+   */
   async resume(workspaceId: string, id: string): Promise<CampaignDto> {
-    return this.setStatus(workspaceId, id, 'active');
+    const campaign = await this.getOne(workspaceId, id); // 404 if wrong workspace
+    const createdById = await this.loadCreatedById(id);
+
+    const pendingSlots = await db
+      .select()
+      .from(campaignSlotContent)
+      .where(
+        and(eq(campaignSlotContent.campaignId, id), eq(campaignSlotContent.slotStatus, 'pending')),
+      );
+
+    const publishable = pendingSlots.filter(
+      (s) => this.isSlotFilled(s.content) && (s.content.mode !== 'ai' || s.content.aiSubState === 'approved'),
+    );
+
+    const channelMap = await this.resolveSlotChannels(publishable.map((s) => s.channelId));
+    const dates = [...new Set(publishable.map((s) => s.date))];
+    const { due } = computeSlotSchedule(campaign.schedule, dates, new Date());
+    const dueByDate = new Map(due.map((d) => [d.date, d.scheduledAt]));
+
+    for (const slot of publishable) {
+      const scheduledAt = dueByDate.get(slot.date);
+      const platform = channelMap.get(slot.channelId);
+      if (!scheduledAt || !platform) continue; // past-due/unavailable stays pending
+
+      const { postId, jobId } = await this.publishing.materializeAndEnqueue({
+        workspaceId,
+        createdById,
+        campaignId: id,
+        date: slot.date,
+        channelId: slot.channelId,
+        content: slot.content,
+        platform,
+        scheduledAt,
+      });
+
+      await db
+        .update(campaignSlotContent)
+        .set({ postId, jobId, scheduledAt, slotStatus: 'scheduled', updatedAt: new Date() })
+        .where(eq(campaignSlotContent.id, slot.id));
+    }
+
+    await db.update(campaigns).set({ status: 'active', updatedAt: new Date() }).where(eq(campaigns.id, id));
+    return this.assembleCampaign(id);
   }
 
   /**

@@ -659,11 +659,12 @@ describe('CampaignsService write methods (mocked db)', () => {
       slotUpdates: { id: string; set: Record<string, unknown> }[];
       campaignUpdates: Record<string, unknown>[];
     } = { slotUpdates: [], campaignUpdates: [] };
+    const deletes: { postIds: string[] } = { postIds: [] };
 
     const db = {
       select: () => ({
         from: (table: unknown) => ({
-          where: () => {
+          where: (whereCond: unknown) => {
             const name = getTableName(table as never);
             if (name === 'campaigns') {
               return Promise.resolve(fixture.campaignRow ? [fixture.campaignRow] : []);
@@ -672,7 +673,14 @@ describe('CampaignsService write methods (mocked db)', () => {
               return Promise.resolve(fixture.dayRows ?? []);
             }
             if (name === 'campaign_slot_content') {
-              return Promise.resolve(fixture.slotRows ?? []);
+              const rows = fixture.slotRows ?? [];
+              const eqValues = extractEqValues(whereCond);
+              const wantedStatus = eqValues['slot_status'];
+              const filtered =
+                typeof wantedStatus === 'string'
+                  ? rows.filter((r) => (r as { slotStatus?: string }).slotStatus === wantedStatus)
+                  : rows;
+              return Promise.resolve(filtered);
             }
             if (name === 'social_media_channels') {
               return Promise.resolve(fixture.channelRows ?? []);
@@ -688,6 +696,10 @@ describe('CampaignsService write methods (mocked db)', () => {
             if (name === 'campaign_slot_content') {
               const id = extractSlotIdFromWhere(whereCond);
               updates.slotUpdates.push({ id, set });
+              // Write through so a subsequent select in the same call (e.g.
+              // resume's re-derived DTO) sees the post-update slot state.
+              const row = (fixture.slotRows ?? []).find((r) => (r as { id: string }).id === id);
+              if (row) Object.assign(row, set);
             } else if (name === 'campaigns') {
               updates.campaignUpdates.push(set);
               // Write through to the live fixture row so the final
@@ -699,9 +711,18 @@ describe('CampaignsService write methods (mocked db)', () => {
           },
         }),
       }),
+      delete: (table: unknown) => ({
+        where: (whereCond: unknown) => {
+          const name = getTableName(table as never);
+          if (name === 'posts') {
+            deletes.postIds.push(extractSlotIdFromWhere(whereCond));
+          }
+          return Promise.resolve();
+        },
+      }),
     };
 
-    return { db, updates };
+    return { db, updates, deletes };
   }
 
   /** Pulls the `campaignSlotContent.id` value out of an `eq(campaignSlotContent.id, x)`
@@ -714,6 +735,36 @@ describe('CampaignsService write methods (mocked db)', () => {
       if (typeof c?.value === 'string') return c.value;
     }
     return '';
+  }
+
+  /**
+   * Walks a drizzle `and(eq(colA, v1), eq(colB, v2), ...)` condition tree and
+   * returns `{ colA: v1, colB: v2 }`. Used by the fake db's `select` so
+   * `pause`/`resume`'s `slotStatus:'scheduled'` / `slotStatus:'pending'`
+   * filters actually narrow the in-memory `slotRows` fixture instead of
+   * ignoring the `where()` clause outright (which would make pause cancel
+   * every slot regardless of status).
+   */
+  function extractEqValues(cond: unknown): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+    let pendingColumn: string | undefined;
+    function walk(node: unknown): void {
+      if (node == null || typeof node !== 'object') return;
+      const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+      if (Array.isArray(chunks)) {
+        for (const c of chunks) walk(c);
+        return;
+      }
+      const named = node as { name?: string; columnType?: string; value?: unknown };
+      if (typeof named.name === 'string' && typeof named.columnType === 'string') {
+        pendingColumn = named.name;
+      } else if (pendingColumn && named.value !== undefined && typeof named.value !== 'object') {
+        result[pendingColumn] = named.value;
+        pendingColumn = undefined;
+      }
+    }
+    walk(cond);
+    return result;
   }
 
   function makePublishingMock() {
@@ -799,6 +850,134 @@ describe('CampaignsService write methods (mocked db)', () => {
     const service = loadServiceWithFakeDb(db, publishing);
 
     await expect(service.launch(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow('Campaign not found');
+  });
+
+  // ==========================================================================
+  // pause() / resume() — reuse launch's table-routed `buildFakeDb` fixture
+  // (declared above in this `describe('launch')` closure) since pause/resume
+  // share the same slot/campaign shapes and the same fake-db plumbing.
+  // ==========================================================================
+
+  describe('pause', () => {
+    const WORKSPACE_ID = 'ws-1';
+    const CAMPAIGN_ID = 'c-1';
+
+    it('cancels only the scheduled slot job and resets it to pending; published slot untouched', async () => {
+      const publishing = makePublishingMock();
+      const scheduledSlot = makeSlotRow({
+        id: 'slot-scheduled',
+        slotStatus: 'scheduled',
+        postId: 'post-1',
+        jobId: 'job-1',
+        scheduledAt: new Date('2026-08-13T09:00:00Z'),
+      });
+      const publishedSlot = makeSlotRow({
+        id: 'slot-published',
+        slotStatus: 'published',
+        postId: 'post-2',
+        jobId: 'job-2',
+      });
+      const { db, updates, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [scheduledSlot, publishedSlot],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      const result = await service.pause(WORKSPACE_ID, CAMPAIGN_ID);
+
+      expect(publishing.cancelSlotJob).toHaveBeenCalledTimes(1);
+      expect(publishing.cancelSlotJob).toHaveBeenCalledWith('job-1');
+      expect(deletes.postIds).toEqual(['post-1']);
+      expect(result.status).toBe('paused');
+
+      const scheduledUpdate = updates.slotUpdates.find((u) => u.id === 'slot-scheduled');
+      expect(scheduledUpdate?.set).toMatchObject({
+        slotStatus: 'pending',
+        postId: null,
+        jobId: null,
+        scheduledAt: null,
+      });
+      // The published slot was selected out by the `slotStatus:'scheduled'`
+      // filter in the real query — the fake db doesn't filter, so assert no
+      // update was ever recorded against it.
+      expect(updates.slotUpdates.find((u) => u.id === 'slot-published')).toBeUndefined();
+      expect(updates.campaignUpdates[0]).toMatchObject({ status: 'paused' });
+    });
+
+    it('404s when the campaign does not belong to the workspace', async () => {
+      const publishing = makePublishingMock();
+      const { db } = buildFakeDb({ campaignRow: undefined });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await expect(service.pause(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow('Campaign not found');
+    });
+  });
+
+  describe('resume', () => {
+    const WORKSPACE_ID = 'ws-1';
+    const CAMPAIGN_ID = 'c-1';
+
+    it('re-enqueues pending future slots and sets the campaign active', async () => {
+      const publishing = makePublishingMock();
+      const futureDate = '2099-06-15'; // far future -> always "due", never past-due
+      const { db, updates } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'paused' }),
+        dayRows: [],
+        slotRows: [makeSlotRow({ date: futureDate, channelId: '1', slotStatus: 'pending' })],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      const result = await service.resume(WORKSPACE_ID, CAMPAIGN_ID);
+
+      expect(publishing.materializeAndEnqueue).toHaveBeenCalledTimes(1);
+      expect(publishing.materializeAndEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceId: WORKSPACE_ID,
+          createdById: 'user-1',
+          campaignId: CAMPAIGN_ID,
+          date: futureDate,
+          channelId: '1',
+          platform: 'twitter',
+        }),
+      );
+      expect(result.status).toBe('active');
+
+      const slotUpdate = updates.slotUpdates.find((u) => u.id === 'slot-1');
+      expect(slotUpdate?.set).toMatchObject({
+        postId: 'p1',
+        jobId: 'j1',
+        slotStatus: 'scheduled',
+      });
+      expect(updates.campaignUpdates[0]).toMatchObject({ status: 'active' });
+    });
+
+    it('leaves a past-due pending slot untouched (still pending, not enqueued)', async () => {
+      const publishing = makePublishingMock();
+      const pastDate = '2020-01-02'; // within schedule window but already elapsed
+      const { db, updates } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'paused' }),
+        dayRows: [],
+        slotRows: [makeSlotRow({ date: pastDate, channelId: '1', slotStatus: 'pending' })],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      const result = await service.resume(WORKSPACE_ID, CAMPAIGN_ID);
+
+      expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
+      expect(result.status).toBe('active');
+      expect(updates.slotUpdates.find((u) => u.id === 'slot-1')).toBeUndefined();
+    });
+
+    it('404s when the campaign does not belong to the workspace', async () => {
+      const publishing = makePublishingMock();
+      const { db } = buildFakeDb({ campaignRow: undefined });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await expect(service.resume(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow('Campaign not found');
+    });
   });
   });
 });
