@@ -21,7 +21,9 @@ import {
   isNull,
   isNotNull,
   or,
+  notInArray,
 } from 'drizzle-orm';
+import { INTEGRATION_PLATFORMS } from '../drizzle/schema';
 import {
   users,
   workspace,
@@ -1529,6 +1531,15 @@ export class AdminService {
   // ==========================================================================
 
   async getChannelStats() {
+    // Publishing channels only, matching the list — cloud/calendar
+    // integrations share the table but are not channels and would inflate
+    // every count here. By platform, not the `category` column, which is
+    // unreliable until its backfill has run.
+    const notIntegration = notInArray(
+      socialMediaChannels.platform,
+      INTEGRATION_PLATFORMS,
+    );
+
     // Channels by platform
     const channelsByPlatform = await this.db
       .select({
@@ -1536,6 +1547,7 @@ export class AdminService {
         count: count(),
       })
       .from(socialMediaChannels)
+      .where(notIntegration)
       .groupBy(socialMediaChannels.platform)
       .orderBy(desc(count()));
 
@@ -1546,7 +1558,25 @@ export class AdminService {
         count: count(),
       })
       .from(socialMediaChannels)
+      .where(notIntegration)
       .groupBy(socialMediaChannels.connectionStatus);
+
+    // Broken count per platform, so the by-platform view can show how many of
+    // each platform's channels need a reconnect without apportioning a
+    // fleet-wide rate as a guess.
+    const brokenByPlatform = await this.db
+      .select({
+        platform: socialMediaChannels.platform,
+        count: count(),
+      })
+      .from(socialMediaChannels)
+      .where(
+        and(
+          notIntegration,
+          sql`${socialMediaChannels.connectionStatus} IN ('expired', 'error', 'revoked')`,
+        ),
+      )
+      .groupBy(socialMediaChannels.platform);
 
     // Expired/error channels
     const problemChannels = await this.db
@@ -1561,14 +1591,128 @@ export class AdminService {
       })
       .from(socialMediaChannels)
       .where(
-        sql`${socialMediaChannels.connectionStatus} IN ('expired', 'error', 'revoked')`,
+        and(
+          notIntegration,
+          sql`${socialMediaChannels.connectionStatus} IN ('expired', 'error', 'revoked')`,
+        ),
       )
       .limit(50);
 
     return {
       byPlatform: channelsByPlatform,
       byStatus: channelsByStatus,
+      brokenByPlatform,
       problemChannels,
+    };
+  }
+
+  /**
+   * Every connected account across every customer, one page at a time.
+   *
+   * `needsAttention` is a filter rather than a stored flag, and it means the
+   * same thing here as everywhere else in admin: a connection status of
+   * expired, error or revoked. Keeping the definition in one place stops the
+   * channels list and the workspace health view from disagreeing about what
+   * "broken" is.
+   */
+  async getAdminChannels(options: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    platform?: string;
+    status?: string;
+    needsAttention?: boolean;
+  }) {
+    const {
+      page = 1,
+      limit = 20,
+      search,
+      platform,
+      status,
+      needsAttention,
+    } = options;
+    const offset = (page - 1) * limit;
+
+    // Publishing channels only. Cloud and calendar integrations share this
+    // table but are a different thing — they do not publish, do not consume a
+    // channel slot (`isBillablePlatform` draws the same line), and belong to an
+    // integrations surface rather than here. Excluded by platform, not by the
+    // `category` column, which is unreliable until its backfill has run.
+    const conditions: any[] = [
+      notInArray(socialMediaChannels.platform, INTEGRATION_PLATFORMS),
+    ];
+    if (platform) {
+      conditions.push(eq(socialMediaChannels.platform, platform));
+    }
+    if (status) {
+      conditions.push(eq(socialMediaChannels.connectionStatus, status));
+    }
+    if (needsAttention) {
+      conditions.push(
+        sql`${socialMediaChannels.connectionStatus} IN ('expired', 'error', 'revoked')`,
+      );
+    }
+    if (search?.trim()) {
+      const term = `%${search.trim()}%`;
+      conditions.push(
+        or(
+          ilike(socialMediaChannels.accountName, term),
+          ilike(socialMediaChannels.username, term),
+        ),
+      );
+    }
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [channelsList, totalCount] = await Promise.all([
+      this.db
+        .select({
+          id: socialMediaChannels.id,
+          platform: socialMediaChannels.platform,
+          category: socialMediaChannels.category,
+          accountType: socialMediaChannels.accountType,
+          accountName: socialMediaChannels.accountName,
+          username: socialMediaChannels.username,
+          profilePictureUrl: socialMediaChannels.profilePictureUrl,
+          connectionStatus: socialMediaChannels.connectionStatus,
+          lastError: socialMediaChannels.lastError,
+          lastErrorAt: socialMediaChannels.lastErrorAt,
+          consecutiveErrors: socialMediaChannels.consecutiveErrors,
+          tokenExpiresAt: socialMediaChannels.tokenExpiresAt,
+          lastSyncedAt: socialMediaChannels.lastSyncedAt,
+          isActive: socialMediaChannels.isActive,
+          createdAt: socialMediaChannels.createdAt,
+          workspaceId: socialMediaChannels.workspaceId,
+          // The owning workspace's name, correlated to the channel's row. The
+          // identifier is written out qualified on purpose: in this select
+          // Drizzle would otherwise emit `workspace_id` bare, and the subquery
+          // would read it as its own column and match nothing.
+          workspaceName: sql<string>`(
+            SELECT ws.name
+            FROM ${workspace} AS ws
+            WHERE ws.id = ${socialMediaChannels.workspaceId}
+          )`,
+        })
+        .from(socialMediaChannels)
+        .where(where)
+        .orderBy(desc(socialMediaChannels.createdAt))
+        .limit(limit)
+        .offset(offset),
+      this.db
+        .select({ count: count() })
+        .from(socialMediaChannels)
+        .where(where),
+    ]);
+
+    const total = totalCount[0]?.count ?? 0;
+
+    return {
+      channels: channelsList,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
     };
   }
 
