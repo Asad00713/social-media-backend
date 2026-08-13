@@ -55,9 +55,18 @@ export class WorkspaceSuspendedGuard implements CanActivate {
     ]);
     if (skip) return true;
 
-    const request = context
-      .switchToHttp()
-      .getRequest<{ params?: Record<string, string | undefined> }>();
+    const request = context.switchToHttp().getRequest<{
+      params?: Record<string, string | undefined>;
+      user?: { role?: string };
+    }>();
+
+    // A super admin is never locked out of a suspended workspace — reaching one
+    // to inspect and reactivate it is the whole point. This is a best-effort
+    // second line behind @SkipSuspendCheck() on the admin controller: as a
+    // global guard this can run before the route's auth guard populates
+    // `request.user`, so when the role is present we honour it, and when it is
+    // not the decorator has already exempted the admin routes.
+    if (request.user?.role === 'SUPER_ADMIN') return true;
     // `:workspaceId` everywhere except the analytics module, which uses `:wsId`.
     const workspaceId =
       request.params?.workspaceId ?? request.params?.wsId ?? null;

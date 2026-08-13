@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
+import { SkipSuspendCheck } from '../auth/decorators/skip-suspend-check.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import {
   ArrayMaxSize,
@@ -353,6 +354,12 @@ class CleanQueueDto {
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, SuperAdminGuard)
+// Admin routes are never subject to the billing-suspension lock. A super admin
+// has to reach a suspended workspace precisely to inspect it and switch it back
+// on; the global WorkspaceSuspendedGuard, which keys off the `:workspaceId`
+// param alone, would otherwise 403 every admin call into a suspended workspace
+// and make it un-openable and un-reactivatable from here.
+@SkipSuspendCheck()
 export class AdminController {
   constructor(
     private readonly adminService: AdminService,
