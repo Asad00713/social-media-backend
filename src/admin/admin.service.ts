@@ -1984,6 +1984,322 @@ export class AdminService {
   }
 
   // ==========================================================================
+  // Dashboard Overview (landing page)
+  // ==========================================================================
+
+  /**
+   * Everything the admin landing page shows, in one call. `getDashboardOverview`
+   * gives headline counts and `getRevenueStats` gives paid-invoice revenue, but
+   * neither carries recurring MRR, a per-plan revenue split, or a day-by-day
+   * growth series — and the overview wants all three plus period-over-period
+   * deltas. Assembling it here keeps the page to a single request.
+   *
+   * `period` (7/30/90 days) sizes only the time series and the deltas; the
+   * headline totals are always the live platform-wide figures.
+   */
+  async getAdminOverview(period: '7d' | '30d' | '90d' = '30d') {
+    const days = period === '7d' ? 7 : period === '90d' ? 90 : 30;
+    const now = new Date();
+    const dayMs = 24 * 60 * 60 * 1000;
+    // Window boundaries for the delta: the current period, and the one of equal
+    // length immediately before it. "New this period vs the period before" is
+    // the honest comparison a dashboard delta implies.
+    const periodStart = new Date(now.getTime() - days * dayMs);
+    const prevPeriodStart = new Date(now.getTime() - 2 * days * dayMs);
+
+    // Publishing channels only, matching the channels module. The older
+    // getDashboardOverview counts integrations here too, which is a discrepancy
+    // we deliberately do not carry forward.
+    const notIntegration = notInArray(
+      socialMediaChannels.platform,
+      INTEGRATION_PLATFORMS,
+    );
+
+    const [
+      totalUsers,
+      activeUsers,
+      newUsersThisPeriod,
+      newUsersPrevPeriod,
+      totalWorkspaces,
+      activeWorkspaces,
+      newWorkspacesThisPeriod,
+      newWorkspacesPrevPeriod,
+      totalChannels,
+      connectedChannels,
+      brokenChannels,
+      postsAgg,
+      failedPostsThisPeriod,
+      mrrRow,
+      planMixRows,
+      userGrowthRows,
+      workspaceGrowthRows,
+      postSeriesRows,
+      aiByWorkspaceRaw,
+      recentUsers,
+      recentWorkspaces,
+    ] = await Promise.all([
+      this.db.select({ count: count() }).from(users),
+      this.db
+        .select({ count: count() })
+        .from(users)
+        .where(eq(users.isActive, true)),
+      this.db
+        .select({ count: count() })
+        .from(users)
+        .where(gte(users.createdAt, periodStart)),
+      this.db
+        .select({ count: count() })
+        .from(users)
+        .where(
+          and(
+            gte(users.createdAt, prevPeriodStart),
+            lte(users.createdAt, periodStart),
+          ),
+        ),
+
+      this.db.select({ count: count() }).from(workspace),
+      this.db
+        .select({ count: count() })
+        .from(workspace)
+        .where(eq(workspace.isActive, true)),
+      this.db
+        .select({ count: count() })
+        .from(workspace)
+        .where(gte(workspace.createdAt, periodStart)),
+      this.db
+        .select({ count: count() })
+        .from(workspace)
+        .where(
+          and(
+            gte(workspace.createdAt, prevPeriodStart),
+            lte(workspace.createdAt, periodStart),
+          ),
+        ),
+
+      this.db.select({ count: count() }).from(socialMediaChannels).where(notIntegration),
+      this.db
+        .select({ count: count() })
+        .from(socialMediaChannels)
+        .where(and(notIntegration, eq(socialMediaChannels.connectionStatus, 'connected'))),
+      this.db
+        .select({ count: count() })
+        .from(socialMediaChannels)
+        .where(
+          and(
+            notIntegration,
+            sql`${socialMediaChannels.connectionStatus} IN ('expired', 'error', 'revoked')`,
+          ),
+        ),
+
+      // Posts by status, as one grouped query rather than four counts.
+      this.db
+        .select({ status: posts.status, count: count() })
+        .from(posts)
+        .groupBy(posts.status),
+      this.db
+        .select({ count: count() })
+        .from(posts)
+        .where(and(eq(posts.status, 'failed'), gte(posts.createdAt, periodStart))),
+
+      // Platform MRR: every active subscription's recurring contribution summed.
+      // The inner scalar mirrors getAdminSubscriptions — line items summed, or
+      // the plan's base price when a subscription predates any Stripe checkout.
+      this.db
+        .select({
+          mrrCents: sql<number>`COALESCE(SUM(
+            COALESCE(
+              (
+                SELECT SUM(si.quantity * si.unit_price_cents)
+                FROM ${subscriptionItems} AS si
+                WHERE si.subscription_id = ${subscriptions.id}
+              ),
+              ${plans.basePriceCents}
+            )
+          ), 0)`,
+        })
+        .from(subscriptions)
+        .innerJoin(plans, eq(plans.code, subscriptions.planCode))
+        .where(eq(subscriptions.status, 'active')),
+
+      // Per-plan: how many active subscriptions and how much recurring revenue.
+      this.db
+        .select({
+          planCode: subscriptions.planCode,
+          planName: plans.name,
+          basePriceCents: plans.basePriceCents,
+          count: count(),
+          mrrCents: sql<number>`COALESCE(SUM(
+            COALESCE(
+              (
+                SELECT SUM(si.quantity * si.unit_price_cents)
+                FROM ${subscriptionItems} AS si
+                WHERE si.subscription_id = ${subscriptions.id}
+              ),
+              ${plans.basePriceCents}
+            )
+          ), 0)`,
+        })
+        .from(subscriptions)
+        .innerJoin(plans, eq(plans.code, subscriptions.planCode))
+        .where(eq(subscriptions.status, 'active'))
+        .groupBy(subscriptions.planCode, plans.name, plans.basePriceCents),
+
+      // Daily growth series over the window — one row per day that had signups.
+      this.db
+        .select({
+          date: sql<string>`DATE(${users.createdAt})`,
+          count: count(),
+        })
+        .from(users)
+        .where(gte(users.createdAt, periodStart))
+        .groupBy(sql`DATE(${users.createdAt})`)
+        .orderBy(sql`DATE(${users.createdAt})`),
+      this.db
+        .select({
+          date: sql<string>`DATE(${workspace.createdAt})`,
+          count: count(),
+        })
+        .from(workspace)
+        .where(gte(workspace.createdAt, periodStart))
+        .groupBy(sql`DATE(${workspace.createdAt})`)
+        .orderBy(sql`DATE(${workspace.createdAt})`),
+
+      // Publishing series: posts per day split by status, for the stacked chart.
+      this.db
+        .select({
+          date: sql<string>`DATE(${posts.createdAt})`,
+          status: posts.status,
+          count: count(),
+        })
+        .from(posts)
+        .where(gte(posts.createdAt, periodStart))
+        .groupBy(sql`DATE(${posts.createdAt})`, posts.status)
+        .orderBy(sql`DATE(${posts.createdAt})`),
+
+      // Top AI spenders by tokens (there is no per-workspace dollar cost stored,
+      // so the overview shows tokens, not a fabricated dollar figure).
+      this.db
+        .select({
+          workspaceId: aiUsageLog.workspaceId,
+          workspaceName: workspace.name,
+          totalTokens: sql<number>`COALESCE(SUM(${aiUsageLog.tokensUsed}), 0)`,
+          operations: count(),
+        })
+        .from(aiUsageLog)
+        .innerJoin(workspace, eq(workspace.id, aiUsageLog.workspaceId))
+        .where(gte(aiUsageLog.createdAt, periodStart))
+        .groupBy(aiUsageLog.workspaceId, workspace.name)
+        .orderBy(sql`SUM(${aiUsageLog.tokensUsed}) DESC`)
+        .limit(5),
+
+      this.db
+        .select({
+          id: users.id,
+          email: users.email,
+          name: users.name,
+          createdAt: users.createdAt,
+        })
+        .from(users)
+        .orderBy(desc(users.createdAt))
+        .limit(6),
+      this.db
+        .select({
+          id: workspace.id,
+          name: workspace.name,
+          slug: workspace.slug,
+          createdAt: workspace.createdAt,
+        })
+        .from(workspace)
+        .orderBy(desc(workspace.createdAt))
+        .limit(6),
+    ]);
+
+    const postsByStatus = new Map(
+      postsAgg.map((row) => [row.status, row.count]),
+    );
+    const postsTotal = postsAgg.reduce((sum, row) => sum + row.count, 0);
+
+    // Percentage change, guarding the divide-by-zero: from nothing to something
+    // is "new", not an infinite percentage.
+    const delta = (current: number, previous: number): number | null => {
+      if (previous === 0) return current > 0 ? null : 0;
+      return Math.round(((current - previous) / previous) * 1000) / 10;
+    };
+
+    const usersThisPeriod = newUsersThisPeriod[0]?.count || 0;
+    const usersPrevPeriod = newUsersPrevPeriod[0]?.count || 0;
+    const wsThisPeriod = newWorkspacesThisPeriod[0]?.count || 0;
+    const wsPrevPeriod = newWorkspacesPrevPeriod[0]?.count || 0;
+
+    return {
+      period,
+      users: {
+        total: totalUsers[0]?.count || 0,
+        active: activeUsers[0]?.count || 0,
+        suspended: (totalUsers[0]?.count || 0) - (activeUsers[0]?.count || 0),
+        newThisPeriod: usersThisPeriod,
+        delta: delta(usersThisPeriod, usersPrevPeriod),
+      },
+      workspaces: {
+        total: totalWorkspaces[0]?.count || 0,
+        active: activeWorkspaces[0]?.count || 0,
+        suspended:
+          (totalWorkspaces[0]?.count || 0) - (activeWorkspaces[0]?.count || 0),
+        newThisPeriod: wsThisPeriod,
+        delta: delta(wsThisPeriod, wsPrevPeriod),
+      },
+      channels: {
+        total: totalChannels[0]?.count || 0,
+        connected: connectedChannels[0]?.count || 0,
+        broken: brokenChannels[0]?.count || 0,
+      },
+      posts: {
+        total: postsTotal,
+        published: postsByStatus.get('published') || 0,
+        scheduled: postsByStatus.get('scheduled') || 0,
+        failed: postsByStatus.get('failed') || 0,
+        failedThisPeriod: failedPostsThisPeriod[0]?.count || 0,
+      },
+      revenue: {
+        mrrCents: Number(mrrRow[0]?.mrrCents) || 0,
+        byPlan: planMixRows
+          .map((row) => ({
+            planCode: row.planCode,
+            planName: row.planName,
+            count: Number(row.count) || 0,
+            mrrCents: Number(row.mrrCents) || 0,
+          }))
+          .sort((a, b) => b.mrrCents - a.mrrCents),
+      },
+      growth: {
+        users: userGrowthRows.map((r) => ({
+          date: r.date,
+          count: Number(r.count) || 0,
+        })),
+        workspaces: workspaceGrowthRows.map((r) => ({
+          date: r.date,
+          count: Number(r.count) || 0,
+        })),
+      },
+      publishing: postSeriesRows.map((r) => ({
+        date: r.date,
+        status: r.status,
+        count: Number(r.count) || 0,
+      })),
+      topSpenders: aiByWorkspaceRaw.map((r) => ({
+        workspaceId: r.workspaceId,
+        workspaceName: r.workspaceName,
+        tokens: Number(r.totalTokens) || 0,
+        operations: Number(r.operations) || 0,
+      })),
+      recentActivity: {
+        users: recentUsers,
+        workspaces: recentWorkspaces,
+      },
+    };
+  }
+
+  // ==========================================================================
   // Posts Analytics
   // ==========================================================================
 
