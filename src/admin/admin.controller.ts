@@ -38,10 +38,12 @@ import {
   // that does not exist at runtime.
   type SuspensionReason,
   SUSPENSION_REASONS,
+  USER_STATES,
   WORKSPACE_CHANNEL_HEALTH_FILTERS,
   WORKSPACE_LIMIT_FILTERS,
   WORKSPACE_SORT_FIELDS,
   WORKSPACE_STATES,
+  type UserState,
   type WorkspaceChannelHealthFilter,
   type WorkspaceLimitFilter,
   type WorkspaceSortField,
@@ -103,6 +105,10 @@ class UserQueryDto {
   @IsBoolean()
   @Transform(({ value }) => value === true || value === 'true')
   isActive?: boolean;
+
+  @IsOptional()
+  @IsIn(USER_STATES)
+  state?: UserState;
 
   @IsOptional()
   @IsString()
@@ -304,6 +310,7 @@ export class AdminController {
         query.isActive !== undefined
           ? query.isActive === true || query.isActive === ('true' as any)
           : undefined,
+      state: query.state,
       role: query.role,
     });
   }

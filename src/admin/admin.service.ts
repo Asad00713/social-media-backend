@@ -68,6 +68,24 @@ export const WORKSPACE_STATES = [
 
 export type WorkspaceState = (typeof WORKSPACE_STATES)[number];
 
+/**
+ * A user's three states, derived from two flags rather than stored. A user is
+ * `active` once their email is verified, `unverified` while it is not, and
+ * `suspended` when an admin has switched the account off — the last takes
+ * precedence, since a suspended account's verification status is moot.
+ */
+export const USER_STATES = ['active', 'unverified', 'suspended'] as const;
+
+export type UserState = (typeof USER_STATES)[number];
+
+export function deriveUserState(
+  isActive: boolean,
+  isEmailVerified: boolean,
+): UserState {
+  if (!isActive) return 'suspended';
+  return isEmailVerified ? 'active' : 'unverified';
+}
+
 export function deriveWorkspaceState(
   isActive: boolean,
   suspendedReason: string | null,
@@ -225,9 +243,16 @@ export class AdminService {
     limit?: number;
     search?: string;
     isActive?: boolean;
+    /**
+     * The three states the UI shows, derived rather than stored: `active` and
+     * `unverified` are both `isActive = true` split on whether the email was
+     * confirmed, and `suspended` is `isActive = false`. Kept alongside the raw
+     * `isActive` flag, which callers other than the admin table still pass.
+     */
+    state?: UserState;
     role?: string;
   }) {
-    const { page = 1, limit = 20, search, isActive, role } = options;
+    const { page = 1, limit = 20, search, isActive, state, role } = options;
     const offset = (page - 1) * limit;
 
     // Every filter, search included, goes into the WHERE clause. Search used
@@ -237,6 +262,17 @@ export class AdminService {
     const conditions: any[] = [];
     if (isActive !== undefined) {
       conditions.push(eq(users.isActive, isActive));
+    }
+    if (state === 'suspended') {
+      conditions.push(eq(users.isActive, false));
+    } else if (state === 'active') {
+      conditions.push(
+        and(eq(users.isActive, true), eq(users.isEmailVerified, true)),
+      );
+    } else if (state === 'unverified') {
+      conditions.push(
+        and(eq(users.isActive, true), eq(users.isEmailVerified, false)),
+      );
     }
     if (role) {
       conditions.push(eq(users.role, role as any));
@@ -260,6 +296,20 @@ export class AdminService {
           suspendedReason: users.suspendedReason,
           lastLoginAt: users.lastLoginAt,
           createdAt: users.createdAt,
+          // How many workspaces this user owns. A correlated subquery rather
+          // than a join: a user owns many workspaces, so joining would repeat
+          // the user row per workspace and inflate both the page and its count.
+          //
+          // `users.id` is written out as a qualified identifier on purpose. In
+          // a single-table select Drizzle emits it bare as `"id"`, which the
+          // subquery reads as `owned_ws.id` — an uncorrelated comparison that
+          // matches nothing and counts zero for everyone. Qualifying it ties
+          // the correlation back to the outer row.
+          workspaceCount: sql<number>`(
+            SELECT COUNT(*)::int
+            FROM ${workspace} AS owned_ws
+            WHERE owned_ws.owner_id = ${sql.identifier('users')}.${sql.identifier('id')}
+          )`.mapWith(Number),
         })
         .from(users)
         .where(where)
