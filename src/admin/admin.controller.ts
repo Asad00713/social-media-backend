@@ -15,6 +15,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
+import { SkipSuspendCheck } from '../auth/decorators/skip-suspend-check.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import {
   ArrayMaxSize,
@@ -38,6 +39,8 @@ import {
   // that does not exist at runtime.
   type SuspensionReason,
   SUSPENSION_REASONS,
+  SUBSCRIPTION_STATUSES,
+  INVOICE_STATUSES,
   USER_STATES,
   WORKSPACE_CHANNEL_HEALTH_FILTERS,
   WORKSPACE_LIMIT_FILTERS,
@@ -151,6 +154,58 @@ class ChannelQueryDto {
   @IsBoolean()
   @Transform(({ value }) => value === true || value === 'true')
   needsAttention?: boolean;
+}
+
+class SubscriptionQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  page?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @Type(() => Number)
+  limit?: number;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @IsIn(SUBSCRIPTION_STATUSES)
+  status?: string;
+
+  // Free string, not a whitelist: plan codes are seeded data that can grow, and
+  // an unknown code simply matches nothing.
+  @IsOptional()
+  @IsString()
+  planCode?: string;
+}
+
+class InvoiceQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  page?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @Type(() => Number)
+  limit?: number;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @IsIn(INVOICE_STATUSES)
+  status?: string;
 }
 
 class WorkspaceQueryDto {
@@ -299,6 +354,12 @@ class CleanQueueDto {
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, SuperAdminGuard)
+// Admin routes are never subject to the billing-suspension lock. A super admin
+// has to reach a suspended workspace precisely to inspect it and switch it back
+// on; the global WorkspaceSuspendedGuard, which keys off the `:workspaceId`
+// param alone, would otherwise 403 every admin call into a suspended workspace
+// and make it un-openable and un-reactivatable from here.
+@SkipSuspendCheck()
 export class AdminController {
   constructor(
     private readonly adminService: AdminService,
@@ -578,6 +639,39 @@ export class AdminController {
       status: query.status,
       needsAttention: query.needsAttention,
     });
+  }
+
+  // ==========================================================================
+  // Billing Management
+  // ==========================================================================
+
+  @Get('subscriptions')
+  @HttpCode(HttpStatus.OK)
+  async getSubscriptions(@Query() query: SubscriptionQueryDto) {
+    return this.adminService.getAdminSubscriptions({
+      page: query.page ? Number(query.page) : 1,
+      limit: query.limit ? Number(query.limit) : 20,
+      search: query.search,
+      status: query.status,
+      planCode: query.planCode,
+    });
+  }
+
+  @Get('invoices')
+  @HttpCode(HttpStatus.OK)
+  async getInvoices(@Query() query: InvoiceQueryDto) {
+    return this.adminService.getAdminInvoices({
+      page: query.page ? Number(query.page) : 1,
+      limit: query.limit ? Number(query.limit) : 20,
+      search: query.search,
+      status: query.status,
+    });
+  }
+
+  @Get('billing/addons')
+  @HttpCode(HttpStatus.OK)
+  async getAddons() {
+    return this.adminService.getAdminAddons();
   }
 
   // ==========================================================================
