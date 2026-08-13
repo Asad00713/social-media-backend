@@ -8,6 +8,10 @@ import { QueueModule, QUEUES } from '../queue/queue.module';
 import { AnalyticsModule } from '../channels/analytics/analytics.module';
 import { MediaModule } from '../media/media.module';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
+// Leaf provider (depends only on `db`) — importing the class directly does
+// NOT pull in CampaignsModule, so this does not create a module cycle even
+// though CampaignsModule imports PostsModule.
+import { CampaignStatusSyncListener } from '../campaigns/campaign-status-sync.listener';
 
 // Publishers
 import { PublisherFactory } from './publishers/publisher.factory';
@@ -54,6 +58,7 @@ import { PostPublishProcessor } from './processors/post-publish.processor';
     MastodonPublisher,
     RedditPublisher,
     PostPublishProcessor,
+    CampaignStatusSyncListener,
   ],
   exports: [PostService, PublisherFactory],
 })

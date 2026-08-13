@@ -28,6 +28,7 @@ import { AdapterRegistryService } from '../../channels/analytics/services/adapte
 import type { AgeBucket } from '../../channels/analytics/types/platform-capabilities.types';
 import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
 import { CalendarPushSyncService } from '../../calendar-sync/services/calendar-push-sync.service';
+import { CampaignStatusSyncListener } from '../../campaigns/campaign-status-sync.listener';
 import type {
   PostStatusChangedPayload,
   PostStatusChangedTarget,
@@ -66,6 +67,7 @@ export class PostService {
     private readonly adapters: AdapterRegistryService,
     private readonly realtimeEmitter: AnalyticsEventEmitter,
     private readonly calendarPushSync: CalendarPushSyncService,
+    private readonly campaignStatusSync: CampaignStatusSyncListener,
   ) {}
 
   /**
@@ -221,7 +223,12 @@ export class PostService {
       offset?: number;
     },
   ): Promise<{ posts: (typeof posts.$inferSelect)[]; total: number }> {
-    const conditions = [eq(posts.workspaceId, workspaceId)];
+    const conditions = [
+      eq(posts.workspaceId, workspaceId),
+      // Exclude campaign-materialized posts from the normal post list —
+      // they still appear on the calendar (getCalendarPosts is unaffected).
+      sql`(${posts.metadata} ->> 'campaignId') is null`,
+    ];
 
     if (options?.status) {
       conditions.push(eq(posts.status, options.status));
@@ -655,6 +662,32 @@ export class PostService {
       .set(postUpdateData)
       .where(eq(posts.id, postId))
       .returning();
+
+    if (!updatedPost) {
+      // The post row is gone (e.g. campaign `pause` deleted it) even though
+      // publishing already completed above. Don't dereference a missing row
+      // — that would throw AFTER the content already went live, which would
+      // trip a BullMQ retry and publish a second time on `resume`. There's
+      // nothing left to update/sync/emit for a deleted post, so bail here.
+      this.logger.warn(
+        `Post ${postId} vanished during publish (likely paused/deleted); skipping post-publish bookkeeping`,
+      );
+      return post;
+    }
+
+    // Sync the outcome back to the originating campaign slot (if this post
+    // was materialized from one) and auto-complete the campaign when no
+    // slots remain outstanding. No-ops internally when metadata.campaignId
+    // is absent. Never let a sync failure fail (or duplicate, via BullMQ
+    // retry) an otherwise-successful publish — same fire-and-forget
+    // error boundary as `syncCalendarForPost` above.
+    void this.campaignStatusSync.syncFromPost(updatedPost).catch((error) => {
+      this.logger.warn(
+        `Campaign slot sync failed for post ${postId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    });
 
     this.emitPostStatusChanged({
       workspaceId,
