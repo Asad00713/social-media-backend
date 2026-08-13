@@ -29,6 +29,7 @@ import {
   type WorkspaceWithRole,
   type PublicWorkspace,
 } from './workspace-membership.util';
+import { isEmailAllowlisted } from './allowlist';
 
 // Columns returned to the client for any workspace row reachable from
 // /auth/me. Deliberately excludes `suspensionNote` (admin-only note) and
@@ -69,6 +70,7 @@ export interface MeResponse {
   user: PublicUser;
   workspaces: WorkspaceWithRole[];
   lastAccessedWorkspace: PublicWorkspace | null;
+  isAllowlisted: boolean;
 }
 
 @Injectable()
@@ -257,6 +259,7 @@ export class AuthService {
       user,
       workspaces: merged,
       lastAccessedWorkspace,
+      isAllowlisted: isEmailAllowlisted(user.email, user.role),
     };
   }
 

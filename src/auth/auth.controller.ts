@@ -31,6 +31,7 @@ import { JwtRefreshGuard } from './guards/jwt-refresh.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { CreateUserDto } from 'src/users/dto/create-user.dto';
+import { SkipLaunchGate } from './decorators/skip-launch-gate.decorator';
 
 @Controller('auth')
 export class AuthController {
@@ -188,6 +189,7 @@ export class AuthController {
   @Post('logout')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
+  @SkipLaunchGate()
   async logout(@Res({ passthrough: true }) response: Response) {
     response.clearCookie('refreshToken', {
       httpOnly: true,
@@ -202,6 +204,7 @@ export class AuthController {
 
   @Get('me')
   @UseGuards(JwtAuthGuard)
+  @SkipLaunchGate()
   async getProfile(@CurrentUser() user: { userId: string; email: string }) {
     return this.authService.whoAmI(user.userId);
   }
