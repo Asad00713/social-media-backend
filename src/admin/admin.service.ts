@@ -30,10 +30,12 @@ import {
   socialMediaChannels,
   posts,
   subscriptions,
+  subscriptionItems,
   invoices,
   failedPayments,
   stripeCustomers,
   plans,
+  addonPricing,
   aiUsageLog,
   workspaceUsage,
   workspaceInvitation,
@@ -95,6 +97,31 @@ export function deriveWorkspaceState(
   if (isActive) return 'active';
   return suspendedReason === 'inactivity' ? 'deactivated' : 'suspended';
 }
+
+/**
+ * The subscription lifecycle states Stripe writes onto `subscriptions.status`.
+ * Not stored as an enum on the column (it is a plain varchar), so the admin
+ * layer names the set it filters by.
+ */
+export const SUBSCRIPTION_STATUSES = [
+  'active',
+  'past_due',
+  'canceled',
+  'trialing',
+] as const;
+
+export type SubscriptionStatus = (typeof SUBSCRIPTION_STATUSES)[number];
+
+/** The invoice states Stripe mirrors onto `invoices.status`. */
+export const INVOICE_STATUSES = [
+  'draft',
+  'open',
+  'paid',
+  'void',
+  'uncollectible',
+] as const;
+
+export type InvoiceStatus = (typeof INVOICE_STATUSES)[number];
 
 /** Columns the list may be ordered by. Anything else falls back to createdAt. */
 export const WORKSPACE_SORT_FIELDS = [
@@ -1713,6 +1740,246 @@ export class AdminService {
         total,
         totalPages: Math.ceil(total / limit),
       },
+    };
+  }
+
+  // ==========================================================================
+  // Billing Management
+  // ==========================================================================
+
+  /**
+   * Every workspace's subscription, one page at a time — the cross-customer
+   * view the revenue screen needs and that no existing method provided
+   * (`getRevenueStats` returns aggregate counts, `getWorkspaceBilling` is
+   * scoped to one workspace).
+   *
+   * Each row carries its recurring monthly contribution. That is the sum of the
+   * subscription's line items (base plan plus every add-on), which is the real
+   * figure a customer is billed. Subscriptions created before any Stripe
+   * checkout — a free plan, a hand-seeded row — have no items yet, so the base
+   * plan's list price stands in. `COALESCE` picks whichever exists.
+   */
+  async getAdminSubscriptions(options: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    status?: string;
+    planCode?: string;
+  }) {
+    const { page = 1, limit = 20, search, status, planCode } = options;
+    const offset = (page - 1) * limit;
+
+    const conditions: any[] = [];
+    if (status) {
+      conditions.push(eq(subscriptions.status, status));
+    }
+    if (planCode) {
+      conditions.push(eq(subscriptions.planCode, planCode));
+    }
+    if (search?.trim()) {
+      conditions.push(ilike(workspace.name, `%${search.trim()}%`));
+    }
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    // Recurring monthly revenue for one subscription: the sum of its line
+    // items, or the plan's base price when it has none. Written as a scalar
+    // subquery so it stays a per-row value the outer query can also order by.
+    const mrrCents = sql<number>`COALESCE(
+      (
+        SELECT SUM(si.quantity * si.unit_price_cents)
+        FROM ${subscriptionItems} AS si
+        WHERE si.subscription_id = ${subscriptions.id}
+      ),
+      ${plans.basePriceCents}
+    )`;
+
+    const [rows, totalCount] = await Promise.all([
+      this.db
+        .select({
+          id: subscriptions.id,
+          workspaceId: subscriptions.workspaceId,
+          workspaceName: workspace.name,
+          planCode: subscriptions.planCode,
+          planName: plans.name,
+          basePriceCents: plans.basePriceCents,
+          status: subscriptions.status,
+          currentPeriodEnd: subscriptions.currentPeriodEnd,
+          trialEnd: subscriptions.trialEnd,
+          cancelAtPeriodEnd: subscriptions.cancelAtPeriodEnd,
+          canceledAt: subscriptions.canceledAt,
+          stripeSubscriptionId: subscriptions.stripeSubscriptionId,
+          createdAt: subscriptions.createdAt,
+          mrrCents,
+          // How many add-ons ride on top of the base plan. Everything that is
+          // not the base plan line is an add-on the customer bought.
+          addonCount: sql<number>`(
+            SELECT COUNT(*)
+            FROM ${subscriptionItems} AS si
+            WHERE si.subscription_id = ${subscriptions.id}
+              AND si.item_type <> 'BASE_PLAN'
+          )`,
+        })
+        .from(subscriptions)
+        .innerJoin(workspace, eq(workspace.id, subscriptions.workspaceId))
+        .innerJoin(plans, eq(plans.code, subscriptions.planCode))
+        .where(where)
+        .orderBy(desc(subscriptions.createdAt))
+        .limit(limit)
+        .offset(offset),
+      this.db
+        .select({ count: count() })
+        .from(subscriptions)
+        .innerJoin(workspace, eq(workspace.id, subscriptions.workspaceId))
+        .where(where),
+    ]);
+
+    const total = totalCount[0]?.count ?? 0;
+
+    return {
+      subscriptions: rows.map((row) => ({
+        ...row,
+        mrrCents: Number(row.mrrCents) || 0,
+        addonCount: Number(row.addonCount) || 0,
+      })),
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Every invoice across every customer, newest first. Invoices carry no
+   * workspace_id — they hang off the subscription — so the workspace comes
+   * through the same join `getWorkspaceBilling` uses, just without the
+   * per-workspace filter.
+   */
+  async getAdminInvoices(options: {
+    page?: number;
+    limit?: number;
+    search?: string;
+    status?: string;
+  }) {
+    const { page = 1, limit = 20, search, status } = options;
+    const offset = (page - 1) * limit;
+
+    const conditions: any[] = [];
+    if (status) {
+      conditions.push(eq(invoices.status, status));
+    }
+    if (search?.trim()) {
+      const term = `%${search.trim()}%`;
+      conditions.push(
+        or(ilike(workspace.name, term), ilike(invoices.stripeInvoiceId, term)),
+      );
+    }
+    const where = conditions.length > 0 ? and(...conditions) : undefined;
+
+    const [rows, totalCount] = await Promise.all([
+      this.db
+        .select({
+          id: invoices.id,
+          stripeInvoiceId: invoices.stripeInvoiceId,
+          workspaceId: subscriptions.workspaceId,
+          workspaceName: workspace.name,
+          planCode: subscriptions.planCode,
+          status: invoices.status,
+          totalCents: invoices.totalCents,
+          amountPaidCents: invoices.amountPaidCents,
+          amountDueCents: invoices.amountDueCents,
+          currency: invoices.currency,
+          periodStart: invoices.periodStart,
+          periodEnd: invoices.periodEnd,
+          paidAt: invoices.paidAt,
+          hostedInvoiceUrl: invoices.hostedInvoiceUrl,
+          invoicePdfUrl: invoices.invoicePdfUrl,
+          createdAt: invoices.createdAt,
+        })
+        .from(invoices)
+        .innerJoin(
+          subscriptions,
+          eq(subscriptions.id, invoices.subscriptionId),
+        )
+        .innerJoin(workspace, eq(workspace.id, subscriptions.workspaceId))
+        .where(where)
+        .orderBy(desc(invoices.createdAt))
+        .limit(limit)
+        .offset(offset),
+      this.db
+        .select({ count: count() })
+        .from(invoices)
+        .innerJoin(
+          subscriptions,
+          eq(subscriptions.id, invoices.subscriptionId),
+        )
+        .innerJoin(workspace, eq(workspace.id, subscriptions.workspaceId))
+        .where(where),
+    ]);
+
+    const total = totalCount[0]?.count ?? 0;
+
+    return {
+      invoices: rows,
+      pagination: {
+        page,
+        limit,
+        total,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * The add-on catalogue paired with how much of it customers actually buy.
+   *
+   * The catalogue half is `addon_pricing`: what an add-on costs, per plan. The
+   * adoption half comes from the subscription line items customers hold — how
+   * many workspaces carry each add-on type, and the recurring revenue it brings
+   * in. The two are keyed by add-on type so the UI can show price and uptake on
+   * one row.
+   */
+  async getAdminAddons() {
+    const [catalogue, adoption] = await Promise.all([
+      this.db
+        .select({
+          id: addonPricing.id,
+          planCode: addonPricing.planCode,
+          addonType: addonPricing.addonType,
+          pricePerUnitCents: addonPricing.pricePerUnitCents,
+          unitsPerQuantity: addonPricing.unitsPerQuantity,
+          minQuantity: addonPricing.minQuantity,
+          maxQuantity: addonPricing.maxQuantity,
+          isActive: addonPricing.isActive,
+        })
+        .from(addonPricing)
+        .orderBy(asc(addonPricing.planCode), asc(addonPricing.addonType)),
+
+      // What is actually purchased, by add-on type. Base-plan lines are not
+      // add-ons, so they are excluded; `workspaces` counts distinct
+      // subscriptions holding the type, `units` is the total quantity, and
+      // `mrrCents` the recurring revenue it accounts for.
+      this.db
+        .select({
+          addonType: subscriptionItems.itemType,
+          workspaces: count(),
+          units: sum(subscriptionItems.quantity),
+          mrrCents: sql<number>`SUM(${subscriptionItems.quantity} * ${subscriptionItems.unitPriceCents})`,
+        })
+        .from(subscriptionItems)
+        .where(sql`${subscriptionItems.itemType} <> 'BASE_PLAN'`)
+        .groupBy(subscriptionItems.itemType),
+    ]);
+
+    return {
+      catalogue,
+      adoption: adoption.map((row) => ({
+        addonType: row.addonType,
+        workspaces: Number(row.workspaces) || 0,
+        units: Number(row.units) || 0,
+        mrrCents: Number(row.mrrCents) || 0,
+      })),
     };
   }
 

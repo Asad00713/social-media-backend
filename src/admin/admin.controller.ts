@@ -38,6 +38,8 @@ import {
   // that does not exist at runtime.
   type SuspensionReason,
   SUSPENSION_REASONS,
+  SUBSCRIPTION_STATUSES,
+  INVOICE_STATUSES,
   USER_STATES,
   WORKSPACE_CHANNEL_HEALTH_FILTERS,
   WORKSPACE_LIMIT_FILTERS,
@@ -151,6 +153,58 @@ class ChannelQueryDto {
   @IsBoolean()
   @Transform(({ value }) => value === true || value === 'true')
   needsAttention?: boolean;
+}
+
+class SubscriptionQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  page?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @Type(() => Number)
+  limit?: number;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @IsIn(SUBSCRIPTION_STATUSES)
+  status?: string;
+
+  // Free string, not a whitelist: plan codes are seeded data that can grow, and
+  // an unknown code simply matches nothing.
+  @IsOptional()
+  @IsString()
+  planCode?: string;
+}
+
+class InvoiceQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  page?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @Type(() => Number)
+  limit?: number;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  @IsOptional()
+  @IsIn(INVOICE_STATUSES)
+  status?: string;
 }
 
 class WorkspaceQueryDto {
@@ -578,6 +632,39 @@ export class AdminController {
       status: query.status,
       needsAttention: query.needsAttention,
     });
+  }
+
+  // ==========================================================================
+  // Billing Management
+  // ==========================================================================
+
+  @Get('subscriptions')
+  @HttpCode(HttpStatus.OK)
+  async getSubscriptions(@Query() query: SubscriptionQueryDto) {
+    return this.adminService.getAdminSubscriptions({
+      page: query.page ? Number(query.page) : 1,
+      limit: query.limit ? Number(query.limit) : 20,
+      search: query.search,
+      status: query.status,
+      planCode: query.planCode,
+    });
+  }
+
+  @Get('invoices')
+  @HttpCode(HttpStatus.OK)
+  async getInvoices(@Query() query: InvoiceQueryDto) {
+    return this.adminService.getAdminInvoices({
+      page: query.page ? Number(query.page) : 1,
+      limit: query.limit ? Number(query.limit) : 20,
+      search: query.search,
+      status: query.status,
+    });
+  }
+
+  @Get('billing/addons')
+  @HttpCode(HttpStatus.OK)
+  async getAddons() {
+    return this.adminService.getAdminAddons();
   }
 
   // ==========================================================================
