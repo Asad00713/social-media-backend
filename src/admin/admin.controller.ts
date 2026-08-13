@@ -49,7 +49,11 @@ import {
   type WorkspaceSortField,
   type WorkspaceState,
 } from './admin.service';
-import { POST_STATUSES, type PostStatus } from '../drizzle/schema';
+import {
+  CONNECTION_STATUSES,
+  POST_STATUSES,
+  type PostStatus,
+} from '../drizzle/schema';
 import { ChannelService } from '../channels/services/channel.service';
 import { WorkspaceMembersService } from '../workspace-members/workspace-members.service';
 import { UpdateMemberDto } from '../workspace-members/dto/update-member.dto';
@@ -113,6 +117,40 @@ class UserQueryDto {
   @IsOptional()
   @IsString()
   role?: string;
+}
+
+class ChannelQueryDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Type(() => Number)
+  page?: number;
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  @Type(() => Number)
+  limit?: number;
+
+  @IsOptional()
+  @IsString()
+  search?: string;
+
+  // Free string, not a whitelist: an unknown platform simply matches nothing,
+  // and the list of platforms grows without this DTO having to be kept in step.
+  @IsOptional()
+  @IsString()
+  platform?: string;
+
+  @IsOptional()
+  @IsIn(CONNECTION_STATUSES)
+  status?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === true || value === 'true')
+  needsAttention?: boolean;
 }
 
 class WorkspaceQueryDto {
@@ -523,6 +561,23 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   async reactivateWorkspace(@Param('workspaceId') workspaceId: string) {
     return this.adminService.reactivateWorkspace(workspaceId);
+  }
+
+  // ==========================================================================
+  // Channel Management
+  // ==========================================================================
+
+  @Get('channels')
+  @HttpCode(HttpStatus.OK)
+  async getChannels(@Query() query: ChannelQueryDto) {
+    return this.adminService.getAdminChannels({
+      page: query.page ? Number(query.page) : 1,
+      limit: query.limit ? Number(query.limit) : 20,
+      search: query.search,
+      platform: query.platform,
+      status: query.status,
+      needsAttention: query.needsAttention,
+    });
   }
 
   // ==========================================================================

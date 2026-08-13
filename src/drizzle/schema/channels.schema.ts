@@ -82,6 +82,19 @@ export function isBillablePlatform(p: SupportedPlatform): boolean {
   return CHANNEL_CATEGORY[p] !== 'integration';
 }
 
+/**
+ * The platforms that are integrations rather than publishing channels, derived
+ * from the category map so the two can never drift.
+ *
+ * This is the reliable way to tell the two apart: the stored `category` column
+ * defaults to 'social' and was only backfilled where that migration has run, so
+ * a channel's own row may mislabel it. The platform, on the other hand, is
+ * always correct.
+ */
+export const INTEGRATION_PLATFORMS: SupportedPlatform[] = (
+  Object.keys(CHANNEL_CATEGORY) as SupportedPlatform[]
+).filter((p) => CHANNEL_CATEGORY[p] === 'integration');
+
 // Account type enum values
 export const ACCOUNT_TYPES = [
   'page',
