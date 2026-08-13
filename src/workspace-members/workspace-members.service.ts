@@ -493,8 +493,9 @@ export class WorkspaceMembersService {
     const isOwner = workspaceData.ownerId === currentUserId;
     const isAdmin = await this.isUserAdmin(workspaceId, currentUserId);
     const isInviter = invitation.invitedBy === currentUserId;
+    const isSuperAdmin = await this.isPlatformSuperAdmin(currentUserId);
 
-    if (!isOwner && !isAdmin && !isInviter) {
+    if (!isOwner && !isAdmin && !isInviter && !isSuperAdmin) {
       throw new ForbiddenException(
         'You do not have permission to cancel this invitation',
       );
@@ -586,8 +587,9 @@ export class WorkspaceMembersService {
 
     const isOwner = workspaceData.ownerId === currentUserId;
     const isAdmin = await this.isUserAdmin(workspaceId, currentUserId);
+    const isSuperAdmin = await this.isPlatformSuperAdmin(currentUserId);
 
-    if (!isOwner && !isAdmin) {
+    if (!isOwner && !isAdmin && !isSuperAdmin) {
       throw new ForbiddenException(
         'Only workspace owner or admins can update member roles',
       );
@@ -646,8 +648,9 @@ export class WorkspaceMembersService {
     const isOwner = workspaceData.ownerId === currentUserId;
     const isAdmin = await this.isUserAdmin(workspaceId, currentUserId);
     const isSelf = member.userId === currentUserId;
+    const isSuperAdmin = await this.isPlatformSuperAdmin(currentUserId);
 
-    if (!isSelf && !isOwner && !isAdmin) {
+    if (!isSelf && !isOwner && !isAdmin && !isSuperAdmin) {
       throw new ForbiddenException(
         'You do not have permission to remove this member',
       );
@@ -722,5 +725,28 @@ export class WorkspaceMembersService {
       ),
     });
     return !!member;
+  }
+
+  /**
+   * A platform super admin acting on a workspace they do not belong to.
+   *
+   * They are not a member and never will be, so every membership check in
+   * this file refuses them. Support work — pulling a departed employee out of
+   * an account, fixing a role the customer cannot reach themselves — still
+   * has to run through these methods rather than around them: the usage
+   * counters and side effects live here, and a second copy in the admin
+   * module would drift out of step with this one.
+   *
+   * Deliberately narrow. It grants nothing to a workspace ADMIN, only to
+   * SUPER_ADMIN, which is the role the admin dashboard's guard already
+   * demands before any of this is reachable.
+   */
+  private async isPlatformSuperAdmin(userId: string): Promise<boolean> {
+    const user = await this.db.query.users.findFirst({
+      where: eq(users.id, userId),
+      columns: { role: true },
+    });
+
+    return user?.role === 'SUPER_ADMIN';
   }
 }

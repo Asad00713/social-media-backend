@@ -24,6 +24,10 @@ import { UsersModule } from 'src/users/users.module';
   controllers: [WorkspaceMembersController, PublicInvitationsController],
   // Re-export the role module so existing consumers of WorkspaceMembersModule
   // keep receiving WorkspaceRoleService / WorkspaceRoleGuard.
-  exports: [WorkspaceRoleModule],
+  //
+  // The service itself is exported for the admin dashboard, which performs
+  // member removals and role changes through these same methods rather than
+  // reimplementing them — the usage counters and side effects live in here.
+  exports: [WorkspaceRoleModule, WorkspaceMembersService],
 })
 export class WorkspaceMembersModule {}
