@@ -556,6 +556,50 @@ describe('CampaignsService write methods (mocked db)', () => {
     ).rejects.toThrow('Event not found');
   });
 
+  it('exposes per-slot runtime status + launchedAt in the assembled DTO', async () => {
+    const campaignRow = makeCampaignRow({
+      launchedAt: new Date('2026-09-01T09:00:00Z'),
+    });
+    const dayRows = [{ id: 'day-1', campaignId: CAMPAIGN_ID, date: '2026-09-02', skip: false }];
+    const slotRows = [
+      {
+        id: 'slot-1',
+        campaignId: CAMPAIGN_ID,
+        date: '2026-09-02',
+        channelId: '42',
+        content: content({ caption: 'Hello world' }),
+        scheduledAt: new Date('2026-09-02T09:00:00Z'),
+        slotStatus: 'published',
+        postId: 'post-1',
+        jobId: 'job-1',
+        publishedAt: new Date('2026-09-02T09:05:00Z'),
+        lastError: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    // getOne() issues: 1) campaigns lookup, then assembleFromRow's
+    // 2) campaignDays + 3) campaignSlotContent selects.
+    const selectResults = [[campaignRow], dayRows, slotRows];
+    let selectCall = 0;
+
+    const service = loadServiceWithFakeDb({
+      select: () => ({
+        from: () => ({
+          where: () => Promise.resolve(selectResults[selectCall++] ?? []),
+        }),
+      }),
+    });
+
+    const dto = await service.getOne(WORKSPACE_ID, CAMPAIGN_ID);
+
+    expect(dto.launchedAt).toBeTruthy();
+    const slot = dto.slotContent['2026-09-02'].channelContent['42'];
+    expect(slot.runtime?.slotStatus).toBe('published');
+    expect(slot.runtime?.publishedAt).toBeTruthy();
+  });
+
   it('duplicate resets status to draft on the copy even when the source is active', async () => {
     const sourceRow = makeCampaignRow({ status: 'active', name: 'Launch week' });
     const copyRow = makeCampaignRow({

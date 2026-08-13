@@ -23,8 +23,15 @@ import { CampaignPublishingService } from './campaign-publishing.service';
 // `src/features/campaigns/types/campaign.ts`.
 // ==========================================================================
 
+export interface SlotRuntimeStatusDto {
+  slotStatus: string;
+  scheduledAt: string | null;
+  publishedAt: string | null;
+  lastError: string | null;
+}
+
 export interface CampaignDaySlotDto {
-  channelContent: Record<string, ChannelDayContentJson>;
+  channelContent: Record<string, ChannelDayContentJson & { runtime?: SlotRuntimeStatusDto }>;
   skip?: boolean;
 }
 
@@ -54,6 +61,7 @@ export interface CampaignDto {
   metrics: CampaignMetricsDto;
   createdAt: string;
   updatedAt: string;
+  launchedAt: string | null;
   nextRunAt: string | null;
 }
 
@@ -455,7 +463,15 @@ export class CampaignsService {
 
     for (const slot of slots) {
       const existing = slotContent[slot.date] ?? { channelContent: {} };
-      existing.channelContent[slot.channelId] = slot.content;
+      existing.channelContent[slot.channelId] = {
+        ...slot.content,
+        runtime: {
+          slotStatus: slot.slotStatus,
+          scheduledAt: slot.scheduledAt ? slot.scheduledAt.toISOString() : null,
+          publishedAt: slot.publishedAt ? slot.publishedAt.toISOString() : null,
+          lastError: slot.lastError ?? null,
+        },
+      };
       slotContent[slot.date] = existing;
     }
 
@@ -479,6 +495,7 @@ export class CampaignsService {
       metrics,
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
+      launchedAt: row.launchedAt ? row.launchedAt.toISOString() : null,
       nextRunAt,
     };
   }
