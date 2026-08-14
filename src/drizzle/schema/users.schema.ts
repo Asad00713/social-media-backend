@@ -56,6 +56,11 @@ export const users = pgTable('users', {
 
   // Last login tracking
   lastLoginAt: timestamp('last_login_at'),
+  // Where the last session signed in from. The IP is captured at auth time;
+  // country/countryCode are resolved from it (best-effort, may lag or be null).
+  lastLoginIp: varchar('last_login_ip', { length: 45 }), // fits IPv6
+  country: varchar('country', { length: 100 }),
+  countryCode: varchar('country_code', { length: 2 }), // ISO 3166-1 alpha-2
 
   // Inactivity email tracking
   inactivityEmail15DaysSentAt: timestamp('inactivity_email_15_days_sent_at'),

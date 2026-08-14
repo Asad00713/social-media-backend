@@ -135,9 +135,10 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   async login(
     @Body() loginDto: LoginDto,
+    @Ip() ip: string,
     @Res({ passthrough: true }) response: Response,
   ) {
-    const { accessToken, user } = await this.authService.login(loginDto);
+    const { accessToken, user } = await this.authService.login(loginDto, ip);
 
     const refreshToken = await this.authService.generateRefreshToken(
       user.id,
@@ -162,11 +163,13 @@ export class AuthController {
   @UseGuards(JwtRefreshGuard)
   async refreshTokens(
     @CurrentUser() user: { userId: string; email: string },
+    @Ip() ip: string,
     @Res({ passthrough: true }) response: Response,
   ) {
     const accessToken = await this.authService.refreshTokens(
       user.userId,
       user.email,
+      ip,
     );
 
     const refreshToken = await this.authService.generateRefreshToken(

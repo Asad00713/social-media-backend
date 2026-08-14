@@ -326,6 +326,8 @@ export class AdminService {
           suspendedAt: users.suspendedAt,
           suspendedReason: users.suspendedReason,
           lastLoginAt: users.lastLoginAt,
+          country: users.country,
+          countryCode: users.countryCode,
           createdAt: users.createdAt,
           // How many workspaces this user owns. A correlated subquery rather
           // than a join: a user owns many workspaces, so joining would repeat
@@ -379,6 +381,8 @@ export class AdminService {
         suspendedReason: true,
         suspensionNote: true,
         lastLoginAt: true,
+        country: true,
+        countryCode: true,
         createdAt: true,
         updatedAt: true,
       },
