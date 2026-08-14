@@ -375,13 +375,23 @@ export class PinterestService {
       );
     }
 
-    const registerData = await registerResponse.json();
+    const registerData = (await registerResponse.json()) as {
+      media_id: string;
+      upload_url: string;
+      // AWS S3 form fields (key, policy, signature, etc.) that MUST be sent
+      // alongside the file as multipart/form-data — the S3 upload is
+      // rejected without them.
+      upload_parameters?: Record<string, string>;
+    };
     const mediaId = registerData.media_id;
     const uploadUrl = registerData.upload_url;
+    const uploadParameters = registerData.upload_parameters ?? {};
 
     this.logger.log(`Pinterest video upload registered: media_id=${mediaId}`);
 
-    // Step 2: Download video and upload to Pinterest
+    // Step 2: Download video and upload to Pinterest's S3 bucket.
+    // Pinterest requires a multipart/form-data POST containing every
+    // upload_parameter as a field, with the video file LAST under `file`.
     const videoResponse = await fetch(videoUrl);
     if (!videoResponse.ok) {
       throw new BadRequestException(
@@ -391,12 +401,18 @@ export class PinterestService {
 
     const videoBuffer = await videoResponse.arrayBuffer();
 
+    const uploadForm = new FormData();
+    for (const [key, value] of Object.entries(uploadParameters)) {
+      uploadForm.append(key, value);
+    }
+    // File field must come after the parameters for the S3 policy to match.
+    uploadForm.append('file', new Blob([videoBuffer], { type: 'video/mp4' }));
+
+    // No explicit Content-Type header — fetch derives the multipart boundary
+    // from the FormData; setting it manually would break the boundary.
     const uploadResponse = await fetch(uploadUrl, {
       method: 'POST',
-      headers: {
-        'Content-Type': 'video/mp4',
-      },
-      body: videoBuffer,
+      body: uploadForm,
     });
 
     if (!uploadResponse.ok) {
