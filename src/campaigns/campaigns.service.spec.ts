@@ -135,6 +135,7 @@ describe('CampaignsService.computeMetrics', () => {
       campaignId: 'c1',
       date,
       channelId,
+      time: '09:00',
       content: content(contentOverrides),
       scheduledAt: null,
       slotStatus: 'pending',
@@ -637,6 +638,167 @@ describe('CampaignsService write methods (mocked db)', () => {
   });
 
   // ==========================================================================
+  // createDrip() — materialization tests. A table-name-routed fake db records
+  // every `insert(...).values(...)` so we can assert the exact `campaign_days`
+  // rows materialized from the weekday/blackout/maxPostCount rules, and that a
+  // drip campaign is inserted with `type:'drip'`. `createSimple` is the
+  // control: still `type:'bulk'`, zero days materialized.
+  // ==========================================================================
+
+  describe('createDrip / createSimple materialization', () => {
+    const WORKSPACE_ID = 'ws-1';
+
+    function makeDripRow(overrides: Partial<Record<string, unknown>> = {}) {
+      return makeCampaignRow({
+        id: 'drip-1',
+        type: 'drip',
+        ...overrides,
+      });
+    }
+
+    /**
+     * Fake db that records the values passed to each `insert(table).values(x)`
+     * into `inserts` (keyed by table name), returns the campaign row from the
+     * campaigns insert's `.returning()`, and serves the trailing
+     * `assembleCampaign` selects (campaigns row + empty days/slots).
+     */
+    function buildInsertRecordingDb(campaignRow: Record<string, unknown>) {
+      const inserts: {
+        campaigns: unknown[];
+        campaignDays: unknown[];
+        campaignSlotContent: unknown[];
+      } = { campaigns: [], campaignDays: [], campaignSlotContent: [] };
+
+      const db = {
+        insert: (table: unknown) => ({
+          values: (vals: unknown) => {
+            const name = getTableName(table as never);
+            if (name === 'campaigns') {
+              inserts.campaigns.push(vals);
+              return { returning: () => Promise.resolve([campaignRow]) };
+            }
+            if (name === 'campaign_days') inserts.campaignDays.push(vals);
+            if (name === 'campaign_slot_content') inserts.campaignSlotContent.push(vals);
+            return { returning: () => Promise.resolve([]) };
+          },
+        }),
+        select: () => ({
+          from: (table: unknown) => ({
+            where: () => {
+              const name = getTableName(table as never);
+              if (name === 'campaigns') return Promise.resolve([campaignRow]);
+              return Promise.resolve([]);
+            },
+          }),
+        }),
+      };
+
+      return { db, inserts };
+    }
+
+    it('inserts a drip campaign (type:drip) with a drip schedule built from the DTO', async () => {
+      const { db, inserts } = buildInsertRecordingDb(makeDripRow());
+      const service = loadServiceWithFakeDb(db);
+
+      await service.createDrip(WORKSPACE_ID, 'user-1', {
+        name: 'Drip A',
+        startDate: '2026-08-01',
+        endDate: '2026-08-31',
+        timezone: 'UTC',
+        weekdays: [1, 3, 5],
+        times: ['09:00', '17:00'],
+      });
+
+      expect(inserts.campaigns).toHaveLength(1);
+      const campaignInsert = inserts.campaigns[0] as {
+        type: string;
+        schedule: { type: string; weekdays: number[]; times: string[] };
+      };
+      expect(campaignInsert.type).toBe('drip');
+      expect(campaignInsert.schedule.type).toBe('drip');
+      expect(campaignInsert.schedule.weekdays).toEqual([1, 3, 5]);
+      expect(campaignInsert.schedule.times).toEqual(['09:00', '17:00']);
+    });
+
+    it('materializes campaign_days only for weekdays in range, excluding blackout dates', async () => {
+      const { db, inserts } = buildInsertRecordingDb(makeDripRow());
+      const service = loadServiceWithFakeDb(db);
+
+      // 2026-08-03 is a Monday. Range Mon 2026-08-03 .. Sun 2026-08-09.
+      // weekdays [1,3] = Mon/Wed -> 2026-08-03 (Mon), 2026-08-05 (Wed).
+      // Blackout 2026-08-05 -> only 2026-08-03 survives.
+      await service.createDrip(WORKSPACE_ID, 'user-1', {
+        name: 'Drip B',
+        startDate: '2026-08-03',
+        endDate: '2026-08-09',
+        timezone: 'UTC',
+        weekdays: [1, 3],
+        times: ['09:00'],
+        blackoutDates: ['2026-08-05'],
+      });
+
+      expect(inserts.campaignDays).toHaveLength(1);
+      const dayRows = inserts.campaignDays[0] as { campaignId: string; date: string }[];
+      expect(dayRows.map((d) => d.date)).toEqual(['2026-08-03']);
+    });
+
+    it('caps materialized days at ceil(maxPostCount / times.length) SLOTS worth', async () => {
+      const { db, inserts } = buildInsertRecordingDb(makeDripRow());
+      const service = loadServiceWithFakeDb(db);
+
+      // Every weekday in a long window; 2 times/day; maxPostCount=5 -> ceil(5/2)=3 days.
+      await service.createDrip(WORKSPACE_ID, 'user-1', {
+        name: 'Drip C',
+        startDate: '2026-08-01',
+        endDate: '2026-12-31',
+        timezone: 'UTC',
+        weekdays: [0, 1, 2, 3, 4, 5, 6],
+        times: ['09:00', '17:00'],
+        maxPostCount: 5,
+      });
+
+      const dayRows = inserts.campaignDays[0] as { date: string }[];
+      expect(dayRows).toHaveLength(3); // ceil(5 / 2)
+    });
+
+    it('materializes no campaign_days when no in-range date matches a weekday', async () => {
+      const { db, inserts } = buildInsertRecordingDb(makeDripRow());
+      const service = loadServiceWithFakeDb(db);
+
+      // 2026-08-01 is a Saturday, 2026-08-02 a Sunday. weekdays [1] (Mon) -> none.
+      await service.createDrip(WORKSPACE_ID, 'user-1', {
+        name: 'Drip D',
+        startDate: '2026-08-01',
+        endDate: '2026-08-02',
+        timezone: 'UTC',
+        weekdays: [1],
+        times: ['09:00'],
+      });
+
+      expect(inserts.campaignDays).toHaveLength(0);
+    });
+
+    it('createSimple still inserts type:bulk and materializes zero days (control)', async () => {
+      const bulkRow = makeCampaignRow({ id: 'bulk-1', type: 'bulk' });
+      const { db, inserts } = buildInsertRecordingDb(bulkRow);
+      const service = loadServiceWithFakeDb(db);
+
+      await service.createSimple(WORKSPACE_ID, 'user-1', {
+        name: 'Bulk A',
+        startDate: '2026-08-01',
+        endDate: '2026-08-31',
+        timezone: 'UTC',
+        defaultTime: '09:00',
+        skipWeekends: false,
+      });
+
+      expect(inserts.campaigns).toHaveLength(1);
+      expect((inserts.campaigns[0] as { type: string }).type).toBe('bulk');
+      expect(inserts.campaignDays).toHaveLength(0);
+    });
+  });
+
+  // ==========================================================================
   // launch() — table-identity-routed fake db (rather than call-order indices,
   // since launch's preflight + per-slot loop issues a variable number of
   // selects/updates depending on how many slots are publishable). Compares
@@ -685,6 +847,7 @@ describe('CampaignsService write methods (mocked db)', () => {
       campaignId: CAMPAIGN_ID,
       date: '2026-08-13',
       channelId: '1',
+      time: '09:00',
       content: content({ caption: 'Hello world' }),
       scheduledAt: null,
       slotStatus: 'pending',
