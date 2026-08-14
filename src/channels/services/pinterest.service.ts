@@ -426,15 +426,27 @@ export class PinterestService {
     // Step 3: Wait for video processing and create pin
     await this.waitForMediaProcessing(accessToken, mediaId);
 
-    // Step 4: Create pin with video
+    // Step 4: Create pin with video.
+    // Pinterest requires a cover for a video pin: either an explicit
+    // cover_image_url, or cover_image_key_frame_time (a millisecond offset it
+    // grabs a frame from). We prefer the caller-supplied cover image and fall
+    // back to the video's first frame (0ms) so a pin never fails for a missing
+    // cover.
+    const mediaSource: Record<string, any> = {
+      source_type: 'video_id',
+      media_id: mediaId,
+    };
+    if (options?.videoCoverImageUrl) {
+      mediaSource.cover_image_url = options.videoCoverImageUrl;
+    } else {
+      mediaSource.cover_image_key_frame_time = 0;
+    }
+
     const pinBody: Record<string, any> = {
       board_id: boardId,
       title,
       description,
-      media_source: {
-        source_type: 'video_id',
-        media_id: mediaId,
-      },
+      media_source: mediaSource,
     };
 
     if (options?.link) {
