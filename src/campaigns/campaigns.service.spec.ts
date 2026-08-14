@@ -799,6 +799,148 @@ describe('CampaignsService write methods (mocked db)', () => {
   });
 
   // ==========================================================================
+  // addEvent bulk single-slot-per-(date,channel) invariant — regression for the
+  // defaultTime-edit duplicate-slot bug. Uses a STATEFUL table-name-routed fake
+  // db so slots inserted by the first addEvent are visible to the second one's
+  // lookup, and so `update(campaigns).set({schedule})` mutates the live row that
+  // getOne re-reads. Proves that after a defaultTime edit (which does NOT
+  // backfill existing slots' `time`), re-adding the same (date,channel) updates
+  // the single existing slot rather than inserting a duplicate.
+  // ==========================================================================
+
+  describe('addEvent bulk single-slot invariant (defaultTime-edit regression)', () => {
+    const WORKSPACE_ID = 'ws-1';
+    const CAMPAIGN_ID = 'c-1';
+
+    /** Walk an `and(eq(col, v), ...)` tree → `{ colDbName: value }`. */
+    function eqValues(cond: unknown): Record<string, unknown> {
+      const result: Record<string, unknown> = {};
+      let pendingColumn: string | undefined;
+      function walk(node: unknown): void {
+        if (node == null || typeof node !== 'object') return;
+        const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+        if (Array.isArray(chunks)) {
+          for (const c of chunks) walk(c);
+          return;
+        }
+        const named = node as { name?: string; columnType?: string; value?: unknown };
+        if (typeof named.name === 'string' && typeof named.columnType === 'string') {
+          pendingColumn = named.name;
+        } else if (
+          pendingColumn &&
+          named.value !== undefined &&
+          typeof named.value !== 'object'
+        ) {
+          result[pendingColumn] = named.value;
+          pendingColumn = undefined;
+        }
+      }
+      walk(cond);
+      return result;
+    }
+
+    function buildStatefulDb(campaignRow: Record<string, unknown>) {
+      const slotRows: Record<string, unknown>[] = [];
+      const dayRows: Record<string, unknown>[] = [];
+      let slotSeq = 0;
+
+      const matches = (row: Record<string, unknown>, pairs: Record<string, unknown>) => {
+        const map: Record<string, string> = {
+          campaign_id: 'campaignId',
+          channel_id: 'channelId',
+          date: 'date',
+          time: 'time',
+        };
+        return Object.entries(pairs).every(([dbName, v]) => {
+          const key = map[dbName] ?? dbName;
+          return row[key] === v;
+        });
+      };
+
+      const db = {
+        select: () => ({
+          from: (table: unknown) => ({
+            where: (cond: unknown) => {
+              const name = getTableName(table as never);
+              const pairs = eqValues(cond);
+              if (name === 'campaigns') return Promise.resolve([campaignRow]);
+              if (name === 'campaign_days')
+                return Promise.resolve(dayRows.filter((r) => matches(r, pairs)));
+              if (name === 'campaign_slot_content')
+                return Promise.resolve(slotRows.filter((r) => matches(r, pairs)));
+              return Promise.resolve([]);
+            },
+          }),
+        }),
+        insert: (table: unknown) => ({
+          values: (vals: Record<string, unknown> | Record<string, unknown>[]) => {
+            const name = getTableName(table as never);
+            const rows = Array.isArray(vals) ? vals : [vals];
+            if (name === 'campaign_days') dayRows.push(...rows);
+            if (name === 'campaign_slot_content') {
+              for (const r of rows) slotRows.push({ id: `slot-${++slotSeq}`, ...r });
+            }
+            return { returning: () => Promise.resolve([]) };
+          },
+        }),
+        update: (table: unknown) => ({
+          set: (set: Record<string, unknown>) => ({
+            where: () => {
+              const name = getTableName(table as never);
+              if (name === 'campaigns') Object.assign(campaignRow, set);
+              if (name === 'campaign_slot_content') {
+                // updateEvent/addEvent slot content update: apply to all (test
+                // uses a single slot, so no id disambiguation needed here).
+                for (const r of slotRows) Object.assign(r, set);
+              }
+              return Promise.resolve();
+            },
+          }),
+        }),
+      };
+
+      return { db, slotRows };
+    }
+
+    it('re-adding the same (date,channel) after a defaultTime edit updates the one slot, does not duplicate', async () => {
+      const campaignRow = makeCampaignRow({
+        type: 'bulk',
+        schedule: {
+          type: 'bulk',
+          startDate: '2026-08-01',
+          endDate: '2026-08-31',
+          defaultTime: '09:00',
+          timezone: 'UTC',
+          blackoutDates: [],
+          skipWeekends: false,
+        },
+      });
+      const { db, slotRows } = buildStatefulDb(campaignRow);
+      const service = loadServiceWithFakeDb(db);
+
+      // 1) First addEvent → inserts one slot at time '09:00'.
+      await service.addEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: '2026-08-10',
+        channelId: '1',
+      });
+      expect(slotRows).toHaveLength(1);
+      expect(slotRows[0].time).toBe('09:00');
+
+      // 2) Edit the schedule's defaultTime (does NOT backfill the slot's time).
+      await service.update(WORKSPACE_ID, CAMPAIGN_ID, { scheduleDefaultTime: '10:00' });
+
+      // 3) Re-add the SAME (date,channel). Must find + update the existing
+      //    '09:00' slot — NOT insert a second slot keyed on the new '10:00'.
+      await service.addEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: '2026-08-10',
+        channelId: '1',
+      });
+
+      expect(slotRows).toHaveLength(1);
+    });
+  });
+
+  // ==========================================================================
   // launch() — table-identity-routed fake db (rather than call-order indices,
   // since launch's preflight + per-slot loop issues a variable number of
   // selects/updates depending on how many slots are publishable). Compares

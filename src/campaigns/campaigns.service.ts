@@ -1210,6 +1210,14 @@ export class CampaignsService {
 
     const slotTime = dto.time ?? this.resolveDefaultTime(campaign.schedule);
 
+    // Match key: include `time` ONLY when the caller explicitly supplied one
+    // (drip's genuinely multi-slot-per-(date,channel) case). Bulk is inherently
+    // single-slot-per-(date,channel) and never sends `time`, so it must match on
+    // (date,channel) alone — a `defaultTime` edit mutates schedule.defaultTime
+    // WITHOUT backfilling existing slot rows' `time`, so keying the lookup on the
+    // freshly-resolved default would miss the existing slot and insert a
+    // duplicate (→ double post at launch). The INSERT below still writes the
+    // resolved `time` column regardless.
     const [existingSlot] = await db
       .select({ id: campaignSlotContent.id })
       .from(campaignSlotContent)
@@ -1218,7 +1226,7 @@ export class CampaignsService {
           eq(campaignSlotContent.campaignId, id),
           eq(campaignSlotContent.date, dto.date),
           eq(campaignSlotContent.channelId, dto.channelId),
-          eq(campaignSlotContent.time, slotTime),
+          ...(dto.time ? [eq(campaignSlotContent.time, dto.time)] : []),
         ),
       );
 
