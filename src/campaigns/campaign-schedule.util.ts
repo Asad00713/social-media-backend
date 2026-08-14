@@ -2,7 +2,13 @@ import type { CampaignScheduleJson } from '../drizzle/schema/campaigns.schema';
 
 export interface SlotSchedule {
   date: string; // yyyy-MM-dd
+  time: string; // HH:mm
   scheduledAt: Date;
+}
+
+export interface SlotKey {
+  date: string;
+  time: string;
 }
 
 const DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
@@ -64,32 +70,29 @@ function isWeekend(date: string): boolean {
 
 export function computeSlotSchedule(
   schedule: CampaignScheduleJson,
-  dates: string[],
+  slots: SlotKey[],
   now: Date,
-): { due: SlotSchedule[]; pastDue: string[] } {
+): { due: SlotSchedule[]; pastDue: SlotKey[] } {
   const due: SlotSchedule[] = [];
-  const pastDue: string[] = [];
+  const pastDue: SlotKey[] = [];
 
-  if (schedule.type !== 'bulk') {
-    // Phase 2 launches bulk only; defensively treat others as nothing-due.
-    return { due: [], pastDue: [...dates] };
-  }
-
+  // Bulk & drip share the same per-slot logic now: each slot has an explicit
+  // (date, time); we exclude blackout/weekend and split due vs past-due.
+  // Evergreen has no endDate bound here; treat like drip within the window.
   const blackout = new Set(schedule.blackoutDates ?? []);
-  const perDay = schedule.perDayTimes ?? {};
+  const skipWeekends = schedule.type === 'bulk' && schedule.skipWeekends;
 
-  for (const date of dates) {
-    if (blackout.has(date)) continue; // excluded, not published, not counted past-due
-    if (schedule.skipWeekends && isWeekend(date)) continue;
+  for (const slot of slots) {
+    if (blackout.has(slot.date)) continue; // excluded, not counted past-due
+    if (skipWeekends && isWeekend(slot.date)) continue;
 
-    const time = perDay[date] ?? schedule.defaultTime;
-    const at = wallClockToUtc(date, time, schedule.timezone);
+    const at = wallClockToUtc(slot.date, slot.time, schedule.timezone);
     if (!at) continue;
 
     if (at.getTime() >= now.getTime()) {
-      due.push({ date, scheduledAt: at });
+      due.push({ date: slot.date, time: slot.time, scheduledAt: at });
     } else {
-      pastDue.push(date);
+      pastDue.push({ date: slot.date, time: slot.time });
     }
   }
 
