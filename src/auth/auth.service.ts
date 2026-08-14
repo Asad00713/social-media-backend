@@ -20,6 +20,7 @@ import {
   hash,
 } from '../common/utils/encryption.util';
 import { DRIZZLE } from '../drizzle/drizzle.module';
+import { LoginActivityService } from './services/login-activity.service';
 import type { DbType } from '../drizzle/db';
 import { and, eq } from 'drizzle-orm';
 import { NotificationEmitterService } from '../notifications/notification-emitter.service';
@@ -85,6 +86,7 @@ export class AuthService {
     // One-way dependency: the challenge service knows nothing about AuthService,
     // so this needs no forwardRef.
     private adminChallengeService: AdminChallengeService,
+    private loginActivityService: LoginActivityService,
   ) {}
 
   async register(registerDto: CreateUserDto): Promise<AuthResponse> {
@@ -109,7 +111,7 @@ export class AuthService {
   }
 
 
-  async login(loginDto: LoginDto): Promise<AuthResponse> {
+  async login(loginDto: LoginDto, ip?: string): Promise<AuthResponse> {
     const user = await this.validateUser(loginDto.email, loginDto.password);
 
     if (!user) {
@@ -150,6 +152,10 @@ export class AuthService {
     }
 
     const accessToken = await this.generateAccessToken(user.id, user.email);
+
+    // Stamp last-seen and where from. Awaited only for the local write; the geo
+    // lookup inside runs detached, so a slow resolver can't hold up the login.
+    await this.loginActivityService.record(user.id, ip);
 
     const {
       password: _password,
@@ -210,8 +216,14 @@ export class AuthService {
     });
   }
 
-  async refreshTokens(userId: string, email: string): Promise<string> {
+  async refreshTokens(
+    userId: string,
+    email: string,
+    ip?: string,
+  ): Promise<string> {
     const accessToken = await this.generateAccessToken(userId, email);
+    // A refresh means the session is still active — keep last-seen current.
+    await this.loginActivityService.record(userId, ip);
     return accessToken;
   }
 

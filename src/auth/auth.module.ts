@@ -10,12 +10,16 @@ import { JwtRefreshStrategy } from './strategies/jwt-refresh.strategy';
 import { EmailModule } from '../email/email.module';
 import { AdminChallengeService } from './admin-challenge.service';
 import { AllowlistGuard } from './guards/allowlist.guard';
+import { GeoipService } from './services/geoip.service';
+import { LoginActivityService } from './services/login-activity.service';
 
 @Module({
   imports: [UsersModule, PassportModule, JwtModule.register({}), EmailModule],
   providers: [
     AuthService,
     AdminChallengeService,
+    GeoipService,
+    LoginActivityService,
     JwtStrategy,
     JwtRefreshStrategy,
     // Global launch-gate enforcement (see AllowlistGuard). Registered here
