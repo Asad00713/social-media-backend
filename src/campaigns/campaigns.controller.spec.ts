@@ -330,8 +330,10 @@ describe('CampaignsController (DB-mocked happy path)', () => {
     // stays empty here since 'channel-1' isn't a numeric channel id.
     expect(afterAddEvent.channelIds).toEqual(['channel-1']);
     expect(afterAddEvent.platforms).toEqual([]);
+    // Slot key is now `${channelId}@${time}`; a bulk addEvent with no explicit
+    // time resolves to the schedule's defaultTime ('09:00').
     expect(
-      afterAddEvent.slotContent['2026-09-01'].channelContent['channel-1'],
+      afterAddEvent.slotContent['2026-09-01'].channelContent['channel-1@09:00'],
     ).toMatchObject({ mode: 'manual', postType: 'text', caption: '' });
 
     // ---- updateEvent ---------------------------------------------------------
@@ -341,11 +343,11 @@ describe('CampaignsController (DB-mocked happy path)', () => {
       patch: { caption: 'Hello world!' },
     });
     expect(
-      afterUpdateEvent.slotContent['2026-09-01'].channelContent['channel-1'].caption,
+      afterUpdateEvent.slotContent['2026-09-01'].channelContent['channel-1@09:00'].caption,
     ).toBe('Hello world!');
     // Merge preserved the rest of the slot content (patch is shallow-merged).
     expect(
-      afterUpdateEvent.slotContent['2026-09-01'].channelContent['channel-1'].postType,
+      afterUpdateEvent.slotContent['2026-09-01'].channelContent['channel-1@09:00'].postType,
     ).toBe('text');
 
     // Filled slot on a non-skipped day -> counted in metrics.

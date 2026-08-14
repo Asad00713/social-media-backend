@@ -568,6 +568,7 @@ describe('CampaignsService write methods (mocked db)', () => {
         campaignId: CAMPAIGN_ID,
         date: '2026-09-02',
         channelId: '42',
+        time: '09:00',
         content: content({ caption: 'Hello world' }),
         scheduledAt: new Date('2026-09-02T09:00:00Z'),
         slotStatus: 'published',
@@ -596,9 +597,71 @@ describe('CampaignsService write methods (mocked db)', () => {
     const dto = await service.getOne(WORKSPACE_ID, CAMPAIGN_ID);
 
     expect(dto.launchedAt).toBeTruthy();
-    const slot = dto.slotContent['2026-09-02'].channelContent['42'];
+    const slot = dto.slotContent['2026-09-02'].channelContent['42@09:00'];
     expect(slot.runtime?.slotStatus).toBe('published');
     expect(slot.runtime?.publishedAt).toBeTruthy();
+  });
+
+  // BUG C1 regression: two slots on the SAME date+channel at different times
+  // must both survive in channelContent. With the old channelId-only key the
+  // 17:00 slot overwrote the 09:00 one and this assertion (2 entries) failed.
+  it('keeps BOTH multi-time slots on the same date+channel (drip) distinct in the DTO', async () => {
+    const campaignRow = makeCampaignRow({ type: 'drip' });
+    const dayRows = [{ id: 'day-1', campaignId: CAMPAIGN_ID, date: '2026-09-02', skip: false }];
+    const slotRows = [
+      {
+        id: 'slot-am',
+        campaignId: CAMPAIGN_ID,
+        date: '2026-09-02',
+        channelId: '42',
+        time: '09:00',
+        content: content({ caption: 'Morning post' }),
+        scheduledAt: null,
+        slotStatus: 'pending',
+        postId: null,
+        jobId: null,
+        publishedAt: null,
+        lastError: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: 'slot-pm',
+        campaignId: CAMPAIGN_ID,
+        date: '2026-09-02',
+        channelId: '42',
+        time: '17:00',
+        content: content({ caption: 'Evening post' }),
+        scheduledAt: null,
+        slotStatus: 'pending',
+        postId: null,
+        jobId: null,
+        publishedAt: null,
+        lastError: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    const selectResults = [[campaignRow], dayRows, slotRows];
+    let selectCall = 0;
+    const service = loadServiceWithFakeDb({
+      select: () => ({
+        from: () => ({
+          where: () => Promise.resolve(selectResults[selectCall++] ?? []),
+        }),
+      }),
+    });
+
+    const dto = await service.getOne(WORKSPACE_ID, CAMPAIGN_ID);
+
+    const channelContent = dto.slotContent['2026-09-02'].channelContent;
+    // Two distinct composite keys, not one collapsed channelId key.
+    expect(Object.keys(channelContent).sort()).toEqual(['42@09:00', '42@17:00']);
+    expect(channelContent['42@09:00'].caption).toBe('Morning post');
+    expect(channelContent['42@09:00'].time).toBe('09:00');
+    expect(channelContent['42@17:00'].caption).toBe('Evening post');
+    expect(channelContent['42@17:00'].time).toBe('17:00');
   });
 
   it('duplicate resets status to draft on the copy even when the source is active', async () => {

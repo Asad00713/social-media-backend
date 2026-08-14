@@ -31,7 +31,14 @@ export interface SlotRuntimeStatusDto {
 }
 
 export interface CampaignDaySlotDto {
-  channelContent: Record<string, ChannelDayContentJson & { runtime?: SlotRuntimeStatusDto }>;
+  // Keyed by `${channelId}@${time}` (not channelId alone) so a drip day with
+  // two slots on the same channel at different times (09:00 & 17:00) keeps
+  // BOTH entries — a channelId-only key would let the second slot overwrite
+  // the first. Each entry carries its own `time` so consumers can read it back.
+  channelContent: Record<
+    string,
+    ChannelDayContentJson & { runtime?: SlotRuntimeStatusDto; time: string }
+  >;
   skip?: boolean;
 }
 
@@ -478,8 +485,9 @@ export class CampaignsService {
 
     for (const slot of slots) {
       const existing = slotContent[slot.date] ?? { channelContent: {} };
-      existing.channelContent[slot.channelId] = {
+      existing.channelContent[`${slot.channelId}@${slot.time}`] = {
         ...slot.content,
+        time: slot.time,
         runtime: {
           slotStatus: slot.slotStatus,
           scheduledAt: slot.scheduledAt ? slot.scheduledAt.toISOString() : null,
@@ -747,7 +755,11 @@ export class CampaignsService {
 
   /** The default fire time for a slot when the caller doesn't specify one:
    *  bulk campaigns use the schedule's `defaultTime`; drip/evergreen use the
-   *  first (earliest, since `times` is stored sorted) of their `times`. */
+   *  first (earliest, since `times` is stored sorted) of their `times`.
+   *  NOTE: `schedule.perDayTimes`/`schedule.times` are now display-only (read
+   *  by `computeNextRun`) and are NOT consulted on the publish path — each
+   *  materialized slot carries its own `time` column, which the launch/resume
+   *  flows and `CampaignStatusSyncListener` key off of. */
   private resolveDefaultTime(schedule: CampaignScheduleJson): string {
     return schedule.type === 'bulk'
       ? schedule.defaultTime
