@@ -14,10 +14,12 @@ import {
   count,
   sum,
   and,
+  gt,
   gte,
   lte,
   desc,
   ilike,
+  inArray,
   isNull,
   isNotNull,
   or,
@@ -1979,6 +1981,217 @@ export class AdminService {
         workspaces: Number(row.workspaces) || 0,
         units: Number(row.units) || 0,
         mrrCents: Number(row.mrrCents) || 0,
+      })),
+    };
+  }
+
+  // ==========================================================================
+  // Revenue (Platform)
+  // ==========================================================================
+
+  /**
+   * The revenue screen's live figures in one call: the MRR broken down by the
+   * health of the subscription behind it, the plan distribution, an invoice
+   * summary, and the payment-failure picture.
+   *
+   * Two things this deliberately does NOT return, because the data to do them
+   * honestly is not recorded yet — the frontend shows them as gaps rather than
+   * inventing numbers:
+   *   • a monthly MRR-movement series (new/expansion/contraction/churn). The
+   *     subscription-change log records upgrades and add-on edits but never a
+   *     create or a cancel, so "new" and "churn" cannot be reconstructed.
+   *   • decline reasons grouped by Stripe code. Only the free-text failure
+   *     message is stored, not the structured `decline_code`; what is returned
+   *     here is that message, grouped, and the UI says as much.
+   */
+  async getAdminRevenue() {
+    // The recurring contribution of one subscription — line items summed, or the
+    // plan's base price when it predates any checkout. The same scalar the
+    // overview and the subscriptions list use, applied here with different
+    // status filters to split MRR by health.
+    const mrrOf = (statuses: string[]) =>
+      this.db
+        .select({
+          mrrCents: sql<number>`COALESCE(SUM(
+            COALESCE(
+              (
+                SELECT SUM(si.quantity * si.unit_price_cents)
+                FROM ${subscriptionItems} AS si
+                WHERE si.subscription_id = ${subscriptions.id}
+              ),
+              ${plans.basePriceCents}
+            )
+          ), 0)`,
+        })
+        .from(subscriptions)
+        .innerJoin(plans, eq(plans.code, subscriptions.planCode))
+        .where(
+          statuses.length === 1
+            ? eq(subscriptions.status, statuses[0])
+            : inArray(subscriptions.status, statuses),
+        );
+
+    const invoiceJoin = () =>
+      this.db
+        .select({
+          status: invoices.status,
+          totalCents: invoices.totalCents,
+          amountPaidCents: invoices.amountPaidCents,
+          amountDueCents: invoices.amountDueCents,
+        })
+        .from(invoices)
+        .innerJoin(subscriptions, eq(subscriptions.id, invoices.subscriptionId));
+
+    const [
+      activeMrr,
+      atRiskMrr,
+      lostMrr,
+      addonMrr,
+      planRows,
+      catalogue,
+      payingCount,
+      invoiceRows,
+      declineRows,
+    ] = await Promise.all([
+      mrrOf(['active']),
+      mrrOf(['past_due']),
+      mrrOf(['canceled', 'unpaid']),
+
+      // Add-on portion of MRR: line items that are not the base plan, on active
+      // subscriptions only (so a canceled sub's add-ons don't inflate it).
+      this.db
+        .select({
+          mrrCents: sql<number>`COALESCE(SUM(${subscriptionItems.quantity} * ${subscriptionItems.unitPriceCents}), 0)`,
+        })
+        .from(subscriptionItems)
+        .innerJoin(
+          subscriptions,
+          eq(subscriptions.id, subscriptionItems.subscriptionId),
+        )
+        .where(
+          and(
+            sql`${subscriptionItems.itemType} <> 'BASE_PLAN'`,
+            eq(subscriptions.status, 'active'),
+          ),
+        ),
+
+      // Plan mix: active subscriptions per plan and the recurring revenue each
+      // plan accounts for.
+      this.db
+        .select({
+          planCode: subscriptions.planCode,
+          planName: plans.name,
+          basePriceCents: plans.basePriceCents,
+          workspaces: count(),
+          mrrCents: sql<number>`COALESCE(SUM(
+            COALESCE(
+              (
+                SELECT SUM(si.quantity * si.unit_price_cents)
+                FROM ${subscriptionItems} AS si
+                WHERE si.subscription_id = ${subscriptions.id}
+              ),
+              ${plans.basePriceCents}
+            )
+          ), 0)`,
+        })
+        .from(subscriptions)
+        .innerJoin(plans, eq(plans.code, subscriptions.planCode))
+        .where(eq(subscriptions.status, 'active'))
+        .groupBy(subscriptions.planCode, plans.name, plans.basePriceCents),
+
+      // The plan catalogue with its limits, for the "what each tier allows" table.
+      this.db
+        .select({
+          code: plans.code,
+          name: plans.name,
+          basePriceCents: plans.basePriceCents,
+          channelsPerWorkspace: plans.channelsPerWorkspace,
+          membersPerWorkspace: plans.membersPerWorkspace,
+          maxWorkspaces: plans.maxWorkspaces,
+          aiTokensPerMonth: plans.aiTokensPerMonth,
+          isActive: plans.isActive,
+        })
+        .from(plans)
+        .orderBy(asc(plans.basePriceCents)),
+
+      // Paying accounts: active subscriptions on a plan that costs something.
+      this.db
+        .select({ count: count() })
+        .from(subscriptions)
+        .innerJoin(plans, eq(plans.code, subscriptions.planCode))
+        .where(and(eq(subscriptions.status, 'active'), gt(plans.basePriceCents, 0))),
+
+      // Every invoice's status + amounts, for the collected/outstanding/written
+      // -off split. Invoices carry no workspace_id, so the join to subscriptions
+      // is what gives each one a plan and an owner elsewhere; here it just keeps
+      // the row set identical to the invoices list.
+      invoiceJoin(),
+
+      // Failure reasons, grouped by the stored message. This is free text, not
+      // a Stripe decline code — the frontend surfaces that caveat.
+      this.db
+        .select({
+          reason: failedPayments.failureReason,
+          count: count(),
+        })
+        .from(failedPayments)
+        .groupBy(failedPayments.failureReason)
+        .orderBy(desc(count())),
+    ]);
+
+    // Invoice summary, computed in one pass over the status buckets.
+    let collectedCents = 0;
+    let outstandingCents = 0;
+    let writtenOffCents = 0;
+    let paidCount = 0;
+    let attemptedCount = 0;
+    for (const row of invoiceRows) {
+      // Drafts are not a billing attempt; everything else is an issued invoice.
+      if (row.status !== 'draft') attemptedCount += 1;
+      if (row.status === 'paid') {
+        collectedCents += row.amountPaidCents;
+        paidCount += 1;
+      } else if (row.status === 'open') {
+        outstandingCents += row.amountDueCents;
+      } else if (row.status === 'uncollectible' || row.status === 'void') {
+        writtenOffCents += row.amountDueCents;
+      }
+    }
+
+    const activeCents = Number(activeMrr[0]?.mrrCents) || 0;
+    const planMix = planRows
+      .map((row) => ({
+        planCode: row.planCode,
+        planName: row.planName,
+        basePriceCents: row.basePriceCents,
+        workspaces: Number(row.workspaces) || 0,
+        mrrCents: Number(row.mrrCents) || 0,
+      }))
+      .sort((a, b) => b.mrrCents - a.mrrCents);
+
+    return {
+      mrr: {
+        activeCents,
+        atRiskCents: Number(atRiskMrr[0]?.mrrCents) || 0,
+        lostCents: Number(lostMrr[0]?.mrrCents) || 0,
+        fromAddonsCents: Number(addonMrr[0]?.mrrCents) || 0,
+        payingAccounts: payingCount[0]?.count || 0,
+      },
+      planMix,
+      catalogue: catalogue.map((row) => ({
+        ...row,
+        // count() is a number already; the limits are plain integers.
+      })),
+      invoices: {
+        collectedCents,
+        outstandingCents,
+        writtenOffCents,
+        paidCount,
+        attemptedCount,
+      },
+      declineReasons: declineRows.map((row) => ({
+        reason: row.reason,
+        count: Number(row.count) || 0,
       })),
     };
   }

@@ -689,6 +689,14 @@ export class AdminController {
     return this.adminService.getAdminAddons();
   }
 
+  // The revenue screen's live figures: MRR split by subscription health, plan
+  // mix and catalogue, invoice summary, and the payment-failure picture.
+  @Get('revenue')
+  @HttpCode(HttpStatus.OK)
+  async getRevenue() {
+    return this.adminService.getAdminRevenue();
+  }
+
   // ==========================================================================
   // Analytics
   // ==========================================================================
