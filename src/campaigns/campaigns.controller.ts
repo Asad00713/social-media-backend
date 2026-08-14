@@ -16,6 +16,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { CampaignsService } from './campaigns.service';
 import {
   CreateSimpleCampaignDto,
+  CreateDripCampaignDto,
   UpdateCampaignDto,
   ListCampaignsQueryDto,
   AddDayDto,
@@ -73,6 +74,16 @@ export class CampaignsController {
     @Body() dto: CreateSimpleCampaignDto,
   ) {
     return this.campaignsService.createSimple(workspaceId, user.userId, dto);
+  }
+
+  @Post('workspaces/:workspaceId/drip')
+  @HttpCode(HttpStatus.CREATED)
+  async createDrip(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: CreateDripCampaignDto,
+  ) {
+    return this.campaignsService.createDrip(workspaceId, user.userId, dto);
   }
 
   @Patch('workspaces/:workspaceId/:id')
