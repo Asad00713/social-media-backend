@@ -208,6 +208,13 @@ class InvoiceQueryDto {
   status?: string;
 }
 
+class OverviewQueryDto {
+  // Sizes the time series and the deltas; the headline totals ignore it.
+  @IsOptional()
+  @IsIn(['7d', '30d', '90d'])
+  period?: '7d' | '30d' | '90d';
+}
+
 class WorkspaceQueryDto {
   @IsOptional()
   @IsInt()
@@ -380,6 +387,14 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   async getDashboard() {
     return this.adminService.getDashboardOverview();
+  }
+
+  // The landing page's single call: headline totals, MRR, plan mix, growth and
+  // publishing series, top AI spenders and recent activity in one response.
+  @Get('overview')
+  @HttpCode(HttpStatus.OK)
+  async getOverview(@Query() query: OverviewQueryDto) {
+    return this.adminService.getAdminOverview(query.period);
   }
 
   @Get('dashboard/activity')
