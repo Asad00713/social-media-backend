@@ -2857,4 +2857,83 @@ export class AdminService {
 
     return enrichedLogs;
   }
+
+  // ==========================================================================
+  // Storage Usage (Costs → Storage tab)
+  // ==========================================================================
+
+  /**
+   * What every workspace is storing, straight from our own counters.
+   *
+   * This is the one storage figure only we can produce: R2 and Cloudinary see
+   * buckets, not customers. The bytes come from `media_items.file_size`, summed
+   * per workspace, with soft-deleted rows excluded so the number matches what a
+   * customer would actually see in their library. `cloudinaryPublicId` splits
+   * the total by provider — a rough proxy, since it marks where a file lives,
+   * not what it costs.
+   *
+   * The external provider bills (R2 metrics, Cloudinary quota) are deliberately
+   * absent: they need each vendor's usage API wired up, which the Storage tab
+   * flags as not-yet-connected rather than inventing a number for.
+   */
+  async getStorageUsage() {
+    const BYTES_PER_GB = 1024 * 1024 * 1024;
+
+    // Per-workspace totals — only files that still exist, so the figure lines
+    // up with the customer's own library rather than the raw bucket.
+    const perWorkspaceRaw = await this.db
+      .select({
+        workspaceId: mediaItems.workspaceId,
+        bytes: sql<number>`COALESCE(SUM(${mediaItems.fileSize}), 0)`,
+        objects: count(),
+        cloudinaryBytes: sql<number>`COALESCE(SUM(${mediaItems.fileSize}) FILTER (WHERE ${mediaItems.cloudinaryPublicId} IS NOT NULL), 0)`,
+      })
+      .from(mediaItems)
+      .where(eq(mediaItems.isDeleted, false))
+      .groupBy(mediaItems.workspaceId)
+      .orderBy(sql`SUM(${mediaItems.fileSize}) DESC NULLS LAST`);
+
+    // Attach names in one pass so the table can label rows without the caller
+    // resolving ids itself.
+    const perWorkspace = await Promise.all(
+      perWorkspaceRaw.map(async (row) => {
+        const ws = await this.db.query.workspace.findFirst({
+          where: eq(workspace.id, row.workspaceId),
+          columns: { name: true, slug: true },
+        });
+        const bytes = Number(row.bytes) || 0;
+        return {
+          workspaceId: row.workspaceId,
+          workspaceName: ws?.name ?? 'Unknown',
+          workspaceSlug: ws?.slug ?? 'unknown',
+          bytes,
+          gb: bytes / BYTES_PER_GB,
+          objects: Number(row.objects) || 0,
+          cloudinaryBytes: Number(row.cloudinaryBytes) || 0,
+        };
+      }),
+    );
+
+    const totalBytes = perWorkspace.reduce((sum, r) => sum + r.bytes, 0);
+    const cloudinaryBytes = perWorkspace.reduce(
+      (sum, r) => sum + r.cloudinaryBytes,
+      0,
+    );
+    const totalObjects = perWorkspace.reduce((sum, r) => sum + r.objects, 0);
+
+    return {
+      totals: {
+        totalBytes,
+        totalGb: totalBytes / BYTES_PER_GB,
+        totalObjects,
+        workspaceCount: perWorkspace.length,
+        // Provider split is a proxy: a file carrying a Cloudinary public id
+        // lives on Cloudinary, everything else on R2. It maps location, not
+        // cost — the actual bills come from each vendor's own usage API.
+        cloudinaryBytes,
+        r2Bytes: totalBytes - cloudinaryBytes,
+      },
+      byWorkspace: perWorkspace,
+    };
+  }
 }
