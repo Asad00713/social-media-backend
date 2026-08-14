@@ -31,7 +31,14 @@ export interface SlotRuntimeStatusDto {
 }
 
 export interface CampaignDaySlotDto {
-  channelContent: Record<string, ChannelDayContentJson & { runtime?: SlotRuntimeStatusDto }>;
+  // Keyed by `${channelId}@${time}` (not channelId alone) so a drip day with
+  // two slots on the same channel at different times (09:00 & 17:00) keeps
+  // BOTH entries — a channelId-only key would let the second slot overwrite
+  // the first. Each entry carries its own `time` so consumers can read it back.
+  channelContent: Record<
+    string,
+    ChannelDayContentJson & { runtime?: SlotRuntimeStatusDto; time: string }
+  >;
   skip?: boolean;
 }
 
@@ -103,22 +110,37 @@ export interface UpdateCampaignDto {
   blackoutDates?: string[];
 }
 
+export interface CreateDripCampaignDto {
+  name: string;
+  description?: string;
+  startDate: string; // yyyy-MM-dd
+  endDate: string; // yyyy-MM-dd
+  timezone: string;
+  weekdays: number[]; // 0=Sun … 6=Sat
+  times: string[]; // HH:mm[]
+  maxPostCount?: number;
+  blackoutDates?: string[];
+}
+
 export interface AddEventDto {
   date: string;
   channelId: string;
   postType?: string;
   platform?: string;
+  time?: string; // HH:mm — defaults to the schedule's resolved time
 }
 
 export interface UpdateEventDto {
   date: string;
   channelId: string;
   patch: Partial<ChannelDayContentJson>;
+  time?: string; // HH:mm — disambiguates a multi-time slot when provided
 }
 
 export interface RemoveEventDto {
   date: string;
   channelId: string;
+  time?: string; // HH:mm — disambiguates a multi-time slot when provided
 }
 
 /** Loose shape of the frontend `AiAutopilotConfig` — enough to reproduce
@@ -463,8 +485,9 @@ export class CampaignsService {
 
     for (const slot of slots) {
       const existing = slotContent[slot.date] ?? { channelContent: {} };
-      existing.channelContent[slot.channelId] = {
+      existing.channelContent[`${slot.channelId}@${slot.time}`] = {
         ...slot.content,
+        time: slot.time,
         runtime: {
           slotStatus: slot.slotStatus,
           scheduledAt: slot.scheduledAt ? slot.scheduledAt.toISOString() : null,
@@ -642,6 +665,107 @@ export class CampaignsService {
     return this.assembleCampaign(row.id);
   }
 
+  /** Every yyyy-MM-dd in [start,end] whose weekday ∈ weekdays, minus blackout,
+   *  in chronological order. `maxPostCount` caps total SLOTS (days × times), so
+   *  the day cap is ceil(maxPostCount / timesPerDay). */
+  private materializeDripDates(
+    startDate: string,
+    endDate: string,
+    weekdays: number[],
+    blackout: string[],
+    timesPerDay: number,
+    maxPostCount?: number,
+  ): string[] {
+    const wanted = new Set(weekdays);
+    const skip = new Set(blackout);
+    const out: string[] = [];
+    let cursor = this.parseIsoDate(startDate);
+    const end = this.parseIsoDate(endDate);
+    if (!cursor || !end) return out;
+
+    const dayCap =
+      maxPostCount && timesPerDay > 0
+        ? Math.ceil(maxPostCount / timesPerDay)
+        : Infinity;
+
+    // Guard against a pathological range; the schedule window is user-bounded.
+    for (let i = 0; i < 3660 && cursor <= end && out.length < dayCap; i += 1) {
+      const iso = this.toIsoDate(cursor);
+      if (wanted.has(cursor.getDay()) && !skip.has(iso)) out.push(iso);
+      cursor = this.addDays(cursor, 1);
+    }
+    return out;
+  }
+
+  /** Creates a Drip (type `'drip'`) campaign as a draft and materializes its
+   *  `campaign_days` rows from the weekday/times/blackout/maxPostCount rules.
+   *  Like `createSimple` it does NOT pre-create slot-content rows — those are
+   *  added per channel-day via `addEvent`. */
+  async createDrip(
+    workspaceId: string,
+    userId: string,
+    dto: CreateDripCampaignDto,
+  ): Promise<CampaignDto> {
+    const blackout = dto.blackoutDates ?? [];
+    const schedule: CampaignScheduleJson = {
+      type: 'drip',
+      startDate: dto.startDate,
+      endDate: dto.endDate,
+      weekdays: [...dto.weekdays].sort((a, b) => a - b),
+      times: [...dto.times].sort(),
+      timezone: dto.timezone,
+      blackoutDates: blackout,
+      ...(dto.maxPostCount != null ? { maxPostCount: dto.maxPostCount } : {}),
+    };
+
+    const [row] = await db
+      .insert(campaigns)
+      .values({
+        workspaceId,
+        createdById: userId,
+        name: dto.name,
+        description: dto.description?.trim() ? dto.description.trim() : null,
+        type: 'drip',
+        status: 'draft',
+        schedule,
+        contentSource: 'manual',
+        aiConfig: null,
+        libraryTemplateIds: [],
+        channelIds: [],
+        platforms: [],
+      })
+      .returning();
+
+    const dates = this.materializeDripDates(
+      dto.startDate,
+      dto.endDate,
+      schedule.weekdays,
+      blackout,
+      schedule.times.length,
+      dto.maxPostCount,
+    );
+    if (dates.length > 0) {
+      await db
+        .insert(campaignDays)
+        .values(dates.map((date) => ({ campaignId: row.id, date })));
+    }
+
+    return this.assembleCampaign(row.id);
+  }
+
+  /** The default fire time for a slot when the caller doesn't specify one:
+   *  bulk campaigns use the schedule's `defaultTime`; drip/evergreen use the
+   *  first (earliest, since `times` is stored sorted) of their `times`.
+   *  NOTE: `schedule.perDayTimes`/`schedule.times` are now display-only (read
+   *  by `computeNextRun`) and are NOT consulted on the publish path — each
+   *  materialized slot carries its own `time` column, which the launch/resume
+   *  flows and `CampaignStatusSyncListener` key off of. */
+  private resolveDefaultTime(schedule: CampaignScheduleJson): string {
+    return schedule.type === 'bulk'
+      ? schedule.defaultTime
+      : (schedule.times[0] ?? '09:00');
+  }
+
   /**
    * Patches name/description/contentSource/aiConfig + bulk-schedule fields
    * (defaultTime/skipWeekends/blackoutDates). `channelIds`/`platforms` in the
@@ -717,7 +841,7 @@ export class CampaignsService {
    *  with no explicit status is still 'pending'), and if AI-mode its
    *  aiSubState is 'approved'. Returns slot id/date/channelId/content. */
   private async collectPublishableSlots(campaignId: string): Promise<
-    { slotId: string; date: string; channelId: string; content: ChannelDayContentJson }[]
+    { slotId: string; date: string; channelId: string; time: string; content: ChannelDayContentJson }[]
   > {
     const [days, slots] = await Promise.all([
       db.select().from(campaignDays).where(eq(campaignDays.campaignId, campaignId)),
@@ -732,7 +856,13 @@ export class CampaignsService {
       .filter((s) => s.slotStatus === 'pending' || s.slotStatus == null)
       .filter((s) => this.isSlotFilled(s.content))
       .filter((s) => s.content.mode !== 'ai' || s.content.aiSubState === 'approved')
-      .map((s) => ({ slotId: s.id, date: s.date, channelId: s.channelId, content: s.content }));
+      .map((s) => ({
+        slotId: s.id,
+        date: s.date,
+        channelId: s.channelId,
+        time: s.time,
+        content: s.content,
+      }));
   }
 
   /** channelId (stringified numeric) → platform. Missing/deleted channels are
@@ -784,15 +914,16 @@ export class CampaignsService {
       publishable.map((s) => s.channelId),
     );
 
-    const dates = [...new Set(publishable.map((s) => s.date))];
-    const { due, pastDue } = computeSlotSchedule(campaign.schedule, dates, new Date());
-    const dueByDate = new Map(due.map((d) => [d.date, d.scheduledAt]));
-    const pastDueSet = new Set(pastDue);
+    const slotKeys = publishable.map((s) => ({ date: s.date, time: s.time }));
+    const { due, pastDue } = computeSlotSchedule(campaign.schedule, slotKeys, new Date());
+    const dueByKey = new Map(due.map((d) => [`${d.date}|${d.time}`, d.scheduledAt]));
+    const pastDueSet = new Set(pastDue.map((p) => `${p.date}|${p.time}`));
 
     for (const slot of publishable) {
       // Past-due (or blackout/weekend-excluded → not in `due`) → skip.
-      const scheduledAt = dueByDate.get(slot.date);
-      if (!scheduledAt || pastDueSet.has(slot.date)) {
+      const slotKey = `${slot.date}|${slot.time}`;
+      const scheduledAt = dueByKey.get(slotKey);
+      if (!scheduledAt || pastDueSet.has(slotKey)) {
         await db
           .update(campaignSlotContent)
           .set({ slotStatus: 'skipped', updatedAt: new Date() })
@@ -814,6 +945,7 @@ export class CampaignsService {
         campaignId: id,
         date: slot.date,
         channelId: slot.channelId,
+        time: slot.time,
         content: slot.content,
         platform,
         scheduledAt,
@@ -910,12 +1042,12 @@ export class CampaignsService {
     );
 
     const channelMap = await this.resolveSlotChannels(publishable.map((s) => s.channelId));
-    const dates = [...new Set(publishable.map((s) => s.date))];
-    const { due } = computeSlotSchedule(campaign.schedule, dates, new Date());
-    const dueByDate = new Map(due.map((d) => [d.date, d.scheduledAt]));
+    const slotKeys = publishable.map((s) => ({ date: s.date, time: s.time }));
+    const { due } = computeSlotSchedule(campaign.schedule, slotKeys, new Date());
+    const dueByKey = new Map(due.map((d) => [`${d.date}|${d.time}`, d.scheduledAt]));
 
     for (const slot of publishable) {
-      const scheduledAt = dueByDate.get(slot.date);
+      const scheduledAt = dueByKey.get(`${slot.date}|${slot.time}`);
       const platform = channelMap.get(slot.channelId);
       if (!scheduledAt || !platform) continue; // past-due/unavailable stays pending
 
@@ -925,6 +1057,7 @@ export class CampaignsService {
         campaignId: id,
         date: slot.date,
         channelId: slot.channelId,
+        time: slot.time,
         content: slot.content,
         platform,
         scheduledAt,
@@ -994,6 +1127,7 @@ export class CampaignsService {
           campaignId: copyRow.id,
           date: s.date,
           channelId: s.channelId,
+          time: s.time,
           content: s.content,
         })),
       );
@@ -1086,6 +1220,16 @@ export class CampaignsService {
       campaign.contentSource,
     );
 
+    const slotTime = dto.time ?? this.resolveDefaultTime(campaign.schedule);
+
+    // Match key: include `time` ONLY when the caller explicitly supplied one
+    // (drip's genuinely multi-slot-per-(date,channel) case). Bulk is inherently
+    // single-slot-per-(date,channel) and never sends `time`, so it must match on
+    // (date,channel) alone — a `defaultTime` edit mutates schedule.defaultTime
+    // WITHOUT backfilling existing slot rows' `time`, so keying the lookup on the
+    // freshly-resolved default would miss the existing slot and insert a
+    // duplicate (→ double post at launch). The INSERT below still writes the
+    // resolved `time` column regardless.
     const [existingSlot] = await db
       .select({ id: campaignSlotContent.id })
       .from(campaignSlotContent)
@@ -1094,6 +1238,7 @@ export class CampaignsService {
           eq(campaignSlotContent.campaignId, id),
           eq(campaignSlotContent.date, dto.date),
           eq(campaignSlotContent.channelId, dto.channelId),
+          ...(dto.time ? [eq(campaignSlotContent.time, dto.time)] : []),
         ),
       );
 
@@ -1107,6 +1252,7 @@ export class CampaignsService {
         campaignId: id,
         date: dto.date,
         channelId: dto.channelId,
+        time: slotTime,
         content,
       });
     }
@@ -1138,6 +1284,7 @@ export class CampaignsService {
           eq(campaignSlotContent.campaignId, id),
           eq(campaignSlotContent.date, dto.date),
           eq(campaignSlotContent.channelId, dto.channelId),
+          ...(dto.time ? [eq(campaignSlotContent.time, dto.time)] : []),
         ),
       );
 
@@ -1174,6 +1321,7 @@ export class CampaignsService {
           eq(campaignSlotContent.campaignId, id),
           eq(campaignSlotContent.date, dto.date),
           eq(campaignSlotContent.channelId, dto.channelId),
+          ...(dto.time ? [eq(campaignSlotContent.time, dto.time)] : []),
         ),
       );
 

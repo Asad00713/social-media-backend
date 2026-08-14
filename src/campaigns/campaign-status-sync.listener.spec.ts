@@ -74,6 +74,48 @@ function buildFakeDb(fixture: {
   return { db, updates };
 }
 
+/** Extracts the column-name -> value equality pairs out of a drizzle
+ *  `and(eq(...), ...)` / bare `eq(...)` condition tree by walking `queryChunks`
+ *  and picking (Column, Param) adjacency. Mirrors the helper in
+ *  `campaigns.controller.spec.ts` — used by the multi-time (BUG C2) test to
+ *  evaluate a WHERE clause against in-memory slot rows. */
+function extractEqPairs(condition: unknown): Record<string, unknown> {
+  const pairs: Record<string, unknown> = {};
+  if (!condition || typeof condition !== 'object') return pairs;
+
+  const chunks = (condition as { queryChunks?: unknown[] }).queryChunks;
+  if (Array.isArray(chunks)) {
+    for (let i = 0; i < chunks.length; i += 1) {
+      const chunk = chunks[i] as { name?: string; queryChunks?: unknown[] };
+      const isColumn =
+        chunk &&
+        typeof chunk === 'object' &&
+        'name' in chunk &&
+        typeof chunk.name === 'string' &&
+        'columnType' in (chunk as Record<string, unknown>);
+      if (isColumn) {
+        for (let j = i + 1; j < chunks.length; j += 1) {
+          const candidate = chunks[j] as { value?: unknown };
+          if (
+            candidate &&
+            typeof candidate === 'object' &&
+            'value' in candidate &&
+            !Array.isArray(candidate.value)
+          ) {
+            pairs[chunk.name as string] = candidate.value;
+            break;
+          }
+        }
+      }
+      if (chunk && typeof chunk === 'object' && Array.isArray(chunk.queryChunks)) {
+        Object.assign(pairs, extractEqPairs(chunk));
+      }
+    }
+  }
+
+  return pairs;
+}
+
 /**
  * Loads a fresh, isolated copy of the listener module with `../drizzle/db`
  * mocked to `fakeDb`. Scoped per-call via `jest.isolateModules` so tests
@@ -259,5 +301,77 @@ describe('CampaignStatusSyncListener.syncFromPost', () => {
     await expect(listener.syncFromPost(makePostRow({ status: 'published' }) as never)).rejects.toThrow(
       'connection reset',
     );
+  });
+
+  // ==========================================================================
+  // BUG C2 — multi-time drip: two slots sharing (date, channelId) at different
+  // times. Publishing the 09:00 post must flip ONLY the 09:00 slot; without
+  // `time` in the WHERE clause both slots flip and the campaign completes
+  // prematurely. This is a behavioural test — it evaluates the real WHERE the
+  // listener builds against an in-memory two-slot table.
+  // ==========================================================================
+  it('flips ONLY the matching time-slot when two slots share date+channel (09:00 vs 17:00)', async () => {
+    // Two pending slots on the same date+channel, different times.
+    const slotTable: Record<string, unknown>[] = [
+      { id: 'slot-am', campaignId: 'campaign-1', date: '2026-08-12', channelId: '1', time: '09:00', slotStatus: 'scheduled' },
+      { id: 'slot-pm', campaignId: 'campaign-1', date: '2026-08-12', channelId: '1', time: '17:00', slotStatus: 'scheduled' },
+    ];
+    // Maps db column name -> in-memory row key.
+    const COL: Record<string, string> = {
+      campaign_id: 'campaignId',
+      date: 'date',
+      channel_id: 'channelId',
+      time: 'time',
+    };
+
+    const db = {
+      // maybeCompleteCampaign selects outstanding slots — return whatever is
+      // still scheduled/publishing after the update so completion is realistic.
+      select: () => ({
+        from: () => ({
+          where: () =>
+            Promise.resolve(
+              slotTable.filter(
+                (r) => r.slotStatus === 'scheduled' || r.slotStatus === 'publishing',
+              ),
+            ),
+        }),
+      }),
+      update: () => ({
+        set: (set: Record<string, unknown>) => ({
+          where: (cond: unknown) => {
+            const pairs = extractEqPairs(cond);
+            for (const row of slotTable) {
+              const matches = Object.entries(pairs).every(([dbName, value]) => {
+                const key = COL[dbName] ?? dbName;
+                return row[key] === value;
+              });
+              if (matches) Object.assign(row, set);
+            }
+            return Promise.resolve();
+          },
+        }),
+      }),
+    };
+
+    const listener = loadListenerWithFakeDb(db);
+
+    await listener.syncFromPost(
+      makePostRow({
+        status: 'published',
+        metadata: {
+          campaignId: 'campaign-1',
+          campaignSlot: { date: '2026-08-12', channelId: '1', time: '09:00' },
+        },
+      }) as never,
+    );
+
+    const am = slotTable.find((r) => r.id === 'slot-am')!;
+    const pm = slotTable.find((r) => r.id === 'slot-pm')!;
+    // Only the 09:00 slot published; the 17:00 slot stays scheduled.
+    expect(am.slotStatus).toBe('published');
+    expect(pm.slotStatus).toBe('scheduled');
+    // 17:00 still outstanding -> campaign must NOT auto-complete.
+    expect(am.publishedAt).toBeInstanceOf(Date);
   });
 });

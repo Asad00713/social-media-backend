@@ -135,6 +135,7 @@ describe('CampaignsService.computeMetrics', () => {
       campaignId: 'c1',
       date,
       channelId,
+      time: '09:00',
       content: content(contentOverrides),
       scheduledAt: null,
       slotStatus: 'pending',
@@ -567,6 +568,7 @@ describe('CampaignsService write methods (mocked db)', () => {
         campaignId: CAMPAIGN_ID,
         date: '2026-09-02',
         channelId: '42',
+        time: '09:00',
         content: content({ caption: 'Hello world' }),
         scheduledAt: new Date('2026-09-02T09:00:00Z'),
         slotStatus: 'published',
@@ -595,9 +597,71 @@ describe('CampaignsService write methods (mocked db)', () => {
     const dto = await service.getOne(WORKSPACE_ID, CAMPAIGN_ID);
 
     expect(dto.launchedAt).toBeTruthy();
-    const slot = dto.slotContent['2026-09-02'].channelContent['42'];
+    const slot = dto.slotContent['2026-09-02'].channelContent['42@09:00'];
     expect(slot.runtime?.slotStatus).toBe('published');
     expect(slot.runtime?.publishedAt).toBeTruthy();
+  });
+
+  // BUG C1 regression: two slots on the SAME date+channel at different times
+  // must both survive in channelContent. With the old channelId-only key the
+  // 17:00 slot overwrote the 09:00 one and this assertion (2 entries) failed.
+  it('keeps BOTH multi-time slots on the same date+channel (drip) distinct in the DTO', async () => {
+    const campaignRow = makeCampaignRow({ type: 'drip' });
+    const dayRows = [{ id: 'day-1', campaignId: CAMPAIGN_ID, date: '2026-09-02', skip: false }];
+    const slotRows = [
+      {
+        id: 'slot-am',
+        campaignId: CAMPAIGN_ID,
+        date: '2026-09-02',
+        channelId: '42',
+        time: '09:00',
+        content: content({ caption: 'Morning post' }),
+        scheduledAt: null,
+        slotStatus: 'pending',
+        postId: null,
+        jobId: null,
+        publishedAt: null,
+        lastError: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+      {
+        id: 'slot-pm',
+        campaignId: CAMPAIGN_ID,
+        date: '2026-09-02',
+        channelId: '42',
+        time: '17:00',
+        content: content({ caption: 'Evening post' }),
+        scheduledAt: null,
+        slotStatus: 'pending',
+        postId: null,
+        jobId: null,
+        publishedAt: null,
+        lastError: null,
+        createdAt: new Date(),
+        updatedAt: new Date(),
+      },
+    ];
+
+    const selectResults = [[campaignRow], dayRows, slotRows];
+    let selectCall = 0;
+    const service = loadServiceWithFakeDb({
+      select: () => ({
+        from: () => ({
+          where: () => Promise.resolve(selectResults[selectCall++] ?? []),
+        }),
+      }),
+    });
+
+    const dto = await service.getOne(WORKSPACE_ID, CAMPAIGN_ID);
+
+    const channelContent = dto.slotContent['2026-09-02'].channelContent;
+    // Two distinct composite keys, not one collapsed channelId key.
+    expect(Object.keys(channelContent).sort()).toEqual(['42@09:00', '42@17:00']);
+    expect(channelContent['42@09:00'].caption).toBe('Morning post');
+    expect(channelContent['42@09:00'].time).toBe('09:00');
+    expect(channelContent['42@17:00'].caption).toBe('Evening post');
+    expect(channelContent['42@17:00'].time).toBe('17:00');
   });
 
   it('duplicate resets status to draft on the copy even when the source is active', async () => {
@@ -634,6 +698,309 @@ describe('CampaignsService write methods (mocked db)', () => {
 
     expect(result.status).toBe('draft');
     expect(result.name).toBe('Launch week (copy)');
+  });
+
+  // ==========================================================================
+  // createDrip() — materialization tests. A table-name-routed fake db records
+  // every `insert(...).values(...)` so we can assert the exact `campaign_days`
+  // rows materialized from the weekday/blackout/maxPostCount rules, and that a
+  // drip campaign is inserted with `type:'drip'`. `createSimple` is the
+  // control: still `type:'bulk'`, zero days materialized.
+  // ==========================================================================
+
+  describe('createDrip / createSimple materialization', () => {
+    const WORKSPACE_ID = 'ws-1';
+
+    function makeDripRow(overrides: Partial<Record<string, unknown>> = {}) {
+      return makeCampaignRow({
+        id: 'drip-1',
+        type: 'drip',
+        ...overrides,
+      });
+    }
+
+    /**
+     * Fake db that records the values passed to each `insert(table).values(x)`
+     * into `inserts` (keyed by table name), returns the campaign row from the
+     * campaigns insert's `.returning()`, and serves the trailing
+     * `assembleCampaign` selects (campaigns row + empty days/slots).
+     */
+    function buildInsertRecordingDb(campaignRow: Record<string, unknown>) {
+      const inserts: {
+        campaigns: unknown[];
+        campaignDays: unknown[];
+        campaignSlotContent: unknown[];
+      } = { campaigns: [], campaignDays: [], campaignSlotContent: [] };
+
+      const db = {
+        insert: (table: unknown) => ({
+          values: (vals: unknown) => {
+            const name = getTableName(table as never);
+            if (name === 'campaigns') {
+              inserts.campaigns.push(vals);
+              return { returning: () => Promise.resolve([campaignRow]) };
+            }
+            if (name === 'campaign_days') inserts.campaignDays.push(vals);
+            if (name === 'campaign_slot_content') inserts.campaignSlotContent.push(vals);
+            return { returning: () => Promise.resolve([]) };
+          },
+        }),
+        select: () => ({
+          from: (table: unknown) => ({
+            where: () => {
+              const name = getTableName(table as never);
+              if (name === 'campaigns') return Promise.resolve([campaignRow]);
+              return Promise.resolve([]);
+            },
+          }),
+        }),
+      };
+
+      return { db, inserts };
+    }
+
+    it('inserts a drip campaign (type:drip) with a drip schedule built from the DTO', async () => {
+      const { db, inserts } = buildInsertRecordingDb(makeDripRow());
+      const service = loadServiceWithFakeDb(db);
+
+      await service.createDrip(WORKSPACE_ID, 'user-1', {
+        name: 'Drip A',
+        startDate: '2026-08-01',
+        endDate: '2026-08-31',
+        timezone: 'UTC',
+        weekdays: [1, 3, 5],
+        times: ['09:00', '17:00'],
+      });
+
+      expect(inserts.campaigns).toHaveLength(1);
+      const campaignInsert = inserts.campaigns[0] as {
+        type: string;
+        schedule: { type: string; weekdays: number[]; times: string[] };
+      };
+      expect(campaignInsert.type).toBe('drip');
+      expect(campaignInsert.schedule.type).toBe('drip');
+      expect(campaignInsert.schedule.weekdays).toEqual([1, 3, 5]);
+      expect(campaignInsert.schedule.times).toEqual(['09:00', '17:00']);
+    });
+
+    it('materializes campaign_days only for weekdays in range, excluding blackout dates', async () => {
+      const { db, inserts } = buildInsertRecordingDb(makeDripRow());
+      const service = loadServiceWithFakeDb(db);
+
+      // 2026-08-03 is a Monday. Range Mon 2026-08-03 .. Sun 2026-08-09.
+      // weekdays [1,3] = Mon/Wed -> 2026-08-03 (Mon), 2026-08-05 (Wed).
+      // Blackout 2026-08-05 -> only 2026-08-03 survives.
+      await service.createDrip(WORKSPACE_ID, 'user-1', {
+        name: 'Drip B',
+        startDate: '2026-08-03',
+        endDate: '2026-08-09',
+        timezone: 'UTC',
+        weekdays: [1, 3],
+        times: ['09:00'],
+        blackoutDates: ['2026-08-05'],
+      });
+
+      expect(inserts.campaignDays).toHaveLength(1);
+      const dayRows = inserts.campaignDays[0] as { campaignId: string; date: string }[];
+      expect(dayRows.map((d) => d.date)).toEqual(['2026-08-03']);
+    });
+
+    it('caps materialized days at ceil(maxPostCount / times.length) SLOTS worth', async () => {
+      const { db, inserts } = buildInsertRecordingDb(makeDripRow());
+      const service = loadServiceWithFakeDb(db);
+
+      // Every weekday in a long window; 2 times/day; maxPostCount=5 -> ceil(5/2)=3 days.
+      await service.createDrip(WORKSPACE_ID, 'user-1', {
+        name: 'Drip C',
+        startDate: '2026-08-01',
+        endDate: '2026-12-31',
+        timezone: 'UTC',
+        weekdays: [0, 1, 2, 3, 4, 5, 6],
+        times: ['09:00', '17:00'],
+        maxPostCount: 5,
+      });
+
+      const dayRows = inserts.campaignDays[0] as { date: string }[];
+      expect(dayRows).toHaveLength(3); // ceil(5 / 2)
+    });
+
+    it('materializes no campaign_days when no in-range date matches a weekday', async () => {
+      const { db, inserts } = buildInsertRecordingDb(makeDripRow());
+      const service = loadServiceWithFakeDb(db);
+
+      // 2026-08-01 is a Saturday, 2026-08-02 a Sunday. weekdays [1] (Mon) -> none.
+      await service.createDrip(WORKSPACE_ID, 'user-1', {
+        name: 'Drip D',
+        startDate: '2026-08-01',
+        endDate: '2026-08-02',
+        timezone: 'UTC',
+        weekdays: [1],
+        times: ['09:00'],
+      });
+
+      expect(inserts.campaignDays).toHaveLength(0);
+    });
+
+    it('createSimple still inserts type:bulk and materializes zero days (control)', async () => {
+      const bulkRow = makeCampaignRow({ id: 'bulk-1', type: 'bulk' });
+      const { db, inserts } = buildInsertRecordingDb(bulkRow);
+      const service = loadServiceWithFakeDb(db);
+
+      await service.createSimple(WORKSPACE_ID, 'user-1', {
+        name: 'Bulk A',
+        startDate: '2026-08-01',
+        endDate: '2026-08-31',
+        timezone: 'UTC',
+        defaultTime: '09:00',
+        skipWeekends: false,
+      });
+
+      expect(inserts.campaigns).toHaveLength(1);
+      expect((inserts.campaigns[0] as { type: string }).type).toBe('bulk');
+      expect(inserts.campaignDays).toHaveLength(0);
+    });
+  });
+
+  // ==========================================================================
+  // addEvent bulk single-slot-per-(date,channel) invariant — regression for the
+  // defaultTime-edit duplicate-slot bug. Uses a STATEFUL table-name-routed fake
+  // db so slots inserted by the first addEvent are visible to the second one's
+  // lookup, and so `update(campaigns).set({schedule})` mutates the live row that
+  // getOne re-reads. Proves that after a defaultTime edit (which does NOT
+  // backfill existing slots' `time`), re-adding the same (date,channel) updates
+  // the single existing slot rather than inserting a duplicate.
+  // ==========================================================================
+
+  describe('addEvent bulk single-slot invariant (defaultTime-edit regression)', () => {
+    const WORKSPACE_ID = 'ws-1';
+    const CAMPAIGN_ID = 'c-1';
+
+    /** Walk an `and(eq(col, v), ...)` tree → `{ colDbName: value }`. */
+    function eqValues(cond: unknown): Record<string, unknown> {
+      const result: Record<string, unknown> = {};
+      let pendingColumn: string | undefined;
+      function walk(node: unknown): void {
+        if (node == null || typeof node !== 'object') return;
+        const chunks = (node as { queryChunks?: unknown[] }).queryChunks;
+        if (Array.isArray(chunks)) {
+          for (const c of chunks) walk(c);
+          return;
+        }
+        const named = node as { name?: string; columnType?: string; value?: unknown };
+        if (typeof named.name === 'string' && typeof named.columnType === 'string') {
+          pendingColumn = named.name;
+        } else if (
+          pendingColumn &&
+          named.value !== undefined &&
+          typeof named.value !== 'object'
+        ) {
+          result[pendingColumn] = named.value;
+          pendingColumn = undefined;
+        }
+      }
+      walk(cond);
+      return result;
+    }
+
+    function buildStatefulDb(campaignRow: Record<string, unknown>) {
+      const slotRows: Record<string, unknown>[] = [];
+      const dayRows: Record<string, unknown>[] = [];
+      let slotSeq = 0;
+
+      const matches = (row: Record<string, unknown>, pairs: Record<string, unknown>) => {
+        const map: Record<string, string> = {
+          campaign_id: 'campaignId',
+          channel_id: 'channelId',
+          date: 'date',
+          time: 'time',
+        };
+        return Object.entries(pairs).every(([dbName, v]) => {
+          const key = map[dbName] ?? dbName;
+          return row[key] === v;
+        });
+      };
+
+      const db = {
+        select: () => ({
+          from: (table: unknown) => ({
+            where: (cond: unknown) => {
+              const name = getTableName(table as never);
+              const pairs = eqValues(cond);
+              if (name === 'campaigns') return Promise.resolve([campaignRow]);
+              if (name === 'campaign_days')
+                return Promise.resolve(dayRows.filter((r) => matches(r, pairs)));
+              if (name === 'campaign_slot_content')
+                return Promise.resolve(slotRows.filter((r) => matches(r, pairs)));
+              return Promise.resolve([]);
+            },
+          }),
+        }),
+        insert: (table: unknown) => ({
+          values: (vals: Record<string, unknown> | Record<string, unknown>[]) => {
+            const name = getTableName(table as never);
+            const rows = Array.isArray(vals) ? vals : [vals];
+            if (name === 'campaign_days') dayRows.push(...rows);
+            if (name === 'campaign_slot_content') {
+              for (const r of rows) slotRows.push({ id: `slot-${++slotSeq}`, ...r });
+            }
+            return { returning: () => Promise.resolve([]) };
+          },
+        }),
+        update: (table: unknown) => ({
+          set: (set: Record<string, unknown>) => ({
+            where: () => {
+              const name = getTableName(table as never);
+              if (name === 'campaigns') Object.assign(campaignRow, set);
+              if (name === 'campaign_slot_content') {
+                // updateEvent/addEvent slot content update: apply to all (test
+                // uses a single slot, so no id disambiguation needed here).
+                for (const r of slotRows) Object.assign(r, set);
+              }
+              return Promise.resolve();
+            },
+          }),
+        }),
+      };
+
+      return { db, slotRows };
+    }
+
+    it('re-adding the same (date,channel) after a defaultTime edit updates the one slot, does not duplicate', async () => {
+      const campaignRow = makeCampaignRow({
+        type: 'bulk',
+        schedule: {
+          type: 'bulk',
+          startDate: '2026-08-01',
+          endDate: '2026-08-31',
+          defaultTime: '09:00',
+          timezone: 'UTC',
+          blackoutDates: [],
+          skipWeekends: false,
+        },
+      });
+      const { db, slotRows } = buildStatefulDb(campaignRow);
+      const service = loadServiceWithFakeDb(db);
+
+      // 1) First addEvent → inserts one slot at time '09:00'.
+      await service.addEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: '2026-08-10',
+        channelId: '1',
+      });
+      expect(slotRows).toHaveLength(1);
+      expect(slotRows[0].time).toBe('09:00');
+
+      // 2) Edit the schedule's defaultTime (does NOT backfill the slot's time).
+      await service.update(WORKSPACE_ID, CAMPAIGN_ID, { scheduleDefaultTime: '10:00' });
+
+      // 3) Re-add the SAME (date,channel). Must find + update the existing
+      //    '09:00' slot — NOT insert a second slot keyed on the new '10:00'.
+      await service.addEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: '2026-08-10',
+        channelId: '1',
+      });
+
+      expect(slotRows).toHaveLength(1);
+    });
   });
 
   // ==========================================================================
@@ -685,6 +1052,7 @@ describe('CampaignsService write methods (mocked db)', () => {
       campaignId: CAMPAIGN_ID,
       date: '2026-08-13',
       channelId: '1',
+      time: '09:00',
       content: content({ caption: 'Hello world' }),
       scheduledAt: null,
       slotStatus: 'pending',

@@ -8,6 +8,10 @@ import {
   IsObject,
   Matches,
   ValidateIf,
+  ArrayNotEmpty,
+  IsInt,
+  Min,
+  Max,
 } from 'class-validator';
 import { CAMPAIGN_STATUSES } from '../../drizzle/schema/campaigns.schema';
 import type { ChannelDayContentJson } from '../../drizzle/schema/campaigns.schema';
@@ -40,6 +44,46 @@ export class CreateSimpleCampaignDto {
 
   @IsBoolean()
   skipWeekends: boolean;
+}
+
+export class CreateDripCampaignDto {
+  @IsString()
+  name: string;
+
+  @IsOptional()
+  @IsString()
+  description?: string;
+
+  @IsDateString()
+  startDate: string; // yyyy-MM-dd
+
+  @IsDateString()
+  endDate: string; // yyyy-MM-dd — REQUIRED in v1 (finite materialization)
+
+  @IsString()
+  timezone: string;
+
+  @IsArray()
+  @ArrayNotEmpty()
+  @IsInt({ each: true })
+  @Min(0, { each: true })
+  @Max(6, { each: true })
+  weekdays: number[]; // 0=Sun … 6=Sat
+
+  @IsArray()
+  @ArrayNotEmpty()
+  @Matches(/^\d{2}:\d{2}$/, { each: true, message: 'each time must be HH:mm' })
+  times: string[];
+
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  maxPostCount?: number;
+
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  blackoutDates?: string[];
 }
 
 export class UpdateCampaignDto {
@@ -134,6 +178,10 @@ export class AddEventDto {
   @IsOptional()
   @IsString()
   platform?: string;
+
+  @IsOptional()
+  @Matches(/^\d{2}:\d{2}$/, { message: 'time must be HH:mm' })
+  time?: string;
 }
 
 export class UpdateEventDto {
@@ -145,6 +193,10 @@ export class UpdateEventDto {
 
   @IsObject()
   patch: Partial<ChannelDayContentJson>;
+
+  @IsOptional()
+  @Matches(/^\d{2}:\d{2}$/, { message: 'time must be HH:mm' })
+  time?: string;
 }
 
 export class RemoveEventDto {
@@ -153,6 +205,10 @@ export class RemoveEventDto {
 
   @IsString()
   channelId: string;
+
+  @IsOptional()
+  @Matches(/^\d{2}:\d{2}$/, { message: 'time must be HH:mm' })
+  time?: string;
 }
 
 export class AiEventDto {

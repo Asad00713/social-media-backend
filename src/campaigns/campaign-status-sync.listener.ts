@@ -14,7 +14,7 @@ type PostRow = typeof posts.$inferSelect;
  *  Written by `CampaignPublishingService.materializeAndEnqueue` (Task 3). */
 interface CampaignPostMetadata {
   campaignId?: string;
-  campaignSlot?: { date: string; channelId: string };
+  campaignSlot?: { date: string; channelId: string; time?: string };
 }
 
 const TERMINAL_SLOT_STATUSES: readonly CampaignSlotStatus[] = ['published', 'failed'];
@@ -65,6 +65,15 @@ export class CampaignStatusSyncListener {
           eq(campaignSlotContent.campaignId, meta.campaignId),
           eq(campaignSlotContent.date, meta.campaignSlot.date),
           eq(campaignSlotContent.channelId, meta.campaignSlot.channelId),
+          // Multi-time drip: two slots can share (date, channelId) at
+          // different times (e.g. 09:00 & 17:00). Match on `time` too so
+          // publishing the 09:00 post only flips the 09:00 slot — without it
+          // both slots flip and `maybeCompleteCampaign` completes early.
+          // Legacy posts written before `time` was added to metadata fall
+          // back to the (date, channelId)-only match (current behaviour).
+          ...(meta.campaignSlot.time
+            ? [eq(campaignSlotContent.time, meta.campaignSlot.time)]
+            : []),
         ),
       );
 

@@ -186,6 +186,7 @@ export const campaignSlotContent = pgTable(
 
     date: varchar('date', { length: 10 }).notNull(), // yyyy-MM-dd
     channelId: varchar('channel_id', { length: 255 }).notNull(),
+    time: varchar('time', { length: 5 }).notNull(), // HH:mm — slot's fire time
 
     content: jsonb('content').$type<ChannelDayContentJson>().notNull(),
 
@@ -203,9 +204,9 @@ export const campaignSlotContent = pgTable(
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (t) => ({
-    uqCampaignDateChannel: uniqueIndex(
-      'campaign_slot_content_campaign_date_channel_uq',
-    ).on(t.campaignId, t.date, t.channelId),
+    uqCampaignDateChannelTime: uniqueIndex(
+      'campaign_slot_content_campaign_date_channel_time_uq',
+    ).on(t.campaignId, t.date, t.channelId, t.time),
   }),
 );
 

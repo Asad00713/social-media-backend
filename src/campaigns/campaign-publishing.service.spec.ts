@@ -27,8 +27,8 @@ describe('CampaignPublishingService', () => {
   it('enqueues with a delay derived from scheduledAt and a deterministic jobId', () => {
     const { service } = make();
     // buildJobId is a pure helper — assert its shape (used for idempotency).
-    expect(service.buildJobId('c1', '2026-09-02', '42')).toBe(
-      'campaign-c1-2026-09-02-42',
+    expect(service.buildJobId('c1', '2026-09-02', '42', '09:00')).toBe(
+      'campaign-c1-2026-09-02-42-09:00',
     );
   });
 });

@@ -13,6 +13,7 @@ interface MaterializeInput {
   campaignId: string;
   date: string;
   channelId: string; // stringified numeric channel id
+  time: string; // HH:mm — the slot's fire time; disambiguates multi-time slots
   content: ChannelDayContentJson;
   platform: string;
   scheduledAt: Date;
@@ -31,9 +32,16 @@ export class CampaignPublishingService {
     @InjectQueue(QUEUES.POST_PUBLISHING) private readonly queue: Queue,
   ) {}
 
-  /** Deterministic per-(campaign,date,channel) job id → idempotent enqueue. */
-  buildJobId(campaignId: string, date: string, channelId: string): string {
-    return `campaign-${campaignId}-${date}-${channelId}`;
+  /** Deterministic per-(campaign,date,channel,time) job id → idempotent
+   *  enqueue. Time is REQUIRED in the key so two same-day/same-channel drip
+   *  slots (e.g. 09:00 and 17:00) don't collide onto one job id. */
+  buildJobId(
+    campaignId: string,
+    date: string,
+    channelId: string,
+    time: string,
+  ): string {
+    return `campaign-${campaignId}-${date}-${channelId}-${time}`;
   }
 
   buildTargets(channelId: string, platform: string): PostTarget[] {
@@ -70,7 +78,11 @@ export class CampaignPublishingService {
         platformContent,
         metadata: {
           campaignId: input.campaignId,
-          campaignSlot: { date: input.date, channelId: input.channelId },
+          campaignSlot: {
+            date: input.date,
+            channelId: input.channelId,
+            time: input.time,
+          },
         },
       })
       .returning();
@@ -79,6 +91,7 @@ export class CampaignPublishingService {
       input.campaignId,
       input.date,
       input.channelId,
+      input.time,
     );
     const delay = Math.max(0, input.scheduledAt.getTime() - Date.now());
 
