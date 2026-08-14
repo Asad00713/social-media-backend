@@ -34,14 +34,18 @@ export class CampaignPublishingService {
 
   /** Deterministic per-(campaign,date,channel,time) job id → idempotent
    *  enqueue. Time is REQUIRED in the key so two same-day/same-channel drip
-   *  slots (e.g. 09:00 and 17:00) don't collide onto one job id. */
+   *  slots (e.g. 09:00 and 17:00) don't collide onto one job id. The time's
+   *  `:` is stripped — BullMQ rejects a custom job id containing ':'
+   *  (Job.validateOptions throws "Custom Id cannot contain :"). Removing just
+   *  the colon keeps ids distinct (0900 vs 1700) and deterministic. */
   buildJobId(
     campaignId: string,
     date: string,
     channelId: string,
     time: string,
   ): string {
-    return `campaign-${campaignId}-${date}-${channelId}-${time}`;
+    const safeTime = time.replace(/:/g, '');
+    return `campaign-${campaignId}-${date}-${channelId}-${safeTime}`;
   }
 
   buildTargets(channelId: string, platform: string): PostTarget[] {
