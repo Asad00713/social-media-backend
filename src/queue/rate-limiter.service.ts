@@ -280,34 +280,94 @@ export class RateLimiterService {
   }
 
   /**
-   * Get current rate limit status for all platforms
+   * Get current rate limit status for all platforms.
+   *
+   * The live counts come from Redis. When Redis is down or slow, ioredis retries
+   * every call forever, so a naive loop here hangs the whole admin request until
+   * something times it out at the edge (~23s → 500). Instead the entire Redis
+   * read races a short timeout: if it can't answer in time, every platform comes
+   * back with `current: null` (config known, live count unknown) rather than
+   * blocking. The caller and UI already treat null as "usage unknown", which is
+   * the honest state when the counter is unreachable.
    */
   async getAllRateLimitStatus(): Promise<
     Record<
       SupportedPlatform,
-      { current: number; max: number; remaining: number; windowMs: number }
+      {
+        current: number | null;
+        max: number;
+        remaining: number | null;
+        windowMs: number;
+        description: string;
+      }
     >
   > {
-    const status: any = {};
+    const now = Date.now();
+
+    // Read every platform's counter concurrently, and race the whole batch
+    // against a 2s ceiling. One slow key shouldn't hold the rest, and no key
+    // should hold the request.
+    const readAll = Promise.all(
+      Object.entries(PLATFORM_RATE_LIMITS).map(async ([platform, limit]) => {
+        const key = `ratelimit:global:${platform}`;
+        await this.redis.zremrangebyscore(key, 0, now - limit.windowMs);
+        const current = await this.redis.zcard(key);
+        return [platform, current] as const;
+      }),
+    );
+
+    let counts: Map<string, number> | null = null;
+    try {
+      const settled = await Promise.race([
+        readAll,
+        new Promise<never>((_, reject) =>
+          setTimeout(
+            () => reject(new Error('Rate-limit counter read timed out')),
+            2000,
+          ),
+        ),
+      ]);
+      counts = new Map(settled);
+    } catch (error) {
+      this.logger.warn(
+        `Rate-limit status unavailable (Redis unreachable): ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    const status: Record<
+      string,
+      {
+        current: number | null;
+        max: number;
+        remaining: number | null;
+        windowMs: number;
+        description: string;
+      }
+    > = {};
 
     for (const [platform, limit] of Object.entries(PLATFORM_RATE_LIMITS)) {
-      const key = `ratelimit:global:${platform}`;
-      const now = Date.now();
-      const windowStart = now - limit.windowMs;
-
-      await this.redis.zremrangebyscore(key, 0, windowStart);
-      const currentCount = await this.redis.zcard(key);
-
+      const current = counts?.get(platform) ?? null;
       status[platform] = {
-        current: currentCount,
+        current,
         max: limit.maxRequests,
-        remaining: Math.max(0, limit.maxRequests - currentCount),
+        remaining: current === null ? null : Math.max(0, limit.maxRequests - current),
         windowMs: limit.windowMs,
         description: limit.description,
       };
     }
 
-    return status;
+    return status as Record<
+      SupportedPlatform,
+      {
+        current: number | null;
+        max: number;
+        remaining: number | null;
+        windowMs: number;
+        description: string;
+      }
+    >;
   }
 
   /**
