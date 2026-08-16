@@ -26,7 +26,13 @@ import {
   or,
   notInArray,
 } from 'drizzle-orm';
-import { INTEGRATION_PLATFORMS } from '../drizzle/schema';
+import {
+  INTEGRATION_PLATFORMS,
+  SUPPORTED_PLATFORMS,
+  CHANNEL_CATEGORY,
+  PLATFORM_CONFIG,
+  type SupportedPlatform,
+} from '../drizzle/schema';
 import {
   users,
   workspace,
@@ -1643,6 +1649,123 @@ export class AdminService {
   }
 
   /**
+   * One row per publishing platform, pairing the OAuth scopes we *request* at
+   * connect (declared in code, the source of truth) with what each connected
+   * channel was actually *granted* (its `token_scope`, recorded from the
+   * provider's token response).
+   *
+   * The point of the page is the gap. A channel connected before a platform's
+   * scope list grew still carries the old, shorter grant — it looks connected
+   * and healthy, yet a feature that needs the newer scope silently returns
+   * (#200) or its equivalent. That is exactly how a Slack workspace ran
+   * half-broken on six scopes for weeks without a single error surfacing. This
+   * counts, per platform, how many live channels are missing a scope we now ask
+   * for, so the fix ("these N channels must reconnect") is a number instead of a
+   * support ticket.
+   *
+   * Integrations (cloud storage, calendars) are excluded — they are not
+   * publishing channels and their scopes answer a different question.
+   *
+   * What this deliberately does NOT claim: app-review state (live / in review /
+   * not submitted) and platform app IDs are not modelled in this database — they
+   * live in each platform's developer console. The tab is honest about that
+   * rather than inventing a status.
+   */
+  async getPlatformApps() {
+    const publishingPlatforms = SUPPORTED_PLATFORMS.filter(
+      (p) => CHANNEL_CATEGORY[p] !== 'integration',
+    );
+
+    // token_scope is a single free-text string exactly as the provider echoed
+    // it back — space- or comma-separated, and null where a provider returned
+    // no scope field at all. Pull the raw scope plus connection status for every
+    // publishing channel in one query, then bucket in memory.
+    const rows = await this.db
+      .select({
+        platform: socialMediaChannels.platform,
+        tokenScope: socialMediaChannels.tokenScope,
+        connectionStatus: socialMediaChannels.connectionStatus,
+      })
+      .from(socialMediaChannels)
+      .where(notInArray(socialMediaChannels.platform, INTEGRATION_PLATFORMS));
+
+    const byPlatform = new Map<string, typeof rows>();
+    for (const row of rows) {
+      const list = byPlatform.get(row.platform);
+      if (list) list.push(row);
+      else byPlatform.set(row.platform, [row]);
+    }
+
+    const platforms = publishingPlatforms.map((platform) => {
+      const config = PLATFORM_CONFIG[platform as SupportedPlatform];
+      const declaredScopes = config?.oauthScopes ?? [];
+      const channels = byPlatform.get(platform) ?? [];
+
+      const connected = channels.filter(
+        (c) => c.connectionStatus === 'connected',
+      ).length;
+      const broken = channels.filter((c) =>
+        ['expired', 'error', 'revoked'].includes(c.connectionStatus ?? ''),
+      ).length;
+
+      // A channel is "behind" when its granted scopes don't cover every scope we
+      // now request. Compared case-sensitively against the raw grant string —
+      // providers return scopes verbatim, so a substring test on the exact scope
+      // name is what actually matches. A null/empty grant means the provider
+      // told us nothing; we can't prove a gap, so it is counted separately as
+      // "unknown" rather than assumed broken.
+      let scopeGap = 0;
+      let scopeUnknown = 0;
+      for (const channel of channels) {
+        const granted = channel.tokenScope?.trim();
+        if (!granted) {
+          scopeUnknown += 1;
+          continue;
+        }
+        const missing = declaredScopes.some((scope) => !granted.includes(scope));
+        if (missing) scopeGap += 1;
+      }
+
+      return {
+        platform,
+        name: config?.name ?? platform,
+        category: CHANNEL_CATEGORY[platform as SupportedPlatform],
+        declaredScopes,
+        declaredScopeCount: declaredScopes.length,
+        channelCount: channels.length,
+        connected,
+        broken,
+        // Channels missing at least one currently-requested scope — the ones
+        // that need a reconnect to regain a feature.
+        scopeGap,
+        // Channels whose provider returned no scope string; we can't judge them.
+        scopeUnknown,
+      };
+    });
+
+    // The platforms that carry a real risk first: a scope gap on a connected
+    // channel is a live feature silently broken. Then by how many channels are
+    // affected, then alphabetically for a stable order.
+    platforms.sort(
+      (a, b) =>
+        Number(b.scopeGap > 0) - Number(a.scopeGap > 0) ||
+        b.scopeGap - a.scopeGap ||
+        b.channelCount - a.channelCount ||
+        a.name.localeCompare(b.name),
+    );
+
+    return {
+      platforms,
+      totals: {
+        platformCount: platforms.length,
+        connectedChannels: platforms.reduce((s, p) => s + p.connected, 0),
+        channelsBehind: platforms.reduce((s, p) => s + p.scopeGap, 0),
+        scopeUnknown: platforms.reduce((s, p) => s + p.scopeUnknown, 0),
+      },
+    };
+  }
+
+  /**
    * Every connected account across every customer, one page at a time.
    *
    * `needsAttention` is a filter rather than a stored flag, and it means the
@@ -1714,6 +1837,10 @@ export class AdminService {
           lastErrorAt: socialMediaChannels.lastErrorAt,
           consecutiveErrors: socialMediaChannels.consecutiveErrors,
           tokenExpiresAt: socialMediaChannels.tokenExpiresAt,
+          // Granted OAuth scopes as the provider echoed them at connect. Null
+          // where the provider returned none. Surfaced so the channels list can
+          // show which grant a broken channel is actually carrying.
+          tokenScope: socialMediaChannels.tokenScope,
           lastSyncedAt: socialMediaChannels.lastSyncedAt,
           isActive: socialMediaChannels.isActive,
           createdAt: socialMediaChannels.createdAt,

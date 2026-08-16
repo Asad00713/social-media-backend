@@ -710,6 +710,16 @@ export class AdminController {
     return this.adminService.getChannelStats();
   }
 
+  // Per-platform OAuth picture: scopes we request vs. what each connected
+  // channel was actually granted, and how many channels are behind a scope we
+  // now ask for (the reconnect list). See getPlatformApps for what it can and
+  // can't answer.
+  @Get('platforms/apps')
+  @HttpCode(HttpStatus.OK)
+  async getPlatformApps() {
+    return this.adminService.getPlatformApps();
+  }
+
   @Get('analytics/posts')
   @HttpCode(HttpStatus.OK)
   async getPostStats() {
