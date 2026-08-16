@@ -61,6 +61,7 @@ import { ChannelService } from '../channels/services/channel.service';
 import { WorkspaceMembersService } from '../workspace-members/workspace-members.service';
 import { UpdateMemberDto } from '../workspace-members/dto/update-member.dto';
 import { UserInactivityService } from './user-inactivity.service';
+import { AdminActivityService } from './admin-activity.service';
 import { QueueMonitorService } from './queue-monitor.service';
 import {
   RateLimiterService,
@@ -370,6 +371,7 @@ class CleanQueueDto {
 export class AdminController {
   constructor(
     private readonly adminService: AdminService,
+    private readonly adminActivityService: AdminActivityService,
     private readonly userInactivityService: UserInactivityService,
     private readonly queueMonitorService: QueueMonitorService,
     private readonly rateLimiterService: RateLimiterService,
@@ -718,6 +720,42 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   async getPlatformApps() {
     return this.adminService.getPlatformApps();
+  }
+
+  // ==========================================================================
+  // Activity — platform-wide recent feeds, one per domain. Each returns the
+  // newest rows across all workspaces, attributed to their workspace. Thin by
+  // design: real rows only, no invented rollups. See AdminActivityService.
+  // ==========================================================================
+
+  @Get('activity/posts')
+  @HttpCode(HttpStatus.OK)
+  async getActivityPosts(@Query('cursor') cursor?: string) {
+    return this.adminActivityService.getRecentPosts(cursor);
+  }
+
+  @Get('activity/campaigns')
+  @HttpCode(HttpStatus.OK)
+  async getActivityCampaigns(@Query('cursor') cursor?: string) {
+    return this.adminActivityService.getRecentCampaigns(cursor);
+  }
+
+  @Get('activity/inbox')
+  @HttpCode(HttpStatus.OK)
+  async getActivityInbox(@Query('cursor') cursor?: string) {
+    return this.adminActivityService.getRecentInbox(cursor);
+  }
+
+  @Get('activity/media')
+  @HttpCode(HttpStatus.OK)
+  async getActivityMedia(@Query('cursor') cursor?: string) {
+    return this.adminActivityService.getRecentMedia(cursor);
+  }
+
+  @Get('activity/ads')
+  @HttpCode(HttpStatus.OK)
+  async getActivityAds(@Query('cursor') cursor?: string) {
+    return this.adminActivityService.getRecentAds(cursor);
   }
 
   @Get('analytics/posts')
