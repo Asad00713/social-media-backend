@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../drizzle/db';
 import {
@@ -964,6 +970,49 @@ export class CampaignsService {
       .where(eq(campaigns.id, id));
 
     return this.assembleCampaign(id);
+  }
+
+  /**
+   * Guards edits on a launched (`active`) campaign's slot once it has
+   * already fired — `publishing`/`published`/`failed`/`skipped`. Draft (and
+   * any other non-`active`) campaigns are unguarded since nothing has been
+   * enqueued yet; still-`pending`/`scheduled` slots on an active campaign
+   * remain editable since they haven't gone out. Throws `ConflictException`
+   * otherwise so callers (Tasks 2-4) can 409 instead of corrupting a fired
+   * post.
+   */
+  private assertLaunchedSlotEditable(campaignStatus: string, slotStatus: string): void {
+    if (campaignStatus !== 'active') return; // draft/scheduled/paused/etc. — unguarded
+    const readOnly = ['publishing', 'published', 'failed', 'skipped'];
+    if (readOnly.includes(slotStatus)) {
+      throw new ConflictException(
+        slotStatus === 'skipped'
+          ? 'This post was skipped and can no longer be edited.'
+          : 'This post has already been published and can no longer be edited.',
+      );
+    }
+  }
+
+  /**
+   * Cancels the enqueued job and deletes the not-yet-fired `posts` row for
+   * one slot (mirrors `pause`, race-safe on `posts.status = 'scheduled'`).
+   * Returns `false` if the post already flipped to publishing (0 rows
+   * deleted) — the caller must abort with 409 rather than re-materialize a
+   * fired post.
+   */
+  private async cancelAndClearSlotPost(slot: {
+    jobId: string | null;
+    postId: string | null;
+  }): Promise<boolean> {
+    if (slot.jobId) await this.publishing.cancelSlotJob(slot.jobId);
+    if (slot.postId) {
+      const deleted = await db
+        .delete(posts)
+        .where(and(eq(posts.id, slot.postId), eq(posts.status, 'scheduled')))
+        .returning({ id: posts.id });
+      if (deleted.length === 0) return false; // already publishing/published
+    }
+    return true;
   }
 
   /**

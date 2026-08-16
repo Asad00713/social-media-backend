@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { getTableName } from 'drizzle-orm';
 import { CampaignsService } from './campaigns.service';
 import type { ChannelDayContentJson } from '../drizzle/schema/campaigns.schema';
@@ -106,6 +107,43 @@ describe('CampaignsService.isSlotFilled', () => {
 
   it('empty manual content is not filled', () => {
     expect(service.isSlotFilled(content({}))).toBe(false);
+  });
+});
+
+describe('CampaignsService.assertLaunchedSlotEditable', () => {
+  // Pure-helper tests never touch the injected CampaignPublishingService —
+  // undefined is safe here, cast away since the constructor param is typed
+  // required for real (module-wired) construction.
+  const service = new CampaignsService(undefined as never);
+  const call = (campaignStatus: string, slotStatus: string) =>
+    (service as any).assertLaunchedSlotEditable(campaignStatus, slotStatus);
+
+  it('does not throw for a draft campaign regardless of slot status', () => {
+    expect(() => call('draft', 'published')).not.toThrow();
+  });
+
+  it('does not throw for an active campaign with a still-scheduled slot', () => {
+    expect(() => call('active', 'scheduled')).not.toThrow();
+  });
+
+  it('does not throw for an active campaign with a pending slot', () => {
+    expect(() => call('active', 'pending')).not.toThrow();
+  });
+
+  it('throws ConflictException for an active campaign with a published slot', () => {
+    expect(() => call('active', 'published')).toThrow(ConflictException);
+  });
+
+  it('throws ConflictException for an active campaign with a publishing slot', () => {
+    expect(() => call('active', 'publishing')).toThrow(ConflictException);
+  });
+
+  it('throws ConflictException for an active campaign with a failed slot', () => {
+    expect(() => call('active', 'failed')).toThrow(ConflictException);
+  });
+
+  it('throws ConflictException for an active campaign with a skipped slot', () => {
+    expect(() => call('active', 'skipped')).toThrow(ConflictException);
   });
 });
 
