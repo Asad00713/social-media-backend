@@ -795,6 +795,9 @@ export class PostService {
     const mergedMetadata: Record<string, any> = {
       ...postMetadata,
       ...platformSpecific,
+      // Messaging platforms (Slack/Discord) read their sub-destination
+      // (which channel to post to) from here; absent for social platforms.
+      ...(target.destination ? { destination: target.destination } : {}),
     };
 
     // Decrypt access token
