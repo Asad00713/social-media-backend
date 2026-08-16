@@ -141,6 +141,7 @@ export interface UpdateEventDto {
   channelId: string;
   patch: Partial<ChannelDayContentJson>;
   time?: string; // HH:mm — disambiguates a multi-time slot when provided
+  newTime?: string; // HH:mm — content-preserving move to this time (pre-launch only)
 }
 
 export interface RemoveEventDto {
@@ -1363,11 +1364,43 @@ export class CampaignsService {
 
     this.assertLaunchedSlotEditable(campaignStatus, slot.slotStatus);
 
+    // Content-preserving time move. Pre-launch only: moving a launched slot
+    // would need a re-materialize at the new fire time (out of scope here), so
+    // reject it with a clear 409 — the picker is disabled there anyway.
+    const movingTime = !!dto.newTime && dto.newTime !== slot.time;
+    if (movingTime) {
+      if (campaignStatus === 'active') {
+        throw new ConflictException(
+          'Change this post’s time before launching the campaign.',
+        );
+      }
+      const [clash] = await db
+        .select({ id: campaignSlotContent.id })
+        .from(campaignSlotContent)
+        .where(
+          and(
+            eq(campaignSlotContent.campaignId, id),
+            eq(campaignSlotContent.date, dto.date),
+            eq(campaignSlotContent.channelId, dto.channelId),
+            eq(campaignSlotContent.time, dto.newTime!),
+          ),
+        );
+      if (clash) {
+        throw new ConflictException(
+          'A post already exists for this channel at that time on this day.',
+        );
+      }
+    }
+
     const mergedContent: ChannelDayContentJson = { ...slot.content, ...dto.patch };
 
     await db
       .update(campaignSlotContent)
-      .set({ content: mergedContent, updatedAt: new Date() })
+      .set({
+        content: mergedContent,
+        ...(movingTime ? { time: dto.newTime! } : {}),
+        updatedAt: new Date(),
+      })
       .where(eq(campaignSlotContent.id, slot.id));
 
     // Launched + still-scheduled: the enqueued post is stale — cancel & re-enqueue

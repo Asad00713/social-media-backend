@@ -1233,10 +1233,18 @@ describe('CampaignsService write methods (mocked db)', () => {
               const rows = fixture.slotRows ?? [];
               const eqValues = extractEqValues(whereCond);
               const wantedStatus = eqValues['slot_status'];
-              const filtered =
-                typeof wantedStatus === 'string'
-                  ? rows.filter((r) => (r as { slotStatus?: string }).slotStatus === wantedStatus)
-                  : rows;
+              const wantedTime = eqValues['time'];
+              const filtered = rows
+                .filter((r) =>
+                  typeof wantedStatus === 'string'
+                    ? (r as { slotStatus?: string }).slotStatus === wantedStatus
+                    : true,
+                )
+                .filter((r) =>
+                  typeof wantedTime === 'string'
+                    ? (r as { time?: string }).time === wantedTime
+                    : true,
+                );
               return Promise.resolve(filtered);
             }
             if (name === 'social_media_channels') {
@@ -1962,6 +1970,154 @@ describe('CampaignsService write methods (mocked db)', () => {
       expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
       const slotUpdate = updates.slotUpdates.find((u) => u.id === 'slot-1');
       expect((slotUpdate?.set.content as ChannelDayContentJson)?.caption).toBe('New caption');
+    });
+  });
+
+  // ==========================================================================
+  // updateEvent() — newTime move. dto.newTime moves a pre-launch slot's `time`
+  // column while preserving its merged content; it 409s on a collision with an
+  // existing slot at the target time, and 409s outright on a launched (active)
+  // campaign (pre-launch only — a launched move would need a re-materialize at
+  // the new fire time, out of scope here). Reuses launch's table-routed
+  // `buildFakeDb` fixture (declared above in this `describe('launch')`
+  // closure).
+  // ==========================================================================
+
+  describe('updateEvent — newTime move', () => {
+    const WORKSPACE_ID = 'ws-1';
+    const CAMPAIGN_ID = 'c-1';
+    const futureDate = '2099-06-15'; // far future -> always "due", never past-due
+
+    it('moves the slot to newTime and preserves merged content when the target time is free', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        time: '17:00',
+        slotStatus: 'pending',
+        content: content({ caption: 'hi' }),
+      });
+      const { db, updates } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'draft' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+        patch: { caption: 'bye' },
+        time: '17:00',
+        newTime: '18:00',
+      });
+
+      const slotUpdate = updates.slotUpdates.find((u) => u.id === 'slot-1');
+      expect(slotUpdate?.set).toMatchObject({ time: '18:00' });
+      expect((slotUpdate?.set.content as ChannelDayContentJson)?.caption).toBe('bye');
+    });
+
+    it('throws ConflictException when a slot already exists at newTime', async () => {
+      const publishing = makePublishingMock();
+      const slotAt17 = makeSlotRow({
+        id: 'slot-1',
+        date: futureDate,
+        channelId: '1',
+        time: '17:00',
+        slotStatus: 'pending',
+        content: content({ caption: 'hi' }),
+      });
+      const slotAt18 = makeSlotRow({
+        id: 'slot-2',
+        date: futureDate,
+        channelId: '1',
+        time: '18:00',
+        slotStatus: 'pending',
+        content: content({ caption: 'taken' }),
+      });
+      const { db, updates } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'draft' }),
+        dayRows: [],
+        slotRows: [slotAt17, slotAt18],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await expect(
+        service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+          date: futureDate,
+          channelId: '1',
+          patch: { caption: 'bye' },
+          time: '17:00',
+          newTime: '18:00',
+        }),
+      ).rejects.toThrow(/already exists for this channel/i);
+
+      expect(
+        updates.slotUpdates.find((u) => u.set.time === '18:00'),
+      ).toBeUndefined();
+    });
+
+    it('throws ConflictException when the campaign is launched (active) and newTime is set', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        time: '17:00',
+        slotStatus: 'scheduled',
+        content: content({ caption: 'hi' }),
+      });
+      const { db, updates } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await expect(
+        service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+          date: futureDate,
+          channelId: '1',
+          patch: { caption: 'bye' },
+          time: '17:00',
+          newTime: '18:00',
+        }),
+      ).rejects.toThrow(/before launching the campaign/i);
+
+      expect(
+        updates.slotUpdates.find((u) => u.id === 'slot-1' && u.set.time === '18:00'),
+      ).toBeUndefined();
+    });
+
+    it('leaves content-only behaviour unchanged when newTime is absent', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        time: '17:00',
+        slotStatus: 'pending',
+        content: content({ caption: 'hi' }),
+      });
+      const { db, updates } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'draft' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+        patch: { caption: 'x' },
+        time: '17:00',
+      });
+
+      const slotUpdate = updates.slotUpdates.find((u) => u.id === 'slot-1');
+      expect((slotUpdate?.set.content as ChannelDayContentJson)?.caption).toBe('x');
+      expect(slotUpdate?.set.time).toBeUndefined();
     });
   });
 
