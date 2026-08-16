@@ -197,6 +197,12 @@ export class UpdateEventDto {
   @IsOptional()
   @Matches(/^\d{2}:\d{2}$/, { message: 'time must be HH:mm' })
   time?: string;
+
+  // Optional content-preserving time move: when present and different from the
+  // matched slot's current `time`, updateEvent moves the slot to this time.
+  @IsOptional()
+  @Matches(/^\d{2}:\d{2}$/, { message: 'newTime must be HH:mm' })
+  newTime?: string;
 }
 
 export class RemoveEventDto {
