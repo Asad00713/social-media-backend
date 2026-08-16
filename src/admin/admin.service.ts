@@ -1,6 +1,7 @@
 import {
   Injectable,
   Inject,
+  Logger,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
@@ -167,6 +168,8 @@ export type WorkspaceChannelHealthFilter =
 
 @Injectable()
 export class AdminService {
+  private readonly logger = new Logger(AdminService.name);
+
   constructor(@Inject(DRIZZLE) private db: DbType) {}
 
   // ==========================================================================
@@ -2644,8 +2647,36 @@ export class AdminService {
   // System Health
   // ==========================================================================
 
-  async getSystemHealth() {
-    // Get counts of various issues
+  /**
+   * A real reading of what the platform depends on, not a hardcoded "healthy".
+   *
+   * The Redis check is passed in rather than run here: this service only holds
+   * the database connection, so the caller (which has the queue client) pings
+   * Redis and hands the result down. Both dependency checks report a latency and
+   * an up/down state; the overall status is derived from them plus the standing
+   * issue counts, so a down dependency actually turns the banner red.
+   *
+   * Deliberately not covered: external services (S3, Cloudinary, social APIs).
+   * Pinging them on every health poll is flaky and rate-costly and would produce
+   * false "degraded" readings on a transient network blip — the Status tab flags
+   * those as not-yet-monitored rather than guessing.
+   */
+  async getSystemHealth(redis?: { ok: boolean; latencyMs: number | null }) {
+    // Time a trivial round-trip to Postgres. `SELECT 1` measures the connection,
+    // not a table, so it isolates database reachability from any one query.
+    const dbStart = Date.now();
+    let dbOk = false;
+    let dbLatencyMs: number | null = null;
+    try {
+      await this.db.execute(sql`SELECT 1`);
+      dbOk = true;
+      dbLatencyMs = Date.now() - dbStart;
+    } catch (error) {
+      this.logger.warn(`Database ping failed: ${(error as Error).message}`);
+    }
+
+    // Standing issues — already-live counts, surfaced here so the banner
+    // reflects real problems, not just connectivity.
     const [expiredChannels, failedPostsCount, unresolvedPayments] =
       await Promise.all([
         this.db
@@ -2662,12 +2693,51 @@ export class AdminService {
           .where(eq(failedPayments.resolved, false)),
       ]);
 
+    const dependencies = [
+      {
+        id: 'postgres',
+        name: 'PostgreSQL',
+        detail: 'Primary database',
+        state: (dbOk ? 'up' : 'down') as 'up' | 'degraded' | 'down',
+        latencyMs: dbLatencyMs,
+      },
+      {
+        id: 'redis',
+        name: 'Redis',
+        detail: 'Queue + cache backend',
+        state: (redis ? (redis.ok ? 'up' : 'down') : 'down') as
+          | 'up'
+          | 'degraded'
+          | 'down',
+        latencyMs: redis?.latencyMs ?? null,
+      },
+    ];
+
+    const anyDown = dependencies.some((d) => d.state === 'down');
+    const issues = {
+      expiredChannels: expiredChannels[0]?.count || 0,
+      failedPosts: failedPostsCount[0]?.count || 0,
+      unresolvedPayments: unresolvedPayments[0]?.count || 0,
+    };
+    const hasIssues =
+      issues.expiredChannels > 0 ||
+      issues.failedPosts > 0 ||
+      issues.unresolvedPayments > 0;
+
     return {
-      status: 'healthy', // Can be enhanced with actual health checks
-      issues: {
-        expiredChannels: expiredChannels[0]?.count || 0,
-        failedPosts: failedPostsCount[0]?.count || 0,
-        unresolvedPayments: unresolvedPayments[0]?.count || 0,
+      status: anyDown ? 'down' : hasIssues ? 'degraded' : 'healthy',
+      dependencies,
+      issues,
+      deploy: {
+        environment: process.env.NODE_ENV ?? 'development',
+        // Optional stamps set at deploy time; absent when running locally.
+        region: process.env.RAILWAY_REGION ?? process.env.REGION ?? null,
+        commit:
+          process.env.RAILWAY_GIT_COMMIT_SHA ?? process.env.GIT_COMMIT ?? null,
+        branch: process.env.RAILWAY_GIT_BRANCH ?? null,
+        nodeVersion: process.version,
+        // Whole seconds; the UI renders it as d/h/m.
+        uptimeSeconds: Math.floor(process.uptime()),
       },
       timestamp: new Date().toISOString(),
     };
