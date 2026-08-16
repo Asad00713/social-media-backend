@@ -1343,12 +1343,71 @@ export class CampaignsService {
       throw new NotFoundException('Event not found');
     }
 
+    // Load campaign status (raw row) for the launched-edit guard.
+    const [camp] = await db
+      .select({ status: campaigns.status })
+      .from(campaigns)
+      .where(eq(campaigns.id, id));
+    const campaignStatus = camp?.status ?? 'draft';
+
+    this.assertLaunchedSlotEditable(campaignStatus, slot.slotStatus);
+
     const mergedContent: ChannelDayContentJson = { ...slot.content, ...dto.patch };
 
     await db
       .update(campaignSlotContent)
       .set({ content: mergedContent, updatedAt: new Date() })
       .where(eq(campaignSlotContent.id, slot.id));
+
+    // Launched + still-scheduled: the enqueued post is stale — cancel & re-enqueue
+    // from the merged content so the NEW content actually fires.
+    if (campaignStatus === 'active' && slot.slotStatus === 'scheduled') {
+      const safe = await this.cancelAndClearSlotPost({ jobId: slot.jobId, postId: slot.postId });
+      if (!safe) {
+        throw new ConflictException(
+          'This post just started publishing and can no longer be edited. Reload to see its status.',
+        );
+      }
+      const createdById = await this.loadCreatedById(id);
+      const channelMap = await this.resolveSlotChannels([slot.channelId]);
+      const platform = channelMap.get(slot.channelId);
+      const { due, pastDue } = computeSlotSchedule(
+        // reload the campaign schedule for computeSlotSchedule
+        (await this.getOne(workspaceId, id)).schedule,
+        [{ date: slot.date, time: slot.time }],
+        new Date(),
+      );
+      const scheduledAt = due[0]?.scheduledAt;
+      const isPastDue = pastDue.length > 0 || !scheduledAt;
+      if (!platform || isPastDue) {
+        await db
+          .update(campaignSlotContent)
+          .set({
+            slotStatus: 'skipped',
+            postId: null,
+            jobId: null,
+            scheduledAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(campaignSlotContent.id, slot.id));
+      } else {
+        const { postId, jobId } = await this.publishing.materializeAndEnqueue({
+          workspaceId,
+          createdById,
+          campaignId: id,
+          date: slot.date,
+          channelId: slot.channelId,
+          time: slot.time,
+          content: mergedContent,
+          platform,
+          scheduledAt,
+        });
+        await db
+          .update(campaignSlotContent)
+          .set({ postId, jobId, scheduledAt, slotStatus: 'scheduled', updatedAt: new Date() })
+          .where(eq(campaignSlotContent.id, slot.id));
+      }
+    }
 
     await db
       .update(campaigns)
