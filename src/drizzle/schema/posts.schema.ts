@@ -58,6 +58,16 @@ export interface PostTarget {
   publishedAt?: string;
   errorMessage?: string;
   contentOverride?: PlatformContent;
+  /**
+   * Sub-destination for chat/messaging platforms (Slack/Discord): which
+   * Slack channel / Discord text channel the message goes to. Absent for
+   * every social platform (they publish to the account itself). `id` is the
+   * platform channel id; `name` is a human label for display/audit.
+   */
+  destination?: {
+    id: string;
+    name?: string;
+  };
 }
 
 /**
