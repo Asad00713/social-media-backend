@@ -1827,6 +1827,41 @@ describe('CampaignsService write methods (mocked db)', () => {
       });
     });
 
+    it('active campaign + scheduled Slack/Discord slot (not past-due): re-materializes WITH destination from the merged content (was dropped, breaking messaging re-publish)', async () => {
+      const publishing = makePublishingMock();
+      publishing.materializeAndEnqueue.mockResolvedValue({ postId: 'p2', jobId: 'j2' });
+      const slackDestination = { id: 'C1', name: '#x' };
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'scheduled',
+        postId: 'post-old',
+        jobId: 'job-old',
+        content: content({ caption: 'Old caption', destination: slackDestination }),
+      });
+      const { db } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'slack' }],
+        postRows: [{ id: 'post-old', status: 'scheduled' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+        patch: { caption: 'New caption' },
+      });
+
+      expect(publishing.materializeAndEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          platform: 'slack',
+          destination: slackDestination,
+        }),
+      );
+    });
+
     it('active campaign + scheduled slot whose post already started publishing (cancelAndClearSlotPost -> false): throws ConflictException, does not re-enqueue', async () => {
       const publishing = makePublishingMock();
       const slot = makeSlotRow({

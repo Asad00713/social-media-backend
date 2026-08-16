@@ -1412,6 +1412,7 @@ export class CampaignsService {
           content: mergedContent,
           platform,
           scheduledAt,
+          destination: mergedContent.destination,
         });
         await db
           .update(campaignSlotContent)
