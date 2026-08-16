@@ -26,6 +26,8 @@ import { YouTubePublisher } from './publishers/youtube.publisher';
 import { BlueskyPublisher } from './publishers/bluesky.publisher';
 import { MastodonPublisher } from './publishers/mastodon.publisher';
 import { RedditPublisher } from './publishers/reddit.publisher';
+import { SlackPublisher } from './publishers/slack.publisher';
+import { DiscordPublisher } from './publishers/discord.publisher';
 
 // Processors (BullMQ job handlers)
 import { PostPublishProcessor } from './processors/post-publish.processor';
@@ -57,6 +59,8 @@ import { PostPublishProcessor } from './processors/post-publish.processor';
     BlueskyPublisher,
     MastodonPublisher,
     RedditPublisher,
+    SlackPublisher,
+    DiscordPublisher,
     PostPublishProcessor,
     CampaignStatusSyncListener,
   ],

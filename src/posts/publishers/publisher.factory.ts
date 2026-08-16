@@ -12,6 +12,8 @@ import { YouTubePublisher } from './youtube.publisher';
 import { BlueskyPublisher } from './bluesky.publisher';
 import { MastodonPublisher } from './mastodon.publisher';
 import { RedditPublisher } from './reddit.publisher';
+import { SlackPublisher } from './slack.publisher';
+import { DiscordPublisher } from './discord.publisher';
 
 @Injectable()
 export class PublisherFactory {
@@ -29,6 +31,8 @@ export class PublisherFactory {
     private readonly blueskyPublisher: BlueskyPublisher,
     private readonly mastodonPublisher: MastodonPublisher,
     private readonly redditPublisher: RedditPublisher,
+    private readonly slackPublisher: SlackPublisher,
+    private readonly discordPublisher: DiscordPublisher,
   ) {
     this.publishers = new Map<SupportedPlatform, BasePublisher>();
     this.publishers.set('twitter', this.twitterPublisher);
@@ -42,6 +46,8 @@ export class PublisherFactory {
     this.publishers.set('bluesky', this.blueskyPublisher);
     this.publishers.set('mastodon', this.mastodonPublisher);
     this.publishers.set('reddit', this.redditPublisher);
+    this.publishers.set('slack', this.slackPublisher);
+    this.publishers.set('discord', this.discordPublisher);
   }
 
   getPublisher(platform: SupportedPlatform): BasePublisher {
