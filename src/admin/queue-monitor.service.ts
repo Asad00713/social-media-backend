@@ -48,6 +48,43 @@ export class QueueMonitorService {
   ) {}
 
   /**
+   * Pings Redis through a live queue's own connection and times the round trip.
+   *
+   * Reuses the BullMQ client rather than opening a socket of its own, so this
+   * checks the exact connection the workers depend on — a false "up" from a
+   * separate healthy connection is not possible. Never throws: a refused or
+   * timed-out ping is what "down" means here, and the health endpoint has to
+   * report it, not crash on it.
+   */
+  async pingRedis(): Promise<{ ok: boolean; latencyMs: number | null }> {
+    const start = Date.now();
+
+    // Both steps have to be inside the race, not just the ping. When Redis is
+    // down, `queue.client` is a promise that stays pending until a connection is
+    // established — it never rejects — so awaiting it *before* the race is where
+    // the whole health request hangs. Racing the entire operation against a
+    // timeout means a lost race (whatever the reason) reads as "down", which is
+    // exactly what the health check is here to report.
+    const attempt = (async () => {
+      const client = await this.postPublishingQueue.client;
+      await client.ping();
+    })();
+
+    try {
+      await Promise.race([
+        attempt,
+        new Promise((_, reject) =>
+          setTimeout(() => reject(new Error('Redis ping timed out')), 2000),
+        ),
+      ]);
+      return { ok: true, latencyMs: Date.now() - start };
+    } catch (error) {
+      this.logger.warn(`Redis ping failed: ${(error as Error).message}`);
+      return { ok: false, latencyMs: null };
+    }
+  }
+
+  /**
    * Get all queues with their stats
    */
   async getAllQueueStats(): Promise<QueueStats[]> {

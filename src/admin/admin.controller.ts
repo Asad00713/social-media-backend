@@ -406,7 +406,10 @@ export class AdminController {
   @Get('dashboard/health')
   @HttpCode(HttpStatus.OK)
   async getSystemHealth() {
-    return this.adminService.getSystemHealth();
+    // The queue service owns the Redis connection, so it runs that ping; the
+    // admin service runs the DB ping and folds both into one reading.
+    const redis = await this.queueMonitorService.pingRedis();
+    return this.adminService.getSystemHealth(redis);
   }
 
   // ==========================================================================
