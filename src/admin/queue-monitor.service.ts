@@ -5,12 +5,20 @@ import { QUEUES } from '../queue/queue.module';
 
 export interface QueueStats {
   name: string;
+  /** One-line description of what the queue does. */
+  purpose: string;
   waiting: number;
   active: number;
   completed: number;
   failed: number;
   delayed: number;
   paused: boolean;
+  /**
+   * False when the counts couldn't be read — Redis down or slow. The counts are
+   * zeroed in that case rather than left as a stale guess, and the UI can mark
+   * the queue as unreachable instead of showing an empty-but-healthy row.
+   */
+  reachable: boolean;
 }
 
 export interface FailedJobInfo {
@@ -37,15 +45,79 @@ export interface JobDetails {
   returnValue?: any;
 }
 
+/**
+ * What each queue is for, in one line. The monitor is otherwise a wall of
+ * queue names that mean nothing to anyone who did not write the workers, so
+ * every registered queue gets a plain-language purpose the dashboard can show.
+ */
+export const QUEUE_PURPOSE: Record<string, string> = {
+  [QUEUES.POST_PUBLISHING]: 'Publishes scheduled posts to each platform',
+  [QUEUES.TOKEN_REFRESH]: 'Refreshes expiring OAuth tokens before they lapse',
+  [QUEUES.DRIP_CAMPAIGNS]: 'Sends drip-campaign posts on their schedule',
+  [QUEUES.CHANNEL_SNAPSHOTS]: 'Captures periodic channel metric snapshots',
+  [QUEUES.INBOX_POLLING]: 'Polls platforms for new inbox comments and messages',
+  [QUEUES.SCHEDULED_INBOX]: 'Sends scheduled inbox replies at their due time',
+  [QUEUES.LEAD_INTAKE]: 'Ingests inbound leads from ad forms',
+  [QUEUES.LEAD_DELIVERY]: 'Delivers captured leads to their destinations',
+  [QUEUES.AD_INSIGHTS_SYNC]: 'Syncs ad-account insights and spend',
+  [QUEUES.SLACK_INGEST]: 'Ingests Slack events into the inbox',
+  [QUEUES.TELEGRAM_INGEST]: 'Ingests Telegram messages into the inbox',
+  [QUEUES.DISCORD_INGEST]: 'Ingests Discord messages into the inbox',
+  [QUEUES.WHATSAPP_INGEST]: 'Ingests WhatsApp messages into the inbox',
+  [QUEUES.MAESTRO_BRIDGE]: 'Relays Maestro assistant messages across channels',
+};
+
 @Injectable()
 export class QueueMonitorService {
   private readonly logger = new Logger(QueueMonitorService.name);
 
+  /**
+   * Every registered queue, keyed by name. Injecting each one explicitly (rather
+   * than three) is what lets the dashboard see the whole system — the old
+   * three-queue list left eleven queues, inbox polling and lead delivery among
+   * them, entirely unmonitored. The map is the single source both the stats loop
+   * and `getQueueByName` read from, so adding a queue is one line here.
+   */
+  private readonly queues: Record<string, Queue>;
+
   constructor(
-    @InjectQueue(QUEUES.POST_PUBLISHING) private postPublishingQueue: Queue,
-    @InjectQueue(QUEUES.TOKEN_REFRESH) private tokenRefreshQueue: Queue,
-    @InjectQueue(QUEUES.DRIP_CAMPAIGNS) private dripCampaignsQueue: Queue,
-  ) {}
+    @InjectQueue(QUEUES.POST_PUBLISHING) postPublishing: Queue,
+    @InjectQueue(QUEUES.TOKEN_REFRESH) tokenRefresh: Queue,
+    @InjectQueue(QUEUES.DRIP_CAMPAIGNS) dripCampaigns: Queue,
+    @InjectQueue(QUEUES.CHANNEL_SNAPSHOTS) channelSnapshots: Queue,
+    @InjectQueue(QUEUES.INBOX_POLLING) inboxPolling: Queue,
+    @InjectQueue(QUEUES.SCHEDULED_INBOX) scheduledInbox: Queue,
+    @InjectQueue(QUEUES.LEAD_INTAKE) leadIntake: Queue,
+    @InjectQueue(QUEUES.LEAD_DELIVERY) leadDelivery: Queue,
+    @InjectQueue(QUEUES.AD_INSIGHTS_SYNC) adInsightsSync: Queue,
+    @InjectQueue(QUEUES.SLACK_INGEST) slackIngest: Queue,
+    @InjectQueue(QUEUES.TELEGRAM_INGEST) telegramIngest: Queue,
+    @InjectQueue(QUEUES.DISCORD_INGEST) discordIngest: Queue,
+    @InjectQueue(QUEUES.WHATSAPP_INGEST) whatsappIngest: Queue,
+    @InjectQueue(QUEUES.MAESTRO_BRIDGE) maestroBridge: Queue,
+  ) {
+    this.queues = {
+      [QUEUES.POST_PUBLISHING]: postPublishing,
+      [QUEUES.TOKEN_REFRESH]: tokenRefresh,
+      [QUEUES.DRIP_CAMPAIGNS]: dripCampaigns,
+      [QUEUES.CHANNEL_SNAPSHOTS]: channelSnapshots,
+      [QUEUES.INBOX_POLLING]: inboxPolling,
+      [QUEUES.SCHEDULED_INBOX]: scheduledInbox,
+      [QUEUES.LEAD_INTAKE]: leadIntake,
+      [QUEUES.LEAD_DELIVERY]: leadDelivery,
+      [QUEUES.AD_INSIGHTS_SYNC]: adInsightsSync,
+      [QUEUES.SLACK_INGEST]: slackIngest,
+      [QUEUES.TELEGRAM_INGEST]: telegramIngest,
+      [QUEUES.DISCORD_INGEST]: discordIngest,
+      [QUEUES.WHATSAPP_INGEST]: whatsappIngest,
+      [QUEUES.MAESTRO_BRIDGE]: maestroBridge,
+    };
+  }
+
+  /** The Redis ping reuses whichever queue is first — they share a connection. */
+  private get anyQueue(): Queue {
+    return this.queues[QUEUES.POST_PUBLISHING];
+  }
 
   /**
    * Pings Redis through a live queue's own connection and times the round trip.
@@ -66,7 +138,7 @@ export class QueueMonitorService {
     // timeout means a lost race (whatever the reason) reads as "down", which is
     // exactly what the health check is here to report.
     const attempt = (async () => {
-      const client = await this.postPublishingQueue.client;
+      const client = await this.anyQueue.client;
       await client.ping();
     })();
 
@@ -85,40 +157,73 @@ export class QueueMonitorService {
   }
 
   /**
+   * Reads one queue's counts, but never hangs on them. Every count is a Redis
+   * round-trip, and when Redis is down ioredis queues the command and waits for
+   * a reconnection that may never come — so a bare `await` here would hang the
+   * whole overview. Racing against a short timeout turns an unreachable queue
+   * into a zeroed, `reachable: false` row instead of a stuck request.
+   */
+  private async readQueueStats(
+    name: string,
+    queue: Queue,
+  ): Promise<QueueStats> {
+    const base = { name, purpose: QUEUE_PURPOSE[name] ?? '' };
+    try {
+      const counts = Promise.all([
+        queue.getWaitingCount(),
+        queue.getActiveCount(),
+        queue.getCompletedCount(),
+        queue.getFailedCount(),
+        queue.getDelayedCount(),
+        queue.isPaused(),
+      ]);
+      const [waiting, active, completed, failed, delayed, isPaused] =
+        (await Promise.race([
+          counts,
+          new Promise((_, reject) =>
+            setTimeout(() => reject(new Error('Queue read timed out')), 2000),
+          ),
+        ])) as [number, number, number, number, number, boolean];
+
+      return {
+        ...base,
+        waiting,
+        active,
+        completed,
+        failed,
+        delayed,
+        paused: isPaused,
+        reachable: true,
+      };
+    } catch (error) {
+      this.logger.warn(
+        `Queue "${name}" stats unavailable: ${(error as Error).message}`,
+      );
+      return {
+        ...base,
+        waiting: 0,
+        active: 0,
+        completed: 0,
+        failed: 0,
+        delayed: 0,
+        paused: false,
+        reachable: false,
+      };
+    }
+  }
+
+  /**
    * Get all queues with their stats
    */
   async getAllQueueStats(): Promise<QueueStats[]> {
-    const queues = [
-      { name: QUEUES.POST_PUBLISHING, queue: this.postPublishingQueue },
-      { name: QUEUES.TOKEN_REFRESH, queue: this.tokenRefreshQueue },
-      { name: QUEUES.DRIP_CAMPAIGNS, queue: this.dripCampaignsQueue },
-    ];
-
     const stats = await Promise.all(
-      queues.map(async ({ name, queue }) => {
-        const [waiting, active, completed, failed, delayed, isPaused] =
-          await Promise.all([
-            queue.getWaitingCount(),
-            queue.getActiveCount(),
-            queue.getCompletedCount(),
-            queue.getFailedCount(),
-            queue.getDelayedCount(),
-            queue.isPaused(),
-          ]);
-
-        return {
-          name,
-          waiting,
-          active,
-          completed,
-          failed,
-          delayed,
-          paused: isPaused,
-        };
-      }),
+      Object.entries(this.queues).map(([name, queue]) =>
+        this.readQueueStats(name, queue),
+      ),
     );
 
-    return stats;
+    // Stable, name-sorted order so the table doesn't reshuffle between polls.
+    return stats.sort((a, b) => a.name.localeCompare(b.name));
   }
 
   /**
@@ -127,26 +232,7 @@ export class QueueMonitorService {
   async getQueueStats(queueName: string): Promise<QueueStats | null> {
     const queue = this.getQueueByName(queueName);
     if (!queue) return null;
-
-    const [waiting, active, completed, failed, delayed, isPaused] =
-      await Promise.all([
-        queue.getWaitingCount(),
-        queue.getActiveCount(),
-        queue.getCompletedCount(),
-        queue.getFailedCount(),
-        queue.getDelayedCount(),
-        queue.isPaused(),
-      ]);
-
-    return {
-      name: queueName,
-      waiting,
-      active,
-      completed,
-      failed,
-      delayed,
-      paused: isPaused,
-    };
+    return this.readQueueStats(queueName, queue);
   }
 
   /**
@@ -365,7 +451,12 @@ export class QueueMonitorService {
   /**
    * Get aggregate stats across all queues
    */
-  async getAggregateStats(): Promise<{
+  /**
+   * Rolls a set of queue stats into headline totals. Takes the stats it was
+   * given rather than re-fetching — the caller already read them once, and a
+   * second pass would double the Redis round-trips (and the chance to hang).
+   */
+  aggregate(stats: QueueStats[]): {
     totalWaiting: number;
     totalActive: number;
     totalCompleted: number;
@@ -373,34 +464,27 @@ export class QueueMonitorService {
     totalDelayed: number;
     queuesHealthy: number;
     queuesPaused: number;
-  }> {
-    const stats = await this.getAllQueueStats();
-
+    queuesUnreachable: number;
+  } {
     return {
       totalWaiting: stats.reduce((sum, s) => sum + s.waiting, 0),
       totalActive: stats.reduce((sum, s) => sum + s.active, 0),
       totalCompleted: stats.reduce((sum, s) => sum + s.completed, 0),
       totalFailed: stats.reduce((sum, s) => sum + s.failed, 0),
       totalDelayed: stats.reduce((sum, s) => sum + s.delayed, 0),
-      queuesHealthy: stats.filter((s) => !s.paused).length,
+      queuesHealthy: stats.filter((s) => s.reachable && !s.paused).length,
       queuesPaused: stats.filter((s) => s.paused).length,
+      queuesUnreachable: stats.filter((s) => !s.reachable).length,
     };
   }
 
   /**
-   * Get queue by name
+   * Get queue by name. Reads the same map the stats loop does, so every
+   * registered queue is reachable for actions, not just the three that used to
+   * be listed here.
    */
   private getQueueByName(name: string): Queue | null {
-    switch (name) {
-      case QUEUES.POST_PUBLISHING:
-        return this.postPublishingQueue;
-      case QUEUES.TOKEN_REFRESH:
-        return this.tokenRefreshQueue;
-      case QUEUES.DRIP_CAMPAIGNS:
-        return this.dripCampaignsQueue;
-      default:
-        return null;
-    }
+    return this.queues[name] ?? null;
   }
 
   /**

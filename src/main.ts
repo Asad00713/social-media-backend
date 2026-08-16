@@ -35,9 +35,12 @@ async function bootstrap() {
 
   app.use(cookieParser());
 
-  // Basic-auth gate for Bull Board dashboard. Phase 1: env-driven. Will be
-  // upgraded to a proper admin JWT guard when admin pattern is consolidated.
-  app.use('/admin/queues', (req: any, res: any, next: any) => {
+  // Basic-auth gate for the Bull Board dashboard. Scoped to '/admin/bull-board'
+  // — NOT '/admin/queues', which is where the JWT-guarded admin queue API lives.
+  // Gating that prefix here put the whole queue API behind basic auth and out of
+  // reach of the admin dashboard. The Nest routes carry their own super-admin
+  // guard; only Bull Board's own UI needs this env-driven gate.
+  app.use('/admin/bull-board', (req: any, res: any, next: any) => {
     const auth = (req.headers.authorization as string) ?? '';
     const user = process.env.QUEUE_ADMIN_USER ?? 'admin';
     const pass = process.env.QUEUE_ADMIN_PASSWORD ?? 'change-me';

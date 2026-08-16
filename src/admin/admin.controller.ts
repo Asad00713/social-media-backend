@@ -780,10 +780,10 @@ export class AdminController {
   @Get('queues')
   @HttpCode(HttpStatus.OK)
   async getQueuesOverview() {
-    const [stats, aggregate] = await Promise.all([
-      this.queueMonitorService.getAllQueueStats(),
-      this.queueMonitorService.getAggregateStats(),
-    ]);
+    // Read the queue stats once and derive the totals from them — the aggregate
+    // no longer re-fetches, so this is one pass over Redis, not two.
+    const stats = await this.queueMonitorService.getAllQueueStats();
+    const aggregate = this.queueMonitorService.aggregate(stats);
 
     return {
       queues: stats,
