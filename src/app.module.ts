@@ -88,7 +88,11 @@ import { QUEUES } from './queue/queue.module';
     CalendarSyncModule,
     CampaignsModule,
     BullBoardModule.forRoot({
-      route: '/admin/queues',
+      // Moved off '/admin/queues' so it stops swallowing the admin queue API,
+      // which lives under that same prefix. Bull Board keeps its full job
+      // inspector here, behind the basic-auth gate in main.ts; the admin
+      // dashboard's own Jobs page reads the JWT-guarded /admin/queues routes.
+      route: '/admin/bull-board',
       adapter: ExpressAdapter,
     }),
     BullBoardModule.forFeature(
