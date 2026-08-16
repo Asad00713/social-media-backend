@@ -1,3 +1,4 @@
+import { ConflictException } from '@nestjs/common';
 import { getTableName } from 'drizzle-orm';
 import { CampaignsService } from './campaigns.service';
 import type { ChannelDayContentJson } from '../drizzle/schema/campaigns.schema';
@@ -106,6 +107,43 @@ describe('CampaignsService.isSlotFilled', () => {
 
   it('empty manual content is not filled', () => {
     expect(service.isSlotFilled(content({}))).toBe(false);
+  });
+});
+
+describe('CampaignsService.assertLaunchedSlotEditable', () => {
+  // Pure-helper tests never touch the injected CampaignPublishingService —
+  // undefined is safe here, cast away since the constructor param is typed
+  // required for real (module-wired) construction.
+  const service = new CampaignsService(undefined as never);
+  const call = (campaignStatus: string, slotStatus: string) =>
+    (service as any).assertLaunchedSlotEditable(campaignStatus, slotStatus);
+
+  it('does not throw for a draft campaign regardless of slot status', () => {
+    expect(() => call('draft', 'published')).not.toThrow();
+  });
+
+  it('does not throw for an active campaign with a still-scheduled slot', () => {
+    expect(() => call('active', 'scheduled')).not.toThrow();
+  });
+
+  it('does not throw for an active campaign with a pending slot', () => {
+    expect(() => call('active', 'pending')).not.toThrow();
+  });
+
+  it('throws ConflictException for an active campaign with a published slot', () => {
+    expect(() => call('active', 'published')).toThrow(ConflictException);
+  });
+
+  it('throws ConflictException for an active campaign with a publishing slot', () => {
+    expect(() => call('active', 'publishing')).toThrow(ConflictException);
+  });
+
+  it('throws ConflictException for an active campaign with a failed slot', () => {
+    expect(() => call('active', 'failed')).toThrow(ConflictException);
+  });
+
+  it('throws ConflictException for an active campaign with a skipped slot', () => {
+    expect(() => call('active', 'skipped')).toThrow(ConflictException);
   });
 });
 
@@ -1004,6 +1042,95 @@ describe('CampaignsService write methods (mocked db)', () => {
   });
 
   // ==========================================================================
+  // addEvent — launched-campaign guard. A brand-new slot added after launch
+  // would never get materialized (launch's preflight loop already ran), so
+  // it would sit `pending` forever and silently never publish. Reuses the
+  // stateful table-routed `buildStatefulDb` fixture from the sibling
+  // "addEvent bulk single-slot invariant" describe above (same outer scope)
+  // so the draft case exercises the real insert path unchanged, while the
+  // active case proves the guard fires before any day/slot mutation.
+  // ==========================================================================
+
+  describe('addEvent — launched campaign guard', () => {
+    const WORKSPACE_ID = 'ws-1';
+    const CAMPAIGN_ID = 'c-1';
+
+    function buildStatefulDb(campaignRow: Record<string, unknown>) {
+      const slotRows: Record<string, unknown>[] = [];
+      const dayRows: Record<string, unknown>[] = [];
+      let slotSeq = 0;
+
+      const db = {
+        select: () => ({
+          from: (table: unknown) => ({
+            where: () => {
+              const name = getTableName(table as never);
+              if (name === 'campaigns') return Promise.resolve([campaignRow]);
+              if (name === 'campaign_days') return Promise.resolve(dayRows);
+              if (name === 'campaign_slot_content') return Promise.resolve(slotRows);
+              return Promise.resolve([]);
+            },
+          }),
+        }),
+        insert: (table: unknown) => ({
+          values: (vals: Record<string, unknown> | Record<string, unknown>[]) => {
+            const name = getTableName(table as never);
+            const rows = Array.isArray(vals) ? vals : [vals];
+            if (name === 'campaign_days') dayRows.push(...rows);
+            if (name === 'campaign_slot_content') {
+              for (const r of rows) slotRows.push({ id: `slot-${++slotSeq}`, ...r });
+            }
+            return { returning: () => Promise.resolve([]) };
+          },
+        }),
+        update: (table: unknown) => ({
+          set: (set: Record<string, unknown>) => ({
+            where: () => {
+              const name = getTableName(table as never);
+              if (name === 'campaigns') Object.assign(campaignRow, set);
+              if (name === 'campaign_slot_content') {
+                for (const r of slotRows) Object.assign(r, set);
+              }
+              return Promise.resolve();
+            },
+          }),
+        }),
+      };
+
+      return { db, slotRows, dayRows };
+    }
+
+    it('draft campaign: addEvent works unchanged (inserts a slot)', async () => {
+      const campaignRow = makeCampaignRow({ status: 'draft' });
+      const { db, slotRows } = buildStatefulDb(campaignRow);
+      const service = loadServiceWithFakeDb(db);
+
+      await service.addEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: '2026-08-10',
+        channelId: '1',
+      });
+
+      expect(slotRows).toHaveLength(1);
+    });
+
+    it('active campaign: addEvent throws ConflictException, does not insert a slot', async () => {
+      const campaignRow = makeCampaignRow({ status: 'active' });
+      const { db, slotRows, dayRows } = buildStatefulDb(campaignRow);
+      const service = loadServiceWithFakeDb(db);
+
+      await expect(
+        service.addEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+          date: '2026-08-10',
+          channelId: '1',
+        }),
+      ).rejects.toThrow(/already launched|scheduled posts but not add new ones/i);
+
+      expect(slotRows).toHaveLength(0);
+      expect(dayRows).toHaveLength(0);
+    });
+  });
+
+  // ==========================================================================
   // launch() — table-identity-routed fake db (rather than call-order indices,
   // since launch's preflight + per-slot loop issues a variable number of
   // selects/updates depending on how many slots are publishable). Compares
@@ -1089,7 +1216,7 @@ describe('CampaignsService write methods (mocked db)', () => {
       slotUpdates: { id: string; set: Record<string, unknown> }[];
       campaignUpdates: Record<string, unknown>[];
     } = { slotUpdates: [], campaignUpdates: [] };
-    const deletes: { postIds: string[] } = { postIds: [] };
+    const deletes: { postIds: string[]; slotIds: string[] } = { postIds: [], slotIds: [] };
 
     const db = {
       select: () => ({
@@ -1144,6 +1271,7 @@ describe('CampaignsService write methods (mocked db)', () => {
       delete: (table: unknown) => ({
         where: (whereCond: unknown) => {
           const name = getTableName(table as never);
+          let deletedId: string | undefined;
           if (name === 'posts') {
             // Mirror the real `and(eq(posts.id, x), eq(posts.status, 'scheduled'))`
             // guard: only "delete" (record it) when the fixture's post row
@@ -1158,9 +1286,34 @@ describe('CampaignsService write methods (mocked db)', () => {
               requiredStatus === undefined || (postRow && postRow.status === requiredStatus);
             if (postId && statusMatches) {
               deletes.postIds.push(postId);
+              deletedId = postId;
+            }
+          } else if (name === 'campaign_slot_content') {
+            // removeEvent deletes the slot row itself (by campaignSlotContent.id).
+            // Record it AND remove it from the live fixture so a later re-select
+            // (e.g. assembleCampaign's slot read) reflects the deletion, same as
+            // updates' write-through above.
+            const eqValues = extractEqValues(whereCond);
+            const slotId = eqValues['id'] as string | undefined;
+            if (slotId) {
+              deletes.slotIds.push(slotId);
+              deletedId = slotId;
+              const rows = fixture.slotRows ?? [];
+              const idx = rows.findIndex((r) => (r as { id: string }).id === slotId);
+              if (idx !== -1) rows.splice(idx, 1);
             }
           }
-          return Promise.resolve();
+          // `.where()` is awaitable directly (pause's usage) AND supports a
+          // chained `.returning()` (cancelAndClearSlotPost's usage, which
+          // checks `deleted.length === 0` to detect a 0-row delete — i.e. the
+          // post already flipped to 'publishing' and the status guard above
+          // didn't match).
+          const result = Promise.resolve() as Promise<void> & {
+            returning: (sel?: unknown) => Promise<{ id: string }[]>;
+          };
+          result.returning = () =>
+            Promise.resolve(deletedId ? [{ id: deletedId }] : []);
+          return result;
         },
       }),
     };
@@ -1547,6 +1700,445 @@ describe('CampaignsService write methods (mocked db)', () => {
       const service = loadServiceWithFakeDb(db, publishing);
 
       await expect(service.resume(WORKSPACE_ID, CAMPAIGN_ID)).rejects.toThrow('Campaign not found');
+    });
+  });
+
+  // ==========================================================================
+  // updateEvent() — editing a launched campaign's slot must guard fired slots
+  // and re-materialize still-scheduled ones from the MERGED (new) content, not
+  // silently publish the stale pre-edit content. Reuses launch's table-routed
+  // `buildFakeDb` fixture (declared above in this `describe('launch')`
+  // closure).
+  // ==========================================================================
+
+  describe('updateEvent', () => {
+    const WORKSPACE_ID = 'ws-1';
+    const CAMPAIGN_ID = 'c-1';
+    const futureDate = '2099-06-15'; // far future -> always "due", never past-due
+    const pastDate = '2020-01-02'; // within schedule window but already elapsed
+
+    it('draft campaign: merges content, does not cancel or re-materialize', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'pending',
+        content: content({ caption: 'Old caption' }),
+      });
+      const { db, updates } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'draft' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+        patch: { caption: 'New caption' },
+      });
+
+      expect(publishing.cancelSlotJob).not.toHaveBeenCalled();
+      expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
+      const slotUpdate = updates.slotUpdates.find((u) => u.id === 'slot-1');
+      expect((slotUpdate?.set.content as ChannelDayContentJson)?.caption).toBe('New caption');
+    });
+
+    it('active campaign + published slot: throws ConflictException, does not write content', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'published',
+        postId: 'post-1',
+        content: content({ caption: 'Old caption' }),
+      });
+      const { db, updates } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await expect(
+        service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+          date: futureDate,
+          channelId: '1',
+          patch: { caption: 'New caption' },
+        }),
+      ).rejects.toThrow(/already been published/i);
+
+      expect(updates.slotUpdates.find((u) => u.id === 'slot-1')).toBeUndefined();
+      expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
+    });
+
+    it('active campaign + scheduled slot (not past-due): cancels + re-materializes with the MERGED content, stores new postId/jobId/scheduledAt', async () => {
+      const publishing = makePublishingMock();
+      // Distinguish updateEvent's re-materialize call from launch's original
+      // materialize (which would have returned p1/j1) so the assertion below
+      // proves a NEW post/job was created, not the stale one reused.
+      publishing.materializeAndEnqueue.mockResolvedValue({ postId: 'p2', jobId: 'j2' });
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'scheduled',
+        postId: 'post-old',
+        jobId: 'job-old',
+        content: content({ caption: 'Old caption' }),
+      });
+      const { db, updates, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+        postRows: [{ id: 'post-old', status: 'scheduled' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+        patch: { caption: 'New caption' },
+      });
+
+      expect(publishing.cancelSlotJob).toHaveBeenCalledWith('job-old');
+      expect(deletes.postIds).toEqual(['post-old']);
+      expect(publishing.materializeAndEnqueue).toHaveBeenCalledTimes(1);
+      expect(publishing.materializeAndEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          workspaceId: WORKSPACE_ID,
+          campaignId: CAMPAIGN_ID,
+          date: futureDate,
+          channelId: '1',
+          platform: 'twitter',
+          content: expect.objectContaining({ caption: 'New caption' }),
+        }),
+      );
+
+      const slotUpdate = updates.slotUpdates.find(
+        (u) => u.id === 'slot-1' && u.set.slotStatus === 'scheduled' && u.set.postId === 'p2',
+      );
+      expect(slotUpdate?.set).toMatchObject({
+        postId: 'p2',
+        jobId: 'j2',
+        slotStatus: 'scheduled',
+      });
+    });
+
+    it('active campaign + scheduled Slack/Discord slot (not past-due): re-materializes WITH destination from the merged content (was dropped, breaking messaging re-publish)', async () => {
+      const publishing = makePublishingMock();
+      publishing.materializeAndEnqueue.mockResolvedValue({ postId: 'p2', jobId: 'j2' });
+      const slackDestination = { id: 'C1', name: '#x' };
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'scheduled',
+        postId: 'post-old',
+        jobId: 'job-old',
+        content: content({ caption: 'Old caption', destination: slackDestination }),
+      });
+      const { db } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'slack' }],
+        postRows: [{ id: 'post-old', status: 'scheduled' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+        patch: { caption: 'New caption' },
+      });
+
+      expect(publishing.materializeAndEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          platform: 'slack',
+          destination: slackDestination,
+        }),
+      );
+    });
+
+    it('active campaign + scheduled slot whose post already started publishing (cancelAndClearSlotPost -> false): throws ConflictException, does not re-enqueue', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'scheduled',
+        postId: 'post-inflight',
+        jobId: 'job-inflight',
+        content: content({ caption: 'Old caption' }),
+      });
+      const { db, updates } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+        // Post already flipped to 'publishing' -> the status-guarded delete
+        // in cancelAndClearSlotPost finds 0 rows -> returns false.
+        postRows: [{ id: 'post-inflight', status: 'publishing' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await expect(
+        service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+          date: futureDate,
+          channelId: '1',
+          patch: { caption: 'New caption' },
+        }),
+      ).rejects.toThrow(/just started publishing/i);
+
+      expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
+      // Content write happens before the cancel check per the spec'd order,
+      // but no NEW postId/jobId/scheduledAt should ever be recorded.
+      const reEnqueueUpdate = updates.slotUpdates.find(
+        (u) => u.id === 'slot-1' && u.set.postId === 'p2',
+      );
+      expect(reEnqueueUpdate).toBeUndefined();
+    });
+
+    it('active campaign + scheduled slot now past-due after edit: sets slotStatus skipped, does not enqueue', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: pastDate,
+        channelId: '1',
+        slotStatus: 'scheduled',
+        postId: 'post-old',
+        jobId: 'job-old',
+        content: content({ caption: 'Old caption' }),
+      });
+      const { db, updates } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+        postRows: [{ id: 'post-old', status: 'scheduled' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: pastDate,
+        channelId: '1',
+        patch: { caption: 'New caption' },
+      });
+
+      expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
+      const slotUpdate = updates.slotUpdates.find(
+        (u) => u.id === 'slot-1' && u.set.slotStatus === 'skipped',
+      );
+      expect(slotUpdate?.set).toMatchObject({
+        slotStatus: 'skipped',
+        postId: null,
+        jobId: null,
+      });
+    });
+
+    it('active campaign + pending slot: merges content, no cancel or materialize (nothing enqueued yet)', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'pending',
+        content: content({ caption: 'Old caption' }),
+      });
+      const { db, updates } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+        patch: { caption: 'New caption' },
+      });
+
+      expect(publishing.cancelSlotJob).not.toHaveBeenCalled();
+      expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
+      const slotUpdate = updates.slotUpdates.find((u) => u.id === 'slot-1');
+      expect((slotUpdate?.set.content as ChannelDayContentJson)?.caption).toBe('New caption');
+    });
+  });
+
+  // ==========================================================================
+  // removeEvent() — deleting a launched campaign's slot must guard fired
+  // slots and cancel+clear any still-enqueued post BEFORE deleting the slot
+  // row, so a launched-and-then-removed slot never orphans a BullMQ job (the
+  // pre-fix bug: the old removeEvent deleted the row with no guard and no
+  // cancel, so the post fired anyway). Reuses launch's table-routed
+  // `buildFakeDb` fixture (declared above in this `describe('launch')`
+  // closure).
+  // ==========================================================================
+
+  describe('removeEvent', () => {
+    const WORKSPACE_ID = 'ws-1';
+    const CAMPAIGN_ID = 'c-1';
+    const futureDate = '2099-06-15'; // far future -> always "due", never past-due
+
+    it('draft campaign: deletes the slot (unchanged behaviour)', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'pending',
+      });
+      const { db, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'draft' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.removeEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+      });
+
+      expect(deletes.slotIds).toEqual(['slot-1']);
+      expect(publishing.cancelSlotJob).not.toHaveBeenCalled();
+    });
+
+    it('no matching slot: still returns the campaign, no delete attempted', async () => {
+      const publishing = makePublishingMock();
+      const { db, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'draft' }),
+        dayRows: [],
+        slotRows: [],
+        channelRows: [],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      const result = await service.removeEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+      });
+
+      expect(result).toBeDefined();
+      expect(deletes.slotIds).toEqual([]);
+    });
+
+    it('active campaign + published slot: throws ConflictException, does not delete', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'published',
+        postId: 'post-1',
+      });
+      const { db, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await expect(
+        service.removeEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+          date: futureDate,
+          channelId: '1',
+        }),
+      ).rejects.toThrow(/already been published/i);
+
+      expect(deletes.slotIds).toEqual([]);
+      expect(publishing.cancelSlotJob).not.toHaveBeenCalled();
+    });
+
+    it('active campaign + scheduled slot: cancels + clears the post THEN deletes the slot row', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'scheduled',
+        postId: 'post-old',
+        jobId: 'job-old',
+      });
+      const { db, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+        postRows: [{ id: 'post-old', status: 'scheduled' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.removeEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+      });
+
+      expect(publishing.cancelSlotJob).toHaveBeenCalledWith('job-old');
+      // Cancel/clear must happen before the slot delete — assert both fired,
+      // and specifically that the post delete was recorded ahead of the slot
+      // delete in the tracked order.
+      expect(deletes.postIds).toEqual(['post-old']);
+      expect(deletes.slotIds).toEqual(['slot-1']);
+      const postDeleteIndex = deletes.postIds.indexOf('post-old');
+      const slotDeleteIndex = deletes.slotIds.indexOf('slot-1');
+      expect(postDeleteIndex).toBe(0);
+      expect(slotDeleteIndex).toBe(0);
+    });
+
+    it('active campaign + scheduled slot whose post already started publishing (cancelAndClearSlotPost -> false): throws ConflictException, slot NOT deleted', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'scheduled',
+        postId: 'post-inflight',
+        jobId: 'job-inflight',
+      });
+      const { db, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+        // Post already flipped to 'publishing' -> the status-guarded delete
+        // in cancelAndClearSlotPost finds 0 rows -> returns false.
+        postRows: [{ id: 'post-inflight', status: 'publishing' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await expect(
+        service.removeEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+          date: futureDate,
+          channelId: '1',
+        }),
+      ).rejects.toThrow(/just started publishing/i);
+
+      expect(publishing.cancelSlotJob).toHaveBeenCalledWith('job-inflight');
+      expect(deletes.postIds).toEqual([]); // status-guarded delete found 0 rows
+      expect(deletes.slotIds).toEqual([]); // slot must survive — never reached the delete
+    });
+
+    it('active campaign + pending slot: deletes with no cancel (nothing enqueued yet)', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'pending',
+      });
+      const { db, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.removeEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+      });
+
+      expect(publishing.cancelSlotJob).not.toHaveBeenCalled();
+      expect(deletes.slotIds).toEqual(['slot-1']);
     });
   });
   });

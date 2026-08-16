@@ -1,4 +1,10 @@
-import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { db } from '../drizzle/db';
 import {
@@ -967,6 +973,49 @@ export class CampaignsService {
   }
 
   /**
+   * Guards edits on a launched (`active`) campaign's slot once it has
+   * already fired — `publishing`/`published`/`failed`/`skipped`. Draft (and
+   * any other non-`active`) campaigns are unguarded since nothing has been
+   * enqueued yet; still-`pending`/`scheduled` slots on an active campaign
+   * remain editable since they haven't gone out. Throws `ConflictException`
+   * otherwise so callers (Tasks 2-4) can 409 instead of corrupting a fired
+   * post.
+   */
+  private assertLaunchedSlotEditable(campaignStatus: string, slotStatus: string): void {
+    if (campaignStatus !== 'active') return; // draft/scheduled/paused/etc. — unguarded
+    const readOnly = ['publishing', 'published', 'failed', 'skipped'];
+    if (readOnly.includes(slotStatus)) {
+      throw new ConflictException(
+        slotStatus === 'skipped'
+          ? 'This post was skipped and can no longer be edited.'
+          : 'This post has already been published and can no longer be edited.',
+      );
+    }
+  }
+
+  /**
+   * Cancels the enqueued job and deletes the not-yet-fired `posts` row for
+   * one slot (mirrors `pause`, race-safe on `posts.status = 'scheduled'`).
+   * Returns `false` if the post already flipped to publishing (0 rows
+   * deleted) — the caller must abort with 409 rather than re-materialize a
+   * fired post.
+   */
+  private async cancelAndClearSlotPost(slot: {
+    jobId: string | null;
+    postId: string | null;
+  }): Promise<boolean> {
+    if (slot.jobId) await this.publishing.cancelSlotJob(slot.jobId);
+    if (slot.postId) {
+      const deleted = await db
+        .delete(posts)
+        .where(and(eq(posts.id, slot.postId), eq(posts.status, 'scheduled')))
+        .returning({ id: posts.id });
+      if (deleted.length === 0) return false; // already publishing/published
+    }
+    return true;
+  }
+
+  /**
    * Cancels the still-pending BullMQ job (and deletes the not-yet-published
    * `posts` row) behind every `scheduled` slot, then resets those slots back
    * to `pending` so `resume` can re-materialize them later. Already
@@ -1215,6 +1264,17 @@ export class CampaignsService {
     dto: AddEventDto,
   ): Promise<CampaignDto> {
     const campaign = await this.getOne(workspaceId, id);
+
+    const [camp] = await db
+      .select({ status: campaigns.status })
+      .from(campaigns)
+      .where(eq(campaigns.id, id));
+    if ((camp?.status ?? 'draft') === 'active') {
+      throw new ConflictException(
+        'This campaign is already launched — you can edit scheduled posts but not add new ones.',
+      );
+    }
+
     await this.ensureDayRow(id, dto.date);
 
     const content = this.emptyChannelDayContent(
@@ -1294,12 +1354,72 @@ export class CampaignsService {
       throw new NotFoundException('Event not found');
     }
 
+    // Load campaign status (raw row) for the launched-edit guard.
+    const [camp] = await db
+      .select({ status: campaigns.status })
+      .from(campaigns)
+      .where(eq(campaigns.id, id));
+    const campaignStatus = camp?.status ?? 'draft';
+
+    this.assertLaunchedSlotEditable(campaignStatus, slot.slotStatus);
+
     const mergedContent: ChannelDayContentJson = { ...slot.content, ...dto.patch };
 
     await db
       .update(campaignSlotContent)
       .set({ content: mergedContent, updatedAt: new Date() })
       .where(eq(campaignSlotContent.id, slot.id));
+
+    // Launched + still-scheduled: the enqueued post is stale — cancel & re-enqueue
+    // from the merged content so the NEW content actually fires.
+    if (campaignStatus === 'active' && slot.slotStatus === 'scheduled') {
+      const safe = await this.cancelAndClearSlotPost({ jobId: slot.jobId, postId: slot.postId });
+      if (!safe) {
+        throw new ConflictException(
+          'This post just started publishing and can no longer be edited. Reload to see its status.',
+        );
+      }
+      const createdById = await this.loadCreatedById(id);
+      const channelMap = await this.resolveSlotChannels([slot.channelId]);
+      const platform = channelMap.get(slot.channelId);
+      const { due, pastDue } = computeSlotSchedule(
+        // reload the campaign schedule for computeSlotSchedule
+        (await this.getOne(workspaceId, id)).schedule,
+        [{ date: slot.date, time: slot.time }],
+        new Date(),
+      );
+      const scheduledAt = due[0]?.scheduledAt;
+      const isPastDue = pastDue.length > 0 || !scheduledAt;
+      if (!platform || isPastDue) {
+        await db
+          .update(campaignSlotContent)
+          .set({
+            slotStatus: 'skipped',
+            postId: null,
+            jobId: null,
+            scheduledAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(campaignSlotContent.id, slot.id));
+      } else {
+        const { postId, jobId } = await this.publishing.materializeAndEnqueue({
+          workspaceId,
+          createdById,
+          campaignId: id,
+          date: slot.date,
+          channelId: slot.channelId,
+          time: slot.time,
+          content: mergedContent,
+          platform,
+          scheduledAt,
+          destination: mergedContent.destination,
+        });
+        await db
+          .update(campaignSlotContent)
+          .set({ postId, jobId, scheduledAt, slotStatus: 'scheduled', updatedAt: new Date() })
+          .where(eq(campaignSlotContent.id, slot.id));
+      }
+    }
 
     await db
       .update(campaigns)
@@ -1316,8 +1436,9 @@ export class CampaignsService {
   ): Promise<CampaignDto> {
     await this.getOne(workspaceId, id);
 
-    await db
-      .delete(campaignSlotContent)
+    const [slot] = await db
+      .select()
+      .from(campaignSlotContent)
       .where(
         and(
           eq(campaignSlotContent.campaignId, id),
@@ -1326,6 +1447,33 @@ export class CampaignsService {
           ...(dto.time ? [eq(campaignSlotContent.time, dto.time)] : []),
         ),
       );
+
+    if (slot) {
+      // Load campaign status (raw row) for the launched-edit guard.
+      const [camp] = await db
+        .select({ status: campaigns.status })
+        .from(campaigns)
+        .where(eq(campaigns.id, id));
+      const campaignStatus = camp?.status ?? 'draft';
+      this.assertLaunchedSlotEditable(campaignStatus, slot.slotStatus);
+
+      // Launched + still-scheduled: cancel the enqueued job and clear the
+      // not-yet-fired post BEFORE deleting the slot row, so we never orphan
+      // a BullMQ job (post firing for a slot that no longer exists).
+      if (campaignStatus === 'active' && slot.slotStatus === 'scheduled') {
+        const safe = await this.cancelAndClearSlotPost({
+          jobId: slot.jobId,
+          postId: slot.postId,
+        });
+        if (!safe) {
+          throw new ConflictException(
+            'This post just started publishing and can no longer be removed.',
+          );
+        }
+      }
+
+      await db.delete(campaignSlotContent).where(eq(campaignSlotContent.id, slot.id));
+    }
 
     await db
       .update(campaigns)
