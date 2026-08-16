@@ -1216,7 +1216,7 @@ describe('CampaignsService write methods (mocked db)', () => {
       slotUpdates: { id: string; set: Record<string, unknown> }[];
       campaignUpdates: Record<string, unknown>[];
     } = { slotUpdates: [], campaignUpdates: [] };
-    const deletes: { postIds: string[] } = { postIds: [] };
+    const deletes: { postIds: string[]; slotIds: string[] } = { postIds: [], slotIds: [] };
 
     const db = {
       select: () => ({
@@ -1287,6 +1287,20 @@ describe('CampaignsService write methods (mocked db)', () => {
             if (postId && statusMatches) {
               deletes.postIds.push(postId);
               deletedId = postId;
+            }
+          } else if (name === 'campaign_slot_content') {
+            // removeEvent deletes the slot row itself (by campaignSlotContent.id).
+            // Record it AND remove it from the live fixture so a later re-select
+            // (e.g. assembleCampaign's slot read) reflects the deletion, same as
+            // updates' write-through above.
+            const eqValues = extractEqValues(whereCond);
+            const slotId = eqValues['id'] as string | undefined;
+            if (slotId) {
+              deletes.slotIds.push(slotId);
+              deletedId = slotId;
+              const rows = fixture.slotRows ?? [];
+              const idx = rows.findIndex((r) => (r as { id: string }).id === slotId);
+              if (idx !== -1) rows.splice(idx, 1);
             }
           }
           // `.where()` is awaitable directly (pause's usage) AND supports a
@@ -1913,6 +1927,183 @@ describe('CampaignsService write methods (mocked db)', () => {
       expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
       const slotUpdate = updates.slotUpdates.find((u) => u.id === 'slot-1');
       expect((slotUpdate?.set.content as ChannelDayContentJson)?.caption).toBe('New caption');
+    });
+  });
+
+  // ==========================================================================
+  // removeEvent() — deleting a launched campaign's slot must guard fired
+  // slots and cancel+clear any still-enqueued post BEFORE deleting the slot
+  // row, so a launched-and-then-removed slot never orphans a BullMQ job (the
+  // pre-fix bug: the old removeEvent deleted the row with no guard and no
+  // cancel, so the post fired anyway). Reuses launch's table-routed
+  // `buildFakeDb` fixture (declared above in this `describe('launch')`
+  // closure).
+  // ==========================================================================
+
+  describe('removeEvent', () => {
+    const WORKSPACE_ID = 'ws-1';
+    const CAMPAIGN_ID = 'c-1';
+    const futureDate = '2099-06-15'; // far future -> always "due", never past-due
+
+    it('draft campaign: deletes the slot (unchanged behaviour)', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'pending',
+      });
+      const { db, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'draft' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.removeEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+      });
+
+      expect(deletes.slotIds).toEqual(['slot-1']);
+      expect(publishing.cancelSlotJob).not.toHaveBeenCalled();
+    });
+
+    it('no matching slot: still returns the campaign, no delete attempted', async () => {
+      const publishing = makePublishingMock();
+      const { db, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'draft' }),
+        dayRows: [],
+        slotRows: [],
+        channelRows: [],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      const result = await service.removeEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+      });
+
+      expect(result).toBeDefined();
+      expect(deletes.slotIds).toEqual([]);
+    });
+
+    it('active campaign + published slot: throws ConflictException, does not delete', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'published',
+        postId: 'post-1',
+      });
+      const { db, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await expect(
+        service.removeEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+          date: futureDate,
+          channelId: '1',
+        }),
+      ).rejects.toThrow(/already been published/i);
+
+      expect(deletes.slotIds).toEqual([]);
+      expect(publishing.cancelSlotJob).not.toHaveBeenCalled();
+    });
+
+    it('active campaign + scheduled slot: cancels + clears the post THEN deletes the slot row', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'scheduled',
+        postId: 'post-old',
+        jobId: 'job-old',
+      });
+      const { db, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+        postRows: [{ id: 'post-old', status: 'scheduled' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.removeEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+      });
+
+      expect(publishing.cancelSlotJob).toHaveBeenCalledWith('job-old');
+      // Cancel/clear must happen before the slot delete — assert both fired,
+      // and specifically that the post delete was recorded ahead of the slot
+      // delete in the tracked order.
+      expect(deletes.postIds).toEqual(['post-old']);
+      expect(deletes.slotIds).toEqual(['slot-1']);
+      const postDeleteIndex = deletes.postIds.indexOf('post-old');
+      const slotDeleteIndex = deletes.slotIds.indexOf('slot-1');
+      expect(postDeleteIndex).toBe(0);
+      expect(slotDeleteIndex).toBe(0);
+    });
+
+    it('active campaign + scheduled slot whose post already started publishing (cancelAndClearSlotPost -> false): throws ConflictException, slot NOT deleted', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'scheduled',
+        postId: 'post-inflight',
+        jobId: 'job-inflight',
+      });
+      const { db, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+        // Post already flipped to 'publishing' -> the status-guarded delete
+        // in cancelAndClearSlotPost finds 0 rows -> returns false.
+        postRows: [{ id: 'post-inflight', status: 'publishing' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await expect(
+        service.removeEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+          date: futureDate,
+          channelId: '1',
+        }),
+      ).rejects.toThrow(/just started publishing/i);
+
+      expect(publishing.cancelSlotJob).toHaveBeenCalledWith('job-inflight');
+      expect(deletes.postIds).toEqual([]); // status-guarded delete found 0 rows
+      expect(deletes.slotIds).toEqual([]); // slot must survive — never reached the delete
+    });
+
+    it('active campaign + pending slot: deletes with no cancel (nothing enqueued yet)', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        slotStatus: 'pending',
+      });
+      const { db, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.removeEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+      });
+
+      expect(publishing.cancelSlotJob).not.toHaveBeenCalled();
+      expect(deletes.slotIds).toEqual(['slot-1']);
     });
   });
   });

@@ -1435,8 +1435,9 @@ export class CampaignsService {
   ): Promise<CampaignDto> {
     await this.getOne(workspaceId, id);
 
-    await db
-      .delete(campaignSlotContent)
+    const [slot] = await db
+      .select()
+      .from(campaignSlotContent)
       .where(
         and(
           eq(campaignSlotContent.campaignId, id),
@@ -1445,6 +1446,33 @@ export class CampaignsService {
           ...(dto.time ? [eq(campaignSlotContent.time, dto.time)] : []),
         ),
       );
+
+    if (slot) {
+      // Load campaign status (raw row) for the launched-edit guard.
+      const [camp] = await db
+        .select({ status: campaigns.status })
+        .from(campaigns)
+        .where(eq(campaigns.id, id));
+      const campaignStatus = camp?.status ?? 'draft';
+      this.assertLaunchedSlotEditable(campaignStatus, slot.slotStatus);
+
+      // Launched + still-scheduled: cancel the enqueued job and clear the
+      // not-yet-fired post BEFORE deleting the slot row, so we never orphan
+      // a BullMQ job (post firing for a slot that no longer exists).
+      if (campaignStatus === 'active' && slot.slotStatus === 'scheduled') {
+        const safe = await this.cancelAndClearSlotPost({
+          jobId: slot.jobId,
+          postId: slot.postId,
+        });
+        if (!safe) {
+          throw new ConflictException(
+            'This post just started publishing and can no longer be removed.',
+          );
+        }
+      }
+
+      await db.delete(campaignSlotContent).where(eq(campaignSlotContent.id, slot.id));
+    }
 
     await db
       .update(campaigns)
