@@ -1264,6 +1264,17 @@ export class CampaignsService {
     dto: AddEventDto,
   ): Promise<CampaignDto> {
     const campaign = await this.getOne(workspaceId, id);
+
+    const [camp] = await db
+      .select({ status: campaigns.status })
+      .from(campaigns)
+      .where(eq(campaigns.id, id));
+    if ((camp?.status ?? 'draft') === 'active') {
+      throw new ConflictException(
+        'This campaign is already launched — you can edit scheduled posts but not add new ones.',
+      );
+    }
+
     await this.ensureDayRow(id, dto.date);
 
     const content = this.emptyChannelDayContent(

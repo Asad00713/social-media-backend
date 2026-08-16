@@ -1042,6 +1042,95 @@ describe('CampaignsService write methods (mocked db)', () => {
   });
 
   // ==========================================================================
+  // addEvent — launched-campaign guard. A brand-new slot added after launch
+  // would never get materialized (launch's preflight loop already ran), so
+  // it would sit `pending` forever and silently never publish. Reuses the
+  // stateful table-routed `buildStatefulDb` fixture from the sibling
+  // "addEvent bulk single-slot invariant" describe above (same outer scope)
+  // so the draft case exercises the real insert path unchanged, while the
+  // active case proves the guard fires before any day/slot mutation.
+  // ==========================================================================
+
+  describe('addEvent — launched campaign guard', () => {
+    const WORKSPACE_ID = 'ws-1';
+    const CAMPAIGN_ID = 'c-1';
+
+    function buildStatefulDb(campaignRow: Record<string, unknown>) {
+      const slotRows: Record<string, unknown>[] = [];
+      const dayRows: Record<string, unknown>[] = [];
+      let slotSeq = 0;
+
+      const db = {
+        select: () => ({
+          from: (table: unknown) => ({
+            where: () => {
+              const name = getTableName(table as never);
+              if (name === 'campaigns') return Promise.resolve([campaignRow]);
+              if (name === 'campaign_days') return Promise.resolve(dayRows);
+              if (name === 'campaign_slot_content') return Promise.resolve(slotRows);
+              return Promise.resolve([]);
+            },
+          }),
+        }),
+        insert: (table: unknown) => ({
+          values: (vals: Record<string, unknown> | Record<string, unknown>[]) => {
+            const name = getTableName(table as never);
+            const rows = Array.isArray(vals) ? vals : [vals];
+            if (name === 'campaign_days') dayRows.push(...rows);
+            if (name === 'campaign_slot_content') {
+              for (const r of rows) slotRows.push({ id: `slot-${++slotSeq}`, ...r });
+            }
+            return { returning: () => Promise.resolve([]) };
+          },
+        }),
+        update: (table: unknown) => ({
+          set: (set: Record<string, unknown>) => ({
+            where: () => {
+              const name = getTableName(table as never);
+              if (name === 'campaigns') Object.assign(campaignRow, set);
+              if (name === 'campaign_slot_content') {
+                for (const r of slotRows) Object.assign(r, set);
+              }
+              return Promise.resolve();
+            },
+          }),
+        }),
+      };
+
+      return { db, slotRows, dayRows };
+    }
+
+    it('draft campaign: addEvent works unchanged (inserts a slot)', async () => {
+      const campaignRow = makeCampaignRow({ status: 'draft' });
+      const { db, slotRows } = buildStatefulDb(campaignRow);
+      const service = loadServiceWithFakeDb(db);
+
+      await service.addEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: '2026-08-10',
+        channelId: '1',
+      });
+
+      expect(slotRows).toHaveLength(1);
+    });
+
+    it('active campaign: addEvent throws ConflictException, does not insert a slot', async () => {
+      const campaignRow = makeCampaignRow({ status: 'active' });
+      const { db, slotRows, dayRows } = buildStatefulDb(campaignRow);
+      const service = loadServiceWithFakeDb(db);
+
+      await expect(
+        service.addEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+          date: '2026-08-10',
+          channelId: '1',
+        }),
+      ).rejects.toThrow(/already launched|scheduled posts but not add new ones/i);
+
+      expect(slotRows).toHaveLength(0);
+      expect(dayRows).toHaveLength(0);
+    });
+  });
+
+  // ==========================================================================
   // launch() — table-identity-routed fake db (rather than call-order indices,
   // since launch's preflight + per-slot loop issues a variable number of
   // selects/updates depending on how many slots are publishable). Compares
