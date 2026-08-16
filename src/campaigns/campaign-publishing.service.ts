@@ -17,6 +17,12 @@ interface MaterializeInput {
   content: ChannelDayContentJson;
   platform: string;
   scheduledAt: Date;
+  /**
+   * Sub-destination for chat/messaging platforms (Slack/Discord). Absent for
+   * social platforms. Carried into the materialized post's PostTarget so the
+   * publisher knows which Slack channel / Discord text channel to post to.
+   */
+  destination?: { id: string; name?: string };
 }
 
 /**
@@ -48,12 +54,17 @@ export class CampaignPublishingService {
     return `campaign-${campaignId}-${date}-${channelId}-${safeTime}`;
   }
 
-  buildTargets(channelId: string, platform: string): PostTarget[] {
+  buildTargets(
+    channelId: string,
+    platform: string,
+    destination?: { id: string; name?: string },
+  ): PostTarget[] {
     return [
       {
         channelId,
         platform: platform as PostTarget['platform'],
         status: 'scheduled',
+        ...(destination ? { destination } : {}),
       },
     ];
   }
@@ -76,7 +87,11 @@ export class CampaignPublishingService {
           url: m.url ?? '',
           type: m.kind === 'video' ? ('video' as const) : ('image' as const),
         })),
-        targets: this.buildTargets(input.channelId, input.platform),
+        targets: this.buildTargets(
+          input.channelId,
+          input.platform,
+          input.destination,
+        ),
         status: 'scheduled',
         scheduledAt: input.scheduledAt,
         platformContent,

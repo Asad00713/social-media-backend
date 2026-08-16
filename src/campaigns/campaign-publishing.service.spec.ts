@@ -43,4 +43,19 @@ describe('CampaignPublishingService', () => {
     expect(am).not.toContain(':');
     expect(pm).not.toContain(':');
   });
+
+  it('buildTargets includes destination when provided (messaging channels)', () => {
+    const { service } = make();
+    const targets = service.buildTargets('42', 'slack', {
+      id: 'C1',
+      name: '#x',
+    });
+    expect(targets[0].destination).toEqual({ id: 'C1', name: '#x' });
+  });
+
+  it('buildTargets omits destination when not provided (social platforms)', () => {
+    const { service } = make();
+    const targets = service.buildTargets('42', 'twitter');
+    expect(targets[0]).not.toHaveProperty('destination');
+  });
 });

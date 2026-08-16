@@ -949,6 +949,7 @@ export class CampaignsService {
         content: slot.content,
         platform,
         scheduledAt,
+        destination: slot.content.destination,
       });
 
       await db
@@ -1061,6 +1062,7 @@ export class CampaignsService {
         content: slot.content,
         platform,
         scheduledAt,
+        destination: slot.content.destination,
       });
 
       await db

@@ -106,6 +106,17 @@ export interface ChannelDayContentJson {
   templateIds: string[];
   aiSubState?: 'idle' | 'generating' | 'pending_review' | 'approved' | 'skipped';
   platformSpecific?: Record<string, unknown>;
+  /**
+   * Sub-destination for chat/messaging platforms (Slack/Discord): which
+   * Slack channel / Discord text channel this slot's message goes to.
+   * Absent for every social platform. Mirrors PostTarget['destination']
+   * (src/drizzle/schema/posts.schema.ts) — carried into the materialized
+   * post's target at launch/resume time.
+   */
+  destination?: {
+    id: string;
+    name?: string;
+  };
 }
 
 // =============================================================================
