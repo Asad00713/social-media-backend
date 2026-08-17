@@ -1403,6 +1403,12 @@ export class CampaignsService {
 
     const mergedContent: ChannelDayContentJson = { ...slot.content, ...dto.patch };
 
+    // The effective fire time after this update: the new time when moving,
+    // otherwise the slot's existing time. Capture it BEFORE the write — the
+    // re-materialize block below must re-enqueue at the NEW time, not the old
+    // `slot.time` (which, post-write, would otherwise be stale).
+    const effectiveTime = movingTime ? dto.newTime! : slot.time;
+
     await db
       .update(campaignSlotContent)
       .set({
@@ -1413,7 +1419,7 @@ export class CampaignsService {
       .where(eq(campaignSlotContent.id, slot.id));
 
     // Launched + still-scheduled: the enqueued post is stale — cancel & re-enqueue
-    // from the merged content so the NEW content actually fires.
+    // from the merged content (at the effective time) so the NEW content/time fires.
     if (campaignStatus === 'active' && slot.slotStatus === 'scheduled') {
       const safe = await this.cancelAndClearSlotPost({ jobId: slot.jobId, postId: slot.postId });
       if (!safe) {
@@ -1425,9 +1431,8 @@ export class CampaignsService {
       const channelMap = await this.resolveSlotChannels([slot.channelId]);
       const platform = channelMap.get(slot.channelId);
       const { due, pastDue } = computeSlotSchedule(
-        // reload the campaign schedule for computeSlotSchedule
-        (await this.getOne(workspaceId, id)).schedule,
-        [{ date: slot.date, time: slot.time }],
+        campaign.schedule,
+        [{ date: slot.date, time: effectiveTime }],
         new Date(),
       );
       const scheduledAt = due[0]?.scheduledAt;
@@ -1450,7 +1455,7 @@ export class CampaignsService {
           campaignId: id,
           date: slot.date,
           channelId: slot.channelId,
-          time: slot.time,
+          time: effectiveTime,
           content: mergedContent,
           platform,
           scheduledAt,
