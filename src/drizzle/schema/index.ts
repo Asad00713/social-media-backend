@@ -1,5 +1,6 @@
 // Export all schemas
 export * from './ads.schema';
+export * from './error-logs.schema';
 export * from './users.schema';
 export * from './workspace.schema';
 export * from './workspace-invitation.schema';
