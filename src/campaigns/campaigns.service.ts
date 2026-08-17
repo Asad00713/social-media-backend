@@ -141,7 +141,7 @@ export interface UpdateEventDto {
   channelId: string;
   patch: Partial<ChannelDayContentJson>;
   time?: string; // HH:mm — disambiguates a multi-time slot when provided
-  newTime?: string; // HH:mm — content-preserving move to this time (pre-launch only)
+  newTime?: string; // HH:mm — content-preserving time move (blocked if past; re-enqueues a launched scheduled slot)
 }
 
 export interface RemoveEventDto {
@@ -1337,7 +1337,7 @@ export class CampaignsService {
     id: string,
     dto: UpdateEventDto,
   ): Promise<CampaignDto> {
-    await this.getOne(workspaceId, id);
+    const campaign = await this.getOne(workspaceId, id);
 
     const [slot] = await db
       .select()
@@ -1364,14 +1364,23 @@ export class CampaignsService {
 
     this.assertLaunchedSlotEditable(campaignStatus, slot.slotStatus);
 
-    // Content-preserving time move. Pre-launch only: moving a launched slot
-    // would need a re-materialize at the new fire time (out of scope here), so
-    // reject it with a clear 409 — the picker is disabled there anyway.
+    // Content-preserving time move. Allowed on draft AND launched campaigns —
+    // on a launched, still-scheduled slot the re-materialize block below cancels
+    // the enqueued job and re-enqueues at the new time. assertLaunchedSlotEditable
+    // (above) has already 409'd a launched published/fired slot, so only
+    // scheduled/pending reach here.
     const movingTime = !!dto.newTime && dto.newTime !== slot.time;
     if (movingTime) {
-      if (campaignStatus === 'active') {
+      // Block moving to a time that has already passed — draft & launched alike.
+      // Reuse the launch due/past-due split so the boundary is identical.
+      const { pastDue } = computeSlotSchedule(
+        campaign.schedule,
+        [{ date: dto.date, time: dto.newTime! }],
+        new Date(),
+      );
+      if (pastDue.length > 0) {
         throw new ConflictException(
-          'Change this post’s time before launching the campaign.',
+          'This time has already passed — pick a future time.',
         );
       }
       const [clash] = await db
