@@ -62,6 +62,7 @@ import { WorkspaceMembersService } from '../workspace-members/workspace-members.
 import { UpdateMemberDto } from '../workspace-members/dto/update-member.dto';
 import { UserInactivityService } from './user-inactivity.service';
 import { AdminActivityService } from './admin-activity.service';
+import { AdminLogsService } from './admin-logs.service';
 import { QueueMonitorService } from './queue-monitor.service';
 import {
   RateLimiterService,
@@ -372,6 +373,7 @@ export class AdminController {
   constructor(
     private readonly adminService: AdminService,
     private readonly adminActivityService: AdminActivityService,
+    private readonly adminLogsService: AdminLogsService,
     private readonly userInactivityService: UserInactivityService,
     private readonly queueMonitorService: QueueMonitorService,
     private readonly rateLimiterService: RateLimiterService,
@@ -756,6 +758,35 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   async getActivityAds(@Query('cursor') cursor?: string) {
     return this.adminActivityService.getRecentAds(cursor);
+  }
+
+  // ==========================================================================
+  // Logs — application error/warning capture (Phase 1). Cursor-paginated read
+  // + 24h stats. See AdminLogsService.
+  // ==========================================================================
+
+  @Get('logs')
+  @HttpCode(HttpStatus.OK)
+  async getLogs(
+    @Query('level') level?: 'error' | 'warn',
+    @Query('context') context?: string,
+    @Query('search') search?: string,
+    @Query('since') since?: string,
+    @Query('cursor') cursor?: string,
+  ) {
+    return this.adminLogsService.getLogs({
+      level,
+      context,
+      search,
+      since,
+      cursor,
+    });
+  }
+
+  @Get('logs/stats')
+  @HttpCode(HttpStatus.OK)
+  async getLogStats() {
+    return this.adminLogsService.getStats();
   }
 
   @Get('analytics/posts')

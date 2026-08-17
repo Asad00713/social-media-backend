@@ -27,6 +27,7 @@ import { StockMediaModule } from './stock-media/stock-media.module';
 import { CanvaModule } from './canva/canva.module';
 import { MediaLibraryModule } from './media-library/media-library.module';
 import { AdminModule } from './admin/admin.module';
+import { LogsModule } from './logs/logs.module';
 import { CommunityModule } from './community/community.module';
 import { ChatbotModule } from './chatbot/chatbot.module';
 import { MaestroModule } from './maestro/maestro.module';
@@ -76,6 +77,7 @@ import { QUEUES } from './queue/queue.module';
     StockMediaModule,
     CanvaModule,
     AdminModule,
+    LogsModule,
     CommunityModule,
     ChatbotModule,
     MaestroModule,

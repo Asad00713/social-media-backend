@@ -3,6 +3,9 @@ import { AppModule } from './app.module';
 import { ValidationPipe } from '@nestjs/common';
 import cookieParser from 'cookie-parser';
 import express from 'express';
+import { AppLoggerService } from './logs/app-logger.service';
+import { LogWriterService } from './logs/log-writer.service';
+import { AllExceptionsFilter } from './logs/all-exceptions.filter';
 
 async function bootstrap() {
   // `rawBody: true` makes Nest buffer the unparsed request body onto
@@ -59,6 +62,15 @@ async function bootstrap() {
       transform: true,
     }),
   );
+
+  // Route error/warn logs to Postgres (console behaviour unchanged), and catch
+  // unhandled exceptions into the same table without altering the client
+  // response. The writer is injected into the logger after it's resolved,
+  // since useLogger runs before we pull providers from the container.
+  const appLogger = app.get(AppLoggerService);
+  appLogger.setWriter(app.get(LogWriterService));
+  app.useLogger(appLogger);
+  app.useGlobalFilters(app.get(AllExceptionsFilter));
 
   const port = process.env.PORT ?? 8000;
   await app.listen(port, '0.0.0.0');

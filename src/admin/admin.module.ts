@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { AdminController } from './admin.controller';
 import { AdminService } from './admin.service';
 import { AdminActivityService } from './admin-activity.service';
+import { AdminLogsService } from './admin-logs.service';
 import { UserInactivityService } from './user-inactivity.service';
 import { QueueMonitorService } from './queue-monitor.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
@@ -28,6 +29,7 @@ import { WorkspaceMembersModule } from '../workspace-members/workspace-members.m
   providers: [
     AdminService,
     AdminActivityService,
+    AdminLogsService,
     UserInactivityService,
     QueueMonitorService,
   ],
