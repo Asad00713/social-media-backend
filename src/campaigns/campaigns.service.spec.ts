@@ -1245,7 +1245,13 @@ describe('CampaignsService write methods (mocked db)', () => {
                     ? (r as { time?: string }).time === wantedTime
                     : true,
                 );
-              return Promise.resolve(filtered);
+              // Return shallow CLONES, matching a real DB: the object a SELECT
+              // hands back is a snapshot, not the same reference a later UPDATE
+              // mutates. (The update path still write-throughs to the fixture
+              // rows, so a subsequent re-select sees the new state.) Without
+              // this, Object.assign in the update would retroactively mutate a
+              // slot the service is still holding — masking stale-read bugs.
+              return Promise.resolve(filtered.map((r) => ({ ...r })));
             }
             if (name === 'social_media_channels') {
               return Promise.resolve(fixture.channelRows ?? []);
@@ -1987,6 +1993,7 @@ describe('CampaignsService write methods (mocked db)', () => {
     const WORKSPACE_ID = 'ws-1';
     const CAMPAIGN_ID = 'c-1';
     const futureDate = '2099-06-15'; // far future -> always "due", never past-due
+    const pastDate = '2020-01-02'; // within nothing special -> any time on it is past-due
 
     it('moves the slot to newTime and preserves merged content when the target time is free', async () => {
       const publishing = makePublishingMock();
@@ -2059,20 +2066,27 @@ describe('CampaignsService write methods (mocked db)', () => {
       ).toBeUndefined();
     });
 
-    it('throws ConflictException when the campaign is launched (active) and newTime is set', async () => {
+    it('does NOT throw the old launched-409 for a future newTime move on an active scheduled slot', async () => {
+      // The launched campaign + newTime path used to hard-409; now a future move
+      // on a still-scheduled slot is allowed (it re-enqueues — see the re-enqueue
+      // test below). Here just prove it no longer throws the old message.
       const publishing = makePublishingMock();
+      publishing.materializeAndEnqueue.mockResolvedValue({ postId: 'p2', jobId: 'j2' });
       const slot = makeSlotRow({
         date: futureDate,
         channelId: '1',
         time: '17:00',
         slotStatus: 'scheduled',
+        postId: 'post-old',
+        jobId: 'job-old',
         content: content({ caption: 'hi' }),
       });
-      const { db, updates } = buildFakeDb({
+      const { db } = buildFakeDb({
         campaignRow: makeCampaignRow({ status: 'active' }),
         dayRows: [],
         slotRows: [slot],
         channelRows: [{ id: 1, platform: 'twitter' }],
+        postRows: [{ id: 'post-old', status: 'scheduled' }],
       });
       const service = loadServiceWithFakeDb(db, publishing);
 
@@ -2084,11 +2098,124 @@ describe('CampaignsService write methods (mocked db)', () => {
           time: '17:00',
           newTime: '18:00',
         }),
-      ).rejects.toThrow(/before launching the campaign/i);
+      ).resolves.toBeDefined();
+    });
 
-      expect(
-        updates.slotUpdates.find((u) => u.id === 'slot-1' && u.set.time === '18:00'),
-      ).toBeUndefined();
+    it('throws ConflictException when newTime is in the past (draft campaign)', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: pastDate,
+        channelId: '1',
+        time: '08:00',
+        slotStatus: 'pending',
+        content: content({ caption: 'hi' }),
+      });
+      const { db, updates } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'draft' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await expect(
+        service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+          date: pastDate,
+          channelId: '1',
+          patch: { caption: 'bye' },
+          time: '08:00',
+          newTime: '09:00',
+        }),
+      ).rejects.toThrow(/already passed/i);
+
+      expect(updates.slotUpdates.find((u) => u.set.time === '09:00')).toBeUndefined();
+    });
+
+    it('throws ConflictException when newTime is in the past (launched/active campaign)', async () => {
+      const publishing = makePublishingMock();
+      const slot = makeSlotRow({
+        date: pastDate,
+        channelId: '1',
+        time: '08:00',
+        slotStatus: 'scheduled',
+        postId: 'post-old',
+        jobId: 'job-old',
+        content: content({ caption: 'hi' }),
+      });
+      const { db } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+        postRows: [{ id: 'post-old', status: 'scheduled' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await expect(
+        service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+          date: pastDate,
+          channelId: '1',
+          patch: { caption: 'bye' },
+          time: '08:00',
+          newTime: '09:00',
+        }),
+      ).rejects.toThrow(/already passed/i);
+
+      expect(publishing.cancelSlotJob).not.toHaveBeenCalled();
+      expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
+    });
+
+    it('active + scheduled + future newTime: cancels the old job and re-enqueues at the NEW time', async () => {
+      const publishing = makePublishingMock();
+      publishing.materializeAndEnqueue.mockResolvedValue({ postId: 'p2', jobId: 'j2' });
+      const slot = makeSlotRow({
+        date: futureDate,
+        channelId: '1',
+        time: '17:00',
+        slotStatus: 'scheduled',
+        postId: 'post-old',
+        jobId: 'job-old',
+        content: content({ caption: 'hi' }),
+      });
+      const { db, updates, deletes } = buildFakeDb({
+        campaignRow: makeCampaignRow({ status: 'active' }),
+        dayRows: [],
+        slotRows: [slot],
+        channelRows: [{ id: 1, platform: 'twitter' }],
+        postRows: [{ id: 'post-old', status: 'scheduled' }],
+      });
+      const service = loadServiceWithFakeDb(db, publishing);
+
+      await service.updateEvent(WORKSPACE_ID, CAMPAIGN_ID, {
+        date: futureDate,
+        channelId: '1',
+        patch: { caption: 'bye' },
+        time: '17:00',
+        newTime: '20:00',
+      });
+
+      // Old job cancelled + guarded post delete ran.
+      expect(publishing.cancelSlotJob).toHaveBeenCalledWith('job-old');
+      expect(deletes.postIds).toEqual(['post-old']);
+      // Re-enqueued at the NEW time (not the stale '17:00') with the merged content.
+      expect(publishing.materializeAndEnqueue).toHaveBeenCalledTimes(1);
+      expect(publishing.materializeAndEnqueue).toHaveBeenCalledWith(
+        expect.objectContaining({
+          date: futureDate,
+          channelId: '1',
+          time: '20:00',
+          content: expect.objectContaining({ caption: 'bye' }),
+        }),
+      );
+      // Slot re-linked to the new post/job.
+      const reLink = updates.slotUpdates.find(
+        (u) => u.id === 'slot-1' && u.set.postId === 'p2',
+      );
+      expect(reLink?.set).toMatchObject({
+        postId: 'p2',
+        jobId: 'j2',
+        slotStatus: 'scheduled',
+      });
     });
 
     it('leaves content-only behaviour unchanged when newTime is absent', async () => {

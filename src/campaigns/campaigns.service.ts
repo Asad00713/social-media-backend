@@ -141,7 +141,7 @@ export interface UpdateEventDto {
   channelId: string;
   patch: Partial<ChannelDayContentJson>;
   time?: string; // HH:mm — disambiguates a multi-time slot when provided
-  newTime?: string; // HH:mm — content-preserving move to this time (pre-launch only)
+  newTime?: string; // HH:mm — content-preserving time move (blocked if past; re-enqueues a launched scheduled slot)
 }
 
 export interface RemoveEventDto {
@@ -1337,7 +1337,7 @@ export class CampaignsService {
     id: string,
     dto: UpdateEventDto,
   ): Promise<CampaignDto> {
-    await this.getOne(workspaceId, id);
+    const campaign = await this.getOne(workspaceId, id);
 
     const [slot] = await db
       .select()
@@ -1364,14 +1364,23 @@ export class CampaignsService {
 
     this.assertLaunchedSlotEditable(campaignStatus, slot.slotStatus);
 
-    // Content-preserving time move. Pre-launch only: moving a launched slot
-    // would need a re-materialize at the new fire time (out of scope here), so
-    // reject it with a clear 409 — the picker is disabled there anyway.
+    // Content-preserving time move. Allowed on draft AND launched campaigns —
+    // on a launched, still-scheduled slot the re-materialize block below cancels
+    // the enqueued job and re-enqueues at the new time. assertLaunchedSlotEditable
+    // (above) has already 409'd a launched published/fired slot, so only
+    // scheduled/pending reach here.
     const movingTime = !!dto.newTime && dto.newTime !== slot.time;
     if (movingTime) {
-      if (campaignStatus === 'active') {
+      // Block moving to a time that has already passed — draft & launched alike.
+      // Reuse the launch due/past-due split so the boundary is identical.
+      const { pastDue } = computeSlotSchedule(
+        campaign.schedule,
+        [{ date: dto.date, time: dto.newTime! }],
+        new Date(),
+      );
+      if (pastDue.length > 0) {
         throw new ConflictException(
-          'Change this post’s time before launching the campaign.',
+          'This time has already passed — pick a future time.',
         );
       }
       const [clash] = await db
@@ -1394,6 +1403,12 @@ export class CampaignsService {
 
     const mergedContent: ChannelDayContentJson = { ...slot.content, ...dto.patch };
 
+    // The effective fire time after this update: the new time when moving,
+    // otherwise the slot's existing time. Capture it BEFORE the write — the
+    // re-materialize block below must re-enqueue at the NEW time, not the old
+    // `slot.time` (which, post-write, would otherwise be stale).
+    const effectiveTime = movingTime ? dto.newTime! : slot.time;
+
     await db
       .update(campaignSlotContent)
       .set({
@@ -1404,7 +1419,7 @@ export class CampaignsService {
       .where(eq(campaignSlotContent.id, slot.id));
 
     // Launched + still-scheduled: the enqueued post is stale — cancel & re-enqueue
-    // from the merged content so the NEW content actually fires.
+    // from the merged content (at the effective time) so the NEW content/time fires.
     if (campaignStatus === 'active' && slot.slotStatus === 'scheduled') {
       const safe = await this.cancelAndClearSlotPost({ jobId: slot.jobId, postId: slot.postId });
       if (!safe) {
@@ -1416,9 +1431,8 @@ export class CampaignsService {
       const channelMap = await this.resolveSlotChannels([slot.channelId]);
       const platform = channelMap.get(slot.channelId);
       const { due, pastDue } = computeSlotSchedule(
-        // reload the campaign schedule for computeSlotSchedule
-        (await this.getOne(workspaceId, id)).schedule,
-        [{ date: slot.date, time: slot.time }],
+        campaign.schedule,
+        [{ date: slot.date, time: effectiveTime }],
         new Date(),
       );
       const scheduledAt = due[0]?.scheduledAt;
@@ -1441,7 +1455,7 @@ export class CampaignsService {
           campaignId: id,
           date: slot.date,
           channelId: slot.channelId,
-          time: slot.time,
+          time: effectiveTime,
           content: mergedContent,
           platform,
           scheduledAt,
