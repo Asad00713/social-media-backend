@@ -73,3 +73,38 @@ describe('AdminAuditService.record', () => {
     expect(db.inserted[0].actorEmail).toBeNull();
   });
 });
+
+function makeSelectDb(rows: any[]) {
+  // Model select().from().where().orderBy().limit(n) → first n rows of `rows`.
+  const chain: any = {
+    from: () => chain,
+    where: () => chain,
+    orderBy: () => chain,
+    limit: (n: number) => Promise.resolve(rows.slice(0, n)),
+  };
+  return { select: () => chain } as any;
+}
+
+describe('AdminAuditService.getAudit pagination', () => {
+  const row = (i: number) => ({
+    id: `id-${i}`,
+    createdAt: new Date(Date.UTC(2026, 0, 1, 0, 0, i)).toISOString(),
+  });
+
+  it('returns nextCursor=null when a page is not full', async () => {
+    const svc = new AdminAuditService(makeSelectDb([row(1), row(2)]));
+    const res = await svc.getAudit({});
+    expect(res.items).toHaveLength(2);
+    expect(res.nextCursor).toBeNull();
+  });
+
+  it('returns 50 items + a cursor on the 50th row when a 51st exists', async () => {
+    const rows = Array.from({ length: 51 }, (_, i) => row(i));
+    const svc = new AdminAuditService(makeSelectDb(rows));
+    const res = await svc.getAudit({});
+    expect(res.items).toHaveLength(50);
+    expect(res.nextCursor).toContain('id-49'); // 50th row (0-indexed)
+    // The cursor row id must NOT be in the returned page's tail boundary re-fetch:
+    expect(res.items.map((r: any) => r.id)).not.toContain('id-50');
+  });
+});
