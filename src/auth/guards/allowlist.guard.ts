@@ -55,18 +55,32 @@ export class AllowlistGuard implements CanActivate {
       return true; // invalid/expired token → let JwtAuthGuard 401 it
     }
 
-    // Need the role to honor "super admin always passes".
+    // Need the role to honor "super admin always passes", and the onboarding
+    // flag so we only block AFTER onboarding is finished (below).
     let role: string | undefined;
+    let onboardingCompletedAt: Date | string | null | undefined;
     try {
       const user = await this.usersService.findOneWithSuspension(
         payload.sub as string,
       );
       role = user?.role;
+      onboardingCompletedAt = user?.onboardingCompletedAt;
     } catch {
       role = undefined;
+      onboardingCompletedAt = undefined;
     }
 
     if (isEmailAllowlisted(payload.email, role)) return true;
+
+    // Not allowlisted — but let the full pre-launch signup flow complete first:
+    // signup, email verification, workspace creation, and the rest of
+    // onboarding all run for everyone. We only lock the app itself, which a
+    // user reaches once onboarding is marked complete. So a not-yet-onboarded
+    // user (onboardingCompletedAt strictly null) passes through; the block
+    // engages only once they finish onboarding (a real timestamp). A failed
+    // lookup (undefined) fails SAFE and blocks — an unknown state on a
+    // non-allowlisted token must not open the app.
+    if (onboardingCompletedAt === null) return true;
 
     throw new ForbiddenException({
       statusCode: 403,
