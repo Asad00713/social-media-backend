@@ -4,6 +4,7 @@ import { CampaignsController } from './campaigns.controller';
 import { EvergreenController } from './evergreen.controller';
 import { CampaignsService } from './campaigns.service';
 import { EvergreenService } from './evergreen.service';
+import { EvergreenScoringService } from './evergreen-scoring.service';
 import { CampaignPublishingService } from './campaign-publishing.service';
 import { EvergreenFireProcessor } from './processors/evergreen-fire.processor';
 import { EvergreenReconcileCron } from './evergreen-reconcile.cron';
@@ -27,6 +28,7 @@ import { QUEUES } from '../queue/queue.module';
     CampaignsService,
     CampaignPublishingService,
     EvergreenService,
+    EvergreenScoringService,
     EvergreenFireProcessor,
     EvergreenReconcileCron,
   ],

@@ -2,6 +2,7 @@ import { Controller, Post, Patch, Delete, Body, Param, UseGuards, HttpCode, Http
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { EvergreenService } from './evergreen.service';
+import { EvergreenScoringService } from './evergreen-scoring.service';
 import {
   CreateEvergreenCampaignDto,
   CreateEvergreenCategoryDto,
@@ -16,7 +17,10 @@ import {
 @Controller('campaigns')
 @UseGuards(JwtAuthGuard)
 export class EvergreenController {
-  constructor(private readonly evergreen: EvergreenService) {}
+  constructor(
+    private readonly evergreen: EvergreenService,
+    private readonly scoring: EvergreenScoringService,
+  ) {}
 
   // ==========================================================================
   // Campaign
@@ -172,5 +176,30 @@ export class EvergreenController {
     @Param('variationId') variationId: string,
   ) {
     return this.evergreen.removeVariation(workspaceId, id, catId, postId, variationId);
+  }
+
+  // ==========================================================================
+  // Freshness guard (D3) — same category-scoped path shape as the pool-post
+  // and variations routes above.
+  //
+  // Returns the re-assembled `EvergreenCampaignDto` (not just the bare
+  // verdict) so the frontend can refresh a single card's stale badge from
+  // this response the same way every other mutation route here does,
+  // without a second round-trip.
+  // ==========================================================================
+
+  @Post(
+    'workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId/freshness-check',
+  )
+  @HttpCode(HttpStatus.OK)
+  async checkFreshness(
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+    @Param('catId') catId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: { userId: string; email: string },
+  ) {
+    await this.scoring.checkFreshness(workspaceId, user.userId, id, catId, postId);
+    return this.evergreen.assembleEvergreen(id);
   }
 }
