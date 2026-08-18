@@ -63,6 +63,7 @@ import { UpdateMemberDto } from '../workspace-members/dto/update-member.dto';
 import { UserInactivityService } from './user-inactivity.service';
 import { AdminActivityService } from './admin-activity.service';
 import { AdminLogsService } from './admin-logs.service';
+import { AdminAuditService } from './admin-audit.service';
 import { QueueMonitorService } from './queue-monitor.service';
 import {
   RateLimiterService,
@@ -374,6 +375,7 @@ export class AdminController {
     private readonly adminService: AdminService,
     private readonly adminActivityService: AdminActivityService,
     private readonly adminLogsService: AdminLogsService,
+    private readonly adminAuditService: AdminAuditService,
     private readonly userInactivityService: UserInactivityService,
     private readonly queueMonitorService: QueueMonitorService,
     private readonly rateLimiterService: RateLimiterService,
@@ -588,12 +590,20 @@ export class AdminController {
   async disconnectWorkspaceChannel(
     @Param('workspaceId') workspaceId: string,
     @Param('channelId', ParseIntPipe) channelId: number,
+    @CurrentUser() admin: { userId: string },
   ) {
     // The customer-facing service, not a local delete. It cancels the
     // channel's sync jobs, revokes the Google grant while the token still
     // exists, and moves the billable channel counter back down — none of
     // which a row delete here would do.
     await this.channelService.deleteChannel(channelId, workspaceId);
+    await this.adminAuditService.record({
+      action: 'channel.disconnect',
+      actorId: admin.userId,
+      targetType: 'channel',
+      targetId: String(channelId),
+      metadata: { workspaceId },
+    });
     return { success: true, message: 'Channel disconnected' };
   }
 
@@ -622,11 +632,19 @@ export class AdminController {
     @Param('memberId') memberId: string,
     @CurrentUser() admin: { userId: string },
   ) {
-    return this.membersService.removeMember(
+    const result = await this.membersService.removeMember(
       workspaceId,
       memberId,
       admin.userId,
     );
+    await this.adminAuditService.record({
+      action: 'member.remove',
+      actorId: admin.userId,
+      targetType: 'member',
+      targetId: memberId,
+      metadata: { workspaceId },
+    });
+    return result;
   }
 
   /**
@@ -642,11 +660,19 @@ export class AdminController {
     @Param('invitationId') invitationId: string,
     @CurrentUser() admin: { userId: string },
   ) {
-    return this.membersService.cancelInvitation(
+    const result = await this.membersService.cancelInvitation(
       workspaceId,
       invitationId,
       admin.userId,
     );
+    await this.adminAuditService.record({
+      action: 'invitation.cancel',
+      actorId: admin.userId,
+      targetType: 'invitation',
+      targetId: invitationId,
+      metadata: { workspaceId },
+    });
+    return result;
   }
 
   @Post('workspaces/:workspaceId/reactivate')
