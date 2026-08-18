@@ -1,5 +1,6 @@
 // Export all schemas
 export * from './ads.schema';
+export * from './error-logs.schema';
 export * from './users.schema';
 export * from './workspace.schema';
 export * from './workspace-invitation.schema';
@@ -26,3 +27,4 @@ export * from './calendar-sync.schema';
 export * from './admin-login-challenge.schema';
 export * from './campaigns.schema';
 export * from './evergreen.schema';
+export * from './admin-audit-logs.schema';

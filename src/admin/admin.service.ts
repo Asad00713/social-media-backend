@@ -51,6 +51,7 @@ import {
   mediaItems,
 } from '../drizzle/schema';
 import { POST_STATUSES, type PostStatus } from '../drizzle/schema';
+import { AdminAuditService } from './admin-audit.service';
 
 // Suspension reasons
 export const SUSPENSION_REASONS = [
@@ -176,7 +177,10 @@ export type WorkspaceChannelHealthFilter =
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
 
-  constructor(@Inject(DRIZZLE) private db: DbType) {}
+  constructor(
+    @Inject(DRIZZLE) private db: DbType,
+    private readonly auditService: AdminAuditService,
+  ) {}
 
   // ==========================================================================
   // Dashboard Overview Stats
@@ -454,6 +458,16 @@ export class AdminService {
       .where(eq(users.id, userId))
       .returning();
 
+    await this.auditService.record({
+      action: 'user.suspend',
+      actorId: adminId,
+      targetType: 'user',
+      targetId: userId,
+      targetLabel: user.email,
+      reason,
+      note,
+    });
+
     return {
       success: true,
       message: `User ${user.email} has been suspended`,
@@ -467,7 +481,7 @@ export class AdminService {
     };
   }
 
-  async reactivateUser(userId: string) {
+  async reactivateUser(userId: string, adminId: string) {
     const user = await this.db.query.users.findFirst({
       where: eq(users.id, userId),
     });
@@ -491,6 +505,14 @@ export class AdminService {
         updated_at = ${new Date()}
       WHERE id = ${userId}
     `);
+
+    await this.auditService.record({
+      action: 'user.reactivate',
+      actorId: adminId,
+      targetType: 'user',
+      targetId: userId,
+      targetLabel: user.email,
+    });
 
     return {
       success: true,
@@ -1442,7 +1464,9 @@ export class AdminService {
 
     for (const workspaceId of workspaceIds) {
       try {
-        await this.suspendWorkspace(workspaceId, adminId, reason, note);
+        await this.suspendWorkspace(workspaceId, adminId, reason, note, {
+          bulk: true,
+        });
         results.push({ workspaceId, success: true });
       } catch (error) {
         results.push({
@@ -1463,7 +1487,7 @@ export class AdminService {
     };
   }
 
-  async bulkReactivateWorkspaces(workspaceIds: string[]) {
+  async bulkReactivateWorkspaces(workspaceIds: string[], adminId: string) {
     const results: Array<{
       workspaceId: string;
       success: boolean;
@@ -1472,7 +1496,7 @@ export class AdminService {
 
     for (const workspaceId of workspaceIds) {
       try {
-        await this.reactivateWorkspace(workspaceId);
+        await this.reactivateWorkspace(workspaceId, adminId, { bulk: true });
         results.push({ workspaceId, success: true });
       } catch (error) {
         results.push({
@@ -1498,6 +1522,7 @@ export class AdminService {
     adminId: string,
     reason: SuspensionReason,
     note?: string,
+    metadata?: Record<string, unknown>,
   ) {
     const ws = await this.db.query.workspace.findFirst({
       where: eq(workspace.id, workspaceId),
@@ -1524,6 +1549,17 @@ export class AdminService {
       .where(eq(workspace.id, workspaceId))
       .returning();
 
+    await this.auditService.record({
+      action: 'workspace.suspend',
+      actorId: adminId,
+      targetType: 'workspace',
+      targetId: workspaceId,
+      targetLabel: ws.name,
+      reason,
+      note,
+      metadata,
+    });
+
     return {
       success: true,
       message: `Workspace "${ws.name}" has been suspended`,
@@ -1537,7 +1573,11 @@ export class AdminService {
     };
   }
 
-  async reactivateWorkspace(workspaceId: string) {
+  async reactivateWorkspace(
+    workspaceId: string,
+    adminId: string,
+    metadata?: Record<string, unknown>,
+  ) {
     const ws = await this.db.query.workspace.findFirst({
       where: eq(workspace.id, workspaceId),
     });
@@ -1561,6 +1601,15 @@ export class AdminService {
         updated_at = ${new Date()}
       WHERE id = ${workspaceId}
     `);
+
+    await this.auditService.record({
+      action: 'workspace.reactivate',
+      actorId: adminId,
+      targetType: 'workspace',
+      targetId: workspaceId,
+      targetLabel: ws.name,
+      metadata,
+    });
 
     return {
       success: true,

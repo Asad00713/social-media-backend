@@ -4,7 +4,9 @@
 /build
 
 # Logs
-logs
+# Anchored to the repo root — a bare `logs` also matches src/logs/ (the app's
+# LogsModule), silently un-tracking real source. Keep it to the root dev-log dir.
+/logs
 *.log
 npm-debug.log*
 pnpm-debug.log*

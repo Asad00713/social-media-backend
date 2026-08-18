@@ -56,12 +56,16 @@ import {
   CONNECTION_STATUSES,
   POST_STATUSES,
   type PostStatus,
+  type AuditAction,
+  type AuditTargetType,
 } from '../drizzle/schema';
 import { ChannelService } from '../channels/services/channel.service';
 import { WorkspaceMembersService } from '../workspace-members/workspace-members.service';
 import { UpdateMemberDto } from '../workspace-members/dto/update-member.dto';
 import { UserInactivityService } from './user-inactivity.service';
 import { AdminActivityService } from './admin-activity.service';
+import { AdminLogsService } from './admin-logs.service';
+import { AdminAuditService } from './admin-audit.service';
 import { QueueMonitorService } from './queue-monitor.service';
 import {
   RateLimiterService,
@@ -372,6 +376,8 @@ export class AdminController {
   constructor(
     private readonly adminService: AdminService,
     private readonly adminActivityService: AdminActivityService,
+    private readonly adminLogsService: AdminLogsService,
+    private readonly adminAuditService: AdminAuditService,
     private readonly userInactivityService: UserInactivityService,
     private readonly queueMonitorService: QueueMonitorService,
     private readonly rateLimiterService: RateLimiterService,
@@ -461,8 +467,11 @@ export class AdminController {
 
   @Post('users/:userId/reactivate')
   @HttpCode(HttpStatus.OK)
-  async reactivateUser(@Param('userId') userId: string) {
-    return this.adminService.reactivateUser(userId);
+  async reactivateUser(
+    @Param('userId') userId: string,
+    @CurrentUser() admin: { userId: string },
+  ) {
+    return this.adminService.reactivateUser(userId, admin.userId);
   }
 
   // ==========================================================================
@@ -552,8 +561,14 @@ export class AdminController {
 
   @Post('workspaces/bulk/reactivate')
   @HttpCode(HttpStatus.OK)
-  async bulkReactivateWorkspaces(@Body() dto: BulkIdsDto) {
-    return this.adminService.bulkReactivateWorkspaces(dto.workspaceIds);
+  async bulkReactivateWorkspaces(
+    @Body() dto: BulkIdsDto,
+    @CurrentUser() admin: { userId: string },
+  ) {
+    return this.adminService.bulkReactivateWorkspaces(
+      dto.workspaceIds,
+      admin.userId,
+    );
   }
 
   @Post('workspaces/:workspaceId/suspend')
@@ -577,12 +592,20 @@ export class AdminController {
   async disconnectWorkspaceChannel(
     @Param('workspaceId') workspaceId: string,
     @Param('channelId', ParseIntPipe) channelId: number,
+    @CurrentUser() admin: { userId: string },
   ) {
     // The customer-facing service, not a local delete. It cancels the
     // channel's sync jobs, revokes the Google grant while the token still
     // exists, and moves the billable channel counter back down — none of
     // which a row delete here would do.
     await this.channelService.deleteChannel(channelId, workspaceId);
+    await this.adminAuditService.record({
+      action: 'channel.disconnect',
+      actorId: admin.userId,
+      targetType: 'channel',
+      targetId: String(channelId),
+      metadata: { workspaceId },
+    });
     return { success: true, message: 'Channel disconnected' };
   }
 
@@ -611,11 +634,19 @@ export class AdminController {
     @Param('memberId') memberId: string,
     @CurrentUser() admin: { userId: string },
   ) {
-    return this.membersService.removeMember(
+    const result = await this.membersService.removeMember(
       workspaceId,
       memberId,
       admin.userId,
     );
+    await this.adminAuditService.record({
+      action: 'member.remove',
+      actorId: admin.userId,
+      targetType: 'member',
+      targetId: memberId,
+      metadata: { workspaceId },
+    });
+    return result;
   }
 
   /**
@@ -631,17 +662,28 @@ export class AdminController {
     @Param('invitationId') invitationId: string,
     @CurrentUser() admin: { userId: string },
   ) {
-    return this.membersService.cancelInvitation(
+    const result = await this.membersService.cancelInvitation(
       workspaceId,
       invitationId,
       admin.userId,
     );
+    await this.adminAuditService.record({
+      action: 'invitation.cancel',
+      actorId: admin.userId,
+      targetType: 'invitation',
+      targetId: invitationId,
+      metadata: { workspaceId },
+    });
+    return result;
   }
 
   @Post('workspaces/:workspaceId/reactivate')
   @HttpCode(HttpStatus.OK)
-  async reactivateWorkspace(@Param('workspaceId') workspaceId: string) {
-    return this.adminService.reactivateWorkspace(workspaceId);
+  async reactivateWorkspace(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() admin: { userId: string },
+  ) {
+    return this.adminService.reactivateWorkspace(workspaceId, admin.userId);
   }
 
   // ==========================================================================
@@ -756,6 +798,66 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   async getActivityAds(@Query('cursor') cursor?: string) {
     return this.adminActivityService.getRecentAds(cursor);
+  }
+
+  // ==========================================================================
+  // Logs — application error/warning capture (Phase 1). Cursor-paginated read
+  // + 24h stats. See AdminLogsService.
+  // ==========================================================================
+
+  @Get('logs')
+  @HttpCode(HttpStatus.OK)
+  async getLogs(
+    @Query('level') level?: 'error' | 'warn',
+    @Query('context') context?: string,
+    @Query('search') search?: string,
+    @Query('since') since?: string,
+    @Query('cursor') cursor?: string,
+  ) {
+    return this.adminLogsService.getLogs({
+      level,
+      context,
+      search,
+      since,
+      cursor,
+    });
+  }
+
+  @Get('logs/stats')
+  @HttpCode(HttpStatus.OK)
+  async getLogStats() {
+    return this.adminLogsService.getStats();
+  }
+
+  // ==========================================================================
+  // Audit — super-admin action audit log. Cursor-paginated read + 24h stats.
+  // See AdminAuditService.
+  // ==========================================================================
+
+  @Get('audit')
+  @HttpCode(HttpStatus.OK)
+  async getAudit(
+    @Query('action') action?: AuditAction,
+    @Query('targetType') targetType?: AuditTargetType,
+    @Query('actorId') actorId?: string,
+    @Query('search') search?: string,
+    @Query('since') since?: string,
+    @Query('cursor') cursor?: string,
+  ) {
+    return this.adminAuditService.getAudit({
+      action,
+      targetType,
+      actorId,
+      search,
+      since,
+      cursor,
+    });
+  }
+
+  @Get('audit/stats')
+  @HttpCode(HttpStatus.OK)
+  async getAuditStats() {
+    return this.adminAuditService.getStats();
   }
 
   @Get('analytics/posts')
