@@ -5,6 +5,7 @@ import { EvergreenController } from './evergreen.controller';
 import { CampaignsService } from './campaigns.service';
 import { EvergreenService } from './evergreen.service';
 import { CampaignPublishingService } from './campaign-publishing.service';
+import { EvergreenFireProcessor } from './processors/evergreen-fire.processor';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { PostsModule } from '../posts/posts.module';
 import { QUEUES } from '../queue/queue.module';
@@ -12,11 +13,19 @@ import { QUEUES } from '../queue/queue.module';
 @Module({
   imports: [
     DrizzleModule,
-    BullModule.registerQueue({ name: QUEUES.POST_PUBLISHING }),
+    BullModule.registerQueue(
+      { name: QUEUES.POST_PUBLISHING },
+      { name: QUEUES.EVERGREEN_ROTATION },
+    ),
     PostsModule,
   ],
   controllers: [CampaignsController, EvergreenController],
-  providers: [CampaignsService, CampaignPublishingService, EvergreenService],
+  providers: [
+    CampaignsService,
+    CampaignPublishingService,
+    EvergreenService,
+    EvergreenFireProcessor,
+  ],
   exports: [CampaignsService],
 })
 export class CampaignsModule {}

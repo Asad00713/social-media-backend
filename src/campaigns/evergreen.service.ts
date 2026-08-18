@@ -1,19 +1,30 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { Queue } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../drizzle/db';
 import {
   campaigns,
   type Campaign,
+  type ChannelDayContentJson,
   type CampaignScheduleEvergreenJson,
 } from '../drizzle/schema/campaigns.schema';
+import { socialMediaChannels } from '../drizzle/schema/channels.schema';
 import {
   evergreenCategories,
+  evergreenOccurrences,
   evergreenPosts,
   type EvergreenCategory,
   type EvergreenPost,
   type RecyclePolicyJson,
 } from '../drizzle/schema/evergreen.schema';
-import { computeNextCategoryFire } from './evergreen-rotation.util';
+import {
+  computeNextCategoryFire,
+  pickNextPost,
+  selectVariation,
+} from './evergreen-rotation.util';
+import { CampaignPublishingService } from './campaign-publishing.service';
+import { QUEUES } from '../queue/queue.module';
 import type {
   CreateEvergreenCampaignDto,
   CreateEvergreenCategoryDto,
@@ -72,6 +83,14 @@ export interface EvergreenCategoryDto {
   nextRunAt: string | null;
 }
 
+export interface EvergreenUpNextDto {
+  occurrenceId: string;
+  categoryId: string;
+  scheduledAt: string;
+  channelId: string;
+  postIdRef: string;
+}
+
 export interface EvergreenCampaignDto {
   id: string;
   workspaceId: string;
@@ -89,14 +108,22 @@ export interface EvergreenCampaignDto {
   updatedAt: string;
   launchedAt: string | null;
   categories: EvergreenCategoryDto[];
-  /** Upcoming occurrences across all categories. Deliberately empty here —
-   *  populated once the occurrences table + rotation land (Task 6). */
-  upNext: unknown[];
+  /** Next scheduled occurrences across all categories, soonest first. */
+  upNext: EvergreenUpNextDto[];
 }
+
+/** How many upcoming occurrences `assembleEvergreen` surfaces in `upNext`. */
+const UP_NEXT_LIMIT = 10;
 
 @Injectable()
 export class EvergreenService {
-  constructor() {}
+  private readonly logger = new Logger(EvergreenService.name);
+
+  constructor(
+    private readonly publishing: CampaignPublishingService,
+    @InjectQueue(QUEUES.EVERGREEN_ROTATION)
+    private readonly rotationQueue: Queue,
+  ) {}
 
   // ========================================================================
   // Assembly
@@ -105,11 +132,15 @@ export class EvergreenService {
   /**
    * Loads a campaign row + its categories + each category's pool posts and
    * assembles the nested `EvergreenCampaignDto`, computing each category's
-   * `nextRunAt`. `upNext` is always `[]` — Task 6 fills it once occurrences
-   * exist. Throws `NotFoundException` if the campaign id doesn't exist.
+   * `nextRunAt` and the campaign's `upNext` (next scheduled occurrences
+   * across all categories). Throws `NotFoundException` if the campaign id
+   * doesn't exist.
    */
   async assembleEvergreen(campaignId: string): Promise<EvergreenCampaignDto> {
-    const [row] = await db.select().from(campaigns).where(eq(campaigns.id, campaignId));
+    const [row] = await db
+      .select()
+      .from(campaigns)
+      .where(eq(campaigns.id, campaignId));
     if (!row) {
       throw new NotFoundException('Campaign not found');
     }
@@ -142,6 +173,8 @@ export class EvergreenService {
       }),
     );
 
+    const upNext = await this.loadUpNext(row.id);
+
     return {
       id: row.id,
       workspaceId: row.workspaceId,
@@ -154,13 +187,40 @@ export class EvergreenService {
       schedule,
       contentSource: row.contentSource,
       aiConfig: row.aiConfig,
-      libraryTemplateIds: (row.libraryTemplateIds as string[] | null) ?? [],
+      libraryTemplateIds: row.libraryTemplateIds ?? [],
       createdAt: row.createdAt.toISOString(),
       updatedAt: row.updatedAt.toISOString(),
       launchedAt: row.launchedAt ? row.launchedAt.toISOString() : null,
       categories,
-      upNext: [],
+      upNext,
     };
+  }
+
+  /** Next `UP_NEXT_LIMIT` still-`scheduled`, not-yet-due-or-future occurrences
+   *  across all of the campaign's categories, soonest first. Filtering to
+   *  `scheduledAt >= now` and re-sorting client-side (rather than trusting
+   *  DB order) keeps this correct against the fake-DB test harness, which
+   *  doesn't implement `orderBy`/`gte` — and is cheap at this row count. */
+  private async loadUpNext(campaignId: string): Promise<EvergreenUpNextDto[]> {
+    const rows = await db
+      .select()
+      .from(evergreenOccurrences)
+      .where(eq(evergreenOccurrences.campaignId, campaignId));
+
+    const now = Date.now();
+    return rows
+      .filter(
+        (r) => r.slotStatus === 'scheduled' && r.scheduledAt.getTime() >= now,
+      )
+      .sort((a, b) => a.scheduledAt.getTime() - b.scheduledAt.getTime())
+      .slice(0, UP_NEXT_LIMIT)
+      .map((r) => ({
+        occurrenceId: r.id,
+        categoryId: r.categoryId,
+        scheduledAt: r.scheduledAt.toISOString(),
+        channelId: r.channelId,
+        postIdRef: r.postIdRef,
+      }));
   }
 
   private toCategoryDto(
@@ -193,10 +253,12 @@ export class EvergreenService {
       categoryId: post.categoryId,
       content: post.content,
       variations: post.variations,
-      recyclePolicy: post.recyclePolicy as RecyclePolicyJson,
+      recyclePolicy: post.recyclePolicy,
       minGapHours: post.minGapHours,
       recycledCount: post.recycledCount,
-      lastPublishedAt: post.lastPublishedAt ? post.lastPublishedAt.toISOString() : null,
+      lastPublishedAt: post.lastPublishedAt
+        ? post.lastPublishedAt.toISOString()
+        : null,
       performanceScore: post.performanceScore,
       isStale: post.isStale,
       staleReason: post.staleReason,
@@ -253,11 +315,19 @@ export class EvergreenService {
   /** Scopes a campaign id to its workspace, 404ing otherwise. Returns the
    *  raw row (not the assembled DTO) since write methods only need it to
    *  validate ownership before touching category/post rows. */
-  private async loadOwnedCampaign(workspaceId: string, campaignId: string): Promise<Campaign> {
+  private async loadOwnedCampaign(
+    workspaceId: string,
+    campaignId: string,
+  ): Promise<Campaign> {
     const [row] = await db
       .select()
       .from(campaigns)
-      .where(and(eq(campaigns.id, campaignId), eq(campaigns.workspaceId, workspaceId)));
+      .where(
+        and(
+          eq(campaigns.id, campaignId),
+          eq(campaigns.workspaceId, workspaceId),
+        ),
+      );
 
     if (!row) {
       throw new NotFoundException('Campaign not found');
@@ -300,7 +370,10 @@ export class EvergreenService {
       .select()
       .from(evergreenCategories)
       .where(
-        and(eq(evergreenCategories.id, categoryId), eq(evergreenCategories.campaignId, campaignId)),
+        and(
+          eq(evergreenCategories.id, categoryId),
+          eq(evergreenCategories.campaignId, campaignId),
+        ),
       );
     if (!existing) {
       throw new NotFoundException('Category not found');
@@ -313,7 +386,10 @@ export class EvergreenService {
     if (dto.channelIds !== undefined) updates.channelIds = dto.channelIds;
     if (dto.seasonal !== undefined) updates.seasonal = dto.seasonal;
 
-    await db.update(evergreenCategories).set(updates).where(eq(evergreenCategories.id, categoryId));
+    await db
+      .update(evergreenCategories)
+      .set(updates)
+      .where(eq(evergreenCategories.id, categoryId));
 
     return this.assembleEvergreen(campaignId);
   }
@@ -330,7 +406,10 @@ export class EvergreenService {
       .select({ id: evergreenCategories.id })
       .from(evergreenCategories)
       .where(
-        and(eq(evergreenCategories.id, categoryId), eq(evergreenCategories.campaignId, campaignId)),
+        and(
+          eq(evergreenCategories.id, categoryId),
+          eq(evergreenCategories.campaignId, campaignId),
+        ),
       );
     if (!existing) {
       throw new NotFoundException('Category not found');
@@ -355,11 +434,16 @@ export class EvergreenService {
   ): Promise<EvergreenCampaignDto> {
     await this.loadOwnedCampaign(workspaceId, campaignId);
 
-    await db.delete(evergreenPosts).where(eq(evergreenPosts.categoryId, categoryId));
+    await db
+      .delete(evergreenPosts)
+      .where(eq(evergreenPosts.categoryId, categoryId));
     await db
       .delete(evergreenCategories)
       .where(
-        and(eq(evergreenCategories.id, categoryId), eq(evergreenCategories.campaignId, campaignId)),
+        and(
+          eq(evergreenCategories.id, categoryId),
+          eq(evergreenCategories.campaignId, campaignId),
+        ),
       );
 
     return this.assembleEvergreen(campaignId);
@@ -369,12 +453,18 @@ export class EvergreenService {
   // Pool posts
   // ========================================================================
 
-  private async loadOwnedCategory(campaignId: string, categoryId: string): Promise<void> {
+  private async loadOwnedCategory(
+    campaignId: string,
+    categoryId: string,
+  ): Promise<void> {
     const [existing] = await db
       .select({ id: evergreenCategories.id })
       .from(evergreenCategories)
       .where(
-        and(eq(evergreenCategories.id, categoryId), eq(evergreenCategories.campaignId, campaignId)),
+        and(
+          eq(evergreenCategories.id, categoryId),
+          eq(evergreenCategories.campaignId, campaignId),
+        ),
       );
     if (!existing) {
       throw new NotFoundException('Category not found');
@@ -390,7 +480,9 @@ export class EvergreenService {
     await this.loadOwnedCampaign(workspaceId, campaignId);
     await this.loadOwnedCategory(campaignId, categoryId);
 
-    const recyclePolicy: RecyclePolicyJson = dto.recyclePolicy ?? { mode: 'forever' };
+    const recyclePolicy: RecyclePolicyJson = dto.recyclePolicy ?? {
+      mode: 'forever',
+    };
 
     await db.insert(evergreenPosts).values({
       campaignId,
@@ -418,17 +510,26 @@ export class EvergreenService {
     const [existing] = await db
       .select({ id: evergreenPosts.id })
       .from(evergreenPosts)
-      .where(and(eq(evergreenPosts.id, postId), eq(evergreenPosts.categoryId, categoryId)));
+      .where(
+        and(
+          eq(evergreenPosts.id, postId),
+          eq(evergreenPosts.categoryId, categoryId),
+        ),
+      );
     if (!existing) {
       throw new NotFoundException('Post not found');
     }
 
     const updates: Partial<EvergreenPost> = { updatedAt: new Date() };
     if (dto.content !== undefined) updates.content = dto.content;
-    if (dto.recyclePolicy !== undefined) updates.recyclePolicy = dto.recyclePolicy;
+    if (dto.recyclePolicy !== undefined)
+      updates.recyclePolicy = dto.recyclePolicy;
     if (dto.minGapHours !== undefined) updates.minGapHours = dto.minGapHours;
 
-    await db.update(evergreenPosts).set(updates).where(eq(evergreenPosts.id, postId));
+    await db
+      .update(evergreenPosts)
+      .set(updates)
+      .where(eq(evergreenPosts.id, postId));
 
     return this.assembleEvergreen(campaignId);
   }
@@ -444,8 +545,291 @@ export class EvergreenService {
 
     await db
       .delete(evergreenPosts)
-      .where(and(eq(evergreenPosts.id, postId), eq(evergreenPosts.categoryId, categoryId)));
+      .where(
+        and(
+          eq(evergreenPosts.id, postId),
+          eq(evergreenPosts.categoryId, categoryId),
+        ),
+      );
 
     return this.assembleEvergreen(campaignId);
   }
+
+  // ========================================================================
+  // Rotation engine — per-fire re-enqueue chain (Task 6)
+  //
+  // Design choice (postIdRef arm-time-vs-fire-time): `evergreenOccurrences
+  // .postIdRef` is NOT NULL (Task 1's schema), so an occurrence row cannot
+  // exist without a post already chosen. We pick the post at ARM time via
+  // `pickNextPost` and store it — this satisfies the FK immediately and lets
+  // `assembleEvergreen`'s `upNext` show a concrete "what fires next" post
+  // without waiting for fire time. At FIRE time we re-validate eligibility
+  // (re-run `pickNextPost` against current state) rather than trusting the
+  // stored pick blindly — a post can go stale/retired/exhaust its recycle
+  // policy in the gap between arm and fire (the gap can be long: fires are
+  // scheduled up to MAX_SCAN_DAYS out). If the stored post is no longer
+  // eligible, we re-pick from the currently-eligible pool instead of
+  // failing the fire.
+  // ========================================================================
+
+  /**
+   * Computes the category's next fire instant and arms it: inserts a
+   * `scheduled` `evergreenOccurrences` row (picking the post to fire via
+   * `pickNextPost`, and a channel from the category's `channelIds`) and
+   * enqueues a delayed `evergreen-rotation` job `{ occurrenceId }` with a
+   * deterministic `jobId = evg-<occurrenceId>`. Does nothing (just logs) when
+   * the category has no weekdays/times configured (no next fire) or has no
+   * channel/eligible post to arm against — the chain simply stays dormant
+   * until the category is edited into a fireable state.
+   */
+  async armCategory(
+    category: EvergreenCategory,
+    campaign: Campaign,
+    now: Date,
+  ): Promise<void> {
+    const schedule = campaign.schedule as CampaignScheduleEvergreenJson;
+
+    const nextFire = computeNextCategoryFire(
+      category.schedule,
+      schedule.timezone,
+      schedule.blackoutDates ?? [],
+      now,
+    );
+    if (!nextFire) {
+      this.logger.log(
+        `armCategory(${category.id}): no next fire (no weekdays/times configured) — not arming.`,
+      );
+      return;
+    }
+
+    const channelIds = (category.channelIds as string[] | null) ?? [];
+    const channelId = channelIds[0];
+    if (!channelId) {
+      this.logger.warn(
+        `armCategory(${category.id}): no channelIds configured — not arming.`,
+      );
+      return;
+    }
+
+    const postRows = await db
+      .select()
+      .from(evergreenPosts)
+      .where(eq(evergreenPosts.categoryId, category.id));
+
+    const picked = pickNextPost(postRows, category, now);
+    if (!picked) {
+      this.logger.log(
+        `armCategory(${category.id}): no eligible post to arm — not arming.`,
+      );
+      return;
+    }
+
+    const [occurrence] = await db
+      .insert(evergreenOccurrences)
+      .values({
+        campaignId: category.campaignId,
+        categoryId: category.id,
+        postIdRef: picked.id,
+        variationId: null,
+        channelId,
+        scheduledAt: nextFire,
+        slotStatus: 'scheduled',
+      })
+      .returning();
+
+    const jobId = `evg-${occurrence.id}`;
+    const delay = Math.max(0, nextFire.getTime() - now.getTime());
+
+    await this.rotationQueue.add(
+      'evergreen-fire',
+      { occurrenceId: occurrence.id },
+      {
+        delay,
+        jobId,
+        attempts: 3,
+        backoff: { type: 'exponential', delay: 5000 },
+      },
+    );
+
+    await db
+      .update(evergreenOccurrences)
+      .set({ jobId })
+      .where(eq(evergreenOccurrences.id, occurrence.id));
+  }
+
+  /**
+   * Fires one occurrence: re-validates eligibility, publishes via
+   * `CampaignPublishingService.materializeAndEnqueue`, bumps the post, and
+   * ALWAYS arms the category's next fire in a `finally` block — even if the
+   * publish call throws, or no post is eligible — so the rotation chain is
+   * self-healing and never dies on a single bad fire.
+   */
+  async fireOccurrence(occurrenceId: string): Promise<void> {
+    const [occurrence] = await db
+      .select()
+      .from(evergreenOccurrences)
+      .where(eq(evergreenOccurrences.id, occurrenceId));
+    if (!occurrence) {
+      this.logger.warn(
+        `fireOccurrence(${occurrenceId}): occurrence not found — nothing to do.`,
+      );
+      return;
+    }
+
+    const [category] = await db
+      .select()
+      .from(evergreenCategories)
+      .where(eq(evergreenCategories.id, occurrence.categoryId));
+    if (!category) {
+      this.logger.warn(
+        `fireOccurrence(${occurrenceId}): category ${occurrence.categoryId} not found — cannot fire or re-arm.`,
+      );
+      return;
+    }
+
+    const [campaign] = await db
+      .select()
+      .from(campaigns)
+      .where(eq(campaigns.id, occurrence.campaignId));
+    if (!campaign) {
+      this.logger.warn(
+        `fireOccurrence(${occurrenceId}): campaign ${occurrence.campaignId} not found — cannot fire or re-arm.`,
+      );
+      return;
+    }
+
+    const now = new Date();
+
+    try {
+      const postRows = await db
+        .select()
+        .from(evergreenPosts)
+        .where(eq(evergreenPosts.categoryId, category.id));
+
+      // Re-validate at fire time — the arm-time pick may have gone stale
+      // (retired, recycle policy exhausted, min-gap not yet satisfied vs. a
+      // more recent fire, etc.) in the gap between arm and fire.
+      const picked = pickNextPost(postRows, category, now);
+
+      if (!picked) {
+        await db
+          .update(evergreenOccurrences)
+          .set({
+            slotStatus: 'skipped',
+            lastError: 'No eligible post at fire time',
+          })
+          .where(eq(evergreenOccurrences.id, occurrenceId));
+        return;
+      }
+
+      const variation = selectVariation(picked);
+
+      const [channelRow] = await db
+        .select()
+        .from(socialMediaChannels)
+        .where(eq(socialMediaChannels.id, Number(occurrence.channelId)));
+      if (!channelRow) {
+        await db
+          .update(evergreenOccurrences)
+          .set({ slotStatus: 'skipped', lastError: 'Channel unavailable' })
+          .where(eq(evergreenOccurrences.id, occurrenceId));
+        return;
+      }
+
+      const { date, time } = formatInTimeZone(
+        occurrence.scheduledAt,
+        (campaign.schedule as CampaignScheduleEvergreenJson).timezone,
+      );
+
+      const content: ChannelDayContentJson = {
+        ...picked.content,
+        caption: variation.caption,
+      };
+
+      const { postId, jobId } = await this.publishing.materializeAndEnqueue({
+        workspaceId: campaign.workspaceId,
+        createdById: campaign.createdById,
+        campaignId: campaign.id,
+        date,
+        channelId: occurrence.channelId,
+        time,
+        content,
+        platform: channelRow.platform,
+        scheduledAt: now,
+        destination: content.destination,
+      });
+
+      await db
+        .update(evergreenOccurrences)
+        .set({
+          postIdRef: picked.id,
+          variationId: variation.variationId,
+          postsRowId: postId,
+          jobId,
+          slotStatus: 'published',
+          publishedAt: now,
+        })
+        .where(eq(evergreenOccurrences.id, occurrenceId));
+
+      await db
+        .update(evergreenPosts)
+        .set({
+          recycledCount: picked.recycledCount + 1,
+          lastPublishedAt: now,
+          updatedAt: now,
+        })
+        .where(eq(evergreenPosts.id, picked.id));
+    } finally {
+      if (category.isActive) {
+        await this.armCategory(category, campaign, now);
+      } else {
+        this.logger.log(
+          `fireOccurrence(${occurrenceId}): category is inactive — not re-arming.`,
+        );
+      }
+    }
+  }
+}
+
+// ==========================================================================
+// Timezone formatting helper
+// ==========================================================================
+
+/** Format a UTC instant as wall-clock `{ date: yyyy-MM-dd, time: HH:mm }` in
+ *  `timeZone`, using the same `Intl.DateTimeFormat` trick as the rotation
+ *  util's `zoneOffsetMinutes` (kept local/simple rather than importing a
+ *  private helper). Falls back gracefully to UTC formatting if `timeZone`
+ *  is invalid. */
+function formatInTimeZone(
+  at: Date,
+  timeZone: string,
+): { date: string; time: string } {
+  let dtf: Intl.DateTimeFormat;
+  try {
+    dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone,
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  } catch {
+    dtf = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'UTC',
+      hourCycle: 'h23',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+      hour: '2-digit',
+      minute: '2-digit',
+    });
+  }
+  const parts = dtf.formatToParts(at);
+  const get = (t: string) => parts.find((p) => p.type === t)?.value ?? '00';
+  return {
+    date: `${get('year')}-${get('month')}-${get('day')}`,
+    time: `${get('hour')}:${get('minute')}`,
+  };
 }
