@@ -211,3 +211,11 @@ export class AddVariationDto {
   @Type(() => EvergreenVariationMediaDto)
   media?: EvergreenVariationMediaDto[];
 }
+
+export class GenerateVariationsDto {
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  @Max(6)
+  count?: number;
+}

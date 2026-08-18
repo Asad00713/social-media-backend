@@ -9,6 +9,8 @@ import {
   SetCategoryActiveDto,
   CreateEvergreenPostDto,
   UpdateEvergreenPostDto,
+  AddVariationDto,
+  GenerateVariationsDto,
 } from './dto/evergreen.dto';
 
 @Controller('campaigns')
@@ -113,5 +115,62 @@ export class EvergreenController {
     @Param('postId') postId: string,
   ) {
     return this.evergreen.removePost(workspaceId, id, catId, postId);
+  }
+
+  // ==========================================================================
+  // Variations (D1 — AI + manual)
+  //
+  // Same category-scoped path shape as the post CRUD routes above (Task 5's
+  // ruling: `EvergreenService`'s post-scoped methods require categoryId as a
+  // positional arg, so the route carries `:catId` rather than the flatter
+  // `.../posts/:postId/variations` shape).
+  // ==========================================================================
+
+  @Post(
+    'workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId/variations/generate',
+  )
+  @HttpCode(HttpStatus.OK)
+  async generateVariations(
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+    @Param('catId') catId: string,
+    @Param('postId') postId: string,
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: GenerateVariationsDto,
+  ) {
+    return this.evergreen.generateVariations(
+      workspaceId,
+      user.userId,
+      id,
+      catId,
+      postId,
+      dto?.count,
+    );
+  }
+
+  @Post('workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId/variations')
+  @HttpCode(HttpStatus.OK)
+  async addVariation(
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+    @Param('catId') catId: string,
+    @Param('postId') postId: string,
+    @Body() dto: AddVariationDto,
+  ) {
+    return this.evergreen.addVariation(workspaceId, id, catId, postId, dto);
+  }
+
+  @Delete(
+    'workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId/variations/:variationId',
+  )
+  @HttpCode(HttpStatus.OK)
+  async removeVariation(
+    @Param('workspaceId') workspaceId: string,
+    @Param('id') id: string,
+    @Param('catId') catId: string,
+    @Param('postId') postId: string,
+    @Param('variationId') variationId: string,
+  ) {
+    return this.evergreen.removeVariation(workspaceId, id, catId, postId, variationId);
   }
 }

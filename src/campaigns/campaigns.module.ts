@@ -9,6 +9,7 @@ import { EvergreenFireProcessor } from './processors/evergreen-fire.processor';
 import { EvergreenReconcileCron } from './evergreen-reconcile.cron';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { PostsModule } from '../posts/posts.module';
+import { AiModule } from '../ai/ai.module';
 import { QUEUES } from '../queue/queue.module';
 
 @Module({
@@ -19,6 +20,7 @@ import { QUEUES } from '../queue/queue.module';
       { name: QUEUES.EVERGREEN_ROTATION },
     ),
     PostsModule,
+    AiModule,
   ],
   controllers: [CampaignsController, EvergreenController],
   providers: [

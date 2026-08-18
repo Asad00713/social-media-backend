@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
@@ -31,12 +32,15 @@ import {
 } from './evergreen-rotation.util';
 import { CampaignPublishingService } from './campaign-publishing.service';
 import { QUEUES } from '../queue/queue.module';
+import { GroqService, type Platform } from '../ai/groq.service';
+import { AiTokenService } from '../ai/services/ai-token.service';
 import type {
   CreateEvergreenCampaignDto,
   CreateEvergreenCategoryDto,
   UpdateEvergreenCategoryDto,
   CreateEvergreenPostDto,
   UpdateEvergreenPostDto,
+  AddVariationDto,
 } from './dto/evergreen.dto';
 
 // ==========================================================================
@@ -129,6 +133,8 @@ export class EvergreenService {
     private readonly publishing: CampaignPublishingService,
     @InjectQueue(QUEUES.EVERGREEN_ROTATION)
     private readonly rotationQueue: Queue,
+    private readonly groq: GroqService,
+    private readonly aiTokens: AiTokenService,
   ) {}
 
   // ========================================================================
@@ -557,6 +563,187 @@ export class EvergreenService {
           eq(evergreenPosts.categoryId, categoryId),
         ),
       );
+
+    return this.assembleEvergreen(campaignId);
+  }
+
+  /** Scopes a pool post id to its category (ownership-guarded like
+   *  `updatePost`/`removePost` above), 404ing if it doesn't exist. Returns
+   *  the raw row so callers can read `content.caption` / `variations`
+   *  before deciding what to write. */
+  private async loadOwnedPost(
+    categoryId: string,
+    postId: string,
+  ): Promise<EvergreenPost> {
+    const [existing] = await db
+      .select()
+      .from(evergreenPosts)
+      .where(
+        and(
+          eq(evergreenPosts.id, postId),
+          eq(evergreenPosts.categoryId, categoryId),
+        ),
+      );
+    if (!existing) {
+      throw new NotFoundException('Post not found');
+    }
+    return existing;
+  }
+
+  /**
+   * Generates `count` AI variations of a pool post's base caption via
+   * `GroqService.generateVariations`, metered through
+   * `AiTokenService.executeWithTokens` (mirrors `ai.controller.ts`'s
+   * wrapping — token-check, deduct-on-success, log-on-failure). Platform is
+   * derived from the post's category's first configured channel (same
+   * `socialMediaChannels` lookup `fireOccurrence` uses to resolve a
+   * publish-time platform), falling back to the campaign's first
+   * `platforms` entry if the category has no channels configured yet.
+   *
+   * GRACEFUL DEGRADATION: the Groq call + token metering happen BEFORE any
+   * DB write. If either throws (Groq API failure, insufficient tokens,
+   * `executeWithTokens`'s own token-check rejection), the exception
+   * propagates to the caller untouched and this method returns without
+   * touching `evergreenPosts.variations` at all — no partial write, no
+   * corrupted array. The post is only persisted once generation has fully
+   * succeeded and the new variation objects are assembled.
+   */
+  async generateVariations(
+    workspaceId: string,
+    userId: string,
+    campaignId: string,
+    categoryId: string,
+    postId: string,
+    count = 3,
+  ): Promise<EvergreenCampaignDto> {
+    await this.loadOwnedCampaign(workspaceId, campaignId);
+    await this.loadOwnedCategory(campaignId, categoryId);
+    const post = await this.loadOwnedPost(categoryId, postId);
+
+    const platform = await this.resolvePlatform(categoryId, campaignId);
+    const caption = post.content.caption;
+
+    const { result: variationCaptions } = await this.aiTokens.executeWithTokens(
+      workspaceId,
+      userId,
+      'generate_variations',
+      platform,
+      `Variations of: ${caption.substring(0, 100)}`,
+      async () => {
+        const variations = await this.groq.generateVariations(
+          caption,
+          platform as Platform,
+          count,
+        );
+        return { result: variations, outputLength: variations.join('').length };
+      },
+    );
+
+    // Only reachable once generation fully succeeded — assemble the new
+    // variation objects and persist in one write, appended after whatever
+    // already existed.
+    const newVariations = variationCaptions.map((text) => ({
+      id: randomUUID(),
+      caption: text,
+      source: 'ai' as const,
+    }));
+
+    await db
+      .update(evergreenPosts)
+      .set({
+        variations: [...post.variations, ...newVariations],
+        updatedAt: new Date(),
+      })
+      .where(eq(evergreenPosts.id, postId));
+
+    return this.assembleEvergreen(campaignId);
+  }
+
+  /** Best-effort platform resolution for AI generation: the category's
+   *  first configured channel's platform (same `socialMediaChannels`
+   *  lookup `fireOccurrence` uses at publish time), falling back to the
+   *  campaign's first `platforms` entry, then to `'facebook'` if neither is
+   *  configured yet (a brand-new category/campaign with no channels
+   *  attached — generation should still work, just without a
+   *  platform-tuned prompt). */
+  private async resolvePlatform(
+    categoryId: string,
+    campaignId: string,
+  ): Promise<string> {
+    const [category] = await db
+      .select()
+      .from(evergreenCategories)
+      .where(eq(evergreenCategories.id, categoryId));
+    const channelIds = (category?.channelIds as string[] | null) ?? [];
+
+    if (channelIds.length > 0) {
+      const [channelRow] = await db
+        .select()
+        .from(socialMediaChannels)
+        .where(eq(socialMediaChannels.id, Number(channelIds[0])));
+      if (channelRow) {
+        return channelRow.platform;
+      }
+    }
+
+    const [campaign] = await db
+      .select()
+      .from(campaigns)
+      .where(eq(campaigns.id, campaignId));
+    const platforms = (campaign?.platforms as string[] | null) ?? [];
+    return platforms[0] ?? 'facebook';
+  }
+
+  /** Appends a manually-authored variation (`source: 'manual'`) to the
+   *  post's variations array. */
+  async addVariation(
+    workspaceId: string,
+    campaignId: string,
+    categoryId: string,
+    postId: string,
+    dto: AddVariationDto,
+  ): Promise<EvergreenCampaignDto> {
+    await this.loadOwnedCampaign(workspaceId, campaignId);
+    await this.loadOwnedCategory(campaignId, categoryId);
+    const post = await this.loadOwnedPost(categoryId, postId);
+
+    const newVariation = {
+      id: randomUUID(),
+      caption: dto.caption,
+      media: dto.media,
+      source: 'manual' as const,
+    };
+
+    await db
+      .update(evergreenPosts)
+      .set({
+        variations: [...post.variations, newVariation],
+        updatedAt: new Date(),
+      })
+      .where(eq(evergreenPosts.id, postId));
+
+    return this.assembleEvergreen(campaignId);
+  }
+
+  /** Removes one variation by id, leaving the rest untouched. */
+  async removeVariation(
+    workspaceId: string,
+    campaignId: string,
+    categoryId: string,
+    postId: string,
+    variationId: string,
+  ): Promise<EvergreenCampaignDto> {
+    await this.loadOwnedCampaign(workspaceId, campaignId);
+    await this.loadOwnedCategory(campaignId, categoryId);
+    const post = await this.loadOwnedPost(categoryId, postId);
+
+    await db
+      .update(evergreenPosts)
+      .set({
+        variations: post.variations.filter((v) => v.id !== variationId),
+        updatedAt: new Date(),
+      })
+      .where(eq(evergreenPosts.id, postId));
 
     return this.assembleEvergreen(campaignId);
   }
