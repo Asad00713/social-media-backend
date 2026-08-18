@@ -19,6 +19,7 @@ export const QUEUES = {
   DISCORD_INGEST: 'discord-ingest',
   WHATSAPP_INGEST: 'whatsapp-ingest',
   MAESTRO_BRIDGE: 'maestro-bridge',
+  EVERGREEN_ROTATION: 'evergreen-rotation',
 } as const;
 
 @Module({
@@ -72,6 +73,7 @@ export const QUEUES = {
       { name: QUEUES.DISCORD_INGEST },
       { name: QUEUES.WHATSAPP_INGEST },
       { name: QUEUES.MAESTRO_BRIDGE },
+      { name: QUEUES.EVERGREEN_ROTATION },
     ),
   ],
   providers: [RateLimiterService],

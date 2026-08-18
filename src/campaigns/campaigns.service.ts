@@ -22,6 +22,7 @@ import { socialMediaChannels } from '../drizzle/schema/channels.schema';
 import { posts } from '../drizzle/schema/posts.schema';
 import { computeSlotSchedule } from './campaign-schedule.util';
 import { CampaignPublishingService } from './campaign-publishing.service';
+import { EvergreenService, type EvergreenCampaignDto } from './evergreen.service';
 
 // ==========================================================================
 // Response DTO — mirrors the frontend `Campaign` shape byte-for-byte so the
@@ -172,7 +173,10 @@ const MAX_NEXT_RUN_SCAN_DAYS = 3660; // ~10 years
 export class CampaignsService {
   private readonly logger = new Logger(CampaignsService.name);
 
-  constructor(private readonly publishing: CampaignPublishingService) {}
+  constructor(
+    private readonly publishing: CampaignPublishingService,
+    private readonly evergreen: EvergreenService,
+  ) {}
 
   // ==========================================================================
   // Pure helpers — no DB access. Exported as instance methods so they're
@@ -596,6 +600,17 @@ export class CampaignsService {
       throw new NotFoundException('Campaign not found');
     }
 
+    // FIX (C2/M1): evergreen campaigns don't use campaignDays/
+    // campaignSlotContent at all — assembleFromRow (the bulk/drip
+    // assembler) would silently return a DTO with no categories[]/
+    // upNext[]. Delegate to EvergreenService's own assembler, which knows
+    // how to load categories + pool posts. `list()` intentionally does NOT
+    // do this per-row (perf — the list view doesn't need the full pool),
+    // only this single-campaign read does.
+    if (row.type === 'evergreen') {
+      return this.evergreen.assembleEvergreen(id) as unknown as Promise<CampaignDto>;
+    }
+
     return this.assembleFromRow(row);
   }
 
@@ -894,8 +909,19 @@ export class CampaignsService {
    * Sets the campaign to `active` with `launchedAt` once all slots are
    * processed.
    */
-  async launch(workspaceId: string, id: string): Promise<CampaignDto> {
+  async launch(
+    workspaceId: string,
+    id: string,
+  ): Promise<CampaignDto | EvergreenCampaignDto> {
     const campaign = await this.getOne(workspaceId, id); // 404 if wrong workspace
+
+    // Evergreen campaigns have a wholly different lifecycle model (category
+    // rotation arming, not day/slot materialization) — delegate to
+    // EvergreenService and return immediately so the bulk/drip logic below
+    // is byte-for-byte unchanged for type !== 'evergreen'.
+    if (campaign.type === 'evergreen') {
+      return this.evergreen.launch(workspaceId, id);
+    }
 
     // Idempotency guard: a campaign that's already active must not be
     // relaunched (double-click, retry, launch->pause->launch race) — that
@@ -1023,8 +1049,15 @@ export class CampaignsService {
    * `published`/`publishing`/`failed`/`skipped` slots are left untouched —
    * pause only pulls back work that hasn't fired yet.
    */
-  async pause(workspaceId: string, id: string): Promise<CampaignDto> {
-    await this.getOne(workspaceId, id); // 404 if wrong workspace
+  async pause(
+    workspaceId: string,
+    id: string,
+  ): Promise<CampaignDto | EvergreenCampaignDto> {
+    const campaign = await this.getOne(workspaceId, id); // 404 if wrong workspace
+
+    if (campaign.type === 'evergreen') {
+      return this.evergreen.pause(workspaceId, id);
+    }
 
     const slots = await db
       .select()
@@ -1070,8 +1103,16 @@ export class CampaignsService {
    * whose channel no longer resolves are left `pending` (same skip behaviour
    * as `launch`) rather than blocking the whole resume.
    */
-  async resume(workspaceId: string, id: string): Promise<CampaignDto> {
+  async resume(
+    workspaceId: string,
+    id: string,
+  ): Promise<CampaignDto | EvergreenCampaignDto> {
     const campaign = await this.getOne(workspaceId, id); // 404 if wrong workspace
+
+    if (campaign.type === 'evergreen') {
+      return this.evergreen.resume(workspaceId, id);
+    }
+
     const createdById = await this.loadCreatedById(id);
 
     const [days, pendingSlots] = await Promise.all([

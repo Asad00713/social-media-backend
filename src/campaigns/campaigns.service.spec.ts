@@ -500,6 +500,7 @@ describe('CampaignsService write methods (mocked db)', () => {
   function loadServiceWithFakeDb(
     fakeDb: unknown,
     publishing?: unknown,
+    evergreen?: unknown,
   ): InstanceType<typeof CampaignsService> {
     let ServiceCtor!: typeof CampaignsService;
     jest.isolateModules(() => {
@@ -507,7 +508,7 @@ describe('CampaignsService write methods (mocked db)', () => {
       // eslint-disable-next-line @typescript-eslint/no-var-requires
       ServiceCtor = require('./campaigns.service').CampaignsService;
     });
-    return new ServiceCtor(publishing as never);
+    return new ServiceCtor(publishing as never, evergreen as never);
   }
 
   afterEach(() => {
@@ -700,6 +701,64 @@ describe('CampaignsService write methods (mocked db)', () => {
     expect(channelContent['42@09:00'].time).toBe('09:00');
     expect(channelContent['42@17:00'].caption).toBe('Evening post');
     expect(channelContent['42@17:00'].time).toBe('17:00');
+  });
+
+  // FIX 1 (C2/M1): getOne must branch on type === 'evergreen' and delegate
+  // to EvergreenService.assembleEvergreen instead of unconditionally calling
+  // the bulk/drip assembleFromRow — otherwise an evergreen campaign's GET
+  // returns a bulk-shaped DTO with no categories[]/upNext[].
+  it('getOne delegates to evergreen.assembleEvergreen for an evergreen campaign', async () => {
+    const campaignRow = makeCampaignRow({ type: 'evergreen' });
+
+    const service = loadServiceWithFakeDb(
+      {
+        select: () => ({
+          from: () => ({
+            where: () => Promise.resolve([campaignRow]),
+          }),
+        }),
+      },
+      undefined,
+      {
+        assembleEvergreen: jest.fn().mockResolvedValue({
+          id: CAMPAIGN_ID,
+          categories: [{ id: 'cat-1' }],
+          upNext: [],
+        }),
+      },
+    );
+
+    const dto = await service.getOne(WORKSPACE_ID, CAMPAIGN_ID);
+
+    expect(
+      (service as any).evergreen.assembleEvergreen,
+    ).toHaveBeenCalledWith(CAMPAIGN_ID);
+    expect((dto as any).categories).toBeDefined();
+    expect((dto as any).categories).toEqual([{ id: 'cat-1' }]);
+  });
+
+  it('getOne still returns the bulk shape for a non-evergreen campaign (regression)', async () => {
+    const campaignRow = makeCampaignRow({ type: 'bulk' });
+    const selectResults = [[campaignRow], [], []];
+    let selectCall = 0;
+
+    const service = loadServiceWithFakeDb(
+      {
+        select: () => ({
+          from: () => ({
+            where: () => Promise.resolve(selectResults[selectCall++] ?? []),
+          }),
+        }),
+      },
+      undefined,
+      { assembleEvergreen: jest.fn() },
+    );
+
+    const dto = await service.getOne(WORKSPACE_ID, CAMPAIGN_ID);
+
+    expect((service as any).evergreen.assembleEvergreen).not.toHaveBeenCalled();
+    expect(dto.slotContent).toBeDefined();
+    expect((dto as any).categories).toBeUndefined();
   });
 
   it('duplicate resets status to draft on the copy even when the source is active', async () => {

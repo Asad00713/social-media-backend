@@ -503,6 +503,55 @@ Provide ${count} variations, numbered 1 through ${count}. Each should be complet
   }
 
   /**
+   * Cheap staleness check for evergreen recycled content: asks whether the
+   * caption is time-bound (mentions a specific past year, a since-passed
+   * event/promo, "this weekend", etc.) and therefore unsuitable to keep
+   * recycling as-is. Small token budget, low temperature (deterministic-ish
+   * judgment call, not creative writing). Parses defensively — any
+   * unexpected/non-JSON response is treated as "not stale" rather than
+   * thrown, so a flaky model response never wrongly flags a post (the
+   * caller additionally wraps this in try/catch for the same reason).
+   */
+  async checkFreshness(
+    caption: string,
+  ): Promise<{ isStale: boolean; reason: string | null }> {
+    const system =
+      'You check social media post captions for staleness. A caption is ' +
+      'stale if it mentions a specific past year/date, an expired ' +
+      'promotion or discount code, a one-time event that has already ' +
+      'passed, or other time-bound wording that would read as outdated if ' +
+      'republished today. Reply with ONLY a single-line JSON object: ' +
+      '{"isStale": boolean, "reason": string|null}. "reason" is a short ' +
+      'phrase (e.g. "mentions 2025") when isStale is true, otherwise null. ' +
+      'No markdown, no code fences, no extra text.';
+    const user = `Caption:\n"""${caption.slice(0, 500)}"""`;
+
+    const raw = await this.generateCompletion(system, user, {
+      temperature: 0.2,
+      maxTokens: 100,
+    });
+
+    try {
+      const cleaned = raw
+        .trim()
+        .replace(/^```(?:json)?/i, '')
+        .replace(/```$/, '')
+        .trim();
+      const parsed = JSON.parse(cleaned) as {
+        isStale?: unknown;
+        reason?: unknown;
+      };
+      const isStale = parsed.isStale === true;
+      const reason =
+        isStale && typeof parsed.reason === 'string' ? parsed.reason : null;
+      return { isStale, reason };
+    } catch (error) {
+      this.logger.warn(`checkFreshness: failed to parse Groq response: ${error}`);
+      return { isStale: false, reason: null };
+    }
+  }
+
+  /**
    * Analyze a post for improvements
    */
   async analyzePost(
