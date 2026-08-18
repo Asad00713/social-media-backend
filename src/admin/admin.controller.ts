@@ -463,8 +463,11 @@ export class AdminController {
 
   @Post('users/:userId/reactivate')
   @HttpCode(HttpStatus.OK)
-  async reactivateUser(@Param('userId') userId: string) {
-    return this.adminService.reactivateUser(userId);
+  async reactivateUser(
+    @Param('userId') userId: string,
+    @CurrentUser() admin: { userId: string },
+  ) {
+    return this.adminService.reactivateUser(userId, admin.userId);
   }
 
   // ==========================================================================
@@ -554,8 +557,14 @@ export class AdminController {
 
   @Post('workspaces/bulk/reactivate')
   @HttpCode(HttpStatus.OK)
-  async bulkReactivateWorkspaces(@Body() dto: BulkIdsDto) {
-    return this.adminService.bulkReactivateWorkspaces(dto.workspaceIds);
+  async bulkReactivateWorkspaces(
+    @Body() dto: BulkIdsDto,
+    @CurrentUser() admin: { userId: string },
+  ) {
+    return this.adminService.bulkReactivateWorkspaces(
+      dto.workspaceIds,
+      admin.userId,
+    );
   }
 
   @Post('workspaces/:workspaceId/suspend')
@@ -642,8 +651,11 @@ export class AdminController {
 
   @Post('workspaces/:workspaceId/reactivate')
   @HttpCode(HttpStatus.OK)
-  async reactivateWorkspace(@Param('workspaceId') workspaceId: string) {
-    return this.adminService.reactivateWorkspace(workspaceId);
+  async reactivateWorkspace(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() admin: { userId: string },
+  ) {
+    return this.adminService.reactivateWorkspace(workspaceId, admin.userId);
   }
 
   // ==========================================================================
