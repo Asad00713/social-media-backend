@@ -234,6 +234,11 @@ function buildFakeDb(fixture: {
             const filtered = rows.filter((r) => {
               if (wanted.id !== undefined && r.id !== wanted.id) return false;
               if (
+                wanted.workspace_id !== undefined &&
+                r.workspaceId !== wanted.workspace_id
+              )
+                return false;
+              if (
                 wanted.campaign_id !== undefined &&
                 r.campaignId !== wanted.campaign_id
               )
@@ -606,5 +611,63 @@ describe('EvergreenScoringService.checkFreshness', () => {
 
     expect(verdict).toEqual({ isStale: false, reason: null });
     expect(updates.posts).toHaveLength(0);
+  });
+
+  // FIX 2 (M2 — IDOR): checkFreshness validated the post -> category ->
+  // campaign chain but never bound campaignId to workspaceId, unlike every
+  // other evergreen mutation (which calls loadOwnedCampaign(workspaceId,
+  // campaignId) first). A caller from ANOTHER workspace who knows/guesses a
+  // campaignId/categoryId/postId triple could run (and pay for) a freshness
+  // check against content they don't own.
+  it('throws when campaignId does not belong to workspaceId (IDOR guard), and does not call Groq or write', async () => {
+    const post = makePostRow({ id: 'post-1', isStale: false, staleReason: null });
+    const { db, updates } = buildFakeDb({
+      // Campaign is owned by a DIFFERENT workspace than the caller passes.
+      campaignRows: [makeCampaignRow({ workspaceId: 'ws-other' })],
+      categoryRows: [makeCategoryRow()],
+      postRows: [post],
+    });
+    const groq = buildFakeGroq();
+    const service = loadServiceWithFakeDb(db, groq, buildFakeAiTokens());
+
+    await expect(
+      service.checkFreshness(
+        WORKSPACE_ID, // caller's workspace — does NOT own CAMPAIGN_ID
+        USER_ID,
+        CAMPAIGN_ID,
+        CATEGORY_ID,
+        'post-1',
+      ),
+    ).rejects.toThrow();
+
+    expect(groq.checkFreshness).not.toHaveBeenCalled();
+    expect(updates.posts).toHaveLength(0);
+  });
+
+  it('still works normally for a campaign the workspace owns (regression)', async () => {
+    const post = makePostRow({ id: 'post-1', isStale: false, staleReason: null });
+    const { db, postRows } = buildFakeDb({
+      campaignRows: [makeCampaignRow({ workspaceId: WORKSPACE_ID })],
+      categoryRows: [makeCategoryRow()],
+      postRows: [post],
+    });
+    const groq = buildFakeGroq({
+      checkFreshness: jest
+        .fn()
+        .mockResolvedValue({ isStale: true, reason: 'mentions 2025' }),
+    });
+    const service = loadServiceWithFakeDb(db, groq, buildFakeAiTokens());
+
+    const verdict = await service.checkFreshness(
+      WORKSPACE_ID,
+      USER_ID,
+      CAMPAIGN_ID,
+      CATEGORY_ID,
+      'post-1',
+    );
+
+    expect(verdict).toEqual({ isStale: true, reason: 'mentions 2025' });
+    const updated = postRows.find((p) => p.id === 'post-1')!;
+    expect(updated.isStale).toBe(true);
   });
 });

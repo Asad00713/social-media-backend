@@ -998,6 +998,14 @@ describe('CampaignsService lifecycle delegation to EvergreenService', () => {
       launch: jest.fn().mockResolvedValue({ id: CAMPAIGN_ID, status: 'active' }),
       pause: jest.fn(),
       resume: jest.fn(),
+      // getOne (called before the launch/pause/resume delegation below)
+      // now branches evergreen campaigns through assembleEvergreen — see
+      // FIX 1 (C2/M1).
+      assembleEvergreen: jest.fn().mockResolvedValue({
+        id: CAMPAIGN_ID,
+        type: 'evergreen',
+        status: 'draft',
+      }),
     };
     const service = loadCampaignsServiceWithFakeDb(
       db,
@@ -1018,6 +1026,11 @@ describe('CampaignsService lifecycle delegation to EvergreenService', () => {
       launch: jest.fn(),
       pause: jest.fn().mockResolvedValue({ id: CAMPAIGN_ID, status: 'paused' }),
       resume: jest.fn(),
+      assembleEvergreen: jest.fn().mockResolvedValue({
+        id: CAMPAIGN_ID,
+        type: 'evergreen',
+        status: 'active',
+      }),
     };
     const service = loadCampaignsServiceWithFakeDb(
       db,
@@ -1038,6 +1051,11 @@ describe('CampaignsService lifecycle delegation to EvergreenService', () => {
       launch: jest.fn(),
       pause: jest.fn(),
       resume: jest.fn().mockResolvedValue({ id: CAMPAIGN_ID, status: 'active' }),
+      assembleEvergreen: jest.fn().mockResolvedValue({
+        id: CAMPAIGN_ID,
+        type: 'evergreen',
+        status: 'paused',
+      }),
     };
     const service = loadCampaignsServiceWithFakeDb(
       db,

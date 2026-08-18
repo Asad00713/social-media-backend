@@ -940,6 +940,30 @@ export class EvergreenService {
     const now = new Date();
 
     try {
+      // Idempotency guard (m1): a BullMQ retry (attempts:3) re-runs this
+      // whole method from scratch. If a PRIOR attempt already got as far as
+      // `materializeAndEnqueue` (postsRowId written) but threw before the
+      // status-flip update below landed, re-materializing here would insert
+      // a SECOND orphan `posts` row for the same occurrence. postsRowId
+      // being set is proof the publish was already created, so treat this
+      // as already-fired: skip straight to making the occurrence row
+      // consistent (published) and fall through to the `finally` re-arm —
+      // never call materializeAndEnqueue a second time for one occurrence.
+      if (occurrence.postsRowId) {
+        this.logger.warn(
+          `fireOccurrence(${occurrenceId}): postsRowId already set (${occurrence.postsRowId}) — ` +
+            'treating as already-fired (retry after a post-materialize crash), not re-materializing.',
+        );
+        await db
+          .update(evergreenOccurrences)
+          .set({
+            slotStatus: 'published',
+            publishedAt: occurrence.publishedAt ?? now,
+          })
+          .where(eq(evergreenOccurrences.id, occurrenceId));
+        return;
+      }
+
       const postRows = await db
         .select()
         .from(evergreenPosts)

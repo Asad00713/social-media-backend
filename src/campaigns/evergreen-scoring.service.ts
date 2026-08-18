@@ -1,6 +1,6 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { Cron } from '@nestjs/schedule';
-import { eq, inArray } from 'drizzle-orm';
+import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../drizzle/db';
 import { campaigns } from '../drizzle/schema/campaigns.schema';
 import {
@@ -235,6 +235,27 @@ export class EvergreenScoringService {
     return existing;
   }
 
+  /** Scopes a campaign id to its workspace, 404ing otherwise. Mirrors
+   *  `EvergreenService.loadOwnedCampaign` — every other evergreen mutation
+   *  binds `campaignId` to `workspaceId` this way before touching
+   *  category/post rows; `checkFreshness` must too, since it accepts
+   *  `campaignId` directly from the route and otherwise never verifies it
+   *  belongs to the caller's workspace (IDOR). */
+  private async loadOwnedCampaign(
+    workspaceId: string,
+    campaignId: string,
+  ): Promise<void> {
+    const [row] = await db
+      .select()
+      .from(campaigns)
+      .where(
+        and(eq(campaigns.id, campaignId), eq(campaigns.workspaceId, workspaceId)),
+      );
+    if (!row) {
+      throw new NotFoundException('Campaign not found');
+    }
+  }
+
   /**
    * Runs a cheap Groq staleness check against a pool post's base caption
    * and writes the verdict onto `isStale`/`staleReason`.
@@ -253,6 +274,11 @@ export class EvergreenScoringService {
     categoryId: string,
     postId: string,
   ): Promise<{ isStale: boolean; reason: string | null }> {
+    // IDOR guard (M2): bind campaignId to workspaceId BEFORE touching
+    // anything else, and before the graceful-degrade try/catch below —
+    // an unowned campaign must 404, not silently no-op.
+    await this.loadOwnedCampaign(workspaceId, campaignId);
+
     const post = await this.loadOwnedPost(categoryId, postId);
     if (!post || post.campaignId !== campaignId) {
       return { isStale: false, reason: null };

@@ -600,6 +600,17 @@ export class CampaignsService {
       throw new NotFoundException('Campaign not found');
     }
 
+    // FIX (C2/M1): evergreen campaigns don't use campaignDays/
+    // campaignSlotContent at all — assembleFromRow (the bulk/drip
+    // assembler) would silently return a DTO with no categories[]/
+    // upNext[]. Delegate to EvergreenService's own assembler, which knows
+    // how to load categories + pool posts. `list()` intentionally does NOT
+    // do this per-row (perf — the list view doesn't need the full pool),
+    // only this single-campaign read does.
+    if (row.type === 'evergreen') {
+      return this.evergreen.assembleEvergreen(id) as unknown as Promise<CampaignDto>;
+    }
+
     return this.assembleFromRow(row);
   }
 

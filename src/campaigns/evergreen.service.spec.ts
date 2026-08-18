@@ -1068,4 +1068,50 @@ describe('EvergreenService.fireOccurrence', () => {
 
     expect(queue.add).not.toHaveBeenCalled();
   });
+
+  // FIX 3 (m1 — orphan posts row on BullMQ retry): if a prior attempt threw
+  // AFTER materializeAndEnqueue succeeded but BEFORE the status-flip write
+  // (postsRowId/jobId/slotStatus), the occurrence row is left with
+  // postsRowId already set but slotStatus still nominally 'scheduled'. A
+  // BullMQ retry (attempts:3) re-running fireOccurrence must NOT
+  // re-materialize — that would insert a SECOND orphan `posts` row — it
+  // should treat the occurrence as already-fired and just re-arm the next
+  // fire (self-heal stays intact).
+  it('when the occurrence already has postsRowId set (retry after a post-materialize crash): does NOT call materializeAndEnqueue again, but still arms the next fire', async () => {
+    const category = makeCategoryRow({
+      schedule: { weekdays: [1, 3, 5], times: ['09:00'] },
+    });
+    const campaign = makeCampaignRow();
+    const post = makePostRow();
+    // Simulates the crash window: materializeAndEnqueue already ran and
+    // wrote postsRowId/jobId on a prior attempt, but slotStatus never got
+    // flipped off 'scheduled' (the write that would have flipped it is what
+    // threw / never ran).
+    const occurrence = makeOccurrenceRow({
+      postsRowId: 'already-materialized-post-1',
+      jobId: 'already-materialized-job-1',
+      slotStatus: 'scheduled',
+    });
+    const { db, occurrenceRows, inserts } = buildFakeDb({
+      campaignRows: [campaign],
+      categoryRows: [category],
+      postRows: [post],
+      occurrenceRows: [occurrence],
+      channelRows: [makeChannelRow()],
+    });
+    const publishing = buildFakePublishing();
+    const queue = buildFakeQueue();
+    const service = loadServiceWithFakeDb(db, publishing, queue);
+
+    await service.fireOccurrence(OCCURRENCE_ID);
+
+    expect(publishing.materializeAndEnqueue).not.toHaveBeenCalled();
+    // Occurrence is left consistent — still pointing at the ALREADY
+    // materialized post, flipped to published rather than orphaned mid-state.
+    expect(occurrenceRows[0].postsRowId).toBe('already-materialized-post-1');
+    expect(occurrenceRows[0].slotStatus).toBe('published');
+    // Self-heal stays intact — next fire still armed.
+    expect(inserts.occurrences).toHaveLength(1);
+    expect(queue.add).toHaveBeenCalledTimes(1);
+  });
 });
