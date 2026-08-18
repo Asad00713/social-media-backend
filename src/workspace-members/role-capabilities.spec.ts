@@ -25,4 +25,17 @@ describe('roleCan', () => {
     expect(roleCan('ADMIN', 'team:manage')).toBe(true);
     expect(roleCan('ADMIN', 'billing:manage')).toBe(false);
   });
+
+  it('lets any member view the team (team:view floor is GUEST)', () => {
+    expect(roleCan('GUEST', 'team:view')).toBe(true);
+    expect(roleCan('MEMBER', 'team:view')).toBe(true);
+    expect(roleCan('ADMIN', 'team:view')).toBe(true);
+    expect(roleCan('OWNER', 'team:view')).toBe(true);
+  });
+
+  it('keeps team management ADMIN+ (a viewer cannot manage)', () => {
+    expect(roleCan('GUEST', 'team:manage')).toBe(false);
+    expect(roleCan('MEMBER', 'team:manage')).toBe(false);
+    expect(roleCan('ADMIN', 'team:manage')).toBe(true);
+  });
 });
