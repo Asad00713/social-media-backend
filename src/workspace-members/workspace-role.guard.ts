@@ -33,11 +33,18 @@ export class WorkspaceRoleGuard implements CanActivate {
     }
 
     const role = await this.roleService.getRole(workspaceId, userId);
-    if (!role || !roleCan(role, cap)) {
-      throw new ForbiddenException(
-        'You do not have permission to perform this action in this workspace',
-      );
+    if (role && roleCan(role, cap)) {
+      return true;
     }
-    return true;
+    // Platform super admins are not workspace members, so getRole returns null
+    // for them. Let them through anyway (support/admin tooling), mirroring the
+    // service-layer isPlatformSuperAdmin allowance. This lookup runs only on the
+    // failure path, keeping it off the hot path for normal members.
+    if (await this.roleService.isPlatformSuperAdmin(userId)) {
+      return true;
+    }
+    throw new ForbiddenException(
+      'You do not have permission to perform this action in this workspace',
+    );
   }
 }
