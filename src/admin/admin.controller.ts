@@ -56,6 +56,8 @@ import {
   CONNECTION_STATUSES,
   POST_STATUSES,
   type PostStatus,
+  type AuditAction,
+  type AuditTargetType,
 } from '../drizzle/schema';
 import { ChannelService } from '../channels/services/channel.service';
 import { WorkspaceMembersService } from '../workspace-members/workspace-members.service';
@@ -825,6 +827,37 @@ export class AdminController {
   @HttpCode(HttpStatus.OK)
   async getLogStats() {
     return this.adminLogsService.getStats();
+  }
+
+  // ==========================================================================
+  // Audit — super-admin action audit log. Cursor-paginated read + 24h stats.
+  // See AdminAuditService.
+  // ==========================================================================
+
+  @Get('audit')
+  @HttpCode(HttpStatus.OK)
+  async getAudit(
+    @Query('action') action?: AuditAction,
+    @Query('targetType') targetType?: AuditTargetType,
+    @Query('actorId') actorId?: string,
+    @Query('search') search?: string,
+    @Query('since') since?: string,
+    @Query('cursor') cursor?: string,
+  ) {
+    return this.adminAuditService.getAudit({
+      action,
+      targetType,
+      actorId,
+      search,
+      since,
+      cursor,
+    });
+  }
+
+  @Get('audit/stats')
+  @HttpCode(HttpStatus.OK)
+  async getAuditStats() {
+    return this.adminAuditService.getStats();
   }
 
   @Get('analytics/posts')
