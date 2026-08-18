@@ -18,6 +18,12 @@ function make(opts: {
   skip?: boolean;
   verify?: (t: string) => { sub: string; email: string };
   role?: string;
+  // Onboarding state of the looked-up user. Default: a real timestamp, i.e.
+  // ONBOARDED — so the "block unlisted" tests exercise the post-onboarding
+  // lock. Pass `null` to simulate a user still in onboarding; pass a custom
+  // resolver via `user` to simulate a failed lookup.
+  onboardingCompletedAt?: Date | string | null;
+  user?: unknown;
 }) {
   const jwtService = {
     verify: jest.fn((t: string) =>
@@ -25,10 +31,18 @@ function make(opts: {
     ),
   };
   const config = { get: jest.fn().mockReturnValue('secret') };
+  const resolvedUser =
+    'user' in opts
+      ? opts.user
+      : {
+          role: opts.role ?? 'USER',
+          onboardingCompletedAt:
+            opts.onboardingCompletedAt === undefined
+              ? new Date('2026-01-01T00:00:00Z')
+              : opts.onboardingCompletedAt,
+        };
   const usersService = {
-    findOneWithSuspension: jest
-      .fn()
-      .mockResolvedValue({ role: opts.role ?? 'USER' }),
+    findOneWithSuspension: jest.fn().mockResolvedValue(resolvedUser),
   };
   return new AllowlistGuard(
     reflector(!!opts.skip),
@@ -81,6 +95,42 @@ describe('AllowlistGuard', () => {
     ).rejects.toMatchObject({
       response: { code: 'NOT_LAUNCHED' },
     });
+  });
+
+  it('passes an unlisted user still in onboarding (onboardingCompletedAt null)', async () => {
+    process.env.ALLOWLIST_EMAILS = 'a@x.com';
+    const g = make({
+      verify: () => ({ sub: 'u1', email: 'c@z.com' }),
+      role: 'USER',
+      onboardingCompletedAt: null,
+    });
+    await expect(
+      g.canActivate(ctx({ authorization: 'Bearer t' })),
+    ).resolves.toBe(true);
+  });
+
+  it('blocks an unlisted user once onboarding is complete', async () => {
+    process.env.ALLOWLIST_EMAILS = 'a@x.com';
+    const g = make({
+      verify: () => ({ sub: 'u1', email: 'c@z.com' }),
+      role: 'USER',
+      onboardingCompletedAt: new Date('2026-02-01T00:00:00Z'),
+    });
+    await expect(
+      g.canActivate(ctx({ authorization: 'Bearer t' })),
+    ).rejects.toMatchObject({ response: { code: 'NOT_LAUNCHED' } });
+  });
+
+  it('blocks (fail-safe) an unlisted user when the user lookup fails', async () => {
+    process.env.ALLOWLIST_EMAILS = 'a@x.com';
+    // Lookup returns nothing → onboardingCompletedAt undefined → must NOT open.
+    const g = make({
+      verify: () => ({ sub: 'u1', email: 'c@z.com' }),
+      user: undefined,
+    });
+    await expect(
+      g.canActivate(ctx({ authorization: 'Bearer t' })),
+    ).rejects.toMatchObject({ response: { code: 'NOT_LAUNCHED' } });
   });
 
   it('passes a listed user', async () => {
