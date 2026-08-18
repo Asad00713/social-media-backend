@@ -514,13 +514,15 @@ git commit -m "feat(evergreen): rotation engine — fire + per-fire re-enqueue +
 
 ---
 
-## Task 7: Lifecycle branches (launch / pause / resume) + reconcile cron
+## Task 7: Lifecycle branches (launch / pause / resume) + reconcile cron + multi-channel fan-out
 
 **Files:**
 - Modify: `src/campaigns/campaigns.service.ts` (branch `launch/pause/resume/assembleCampaign/duplicate` to `EvergreenService` when `type==='evergreen'`)
-- Modify: `src/campaigns/evergreen.service.ts` (`launch`, `pause`, `resume`, `reconcile`)
+- Modify: `src/campaigns/evergreen.service.ts` (`launch`, `pause`, `resume`, `reconcile`, **+ multi-channel fan-out in `armCategory`**)
 - Create: `src/campaigns/evergreen-reconcile.cron.ts` (one daily `@Cron` that re-arms active categories with no future scheduled occurrence)
 - Test: `src/campaigns/evergreen-lifecycle.spec.ts`
+
+**FOLDED-IN FROM TASK 6 REVIEW (multi-channel fan-out):** Task 6 shipped `armCategory` using `category.channelIds[0]` only — a category with N channels silently posts to just the first. Fix here (this is where arm/fire/reconcile design lives together): when a category's fire is due, `armCategory` must insert **one `evergreenOccurrences` row per channelId** in `category.channelIds` (each its own occurrence → own post → own BullMQ job), NOT just the first. `fireOccurrence` already fires a single occurrence's `channelId`, so it needs no change — only `armCategory` fans out, and the reconcile must re-arm ALL channels of a category, not one. Add a test: a category with 2 channelIds arms 2 occurrences (one per channel) at the same fire instant. Keep the single-channel path working. The occurrence's `postIdRef` pick is per-fire-instant (all channels of one fire may share the same picked post, or re-pick per channel — pick shared-per-instant for simplicity + document it).
 
 **Interfaces:**
 - Consumes: Task 6 `armCategory`; `cancelSlotJob`.
