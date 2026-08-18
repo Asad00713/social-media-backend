@@ -29,11 +29,15 @@ describe('WorkspaceMembersService.inviteMember email', () => {
     };
 
     const usersService: any = {};
+    const roleService: any = {
+      isPlatformSuperAdmin: jest.fn().mockResolvedValue(false),
+    };
     const service = new WorkspaceMembersService(
       db,
       usageService,
       emailService,
       usersService,
+      roleService,
     );
     await service.inviteMember(
       'ws1',
@@ -66,6 +70,7 @@ describe('WorkspaceMembersService.previewInvitation', () => {
       {} as any,
       {} as any,
       {} as any,
+      { isPlatformSuperAdmin: jest.fn().mockResolvedValue(false) } as any,
     );
     const res = await service.previewInvitation('tok123');
     expect(res).toEqual({
@@ -122,6 +127,7 @@ describe('WorkspaceMembersService.acceptInvitation auto-verify + onboarding', ()
       usageService,
       emailService,
       usersService,
+      { isPlatformSuperAdmin: jest.fn().mockResolvedValue(false) } as any,
     );
     await service.acceptInvitation('tok', 'user-1');
 
@@ -157,6 +163,7 @@ describe('WorkspaceMembersService.batchInvite seat gate', () => {
       usageService,
       emailService,
       usersService,
+      { isPlatformSuperAdmin: jest.fn().mockResolvedValue(false) } as any,
     );
     // reserved = membersCount(1) + pending(0) = 1; limit 2 → 1 seat left; batch of 2 → exceeds
     await expect(

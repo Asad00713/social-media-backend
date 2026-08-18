@@ -15,6 +15,8 @@ import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { UpdateMemberDto } from './dto/update-member.dto';
 import { BatchInviteDto } from './dto/batch-invite.dto';
+import { WorkspaceRoleGuard } from './workspace-role.guard';
+import { RequireCapability } from './require-capability.decorator';
 
 @Controller('workspace-members')
 @UseGuards(JwtAuthGuard)
@@ -22,6 +24,8 @@ export class WorkspaceMembersController {
   constructor(private readonly membersService: WorkspaceMembersService) {}
 
   @Post(':workspaceId/invitations')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('team:manage')
   inviteMember(
     @Param('workspaceId') workspaceId: string,
     @Body() inviteMemberDto: InviteMemberDto,
@@ -36,6 +40,8 @@ export class WorkspaceMembersController {
 
   // Batch invite (seat-gated up front)
   @Post(':workspaceId/invitations/batch')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('team:manage')
   batchInvite(
     @Param('workspaceId') workspaceId: string,
     @Body() dto: BatchInviteDto,
@@ -46,6 +52,8 @@ export class WorkspaceMembersController {
 
   // Get pending invitations for a workspace
   @Get(':workspaceId/invitations')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('team:manage')
   getPendingInvitations(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
@@ -55,6 +63,8 @@ export class WorkspaceMembersController {
 
   // Cancel invitation
   @Delete(':workspaceId/invitations/:invitationId')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('team:manage')
   cancelInvitation(
     @Param('workspaceId') workspaceId: string,
     @Param('invitationId') invitationId: string,
@@ -95,6 +105,8 @@ export class WorkspaceMembersController {
 
   // Get all members
   @Get(':workspaceId/members')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('team:view')
   getMembers(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
@@ -104,6 +116,8 @@ export class WorkspaceMembersController {
 
   // Update member role
   @Patch(':workspaceId/members/:memberId')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('team:manage')
   updateMemberRole(
     @Param('workspaceId') workspaceId: string,
     @Param('memberId') memberId: string,
@@ -119,6 +133,9 @@ export class WorkspaceMembersController {
   }
 
   // Remove member
+  // No @RequireCapability here: a member/guest must be able to remove THEIR OWN
+  // row (leave the workspace), which a team:manage gate would block. The
+  // service's isSelf || owner || admin || super-admin check is the real policy.
   @Delete(':workspaceId/members/:memberId')
   removeMember(
     @Param('workspaceId') workspaceId: string,

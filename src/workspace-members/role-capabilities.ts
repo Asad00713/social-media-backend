@@ -2,6 +2,7 @@ export type WorkspaceRole = 'OWNER' | 'ADMIN' | 'MEMBER' | 'GUEST';
 export type Capability =
   | 'billing:manage'
   | 'workspace:delete'
+  | 'team:view'
   | 'team:manage'
   | 'channels:manage'
   | 'posts:publish'
@@ -20,6 +21,7 @@ export const ROLE_RANK: Record<WorkspaceRole, number> = {
 export const CAPABILITY_MIN_ROLE: Record<Capability, WorkspaceRole> = {
   'billing:manage': 'OWNER',
   'workspace:delete': 'OWNER',
+  'team:view': 'GUEST',
   'team:manage': 'ADMIN',
   'channels:manage': 'MEMBER',
   'posts:publish': 'MEMBER',

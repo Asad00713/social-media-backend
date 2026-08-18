@@ -18,6 +18,7 @@ import { MemberRole } from './dto/add-member.dto';
 import { UsageService } from 'src/billing/services/usage.service';
 import { EmailService } from 'src/email/email.service';
 import { UsersService } from 'src/users/users.service';
+import { WorkspaceRoleService } from './workspace-role.service';
 
 @Injectable()
 export class WorkspaceMembersService {
@@ -26,6 +27,7 @@ export class WorkspaceMembersService {
     private usageService: UsageService,
     private emailService: EmailService,
     private usersService: UsersService,
+    private roleService: WorkspaceRoleService,
   ) {}
 
   // ==================== INVITATION FLOW ====================
@@ -742,11 +744,6 @@ export class WorkspaceMembersService {
    * demands before any of this is reachable.
    */
   private async isPlatformSuperAdmin(userId: string): Promise<boolean> {
-    const user = await this.db.query.users.findFirst({
-      where: eq(users.id, userId),
-      columns: { role: true },
-    });
-
-    return user?.role === 'SUPER_ADMIN';
+    return this.roleService.isPlatformSuperAdmin(userId);
   }
 }
