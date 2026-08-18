@@ -1,4 +1,9 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
@@ -10,6 +15,7 @@ import {
   type CampaignScheduleEvergreenJson,
 } from '../drizzle/schema/campaigns.schema';
 import { socialMediaChannels } from '../drizzle/schema/channels.schema';
+import { posts } from '../drizzle/schema/posts.schema';
 import {
   evergreenCategories,
   evergreenOccurrences,
@@ -573,12 +579,17 @@ export class EvergreenService {
   // ========================================================================
 
   /**
-   * Computes the category's next fire instant and arms it: inserts a
-   * `scheduled` `evergreenOccurrences` row (picking the post to fire via
-   * `pickNextPost`, and a channel from the category's `channelIds`) and
-   * enqueues a delayed `evergreen-rotation` job `{ occurrenceId }` with a
-   * deterministic `jobId = evg-<occurrenceId>`. Does nothing (just logs) when
-   * the category has no weekdays/times configured (no next fire) or has no
+   * Computes the category's next fire instant and arms it: inserts ONE
+   * `scheduled` `evergreenOccurrences` row PER `channelId` in the category's
+   * `channelIds` (each its own occurrence → own post → own BullMQ job), all
+   * at the SAME fire instant. The post to fire is picked ONCE via
+   * `pickNextPost` and shared across every channel's occurrence for this
+   * fire instant (rather than re-picked per channel) — simpler, and keeps
+   * "what's firing right now" a single coherent answer across a category's
+   * channels rather than a per-channel roulette. Each occurrence gets its
+   * own deterministic `jobId = evg-<occurrenceId>`, so multiple channels
+   * never collide on one BullMQ job id. Does nothing (just logs) when the
+   * category has no weekdays/times configured (no next fire) or has no
    * channel/eligible post to arm against — the chain simply stays dormant
    * until the category is edited into a fireable state.
    */
@@ -586,6 +597,7 @@ export class EvergreenService {
     category: EvergreenCategory,
     campaign: Campaign,
     now: Date,
+    excludeOccurrenceId?: string,
   ): Promise<void> {
     const schedule = campaign.schedule as CampaignScheduleEvergreenJson;
 
@@ -603,8 +615,7 @@ export class EvergreenService {
     }
 
     const channelIds = (category.channelIds as string[] | null) ?? [];
-    const channelId = channelIds[0];
-    if (!channelId) {
+    if (channelIds.length === 0) {
       this.logger.warn(
         `armCategory(${category.id}): no channelIds configured — not arming.`,
       );
@@ -624,37 +635,78 @@ export class EvergreenService {
       return;
     }
 
-    const [occurrence] = await db
-      .insert(evergreenOccurrences)
-      .values({
-        campaignId: category.campaignId,
-        categoryId: category.id,
-        postIdRef: picked.id,
-        variationId: null,
-        channelId,
-        scheduledAt: nextFire,
-        slotStatus: 'scheduled',
-      })
-      .returning();
-
-    const jobId = `evg-${occurrence.id}`;
-    const delay = Math.max(0, nextFire.getTime() - now.getTime());
-
-    await this.rotationQueue.add(
-      'evergreen-fire',
-      { occurrenceId: occurrence.id },
-      {
-        delay,
-        jobId,
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5000 },
-      },
+    // Idempotency guard: skip any channel that already has a future
+    // `scheduled` occurrence. Without this, calling `armCategory` again on a
+    // category that's only PARTIALLY missing coverage (e.g. `reconcile`
+    // finds channel B uncovered but channel A is still healthy) would insert
+    // a SECOND live occurrence for channel A — a genuine duplicate/double-fire,
+    // since each occurrence gets a fresh UUID and thus a distinct
+    // deterministic jobId (the "deterministic jobId prevents double-fire"
+    // guarantee only holds per-occurrence, not across re-arms). Filtering
+    // here makes `armCategory` safe to call repeatedly against a category
+    // that's already fully or partially armed — by `resume` after a
+    // no-op-should-be pause, or by `reconcile`'s belt-and-suspenders sweep.
+    // `excludeOccurrenceId` (set only by `fireOccurrence`'s re-arm-in-finally
+    // call) excludes the occurrence currently being fired from this check —
+    // it's still nominally `scheduled` in the DB if the fire threw before
+    // reaching its own status-flip write, but it must NOT count as live
+    // coverage for its own channel or the chain dies on the first failure.
+    const existingOccurrences = await db
+      .select()
+      .from(evergreenOccurrences)
+      .where(eq(evergreenOccurrences.categoryId, category.id));
+    const coveredChannels = new Set(
+      existingOccurrences
+        .filter(
+          (o) =>
+            o.id !== excludeOccurrenceId &&
+            o.slotStatus === 'scheduled' &&
+            o.scheduledAt.getTime() >= now.getTime(),
+        )
+        .map((o) => o.channelId),
     );
+    const channelsToArm = channelIds.filter((c) => !coveredChannels.has(c));
 
-    await db
-      .update(evergreenOccurrences)
-      .set({ jobId })
-      .where(eq(evergreenOccurrences.id, occurrence.id));
+    if (channelsToArm.length === 0) {
+      this.logger.log(
+        `armCategory(${category.id}): every channel already has a future scheduled occurrence — nothing to arm.`,
+      );
+      return;
+    }
+
+    for (const channelId of channelsToArm) {
+      const [occurrence] = await db
+        .insert(evergreenOccurrences)
+        .values({
+          campaignId: category.campaignId,
+          categoryId: category.id,
+          postIdRef: picked.id,
+          variationId: null,
+          channelId,
+          scheduledAt: nextFire,
+          slotStatus: 'scheduled',
+        })
+        .returning();
+
+      const jobId = `evg-${occurrence.id}`;
+      const delay = Math.max(0, nextFire.getTime() - now.getTime());
+
+      await this.rotationQueue.add(
+        'evergreen-fire',
+        { occurrenceId: occurrence.id },
+        {
+          delay,
+          jobId,
+          attempts: 3,
+          backoff: { type: 'exponential', delay: 5000 },
+        },
+      );
+
+      await db
+        .update(evergreenOccurrences)
+        .set({ jobId })
+        .where(eq(evergreenOccurrences.id, occurrence.id));
+    }
   }
 
   /**
@@ -781,11 +833,224 @@ export class EvergreenService {
         .where(eq(evergreenPosts.id, picked.id));
     } finally {
       if (category.isActive) {
-        await this.armCategory(category, campaign, now);
+        // Exclude this occurrence from armCategory's own-channel coverage
+        // check — on the success paths above its slotStatus already flipped
+        // away from 'scheduled' (published/skipped) so this is only load-
+        // bearing on the exception path, where the status-flip write never
+        // ran and the row is still nominally 'scheduled'.
+        await this.armCategory(category, campaign, now, occurrenceId);
       } else {
         this.logger.log(
           `fireOccurrence(${occurrenceId}): category is inactive — not re-arming.`,
         );
+      }
+    }
+  }
+
+  // ========================================================================
+  // Lifecycle — launch / pause / resume / reconcile
+  //
+  // Delegated into from `CampaignsService` when `campaign.type ===
+  // 'evergreen'` (one-directional dependency: THIS service never imports or
+  // injects `CampaignsService`, so there's no circular-dep risk — see
+  // task-7-brief's CIRCULAR-DEP ruling).
+  // ========================================================================
+
+  /** True when at least one pool post under `categoryId` is eligible to fire
+   *  right now against `category`. Used by `launch`'s preflight (does ANY
+   *  active category have publishable content) without needing to actually
+   *  arm anything yet. */
+  private async categoryHasEligiblePost(
+    category: EvergreenCategory,
+    now: Date,
+  ): Promise<boolean> {
+    const postRows = await db
+      .select()
+      .from(evergreenPosts)
+      .where(eq(evergreenPosts.categoryId, category.id));
+    return pickNextPost(postRows, category, now) !== null;
+  }
+
+  /**
+   * Validates the campaign has at least one active category with at least
+   * one eligible pool post (mirrors `CampaignsService.launch`'s preflight —
+   * throws a clear `BadRequestException` rather than silently launching an
+   * empty campaign), arms (fan-out) every active category, then flips the
+   * campaign to `active` with `launchedAt` set. A category that individually
+   * has zero eligible posts is simply skipped by `armCategory` (it no-ops
+   * and logs) — the launch as a whole still succeeds as long as AT LEAST ONE
+   * active category could arm.
+   */
+  async launch(workspaceId: string, id: string): Promise<EvergreenCampaignDto> {
+    const campaign = await this.loadOwnedCampaign(workspaceId, id);
+
+    const categoryRows = await db
+      .select()
+      .from(evergreenCategories)
+      .where(eq(evergreenCategories.campaignId, id));
+
+    const activeCategories = categoryRows.filter((c) => c.isActive);
+    const now = new Date();
+
+    const eligibleFlags = await Promise.all(
+      activeCategories.map((c) => this.categoryHasEligiblePost(c, now)),
+    );
+    const hasAnyEligible = eligibleFlags.some(Boolean);
+
+    if (activeCategories.length === 0 || !hasAnyEligible) {
+      throw new BadRequestException(
+        'This campaign has no publishable content. Add at least one active category with an eligible post before launching.',
+      );
+    }
+
+    for (const category of activeCategories) {
+      await this.armCategory(category, campaign, now);
+    }
+
+    await db
+      .update(campaigns)
+      .set({ status: 'active', launchedAt: now, updatedAt: now })
+      .where(eq(campaigns.id, id));
+
+    return this.assembleEvergreen(id);
+  }
+
+  /**
+   * Pulls back every future `scheduled` occurrence: cancels its enqueued
+   * BullMQ job and deletes its not-yet-published `posts` row (guarded on
+   * `posts.status = 'scheduled'`, same race-safety pattern as
+   * `CampaignsService.cancelAndClearSlotPost` — a post that's already
+   * flipped to `publishing` is left alone rather than yanked mid-flight),
+   * then removes the occurrence row itself so `reconcile`/`resume` see a
+   * clean slate to re-arm from. Already-`published`/`skipped` occurrences
+   * are left untouched — pause only pulls back work that hasn't fired yet.
+   * The pool + categories themselves are untouched; only in-flight
+   * scheduling state is torn down.
+   */
+  async pause(workspaceId: string, id: string): Promise<EvergreenCampaignDto> {
+    await this.loadOwnedCampaign(workspaceId, id);
+
+    const occurrenceRows = await db
+      .select()
+      .from(evergreenOccurrences)
+      .where(eq(evergreenOccurrences.campaignId, id));
+
+    const now = Date.now();
+    const futureScheduled = occurrenceRows.filter(
+      (o) => o.slotStatus === 'scheduled' && o.scheduledAt.getTime() >= now,
+    );
+
+    for (const occurrence of futureScheduled) {
+      if (occurrence.jobId) {
+        await this.publishing.cancelSlotJob(occurrence.jobId);
+      }
+      if (occurrence.postsRowId) {
+        await db
+          .delete(posts)
+          .where(
+            and(
+              eq(posts.id, occurrence.postsRowId),
+              eq(posts.status, 'scheduled'),
+            ),
+          );
+      }
+      await db
+        .delete(evergreenOccurrences)
+        .where(eq(evergreenOccurrences.id, occurrence.id));
+    }
+
+    await db
+      .update(campaigns)
+      .set({ status: 'paused', updatedAt: new Date() })
+      .where(eq(campaigns.id, id));
+
+    return this.assembleEvergreen(id);
+  }
+
+  /**
+   * Re-arms (fan-out) every active category and flips the campaign back to
+   * `active`. Mirrors `launch` minus the preflight validation — a campaign
+   * that was launched once already proved it has publishable content, and a
+   * category with zero eligible posts today simply arms nothing (same
+   * graceful no-op `armCategory` already applies elsewhere) rather than
+   * blocking the resume.
+   */
+  async resume(workspaceId: string, id: string): Promise<EvergreenCampaignDto> {
+    const campaign = await this.loadOwnedCampaign(workspaceId, id);
+
+    const categoryRows = await db
+      .select()
+      .from(evergreenCategories)
+      .where(eq(evergreenCategories.campaignId, id));
+
+    const now = new Date();
+    for (const category of categoryRows.filter((c) => c.isActive)) {
+      await this.armCategory(category, campaign, now);
+    }
+
+    await db
+      .update(campaigns)
+      .set({ status: 'active', updatedAt: now })
+      .where(eq(campaigns.id, id));
+
+    return this.assembleEvergreen(id);
+  }
+
+  /**
+   * Belt-and-suspenders sweep against a dead rotation chain: for every
+   * ACTIVE evergreen campaign's ACTIVE category, checks each configured
+   * channel individually — if that channel has no future `scheduled`
+   * occurrence, re-arms the category (fan-out inserts one occurrence PER
+   * channel, so a channel that's already covered doesn't need re-arming;
+   * only the campaign-wide gap matters). Idempotent: `armCategory`'s
+   * deterministic `jobId = evg-<occurrenceId>` means even if this runs
+   * against a chain that's actually still healthy, no double-fire can occur
+   * — BullMQ rejects/no-ops a duplicate job id, and each occurrence row is
+   * freshly inserted so there's no update collision either. Intended to run
+   * on a daily cron (`EvergreenReconcileCron`); safe to call ad hoc too.
+   */
+  async reconcile(): Promise<void> {
+    const activeCampaigns = (
+      await db.select().from(campaigns)
+    ).filter((c) => c.type === 'evergreen' && c.status === 'active');
+
+    const now = new Date();
+
+    for (const campaign of activeCampaigns) {
+      const categoryRows = await db
+        .select()
+        .from(evergreenCategories)
+        .where(eq(evergreenCategories.campaignId, campaign.id));
+
+      for (const category of categoryRows.filter((c) => c.isActive)) {
+        const channelIds = (category.channelIds as string[] | null) ?? [];
+        if (channelIds.length === 0) continue;
+
+        const occurrenceRows = await db
+          .select()
+          .from(evergreenOccurrences)
+          .where(eq(evergreenOccurrences.categoryId, category.id));
+
+        const coveredChannels = new Set(
+          occurrenceRows
+            .filter(
+              (o) =>
+                o.slotStatus === 'scheduled' &&
+                o.scheduledAt.getTime() >= now.getTime(),
+            )
+            .map((o) => o.channelId),
+        );
+
+        const missingAChannel = channelIds.some(
+          (channelId) => !coveredChannels.has(channelId),
+        );
+
+        if (missingAChannel) {
+          this.logger.log(
+            `reconcile(): category ${category.id} has a channel with no future scheduled occurrence — re-arming.`,
+          );
+          await this.armCategory(category, campaign, now);
+        }
       }
     }
   }

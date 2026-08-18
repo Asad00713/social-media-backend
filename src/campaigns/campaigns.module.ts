@@ -6,6 +6,7 @@ import { CampaignsService } from './campaigns.service';
 import { EvergreenService } from './evergreen.service';
 import { CampaignPublishingService } from './campaign-publishing.service';
 import { EvergreenFireProcessor } from './processors/evergreen-fire.processor';
+import { EvergreenReconcileCron } from './evergreen-reconcile.cron';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { PostsModule } from '../posts/posts.module';
 import { QUEUES } from '../queue/queue.module';
@@ -25,6 +26,7 @@ import { QUEUES } from '../queue/queue.module';
     CampaignPublishingService,
     EvergreenService,
     EvergreenFireProcessor,
+    EvergreenReconcileCron,
   ],
   exports: [CampaignsService],
 })
