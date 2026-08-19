@@ -307,9 +307,10 @@ export class GroqService {
   /**
    * Parse a numbered list ("1. ...", "2) ...") into up to `max` trimmed
    * entries. Continuation lines (no leading number) are appended to the
-   * current entry so multi-line captions survive.
+   * current entry so multi-line captions survive. Public so orchestrators
+   * that route through AiTextService (Gemini-primary) can reuse the parsing.
    */
-  private parseNumberedList(raw: string, max: number): string[] {
+  parseNumberedList(raw: string, max: number): string[] {
     const entries: string[] = [];
     let current = '';
 

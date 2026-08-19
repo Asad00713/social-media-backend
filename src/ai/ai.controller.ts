@@ -440,7 +440,8 @@ export class AiController {
 
   /**
    * Generate 1–4 distinct captions from a single idea (composer AI assist).
-   * Billed as one unit regardless of count, mirroring per-channel.
+   * Routed through ComposerAiService → AiTextService (Gemini primary, Groq
+   * fallback). Billed as one unit regardless of count, mirroring per-channel.
    */
   @Post('workspaces/:workspaceId/generate/caption-variants')
   @HttpCode(HttpStatus.OK)
@@ -449,29 +450,16 @@ export class AiController {
     @CurrentUser() user: { userId: string },
     @Body() dto: GenerateCaptionVariantsDto,
   ) {
-    const count = dto.count ?? 1;
-
-    const { result, usage } = await this.aiTokenService.executeWithTokens(
+    return this.composerAiService.generateCaptionVariants(
       workspaceId,
       user.userId,
-      'generate_caption_variants',
-      dto.platform,
-      `${count} caption(s) for: ${dto.description.substring(0, 100)}`,
-      async () => {
-        const variants = await this.groqService.generateCaptionVariants({
-          description: dto.description,
-          platform: dto.platform,
-          tone: dto.tone,
-          count,
-        });
-        return {
-          result: variants,
-          outputLength: variants.join(' ').length,
-        };
+      {
+        description: dto.description,
+        platform: dto.platform,
+        tone: dto.tone,
+        count: dto.count ?? 1,
       },
     );
-
-    return { variants: result, usage };
   }
 
   /**
