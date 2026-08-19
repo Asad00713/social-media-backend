@@ -160,6 +160,19 @@ export class GroqService {
   }
 
   /**
+   * Thin public passthrough onto the private raw completion runner, for
+   * callers (e.g. AiTextService) that need a raw Groq completion as a
+   * fallback rather than one of the typed prompt-building methods below.
+   */
+  async completeRaw(
+    systemPrompt: string,
+    userPrompt: string,
+    opts?: { temperature?: number; maxTokens?: number; model?: string },
+  ): Promise<string> {
+    return this.generateCompletion(systemPrompt, userPrompt, opts);
+  }
+
+  /**
    * Generate a short, descriptive title for a chat conversation from the
    * user's first message. Cheap + fast (small token budget). Returns a cleaned
    * 3-6 word Title-Case string.
