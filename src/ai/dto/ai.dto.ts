@@ -4,6 +4,10 @@ import {
   IsEnum,
   IsArray,
   IsNumber,
+  IsIn,
+  IsBoolean,
+  IsNotEmpty,
+  ArrayMinSize,
   Min,
   Max,
   MinLength,
@@ -274,6 +278,29 @@ export class AnalyzePostDto {
 }
 
 // =============================================================================
+// Generate Per-Channel DTO (composer AI assist)
+// =============================================================================
+
+export class GeneratePerChannelDto {
+  @IsString()
+  @IsNotEmpty()
+  description: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @IsIn(PLATFORMS, { each: true })
+  platforms: Platform[];
+
+  @IsIn(TONES)
+  @IsOptional()
+  tone?: Tone;
+
+  @IsBoolean()
+  @IsOptional()
+  includeHashtags?: boolean;
+}
+
+// =============================================================================
 // Response DTOs
 // =============================================================================
 
@@ -314,6 +341,16 @@ export class PostAnalysisResponseDto {
   strengths: string[];
   improvements: string[];
   suggestions: string;
+}
+
+export class PerChannelVariationResponseDto {
+  platform: Platform;
+  text: string;
+  hashtags?: string[];
+}
+
+export class GeneratedPerChannelResponseDto {
+  variations: PerChannelVariationResponseDto[];
 }
 
 export class AiStatusResponseDto {

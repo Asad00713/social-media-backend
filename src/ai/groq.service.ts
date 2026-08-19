@@ -160,6 +160,19 @@ export class GroqService {
   }
 
   /**
+   * Thin public passthrough onto the private raw completion runner, for
+   * callers (e.g. AiTextService) that need a raw Groq completion as a
+   * fallback rather than one of the typed prompt-building methods below.
+   */
+  async completeRaw(
+    systemPrompt: string,
+    userPrompt: string,
+    opts?: { temperature?: number; maxTokens?: number; model?: string },
+  ): Promise<string> {
+    return this.generateCompletion(systemPrompt, userPrompt, opts);
+  }
+
+  /**
    * Generate a short, descriptive title for a chat conversation from the
    * user's first message. Cheap + fast (small token budget). Returns a cleaned
    * 3-6 word Title-Case string.
@@ -201,13 +214,18 @@ export class GroqService {
   }
 
   /**
-   * Generate a caption for media content
+   * Build the system+user prompt pair for generateCaption without running
+   * it. Exposed so provider-agnostic callers (e.g. AiTextService via the
+   * controller layer) can reuse the exact same prompt through any provider.
    */
-  async generateCaption(options: GenerateCaptionOptions): Promise<string> {
+  buildCaptionPrompt(options: GenerateCaptionOptions): {
+    system: string;
+    user: string;
+  } {
     const { description, platform, tone, includeHashtags, includeCta } =
       options;
 
-    const userPrompt = USER_PROMPTS.generateCaption(
+    const user = USER_PROMPTS.generateCaption(
       description,
       platform,
       tone,
@@ -215,21 +233,40 @@ export class GroqService {
       includeCta,
     );
 
-    return this.generateCompletion(SYSTEM_PROMPTS.captionWriter, userPrompt);
+    return { system: SYSTEM_PROMPTS.captionWriter, user };
+  }
+
+  /**
+   * Generate a caption for media content
+   */
+  async generateCaption(options: GenerateCaptionOptions): Promise<string> {
+    const { system, user } = this.buildCaptionPrompt(options);
+
+    return this.generateCompletion(system, user);
+  }
+
+  /**
+   * Build the system+user prompt pair for generateHashtags without running
+   * it. See buildCaptionPrompt for why this exists.
+   */
+  buildHashtagsPrompt(options: GenerateHashtagsOptions): {
+    system: string;
+    user: string;
+  } {
+    const { topic, platform, count } = options;
+
+    const user = USER_PROMPTS.generateHashtags(topic, platform, count);
+
+    return { system: SYSTEM_PROMPTS.hashtagGenerator, user };
   }
 
   /**
    * Generate hashtags for a topic
    */
   async generateHashtags(options: GenerateHashtagsOptions): Promise<string[]> {
-    const { topic, platform, count } = options;
+    const { system, user } = this.buildHashtagsPrompt(options);
 
-    const userPrompt = USER_PROMPTS.generateHashtags(topic, platform, count);
-
-    const result = await this.generateCompletion(
-      SYSTEM_PROMPTS.hashtagGenerator,
-      userPrompt,
-    );
+    const result = await this.generateCompletion(system, user);
 
     // Parse hashtags from the response
     const hashtags = result
@@ -361,18 +398,31 @@ export class GroqService {
   }
 
   /**
-   * Improve an existing post
+   * Build the system+user prompt pair for improvePost without running it.
+   * See buildCaptionPrompt for why this exists.
    */
-  async improvePost(options: ImprovePostOptions): Promise<string> {
+  buildImprovePrompt(options: ImprovePostOptions): {
+    system: string;
+    user: string;
+  } {
     const { originalPost, platform, improvementFocus } = options;
 
-    const userPrompt = USER_PROMPTS.improvePost(
+    const user = USER_PROMPTS.improvePost(
       originalPost,
       platform,
       improvementFocus,
     );
 
-    return this.generateCompletion(SYSTEM_PROMPTS.contentGenerator, userPrompt);
+    return { system: SYSTEM_PROMPTS.contentGenerator, user };
+  }
+
+  /**
+   * Improve an existing post
+   */
+  async improvePost(options: ImprovePostOptions): Promise<string> {
+    const { system, user } = this.buildImprovePrompt(options);
+
+    return this.generateCompletion(system, user);
   }
 
   /**
@@ -456,6 +506,25 @@ export class GroqService {
   }
 
   /**
+   * Build the system+user prompt pair for generateVariations without
+   * running it. See buildCaptionPrompt for why this exists.
+   */
+  buildVariationsPrompt(
+    content: string,
+    platform: Platform,
+    count: number = 3,
+  ): { system: string; user: string } {
+    const user = `Create ${count} different variations of this ${platform} post. Each should convey the same message but with different wording, structure, or approach.
+
+Original post:
+${content}
+
+Provide ${count} variations, numbered 1 through ${count}. Each should be complete and ready to publish.`;
+
+    return { system: SYSTEM_PROMPTS.contentGenerator, user };
+  }
+
+  /**
    * Generate multiple variations of a post
    */
   async generateVariations(
@@ -463,20 +532,15 @@ export class GroqService {
     platform: Platform,
     count: number = 3,
   ): Promise<string[]> {
-    const prompt = `Create ${count} different variations of this ${platform} post. Each should convey the same message but with different wording, structure, or approach.
-
-Original post:
-${content}
-
-Provide ${count} variations, numbered 1 through ${count}. Each should be complete and ready to publish.`;
-
-    const result = await this.generateCompletion(
-      SYSTEM_PROMPTS.contentGenerator,
-      prompt,
-      {
-        maxTokens: 2048,
-      },
+    const { system, user } = this.buildVariationsPrompt(
+      content,
+      platform,
+      count,
     );
+
+    const result = await this.generateCompletion(system, user, {
+      maxTokens: 2048,
+    });
 
     // Parse variations
     const variations: string[] = [];

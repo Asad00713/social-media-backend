@@ -46,6 +46,29 @@ export class GeminiChatProvider extends BaseLLMProvider {
     return this.genAI !== null;
   }
 
+  /**
+   * Single-shot, non-chat completion. Throws if the provider isn't
+   * configured (no GOOGLE_AI_API_KEY) — callers should check
+   * `isAvailable()` first when they want to fall back instead of throwing.
+   */
+  async generateText(
+    systemPrompt: string,
+    userPrompt: string,
+    opts?: { temperature?: number; maxTokens?: number },
+  ): Promise<string> {
+    const genAI = this.ensureGenAI();
+    const model = genAI.getGenerativeModel({
+      model: this.defaultModel,
+      generationConfig: {
+        temperature: opts?.temperature ?? 0.7,
+        maxOutputTokens: opts?.maxTokens ?? 1024,
+      },
+      systemInstruction: systemPrompt,
+    });
+    const result = await model.generateContent(userPrompt);
+    return result.response.text();
+  }
+
   private ensureGenAI(): GoogleGenerativeAI {
     if (!this.genAI) {
       throw new Error('Google AI API is not configured');
