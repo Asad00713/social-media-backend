@@ -33,6 +33,7 @@ export const AI_OPERATION_COSTS: Record<string, number> = {
   generate_youtube_metadata: 8,
   generate_variations: 8,
   analyze_post: 8,
+  generate_per_channel: 8,
   // Tier 4 - Complex (10 tokens)
   generate_thread: 10,
   // Tier 5 - Premium (15 tokens per platform)

@@ -20,6 +20,7 @@ import {
   AI_OPERATION_COSTS,
 } from './services/ai-token.service';
 import { ElevenLabsSttService } from './services/elevenlabs-stt.service';
+import { ComposerAiService } from './composer-ai.service';
 import {
   GeneratePostDto,
   GenerateCaptionDto,
@@ -33,6 +34,7 @@ import {
   TranslateContentDto,
   GenerateVariationsDto,
   AnalyzePostDto,
+  GeneratePerChannelDto,
   PLATFORMS,
   TONES,
 } from './dto/ai.dto';
@@ -44,6 +46,7 @@ export class AiController {
     private readonly groqService: GroqService,
     private readonly aiTokenService: AiTokenService,
     private readonly sttService: ElevenLabsSttService,
+    private readonly composerAiService: ComposerAiService,
   ) {}
 
   // ==========================================================================
@@ -432,6 +435,25 @@ export class AiController {
     );
 
     return { variations: result, usage };
+  }
+
+  /**
+   * Generate one tailored caption per platform (composer AI assist).
+   * Metered as a single billable unit regardless of how many platforms
+   * are requested.
+   */
+  @Post('workspaces/:workspaceId/generate/per-channel')
+  @HttpCode(HttpStatus.OK)
+  generatePerChannel(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: GeneratePerChannelDto,
+    @CurrentUser() user: { userId: string },
+  ) {
+    return this.composerAiService.generatePerChannel(
+      workspaceId,
+      user.userId,
+      dto,
+    );
   }
 
   /**

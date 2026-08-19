@@ -7,6 +7,7 @@ import { TavilyService } from './services/tavily.service';
 import { DripContentGeneratorService } from './services/drip-content-generator.service';
 import { AiTokenService } from './services/ai-token.service';
 import { ElevenLabsSttService } from './services/elevenlabs-stt.service';
+import { ComposerAiService } from './composer-ai.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { GeminiChatProvider } from '../chatbot/llm/gemini.provider';
 
@@ -27,6 +28,7 @@ import { GeminiChatProvider } from '../chatbot/llm/gemini.provider';
     DripContentGeneratorService,
     AiTokenService,
     ElevenLabsSttService,
+    ComposerAiService,
   ],
   exports: [
     GroqService,
@@ -35,6 +37,7 @@ import { GeminiChatProvider } from '../chatbot/llm/gemini.provider';
     DripContentGeneratorService,
     AiTokenService,
     ElevenLabsSttService,
+    ComposerAiService,
   ],
 })
 export class AiModule {}
