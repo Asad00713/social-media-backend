@@ -78,8 +78,9 @@ export interface AgentResult {
 
 const MAX_ITERATIONS = 10;
 
-/** Fallback model when the primary hits rate limits. */
-const FALLBACK_MODEL = 'llama-3.3-70b-versatile';
+/** Fallback model when the primary hits rate limits.
+ *  (Groq decommissioned llama-3.3-70b-versatile — 404s.) */
+const FALLBACK_MODEL = 'openai/gpt-oss-20b';
 
 /**
  * Trim conversation history to keep token counts manageable.

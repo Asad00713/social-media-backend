@@ -49,14 +49,15 @@ export class LLMRouterService {
 
   /**
    * Get the best model for the task type.
-   * GPT-OSS-120B for tool calling & complex reasoning, Llama 3.1 8B for simple tasks.
+   * GPT-OSS-120B for tool calling & complex reasoning, GPT-OSS-20B for simple
+   * tasks. (Groq decommissioned the llama-3.x models — 404.)
    */
   getModelForTask(
     taskType: 'simple' | 'complex' | 'tool_calling' = 'complex',
   ): string {
     switch (taskType) {
       case 'simple':
-        return 'llama-3.1-8b-instant';
+        return 'openai/gpt-oss-20b';
       case 'complex':
       case 'tool_calling':
       default:

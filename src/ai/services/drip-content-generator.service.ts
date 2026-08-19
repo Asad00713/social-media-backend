@@ -98,7 +98,9 @@ const PLATFORM_CONFIG: Record<
 export class DripContentGeneratorService {
   private readonly logger = new Logger(DripContentGeneratorService.name);
   private groqClient: Groq | null = null;
-  private readonly defaultModel = 'llama-3.3-70b-versatile';
+  // Groq decommissioned llama-3.3-70b-versatile (404s). gpt-oss-120b is the
+  // current strong general model on Groq (131k ctx).
+  private readonly defaultModel = 'openai/gpt-oss-120b';
 
   constructor(
     private readonly configService: ConfigService,
@@ -272,6 +274,8 @@ IMPORTANT:
 Respond with ONLY the post content (including hashtags). No explanations or meta-text.`;
 
     try {
+      // gpt-oss is a reasoning model; without 'low' it can spend the whole
+      // budget on hidden reasoning and return empty content.
       const completion = await this.groqClient.chat.completions.create({
         model: this.defaultModel,
         messages: [
@@ -280,6 +284,9 @@ Respond with ONLY the post content (including hashtags). No explanations or meta
         ],
         temperature: 0.8,
         max_tokens: 500,
+        // reasoning_effort isn't in the SDK's typed params yet; cast the extra
+        // field only, so the create() return stays a non-streaming completion.
+        ...({ reasoning_effort: 'low' } as { reasoning_effort: 'low' }),
       });
 
       let text = completion.choices[0]?.message?.content?.trim() || '';

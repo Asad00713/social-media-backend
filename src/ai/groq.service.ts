@@ -90,7 +90,9 @@ export interface ContentIdea {
 export class GroqService {
   private readonly logger = new Logger(GroqService.name);
   private client: Groq | null = null;
-  private readonly defaultModel = 'llama-3.3-70b-versatile';
+  // Groq decommissioned llama-3.3-70b-versatile (404s). gpt-oss-120b is the
+  // current strong general model on Groq (131k ctx). Overridable per-call.
+  private readonly defaultModel = 'openai/gpt-oss-120b';
 
   constructor(private readonly configService: ConfigService) {
     const apiKey = this.configService.get<string>('GROQ_API_KEY');
@@ -134,6 +136,12 @@ export class GroqService {
     } = options || {};
 
     try {
+      // Groq's gpt-oss models are reasoning models: without reasoning_effort
+      // they spend the whole max_tokens budget on hidden reasoning and return
+      // empty content (breaking small-budget calls like a 24-token title).
+      // 'low' keeps reasoning minimal so short completions still yield real
+      // text. (Ignored by non-reasoning models.) The field isn't in the SDK's
+      // typed params yet, so extend the non-streaming param type locally.
       const completion = await this.client.chat.completions.create({
         model,
         messages: [
@@ -142,6 +150,9 @@ export class GroqService {
         ],
         temperature,
         max_tokens: maxTokens,
+        // reasoning_effort isn't in the SDK's typed params yet; cast the extra
+        // field only, so the create() return stays a non-streaming completion.
+        ...({ reasoning_effort: 'low' } as { reasoning_effort: 'low' }),
       });
 
       const content = completion.choices[0]?.message?.content;
@@ -186,7 +197,9 @@ export class GroqService {
 
     const raw = await this.generateCompletion(system, user, {
       temperature: 0.3,
-      maxTokens: 24,
+      // gpt-oss (reasoning model) needs a little headroom even at low effort;
+      // a 24-token budget returns empty. 128 is ample for a short title.
+      maxTokens: 128,
     });
 
     return raw
@@ -592,7 +605,8 @@ Provide ${count} variations, numbered 1 through ${count}. Each should be complet
 
     const raw = await this.generateCompletion(system, user, {
       temperature: 0.2,
-      maxTokens: 100,
+      // gpt-oss (reasoning model) headroom — 100 can come back empty.
+      maxTokens: 128,
     });
 
     try {
