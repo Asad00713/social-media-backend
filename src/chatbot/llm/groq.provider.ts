@@ -20,11 +20,9 @@ export class GroqChatProvider extends BaseLLMProvider {
   private activeClientIndex = 0;
 
   readonly name = 'groq';
-  readonly models = [
-    'openai/gpt-oss-120b',
-    'llama-3.3-70b-versatile',
-    'llama-3.1-8b-instant',
-  ];
+  // Groq decommissioned the llama-3.x models (404). Current Groq general
+  // models: gpt-oss-120b (strong) + gpt-oss-20b (smaller/faster).
+  readonly models = ['openai/gpt-oss-120b', 'openai/gpt-oss-20b'];
 
   private readonly defaultModel = 'openai/gpt-oss-120b';
 
