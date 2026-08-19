@@ -12,7 +12,11 @@ import {
   ParseUUIDPipe,
 } from '@nestjs/common';
 import { FeedbackService } from './feedback.service';
-import { CreateFeedbackDto, UpdateFeedbackStatusDto } from './dto';
+import {
+  CreateFeedbackDto,
+  UpdateFeedbackStatusDto,
+  QueryFeedbackDto,
+} from './dto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { AdminGuard } from 'src/auth/guards/admin.guard';
 
@@ -29,10 +33,14 @@ export class FeedbackController {
   async findAllPublic(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query() query?: QueryFeedbackDto,
   ) {
     return this.feedbackService.findAllPublic(
       page ? parseInt(page, 10) : 1,
       limit ? parseInt(limit, 10) : 10,
+      // Public surfaces show app reviews unless asked otherwise — mixing types
+      // would produce an average that describes neither.
+      query?.type ?? 'app',
     );
   }
 
@@ -40,8 +48,8 @@ export class FeedbackController {
    * Get public stats (average rating, total approved reviews)
    */
   @Get('stats/public')
-  async getPublicStats() {
-    const stats = await this.feedbackService.getStats();
+  async getPublicStats(@Query() query?: QueryFeedbackDto) {
+    const stats = await this.feedbackService.getStats(query?.type ?? 'app');
     return {
       totalReviews: stats.approved,
       averageRating: stats.averageRating,
@@ -49,6 +57,16 @@ export class FeedbackController {
   }
 
   // ==================== Authenticated User Endpoints ====================
+
+  /**
+   * The caller's own reviews, keyed by type. The widget calls this to decide
+   * whether to render at all.
+   */
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  async findMine(@Request() req) {
+    return this.feedbackService.findMine(req.user.userId);
+  }
 
   /**
    * Submit feedback (authenticated users only)
@@ -70,11 +88,14 @@ export class FeedbackController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('status') status?: 'pending' | 'approved' | 'rejected',
+    @Query() query?: QueryFeedbackDto,
   ) {
     return this.feedbackService.findAllAdmin(
       page ? parseInt(page, 10) : 1,
       limit ? parseInt(limit, 10) : 10,
       status,
+      // No default — admins see every type unless they filter.
+      query?.type,
     );
   }
 
