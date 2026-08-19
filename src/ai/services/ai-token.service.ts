@@ -28,6 +28,7 @@ export const AI_OPERATION_COSTS: Record<string, number> = {
   repurpose_content: 5,
   translate_content: 5,
   speech_to_text: 5, // Voice input transcription
+  suggest_reply: 5, // one inbox reply draft
   // Tier 3 - Advanced (8 tokens)
   generate_ideas: 8,
   generate_youtube_metadata: 8,
