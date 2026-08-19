@@ -263,6 +263,26 @@ export class GenerateVariationsDto {
   count?: number;
 }
 
+export class GenerateCaptionVariantsDto {
+  @IsString()
+  @MinLength(3)
+  @MaxLength(1000)
+  description: string;
+
+  @IsEnum(PLATFORMS)
+  platform: Platform;
+
+  @IsEnum(TONES)
+  @IsOptional()
+  tone?: Tone;
+
+  @IsNumber()
+  @IsOptional()
+  @Min(1)
+  @Max(4)
+  count?: number;
+}
+
 // =============================================================================
 // Analyze Post DTO
 // =============================================================================

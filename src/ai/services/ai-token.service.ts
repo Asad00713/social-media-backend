@@ -32,6 +32,7 @@ export const AI_OPERATION_COSTS: Record<string, number> = {
   generate_ideas: 8,
   generate_youtube_metadata: 8,
   generate_variations: 8,
+  generate_caption_variants: 8, // 1–4 captions from one idea, billed as one unit
   analyze_post: 8,
   generate_per_channel: 8,
   // Tier 4 - Complex (10 tokens)
