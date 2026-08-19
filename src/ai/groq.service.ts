@@ -26,6 +26,13 @@ export interface GenerateCaptionOptions {
   includeCta?: boolean;
 }
 
+export interface GenerateCaptionVariantsOptions {
+  description: string;
+  platform: Platform;
+  count: number;
+  tone?: Tone;
+}
+
 export interface GenerateHashtagsOptions {
   topic: string;
   platform: Platform;
@@ -256,6 +263,74 @@ export class GroqService {
     const { system, user } = this.buildCaptionPrompt(options);
 
     return this.generateCompletion(system, user);
+  }
+
+  /**
+   * Build the system+user prompt pair for generateCaptionVariants without
+   * running it. See buildCaptionPrompt for why this exists.
+   */
+  buildCaptionVariantsPrompt(options: GenerateCaptionVariantsOptions): {
+    system: string;
+    user: string;
+  } {
+    const { description, platform, count, tone } = options;
+
+    const user = USER_PROMPTS.generateCaptionVariants(
+      description,
+      platform,
+      count,
+      tone,
+    );
+
+    return { system: SYSTEM_PROMPTS.captionWriter, user };
+  }
+
+  /**
+   * Generate `count` distinct captions from a single idea/description.
+   * Unlike generateVariations (which rewrites an existing post), this starts
+   * from a prompt, so it powers the composer's "generate N options" flow.
+   */
+  async generateCaptionVariants(
+    options: GenerateCaptionVariantsOptions,
+  ): Promise<string[]> {
+    const { system, user } = this.buildCaptionVariantsPrompt(options);
+
+    // ~400 tokens of headroom per requested caption so longer platforms
+    // (LinkedIn/Instagram) don't get truncated mid-variant.
+    const result = await this.generateCompletion(system, user, {
+      maxTokens: Math.min(4096, 512 + options.count * 400),
+    });
+
+    return this.parseNumberedList(result, options.count);
+  }
+
+  /**
+   * Parse a numbered list ("1. ...", "2) ...") into up to `max` trimmed
+   * entries. Continuation lines (no leading number) are appended to the
+   * current entry so multi-line captions survive.
+   */
+  private parseNumberedList(raw: string, max: number): string[] {
+    const entries: string[] = [];
+    let current = '';
+
+    for (const line of raw.split('\n')) {
+      const numberMatch = line.match(/^\s*\d+[.)]\s*/);
+      if (numberMatch) {
+        if (current.trim()) entries.push(current.trim());
+        current = line.replace(/^\s*\d+[.)]\s*/, '');
+      } else if (line.trim() && current) {
+        current += '\n' + line.trim();
+      }
+    }
+    if (current.trim()) entries.push(current.trim());
+
+    // Fallback: model ignored the numbered format entirely — treat the whole
+    // response as a single caption rather than returning nothing.
+    if (entries.length === 0 && raw.trim()) {
+      entries.push(raw.trim());
+    }
+
+    return entries.slice(0, max);
   }
 
   /**

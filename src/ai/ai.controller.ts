@@ -33,6 +33,7 @@ import {
   GenerateBioDto,
   TranslateContentDto,
   GenerateVariationsDto,
+  GenerateCaptionVariantsDto,
   AnalyzePostDto,
   GeneratePerChannelDto,
   PLATFORMS,
@@ -435,6 +436,42 @@ export class AiController {
     );
 
     return { variations: result, usage };
+  }
+
+  /**
+   * Generate 1–4 distinct captions from a single idea (composer AI assist).
+   * Billed as one unit regardless of count, mirroring per-channel.
+   */
+  @Post('workspaces/:workspaceId/generate/caption-variants')
+  @HttpCode(HttpStatus.OK)
+  async generateCaptionVariants(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
+    @Body() dto: GenerateCaptionVariantsDto,
+  ) {
+    const count = dto.count ?? 1;
+
+    const { result, usage } = await this.aiTokenService.executeWithTokens(
+      workspaceId,
+      user.userId,
+      'generate_caption_variants',
+      dto.platform,
+      `${count} caption(s) for: ${dto.description.substring(0, 100)}`,
+      async () => {
+        const variants = await this.groqService.generateCaptionVariants({
+          description: dto.description,
+          platform: dto.platform,
+          tone: dto.tone,
+          count,
+        });
+        return {
+          result: variants,
+          outputLength: variants.join(' ').length,
+        };
+      },
+    );
+
+    return { variants: result, usage };
   }
 
   /**

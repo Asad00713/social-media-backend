@@ -119,6 +119,23 @@ ${includeCta ? 'Include a call-to-action.' : ''}
 
 Provide only the caption text, ready to use.`,
 
+  generateCaptionVariants: (
+    description: string,
+    platform: string,
+    count: number,
+    tone?: string,
+  ) => `Write ${count} distinct ${platform} caption${count > 1 ? 's' : ''} for this idea: ${description}
+
+Platform style: ${PLATFORM_STYLES[platform as keyof typeof PLATFORM_STYLES] || 'engaging'}
+${tone ? `Tone: ${tone}` : ''}
+
+Each caption must:
+- Convey the same core idea but take a genuinely different angle, hook, or structure from the others
+- Be complete and ready to publish on ${platform}
+- Not repeat wording across variants
+
+Format your response as a numbered list, one caption per number, from 1 to ${count}. Do not add any titles, labels, commentary, or blank explanations — only the numbered captions.`,
+
   generateHashtags: (
     topic: string,
     platform: string,
