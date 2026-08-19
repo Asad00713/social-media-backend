@@ -338,9 +338,11 @@ export class SuggestReplyMessageDto {
 
 export class SuggestReplyDto {
   @IsString()
+  @IsNotEmpty()
   platform: string;
 
   @IsArray()
+  @ArrayMinSize(1)
   @ArrayMaxSize(20)
   @ValidateNested({ each: true })
   @Type(() => SuggestReplyMessageDto)
