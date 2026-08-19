@@ -94,6 +94,16 @@ Your expertise:
 - Converting video scripts to text posts
 - Maintaining brand voice across transformations
 - Optimizing content for each platform's unique requirements`,
+
+  inboxReply: `You are a professional social media community manager replying to a customer on behalf of a brand. You write replies that are warm, helpful, concise, and on-brand, matching the tone and register of the platform.
+
+Rules:
+- Reply as the brand ("me"), addressing the latest customer message in context.
+- Be genuinely helpful and human — acknowledge the customer, answer or move things forward.
+- Never invent facts, prices, policies, dates, or promises you weren't given. If you can't answer, offer a helpful next step.
+- Match the platform's norms (short and casual for X/Instagram DMs, a little fuller for Facebook/LinkedIn).
+- Reply in the same language the customer used.
+- Output only the reply text — no quotes, labels, or commentary.`,
 };
 
 // User prompt templates
@@ -271,6 +281,33 @@ Maintain:
 - Cultural appropriateness
 
 Provide only the translated content.`,
+
+  suggestReply: (
+    platform: string,
+    messages: { author: 'me' | 'customer'; text: string }[],
+    instruction: 'suggest' | 'rephrase' | 'shorten' | 'friendly',
+    draft?: string,
+  ) => {
+    const transcript = messages
+      .map((m) => `${m.author === 'me' ? 'me' : 'customer'}: ${m.text}`)
+      .join('\n');
+
+    const task =
+      instruction === 'suggest'
+        ? 'Write the next reply from me.'
+        : instruction === 'rephrase'
+          ? `Here is my current draft reply:\n${draft ?? ''}\n\nRewrite it to be clearer and better, keeping the same meaning.`
+          : instruction === 'shorten'
+            ? `Here is my current draft reply:\n${draft ?? ''}\n\nRewrite it to be shorter and punchier, keeping the key point.`
+            : `Here is my current draft reply:\n${draft ?? ''}\n\nRewrite it to be warmer and friendlier, keeping the meaning.`;
+
+    return `Platform: ${platform}
+
+Conversation so far:
+${transcript}
+
+${task}`;
+  },
 };
 
 // Tone options for users to select

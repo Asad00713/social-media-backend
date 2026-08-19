@@ -8,6 +8,7 @@ import { DripContentGeneratorService } from './services/drip-content-generator.s
 import { AiTokenService } from './services/ai-token.service';
 import { ElevenLabsSttService } from './services/elevenlabs-stt.service';
 import { ComposerAiService } from './composer-ai.service';
+import { InboxAiService } from './inbox-ai.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { GeminiChatProvider } from '../chatbot/llm/gemini.provider';
 
@@ -29,6 +30,7 @@ import { GeminiChatProvider } from '../chatbot/llm/gemini.provider';
     AiTokenService,
     ElevenLabsSttService,
     ComposerAiService,
+    InboxAiService,
   ],
   exports: [
     GroqService,
@@ -38,6 +40,7 @@ import { GeminiChatProvider } from '../chatbot/llm/gemini.provider';
     AiTokenService,
     ElevenLabsSttService,
     ComposerAiService,
+    InboxAiService,
   ],
 })
 export class AiModule {}

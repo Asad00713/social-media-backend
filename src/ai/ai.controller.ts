@@ -21,6 +21,7 @@ import {
 } from './services/ai-token.service';
 import { ElevenLabsSttService } from './services/elevenlabs-stt.service';
 import { ComposerAiService } from './composer-ai.service';
+import { InboxAiService } from './inbox-ai.service';
 import {
   GeneratePostDto,
   GenerateCaptionDto,
@@ -36,6 +37,7 @@ import {
   GenerateCaptionVariantsDto,
   AnalyzePostDto,
   GeneratePerChannelDto,
+  SuggestReplyDto,
   PLATFORMS,
   TONES,
 } from './dto/ai.dto';
@@ -48,6 +50,7 @@ export class AiController {
     private readonly aiTokenService: AiTokenService,
     private readonly sttService: ElevenLabsSttService,
     private readonly composerAiService: ComposerAiService,
+    private readonly inboxAiService: InboxAiService,
   ) {}
 
   // ==========================================================================
@@ -479,6 +482,25 @@ export class AiController {
       user.userId,
       dto,
     );
+  }
+
+  /**
+   * Draft a reply for an inbox conversation (comments/DMs). Single unit,
+   * Gemini-primary via InboxAiService.
+   */
+  @Post('workspaces/:workspaceId/inbox/suggest-reply')
+  @HttpCode(HttpStatus.OK)
+  async suggestReply(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
+    @Body() dto: SuggestReplyDto,
+  ) {
+    return this.inboxAiService.suggestReply(workspaceId, user.userId, {
+      platform: dto.platform,
+      messages: dto.messages,
+      instruction: dto.instruction ?? 'suggest',
+      draft: dto.draft,
+    });
   }
 
   /**

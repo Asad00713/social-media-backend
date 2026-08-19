@@ -8,11 +8,14 @@ import {
   IsBoolean,
   IsNotEmpty,
   ArrayMinSize,
+  ArrayMaxSize,
+  ValidateNested,
   Min,
   Max,
   MinLength,
   MaxLength,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 
 // Platform and tone enums
 export const PLATFORMS = [
@@ -318,6 +321,41 @@ export class GeneratePerChannelDto {
   @IsBoolean()
   @IsOptional()
   includeHashtags?: boolean;
+}
+
+// =============================================================================
+// Suggest Reply DTO (inbox AI reply-assist)
+// =============================================================================
+
+export class SuggestReplyMessageDto {
+  @IsIn(['me', 'customer'])
+  author: 'me' | 'customer';
+
+  @IsString()
+  @MaxLength(2000)
+  text: string;
+}
+
+export class SuggestReplyDto {
+  @IsString()
+  @IsNotEmpty()
+  platform: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(20)
+  @ValidateNested({ each: true })
+  @Type(() => SuggestReplyMessageDto)
+  messages: SuggestReplyMessageDto[];
+
+  @IsOptional()
+  @IsIn(['suggest', 'rephrase', 'shorten', 'friendly'])
+  instruction?: 'suggest' | 'rephrase' | 'shorten' | 'friendly';
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(2000)
+  draft?: string;
 }
 
 // =============================================================================
