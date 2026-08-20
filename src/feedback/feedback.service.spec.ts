@@ -33,7 +33,10 @@ async function build(db: ReturnType<typeof makeDb>) {
     providers: [
       FeedbackService,
       { provide: DRIZZLE, useValue: db },
-      { provide: NotificationEmitterService, useValue: { emitToAdmins: jest.fn() } },
+      {
+        provide: NotificationEmitterService,
+        useValue: { emitToAdmins: jest.fn() },
+      },
     ],
   }).compile();
   return mod.get(FeedbackService);
@@ -85,7 +88,9 @@ describe('FeedbackService', () => {
         values: jest.fn(() => ({
           returning: jest
             .fn()
-            .mockRejectedValue(Object.assign(new Error('dup'), { code: '23505' })),
+            .mockRejectedValue(
+              Object.assign(new Error('dup'), { code: '23505' }),
+            ),
         })),
       })) as never;
       const service = await build(db);
