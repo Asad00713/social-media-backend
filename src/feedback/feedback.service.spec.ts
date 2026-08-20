@@ -55,15 +55,64 @@ async function build(db: ReturnType<typeof makeDb>) {
 
 describe('FeedbackService', () => {
   describe('create', () => {
-    it('persists the submitted type', async () => {
+    it('persists the submitted type when it matches the prompt', async () => {
       const db = makeDb();
+      // Default makeDb() is an established user with no review history, so
+      // the server prompts 'app'. Submit the type actually prompted for.
       const values = jest.fn(() => ({
         returning: jest.fn().mockResolvedValue([{ id: 'fb-1' }]),
       }));
       db.insert = jest.fn(() => ({ values })) as never;
       const service = await build(db);
 
-      await service.create({ type: 'maestro', rating: 3 }, 'user-1');
+      await service.create({ type: 'app', rating: 3 }, 'user-1');
+
+      expect(values).toHaveBeenCalledWith(
+        expect.objectContaining({ type: 'app', userId: 'user-1' }),
+      );
+    });
+
+    it('rejects a submit for a type other than the one prompted', async () => {
+      // Server prompts 'app' (established user, no history); caller submits
+      // 'maestro' instead. Must be rejected, not silently inserted — this is
+      // the only guard left now that the (user_id, type) unique index is gone.
+      const db = makeDb();
+      const service = await build(db);
+
+      await expect(
+        service.create({ type: 'maestro', rating: 4 }, 'user-1'),
+      ).rejects.toBeInstanceOf(ConflictException);
+    });
+
+    it('accepts a submit for the type actually prompted', async () => {
+      // Server prompts 'maestro': the user's only review is an 'app' review
+      // from more than 90 days ago, so the cooldown has cleared and pickType
+      // favors the type never rated most recently — 'maestro' here since
+      // 'app' has history and 'maestro' does not.
+      const db = makeDb();
+      db.query.users = {
+        findFirst: jest.fn().mockResolvedValue({
+          createdAt: new Date('2024-01-01'),
+        }),
+      };
+      db.query.feedback.findMany = jest.fn().mockResolvedValue([
+        {
+          id: 'old-app',
+          type: 'app',
+          rating: 5,
+          createdAt: new Date(Date.now() - 100 * 24 * 60 * 60 * 1000),
+        },
+      ]);
+      db.query.feedbackDismissals = {
+        findFirst: jest.fn().mockResolvedValue(undefined),
+      };
+      const values = jest.fn(() => ({
+        returning: jest.fn().mockResolvedValue([{ id: 'fb-2' }]),
+      }));
+      db.insert = jest.fn(() => ({ values })) as never;
+      const service = await build(db);
+
+      await service.create({ type: 'maestro', rating: 5 }, 'user-1');
 
       expect(values).toHaveBeenCalledWith(
         expect.objectContaining({ type: 'maestro', userId: 'user-1' }),

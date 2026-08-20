@@ -68,7 +68,7 @@ export class FeedbackService {
     // guard. Without this a stale or hostile client could submit unlimited
     // reviews and skew the public average.
     const mine = await this.findMine(userId);
-    if (mine.prompt === null) {
+    if (mine.prompt !== createFeedbackDto.type) {
       throw new ConflictException(
         'You have already shared feedback recently. Thank you!',
       );
