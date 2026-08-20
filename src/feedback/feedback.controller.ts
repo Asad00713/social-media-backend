@@ -10,9 +10,12 @@ import {
   UseGuards,
   Request,
   ParseUUIDPipe,
+  ParseEnumPipe,
 } from '@nestjs/common';
 import { FeedbackService } from './feedback.service';
 import { CreateFeedbackDto, UpdateFeedbackStatusDto } from './dto';
+import { FEEDBACK_TYPE } from 'src/drizzle/schema';
+import type { FeedbackType } from 'src/drizzle/schema';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
 import { AdminGuard } from 'src/auth/guards/admin.guard';
 
@@ -29,10 +32,15 @@ export class FeedbackController {
   async findAllPublic(
     @Query('page') page?: string,
     @Query('limit') limit?: string,
+    @Query('type', new ParseEnumPipe(FEEDBACK_TYPE, { optional: true }))
+    type?: FeedbackType,
   ) {
     return this.feedbackService.findAllPublic(
       page ? parseInt(page, 10) : 1,
       limit ? parseInt(limit, 10) : 10,
+      // Public surfaces show app reviews unless asked otherwise — mixing types
+      // would produce an average that describes neither.
+      type ?? 'app',
     );
   }
 
@@ -40,8 +48,11 @@ export class FeedbackController {
    * Get public stats (average rating, total approved reviews)
    */
   @Get('stats/public')
-  async getPublicStats() {
-    const stats = await this.feedbackService.getStats();
+  async getPublicStats(
+    @Query('type', new ParseEnumPipe(FEEDBACK_TYPE, { optional: true }))
+    type?: FeedbackType,
+  ) {
+    const stats = await this.feedbackService.getStats(type ?? 'app');
     return {
       totalReviews: stats.approved,
       averageRating: stats.averageRating,
@@ -49,6 +60,16 @@ export class FeedbackController {
   }
 
   // ==================== Authenticated User Endpoints ====================
+
+  /**
+   * The caller's own reviews, keyed by type. The widget calls this to decide
+   * whether to render at all.
+   */
+  @Get('me')
+  @UseGuards(JwtAuthGuard)
+  async findMine(@Request() req) {
+    return this.feedbackService.findMine(req.user.userId);
+  }
 
   /**
    * Submit feedback (authenticated users only)
@@ -70,11 +91,15 @@ export class FeedbackController {
     @Query('page') page?: string,
     @Query('limit') limit?: string,
     @Query('status') status?: 'pending' | 'approved' | 'rejected',
+    @Query('type', new ParseEnumPipe(FEEDBACK_TYPE, { optional: true }))
+    type?: FeedbackType,
   ) {
     return this.feedbackService.findAllAdmin(
       page ? parseInt(page, 10) : 1,
       limit ? parseInt(limit, 10) : 10,
       status,
+      // No default — admins see every type unless they filter.
+      type,
     );
   }
 
