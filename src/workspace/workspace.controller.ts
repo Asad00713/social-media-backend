@@ -18,6 +18,7 @@ import { CreateWorkspaceDto } from './dto/create-workspace.dto';
 import { CurrentUser } from 'src/auth/decorators/current-user.decorator';
 import { UpdateWorkspaceDto } from './dto/update-workspace.dto';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
+import { SkipLaunchGate } from 'src/auth/decorators/skip-launch-gate.decorator';
 
 @Controller('workspace')
 export class WorkspaceController {
@@ -25,6 +26,9 @@ export class WorkspaceController {
 
   @Post()
   @UseGuards(JwtAuthGuard)
+  // Pre-launch setup route: a non-allowlisted user creates their workspace
+  // during onboarding even though the launch gate blocks the rest of the app.
+  @SkipLaunchGate()
   async create(
     @Body() dto: CreateWorkspaceDto,
     @CurrentUser() user: { userId: string; email: string },
