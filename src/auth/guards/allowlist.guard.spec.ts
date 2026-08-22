@@ -97,7 +97,11 @@ describe('AllowlistGuard', () => {
     });
   });
 
-  it('passes an unlisted user still in onboarding (onboardingCompletedAt null)', async () => {
+  it('blocks an unlisted user still in onboarding (no onboarding pass-through)', async () => {
+    // Pre-fix hole: a non-allowlisted user with onboardingCompletedAt === null
+    // passed through and could connect channels + post. The gate now blocks
+    // regardless of onboarding state; the genuine setup routes are opened via
+    // @SkipLaunchGate instead.
     process.env.ALLOWLIST_EMAILS = 'a@x.com';
     const g = make({
       verify: () => ({ sub: 'u1', email: 'c@z.com' }),
@@ -106,7 +110,7 @@ describe('AllowlistGuard', () => {
     });
     await expect(
       g.canActivate(ctx({ authorization: 'Bearer t' })),
-    ).resolves.toBe(true);
+    ).rejects.toMatchObject({ response: { code: 'NOT_LAUNCHED' } });
   });
 
   it('blocks an unlisted user once onboarding is complete', async () => {

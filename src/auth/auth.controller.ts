@@ -215,6 +215,9 @@ export class AuthController {
   @Post('onboarding/complete')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
+  // Pre-launch setup route: a non-allowlisted user must be able to finish
+  // onboarding on their own account even though the launch gate blocks the app.
+  @SkipLaunchGate()
   async completeOnboarding(
     @CurrentUser() user: { userId: string; email: string },
   ) {

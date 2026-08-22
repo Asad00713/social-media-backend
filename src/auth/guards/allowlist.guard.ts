@@ -16,6 +16,14 @@ import { SKIP_LAUNCH_GATE } from '../decorators/skip-launch-gate.decorator';
  * admins) may reach the app; everyone else gets 403 NOT_LAUNCHED. The gate is
  * OFF (pass-through) when ALLOWLIST_EMAILS is empty/unset.
  *
+ * A non-allowlisted user is blocked from the whole app regardless of onboarding
+ * state. The few pre-launch routes a signed-up user still needs — auth,
+ * profile, create-workspace, complete-onboarding — opt out via @SkipLaunchGate,
+ * so a non-allowlisted user can sign up and set up an account but cannot connect
+ * channels or publish. (An earlier version instead passed through any user with
+ * onboardingCompletedAt === null, which let random sign-ups connect channels and
+ * post during onboarding — a live bypass this closes.)
+ *
  * JwtAuthGuard is per-controller, not global, so this global guard cannot rely
  * on req.user. It verifies the bearer token itself (best-effort): no/invalid
  * token → pass (the route's own auth guard, if any, will reject). It is an
@@ -55,33 +63,27 @@ export class AllowlistGuard implements CanActivate {
       return true; // invalid/expired token → let JwtAuthGuard 401 it
     }
 
-    // Need the role to honor "super admin always passes", and the onboarding
-    // flag so we only block AFTER onboarding is finished (below).
+    // Need the role to honor "super admin always passes". A failed lookup
+    // fails SAFE (role undefined → not a super admin → blocked below).
     let role: string | undefined;
-    let onboardingCompletedAt: Date | string | null | undefined;
     try {
       const user = await this.usersService.findOneWithSuspension(
         payload.sub as string,
       );
       role = user?.role;
-      onboardingCompletedAt = user?.onboardingCompletedAt;
     } catch {
       role = undefined;
-      onboardingCompletedAt = undefined;
     }
 
     if (isEmailAllowlisted(payload.email, role)) return true;
 
-    // Not allowlisted — but let the full pre-launch signup flow complete first:
-    // signup, email verification, workspace creation, and the rest of
-    // onboarding all run for everyone. We only lock the app itself, which a
-    // user reaches once onboarding is marked complete. So a not-yet-onboarded
-    // user (onboardingCompletedAt strictly null) passes through; the block
-    // engages only once they finish onboarding (a real timestamp). A failed
-    // lookup (undefined) fails SAFE and blocks — an unknown state on a
-    // non-allowlisted token must not open the app.
-    if (onboardingCompletedAt === null) return true;
-
+    // Not allowlisted → blocked from the whole app, regardless of onboarding
+    // state. The genuine pre-launch setup routes a signed-up user still needs
+    // (auth, profile, create-workspace, complete-onboarding) are opened
+    // individually via @SkipLaunchGate — see those handlers. This deliberately
+    // does NOT wait for onboarding to complete: an earlier version passed
+    // through any user with onboardingCompletedAt === null, which let random
+    // sign-ups connect channels and publish during onboarding (a live bypass).
     throw new ForbiddenException({
       statusCode: 403,
       error: 'Forbidden',
