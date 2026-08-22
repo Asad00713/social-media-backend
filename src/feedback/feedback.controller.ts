@@ -11,9 +11,11 @@ import {
   Request,
   ParseUUIDPipe,
   ParseEnumPipe,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import { FeedbackService } from './feedback.service';
-import { CreateFeedbackDto, UpdateFeedbackStatusDto } from './dto';
+import { CreateFeedbackDto, UpdateFeedbackStatusDto, DismissFeedbackDto } from './dto';
 import { FEEDBACK_TYPE } from 'src/drizzle/schema';
 import type { FeedbackType } from 'src/drizzle/schema';
 import { JwtAuthGuard } from 'src/auth/guards/jwt-auth.guard';
@@ -78,6 +80,18 @@ export class FeedbackController {
   @UseGuards(JwtAuthGuard)
   async create(@Body() createFeedbackDto: CreateFeedbackDto, @Request() req) {
     return this.feedbackService.create(createFeedbackDto, req.user.userId);
+  }
+
+  /**
+   * Record that the user closed the prompt without answering. 204 because the
+   * client has nothing to do with a response body — it collapses the widget
+   * either way.
+   */
+  @Post('dismiss')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @UseGuards(JwtAuthGuard)
+  async dismiss(@Body() dto: DismissFeedbackDto, @Request() req) {
+    await this.feedbackService.dismiss(req.user.userId, dto.type);
   }
 
   // ==================== Admin Endpoints ====================

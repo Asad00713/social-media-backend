@@ -23,6 +23,7 @@ describe('FeedbackController (validation pipe)', () => {
     findAllPublic: jest.fn().mockResolvedValue({ data: [], pagination: {} }),
     getStats: jest.fn().mockResolvedValue({ approved: 0, averageRating: 0 }),
     findAllAdmin: jest.fn().mockResolvedValue({ data: [], pagination: {} }),
+    dismiss: jest.fn().mockResolvedValue(undefined),
   };
 
   beforeAll(async () => {
@@ -31,7 +32,13 @@ describe('FeedbackController (validation pipe)', () => {
       providers: [{ provide: FeedbackService, useValue: feedbackService }],
     })
       .overrideGuard(JwtAuthGuard)
-      .useValue({ canActivate: () => true })
+      .useValue({
+        canActivate: (context) => {
+          const request = context.switchToHttp().getRequest();
+          request.user = { userId: 'test-user-id' };
+          return true;
+        },
+      })
       .overrideGuard(AdminGuard)
       .useValue({ canActivate: () => true })
       .compile();
@@ -110,6 +117,22 @@ describe('FeedbackController (validation pipe)', () => {
       );
 
       expect(res.status).toBe(400);
+    });
+  });
+
+  describe('POST /feedback/dismiss', () => {
+    it('accepts a valid type', async () => {
+      await request(app.getHttpServer())
+        .post('/feedback/dismiss')
+        .send({ type: 'app' })
+        .expect(204);
+    });
+
+    it('rejects an invalid type with 400', async () => {
+      await request(app.getHttpServer())
+        .post('/feedback/dismiss')
+        .send({ type: 'bogus' })
+        .expect(400);
     });
   });
 });

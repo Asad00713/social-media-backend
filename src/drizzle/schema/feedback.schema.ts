@@ -5,9 +5,9 @@ import {
   timestamp,
   text,
   integer,
-  uniqueIndex,
+  index,
 } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, desc } from 'drizzle-orm';
 import { users } from './users.schema';
 
 // Feedback approval status
@@ -51,10 +51,17 @@ export const feedback = pgTable(
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (table) => [
-    // One review per user per type — a user may rate the app and Maestro
-    // separately. Enforced in the DB, not just in the service, so concurrent
-    // submits cannot both slip through the read-then-write check.
-    uniqueIndex('feedback_user_id_type_idx').on(table.userId, table.type),
+    // Recurring feedback: a user reviews each type repeatedly over time, so
+    // this is NOT unique. It is ordered for the only read that matters —
+    // "the newest row for this (user, type)".
+    //
+    // The service is now the sole guard against out-of-cadence submits; the
+    // database no longer enforces it.
+    index('feedback_user_id_type_idx').on(
+      table.userId,
+      table.type,
+      desc(table.createdAt),
+    ),
   ],
 );
 

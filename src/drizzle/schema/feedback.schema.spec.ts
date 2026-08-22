@@ -19,16 +19,14 @@ describe('feedback schema', () => {
     expect(typeCol?.default).toBe('app');
   });
 
-  it('has a unique (user_id, type) index', () => {
+  it('has a NON-unique (user_id, type, created_at) index for latest-row lookups', () => {
     const indexes = getTableConfig(feedback).indexes;
     const idx = indexes.find(
       (i) => i.config.name === 'feedback_user_id_type_idx',
     );
     expect(idx).toBeDefined();
-    expect(idx?.config.unique).toBe(true);
-    expect(idx?.config.columns.map((c: { name: string }) => c.name)).toEqual([
-      'user_id',
-      'type',
-    ]);
+    // Recurring feedback: a user may have many reviews per type over time,
+    // so uniqueness here would be the bug, not the guard.
+    expect(idx?.config.unique).toBe(false);
   });
 });

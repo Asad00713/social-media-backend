@@ -9,6 +9,7 @@ export * from './channels.schema';
 export * from './posts.schema';
 export * from './drips.schema';
 export * from './feedback.schema';
+export * from './feedback-dismissals.schema';
 export * from './notifications.schema';
 export * from './media-library.schema';
 export * from './chatbot.schema';
