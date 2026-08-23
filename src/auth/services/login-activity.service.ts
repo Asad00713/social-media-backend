@@ -49,6 +49,38 @@ export class LoginActivityService {
     void this.resolveCountry(userId, cleanIp);
   }
 
+  /**
+   * Like {@link record}, but waits for the country lookup instead of firing it
+   * detached. Use this where the region must be persisted before the request
+   * returns — signup, where the account is created once and its country is
+   * wanted the moment it exists, rather than only after a first login. The
+   * geo lookup is still fault-tolerant (a failure leaves country null and
+   * never throws), so the caller is delayed at most by the lookup's own 2s
+   * timeout and is never broken by it. Login and refresh keep using the
+   * fire-and-forget {@link record} — they are far too frequent to await on a
+   * network call every time.
+   */
+  async recordSync(userId: string, ip: string | undefined | null): Promise<void> {
+    const now = new Date();
+    const cleanIp = ip?.split(',')[0].trim() || null;
+
+    try {
+      await this.db
+        .update(users)
+        .set({ lastLoginAt: now, lastLoginIp: cleanIp, updatedAt: now })
+        .where(eq(users.id, userId));
+    } catch (error) {
+      // Recording activity must not break auth — log and carry on.
+      this.logger.warn(
+        `Failed to record signup activity for ${userId}: ${(error as Error).message}`,
+      );
+      return;
+    }
+
+    // Awaited so the country is in the row before the caller returns.
+    await this.resolveCountry(userId, cleanIp);
+  }
+
   private async resolveCountry(
     userId: string,
     ip: string | null,

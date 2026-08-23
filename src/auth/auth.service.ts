@@ -89,7 +89,10 @@ export class AuthService {
     private loginActivityService: LoginActivityService,
   ) {}
 
-  async register(registerDto: CreateUserDto): Promise<AuthResponse> {
+  async register(
+    registerDto: CreateUserDto,
+    ip?: string,
+  ): Promise<AuthResponse> {
     // Signup always produces a plain user. Role is never derived from the
     // address someone typed into a public form — SUPER_ADMIN_EMAILS used to do
     // exactly that, which meant anyone who learned a listed address could grant
@@ -99,6 +102,13 @@ export class AuthService {
 
     // Generate verification token and send email
     await this.sendVerificationEmailInternal(user.id, user.email, user.name);
+
+    // Stamp signup-time last-seen and region from the request IP. Awaited
+    // (recordSync) so the country is persisted before we return — a signup
+    // should have its region the moment the account exists, not only after a
+    // first login. Fault-tolerant: a geo miss leaves country null and never
+    // blocks the registration.
+    await this.loginActivityService.recordSync(user.id, ip);
 
     const accessToken = await this.generateAccessToken(user.id, user.email);
 
