@@ -107,10 +107,11 @@ export class AuthController {
   @HttpCode(HttpStatus.CREATED)
   async register(
     @Body() createUserDto: CreateUserDto,
+    @Ip() ip: string,
     @Res({ passthrough: true }) response: Response,
   ) {
     const { accessToken, user, message } =
-      await this.authService.register(createUserDto);
+      await this.authService.register(createUserDto, ip);
 
     const refreshToken = await this.authService.generateRefreshToken(
       user.id,
