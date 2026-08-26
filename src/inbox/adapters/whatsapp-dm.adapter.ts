@@ -127,6 +127,37 @@ export class WhatsAppDmAdapter implements PlatformDmAdapter {
     };
   }
 
+  /**
+   * Send an approved template. Valid outside the 24-hour window — this is what
+   * reopens a conversation the customer has gone quiet on.
+   */
+  async sendTemplateDm(
+    channel: ResolvedChannel,
+    conversationId: string,
+    name: string,
+    language: string,
+    components?: Array<Record<string, any>>,
+  ): Promise<CreatedDm> {
+    const phoneNumberId = String(
+      channel.metadata?.phoneNumberId ?? channel.platformAccountId,
+    );
+    const toWaId = conversationId.slice(conversationId.lastIndexOf(':') + 1);
+    const { messageId } = await this.whatsapp.sendTemplate(
+      channel.accessToken,
+      phoneNumberId,
+      toWaId,
+      name,
+      language,
+      components,
+    );
+    return {
+      conversationId,
+      platformItemId: messageId,
+      text: `[template] ${name}`,
+      platformCreatedAt: new Date(),
+    };
+  }
+
   async getReplyWindowState(
     _channel: ResolvedChannel,
     _conversationId: string,
@@ -144,7 +175,7 @@ export class WhatsAppDmAdapter implements PlatformDmAdapter {
       return {
         canReply: false,
         reason:
-          'The 24-hour reply window has closed. A pre-approved template is required (coming soon).',
+          'The 24-hour reply window has closed. Send an approved template to reopen the conversation.',
         windowExpiresAt: expires,
       };
     }

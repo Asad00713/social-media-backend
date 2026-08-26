@@ -26,6 +26,7 @@ import { UpdateScheduledMessageDto } from './dto/update-scheduled-message.dto';
 import { ListScheduledMessagesDto } from './dto/list-scheduled-messages.dto';
 import { CreateInboxUploadUrlDto } from './dto/create-upload-url.dto';
 import { SendDmDto } from './dto/send-dm.dto';
+import { SendDmTemplateDto } from './dto/send-dm-template.dto';
 
 interface AuthUser {
   userId: string;
@@ -252,6 +253,22 @@ export class InboxController {
         url: a.url,
         contentType: a.contentType,
       })),
+    );
+  }
+
+  @Post('dms/:threadKey/template')
+  async sendDmTemplate(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('threadKey') threadKey: string,
+    @Body() dto: SendDmTemplateDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.inboxService.sendDmTemplate(
+      workspaceId,
+      user.userId,
+      threadKey,
+      dto.name,
+      dto.language,
     );
   }
 

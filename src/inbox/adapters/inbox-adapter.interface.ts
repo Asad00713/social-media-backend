@@ -274,6 +274,19 @@ export interface PlatformDmAdapter {
     text: string,
     attachments: DmAttachmentInput[],
   ): Promise<CreatedDm>;
+
+  /**
+   * Send a pre-approved message template. Valid outside the 24-hour reply
+   * window — this is what reopens a conversation the customer has gone quiet
+   * on. Only WhatsApp implements this today.
+   */
+  sendTemplateDm?(
+    channel: ResolvedChannel,
+    conversationId: string,
+    name: string,
+    language: string,
+    components?: Array<Record<string, any>>,
+  ): Promise<CreatedDm>;
 }
 
 /**
