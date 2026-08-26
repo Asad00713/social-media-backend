@@ -20,9 +20,11 @@ import { BridgeService } from './bridge/services/bridge.service';
 import { TelegramLinkTokenDto } from './bridge/dto/bridge.dto';
 import {
   CreateMaestroConversationDto,
+  MaestroWorkspaceDto,
   PresignMaestroAttachmentDto,
   SendMaestroMessageDto,
   SetFeedbackDto,
+  SetMaestroKeyDto,
 } from './dto/send-message.dto';
 
 @Controller('maestro')
@@ -107,6 +109,48 @@ export class MaestroController {
     @Body() dto: PresignMaestroAttachmentDto,
   ) {
     return this.maestro.presignAttachment(user.userId, dto);
+  }
+
+  /**
+   * Maestro key + first-run wizard state (owner-only).
+   * Never returns the key itself — only a masked hint like "sk-ant-…4f2a".
+   */
+  @Get('key')
+  async getKeyStatus(
+    @CurrentUser() user: { userId: string; email: string },
+    @Query('workspaceId') workspaceId: string,
+  ) {
+    return this.maestro.getKeyStatus(user.userId, workspaceId);
+  }
+
+  /** Save the workspace's own Anthropic key (validated before storing). */
+  @Post('key')
+  @HttpCode(HttpStatus.OK)
+  async setKey(
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: SetMaestroKeyDto,
+  ) {
+    return this.maestro.setOwnKey(user.userId, dto.workspaceId, dto.apiKey);
+  }
+
+  /** Remove the workspace's own key — Maestro reverts to the platform key. */
+  @Post('key/remove')
+  @HttpCode(HttpStatus.OK)
+  async removeKey(
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: MaestroWorkspaceDto,
+  ) {
+    return this.maestro.removeOwnKey(user.userId, dto.workspaceId);
+  }
+
+  /** Mark the first-run Maestro wizard as completed. */
+  @Post('onboarding/complete')
+  @HttpCode(HttpStatus.OK)
+  async completeOnboarding(
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: MaestroWorkspaceDto,
+  ) {
+    return this.maestro.completeOnboarding(user.userId, dto.workspaceId);
   }
 
   /** Current AI-token budget for the workspace (powers the UI meter). */

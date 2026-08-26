@@ -130,3 +130,21 @@ export class SendMaestroMessageDto {
   @Type(() => MaestroAttachmentDto)
   attachments?: MaestroAttachmentDto[];
 }
+
+/** Save a workspace's own Anthropic API key (BYOK). */
+export class SetMaestroKeyDto {
+  @IsString()
+  @IsNotEmpty()
+  workspaceId: string;
+
+  @IsString()
+  @IsNotEmpty()
+  apiKey: string;
+}
+
+/** Target a workspace for key removal / wizard completion. */
+export class MaestroWorkspaceDto {
+  @IsString()
+  @IsNotEmpty()
+  workspaceId: string;
+}
