@@ -289,4 +289,100 @@ export class WhatsAppService {
     }
     return { messageId: data?.messages?.[0]?.id ?? '' };
   }
+
+  /**
+   * List every template on a WABA. Meta paginates; follow `paging.next` so a
+   * business with more than one page does not silently lose the tail.
+   */
+  async listMessageTemplates(
+    accessToken: string,
+    wabaId: string,
+  ): Promise<any[]> {
+    const out: any[] = [];
+    let url =
+      `${WHATSAPP_GRAPH_BASE}/${wabaId}/message_templates` +
+      `?limit=100&fields=id,name,language,category,status,components`;
+    // Bounded so a malformed paging cursor cannot spin forever.
+    for (let page = 0; page < 20 && url; page++) {
+      const res = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const msg =
+          data?.error?.message ||
+          `WhatsApp template list failed (${res.status})`;
+        throw new Error(msg);
+      }
+      out.push(...(data?.data ?? []));
+      url = data?.paging?.next ?? '';
+    }
+    return out;
+  }
+
+  /**
+   * Delete a template at Meta. Permanent — there is no recycle bin. Deleting
+   * by name removes every language variant, so pass `hsm_id` to scope the
+   * delete to the one row the user actually chose.
+   */
+  async deleteMessageTemplate(
+    accessToken: string,
+    wabaId: string,
+    name: string,
+    metaTemplateId: string,
+  ): Promise<void> {
+    const url =
+      `${WHATSAPP_GRAPH_BASE}/${wabaId}/message_templates` +
+      `?name=${encodeURIComponent(name)}` +
+      `&hsm_id=${encodeURIComponent(metaTemplateId)}`;
+    const res = await fetch(url, {
+      method: 'DELETE',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg =
+        data?.error?.message || `WhatsApp template delete failed (${res.status})`;
+      throw new Error(msg);
+    }
+  }
+
+  /**
+   * Send an approved template. Unlike `sendText`, this is valid *outside* the
+   * 24-hour customer window — that is the whole point of templates.
+   */
+  async sendTemplate(
+    accessToken: string,
+    phoneNumberId: string,
+    toWaId: string,
+    name: string,
+    language: string,
+    components?: Array<Record<string, any>>,
+  ): Promise<{ messageId: string }> {
+    const res = await fetch(`${WHATSAPP_GRAPH_BASE}/${phoneNumberId}/messages`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        messaging_product: 'whatsapp',
+        recipient_type: 'individual',
+        to: toWaId,
+        type: 'template',
+        template: {
+          name,
+          language: { code: language },
+          ...(components?.length ? { components } : {}),
+        },
+      }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      const msg =
+        data?.error?.message || `WhatsApp template send failed (${res.status})`;
+      throw new Error(msg);
+    }
+    return { messageId: data?.messages?.[0]?.id ?? '' };
+  }
 }
