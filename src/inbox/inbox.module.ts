@@ -36,6 +36,7 @@ import { RedisClientProvider } from '../channels/analytics/redis-client.provider
 import { ChannelsModule } from '../channels/channels.module';
 import { MediaModule } from '../media/media.module';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
+import { WhatsAppTemplatesModule } from '../whatsapp-templates/whatsapp-templates.module';
 import { QUEUES } from '../queue/queue.module';
 
 @Module({
@@ -50,6 +51,10 @@ import { QUEUES } from '../queue/queue.module';
     // (CalendarPullSyncService → ScheduledMessagesService). Same shape as
     // PostsModule ↔ CalendarSyncModule.
     forwardRef(() => CalendarSyncModule),
+    // WebhooksController (registered below) needs WhatsAppTemplatesService.
+    // WhatsAppTemplatesModule imports ChannelsModule, which forwardRef's this
+    // module back → forwardRef on this edge too, same pattern as ChannelsModule.
+    forwardRef(() => WhatsAppTemplatesModule),
     BullModule.registerQueue(
       { name: QUEUES.INBOX_POLLING },
       { name: QUEUES.SCHEDULED_INBOX },

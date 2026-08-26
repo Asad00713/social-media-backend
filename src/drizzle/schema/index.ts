@@ -29,3 +29,4 @@ export * from './admin-login-challenge.schema';
 export * from './campaigns.schema';
 export * from './evergreen.schema';
 export * from './admin-audit-logs.schema';
+export * from './whatsapp-templates.schema';

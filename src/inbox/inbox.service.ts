@@ -30,6 +30,7 @@ import { ChannelService } from '../channels/services/channel.service';
 import { FacebookService } from '../channels/services/facebook.service';
 import { InstagramService } from '../channels/services/instagram.service';
 import { InboxDispatcher } from './services/inbox-dispatcher.service';
+import { whatsappMessageTemplates } from '../drizzle/schema/whatsapp-templates.schema';
 import type {
   ResolvedChannel,
   DmConversationSummary as AdapterDmConversationSummary,
@@ -2492,6 +2493,102 @@ export class InboxService {
         },
       });
     }
+
+    void this.emitCounts(workspaceId);
+
+    const row =
+      newRow ??
+      (await db.query.inboxItems.findFirst({
+        where: and(
+          eq(inboxItems.channelId, channelId),
+          eq(inboxItems.platformItemId, created.platformItemId),
+        ),
+      }));
+    if (!row) throw new Error('Failed to persist DM');
+    return this.dmItemToDto(row);
+  }
+
+  /**
+   * Send a pre-approved WhatsApp template. This is the only way to reopen a
+   * conversation once the 24-hour reply window has closed, so unlike `sendDm`
+   * it does NOT check `getReplyWindowState` — that's exactly the state this
+   * exists to escape. Only WhatsApp implements template sends today.
+   */
+  async sendDmTemplate(
+    workspaceId: string,
+    userId: string,
+    threadKey: string,
+    name: string,
+    language: string,
+  ): Promise<DmMessageDto> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+    const { channelId, conversationId } = this.decodeDmThreadKey(threadKey);
+
+    const channelRow = await db.query.socialMediaChannels.findFirst({
+      where: eq(socialMediaChannels.id, channelId),
+    });
+    if (!channelRow || channelRow.workspaceId !== workspaceId) {
+      throw new NotFoundException('Channel not found in workspace');
+    }
+
+    const platform = channelRow.platform as SupportedPlatform;
+    if (platform !== 'whatsapp') {
+      throw new BadRequestException(
+        `Platform '${platform}' doesn't support template sends`,
+      );
+    }
+
+    const adapter = this.dispatcher.getDm(platform);
+    if (!adapter.sendTemplateDm) {
+      throw new BadRequestException(
+        `Platform '${platform}' doesn't support template sends`,
+      );
+    }
+
+    // Guard against sending an unapproved template — Meta rejects these
+    // anyway, but failing early here beats a raw Graph API error surfacing.
+    const template = await db.query.whatsappMessageTemplates.findFirst({
+      where: and(
+        eq(whatsappMessageTemplates.workspaceId, workspaceId),
+        eq(whatsappMessageTemplates.channelId, channelId),
+        eq(whatsappMessageTemplates.name, name),
+        eq(whatsappMessageTemplates.language, language),
+      ),
+    });
+    if (!template) {
+      throw new BadRequestException(
+        `Template '${name}' (${language}) not found for this channel`,
+      );
+    }
+    if (template.status !== 'APPROVED') {
+      throw new BadRequestException(
+        `Template '${name}' (${language}) is not approved (status: ${template.status})`,
+      );
+    }
+
+    const channel = await this.resolveChannel(channelId, workspaceId);
+    const created = await adapter.sendTemplateDm(
+      channel,
+      conversationId,
+      name,
+      language,
+    );
+    const myIdentity = await this.loadMyDmIdentity(channelId);
+
+    const newRow = await this.upsertDm({
+      workspaceId,
+      channelId,
+      platform,
+      conversationId: created.conversationId,
+      platformItemId: created.platformItemId,
+      authorPlatformId: myIdentity.platformId,
+      authorHandle: myIdentity.handle,
+      authorDisplayName: myIdentity.displayName,
+      authorAvatarUrl: myIdentity.avatarUrl,
+      text: created.text,
+      fromMe: true,
+      platformCreatedAt: created.platformCreatedAt,
+    });
 
     void this.emitCounts(workspaceId);
 

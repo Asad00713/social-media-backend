@@ -7,11 +7,13 @@ import {
   HttpCode,
   HttpStatus,
   HttpException,
+  Inject,
   Logger,
   Param,
   Req,
   Res,
   Headers,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
@@ -23,7 +25,9 @@ import {
 import { verifyTelegramWebhookSecret } from './utils/telegram-webhook-secret.util';
 import { secureCompare } from '../common/utils/encryption.util';
 import { parseWhatsAppMessages } from './services/whatsapp-webhook.util';
+import { parseWhatsAppTemplateEvents } from './services/whatsapp-template.util';
 import { InboxService } from '../inbox/inbox.service';
+import { WhatsAppTemplatesService } from '../whatsapp-templates/whatsapp-templates.service';
 import { FacebookService } from './services/facebook.service';
 import { InstagramService } from './services/instagram.service';
 import { ChannelService } from './services/channel.service';
@@ -65,6 +69,10 @@ export class WebhooksController {
     private readonly whatsappIngestQueue: Queue,
     @InjectQueue(QUEUES.MAESTRO_BRIDGE)
     private readonly maestroBridgeQueue: Queue,
+    // WhatsAppTemplatesModule -> ChannelsModule -> (forwardRef) InboxModule,
+    // and this controller lives in InboxModule -> forwardRef on both sides.
+    @Inject(forwardRef(() => WhatsAppTemplatesService))
+    private readonly whatsappTemplates: WhatsAppTemplatesService,
   ) {}
 
   // ==========================================================================
@@ -193,6 +201,19 @@ export class WebhooksController {
     // ACK fast, then process async.
     res.status(200).send('EVENT_RECEIVED');
     try {
+      // Template status updates carry no `messages`, so they would fall
+      // through to inbox ingest and vanish. Handle them first and return.
+      const templateEvents = parseWhatsAppTemplateEvents(req.body);
+      if (templateEvents.length > 0) {
+        try {
+          await this.whatsappTemplates.applyStatusEvents(templateEvents);
+        } catch (err) {
+          this.logger.error(
+            `WhatsApp template status update failed: ${(err as Error).message}`,
+          );
+        }
+        return;
+      }
       // One Meta app = one webhook URL. If this payload is for the dedicated
       // Maestro number, divert it to the bridge instead of the inbox ingest so a
       // single callback URL can serve both.
