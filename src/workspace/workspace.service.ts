@@ -19,7 +19,8 @@ import { UsersService } from 'src/users/users.service';
 import { SubscriptionService } from 'src/billing/services/subscription.service';
 
 type GetAllREsponse = {
-  data: Workspace[];
+  // Omits the Maestro BYOK credential — it must never reach a client.
+  data: Omit<Workspace, 'maestroAnthropicKey'>[];
   pagination: {
     page: number;
     limit: number;
@@ -135,6 +136,8 @@ export class WorkspaceService {
 
     const workspaces = await this.db.query.workspace.findMany({
       where: and(...conditions),
+      // Never ship the Maestro BYOK credential to a client. See findOne.
+      columns: { maestroAnthropicKey: false },
       limit: limit,
       offset: offset,
       orderBy: (workspace, { desc }) => [desc(workspace.createdAt)],
@@ -156,9 +159,13 @@ export class WorkspaceService {
     };
   }
 
-  async findAllByUser(userId: string): Promise<Workspace[]> {
+  async findAllByUser(
+    userId: string,
+  ): Promise<Omit<Workspace, 'maestroAnthropicKey'>[]> {
     const workspaces = await this.db.query.workspace.findMany({
       where: eq(workspace.ownerId, userId),
+      // Never ship the Maestro BYOK credential to a client. See findOne.
+      columns: { maestroAnthropicKey: false },
       orderBy: (workspace, { desc }) => [desc(workspace.createdAt)],
     });
 
