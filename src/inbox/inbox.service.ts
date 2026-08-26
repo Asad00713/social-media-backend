@@ -30,7 +30,6 @@ import { ChannelService } from '../channels/services/channel.service';
 import { FacebookService } from '../channels/services/facebook.service';
 import { InstagramService } from '../channels/services/instagram.service';
 import { InboxDispatcher } from './services/inbox-dispatcher.service';
-import { WhatsAppTemplatesService } from '../whatsapp-templates/whatsapp-templates.service';
 import { whatsappMessageTemplates } from '../drizzle/schema/whatsapp-templates.schema';
 import type {
   ResolvedChannel,
@@ -266,7 +265,6 @@ export class InboxService {
     private readonly channelService: ChannelService,
     private readonly facebookService: FacebookService,
     private readonly instagramService: InstagramService,
-    private readonly whatsappTemplatesService: WhatsAppTemplatesService,
     @InjectQueue(QUEUES.INBOX_POLLING) private readonly pollQueue: Queue,
   ) {}
 

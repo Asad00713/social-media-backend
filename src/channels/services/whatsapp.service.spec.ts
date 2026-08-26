@@ -1,4 +1,8 @@
-import { WhatsAppService, GRAPH_API_VERSION } from './whatsapp.service';
+import {
+  WhatsAppService,
+  GRAPH_API_VERSION,
+  MAX_TEMPLATE_PAGES,
+} from './whatsapp.service';
 
 describe('WhatsAppService.sendText', () => {
   const svc = new WhatsAppService();
@@ -240,5 +244,86 @@ describe('WhatsAppService — Embedded Signup Graph methods', () => {
       { id: '111', displayPhoneNumber: '+1 555', verifiedName: 'Acme' },
       { id: '222', displayPhoneNumber: null, verifiedName: null },
     ]);
+  });
+});
+
+describe('WhatsAppService.listMessageTemplates', () => {
+  const svc = new WhatsAppService();
+
+  beforeEach(() => {
+    // Assign a fresh mock rather than jest.spyOn: an earlier describe block
+    // in this file (`Embedded Signup Graph methods`) reassigns `global.fetch`
+    // directly and only `jest.resetAllMocks()`s it in its own afterEach —
+    // it never restores the original fetch — so spying on top of whatever
+    // `global.fetch` currently is would spy on someone else's leftover mock.
+    global.fetch = jest.fn();
+  });
+  afterEach(() => jest.resetAllMocks());
+
+  it('returns all rows from a single page with no paging.next', async () => {
+    (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [
+          { id: 't1', name: 'welcome', language: 'en', category: 'MARKETING', status: 'APPROVED' },
+          { id: 't2', name: 'otp', language: 'en', category: 'AUTHENTICATION', status: 'APPROVED' },
+        ],
+        paging: {},
+      }),
+    });
+
+    const res = await svc.listMessageTemplates('tok', 'waba1');
+
+    expect(res).toEqual([
+      { id: 't1', name: 'welcome', language: 'en', category: 'MARKETING', status: 'APPROVED' },
+      { id: 't2', name: 'otp', language: 'en', category: 'AUTHENTICATION', status: 'APPROVED' },
+    ]);
+  });
+
+  it('follows paging.next across two pages and returns rows from both', async () => {
+    const fetchMock = (global.fetch as jest.Mock)
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [{ id: 't1', name: 'welcome', language: 'en', category: 'MARKETING', status: 'APPROVED' }],
+          paging: { next: 'https://graph.facebook.com/v21.0/waba1/message_templates?after=abc' },
+        }),
+      })
+      .mockResolvedValueOnce({
+        ok: true,
+        json: async () => ({
+          data: [{ id: 't2', name: 'otp', language: 'en', category: 'AUTHENTICATION', status: 'APPROVED' }],
+          paging: {},
+        }),
+      });
+
+    const res = await svc.listMessageTemplates('tok', 'waba1');
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(res).toEqual([
+      { id: 't1', name: 'welcome', language: 'en', category: 'MARKETING', status: 'APPROVED' },
+      { id: 't2', name: 'otp', language: 'en', category: 'AUTHENTICATION', status: 'APPROVED' },
+    ]);
+  });
+
+  it('throws instead of returning a truncated list when the page cap is hit with more pages remaining', async () => {
+    // Every page reports a paging.next cursor, so the cap is always the reason the loop stops.
+    const fetchMock = (global.fetch as jest.Mock).mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        data: [{ id: 'tX', name: 'x', language: 'en', category: 'MARKETING', status: 'APPROVED' }],
+        paging: { next: 'https://graph.facebook.com/v21.0/waba1/message_templates?after=next' },
+      }),
+    });
+
+    await expect(svc.listMessageTemplates('tok', 'waba1')).rejects.toThrow(
+      /waba1/,
+    );
+    expect(fetchMock).toHaveBeenCalledTimes(MAX_TEMPLATE_PAGES);
+
+    fetchMock.mockClear();
+    await expect(svc.listMessageTemplates('tok', 'waba1')).rejects.toThrow(
+      new RegExp(String(MAX_TEMPLATE_PAGES)),
+    );
   });
 });

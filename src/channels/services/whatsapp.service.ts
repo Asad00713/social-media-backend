@@ -7,6 +7,14 @@ export const WHATSAPP_GRAPH_BASE = `https://graph.facebook.com/${GRAPH_API_VERSI
 export const WA_ERROR_PIN_MISMATCH = 133005;
 
 /**
+ * Cap on `listMessageTemplates` pages (at `limit=100` each). Guards against a
+ * malformed `paging.next` cursor spinning forever. If a WABA genuinely has
+ * more templates than this covers, `listMessageTemplates` throws rather than
+ * silently returning a truncated (and therefore misleading) list.
+ */
+export const MAX_TEMPLATE_PAGES = 20;
+
+/**
  * A Graph error that carries Meta's numeric code. Callers branch on `code` rather
  * than pattern-matching `message`, which is prose Meta is free to reword or
  * localise.
@@ -302,8 +310,10 @@ export class WhatsAppService {
     let url =
       `${WHATSAPP_GRAPH_BASE}/${wabaId}/message_templates` +
       `?limit=100&fields=id,name,language,category,status,components`;
-    // Bounded so a malformed paging cursor cannot spin forever.
-    for (let page = 0; page < 20 && url; page++) {
+    // Bounded so a malformed paging cursor cannot spin forever. At limit=100
+    // this covers up to MAX_TEMPLATE_PAGES * 100 templates in one sync.
+    let page = 0;
+    for (; page < MAX_TEMPLATE_PAGES && url; page++) {
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${accessToken}` },
       });
@@ -316,6 +326,20 @@ export class WhatsAppService {
       }
       out.push(...(data?.data ?? []));
       url = data?.paging?.next ?? '';
+    }
+    // If we stopped only because we hit the page cap and Meta still has more
+    // pages, `out` is a truncated list that is indistinguishable from a
+    // complete one to the caller. Reconciliation treats "absent from the
+    // fetched list" as "deleted at Meta" — silently returning a partial list
+    // here would prune every template past the cap on the next sync. Throw
+    // instead so the caller's per-channel error handling skips this sync and
+    // leaves the mirror untouched; a stale mirror beats a destroyed one.
+    if (page >= MAX_TEMPLATE_PAGES && url) {
+      throw new Error(
+        `WhatsApp template list for WABA ${wabaId} exceeded ${MAX_TEMPLATE_PAGES} pages ` +
+          `(more than ${MAX_TEMPLATE_PAGES * 100} templates) with more pages remaining; ` +
+          `aborting to avoid treating a truncated list as complete`,
+      );
     }
     return out;
   }
