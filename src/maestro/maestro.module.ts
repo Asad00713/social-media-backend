@@ -14,6 +14,7 @@ import { PostsModule } from '../posts/posts.module';
 import { InboxModule } from '../inbox/inbox.module';
 import { MaestroController } from './maestro.controller';
 import { MaestroService } from './services/maestro.service';
+import { MaestroKeyService } from './services/maestro-key.service';
 import { ClaudeAgentSdkRuntime } from './runtime/claude-agent-sdk.runtime';
 // Reuse the existing chatbot conversation persistence (same DB tables).
 // ConversationService + TokenTrackingService only depend on the global DRIZZLE provider.
@@ -58,6 +59,7 @@ import { MaestroBridgeProcessor } from './bridge/processors/maestro-bridge.proce
   controllers: [MaestroController],
   providers: [
     MaestroService,
+    MaestroKeyService,
     ClaudeAgentSdkRuntime,
     ConversationService,
     TokenTrackingService,

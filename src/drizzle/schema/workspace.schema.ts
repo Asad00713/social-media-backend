@@ -23,6 +23,22 @@ export const workspace = pgTable('workspace', {
   // AI provider preference (null = system default)
   preferredAiProvider: varchar('preferred_ai_provider', { length: 20 }),
 
+  // --- Maestro BYOK (bring your own Anthropic key) ---
+  // The workspace's own Anthropic API key, ENCRYPTED at rest (AES-256-GCM via
+  // common/utils/encryption.util). Null = use the platform key and bill the
+  // workspace's plan credits. Set = the workspace pays Anthropic directly, so
+  // Maestro turns are logged but NOT billed against plan credits.
+  // Never returned to the client — the API exposes `maestroKeyHint` instead.
+  maestroAnthropicKey: text('maestro_anthropic_key'),
+  // Last 4 characters of the live key, stored in PLAINTEXT purely so settings
+  // can render "sk-ant-…4f2a" without ever decrypting the real key.
+  maestroAnthropicKeyHint: varchar('maestro_anthropic_key_hint', { length: 8 }),
+  // When the key was last saved/replaced (shown in settings).
+  maestroAnthropicKeySetAt: timestamp('maestro_anthropic_key_set_at'),
+  // Marks the first-run Maestro wizard as finished, so it runs once, not on
+  // every reload. Null = the user has not completed it yet.
+  maestroOnboardedAt: timestamp('maestro_onboarded_at'),
+
   // Workspace suspension
   isActive: boolean('is_active').notNull().default(true),
   suspendedAt: timestamp('suspended_at'),

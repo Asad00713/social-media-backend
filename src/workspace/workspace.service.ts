@@ -169,13 +169,20 @@ export class WorkspaceService {
     identifier: string,
     userId: string,
     bySlug: boolean = false,
-  ): Promise<Workspace> {
+  ): Promise<Omit<Workspace, 'maestroAnthropicKey'>> {
     const condition = bySlug
       ? eq(workspace.slug, identifier)
       : eq(workspace.id, identifier);
 
     const result = await this.db.query.workspace.findFirst({
       where: and(condition, eq(workspace.ownerId, userId)),
+      columns: {
+        // Everything EXCEPT the Maestro BYOK credential. This row is returned
+        // straight to the client by GET /workspace/:id and /slug/:slug, so the
+        // encrypted key must never be part of it. Read it only through
+        // MaestroKeyService, which exposes a masked hint instead.
+        maestroAnthropicKey: false,
+      },
       with: {
         owner: {
           columns: {

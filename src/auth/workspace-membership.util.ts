@@ -3,12 +3,19 @@ import type { Workspace } from '../drizzle/schema';
 export type WorkspaceRoleLabel = 'OWNER' | 'ADMIN' | 'MEMBER' | 'GUEST';
 
 // Workspace shape safe to return to clients: excludes admin-only internal
-// columns (`suspensionNote`, `suspendedById`) that must never leak via
-// /auth/me. Keep in sync with the `columns` projection used in
+// columns (`suspensionNote`, `suspendedById`) and the Maestro BYOK credential
+// (`maestroAnthropicKey`, encrypted but still a secret — it must NEVER leave
+// the server; settings read it via GET /maestro/key, which returns only a
+// masked hint). Keep in sync with the `columns` projection used in
 // AuthService#whoAmI.
 export type PublicWorkspace = Omit<
   Workspace,
-  'suspensionNote' | 'suspendedById'
+  | 'suspensionNote'
+  | 'suspendedById'
+  | 'maestroAnthropicKey'
+  | 'maestroAnthropicKeyHint'
+  | 'maestroAnthropicKeySetAt'
+  | 'maestroOnboardedAt'
 >;
 
 export type WorkspaceWithRole = PublicWorkspace & { role: WorkspaceRoleLabel };

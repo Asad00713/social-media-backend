@@ -18,6 +18,7 @@ import { InboxService } from '../../inbox/inbox.service';
 import { PostService } from '../../posts/services/post.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import { ClaudeAgentSdkRuntime } from '../runtime/claude-agent-sdk.runtime';
+import { MaestroKeyService } from './maestro-key.service';
 import { createUserTools } from '../tools/user.tools';
 import { createMediaTools } from '../tools/media.tools';
 import { createInteractionTools } from '../tools/interaction.tools';
@@ -148,6 +149,7 @@ export class MaestroService {
     private readonly posts: PostService,
     private readonly inbox: InboxService,
     private readonly r2: CloudflareR2Service,
+    private readonly keys: MaestroKeyService,
   ) {}
 
   /**
@@ -200,6 +202,34 @@ export class MaestroService {
       sizeBytes,
       filename,
     });
+  }
+
+  /**
+   * Maestro key + first-run state for a workspace. Owner-checked: the key is a
+   * billing credential, so only the workspace owner may see or change it.
+   * Returns only a MASKED hint — the key itself never leaves the server.
+   */
+  async getKeyStatus(userId: string, workspaceId: string) {
+    await this.workspaceService.findOne(workspaceId, userId);
+    return this.keys.getStatus(workspaceId);
+  }
+
+  /** Validate against Anthropic, then store the workspace's own key. */
+  async setOwnKey(userId: string, workspaceId: string, apiKey: string) {
+    await this.workspaceService.findOne(workspaceId, userId);
+    return this.keys.setKey(workspaceId, apiKey);
+  }
+
+  /** Drop the workspace's key — Maestro reverts to the platform key. */
+  async removeOwnKey(userId: string, workspaceId: string) {
+    await this.workspaceService.findOne(workspaceId, userId);
+    return this.keys.removeKey(workspaceId);
+  }
+
+  /** Mark the first-run Maestro wizard complete. */
+  async completeOnboarding(userId: string, workspaceId: string) {
+    await this.workspaceService.findOne(workspaceId, userId);
+    return this.keys.markOnboarded(workspaceId);
   }
 
   /** Record a 👍/👎 on an assistant message (owner-checked). */
@@ -393,9 +423,12 @@ export class MaestroService {
     // Resolve the Anthropic credential BEFORE persisting anything. A
     // misconfigured deployment (no ANTHROPIC_API_KEY) must surface as a clean
     // error, not an uncaught throw mid-SSE that saves a user turn with no reply.
+    // BYOK: when the workspace has its own Anthropic key, it pays Anthropic
+    // directly, so this turn runs on that key and is NOT billed plan credits.
+    const workspaceApiKey = await this.keys.getDecryptedKey(ctx.workspaceId);
     let auth: ReturnType<typeof resolveAgentAuth>;
     try {
-      auth = resolveAgentAuth();
+      auth = resolveAgentAuth({ workspaceApiKey });
     } catch (err) {
       if (err instanceof MaestroAuthUnavailableError) {
         this.logger.error(`Maestro auth unavailable: ${err.message}`);
@@ -411,9 +444,11 @@ export class MaestroService {
       throw err;
     }
 
-    // Block the turn up front if the workspace has exhausted its AI-token budget.
+    // Block the turn up front if the workspace has exhausted its AI-token
+    // budget. A BYOK workspace is exempt: plan credits are not what pays for
+    // its turns, so its own key must keep working past the plan allowance.
     const preBudget = await this.tokens.checkBudget(ctx.workspaceId);
-    if (preBudget.exceeded) {
+    if (preBudget.exceeded && auth.keySource !== 'byok') {
       yield {
         event: 'error',
         data: {
@@ -700,6 +735,9 @@ export class MaestroService {
         1,
         Math.ceil(totalTokens / AGENT_TOKENS_PER_USER_TOKEN),
       );
+      // BYOK turns are LOGGED but not charged — the workspace already paid
+      // Anthropic directly with its own key.
+      const isByok = auth.keySource === 'byok';
       await this.tokens.recordUsage(
         ctx.workspaceId,
         userId,
@@ -710,6 +748,7 @@ export class MaestroService {
           apiOutputTokens: usage.outputTokens,
           outputLength: displayText.length,
         },
+        { billable: !isByok },
       );
 
       if (followups.length > 0) {

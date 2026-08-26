@@ -63,6 +63,11 @@ export class TokenTrackingService {
   /**
    * Record token usage after a successful AI operation.
    * Increments the workspace counter and inserts a log entry.
+   *
+   * Pass `billable: false` to LOG the usage without charging plan credits —
+   * used by Maestro BYOK, where the workspace pays Anthropic directly. We still
+   * want the log row for abuse detection, support ("how much have I used?") and
+   * margin analysis; we just must not double-charge.
    */
   async recordUsage(
     workspaceId: string,
@@ -75,23 +80,28 @@ export class TokenTrackingService {
       inputSummary?: string;
       outputLength?: number;
     },
+    options?: { billable?: boolean },
   ): Promise<void> {
     if (tokensUsed <= 0) return;
+    const billable = options?.billable !== false;
 
     try {
-      // Atomic increment to avoid race conditions
-      await this.db
-        .update(workspaceUsage)
-        .set({
-          aiTokensUsedThisMonth: sql`${workspaceUsage.aiTokensUsedThisMonth} + ${tokensUsed}`,
-        })
-        .where(eq(workspaceUsage.workspaceId, workspaceId));
+      if (billable) {
+        // Atomic increment to avoid race conditions
+        await this.db
+          .update(workspaceUsage)
+          .set({
+            aiTokensUsedThisMonth: sql`${workspaceUsage.aiTokensUsedThisMonth} + ${tokensUsed}`,
+          })
+          .where(eq(workspaceUsage.workspaceId, workspaceId));
+      }
 
       // Insert detailed log entry
       await this.db.insert(aiUsageLog).values({
         workspaceId,
         userId,
-        operation,
+        // Suffix un-billed rows so BYOK spend is separable from plan spend.
+        operation: billable ? operation : `${operation}_byok`,
         tokensUsed,
         apiInputTokens: details?.apiInputTokens,
         apiOutputTokens: details?.apiOutputTokens,
