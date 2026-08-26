@@ -52,6 +52,10 @@ What is wanted instead:
 
 ### Tests for the Maestro core
 
+**Spec:** `docs/superpowers/specs/2026-08-26-maestro-core-tests-design.md`
+**Plan:** `docs/superpowers/plans/2026-08-26-maestro-core-tests.md`
+**Status:** planned 2026-08-26, coding scheduled for 2026-08-27.
+
 24 source files, 3 spec files — and 2 of those 3 were written during the auth
 work. Meanwhile the repo overall has 141 spec files, so Maestro is the outlier,
 not the norm.
