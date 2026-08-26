@@ -27,7 +27,10 @@ import { createSlackTools } from '../tools/slack.tools';
 import { createTelegramTools } from '../tools/telegram.tools';
 import { createWhatsAppTools } from '../tools/whatsapp.tools';
 import { createPostTools } from '../tools/post.tools';
-import { resolveAgentAuth } from '../auth/agent-auth';
+import {
+  resolveAgentAuth,
+  MaestroAuthUnavailableError,
+} from '../auth/agent-auth';
 import {
   STATIC_SYSTEM_PROMPT,
   CONFIRM_BEFORE_SEND_POLICY,
@@ -387,6 +390,27 @@ export class MaestroService {
       workspaceId: conversation.workspaceId,
     };
 
+    // Resolve the Anthropic credential BEFORE persisting anything. A
+    // misconfigured deployment (no ANTHROPIC_API_KEY) must surface as a clean
+    // error, not an uncaught throw mid-SSE that saves a user turn with no reply.
+    let auth: ReturnType<typeof resolveAgentAuth>;
+    try {
+      auth = resolveAgentAuth();
+    } catch (err) {
+      if (err instanceof MaestroAuthUnavailableError) {
+        this.logger.error(`Maestro auth unavailable: ${err.message}`);
+        yield {
+          event: 'error',
+          data: {
+            message:
+              "Maestro isn't configured on this server yet. Please contact support.",
+          },
+        };
+        return;
+      }
+      throw err;
+    }
+
     // Block the turn up front if the workspace has exhausted its AI-token budget.
     const preBudget = await this.tokens.checkBudget(ctx.workspaceId);
     if (preBudget.exceeded) {
@@ -467,7 +491,6 @@ export class MaestroService {
           })
         : null;
 
-    const auth = resolveAgentAuth();
     const abortController = new AbortController();
     signal.addEventListener('abort', () => abortController.abort());
 
