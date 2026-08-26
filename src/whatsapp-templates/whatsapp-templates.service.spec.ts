@@ -1,5 +1,6 @@
 import {
   reconcile,
+  resolveRejectionReason,
   shouldSyncChannel,
   SYNC_MIN_INTERVAL_MS,
 } from './whatsapp-templates.service';
@@ -94,5 +95,25 @@ describe('shouldSyncChannel', () => {
   it('force overrides a fresh sync', () => {
     const justNow = new Date(now.getTime() - 30_000);
     expect(shouldSyncChannel(justNow, now, true)).toBe(true);
+  });
+});
+
+describe('resolveRejectionReason', () => {
+  it('leaves an absent reason untouched (does not write the column)', () => {
+    expect(resolveRejectionReason(undefined)).toBeUndefined();
+  });
+
+  it('persists an explicit null as null, not as "no change"', () => {
+    expect(resolveRejectionReason(null)).toBeNull();
+  });
+
+  it('normalizes the NONE sentinel to null', () => {
+    expect(resolveRejectionReason('NONE')).toBeNull();
+  });
+
+  it('passes a real reason through unchanged', () => {
+    expect(resolveRejectionReason('INCORRECT_CATEGORY')).toBe(
+      'INCORRECT_CATEGORY',
+    );
   });
 });

@@ -72,6 +72,27 @@ export function shouldSyncChannel(
   return now.getTime() - lastSyncedAt.getTime() >= SYNC_MIN_INTERVAL_MS;
 }
 
+/**
+ * Map a webhook event's `reason` onto what we persist.
+ *
+ * Three distinct inputs, three distinct outcomes:
+ * - `undefined` (field omitted entirely) → `undefined`: don't touch the column.
+ * - `null` (Meta explicitly cleared it, e.g. on a delete-scheduled transition)
+ *   → `null`: write the clear.
+ * - `'NONE'` (Meta's sentinel for "no reason") → `null`: same as an explicit clear.
+ *
+ * `null` and `undefined` look identical after `?.`/`??` collapse them, which is
+ * exactly the bug this function exists to prevent: a webhook that explicitly
+ * clears a rejection reason must not be silently treated as "said nothing."
+ */
+export function resolveRejectionReason(
+  reason: string | null | undefined,
+): string | null | undefined {
+  if (reason === undefined) return undefined;
+  if (reason === null || reason === 'NONE') return null;
+  return reason;
+}
+
 @Injectable()
 export class WhatsAppTemplatesService {
   private readonly logger = new Logger(WhatsAppTemplatesService.name);
@@ -215,8 +236,7 @@ export class WhatsAppTemplatesService {
    */
   async applyStatusEvents(events: ParsedTemplateEvent[]): Promise<void> {
     for (const event of events) {
-      const reason =
-        event.reason === 'NONE' ? null : (event.reason ?? undefined);
+      const reason = resolveRejectionReason(event.reason);
 
       const updateValues: Partial<
         typeof whatsappMessageTemplates.$inferInsert
@@ -227,7 +247,7 @@ export class WhatsAppTemplatesService {
       if (reason !== undefined) {
         updateValues.rejectionReason = reason;
       }
-      if (event.category) {
+      if (event.category !== undefined) {
         updateValues.category = event.category as WhatsAppTemplateCategory;
       }
 
