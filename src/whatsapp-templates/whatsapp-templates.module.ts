@@ -1,13 +1,17 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { ChannelsModule } from '../channels/channels.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { WhatsAppTemplatesService } from './whatsapp-templates.service';
 import { WhatsAppTemplatesController } from './whatsapp-templates.controller';
 
-// ChannelsModule does not import this module back, so no forwardRef is
-// needed here (unlike CalendarSyncModule <-> ChannelsModule). If Task 5's
-// controller work introduces a back-reference, wrap this in forwardRef(() =>
-// ChannelsModule) the way channels.module.ts does for CalendarSyncModule.
+// Task 6 (webhook routing) made this circular: WebhooksController lives in
+// InboxModule and now needs WhatsAppTemplatesService, so InboxModule imports
+// this module (forwardRef'd on that side). InboxModule -> ChannelsModule is
+// already forwardRef'd both ways, which means the ChannelsModule import
+// below now sits on a real cycle (InboxModule -> WhatsAppTemplatesModule ->
+// ChannelsModule -> ... -> InboxModule) and resolves to undefined at scan
+// time without forwardRef here too. Same pattern as channels.module.ts's
+// CalendarSyncModule import.
 //
 // WorkspaceRoleModule (not the full WorkspaceMembersModule) supplies
 // WorkspaceRoleGuard's dependencies. Pulling in WorkspaceMembersModule here
@@ -15,7 +19,7 @@ import { WhatsAppTemplatesController } from './whatsapp-templates.controller';
 // NotificationsModule -> ChannelsModule -> WorkspaceMembers -> Billing ->
 // NotificationsModule cycle that channels.module.ts documents avoiding.
 @Module({
-  imports: [ChannelsModule, WorkspaceRoleModule],
+  imports: [forwardRef(() => ChannelsModule), WorkspaceRoleModule],
   controllers: [WhatsAppTemplatesController],
   providers: [WhatsAppTemplatesService],
   exports: [WhatsAppTemplatesService],
