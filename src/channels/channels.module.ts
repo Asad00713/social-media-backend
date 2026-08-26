@@ -142,6 +142,7 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
     RedditService,
     SlackService,
     TelegramService,
+    WhatsAppService,
     DiscordService,
     MetaAdsClient,
     AdAccountsService,
