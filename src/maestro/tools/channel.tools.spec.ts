@@ -125,6 +125,69 @@ describe('channel tools', () => {
       expect(result.refs).toHaveLength(1);
     });
 
+    // Cloud storage and calendars live in the same table but are not channels
+    // you publish to. Asking "which channels do I have" must not answer with
+    // Google Drive — caught live before this test existed.
+    it('leaves cloud storage and calendar integrations out', async () => {
+      const tools = createChannelTools(
+        fakeService([
+          channelRow({ id: 1, platform: 'instagram', accountName: 'Real' }),
+          channelRow({ id: 2, platform: 'google_drive', accountName: 'Drive' }),
+          channelRow({ id: 3, platform: 'dropbox', accountName: 'Dropbox' }),
+          channelRow({
+            id: 4,
+            platform: 'google_calendar',
+            accountName: 'Cal',
+          }),
+          channelRow({ id: 5, platform: 'onedrive', accountName: 'OneDrive' }),
+        ]),
+      );
+
+      const result = (await tool(tools, 'list_channels').handler(
+        {},
+        CTX,
+      )) as ReferencePayload;
+      const data = result.data as { total: number };
+
+      expect(data.total).toBe(1);
+      expect(result.refs.map((r) => r.label)).toEqual(['Real']);
+    });
+
+    // Messaging channels ARE publishing surfaces — the agent can post to Slack
+    // and Discord, so excluding them would hide real capability.
+    it('keeps messaging channels, which are publishing surfaces', async () => {
+      const tools = createChannelTools(
+        fakeService([
+          channelRow({ id: 1, platform: 'slack', accountName: 'Slack WS' }),
+          channelRow({ id: 2, platform: 'discord', accountName: 'Server' }),
+        ]),
+      );
+
+      const result = (await tool(tools, 'list_channels').handler(
+        {},
+        CTX,
+      )) as ReferencePayload;
+
+      expect(result.refs.map((r) => r.label)).toEqual(['Slack WS', 'Server']);
+    });
+
+    // Hiding a real channel is worse than showing one extra, and a new platform
+    // is far more likely to be a social network than a cloud drive.
+    it('keeps a platform it does not recognise', async () => {
+      const tools = createChannelTools(
+        fakeService([
+          channelRow({ id: 1, platform: 'newnetwork', accountName: 'New' }),
+        ]),
+      );
+
+      const result = (await tool(tools, 'list_channels').handler(
+        {},
+        CTX,
+      )) as ReferencePayload;
+
+      expect(result.refs.map((r) => r.label)).toEqual(['New']);
+    });
+
     it('reports an empty workspace as empty, not as an error', async () => {
       const tools = createChannelTools(fakeService([]));
 
@@ -208,7 +271,14 @@ describe('channel tools', () => {
 
   describe('get_channel_stats', () => {
     it('summarises connection health for the workspace', async () => {
-      const tools = createChannelTools(fakeService([]));
+      const tools = createChannelTools(
+        fakeService([
+          channelRow({ id: 1 }),
+          channelRow({ id: 2, platform: 'facebook' }),
+          channelRow({ id: 3, connectionStatus: 'expired' }),
+          channelRow({ id: 4, platform: 'twitter', connectionStatus: 'error' }),
+        ]),
+      );
 
       const result = (await tool(tools, 'get_channel_stats').handler(
         {},
@@ -217,11 +287,31 @@ describe('channel tools', () => {
 
       expect(result).toEqual({
         total: 4,
-        healthy: 3,
-        expired: 1,
-        erroring: 0,
-        byPlatform: { instagram: 2, facebook: 2 },
+        healthy: 2,
+        needsReconnect: 1,
+        erroring: 1,
+        byPlatform: { instagram: 2, facebook: 1, twitter: 1 },
       });
+    });
+
+    // Counting cloud storage would answer "how are my channels doing" with
+    // Google Drive included in the total.
+    it('does not count integrations toward the channel totals', async () => {
+      const tools = createChannelTools(
+        fakeService([
+          channelRow({ id: 1 }),
+          channelRow({ id: 2, platform: 'google_drive' }),
+          channelRow({ id: 3, platform: 'dropbox' }),
+        ]),
+      );
+
+      const result = (await tool(tools, 'get_channel_stats').handler(
+        {},
+        CTX,
+      )) as Record<string, unknown>;
+
+      expect(result.total).toBe(1);
+      expect(result.byPlatform).toEqual({ instagram: 1 });
     });
   });
 

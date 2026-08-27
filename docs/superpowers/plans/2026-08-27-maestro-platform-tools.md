@@ -109,9 +109,16 @@ frontend code.
 `rich-text.tsx` today handles paragraphs, bullets, and `**bold**` — there is no
 link support. Add reference resolution:
 
-- marker → `<a>` routed via the workspace route table the app already owns
-- status rendered inline beside the label as a shadcn `Badge`
+- marker → a clickable chip routed via the workspace route table the app owns
+- **not a bare underlined link — a badge/pill carrying the platform icon**, the
+  way ClickUp renders a task reference. Clicking it opens that entity's detail
+  page. Compare against ClickUp side by side while building.
+- status shown inline beside the label
 - **unresolved marker → plain text**, never a dead link
+
+The prose around the chips must read professionally — this is the agent's
+public voice, not debug output. Verify the whole answer visually, not just that
+the link resolves.
 
 Follow the shadcn-only rule: check the MCP before reaching for any component.
 The shadcn MCP failed to connect this session — if it is still down, STOP and
@@ -207,10 +214,24 @@ rather than reporting it as passed.
   needs one with a filter argument. This matters more as we approach full
   parity: the target is everything the user can do, but reached through well-
   chosen tools, not one tool per button in the UI.
+- **`tool_result` carries an empty tool name.** Pre-existing, found while
+  verifying live: the SDK's tool_result block has only `tool_use_id`, so
+  `claude-agent-sdk.runtime.ts` hardcodes `name: ''` and the event reaches the
+  frontend blank (`tool_executing` has the name; `tool_result` does not).
+  Harmless until the frontend needs to know which tool produced a result — which
+  Task 7 does, to render the connect card. Fix by correlating `tool_use_id`
+  against the earlier `tool_use`, in Task 7 or its own change; do not let it
+  expand the backend tasks.
 - **One connect path, not two.** The agent reuses the UI's OAuth hook and popup.
   If the agent ever grows its own variant, they will drift and only the agent's
   will be broken.
 - **Workspace scoping is a security boundary**, not a convenience. Every read
   derives its workspace from `ctx`, never from tool arguments.
+- **Integrations are not channels.** Cloud storage and calendars share the
+  channels table but are not publishing channels, and must never appear when the
+  user asks about channels or in channel counts. Derive this from the PLATFORM
+  via `CHANNEL_CATEGORY` — the stored `category` column defaults to 'social' and
+  is only correct where the backfill migration has run. Caught live: the first
+  build listed Google Drive as a connected channel.
 - If a task needs production code reshaped beyond this scope, stop and raise it
   rather than widening silently.

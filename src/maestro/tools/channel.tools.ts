@@ -1,5 +1,9 @@
 import { z } from 'zod';
 import type { ChannelService } from '../../channels/services/channel.service';
+import {
+  CHANNEL_CATEGORY,
+  type SupportedPlatform,
+} from '../../drizzle/schema/channels.schema';
 import type { AgentToolDefinition } from '../maestro.types';
 import {
   REFERENCE_USAGE_HINT,
@@ -47,6 +51,22 @@ function channelHealth(ch: {
   return 'connected';
 }
 
+/**
+ * True for a publishing channel (social or messaging), false for a cloud
+ * storage or calendar integration.
+ *
+ * Derived from the PLATFORM, not from the row's stored `category` column: that
+ * column defaults to 'social' and was only backfilled where the migration ran,
+ * so a row can mislabel itself. Asking "which channels do I have" must not
+ * answer with Google Drive.
+ */
+function isPublishingChannel(platform: string): boolean {
+  const category = CHANNEL_CATEGORY[platform as SupportedPlatform];
+  // An unknown platform is more likely a new social network than a new cloud
+  // drive, and hiding a real channel is worse than showing one extra.
+  return category === undefined || category !== 'integration';
+}
+
 /** The label a channel is known by, falling back through what we actually have. */
 function channelLabel(ch: {
   accountName?: string | null;
@@ -92,14 +112,16 @@ export function createChannelTools(
           ...(platform ? { platform } : {}),
         } as never);
 
-        const items = list.map((ch) => ({
-          id: String(ch.id),
-          platform: ch.platform,
-          name: channelLabel(ch),
-          username: ch.username ?? null,
-          health: channelHealth(ch),
-          lastPostedAt: ch.lastPostedAt ?? null,
-        }));
+        const items = list
+          .filter((ch) => isPublishingChannel(ch.platform))
+          .map((ch) => ({
+            id: String(ch.id),
+            platform: ch.platform,
+            name: channelLabel(ch),
+            username: ch.username ?? null,
+            health: channelHealth(ch),
+            lastPostedAt: ch.lastPostedAt ?? null,
+          }));
 
         const refs: EntityReference[] = items.map((it) => ({
           kind: 'channel',
@@ -127,13 +149,28 @@ export function createChannelTools(
         'Get a summary of this workspace\'s channel connections: how many in total, how many healthy, how many expired or erroring, and the split per platform. Use this for "how are my channels doing" or "is everything connected".',
       inputSchema: {},
       handler: async (_args, ctx) => {
-        const stats = await channels.getChannelStats(ctx.workspaceId);
+        // Derived from the channel list rather than getChannelStats(), whose
+        // totals include cloud-storage and calendar integrations. Those are not
+        // publishing channels, and counting them would answer "how are my
+        // channels doing" with Google Drive in the total.
+        const list = (
+          await channels.getWorkspaceChannels(ctx.workspaceId)
+        ).filter((ch) => isPublishingChannel(ch.platform));
+
+        const byPlatform: Record<string, number> = {};
+        for (const ch of list) {
+          byPlatform[ch.platform] = (byPlatform[ch.platform] || 0) + 1;
+        }
+
+        const health = list.map((ch) => channelHealth(ch));
         return {
-          total: stats.totalChannels,
-          healthy: stats.activeChannels,
-          expired: stats.expiredChannels,
-          erroring: stats.errorChannels,
-          byPlatform: stats.byPlatform,
+          total: list.length,
+          healthy: health.filter((h) => h === 'connected').length,
+          needsReconnect: health.filter((h) => h === 'needs reconnect').length,
+          erroring: health.filter(
+            (h) => h === 'error' || h === 'access revoked',
+          ).length,
+          byPlatform,
         };
       },
     },
@@ -164,11 +201,15 @@ export function createChannelTools(
         }
 
         // Already connected and healthy? Say so rather than offering a button
-        // that would start a redundant OAuth round trip.
+        // that would start a redundant OAuth round trip. Integrations are
+        // excluded so a stray cloud-storage row cannot mask a real channel.
         const existing = await channels.getWorkspaceChannels(ctx.workspaceId, {
           platform,
         } as never);
-        const healthy = existing.filter(
+        const publishing = existing.filter((ch) =>
+          isPublishingChannel(ch.platform),
+        );
+        const healthy = publishing.filter(
           (ch) => channelHealth(ch) === 'connected',
         );
 
@@ -195,7 +236,7 @@ export function createChannelTools(
           alreadyConnected: false,
           // Present when the user is re-authorising a broken channel rather
           // than adding a new one — the UI words the button differently.
-          reconnect: existing.length > 0,
+          reconnect: publishing.length > 0,
         };
       },
     },
