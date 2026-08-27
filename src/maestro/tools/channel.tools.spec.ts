@@ -64,8 +64,16 @@ describe('channel tools', () => {
       )) as ReferencePayload;
 
       expect(isReferencePayload(result)).toBe(true);
+      // `platform` rides along so the chip can show the brand logo without the
+      // frontend digging it out of each tool's differently-shaped data.
       expect(result.refs).toEqual([
-        { kind: 'channel', id: '1', label: 'Schedura', status: 'connected' },
+        {
+          kind: 'channel',
+          id: '1',
+          label: 'Schedura',
+          status: 'connected',
+          platform: 'instagram',
+        },
       ]);
     });
 

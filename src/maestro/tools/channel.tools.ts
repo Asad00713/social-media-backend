@@ -128,6 +128,7 @@ export function createChannelTools(
           id: it.id,
           label: it.name,
           status: it.health,
+          platform: it.platform,
         }));
 
         return withReferences(
@@ -226,6 +227,7 @@ export function createChannelTools(
               id: String(ch.id),
               label: channelLabel(ch),
               status: 'connected',
+              platform: ch.platform,
             })),
           );
         }

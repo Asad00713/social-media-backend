@@ -146,7 +146,7 @@ channel.
 
 Loading, disabled, and error states per CLAUDE.md Rule 4.
 
-### Task 7b — fix the COOP popup close
+### Task 7b — fix the COOP popup close — ALREADY DONE, no work needed
 
 `project_oauth_popup_close_bug`: on production the OAuth popup does not
 auto-close after connecting, because COOP severs the child's `window.close()`.
@@ -156,8 +156,11 @@ This is queued work we are pulling in deliberately, not scope creep: Task 7
 makes the bug the ending of the agent's headline flow. Shipping a connect button
 that leaves a stranded window is worse than not shipping it.
 
-If it turns out to need more than a parent-side close, stop and raise it —
-do not let it silently expand this branch.
+**Verified on main and closed:** `use-channel-connect.ts` already closes the
+popup opener-side on the `postMessage` handler, with the COOP reason in its own
+comment (commit 7fe4b7d, 2026-06-21). Nothing to do here — the queued note in
+memory was stale. Because the connect card reuses that same hook, it inherits
+the fix rather than needing its own.
 
 ### Task 8 — frontend verification
 

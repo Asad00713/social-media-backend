@@ -30,6 +30,11 @@ import { createTelegramTools } from '../tools/telegram.tools';
 import { createWhatsAppTools } from '../tools/whatsapp.tools';
 import { createPostTools } from '../tools/post.tools';
 import { createChannelTools } from '../tools/channel.tools';
+import {
+  mergeReferences,
+  isReferencePayload,
+  type EntityReference,
+} from '../tools/references';
 import { ChannelService } from '../../channels/services/channel.service';
 import {
   resolveAgentAuth,
@@ -822,6 +827,10 @@ export class MaestroService {
     let maestroWeb:
       | { title: string; url: string; content: string }[]
       | null = null;
+    // References accumulate across tool calls (unlike media/questions, where a
+    // later result replaces an earlier one): asking about two things in one
+    // turn must leave every named entity clickable.
+    let maestroRefs: EntityReference[] = [];
 
     try {
       for await (const ev of this.runtime.run(input)) {
@@ -896,6 +905,8 @@ export class MaestroService {
                   ? { pendingAction: data.pendingAction }
                   : {}),
               };
+            } else if (isReferencePayload(data)) {
+              maestroRefs = mergeReferences(maestroRefs, data.refs);
             } else if (data?.kind === 'web') {
               if (Array.isArray(data.images) && data.images.length > 0) {
                 maestroMedia = {
@@ -945,12 +956,16 @@ export class MaestroService {
               .filter(Boolean)
               .slice(0, 4);
 
+      const hasRefs = maestroRefs.length > 0;
       const metadata =
-        maestroMedia || maestroQuestion || maestroWeb
+        maestroMedia || maestroQuestion || maestroWeb || hasRefs
           ? {
               ...(maestroMedia ? { maestroMedia } : {}),
               ...(maestroQuestion ? { maestroQuestion } : {}),
               ...(maestroWeb ? { maestroWeb } : {}),
+              // Without this a reference renders live but dies on reload —
+              // the marker would survive in the text with nothing to resolve it.
+              ...(hasRefs ? { maestroRefs } : {}),
             }
           : undefined;
 

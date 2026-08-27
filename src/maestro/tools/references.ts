@@ -48,6 +48,12 @@ export interface EntityReference {
    * "needs reconnect"). Omitted for entities that have no meaningful state.
    */
   status?: string;
+  /**
+   * Platform id (e.g. "instagram") when the entity has a brand logo, so the
+   * chip can show it. Lives here rather than being dug out of the tool's data,
+   * whose shape differs per tool.
+   */
+  platform?: string;
 }
 
 /** A tool result carrying linkable entities. */
@@ -75,8 +81,14 @@ export function referenceMarker(id: string): string {
  */
 export const REFERENCE_USAGE_HINT =
   ' When you mention any of the returned items in your reply, cite it by writing ' +
-  `${REFERENCE_MARKER_PREFIX}<id>${REFERENCE_MARKER_SUFFIX} inline — the UI turns that into a link. ` +
-  'Use the exact id from the result; never invent one, and never write a URL yourself.';
+  `${REFERENCE_MARKER_PREFIX}<id>${REFERENCE_MARKER_SUFFIX} inline. ` +
+  'Use the exact id from the result; never invent one, and never write a URL yourself. ' +
+  'IMPORTANT: the marker renders as a chip that ALREADY SHOWS the item's name, its icon, ' +
+  'and its status — so do NOT repeat the name or the status next to it, and do not add ' +
+  'check marks or warning emoji for status. Write the marker where the name would go: ' +
+  `"${REFERENCE_MARKER_PREFIX}<id>${REFERENCE_MARKER_SUFFIX} hasn't posted in a week", ` +
+  `not "${REFERENCE_MARKER_PREFIX}<id>${REFERENCE_MARKER_SUFFIX} — Name (connected)". ` +
+  'Keep the surrounding prose short and plain; the chips carry the detail.';
 
 /** True when `value` is a well-formed reference (used on the read-back path). */
 export function isEntityReference(value: unknown): value is EntityReference {
@@ -89,8 +101,20 @@ export function isEntityReference(value: unknown): value is EntityReference {
     r.label.length > 0 &&
     typeof r.kind === 'string' &&
     (REFERENCE_KINDS as readonly string[]).includes(r.kind) &&
-    (r.status === undefined || typeof r.status === 'string')
+    (r.status === undefined || typeof r.status === 'string') &&
+    (r.platform === undefined || typeof r.platform === 'string')
   );
+}
+
+/** Strip a reference down to exactly the documented shape. */
+function normalize(ref: EntityReference): EntityReference {
+  return {
+    kind: ref.kind,
+    id: ref.id,
+    label: ref.label,
+    ...(ref.status === undefined ? {} : { status: ref.status }),
+    ...(ref.platform === undefined ? {} : { platform: ref.platform }),
+  };
 }
 
 /**
@@ -108,13 +132,9 @@ export function withReferences(
   for (const ref of refs) {
     if (!isEntityReference(ref) || seen.has(ref.id)) continue;
     seen.add(ref.id);
-    unique.push(
-      // Normalize away extra keys a caller might have spread in, so what the
-      // frontend receives is exactly the documented shape.
-      ref.status === undefined
-        ? { kind: ref.kind, id: ref.id, label: ref.label }
-        : { kind: ref.kind, id: ref.id, label: ref.label, status: ref.status },
-    );
+    // Normalize away extra keys a caller might have spread in, so what the
+    // frontend receives is exactly the documented shape.
+    unique.push(normalize(ref));
   }
   return { kind: 'refs', refs: unique, data };
 }
@@ -142,11 +162,7 @@ export function mergeReferences(
   for (const ref of incoming) {
     if (!isEntityReference(ref) || seen.has(ref.id)) continue;
     seen.add(ref.id);
-    merged.push(
-      ref.status === undefined
-        ? { kind: ref.kind, id: ref.id, label: ref.label }
-        : { kind: ref.kind, id: ref.id, label: ref.label, status: ref.status },
-    );
+    merged.push(normalize(ref));
   }
   return merged;
 }
