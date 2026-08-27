@@ -79,16 +79,27 @@ export function referenceMarker(id: string): string {
  * the model learns the convention from the tool it is about to call rather than
  * from a distant line in the system prompt.
  */
-export const REFERENCE_USAGE_HINT =
-  ' When you mention any of the returned items in your reply, cite it by writing ' +
-  `${REFERENCE_MARKER_PREFIX}<id>${REFERENCE_MARKER_SUFFIX} inline. ` +
-  'Use the exact id from the result; never invent one, and never write a URL yourself. ' +
-  'IMPORTANT: the marker renders as a chip that ALREADY SHOWS the item's name, its icon, ' +
-  'and its status — so do NOT repeat the name or the status next to it, and do not add ' +
-  'check marks or warning emoji for status. Write the marker where the name would go: ' +
-  `"${REFERENCE_MARKER_PREFIX}<id>${REFERENCE_MARKER_SUFFIX} hasn't posted in a week", ` +
-  `not "${REFERENCE_MARKER_PREFIX}<id>${REFERENCE_MARKER_SUFFIX} — Name (connected)". ` +
-  'Keep the surrounding prose short and plain; the chips carry the detail.';
+const REF = `${REFERENCE_MARKER_PREFIX}<id>${REFERENCE_MARKER_SUFFIX}`;
+
+export const REFERENCE_USAGE_HINT = `
+When you mention any of the returned items in your reply, cite it by writing ${REF} inline. Use the exact id from the result; never invent one, and never write a URL yourself.
+
+HOW TO WRITE THE ANSWER — this matters as much as being correct:
+- ${REF} renders as an inline chip that ALREADY SHOWS the item's name, its icon, and its status. Never repeat any of those beside it, and never add a status emoji (no check marks, no warning signs).
+- Put the marker where the NAME would go, inside an ordinary sentence.
+- Do NOT prefix an item with its platform or type followed by a dash. Let several flow in one sentence, separated by commas.
+- NEVER use a numbered list (1. 2. 3.) for items. Prefer one flowing sentence; if a list genuinely helps, use "- " bullets, several items per line.
+- Lead with the answer, not a preamble.
+- Bold only the facts that carry weight — a count, a state, or a name that is not a chip. Leave connective prose unbolded. Bold is quiet emphasis, so never bold a whole sentence.
+- Put a name you are quoting rather than linking in double quotes, and bold it: **"Launch week"**.
+- Keep it short. The chips carry the detail.
+
+Write it like this:
+  You have **3 channels** connected: ${REFERENCE_MARKER_PREFIX}1${REFERENCE_MARKER_SUFFIX}, ${REFERENCE_MARKER_PREFIX}2${REFERENCE_MARKER_SUFFIX}, and ${REFERENCE_MARKER_PREFIX}3${REFERENCE_MARKER_SUFFIX}. The last one needs reconnecting.
+
+Never like this:
+  1. Discord — ${REFERENCE_MARKER_PREFIX}1${REFERENCE_MARKER_SUFFIX} — "Asad's server" — ✅ Connected
+`;
 
 /** True when `value` is a well-formed reference (used on the read-back path). */
 export function isEntityReference(value: unknown): value is EntityReference {
