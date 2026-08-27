@@ -43,9 +43,9 @@ describe('buildMcpServer', () => {
     // hoisted or shared, one workspace would act with another's identity.
     it('gives each handler the context its own server was built with', async () => {
       const seen: ToolContext[] = [];
-      const capture = def('whoami', async (_args, ctx) => {
+      const capture = def('whoami', (_args, ctx) => {
         seen.push(ctx);
-        return { ok: true };
+        return Promise.resolve({ ok: true });
       });
 
       const alice: ToolContext = { userId: 'u-alice', workspaceId: 'ws-alice' };
@@ -68,9 +68,9 @@ describe('buildMcpServer', () => {
 
     it('does not let a later build change an earlier context', async () => {
       const seen: ToolContext[] = [];
-      const capture = def('whoami', async (_args, ctx) => {
+      const capture = def('whoami', (_args, ctx) => {
         seen.push(ctx);
-        return {};
+        return Promise.resolve({});
       });
 
       const first: ToolContext = { userId: 'u-1', workspaceId: 'ws-1' };
@@ -91,9 +91,9 @@ describe('buildMcpServer', () => {
 
     it('passes the caller arguments through untouched', async () => {
       let received: Record<string, unknown> | null = null;
-      const echo = def('echo', async (args) => {
+      const echo = def('echo', (args) => {
         received = args;
-        return {};
+        return Promise.resolve({});
       });
       const { sdk, handlers } = makeSdk();
       buildMcpServer(sdk, [echo], { userId: 'u', workspaceId: 'ws' });
@@ -106,7 +106,7 @@ describe('buildMcpServer', () => {
 
   describe('result wrapping', () => {
     it('wraps a handler return as MCP text content', async () => {
-      const ok = def('ok', async () => ({ sent: true, id: 42 }));
+      const ok = def('ok', () => Promise.resolve({ sent: true, id: 42 }));
       const { sdk, handlers } = makeSdk();
       buildMcpServer(sdk, [ok], { userId: 'u', workspaceId: 'ws' });
 
@@ -121,9 +121,9 @@ describe('buildMcpServer', () => {
     // A throwing tool must not escape and kill the turn — the model should see
     // the failure as a result it can react to.
     it('turns a thrown Error into an isError result rather than rejecting', async () => {
-      const boom = def('boom', async () => {
-        throw new Error('slack channel not found');
-      });
+      const boom = def('boom', () =>
+        Promise.reject(new Error('slack channel not found')),
+      );
       const { sdk, handlers } = makeSdk();
       buildMcpServer(sdk, [boom], { userId: 'u', workspaceId: 'ws' });
 
@@ -136,9 +136,8 @@ describe('buildMcpServer', () => {
     });
 
     it('falls back to a generic message when a non-Error is thrown', async () => {
-      const odd = def('odd', async () => {
-        throw 'just a string';
-      });
+      // eslint-disable-next-line @typescript-eslint/prefer-promise-reject-errors -- a non-Error rejection is exactly what this tests
+      const odd = def('odd', () => Promise.reject('just a string'));
       const { sdk, handlers } = makeSdk();
       buildMcpServer(sdk, [odd], { userId: 'u', workspaceId: 'ws' });
 
@@ -155,9 +154,9 @@ describe('buildMcpServer', () => {
       buildMcpServer(
         sdk,
         [
-          def('one', async () => ({})),
-          def('two', async () => ({})),
-          def('three', async () => ({})),
+          def('one', () => Promise.resolve({})),
+          def('two', () => Promise.resolve({})),
+          def('three', () => Promise.resolve({})),
         ],
         { userId: 'u', workspaceId: 'ws' },
       );

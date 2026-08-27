@@ -42,7 +42,10 @@ describe('confirm gate', () => {
   });
 
   describe('confirmCard', () => {
-    const card = confirmCard('Send "hello" to #general on Slack?', 'Yes, send it');
+    const card = confirmCard(
+      'Send "hello" to #general on Slack?',
+      'Yes, send it',
+    );
 
     it('renders through the same question path as ask_user', () => {
       // `kind: 'question'` is what makes the frontend show real Yes/No
