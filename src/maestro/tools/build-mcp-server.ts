@@ -1,4 +1,5 @@
 import type { AgentToolDefinition, ToolContext } from '../maestro.types';
+import { stampPendingAction } from './confirm';
 
 type AgentSdk = typeof import('@anthropic-ai/claude-agent-sdk');
 
@@ -10,6 +11,11 @@ export const MCP_SERVER_NAME = 'maestro';
  * Each tool handler closes over `ctx` — never global — so every chat turn is
  * scoped to its authenticated user/workspace. Tool results are wrapped into the
  * MCP `CallToolResult` text shape; thrown errors become `isError` results.
+ *
+ * A confirm card returned by an outward tool is stamped here with the tool that
+ * produced it and the arguments it was called with. This is the one place both
+ * are in hand, so a new outward tool gets it for free — where stamping at each
+ * `confirmCard(...)` call site would be eleven chances to forget.
  */
 export function buildMcpServer(
   sdk: AgentSdk,
@@ -24,7 +30,11 @@ export function buildMcpServer(
       def.inputSchema as any,
       async (args: Record<string, unknown>) => {
         try {
-          const data = await def.handler(args, ctx);
+          const data = stampPendingAction(
+            await def.handler(args, ctx),
+            def.name,
+            args,
+          );
           return {
             content: [{ type: 'text' as const, text: JSON.stringify(data) }],
           };

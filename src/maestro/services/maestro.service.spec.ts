@@ -53,6 +53,7 @@ const DONE_EVENT = {
 
 interface Harness {
   service: MaestroService;
+  setMessageMetadata: jest.Mock<Promise<void>, unknown[]>;
   /** Typed so `.mock.calls` indexes without falling back to `any`. */
   addMessage: jest.Mock<Promise<{ id: string }>, unknown[]>;
   recordUsage: jest.Mock<Promise<void>, unknown[]>;
@@ -61,7 +62,14 @@ interface Harness {
 
 function makeHarness(
   events: AgentEvent[],
-  opts: { byokKey?: string | null; budgetExceeded?: boolean } = {},
+  opts: {
+    byokKey?: string | null;
+    budgetExceeded?: boolean;
+    /** Extra messages visible to the approval path. */
+    messages?: unknown[];
+    /** Stands in for the Slack connection the approved tool resolves. */
+    slackConn?: unknown;
+  } = {},
 ): Harness {
   const runtime = {
     run: () =>
@@ -74,6 +82,9 @@ function makeHarness(
   const addMessage = jest
     .fn<Promise<{ id: string }>, unknown[]>()
     .mockResolvedValue({ id: 'msg-saved' });
+  const setMessageMetadata = jest
+    .fn<Promise<void>, unknown[]>()
+    .mockResolvedValue(undefined);
   const conversations = {
     findById: jest.fn().mockResolvedValue({
       id: CONVERSATION_ID,
@@ -84,10 +95,13 @@ function makeHarness(
     addMessage,
     updateTitle: jest.fn().mockResolvedValue(undefined),
     // One prior turn, so `isFirstTurn` is false and no title is generated.
-    getRecentMessages: jest.fn().mockResolvedValue([
-      { role: 'user', content: 'earlier', metadata: null },
-      { role: 'user', content: 'current', metadata: null },
-    ]),
+    getRecentMessages: jest.fn().mockResolvedValue(
+      opts.messages ?? [
+        { role: 'user', content: 'earlier', metadata: null },
+        { role: 'user', content: 'current', metadata: null },
+      ],
+    ),
+    setMessageMetadata,
   };
 
   const recordUsage = jest
@@ -105,26 +119,39 @@ function makeHarness(
     .fn<Promise<string | null>, unknown[]>()
     .mockResolvedValue(opts.byokKey ?? null);
 
-  // Tool factories run at input-build time and only capture these; none is
-  // invoked, because the fake runtime never calls a tool handler.
+  // Tool factories run at input-build time and only capture these. The fake
+  // runtime never calls a handler, so most stay empty — but the APPROVAL path
+  // invokes a real handler, so inbox/slack need just enough to answer it.
   const stub = {} as never;
+  const inbox = {
+    resolveWorkspaceChannelToken: jest
+      .fn()
+      .mockResolvedValue(opts.slackConn ?? null),
+    sendDm: jest.fn().mockResolvedValue({ ok: true }),
+  } as never;
+  const slack = {
+    listAllChannels: jest
+      .fn()
+      .mockResolvedValue({ channels: [{ id: 'C1', name: 'general' }] }),
+    joinChannel: jest.fn().mockResolvedValue(undefined),
+  } as never;
   const groq = { isReady: () => false } as never;
 
   const service = new MaestroService(
     runtime as never,
     conversations as never,
-    stub,
-    stub,
+    stub, // usersService
+    stub, // workspaceService
     tokens as never,
     groq,
-    stub,
-    stub,
-    stub,
-    stub,
-    stub,
-    stub,
-    stub,
-    stub,
+    stub, // pexels
+    stub, // unsplash
+    stub, // tavily
+    stub, // discord
+    slack,
+    stub, // posts
+    inbox,
+    stub, // r2
     { getDecryptedKey } as never,
   );
 
@@ -132,16 +159,61 @@ function makeHarness(
     .spyOn(service, 'getUsage')
     .mockResolvedValue({ used: 10, limit: 1000 } as never);
 
-  return { service, addMessage, recordUsage, getDecryptedKey };
+  return {
+    service,
+    addMessage,
+    recordUsage,
+    getDecryptedKey,
+    setMessageMetadata,
+  };
 }
 
-function run(h: Harness, signal?: AbortSignal) {
+function run(
+  h: Harness,
+  signal?: AbortSignal,
+  approval?: { messageId: string; option: string },
+) {
   return collect(
     h.service.streamMessage(
-      { conversationId: CONVERSATION_ID, userId: USER_ID, message: 'hi' },
+      {
+        conversationId: CONVERSATION_ID,
+        userId: USER_ID,
+        message: 'hi',
+        ...(approval ? { approval } : {}),
+      },
       signal ?? new AbortController().signal,
     ) as AsyncGenerator<unknown, void, unknown>,
   );
+}
+
+const CARD_ID = 'msg-card';
+const YES = 'Yes, send it';
+
+/** An assistant message holding an unresolved confirm card. */
+function cardMessage(over: Record<string, unknown> = {}) {
+  return {
+    id: CARD_ID,
+    role: 'assistant',
+    content: null,
+    metadata: {
+      maestroQuestion: {
+        questions: [
+          {
+            header: 'Confirm',
+            question: 'Send "Hello" to #general on Slack?',
+            options: [YES, 'No, cancel'],
+            multiSelect: false,
+          },
+        ],
+        pendingAction: {
+          tool: 'send_slack_message',
+          args: { channel: 'general', message: 'Hello' },
+          yesLabel: YES,
+        },
+      },
+      ...over,
+    },
+  };
 }
 
 describe('MaestroService.streamMessage', () => {
@@ -501,6 +573,207 @@ describe('MaestroService.streamMessage', () => {
       expect(events[0].data.message).toContain("isn't configured");
       // The whole point of resolving auth first: no orphan user turn.
       expect(h.addMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('approval', () => {
+    // The bug this whole path exists for: the model used to receive the
+    // approval as chat text, and would produce a SECOND confirm card for an
+    // action the user had already approved.
+    it('performs the action itself, with no model turn at all', async () => {
+      const h = makeHarness([...textDeltas('should not run'), DONE_EVENT], {
+        messages: [cardMessage()],
+        slackConn: { accessToken: 'tok', channelId: 'ch-1' },
+      });
+
+      const events = await run(h, undefined, {
+        messageId: CARD_ID,
+        option: YES,
+      });
+      const order = names(events);
+
+      expect(order).toContain('tool_executing');
+      expect(order[order.length - 1]).toBe('done');
+      // The scripted runtime text never appears — the model was not consulted.
+      expect(streamedText(events)).not.toContain('should not run');
+    });
+
+    it('emits no second confirm card', async () => {
+      const h = makeHarness([DONE_EVENT], {
+        messages: [cardMessage()],
+        slackConn: { accessToken: 'tok', channelId: 'ch-1' },
+      });
+
+      const events = await run(h, undefined, {
+        messageId: CARD_ID,
+        option: YES,
+      });
+
+      const cards = events.filter(
+        (e) =>
+          e.event === 'tool_result' &&
+          JSON.stringify(e.data).includes('"kind":"question"'),
+      );
+      expect(cards).toHaveLength(0);
+    });
+
+    it('marks the card resolved so the approval cannot be replayed', async () => {
+      const h = makeHarness([DONE_EVENT], {
+        messages: [cardMessage()],
+        slackConn: { accessToken: 'tok', channelId: 'ch-1' },
+      });
+
+      await run(h, undefined, { messageId: CARD_ID, option: YES });
+
+      const [, meta] = h.setMessageMetadata.mock.calls[0] as [
+        string,
+        { maestroResolved?: { approved?: boolean } },
+      ];
+      expect(meta.maestroResolved?.approved).toBe(true);
+    });
+
+    it('runs nothing when the user cancels', async () => {
+      const h = makeHarness([DONE_EVENT], {
+        messages: [cardMessage()],
+        slackConn: { accessToken: 'tok', channelId: 'ch-1' },
+      });
+
+      const events = await run(h, undefined, {
+        messageId: CARD_ID,
+        option: 'No, cancel',
+      });
+
+      expect(names(events)).not.toContain('tool_executing');
+      expect(names(events)).toContain('message_complete');
+    });
+
+    it('refuses an approval that was already resolved', async () => {
+      // Replaying an approval must not send a second message.
+      const h = makeHarness([...textDeltas('normal turn'), DONE_EVENT], {
+        messages: [
+          cardMessage({
+            maestroResolved: { approved: true, at: '2026-08-27T00:00:00Z' },
+          }),
+        ],
+        slackConn: { accessToken: 'tok', channelId: 'ch-1' },
+      });
+
+      const events = await run(h, undefined, {
+        messageId: CARD_ID,
+        option: YES,
+      });
+
+      // Falls through to a normal turn rather than re-running the action.
+      expect(streamedText(events)).toContain('normal turn');
+    });
+
+    it('ignores an approval naming a message from another conversation', async () => {
+      const h = makeHarness([...textDeltas('normal turn'), DONE_EVENT], {
+        messages: [cardMessage()],
+        slackConn: { accessToken: 'tok', channelId: 'ch-1' },
+      });
+
+      const events = await run(h, undefined, {
+        messageId: 'msg-from-somewhere-else',
+        option: YES,
+      });
+
+      expect(streamedText(events)).toContain('normal turn');
+    });
+
+    // Stored metadata is untrusted input, not a capability token.
+    it('refuses stored arguments that fail the tool schema', async () => {
+      const h = makeHarness([...textDeltas('normal turn'), DONE_EVENT], {
+        messages: [
+          {
+            id: CARD_ID,
+            role: 'assistant',
+            content: null,
+            metadata: {
+              maestroQuestion: {
+                questions: [],
+                pendingAction: {
+                  tool: 'send_slack_message',
+                  // `channel` must be a string; a tampered blob is rejected.
+                  args: { channel: { $ne: null }, message: 'Hello' },
+                  yesLabel: YES,
+                },
+              },
+            },
+          },
+        ],
+        slackConn: { accessToken: 'tok', channelId: 'ch-1' },
+      });
+
+      const events = await run(h, undefined, {
+        messageId: CARD_ID,
+        option: YES,
+      });
+
+      expect(streamedText(events)).toContain('normal turn');
+      expect(h.setMessageMetadata).not.toHaveBeenCalled();
+    });
+
+    it('ignores an approval for a card that names an unknown tool', async () => {
+      const h = makeHarness([...textDeltas('normal turn'), DONE_EVENT], {
+        messages: [
+          {
+            id: CARD_ID,
+            role: 'assistant',
+            content: null,
+            metadata: {
+              maestroQuestion: {
+                questions: [],
+                pendingAction: {
+                  tool: 'tool_that_does_not_exist',
+                  args: {},
+                  yesLabel: YES,
+                },
+              },
+            },
+          },
+        ],
+      });
+
+      const events = await run(h, undefined, {
+        messageId: CARD_ID,
+        option: YES,
+      });
+
+      expect(streamedText(events)).toContain('normal turn');
+    });
+
+    // ask_user questions carry no pendingAction — they must not be treated
+    // as approvals.
+    it('ignores an approval pointing at an ask_user question', async () => {
+      const h = makeHarness([...textDeltas('normal turn'), DONE_EVENT], {
+        messages: [
+          {
+            id: CARD_ID,
+            role: 'assistant',
+            content: null,
+            metadata: {
+              maestroQuestion: {
+                questions: [
+                  {
+                    header: 'Tone',
+                    question: 'Which tone?',
+                    options: ['Friendly', 'Formal'],
+                    multiSelect: false,
+                  },
+                ],
+              },
+            },
+          },
+        ],
+      });
+
+      const events = await run(h, undefined, {
+        messageId: CARD_ID,
+        option: 'Friendly',
+      });
+
+      expect(streamedText(events)).toContain('normal turn');
     });
   });
 

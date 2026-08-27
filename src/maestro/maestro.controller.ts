@@ -213,6 +213,7 @@ export class MaestroController {
           confirmBeforeSend: dto.confirmBeforeSend,
           webSearch: dto.webSearch,
           attachments: dto.attachments,
+          approval: dto.approval,
         },
         abortController.signal,
       )) {

@@ -20,6 +20,7 @@ import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import { ClaudeAgentSdkRuntime } from '../runtime/claude-agent-sdk.runtime';
 import { MaestroKeyService } from './maestro-key.service';
 import { createUserTools } from '../tools/user.tools';
+import { isPendingAction, type PendingAction } from '../tools/confirm';
 import { createMediaTools } from '../tools/media.tools';
 import { createInteractionTools } from '../tools/interaction.tools';
 import { createWebTools } from '../tools/web.tools';
@@ -37,8 +38,10 @@ import {
   CONFIRM_BEFORE_SEND_POLICY,
   bridgeChannelPolicy,
 } from '../prompt/system-prompt';
+import { z } from 'zod';
 import type {
   AgentRunInput,
+  AgentToolDefinition,
   ConversationTurn,
   MaestroAttachment,
   ToolContext,
@@ -62,6 +65,23 @@ const HISTORY_LIMIT = 20;
  * applied at RECORD time (real → user tokens), NOT at display.
  */
 const AGENT_TOKENS_PER_USER_TOKEN = 100;
+
+/** No model ran, so there is nothing to report. */
+const EMPTY_USAGE = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+
+/** Outward tools report failure as `{ ok: false, message }`. */
+function isFailedToolResult(result: unknown): boolean {
+  return Boolean(
+    result &&
+      typeof result === 'object' &&
+      (result as { ok?: unknown }).ok === false,
+  );
+}
+
+function failureMessage(result: unknown): string {
+  const message = (result as { message?: unknown } | null)?.message;
+  return typeof message === 'string' && message ? message : 'the send failed.';
+}
 /** Sentinel the model emits before its follow-up suggestions (stripped from UI text). */
 const FOLLOWUPS_MARKER = '__FOLLOWUPS__';
 
@@ -379,6 +399,196 @@ export class MaestroService {
     return this.conversations.getMessages(conversationId);
   }
 
+  /**
+   * The tool set for one turn. Shared by the agent run and the approval path,
+   * so an approved action re-invokes the SAME handler the card came from —
+   * built with the same options, not a lookalike.
+   */
+  private buildTools(opts: {
+    confirmBeforeSend: boolean;
+    webSearchEnabled: boolean;
+  }): AgentToolDefinition[] {
+    const { confirmBeforeSend, webSearchEnabled } = opts;
+    return [
+      ...createUserTools(this.usersService, this.workspaceService),
+      ...createMediaTools(this.unsplash, this.pexels),
+      ...(webSearchEnabled ? createWebTools(this.tavily) : []),
+      ...createDiscordTools(this.discord, this.inbox, { confirmBeforeSend }),
+      ...createSlackTools(this.slack, this.inbox, { confirmBeforeSend }),
+      ...createTelegramTools(this.inbox, { confirmBeforeSend }),
+      ...createWhatsAppTools(this.inbox, { confirmBeforeSend }),
+      ...createPostTools(this.posts, { confirmBeforeSend }),
+      ...createInteractionTools(),
+    ];
+  }
+
+  /**
+   * Perform the action a confirm card was waiting on.
+   *
+   * The card records which tool asked and with what (`pendingAction`), so the
+   * approval re-invokes that handler directly. The model is never asked to
+   * make the connection — it used to be, from chat text alone, and Haiku
+   * routinely re-asked instead.
+   *
+   * Everything read back from metadata is treated as untrusted: the stored
+   * arguments face the tool's own Zod schema before the handler sees them, and
+   * `ctx` is rebuilt from the authenticated request, never from the payload.
+   * A stored blob must not be usable as a capability.
+   *
+   * Returns null when the approval cannot be honoured, in which case the
+   * caller falls back to a normal agent turn rather than failing the request.
+   */
+  private async resolveApproval(params: {
+    approval: { messageId: string; option: string };
+    conversationId: string;
+    ctx: ToolContext;
+    confirmBeforeSend: boolean;
+    webSearchEnabled: boolean;
+  }): Promise<{ approved: boolean; result?: unknown; tool?: string } | null> {
+    const { approval, conversationId, ctx } = params;
+
+    const recent = await this.conversations.getRecentMessages(
+      conversationId,
+      HISTORY_LIMIT,
+    );
+    // Scoped to THIS conversation, so a message id from elsewhere cannot be
+    // used to trigger an action here.
+    const message = recent.find((m) => m.id === approval.messageId);
+    if (!message || message.role !== 'assistant') return null;
+
+    const meta = message.metadata as {
+      maestroQuestion?: { pendingAction?: unknown };
+      maestroResolved?: unknown;
+    } | null;
+    // An approval must not be replayable.
+    if (meta?.maestroResolved) return null;
+
+    const pending = meta?.maestroQuestion?.pendingAction;
+    if (!isPendingAction(pending)) return null;
+
+    if (approval.option !== pending.yesLabel) {
+      // Declined: nothing runs, and the card is closed so it cannot be
+      // answered a second time.
+      await this.conversations.setMessageMetadata(approval.messageId, {
+        ...(meta ?? {}),
+        maestroResolved: { approved: false, at: new Date().toISOString() },
+      });
+      return { approved: false };
+    }
+
+    const tool = this.buildTools({
+      confirmBeforeSend: params.confirmBeforeSend,
+      webSearchEnabled: params.webSearchEnabled,
+    }).find((t) => t.name === pending.tool);
+    if (!tool) return null;
+
+    // Re-validate the stored arguments against the tool's own schema. They
+    // have been through the database since they were captured.
+    const parsed = z
+      .object(tool.inputSchema as Record<string, z.ZodTypeAny>)
+      .safeParse({ ...pending.args, confirmed: true });
+    if (!parsed.success) {
+      this.logger.warn(
+        `Approval rejected: stored args failed ${pending.tool} schema`,
+      );
+      return null;
+    }
+
+    const result = await tool.handler(
+      parsed.data as Record<string, unknown>,
+      ctx,
+    );
+    await this.conversations.setMessageMetadata(approval.messageId, {
+      ...(meta ?? {}),
+      maestroResolved: { approved: true, at: new Date().toISOString() },
+    });
+    return { approved: true, result, tool: pending.tool };
+  }
+
+  /**
+   * Emit the turn for an approval that was performed without the model.
+   *
+   * The events mirror a normal turn (tool_executing → tool_result → text →
+   * complete → done) so the frontend needs no new event type, and the reply is
+   * a short confirmation written here rather than generated — there is nothing
+   * left to decide, and a model round-trip would only reintroduce the chance
+   * of it re-asking.
+   */
+  private async *completeApprovalTurn(params: {
+    conversationId: string;
+    outcome: { approved: boolean; result?: unknown; tool?: string };
+    model: string;
+    userId: string;
+    ctx: ToolContext;
+    isByok: boolean;
+  }): AsyncGenerator<MaestroSseEvent> {
+    const { conversationId, outcome, model, userId, ctx } = params;
+
+    if (!outcome.approved) {
+      const text = 'No problem — I have not sent it.';
+      const saved = await this.conversations.addMessage(
+        conversationId,
+        'assistant',
+        text,
+        undefined,
+        model,
+        0,
+      );
+      yield { event: 'message_stream', data: { token: text } };
+      yield {
+        event: 'message_complete',
+        data: { content: text, messageId: saved.id },
+      };
+      yield { event: 'done', data: { usage: EMPTY_USAGE, budget: await this.getUsage(ctx.workspaceId) } };
+      return;
+    }
+
+    const tool = outcome.tool ?? 'action';
+    yield { event: 'tool_executing', data: { tool, input: {} } };
+    const output = [
+      { type: 'text', text: JSON.stringify(outcome.result ?? {}) },
+    ];
+    const failed = isFailedToolResult(outcome.result);
+    yield {
+      event: 'tool_result',
+      data: { tool, output, isError: failed },
+    };
+
+    const text = failed
+      ? `That did not go through: ${failureMessage(outcome.result)}`
+      : 'Done — sent.';
+    const saved = await this.conversations.addMessage(
+      conversationId,
+      'assistant',
+      text,
+      undefined,
+      model,
+      0,
+    );
+    yield { event: 'message_stream', data: { token: text } };
+    yield {
+      event: 'message_complete',
+      data: { content: text, messageId: saved.id },
+    };
+
+    // The action ran on our infrastructure but without a model call, so there
+    // are no agent tokens to convert. Logged at the floor so the turn still
+    // appears in usage history.
+    await this.tokens.recordUsage(
+      ctx.workspaceId,
+      userId,
+      1,
+      'maestro_chat',
+      { apiInputTokens: 0, apiOutputTokens: 0, outputLength: text.length },
+      { billable: !params.isByok },
+    );
+
+    yield {
+      event: 'done',
+      data: { usage: EMPTY_USAGE, budget: await this.getUsage(ctx.workspaceId) },
+    };
+  }
+
   async *streamMessage(
     params: {
       conversationId: string;
@@ -396,6 +606,8 @@ export class MaestroService {
       /** Fired the instant the inbound user turn is persisted (before the model
        *  runs) — bridge channels use this to push the user bubble live. */
       onUserMessagePersisted?: () => void;
+      /** Set when this turn answers a confirm card rather than being typed. */
+      approval?: { messageId: string; option: string };
     },
     signal: AbortSignal,
   ): AsyncGenerator<MaestroSseEvent> {
@@ -479,6 +691,34 @@ export class MaestroService {
         // a notification hook must never break the turn
       }
     }
+    // An answer to a confirm card is performed HERE, not by the model. The
+    // card recorded which tool asked and with what, so the approval re-invokes
+    // that handler directly — the model used to have to infer the link from
+    // chat text, and would re-ask instead of acting.
+    if (params.approval) {
+      const outcome = await this.resolveApproval({
+        approval: params.approval,
+        conversationId,
+        ctx,
+        confirmBeforeSend,
+        webSearchEnabled,
+      });
+      if (outcome) {
+        yield* this.completeApprovalTurn({
+          conversationId,
+          outcome,
+          model,
+          userId,
+          ctx,
+          isByok: auth.keySource === 'byok',
+        });
+        return;
+      }
+      // Could not be honoured (stale card, replay, failed validation) — fall
+      // through to a normal turn so the user still gets a reply.
+      this.logger.warn('Approval could not be resolved; running a normal turn');
+    }
+
     const recent = await this.conversations.getRecentMessages(
       conversationId,
       HISTORY_LIMIT,
@@ -545,17 +785,7 @@ export class MaestroService {
       history,
       userMessage: message,
       attachments,
-      tools: [
-        ...createUserTools(this.usersService, this.workspaceService),
-        ...createMediaTools(this.unsplash, this.pexels),
-        ...(webSearchEnabled ? createWebTools(this.tavily) : []),
-        ...createDiscordTools(this.discord, this.inbox, { confirmBeforeSend }),
-        ...createSlackTools(this.slack, this.inbox, { confirmBeforeSend }),
-        ...createTelegramTools(this.inbox, { confirmBeforeSend }),
-        ...createWhatsAppTools(this.inbox, { confirmBeforeSend }),
-        ...createPostTools(this.posts, { confirmBeforeSend }),
-        ...createInteractionTools(),
-      ],
+      tools: this.buildTools({ confirmBeforeSend, webSearchEnabled }),
       model,
       env: auth.env,
       abortController,
@@ -582,6 +812,8 @@ export class MaestroService {
         options: string[];
         multiSelect: boolean;
       }[];
+      /** Present only on confirm-gate cards — what the card is waiting to do. */
+      pendingAction?: PendingAction;
     } | null = null;
     let maestroWeb:
       | { title: string; url: string; content: string }[]
@@ -654,6 +886,11 @@ export class MaestroService {
                     multiSelect: Boolean(item.multiSelect),
                   };
                 }),
+                // Persisted so a later approval can re-invoke the exact
+                // handler that asked. Absent for ask_user questions.
+                ...(isPendingAction(data.pendingAction)
+                  ? { pendingAction: data.pendingAction }
+                  : {}),
               };
             } else if (data?.kind === 'web') {
               if (Array.isArray(data.images) && data.images.length > 0) {

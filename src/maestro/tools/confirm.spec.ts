@@ -1,4 +1,9 @@
-import { confirmCard, isConfirmed } from './confirm';
+import {
+  CANCEL_LABEL,
+  confirmCard,
+  isConfirmed,
+  stampPendingAction,
+} from './confirm';
 
 /**
  * The confirm gate is what stops Maestro performing an outward action — a real
@@ -71,6 +76,90 @@ describe('confirm gate', () => {
     it('tells the model to re-call with confirmed:true rather than answer in prose', () => {
       expect(card.instruction).toContain('confirmed:true');
       expect(card.instruction).toContain('Yes, send it');
+    });
+  });
+
+  describe('stampPendingAction', () => {
+    // The card must remember who asked and with what, so an approval can
+    // re-invoke that exact handler instead of the model re-deriving it from
+    // chat text — which is what produced the duplicate-confirm bug.
+    const args = { channel: 'schedura-channel', message: 'Hello' };
+
+    it('records the asking tool and its arguments', () => {
+      const stamped = stampPendingAction(
+        confirmCard('Send "Hello" to #schedura-channel?', 'Yes, send it'),
+        'send_slack_message',
+        args,
+      ) as { pendingAction?: unknown };
+
+      expect(stamped.pendingAction).toEqual({
+        tool: 'send_slack_message',
+        args,
+        yesLabel: 'Yes, send it',
+      });
+    });
+
+    // It was falsy on the call that produced the card, and the approval path
+    // sets it itself — carrying it would only invite it to go stale.
+    it('drops the confirmed flag from the recorded arguments', () => {
+      const stamped = stampPendingAction(
+        confirmCard('Send it?', 'Yes, send it'),
+        'send_slack_message',
+        { ...args, confirmed: false },
+      ) as { pendingAction: { args: Record<string, unknown> } };
+
+      expect(stamped.pendingAction.args).toEqual(args);
+      expect(stamped.pendingAction.args).not.toHaveProperty('confirmed');
+    });
+
+    it('leaves an ordinary tool result untouched', () => {
+      const result = { kind: 'slack', ok: true, message: 'sent' };
+
+      expect(stampPendingAction(result, 'send_slack_message', args)).toBe(
+        result,
+      );
+    });
+
+    // ask_user questions flow through the same wrapper but are not gates —
+    // there is no action pending behind them.
+    it('does not stamp an ask_user question', () => {
+      const question = {
+        kind: 'question',
+        shown: true,
+        questions: [
+          {
+            header: 'Tone',
+            question: 'Which tone?',
+            options: ['Friendly', 'Formal'],
+            multiSelect: false,
+          },
+        ],
+      };
+
+      const stamped = stampPendingAction(question, 'ask_user', {}) as {
+        pendingAction?: unknown;
+      };
+
+      expect(stamped.pendingAction).toBeUndefined();
+    });
+
+    it('never overwrites a stamp that is already there', () => {
+      const already = {
+        ...confirmCard('Send it?', 'Yes, send it'),
+        pendingAction: { tool: 'original', args: {}, yesLabel: 'Yes, send it' },
+      };
+
+      const stamped = stampPendingAction(already, 'other_tool', args) as {
+        pendingAction: { tool: string };
+      };
+
+      expect(stamped.pendingAction.tool).toBe('original');
+    });
+
+    it('uses the shared cancel label as the negative option', () => {
+      expect(
+        confirmCard('Send it?', 'Yes, send it').questions[0].options[1],
+      ).toBe(CANCEL_LABEL);
     });
   });
 });
