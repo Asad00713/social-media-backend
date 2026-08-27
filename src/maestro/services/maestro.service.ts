@@ -20,6 +20,7 @@ import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import { ClaudeAgentSdkRuntime } from '../runtime/claude-agent-sdk.runtime';
 import { MaestroKeyService } from './maestro-key.service';
 import { createUserTools } from '../tools/user.tools';
+import { isPendingAction, type PendingAction } from '../tools/confirm';
 import { createMediaTools } from '../tools/media.tools';
 import { createInteractionTools } from '../tools/interaction.tools';
 import { createWebTools } from '../tools/web.tools';
@@ -582,6 +583,8 @@ export class MaestroService {
         options: string[];
         multiSelect: boolean;
       }[];
+      /** Present only on confirm-gate cards — what the card is waiting to do. */
+      pendingAction?: PendingAction;
     } | null = null;
     let maestroWeb:
       | { title: string; url: string; content: string }[]
@@ -654,6 +657,11 @@ export class MaestroService {
                     multiSelect: Boolean(item.multiSelect),
                   };
                 }),
+                // Persisted so a later approval can re-invoke the exact
+                // handler that asked. Absent for ask_user questions.
+                ...(isPendingAction(data.pendingAction)
+                  ? { pendingAction: data.pendingAction }
+                  : {}),
               };
             } else if (data?.kind === 'web') {
               if (Array.isArray(data.images) && data.images.length > 0) {
