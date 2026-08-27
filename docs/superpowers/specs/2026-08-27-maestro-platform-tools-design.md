@@ -15,6 +15,23 @@ So Maestro today is a messaging agent that happens to live inside Schedura. It
 cannot answer "how many channels do I have", "what's going out this week", or
 "which post did best" — the three things a user is most likely to ask it.
 
+## The target
+
+**Anything the user can do or see in the app, the agent can do or see too.**
+
+That is the standard set for this work, and it is what makes the layering below
+a sequence rather than a subset: every layer is on the way to full parity, none
+of them is the stopping point.
+
+Two things follow from it, and they hold for every later layer:
+
+- **The agent uses the same paths the UI uses.** Not a parallel implementation
+  that drifts. If connecting a channel runs OAuth in the UI, it runs OAuth from
+  the agent — the same hook, the same popup, the same callback.
+- **Parity of surface, not of permission.** The agent inherits the user's own
+  capabilities and workspace scope. It can never see or do more than the person
+  asking, and every read derives its workspace from the request context.
+
 ---
 
 ## Not module by module
@@ -88,6 +105,19 @@ to connect a channel"), and everything else depends on channels existing.
 
 Then the same shape across posts, campaigns, inbox, media, and calendar.
 
+**Analytics: everything the Insights UI shows** — per the user's decision. That
+surface is `kpi-strip`, `metrics-chart`, `platform-breakdown`, and
+`channel-table`, so the agent reads the same numbers behind them: KPIs and their
+trend, the metric series over a period, the per-platform split, and per-channel
+performance.
+
+Read the values through the services the UI already calls. Nothing new is
+computed for the agent, and no number should be derivable only by asking it —
+if the agent and the Insights page disagree, that is a bug in this work.
+
+The agent answers in prose and links; it does not draw charts. Rendering a chart
+in the panel is a later question, and not what "show me my analytics" needs.
+
 ### `connect_channel` — the card pattern
 
 The user's example: *"I don't know how to connect a channel"* → agent asks which
@@ -97,10 +127,23 @@ This is a new pattern, not just a new tool: **the agent returns an interactive
 card, and the actual work happens in the browser.** `MediaGrid` already proves
 the panel can render a rich tool result; this extends it to one that acts.
 
-The card routes to `/settings/channels` with the platform preselected. It does
-**not** open the OAuth popup directly from the panel: the COOP popup-close bug
-is still open on production (`project_oauth_popup_close_bug`), and routing the
-user to the page they would have used anyway avoids inheriting it.
+**The button runs the real OAuth flow** — the same behaviour as connecting from
+the Channels page, per the user's decision. It reuses `useInitiateOAuth` and
+`openOAuthPopup` rather than reimplementing anything: the agent must not become
+a second, subtly different connect path.
+
+One constraint shapes the card: `useInitiateOAuth` does not redirect on its own,
+and the popup **must be opened synchronously inside the click handler** or popup
+blockers kill it. So the card owns the click and the popup; the agent's job ends
+at rendering it. An agent-initiated popup is not possible here, and that is
+fine — the user clicking is the action.
+
+**This inherits the open COOP popup bug.** `project_oauth_popup_close_bug`:
+on production the popup does not auto-close after connecting, because COOP
+severs `window.close()`. It is real today on the Channels page and it will be
+equally real inside Maestro. Since this work makes it more visible, the fix
+(parent-side close) belongs here rather than staying queued — otherwise the
+agent's headline feature ends in a window the user has to close by hand.
 
 The pattern is reused later for "open this post", "show this campaign",
 "reconnect this channel".
@@ -111,8 +154,7 @@ The pattern is reused later for "open this post", "show this campaign",
 
 - **Layers 2–4.** `connect_channel` is included because it is Layer 1's proof of
   the card pattern at small scope, not because Layer 2 starts here.
-- **Analytics comparisons.** Reading numbers is Layer 1. Charts, period-over-
-  period, and cross-channel comparison are a separate effort.
+- **Analytics beyond what the UI shows.** Nothing new is computed for the agent.
 - **Write of any kind.** No tool in this layer changes state.
 
 ---

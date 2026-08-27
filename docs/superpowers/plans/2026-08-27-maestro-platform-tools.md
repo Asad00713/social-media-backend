@@ -56,18 +56,32 @@ as an argument.
 
 Register in `build-mcp-server.ts` alongside the existing tool groups.
 
-### Task 3 — `connect_channel` card
+### Task 3 — analytics read tools
 
-Returns an interactive card naming the platform to connect, which the frontend
-renders as a button routing to `/settings/channels` with that platform
-preselected.
+`src/maestro/tools/analytics.tools.ts` (new)
 
-Not an outward action — it performs nothing, so **no confirm gate**. The user
-clicking is the action.
+Everything the Insights UI shows: KPIs and trend, the metric series over a
+period, per-platform breakdown, per-channel performance.
+
+Read through the services `kpi-strip`, `metrics-chart`, `platform-breakdown`,
+and `channel-table` already call. Do not recompute — if the agent and the
+Insights page can disagree, this task is wrong.
+
+Prefer one tool with a period/metric argument over four near-identical tools
+(tool-count discipline, see Notes).
+
+### Task 4 — `connect_channel` card
+
+Returns an interactive card naming the platform to connect. The frontend renders
+it as a button that runs **the real OAuth flow** — same behaviour as the
+Channels page.
+
+Not an outward action in the confirm-gate sense — the tool performs nothing, so
+**no confirm gate**. The user clicking is the action.
 
 If the platform is already connected, say so instead of offering the button.
 
-### Task 4 — backend verification
+### Task 5 — backend verification
 
 ```
 npx jest src/maestro test/maestro-core   # 93 existing + new
@@ -81,6 +95,7 @@ New tests:
 - Reads are workspace-scoped — another workspace's channels never appear.
 - `connect_channel` on an already-connected platform offers no button.
 - A tool result with no entities still renders (empty references, not absent).
+- Analytics tools return the same figures as the Insights services they wrap.
 
 **Then STOP.** Present the backend and propose the frontend plan before writing
 frontend code.
@@ -89,7 +104,7 @@ frontend code.
 
 ## Frontend (after user approval)
 
-### Task 5 — render references as links
+### Task 6 — render references as links
 
 `rich-text.tsx` today handles paragraphs, bullets, and `**bold**` — there is no
 link support. Add reference resolution:
@@ -105,15 +120,39 @@ tell the user rather than hand-rolling a badge.
 Keep `RevealedText` streaming intact: a link must fade in with the words around
 it, not pop in fully-formed.
 
-### Task 6 — the connect card
+### Task 7 — the connect card
 
 Render `connect_channel`'s result as a button, following `MediaGrid`'s
-precedent for a rich tool result. Route to `/settings/channels` with the
-platform preselected.
+precedent for a rich tool result. The button runs the real OAuth flow.
+
+**Reuse `useInitiateOAuth` + `openOAuthPopup`.** Do not write a second connect
+path — a divergent one would drift from the Channels page and break in ways only
+the agent shows.
+
+The popup must be opened **synchronously in the click handler** (the hook's own
+docblock says so: it does not redirect on its own, and popup blockers fire
+otherwise). So the card owns the click; `openOAuthPopup` first, then point it at
+the authorization URL from the mutation's `onSuccess`.
+
+On success, refresh the channel list so the agent's next answer reflects the new
+channel.
 
 Loading, disabled, and error states per CLAUDE.md Rule 4.
 
-### Task 7 — frontend verification
+### Task 7b — fix the COOP popup close
+
+`project_oauth_popup_close_bug`: on production the OAuth popup does not
+auto-close after connecting, because COOP severs the child's `window.close()`.
+Fix parent-side in the opener.
+
+This is queued work we are pulling in deliberately, not scope creep: Task 7
+makes the bug the ending of the agent's headline flow. Shipping a connect button
+that leaves a stranded window is worse than not shipping it.
+
+If it turns out to need more than a parent-side close, stop and raise it —
+do not let it silently expand this branch.
+
+### Task 8 — frontend verification
 
 ```
 npm run build
@@ -133,14 +172,25 @@ Using Chrome DevTools MCP, on a real workspace:
    structured, and that the rendered href matches the entity id.
 4. Ask something with **no** results (a workspace with no campaigns) → confirm a
    real empty state, not a broken reference or a dead link.
-5. Ask "I don't know how to connect a channel" → confirm the question card
-   appears with platform options, then the button, then that clicking it routes
-   correctly with the platform preselected.
-6. Reload mid-conversation → confirm links still work on the hydrated message
+5. Ask about analytics → confirm the figures **match the Insights page** for the
+   same period. Open both and compare; a plausible-looking wrong number is the
+   failure mode here, and only a side-by-side catches it.
+6. Ask "I don't know how to connect a channel" → confirm the question card
+   appears with platform options, then the button. Click it and confirm the
+   OAuth popup actually opens against the right provider — not merely that the
+   button rendered.
+7. Complete a real connection through that popup → confirm the popup closes on
+   its own (Task 7b), the channel appears, and asking again reflects it.
+8. Reload mid-conversation → confirm links still work on the hydrated message
    (references must survive persistence, not only live streaming).
 
 Screenshot each step. A link that looks right but points at the wrong id is
-exactly the failure this step exists to catch — check both.
+exactly the failure this step exists to catch — check the rendered href against
+the entity id, not just the pixels.
+
+Where the browser cannot complete a step (a real OAuth consent screen may need
+the user's own credentials), say so plainly and hand that step to the user
+rather than reporting it as passed.
 
 ---
 
@@ -154,7 +204,12 @@ exactly the failure this step exists to catch — check both.
   test the reloaded path explicitly (step 6), not just the streaming one.
 - **Tool-count discipline.** Layer 1 across all modules should land near a dozen
   tools, not thirty. If a module seems to need five read tools, it probably
-  needs one with a filter argument.
+  needs one with a filter argument. This matters more as we approach full
+  parity: the target is everything the user can do, but reached through well-
+  chosen tools, not one tool per button in the UI.
+- **One connect path, not two.** The agent reuses the UI's OAuth hook and popup.
+  If the agent ever grows its own variant, they will drift and only the agent's
+  will be broken.
 - **Workspace scoping is a security boundary**, not a convenience. Every read
   derives its workspace from `ctx`, never from tool arguments.
 - If a task needs production code reshaped beyond this scope, stop and raise it
