@@ -29,6 +29,8 @@ import { createSlackTools } from '../tools/slack.tools';
 import { createTelegramTools } from '../tools/telegram.tools';
 import { createWhatsAppTools } from '../tools/whatsapp.tools';
 import { createPostTools } from '../tools/post.tools';
+import { createChannelTools } from '../tools/channel.tools';
+import { ChannelService } from '../../channels/services/channel.service';
 import {
   resolveAgentAuth,
   MaestroAuthUnavailableError,
@@ -170,6 +172,7 @@ export class MaestroService {
     private readonly inbox: InboxService,
     private readonly r2: CloudflareR2Service,
     private readonly keys: MaestroKeyService,
+    private readonly channels: ChannelService,
   ) {}
 
   /**
@@ -418,6 +421,7 @@ export class MaestroService {
       ...createTelegramTools(this.inbox, { confirmBeforeSend }),
       ...createWhatsAppTools(this.inbox, { confirmBeforeSend }),
       ...createPostTools(this.posts, { confirmBeforeSend }),
+      ...createChannelTools(this.channels),
       ...createInteractionTools(),
     ];
   }
