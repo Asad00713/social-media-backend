@@ -197,6 +197,22 @@ export class ConversationService {
   }
 
   /**
+   * Replace one message's metadata blob.
+   *
+   * Used to mark a Maestro confirm card resolved once its action has run (or
+   * been declined), so the same approval cannot be replayed.
+   */
+  async setMessageMetadata(
+    messageId: string,
+    metadata: Record<string, unknown>,
+  ) {
+    await this.db
+      .update(chatMessages)
+      .set({ metadata })
+      .where(eq(chatMessages.id, messageId));
+  }
+
+  /**
    * Auto-generate a title from the first user message.
    */
   async autoGenerateTitle(conversationId: string, firstMessage: string) {

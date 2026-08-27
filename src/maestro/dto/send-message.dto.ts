@@ -101,6 +101,20 @@ export class MaestroAttachmentDto {
   size!: number;
 }
 
+/** The user's answer to a confirm card, carried as data rather than prose. */
+export class MaestroApprovalDto {
+  /** The assistant message whose card is being answered. */
+  @IsString()
+  @IsNotEmpty()
+  messageId!: string;
+
+  /** The option the user picked, verbatim. */
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  option!: string;
+}
+
 export class SendMaestroMessageDto {
   @IsString()
   @MaxLength(8000)
@@ -129,6 +143,18 @@ export class SendMaestroMessageDto {
   @ValidateNested({ each: true })
   @Type(() => MaestroAttachmentDto)
   attachments?: MaestroAttachmentDto[];
+
+  /**
+   * Set when this turn answers a confirm card, instead of being free-typed.
+   *
+   * Without it the choice arrives as ordinary chat text and the model has to
+   * work out which card it answered and which tool to re-run — which is
+   * exactly what produced duplicate confirmation prompts.
+   */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MaestroApprovalDto)
+  approval?: MaestroApprovalDto;
 }
 
 /** Save a workspace's own Anthropic API key (BYOK). */
