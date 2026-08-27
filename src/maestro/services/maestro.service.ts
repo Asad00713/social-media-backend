@@ -33,6 +33,7 @@ import { createChannelTools } from '../tools/channel.tools';
 import {
   mergeReferences,
   isReferencePayload,
+  referenceMarker,
   type EntityReference,
 } from '../tools/references';
 import { ChannelService } from '../../channels/services/channel.service';
@@ -759,6 +760,29 @@ export class MaestroService {
         if (m.role === 'user' && Array.isArray(atts) && atts.length > 0) {
           const list = atts.map((a) => `${a.name} — ${a.url}`).join('; ');
           const note = `[Attached files (URLs for tool use only, do not paste in replies): ${list}]`;
+          content = content ? `${content}\n${note}` : note;
+        }
+
+        // Replay what each [[ref:id]] in a past reply pointed at.
+        //
+        // Without this the markers come back as opaque text: the model can see
+        // that it once wrote [[ref:10]] but not that it meant the Threads
+        // channel, so on a follow-up it names the entity in prose and the user
+        // loses the link. Restating the mapping lets it keep citing entities it
+        // has already mentioned, without calling the tool again.
+        const refs = (
+          m.metadata as { maestroRefs?: EntityReference[] } | null
+        )?.maestroRefs;
+        if (m.role === 'assistant' && Array.isArray(refs) && refs.length > 0) {
+          const known = refs
+            .map(
+              (r) =>
+                `${referenceMarker(r.id)} = ${r.label}` +
+                (r.platform ? ` (${r.platform})` : '') +
+                (r.status ? `, ${r.status}` : ''),
+            )
+            .join('; ');
+          const note = `[Entities cited above — when you mention any of these again, cite it by its marker rather than writing the name as plain text: ${known}]`;
           content = content ? `${content}\n${note}` : note;
         }
         return { role: m.role as 'user' | 'assistant', content };
