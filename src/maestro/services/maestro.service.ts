@@ -81,8 +81,8 @@ const EMPTY_USAGE = { inputTokens: 0, outputTokens: 0, costUsd: 0 };
 function isFailedToolResult(result: unknown): boolean {
   return Boolean(
     result &&
-      typeof result === 'object' &&
-      (result as { ok?: unknown }).ok === false,
+    typeof result === 'object' &&
+    (result as { ok?: unknown }).ok === false,
   );
 }
 
@@ -287,7 +287,11 @@ export class MaestroService {
     };
   }
 
-  async createConversation(userId: string, workspaceId: string, title?: string) {
+  async createConversation(
+    userId: string,
+    workspaceId: string,
+    title?: string,
+  ) {
     return this.conversations.create(userId, workspaceId, title);
   }
 
@@ -504,10 +508,7 @@ export class MaestroService {
       return null;
     }
 
-    const result = await tool.handler(
-      parsed.data as Record<string, unknown>,
-      ctx,
-    );
+    const result = await tool.handler(parsed.data, ctx);
     await this.conversations.setMessageMetadata(approval.messageId, {
       ...(meta ?? {}),
       maestroResolved: { approved: true, at: new Date().toISOString() },
@@ -549,7 +550,13 @@ export class MaestroService {
         event: 'message_complete',
         data: { content: text, messageId: saved.id },
       };
-      yield { event: 'done', data: { usage: EMPTY_USAGE, budget: await this.getUsage(ctx.workspaceId) } };
+      yield {
+        event: 'done',
+        data: {
+          usage: EMPTY_USAGE,
+          budget: await this.getUsage(ctx.workspaceId),
+        },
+      };
       return;
     }
 
@@ -595,7 +602,10 @@ export class MaestroService {
 
     yield {
       event: 'done',
-      data: { usage: EMPTY_USAGE, budget: await this.getUsage(ctx.workspaceId) },
+      data: {
+        usage: EMPTY_USAGE,
+        budget: await this.getUsage(ctx.workspaceId),
+      },
     };
   }
 
@@ -739,9 +749,8 @@ export class MaestroService {
         if (m.content) return true;
         // Keep an image/file-only user turn (empty text) so its attachment URLs
         // still reach later turns.
-        const atts = (
-          m.metadata as { maestroAttachments?: unknown[] } | null
-        )?.maestroAttachments;
+        const atts = (m.metadata as { maestroAttachments?: unknown[] } | null)
+          ?.maestroAttachments;
         return m.role === 'user' && Array.isArray(atts) && atts.length > 0;
       })
       .slice(0, -1)
@@ -770,9 +779,8 @@ export class MaestroService {
         // channel, so on a follow-up it names the entity in prose and the user
         // loses the link. Restating the mapping lets it keep citing entities it
         // has already mentioned, without calling the tool again.
-        const refs = (
-          m.metadata as { maestroRefs?: EntityReference[] } | null
-        )?.maestroRefs;
+        const refs = (m.metadata as { maestroRefs?: EntityReference[] } | null)
+          ?.maestroRefs;
         if (m.role === 'assistant' && Array.isArray(refs) && refs.length > 0) {
           const known = refs
             .map(
@@ -848,9 +856,8 @@ export class MaestroService {
       /** Present only on confirm-gate cards — what the card is waiting to do. */
       pendingAction?: PendingAction;
     } | null = null;
-    let maestroWeb:
-      | { title: string; url: string; content: string }[]
-      | null = null;
+    let maestroWeb: { title: string; url: string; content: string }[] | null =
+      null;
     // References accumulate across tool calls (unlike media/questions, where a
     // later result replaces an earlier one): asking about two things in one
     // turn must leave every named entity clickable.
@@ -964,7 +971,10 @@ export class MaestroService {
 
       // Flush any held-back display text when no marker was ever seen.
       if (markerIdx === -1 && raw.length > emittedLen) {
-        yield { event: 'message_stream', data: { token: raw.slice(emittedLen) } };
+        yield {
+          event: 'message_stream',
+          data: { token: raw.slice(emittedLen) },
+        };
       }
 
       const displayText = (
@@ -976,7 +986,12 @@ export class MaestroService {
           : raw
               .slice(markerIdx + FOLLOWUPS_MARKER.length)
               .split('|')
-              .map((s) => s.trim().replace(/^[-•\d.)\s]+/, '').trim())
+              .map((s) =>
+                s
+                  .trim()
+                  .replace(/^[-•\d.)\s]+/, '')
+                  .trim(),
+              )
               .filter(Boolean)
               .slice(0, 4);
 
