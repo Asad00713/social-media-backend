@@ -54,6 +54,17 @@ export interface EntityReference {
    * whose shape differs per tool.
    */
   platform?: string;
+  /**
+   * The entity's sub-type, when its kind has several and the app draws each
+   * with its own icon — a campaign is "bulk", "drip", or "evergreen", and the
+   * Campaigns page gives those three different glyphs.
+   *
+   * Separate from `platform` because they answer different questions: platform
+   * is which network this belongs to, variant is which KIND of this thing it
+   * is. A chip that wore one generic icon for every campaign would look less
+   * like the card it links to.
+   */
+  variant?: string;
 }
 
 /** A tool result carrying linkable entities. */
@@ -95,8 +106,11 @@ HOW TO WRITE THE ANSWER — this matters as much as being correct:
 - Do not restate the status as the sentence's verb either. Instead of "${REF} is paused — you'll need to unpause it", write "${REF} needs unpausing before it will send." Say what the state MEANS for the user, or what to do about it; the pill already says what the state IS.
 - Do NOT prefix an item with its platform or type followed by a dash. Let several flow in one sentence, separated by commas.
 - NEVER use a numbered list (1. 2. 3.) for items. Prefer one flowing sentence; if a list genuinely helps, use "- " bullets, several items per line.
-- Lead with the answer, not a preamble.
+- Lead with the CONCLUSION, not a census. When the user asks which things need attention, open with how many do and name those first — never walk through every item in list order and leave the point for the end. And do not open by counting what the screen already shows: "You have 3 campaigns" tells the user nothing they cannot see.
+- Do not close by summarising what you just said. If a closing line adds nothing new, leave it out; the answer ends when the last useful fact does.
 - Bold only facts that are NOT chips — a count, or a bare state. Never bold a chip or the words beside it. Bold is quiet emphasis, so never bold a whole sentence.
+- One clause per item. Say the thing the user would not have known from the chip — a date, a blocker, the next step — and stop. No mini-narratives.
+- Use the product's own words for things. If a tool gives you a label, use it verbatim; never substitute an internal-sounding synonym.
 - Keep it short. The chips carry the detail.
 
 Write it like this:
@@ -105,13 +119,20 @@ Write it like this:
 And on a follow-up, still like this:
   Only ${REFERENCE_MARKER_PREFIX}10${REFERENCE_MARKER_SUFFIX} needs attention — ${REFERENCE_MARKER_PREFIX}1${REFERENCE_MARKER_SUFFIX} and ${REFERENCE_MARKER_PREFIX}2${REFERENCE_MARKER_SUFFIX} are healthy.
 
+And when some items need the user and others do not, group them — conclusion first:
+  **2 of 3** need you:
+  - ${REFERENCE_MARKER_PREFIX}c1${REFERENCE_MARKER_SUFFIX} (Evergreen) — finish setup and launch it.
+  - ${REFERENCE_MARKER_PREFIX}c2${REFERENCE_MARKER_SUFFIX} (Drip) — resume it to start posting again.
+
+  On track: ${REFERENCE_MARKER_PREFIX}c3${REFERENCE_MARKER_SUFFIX} (Simple), next post Sep 1.
+
 Never like this:
   1. Discord — ${REFERENCE_MARKER_PREFIX}1${REFERENCE_MARKER_SUFFIX} — "Asad's server" — ✅ Connected
   Your **Threads** account needs reconnecting; **Discord** and **Slack** are fine.
   ${REFERENCE_MARKER_PREFIX}c1${REFERENCE_MARKER_SUFFIX} (evergreen, draft) is in draft — it hasn't started yet.
+  You have **3 campaigns**: ${REFERENCE_MARKER_PREFIX}c1${REFERENCE_MARKER_SUFFIX} (Evergreen) — still in draft and hasn't started. ${REFERENCE_MARKER_PREFIX}c2${REFERENCE_MARKER_SUFFIX} (Drip) — paused, on hold right now. ${REFERENCE_MARKER_PREFIX}c3${REFERENCE_MARKER_SUFFIX} (Simple) — active and on track. The two that need attention are the draft and the paused one.
 
-Say that last one like this instead:
-  ${REFERENCE_MARKER_PREFIX}c1${REFERENCE_MARKER_SUFFIX} (evergreen) hasn't started yet — launch it when you're ready.
+That last one is wrong three times over: it counts what the screen shows, it restates every pill in prose, and it buries the answer in a closing line.
 `;
 
 /** True when `value` is a well-formed reference (used on the read-back path). */
@@ -126,7 +147,8 @@ export function isEntityReference(value: unknown): value is EntityReference {
     typeof r.kind === 'string' &&
     (REFERENCE_KINDS as readonly string[]).includes(r.kind) &&
     (r.status === undefined || typeof r.status === 'string') &&
-    (r.platform === undefined || typeof r.platform === 'string')
+    (r.platform === undefined || typeof r.platform === 'string') &&
+    (r.variant === undefined || typeof r.variant === 'string')
   );
 }
 
@@ -138,6 +160,7 @@ function normalize(ref: EntityReference): EntityReference {
     label: ref.label,
     ...(ref.status === undefined ? {} : { status: ref.status }),
     ...(ref.platform === undefined ? {} : { platform: ref.platform }),
+    ...(ref.variant === undefined ? {} : { variant: ref.variant }),
   };
 }
 

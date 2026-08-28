@@ -92,7 +92,13 @@ describe('campaign tools', () => {
 
       expect(isReferencePayload(result)).toBe(true);
       expect(result.refs).toEqual([
-        { kind: 'campaign', id: 'c-1', label: 'Launch week', status: 'active' },
+        {
+          kind: 'campaign',
+          id: 'c-1',
+          label: 'Launch week',
+          status: 'active',
+          variant: 'bulk',
+        },
       ]);
     });
 
@@ -201,11 +207,11 @@ describe('campaign tools', () => {
         {},
         CTX,
       )) as ReferencePayload;
-      const { campaigns } = result.data as {
-        campaigns: { schedule: string | null }[];
+      const { onTrack } = result.data as {
+        onTrack: { schedule: string | null }[];
       };
 
-      expect(campaigns[0].schedule).toBe('from 2026-09-01, ongoing');
+      expect(onTrack[0].schedule).toBe('from 2026-09-01, ongoing');
     });
 
     it('does not invent an end date for a drip campaign that has none', async () => {
@@ -229,11 +235,131 @@ describe('campaign tools', () => {
         {},
         CTX,
       )) as ReferencePayload;
-      const { campaigns } = result.data as {
-        campaigns: { schedule: string | null }[];
+      const { onTrack } = result.data as {
+        onTrack: { schedule: string | null }[];
       };
 
-      expect(campaigns[0].schedule).toBe('from 2026-09-01, no end date');
+      expect(onTrack[0].schedule).toBe('from 2026-09-01, no end date');
+    });
+
+    it('calls a bulk campaign "Simple", the name the product uses', async () => {
+      // The UI has never shown the word "bulk" — that is the database's word.
+      // An agent that says it is naming a thing the user cannot find.
+      const tools = createCampaignTools(fakeService([campaignRow()]));
+      const result = (await tool(tools, 'list_campaigns').handler(
+        {},
+        CTX,
+      )) as ReferencePayload;
+      const { onTrack } = result.data as { onTrack: { type: string }[] };
+
+      expect(onTrack[0].type).toBe('Simple');
+    });
+
+    it('passes an unknown type through rather than dropping it', async () => {
+      const tools = createCampaignTools(
+        fakeService([campaignRow({ type: 'experimental' })]),
+      );
+      const result = (await tool(tools, 'list_campaigns').handler(
+        {},
+        CTX,
+      )) as ReferencePayload;
+      const { onTrack } = result.data as { onTrack: { type: string }[] };
+
+      expect(onTrack[0].type).toBe('experimental');
+    });
+
+    it('splits campaigns into the ones waiting on the user and the rest', async () => {
+      const tools = createCampaignTools(
+        fakeService([
+          campaignRow({ id: 'a', status: 'active' }),
+          campaignRow({ id: 'd', status: 'draft' }),
+          campaignRow({ id: 'p', status: 'paused' }),
+          campaignRow({ id: 'f', status: 'failed' }),
+          campaignRow({ id: 'c', status: 'completed' }),
+        ]),
+      );
+      const result = (await tool(tools, 'list_campaigns').handler(
+        {},
+        CTX,
+      )) as ReferencePayload;
+      const data = result.data as {
+        needsAttentionCount: number;
+        onTrackCount: number;
+        needsAttention: { id: string }[];
+        onTrack: { id: string }[];
+      };
+
+      expect(data.needsAttention.map((c) => c.id)).toEqual(['d', 'p', 'f']);
+      expect(data.onTrack.map((c) => c.id)).toEqual(['a', 'c']);
+      expect(data.needsAttentionCount).toBe(3);
+      expect(data.onTrackCount).toBe(2);
+    });
+
+    it('still references every campaign, whichever group it landed in', async () => {
+      const tools = createCampaignTools(
+        fakeService([
+          campaignRow({ id: 'a', status: 'active' }),
+          campaignRow({ id: 'd', status: 'draft' }),
+        ]),
+      );
+      const result = (await tool(tools, 'list_campaigns').handler(
+        {},
+        CTX,
+      )) as ReferencePayload;
+
+      expect(result.refs.map((r) => r.id).sort()).toEqual(['a', 'd']);
+    });
+
+    it('gives each campaign the next step to take, so the prose is not left to invent one', async () => {
+      const tools = createCampaignTools(
+        fakeService([
+          campaignRow({ id: 'd', status: 'draft' }),
+          campaignRow({ id: 'p', status: 'paused' }),
+        ]),
+      );
+      const result = (await tool(tools, 'list_campaigns').handler(
+        {},
+        CTX,
+      )) as ReferencePayload;
+      const { needsAttention } = result.data as {
+        needsAttention: { id: string; suggestedAction?: string }[];
+      };
+
+      expect(needsAttention[0].suggestedAction).toBe(
+        'finish setup and launch it',
+      );
+      expect(needsAttention[1].suggestedAction).toBe(
+        'resume it to start posting again',
+      );
+    });
+
+    it('offers no action for a campaign that needs none', async () => {
+      const tools = createCampaignTools(
+        fakeService([campaignRow({ status: 'active' })]),
+      );
+      const result = (await tool(tools, 'list_campaigns').handler(
+        {},
+        CTX,
+      )) as ReferencePayload;
+      const { onTrack } = result.data as {
+        onTrack: { suggestedAction?: string }[];
+      };
+
+      expect(onTrack[0].suggestedAction).toBeUndefined();
+    });
+
+    it('tells the chip which campaign type it is, so it wears the right icon', async () => {
+      const tools = createCampaignTools(
+        fakeService([campaignRow({ type: 'evergreen' })]),
+      );
+      const result = (await tool(tools, 'list_campaigns').handler(
+        {},
+        CTX,
+      )) as ReferencePayload;
+
+      // The raw id, not the label — the frontend maps it to the Campaigns
+      // page's own icon.
+      expect(result.refs[0].variant).toBe('evergreen');
     });
 
     it('carries the progress counts the user asks about', async () => {
@@ -242,11 +368,11 @@ describe('campaign tools', () => {
         {},
         CTX,
       )) as ReferencePayload;
-      const { campaigns } = result.data as {
-        campaigns: { progress: Record<string, number> }[];
+      const { onTrack } = result.data as {
+        onTrack: { progress: Record<string, number> }[];
       };
 
-      expect(campaigns[0].progress).toEqual({
+      expect(onTrack[0].progress).toEqual({
         planned: 10,
         published: 4,
         failed: 1,

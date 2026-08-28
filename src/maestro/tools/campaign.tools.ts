@@ -24,6 +24,27 @@ const CAMPAIGN_STATUSES = [
   'failed',
 ] as const;
 
+/**
+ * What each campaign type is CALLED in the product.
+ *
+ * `bulk` is the database's word; the user has never seen it — every screen
+ * calls that type "Simple" (see the frontend's CAMPAIGN_TYPES). An agent that
+ * says "bulk" is naming a thing that does not exist in the interface, which
+ * reads as a fabricated attribute rather than a synonym.
+ *
+ * A type absent from this map passes through unchanged: a new type is better
+ * named by its raw id than dropped from the answer.
+ */
+const CAMPAIGN_TYPE_LABEL: Record<string, string> = {
+  bulk: 'Simple',
+  drip: 'Drip',
+  evergreen: 'Evergreen',
+};
+
+function typeLabel(type: string): string {
+  return CAMPAIGN_TYPE_LABEL[type] ?? type;
+}
+
 /** How many campaigns one answer can name before the reply stops being useful. */
 const DEFAULT_LIMIT = 10;
 const MAX_LIMIT = 25;
@@ -70,19 +91,57 @@ function progressOf(c: CampaignDto) {
   };
 }
 
+/**
+ * Whether this campaign is waiting on the user.
+ *
+ * A draft was never launched and a paused campaign was stopped by hand — both
+ * sit still until someone acts. `failed` needs looking at for the opposite
+ * reason. Everything else is either running or finished, so it needs nothing.
+ *
+ * Computed here rather than left to the model: "which ones need attention" is
+ * the question users actually ask, and an answer that re-derives it from six
+ * status strings gets it wrong eventually.
+ */
+function needsAttention(c: CampaignDto): boolean {
+  return c.status === 'draft' || c.status === 'paused' || c.status === 'failed';
+}
+
+/**
+ * The one thing the user would do about this campaign next.
+ *
+ * The status pill already shows the state, so the answer's prose has to earn
+ * its place by saying what the state MEANS. Supplying the verb here keeps that
+ * consistent instead of leaving the model to invent a phrasing per campaign.
+ */
+function suggestedAction(c: CampaignDto): string | null {
+  switch (c.status) {
+    case 'draft':
+      return 'finish setup and launch it';
+    case 'paused':
+      return 'resume it to start posting again';
+    case 'failed':
+      return 'check what went wrong';
+    default:
+      return null;
+  }
+}
+
 /** One campaign, flattened to what an answer actually needs. */
 function summarize(c: CampaignDto) {
   return {
     id: c.id,
     name: c.name,
     status: c.status,
-    type: c.type,
+    // The product's word, not the database's — see CAMPAIGN_TYPE_LABEL.
+    type: typeLabel(c.type),
     platforms: c.platforms,
     channelCount: c.channelIds.length,
     schedule: scheduleSummary(c),
     progress: progressOf(c),
     nextRunAt: c.nextRunAt,
     launchedAt: c.launchedAt,
+    needsAttention: needsAttention(c),
+    ...(suggestedAction(c) ? { suggestedAction: suggestedAction(c) } : {}),
   };
 }
 
@@ -92,6 +151,9 @@ function referenceFor(c: CampaignDto): EntityReference {
     id: c.id,
     label: c.name,
     status: c.status,
+    // The raw type, not its label — the frontend maps this to the same icon the
+    // Campaigns page draws on the card, so a chip looks like what it links to.
+    variant: c.type,
   };
 }
 
@@ -113,7 +175,10 @@ export function createCampaignTools(
     {
       name: 'list_campaigns',
       description:
-        'List this workspace\'s campaigns, optionally filtered by status or searched by name. Use this for "what campaigns do I have", "what\'s running right now", "any campaigns paused", or before suggesting the user schedule something. Covers all three types: bulk, drip, and evergreen.' +
+        'List this workspace\'s campaigns, optionally filtered by status or searched by name. Use this for "what campaigns do I have", "what\'s running right now", "any campaigns paused", or before suggesting the user schedule something. Covers all three types: Simple, Drip, and Evergreen.\n\n' +
+        'The result arrives already split into `needsAttention` (drafts, paused, and failed — the ones waiting on the user) and `onTrack`. Lead your answer with that split: say how many need attention, name those first, and only then mention the ones running fine. Do not walk through every campaign in list order before reaching the point.\n\n' +
+        'Each campaign carries a `suggestedAction` — the next thing the user would do. Use it instead of writing your own, and never explain what the status means ("it\'s in draft, so it hasn\'t started"): the chip shows the state, so your words are for what to do about it.\n\n' +
+        "Do NOT write the campaign's type in your sentence — the chip already carries its type icon. `type` is there so you can filter or answer a direct question about it, not to be repeated beside every name." +
         REFERENCE_USAGE_HINT,
       inputSchema: {
         status: z
@@ -160,12 +225,22 @@ export function createCampaignTools(
         // says "you have 10 campaigns" when there are 40 is wrong.
         const page = all.slice(0, limit);
 
+        // Split rather than hand back one flat list. "Which need attention" is
+        // the question behind most campaign questions, and a result already
+        // sorted into the two groups leads the model to answer with the
+        // conclusion first instead of narrating every campaign in turn.
+        const waiting = page.filter(needsAttention);
+        const running = page.filter((c) => !needsAttention(c));
+
         return withReferences(
           {
             total: all.length,
             showing: page.length,
             ...(status ? { filteredByStatus: status } : {}),
-            campaigns: page.map(summarize),
+            needsAttentionCount: waiting.length,
+            onTrackCount: running.length,
+            needsAttention: waiting.map(summarize),
+            onTrack: running.map(summarize),
           },
           page.map(referenceFor),
         );
