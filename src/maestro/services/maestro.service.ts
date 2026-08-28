@@ -31,6 +31,7 @@ import { createWhatsAppTools } from '../tools/whatsapp.tools';
 import { createPostTools } from '../tools/post.tools';
 import { createChannelTools } from '../tools/channel.tools';
 import { createCampaignTools } from '../tools/campaign.tools';
+import { createInboxTools } from '../tools/inbox.tools';
 import {
   mergeReferences,
   isReferencePayload,
@@ -436,6 +437,7 @@ export class MaestroService {
       ...createPostTools(this.posts, { confirmBeforeSend }),
       ...createChannelTools(this.channels),
       ...createCampaignTools(this.campaigns),
+      ...createInboxTools(this.inbox),
       ...createInteractionTools(),
     ];
   }
