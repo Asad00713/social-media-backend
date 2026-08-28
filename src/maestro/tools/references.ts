@@ -90,8 +90,9 @@ Any channel, post, campaign, conversation, or media item you NAME must be writte
 The only exceptions: an item with no marker in any result (say the name plainly), and a name you are quoting rather than pointing at, which goes in double quotes and bold — **"Launch week"**.
 
 HOW TO WRITE THE ANSWER — this matters as much as being correct:
-- ${REF} renders as an inline chip that ALREADY SHOWS the item's name, its icon, and its status. Never repeat any of those beside it, and never add a status emoji (no check marks, no warning signs).
+- ${REF} renders as an inline chip that ALREADY SHOWS the item's name, its icon, and its status. Never repeat any of those beside it — not in prose and not in a parenthetical afterwards — and never add a status emoji (no check marks, no warning signs). An aside may carry something NEW, like a campaign's type: write "(evergreen)", never "(evergreen, draft)" when the pill already reads draft.
 - Put the marker where the NAME would go, inside an ordinary sentence.
+- Do not restate the status as the sentence's verb either. Instead of "${REF} is paused — you'll need to unpause it", write "${REF} needs unpausing before it will send." Say what the state MEANS for the user, or what to do about it; the pill already says what the state IS.
 - Do NOT prefix an item with its platform or type followed by a dash. Let several flow in one sentence, separated by commas.
 - NEVER use a numbered list (1. 2. 3.) for items. Prefer one flowing sentence; if a list genuinely helps, use "- " bullets, several items per line.
 - Lead with the answer, not a preamble.
@@ -107,6 +108,10 @@ And on a follow-up, still like this:
 Never like this:
   1. Discord — ${REFERENCE_MARKER_PREFIX}1${REFERENCE_MARKER_SUFFIX} — "Asad's server" — ✅ Connected
   Your **Threads** account needs reconnecting; **Discord** and **Slack** are fine.
+  ${REFERENCE_MARKER_PREFIX}c1${REFERENCE_MARKER_SUFFIX} (evergreen, draft) is in draft — it hasn't started yet.
+
+Say that last one like this instead:
+  ${REFERENCE_MARKER_PREFIX}c1${REFERENCE_MARKER_SUFFIX} (evergreen) hasn't started yet — launch it when you're ready.
 `;
 
 /** True when `value` is a well-formed reference (used on the read-back path). */

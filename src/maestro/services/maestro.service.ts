@@ -30,6 +30,7 @@ import { createTelegramTools } from '../tools/telegram.tools';
 import { createWhatsAppTools } from '../tools/whatsapp.tools';
 import { createPostTools } from '../tools/post.tools';
 import { createChannelTools } from '../tools/channel.tools';
+import { createCampaignTools } from '../tools/campaign.tools';
 import {
   mergeReferences,
   isReferencePayload,
@@ -37,6 +38,7 @@ import {
   type EntityReference,
 } from '../tools/references';
 import { ChannelService } from '../../channels/services/channel.service';
+import { CampaignsService } from '../../campaigns/campaigns.service';
 import {
   resolveAgentAuth,
   MaestroAuthUnavailableError,
@@ -179,6 +181,7 @@ export class MaestroService {
     private readonly r2: CloudflareR2Service,
     private readonly keys: MaestroKeyService,
     private readonly channels: ChannelService,
+    private readonly campaigns: CampaignsService,
   ) {}
 
   /**
@@ -432,6 +435,7 @@ export class MaestroService {
       ...createWhatsAppTools(this.inbox, { confirmBeforeSend }),
       ...createPostTools(this.posts, { confirmBeforeSend }),
       ...createChannelTools(this.channels),
+      ...createCampaignTools(this.campaigns),
       ...createInteractionTools(),
     ];
   }
