@@ -12,6 +12,12 @@ import { PostsModule } from '../posts/posts.module';
 // InboxModule exports InboxService — used so Maestro's DMs persist to the inbox
 // (sent via the same path as a manual reply, fromMe=true).
 import { InboxModule } from '../inbox/inbox.module';
+import { ChannelsModule } from '../channels/channels.module';
+// CampaignsModule exports CampaignsService — for the campaign read tools. Like
+// ChannelsModule it owns DB and queue dependencies, so it comes in as a module
+// import rather than a directly-provided service. It does not import Maestro,
+// so no forwardRef is needed.
+import { CampaignsModule } from '../campaigns/campaigns.module';
 import { MaestroController } from './maestro.controller';
 import { MaestroService } from './services/maestro.service';
 import { MaestroKeyService } from './services/maestro-key.service';
@@ -54,6 +60,12 @@ import { MaestroBridgeProcessor } from './bridge/processors/maestro-bridge.proce
     AiModule,
     PostsModule,
     InboxModule,
+    // For the channel read tools. Unlike the stateless REST clients above,
+    // ChannelService owns DB + queue dependencies, so it cannot be provided
+    // directly — the module import is the right call here. ChannelsModule does
+    // not import Maestro, so no forwardRef is needed.
+    ChannelsModule,
+    CampaignsModule,
     BullModule.registerQueue({ name: QUEUES.MAESTRO_BRIDGE }),
   ],
   controllers: [MaestroController],

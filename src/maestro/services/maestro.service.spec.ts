@@ -153,6 +153,8 @@ function makeHarness(
     inbox,
     stub, // r2
     { getDecryptedKey } as never,
+    stub, // channels
+    stub, // campaigns
   );
 
   jest
