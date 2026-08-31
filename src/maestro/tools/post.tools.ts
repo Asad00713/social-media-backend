@@ -16,7 +16,7 @@ interface PostTargetLite {
   errorMessage?: string;
 }
 
-type PostRow = Awaited<ReturnType<PostService['getPost']>>;
+export type PostRow = Awaited<ReturnType<PostService['getPost']>>;
 
 const LISTABLE_STATUSES = new Set([
   'draft',
@@ -115,14 +115,14 @@ function displayCaption(post: PostRow): string | null {
  * so a full caption would push the surrounding prose off the line. The model
  * still gets the longer excerpt in the tool result to reason about.
  */
-function chipLabel(post: PostRow): string {
+export function chipLabel(post: PostRow): string {
   const caption = displayCaption(post);
   if (!caption) return 'Untitled post';
   const oneLine = caption.replace(/\s+/g, ' ').trim();
   return oneLine.length > 40 ? `${oneLine.slice(0, 40).trimEnd()}…` : oneLine;
 }
 
-function referenceFor(post: PostRow): EntityReference {
+export function postReference(post: PostRow): EntityReference {
   return {
     // A draft routes to the same editor as any other post, but the frontend
     // colours the two differently, so the kind has to reflect the real state.
@@ -195,7 +195,7 @@ export function createPostTools(
               scheduledAt: p.scheduledAt,
             })),
           },
-          rows.map(referenceFor),
+          rows.map(postReference),
         );
       },
     },
@@ -231,7 +231,7 @@ export function createPostTools(
                 })),
               },
             },
-            [referenceFor(p)],
+            [postReference(p)],
           );
         } catch {
           return {
@@ -336,7 +336,7 @@ export function createPostTools(
           // The reference carries the POST-publish row, so the chip shows the
           // status the publish actually reached (published, or partial when a
           // platform failed) rather than the draft state it started in.
-          [referenceFor(result)],
+          [postReference(result)],
         );
       },
     },
