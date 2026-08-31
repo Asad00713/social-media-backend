@@ -252,6 +252,30 @@ async function idleCampaigns(
 }
 
 /**
+ * Posts the workspace holds outside the window being reported.
+ *
+ * The Planner's own filter chips count everything — "All 7" — while a week's
+ * answer counts four. Both are right, and the user cannot see why. Left to be
+ * challenged, the model guessed at reasons instead of looking; volunteering the
+ * number in the first sentence means the question is never asked.
+ */
+async function postsOutsideWindow(
+  deps: PlannerDeps,
+  ctx: { workspaceId: string },
+  inWindow: number,
+): Promise<number> {
+  try {
+    // limit 1: only the total is wanted, never the rows.
+    const { total } = await deps.posts.getWorkspacePosts(ctx.workspaceId, {
+      limit: 1,
+    });
+    return Math.max(total - inWindow, 0);
+  } catch {
+    return 0;
+  }
+}
+
+/**
  * The zone the workspace plans in.
  *
  * Falls back to UTC rather than throwing: a wrong-by-an-offset time is a far
@@ -306,9 +330,15 @@ function resolveRange(
     return { from, to: endOfDay > maxTo ? maxTo : endOfDay };
   }
 
+  // DEFAULT_DAYS_AHEAD days INCLUDING the day we start on. Adding a full 7 days
+  // to a mid-afternoon "now" reaches into an eighth calendar day, which put the
+  // same weekday at both ends of "this week" — the answer named Monday as empty
+  // and the user could not tell whether that meant today or a week from today.
   return {
     from,
-    to: new Date(from.getTime() + DEFAULT_DAYS_AHEAD * 24 * 60 * 60 * 1000),
+    to: new Date(
+      from.getTime() + (DEFAULT_DAYS_AHEAD - 1) * 24 * 60 * 60 * 1000,
+    ),
   };
 }
 
@@ -492,9 +522,12 @@ export function createPlannerTools(deps: PlannerDeps): AgentToolDefinition[] {
       description:
         'Counts of what is on the calendar over a range — per day, per platform, and how many days have nothing on them. Use this for "how does my week look", "am I posting enough", "which days are empty", or as a cheap first check before deciding whether to list anything. Returns counts only; call list_scheduled when the user wants to see the actual posts.\n\n' +
         'Every count here is of UPCOMING entries — things still to go out. Anything already published in the range is reported separately as `alreadyOut` and must not be folded into the total.\n\n' +
-        '`emptyDays` are the days in range with nothing scheduled, today excluded — a day already underway is not something the user can fill. Each carries its own `day` label; say that, never a weekday you worked out yourself. That is usually the answer to "am I posting enough", so lead with it rather than reciting per-day counts.\n\n' +
+        '`emptyDays` are the days in range with nothing scheduled, today excluded — a day already underway is not something the user can fill. Each carries a `day` label that already includes the date; say it whole ("Wed, Sep 2"), never a bare weekday. "Nothing on Monday" is unanswerable when the user cannot tell which Monday.\n\n' +
+        'Report an empty day as an absence, not a shortfall: "nothing scheduled Wed Sep 2 or Fri Sep 4". Do not call it a gap, a hole, or a break in rhythm/consistency/cadence — you do not know what this workspace is aiming for, so every one of those words is a judgement on a plan you have not seen. A deliberate three-posts-a-week schedule is not a problem to solve.\n\n' +
         '`busiestDay` is null when the days are evenly spread. Null means there is no busiest day — do not name one anyway, and do not describe an even spread as a pattern. Say nothing about cadence beyond what these numbers show: you do not know what this workspace is aiming for, so "you have gaps in your rhythm" is a judgement you cannot support.\n\n' +
-        '`activeCampaignsWithNoPosts` is a campaign that is running and will publish nothing, because it has no posts planned. It looks healthy on the Campaigns page, so the user cannot see it — say it whenever the list is non-empty, cite the campaign, and put it FIRST: it matters more than any count on this result.' +
+        '`activeCampaignsWithNoPosts` is a campaign that is running and will publish nothing, because it has no posts planned. It looks healthy on the Campaigns page, so the user cannot see it — say it whenever the list is non-empty, cite the campaign, and put it FIRST: it matters more than any count on this result. Say the consequence, not a nudge: "it will not publish anything until it has posts" beats "worth checking on".\n\n' +
+        '`postsOutsideThisWindow` is how many of the workspace\'s posts fall outside the range you are reporting. When it is above zero, say it in the same breath as your count — "4 scheduled this week; your other 3 posts sit outside it" — because the Planner\'s own filter counts every post and the user is looking at the larger number. Volunteer it; do not wait to be asked why the two disagree.\n\n' +
+        '`perPlatform` is a count per platform. Say the counts, not just the names: "Threads (2), Discord (1)" tells the user where the week actually went; "across Threads and Discord" does not.' +
         REFERENCE_USAGE_HINT,
       inputSchema: {
         from: z
@@ -517,6 +550,11 @@ export function createPlannerTools(deps: PlannerDeps): AgentToolDefinition[] {
           idleCampaigns(deps, ctx),
         ]);
         const upcoming = all.filter((e) => !e.settled);
+        const elsewhere = await postsOutsideWindow(
+          deps,
+          ctx,
+          all.filter((e) => e.kind === 'post').length,
+        );
 
         const perPlatform: Record<string, number> = {};
         for (const entry of upcoming) {
@@ -568,6 +606,7 @@ export function createPlannerTools(deps: PlannerDeps): AgentToolDefinition[] {
                 ? { date: busiest.date, day: busiest.day, count: busiest.count }
                 : null,
             activeCampaignsWithNoPosts: idle.map((c) => c.name),
+            postsOutsideThisWindow: elsewhere,
           },
           idle.map((c) => ({
             kind: 'campaign' as const,

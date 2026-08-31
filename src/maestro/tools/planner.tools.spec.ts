@@ -76,6 +76,8 @@ function fakeDeps(
     drips?: ReturnType<typeof dripPost>[];
     /** The workspace's zone. Defaults to UTC so existing cases are unchanged. */
     timezone?: string;
+    /** Every post the workspace holds, however far outside the window. */
+    totalWorkspacePosts?: number;
     /** Campaigns the workspace holds, for the idle-campaign check. */
     campaigns?: {
       id: string;
@@ -101,6 +103,14 @@ function fakeDeps(
             return at ? at >= from && at <= to : false;
           }),
         );
+      },
+      getWorkspacePosts: (workspaceId: string) => {
+        calls.push({ method: 'getWorkspacePosts', workspaceId });
+        guard(workspaceId);
+        return Promise.resolve({
+          posts: [],
+          total: data.totalWorkspacePosts ?? (data.posts ?? []).length,
+        });
       },
       getPost: (id: string, workspaceId: string) => {
         calls.push({ method: 'getPost', workspaceId });
@@ -219,6 +229,7 @@ interface ListData {
 interface SummaryData {
   range: { timeZone: string; label: string };
   activeCampaignsWithNoPosts: string[];
+  postsOutsideThisWindow: number;
   upcomingCount: number;
   alreadyOutCount: number;
   perDay: { date: string; day: string; count: number }[];
@@ -422,6 +433,9 @@ describe('list_scheduled', () => {
     expect(data.showing).toBe(1);
   });
 
+  // Seven CALENDAR days counting today — not seven times twenty-four hours,
+  // which from a mid-afternoon "now" spills into an eighth day and puts the
+  // same weekday at both ends of "this week".
   it('defaults to a week ahead when no dates are given', async () => {
     const calls: Recorded[] = [];
     const tools = createPlannerTools(fakeDeps({}, calls));
@@ -429,8 +443,12 @@ describe('list_scheduled', () => {
     await toolNamed(tools, 'list_scheduled').handler({}, CTX);
 
     const call = calls.find((c) => c.method === 'getCalendarPosts')!;
-    const days = (call.to!.getTime() - call.from!.getTime()) / 86_400_000;
-    expect(Math.round(days)).toBe(7);
+    const dayOf = (d: Date) => d.toISOString().slice(0, 10);
+    const span =
+      (Date.parse(`${dayOf(call.to!)}T00:00:00Z`) -
+        Date.parse(`${dayOf(call.from!)}T00:00:00Z`)) /
+      86_400_000;
+    expect(span + 1).toBe(7);
   });
 
   // One question must not be able to pull a year of posts into the context.
@@ -989,5 +1007,112 @@ describe('an active campaign that will publish nothing', () => {
 
     expect(result.upcomingCount).toBe(1);
     expect(result.activeCampaignsWithNoPosts).toEqual([]);
+  });
+});
+
+/**
+ * The default window used to add a full 7 days to "now", which reaches into an
+ * eighth calendar day and put the same weekday at both ends — the answer named
+ * "Monday" as empty and the user could not tell whether that meant today or a
+ * week from today.
+ */
+describe('the week is seven days, not eight', () => {
+  it("never names today, or today's weekday a week out, as empty", async () => {
+    const tools = createPlannerTools(fakeDeps({}));
+
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler({}, CTX),
+    );
+
+    const days = result.emptyDays.map((d) => d.date);
+    const weekdayOf = (key: string) =>
+      new Intl.DateTimeFormat('en-US', {
+        timeZone: 'UTC',
+        weekday: 'long',
+      }).format(new Date(`${key}T12:00:00Z`));
+
+    // Today is excluded outright...
+    const today = new Date().toISOString().slice(0, 10);
+    expect(days).not.toContain(today);
+    // ...and no weekday appears twice, so "Monday" can only mean one day.
+    const weekdays = days.map(weekdayOf);
+    expect(new Set(weekdays).size).toBe(weekdays.length);
+  });
+
+  it('gives every empty day a date, never a bare weekday', async () => {
+    const tools = createPlannerTools(fakeDeps({}));
+
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler({}, CTX),
+    );
+
+    expect(result.emptyDays.length).toBeGreaterThan(0);
+    for (const d of result.emptyDays) {
+      // "Wednesday, Sep 2" — weekday AND date, so it cannot be misread.
+      expect(d.day).toMatch(/^[A-Z][a-z]+day, [A-Z][a-z]{2} \d{1,2}$/);
+    }
+  });
+});
+
+/**
+ * The Planner's filter chips count every post the workspace holds; a week's
+ * answer counts the week. Both are right and the user cannot see why, so the
+ * difference is volunteered rather than waiting to be challenged.
+ */
+describe('posts outside the window being reported', () => {
+  it('counts the ones the window does not cover', async () => {
+    const tools = createPlannerTools(
+      fakeDeps({
+        posts: [postRow({ scheduledAt: new Date('2026-09-02T09:00:00.000Z') })],
+        // Four in the workspace, one of them inside this window.
+        totalWorkspacePosts: 4,
+      }),
+    );
+
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(WIDE, CTX),
+    );
+
+    expect(result.upcomingCount).toBe(1);
+    expect(result.postsOutsideThisWindow).toBe(3);
+  });
+
+  it('reports none when the window already holds them all', async () => {
+    const tools = createPlannerTools(
+      fakeDeps({
+        posts: [postRow({ scheduledAt: new Date('2026-09-02T09:00:00.000Z') })],
+        totalWorkspacePosts: 1,
+      }),
+    );
+
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(WIDE, CTX),
+    );
+
+    expect(result.postsOutsideThisWindow).toBe(0);
+  });
+
+  // A count that cannot be read must not cost the user their calendar answer.
+  it('still answers when the workspace count fails', async () => {
+    const base = fakeDeps({
+      posts: [postRow({ scheduledAt: new Date('2026-09-02T09:00:00.000Z') })],
+    });
+    const broken = {
+      ...base,
+      posts: {
+        ...base.posts,
+        getWorkspacePosts: () => Promise.reject(new Error('down')),
+      } as unknown as PostService,
+    };
+
+    const result = dataOf<SummaryData>(
+      await toolNamed(
+        createPlannerTools(broken),
+        'get_schedule_summary',
+      ).handler(WIDE, CTX),
+    );
+
+    expect(result.upcomingCount).toBe(1);
+    expect(result.postsOutsideThisWindow).toBe(0);
   });
 });
