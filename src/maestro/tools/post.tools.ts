@@ -109,17 +109,34 @@ function displayCaption(post: PostRow): string | null {
 }
 
 /**
- * A short label for a post's chip.
+ * How much of a caption a chip carries.
  *
- * Much shorter than the excerpt the model reads: a chip sits inside a sentence,
- * so a full caption would push the surrounding prose off the line. The model
- * still gets the longer excerpt in the tool result to reason about.
+ * Was 40, which cut most real captions mid-word — "Behind the scenes at our
+ * studio this wee…" — and that is a failure when the user's actual request was
+ * to see the titles. The chip wraps and has no width cap, so the limit is only
+ * about keeping a sentence readable, not about fitting a box. 80 clears a
+ * typical caption's first line whole and still truncates a genuine essay.
+ */
+const CHIP_LABEL_CHARS = 80;
+
+/**
+ * A label for a post's chip.
+ *
+ * Shorter than the excerpt the model reads: a chip sits inside a sentence, so a
+ * whole caption would bury the prose around it. The model still gets the longer
+ * excerpt in the tool result to reason about.
  */
 export function chipLabel(post: PostRow): string {
   const caption = displayCaption(post);
   if (!caption) return 'Untitled post';
   const oneLine = caption.replace(/\s+/g, ' ').trim();
-  return oneLine.length > 40 ? `${oneLine.slice(0, 40).trimEnd()}…` : oneLine;
+  if (oneLine.length <= CHIP_LABEL_CHARS) return oneLine;
+  // Break on a word, not mid-word, when there is one reasonably near the end.
+  const cut = oneLine.slice(0, CHIP_LABEL_CHARS);
+  const lastSpace = cut.lastIndexOf(' ');
+  const trimmed =
+    lastSpace > CHIP_LABEL_CHARS - 15 ? cut.slice(0, lastSpace) : cut;
+  return `${trimmed.trimEnd()}…`;
 }
 
 export function postReference(post: PostRow): EntityReference {

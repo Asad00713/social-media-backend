@@ -2,6 +2,7 @@ import type { PostService } from '../../posts/services/post.service';
 import type { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
 import type { DripService } from '../../drips/drip.service';
 import type { WorkspaceService } from '../../workspace/workspace.service';
+import type { CampaignsService } from '../../campaigns/campaigns.service';
 import type { AgentToolDefinition, ToolContext } from '../maestro.types';
 import { createPlannerTools } from './planner.tools';
 import { isReferencePayload, type ReferencePayload } from './references';
@@ -75,6 +76,13 @@ function fakeDeps(
     drips?: ReturnType<typeof dripPost>[];
     /** The workspace's zone. Defaults to UTC so existing cases are unchanged. */
     timezone?: string;
+    /** Campaigns the workspace holds, for the idle-campaign check. */
+    campaigns?: {
+      id: string;
+      name: string;
+      status: string;
+      postsPlanned: number;
+    }[];
   },
   calls: Recorded[] = [],
 ) {
@@ -142,6 +150,23 @@ function fakeDeps(
         return Promise.resolve({ timezone: data.timezone ?? 'UTC' });
       },
     } as unknown as WorkspaceService,
+
+    campaigns: {
+      list: (workspaceId: string, filters: { status?: string } = {}) => {
+        calls.push({ method: 'campaignList', workspaceId });
+        guard(workspaceId);
+        return Promise.resolve(
+          (data.campaigns ?? [])
+            .filter((c) => !filters.status || c.status === filters.status)
+            .map((c) => ({
+              id: c.id,
+              name: c.name,
+              status: c.status,
+              metrics: { postsPlanned: c.postsPlanned },
+            })),
+        );
+      },
+    } as unknown as CampaignsService,
   };
 }
 
@@ -193,6 +218,7 @@ interface ListData {
 
 interface SummaryData {
   range: { timeZone: string; label: string };
+  activeCampaignsWithNoPosts: string[];
   upcomingCount: number;
   alreadyOutCount: number;
   perDay: { date: string; day: string; count: number }[];
@@ -567,10 +593,9 @@ describe('get_schedule_summary', () => {
       }),
     );
 
-    const result = (await toolNamed(tools, 'get_schedule_summary').handler(
-      WIDE,
-      CTX,
-    )) as SummaryData;
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(WIDE, CTX),
+    );
 
     expect(result.upcomingCount).toBe(1);
     expect(result.alreadyOutCount).toBe(1);
@@ -584,10 +609,9 @@ describe('get_schedule_summary', () => {
       }),
     );
 
-    const result = (await toolNamed(tools, 'get_schedule_summary').handler(
-      WIDE,
-      CTX,
-    )) as SummaryData;
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(WIDE, CTX),
+    );
 
     expect(result.perPlatform).toEqual({ instagram: 2, twitter: 1 });
   });
@@ -600,10 +624,12 @@ describe('get_schedule_summary', () => {
       }),
     );
 
-    const result = (await toolNamed(tools, 'get_schedule_summary').handler(
-      { from: '2026-09-01', to: '2026-09-03' },
-      CTX,
-    )) as SummaryData;
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(
+        { from: '2026-09-01', to: '2026-09-03' },
+        CTX,
+      ),
+    );
 
     expect(result.emptyDays.map((d) => d.date)).toEqual([
       '2026-09-01',
@@ -631,10 +657,9 @@ describe('get_schedule_summary', () => {
       }),
     );
 
-    const result = (await toolNamed(tools, 'get_schedule_summary').handler(
-      WIDE,
-      CTX,
-    )) as SummaryData;
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(WIDE, CTX),
+    );
 
     expect(result.busiestDay?.date).toBe('2026-09-05');
     expect(result.busiestDay?.count).toBe(2);
@@ -643,10 +668,12 @@ describe('get_schedule_summary', () => {
   it('reports an empty calendar without inventing a busiest day', async () => {
     const tools = createPlannerTools(fakeDeps({}));
 
-    const result = (await toolNamed(tools, 'get_schedule_summary').handler(
-      { from: '2026-09-01', to: '2026-09-02' },
-      CTX,
-    )) as SummaryData;
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(
+        { from: '2026-09-01', to: '2026-09-02' },
+        CTX,
+      ),
+    );
 
     expect(result.upcomingCount).toBe(0);
     expect(result.busiestDay).toBeNull();
@@ -695,10 +722,12 @@ describe('the two tools agree', () => {
         'list_scheduled',
       ).handler(WIDE, CTX),
     );
-    const summary = (await toolNamed(
-      createPlannerTools(fakeDeps(fixtures)),
-      'get_schedule_summary',
-    ).handler(WIDE, CTX)) as SummaryData;
+    const summary = dataOf<SummaryData>(
+      await toolNamed(
+        createPlannerTools(fakeDeps(fixtures)),
+        'get_schedule_summary',
+      ).handler(WIDE, CTX),
+    );
 
     expect(summary.upcomingCount).toBe(listData.upcomingCount);
     expect(summary.alreadyOutCount).toBe(listData.alreadyOutCount);
@@ -829,10 +858,9 @@ describe('claims the numbers actually support', () => {
       }),
     );
 
-    const result = (await toolNamed(tools, 'get_schedule_summary').handler(
-      WIDE,
-      CTX,
-    )) as SummaryData;
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(WIDE, CTX),
+    );
 
     expect(result.busiestDay).toBeNull();
   });
@@ -842,14 +870,124 @@ describe('claims the numbers actually support', () => {
     const now = new Date();
     const tools = createPlannerTools(fakeDeps({}));
 
-    const result = (await toolNamed(tools, 'get_schedule_summary').handler(
-      {},
-      CTX,
-    )) as SummaryData;
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler({}, CTX),
+    );
 
     const today = now.toISOString().slice(0, 10);
     expect(result.emptyDays.map((d) => d.date)).not.toContain(today);
     // The rest of the window is still reported.
     expect(result.emptyDays.length).toBeGreaterThan(0);
+  });
+});
+
+/**
+ * A campaign that is active but has nothing planned publishes nothing, quietly.
+ * It looks healthy on the Campaigns page, so the only way anyone finds out is
+ * by comparing two screens — which is exactly the kind of thing the agent
+ * should say without being asked.
+ */
+describe('an active campaign that will publish nothing', () => {
+  it('names it, and cites it so the user can open it', async () => {
+    const tools = createPlannerTools(
+      fakeDeps({
+        campaigns: [
+          {
+            id: 'c-idle',
+            name: 'Autumn Launch',
+            status: 'active',
+            postsPlanned: 0,
+          },
+        ],
+      }),
+    );
+
+    const result = await toolNamed(tools, 'get_schedule_summary').handler(
+      WIDE,
+      CTX,
+    );
+
+    expect(dataOf<SummaryData>(result).activeCampaignsWithNoPosts).toEqual([
+      'Autumn Launch',
+    ]);
+    expect(payload(result).refs).toEqual([
+      expect.objectContaining({
+        kind: 'campaign',
+        id: 'c-idle',
+        label: 'Autumn Launch',
+      }),
+    ]);
+  });
+
+  it('stays quiet about an active campaign that has posts planned', async () => {
+    const tools = createPlannerTools(
+      fakeDeps({
+        campaigns: [
+          {
+            id: 'c-ok',
+            name: 'Weekly Tips',
+            status: 'active',
+            postsPlanned: 12,
+          },
+        ],
+      }),
+    );
+
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(WIDE, CTX),
+    );
+
+    expect(result.activeCampaignsWithNoPosts).toEqual([]);
+  });
+
+  // A paused or draft campaign is not running, so it is not failing to run.
+  it('ignores campaigns that are not active', async () => {
+    const tools = createPlannerTools(
+      fakeDeps({
+        campaigns: [
+          {
+            id: 'c-draft',
+            name: 'Evergreen Quotes',
+            status: 'draft',
+            postsPlanned: 0,
+          },
+          {
+            id: 'c-paused',
+            name: 'Weekly Tips',
+            status: 'paused',
+            postsPlanned: 0,
+          },
+        ],
+      }),
+    );
+
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(WIDE, CTX),
+    );
+
+    expect(result.activeCampaignsWithNoPosts).toEqual([]);
+  });
+
+  // The calendar answer is the point; a campaigns read failing must not take it.
+  it('still answers when the campaigns read fails', async () => {
+    const deps = fakeDeps({
+      posts: [postRow({ scheduledAt: new Date('2026-09-02T09:00:00.000Z') })],
+    });
+    const broken = {
+      ...deps,
+      campaigns: {
+        list: () => Promise.reject(new Error('campaigns down')),
+      } as unknown as CampaignsService,
+    };
+
+    const result = dataOf<SummaryData>(
+      await toolNamed(
+        createPlannerTools(broken),
+        'get_schedule_summary',
+      ).handler(WIDE, CTX),
+    );
+
+    expect(result.upcomingCount).toBe(1);
+    expect(result.activeCampaignsWithNoPosts).toEqual([]);
   });
 });

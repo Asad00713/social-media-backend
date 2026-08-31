@@ -448,6 +448,7 @@ export class MaestroService {
         scheduledMessages: this.scheduledMessages,
         drips: this.drips,
         workspaces: this.workspaceService,
+        campaigns: this.campaigns,
       }),
       ...createInteractionTools(),
     ];

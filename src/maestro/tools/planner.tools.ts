@@ -3,6 +3,7 @@ import type { PostService } from '../../posts/services/post.service';
 import type { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
 import type { DripService } from '../../drips/drip.service';
 import type { WorkspaceService } from '../../workspace/workspace.service';
+import type { CampaignsService } from '../../campaigns/campaigns.service';
 import type { AgentToolDefinition } from '../maestro.types';
 import {
   REFERENCE_USAGE_HINT,
@@ -222,6 +223,32 @@ interface PlannerDeps {
   scheduledMessages: ScheduledMessagesService;
   drips: DripService;
   workspaces: WorkspaceService;
+  campaigns: CampaignsService;
+}
+
+/**
+ * Campaigns that are running but have nothing to run.
+ *
+ * An active campaign with no planned posts publishes nothing, quietly, and
+ * looks fine on the Campaigns page — the failure is only visible by comparing
+ * two screens. It is a fact about the schedule, so it belongs in the schedule
+ * answer rather than waiting for someone to ask about campaigns.
+ */
+async function idleCampaigns(
+  deps: PlannerDeps,
+  ctx: { workspaceId: string },
+): Promise<{ id: string; name: string }[]> {
+  try {
+    const rows = await deps.campaigns.list(ctx.workspaceId, {
+      status: 'active',
+    });
+    return rows
+      .filter((c) => (c.metrics?.postsPlanned ?? 0) === 0)
+      .map((c) => ({ id: c.id, name: c.name }));
+  } catch {
+    // A campaigns read failing must not take the calendar answer with it.
+    return [];
+  }
 }
 
 /**
@@ -466,7 +493,9 @@ export function createPlannerTools(deps: PlannerDeps): AgentToolDefinition[] {
         'Counts of what is on the calendar over a range — per day, per platform, and how many days have nothing on them. Use this for "how does my week look", "am I posting enough", "which days are empty", or as a cheap first check before deciding whether to list anything. Returns counts only; call list_scheduled when the user wants to see the actual posts.\n\n' +
         'Every count here is of UPCOMING entries — things still to go out. Anything already published in the range is reported separately as `alreadyOut` and must not be folded into the total.\n\n' +
         '`emptyDays` are the days in range with nothing scheduled, today excluded — a day already underway is not something the user can fill. Each carries its own `day` label; say that, never a weekday you worked out yourself. That is usually the answer to "am I posting enough", so lead with it rather than reciting per-day counts.\n\n' +
-        '`busiestDay` is null when the days are evenly spread. Null means there is no busiest day — do not name one anyway, and do not describe an even spread as a pattern. Say nothing about cadence beyond what these numbers show: you do not know what this workspace is aiming for, so "you have gaps in your rhythm" is a judgement you cannot support.',
+        '`busiestDay` is null when the days are evenly spread. Null means there is no busiest day — do not name one anyway, and do not describe an even spread as a pattern. Say nothing about cadence beyond what these numbers show: you do not know what this workspace is aiming for, so "you have gaps in your rhythm" is a judgement you cannot support.\n\n' +
+        '`activeCampaignsWithNoPosts` is a campaign that is running and will publish nothing, because it has no posts planned. It looks healthy on the Campaigns page, so the user cannot see it — say it whenever the list is non-empty, cite the campaign, and put it FIRST: it matters more than any count on this result.' +
+        REFERENCE_USAGE_HINT,
       inputSchema: {
         from: z
           .string()
@@ -483,7 +512,10 @@ export function createPlannerTools(deps: PlannerDeps): AgentToolDefinition[] {
         const now = new Date();
         const range = resolveRange(args.from, args.to, now);
         const tz = await resolveTimeZone(deps, ctx);
-        const all = await collectEntries(deps, ctx, range, tz);
+        const [all, idle] = await Promise.all([
+          collectEntries(deps, ctx, range, tz),
+          idleCampaigns(deps, ctx),
+        ]);
         const upcoming = all.filter((e) => !e.settled);
 
         const perPlatform: Record<string, number> = {};
@@ -515,26 +547,35 @@ export function createPlannerTools(deps: PlannerDeps): AgentToolDefinition[] {
         const days = byDate(upcoming);
         const busiest = [...days].sort((a, b) => b.count - a.count)[0] ?? null;
 
-        return {
-          range: {
-            from: range.from.toISOString(),
-            to: range.to.toISOString(),
-            timeZone: tz,
-            label: `${humanDate(dateKey(range.from.toISOString(), tz))} – ${humanDate(endKey)}`,
+        return withReferences(
+          {
+            range: {
+              from: range.from.toISOString(),
+              to: range.to.toISOString(),
+              timeZone: tz,
+              label: `${humanDate(dateKey(range.from.toISOString(), tz))} – ${humanDate(endKey)}`,
+            },
+            upcomingCount: upcoming.length,
+            alreadyOutCount: all.length - upcoming.length,
+            perDay: days.map(({ date, day, count }) => ({ date, day, count })),
+            perPlatform,
+            emptyDays: emptyDays.map((d) => ({ date: d, day: humanDate(d) })),
+            // Only a real peak is worth naming. When every day carries the same
+            // count there is no busiest day, and saying there is invents a
+            // pattern out of an even spread.
+            busiestDay:
+              busiest && days.some((d) => d.count < busiest.count)
+                ? { date: busiest.date, day: busiest.day, count: busiest.count }
+                : null,
+            activeCampaignsWithNoPosts: idle.map((c) => c.name),
           },
-          upcomingCount: upcoming.length,
-          alreadyOutCount: all.length - upcoming.length,
-          perDay: days.map(({ date, day, count }) => ({ date, day, count })),
-          perPlatform,
-          emptyDays: emptyDays.map((d) => ({ date: d, day: humanDate(d) })),
-          // Only a real peak is worth naming. When every day carries the same
-          // count there is no busiest day, and saying there is invents a
-          // pattern out of an even spread.
-          busiestDay:
-            busiest && days.some((d) => d.count < busiest.count)
-              ? { date: busiest.date, day: busiest.day, count: busiest.count }
-              : null,
-        };
+          idle.map((c) => ({
+            kind: 'campaign' as const,
+            id: c.id,
+            label: c.name,
+            status: 'active',
+          })),
+        );
       },
     },
   ];
