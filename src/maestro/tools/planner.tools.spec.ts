@@ -230,9 +230,11 @@ interface SummaryData {
   range: { timeZone: string; label: string };
   activeCampaignsWithNoPosts: string[];
   postsOutsideThisWindow: number;
+  canJudgeSufficiency: boolean;
+  noTargetCadenceReason: string;
   upcomingCount: number;
   alreadyOutCount: number;
-  perDay: { date: string; day: string; count: number }[];
+  perDay: { date: string; day: string; count: number; postIds: string[] }[];
   perPlatform: Record<string, number>;
   emptyDays: DayLabel[];
   busiestDay: { date: string; day: string; count: number } | null;
@@ -665,10 +667,14 @@ describe('get_schedule_summary', () => {
           }),
           postRow({
             id: 'p-2',
-            scheduledAt: new Date('2026-09-05T09:00:00.000Z'),
+            scheduledAt: new Date('2026-09-05T07:00:00.000Z'),
           }),
           postRow({
             id: 'p-3',
+            scheduledAt: new Date('2026-09-05T09:00:00.000Z'),
+          }),
+          postRow({
+            id: 'p-4',
             scheduledAt: new Date('2026-09-05T17:00:00.000Z'),
           }),
         ],
@@ -680,7 +686,7 @@ describe('get_schedule_summary', () => {
     );
 
     expect(result.busiestDay?.date).toBe('2026-09-05');
-    expect(result.busiestDay?.count).toBe(2);
+    expect(result.busiestDay?.count).toBe(3);
   });
 
   it('reports an empty calendar without inventing a busiest day', async () => {
@@ -1114,5 +1120,308 @@ describe('posts outside the window being reported', () => {
 
     expect(result.upcomingCount).toBe(1);
     expect(result.postsOutsideThisWindow).toBe(0);
+  });
+});
+
+/**
+ * Proven from a tool-call log, not guessed: the model correctly asked for a
+ * range ending Sunday 6 September, and the answer came back labelled
+ * "Monday, Sep 7". A bare YYYY-MM-DD was being read as UTC while every other
+ * part of the tool thinks in the workspace's zone, so the last day's end
+ * landed 5 hours into the next local day.
+ */
+describe('a range means whole days where the user lives', () => {
+  const KARACHI = 'Asia/Karachi'; // UTC+5, no DST.
+
+  it('ends the range on the day that was asked for', async () => {
+    const tools = createPlannerTools(fakeDeps({ timezone: KARACHI }));
+
+    const data = dataOf<ListData>(
+      await toolNamed(tools, 'list_scheduled').handler(
+        { from: '2026-08-31', to: '2026-09-06' },
+        CTX,
+      ),
+    );
+
+    expect(data.range.label).toBe('Monday, Aug 31 – Sunday, Sep 6');
+    expect(data.range.label).not.toContain('Sep 7');
+  });
+
+  it('starts the range at local midnight, not UTC midnight', async () => {
+    const calls: Recorded[] = [];
+    const tools = createPlannerTools(fakeDeps({ timezone: KARACHI }, calls));
+
+    await toolNamed(tools, 'list_scheduled').handler(
+      { from: '2026-09-02', to: '2026-09-02' },
+      CTX,
+    );
+
+    const call = calls.find((c) => c.method === 'getCalendarPosts')!;
+    // Midnight in Karachi is 19:00 the previous day in UTC.
+    expect(call.from!.toISOString()).toBe('2026-09-01T19:00:00.000Z');
+    expect(call.to!.toISOString()).toBe('2026-09-02T18:59:59.999Z');
+  });
+
+  // A single named day must hold that day's posts, wherever they sit in UTC.
+  it('covers a whole local day when from and to are the same date', async () => {
+    const tools = createPlannerTools(
+      fakeDeps({
+        timezone: KARACHI,
+        posts: [
+          // 1:00 AM Karachi on 2 Sep — the previous day in UTC.
+          postRow({
+            id: 'p-early',
+            scheduledAt: new Date('2026-09-01T20:00:00.000Z'),
+          }),
+          // 11:00 PM Karachi on 2 Sep — still the 2nd locally.
+          postRow({
+            id: 'p-late',
+            scheduledAt: new Date('2026-09-02T18:00:00.000Z'),
+          }),
+        ],
+      }),
+    );
+
+    const data = dataOf<ListData>(
+      await toolNamed(tools, 'list_scheduled').handler(
+        { from: '2026-09-02', to: '2026-09-02' },
+        CTX,
+      ),
+    );
+
+    expect(data.upcoming.map((e) => e.id).sort()).toEqual([
+      'p-early',
+      'p-late',
+    ]);
+  });
+});
+
+/**
+ * "Am I posting enough" is not a question the calendar can answer — nobody set
+ * a target. Both live runs answered it anyway, one with "you'll want to get
+ * some content on the calendar". The absence of a target is now a fact in the
+ * payload rather than an instruction the model may ignore.
+ */
+describe('sufficiency is not something the calendar knows', () => {
+  it('states outright that it cannot judge enough', async () => {
+    const tools = createPlannerTools(fakeDeps({ posts: [postRow()] }));
+
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(WIDE, CTX),
+    );
+
+    expect(result.canJudgeSufficiency).toBe(false);
+    expect(result.noTargetCadenceReason).toContain('no posting-frequency');
+  });
+
+  // Two against one is a light week, not a pattern worth naming.
+  it('names no busiest day for a 2/1/1 spread', async () => {
+    const tools = createPlannerTools(
+      fakeDeps({
+        posts: [
+          postRow({ id: 'a', scheduledAt: new Date('2026-09-02T09:00:00Z') }),
+          postRow({ id: 'b', scheduledAt: new Date('2026-09-02T17:00:00Z') }),
+          postRow({ id: 'c', scheduledAt: new Date('2026-09-04T09:00:00Z') }),
+          postRow({ id: 'd', scheduledAt: new Date('2026-09-06T09:00:00Z') }),
+        ],
+      }),
+    );
+
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(WIDE, CTX),
+    );
+
+    expect(result.busiestDay).toBeNull();
+  });
+
+  it('names a busiest day when one genuinely stands out', async () => {
+    const tools = createPlannerTools(
+      fakeDeps({
+        posts: [
+          postRow({ id: 'a', scheduledAt: new Date('2026-09-02T07:00:00Z') }),
+          postRow({ id: 'b', scheduledAt: new Date('2026-09-02T09:00:00Z') }),
+          postRow({ id: 'c', scheduledAt: new Date('2026-09-02T17:00:00Z') }),
+          postRow({ id: 'd', scheduledAt: new Date('2026-09-04T09:00:00Z') }),
+        ],
+      }),
+    );
+
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(WIDE, CTX),
+    );
+
+    expect(result.busiestDay?.count).toBe(3);
+    expect(result.busiestDay?.day).toBe('Wednesday, Sep 2');
+  });
+});
+
+/**
+ * A post the summary counts has to be as clickable as the same post in a list.
+ * Live, "2 going out Tuesday" named nothing and cited nothing — only the
+ * campaign was a chip, so the posts themselves were a dead end.
+ */
+describe('the summary cites its posts too', () => {
+  it('returns a chip for every post it counted', async () => {
+    const tools = createPlannerTools(
+      fakeDeps({
+        posts: [
+          postRow({
+            id: 'p-1',
+            content: 'Behind the scenes',
+            scheduledAt: new Date('2026-09-02T09:00:00.000Z'),
+          }),
+          postRow({
+            id: 'p-2',
+            content: 'Weekend reading',
+            scheduledAt: new Date('2026-09-05T09:00:00.000Z'),
+          }),
+        ],
+      }),
+    );
+
+    const result = await toolNamed(tools, 'get_schedule_summary').handler(
+      WIDE,
+      CTX,
+    );
+
+    const chipIds = payload(result)
+      .refs.filter((r) => r.kind === 'post' || r.kind === 'draft')
+      .map((r) => r.id)
+      .sort();
+    expect(chipIds).toEqual(['p-1', 'p-2']);
+  });
+
+  it('says which posts sit on which day, so a count can be named', async () => {
+    const tools = createPlannerTools(
+      fakeDeps({
+        posts: [
+          postRow({
+            id: 'p-morning',
+            scheduledAt: new Date('2026-09-02T07:00:00.000Z'),
+          }),
+          postRow({
+            id: 'p-evening',
+            scheduledAt: new Date('2026-09-02T15:00:00.000Z'),
+          }),
+        ],
+      }),
+    );
+
+    const result = dataOf<SummaryData>(
+      await toolNamed(tools, 'get_schedule_summary').handler(WIDE, CTX),
+    );
+
+    const tuesday = result.perDay.find((d) => d.date === '2026-09-02')!;
+    expect(tuesday.count).toBe(2);
+    expect(tuesday.postIds.sort()).toEqual(['p-evening', 'p-morning']);
+  });
+
+  // Campaign chips were already there; adding posts must not displace them.
+  it('keeps the campaign chip alongside the post chips', async () => {
+    const tools = createPlannerTools(
+      fakeDeps({
+        posts: [postRow({ id: 'p-1' })],
+        campaigns: [
+          {
+            id: 'c-idle',
+            name: 'Autumn Launch',
+            status: 'active',
+            postsPlanned: 0,
+          },
+        ],
+      }),
+    );
+
+    const result = await toolNamed(tools, 'get_schedule_summary').handler(
+      WIDE,
+      CTX,
+    );
+
+    const kinds = payload(result).refs.map((r) => r.kind);
+    expect(kinds).toContain('campaign');
+    expect(kinds.some((k) => k === 'post' || k === 'draft')).toBe(true);
+  });
+});
+
+/**
+ * Asked "this week" three times the model sent three different ranges — one of
+ * them eight days long, with Monday at both ends. The phrase now names a
+ * period and the server decides what it covers, so the same question cannot
+ * mean three windows.
+ */
+describe("a named period is the server's to resolve", () => {
+  const KARACHI = 'Asia/Karachi';
+
+  /** The dates a call actually asked the calendar for, in the workspace zone. */
+  async function windowOf(period: string) {
+    const calls: Recorded[] = [];
+    const tools = createPlannerTools(fakeDeps({ timezone: KARACHI }, calls));
+    await toolNamed(tools, 'list_scheduled').handler({ period }, CTX);
+    const call = calls.find((c) => c.method === 'getCalendarPosts')!;
+    const key = (d: Date) =>
+      new Intl.DateTimeFormat('en-CA', {
+        timeZone: KARACHI,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+      }).format(d);
+    return { from: key(call.from!), to: key(call.to!) };
+  }
+
+  const todayKey = () =>
+    new Intl.DateTimeFormat('en-CA', {
+      timeZone: KARACHI,
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    }).format(new Date());
+
+  it('covers exactly one day for today', async () => {
+    const w = await windowOf('today');
+    expect(w.from).toBe(todayKey());
+    expect(w.to).toBe(todayKey());
+  });
+
+  it('covers exactly one day for tomorrow, and it is not today', async () => {
+    const w = await windowOf('tomorrow');
+    expect(w.from).toBe(w.to);
+    expect(w.from).not.toBe(todayKey());
+  });
+
+  // The bug this whole period argument exists to kill.
+  it('ends this_week on a Sunday, so no weekday appears twice', async () => {
+    const w = await windowOf('this_week');
+    expect(w.from).toBe(todayKey());
+    const lastDay = new Date(`${w.to}T12:00:00Z`).getUTCDay();
+    expect(lastDay).toBe(0); // Sunday
+  });
+
+  it('gives next_week a full Monday-to-Sunday, starting after today', async () => {
+    const w = await windowOf('next_week');
+    expect(new Date(`${w.from}T12:00:00Z`).getUTCDay()).toBe(1); // Monday
+    expect(new Date(`${w.to}T12:00:00Z`).getUTCDay()).toBe(0); // Sunday
+    expect(w.from > todayKey()).toBe(true);
+  });
+
+  it('runs this_month to the last day of the month', async () => {
+    const w = await windowOf('this_month');
+    const [y, m, d] = w.to.split('-').map(Number);
+    const lastOfMonth = new Date(Date.UTC(y, m, 0)).getUTCDate();
+    expect(d).toBe(lastOfMonth);
+  });
+
+  // An unknown value must not silently become "today" or throw.
+  it('falls back to the default window on a period it does not know', async () => {
+    const calls: Recorded[] = [];
+    const tools = createPlannerTools(fakeDeps({ timezone: KARACHI }, calls));
+
+    await toolNamed(tools, 'list_scheduled').handler(
+      { period: 'last_fortnight' },
+      CTX,
+    );
+
+    const call = calls.find((c) => c.method === 'getCalendarPosts')!;
+    const spanDays = (call.to!.getTime() - call.from!.getTime()) / 86_400_000;
+    expect(spanDays).toBeGreaterThan(5);
   });
 });
