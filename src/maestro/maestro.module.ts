@@ -18,6 +18,9 @@ import { ChannelsModule } from '../channels/channels.module';
 // import rather than a directly-provided service. It does not import Maestro,
 // so no forwardRef is needed.
 import { CampaignsModule } from '../campaigns/campaigns.module';
+// DripModule exports DripService — for the planner tools, which merge drip
+// campaign posts with normal posts the way the Planner screen does.
+import { DripModule } from '../drips/drip.module';
 import { MaestroController } from './maestro.controller';
 import { MaestroService } from './services/maestro.service';
 import { MaestroKeyService } from './services/maestro-key.service';
@@ -66,6 +69,7 @@ import { MaestroBridgeProcessor } from './bridge/processors/maestro-bridge.proce
     // not import Maestro, so no forwardRef is needed.
     ChannelsModule,
     CampaignsModule,
+    DripModule,
     BullModule.registerQueue({ name: QUEUES.MAESTRO_BRIDGE }),
   ],
   controllers: [MaestroController],

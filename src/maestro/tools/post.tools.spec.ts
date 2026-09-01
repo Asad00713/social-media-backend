@@ -112,8 +112,37 @@ describe('post tools', () => {
       ).handler({}, CTX)) as ReferencePayload;
 
       const label = result.refs[0].label;
-      expect(label.length).toBeLessThanOrEqual(41);
+      expect(label.length).toBeLessThanOrEqual(81);
       expect(label.endsWith('…')).toBe(true);
+    });
+
+    // A chip cut mid-word ("…at our studio this wee…") fails the very request it
+    // is answering when the user asked to see the titles.
+    it('cuts a long caption at a word, not mid-word', async () => {
+      const long =
+        'Behind the scenes at our studio this week as we photograph the entire autumn collection';
+      const result = (await tool(
+        build([postRow({ content: long })]),
+        'list_posts',
+      ).handler({}, CTX)) as ReferencePayload;
+
+      const label = result.refs[0].label;
+      expect(label.endsWith('…')).toBe(true);
+      // Whatever it kept, it kept whole words of the original.
+      const kept = label.slice(0, -1).trimEnd();
+      expect(long.startsWith(kept)).toBe(true);
+      expect(long[kept.length]).toBe(' ');
+    });
+
+    // A caption that already fits is left exactly as the user wrote it.
+    it('leaves a caption that fits completely alone', async () => {
+      const short = 'Weekend reading list for founders';
+      const result = (await tool(
+        build([postRow({ content: short })]),
+        'list_posts',
+      ).handler({}, CTX)) as ReferencePayload;
+
+      expect(result.refs[0].label).toBe(short);
     });
 
     it('names a title-only post by its platform title, like the Planner does', async () => {

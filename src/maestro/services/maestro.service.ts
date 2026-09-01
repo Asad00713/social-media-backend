@@ -16,6 +16,8 @@ import { TavilyService } from '../../ai/services/tavily.service';
 import { DiscordService } from '../../channels/services/discord.service';
 import { SlackService } from '../../channels/services/slack.service';
 import { InboxService } from '../../inbox/inbox.service';
+import { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
+import { DripService } from '../../drips/drip.service';
 import { PostService } from '../../posts/services/post.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import { ClaudeAgentSdkRuntime } from '../runtime/claude-agent-sdk.runtime';
@@ -33,6 +35,7 @@ import { createPostTools } from '../tools/post.tools';
 import { createChannelTools } from '../tools/channel.tools';
 import { createCampaignTools } from '../tools/campaign.tools';
 import { createInboxTools } from '../tools/inbox.tools';
+import { createPlannerTools } from '../tools/planner.tools';
 import {
   mergeReferences,
   isReferencePayload,
@@ -97,6 +100,39 @@ function failureMessage(result: unknown): string {
 }
 /** Sentinel the model emits before its follow-up suggestions (stripped from UI text). */
 const FOLLOWUPS_MARKER = '__FOLLOWUPS__';
+
+/**
+ * Words that judge a posting schedule the app knows nothing about.
+ *
+ * "Fill the gaps" tells the user their calendar is short of something. Nobody
+ * set a target, so there is nothing for it to be short of — three posts a week
+ * may be exactly the plan. The prompt asked the model not to say this and the
+ * model said it anyway, twice, which is what a prompt can do: ask.
+ */
+const CADENCE_JUDGEMENT = /\b(gaps?|rhythm|cadence|consistency)\b/gi;
+
+/** The same suggestion, with the judgement taken out. */
+export function withoutCadenceJudgement(suggestion: string): string {
+  if (!CADENCE_JUDGEMENT.test(suggestion)) return suggestion;
+  CADENCE_JUDGEMENT.lastIndex = 0;
+  return (
+    suggestion
+      // "Add more posts to fill the gaps" — the tail is the judgement, and the
+      // sentence already says what to do without it.
+      .replace(
+        /\s*\bto\s+(fill|close|fix)\s+(the\s+|my\s+|those\s+)?gaps?\b/gi,
+        '',
+      )
+      .replace(
+        /\b(fill|close|fix)\s+(the\s+|my\s+|those\s+)?gaps?\b/gi,
+        'add posts',
+      )
+      .replace(/\bgaps?\b/gi, 'empty days')
+      .replace(/\b(posting\s+)?(rhythm|cadence|consistency)\b/gi, 'schedule')
+      .replace(/\s{2,}/g, ' ')
+      .trim()
+  );
+}
 
 /** SSE events the controller writes to the client. */
 export type MaestroSseEvent =
@@ -185,6 +221,8 @@ export class MaestroService {
     private readonly keys: MaestroKeyService,
     private readonly channels: ChannelService,
     private readonly campaigns: CampaignsService,
+    private readonly scheduledMessages: ScheduledMessagesService,
+    private readonly drips: DripService,
   ) {}
 
   /**
@@ -460,6 +498,13 @@ export class MaestroService {
       ...createChannelTools(this.channels),
       ...createCampaignTools(this.campaigns),
       ...createInboxTools(this.inbox),
+      ...createPlannerTools({
+        posts: this.posts,
+        scheduledMessages: this.scheduledMessages,
+        drips: this.drips,
+        workspaces: this.workspaceService,
+        campaigns: this.campaigns,
+      }),
       ...createInteractionTools(),
     ];
   }
@@ -1030,6 +1075,7 @@ export class MaestroService {
                   .trim(),
               )
               .filter(Boolean)
+              .map(withoutCadenceJudgement)
               .slice(0, 4);
 
       const hasRefs = maestroRefs.length > 0;
