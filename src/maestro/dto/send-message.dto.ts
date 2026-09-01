@@ -12,6 +12,10 @@ import {
   MaxLength,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import {
+  MAESTRO_TONES,
+  type MaestroTone,
+} from '../../drizzle/schema/users.schema';
 
 /** Models the UI may request. Kept in sync with the frontend model switcher. */
 export const MAESTRO_MODELS = [
@@ -173,4 +177,10 @@ export class MaestroWorkspaceDto {
   @IsString()
   @IsNotEmpty()
   workspaceId: string;
+}
+
+/** Body for PATCH /maestro/tone -- the caller's own Maestro reply style. */
+export class SetMaestroToneDto {
+  @IsIn(MAESTRO_TONES)
+  tone!: MaestroTone;
 }

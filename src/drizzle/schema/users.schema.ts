@@ -18,6 +18,12 @@ export const USER_ROLES = ['USER', 'ADMIN', 'SUPER_ADMIN'] as const;
 export type UserRole = (typeof USER_ROLES)[number];
 export const userRoleEnum = pgEnum('user_role', USER_ROLES);
 
+// How Maestro pitches its replies. 'professional' is the pre-existing voice, so
+// it is the default and no existing user notices a change.
+export const MAESTRO_TONES = ['simple', 'professional', 'detailed'] as const;
+export type MaestroTone = (typeof MAESTRO_TONES)[number];
+export const maestroToneEnum = pgEnum('maestro_tone', MAESTRO_TONES);
+
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: varchar('email', { length: 255 }).notNull().unique(),
@@ -61,6 +67,16 @@ export const users = pgTable('users', {
   lastLoginIp: varchar('last_login_ip', { length: 45 }), // fits IPv6
   country: varchar('country', { length: 100 }),
   countryCode: varchar('country_code', { length: 2 }), // ISO 3166-1 alpha-2
+
+  // How Maestro should pitch its replies to THIS user. Per-user, not
+  // per-workspace: one workspace holds people of very different technical
+  // comfort, so a workspace-wide setting would let one member's choice change
+  // the assistant for everyone else. Server-side rather than localStorage for
+  // the same reason as onboardingCompletedAt above -- the person who most needs
+  // 'simple' is the least likely to re-pick it on every new device.
+  maestroTone: maestroToneEnum('maestro_tone')
+    .default('professional')
+    .notNull(),
 
   // Inactivity email tracking
   inactivityEmail15DaysSentAt: timestamp('inactivity_email_15_days_sent_at'),

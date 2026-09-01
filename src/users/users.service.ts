@@ -7,7 +7,13 @@ import {
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
 import { CreateUserDto } from './dto/create-user.dto';
-import { NewUser, User, users, UserRole } from 'src/drizzle/schema';
+import {
+  MaestroTone,
+  NewUser,
+  User,
+  users,
+  UserRole,
+} from 'src/drizzle/schema';
 import { eq, sql } from 'drizzle-orm';
 import * as bcrypt from 'bcrypt';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -22,6 +28,7 @@ export type PublicUser = Pick<
   | 'isEmailVerified'
   | 'lastAccessedWorkspaceId'
   | 'onboardingCompletedAt'
+  | 'maestroTone'
   | 'createdAt'
   | 'updatedAt'
 >;
@@ -62,6 +69,7 @@ export class UsersService {
       isEmailVerified: newUser.isEmailVerified,
       lastAccessedWorkspaceId: newUser.lastAccessedWorkspaceId,
       onboardingCompletedAt: newUser.onboardingCompletedAt,
+      maestroTone: newUser.maestroTone,
       createdAt: newUser.createdAt,
       updatedAt: newUser.updatedAt,
     };
@@ -77,6 +85,7 @@ export class UsersService {
         isEmailVerified: true,
         lastAccessedWorkspaceId: true,
         onboardingCompletedAt: true,
+        maestroTone: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -96,6 +105,7 @@ export class UsersService {
         isEmailVerified: true,
         lastAccessedWorkspaceId: true,
         onboardingCompletedAt: true,
+        maestroTone: true,
         createdAt: true,
         updatedAt: true,
       },
@@ -123,6 +133,7 @@ export class UsersService {
         isEmailVerified: true,
         lastAccessedWorkspaceId: true,
         onboardingCompletedAt: true,
+        maestroTone: true,
         isActive: true,
         suspendedReason: true,
         createdAt: true,
@@ -248,6 +259,7 @@ export class UsersService {
       isEmailVerified: updatedUser.isEmailVerified,
       lastAccessedWorkspaceId: updatedUser.lastAccessedWorkspaceId,
       onboardingCompletedAt: updatedUser.onboardingCompletedAt,
+      maestroTone: updatedUser.maestroTone,
       createdAt: updatedUser.createdAt,
       updatedAt: updatedUser.updatedAt,
     };
@@ -258,6 +270,27 @@ export class UsersService {
    * already set, leaves the original timestamp untouched so we don't
    * accidentally reset analytics that depend on the first completion time.
    */
+  /**
+   * The user's Maestro reply style. Falls back to 'professional' -- the voice
+   * Maestro had before this setting existed -- if the row is missing, so a
+   * failed lookup degrades to the old behaviour instead of breaking a chat turn.
+   */
+  async getMaestroTone(userId: string): Promise<MaestroTone> {
+    const row = await this.db.query.users.findFirst({
+      where: eq(users.id, userId),
+      columns: { maestroTone: true },
+    });
+    return row?.maestroTone ?? 'professional';
+  }
+
+  /** Set the user's Maestro reply style. */
+  async setMaestroTone(userId: string, tone: MaestroTone): Promise<void> {
+    await this.db
+      .update(users)
+      .set({ maestroTone: tone, updatedAt: new Date() })
+      .where(eq(users.id, userId));
+  }
+
   async markOnboardingCompleted(userId: string): Promise<void> {
     await this.db
       .update(users)

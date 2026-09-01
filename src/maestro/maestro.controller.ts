@@ -25,6 +25,7 @@ import {
   SendMaestroMessageDto,
   SetFeedbackDto,
   SetMaestroKeyDto,
+  SetMaestroToneDto,
 } from './dto/send-message.dto';
 
 @Controller('maestro')
@@ -109,6 +110,27 @@ export class MaestroController {
     @Body() dto: PresignMaestroAttachmentDto,
   ) {
     return this.maestro.presignAttachment(user.userId, dto);
+  }
+
+  /**
+   * The caller's own Maestro reply style. Per-user, not per-workspace: one
+   * workspace holds people of very different technical comfort.
+   * The id comes from the token, so nobody can read or set someone else's.
+   */
+  @Get('tone')
+  async getTone(@CurrentUser() user: { userId: string; email: string }) {
+    return { tone: await this.maestro.getTone(user.userId) };
+  }
+
+  /** Set the caller's Maestro reply style. */
+  @Patch('tone')
+  @HttpCode(HttpStatus.OK)
+  async setTone(
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: SetMaestroToneDto,
+  ) {
+    await this.maestro.setTone(user.userId, dto.tone);
+    return { tone: dto.tone };
   }
 
   /**
