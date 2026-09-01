@@ -1,5 +1,17 @@
 import { z } from 'zod';
 import type { AgentToolDefinition, ToolContext } from '../maestro.types';
+import { confirmCard, isConfirmed } from './confirm';
+import {
+  TEMPLATE_TYPES,
+  TEXT_SNIPPET_TYPES,
+  type TemplateType,
+  type TextSnippetType,
+} from '../../drizzle/schema/media-library.schema';
+import type {
+  CreateTemplateDto,
+  CreateTextSnippetDto,
+  CreateSavedLinkDto,
+} from '../../media-library/dto/media-library.dto';
 import {
   REFERENCE_USAGE_HINT,
   withReferences,
@@ -122,36 +134,32 @@ interface Listed {
   total: number;
 }
 
-/** The library services this tool set reads. Structural, so tests can fake them. */
+/** A library service Maestro can only read from. */
+interface ReadableStore {
+  findAll(workspaceId: string, query: Record<string, unknown>): Promise<Listed>;
+  findOne(workspaceId: string, id: string): Promise<LibraryRow | null>;
+}
+
+/**
+ * A store Maestro can also write to.
+ *
+ * `userId` is separate from the workspace because the services record WHO
+ * created a row. An agent-authored template is still the work of the person who
+ * asked for it, so their id is what gets stamped — not a synthetic agent
+ * identity that would leave the library full of rows belonging to nobody.
+ */
+interface WritableStore<TDto = never> extends ReadableStore {
+  // The DTO type is the service's own, so a field this file spells wrong is a
+  // compile error rather than a validation failure discovered at runtime.
+  create(workspaceId: string, userId: string, dto: TDto): Promise<LibraryRow>;
+}
+
 export interface LibraryDeps {
-  items: {
-    findAll(
-      workspaceId: string,
-      query: Record<string, unknown>,
-    ): Promise<Listed>;
-    findOne(workspaceId: string, id: string): Promise<LibraryRow | null>;
-  };
-  templates: {
-    findAll(
-      workspaceId: string,
-      query: Record<string, unknown>,
-    ): Promise<Listed>;
-    findOne(workspaceId: string, id: string): Promise<LibraryRow | null>;
-  };
-  snippets: {
-    findAll(
-      workspaceId: string,
-      query: Record<string, unknown>,
-    ): Promise<Listed>;
-    findOne(workspaceId: string, id: string): Promise<LibraryRow | null>;
-  };
-  links: {
-    findAll(
-      workspaceId: string,
-      query: Record<string, unknown>,
-    ): Promise<Listed>;
-    findOne(workspaceId: string, id: string): Promise<LibraryRow | null>;
-  };
+  /** Uploads need a file; Maestro has no bytes to upload, so this stays read-only. */
+  items: ReadableStore;
+  templates: WritableStore<CreateTemplateDto>;
+  snippets: WritableStore<CreateTextSnippetDto>;
+  links: WritableStore<CreateSavedLinkDto>;
   categories: {
     findAll(
       workspaceId: string,
@@ -167,6 +175,18 @@ function humanSize(bytes: number | null | undefined): string | null {
   const kb = bytes / 1024;
   if (kb < 1024) return `${Math.round(kb)} KB`;
   return `${(kb / 1024).toFixed(1)} MB`;
+}
+
+/**
+ * A tool argument as a trimmed string, or '' if it is not one.
+ *
+ * Deliberately NOT String(value): the model can pass an object or an array
+ * where a string was asked for, and String() would turn that into the literal
+ * text "[object Object]" — which then passes the non-empty check and gets saved
+ * as somebody's template name.
+ */
+function textArg(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
 }
 
 /** A date the model can read aloud without doing arithmetic on it. */
@@ -213,7 +233,12 @@ function summarize(row: LibraryRow, kind: LibraryKind) {
   };
 }
 
-export function createLibraryTools(deps: LibraryDeps): AgentToolDefinition[] {
+export function createLibraryTools(
+  deps: LibraryDeps,
+  opts: { confirmBeforeSend: boolean } = { confirmBeforeSend: true },
+): AgentToolDefinition[] {
+  const { confirmBeforeSend } = opts;
+
   /** Route a kind to its service, with the filters that kind implies. */
   async function listOf(
     kind: LibraryKind,
@@ -376,6 +401,206 @@ export function createLibraryTools(deps: LibraryDeps): AgentToolDefinition[] {
             section: SECTION_BY_KIND[kind as LibraryKind],
           },
           [chipFor(row, kind as LibraryKind)],
+        );
+      },
+    },
+
+    {
+      name: 'create_template',
+      description:
+        'Save a reusable post template to the workspace library. Use when the user ' +
+        'asks to turn a post, caption or idea into something they can reuse — ' +
+        '"save this as a template", "make me a launch template".\n\n' +
+        'The body supports {{placeholders}} for the parts that change each time ' +
+        '(e.g. "Launching {{product}} today"). Prefer them over inventing specifics: ' +
+        'a template with a real product name baked in is a post, not a template.\n\n' +
+        "This writes to the user's library. WRITES — it needs confirmation.\n\n" +
+        REFERENCE_USAGE_HINT,
+      inputSchema: {
+        name: z
+          .string()
+          .max(255)
+          .describe('Short name the user will recognise in their library.'),
+        text: z
+          .string()
+          .describe(
+            'The template body. Use {{placeholder}} for the parts that change.',
+          ),
+        templateType: z
+          .enum(TEMPLATE_TYPES)
+          .optional()
+          .describe('Defaults to post.'),
+        hashtags: z
+          .array(z.string())
+          .optional()
+          .describe('Hashtags to attach, each including its #.'),
+        platforms: z
+          .array(z.string())
+          .optional()
+          .describe('Platforms this template is meant for, if the user said.'),
+        description: z.string().optional(),
+        confirmed: z.boolean().optional(),
+      },
+      handler: async (args, ctx) => {
+        const name = textArg(args.name);
+        const text = textArg(args.text);
+        if (!name || !text) {
+          return {
+            created: false,
+            message:
+              'A template needs both a name and body text. Ask the user for whichever is missing.',
+          };
+        }
+
+        const templateType =
+          (args.templateType as TemplateType | undefined) ?? 'post';
+        if (!isConfirmed(confirmBeforeSend, args)) {
+          return confirmCard(
+            `Save "${name}" as a ${templateType} template in your library?`,
+            'Yes, save it',
+          );
+        }
+
+        const created = await deps.templates.create(
+          ctx.workspaceId,
+          ctx.userId,
+          {
+            name,
+            templateType,
+            description:
+              typeof args.description === 'string'
+                ? args.description
+                : undefined,
+            platforms: Array.isArray(args.platforms)
+              ? args.platforms
+              : undefined,
+            content: {
+              text,
+              hashtags: Array.isArray(args.hashtags) ? args.hashtags : [],
+              mediaSlots: [],
+            },
+          },
+        );
+
+        return withReferences(
+          {
+            created: true,
+            id: created.id,
+            name: created.name,
+            section: SECTION_BY_KIND.template,
+          },
+          [chipFor(created, 'template')],
+        );
+      },
+    },
+
+    {
+      name: 'create_snippet',
+      description:
+        'Save a reusable piece of text to the workspace library — a caption, a ' +
+        'hashtag set, a call to action, a bio. Use for "save these hashtags", ' +
+        '"keep this caption for later".\n\n' +
+        'WRITES — it needs confirmation.\n\n' +
+        REFERENCE_USAGE_HINT,
+      inputSchema: {
+        name: z.string().max(255).describe('Short recognisable name.'),
+        content: z.string().describe('The text itself.'),
+        snippetType: z
+          .enum(TEXT_SNIPPET_TYPES)
+          .describe(
+            'What kind of text this is. Pick the one that matches — it is how the user finds it later.',
+          ),
+        confirmed: z.boolean().optional(),
+      },
+      handler: async (args, ctx) => {
+        const name = textArg(args.name);
+        const content = textArg(args.content);
+        if (!name || !content) {
+          return {
+            created: false,
+            message:
+              'A snippet needs both a name and its text. Ask the user for whichever is missing.',
+          };
+        }
+
+        const snippetType =
+          (args.snippetType as TextSnippetType | undefined) ?? 'other';
+        if (!isConfirmed(confirmBeforeSend, args)) {
+          return confirmCard(
+            `Save "${name}" as a ${snippetType} snippet in your library?`,
+            'Yes, save it',
+          );
+        }
+
+        const created = await deps.snippets.create(
+          ctx.workspaceId,
+          ctx.userId,
+          { name, content, snippetType },
+        );
+
+        return withReferences(
+          {
+            created: true,
+            id: created.id,
+            name: created.name,
+            section: SECTION_BY_KIND.snippet,
+          },
+          [chipFor(created, 'snippet')],
+        );
+      },
+    },
+
+    {
+      name: 'save_link',
+      description:
+        'Save a URL to the workspace library for later reference. Use for ' +
+        '"save this link", "bookmark this article".\n\n' +
+        'WRITES — it needs confirmation.\n\n' +
+        REFERENCE_USAGE_HINT,
+      inputSchema: {
+        name: z.string().max(255).describe('Short recognisable name.'),
+        url: z.string().describe('The full URL, including https://'),
+        description: z.string().optional(),
+        confirmed: z.boolean().optional(),
+      },
+      handler: async (args, ctx) => {
+        const name = textArg(args.name);
+        const url = textArg(args.url);
+        if (!name || !url) {
+          return {
+            created: false,
+            message:
+              'Saving a link needs both a name and a URL. Ask the user for whichever is missing.',
+          };
+        }
+        // Checked here as well as by the DTO so the model gets a sentence it can
+        // act on, rather than a validation error it has to decode.
+        if (!/^https?:\/\//i.test(url)) {
+          return {
+            created: false,
+            message: `"${url}" is not a full URL. It needs to start with http:// or https://.`,
+          };
+        }
+
+        if (!isConfirmed(confirmBeforeSend, args)) {
+          return confirmCard(`Save "${name}" to your library?`, 'Yes, save it');
+        }
+
+        const created = await deps.links.create(ctx.workspaceId, ctx.userId, {
+          name,
+          url,
+          description:
+            typeof args.description === 'string' ? args.description : undefined,
+        });
+
+        return withReferences(
+          {
+            created: true,
+            id: created.id,
+            name: created.name,
+            section: SECTION_BY_KIND.link,
+          },
+          [chipFor(created, 'link')],
         );
       },
     },

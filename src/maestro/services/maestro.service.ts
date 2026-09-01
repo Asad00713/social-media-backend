@@ -508,13 +508,16 @@ export class MaestroService {
       ...createPostTools(this.posts, { confirmBeforeSend }),
       ...createChannelTools(this.channels),
       ...createCampaignTools(this.campaigns),
-      ...createLibraryTools({
-        items: this.libraryItems,
-        templates: this.libraryTemplates,
-        snippets: this.librarySnippets,
-        links: this.libraryLinks,
-        categories: this.libraryCategories,
-      }),
+      ...createLibraryTools(
+        {
+          items: this.libraryItems,
+          templates: this.libraryTemplates,
+          snippets: this.librarySnippets,
+          links: this.libraryLinks,
+          categories: this.libraryCategories,
+        },
+        { confirmBeforeSend },
+      ),
       ...createInboxTools(this.inbox),
       ...createPlannerTools({
         posts: this.posts,
