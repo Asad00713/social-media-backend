@@ -34,6 +34,7 @@ import { createWhatsAppTools } from '../tools/whatsapp.tools';
 import { createPostTools } from '../tools/post.tools';
 import { createChannelTools } from '../tools/channel.tools';
 import { createCampaignTools } from '../tools/campaign.tools';
+import { createLibraryTools } from '../tools/library.tools';
 import { createInboxTools } from '../tools/inbox.tools';
 import { createPlannerTools } from '../tools/planner.tools';
 import {
@@ -44,6 +45,11 @@ import {
 } from '../tools/references';
 import { ChannelService } from '../../channels/services/channel.service';
 import { CampaignsService } from '../../campaigns/campaigns.service';
+import { MediaItemService } from '../../media-library/services/media-item.service';
+import { TemplateService } from '../../media-library/services/template.service';
+import { TextSnippetService } from '../../media-library/services/text-snippet.service';
+import { SavedLinkService } from '../../media-library/services/saved-link.service';
+import { CategoryService } from '../../media-library/services/category.service';
 import {
   resolveAgentAuth,
   MaestroAuthUnavailableError,
@@ -221,6 +227,11 @@ export class MaestroService {
     private readonly keys: MaestroKeyService,
     private readonly channels: ChannelService,
     private readonly campaigns: CampaignsService,
+    private readonly libraryItems: MediaItemService,
+    private readonly libraryTemplates: TemplateService,
+    private readonly librarySnippets: TextSnippetService,
+    private readonly libraryLinks: SavedLinkService,
+    private readonly libraryCategories: CategoryService,
     private readonly scheduledMessages: ScheduledMessagesService,
     private readonly drips: DripService,
   ) {}
@@ -497,6 +508,13 @@ export class MaestroService {
       ...createPostTools(this.posts, { confirmBeforeSend }),
       ...createChannelTools(this.channels),
       ...createCampaignTools(this.campaigns),
+      ...createLibraryTools({
+        items: this.libraryItems,
+        templates: this.libraryTemplates,
+        snippets: this.librarySnippets,
+        links: this.libraryLinks,
+        categories: this.libraryCategories,
+      }),
       ...createInboxTools(this.inbox),
       ...createPlannerTools({
         posts: this.posts,

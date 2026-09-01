@@ -18,6 +18,7 @@ import { ChannelsModule } from '../channels/channels.module';
 // import rather than a directly-provided service. It does not import Maestro,
 // so no forwardRef is needed.
 import { CampaignsModule } from '../campaigns/campaigns.module';
+import { MediaLibraryModule } from '../media-library/media-library.module';
 // DripModule exports DripService — for the planner tools, which merge drip
 // campaign posts with normal posts the way the Planner screen does.
 import { DripModule } from '../drips/drip.module';
@@ -69,6 +70,9 @@ import { MaestroBridgeProcessor } from './bridge/processors/maestro-bridge.proce
     // not import Maestro, so no forwardRef is needed.
     ChannelsModule,
     CampaignsModule,
+    // For the library read tools (the workspace's OWN saved media, templates,
+    // snippets and links -- distinct from the stock search in media.tools.ts).
+    MediaLibraryModule,
     DripModule,
     BullModule.registerQueue({ name: QUEUES.MAESTRO_BRIDGE }),
   ],
