@@ -103,7 +103,7 @@ The console also has the **legacy** *Instagram API with Facebook Login*
 | `instagram_business_manage_messages` | ✅ | AR | Keep |
 | `instagram_business_manage_comments` | ✅ | AR | Keep |
 | `instagram_business_content_publish` | ✅ | AR | Keep |
-| `instagram_business_manage_insights` | ⚠️ mismatch | AR | Keep — **fix code** (see below) |
+| `instagram_business_manage_insights` | ✅ | AR | Keep — code fixed (was `instagram_manage_insights`) |
 
 ### Remove — legacy (Instagram Graph API via Facebook Login)
 | Permission | Action |
@@ -112,16 +112,16 @@ The console also has the **legacy** *Instagram API with Facebook Login*
 | `instagram_manage_comments` | **Remove** — legacy dup |
 | `instagram_manage_messages` | **Remove** — legacy dup |
 
-### 🔧 Code fix required
-`channels.schema.ts` requests the **legacy** `instagram_manage_insights` while
-every other IG scope is the new `instagram_business_*` generation:
+### 🔧 Code fix (done)
+`channels.schema.ts` used to request the **legacy** `instagram_manage_insights`
+while every other IG scope was the new `instagram_business_*` generation. Fixed:
 
 ```
 instagram_manage_insights  →  instagram_business_manage_insights
 ```
 
-Changing this is a scope change — **existing Instagram channels must reconnect**
-(tokens never gain scopes retroactively).
+This was a scope change — **existing Instagram channels must reconnect** after
+deploy (tokens never gain scopes retroactively).
 
 ---
 
