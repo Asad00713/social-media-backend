@@ -49,6 +49,16 @@ function fakeDeps(
       }
       return Promise.resolve({ items: out, total: out.length });
     },
+    create: (
+      workspaceId: string,
+      userId: string,
+      dto: Record<string, unknown>,
+    ) => {
+      calls.push({ service, workspaceId, query: { ...dto, userId } });
+      const row = { id: `new-${service}`, name: String(dto.name), ...dto };
+      rows.push(row as Row);
+      return Promise.resolve(row);
+    },
     findOne: (workspaceId: string, id: string) => {
       calls.push({ service, workspaceId, query: { id } });
       return Promise.resolve(rows.find((r) => r.id === id) ?? null);
@@ -364,13 +374,154 @@ describe('library tools', () => {
     });
   });
 
+  describe('creating', () => {
+    /** Tools with the confirm gate switched off, for the act-and-assert cases. */
+    function unguarded(deps: LibraryDeps) {
+      return createLibraryTools(deps, { confirmBeforeSend: false });
+    }
+
+    it('asks before writing anything to the library', async () => {
+      const calls: Call[] = [];
+      const tools = createLibraryTools(fakeDeps({}, calls));
+
+      const result = (await tool(tools, 'create_template').handler(
+        { name: 'Launch', text: 'Hello {{name}}' },
+        CTX,
+      )) as { kind: string };
+
+      // A confirm CARD, and -- the part that matters -- nothing written yet.
+      expect(result.kind).toBe('question');
+      expect(calls).toHaveLength(0);
+    });
+
+    it('writes once the user has approved', async () => {
+      const calls: Call[] = [];
+      const tools = createLibraryTools(fakeDeps({}, calls));
+
+      const result = await tool(tools, 'create_template').handler(
+        { name: 'Launch', text: 'Hello {{name}}', confirmed: true },
+        CTX,
+      );
+
+      expect(calls[0].service).toBe('templates');
+      expect(dataOf<{ created: boolean }>(result).created).toBe(true);
+    });
+
+    it.each([
+      ['create_template', { name: 'X', text: 'body' }],
+      [
+        'create_snippet',
+        { name: 'X', content: 'body', snippetType: 'caption' },
+      ],
+      ['save_link', { name: 'X', url: 'https://example.com' }],
+    ])('%s stamps the asking user, not the agent', async (name, args) => {
+      const calls: Call[] = [];
+      const tools = unguarded(fakeDeps({}, calls));
+
+      await tool(tools, name).handler(args, CTX);
+
+      // An agent-authored row still belongs to the person who asked for it.
+      expect(calls[0].query.userId).toBe('u1');
+      expect(calls[0].workspaceId).toBe('ws-1');
+    });
+
+    it('returns a chip so the new thing is reachable straight away', async () => {
+      const tools = unguarded(fakeDeps({}));
+
+      const result = await tool(tools, 'create_snippet').handler(
+        { name: 'CTA', content: 'Link in bio', snippetType: 'cta' },
+        CTX,
+      );
+
+      expect(refsOf(result)[0].label).toBe('CTA');
+    });
+
+    it('keeps the template body intact, placeholders and all', async () => {
+      const calls: Call[] = [];
+      const tools = unguarded(fakeDeps({}, calls));
+
+      await tool(tools, 'create_template').handler(
+        {
+          name: 'Launch',
+          text: 'Launching {{product}} today',
+          hashtags: ['#launch'],
+        },
+        CTX,
+      );
+
+      // Placeholders are the whole point: a template with a real product name
+      // baked in is a post, not a template.
+      expect(calls[0].query.content).toEqual({
+        text: 'Launching {{product}} today',
+        hashtags: ['#launch'],
+        mediaSlots: [],
+      });
+    });
+
+    it.each([
+      ['create_template', { name: '', text: 'body' }],
+      ['create_template', { name: 'X', text: '   ' }],
+      ['create_snippet', { name: 'X', content: '', snippetType: 'cta' }],
+      ['save_link', { name: 'X', url: '' }],
+    ])(
+      '%s refuses an incomplete request instead of saving a blank',
+      async (name, args) => {
+        const calls: Call[] = [];
+        const tools = unguarded(fakeDeps({}, calls));
+
+        const result = (await tool(tools, name).handler(args, CTX)) as {
+          created: boolean;
+          message: string;
+        };
+
+        expect(result.created).toBe(false);
+        // The message names what is missing, so the model can ask for it rather
+        // than retrying the same empty call.
+        expect(result.message).toMatch(/needs/i);
+        expect(calls).toHaveLength(0);
+      },
+    );
+
+    it('rejects a URL that is not one, in words the model can act on', async () => {
+      const calls: Call[] = [];
+      const tools = unguarded(fakeDeps({}, calls));
+
+      const result = (await tool(tools, 'save_link').handler(
+        { name: 'Docs', url: 'example.com' },
+        CTX,
+      )) as { created: boolean; message: string };
+
+      expect(result.created).toBe(false);
+      expect(result.message).toMatch(/https?:\/\//);
+      expect(calls).toHaveLength(0);
+    });
+
+    it('defaults a template to a post, the commonest case', async () => {
+      const calls: Call[] = [];
+      const tools = unguarded(fakeDeps({}, calls));
+
+      await tool(tools, 'create_template').handler(
+        { name: 'X', text: 'body' },
+        CTX,
+      );
+
+      expect(calls[0].query.templateType).toBe('post');
+    });
+  });
+
   describe('tool surface', () => {
-    it('exposes exactly the two read tools, and nothing that writes', () => {
+    it('creates but never deletes', () => {
       const names = createLibraryTools(fakeDeps({})).map((t) => t.name);
 
-      // Write access is a later wave. Until then the absence is the contract:
-      // an agent that cannot delete cannot delete the wrong thing.
-      expect(names).toEqual(['search_library', 'get_library_item']);
+      // Creating is allowed; DELETING is deliberately still absent -- an agent
+      // that cannot delete cannot delete the wrong thing.
+      expect(names).toEqual([
+        'search_library',
+        'get_library_item',
+        'create_template',
+        'create_snippet',
+        'save_link',
+      ]);
     });
 
     it('tells the model apart from stock search in its own description', () => {
