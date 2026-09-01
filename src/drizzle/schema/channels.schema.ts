@@ -500,8 +500,11 @@ export const PLATFORM_CONFIG: Record<
       'instagram_business_manage_messages',
       'instagram_business_manage_comments',
       'instagram_business_content_publish',
-      // Required for reading IG insights when an FB ad targets IG placements.
-      'instagram_manage_insights',
+      // Business Login variant for reading IG account/media insights. Must be
+      // the instagram_business_* form to match the Instagram Login flow above —
+      // the legacy instagram_manage_insights belongs to Facebook Login and is
+      // not granted here.
+      'instagram_business_manage_insights',
     ],
   },
   youtube: {
