@@ -58,6 +58,8 @@ interface Harness {
   addMessage: jest.Mock<Promise<{ id: string }>, unknown[]>;
   recordUsage: jest.Mock<Promise<void>, unknown[]>;
   getDecryptedKey: jest.Mock<Promise<string | null>, unknown[]>;
+  runInputs: { systemPrompt: string | string[] }[];
+  users: { getMaestroTone: jest.Mock };
 }
 
 function makeHarness(
@@ -67,16 +69,21 @@ function makeHarness(
     budgetExceeded?: boolean;
     /** Extra messages visible to the approval path. */
     messages?: unknown[];
+    /** The tone stored on the user row; omit to leave the lookup unstubbed. */
+    tone?: 'simple' | 'professional' | 'detailed';
     /** Stands in for the Slack connection the approved tool resolves. */
     slackConn?: unknown;
   } = {},
 ): Harness {
+  const runInputs: { systemPrompt: string | string[] }[] = [];
   const runtime = {
-    run: () =>
+    run: (input: { systemPrompt: string | string[] }) => (
+      runInputs.push(input),
       // eslint-disable-next-line @typescript-eslint/require-await -- scripted events, nothing to await
       (async function* () {
         for (const ev of events) yield ev;
-      })(),
+      })()
+    ),
   };
 
   const addMessage = jest
@@ -135,12 +142,15 @@ function makeHarness(
       .mockResolvedValue({ channels: [{ id: 'C1', name: 'general' }] }),
     joinChannel: jest.fn().mockResolvedValue(undefined),
   } as never;
+  const users = {
+    getMaestroTone: jest.fn().mockResolvedValue(opts.tone ?? 'professional'),
+  };
   const groq = { isReady: () => false } as never;
 
   const service = new MaestroService(
     runtime as never,
     conversations as never,
-    stub, // usersService
+    users as never,
     stub, // workspaceService
     tokens as never,
     groq,
@@ -167,6 +177,8 @@ function makeHarness(
     recordUsage,
     getDecryptedKey,
     setMessageMetadata,
+    runInputs,
+    users,
   };
 }
 
@@ -776,6 +788,63 @@ describe('MaestroService.streamMessage', () => {
       });
 
       expect(streamedText(events)).toContain('normal turn');
+    });
+  });
+
+  describe('reply tone', () => {
+    /** The system prompt the runtime actually received, flattened. */
+    function promptOf(h: Harness): string {
+      const sent = h.runInputs[0].systemPrompt;
+      return Array.isArray(sent) ? sent.join(String.fromCharCode(10)) : sent;
+    }
+
+    it('reads the tone from the user row, not the request body', async () => {
+      // Tone must survive the bridge (Telegram/WhatsApp), which has no browser
+      // to send a preference from -- so the DB is the only source of truth.
+      const h = makeHarness([...textDeltas('Hi'), DONE_EVENT], {
+        tone: 'simple',
+      });
+
+      await run(h);
+
+      expect(h.users.getMaestroTone).toHaveBeenCalledWith(USER_ID);
+      expect(promptOf(h)).toContain('Reply style: Simple');
+    });
+
+    it('adds nothing for the default voice', async () => {
+      const h = makeHarness([...textDeltas('Hi'), DONE_EVENT], {
+        tone: 'professional',
+      });
+
+      await run(h);
+
+      expect(promptOf(h)).not.toContain('Reply style');
+    });
+
+    it('keeps the static prompt first so the cache prefix is stable', async () => {
+      const h = makeHarness([...textDeltas('Hi'), DONE_EVENT], {
+        tone: 'detailed',
+      });
+
+      await run(h);
+
+      const sent = h.runInputs[0].systemPrompt;
+      expect(Array.isArray(sent)).toBe(true);
+      // A tone block inserted BEFORE the static prompt would invalidate the
+      // cached prefix on every turn, for a cosmetic setting.
+      expect((sent as string[])[0]).toContain('You are Maestro');
+      expect(promptOf(h)).toContain('Reply style: Detailed');
+    });
+
+    it('still answers when the tone lookup fails', async () => {
+      const h = makeHarness([...textDeltas('Hi'), DONE_EVENT]);
+      h.users.getMaestroTone.mockRejectedValue(new Error('db down'));
+
+      const events = await run(h);
+
+      // A cosmetic preference must never take a chat turn down with it.
+      expect(names(events)).not.toContain('error');
+      expect(promptOf(h)).not.toContain('Reply style');
     });
   });
 

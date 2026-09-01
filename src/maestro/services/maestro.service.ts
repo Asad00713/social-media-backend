@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   BadRequestException,
 } from '@nestjs/common';
+import type { MaestroTone } from '../../drizzle/schema/users.schema';
 import { UsersService } from '../../users/users.service';
 import { WorkspaceService } from '../../workspace/workspace.service';
 import { ConversationService } from '../../chatbot/services/conversation.service';
@@ -47,6 +48,7 @@ import {
 import {
   STATIC_SYSTEM_PROMPT,
   CONFIRM_BEFORE_SEND_POLICY,
+  tonePolicy,
   bridgeChannelPolicy,
 } from '../prompt/system-prompt';
 import { z } from 'zod';
@@ -242,6 +244,26 @@ export class MaestroService {
    * billing credential, so only the workspace owner may see or change it.
    * Returns only a MASKED hint — the key itself never leaves the server.
    */
+  /** Never throws: falls back to the pre-existing voice. */
+  private async resolveTone(userId: string): Promise<MaestroTone> {
+    try {
+      return await this.usersService.getMaestroTone(userId);
+    } catch (err) {
+      this.logger.warn(`Tone lookup failed, using professional: ${err}`);
+      return 'professional';
+    }
+  }
+
+  /** The caller's Maestro reply style (see tonePolicy). */
+  getTone(userId: string): Promise<MaestroTone> {
+    return this.usersService.getMaestroTone(userId);
+  }
+
+  /** Set the caller's Maestro reply style. */
+  setTone(userId: string, tone: MaestroTone): Promise<void> {
+    return this.usersService.setMaestroTone(userId, tone);
+  }
+
   async getKeyStatus(userId: string, workspaceId: string) {
     await this.workspaceService.findOne(workspaceId, userId);
     return this.keys.getStatus(workspaceId);
@@ -819,6 +841,15 @@ export class MaestroService {
     // STATIC stays first (cache-stable prefix). The bridge policy comes LAST so
     // it overrides the web-oriented "buttons/cards" wording for Telegram/WhatsApp.
     const promptParts: string[] = [STATIC_SYSTEM_PROMPT];
+    // Tone comes from the USER row, never from the request body: the bridge
+    // channels have no browser to send a preference from, and a setting the
+    // caller could spoof is not a setting.
+    // Wrapped, not just .catch()-ed: a reply style is a cosmetic preference,
+    // so ANY failure to read it -- a DB blip, a missing row -- must degrade to
+    // the old voice rather than take the whole chat turn down with it.
+    const tone = await this.resolveTone(userId);
+    const toneBlock = tonePolicy(tone);
+    if (toneBlock) promptParts.push(toneBlock);
     if (confirmBeforeSend) promptParts.push(CONFIRM_BEFORE_SEND_POLICY);
     if (params.sourceChannel) {
       promptParts.push(bridgeChannelPolicy(params.sourceChannel));
