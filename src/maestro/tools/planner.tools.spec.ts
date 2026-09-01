@@ -637,7 +637,13 @@ describe('get_schedule_summary', () => {
   });
 
   // "Which days am I not posting" is the question behind most summary asks.
+  //
+  // Time is frozen for the emptyDays cases: the tool excludes TODAY (a day
+  // already underway is not one the user can fill), so a hard-coded range with
+  // a real clock silently changes meaning as the calendar reaches it -- these
+  // two passed for months and then broke by themselves on 2026-09-01.
   it('names the days in range with nothing scheduled', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-25T00:00:00.000Z'));
     const tools = createPlannerTools(
       fakeDeps({
         posts: [postRow({ scheduledAt: new Date('2026-09-02T09:00:00.000Z') })],
@@ -655,6 +661,7 @@ describe('get_schedule_summary', () => {
       '2026-09-01',
       '2026-09-03',
     ]);
+    jest.useRealTimers();
   });
 
   it('names the busiest day', async () => {
@@ -690,6 +697,7 @@ describe('get_schedule_summary', () => {
   });
 
   it('reports an empty calendar without inventing a busiest day', async () => {
+    jest.useFakeTimers().setSystemTime(new Date('2026-08-25T00:00:00.000Z'));
     const tools = createPlannerTools(fakeDeps({}));
 
     const result = dataOf<SummaryData>(
@@ -705,6 +713,7 @@ describe('get_schedule_summary', () => {
       '2026-09-01',
       '2026-09-02',
     ]);
+    jest.useRealTimers();
   });
 
   it('reads the caller workspace, ignoring any workspaceId argument', async () => {
