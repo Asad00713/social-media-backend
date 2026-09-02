@@ -19,6 +19,8 @@ import { ChannelsModule } from '../channels/channels.module';
 // so no forwardRef is needed.
 import { CampaignsModule } from '../campaigns/campaigns.module';
 import { MediaLibraryModule } from '../media-library/media-library.module';
+import { WorkspaceMembersModule } from '../workspace-members/workspace-members.module';
+import { MentionSearchService } from './services/mention-search.service';
 // DripModule exports DripService — for the planner tools, which merge drip
 // campaign posts with normal posts the way the Planner screen does.
 import { DripModule } from '../drips/drip.module';
@@ -73,12 +75,15 @@ import { MaestroBridgeProcessor } from './bridge/processors/maestro-bridge.proce
     // For the library read tools (the workspace's OWN saved media, templates,
     // snippets and links -- distinct from the stock search in media.tools.ts).
     MediaLibraryModule,
+    // For the composer's @-mention picker (workspace roster).
+    WorkspaceMembersModule,
     DripModule,
     BullModule.registerQueue({ name: QUEUES.MAESTRO_BRIDGE }),
   ],
   controllers: [MaestroController],
   providers: [
     MaestroService,
+    MentionSearchService,
     MaestroKeyService,
     ClaudeAgentSdkRuntime,
     ConversationService,

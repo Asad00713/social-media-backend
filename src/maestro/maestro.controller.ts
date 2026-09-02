@@ -16,6 +16,11 @@ import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { MaestroService } from './services/maestro.service';
+import {
+  MentionSearchService,
+  MENTION_TYPES,
+  type MentionType,
+} from './services/mention-search.service';
 import { BridgeService } from './bridge/services/bridge.service';
 import { TelegramLinkTokenDto } from './bridge/dto/bridge.dto';
 import {
@@ -36,6 +41,7 @@ export class MaestroController {
   constructor(
     private readonly maestro: MaestroService,
     private readonly bridge: BridgeService,
+    private readonly mentions: MentionSearchService,
   ) {}
 
   /** List the caller's Maestro bridge connections (Telegram/WhatsApp/Email). */
@@ -110,6 +116,29 @@ export class MaestroController {
     @Body() dto: PresignMaestroAttachmentDto,
   ) {
     return this.maestro.presignAttachment(user.userId, dto);
+  }
+
+  /**
+   * Rows for the composer's `@` picker.
+   *
+   * `q` empty means "just opened" -- the picker shows recent items rather than
+   * an empty box asking the user to type, matching how ClickUp's behaves.
+   */
+  @Get('mentions')
+  async searchMentions(
+    @CurrentUser() user: { userId: string; email: string },
+    @Query('workspaceId') workspaceId: string,
+    @Query('q') q?: string,
+    @Query('type') type?: string,
+  ) {
+    return this.mentions.search({
+      workspaceId,
+      userId: user.userId,
+      query: q ?? '',
+      type: (MENTION_TYPES as readonly string[]).includes(type ?? '')
+        ? (type as MentionType)
+        : undefined,
+    });
   }
 
   /**
