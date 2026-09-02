@@ -1932,6 +1932,28 @@ export class InboxService {
     return matches[0];
   }
 
+  /**
+   * Resolve Instagram channels by the IG professional account ID that webhooks
+   * carry as `entry.id` (stored as `metadata.igWebhookId` at connect time).
+   *
+   * This exists because Instagram Login's `/me` returns two IDs: the
+   * app-scoped `id` (what we persist as `platformAccountId` and what Graph
+   * read/publish calls use) and `user_id` (the value webhooks send). A DM or
+   * comment webhook therefore never matches on `platformAccountId`, so the
+   * webhook handler falls back to this lookup. Like
+   * {@link findChannelsByPlatformAccount} it returns every match so a shared
+   * account fans out to all its workspaces.
+   */
+  async findInstagramChannelsByWebhookId(webhookId: string) {
+    return db.query.socialMediaChannels.findMany({
+      where: and(
+        eq(socialMediaChannels.platform, 'instagram'),
+        sql`${socialMediaChannels.metadata}->>'igWebhookId' = ${webhookId}`,
+      ),
+      orderBy: (c, { asc }) => asc(c.id),
+    });
+  }
+
   async findTelegramChannelByRouteId(
     routeId: string,
   ): Promise<{ id: number; workspaceId: string } | null> {

@@ -7,6 +7,15 @@ import type {
 
 export interface InstagramUser {
   id: string;
+  /**
+   * The Instagram professional account ID (`user_id` on the /me endpoint).
+   * Per Meta's docs this is the value that arrives as `entry.id` in webhook
+   * notifications — distinct from `id`, which is the app-scoped ID that Graph
+   * read/publish calls use. We store this so the webhook handler can resolve
+   * the channel from an incoming event. May be undefined for legacy callers
+   * that did not request the field.
+   */
+  userId?: string;
   username: string;
   name: string;
   profilePictureUrl: string | null;
@@ -279,7 +288,9 @@ export class InstagramService {
     meUrl.searchParams.set('access_token', accessToken);
     meUrl.searchParams.set(
       'fields',
-      'id,username,name,profile_picture_url,followers_count,follows_count,media_count,biography,website,account_type',
+      // `user_id` is the IG professional account ID that webhooks send as
+      // `entry.id`; `id` is the app-scoped ID Graph calls use. We need both.
+      'id,user_id,username,name,profile_picture_url,followers_count,follows_count,media_count,biography,website,account_type',
     );
 
     this.logger.log(
@@ -301,6 +312,9 @@ export class InstagramService {
 
     return {
       id: data.id,
+      // `user_id` may be absent on very old Graph versions; fall back to `id`
+      // only as a last resort (it will simply not match a webhook then).
+      userId: data.user_id ? String(data.user_id) : undefined,
       username: data.username || 'unknown',
       name: data.name || data.username || 'Instagram User',
       profilePictureUrl: data.profile_picture_url || null,
