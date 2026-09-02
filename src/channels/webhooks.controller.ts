@@ -392,13 +392,12 @@ export class WebhooksController {
     const fromMe = message.is_echo === true || senderId === accountId;
     // Other-party id: the user (PSID/IGSID), not the page.
     const otherPartyId = fromMe ? recipientId : senderId;
-    const conversationId = `${accountId}:${otherPartyId}`;
 
     // Fan out to EVERY workspace this account is connected to. Platform
     // webhooks fire only once per event, so resolving a single channel would
     // silently drop the DM for every other workspace that shares this account
     // (e.g. an agency and its client both connect the same Page).
-    const channels = await this.inbox.findChannelsByPlatformAccount(
+    const channels = await this.resolveWebhookChannels(
       source as SupportedPlatform,
       accountId,
     );
@@ -410,6 +409,15 @@ export class WebhooksController {
       );
       return;
     }
+
+    // Build the conversation id from the account id our OWN records use
+    // (channel.platformAccountId), NOT the raw webhook account id. For
+    // Instagram those differ (app-scoped id vs webhook `user_id`), and polling
+    // keys conversations off platformAccountId — so keying the webhook off the
+    // raw id would split the same thread into two conversations. All resolved
+    // channels for one account share the same platformAccountId, so [0] is safe.
+    const conversationAccountId = channels[0].platformAccountId;
+    const conversationId = `${conversationAccountId}:${otherPartyId}`;
 
     // Timestamp parsing — FB Messenger sends ms, IG samples sometimes show
     // seconds. Auto-detect: anything below 10^12 is seconds.
@@ -690,6 +698,34 @@ export class WebhooksController {
     );
   }
 
+  /**
+   * Resolve the connected channels a Meta webhook event belongs to.
+   *
+   * Primary match is on `platformAccountId` (the id our OAuth flow stored),
+   * which is correct for Facebook and Threads. Instagram Login is the
+   * exception: its webhooks send the professional-account id (`user_id`),
+   * while we persist the app-scoped `id` as `platformAccountId` — so an IG
+   * event never matches on `platformAccountId`. For IG we therefore fall back
+   * to matching `metadata.igWebhookId` (the `user_id` captured at connect).
+   *
+   * The fallback runs only when the primary lookup finds nothing, so a
+   * correctly-keyed channel keeps its existing (fan-out) behaviour untouched.
+   */
+  private async resolveWebhookChannels(
+    platform: SupportedPlatform,
+    accountId: string,
+  ): Promise<Awaited<ReturnType<InboxService['findChannelsByPlatformAccount']>>> {
+    const primary = await this.inbox.findChannelsByPlatformAccount(
+      platform,
+      accountId,
+    );
+    if (primary.length > 0 || platform !== 'instagram') return primary;
+
+    // IG dual-id fallback: the webhook's account id is the `user_id`, stored
+    // in metadata rather than platformAccountId.
+    return this.inbox.findInstagramChannelsByWebhookId(accountId);
+  }
+
   // ──────────────────────────────────────────────────────────────────────
   // Common ingest path — resolves channel, looks up our post, upserts.
   // Drops the event silently if the comment is on a post we didn't publish
@@ -712,7 +748,7 @@ export class WebhooksController {
     // "our post" check below routes the comment to whichever workspace(s)
     // actually published the post — resolving a single channel would drop the
     // comment entirely whenever the wrong workspace won the lookup.
-    const channels = await this.inbox.findChannelsByPlatformAccount(
+    const channels = await this.resolveWebhookChannels(
       args.platform,
       args.platformAccountIdToMatch,
     );

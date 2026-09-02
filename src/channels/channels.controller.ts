@@ -596,6 +596,11 @@ export class ChannelsController {
                 followsCount: instagramUser.followsCount,
                 mediaCount: instagramUser.mediaCount,
                 tokenType: 'instagram_business_login',
+                // The IG professional account ID (`user_id`) that webhook
+                // notifications carry as `entry.id`. `platformAccountId` above
+                // is the app-scoped `id`, which Graph read/publish uses but
+                // webhooks never send — so we key webhook lookups off this.
+                igWebhookId: instagramUser.userId ?? null,
               },
             },
           );

@@ -127,6 +127,21 @@ export class InboxPollProcessor extends WorkerHost {
       return { ok: false, ingested: 0 };
     }
 
+    // Self-heal the IG webhook id for channels connected before we started
+    // storing it. Instagram webhooks key off the professional-account id
+    // (`user_id`), which we now persist as metadata.igWebhookId at connect
+    // time — but pre-existing channels lack it, so their realtime events
+    // can't resolve a channel. Backfill it opportunistically on the poll path
+    // (token already decrypted here); runs once per channel, then the guard
+    // short-circuits. Best-effort — a failure never blocks the poll.
+    if (platform === 'instagram' && !channel.metadata?.igWebhookId) {
+      await this.backfillInstagramWebhookId(channel).catch((err) => {
+        this.logger.warn(
+          `Inbox poll: IG webhook-id backfill skipped for channel ${channelId}: ${(err as Error).message}`,
+        );
+      });
+    }
+
     // Phase 2.3 — lazy webhook subscription. Once per backend lifetime per
     // channel, try to re-arm the Meta webhook subscription for FB Pages + IG
     // Business accounts. Idempotent on Meta's side; this is the safety net
@@ -497,6 +512,42 @@ export class InboxPollProcessor extends WorkerHost {
         `Webhook auto-subscribe failed for channel ${channel.id} (${platform}): ${(err as Error).message}`,
       );
     }
+  }
+
+  /**
+   * Backfill metadata.igWebhookId for a legacy Instagram channel.
+   *
+   * Fetches the account's `user_id` (the id IG webhooks send as entry.id) with
+   * the channel's own token and merges it into the metadata JSONB, preserving
+   * every other key. Only runs when the key is absent (guarded by the caller),
+   * so it's a one-time self-heal per channel.
+   */
+  private async backfillInstagramWebhookId(
+    channel: ResolvedChannel,
+  ): Promise<void> {
+    const info = await this.instagramService.getAccountInfoWithUserToken(
+      channel.accessToken,
+    );
+    if (!info.userId) {
+      this.logger.warn(
+        `Inbox poll: IG /me returned no user_id for channel ${channel.id}; cannot backfill webhook id`,
+      );
+      return;
+    }
+
+    await db
+      .update(socialMediaChannels)
+      .set({
+        metadata: sql`COALESCE(${socialMediaChannels.metadata}, '{}'::jsonb) || jsonb_build_object('igWebhookId', ${info.userId}::text)`,
+      })
+      .where(eq(socialMediaChannels.id, channel.id));
+
+    // Keep the in-memory copy consistent so the same poll run resolves.
+    channel.metadata = { ...(channel.metadata ?? {}), igWebhookId: info.userId };
+
+    this.logger.log(
+      `Inbox poll: backfilled igWebhookId=${info.userId} for channel ${channel.id} (platformAccountId=${channel.platformAccountId})`,
+    );
   }
 }
 
