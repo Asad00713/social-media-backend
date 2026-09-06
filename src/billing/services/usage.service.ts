@@ -9,15 +9,15 @@ import { db } from '../../drizzle/db';
 import {
   workspaceUsage,
   usageEvents,
-  subscriptions,
   plans,
-  subscriptionItems,
   workspace,
   workspaceInvitation,
   NewUsageEvent,
 } from '../../drizzle/schema';
+import { SubscriptionLookupService } from './subscription-lookup.service';
+import { resolveMaxWorkspaces } from './limit-resolver.util';
 
-export type ResourceType = 'CHANNEL' | 'MEMBER' | 'WORKSPACE';
+export type ResourceType = 'CHANNEL' | 'MEMBER' | 'WORKSPACE' | 'POST';
 export type EventType =
   | 'CHANNEL_ADDED'
   | 'CHANNEL_REMOVED'
@@ -51,6 +51,8 @@ export interface WorkspaceLimits {
 @Injectable()
 export class UsageService {
   private readonly logger = new Logger(UsageService.name);
+
+  constructor(private readonly lookup: SubscriptionLookupService) {}
 
   // Get usage limits for a workspace
   async getWorkspaceUsage(workspaceId: string): Promise<UsageLimits> {
@@ -87,57 +89,40 @@ export class UsageService {
     };
   }
 
-  // Check if user can create more workspaces
+  /**
+   * How many workspaces this account may own.
+   *
+   * Previously this looped over every workspace the user owned, read each
+   * one's own subscription, and kept the LARGEST maxWorkspaces it found — a
+   * workaround for workspace-scoped billing that was also exploitable (buy MAX
+   * on one workspace, FREE on another, and MAX's allowance applied to both).
+   * One account, one subscription, one lookup.
+   */
   async getWorkspaceLimits(userId: string): Promise<WorkspaceLimits> {
-    // Get user's workspaces
     const userWorkspaces = await db
-      .select()
+      .select({ id: workspace.id })
       .from(workspace)
       .where(eq(workspace.ownerId, userId));
 
-    // Get the highest plan limit from user's subscriptions
-    let maxWorkspaces = 1; // Default FREE plan limit
+    const subscription = await this.lookup.findByUserId(userId);
 
-    for (const ws of userWorkspaces) {
-      const subscription = await db
-        .select()
-        .from(subscriptions)
-        .where(
-          and(
-            eq(subscriptions.workspaceId, ws.id),
-            eq(subscriptions.status, 'active'),
-          ),
-        )
-        .limit(1);
+    // No subscription, or one that is not active, gets FREE's allowance.
+    const planCode =
+      subscription && subscription.status === 'active'
+        ? subscription.planCode
+        : 'FREE';
 
-      if (subscription.length > 0) {
-        const plan = await db
-          .select()
-          .from(plans)
-          .where(eq(plans.code, subscription[0].planCode))
-          .limit(1);
+    const plan = await this.lookup.getPlanLimits(planCode);
+    const addons = subscription
+      ? await this.lookup.getAddonQuantities(subscription.id)
+      : {
+          extraChannels: 0,
+          extraMembers: 0,
+          extraWorkspaces: 0,
+          extraAiTokens: 0,
+        };
 
-        if (plan.length > 0 && plan[0].maxWorkspaces > maxWorkspaces) {
-          maxWorkspaces = plan[0].maxWorkspaces;
-        }
-
-        // Check for extra workspaces purchased
-        const extraWorkspaces = await db
-          .select()
-          .from(subscriptionItems)
-          .where(
-            and(
-              eq(subscriptionItems.subscriptionId, subscription[0].id),
-              eq(subscriptionItems.itemType, 'EXTRA_WORKSPACE'),
-            ),
-          )
-          .limit(1);
-
-        if (extraWorkspaces.length > 0) {
-          maxWorkspaces += extraWorkspaces[0].quantity;
-        }
-      }
-    }
+    const maxWorkspaces = resolveMaxWorkspaces(plan, addons);
 
     return {
       maxWorkspaces,
