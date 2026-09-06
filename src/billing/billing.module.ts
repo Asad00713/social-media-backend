@@ -10,6 +10,7 @@ import { PlanChangeService } from './services/plan-change.service';
 import { DashboardService } from './services/dashboard.service';
 import { InvoiceService } from './services/invoice.service';
 import { PaymentMethodService } from './services/payment-method.service';
+import { SubscriptionLookupService } from './services/subscription-lookup.service';
 import { StripeModule } from '../stripe/stripe.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { NotificationsModule } from '../notifications/notifications.module';
@@ -27,6 +28,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     DashboardService,
     InvoiceService,
     PaymentMethodService,
+    SubscriptionLookupService,
   ],
   controllers: [BillingController],
   exports: [
@@ -39,6 +41,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     DashboardService,
     InvoiceService,
     PaymentMethodService,
+    SubscriptionLookupService,
   ],
 })
 export class BillingModule {}
