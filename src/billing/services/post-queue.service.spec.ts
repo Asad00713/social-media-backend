@@ -13,7 +13,10 @@ describe('buildQueuedTargetJson', () => {
   });
 
   it('probes only channelId, so a target matches whatever else it carries', () => {
-    const parsed = JSON.parse(buildQueuedTargetJson('7'));
+    const parsed = JSON.parse(buildQueuedTargetJson('7')) as Record<
+      string,
+      unknown
+    >[];
     expect(Object.keys(parsed[0])).toEqual(['channelId']);
   });
 });

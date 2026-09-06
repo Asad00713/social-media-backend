@@ -898,7 +898,7 @@ git commit -m "feat(billing): single lookup seam for account-scoped subscription
     countQueuedForChannel(workspaceId: string, channelId: string): Promise<number>;
     enforceQueueLimit(workspaceId: string, channelIds: string[]): Promise<void>;
   }
-  export function buildQueuedCountFilter(workspaceId: string, channelId: string): SQL;
+  export function buildQueuedTargetJson(channelId: string | number): string;
   ```
 
 - [ ] **Step 1: Write the failing test**
@@ -921,7 +921,9 @@ describe('buildQueuedTargetJson', () => {
   });
 
   it('probes only channelId, so a target matches whatever else it carries', () => {
-    const parsed = JSON.parse(buildQueuedTargetJson('7'));
+    const parsed = JSON.parse(
+      buildQueuedTargetJson('7'),
+    ) as Record<string, unknown>[];
     expect(Object.keys(parsed[0])).toEqual(['channelId']);
   });
 });
