@@ -6,9 +6,11 @@ import {
 import { eq, and, sql } from 'drizzle-orm';
 import Stripe from 'stripe';
 import { buildSubscriptionSync } from './subscription-sync.util';
+import { buildUsageFanout } from './usage-fanout.util';
 import { upsertInvoiceFromStripe } from './invoice-sync.util';
 import { StripeService } from '../../stripe/stripe.service';
 import { CustomerService } from './customer.service';
+import { SubscriptionLookupService } from './subscription-lookup.service';
 import { db } from '../../drizzle/db';
 import {
   subscriptions,
@@ -48,6 +50,7 @@ export class SubscriptionService {
   constructor(
     private stripeService: StripeService,
     private customerService: CustomerService,
+    private lookup: SubscriptionLookupService,
   ) {}
 
   async createSubscription(
@@ -75,15 +78,16 @@ export class SubscriptionService {
       );
     }
 
-    // 3. Check if workspace already has a subscription
+    // 3. Check if the account (owner) already has a subscription — a
+    //    subscription is per-account now, not per-workspace.
     const existingSub = await db
       .select()
       .from(subscriptions)
-      .where(eq(subscriptions.workspaceId, dto.workspaceId))
+      .where(eq(subscriptions.userId, dto.userId))
       .limit(1);
 
     if (existingSub.length > 0) {
-      throw new BadRequestException('Workspace already has a subscription');
+      throw new BadRequestException('You already have a subscription');
     }
 
     // 4. Get plan details
@@ -101,8 +105,15 @@ export class SubscriptionService {
 
     // 5. Handle FREE plan (no Stripe subscription needed)
     if (dto.planCode === 'FREE') {
+      const ownedWorkspaces = await db
+        .select({ id: workspace.id, createdAt: workspace.createdAt })
+        .from(workspace)
+        .where(eq(workspace.ownerId, dto.userId))
+        .orderBy(workspace.createdAt, workspace.id);
+
       return await this.createFreeSubscription(
-        dto.workspaceId,
+        dto.userId,
+        ownedWorkspaces,
         stripeCustomerId,
         selectedPlan,
       );
@@ -155,10 +166,10 @@ export class SubscriptionService {
       trialPeriodDays: dto.trialPeriodDays,
     });
 
-    // 8. Save subscription to database
+    // 8. Save subscription to database (per-account, not per-workspace)
     const sub: any = stripeSubscription;
     const subscriptionData: any = {
-      workspaceId: dto.workspaceId,
+      userId: dto.userId,
       stripeCustomerId,
       stripeSubscriptionId: stripeSubscription.id,
       planCode: dto.planCode,
@@ -185,16 +196,41 @@ export class SubscriptionService {
       unitPriceCents: selectedPlan.basePriceCents,
     } as NewSubscriptionItem);
 
-    // 10. Initialize workspace usage
-    await db.insert(workspaceUsage).values({
-      workspaceId: dto.workspaceId,
-      channelsCount: 0,
-      channelsLimit: selectedPlan.channelsPerWorkspace,
-      extraChannelsPurchased: 0,
-      membersCount: 0,
-      membersLimit: selectedPlan.membersPerWorkspace,
-      extraMembersPurchased: 0,
-    } as NewWorkspaceUsage);
+    // 10. Initialize workspace usage for every workspace this account owns —
+    // one subscription now sets limits for all of them (fan-out per the
+    // primary-workspace rule: only the oldest gets channels/members).
+    const ownedWorkspacesForUsage = await db
+      .select({ id: workspace.id, createdAt: workspace.createdAt })
+      .from(workspace)
+      .where(eq(workspace.ownerId, dto.userId))
+      .orderBy(workspace.createdAt, workspace.id);
+
+    const initialUsageRows = buildUsageFanout(
+      ownedWorkspacesForUsage,
+      {
+        channelsPerWorkspace: selectedPlan.channelsPerWorkspace,
+        membersPerWorkspace: selectedPlan.membersPerWorkspace,
+        maxWorkspaces: selectedPlan.maxWorkspaces,
+        aiTokensPerMonth: selectedPlan.aiTokensPerMonth,
+        queuedPostsPerChannel: selectedPlan.queuedPostsPerChannel,
+      },
+      {
+        extraChannels: 0,
+        extraMembers: 0,
+        extraWorkspaces: 0,
+        extraAiTokens: 0,
+      },
+    );
+
+    for (const row of initialUsageRows) {
+      await db.insert(workspaceUsage).values({
+        ...row,
+        channelsCount: 0,
+        extraChannelsPurchased: 0,
+        membersCount: 0,
+        extraMembersPurchased: 0,
+      } as NewWorkspaceUsage);
+    }
 
     // 11. Extract client secret for frontend
     const latestInvoice: any = sub.latest_invoice;
@@ -216,7 +252,8 @@ export class SubscriptionService {
   }
 
   private async createFreeSubscription(
-    workspaceId: string,
+    userId: string,
+    workspaces: { id: string; createdAt: Date }[],
     stripeCustomerId: string,
     plan: typeof plans.$inferSelect,
   ): Promise<SubscriptionResponse> {
@@ -225,7 +262,7 @@ export class SubscriptionService {
     const [newSubscription] = await db
       .insert(subscriptions)
       .values({
-        workspaceId,
+        userId,
         stripeCustomerId,
         planCode: 'FREE',
         status: 'active',
@@ -233,16 +270,35 @@ export class SubscriptionService {
       } as NewSubscription)
       .returning();
 
-    // Initialize workspace usage
-    await db.insert(workspaceUsage).values({
-      workspaceId,
-      channelsCount: 0,
-      channelsLimit: plan.channelsPerWorkspace,
-      extraChannelsPurchased: 0,
-      membersCount: 0,
-      membersLimit: plan.membersPerWorkspace,
-      extraMembersPurchased: 0,
-    } as NewWorkspaceUsage);
+    // Initialize workspace usage for every workspace the account owns — a
+    // single subscription now sets limits for all of them (fanned out per
+    // the primary-workspace rule: only the oldest gets channels/members).
+    const usageRows = buildUsageFanout(
+      workspaces,
+      {
+        channelsPerWorkspace: plan.channelsPerWorkspace,
+        membersPerWorkspace: plan.membersPerWorkspace,
+        maxWorkspaces: plan.maxWorkspaces,
+        aiTokensPerMonth: plan.aiTokensPerMonth,
+        queuedPostsPerChannel: plan.queuedPostsPerChannel,
+      },
+      {
+        extraChannels: 0,
+        extraMembers: 0,
+        extraWorkspaces: 0,
+        extraAiTokens: 0,
+      },
+    );
+
+    for (const row of usageRows) {
+      await db.insert(workspaceUsage).values({
+        ...row,
+        channelsCount: 0,
+        extraChannelsPurchased: 0,
+        membersCount: 0,
+        extraMembersPurchased: 0,
+      } as NewWorkspaceUsage);
+    }
 
     return {
       subscriptionId: newSubscription.id,
@@ -281,11 +337,12 @@ export class SubscriptionService {
       );
     }
 
-    // Wipe subscription items first (FK to subscriptions)
+    // Wipe subscription items first (FK to subscriptions). Subscriptions are
+    // per-account now, so reset the (already-verified) owner's subscription.
     const sub = await db
       .select({ id: subscriptions.id })
       .from(subscriptions)
-      .where(eq(subscriptions.workspaceId, workspaceId))
+      .where(eq(subscriptions.userId, userId))
       .limit(1);
 
     if (sub.length > 0) {
@@ -382,12 +439,13 @@ export class SubscriptionService {
 
   /**
    * Idempotently persist a Stripe subscription into our DB (subscriptions +
-   * BASE_PLAN item + workspace_usage). Used by the checkout webhook and any
-   * direct path. Upserts on the workspace's existing row (FREE→paid updates the
-   * pre-existing FREE row rather than inserting a duplicate).
+   * BASE_PLAN item + a workspace_usage row per owned workspace). Used by the
+   * checkout webhook and any direct path. Upserts on the account's existing
+   * row (FREE→paid updates the pre-existing FREE row rather than inserting a
+   * duplicate) — a subscription is per-account now, not per-workspace.
    */
   async persistStripeSubscription(input: {
-    workspaceId: string;
+    userId: string;
     planCode: string;
     stripeCustomerId: string;
     stripeSubscription: Stripe.Subscription;
@@ -402,15 +460,43 @@ export class SubscriptionService {
       throw new NotFoundException(`Plan "${input.planCode}" not found`);
     }
 
-    const { subscriptionRow, baseItem, usageRow } = buildSubscriptionSync({
-      workspaceId: input.workspaceId,
+    // Deterministic order (createdAt, then id) so "primary workspace" never
+    // shifts between calls when two workspaces share a createdAt timestamp.
+    const workspaces = await db
+      .select({ id: workspace.id, createdAt: workspace.createdAt })
+      .from(workspace)
+      .where(eq(workspace.ownerId, input.userId))
+      .orderBy(workspace.createdAt, workspace.id);
+
+    const existingSubForAddons = await this.lookup.findByUserId(input.userId);
+    const addons = existingSubForAddons
+      ? await this.lookup.getAddonQuantities(existingSubForAddons.id)
+      : {
+          extraChannels: 0,
+          extraMembers: 0,
+          extraWorkspaces: 0,
+          extraAiTokens: 0,
+        };
+
+    const planLimits = {
+      channelsPerWorkspace: plan.channelsPerWorkspace,
+      membersPerWorkspace: plan.membersPerWorkspace,
+      maxWorkspaces: plan.maxWorkspaces,
+      aiTokensPerMonth: plan.aiTokensPerMonth,
+      queuedPostsPerChannel: plan.queuedPostsPerChannel,
+    };
+
+    const { subscriptionRow, baseItem, usageRows } = buildSubscriptionSync({
+      userId: input.userId,
+      workspaces,
       planCode: input.planCode,
-      plan,
+      plan: { ...planLimits, basePriceCents: plan.basePriceCents },
+      addons,
       stripeCustomerId: input.stripeCustomerId,
       stripeSubscription: input.stripeSubscription,
     });
 
-    // 1. Upsert the subscriptions row (UNIQUE workspace_id → updates FREE row).
+    // 1. Upsert the subscriptions row (UNIQUE user_id → updates FREE row).
     const subSet: Record<string, unknown> = {
       stripeCustomerId: sql`excluded.stripe_customer_id`,
       stripeSubscriptionId: sql`excluded.stripe_subscription_id`,
@@ -427,13 +513,13 @@ export class SubscriptionService {
     await db
       .insert(subscriptions)
       .values(subscriptionRow as NewSubscription)
-      .onConflictDoUpdate({ target: subscriptions.workspaceId, set: subSet });
+      .onConflictDoUpdate({ target: subscriptions.userId, set: subSet });
 
     // 2. Get the subscription id for the item upsert.
     const savedRows = await db
       .select({ id: subscriptions.id })
       .from(subscriptions)
-      .where(eq(subscriptions.workspaceId, input.workspaceId))
+      .where(eq(subscriptions.userId, input.userId))
       .limit(1);
     const subscriptionId = savedRows[0].id;
 
@@ -452,19 +538,22 @@ export class SubscriptionService {
         },
       });
 
-    // 4. Upsert workspace_usage limits (UNIQUE workspace_id).
-    await db
-      .insert(workspaceUsage)
-      .values(usageRow as NewWorkspaceUsage)
-      .onConflictDoUpdate({
-        target: workspaceUsage.workspaceId,
-        set: {
-          channelsLimit: sql`excluded.channels_limit`,
-          membersLimit: sql`excluded.members_limit`,
-          aiTokensLimit: sql`excluded.ai_tokens_limit`,
-          updatedAt: new Date(),
-        },
-      });
+    // 4. Upsert workspace_usage limits (UNIQUE workspace_id) — one row per
+    // owned workspace, since one subscription now covers all of them.
+    for (const usageRow of usageRows) {
+      await db
+        .insert(workspaceUsage)
+        .values(usageRow as NewWorkspaceUsage)
+        .onConflictDoUpdate({
+          target: workspaceUsage.workspaceId,
+          set: {
+            channelsLimit: sql`excluded.channels_limit`,
+            membersLimit: sql`excluded.members_limit`,
+            aiTokensLimit: sql`excluded.ai_tokens_limit`,
+            updatedAt: new Date(),
+          },
+        });
+    }
 
     // 5. Persist the subscription's first invoice now, while we hold the fully
     // expanded Stripe subscription (getSubscription expands `latest_invoice`).
@@ -479,17 +568,11 @@ export class SubscriptionService {
   }
 
   async getSubscriptionByWorkspaceId(workspaceId: string) {
-    const subscription = await db
-      .select()
-      .from(subscriptions)
-      .where(eq(subscriptions.workspaceId, workspaceId))
-      .limit(1);
-
-    if (subscription.length === 0) {
+    const subscription = await this.lookup.findByWorkspaceId(workspaceId);
+    if (!subscription) {
       throw new NotFoundException('Subscription not found for this workspace');
     }
-
-    return subscription[0];
+    return subscription;
   }
 
   async cancelSubscription(
@@ -497,9 +580,6 @@ export class SubscriptionService {
     userId: string,
     cancelAtPeriodEnd: boolean = true,
   ): Promise<{ message: string }> {
-    // Get subscription
-    const subscription = await this.getSubscriptionByWorkspaceId(workspaceId);
-
     // Verify ownership
     const ws = await db
       .select()
@@ -511,6 +591,19 @@ export class SubscriptionService {
       throw new NotFoundException(
         'Workspace not found or you are not the owner',
       );
+    }
+
+    // Get subscription — subscriptions are per-account, so look it up by the
+    // (already-verified) owner rather than the workspace.
+    const subscription = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.userId, userId))
+      .limit(1)
+      .then((rows) => rows[0]);
+
+    if (!subscription) {
+      throw new NotFoundException('Subscription not found for this workspace');
     }
 
     // Handle FREE plan
