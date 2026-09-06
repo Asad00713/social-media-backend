@@ -38,6 +38,11 @@ export const plans = pgTable('plans', {
   channelsPerWorkspace: integer('channels_per_workspace').notNull(),
   membersPerWorkspace: integer('members_per_workspace').notNull(),
   maxWorkspaces: integer('max_workspaces').notNull(),
+  // -1 = unlimited. Caps posts sitting in `scheduled` status per channel;
+  // publishing frees the slot, so there is no counter to reset.
+  queuedPostsPerChannel: integer('queued_posts_per_channel')
+    .notNull()
+    .default(-1),
   aiTokensPerMonth: integer('ai_tokens_per_month').default(0).notNull(), // 0=no AI, 2000=pro, 5000=max
   features: jsonb('features'),
   isActive: boolean('is_active').default(true).notNull(),
@@ -72,14 +77,14 @@ export const addonPricing = pgTable(
   },
 );
 
-// 4. Subscriptions - Per-workspace subscriptions
+// 4. Subscriptions - Per-user (account) subscriptions
 export const subscriptions = pgTable('subscriptions', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
-  workspaceId: uuid('workspace_id')
+  userId: uuid('user_id')
     .notNull()
     .unique()
-    .references(() => workspace.id, { onDelete: 'cascade' }),
-  stripeCustomerId: varchar('stripe_customer_id', { length: 255 }).notNull(),
+    .references(() => users.id, { onDelete: 'cascade' }),
+  stripeCustomerId: varchar('stripe_customer_id', { length: 255 }),
   stripeSubscriptionId: varchar('stripe_subscription_id', {
     length: 255,
   }).unique(),
@@ -322,9 +327,9 @@ export const stripeCustomersRelations = relations(
 export const subscriptionsRelations = relations(
   subscriptions,
   ({ one, many }) => ({
-    workspace: one(workspace, {
-      fields: [subscriptions.workspaceId],
-      references: [workspace.id],
+    user: one(users, {
+      fields: [subscriptions.userId],
+      references: [users.id],
     }),
     plan: one(plans, {
       fields: [subscriptions.planCode],
