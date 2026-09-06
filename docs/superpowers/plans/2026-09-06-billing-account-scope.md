@@ -17,7 +17,12 @@
 - **`-1` means unlimited** for `queued_posts_per_channel`. Never treat it as a literal count.
 - **`posts.targets[].channelId` is a STRING**, written as `String(channel.id)` (`post.service.ts:144`) even though `social_media_channels.id` is a bigint. Every jsonb containment query MUST stringify the channel id or it will silently match nothing.
 - **Test command:** `npm test -- <path>` from `socialmedia-workspace/`. Jest `rootDir` is `src`, `testRegex` is `.*\.spec\.ts$`. Specs are co-located with source.
-- **Prettier:** single quotes, trailing commas. Run `npm run lint` before each commit.
+- **Prettier:** single quotes, trailing commas.
+- **NEVER run `npm run lint`.** That script is `eslint "{src,apps,libs,test}/**/*.ts" --fix` — repo-wide, with auto-fix. Running it once during Task 3 modified **132 unrelated files**, and not merely cosmetically: ignoring whitespace entirely, 2843 lines still differed, because eslint stripped non-null assertions and type casts (`r.workspace!` becomes `r.workspace`, and a dropped `as 'ADMIN' | 'MEMBER' | 'GUEST'`) in files including `auth.service.ts`, the login path. That sweep is parked on branch `chore/eslint-fix-sweep`. **Lint only the files you touched**, naming each one:
+  ```bash
+  npx eslint path/to/file-you-changed.ts path/to/other-file.ts
+  ```
+  Never pass a glob, and never add `--fix` to a path you did not write yourself.
 - **`gh` CLI needs an explicit account switch per repo:** `gh auth switch --user Asad00713` for backend, `--user asad00712` for frontend. Binary is off-PATH at `/c/Program Files/GitHub CLI/gh.exe`.
 - **Plan tier values are authoritative from this plan**, not from the existing seed. Note MAX channels changes from the seed's `50` to `25`.
 
@@ -310,7 +315,7 @@ Expected: PASS, 13 tests.
 - [ ] **Step 5: Lint and commit**
 
 ```bash
-npm run lint
+# npx eslint <files you changed>
 git add src/billing/services/limit-resolver.util.ts src/billing/services/limit-resolver.util.spec.ts
 git commit -m "feat(billing): pure limit-resolution helpers for account-scoped plans"
 ```
@@ -518,7 +523,7 @@ Expected: PASS, 6 tests.
 - [ ] **Step 5: Lint and commit**
 
 ```bash
-npm run lint
+# npx eslint <files you changed>
 git add src/billing/services/usage-fanout.util.ts src/billing/services/usage-fanout.util.spec.ts
 git commit -m "feat(billing): fan out workspace limits across every workspace an account owns"
 ```
@@ -625,12 +630,12 @@ Record the error count — later tasks drive it to zero.
 - [ ] **Step 4: Commit**
 
 ```bash
-npm run lint -- --no-fix || true
+# lint only what this task touched — see Global Constraints
 git add src/drizzle/schema/billing.schema.ts drizzle/migrations/0030_billing_account_scope.sql
 git commit -m "feat(billing): scope subscriptions to the user, add queued-post plan limit"
 ```
 
-Note: `npm run lint` auto-fixes; it will fail on the broken call sites, which is expected at this point. The `|| true` lets the commit proceed. Do NOT skip lint in later tasks.
+Note: at this point the build is intentionally broken — later tasks fix the call sites. Lint only the two files this task touched (`npx eslint src/drizzle/schema/billing.schema.ts`); the migration is `.sql` and eslint does not apply to it.
 
 ---
 
@@ -1031,7 +1036,7 @@ In `src/billing/billing.module.ts`, add `PostQueueService` to `providers` and `e
 - [ ] **Step 6: Lint and commit**
 
 ```bash
-npm run lint -- --no-fix || true
+# lint only what this task touched — see Global Constraints
 git add src/billing/services/post-queue.service.ts src/billing/services/post-queue.service.spec.ts src/billing/billing.module.ts
 git commit -m "feat(billing): queued-post limit per channel"
 ```
@@ -1155,7 +1160,7 @@ Expected: no output.
 - [ ] **Step 6: Commit**
 
 ```bash
-npm run lint -- --no-fix || true
+# lint only what this task touched — see Global Constraints
 git add src/billing/services/usage.service.ts src/billing/services/usage.service.spec.ts
 git commit -m "fix(billing): resolve workspace allowance from one account subscription"
 ```
@@ -1332,7 +1337,7 @@ Run: `npx tsc --noEmit -p tsconfig.json 2>&1 | grep -E "subscription.service.ts|
 Expected: no output.
 
 ```bash
-npm run lint -- --no-fix || true
+# lint only what this task touched — see Global Constraints
 git add src/billing/services/subscription.service.ts src/billing/services/subscription-sync.util.ts src/billing/services/subscription-sync.util.spec.ts
 git commit -m "feat(billing): persist subscriptions per account and fan usage out"
 ```
@@ -1469,7 +1474,7 @@ Run: `npx tsc --noEmit -p tsconfig.json 2>&1 | grep "src/billing" | head`
 Expected: no output.
 
 ```bash
-npm run lint -- --no-fix || true
+# lint only what this task touched — see Global Constraints
 git add src/billing/services/
 git commit -m "feat(billing): fan limit writes across every workspace on plan and add-on change"
 ```
@@ -1593,7 +1598,7 @@ Run: `npm test`
 Expected: all tests pass.
 
 ```bash
-npm run lint
+# npx eslint <files you changed>
 git add -A
 git commit -m "feat(billing): resolve subscriptions per account across the app, enforce post queue"
 ```
@@ -1634,7 +1639,7 @@ Expected: no output.
 - [ ] **Step 4: Commit**
 
 ```bash
-npm run lint
+# npx eslint <files you changed>
 git add src/drizzle/seeds/plans.seed.ts
 git commit -m "feat(billing): reseed plan tiers with queued-post limits"
 ```
