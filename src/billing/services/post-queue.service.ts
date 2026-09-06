@@ -57,7 +57,15 @@ export class PostQueueService {
    * Refuse the schedule if any target channel is already at its queue ceiling.
    *
    * Checked per channel, not per post: a post targeting three channels
-   * occupies one slot on each.
+   * occupies one slot on each. Counts run concurrently — a post targeting N
+   * channels would otherwise pay N sequential round-trips on the scheduling
+   * write path.
+   *
+   * When more than one channel is over its ceiling, the thrown message names
+   * whichever comes first in `channelIds` (the caller's order), never
+   * whichever count happens to settle first — `Promise.all` preserves input
+   * order in its results, so the scan below is deterministic regardless of
+   * completion order.
    */
   async enforceQueueLimit(
     workspaceId: string,
@@ -72,11 +80,18 @@ export class PostQueueService {
     // Cheapest possible exit for every paid tier.
     if (plan.queuedPostsPerChannel === UNLIMITED) return;
 
-    for (const channelId of channelIds) {
-      const queued = await this.countQueuedForChannel(workspaceId, channelId);
+    const queuedCounts = await Promise.all(
+      channelIds.map((channelId) =>
+        this.countQueuedForChannel(workspaceId, channelId),
+      ),
+    );
+
+    for (let i = 0; i < channelIds.length; i++) {
+      const channelId = channelIds[i];
+      const queued = queuedCounts[i];
       if (!canQueuePost(plan.queuedPostsPerChannel, queued)) {
         throw new ForbiddenException(
-          `Scheduling queue full. This channel has ${queued} of ${plan.queuedPostsPerChannel} scheduled posts. ` +
+          `Scheduling queue full for channel ${channelId}. This channel has ${queued} of ${plan.queuedPostsPerChannel} scheduled posts. ` +
             'Publish or remove a scheduled post, or upgrade for unlimited scheduling.',
         );
       }
