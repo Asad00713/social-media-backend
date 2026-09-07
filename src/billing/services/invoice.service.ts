@@ -9,6 +9,7 @@ import {
   stripeCustomers,
 } from '../../drizzle/schema';
 import { StripeService } from '../../stripe/stripe.service';
+import { SubscriptionLookupService } from './subscription-lookup.service';
 
 export interface InvoiceDetails {
   id: number;
@@ -54,7 +55,10 @@ export interface InvoiceListItem {
 export class InvoiceService {
   private readonly logger = new Logger(InvoiceService.name);
 
-  constructor(private stripeService: StripeService) {}
+  constructor(
+    private stripeService: StripeService,
+    private readonly lookup: SubscriptionLookupService,
+  ) {}
 
   // Get invoices for a workspace
   async getWorkspaceInvoices(
@@ -62,12 +66,11 @@ export class InvoiceService {
     limit: number = 10,
     offset: number = 0,
   ): Promise<{ invoices: InvoiceListItem[]; total: number }> {
-    // Get subscription for workspace
-    const subscription = await db
-      .select()
-      .from(subscriptions)
-      .where(eq(subscriptions.workspaceId, workspaceId))
-      .limit(1);
+    // Invoices belong to the account, so read the OWNER's subscription. Every
+    // workspace the account owns therefore shows the same billing history —
+    // there is only one subscription being invoiced.
+    const sub = await this.lookup.findByWorkspaceId(workspaceId);
+    const subscription = sub ? [sub] : [];
 
     if (subscription.length === 0) {
       return { invoices: [], total: 0 };
@@ -174,50 +177,51 @@ export class InvoiceService {
     invoices: (InvoiceListItem & { workspaceName: string })[];
     total: number;
   }> {
-    // Get all user's workspaces
+    // The account has ONE subscription. This used to loop the user's
+    // workspaces and read "each workspace's" subscription — under account
+    // scope that returns the same subscription every time, so every invoice
+    // was emitted once per owned workspace and the list (and its total)
+    // multiplied by the workspace count.
+    //
+    // Deterministic order so the label below is stable across calls.
     const workspaces = await db
       .select()
       .from(workspace)
-      .where(eq(workspace.ownerId, userId));
+      .where(eq(workspace.ownerId, userId))
+      .orderBy(workspace.createdAt, workspace.id);
 
     if (workspaces.length === 0) {
       return { invoices: [], total: 0 };
     }
 
-    // Get all subscriptions for these workspaces
-    const workspaceIds = workspaces.map((ws) => ws.id);
-    const allInvoices: (InvoiceListItem & { workspaceName: string })[] = [];
-
-    for (const ws of workspaces) {
-      const subscription = await db
-        .select()
-        .from(subscriptions)
-        .where(eq(subscriptions.workspaceId, ws.id))
-        .limit(1);
-
-      if (subscription.length > 0) {
-        const wsInvoices = await db
-          .select()
-          .from(invoices)
-          .where(eq(invoices.subscriptionId, subscription[0].id))
-          .orderBy(desc(invoices.createdAt));
-
-        for (const inv of wsInvoices) {
-          allInvoices.push({
-            id: inv.id,
-            stripeInvoiceId: inv.stripeInvoiceId,
-            status: inv.status,
-            totalCents: inv.totalCents,
-            totalFormatted: `$${(inv.totalCents / 100).toFixed(2)}`,
-            periodStart: inv.periodStart,
-            periodEnd: inv.periodEnd,
-            paidAt: inv.paidAt,
-            createdAt: inv.createdAt,
-            workspaceName: ws.name,
-          });
-        }
-      }
+    const subscription = await this.lookup.findByUserId(userId);
+    if (!subscription) {
+      return { invoices: [], total: 0 };
     }
+
+    // The subscription is the account's, not any one workspace's; label it
+    // with the primary (oldest) workspace, which is where its purchases land.
+    const primaryWorkspaceName = workspaces[0].name;
+
+    const userInvoices = await db
+      .select()
+      .from(invoices)
+      .where(eq(invoices.subscriptionId, subscription.id))
+      .orderBy(desc(invoices.createdAt));
+
+    const allInvoices: (InvoiceListItem & { workspaceName: string })[] =
+      userInvoices.map((inv) => ({
+        id: inv.id,
+        stripeInvoiceId: inv.stripeInvoiceId,
+        status: inv.status,
+        totalCents: inv.totalCents,
+        totalFormatted: `$${(inv.totalCents / 100).toFixed(2)}`,
+        periodStart: inv.periodStart,
+        periodEnd: inv.periodEnd,
+        paidAt: inv.paidAt,
+        createdAt: inv.createdAt,
+        workspaceName: primaryWorkspaceName,
+      }));
 
     // Sort by date and paginate
     allInvoices.sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime());
@@ -338,11 +342,9 @@ export class InvoiceService {
   // Get upcoming invoice preview
   async getUpcomingInvoice(workspaceId: string): Promise<any> {
     // Get subscription
-    const subscription = await db
-      .select()
-      .from(subscriptions)
-      .where(eq(subscriptions.workspaceId, workspaceId))
-      .limit(1);
+    // The upcoming invoice is the OWNER's — one subscription per account.
+    const ownerSub = await this.lookup.findByWorkspaceId(workspaceId);
+    const subscription = ownerSub ? [ownerSub] : [];
 
     if (subscription.length === 0 || !subscription[0].stripeSubscriptionId) {
       return null;

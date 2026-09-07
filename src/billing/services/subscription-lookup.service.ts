@@ -6,9 +6,15 @@ import {
   subscriptionItems,
   plans,
   workspace,
+  workspaceUsage,
   Subscription,
 } from '../../drizzle/schema';
 import { PlanLimits, AddonQuantities } from './limit-resolver.util';
+import {
+  buildUsageFanout,
+  pickPrimaryWorkspaceId,
+  WorkspaceRef,
+} from './usage-fanout.util';
 
 /** Limits every account falls back to when it has no subscription row. */
 const FREE_FALLBACK: PlanLimits = {
@@ -131,5 +137,66 @@ export class SubscriptionLookupService {
     const unitsByType: Record<string, number> = { EXTRA_AI_TOKENS: 5000 };
 
     return SubscriptionLookupService.toAddonQuantities(items, unitsByType);
+  }
+
+  /**
+   * Every workspace the account owns, oldest first.
+   *
+   * The `(createdAt, id)` order is load-bearing, not cosmetic:
+   * `pickPrimaryWorkspaceId` breaks a createdAt tie by input order, so an
+   * unordered query could nominate a different "primary" workspace on each
+   * call and silently migrate the account's channel allowance between them.
+   */
+  async listOwnedWorkspaces(userId: string): Promise<WorkspaceRef[]> {
+    return db
+      .select({ id: workspace.id, createdAt: workspace.createdAt })
+      .from(workspace)
+      .where(eq(workspace.ownerId, userId))
+      .orderBy(workspace.createdAt, workspace.id);
+  }
+
+  /**
+   * The workspace that carries the account's purchased channels and seats: its
+   * oldest. Null when the account owns none.
+   */
+  async getPrimaryWorkspaceId(userId: string): Promise<string | null> {
+    return pickPrimaryWorkspaceId(await this.listOwnedWorkspaces(userId));
+  }
+
+  /**
+   * Write plan limits to EVERY workspace the account owns.
+   *
+   * Under workspace-scoped billing each of these writes targeted a single
+   * usage row. One subscription now covers many workspaces, so writing one row
+   * would leave the rest on their previous limits with no error raised. Every
+   * plan change, add-on change, downgrade, and reset-to-FREE goes through here.
+   */
+  async applyLimitsToAllWorkspaces(
+    userId: string,
+    planCode: string,
+    addons: AddonQuantities,
+  ): Promise<void> {
+    const workspaces = await this.listOwnedWorkspaces(userId);
+
+    if (workspaces.length === 0) return;
+
+    const plan = await this.getPlanLimits(planCode);
+    const writes = buildUsageFanout(workspaces, plan, addons);
+
+    for (const write of writes) {
+      await db
+        .update(workspaceUsage)
+        .set({
+          channelsLimit: write.channelsLimit,
+          membersLimit: write.membersLimit,
+          aiTokensLimit: write.aiTokensLimit,
+          updatedAt: new Date(),
+        })
+        .where(eq(workspaceUsage.workspaceId, write.workspaceId));
+    }
+
+    this.logger.log(
+      `Applied ${planCode} limits to ${writes.length} workspace(s) for user ${userId}`,
+    );
   }
 }

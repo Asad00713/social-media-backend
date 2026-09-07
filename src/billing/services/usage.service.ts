@@ -48,6 +48,20 @@ export interface WorkspaceLimits {
   workspacesAvailable: number;
 }
 
+/** One owned workspace's counted resources, for the downgrade check. */
+export interface DowngradeWorkspaceUsage {
+  workspaceName: string;
+  channelsCount: number;
+  membersCount: number;
+}
+
+/** The per-workspace ceilings of the plan being downgraded to. */
+export interface DowngradePlanLimits {
+  name: string;
+  channelsPerWorkspace: number;
+  membersPerWorkspace: number;
+}
+
 @Injectable()
 export class UsageService {
   private readonly logger = new Logger(UsageService.name);
@@ -413,24 +427,51 @@ export class UsageService {
     this.logger.log(`Updated limits for workspace ${workspaceId}`);
   }
 
-  // Check if downgrade is possible (usage within new limits)
-  async canDowngrade(
-    workspaceId: string,
-    newPlanCode: string,
-  ): Promise<{ canDowngrade: boolean; issues: string[] }> {
+  /**
+   * Pure: the downgrade complaints for ONE workspace, each naming its
+   * workspace.
+   *
+   * A downgrade re-limits every workspace the account owns, so the workspace
+   * blocking the user is often not the one they are looking at. "You have 7
+   * channels" without saying where sends them hunting.
+   */
+  static describeDowngradeIssues(
+    ws: DowngradeWorkspaceUsage,
+    plan: DowngradePlanLimits,
+  ): string[] {
     const issues: string[] = [];
 
-    // Get current usage
-    const currentUsage = await db
-      .select()
-      .from(workspaceUsage)
-      .where(eq(workspaceUsage.workspaceId, workspaceId))
-      .limit(1);
-
-    if (currentUsage.length === 0) {
-      return { canDowngrade: true, issues: [] };
+    if (ws.channelsCount > plan.channelsPerWorkspace) {
+      issues.push(
+        `Workspace "${ws.workspaceName}" has ${ws.channelsCount} channels but the ${plan.name} plan only allows ${plan.channelsPerWorkspace}. ` +
+          `Please remove ${ws.channelsCount - plan.channelsPerWorkspace} channel(s) from it first.`,
+      );
     }
 
+    if (ws.membersCount > plan.membersPerWorkspace) {
+      issues.push(
+        `Workspace "${ws.workspaceName}" has ${ws.membersCount} members but the ${plan.name} plan only allows ${plan.membersPerWorkspace}. ` +
+          `Please remove ${ws.membersCount - plan.membersPerWorkspace} member(s) from it first.`,
+      );
+    }
+
+    return issues;
+  }
+
+  /**
+   * Can this ACCOUNT drop to `newPlanCode`?
+   *
+   * This used to validate a single workspace. A subscription now covers every
+   * workspace the account owns and a downgrade re-limits all of them at once,
+   * so checking one let a user pass validation while a SECOND workspace still
+   * held channels over the new limit — downgrading it into a silently
+   * over-limit state. Every owned workspace is checked, and each complaint
+   * names the workspace that needs tidying.
+   */
+  async canDowngrade(
+    userId: string,
+    newPlanCode: string,
+  ): Promise<{ canDowngrade: boolean; issues: string[] }> {
     // Get new plan limits
     const newPlan = await db
       .select()
@@ -442,24 +483,25 @@ export class UsageService {
       return { canDowngrade: false, issues: ['Plan not found'] };
     }
 
-    const usage = currentUsage[0];
     const plan = newPlan[0];
 
-    // Check channels
-    if (usage.channelsCount > plan.channelsPerWorkspace) {
-      issues.push(
-        `You have ${usage.channelsCount} channels but the ${plan.name} plan only allows ${plan.channelsPerWorkspace}. ` +
-          `Please remove ${usage.channelsCount - plan.channelsPerWorkspace} channel(s) first.`,
-      );
-    }
+    // Every workspace the account owns, with its usage row. A workspace with no
+    // usage row has no counted resources to be over-limit on, so an inner join
+    // (which drops it) is the same answer as counting it at zero.
+    const rows = await db
+      .select({
+        workspaceName: workspace.name,
+        channelsCount: workspaceUsage.channelsCount,
+        membersCount: workspaceUsage.membersCount,
+      })
+      .from(workspace)
+      .innerJoin(workspaceUsage, eq(workspaceUsage.workspaceId, workspace.id))
+      .where(eq(workspace.ownerId, userId))
+      .orderBy(workspace.createdAt, workspace.id);
 
-    // Check members
-    if (usage.membersCount > plan.membersPerWorkspace) {
-      issues.push(
-        `You have ${usage.membersCount} members but the ${plan.name} plan only allows ${plan.membersPerWorkspace}. ` +
-          `Please remove ${usage.membersCount - plan.membersPerWorkspace} member(s) first.`,
-      );
-    }
+    const issues = rows.flatMap((row) =>
+      UsageService.describeDowngradeIssues(row, plan),
+    );
 
     return {
       canDowngrade: issues.length === 0,

@@ -19,6 +19,7 @@ import {
 } from '../../drizzle/schema';
 import { StripeService } from '../../stripe/stripe.service';
 import { UsageService } from './usage.service';
+import { SubscriptionLookupService } from './subscription-lookup.service';
 
 export type AddonType =
   | 'EXTRA_CHANNEL'
@@ -54,6 +55,7 @@ export class AddonService {
   constructor(
     private stripeService: StripeService,
     private usageService: UsageService,
+    private readonly lookup: SubscriptionLookupService,
   ) {}
 
   // Purchase add-on for a workspace
@@ -79,13 +81,14 @@ export class AddonService {
       throw new ForbiddenException('Only workspace owner can purchase add-ons');
     }
 
-    // 2. Get active subscription for this workspace
+    // 2. Get the account's active subscription. Ownership was just verified,
+    //    so `userId` IS the owner whose subscription pays for this workspace.
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, userId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -262,9 +265,11 @@ export class AddonService {
       subscriptionItemId = newItem.id;
     }
 
-    // 5. Update workspace usage limits (pack size converts qty → resource units)
+    // 5. Update usage limits across the account (pack size converts qty →
+    //    resource units)
     await this.updateUsageLimitsForAddon(
-      workspaceId,
+      userId,
+      sub.planCode,
       addonType,
       finalQuantity,
       addonPrice.unitsPerQuantity,
@@ -286,8 +291,12 @@ export class AddonService {
       `Add-on purchased: ${addonType} x${quantity} for workspace ${workspaceId}`,
     );
 
-    // Get updated limits
-    const usage = await this.usageService.getWorkspaceUsage(workspaceId);
+    // Report the limits the purchase actually moved. Purchased channels and
+    // seats land on the account's primary workspace, so reading the browsed
+    // workspace would report 0 and make a successful purchase look inert.
+    const usage = await this.usageService.getWorkspaceUsage(
+      (await this.lookup.getPrimaryWorkspaceId(userId)) ?? workspaceId,
+    );
 
     return {
       subscriptionItemId,
@@ -326,13 +335,14 @@ export class AddonService {
       throw new ForbiddenException('Only workspace owner can manage add-ons');
     }
 
-    // 2. Get subscription
+    // 2. Get the account's subscription (ownership verified just above, so
+    //    `userId` is the owner).
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, userId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -369,12 +379,18 @@ export class AddonService {
       );
     }
 
-    // 4. Check if removal would violate current usage
-    const usage = await db
-      .select()
-      .from(workspaceUsage)
-      .where(eq(workspaceUsage.workspaceId, workspaceId))
-      .limit(1);
+    // 4. Check if removal would violate current usage. Purchased channels and
+    //    seats land ONLY on the account's primary workspace, so that is the
+    //    row the removal actually shrinks — reading the browsed workspace here
+    //    would compare against limits it never held.
+    const primaryWorkspaceId = await this.lookup.getPrimaryWorkspaceId(userId);
+    const usage = primaryWorkspaceId
+      ? await db
+          .select()
+          .from(workspaceUsage)
+          .where(eq(workspaceUsage.workspaceId, primaryWorkspaceId))
+          .limit(1)
+      : [];
 
     if (usage.length > 0) {
       const u = usage[0];
@@ -449,7 +465,8 @@ export class AddonService {
       .limit(1);
 
     await this.updateUsageLimitsForAddon(
-      workspaceId,
+      userId,
+      sub.planCode,
       addonType,
       remainingQuantity,
       removePricing?.unitsPerQuantity ?? 1,
@@ -480,12 +497,18 @@ export class AddonService {
 
   // Get available add-ons for a workspace's current plan
   async getAvailableAddons(workspaceId: string): Promise<any[]> {
+    // The subscription that pays for this workspace is its owner's.
+    const ownerId = await this.lookup.getOwnerId(workspaceId);
+    if (!ownerId) {
+      return [];
+    }
+
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, ownerId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -536,12 +559,18 @@ export class AddonService {
 
   // Get current add-ons for a workspace
   async getCurrentAddons(workspaceId: string): Promise<any[]> {
+    // The subscription that pays for this workspace is its owner's.
+    const ownerId = await this.lookup.getOwnerId(workspaceId);
+    if (!ownerId) {
+      return [];
+    }
+
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, ownerId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -573,16 +602,36 @@ export class AddonService {
       }));
   }
 
-  // Helper to update usage limits when add-ons change.
-  // `unitsPerQuantity` converts purchased quantity → granted resource units:
-  // 1 for seats/channels/workspaces, 5000 for an AI-token pack. Without it the
-  // AI-token limit grew by the pack COUNT (e.g. +1) instead of +5000 tokens.
+  /**
+   * Re-apply the account's limits after an add-on quantity changes.
+   *
+   * Two writes, in order:
+   *  1. The purchased totals (`extra*Purchased`) land on the account's PRIMARY
+   *     workspace only. Channel and seat limits are per-workspace, so spreading
+   *     purchases across workspaces — or letting a bought workspace carry the
+   *     tier's allowance — would make EXTRA_WORKSPACE a cheaper route to
+   *     channels. See resolveWorkspaceLimits.
+   *  2. Every owned workspace then re-derives its limits from plan + add-ons.
+   *     Writing only one row would strand the others on stale limits.
+   *
+   * `unitsPerQuantity` converts purchased quantity → granted resource units:
+   * 1 for seats/channels/workspaces, 5000 for an AI-token pack. Without it the
+   * AI-token limit grew by the pack COUNT (e.g. +1) instead of +5000 tokens.
+   */
   private async updateUsageLimitsForAddon(
-    workspaceId: string,
+    userId: string,
+    planCode: string,
     addonType: AddonType,
     newQuantity: number,
     unitsPerQuantity = 1,
   ): Promise<void> {
+    // EXTRA_WORKSPACE changes `maxWorkspaces`, which `getWorkspaceLimits`
+    // computes LIVE from plan + add-on items. It is never materialized into
+    // workspace_usage, so there is nothing to write here.
+    if (addonType === 'EXTRA_WORKSPACE') {
+      return;
+    }
+
     const updates: Record<string, number> = {};
 
     if (addonType === 'EXTRA_CHANNEL') {
@@ -593,8 +642,28 @@ export class AddonService {
       updates['extraAiTokensPurchased'] = newQuantity * unitsPerQuantity;
     }
 
-    if (Object.keys(updates).length > 0) {
-      await this.usageService.updateWorkspaceLimits(workspaceId, updates);
+    if (Object.keys(updates).length === 0) {
+      return;
     }
+
+    const primaryWorkspaceId = await this.lookup.getPrimaryWorkspaceId(userId);
+    if (!primaryWorkspaceId) {
+      this.logger.warn(`User ${userId} owns no workspace — no limits to apply`);
+      return;
+    }
+
+    await this.usageService.updateWorkspaceLimits(primaryWorkspaceId, updates);
+
+    const subscription = await this.lookup.findByUserId(userId);
+    const addons = subscription
+      ? await this.lookup.getAddonQuantities(subscription.id)
+      : {
+          extraChannels: 0,
+          extraMembers: 0,
+          extraWorkspaces: 0,
+          extraAiTokens: 0,
+        };
+
+    await this.lookup.applyLimitsToAllWorkspaces(userId, planCode, addons);
   }
 }

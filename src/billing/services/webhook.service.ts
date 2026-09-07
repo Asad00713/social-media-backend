@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { eq, and, gt } from 'drizzle-orm';
+import { eq, and, gt, inArray } from 'drizzle-orm';
 import Stripe from 'stripe';
 import { db } from '../../drizzle/db';
 import {
@@ -12,10 +12,12 @@ import {
   paymentMethods,
   stripeCustomers,
   plans,
+  workspace,
   NewBillingEvent,
   NewFailedPayment,
 } from '../../drizzle/schema';
 import { SubscriptionService } from './subscription.service';
+import { SubscriptionLookupService } from './subscription-lookup.service';
 import {
   getInvoiceSubscriptionId,
   upsertInvoiceFromStripe,
@@ -34,6 +36,7 @@ export class WebhookService {
   constructor(
     private subscriptionService: SubscriptionService,
     private stripeService: StripeService,
+    private readonly lookup: SubscriptionLookupService,
   ) {}
 
   async handleWebhook(event: Stripe.Event): Promise<void> {
@@ -172,12 +175,19 @@ export class WebhookService {
     const meta = (stripeSubscription.metadata ??
       session.metadata ??
       {}) as Record<string, string>;
-    const workspaceId = meta.workspaceId;
     const planCode = meta.planCode;
 
-    if (!workspaceId || !planCode) {
+    // The subscription is account-scoped, so the account is what we need.
+    // `workspaceId` is still written for context (and by checkouts created
+    // before this change) — fall back to its owner so a checkout already in
+    // flight at deploy time still lands.
+    const userId =
+      meta.userId ??
+      (meta.workspaceId ? await this.lookup.getOwnerId(meta.workspaceId) : null);
+
+    if (!userId || !planCode) {
       this.logger.error(
-        `checkout.session.completed ${session.id} missing workspaceId/planCode metadata`,
+        `checkout.session.completed ${session.id} missing userId/planCode metadata`,
       );
       return;
     }
@@ -188,14 +198,14 @@ export class WebhookService {
         : stripeSubscription.customer.id;
 
     await this.subscriptionService.persistStripeSubscription({
-      workspaceId,
+      userId,
       planCode,
       stripeCustomerId,
       stripeSubscription,
     });
 
     this.logger.log(
-      `Synced subscription ${subscriptionId} for workspace ${workspaceId} (${planCode})`,
+      `Synced subscription ${subscriptionId} for user ${userId} (${planCode})`,
     );
   }
 
@@ -294,18 +304,17 @@ export class WebhookService {
       })
       .where(eq(subscriptions.id, existing.id));
 
-    await db
-      .update(workspaceUsage)
-      .set({
-        channelsLimit: plan.channelsPerWorkspace,
-        membersLimit: plan.membersPerWorkspace,
-        aiTokensLimit: plan.aiTokensPerMonth,
-        updatedAt: new Date(),
-      })
-      .where(eq(workspaceUsage.workspaceId, existing.workspaceId));
+    // The subscription covers every workspace the account owns — writing one
+    // usage row would strand the rest on the OLD, higher limits.
+    const addons = await this.lookup.getAddonQuantities(existing.id);
+    await this.lookup.applyLimitsToAllWorkspaces(
+      existing.userId,
+      scheduledPlanCode,
+      addons,
+    );
 
     this.logger.log(
-      `Applied scheduled downgrade for workspace ${existing.workspaceId} -> ${scheduledPlanCode}`,
+      `Applied scheduled downgrade for user ${existing.userId} -> ${scheduledPlanCode}`,
     );
   }
 
@@ -326,15 +335,9 @@ export class WebhookService {
     const existing = existingSub[0];
 
     // A deleted Stripe subscription means the paid period has fully ended, so
-    // the workspace falls back to FREE: reset the plan, drop limits to FREE,
-    // clear any schedule, and remove add-on items referencing the dead sub.
-    const freeRows = await db
-      .select()
-      .from(plans)
-      .where(eq(plans.code, 'FREE'))
-      .limit(1);
-    const free = freeRows[0];
-
+    // the ACCOUNT falls back to FREE: reset the plan, drop limits to FREE on
+    // every owned workspace, clear any schedule, and remove add-on items
+    // referencing the dead sub.
     await db
       .update(subscriptions)
       .set({
@@ -349,27 +352,40 @@ export class WebhookService {
       })
       .where(eq(subscriptions.id, existing.id));
 
-    if (free) {
-      await db
-        .update(workspaceUsage)
-        .set({
-          channelsLimit: free.channelsPerWorkspace,
-          membersLimit: free.membersPerWorkspace,
-          aiTokensLimit: free.aiTokensPerMonth,
-          extraChannelsPurchased: 0,
-          extraMembersPurchased: 0,
-          extraAiTokensPurchased: 0,
-          updatedAt: new Date(),
-        })
-        .where(eq(workspaceUsage.workspaceId, existing.workspaceId));
-    }
+    // The add-on items are deleted just below, so pass zeroes explicitly
+    // rather than reading quantities that are about to disappear.
+    await this.lookup.applyLimitsToAllWorkspaces(existing.userId, 'FREE', {
+      extraChannels: 0,
+      extraMembers: 0,
+      extraWorkspaces: 0,
+      extraAiTokens: 0,
+    });
+
+    // The purchased extras die with the subscription.
+    await db
+      .update(workspaceUsage)
+      .set({
+        extraChannelsPurchased: 0,
+        extraMembersPurchased: 0,
+        extraAiTokensPurchased: 0,
+        updatedAt: new Date(),
+      })
+      .where(
+        inArray(
+          workspaceUsage.workspaceId,
+          db
+            .select({ id: workspace.id })
+            .from(workspace)
+            .where(eq(workspace.ownerId, existing.userId)),
+        ),
+      );
 
     await db
       .delete(subscriptionItems)
       .where(eq(subscriptionItems.subscriptionId, existing.id));
 
     this.logger.log(
-      `Workspace ${existing.workspaceId} reset to FREE after subscription ${subscription.id} ended`,
+      `User ${existing.userId} reset to FREE after subscription ${subscription.id} ended`,
     );
   }
 
@@ -502,7 +518,7 @@ export class WebhookService {
     if (unresolvedFailures.length >= this.MAX_FAILED_ATTEMPTS) {
       await this.applyPaymentFailureRestrictions(
         subscription[0].id,
-        subscription[0].workspaceId,
+        subscription[0].userId,
       );
     }
 
@@ -550,7 +566,7 @@ export class WebhookService {
         // Remove restrictions if any were applied
         await this.removePaymentFailureRestrictions(
           subscription[0].id,
-          subscription[0].workspaceId,
+          subscription[0].userId,
         );
 
         // Update subscription status to active
@@ -676,24 +692,24 @@ export class WebhookService {
   // Apply restrictions when payment fails too many times
   private async applyPaymentFailureRestrictions(
     subscriptionId: number,
-    workspaceId: string,
+    userId: string,
   ): Promise<void> {
     this.logger.warn(
-      `Applying payment failure restrictions to workspace ${workspaceId}`,
+      `Applying payment failure restrictions to user ${userId}'s workspaces`,
     );
 
-    // Option 1: Reduce limits to free plan levels
-    // This prevents new resource creation but doesn't delete existing resources
-    await db
-      .update(workspaceUsage)
-      .set({
-        channelsLimit: 3, // Free plan limit
-        membersLimit: 1, // Free plan limit
-        updatedAt: new Date(),
-      })
-      .where(eq(workspaceUsage.workspaceId, workspaceId));
+    // Reduce limits to FREE levels across EVERY workspace the account owns —
+    // restricting only one would leave the others on the unpaid-for plan's
+    // allowance. This prevents new resource creation but deletes nothing.
+    // Add-ons are zeroed too: they are part of what went unpaid.
+    await this.lookup.applyLimitsToAllWorkspaces(userId, 'FREE', {
+      extraChannels: 0,
+      extraMembers: 0,
+      extraWorkspaces: 0,
+      extraAiTokens: 0,
+    });
 
-    // Option 2: Mark subscription as restricted
+    // Mark subscription as restricted
     await db
       .update(subscriptions)
       .set({
@@ -703,17 +719,17 @@ export class WebhookService {
       .where(eq(subscriptions.id, subscriptionId));
 
     this.logger.log(
-      `Restrictions applied to workspace ${workspaceId} due to payment failures`,
+      `Restrictions applied to user ${userId} due to payment failures`,
     );
   }
 
   // Remove restrictions when payment succeeds
   private async removePaymentFailureRestrictions(
     subscriptionId: number,
-    workspaceId: string,
+    userId: string,
   ): Promise<void> {
     this.logger.log(
-      `Removing payment failure restrictions from workspace ${workspaceId}`,
+      `Removing payment failure restrictions from user ${userId}'s workspaces`,
     );
 
     // Get the subscription to find the plan
@@ -727,35 +743,18 @@ export class WebhookService {
       return;
     }
 
-    // Restore plan limits based on plan code
-    const planLimits: Record<string, { channels: number; members: number }> = {
-      FREE: { channels: 3, members: 1 },
-      PRO: { channels: 10, members: 5 },
-      MAX: { channels: 25, members: 15 },
-    };
-
-    const limits = planLimits[subscription[0].planCode] || planLimits.FREE;
-
-    // Get current usage to preserve extra purchased add-ons
-    const usage = await db
-      .select()
-      .from(workspaceUsage)
-      .where(eq(workspaceUsage.workspaceId, workspaceId))
-      .limit(1);
-
-    if (usage.length > 0) {
-      await db
-        .update(workspaceUsage)
-        .set({
-          channelsLimit: limits.channels,
-          membersLimit: limits.members,
-          updatedAt: new Date(),
-        })
-        .where(eq(workspaceUsage.workspaceId, workspaceId));
-    }
+    // Restore the real plan limits (plus the add-ons that survived) on every
+    // owned workspace. This used to consult a hard-coded FREE/PRO/MAX table,
+    // which silently mis-restored BASIC and ENTERPRISE and dropped add-ons.
+    const addons = await this.lookup.getAddonQuantities(subscriptionId);
+    await this.lookup.applyLimitsToAllWorkspaces(
+      userId,
+      subscription[0].planCode,
+      addons,
+    );
 
     this.logger.log(
-      `Restrictions removed from workspace ${workspaceId}, limits restored`,
+      `Restrictions removed from user ${userId}, limits restored`,
     );
   }
 

@@ -5,7 +5,7 @@ import {
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
-import { eq, and } from 'drizzle-orm';
+import { eq, and, inArray } from 'drizzle-orm';
 import Stripe from 'stripe';
 import { db } from '../../drizzle/db';
 import {
@@ -20,6 +20,7 @@ import {
 } from '../../drizzle/schema';
 import { StripeService } from '../../stripe/stripe.service';
 import { UsageService } from './usage.service';
+import { SubscriptionLookupService } from './subscription-lookup.service';
 import { NotificationEmitterService } from '../../notifications/notification-emitter.service';
 
 export interface PlanChangePreview {
@@ -77,6 +78,7 @@ export class PlanChangeService {
   constructor(
     private stripeService: StripeService,
     private usageService: UsageService,
+    private readonly lookup: SubscriptionLookupService,
     private notificationEmitter: NotificationEmitterService,
   ) {}
 
@@ -101,13 +103,14 @@ export class PlanChangeService {
       throw new ForbiddenException('Only workspace owner can change plans');
     }
 
-    // 2. Get current subscription
+    // 2. Get the account's current subscription (ownership verified above, so
+    //    `userId` is the owner who pays for this workspace).
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, userId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -152,8 +155,11 @@ export class PlanChangeService {
     const validationIssues: string[] = [];
 
     if (!isUpgrade) {
+      // Account-scoped: a downgrade re-limits EVERY workspace the user owns,
+      // so validating just this one would let a second workspace slip through
+      // over the new limit.
       const downgradeCheck = await this.usageService.canDowngrade(
-        workspaceId,
+        userId,
         newPlanCode,
       );
       validationIssues.push(...downgradeCheck.issues);
@@ -241,14 +247,15 @@ export class PlanChangeService {
       );
     }
 
-    // 2. Get subscription
+    // 2. Get the account's subscription (previewPlanChange already verified
+    //    that `userId` owns this workspace).
     this.logger.log(`[DEBUG] Step 2: Getting subscription...`);
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, userId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -393,8 +400,15 @@ export class PlanChangeService {
         `Creating new Stripe subscription for upgrade from FREE to ${newPlanCode}`,
       );
 
-      // Guard: FREE→paid upgrade requires a card on file. The Checkout flow
-      // attaches the card before the webhook fires; direct calls must be blocked.
+      // Guard: FREE→paid upgrade requires a Stripe customer AND a card on
+      // file. The Checkout flow creates both before the webhook fires; a
+      // direct call on an account that never reached Stripe has neither.
+      if (!sub.stripeCustomerId) {
+        throw new BadRequestException(
+          'This account has no Stripe customer yet — subscribe via Checkout',
+        );
+      }
+
       const hasCard = await this.stripeService.customerHasPaymentMethod(
         sub.stripeCustomerId,
       );
@@ -502,21 +516,20 @@ export class PlanChangeService {
     }
     this.logger.log(`[DEBUG] Step 7 DONE`);
 
-    // 8. Update workspace usage limits
+    // 8. Update usage limits on EVERY workspace the account owns. One
+    //    subscription covers all of them, so writing a single row would leave
+    //    the rest on the OLD plan's limits with no error raised. The AI-token
+    //    allowance moves with the plan too — without that, an upgrade or
+    //    downgrade left the old limit and the Maestro meter never reflected the
+    //    new plan. `aiTokensUsedThisMonth` is intentionally NOT reset (no free
+    //    refill on every plan switch); the monthly reset does that.
     this.logger.log(`[DEBUG] Step 8: Updating workspace usage limits...`);
-    await db
-      .update(workspaceUsage)
-      .set({
-        channelsLimit: target.channelsPerWorkspace,
-        membersLimit: target.membersPerWorkspace,
-        // Keep the AI-token allowance in lockstep with the plan — without this
-        // an upgrade/downgrade left the old limit, so the Maestro meter never
-        // reflected the new plan. `aiTokensUsedThisMonth` is intentionally NOT
-        // reset (no free refill on every plan switch); the monthly reset does that.
-        aiTokensLimit: target.aiTokensPerMonth,
-        updatedAt: new Date(),
-      })
-      .where(eq(workspaceUsage.workspaceId, workspaceId));
+    const changeAddons = await this.lookup.getAddonQuantities(sub.id);
+    await this.lookup.applyLimitsToAllWorkspaces(
+      userId,
+      newPlanCode,
+      changeAddons,
+    );
     this.logger.log(`[DEBUG] Step 8 DONE`);
 
     // 9. Log the change
@@ -584,17 +597,21 @@ export class PlanChangeService {
 
   // Get available plans for upgrade/downgrade (with workspace context)
   async getAvailablePlans(workspaceId: string): Promise<any[]> {
-    // Get current subscription
-    const subscription = await db
-      .select()
-      .from(subscriptions)
-      .where(
-        and(
-          eq(subscriptions.workspaceId, workspaceId),
-          eq(subscriptions.status, 'active'),
-        ),
-      )
-      .limit(1);
+    // The subscription that pays for this workspace is its owner's.
+    const ownerId = await this.lookup.getOwnerId(workspaceId);
+
+    const subscription = ownerId
+      ? await db
+          .select()
+          .from(subscriptions)
+          .where(
+            and(
+              eq(subscriptions.userId, ownerId),
+              eq(subscriptions.status, 'active'),
+            ),
+          )
+          .limit(1)
+      : [];
 
     const currentPlanCode =
       subscription.length > 0 ? subscription[0].planCode : null;
@@ -605,15 +622,26 @@ export class PlanChangeService {
       .from(plans)
       .where(eq(plans.isActive, true));
 
-    // Get current usage for downgrade validation
-    let usage: { channelsCount: number; membersCount: number } | null = null;
-    if (subscription.length > 0) {
-      try {
-        usage = await this.usageService.getWorkspaceUsage(workspaceId);
-      } catch {
-        // No usage record yet
-      }
-    }
+    // Usage for downgrade validation, across EVERY workspace the account owns.
+    // A downgrade re-limits all of them, so a plan is only offered as
+    // switchable when every workspace fits under it — otherwise the list would
+    // advertise a downgrade that `changePlan` then rejects.
+    const ownedUsage =
+      subscription.length > 0 && ownerId
+        ? await db
+            .select({
+              workspaceName: workspace.name,
+              channelsCount: workspaceUsage.channelsCount,
+              membersCount: workspaceUsage.membersCount,
+            })
+            .from(workspace)
+            .innerJoin(
+              workspaceUsage,
+              eq(workspaceUsage.workspaceId, workspace.id),
+            )
+            .where(eq(workspace.ownerId, ownerId))
+            .orderBy(workspace.createdAt, workspace.id)
+        : [];
 
     return allPlans.map((plan) => {
       const isCurrent = plan.code === currentPlanCode;
@@ -624,24 +652,13 @@ export class PlanChangeService {
         ? this.planHierarchy[plan.code] < this.planHierarchy[currentPlanCode]
         : false;
 
-      // Check if downgrade is possible
-      let canDowngrade = true;
-      const downgradeIssues: string[] = [];
-
-      if (isDowngrade && usage) {
-        if (usage.channelsCount > plan.channelsPerWorkspace) {
-          canDowngrade = false;
-          downgradeIssues.push(
-            `You have ${usage.channelsCount} channels but this plan only allows ${plan.channelsPerWorkspace}`,
-          );
-        }
-        if (usage.membersCount > plan.membersPerWorkspace) {
-          canDowngrade = false;
-          downgradeIssues.push(
-            `You have ${usage.membersCount} members but this plan only allows ${plan.membersPerWorkspace}`,
-          );
-        }
-      }
+      // Check if downgrade is possible — same rule the enforcement path uses.
+      const downgradeIssues = isDowngrade
+        ? ownedUsage.flatMap((ws) =>
+            UsageService.describeDowngradeIssues(ws, plan),
+          )
+        : [];
+      const canDowngrade = downgradeIssues.length === 0;
 
       return {
         code: plan.code,
@@ -682,13 +699,13 @@ export class PlanChangeService {
       throw new ForbiddenException('Only workspace owner can change plans');
     }
 
-    // Get current subscription
+    // Get the account's current subscription (ownership verified above).
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, userId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -704,11 +721,9 @@ export class PlanChangeService {
       throw new BadRequestException('Already on FREE plan');
     }
 
-    // Validate usage
-    const downgradeCheck = await this.usageService.canDowngrade(
-      workspaceId,
-      'FREE',
-    );
+    // Validate usage across every workspace the account owns — dropping to
+    // FREE re-limits all of them at once.
+    const downgradeCheck = await this.usageService.canDowngrade(userId, 'FREE');
     if (!downgradeCheck.canDowngrade) {
       throw new BadRequestException(
         `Cannot downgrade to FREE: ${downgradeCheck.issues.join(', ')}`,
@@ -743,19 +758,33 @@ export class PlanChangeService {
         })
         .where(eq(subscriptions.id, sub.id));
 
+      // FREE limits land on EVERY workspace the account owns — writing one row
+      // would leave the rest on the plan the user just left. Add-ons don't
+      // carry over, so pass zeroes (the items are deleted just below).
+      await this.lookup.applyLimitsToAllWorkspaces(userId, 'FREE', {
+        extraChannels: 0,
+        extraMembers: 0,
+        extraWorkspaces: 0,
+        extraAiTokens: 0,
+      });
+
       await db
         .update(workspaceUsage)
         .set({
-          channelsLimit: free.channelsPerWorkspace,
-          membersLimit: free.membersPerWorkspace,
-          // FREE has no AI allowance and add-ons don't carry over.
-          aiTokensLimit: free.aiTokensPerMonth,
           extraChannelsPurchased: 0,
           extraMembersPurchased: 0,
           extraAiTokensPurchased: 0,
           updatedAt: new Date(),
         })
-        .where(eq(workspaceUsage.workspaceId, workspaceId));
+        .where(
+          inArray(
+            workspaceUsage.workspaceId,
+            db
+              .select({ id: workspace.id })
+              .from(workspace)
+              .where(eq(workspace.ownerId, userId)),
+          ),
+        );
 
       await db
         .delete(subscriptionItems)
@@ -891,7 +920,7 @@ export class PlanChangeService {
     } as NewSubscriptionChange);
 
     this.logger.log(
-      `Scheduled downgrade for workspace ${sub.workspaceId}: ${oldPlanCode} -> ${target.code} at ${sub.currentPeriodEnd?.toISOString() ?? 'period end'}`,
+      `Scheduled downgrade for user ${sub.userId}: ${oldPlanCode} -> ${target.code} at ${sub.currentPeriodEnd?.toISOString() ?? 'period end'}`,
     );
 
     try {
