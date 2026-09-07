@@ -120,6 +120,30 @@ export class StripeService implements OnModuleInit {
     return await this.stripe.subscriptions.update(subscriptionId, params);
   }
 
+  /**
+   * Stop collecting payment without ending the subscription.
+   *
+   * The safe off-ramp for a customer who would otherwise cancel: nothing is
+   * deleted, no channel is disconnected, and resuming restores the plan
+   * exactly. `void` means the paused months are never billed retroactively —
+   * the alternative, `keep_as_draft`, would hand the customer a stack of
+   * invoices the moment they came back.
+   */
+  async pauseSubscription(subscriptionId: string): Promise<Stripe.Subscription> {
+    return await this.stripe.subscriptions.update(subscriptionId, {
+      pause_collection: { behavior: 'void' },
+    });
+  }
+
+  /** Resume a paused subscription; billing restarts on the normal anchor. */
+  async resumeSubscription(
+    subscriptionId: string,
+  ): Promise<Stripe.Subscription> {
+    return await this.stripe.subscriptions.update(subscriptionId, {
+      pause_collection: null,
+    });
+  }
+
   async cancelSubscription(
     subscriptionId: string,
     cancelAtPeriodEnd: boolean = true,

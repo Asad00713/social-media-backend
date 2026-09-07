@@ -53,7 +53,10 @@ describe('UsageService.canDowngrade (account-scoped)', () => {
     selectResults = [];
     mockDb.select.mockReset();
     mockDb.select.mockImplementation(() => makeSelectChain());
-    service = new UsageService(new SubscriptionLookupService());
+    // canDowngrade does not touch AccountChannelsService, so it is stubbed.
+    service = new UsageService(new SubscriptionLookupService(), {
+      getUsage: jest.fn(),
+    } as never);
   });
 
   it('blocks the downgrade when a SECOND workspace is over the new limit', async () => {

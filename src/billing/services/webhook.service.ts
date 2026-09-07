@@ -709,6 +709,30 @@ export class WebhookService {
       extraAiTokens: 0,
     });
 
+    // Zero the stored extras as well. Passing zeroes above only affects the
+    // base limits the fan-out writes; every reader computes the ceiling as
+    // `limit + extraPurchased`, so leaving the purchased columns populated made
+    // the "restriction" land at 3 + 3 = 6 channels instead of FREE's 3. The
+    // sibling paths (handleSubscriptionDeleted, downgradeToFree) already do
+    // this — this path was the outlier.
+    await db
+      .update(workspaceUsage)
+      .set({
+        extraChannelsPurchased: 0,
+        extraMembersPurchased: 0,
+        extraAiTokensPurchased: 0,
+        updatedAt: new Date(),
+      })
+      .where(
+        inArray(
+          workspaceUsage.workspaceId,
+          db
+            .select({ id: workspace.id })
+            .from(workspace)
+            .where(eq(workspace.ownerId, userId)),
+        ),
+      );
+
     // Mark subscription as restricted
     await db
       .update(subscriptions)

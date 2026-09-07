@@ -13,6 +13,7 @@ import {
   Plan,
 } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
+import { AccountChannelsService } from './account-channels.service';
 
 export interface BillingDashboard {
   subscription: {
@@ -90,7 +91,10 @@ export interface UserBillingSummary {
 export class DashboardService {
   private readonly logger = new Logger(DashboardService.name);
 
-  constructor(private readonly lookup: SubscriptionLookupService) {}
+  constructor(
+    private readonly lookup: SubscriptionLookupService,
+    private readonly accountChannels: AccountChannelsService,
+  ) {}
 
   // Get billing dashboard for a workspace
   async getWorkspaceDashboard(workspaceId: string): Promise<BillingDashboard> {
@@ -148,16 +152,26 @@ export class DashboardService {
     let usageData: BillingDashboard['usage'] = null;
     if (usage.length > 0) {
       const u = usage[0];
-      const totalChannels = u.channelsLimit + u.extraChannelsPurchased;
+
+      // Channels are pooled across the ACCOUNT: the dashboard must show the
+      // ceiling that is actually enforced, not this workspace's stored row.
+      // Members and AI tokens remain per-workspace.
+      const ownerId = await this.lookup.getOwnerId(workspaceId);
+      const accountChannels = ownerId
+        ? await this.accountChannels.getUsage(ownerId)
+        : { used: u.channelsCount, limit: u.channelsLimit, available: 0 };
+
+      const totalChannels = accountChannels.limit;
+      const channelsUsed = accountChannels.used;
       const totalMembers = u.membersLimit + u.extraMembersPurchased;
       const totalAiTokens = u.aiTokensLimit + u.extraAiTokensPurchased;
 
       usageData = {
-        channelsCount: u.channelsCount,
+        channelsCount: channelsUsed,
         channelsLimit: totalChannels,
         channelsPercentage:
           totalChannels > 0
-            ? Math.round((u.channelsCount / totalChannels) * 100)
+            ? Math.round((channelsUsed / totalChannels) * 100)
             : 0,
         membersCount: u.membersCount,
         membersLimit: totalMembers,

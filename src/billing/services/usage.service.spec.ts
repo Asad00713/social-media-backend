@@ -102,13 +102,20 @@ function makeFakeLookup(overrides?: {
   };
 }
 
-/** Wires a FakeLookup into a real UsageService, stubbing the two unused methods. */
+/**
+ * Wires a FakeLookup into a real UsageService. These tests exercise
+ * getWorkspaceLimits, which does not touch AccountChannelsService, so that
+ * collaborator is stubbed.
+ */
 function makeService(lookup: FakeLookup): UsageService {
-  return new UsageService({
-    ...lookup,
-    findByWorkspaceId: jest.fn(),
-    getOwnerId: jest.fn(),
-  } as unknown as SubscriptionLookupService);
+  return new UsageService(
+    {
+      ...lookup,
+      findByWorkspaceId: jest.fn(),
+      getOwnerId: jest.fn(),
+    } as unknown as SubscriptionLookupService,
+    { getUsage: jest.fn() } as never,
+  );
 }
 
 describe('UsageService.getWorkspaceLimits', () => {

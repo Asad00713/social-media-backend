@@ -102,6 +102,24 @@ export class BillingController {
     });
   }
 
+  /**
+   * Pause billing without cancelling. The safe alternative to a downgrade that
+   * would lock channels or lose scheduled work.
+   */
+  @Post('subscription/pause')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async pauseSubscription(@CurrentUser() user: { userId: string }) {
+    return await this.subscriptionService.pauseSubscription(user.userId);
+  }
+
+  @Post('subscription/resume')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async resumeSubscription(@CurrentUser() user: { userId: string }) {
+    return await this.subscriptionService.resumeSubscription(user.userId);
+  }
+
   @Get('workspaces/:workspaceId/subscription')
   @UseGuards(JwtAuthGuard)
   async getSubscription(@Param('workspaceId') workspaceId: string) {

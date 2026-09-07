@@ -11,13 +11,15 @@ import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
 import { CreateWorkspaceDto } from './dto/create-workspace.dto';
 import { workspace, workspaceUsage, Workspace } from 'src/drizzle/schema';
-import { and, count, eq } from 'drizzle-orm';
+import { and, count, eq, ne } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { UpdateWorkspaceDto } from './dto/update-workspace.dto';
 import { UsageService } from 'src/billing/services/usage.service';
 import { UsersService } from 'src/users/users.service';
 import { SubscriptionService } from 'src/billing/services/subscription.service';
 import { SubscriptionLookupService } from 'src/billing/services/subscription-lookup.service';
+import { AddonService } from 'src/billing/services/addon.service';
+import { AccountChannelsService } from 'src/billing/services/account-channels.service';
 import { resolveWorkspaceLimits } from 'src/billing/services/limit-resolver.util';
 
 type GetAllREsponse = {
@@ -42,6 +44,9 @@ export class WorkspaceService {
     @Inject(forwardRef(() => SubscriptionService))
     private subscriptionService: SubscriptionService,
     private lookup: SubscriptionLookupService,
+    @Inject(forwardRef(() => AddonService))
+    private addonService: AddonService,
+    private accountChannels: AccountChannelsService,
   ) {}
 
   async create(
@@ -385,8 +390,100 @@ export class WorkspaceService {
       );
     }
 
+    // Give back the workspace slot BEFORE deleting, while this workspace still
+    // exists for removeAddon to verify ownership against.
+    //
+    // Without this the customer keeps paying an EXTRA_WORKSPACE line for a
+    // workspace that no longer exists, every month, until they notice. Only
+    // reduce when the account is actually over its included allowance —
+    // deleting a workspace that the plan already covers should cost nothing.
+    try {
+      const ownedAfter = await this.countOwnedWorkspaces(userId, workspaceId);
+      const included = await this.includedWorkspaces(userId);
+
+      if (ownedAfter < included.purchasedFloor) {
+        await this.addonService.removeAddon(
+          workspaceId,
+          userId,
+          'EXTRA_WORKSPACE',
+          1,
+        );
+      }
+    } catch (error) {
+      // A billing hiccup must not strand the user with an undeletable
+      // workspace; the slot is reconciled by the next plan or add-on change.
+      this.logger.error(
+        `Failed to release the workspace slot for ${workspaceId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
     await this.db.delete(workspace).where(eq(workspace.id, workspaceId));
 
+    // Remaining workspaces re-derive their limits: deleting the primary one
+    // promotes the next-oldest, and nothing else recomputes the fan-out.
+    // Channels are pooled, so freeing this workspace's channels may also let
+    // previously locked channels come back.
+    try {
+      const subscription = await this.lookup.findByUserId(userId);
+      const planCode =
+        subscription && subscription.status === 'active'
+          ? subscription.planCode
+          : 'FREE';
+      const addons = subscription
+        ? await this.lookup.getAddonQuantities(subscription.id)
+        : {
+            extraChannels: 0,
+            extraMembers: 0,
+            extraWorkspaces: 0,
+            extraAiTokens: 0,
+          };
+
+      await this.lookup.applyLimitsToAllWorkspaces(userId, planCode, addons);
+      await this.accountChannels.reconcileLocks(userId);
+    } catch (error) {
+      this.logger.error(
+        `Failed to re-apply limits after deleting workspace ${workspaceId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
     return { message: 'Workspace permanently deleted' };
+  }
+
+  /** How many workspaces the account will own once `excludingId` is gone. */
+  private async countOwnedWorkspaces(
+    userId: string,
+    excludingId: string,
+  ): Promise<number> {
+    const [row] = await this.db
+      .select({ n: count() })
+      .from(workspace)
+      .where(
+        and(eq(workspace.ownerId, userId), ne(workspace.id, excludingId)),
+      );
+    return Number(row?.n ?? 0);
+  }
+
+  /**
+   * The point below which a purchased workspace slot is no longer needed.
+   *
+   * `purchasedFloor` is the plan's own allowance: while the account owns more
+   * than that, every workspace above it is one it paid extra for, so deleting
+   * one should hand a slot back. At or below it, the plan already covers what
+   * remains and there is nothing to refund.
+   */
+  private async includedWorkspaces(
+    userId: string,
+  ): Promise<{ purchasedFloor: number }> {
+    const subscription = await this.lookup.findByUserId(userId);
+    const planCode =
+      subscription && subscription.status === 'active'
+        ? subscription.planCode
+        : 'FREE';
+    const plan = await this.lookup.getPlanLimits(planCode);
+    return { purchasedFloor: plan.maxWorkspaces };
   }
 }

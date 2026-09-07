@@ -15,6 +15,7 @@ import {
   NewUsageEvent,
 } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
+import { AccountChannelsService } from './account-channels.service';
 import { resolveMaxWorkspaces } from './limit-resolver.util';
 
 export type ResourceType = 'CHANNEL' | 'MEMBER' | 'WORKSPACE' | 'POST';
@@ -66,7 +67,10 @@ export interface DowngradePlanLimits {
 export class UsageService {
   private readonly logger = new Logger(UsageService.name);
 
-  constructor(private readonly lookup: SubscriptionLookupService) {}
+  constructor(
+    private readonly lookup: SubscriptionLookupService,
+    private readonly accountChannels: AccountChannelsService,
+  ) {}
 
   // Get usage limits for a workspace
   async getWorkspaceUsage(workspaceId: string): Promise<UsageLimits> {
@@ -84,11 +88,21 @@ export class UsageService {
 
     const u = usage[0];
     const totalAiTokens = u.aiTokensLimit + u.extraAiTokensPurchased;
+
+    // Channels are pooled across the ACCOUNT, so the numbers a workspace shows
+    // for them are the account's — the same ceiling and the same live count the
+    // connect path enforces. Reading this workspace's own row here would show a
+    // customer a limit that is not the one being applied to them.
+    // Members stay per-workspace.
+    const ownerId = await this.lookup.getOwnerId(workspaceId);
+    const channels = ownerId
+      ? await this.accountChannels.getUsage(ownerId)
+      : { used: u.channelsCount, limit: u.channelsLimit, available: 0 };
+
     return {
-      channelsLimit: u.channelsLimit + u.extraChannelsPurchased,
-      channelsCount: u.channelsCount,
-      channelsAvailable:
-        u.channelsLimit + u.extraChannelsPurchased - u.channelsCount,
+      channelsLimit: channels.limit,
+      channelsCount: channels.used,
+      channelsAvailable: Math.max(0, channels.available),
       membersLimit: u.membersLimit + u.extraMembersPurchased,
       membersCount: u.membersCount,
       membersAvailable:

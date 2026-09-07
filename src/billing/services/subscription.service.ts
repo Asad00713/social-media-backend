@@ -575,6 +575,97 @@ export class SubscriptionService {
     return subscription;
   }
 
+  /**
+   * Pause billing without tearing anything down.
+   *
+   * The category's cautionary tale is Publer, whose downgrade-to-free deletes
+   * scheduled posts; its own help centre tells users to pause instead. Offering
+   * pause directly gives a price-sensitive or seasonal customer somewhere to go
+   * that is not cancellation, and costs us nothing to hold.
+   *
+   * Limits drop to FREE for the duration — they are not paying — so channels
+   * over the free ceiling lock rather than disconnect, and resuming brings
+   * them straight back.
+   */
+  async pauseSubscription(
+    userId: string,
+  ): Promise<{ message: string; pausedAt: Date }> {
+    const subscription = await this.lookup.findByUserId(userId);
+
+    if (!subscription) {
+      throw new NotFoundException('No subscription to pause');
+    }
+
+    if (subscription.planCode === 'FREE') {
+      throw new BadRequestException('A free plan has nothing to pause');
+    }
+
+    if (subscription.status === 'paused') {
+      throw new BadRequestException('Subscription is already paused');
+    }
+
+    if (subscription.stripeSubscriptionId) {
+      await this.stripeService.pauseSubscription(
+        subscription.stripeSubscriptionId,
+      );
+    }
+
+    const pausedAt = new Date();
+
+    await db
+      .update(subscriptions)
+      .set({ status: 'paused', updatedAt: pausedAt })
+      .where(eq(subscriptions.id, subscription.id));
+
+    // FREE limits while paused. Nothing is deleted: over-ceiling channels lock
+    // and come back on resume.
+    await this.lookup.applyLimitsToAllWorkspaces(userId, 'FREE', {
+      extraChannels: 0,
+      extraMembers: 0,
+      extraWorkspaces: 0,
+      extraAiTokens: 0,
+    });
+
+    return {
+      message:
+        'Subscription paused. Nothing was deleted — resume any time to restore your plan.',
+      pausedAt,
+    };
+  }
+
+  /** Resume a paused subscription and restore the plan's limits. */
+  async resumeSubscription(userId: string): Promise<{ message: string }> {
+    const subscription = await this.lookup.findByUserId(userId);
+
+    if (!subscription) {
+      throw new NotFoundException('No subscription to resume');
+    }
+
+    if (subscription.status !== 'paused') {
+      throw new BadRequestException('Subscription is not paused');
+    }
+
+    if (subscription.stripeSubscriptionId) {
+      await this.stripeService.resumeSubscription(
+        subscription.stripeSubscriptionId,
+      );
+    }
+
+    await db
+      .update(subscriptions)
+      .set({ status: 'active', updatedAt: new Date() })
+      .where(eq(subscriptions.id, subscription.id));
+
+    const addons = await this.lookup.getAddonQuantities(subscription.id);
+    await this.lookup.applyLimitsToAllWorkspaces(
+      userId,
+      subscription.planCode,
+      addons,
+    );
+
+    return { message: 'Subscription resumed. Your plan and channels are back.' };
+  }
+
   async cancelSubscription(
     workspaceId: string,
     userId: string,
