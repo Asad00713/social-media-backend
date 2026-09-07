@@ -1,0 +1,116 @@
+import {
+  PaymentProvider,
+  ProviderItemType,
+  ProviderSubscription,
+} from '../../drizzle/schema';
+
+/**
+ * Reading a set of provider records for one account.
+ *
+ * An account holds one `subscriptions` row (our model) and N
+ * `provider_subscriptions` rows (what the providers hold). On Stripe N is 1;
+ * on Lemon Squeezy N is up to 5, because a Lemon Squeezy subscription carries
+ * exactly one variant and every add-on is therefore its own subscription.
+ *
+ * During the Lemon Squeezy -> Stripe migration both providers appear at once:
+ * each account moves at its own renewal date, so for a whole billing cycle
+ * some accounts hold a lapsing Lemon Squeezy record and a fresh Stripe one.
+ * Every function here is written for that overlap rather than against it.
+ */
+
+/** The provider currently billing this account. */
+export function pickDefaultProvider(
+  rows: ProviderSubscription[],
+): PaymentProvider | null {
+  const row = rows.find((r) => r.isDefault);
+  return row ? (row.provider as PaymentProvider) : null;
+}
+
+/**
+ * The rows belonging to one provider, for when a caller must act through a
+ * specific one (cancelling the old provider during migration, say).
+ */
+export function rowsForProvider(
+  rows: ProviderSubscription[],
+  provider: PaymentProvider,
+): ProviderSubscription[] {
+  return rows.filter((r) => r.provider === provider);
+}
+
+/**
+ * The single record covering one part of the subscription at the DEFAULT
+ * provider — the base plan, or one add-on type.
+ *
+ * Scoped to the default deliberately: during migration an account can hold
+ * both a Lemon Squeezy and a Stripe BASE_PLAN, and a lookup that ignored the
+ * flag would return whichever row happened to come back first.
+ */
+export function findItem(
+  rows: ProviderSubscription[],
+  itemType: ProviderItemType,
+): ProviderSubscription | null {
+  const provider = pickDefaultProvider(rows);
+  if (!provider) return null;
+  return (
+    rows.find((r) => r.provider === provider && r.itemType === itemType) ?? null
+  );
+}
+
+/**
+ * Does this account still have anything live at a non-default provider?
+ *
+ * True during the migration window: the customer has moved to Stripe but their
+ * Lemon Squeezy subscription runs to the end of the period they already paid
+ * for. Both must keep working until it lapses.
+ */
+export function hasLegacyProvider(rows: ProviderSubscription[]): boolean {
+  const current = pickDefaultProvider(rows);
+  if (!current) return false;
+  return rows.some((r) => r.provider !== current && isLive(r));
+}
+
+/**
+ * Is this provider record still entitling the customer to something?
+ *
+ * The Lemon Squeezy trap lives here. Its `cancelled` does NOT mean access has
+ * ended — the subscription runs to `ends_at` and only then becomes `expired`.
+ * Their docs are explicit that customers keep access in every status except
+ * `expired`. Mapping `cancelled` onto our `canceled` would cut off paying
+ * customers the moment they schedule a cancellation, so this checks the
+ * statuses that genuinely revoke instead of trusting the word.
+ */
+export function isLive(row: ProviderSubscription): boolean {
+  const status = (row.providerStatus ?? '').toLowerCase();
+  if (status === 'expired' || status === 'canceled') return false;
+  // `cancelled` (LS spelling) is still live until ends_at passes.
+  if (status === 'cancelled') {
+    return row.endsAt ? row.endsAt.getTime() > Date.now() : true;
+  }
+  return true;
+}
+
+/**
+ * The add-on quantities a provider believes it is billing for.
+ *
+ * BILLING, not entitlement. Access checks must read
+ * `subscription_items.quantity` instead: the two diverge legitimately when an
+ * add-on is reduced mid-cycle, where the provider's figure drops at the
+ * renewal boundary while the customer keeps what they paid for until the
+ * period ends. This exists for reconciliation — diffing the two to catch
+ * webhook drift — never for authorisation.
+ */
+export function billedQuantities(
+  rows: ProviderSubscription[],
+): Record<string, number> {
+  const provider = pickDefaultProvider(rows);
+  if (!provider) return {};
+
+  const out: Record<string, number> = {};
+  for (const row of rows) {
+    if (row.provider !== provider) continue;
+    if (row.itemType === 'BASE_PLAN') continue;
+    if (!isLive(row)) continue;
+    out[row.itemType] = row.providerQuantity;
+  }
+  return out;
+}
