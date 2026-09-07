@@ -69,7 +69,9 @@ describe('buildUsageFanout', () => {
     });
   });
 
-  it('routes purchased channels to the primary workspace only', () => {
+  // Add-ons are NOT folded into channelsLimit — workspace_usage keeps them in
+  // extra*Purchased and readers sum the two. Folding here double-counted them.
+  it('gives the primary the base allowance and non-primary zero', () => {
     const workspaces: WorkspaceRef[] = [
       { id: 'primary', createdAt: d('2026-01-01T00:00:00Z') },
       { id: 'second', createdAt: d('2026-02-01T00:00:00Z') },
@@ -78,7 +80,7 @@ describe('buildUsageFanout', () => {
       ...NO_ADDONS,
       extraChannels: 4,
     });
-    expect(writes.find((w) => w.workspaceId === 'primary')!.channelsLimit).toBe(12);
+    expect(writes.find((w) => w.workspaceId === 'primary')!.channelsLimit).toBe(8);
     expect(writes.find((w) => w.workspaceId === 'second')!.channelsLimit).toBe(0);
   });
 

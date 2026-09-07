@@ -74,7 +74,10 @@ describe('WorkspaceService.seedWorkspaceUsage', () => {
 
   const ACTIVE_SUB = { id: 7, status: 'active', planCode: 'PRO' };
 
-  it('gives the account FIRST workspace the plan allowance plus add-ons', async () => {
+  // The base allowance and the purchased extras go in SEPARATE columns; every
+  // reader computes the ceiling as `limit + extraPurchased`. Folding add-ons
+  // into the limit would count them twice.
+  it('gives the account FIRST workspace the base allowance and its add-ons', async () => {
     const { service, values } = makeService(1, ACTIVE_SUB);
 
     await seed(service);
@@ -82,11 +85,25 @@ describe('WorkspaceService.seedWorkspaceUsage', () => {
     expect(values).toHaveBeenCalledWith(
       expect.objectContaining({
         workspaceId: 'ws-1',
-        channelsLimit: 3 + 4,
-        membersLimit: 2 + 6,
-        aiTokensLimit: 100 + 5000,
+        channelsLimit: 3,
+        membersLimit: 2,
+        aiTokensLimit: 100,
+        extraChannelsPurchased: 4,
+        extraMembersPurchased: 6,
+        extraAiTokensPurchased: 5000,
       }),
     );
+  });
+
+  // The gap this closes: an account that bought add-ons BEFORE creating its
+  // first workspace would otherwise have them silently dropped here.
+  it('carries the purchased extras onto the first workspace', async () => {
+    const { service, values } = makeService(1, ACTIVE_SUB);
+
+    await seed(service);
+
+    const written = values.mock.calls[0][0] as Record<string, number>;
+    expect(written.channelsLimit + written.extraChannelsPurchased).toBe(7);
   });
 
   // The anti-arbitrage rule: if a purchased workspace carried the tier's

@@ -173,9 +173,15 @@ export class WorkspaceService {
           membersLimit: limits.membersLimit,
           aiTokensLimit: limits.aiTokensLimit,
           channelsCount: 0,
-          extraChannelsPurchased: 0,
           membersCount: 0,
-          extraMembersPurchased: 0,
+          // The purchased extras belong to the ACCOUNT, and every reader
+          // computes the ceiling as `limit + extraPurchased`. The primary
+          // workspace must therefore carry them, or an account that bought
+          // add-ons before creating this workspace would silently lose them.
+          // Non-primary workspaces get zero, matching their zero base.
+          extraChannelsPurchased: isFirst ? addons.extraChannels : 0,
+          extraMembersPurchased: isFirst ? addons.extraMembers : 0,
+          extraAiTokensPurchased: isFirst ? addons.extraAiTokens : 0,
         })
         .onConflictDoNothing({ target: workspaceUsage.workspaceId });
     } catch (error) {

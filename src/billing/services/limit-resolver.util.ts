@@ -30,7 +30,20 @@ export interface ResolvedWorkspaceLimits {
 }
 
 /**
- * Resolve one workspace's limits from the owner's plan and add-ons.
+ * Resolve one workspace's BASE limits from the owner's plan.
+ *
+ * The returned limits deliberately EXCLUDE purchased add-ons. `workspace_usage`
+ * stores the base allowance in `channelsLimit`/`membersLimit`/`aiTokensLimit`
+ * and the purchased amount separately in `extra*Purchased`, and every one of
+ * the eight readers across the codebase computes the effective ceiling as
+ * `limit + extraPurchased` (usage.service, dashboard.service, channel.service,
+ * admin.service, ai-token.service, token-tracking.service).
+ *
+ * Adding add-ons here as well made every add-on count twice: PRO (8 channels)
+ * plus 3 EXTRA_CHANNEL yielded 14 usable channels for 11 paid. AI tokens were
+ * worse, since a pack multiplies by 5000. `addon.service` even recovers the
+ * base with `channelsLimit - extraChannelsPurchased`, which only holds if this
+ * function returns the base alone.
  *
  * `isPrimaryWorkspace` decides where purchased channels and members land. A
  * workspace bought via EXTRA_WORKSPACE arrives EMPTY: channel limits are
@@ -54,9 +67,9 @@ export function resolveWorkspaceLimits(
   }
 
   return {
-    channelsLimit: plan.channelsPerWorkspace + addons.extraChannels,
-    membersLimit: plan.membersPerWorkspace + addons.extraMembers,
-    aiTokensLimit: plan.aiTokensPerMonth + addons.extraAiTokens,
+    channelsLimit: plan.channelsPerWorkspace,
+    membersLimit: plan.membersPerWorkspace,
+    aiTokensLimit: plan.aiTokensPerMonth,
     queuedPostsPerChannel: plan.queuedPostsPerChannel,
   };
 }

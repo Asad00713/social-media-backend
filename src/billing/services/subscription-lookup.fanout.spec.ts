@@ -113,7 +113,7 @@ describe('SubscriptionLookupService.applyLimitsToAllWorkspaces', () => {
     expect(writes).toHaveLength(3);
   });
 
-  it('gives purchased channels and seats to the OLDEST workspace only', async () => {
+  it('gives the OLDEST workspace the base allowance, others zero', async () => {
     selectResults = [
       [
         { id: 'ws-new', createdAt: d('2026-03-01T00:00:00Z') },
@@ -132,11 +132,13 @@ describe('SubscriptionLookupService.applyLimitsToAllWorkspaces', () => {
     // Written in the order the query returned them: new first, then old.
     const [newer, older] = writes;
 
-    // The purchased extras land on the oldest workspace — regardless of the
-    // order rows arrived in.
-    expect(older.values.channelsLimit).toBe(8 + 4);
-    expect(older.values.membersLimit).toBe(5 + 2);
-    expect(older.values.aiTokensLimit).toBe(20000 + 5000);
+    // The BASE allowance lands on the oldest workspace — regardless of the
+    // order rows arrived in. Purchased add-ons are NOT folded in here: they
+    // live in extra*Purchased and readers add the two, so folding them here
+    // would count every add-on twice.
+    expect(older.values.channelsLimit).toBe(8);
+    expect(older.values.membersLimit).toBe(5);
+    expect(older.values.aiTokensLimit).toBe(20000);
 
     // Anti-arbitrage: a non-primary workspace gets ZERO channels and seats, so
     // buying a workspace can never be a cheaper route to channels.

@@ -39,7 +39,11 @@ describe('resolveWorkspaceLimits', () => {
     });
   });
 
-  it('adds purchased channels and members to the primary workspace', () => {
+  // workspace_usage stores the BASE allowance and the purchased amount in
+  // separate columns; all eight readers compute the ceiling as
+  // `limit + extraPurchased`. Adding add-ons here too counted them twice —
+  // PRO(8) + 3 EXTRA_CHANNEL gave 14 usable channels for 11 paid.
+  it('returns the base allowance and does NOT fold add-ons in', () => {
     const addons: AddonQuantities = {
       ...NO_ADDONS,
       extraChannels: 2,
@@ -47,9 +51,9 @@ describe('resolveWorkspaceLimits', () => {
       extraAiTokens: 5000,
     };
     expect(resolveWorkspaceLimits(PRO, addons, true)).toEqual({
-      channelsLimit: 10,
-      membersLimit: 8,
-      aiTokensLimit: 25000,
+      channelsLimit: 8,
+      membersLimit: 5,
+      aiTokensLimit: 20000,
       queuedPostsPerChannel: -1,
     });
   });
@@ -80,6 +84,30 @@ describe('resolveWorkspaceLimits', () => {
     expect(
       resolveWorkspaceLimits(FREE, NO_ADDONS, true).queuedPostsPerChannel,
     ).toBe(10);
+  });
+});
+
+// The effective ceiling every reader computes. This mirrors what
+// usage.service.ts, dashboard.service.ts, channel.service.ts and
+// admin.service.ts all do: base limit + purchased extras. Keeping it here as a
+// test guards the contract from either side drifting.
+describe('effective ceiling (base + extraPurchased)', () => {
+  it('gives PRO + 3 extra channels exactly 11, not 14', () => {
+    const addons: AddonQuantities = { ...NO_ADDONS, extraChannels: 3 };
+    const base = resolveWorkspaceLimits(PRO, addons, true);
+
+    // What workspace_usage would store, and what every reader then sums.
+    const storedLimit = base.channelsLimit;
+    const storedExtra = addons.extraChannels;
+
+    expect(storedLimit + storedExtra).toBe(11);
+  });
+
+  it('gives one 5000-token AI pack exactly 25000, not 30000', () => {
+    const addons: AddonQuantities = { ...NO_ADDONS, extraAiTokens: 5000 };
+    const base = resolveWorkspaceLimits(PRO, addons, true);
+
+    expect(base.aiTokensLimit + addons.extraAiTokens).toBe(25000);
   });
 });
 
