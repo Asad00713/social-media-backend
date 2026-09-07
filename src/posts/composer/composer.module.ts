@@ -16,6 +16,8 @@ import { ChannelsModule } from '../../channels/channels.module';
 import { DrizzleModule } from '../../drizzle/drizzle.module';
 import { PostsModule } from '../posts.module';
 import { CalendarSyncModule } from '../../calendar-sync/calendar-sync.module';
+// For PostQueueService — the same scheduling ceiling PostsModule enforces.
+import { BillingModule } from '../../billing/billing.module';
 
 @Module({
   imports: [
@@ -23,6 +25,7 @@ import { CalendarSyncModule } from '../../calendar-sync/calendar-sync.module';
     ChannelsModule,
     PostsModule,
     QueueModule,
+    BillingModule,
     // For CalendarPushSyncService — reflect composer-scheduled drafts on
     // connected calendars immediately (ComposerModule is not part of the
     // PostsModule <-> CalendarSyncModule cycle, so a plain import is safe).

@@ -173,6 +173,41 @@ export const WORKSPACE_CHANNEL_HEALTH_FILTERS = [
 export type WorkspaceChannelHealthFilter =
   (typeof WORKSPACE_CHANNEL_HEALTH_FILTERS)[number];
 
+/**
+ * The account's primary workspace, as a scalar subquery on `subscriptions`.
+ *
+ * Subscriptions are account-scoped, but the admin subscription and invoice
+ * lists still want a workspace to name and link to. Reaching it by JOINing
+ * `workspace ON owner_id = subscriptions.user_id` is the trap: that join is
+ * one-to-many, so an account with three workspaces yields three copies of its
+ * one subscription — tripling the row count, the pagination total, and any MRR
+ * or invoice amount summed over the list. A scalar subquery returns exactly
+ * one value per subscription, so the list stays one-row-per-subscription.
+ *
+ * `ORDER BY created_at, id LIMIT 1` matches SubscriptionLookupService's
+ * `listOwnedWorkspaces` / `pickPrimaryWorkspaceId`, so "primary" here is the
+ * same workspace that actually carries the account's channel allowance.
+ */
+const primaryWorkspaceId = sql<string | null>`(
+  SELECT pw.id FROM ${workspace} AS pw
+  WHERE pw.owner_id = ${subscriptions.userId}
+  ORDER BY pw.created_at, pw.id
+  LIMIT 1
+)`;
+
+const primaryWorkspaceName = sql<string | null>`(
+  SELECT pw.name FROM ${workspace} AS pw
+  WHERE pw.owner_id = ${subscriptions.userId}
+  ORDER BY pw.created_at, pw.id
+  LIMIT 1
+)`;
+
+/** How many workspaces this one subscription now covers. */
+const ownedWorkspaceCount = sql<number>`(
+  SELECT COUNT(*) FROM ${workspace} AS cw
+  WHERE cw.owner_id = ${subscriptions.userId}
+)`;
+
 @Injectable()
 export class AdminService {
   private readonly logger = new Logger(AdminService.name);
@@ -607,7 +642,7 @@ export class AdminService {
         SELECT 1 FROM ${invoices}
         INNER JOIN ${subscriptions} AS rev_sub
           ON rev_sub.id = ${invoices.subscriptionId}
-        WHERE rev_sub.workspace_id = ${workspace.id}
+        WHERE rev_sub.user_id = ${workspace.ownerId}
           AND ${invoices.status} = 'paid'
           AND ${invoices.amountPaidCents} > 0
       )`;
@@ -743,7 +778,7 @@ export class AdminService {
         FROM ${invoices}
         INNER JOIN ${subscriptions} AS sort_sub
           ON sort_sub.id = ${invoices.subscriptionId}
-        WHERE sort_sub.workspace_id = ${workspace.id}
+        WHERE sort_sub.user_id = ${workspace.ownerId}
           AND ${invoices.status} = 'paid'
       )`,
     } as const;
@@ -791,19 +826,25 @@ export class AdminService {
         // COALESCE because a workspace that has never been billed sums to
         // NULL, and a list column reading "—" where it means "nothing yet"
         // is a distinction without a difference here.
+        //
+        // Account-scoped: this is the OWNER's lifetime revenue, so every
+        // workspace one account owns shows the same figure. Read it as "what
+        // the account paying for this workspace has paid us", never as this
+        // workspace's own contribution — and never SUM this column across the
+        // list, which would count one account's revenue once per workspace.
         lifetimeRevenueCents: sql<number>`(
           SELECT COALESCE(SUM(${invoices.amountPaidCents}), 0)
           FROM ${invoices}
           INNER JOIN ${subscriptions} AS inv_sub
             ON inv_sub.id = ${invoices.subscriptionId}
-          WHERE inv_sub.workspace_id = ${workspace.id}
+          WHERE inv_sub.user_id = ${workspace.ownerId}
             AND ${invoices.status} = 'paid'
         )`.mapWith(Number),
       })
       .from(workspace)
       .leftJoin(users, eq(users.id, workspace.ownerId))
       .leftJoin(workspaceUsage, eq(workspaceUsage.workspaceId, workspace.id))
-      .leftJoin(subscriptions, eq(subscriptions.workspaceId, workspace.id))
+      .leftJoin(subscriptions, eq(subscriptions.userId, workspace.ownerId))
       .where(where)
       .orderBy(orderBy)
       .limit(limit)
@@ -817,7 +858,7 @@ export class AdminService {
       .from(workspace)
       .leftJoin(users, eq(users.id, workspace.ownerId))
       .leftJoin(workspaceUsage, eq(workspaceUsage.workspaceId, workspace.id))
-      .leftJoin(subscriptions, eq(subscriptions.workspaceId, workspace.id))
+      .leftJoin(subscriptions, eq(subscriptions.userId, workspace.ownerId))
       .where(where);
 
     const total = totalCount[0]?.count ?? 0;
@@ -947,8 +988,10 @@ export class AdminService {
         where: eq(workspaceUsage.workspaceId, workspaceId),
       }),
 
+      // Account-scoped: this workspace is covered by its owner's one
+      // subscription, which every other workspace they own shares.
       this.db.query.subscriptions.findFirst({
-        where: eq(subscriptions.workspaceId, workspaceId),
+        where: eq(subscriptions.userId, ws.ownerId),
       }),
 
       // The channels themselves, not a count. "3 channels" and "3 channels,
@@ -1293,7 +1336,7 @@ export class AdminService {
   async getWorkspaceBilling(workspaceId: string) {
     const ws = await this.db.query.workspace.findFirst({
       where: eq(workspace.id, workspaceId),
-      columns: { id: true },
+      columns: { id: true, ownerId: true },
     });
 
     if (!ws) {
@@ -1302,7 +1345,10 @@ export class AdminService {
 
     // Invoices hang off the subscription, not the workspace — there is no
     // workspace_id on the table — so every invoice query here goes through
-    // this join.
+    // this join. The subscription itself is the OWNER's: billing is
+    // account-scoped, so these figures cover the account, and every workspace
+    // this owner has shows the same invoices. Read them as "the account that
+    // pays for this workspace", not "what this workspace alone generated".
     const invoiceJoin = this.db
       .select({
         id: invoices.id,
@@ -1320,7 +1366,7 @@ export class AdminService {
       })
       .from(invoices)
       .innerJoin(subscriptions, eq(subscriptions.id, invoices.subscriptionId))
-      .where(eq(subscriptions.workspaceId, workspaceId));
+      .where(eq(subscriptions.userId, ws.ownerId));
 
     const now = new Date();
     const thirtyDaysAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);
@@ -1375,7 +1421,7 @@ export class AdminService {
           )
           .where(
             and(
-              eq(subscriptions.workspaceId, workspaceId),
+              eq(subscriptions.userId, ws.ownerId),
               eq(failedPayments.resolved, false),
             ),
           ),
@@ -1962,7 +2008,21 @@ export class AdminService {
       conditions.push(eq(subscriptions.planCode, planCode));
     }
     if (search?.trim()) {
-      conditions.push(ilike(workspace.name, `%${search.trim()}%`));
+      // Matches the account rather than one workspace: a subscription is no
+      // longer tied to a single workspace, so searching by owner email/name or
+      // by ANY workspace the account owns is what an admin means here.
+      const term = `%${search.trim()}%`;
+      conditions.push(
+        or(
+          ilike(users.email, term),
+          ilike(users.name, term),
+          sql`EXISTS (
+            SELECT 1 FROM ${workspace} AS search_ws
+            WHERE search_ws.owner_id = ${subscriptions.userId}
+              AND search_ws.name ILIKE ${term}
+          )`,
+        ),
+      );
     }
     const where = conditions.length > 0 ? and(...conditions) : undefined;
 
@@ -1982,8 +2042,17 @@ export class AdminService {
       this.db
         .select({
           id: subscriptions.id,
-          workspaceId: subscriptions.workspaceId,
-          workspaceName: workspace.name,
+          userId: subscriptions.userId,
+          ownerEmail: users.email,
+          ownerName: users.name,
+          // The account's primary (oldest) workspace, kept so the admin UI
+          // still has something to link to. Deliberately a scalar subquery,
+          // NOT a join: joining workspace on owner_id would emit one row per
+          // owned workspace, duplicating the subscription and multiplying
+          // every MRR figure summed from this list by that workspace count.
+          workspaceId: primaryWorkspaceId,
+          workspaceName: primaryWorkspaceName,
+          workspaceCount: ownedWorkspaceCount,
           planCode: subscriptions.planCode,
           planName: plans.name,
           basePriceCents: plans.basePriceCents,
@@ -2005,7 +2074,7 @@ export class AdminService {
           )`,
         })
         .from(subscriptions)
-        .innerJoin(workspace, eq(workspace.id, subscriptions.workspaceId))
+        .innerJoin(users, eq(users.id, subscriptions.userId))
         .innerJoin(plans, eq(plans.code, subscriptions.planCode))
         .where(where)
         .orderBy(desc(subscriptions.createdAt))
@@ -2014,7 +2083,7 @@ export class AdminService {
       this.db
         .select({ count: count() })
         .from(subscriptions)
-        .innerJoin(workspace, eq(workspace.id, subscriptions.workspaceId))
+        .innerJoin(users, eq(users.id, subscriptions.userId))
         .where(where),
     ]);
 
@@ -2025,6 +2094,8 @@ export class AdminService {
         ...row,
         mrrCents: Number(row.mrrCents) || 0,
         addonCount: Number(row.addonCount) || 0,
+        // COUNT(*) comes back as a string over the wire.
+        workspaceCount: Number(row.workspaceCount) || 0,
       })),
       pagination: {
         page,
@@ -2057,7 +2128,16 @@ export class AdminService {
     if (search?.trim()) {
       const term = `%${search.trim()}%`;
       conditions.push(
-        or(ilike(workspace.name, term), ilike(invoices.stripeInvoiceId, term)),
+        or(
+          ilike(users.email, term),
+          ilike(users.name, term),
+          ilike(invoices.stripeInvoiceId, term),
+          sql`EXISTS (
+            SELECT 1 FROM ${workspace} AS search_ws
+            WHERE search_ws.owner_id = ${subscriptions.userId}
+              AND search_ws.name ILIKE ${term}
+          )`,
+        ),
       );
     }
     const where = conditions.length > 0 ? and(...conditions) : undefined;
@@ -2067,8 +2147,14 @@ export class AdminService {
         .select({
           id: invoices.id,
           stripeInvoiceId: invoices.stripeInvoiceId,
-          workspaceId: subscriptions.workspaceId,
-          workspaceName: workspace.name,
+          userId: subscriptions.userId,
+          ownerEmail: users.email,
+          ownerName: users.name,
+          // Scalar subqueries, not a workspace join — see the note in
+          // getAdminSubscriptions. Joining on owner_id here would repeat each
+          // invoice once per owned workspace and inflate the totals.
+          workspaceId: primaryWorkspaceId,
+          workspaceName: primaryWorkspaceName,
           planCode: subscriptions.planCode,
           status: invoices.status,
           totalCents: invoices.totalCents,
@@ -2087,7 +2173,7 @@ export class AdminService {
           subscriptions,
           eq(subscriptions.id, invoices.subscriptionId),
         )
-        .innerJoin(workspace, eq(workspace.id, subscriptions.workspaceId))
+        .innerJoin(users, eq(users.id, subscriptions.userId))
         .where(where)
         .orderBy(desc(invoices.createdAt))
         .limit(limit)
@@ -2099,7 +2185,7 @@ export class AdminService {
           subscriptions,
           eq(subscriptions.id, invoices.subscriptionId),
         )
-        .innerJoin(workspace, eq(workspace.id, subscriptions.workspaceId))
+        .innerJoin(users, eq(users.id, subscriptions.userId))
         .where(where),
     ]);
 
@@ -2260,6 +2346,12 @@ export class AdminService {
 
       // Plan mix: active subscriptions per plan and the recurring revenue each
       // plan accounts for.
+      //
+      // `workspaces` counts SUBSCRIPTIONS (accounts), not workspaces — the
+      // field name predates account-scoped billing and is kept because the
+      // admin UI reads it. It is deliberately not a workspace count: grouping
+      // over a workspace join would repeat each subscription once per owned
+      // workspace and inflate every mrrCents on this breakdown.
       this.db
         .select({
           planCode: subscriptions.planCode,

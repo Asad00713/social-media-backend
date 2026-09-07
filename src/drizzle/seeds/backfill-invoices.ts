@@ -29,7 +29,7 @@ async function backfill() {
   const subs = await db
     .select({
       id: subscriptions.id,
-      workspaceId: subscriptions.workspaceId,
+      userId: subscriptions.userId,
       planCode: subscriptions.planCode,
       stripeSubscriptionId: subscriptions.stripeSubscriptionId,
     })

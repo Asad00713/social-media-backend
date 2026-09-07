@@ -10,13 +10,15 @@ import {
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
 import { CreateWorkspaceDto } from './dto/create-workspace.dto';
-import { workspace, Workspace } from 'src/drizzle/schema';
-import { and, eq } from 'drizzle-orm';
+import { workspace, workspaceUsage, Workspace } from 'src/drizzle/schema';
+import { and, count, eq } from 'drizzle-orm';
 import { sql } from 'drizzle-orm';
 import { UpdateWorkspaceDto } from './dto/update-workspace.dto';
 import { UsageService } from 'src/billing/services/usage.service';
 import { UsersService } from 'src/users/users.service';
 import { SubscriptionService } from 'src/billing/services/subscription.service';
+import { SubscriptionLookupService } from 'src/billing/services/subscription-lookup.service';
+import { resolveWorkspaceLimits } from 'src/billing/services/limit-resolver.util';
 
 type GetAllREsponse = {
   // Omits the Maestro BYOK credential — it must never reach a client.
@@ -39,6 +41,7 @@ export class WorkspaceService {
     private usersService: UsersService,
     @Inject(forwardRef(() => SubscriptionService))
     private subscriptionService: SubscriptionService,
+    private lookup: SubscriptionLookupService,
   ) {}
 
   async create(
@@ -100,6 +103,15 @@ export class WorkspaceService {
       // Don't fail workspace creation if subscription fails - can be created later
     }
 
+    // Seed this workspace's limits from the owner's subscription.
+    //
+    // Why this has to exist: `applyLimitsToAllWorkspaces` fans plan changes out
+    // with UPDATE, so a workspace with no `workspace_usage` row is silently
+    // skipped by every future plan change, add-on purchase and downgrade — and
+    // `getWorkspaceUsage` throws for it. Only the account's FIRST workspace
+    // ever got a row (via createFreeSubscription); the second onward had none.
+    await this.seedWorkspaceUsage(newWorkspace.id, userId);
+
     // Auto-set lastAccessedWorkspaceId if this is user's first workspace
     const user = await this.usersService.findOne(userId);
     if (!user.lastAccessedWorkspaceId) {
@@ -107,6 +119,72 @@ export class WorkspaceService {
     }
 
     return newWorkspace;
+  }
+
+  /**
+   * Create the `workspace_usage` row a new workspace needs, sized from the
+   * owner's account-wide subscription.
+   *
+   * `onConflictDoNothing` because the account's first workspace already got a
+   * row from `createFreeSubscription` moments earlier; `workspace_usage.
+   * workspace_id` is UNIQUE, so a plain insert would fail there and take
+   * workspace creation down with it. Whoever wrote the row first wins.
+   */
+  private async seedWorkspaceUsage(
+    workspaceId: string,
+    userId: string,
+  ): Promise<void> {
+    try {
+      const subscription = await this.lookup.findByUserId(userId);
+      const planCode =
+        subscription && subscription.status === 'active'
+          ? subscription.planCode
+          : 'FREE';
+      const addons = subscription
+        ? await this.lookup.getAddonQuantities(subscription.id)
+        : {
+            extraChannels: 0,
+            extraMembers: 0,
+            extraWorkspaces: 0,
+            extraAiTokens: 0,
+          };
+      const plan = await this.lookup.getPlanLimits(planCode);
+
+      // A newly created workspace starts EMPTY (no channels, no seats) unless
+      // it is the account's first. Purchased channels and seats live on the
+      // primary workspace only — otherwise buying an EXTRA_WORKSPACE would be
+      // a cheaper way to buy channels than buying channels.
+      //
+      // Counted AFTER the insert, so the account's very first workspace sees
+      // exactly 1 and is the only one treated as primary.
+      const [ownedCount] = await this.db
+        .select({ n: count() })
+        .from(workspace)
+        .where(eq(workspace.ownerId, userId));
+      const isFirst = Number(ownedCount?.n ?? 0) === 1;
+
+      const limits = resolveWorkspaceLimits(plan, addons, isFirst);
+
+      await this.db
+        .insert(workspaceUsage)
+        .values({
+          workspaceId,
+          channelsLimit: limits.channelsLimit,
+          membersLimit: limits.membersLimit,
+          aiTokensLimit: limits.aiTokensLimit,
+          channelsCount: 0,
+          extraChannelsPurchased: 0,
+          membersCount: 0,
+          extraMembersPurchased: 0,
+        })
+        .onConflictDoNothing({ target: workspaceUsage.workspaceId });
+    } catch (error) {
+      // A missing usage row degrades gracefully (limits read as unset) whereas
+      // a thrown error here would lose the workspace the user just created.
+      this.logger.error(
+        `Failed to seed usage for workspace ${workspaceId}: ${error.message}`,
+      );
+    }
   }
 
   private generateSlug(name: string): string {

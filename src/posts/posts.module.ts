@@ -8,6 +8,10 @@ import { QueueModule, QUEUES } from '../queue/queue.module';
 import { AnalyticsModule } from '../channels/analytics/analytics.module';
 import { MediaModule } from '../media/media.module';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
+// For PostQueueService — the per-channel scheduling ceiling. BillingModule
+// reaches only Stripe/Drizzle/Notifications, none of which import PostsModule,
+// so this is a plain import rather than a forwardRef.
+import { BillingModule } from '../billing/billing.module';
 // Leaf provider (depends only on `db`) — importing the class directly does
 // NOT pull in CampaignsModule, so this does not create a module cycle even
 // though CampaignsModule imports PostsModule.
@@ -40,6 +44,7 @@ import { PostPublishProcessor } from './processors/post-publish.processor';
     BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS }),
     AnalyticsModule,
     MediaModule,
+    BillingModule,
     // Circular by design: posts push to calendars (CalendarPushSyncService) and
     // calendars write back to posts (CalendarPullSyncService → PostService).
     forwardRef(() => CalendarSyncModule),
