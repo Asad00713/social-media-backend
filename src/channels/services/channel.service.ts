@@ -34,6 +34,7 @@ import {
 import { workspaceUsage } from '../../drizzle/schema';
 import { channelSyncState } from '../../drizzle/schema/channel-sync-state.schema';
 import { posts, type PostTarget } from '../../drizzle/schema/posts.schema';
+import { AccountChannelsService } from '../../billing/services/account-channels.service';
 import {
   encrypt,
   decrypt,
@@ -83,6 +84,8 @@ export class ChannelService {
     private readonly oauthService: OAuthService,
     private readonly syncLifecycle: ChannelSyncLifecycleService,
     private readonly googleRevoke: GoogleOauthRevokeService,
+    @Inject(forwardRef(() => AccountChannelsService))
+    private readonly accountChannels: AccountChannelsService,
   ) {}
 
   // ==========================================================================
@@ -176,12 +179,20 @@ export class ChannelService {
       return this.toResponseDto(updated[0]);
     }
 
-    // No existing row — enforce channel limit before creating a new slot.
-    // Integrations (cloud storage, calendars) never consume a paid slot — only
-    // enforce the limit for billable platforms.
-    if (isBillablePlatform(dto.platform as SupportedPlatform)) {
-      await this.enforceChannelLimit(workspaceId);
-    }
+    // No existing row — enforce the ACCOUNT channel ceiling before creating a
+    // new slot. Channels are pooled across the account, so the limit spans
+    // every workspace the owner has, not just this one. Integrations (cloud
+    // storage, calendars) never consume a paid slot.
+    //
+    // The check and the insert below are separate statements, so two
+    // simultaneous connects could both pass a check taken before either
+    // inserted. Pooling widens that window — the two connects no longer even
+    // need to target the same workspace — so the enforcement takes an advisory
+    // lock keyed on the account and the insert runs in the same transaction.
+    const billable = isBillablePlatform(dto.platform);
+    const ownerId = billable
+      ? await this.accountChannels.ownerOf(workspaceId)
+      : null;
 
     // Get platform config for defaults
     const platformConfig = PLATFORM_CONFIG[dto.platform];
@@ -199,7 +210,7 @@ export class ChannelService {
     const newChannel: any = {
       workspaceId,
       platform: dto.platform,
-      category: CHANNEL_CATEGORY[dto.platform as SupportedPlatform],
+      category: CHANNEL_CATEGORY[dto.platform],
       accountType: dto.accountType,
       platformAccountId: dto.platformAccountId,
       accountName: dto.accountName,
@@ -237,13 +248,19 @@ export class ChannelService {
       newChannel.telegramWebhookRouteId = dto.telegramWebhookRouteId ?? null;
     }
 
-    const inserted = await db
-      .insert(socialMediaChannels)
-      .values(newChannel)
-      .returning();
+    const inserted = await db.transaction(async (tx) => {
+      if (ownerId) {
+        // Holds pg_advisory_xact_lock(account) for the rest of this
+        // transaction, so a concurrent connect on the same account waits here
+        // rather than racing past the ceiling.
+        await this.accountChannels.enforceWithinTransaction(tx, ownerId);
+      }
+
+      return tx.insert(socialMediaChannels).values(newChannel).returning();
+    });
 
     // Update workspace usage count — billable platforms only.
-    if (isBillablePlatform(dto.platform as SupportedPlatform)) {
+    if (billable) {
       await this.incrementChannelCount(workspaceId);
     }
 
@@ -1313,32 +1330,6 @@ export class ChannelService {
   // ==========================================================================
   // Billing Integration
   // ==========================================================================
-
-  /**
-   * Enforce channel limit based on subscription
-   */
-  private async enforceChannelLimit(workspaceId: string): Promise<void> {
-    const usage = await db
-      .select()
-      .from(workspaceUsage)
-      .where(eq(workspaceUsage.workspaceId, workspaceId))
-      .limit(1);
-
-    if (usage.length === 0) {
-      // No usage record, allow (will be created on first subscription)
-      return;
-    }
-
-    const { channelsCount, channelsLimit, extraChannelsPurchased } = usage[0];
-    const totalLimit = channelsLimit + extraChannelsPurchased;
-
-    if (channelsCount >= totalLimit) {
-      throw new ForbiddenException(
-        `Channel limit reached (${channelsCount}/${totalLimit}). ` +
-          'Please upgrade your plan or purchase additional channels.',
-      );
-    }
-  }
 
   /**
    * Increment channel count in workspace usage

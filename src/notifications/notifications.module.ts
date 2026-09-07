@@ -1,4 +1,4 @@
-import { Module, Global } from '@nestjs/common';
+import { Module, Global, forwardRef } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { NotificationsController } from './notifications.controller';
 import { NotificationsService } from './notifications.service';
@@ -11,7 +11,11 @@ import { ChannelsModule } from '../channels/channels.module';
 
 @Global() // Make this module global so other services can inject NotificationsService
 @Module({
-  imports: [JwtModule.register({}), ChannelsModule],
+  // ChannelsModule now imports BillingModule (channels are pooled per account,
+  // so connecting one needs the account-wide ceiling), and BillingModule
+  // imports this module — Channels -> Billing -> Notifications -> Channels.
+  // Both sides of that cycle must be forwardRef'd or Nest cannot build it.
+  imports: [JwtModule.register({}), forwardRef(() => ChannelsModule)],
   controllers: [NotificationsController, NotificationRoutesController],
   providers: [
     NotificationsService,

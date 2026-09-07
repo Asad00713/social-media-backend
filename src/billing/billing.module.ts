@@ -11,6 +11,7 @@ import { DashboardService } from './services/dashboard.service';
 import { InvoiceService } from './services/invoice.service';
 import { PaymentMethodService } from './services/payment-method.service';
 import { SubscriptionLookupService } from './services/subscription-lookup.service';
+import { AccountChannelsService } from './services/account-channels.service';
 import { PostQueueService } from './services/post-queue.service';
 import { StripeModule } from '../stripe/stripe.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
@@ -31,6 +32,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     PaymentMethodService,
     SubscriptionLookupService,
     PostQueueService,
+    AccountChannelsService,
   ],
   controllers: [BillingController],
   exports: [
@@ -45,6 +47,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
     PaymentMethodService,
     SubscriptionLookupService,
     PostQueueService,
+    AccountChannelsService,
   ],
 })
 export class BillingModule {}

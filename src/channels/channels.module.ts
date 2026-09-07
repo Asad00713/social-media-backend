@@ -46,6 +46,7 @@ import { QueueModule } from '../queue/queue.module';
 import { BullModule } from '@nestjs/bullmq';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
 import { CALENDAR_RECONCILE_QUEUE } from '../calendar-sync/calendar-sync.constants';
+import { BillingModule } from '../billing/billing.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { TokenRefreshProcessor } from './processors/token-refresh.processor';
 import { TokenRefreshScheduler } from './schedulers/token-refresh.scheduler';
@@ -69,6 +70,11 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
     // module, NOT WorkspaceMembersModule (which pulls BillingModule and would
     // re-create a circular dependency through NotificationsModule).
     WorkspaceRoleModule,
+    // Channels are pooled per ACCOUNT, so connecting one needs the account-wide
+    // ceiling. BillingModule reaches back here via NotificationsModule
+    // (Channels -> Billing -> Notifications -> Channels), so this must be a
+    // forwardRef or the app fails to boot.
+    forwardRef(() => BillingModule),
   ],
   controllers: [ChannelsController],
   providers: [
