@@ -23,6 +23,16 @@ import { DashboardService } from './services/dashboard.service';
 import { InvoiceService } from './services/invoice.service';
 import { PaymentMethodService } from './services/payment-method.service';
 import { StripeService } from '../stripe/stripe.service';
+import {
+  CreateSubscriptionBodyDto,
+  CreateCheckoutSessionBodyDto,
+  CancelSubscriptionBodyDto,
+  PurchaseAddonBodyDto,
+  RemoveAddonBodyDto,
+  ChangePlanBodyDto,
+  AddPaymentMethodBodyDto,
+} from './dto/billing.dto';
+import type { AddonTypeDto } from './dto/billing.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { SkipSuspendCheck } from '../auth/decorators/skip-suspend-check.decorator';
@@ -66,12 +76,7 @@ export class BillingController {
   async createSubscription(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body()
-    body: {
-      planCode: string;
-      paymentMethodId?: string;
-      trialPeriodDays?: number;
-    },
+    @Body() body: CreateSubscriptionBodyDto,
   ) {
     return await this.subscriptionService.createSubscription({
       workspaceId,
@@ -88,7 +93,7 @@ export class BillingController {
   async createCheckoutSession(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string },
-    @Body() body: { planCode: string },
+    @Body() body: CreateCheckoutSessionBodyDto,
   ) {
     return await this.subscriptionService.createCheckoutSession({
       workspaceId,
@@ -111,7 +116,7 @@ export class BillingController {
   async cancelSubscription(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() body: { cancelAtPeriodEnd?: boolean },
+    @Body() body: CancelSubscriptionBodyDto,
   ) {
     return await this.subscriptionService.cancelSubscription(
       workspaceId,
@@ -162,15 +167,7 @@ export class BillingController {
   async purchaseAddon(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body()
-    body: {
-      addonType:
-        | 'EXTRA_CHANNEL'
-        | 'EXTRA_MEMBER'
-        | 'EXTRA_WORKSPACE'
-        | 'EXTRA_AI_TOKENS';
-      quantity: number;
-    },
+    @Body() body: PurchaseAddonBodyDto,
   ) {
     return await this.addonService.purchaseAddon({
       workspaceId,
@@ -185,14 +182,9 @@ export class BillingController {
   @HttpCode(HttpStatus.OK)
   async removeAddon(
     @Param('workspaceId') workspaceId: string,
-    @Param('addonType')
-    addonType:
-      | 'EXTRA_CHANNEL'
-      | 'EXTRA_MEMBER'
-      | 'EXTRA_WORKSPACE'
-      | 'EXTRA_AI_TOKENS',
+    @Param('addonType') addonType: AddonTypeDto,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() body: { quantity?: number },
+    @Body() body: RemoveAddonBodyDto,
   ) {
     return await this.addonService.removeAddon(
       workspaceId,
@@ -235,7 +227,7 @@ export class BillingController {
   async changePlan(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() body: { newPlanCode: string },
+    @Body() body: ChangePlanBodyDto,
   ) {
     return await this.planChangeService.changePlan(
       workspaceId,
@@ -348,7 +340,7 @@ export class BillingController {
   @HttpCode(HttpStatus.CREATED)
   async addPaymentMethod(
     @CurrentUser() user: { userId: string; email: string },
-    @Body() body: { paymentMethodId: string; setAsDefault?: boolean },
+    @Body() body: AddPaymentMethodBodyDto,
   ) {
     return await this.paymentMethodService.addPaymentMethod(
       user.userId,
