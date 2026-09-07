@@ -1,12 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
+import { and, inArray } from 'drizzle-orm';
 import {
   subscriptions,
   subscriptionItems,
   plans,
   workspace,
   workspaceUsage,
+  socialMediaChannels,
   Subscription,
 } from '../../drizzle/schema';
 import { PlanLimits, AddonQuantities } from './limit-resolver.util';
@@ -15,6 +17,7 @@ import {
   pickPrimaryWorkspaceId,
   WorkspaceRef,
 } from './usage-fanout.util';
+import { planChannelLocks } from './channel-lock.util';
 
 /** Limits every account falls back to when it has no subscription row. */
 const FREE_FALLBACK: PlanLimits = {
@@ -198,5 +201,80 @@ export class SubscriptionLookupService {
     this.logger.log(
       `Applied ${planCode} limits to ${writes.length} workspace(s) for user ${userId}`,
     );
+
+    for (const write of writes) {
+      await this.reconcileChannelLocks(write.workspaceId);
+    }
+  }
+
+  /**
+   * Bring one workspace's channels in line with its ceiling.
+   *
+   * Excess channels are LOCKED, never disconnected: tokens, history and
+   * scheduled posts survive, and an upgrade releases them again. The oldest
+   * channels are the ones kept — the customer makes no decision at the moment
+   * their plan lapses, and the same set survives however often this runs.
+   *
+   * Called after every limit write, so it covers downgrade, reset-to-FREE,
+   * add-on removal and payment failure without each path remembering to.
+   */
+  async reconcileChannelLocks(workspaceId: string): Promise<void> {
+    const usage = await db
+      .select({
+        channelsLimit: workspaceUsage.channelsLimit,
+        extraChannelsPurchased: workspaceUsage.extraChannelsPurchased,
+      })
+      .from(workspaceUsage)
+      .where(eq(workspaceUsage.workspaceId, workspaceId))
+      .limit(1);
+
+    if (usage.length === 0) return;
+
+    // The effective ceiling is base + purchased, the same sum every other
+    // reader computes.
+    const limit = usage[0].channelsLimit + usage[0].extraChannelsPurchased;
+
+    const channels = await db
+      .select({
+        id: socialMediaChannels.id,
+        createdAt: socialMediaChannels.createdAt,
+        isActive: socialMediaChannels.isActive,
+      })
+      .from(socialMediaChannels)
+      .where(eq(socialMediaChannels.workspaceId, workspaceId));
+
+    if (channels.length === 0) return;
+
+    const plan = planChannelLocks(channels, limit);
+
+    if (plan.lock.length > 0) {
+      await db
+        .update(socialMediaChannels)
+        .set({ isActive: false, updatedAt: new Date() })
+        .where(
+          and(
+            eq(socialMediaChannels.workspaceId, workspaceId),
+            inArray(socialMediaChannels.id, plan.lock),
+          ),
+        );
+      this.logger.log(
+        `Locked ${plan.lock.length} channel(s) over the ${limit}-channel ceiling in workspace ${workspaceId}`,
+      );
+    }
+
+    if (plan.unlock.length > 0) {
+      await db
+        .update(socialMediaChannels)
+        .set({ isActive: true, updatedAt: new Date() })
+        .where(
+          and(
+            eq(socialMediaChannels.workspaceId, workspaceId),
+            inArray(socialMediaChannels.id, plan.unlock),
+          ),
+        );
+      this.logger.log(
+        `Released ${plan.unlock.length} channel(s) in workspace ${workspaceId}`,
+      );
+    }
   }
 }

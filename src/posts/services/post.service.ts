@@ -888,6 +888,18 @@ export class PostService {
       );
     }
 
+    // A channel locked by a downgrade stays connected — its tokens and history
+    // are intact and it comes back on upgrade — but it must not publish, or the
+    // plan ceiling would mean nothing.
+    const locked = channelList.filter((c) => c.isActive === false);
+    if (locked.length > 0) {
+      throw new BadRequestException(
+        `Channel(s) locked by your current plan: ${locked
+          .map((c) => c.accountName)
+          .join(', ')}. Upgrade or free up a channel slot to use them again.`,
+      );
+    }
+
     return channelList;
   }
 

@@ -769,6 +769,18 @@ export class ChannelService {
     }
 
     const channelData = channel[0];
+
+    // A channel locked by a downgrade keeps its tokens and history — it is not
+    // disconnected — but it must not publish. Every publish path needs a token,
+    // so this is the one place that guarantees the plan ceiling is honoured
+    // whichever composer the post came from.
+    if (channelData.isActive === false) {
+      throw new ForbiddenException(
+        `"${channelData.accountName}" is locked by your current plan. ` +
+          'Upgrade or free up a channel slot to use it again.',
+      );
+    }
+
     const platform = channelData.platform as SupportedPlatform;
     const platformConfig = PLATFORM_CONFIG[platform];
 
