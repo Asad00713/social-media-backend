@@ -28,7 +28,13 @@ describe('planChannelLocks', () => {
   });
 
   it('ignores the order channels arrive in', () => {
-    const shuffled = [CHANNELS[3], CHANNELS[0], CHANNELS[4], CHANNELS[1], CHANNELS[2]];
+    const shuffled = [
+      CHANNELS[3],
+      CHANNELS[0],
+      CHANNELS[4],
+      CHANNELS[1],
+      CHANNELS[2],
+    ];
     expect(planChannelLocks(shuffled, 3).keep).toEqual([1, 2, 3]);
   });
 
@@ -40,7 +46,9 @@ describe('planChannelLocks', () => {
     ];
     expect(planChannelLocks(sameInstant, 2).keep).toEqual([3, 7]);
     // Same answer whichever order they arrive in.
-    expect(planChannelLocks([...sameInstant].reverse(), 2).keep).toEqual([3, 7]);
+    expect(planChannelLocks([...sameInstant].reverse(), 2).keep).toEqual([
+      3, 7,
+    ]);
   });
 
   it('releases locked channels that fit again after an upgrade', () => {
