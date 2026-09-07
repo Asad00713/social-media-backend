@@ -282,7 +282,11 @@ export class AddonService {
       oldValue:
         existingItem.length > 0 ? { quantity: existingItem[0].quantity } : null,
       newValue: { addonType, quantity: finalQuantity },
-      prorationAmountCents: addonPrice.pricePerUnitCents * quantity,
+      // Null, not the full monthly price. Stripe pro-rates a mid-cycle add-on
+      // against the days left in the period, so the real charge is only known
+      // from the invoice it raises — writing the list price here recorded an
+      // amount the customer was never billed. The invoice is the source of truth.
+      prorationAmountCents: null,
       changedByUserId: userId,
       reason: `Purchased ${quantity} ${addonType}`,
     } as NewSubscriptionChange);
