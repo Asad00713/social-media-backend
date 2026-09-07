@@ -154,6 +154,35 @@ describe('WorkspaceService.seedWorkspaceUsage', () => {
     expect(lookupPlan).toHaveBeenCalledWith('FREE');
   });
 
+  // Regression: the seeded row originally omitted aiTokensResetDate. The
+  // monthly reset is gated on `usage.aiTokensResetDate && now >= it`, and NULL
+  // is falsy — so the workspace spent its first month's tokens and stayed at
+  // zero forever. Seeding the row also made AiTokenService's lazy branch (the
+  // only writer that set the date) unreachable, so nothing could repair it.
+  it('sets a token reset date so the monthly allowance actually rolls over', async () => {
+    const { service, values } = makeService(1, ACTIVE_SUB);
+
+    await seed(service);
+
+    const written = values.mock.calls[0][0] as { aiTokensResetDate?: Date };
+    expect(written.aiTokensResetDate).toBeInstanceOf(Date);
+    // Must be in the future, or the gate fires on every call instead of monthly.
+    expect(written.aiTokensResetDate!.getTime()).toBeGreaterThan(Date.now());
+    expect(written.aiTokensResetDate!.getDate()).toBe(1);
+  });
+
+  // A later workspace gets zero channels and seats, but its AI allowance still
+  // has to roll over — it is the one limit a non-primary workspace can spend.
+  it('sets the reset date on later workspaces too, not just the first', async () => {
+    const { service, values } = makeService(2, ACTIVE_SUB);
+
+    await seed(service, 'ws-2');
+
+    const written = values.mock.calls[0][0] as { aiTokensResetDate?: Date };
+    expect(written.aiTokensResetDate).toBeInstanceOf(Date);
+    expect(written.aiTokensResetDate!.getTime()).toBeGreaterThan(Date.now());
+  });
+
   it('never lets a seeding failure destroy the workspace the user just created', async () => {
     const { service, db } = makeService(1, ACTIVE_SUB);
     db.insert.mockImplementation(() => {

@@ -7,6 +7,7 @@ import { eq, and, sql } from 'drizzle-orm';
 import Stripe from 'stripe';
 import { buildSubscriptionSync } from './subscription-sync.util';
 import { buildUsageFanout } from './usage-fanout.util';
+import { getNextTokenResetDate } from './token-reset.util';
 import { upsertInvoiceFromStripe } from './invoice-sync.util';
 import { StripeService } from '../../stripe/stripe.service';
 import { CustomerService } from './customer.service';
@@ -229,6 +230,7 @@ export class SubscriptionService {
         extraChannelsPurchased: 0,
         membersCount: 0,
         extraMembersPurchased: 0,
+        aiTokensResetDate: getNextTokenResetDate(),
       } as NewWorkspaceUsage);
     }
 
@@ -297,6 +299,7 @@ export class SubscriptionService {
         extraChannelsPurchased: 0,
         membersCount: 0,
         extraMembersPurchased: 0,
+        aiTokensResetDate: getNextTokenResetDate(),
       } as NewWorkspaceUsage);
     }
 
@@ -543,7 +546,10 @@ export class SubscriptionService {
     for (const usageRow of usageRows) {
       await db
         .insert(workspaceUsage)
-        .values(usageRow as NewWorkspaceUsage)
+        .values({
+          ...usageRow,
+          aiTokensResetDate: getNextTokenResetDate(),
+        } as NewWorkspaceUsage)
         .onConflictDoUpdate({
           target: workspaceUsage.workspaceId,
           set: {
@@ -551,6 +557,10 @@ export class SubscriptionService {
             membersLimit: sql`excluded.members_limit`,
             aiTokensLimit: sql`excluded.ai_tokens_limit`,
             updatedAt: new Date(),
+            // aiTokensResetDate is deliberately NOT updated here. It seeds a
+            // brand-new row only; carrying it into the conflict branch would
+            // push every existing workspace's rollover forward on every plan
+            // or add-on change, handing out a fresh allowance each time.
           },
         });
     }

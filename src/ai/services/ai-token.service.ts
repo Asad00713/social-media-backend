@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import type { DbType } from '../../drizzle/db';
+import { getNextTokenResetDate } from '../../billing/services/token-reset.util';
 import {
   workspace,
   workspaceUsage,
@@ -304,12 +305,13 @@ export class AiTokenService {
   }
 
   /**
-   * Get the next monthly reset date (first of next month)
+   * Get the next monthly reset date (first of next month).
+   *
+   * Delegates so that this service and the four billing/workspace insert sites
+   * cannot drift apart on what "next cycle" means.
    */
   private getNextResetDate(): Date {
-    const now = new Date();
-    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-    return nextMonth;
+    return getNextTokenResetDate();
   }
 
   /**

@@ -21,6 +21,7 @@ import { SubscriptionLookupService } from 'src/billing/services/subscription-loo
 import { AddonService } from 'src/billing/services/addon.service';
 import { AccountChannelsService } from 'src/billing/services/account-channels.service';
 import { resolveWorkspaceLimits } from 'src/billing/services/limit-resolver.util';
+import { getNextTokenResetDate } from 'src/billing/services/token-reset.util';
 
 type GetAllREsponse = {
   // Omits the Maestro BYOK credential — it must never reach a client.
@@ -187,6 +188,11 @@ export class WorkspaceService {
           extraChannelsPurchased: isFirst ? addons.extraChannels : 0,
           extraMembersPurchased: isFirst ? addons.extraMembers : 0,
           extraAiTokensPurchased: isFirst ? addons.extraAiTokens : 0,
+          // Required, not optional. The monthly reset is gated on this being
+          // non-null, so a row seeded without it never rolls over: the
+          // workspace burns its first month's allowance and stays at zero
+          // forever, with no code path able to revive it.
+          aiTokensResetDate: getNextTokenResetDate(),
         })
         .onConflictDoNothing({ target: workspaceUsage.workspaceId });
     } catch (error) {
