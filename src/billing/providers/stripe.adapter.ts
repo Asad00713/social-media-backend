@@ -303,10 +303,25 @@ export class StripeAdapter implements PaymentProviderAdapter {
       atPeriodEnd,
     );
 
+    // An immediate cancel (atPeriodEnd=false) is genuine termination — the
+    // same shape endStripeProviderRows exists for. It must drop is_default,
+    // not just keep it the way expireStripeProviderRows does for stale-id
+    // recovery: this account isn't expected to re-subscribe through Stripe
+    // immediately, so the flag must free the single slot
+    // provider_subscriptions_one_default_idx allows, or a later Lemon Squeezy
+    // signup raises 23505 after LS has already taken the payment. The
+    // subscription.deleted webhook (endStripeProviderRows) self-heals this
+    // shortly after, so the gap this closes is only the window before that
+    // webhook lands.
+    //
+    // A scheduled cancel (atPeriodEnd=true) is still billing until the period
+    // ends, so it must keep is_default exactly like `cancel_scheduled` already
+    // implies.
     await this.db
       .update(providerSubscriptions)
       .set({
         providerStatus: atPeriodEnd ? 'cancel_scheduled' : 'canceled',
+        ...(atPeriodEnd ? {} : { isDefault: false }),
         updatedAt: new Date(),
       })
       .where(eq(providerSubscriptions.id, base.id));

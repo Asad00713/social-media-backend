@@ -4,6 +4,8 @@ import { StripeAdapter } from './stripe.adapter';
 function makeAdapter(rows: Record<string, unknown>[] = []) {
   /** Every row payload handed to `db.insert(...).values(...)`, in order. */
   const inserts: Record<string, unknown>[] = [];
+  /** Every payload handed to `db.update(...).set(...)`, in order. */
+  const updates: Record<string, unknown>[] = [];
   const db = {
     select: jest.fn().mockReturnValue({
       from: jest.fn().mockReturnValue({
@@ -11,8 +13,9 @@ function makeAdapter(rows: Record<string, unknown>[] = []) {
       }),
     }),
     update: jest.fn().mockReturnValue({
-      set: jest.fn().mockReturnValue({
-        where: jest.fn().mockResolvedValue(undefined),
+      set: jest.fn((v: Record<string, unknown>) => {
+        updates.push(v);
+        return { where: jest.fn().mockResolvedValue(undefined) };
       }),
     }),
     insert: jest.fn().mockReturnValue({
@@ -46,7 +49,7 @@ function makeAdapter(rows: Record<string, unknown>[] = []) {
     customers as never,
     catalogue as never,
   );
-  return { adapter, stripe, customers, catalogue, inserts };
+  return { adapter, stripe, customers, catalogue, inserts, updates };
 }
 
 describe('StripeAdapter', () => {
@@ -92,6 +95,52 @@ describe('StripeAdapter', () => {
     ]);
     await adapter.cancel(1, true);
     expect(stripe.cancelSubscription).toHaveBeenCalledWith('sub_1', true);
+  });
+
+  // The is_default hazard this fix closes: an immediate cancel is genuine
+  // termination, the same shape endStripeProviderRows exists for, and must
+  // free the single slot provider_subscriptions_one_default_idx allows.
+  // Before the fix the row was left isDefault:true after `providerStatus:
+  // 'canceled'` was written, squatting the slot until the
+  // subscription.deleted webhook eventually self-healed it.
+  it('drops is_default on an immediate cancel, freeing the slot for another provider', async () => {
+    const { adapter, updates } = makeAdapter([
+      {
+        itemType: 'BASE_PLAN',
+        providerSubscriptionId: 'sub_1',
+        provider: 'stripe',
+        isDefault: true,
+      },
+    ]);
+
+    await adapter.cancel(1, false);
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({
+      providerStatus: 'canceled',
+      isDefault: false,
+    });
+  });
+
+  // The counterpart: a scheduled (at-period-end) cancel is still billing
+  // until the period ends, so it must NOT drop is_default the way an
+  // immediate cancel does — the account is still the default provider until
+  // then.
+  it('keeps is_default on a scheduled cancel, since billing continues to period end', async () => {
+    const { adapter, updates } = makeAdapter([
+      {
+        itemType: 'BASE_PLAN',
+        providerSubscriptionId: 'sub_1',
+        provider: 'stripe',
+        isDefault: true,
+      },
+    ]);
+
+    await adapter.cancel(1, true);
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0]).toMatchObject({ providerStatus: 'cancel_scheduled' });
+    expect(updates[0]).not.toHaveProperty('isDefault');
   });
 
   // The line-62 hazard: this call used to run before the plan was even read,

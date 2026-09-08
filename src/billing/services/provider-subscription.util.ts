@@ -150,6 +150,37 @@ export function hasLegacyProvider(rows: ProviderSubscription[]): boolean {
 }
 
 /**
+ * Terminal Stripe statuses that must read as not-live even though nothing
+ * ever renamed them to our `canceled`/`expired` spellings.
+ *
+ * `refreshStripeProviderRowStatus` (stripe-provider-row.util.ts) writes
+ * Stripe's status string onto `provider_status` RAW — it never maps it onto
+ * our vocabulary the way the Lemon Squeezy branch below does. `incomplete` ->
+ * `active` -> `past_due` -> `canceled`/`unpaid` all arrive verbatim, and most
+ * of them are meant to: `unpaid`, `paused` and `past_due` are recoverable
+ * states where the customer keeps access, and the deny-list already lets them
+ * through correctly.
+ *
+ * `incomplete_expired` is the one Stripe status that is BOTH raw-written here
+ * and genuinely terminal — Stripe's own docs call it out explicitly: "If the
+ * first invoice is not paid within 23 hours, the subscription transitions to
+ * `incomplete_expired`. This is a terminal status." It reaches this column
+ * without ever passing through `endStripeProviderRows`: Stripe fires
+ * `customer.subscription.updated`, not `.deleted`, for that transition, so
+ * the row is left with a stale `is_default` slot and a status the deny-list
+ * used to wave through as "still billing". `hasLiveBasePlan()` then answers
+ * true for a customer who never completed a payment, `changePlan` takes the
+ * already-paying branch, and they can never subscribe.
+ *
+ * `canceled` is Stripe's OWN terminal spelling and is already handled above
+ * this list runs. `incomplete` (not `_expired`) is deliberately excluded: it
+ * is a live, recoverable pending-payment state for the first 23 hours, and
+ * treating it as dead here would strip access from someone whose payment is
+ * still processing.
+ */
+const STRIPE_TERMINAL_STATUSES = new Set(['incomplete_expired']);
+
+/**
  * Is this provider record still entitling the customer to something?
  *
  * The Lemon Squeezy trap lives here. Its `cancelled` does NOT mean access has
@@ -158,10 +189,24 @@ export function hasLegacyProvider(rows: ProviderSubscription[]): boolean {
  * `expired`. Mapping `cancelled` onto our `canceled` would cut off paying
  * customers the moment they schedule a cancellation, so this checks the
  * statuses that genuinely revoke instead of trusting the word.
+ *
+ * DENY-LIST BY DESIGN, kept deliberately over an allow-list even after this
+ * function gained a second enumerated status. A deny-list fails OPEN: an
+ * unrecognised status (a future Stripe or Lemon Squeezy addition, a typo, a
+ * provider we haven't integrated yet) reads as still-live, so the worst case
+ * is we don't cancel a subscription that should have been cancelled. An
+ * allow-list fails CLOSED: the same unrecognised status would read as dead,
+ * and `hasLiveBasePlan()` would answer false for a customer who is actively
+ * being charged — `downgradeToFree` would then strip their plan locally while
+ * the provider keeps billing them, which is the exact defect this file's
+ * history (round 1) already produced once. Given that history, failing open
+ * is the safer default here, so this stays a deny-list with terminal statuses
+ * enumerated explicitly rather than flipping to allow-list semantics.
  */
 export function isLive(row: ProviderSubscription): boolean {
   const status = (row.providerStatus ?? '').toLowerCase();
   if (status === 'expired' || status === 'canceled') return false;
+  if (STRIPE_TERMINAL_STATUSES.has(status)) return false;
   // `cancelled` (LS spelling) is still live until ends_at passes.
   if (status === 'cancelled') {
     return row.endsAt ? row.endsAt.getTime() > Date.now() : true;

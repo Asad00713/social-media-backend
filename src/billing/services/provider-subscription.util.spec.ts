@@ -142,6 +142,30 @@ describe('isLive', () => {
     expect(isLive(row({ providerStatus: 'on_trial' }))).toBe(true);
     expect(isLive(row({ providerStatus: null }))).toBe(true);
   });
+
+  // The Fix 1 hazard: refreshStripeProviderRowStatus writes Stripe's status
+  // string RAW, and Stripe's own docs call incomplete_expired a terminal
+  // status (23h unpaid first invoice, no `.deleted` webhook fires for it).
+  // Before this, the deny-list waved it through as still-live and a customer
+  // who never completed a payment read as an already-paying account forever.
+  it('treats incomplete_expired as revoked — the terminal first-payment-never-landed status', () => {
+    expect(isLive(row({ providerStatus: 'incomplete_expired' }))).toBe(false);
+  });
+
+  // The recoverable states this fix must NOT touch, spelled out explicitly
+  // because they are exactly the statuses raw-written by the same function
+  // that produces incomplete_expired.
+  it('keeps unpaid live — a recoverable dunning state with continued access', () => {
+    expect(isLive(row({ providerStatus: 'unpaid' }))).toBe(true);
+  });
+
+  it('keeps paused live — a recoverable pause state with continued access', () => {
+    expect(isLive(row({ providerStatus: 'paused' }))).toBe(true);
+  });
+
+  it('keeps incomplete (not yet expired) live — payment is still processing', () => {
+    expect(isLive(row({ providerStatus: 'incomplete' }))).toBe(true);
+  });
 });
 
 describe('hasLegacyProvider', () => {
@@ -285,6 +309,24 @@ describe('hasLiveBasePlan', () => {
         }),
       ]),
     ).toBe(true);
+  });
+
+  // The triggering scenario from the bug report: first payment never
+  // completes, Stripe moves incomplete -> incomplete_expired via
+  // `customer.subscription.updated` (no `.deleted`, so endStripeProviderRows
+  // never runs), and the row is left with is_default:true. Before the fix
+  // this read as billing and changePlan took the already-paying branch,
+  // stranding the customer with no way to ever subscribe.
+  it('is false once the base plan is incomplete_expired, even with is_default still set', () => {
+    expect(
+      hasLiveBasePlan([
+        row({
+          itemType: 'BASE_PLAN',
+          isDefault: true,
+          providerStatus: 'incomplete_expired',
+        }),
+      ]),
+    ).toBe(false);
   });
 
   it('is false for a base plan belonging to a non-default provider only', () => {
