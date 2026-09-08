@@ -192,7 +192,14 @@ export class AddonService {
     //     Squeezy add-on fail on a column that provider never populates. It is
     //     still read below, but only to keep the legacy `subscription_items`
     //     bookkeeping row truthful.
-    const stripePriceId = addonPrice.stripePriceId;
+    //
+    //     Coerced to '' because `addon_pricing.stripe_price_id` is NULLABLE
+    //     while `subscription_items.stripe_price_id` is NOT NULL. For a Lemon
+    //     Squeezy add-on the source really is null, and the insert below runs
+    //     AFTER the provider has already charged the customer - so a raw
+    //     Postgres NOT NULL violation there would take their money and then
+    //     500. Matches how plan-change.service.ts writes the same column.
+    const stripePriceId = addonPrice.stripePriceId ?? '';
 
     // 4. Check if subscription item already exists for this addon type
     const existingItem = await db

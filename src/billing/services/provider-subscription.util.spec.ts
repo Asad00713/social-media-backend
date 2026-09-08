@@ -5,6 +5,7 @@ import {
   hasLegacyProvider,
   isLive,
   billedQuantities,
+  hasLiveBasePlan,
 } from './provider-subscription.util';
 import { ProviderSubscription } from '../../drizzle/schema';
 
@@ -229,5 +230,70 @@ describe('rowsForProvider', () => {
     ];
     expect(rowsForProvider(rows, 'lemonsqueezy')).toHaveLength(2);
     expect(rowsForProvider(rows, 'stripe')).toHaveLength(1);
+  });
+});
+
+describe('hasLiveBasePlan', () => {
+  it('is true for a Lemon Squeezy account, whose stripe_subscription_id is NULL', () => {
+    // The whole point. Every branch that used to ask
+    // `if (sub.stripeSubscriptionId)` read FALSE here and concluded nothing
+    // was being billed, while Lemon Squeezy carried on charging.
+    expect(hasLiveBasePlan(lemonSqueezyAccount())).toBe(true);
+  });
+
+  it('is true for a Stripe account', () => {
+    expect(
+      hasLiveBasePlan([
+        row({ provider: 'stripe', itemType: 'BASE_PLAN', isDefault: true }),
+      ]),
+    ).toBe(true);
+  });
+
+  it('is false for an account with no provider records at all', () => {
+    expect(hasLiveBasePlan([])).toBe(false);
+  });
+
+  it('is false when the account holds only add-ons and no base plan', () => {
+    expect(
+      hasLiveBasePlan([row({ itemType: 'EXTRA_CHANNEL', isDefault: true })]),
+    ).toBe(false);
+  });
+
+  it('is false once the base plan has expired', () => {
+    expect(
+      hasLiveBasePlan([
+        row({
+          itemType: 'BASE_PLAN',
+          isDefault: true,
+          providerStatus: 'expired',
+        }),
+      ]),
+    ).toBe(false);
+  });
+
+  it('stays true for a Lemon Squeezy base plan cancelled but not yet ended', () => {
+    // LS `cancelled` keeps access (and billing to date) until `ends_at`, so a
+    // downgrade must still cancel it at the provider rather than assume it is
+    // already gone.
+    expect(
+      hasLiveBasePlan([
+        row({
+          itemType: 'BASE_PLAN',
+          isDefault: true,
+          providerStatus: 'cancelled',
+          endsAt: new Date(Date.now() + 86_400_000),
+        }),
+      ]),
+    ).toBe(true);
+  });
+
+  it('is false for a base plan belonging to a non-default provider only', () => {
+    // Mid-migration the old provider's row lingers; it must not be mistaken
+    // for the account's current billing.
+    expect(
+      hasLiveBasePlan([
+        row({ provider: 'stripe', itemType: 'BASE_PLAN', isDefault: false }),
+      ]),
+    ).toBe(false);
   });
 });

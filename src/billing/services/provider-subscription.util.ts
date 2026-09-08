@@ -57,6 +57,26 @@ export function findItem(
 }
 
 /**
+ * Does this account have a live BASE_PLAN at its current provider — i.e. is
+ * anything actually being billed right now?
+ *
+ * The provider-neutral replacement for `if (sub.stripeSubscriptionId)`, which
+ * was the discriminator every paid/unpaid branch used to key on. That column is
+ * NULL for every Lemon Squeezy account (nothing writes it outside the Stripe
+ * path), so those branches read "this customer pays nothing" for customers who
+ * were very much being charged — stripping them to FREE locally while the
+ * provider billed on.
+ *
+ * Reads `provider_subscriptions`, which every provider writes, and honours
+ * `isLive` so a Lemon Squeezy `cancelled` row that has not reached `ends_at`
+ * still counts as billing.
+ */
+export function hasLiveBasePlan(rows: ProviderSubscription[]): boolean {
+  const base = findItem(rows, 'BASE_PLAN');
+  return base !== null && isLive(base);
+}
+
+/**
  * Does this account still have anything live at a non-default provider?
  *
  * True during the migration window: the customer has moved to Stripe but their

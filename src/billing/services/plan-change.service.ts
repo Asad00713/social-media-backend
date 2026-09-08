@@ -14,12 +14,15 @@ import {
   workspaceUsage,
   subscriptionChanges,
   workspace,
+  providerSubscriptions,
+  ProviderSubscription,
   NewSubscriptionChange,
   NewSubscriptionItem,
 } from '../../drizzle/schema';
 import { StripeService } from '../../stripe/stripe.service';
 import { UsageService } from './usage.service';
 import { SubscriptionLookupService } from './subscription-lookup.service';
+import { hasLiveBasePlan } from './provider-subscription.util';
 import { ProviderRegistryService } from '../providers/provider-registry.service';
 import { createStripeSubscriptionDirect } from '../providers/stripe-direct-subscribe.util';
 import { clearStaleStripeSubscription } from '../providers/stripe-stale-subscription.util';
@@ -85,6 +88,23 @@ export class PlanChangeService {
     private notificationEmitter: NotificationEmitterService,
     private readonly providers: ProviderRegistryService,
   ) {}
+
+  /**
+   * Every provider record for one of our subscriptions.
+   *
+   * The provider-neutral answer to "what is this account actually paying for",
+   * replacing the `sub.stripeSubscriptionId` reads that silently mis-branched
+   * every Lemon Squeezy account.
+   */
+  private async providerRowsFor(
+    subscriptionId: number,
+  ): Promise<ProviderSubscription[]> {
+    const rows = await db
+      .select()
+      .from(providerSubscriptions)
+      .where(eq(providerSubscriptions.subscriptionId, subscriptionId));
+    return rows as ProviderSubscription[];
+  }
 
   // Preview plan change (shows proration, validation issues)
   async previewPlanChange(
@@ -301,13 +321,24 @@ export class PlanChangeService {
 
     const target = newPlan[0];
 
-    // 4. Read the provisioned Stripe price for the target plan (read-only).
-    //    FREE (basePriceCents === 0) has no price — targetPriceId stays empty
-    //    and the downstream `if (sub.stripeSubscriptionId && targetPriceId)`
-    //    branch handles the free path.
+    // 4. Is the TARGET a paid plan? This is a property of the plan itself, not
+    //    of any provider. It used to be inferred from `target.stripePriceId`
+    //    being non-empty, which is a Stripe column - a Lemon Squeezy account
+    //    moving to a plan Stripe had never provisioned took the wrong branch.
+    const isTargetPaid = target.basePriceCents > 0;
+
+    // Does the account ALREADY pay someone? Read from `provider_subscriptions`
+    // (written by every provider), never from `stripeSubscriptionId` (NULL for
+    // every Lemon Squeezy account, which made `changePlan` fall through to the
+    // FREE-upgrade branch and throw a spurious 400 for LS paid->paid changes).
+    const isAlreadyPaying = hasLiveBasePlan(await this.providerRowsFor(sub.id));
+
+    // Stripe's price id is still needed further down for the direct
+    // FREE -> paid path and for the `subscription_items` bookkeeping row, but
+    // it no longer decides any branch.
     const targetPriceId = target.stripePriceId;
 
-    if (!targetPriceId && target.basePriceCents > 0) {
+    if (!targetPriceId && isTargetPaid && adapter.name === 'stripe') {
       throw new BadRequestException(
         `Plan "${target.code}" is not provisioned in Stripe — run the pricing provision script (npx ts-node src/drizzle/seeds/stripe-provision.ts)`,
       );
@@ -317,12 +348,11 @@ export class PlanChangeService {
     // keeps their current plan + limits until `currentPeriodEnd`; we swap the
     // Stripe price now with NO proration (so the next invoice bills the lower
     // price), and the webhook flips our plan/limits once the period rolls over.
-    if (!preview.isUpgrade && sub.stripeSubscriptionId && targetPriceId) {
+    if (!preview.isUpgrade && isAlreadyPaying && isTargetPaid) {
       return await this.scheduleDowngrade(
         sub,
         userId,
         target,
-        targetPriceId,
         oldPlanCode,
         preview,
       );
@@ -333,7 +363,7 @@ export class PlanChangeService {
     let newStripeSubscriptionId: string | null = null;
     let newStripeSubscriptionItemId: string | null = null;
 
-    if (sub.stripeSubscriptionId && targetPriceId) {
+    if (isAlreadyPaying && isTargetPaid) {
       // An existing paid subscription: one abstracted operation. The adapter
       // owns the provider-specific shape of it - Stripe swaps the price on the
       // BASE_PLAN line item, Lemon Squeezy PATCHes the subscription's variant.
@@ -343,17 +373,17 @@ export class PlanChangeService {
       // proration plumbing with no Lemon Squeezy equivalent - LS invoices the
       // change itself via `invoice_immediately` inside its own adapter - so it
       // is gated rather than abstracted.
-      if (preview.isUpgrade && adapter.name === 'stripe') {
+      if (
+        preview.isUpgrade &&
+        adapter.name === 'stripe' &&
+        sub.stripeSubscriptionId
+      ) {
         await invoiceStripeProrationsImmediately(
           this.stripeService,
           sub.stripeSubscriptionId,
         );
       }
-    } else if (
-      !sub.stripeSubscriptionId &&
-      targetPriceId &&
-      target.basePriceCents > 0
-    ) {
+    } else if (!isAlreadyPaying && isTargetPaid) {
       // FREE -> paid with a card already on file. Like
       // `SubscriptionService.createSubscription`, this is a Stripe-only path:
       // it creates a subscription server-side from a stored payment method,
@@ -377,6 +407,15 @@ export class PlanChangeService {
       if (!sub.stripeCustomerId) {
         throw new BadRequestException(
           'This account has no Stripe customer yet - subscribe via Checkout',
+        );
+      }
+
+      // Non-null by construction: `isTargetPaid` is true in this branch and
+      // the provisioning check above throws for a Stripe account whose target
+      // plan has no price. The other providers were refused a few lines up.
+      if (!targetPriceId) {
+        throw new BadRequestException(
+          `Plan "${target.code}" is not provisioned in Stripe — run the pricing provision script (npx ts-node src/drizzle/seeds/stripe-provision.ts)`,
         );
       }
 
@@ -708,8 +747,14 @@ export class PlanChangeService {
       maxWorkspaces: free.maxWorkspaces,
     };
 
-    // No Stripe subscription means nothing is being billed — flip to FREE now.
-    if (!sub.stripeSubscriptionId) {
+    // Nothing live at ANY provider means nothing is being billed - flip to
+    // FREE now. This used to ask `if (!sub.stripeSubscriptionId)`, which is
+    // NULL for every Lemon Squeezy account: the branch always fired, the
+    // customer was stripped to FREE limits, and the method returned without
+    // ever cancelling at Lemon Squeezy - so they kept being charged,
+    // indefinitely, with no error. `provider_subscriptions` is the table every
+    // provider writes, so it is what this must read.
+    if (!hasLiveBasePlan(await this.providerRowsFor(sub.id))) {
       await db
         .update(subscriptions)
         .set({
@@ -776,9 +821,10 @@ export class PlanChangeService {
       };
     }
 
-    // Has a paid Stripe subscription: cancel at period end. The customer keeps
-    // their paid plan until the period they already paid for ends, then Stripe
-    // fires `customer.subscription.deleted` and the webhook resets us to FREE.
+    // Something IS live at the provider: cancel at period end. The customer
+    // keeps their paid plan until the period they already paid for ends, then
+    // the provider's webhook (Stripe's `customer.subscription.deleted`, Lemon
+    // Squeezy's expiry) resets us to FREE.
     const cancelAdapter = await this.providers.adapterForSubscription(sub.id);
     await cancelAdapter.cancel(sub.id, true);
 
@@ -819,17 +865,16 @@ export class PlanChangeService {
   /**
    * Schedule a paid → paid downgrade for the end of the current billing period.
    *
-   * Swaps the Stripe price now with `proration_behavior: 'none'` — the current
-   * period stays paid at the old price, and the next invoice bills the lower
-   * price — but leaves our plan/limits untouched. The pending change is recorded
-   * on the subscription row; `WebhookService.handleSubscriptionUpdated` flips the
-   * plan + limits when the period rolls over.
+   * Swaps the plan at the provider now (Stripe with `proration_behavior:
+   * 'none'`) — the current period stays paid at the old price, and the next
+   * invoice bills the lower one — but leaves our plan/limits untouched. The
+   * pending change is recorded on the subscription row; the provider's webhook
+   * flips the plan + limits when the period rolls over.
    */
   private async scheduleDowngrade(
     sub: typeof subscriptions.$inferSelect,
     userId: string,
     target: typeof plans.$inferSelect,
-    targetPriceId: string,
     oldPlanCode: string,
     preview: PlanChangePreview,
   ): Promise<PlanChangeResult> {
