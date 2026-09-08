@@ -18,6 +18,7 @@ import { DrizzleModule } from '../drizzle/drizzle.module';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { ProviderRegistryService } from './providers/provider-registry.service';
 import { CatalogueService } from './providers/catalogue.service';
+import { LemonSqueezyClient } from './providers/lemonsqueezy.client';
 
 @Module({
   imports: [StripeModule, DrizzleModule, NotificationsModule],
@@ -37,6 +38,7 @@ import { CatalogueService } from './providers/catalogue.service';
     AccountChannelsService,
     ProviderRegistryService,
     CatalogueService,
+    LemonSqueezyClient,
   ],
   controllers: [BillingController],
   exports: [
