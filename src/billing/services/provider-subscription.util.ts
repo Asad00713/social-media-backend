@@ -56,6 +56,20 @@ export function findItem(
   );
 }
 
+/** The pre-abstraction facts about an account, for the legacy fallback below. */
+export interface LegacyStripeFacts {
+  /** `subscriptions.stripe_subscription_id`. */
+  stripeSubscriptionId: string | null;
+}
+
+/**
+ * The sentinel `createFreeSubscription` writes into `stripe_subscription_id`.
+ * It is not a Stripe id and nothing is being billed for it.
+ */
+function isRealStripeSubscriptionId(id: string | null): boolean {
+  return Boolean(id) && !id!.startsWith('free-plan');
+}
+
 /**
  * Does this account have a live BASE_PLAN at its current provider — i.e. is
  * anything actually being billed right now?
@@ -70,10 +84,45 @@ export function findItem(
  * Reads `provider_subscriptions`, which every provider writes, and honours
  * `isLive` so a Lemon Squeezy `cancelled` row that has not reached `ends_at`
  * still counts as billing.
+ *
+ * THE LEGACY FALLBACK
+ *
+ * `legacy` is not belt-and-braces; without it this function was WRONG for the
+ * entire paying population. `provider_subscriptions` was created by 0032 and
+ * read by six files, and nothing ever wrote a BASE_PLAN row into it — so every
+ * pre-existing Stripe subscriber had `stripe_subscription_id` set and zero
+ * provider rows, and this returned false for all of them: `downgradeToFree`
+ * stripped them to FREE without cancelling (Stripe billed on forever) and
+ * `changePlan` created a second live subscription (double-billing).
+ *
+ * Migration 0034 backfills those rows and `writeStripeBasePlanRow` writes them
+ * from now on, so the fallback should be dead weight in a healthy database.
+ * It stays because "the row is missing" and "the account is not being billed"
+ * are different facts, and only one of them is safe to guess wrong. A missing
+ * row must never be read as "cancel nothing, charge on".
+ *
+ * It fires ONLY when there is no Stripe row at all. Once a Stripe row exists
+ * it is authoritative — including when it says `expired`, which is exactly
+ * what `clearStaleStripeSubscription` writes to route a dead id to Checkout.
+ * Reading the stale column instead would resurrect the 500 that recovery
+ * exists to prevent.
  */
-export function hasLiveBasePlan(rows: ProviderSubscription[]): boolean {
+export function hasLiveBasePlan(
+  rows: ProviderSubscription[],
+  legacy?: LegacyStripeFacts,
+): boolean {
   const base = findItem(rows, 'BASE_PLAN');
-  return base !== null && isLive(base);
+  if (base) return isLive(base);
+
+  if (!legacy) return false;
+
+  // A Stripe row of ANY item type means this account has been through the
+  // provider table, so its silence about the base plan is information rather
+  // than an absence of it.
+  const hasAnyStripeRow = rows.some((r) => r.provider === 'stripe');
+  if (hasAnyStripeRow) return false;
+
+  return isRealStripeSubscriptionId(legacy.stripeSubscriptionId);
 }
 
 /**

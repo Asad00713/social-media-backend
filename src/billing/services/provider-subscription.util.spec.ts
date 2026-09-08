@@ -297,3 +297,78 @@ describe('hasLiveBasePlan', () => {
     ).toBe(false);
   });
 });
+
+/**
+ * The legacy fallback.
+ *
+ * `provider_subscriptions` was created by migration 0032 and read by six
+ * files, and nothing ever wrote a BASE_PLAN row into it. So every account that
+ * predates the provider table — which today is the entire paying population —
+ * has `stripe_subscription_id` set and ZERO provider rows, and
+ * `hasLiveBasePlan` returned false for all of them: `downgradeToFree` stripped
+ * the plan without cancelling (Stripe billed on forever) and `changePlan`
+ * created a second live subscription.
+ *
+ * Migration 0034 backfills them and `writeStripeBasePlanRow` writes them from
+ * now on, so in a healthy database this branch never fires. It exists because
+ * "the bookkeeping row is missing" and "this customer is not being billed" are
+ * different facts, and only one of them is safe to guess wrong.
+ */
+describe('hasLiveBasePlan legacy fallback', () => {
+  it('reads a pre-abstraction Stripe subscriber as billing when no rows exist', () => {
+    expect(hasLiveBasePlan([], { stripeSubscriptionId: 'sub_live' })).toBe(
+      true,
+    );
+  });
+
+  it('is false without the legacy facts, so nothing changes for callers that pass none', () => {
+    expect(hasLiveBasePlan([])).toBe(false);
+  });
+
+  it('is false when the account has no Stripe subscription id either', () => {
+    expect(hasLiveBasePlan([], { stripeSubscriptionId: null })).toBe(false);
+  });
+
+  it('ignores the free-plan sentinel, which is not a Stripe id', () => {
+    // createFreeSubscription writes this string. Treating it as billing would
+    // make downgradeToFree try to cancel a subscription Stripe never had.
+    expect(hasLiveBasePlan([], { stripeSubscriptionId: 'free-plan' })).toBe(
+      false,
+    );
+  });
+
+  it('does not fire once ANY Stripe row exists — an expired one is authoritative', () => {
+    // This is what `clearStaleStripeSubscription` writes to route a dead id to
+    // Checkout. Falling back to the column here would hand the dead id back to
+    // Stripe and reproduce the `resource_missing` 500 recovery exists to stop.
+    expect(
+      hasLiveBasePlan(
+        [
+          row({
+            provider: 'stripe',
+            itemType: 'BASE_PLAN',
+            isDefault: true,
+            providerStatus: 'expired',
+          }),
+        ],
+        { stripeSubscriptionId: 'sub_dead' },
+      ),
+    ).toBe(false);
+  });
+
+  it('does not fire when a live Lemon Squeezy base plan already answers the question', () => {
+    expect(
+      hasLiveBasePlan(
+        [
+          row({
+            provider: 'lemonsqueezy',
+            itemType: 'BASE_PLAN',
+            isDefault: true,
+            providerStatus: 'active',
+          }),
+        ],
+        { stripeSubscriptionId: null },
+      ),
+    ).toBe(true);
+  });
+});

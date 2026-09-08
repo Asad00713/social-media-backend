@@ -25,6 +25,7 @@ import { SubscriptionLookupService } from './subscription-lookup.service';
 import { hasLiveBasePlan } from './provider-subscription.util';
 import { ProviderRegistryService } from '../providers/provider-registry.service';
 import { createStripeSubscriptionDirect } from '../providers/stripe-direct-subscribe.util';
+import { writeStripeBasePlanRow } from '../providers/stripe-provider-row.util';
 import { clearStaleStripeSubscription } from '../providers/stripe-stale-subscription.util';
 import { invoiceStripeProrationsImmediately } from '../providers/stripe-immediate-invoice.util';
 import { NotificationEmitterService } from '../../notifications/notification-emitter.service';
@@ -331,7 +332,17 @@ export class PlanChangeService {
     // (written by every provider), never from `stripeSubscriptionId` (NULL for
     // every Lemon Squeezy account, which made `changePlan` fall through to the
     // FREE-upgrade branch and throw a spurious 400 for LS paid->paid changes).
-    const isAlreadyPaying = hasLiveBasePlan(await this.providerRowsFor(sub.id));
+    //
+    // `sub` is passed as the legacy fallback for the accounts that predate the
+    // provider table and have no row in it yet. Reading false for one of those
+    // sends a paid->paid change into the FREE->paid branch, which creates a
+    // SECOND live Stripe subscription and orphans the first. Note this reads
+    // the IN-MEMORY `sub`, which the stale check above has already nulled if
+    // the id was dead — so a stale account still routes to Checkout.
+    const isAlreadyPaying = hasLiveBasePlan(
+      await this.providerRowsFor(sub.id),
+      sub,
+    );
 
     // Stripe's price id is still needed further down for the direct
     // FREE -> paid path and for the `subscription_items` bookkeeping row, but
@@ -435,6 +446,18 @@ export class PlanChangeService {
       newStripeSubscriptionId = stripeSubscription.id;
       newStripeSubscriptionItemId =
         stripeSubscription.items.data[0]?.id || null;
+
+      // The account is now being billed, so say so in the table the branches
+      // read. Without this row the very next call into `changePlan` would
+      // again see `isAlreadyPaying === false` and create ANOTHER subscription,
+      // and `downgradeToFree` would strip the plan without cancelling this
+      // one. Upserts, so a retry of this path cannot collide.
+      await writeStripeBasePlanRow({
+        subscriptionId: sub.id,
+        stripeSubscription,
+        stripeCustomerId: sub.stripeCustomerId,
+        unitPriceCents: target.basePriceCents,
+      });
 
       this.logger.log(
         `Created Stripe subscription ${newStripeSubscriptionId} for workspace ${workspaceId}`,
@@ -754,7 +777,14 @@ export class PlanChangeService {
     // ever cancelling at Lemon Squeezy - so they kept being charged,
     // indefinitely, with no error. `provider_subscriptions` is the table every
     // provider writes, so it is what this must read.
-    if (!hasLiveBasePlan(await this.providerRowsFor(sub.id))) {
+    //
+    // `sub` is the legacy fallback for accounts that predate the provider
+    // table. This is the branch that bills after cancellation: read false for
+    // a real Stripe subscriber and we strip their plan, delete their
+    // subscription_items, and return WITHOUT cancelling - Stripe charges them
+    // forever. A missing bookkeeping row must never be read as "nothing to
+    // cancel".
+    if (!hasLiveBasePlan(await this.providerRowsFor(sub.id), sub)) {
       await db
         .update(subscriptions)
         .set({

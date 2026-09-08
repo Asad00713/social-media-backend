@@ -3,6 +3,7 @@ import { eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { subscriptions } from '../../drizzle/schema';
 import { StripeService } from '../../stripe/stripe.service';
+import { expireStripeProviderRows } from './stripe-provider-row.util';
 
 const logger = new Logger('StripeStaleSubscription');
 
@@ -56,6 +57,17 @@ export async function clearStaleStripeSubscription(
         updatedAt: new Date(),
       })
       .where(eq(subscriptions.id, sub.id));
+
+    // ...and expire the PROVIDER rows holding the same dead id. Nulling the
+    // column alone used to be enough because every paid/unpaid branch keyed on
+    // it; they now ask `hasLiveBasePlan()`, which reads
+    // `provider_subscriptions`. Leaving those rows live made this whole
+    // recovery a no-op: the caller still read "already paying", handed the
+    // dead id straight back to `stripe.updateSubscription`, and got the
+    // `resource_missing` 500 this function exists to prevent. Marked expired
+    // rather than deleted — `isLive()` treats `expired` as not billing, and
+    // the row stays as a record of an id Stripe once issued.
+    await expireStripeProviderRows(sub.id);
 
     return true;
   }

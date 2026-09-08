@@ -178,6 +178,27 @@ export class StripeAdapter implements PaymentProviderAdapter {
       quantity,
     });
 
+    // `isDefault` is FALSE here, and that is not a detail.
+    //
+    // The flag marks the account's default PROVIDER, not its default item — a
+    // property of the account, carried by exactly one row. `0032` enforces
+    // that with a partial unique index (`... ON provider_subscriptions
+    // (subscription_id) WHERE is_default`), so setting it on every add-on
+    // insert meant an account that already had one — every Stripe account,
+    // whose BASE_PLAN row carries it — hit a 23505 unique violation AFTER
+    // `addSubscriptionItem` had already put the billable line on the
+    // subscription: the customer was charged, the request 500'd, and no
+    // bookkeeping row was written.
+    //
+    // It was also wrong when it did land. `pickDefaultProvider` returns the
+    // provider of whichever row holds the flag, so the "scoped to the default
+    // provider" invariant that `findItem` and `hasLiveBasePlan` rest on would
+    // have depended on insert order.
+    //
+    // The BASE_PLAN row is what carries the flag, written by
+    // `writeStripeBasePlanRow` (and backfilled by `0034`) — and `require()`
+    // above has already proved it exists, since an add-on cannot be added to a
+    // subscription we hold no base plan for.
     await this.db
       .insert(providerSubscriptions)
       .values({
@@ -188,7 +209,7 @@ export class StripeAdapter implements PaymentProviderAdapter {
         providerItemId: item.id,
         providerPriceId: priceId,
         providerQuantity: quantity,
-        isDefault: true,
+        isDefault: false,
       })
       .onConflictDoUpdate({
         target: [

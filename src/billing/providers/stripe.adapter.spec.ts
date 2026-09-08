@@ -2,6 +2,8 @@
 import { StripeAdapter } from './stripe.adapter';
 
 function makeAdapter(rows: Record<string, unknown>[] = []) {
+  /** Every row payload handed to `db.insert(...).values(...)`, in order. */
+  const inserts: Record<string, unknown>[] = [];
   const db = {
     select: jest.fn().mockReturnValue({
       from: jest.fn().mockReturnValue({
@@ -14,8 +16,9 @@ function makeAdapter(rows: Record<string, unknown>[] = []) {
       }),
     }),
     insert: jest.fn().mockReturnValue({
-      values: jest.fn().mockReturnValue({
-        onConflictDoUpdate: jest.fn().mockResolvedValue(undefined),
+      values: jest.fn((v: Record<string, unknown>) => {
+        inserts.push(v);
+        return { onConflictDoUpdate: jest.fn().mockResolvedValue(undefined) };
       }),
     }),
   };
@@ -43,7 +46,7 @@ function makeAdapter(rows: Record<string, unknown>[] = []) {
     customers as never,
     catalogue as never,
   );
-  return { adapter, stripe, customers, catalogue };
+  return { adapter, stripe, customers, catalogue, inserts };
 }
 
 describe('StripeAdapter', () => {
@@ -157,5 +160,34 @@ describe('StripeAdapter', () => {
     await adapter.cancel(1, true);
 
     expect(stripe.cancelSubscription).toHaveBeenCalledWith('sub_1', true);
+  });
+
+  /**
+   * `is_default` marks the account's default PROVIDER, and 0032 enforces that
+   * with a partial unique index — one true row per subscription. This insert
+   * used to set it unconditionally, so an account that already had one (every
+   * Stripe account, whose BASE_PLAN row carries it) hit a 23505 unique
+   * violation AFTER `addSubscriptionItem` had already put the billable line on
+   * the subscription: charged, 500'd, and no bookkeeping row written.
+   *
+   * It was also wrong when it landed — `pickDefaultProvider` returns whichever
+   * row holds the flag, so the "scoped to the default provider" invariant that
+   * `findItem` and `hasLiveBasePlan` rest on would depend on insert order.
+   */
+  it('does not claim the default-provider flag on an add-on row', async () => {
+    const { adapter, inserts } = makeAdapter([
+      {
+        itemType: 'BASE_PLAN',
+        providerSubscriptionId: 'sub_1',
+        provider: 'stripe',
+        isDefault: true,
+      },
+    ]);
+
+    await adapter.purchaseAddon(1, 'EXTRA_CHANNEL', 3);
+
+    expect(inserts).toHaveLength(1);
+    expect(inserts[0].itemType).toBe('EXTRA_CHANNEL');
+    expect(inserts[0].isDefault).toBe(false);
   });
 });

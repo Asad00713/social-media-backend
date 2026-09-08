@@ -14,6 +14,7 @@ import { CustomerService } from './customer.service';
 import { SubscriptionLookupService } from './subscription-lookup.service';
 import { ProviderRegistryService } from '../providers/provider-registry.service';
 import { createStripeSubscriptionDirect } from '../providers/stripe-direct-subscribe.util';
+import { writeStripeBasePlanRow } from '../providers/stripe-provider-row.util';
 import { db } from '../../drizzle/db';
 import {
   subscriptions,
@@ -191,6 +192,18 @@ export class SubscriptionService {
       .insert(subscriptions)
       .values(subscriptionData as NewSubscription)
       .returning();
+
+    // 8b. Write the provider record alongside it. Same reason as in
+    // `persistStripeSubscription`: `hasLiveBasePlan()` reads
+    // `provider_subscriptions`, so a subscription created here without one is
+    // a subscription the cancel path will refuse to cancel while Stripe keeps
+    // billing it.
+    await writeStripeBasePlanRow({
+      subscriptionId: newSubscription.id,
+      stripeSubscription,
+      stripeCustomerId,
+      unitPriceCents: selectedPlan.basePriceCents,
+    });
 
     // 9. Create subscription item for base plan
     await db.insert(subscriptionItems).values({
@@ -515,6 +528,21 @@ export class SubscriptionService {
       .where(eq(subscriptions.userId, input.userId))
       .limit(1);
     const subscriptionId = savedRows[0].id;
+
+    // 2b. Write the provider record. `provider_subscriptions` is the table
+    // `hasLiveBasePlan()` reads to decide whether this account is being billed
+    // — the provider-neutral replacement for `if (sub.stripeSubscriptionId)`.
+    // Nothing wrote the BASE_PLAN row before this, so every branch keyed on it
+    // read "unbilled" for real Stripe subscribers: `downgradeToFree` returned
+    // without cancelling (Stripe charged on), and a paid→paid `changePlan`
+    // created a SECOND live subscription. Idempotent, because Stripe
+    // redelivers `checkout.session.completed`.
+    await writeStripeBasePlanRow({
+      subscriptionId,
+      stripeSubscription: input.stripeSubscription,
+      stripeCustomerId: input.stripeCustomerId,
+      unitPriceCents: plan.basePriceCents,
+    });
 
     // 3. Upsert the BASE_PLAN item (UNIQUE subscription_id + item_type).
     await db
