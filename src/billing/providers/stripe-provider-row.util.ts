@@ -188,6 +188,10 @@ export async function writeStripeBasePlanRow(input: {
     // live row on the account.
     await rehomeDefault({ subscriptionId: input.subscriptionId });
   } catch (err: unknown) {
+    // `rehomeDefault` never throws (it is non-throwing by design, see its own
+    // doc comment), so anything caught here came from the `insert` above —
+    // the row itself failed to write, not the is_default claim that follows
+    // it.
     const message = err instanceof Error ? err.message : String(err);
     logger.error(
       `Failed to write the Stripe BASE_PLAN provider row for subscription ` +

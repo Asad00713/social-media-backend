@@ -229,6 +229,7 @@ const mockDb: any = {
 
 jest.mock('../../drizzle/db', () => ({ db: mockDb }));
 
+import { Logger } from '@nestjs/common';
 import {
   writeStripeBasePlanRow,
   expireStripeProviderRows,
@@ -500,6 +501,44 @@ describe('writeStripeBasePlanRow', () => {
       expect(lsRow().isDefault).toBe(true);
       expect(stripeRow().isDefault).toBe(false);
       expect(expectExactlyOneLiveDefault().provider).toBe('lemonsqueezy');
+    });
+
+    // ----------------------------------------------- observability finding
+    //
+    // The merge-gate review's Important finding: this exact shape — a Stripe
+    // row inserted `isDefault: false` beside a live Lemon Squeezy default, an
+    // account now paying BOTH providers — produced zero log lines. The
+    // incumbent guard inside `rehomeDefault` is a bare early-return with no
+    // log, so `hasLegacyProvider` (previously wired nowhere) now names it.
+
+    it('warns that the account is billed by two providers at once', async () => {
+      seedLemonSqueezyDefault();
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn');
+
+      await write();
+
+      expect(warnSpy).toHaveBeenCalledTimes(1);
+      const message = warnSpy.mock.calls[0][0] as string;
+      expect(message).toContain('TWO providers');
+      expect(message).toContain('lemonsqueezy');
+      expect(message).toContain('stripe');
+      expect(message).toContain(String(SUBSCRIPTION_ID));
+      warnSpy.mockRestore();
+    });
+
+    it('does NOT warn on an ordinary redelivery where nothing dual-bills', async () => {
+      // The counter-case a test suite must carry or the warn above is
+      // unfalsifiable: seed a Stripe account with no other live provider,
+      // then redeliver the webhook. The incumbent guard fires (idempotent
+      // no-op) but there is only ever one live provider, so this must stay
+      // quiet rather than train an on-call human to ignore the warning.
+      await write();
+      const warnSpy = jest.spyOn(Logger.prototype, 'warn');
+
+      await write();
+
+      expect(warnSpy).not.toHaveBeenCalled();
+      warnSpy.mockRestore();
     });
   });
 

@@ -8,7 +8,10 @@ import {
 // The SAME predicate `hasLiveBasePlan` reads. Re-homing `is_default` onto a row
 // this call would not consider live is how the account ends up holding a
 // default that still reads as unbilled — one definition of "live", not two.
-import { isLive } from './provider-subscription.util';
+// `hasLegacyProvider` is the detector for the dual-provider shape the
+// incumbent guard below can produce: it answers true precisely when the
+// default provider has a live row AND a DIFFERENT provider also has one.
+import { hasLegacyProvider, isLive } from './provider-subscription.util';
 
 const logger = new Logger('RehomeDefault');
 
@@ -104,7 +107,44 @@ export async function rehomeDefault(input: {
     // Somebody already holds it and is genuinely live: nothing to do. Checked
     // BEFORE the heir search so this stays idempotent — a redelivered webhook
     // must not move a flag that is already correctly placed.
-    if (rows.some((row) => row.isDefault && isLive(row))) return;
+    if (rows.some((row) => row.isDefault && isLive(row))) {
+      // This is also the ONLY place the dual-provider shape from the eighth
+      // incarnation reaches: `writeStripeBasePlanRow` deliberately inserts
+      // `isDefault: false` beside a live Lemon Squeezy default, and this guard
+      // is what makes that insert a no-op instead of a re-home. Nothing else
+      // observes it — no log, no metric — so an account paying TWO providers
+      // at once stays silent until the customer complains.
+      //
+      // `hasLegacyProvider` is exactly the predicate: it reads the SAME
+      // `pickDefaultProvider` this guard implicitly relies on, and answers
+      // true only when the incumbent's own row is live (found above) and a
+      // DIFFERENT provider also has a live row. Ordinary idempotent
+      // redelivery — the incumbent is the only live provider — must stay
+      // quiet, or a warn here trains people to ignore it. Only the genuinely
+      // dual-billed shape gets a warn, naming the subscription and both
+      // providers so an on-call human can act without querying the database
+      // first.
+      if (hasLegacyProvider(rows)) {
+        const incumbent = rows.find((row) => row.isDefault && isLive(row));
+        const other = rows.find(
+          (row) => row.provider !== incumbent?.provider && isLive(row),
+        );
+        logger.warn(
+          `Subscription ${input.subscriptionId} is being billed by TWO ` +
+            `providers at once: ${incumbent?.provider} holds is_default ` +
+            `while a live ${other?.provider} row also exists. Only ` +
+            `${incumbent?.provider} is currently reachable for cancels and ` +
+            `plan changes; the other provider will keep charging until it ` +
+            `is manually resolved.`,
+        );
+      } else {
+        logger.debug(
+          `Subscription ${input.subscriptionId} already holds its default ` +
+            `on a live row; nothing to re-home.`,
+        );
+      }
+      return;
+    }
 
     // `isLive` is deliberately NOT a status string comparison: Lemon Squeezy's
     // `cancelled` is still live until `ends_at`, and re-homing onto a
