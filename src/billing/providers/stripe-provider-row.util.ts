@@ -33,12 +33,74 @@ const PROVIDER = 'stripe' as const;
  * this upserts on the `(subscription_id, provider, item_type)` constraint and
  * refreshes the mutable provider facts rather than inserting a duplicate.
  *
- * `is_default` is set to true only on INSERT. On conflict it is deliberately
- * left alone: during the Lemon Squeezy -> Stripe window the flag says which
- * provider currently bills the account, and a redelivered webhook must not
- * silently move it. The partial unique index
- * `provider_subscriptions_one_default_idx` permits one true row per
- * subscription, so flipping it here could also raise 23505.
+ * `is_default` IS NEVER CLAIMED ON THE INSERT, and this is the EIGHTH
+ * incarnation of this branch's recurring defect — the same class as C1 in the
+ * opposite direction. C1 was RELEASING the flag without re-homing it; this was
+ * CLAIMING it without checking who already held it.
+ *
+ * This function used to hardcode `isDefault: true` in `values`. The
+ * `ON CONFLICT` target below is `(subscription_id, provider, item_type)`, so a
+ * `provider = 'stripe'` insert does NOT conflict with an existing
+ * `provider = 'lemonsqueezy'` row — it proceeds as a genuine INSERT carrying
+ * `is_default = true` and violates a DIFFERENT index,
+ * `provider_subscriptions_one_default_idx`. An explicit `ON CONFLICT` target
+ * cannot absorb another index's violation, so the result is 23505, which the
+ * catch below then LOGS AND SWALLOWS: a 200 goes back to Stripe, no retry is
+ * scheduled, and the Stripe BASE_PLAN row is missing entirely.
+ *
+ * Reachable on the forward-cutover path this whole abstraction exists to
+ * serve. `handleCheckoutSessionCompleted` has no provider guard at all — it
+ * accepts on `userId`/`planCode` metadata alone — so an account whose Lemon
+ * Squeezy row holds the flag reaches here via a checkout created before the LS
+ * row existed, one created out-of-band (Dashboard, Payment Link, support
+ * link), or a delivery that lands after an LS `subscription_created` claimed
+ * the slot. `subscriptions.stripe_subscription_id` has already committed by
+ * then, so the account is billed by BOTH providers while `pickDefaultProvider`
+ * still names lemonsqueezy — and `adapterForSubscription` routes every cancel
+ * and plan change to the LS adapter for a subscription STRIPE is charging.
+ * `refreshStripeProviderRowStatus` is UPDATE-only by design, matches zero
+ * rows, and cannot heal it.
+ *
+ * WHICH PROVIDER SHOULD OWN THE FLAG HERE — the answer the next person needs.
+ *
+ * When a Stripe checkout completes on an LS-defaulted account both
+ * subscriptions are genuinely live, so this is a real choice rather than a
+ * technicality, and it decides where cancels get routed. THE INCUMBENT KEEPS
+ * IT: the flag stays on the live Lemon Squeezy row, and Stripe inherits it
+ * only when that row actually dies.
+ *
+ * That is the safe direction, not merely the convenient one. `is_default` is
+ * not a label for "who charged most recently" — it is the ONLY handle the
+ * system has on a subscription, because `adapterForSubscription` resolves
+ * through it and `findItem` scopes every lookup to it. Letting Stripe seize
+ * the flag would strip the live LS subscription of the only pointer anything
+ * holds to it: no cancel path could ever reach it again, and it would bill the
+ * customer forever with no code able to stop it. Leaving it on Lemon Squeezy
+ * costs the mirror problem for one cycle — the new Stripe subscription is not
+ * directly cancellable through `adapterForSubscription` — but that one is
+ * BOUNDED and SELF-HEALING: the LS row lapses at its own period end, whereupon
+ * `rehomeDefault` on the Lemon Squeezy termination path hands the flag to the
+ * Stripe row, which is exactly the cutover this table was designed for. One
+ * choice strands a live subscription permanently; the other defers ownership
+ * by at most one billing period. Prefer the recoverable failure.
+ *
+ * It also keeps the dual-billing VISIBLE — `hasLegacyProvider` answers true
+ * for precisely this shape — rather than erasing the evidence that two
+ * providers are charging one account.
+ *
+ * THE CLAIM IS DELEGATED TO `rehomeDefault`, exactly as `createRowFromCheckout`
+ * does on the Lemon Squeezy side. Not a third copy of this logic: being
+ * private to one service is precisely how the sixth and seventh incarnations
+ * came about. It re-reads the account, returns early when a live default
+ * already holds the slot (which is the incumbent rule above, for free), writes
+ * at most one row, and never throws — so a lost race between two concurrent
+ * deliveries is a log line rather than a 500 on a checkout that already took
+ * the customer's money. It is also what claims the flag in the ordinary case,
+ * where this Stripe row is the only live row on the account.
+ *
+ * On CONFLICT `is_default` is likewise left alone: a redelivered webhook must
+ * not silently move the flag, and writing it there could raise 23505 against
+ * the same partial unique index.
  *
  * NEVER THROWS. It is called after the customer has already been charged and
  * after the `subscriptions` row has been written; failing the request at that
@@ -84,7 +146,12 @@ export async function writeStripeBasePlanRow(input: {
     providerStatus: sub.status ?? null,
     endsAt: cancelling ? periodEnd : null,
     renewsAt: cancelling ? null : periodEnd,
-    isDefault: true,
+    // NEVER claimed here. See the `is_default` section of the doc comment: the
+    // ON CONFLICT target cannot absorb `provider_subscriptions_one_default_idx`,
+    // so hardcoding `true` raised 23505 against a live Lemon Squeezy default
+    // and the catch below swallowed it, losing the row entirely. The claim is
+    // delegated to `rehomeDefault` after the write.
+    isDefault: false,
   };
 
   try {
@@ -107,15 +174,29 @@ export async function writeStripeBasePlanRow(input: {
           endsAt: values.endsAt,
           renewsAt: values.renewsAt,
           updatedAt: new Date(),
+          // `isDefault` deliberately absent — a redelivery must not move the
+          // flag, and writing it here could raise 23505 on the default index.
         },
       });
+
+    // AFTER the row exists, never as part of it. Claims `is_default` only when
+    // nothing live already holds the slot, so an account whose Lemon Squeezy
+    // subscription is still billing keeps its default on the row that can
+    // actually be cancelled, and Stripe inherits it when that row lapses.
+    // Idempotent, non-throwing, and safe under concurrent deliveries; it is
+    // also what claims the flag in the ordinary case where this is the only
+    // live row on the account.
+    await rehomeDefault({ subscriptionId: input.subscriptionId });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error(
       `Failed to write the Stripe BASE_PLAN provider row for subscription ` +
-        `${input.subscriptionId} (${sub.id}): ${message}. The account will ` +
-        `read as unbilled until a webhook rewrites it — do not let this pass ` +
-        `silently.`,
+        `${input.subscriptionId} (${sub.id}): ${message}. Stripe is charging ` +
+        `this account but nothing records it, so the account reads as billed ` +
+        `by whichever provider still holds is_default — during the cutover ` +
+        `that is LEMON SQUEEZY, not "unbilled", and every cancel and plan ` +
+        `change will be routed to the WRONG provider until a webhook ` +
+        `rewrites the row — do not let this pass silently.`,
     );
   }
 }
