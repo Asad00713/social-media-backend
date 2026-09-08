@@ -16,6 +16,8 @@ import { PostQueueService } from './services/post-queue.service';
 import { StripeModule } from '../stripe/stripe.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { ProviderRegistryService } from './providers/provider-registry.service';
+import { CatalogueService } from './providers/catalogue.service';
 
 @Module({
   imports: [StripeModule, DrizzleModule, NotificationsModule],
@@ -33,6 +35,8 @@ import { NotificationsModule } from '../notifications/notifications.module';
     SubscriptionLookupService,
     PostQueueService,
     AccountChannelsService,
+    ProviderRegistryService,
+    CatalogueService,
   ],
   controllers: [BillingController],
   exports: [
@@ -48,6 +52,8 @@ import { NotificationsModule } from '../notifications/notifications.module';
     SubscriptionLookupService,
     PostQueueService,
     AccountChannelsService,
+    ProviderRegistryService,
+    CatalogueService,
   ],
 })
 export class BillingModule {}
