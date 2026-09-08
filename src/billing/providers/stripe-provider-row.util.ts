@@ -3,6 +3,7 @@ import Stripe from 'stripe';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { providerSubscriptions } from '../../drizzle/schema';
+import { rehomeDefault } from '../services/rehome-default.util';
 
 const logger = new Logger('StripeProviderRow');
 
@@ -282,8 +283,34 @@ export async function refreshStripeProviderRowStatus(input: {
  * `clearStaleStripeSubscription` could not rescue it either: it early-returns
  * on a null `stripeSubscriptionId`, which this handler had already nulled.
  *
+ * AND IT MUST RE-HOME THE FLAG, NOT ONLY RELEASE IT.
+ *
+ * The UPDATE is scoped to `provider = 'stripe'`, so a live LEMON SQUEEZY row
+ * survives it completely untouched — the account is still being billed. This
+ * released the flag and handed it to nobody, which is the SEVENTH incarnation
+ * of this branch's recurring defect and the exact MIRROR of the sixth: we
+ * fixed the Lemon Squeezy direction in `f331109` and left this one open. The
+ * resulting state is ZERO defaults while Lemon Squeezy actively bills, so
+ * `pickDefaultProvider` returns null, `findItem` returns null (it scopes to
+ * the default), `hasLiveBasePlan` answers FALSE for a paying customer, and
+ * `plan-change.service.ts` takes its FREE->paid branch: a SECOND live
+ * subscription on a customer who is already being charged. The legacy fallback
+ * cannot rescue it either — `hasAnyStripeRow` is true, so it returns false
+ * before reaching `isRealStripeSubscriptionId`.
+ *
+ * Reachable from `customer.subscription.deleted` on any account mid-cutover,
+ * and from `POST /billing/reset` on any account holding both providers.
+ *
+ * ORDERING IS LOAD-BEARING and it is why the re-home is a SECOND statement
+ * rather than part of the UPDATE. By the time it runs, every Stripe row on the
+ * account reads `canceled`, so `rehomeDefault`'s real `isLive` filter rejects
+ * them all and only a genuinely live cross-provider row can inherit. Running
+ * it first would let a Stripe row this same call is about to kill win the heir
+ * search and take the flag to its grave.
+ *
  * NEVER THROWS — a webhook retry storm is worse than a stale flag, and the
  * `subscriptions` write has already committed by the time this runs.
+ * `rehomeDefault` is itself non-throwing for the same reason.
  */
 export async function endStripeProviderRows(
   subscriptionId: number,
@@ -304,6 +331,12 @@ export async function endStripeProviderRows(
           eq(providerSubscriptions.provider, PROVIDER),
         ),
       );
+
+    // AFTER the rows above are already `canceled`, never before. See the
+    // ordering paragraph in the doc comment: the heir search filters on the
+    // real `isLive`, so running it earlier would let a Stripe row this same
+    // call is about to kill look live and inherit the flag.
+    await rehomeDefault({ subscriptionId });
   } catch (err: unknown) {
     const message = err instanceof Error ? err.message : String(err);
     logger.error(

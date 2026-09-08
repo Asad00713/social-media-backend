@@ -76,13 +76,123 @@ function tableName(t: unknown): string {
 }
 
 /**
- * Every `where` in the handlers under test is an equality (or a conjunction of
- * them) scoped to the one account being touched. Rather than interpret
- * drizzle's SQL AST, the fake applies a single predicate, which these tests
- * leave wide open — there is exactly one account in the store.
+ * THIS FAKE USED TO IGNORE `where()`.
+ *
+ * It applied one wide-open `wherePredicate`, so every `update` and `delete`
+ * patched EVERY row in the table. That was survivable only for as long as each
+ * test seeded exactly one account and one provider row — and the C1 fix breaks
+ * that assumption on purpose: `endStripeProviderRows` is scoped to
+ * `provider = 'stripe'`, and the whole point of the seventh incarnation is
+ * what happens to the live LEMON SQUEEZY row sitting beside it. Under the old
+ * fake a test seeding both would have watched the Stripe-scoped UPDATE flatten
+ * the Lemon Squeezy row too, and would have "passed" while proving the exact
+ * opposite of the invariant it claims to check.
+ *
+ * So it now interprets the real clause, ported verbatim from
+ * `lemonsqueezy-webhook.service.spec.ts` (which needed it first, for the same
+ * reason).
+ */
+/**
+ * A REAL predicate, built by walking drizzle's `queryChunks`.
+ *
+ * A wide-open predicate would be worse than useless here. Every routing
+ * decision in the service is a `where` — "which provider row does this
+ * provider_subscription_id name", "does this account already hold a default",
+ * "which subscription_items row belongs to this add-on" — so a fake that
+ * ignores `where` makes the routing tests assert nothing: the first row in the
+ * table answers every query and an add-on event appears to update the base
+ * plan correctly. That is exactly the class of silent agreement between test
+ * and code this branch keeps producing.
+ *
+ * `eq(column, value)` serialises to chunks `['', {name}, ' = ', value, '']`, and
+ * `and(...)` NESTS those inside its own chunks, so the walk is recursive.
+ * Flattening yields the column/value pairs, which is all the service ever
+ * builds. An unrecognised shape throws rather than falling back to "match
+ * everything" — a fake that silently widens is how a mutation check ends up
+ * testing nothing.
  */
 type Predicate = (row: Row) => boolean;
-let wherePredicate: Predicate;
+
+/** A drizzle column chunk, as opposed to a literal or an operator. */
+function isColumn(chunk: unknown): boolean {
+  return (
+    !!chunk &&
+    typeof chunk === 'object' &&
+    typeof (chunk as any).name === 'string'
+  );
+}
+
+/** camelCase property for a snake_case SQL column. */
+function camel(sqlName: string): string {
+  return sqlName.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+}
+
+/** Depth-first flatten of drizzle's nested `queryChunks`. */
+function flatten(chunks: unknown[], out: unknown[] = []): unknown[] {
+  for (const chunk of chunks) {
+    const nested = (chunk as any)?.queryChunks as unknown[] | undefined;
+    if (Array.isArray(nested)) flatten(nested, out);
+    else out.push(chunk);
+  }
+  return out;
+}
+
+function predicateFrom(condition: unknown): Predicate {
+  if (!condition) return () => true;
+  const top = (condition as any).queryChunks as unknown[] | undefined;
+  if (!Array.isArray(top)) {
+    throw new Error('The db fake only understands drizzle eq()/and() clauses.');
+  }
+  const chunks = flatten(top);
+
+  const pairs: { column: string; value: unknown }[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk: any = chunks[i];
+    if (isColumn(chunk)) {
+      // ['', {name}, ' = ', value, ...]
+      const op = chunks[i + 1] as any;
+      const opText = Array.isArray(op?.value) ? String(op.value[0]) : '';
+      // `inArray(col, <subquery>)` — the account-wide usage fan-out uses one.
+      // Interpreting a nested SELECT here would be a second query engine, and
+      // the tests that exercise it seed one owner, so the column is left
+      // unconstrained. Stated as an explicit BRANCH rather than a fallback:
+      // the `throw` below still fires for any other operator, so an
+      // unrecognised clause can never silently widen to "match everything",
+      // which is what the old table-wide predicate did for every query.
+      if (opText.includes(' in ')) {
+        while (i + 1 < chunks.length && !isColumn(chunks[i + 1])) i++;
+        continue;
+      }
+      if (!opText.includes('=')) {
+        throw new Error(`The db fake only understands '=', saw "${opText}".`);
+      }
+      // The bound value is a drizzle `Param`, not the raw literal.
+      const param = chunks[i + 2] as any;
+      const value =
+        param && typeof param === 'object' && 'value' in param
+          ? param.value
+          : param;
+      pairs.push({ column: camel(chunk.name), value });
+      i += 2;
+    }
+  }
+
+  // Zero pairs is legitimate only for a clause that was ENTIRELY a subquery
+  // `in` (the usage fan-out). Anything else reaching here means the walk
+  // understood nothing, and matching everything would be the silent widening
+  // this interpreter exists to prevent.
+  if (pairs.length === 0) return () => true;
+
+  return (row: Row) =>
+    pairs.every((p) => {
+      const actual = row[p.column];
+      // Dates compare by value; ids arrive as numbers or strings.
+      if (actual instanceof Date && p.value instanceof Date) {
+        return actual.getTime() === p.value.getTime();
+      }
+      return actual === p.value;
+    });
+}
 
 function rowsOf(name: string): Row[] {
   tables[name] = tables[name] ?? [];
@@ -93,6 +203,7 @@ function makeDb(): any {
   return {
     select: () => {
       let target = 'unknown';
+      let match: Predicate = () => true;
       const chain: any = {
         from: (t: unknown) => {
           target = tableName(t);
@@ -100,11 +211,14 @@ function makeDb(): any {
         },
         innerJoin: () => chain,
         leftJoin: () => chain,
-        where: () => chain,
+        where: (c: unknown) => {
+          match = predicateFrom(c);
+          return chain;
+        },
         orderBy: () => chain,
         limit: () => chain,
         then: (resolve: (v: unknown) => unknown) =>
-          Promise.resolve(rowsOf(target).filter(wherePredicate)).then(resolve),
+          Promise.resolve(rowsOf(target).filter(match)).then(resolve),
       };
       return chain;
     },
@@ -131,9 +245,10 @@ function makeDb(): any {
     update: (t: unknown) => {
       const target = tableName(t);
       let patch: Row = {};
+      let match: Predicate = () => true;
       const apply = (): void => {
         for (const row of rowsOf(target)) {
-          if (wherePredicate(row)) Object.assign(row, patch);
+          if (match(row)) Object.assign(row, patch);
         }
       };
       const chain: any = {
@@ -141,7 +256,8 @@ function makeDb(): any {
           patch = v;
           return chain;
         },
-        where: () => {
+        where: (c: unknown) => {
+          match = predicateFrom(c);
           apply();
           return chain;
         },
@@ -155,11 +271,13 @@ function makeDb(): any {
 
     delete: (t: unknown) => {
       const target = tableName(t);
+      let match: Predicate = () => true;
       const apply = (): void => {
-        tables[target] = rowsOf(target).filter((r) => !wherePredicate(r));
+        tables[target] = rowsOf(target).filter((r) => !match(r));
       };
       const chain: any = {
-        where: () => {
+        where: (c: unknown) => {
+          match = predicateFrom(c);
           apply();
           return chain;
         },
@@ -182,6 +300,9 @@ jest.mock('./invoice-sync.util', () => ({
 }));
 
 import { WebhookService } from './webhook.service';
+// The REAL predicate the production readers use. A local re-implementation
+// here could agree with a broken one in `src/`.
+import { isLive } from './provider-subscription.util';
 
 const SUBSCRIPTION_ID = 42;
 
@@ -221,11 +342,74 @@ function seedPayingAccount(): void {
     workspace: [],
     plans: [],
   };
-  wherePredicate = () => true;
 }
 
 function providerRow(): Row {
   return rowsOf('provider_subscriptions')[0];
+}
+
+/**
+ * The invariant this whole branch keeps breaking, in its seventh incarnation.
+ *
+ *   anything live => EXACTLY ONE `is_default` row, and that row is itself live
+ *   nothing live  => ZERO
+ *
+ * Mirrored from `expectDefaultInvariant()` in
+ * `lemonsqueezy-webhook.service.spec.ts` deliberately — one statement of the
+ * rule, asserted on both providers' termination paths, because the defect's
+ * habit is to be fixed on one side and left open on the other.
+ *
+ * Asserting the FIELD alone is what let the seventh ship: a test that checks
+ * `isDefault === false` on the dying Stripe row passes just as happily when
+ * the account is left with zero defaults while Lemon Squeezy bills it.
+ */
+function expectDefaultInvariant(): void {
+  const rows = rowsOf('provider_subscriptions');
+  const defaults = rows.filter((r) => r.isDefault === true);
+
+  // Never two: `provider_subscriptions_one_default_idx` would reject it.
+  expect(defaults.length).toBeLessThanOrEqual(1);
+
+  const live = rows.filter((r) => isLive(r as never));
+  if (live.length > 0) {
+    // Something is still being billed, so the account must still name a
+    // provider — otherwise `hasLiveBasePlan` answers false for a paying
+    // customer and `plan-change.service.ts` opens a SECOND subscription.
+    expect(defaults).toHaveLength(1);
+    // And the flag must sit on a row that is genuinely live. Parking it on a
+    // corpse satisfies "exactly one" while still reading as unbilled, because
+    // `findItem` scopes to the default and `isLive` then rejects it.
+    expect(isLive(defaults[0] as never)).toBe(true);
+  } else {
+    // Nothing live: the slot must be FREE so the customer can subscribe again
+    // at either provider. A dead row squatting on it raises 23505 after the
+    // next provider has already charged.
+    expect(defaults).toHaveLength(0);
+  }
+}
+
+/**
+ * The seed whose ABSENCE let the seventh incarnation ship: a live Lemon
+ * Squeezy row beside the Stripe one that is about to die. Every existing test
+ * in this file seeds Stripe alone, so `endStripeProviderRows` clearing the
+ * flag left nothing live and the invariant's zero-defaults branch passed.
+ *
+ * This is the real cutover shape — an abandoned or reversed migration, or
+ * `POST /billing/reset` on an account holding both providers.
+ */
+function seedLiveLemonSqueezyBeside(): void {
+  rowsOf('provider_subscriptions').push({
+    id: 2,
+    subscriptionId: SUBSCRIPTION_ID,
+    provider: 'lemonsqueezy',
+    itemType: 'BASE_PLAN',
+    providerSubscriptionId: 'ls_sub_1',
+    providerStatus: 'active',
+    providerQuantity: 1,
+    endsAt: null,
+    renewsAt: new Date('2026-11-07'),
+    isDefault: false,
+  });
 }
 
 /** The account-wide fan-out and add-on bookkeeping are not under test here. */
@@ -291,6 +475,109 @@ describe('customer.subscription.deleted', () => {
     const sub = rowsOf('subscriptions')[0];
     expect(sub.planCode).toBe('FREE');
     expect(sub.stripeSubscriptionId).toBeNull();
+  });
+
+  it('leaves the slot free when nothing else on the account is live', async () => {
+    await call(makeService(), 'handleSubscriptionDeleted', DELETED_EVENT);
+
+    // Stripe alone, and it just died: zero defaults is the CORRECT end state,
+    // and the free slot is what lets the customer subscribe again anywhere.
+    expectDefaultInvariant();
+  });
+
+  it('hands is_default to a live LEMON SQUEEZY row instead of stranding it', async () => {
+    // THE SEVENTH INCARNATION, and the exact mirror of the sixth that
+    // `f331109` fixed on the Lemon Squeezy side.
+    //
+    // `endStripeProviderRows` sets `is_default = false` scoped to
+    // `provider = 'stripe'`, so this live Lemon Squeezy row survives it
+    // completely untouched — the account IS still being billed — and nothing
+    // re-homed the flag. `rehomeDefault` existed ONLY on the Lemon Squeezy
+    // webhook service; there was no Stripe-side equivalent at all.
+    //
+    // The resulting state was zero defaults while Lemon Squeezy actively
+    // charges: `pickDefaultProvider` null, `findItem` null (it scopes to the
+    // default), `hasLiveBasePlan` FALSE for a paying customer, so
+    // `plan-change.service.ts:342` reads `isAlreadyPaying = false` and `:397`
+    // takes the FREE->paid branch — a SECOND live subscription, double
+    // billing. The legacy fallback cannot rescue it either, because
+    // `hasAnyStripeRow` is true.
+    seedLiveLemonSqueezyBeside();
+
+    await call(makeService(), 'handleSubscriptionDeleted', DELETED_EVENT);
+
+    const ls = rowsOf('provider_subscriptions').find(
+      (r) => r.provider === 'lemonsqueezy',
+    ) as Row;
+    // The live row inherits...
+    expect(ls.isDefault).toBe(true);
+    // ...and the dead Stripe row does not squat on the slot.
+    expect(providerRow().isDefault).toBe(false);
+    // The assertion that actually matters: not the field, the INVARIANT.
+    expectDefaultInvariant();
+  });
+
+  it('never adds a SECOND default when a live add-on already holds the flag', async () => {
+    // The idempotence guard in `rehomeDefault`, and it is NOT redundant with
+    // the `heir.isDefault` check further down.
+    //
+    // Here a live Lemon Squeezy ADD-ON holds the flag while a live Lemon
+    // Squeezy BASE_PLAN does not — legitimate, per `rehomeDefault`'s own
+    // base-plan-first note about an account whose base plan lapsed while an
+    // add-on ran on. The heir search prefers BASE_PLAN, so the heir is NOT the
+    // row currently holding the flag: `heir.isDefault` is false, the write
+    // goes ahead, and the account momentarily holds TWO defaults — 23505
+    // against `provider_subscriptions_one_default_idx`, inside a webhook, so
+    // Stripe retries forever against a state that cannot converge.
+    //
+    // The account already names a live provider, so there is nothing to
+    // re-home and the correct action is to do nothing at all.
+    seedLiveLemonSqueezyBeside();
+    rowsOf('provider_subscriptions').push({
+      id: 3,
+      subscriptionId: SUBSCRIPTION_ID,
+      provider: 'lemonsqueezy',
+      itemType: 'EXTRA_CHANNEL',
+      providerSubscriptionId: 'ls_sub_addon',
+      providerStatus: 'active',
+      providerQuantity: 1,
+      endsAt: null,
+      renewsAt: new Date('2026-11-07'),
+      isDefault: true,
+    });
+    // The Stripe row is not the one holding the flag here.
+    providerRow().isDefault = false;
+
+    await call(makeService(), 'handleSubscriptionDeleted', DELETED_EVENT);
+
+    // Untouched: the add-on still holds it, and the base plan did not take it.
+    const addon = rowsOf('provider_subscriptions').find(
+      (r) => r.itemType === 'EXTRA_CHANNEL',
+    ) as Row;
+    expect(addon.isDefault).toBe(true);
+    expectDefaultInvariant();
+  });
+
+  it('does not re-home onto a Lemon Squeezy row that is itself dead', async () => {
+    // Pins the `isLive` filter inside the heir search. A cross-provider row
+    // EXISTING is not the same fact as the account still being billed — an
+    // expired Lemon Squeezy row taking the flag would satisfy "exactly one
+    // default" while `findItem` + `isLive` still read the account as unbilled,
+    // which is the corpse-holds-the-flag half of the invariant.
+    seedLiveLemonSqueezyBeside();
+    (
+      rowsOf('provider_subscriptions').find(
+        (r) => r.provider === 'lemonsqueezy',
+      ) as Row
+    ).providerStatus = 'expired';
+
+    await call(makeService(), 'handleSubscriptionDeleted', DELETED_EVENT);
+
+    const ls = rowsOf('provider_subscriptions').find(
+      (r) => r.provider === 'lemonsqueezy',
+    ) as Row;
+    expect(ls.isDefault).toBe(false);
+    expectDefaultInvariant();
   });
 });
 

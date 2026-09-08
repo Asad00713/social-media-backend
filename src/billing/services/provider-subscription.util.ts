@@ -142,6 +142,24 @@ export function hasLiveBasePlan(
  * True during the migration window: the customer has moved to Stripe but their
  * Lemon Squeezy subscription runs to the end of the period they already paid
  * for. Both must keep working until it lapses.
+ *
+ * NO CALLERS OUTSIDE ITS OWN SPEC, and that is now a deliberate answer rather
+ * than an oversight. The final review suggested it as the detector for the
+ * seventh incarnation — an account whose Stripe rows died while a live Lemon
+ * Squeezy row carried on billing. It is not, and wiring it there would have
+ * been the wrong shape twice over:
+ *
+ *  - It reads `pickDefaultProvider` FIRST and returns false when there is no
+ *    default at all, which is precisely the broken state. It cannot see the
+ *    bug it was proposed to detect.
+ *  - The bug is now PREVENTED rather than detected: `rehomeDefault` runs on
+ *    every termination path, so the zero-defaults state is not reached and
+ *    there is nothing left for a detector to find.
+ *
+ * Kept because it answers a real question the cutover still needs — "is this
+ * account mid-migration, with two providers live at once?" — which is what the
+ * deferred reconciliation cron and any dual-provider UI will ask. Delete it
+ * only when that question stops being asked.
  */
 export function hasLegacyProvider(rows: ProviderSubscription[]): boolean {
   const current = pickDefaultProvider(rows);
@@ -177,8 +195,20 @@ export function hasLegacyProvider(rows: ProviderSubscription[]): boolean {
  * is a live, recoverable pending-payment state for the first 23 hours, and
  * treating it as dead here would strip access from someone whose payment is
  * still processing.
+ *
+ * `removed` is ours, not Stripe's — `StripeAdapter.removeAddon` used to write
+ * it for a deleted subscription line item. Because this is a deny-list that
+ * fails OPEN, an unlisted status reads as still billing, so a removed add-on
+ * went on reading as live: it fed `billedQuantities`, and it was eligible to
+ * inherit `is_default` in `rehomeDefault`'s heir search, which would make an
+ * unbilled account read as paying. That writer now writes `canceled` like
+ * every other termination path, and this entry covers rows written before the
+ * change so they do not stay live forever. Kept as a deny-list entry rather
+ * than flipping the function to an allow-list: failing closed here would strip
+ * a genuinely-paying customer's plan on any status we had not enumerated,
+ * which is the round-1 defect this file exists to prevent.
  */
-const STRIPE_TERMINAL_STATUSES = new Set(['incomplete_expired']);
+const STRIPE_TERMINAL_STATUSES = new Set(['incomplete_expired', 'removed']);
 
 /**
  * Is this provider record still entitling the customer to something?
@@ -223,6 +253,15 @@ export function isLive(row: ProviderSubscription): boolean {
  * renewal boundary while the customer keeps what they paid for until the
  * period ends. This exists for reconciliation — diffing the two to catch
  * webhook drift — never for authorisation.
+ *
+ * NO CALLERS OUTSIDE ITS OWN SPEC, and deliberately so: its consumer is the
+ * nightly reconciliation cron, which the design doc defers explicitly
+ * ("Discrepancies are logged, not auto-corrected" / "Explicitly not doing:
+ * auto-correcting reconciliation drift"). The spec also names the mechanism
+ * this function IS — "`providerQuantity` (billing) is stored separately from
+ * `subscription_items.quantity` (entitlement) — the difference between them
+ * *is* the drift signal". So it is unwired-pending-its-consumer, not dead
+ * code, and it must not be deleted as unused before that cron is written.
  */
 export function billedQuantities(
   rows: ProviderSubscription[],

@@ -167,13 +167,23 @@ beforeEach(() => {
   mockDb.delete.mockImplementation(() => makeInsertChain());
 });
 
-function lemonSqueezyPurchaseQueries() {
+/**
+ * @param existingItem the `subscription_items` row the account already holds,
+ *   or `[]` for a first purchase.
+ * @param providerRows what `provider_subscriptions` holds. The gap between
+ *   these two is the whole of I1 — see the tests below.
+ */
+function lemonSqueezyPurchaseQueries(
+  existingItem: unknown[] = [],
+  providerRows: unknown[] = LS_PROVIDER_ROWS,
+) {
   selectResults = [
     [WORKSPACE_ROW], // ownership
     [LS_SUBSCRIPTION], // the account's subscription
     [LS_ADDON_PRICING], // addon_pricing — stripePriceId is NULL
-    [], // no existing subscription_items row
-    LS_PROVIDER_ROWS, // provider_subscriptions, for the item id
+    existingItem, // the existing subscription_items row, if any
+    providerRows, // provider_subscriptions, BEFORE the purchase (I1)
+    providerRows, // provider_subscriptions again, for the item id
   ];
 }
 
@@ -240,5 +250,97 @@ describe('purchaseAddon on a Lemon Squeezy account', () => {
       (v) => v && 'stripePriceId' in v && v.itemType === 'EXTRA_CHANNEL',
     );
     expect(itemInsert).toBeUndefined();
+  });
+});
+
+/**
+ * I1 — what NUMBER reaches the provider.
+ *
+ * `purchaseAddon` is ABSOLUTE when the provider already holds a record of this
+ * add-on and an INCREMENT when it does not, because a Lemon Squeezy checkout
+ * opens a brand-new subscription that bills for exactly the figure in it,
+ * alongside whatever is already running. The service sent `existing + quantity`
+ * unconditionally, which is right for the first case and bills twice in the
+ * second.
+ */
+describe('the quantity sent to the provider', () => {
+  const EXISTING_ITEM = [{ id: 7, quantity: 2, itemType: 'EXTRA_CHANNEL' }];
+
+  it('sends the cumulative TOTAL when the provider already holds the add-on', async () => {
+    // Absolute semantics: Lemon Squeezy PATCHes the subscription item's
+    // quantity and Stripe sets the line item's, so the new total is the
+    // correct figure and anything less would silently REDUCE what the customer
+    // holds.
+    const { service, adapter } = makeService({
+      status: 'completed',
+      quantity: 5,
+    });
+    lemonSqueezyPurchaseQueries(EXISTING_ITEM, LS_PROVIDER_ROWS);
+
+    await service.purchaseAddon({
+      workspaceId: 'ws-1',
+      userId: 'user-1',
+      addonType: 'EXTRA_CHANNEL',
+      quantity: 3,
+    });
+
+    // 2 already held + 3 more.
+    expect(adapter.purchaseAddon).toHaveBeenCalledWith(42, 'EXTRA_CHANNEL', 5);
+  });
+
+  it('sends only the INCREMENT when the provider holds no row for it', async () => {
+    // THE DEFECT. `subscription_items` says the customer holds 2, but
+    // `provider_subscriptions` has no row — reachable, because the Lemon
+    // Squeezy add-on `subscription_created` webhook is what writes that row,
+    // and a first checkout whose `custom_data` carried no resolvable account
+    // writes neither it nor a redelivery.
+    //
+    // `LemonSqueezyAdapter.purchaseAddon` therefore misses and opens a FRESH
+    // checkout. Sent the cumulative 5, that checkout creates a second
+    // subscription billing for 5 while the original add-on subscription keeps
+    // billing for 2 — the customer pays for 7 and receives 5.
+    const { service, adapter } = makeService({
+      status: 'checkout_required',
+      url: 'https://store.lemonsqueezy.com/checkout/abc',
+    });
+    lemonSqueezyPurchaseQueries(EXISTING_ITEM, []);
+
+    const result = await service.purchaseAddon({
+      workspaceId: 'ws-1',
+      userId: 'user-1',
+      addonType: 'EXTRA_CHANNEL',
+      quantity: 3,
+    });
+
+    // 3, not 5: the customer is already being charged for the other 2.
+    expect(adapter.purchaseAddon).toHaveBeenCalledWith(42, 'EXTRA_CHANNEL', 3);
+    // And the caller is told what this checkout actually bills for.
+    expect(result).toMatchObject({ quantity: 3 });
+  });
+
+  it('still enforces the cap against the TRUE total, not the increment', async () => {
+    // The increment must not become a way past `maxQuantity`. The cap is
+    // checked on `existing + quantity` regardless of which figure the provider
+    // is sent.
+    const { service, adapter } = makeService({
+      status: 'checkout_required',
+      url: 'https://store.lemonsqueezy.com/checkout/abc',
+    });
+    lemonSqueezyPurchaseQueries(
+      [{ id: 7, quantity: 49, itemType: 'EXTRA_CHANNEL' }],
+      [],
+    );
+
+    await expect(
+      service.purchaseAddon({
+        workspaceId: 'ws-1',
+        userId: 'user-1',
+        addonType: 'EXTRA_CHANNEL',
+        quantity: 5,
+      }),
+    ).rejects.toThrow(/Maximum total/);
+
+    // Rejected BEFORE the provider was asked for anything.
+    expect(adapter.purchaseAddon).not.toHaveBeenCalled();
   });
 });

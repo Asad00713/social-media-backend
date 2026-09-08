@@ -7,14 +7,14 @@ import {
   subscriptions,
   subscriptionItems,
   ProviderItemType,
-  ProviderSubscription,
 } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
 import { mapLemonSqueezyStatus } from '../providers/lemonsqueezy-status.util';
-// The SAME predicate `hasLiveBasePlan` reads. Re-homing `is_default` onto a row
-// this call would not consider live is how the account ends up holding a
-// default that still reads as unbilled — one definition of "live", not two.
-import { isLive } from './provider-subscription.util';
+// The heir search lives in the shared helper now, and it filters on the SAME
+// `isLive` predicate `hasLiveBasePlan` reads — one definition of "live", not
+// two. It was a private method here until the Stripe direction of the same
+// cutover turned out to have no equivalent at all.
+import { rehomeDefault } from './rehome-default.util';
 
 const PROVIDER = 'lemonsqueezy' as const;
 
@@ -267,50 +267,95 @@ export class LemonSqueezyWebhookService {
 
     const attrs = envelope.data?.attributes ?? {};
 
-    // `is_default` names the provider currently billing this account, and the
-    // partial unique index allows exactly ONE true row per subscription.
-    // Claiming it while another row already holds it raises 23505 AFTER Lemon
-    // Squeezy has taken the customer's money — the same post-charge shape as
-    // the Stripe add-on defect. So it is claimed only when the account has no
-    // default at all.
-    const existingDefault = await db
-      .select({ id: providerSubscriptions.id })
-      .from(providerSubscriptions)
-      .where(
-        and(
-          eq(providerSubscriptions.subscriptionId, subscriptionId),
-          eq(providerSubscriptions.isDefault, true),
-        ),
-      );
+    const values = {
+      subscriptionId,
+      provider: PROVIDER,
+      itemType,
+      providerSubscriptionId,
+      providerCustomerId: idOf(attrs.customer_id),
+      providerItemId: idOf(attrs.first_subscription_item?.id),
+      providerPriceId: idOf(attrs.variant_id),
+      providerQuantity: attrs.first_subscription_item?.quantity ?? 1,
+      providerStatus: attrs.status ?? null,
+      endsAt: dateOf(attrs.ends_at),
+      renewsAt: dateOf(attrs.renews_at),
+      // NEVER claimed on the INSERT. See below.
+      isDefault: false,
+    };
 
-    const claimsDefault = existingDefault.length === 0;
-
+    // UPSERT, not a bare insert — this was the only writer of this table that
+    // was not one. Its siblings (`writeStripeBasePlanRow`,
+    // `StripeAdapter.purchaseAddon`) both upsert on the same constraint, and
+    // the reason applies here with more force, because Lemon Squeezy does NOT
+    // redeliver a delivery it already got a 200 for.
+    //
+    // The path that gets here twice: the FIRST checkout's `custom_data`
+    // carried no resolvable account (`resolveSubscriptionId` above returns
+    // null), so no row was written and Lemon Squeezy considered the delivery
+    // handled. The customer, seeing nothing, buys again — Lemon Squeezy
+    // creates a SECOND subscription and charges for both — and this insert
+    // then hit the `(subscription_id, provider, item_type)` unique constraint
+    // and raised 23505 AFTER the money moved, so the webhook 500'd and the row
+    // was never written for the second purchase either. The upsert repoints
+    // the row at the subscription that is actually live instead.
+    //
+    // TOCTOU: `is_default` is deliberately NOT claimed here. It used to be
+    // decided by a SELECT for an existing default followed by this INSERT,
+    // with no transaction between them (this file opens none anywhere), so two
+    // concurrent `subscription_created` deliveries for one account could both
+    // read zero defaults and both write `true` — 23505 against
+    // `provider_subscriptions_one_default_idx`, again after Lemon Squeezy
+    // charged. The C2 upsert cannot close that: it arbitrates the
+    // (subscription, provider, item_type) constraint, and the default slot is
+    // a DIFFERENT partial unique index. So the claim is delegated to
+    // `rehomeDefault`, which re-reads the account, no-ops when a live default
+    // already exists, writes at most one row, and never throws — a lost race
+    // there is a log line, not a 500 on a paid checkout.
     const inserted = await db
       .insert(providerSubscriptions)
-      .values({
-        subscriptionId,
-        provider: PROVIDER,
-        itemType,
-        providerSubscriptionId,
-        providerCustomerId: idOf(attrs.customer_id),
-        providerItemId: idOf(attrs.first_subscription_item?.id),
-        providerPriceId: idOf(attrs.variant_id),
-        providerQuantity: attrs.first_subscription_item?.quantity ?? 1,
-        providerStatus: attrs.status ?? null,
-        endsAt: dateOf(attrs.ends_at),
-        renewsAt: dateOf(attrs.renews_at),
-        isDefault: claimsDefault,
+      .values(values)
+      .onConflictDoUpdate({
+        target: [
+          providerSubscriptions.subscriptionId,
+          providerSubscriptions.provider,
+          providerSubscriptions.itemType,
+        ],
+        set: {
+          providerSubscriptionId: values.providerSubscriptionId,
+          providerCustomerId: values.providerCustomerId,
+          providerItemId: values.providerItemId,
+          providerPriceId: values.providerPriceId,
+          providerQuantity: values.providerQuantity,
+          providerStatus: values.providerStatus,
+          endsAt: values.endsAt,
+          renewsAt: values.renewsAt,
+          updatedAt: new Date(),
+          // `isDefault` is deliberately absent, exactly as in
+          // `writeStripeBasePlanRow`: a redelivery must never move the flag,
+          // and writing it here could raise 23505 on the default index.
+        },
       })
       .returning({ id: providerSubscriptions.id });
 
     const rowId = (inserted as { id: number }[])[0]?.id;
     if (rowId === undefined || rowId === null) return null;
 
+    // The account now holds a live row that may be the only thing billing it.
+    // Idempotent and safe under concurrency: it returns early when a live
+    // default already exists, so a Stripe row genuinely billing this account
+    // keeps the flag and this new Lemon Squeezy row does not steal it.
+    await rehomeDefault({ subscriptionId });
+
+    const claimed = await db
+      .select({ isDefault: providerSubscriptions.isDefault })
+      .from(providerSubscriptions)
+      .where(eq(providerSubscriptions.id, rowId));
+
     return {
       rowId,
       subscriptionId,
       itemType,
-      isDefault: claimsDefault,
+      isDefault: Boolean((claimed as { isDefault: boolean }[])[0]?.isDefault),
       providerStatus: attrs.status ?? null,
     };
   }
@@ -587,47 +632,16 @@ export class LemonSqueezyWebhookService {
    * either provider.
    */
   private async rehomeDefault(target: Target): Promise<void> {
-    const siblings = await db
-      .select({
-        id: providerSubscriptions.id,
-        itemType: providerSubscriptions.itemType,
-        providerStatus: providerSubscriptions.providerStatus,
-        endsAt: providerSubscriptions.endsAt,
-        provider: providerSubscriptions.provider,
-        providerQuantity: providerSubscriptions.providerQuantity,
-        isDefault: providerSubscriptions.isDefault,
-      })
-      .from(providerSubscriptions)
-      .where(eq(providerSubscriptions.subscriptionId, target.subscriptionId));
-
-    // `isLive` is the same predicate `hasLiveBasePlan` reads, so the row this
-    // picks is by construction one that makes the account read as billed. It
-    // is deliberately NOT a status string comparison here: Lemon Squeezy's
-    // `cancelled` is still live until `ends_at`, and re-homing onto a
-    // `cancelled` base plan mid-period is exactly right.
-    const candidates = (siblings as ProviderSubscription[]).filter(
-      (row) => row.id !== target.rowId && isLive(row),
-    );
-    if (candidates.length === 0) return;
-
-    const heir =
-      candidates.find((row) => row.itemType === 'BASE_PLAN') ?? candidates[0];
-
-    // Already correct — an account can legitimately hold its default on a
-    // second row if some other path re-homed it first. Writing again would be
-    // harmless but the guard keeps the "exactly one" invariant explicit.
-    if (heir.isDefault) return;
-
-    await db
-      .update(providerSubscriptions)
-      .set({ isDefault: true, updatedAt: new Date() })
-      .where(eq(providerSubscriptions.id, heir.id));
-
-    this.logger.log(
-      `Moved is_default to provider row ${heir.id} (${heir.provider} ` +
-        `${heir.itemType}) after row ${target.rowId} expired; the account is ` +
-        `still being billed.`,
-    );
+    // Delegates to the shared, provider-agnostic helper. It used to live here
+    // as a private method, and that is exactly how this defect found its
+    // SEVENTH home: `endStripeProviderRows` had no equivalent, so the Stripe
+    // direction of the same cutover was left open. The doc comment above
+    // states the contract this call site satisfies; the helper states the
+    // rest.
+    await rehomeDefault({
+      subscriptionId: target.subscriptionId,
+      excludeRowId: target.rowId,
+    });
   }
 
   /** One expired add-on: drop its bookkeeping row and re-apply limits. */

@@ -213,13 +213,52 @@ export class AddonService {
       )
       .limit(1);
 
+    // SEMANTICS OF THE NUMBER SENT TO THE PROVIDER — read this before changing
+    // it, because sending the wrong one bills the customer twice.
+    //
+    // `purchaseAddon` is ABSOLUTE when the provider already holds a record of
+    // this add-on (Stripe sets the line item's quantity; Lemon Squeezy PATCHes
+    // the subscription item's), and it is an INCREMENT when it does not,
+    // because there is nothing to add to — Lemon Squeezy opens a fresh hosted
+    // checkout for a NEW subscription, and that subscription bills for exactly
+    // the number in it, alongside anything already running.
+    //
+    // The service used to send `existing + quantity` unconditionally. That is
+    // right for the absolute case and WRONG for the checkout case, and the two
+    // disagree exactly when the `subscription_items` bookkeeping row exists
+    // while the `provider_subscriptions` row does not — a reachable state,
+    // since the Lemon Squeezy add-on `subscription_created` path is the one
+    // that writes the provider row, and a first checkout whose `custom_data`
+    // carried no resolvable account writes neither. The customer would then be
+    // charged `existing + quantity` on the NEW subscription while the original
+    // add-on subscription kept charging `existing`.
+    //
+    // So the sum is keyed on what the PROVIDER holds, not on what our
+    // bookkeeping table holds. The cap is still checked against the true total
+    // either way, so this cannot be used to exceed `maxQuantity`.
+    const providerRowsBefore = await db
+      .select()
+      .from(providerSubscriptions)
+      .where(eq(providerSubscriptions.subscriptionId, sub.id));
+    const providerHoldsAddon =
+      findItem(providerRowsBefore as ProviderSubscription[], addonType) !==
+      null;
+
+    const existingQuantity =
+      existingItem.length > 0 ? existingItem[0].quantity : 0;
+
+    // What the customer will hold once this purchase completes, used for the
+    // cap and for our own bookkeeping row.
+    const totalQuantity = existingQuantity + quantity;
+
+    // What the provider is asked for: the new total when it will REPLACE the
+    // figure it holds, the increment when it will bill a separate record.
+    const providerQuantity = providerHoldsAddon ? totalQuantity : quantity;
+
     let subscriptionItemId: number;
-    let finalQuantity = quantity;
+    const finalQuantity = totalQuantity;
 
     if (existingItem.length > 0) {
-      // Add to the current quantity rather than replacing it.
-      finalQuantity = existingItem[0].quantity + quantity;
-
       if (addonPrice.maxQuantity && finalQuantity > addonPrice.maxQuantity) {
         throw new BadRequestException(
           `Cannot add ${quantity} more. Maximum total for ${addonType} is ${addonPrice.maxQuantity}. ` +
@@ -236,7 +275,7 @@ export class AddonService {
     const purchase = await adapter.purchaseAddon(
       sub.id,
       addonType,
-      finalQuantity,
+      providerQuantity,
     );
 
     // Lemon Squeezy cannot create a NEW add-on through its API, so it hands
@@ -251,7 +290,11 @@ export class AddonService {
       return {
         status: 'checkout_required',
         addonType,
-        quantity: finalQuantity,
+        // What this checkout actually bills for. Reporting the cumulative
+        // total here would tell the frontend the customer is buying more than
+        // the checkout charges for whenever a separate add-on subscription is
+        // already running.
+        quantity: providerQuantity,
         checkoutUrl: purchase.url,
       };
     }

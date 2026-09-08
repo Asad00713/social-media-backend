@@ -12,6 +12,7 @@ import { CustomerService } from '../services/customer.service';
 import { StripeService } from '../../stripe/stripe.service';
 import { assertProviderIsStripe } from '../../stripe/stripe-guard.util';
 import { pickDefaultProvider } from '../services/provider-subscription.util';
+import { rehomeDefault } from '../services/rehome-default.util';
 import {
   PaymentProviderAdapter,
   PurchaseResult,
@@ -273,10 +274,27 @@ export class StripeAdapter implements PaymentProviderAdapter {
 
     await this.stripe.deleteSubscriptionItem(row.providerItemId);
 
+    // `canceled`, NOT `removed`. `isLive` is a DENY-LIST — it fails open by
+    // design, so a status it does not recognise reads as STILL BILLING.
+    // `removed` was such a status, which meant a deleted Stripe line item went
+    // on reading as live: it fed `billedQuantities` and, worse, it was
+    // eligible to inherit `is_default` in `rehomeDefault`'s heir search, so a
+    // removed add-on could become the row that makes an unbilled account read
+    // as paying. This is the liveness-write-that-never-touches-the-flag shape
+    // that broke the invariant twice before on this branch.
+    //
+    // Chose the existing vocabulary over widening the deny-list at the source:
+    // `endStripeProviderRows` already writes `canceled` for the same meaning
+    // ("this is over at the provider"), one spelling per fact is what stops
+    // the next status from drifting out of the deny-list the same way, and it
+    // needs no new entry to be correct. `removed` is ALSO added to
+    // `STRIPE_TERMINAL_STATUSES` so rows already written that way — this code
+    // has shipped nowhere yet, but a local or staging database may hold them —
+    // read correctly rather than staying live forever.
     await this.db
       .update(providerSubscriptions)
       .set({
-        providerStatus: 'removed',
+        providerStatus: 'canceled',
         updatedAt: new Date(),
       })
       .where(eq(providerSubscriptions.id, row.id));
@@ -325,6 +343,25 @@ export class StripeAdapter implements PaymentProviderAdapter {
         updatedAt: new Date(),
       })
       .where(eq(providerSubscriptions.id, base.id));
+
+    // Releasing the flag is only half of it. `is_default` names the provider
+    // billing THE ACCOUNT, not this row, and mid-cutover a live Lemon Squeezy
+    // row can survive an immediate Stripe cancel untouched — this UPDATE
+    // touches one Stripe row. Leaving zero defaults on an account Lemon
+    // Squeezy is still charging makes `hasLiveBasePlan` answer false for a
+    // paying customer and opens a SECOND subscription through the FREE->paid
+    // branch. Runs AFTER the write above so the row just cancelled is already
+    // not-live and cannot win its own heir search.
+    if (!atPeriodEnd) {
+      await rehomeDefault({
+        subscriptionId,
+        excludeRowId: base.id,
+        // The INJECTED handle, not the module-level one — see the helper's
+        // doc comment. They are the same instance at runtime and different
+        // fakes under test.
+        db: this.db,
+      });
+    }
   }
 
   // ------------------------------------------------------------ pause/resume

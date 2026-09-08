@@ -166,6 +166,27 @@ describe('isLive', () => {
   it('keeps incomplete (not yet expired) live — payment is still processing', () => {
     expect(isLive(row({ providerStatus: 'incomplete' }))).toBe(true);
   });
+
+  // I2. `StripeAdapter.removeAddon` used to write `removed` for a deleted
+  // subscription line item, and because this is a deny-list that fails OPEN an
+  // unlisted status reads as STILL BILLING. So a removed add-on stayed live:
+  // it fed `billedQuantities`, and it was an eligible heir in `rehomeDefault`,
+  // which would let a gone add-on hold `is_default` and make an unbilled
+  // account read as paying. That writer now writes `canceled`; this entry
+  // covers rows written before the change so they do not stay live forever.
+  it('treats removed as revoked — the line item is gone at Stripe', () => {
+    expect(isLive(row({ providerStatus: 'removed' }))).toBe(false);
+  });
+
+  // The deny-list must stay a deny-list. An unrecognised status reading as
+  // live is the DELIBERATE failure mode: failing closed would strip a paying
+  // customer's plan on any status we had not enumerated, which is the round-1
+  // defect this file exists to prevent.
+  it('still fails OPEN on a status nobody enumerated', () => {
+    expect(isLive(row({ providerStatus: 'some_future_stripe_status' }))).toBe(
+      true,
+    );
+  });
 });
 
 describe('hasLegacyProvider', () => {

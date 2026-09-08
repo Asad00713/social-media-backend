@@ -176,21 +176,61 @@ function makeDb(): any {
       return chain;
     },
 
+    /**
+     * The insert honours its DECLARED CONFLICT TARGET.
+     *
+     * A fake that ignored `onConflictDoUpdate` — as this one did — makes a
+     * bare INSERT and an UPSERT indistinguishable, so a test asserting "the
+     * second delivery updates rather than duplicating" passes with the
+     * `onConflictDoUpdate` deleted. That is the C2 defect testing itself into
+     * a pass. The target's columns are read off the real drizzle objects
+     * (`.name`), so dropping or changing one of them is caught too.
+     */
     insert: (t: unknown) => {
       const target = tableName(t);
       let last: Row[] = [];
+      let pending: Row[] = [];
       const chain: any = {
         values: (v: Row | Row[]) => {
-          const incoming = Array.isArray(v) ? v : [v];
+          pending = Array.isArray(v) ? v : [v];
           last = [];
-          for (const row of incoming) {
+          for (const row of pending) {
             const stored = { id: rowsOf(target).length + 1, ...row };
             rowsOf(target).push(stored);
             last.push(stored);
           }
           return chain;
         },
-        onConflictDoUpdate: () => chain,
+        onConflictDoUpdate: (arg: {
+          target: unknown[];
+          set: Record<string, unknown>;
+        }) => {
+          const keys = (arg.target ?? []).map((c) =>
+            camel(String((c as any)?.name)),
+          );
+          if (keys.length === 0) {
+            throw new Error('The db fake needs a declared conflict target.');
+          }
+          // Undo the optimistic append and redo it as a real upsert.
+          last = [];
+          for (let k = 0; k < pending.length; k++) {
+            rowsOf(target).pop();
+          }
+          for (const row of pending) {
+            const existing = rowsOf(target).find((r) =>
+              keys.every((k) => r[k] === row[k]),
+            );
+            if (existing) {
+              Object.assign(existing, arg.set);
+              last.push(existing);
+            } else {
+              const stored = { id: rowsOf(target).length + 1, ...row };
+              rowsOf(target).push(stored);
+              last.push(stored);
+            }
+          }
+          return chain;
+        },
         onConflictDoNothing: () => chain,
         returning: (projection?: Record<string, unknown>) => {
           if (!projection) return Promise.resolve(last);
@@ -484,11 +524,51 @@ describe('LemonSqueezyWebhookService.verifySignature', () => {
   });
 
   it('rejects when no secret is configured, rather than accepting everything', () => {
+    // THIS TEST USED TO PROVE NOTHING. Asserting only `false` here passes even
+    // with the `if (!secret)` guard deleted, because `createHmac('sha256',
+    // undefined)` throws a TypeError that the method's own outer try/catch
+    // swallows into `false`. It tested the catch, not the guard — verified by
+    // replacing the condition with `if (false)`: 45/45 still passed.
+    //
+    // That matters because the guard is the only fail-CLOSED protection on a
+    // publicly reachable endpoint that mutates billing state, and `''` (which
+    // is what an unset Railway variable actually looks like) does NOT throw:
+    // `createHmac('sha256', '')` succeeds, so without the guard an empty
+    // secret would fail OPEN and accept a forged body. A refactor of the
+    // try/catch could remove the protection with CI green.
+    //
+    // So it now pins the GUARD's own observable effect: the loud error it logs
+    // before returning. Only that branch writes it, so the assertion fails the
+    // moment the guard stops running — whatever the try/catch does afterwards.
+    // (`jest.spyOn(crypto, 'createHmac')` would be the sharper assertion, but
+    // the ESM namespace object's properties are non-configurable here and the
+    // spy throws `Cannot redefine property`.)
     delete process.env.LEMONSQUEEZY_WEBHOOK_SECRET;
+    const service = make();
+    const logged = jest
+      .spyOn((service as any).logger, 'error')
+      .mockImplementation(() => undefined);
+
     const raw = '{}';
-    expect(make().verifySignature(Buffer.from(raw), sign(raw, 'shhh'))).toBe(
+    expect(service.verifySignature(Buffer.from(raw), sign(raw, 'shhh'))).toBe(
       false,
     );
+    expect(logged).toHaveBeenCalledWith(
+      expect.stringContaining('LEMONSQUEEZY_WEBHOOK_SECRET is not set'),
+    );
+
+    logged.mockRestore();
+  });
+
+  it('rejects an EMPTY secret, which does not throw and would otherwise fail OPEN', () => {
+    // The shape an unset deployment variable really takes. Unlike `undefined`,
+    // `crypto.createHmac('sha256', '')` succeeds, so the try/catch cannot
+    // rescue this one — only the guard can. Without it an attacker who knows
+    // the secret is empty can sign their own body and drive billing state.
+    process.env.LEMONSQUEEZY_WEBHOOK_SECRET = '';
+    const raw = '{"meta":{"event_name":"subscription_expired"}}';
+    // Signed with the empty secret the server would be using.
+    expect(make().verifySignature(Buffer.from(raw), sign(raw, ''))).toBe(false);
   });
 
   it('rejects a signature of the wrong LENGTH without throwing', () => {
@@ -780,6 +860,127 @@ describe('subscription_created', () => {
     expect(row.isDefault).toBe(false);
     // The existing default is untouched.
     expect(baseRow().isDefault).toBe(true);
+  });
+
+  it('UPSERTS a second checkout onto the same row instead of raising 23505', async () => {
+    // C2. This insert was the only writer of this table that was bare — its
+    // siblings (`writeStripeBasePlanRow`, `StripeAdapter.purchaseAddon`) both
+    // upsert on this same `(subscription_id, provider, item_type)` target.
+    //
+    // The path that gets here twice: the FIRST checkout's `custom_data`
+    // carried no resolvable account, so no row was written — and Lemon Squeezy
+    // does NOT redeliver a delivery it already answered 200 to. The customer,
+    // seeing nothing, buys again; Lemon Squeezy creates a SECOND subscription
+    // and charges for both. A bare insert then hit the unique constraint and
+    // raised 23505 AFTER the money moved, so the webhook 500'd and the row was
+    // never written for the second purchase either.
+    tables.provider_subscriptions = [];
+
+    const created = (providerSubscriptionId: string) =>
+      make().handleEvent(
+        'subscription_created',
+        lifecycle(
+          providerSubscriptionId,
+          {
+            status: 'active',
+            customer_id: 555,
+            first_subscription_item: { id: 'item_x', quantity: 1 },
+          },
+          {
+            user_id: 'user-1',
+            item_type: 'EXTRA_MEMBER',
+            subscription_id: String(SUBSCRIPTION_ID),
+          },
+        ),
+      );
+
+    await created('ls_sub_first');
+    await expect(created('ls_sub_second')).resolves.toBeUndefined();
+
+    // ONE row, repointed at the subscription that is actually live — not a
+    // duplicate, and not a throw.
+    const rows = rowsOf('provider_subscriptions').filter(
+      (r) => r.itemType === 'EXTRA_MEMBER',
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].providerSubscriptionId).toBe('ls_sub_second');
+    expectDefaultInvariant();
+  });
+
+  it('does not let a redelivery move is_default off the row that holds it', async () => {
+    // The conflict `set` deliberately omits `isDefault`, exactly as
+    // `writeStripeBasePlanRow` does. During the cutover that flag says which
+    // provider currently bills the account; a redelivery must not move it, and
+    // writing it here could also raise 23505 on the partial default index.
+    await make().handleEvent(
+      'subscription_created',
+      lifecycle(
+        'ls_sub_base_again',
+        { status: 'active', first_subscription_item: { id: 'i', quantity: 1 } },
+        {
+          user_id: 'user-1',
+          item_type: 'BASE_PLAN',
+          subscription_id: String(SUBSCRIPTION_ID),
+        },
+      ),
+    );
+
+    // The SAME row, repointed at the new provider subscription id — not a
+    // second BASE_PLAN row, and still holding the flag it already had.
+    const bases = rowsOf('provider_subscriptions').filter(
+      (r) => r.itemType === 'BASE_PLAN',
+    );
+    expect(bases).toHaveLength(1);
+    expect(bases[0].providerSubscriptionId).toBe('ls_sub_base_again');
+    expect(bases[0].isDefault).toBe(true);
+    expectDefaultInvariant();
+  });
+
+  it('a redelivery cannot GRANT the flag to a row that does not hold it', async () => {
+    // The direction that actually catches an `isDefault` in the conflict
+    // `set`. Asserting only that a row which ALREADY holds the flag keeps it
+    // passes for `set: { isDefault: true }`, because writing true over true
+    // changes nothing — the mutation-proof version has to redeliver onto a row
+    // holding FALSE while another row holds the flag.
+    //
+    // It also has to be a NEW provider subscription id. `handleLifecycle` only
+    // calls `createRowFromCheckout` when `findTarget` misses, so redelivering
+    // the SAME id never reaches this insert at all — it takes the refresh path
+    // instead. The conflict that does reach it is a second Lemon Squeezy
+    // subscription landing on the same (subscription, provider, item_type).
+    //
+    // Here that second add-on subscription arrives while the BASE_PLAN holds
+    // the account's default. An `isDefault` in the conflict `set` would flip
+    // the add-on's row to true, and
+    // `provider_subscriptions_one_default_idx` allows exactly one true row per
+    // subscription: 23505 inside a webhook, retried forever.
+    expect(addonRow().isDefault).toBe(false);
+    expect(baseRow().isDefault).toBe(true);
+    const addonItemType = addonRow().itemType as string;
+
+    await make().handleEvent(
+      'subscription_created',
+      lifecycle(
+        'ls_sub_addon_replacement',
+        { status: 'active', first_subscription_item: { id: 'i', quantity: 4 } },
+        {
+          user_id: 'user-1',
+          item_type: addonItemType,
+          subscription_id: String(SUBSCRIPTION_ID),
+        },
+      ),
+    );
+
+    const addons = rowsOf('provider_subscriptions').filter(
+      (r) => r.itemType === addonItemType,
+    );
+    // Upserted onto the one row (quantity refreshed, id repointed)...
+    expect(addons).toHaveLength(1);
+    expect(addons[0].providerQuantity).toBe(4);
+    // ...but the flag did NOT move onto it.
+    expect(addons[0].isDefault).toBe(false);
+    expect(baseRow().isDefault).toBe(true);
+    expectDefaultInvariant();
   });
 
   it('writes nothing when the checkout carried no resolvable account', async () => {

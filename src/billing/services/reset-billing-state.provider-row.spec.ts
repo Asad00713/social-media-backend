@@ -29,7 +29,6 @@
 /* The fakes stand in for drizzle's fluent builders; `any` is confined to them. */
 /* eslint-disable @typescript-eslint/no-unsafe-return */
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
-/* eslint-disable @typescript-eslint/no-unsafe-call */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 
 interface Row {
@@ -47,6 +46,100 @@ function tableName(t: unknown): string {
   return typeof name === 'string' ? name : 'unknown';
 }
 
+/**
+ * THIS FAKE USED TO IGNORE `where()` TOO, patching every row in a table.
+ *
+ * Survivable while each test seeded exactly one provider row, and wrong the
+ * moment one does not: `endStripeProviderRows` is scoped to
+ * `provider = 'stripe'`, and the seventh incarnation is entirely about the
+ * live LEMON SQUEEZY row beside it. A table-wide patch would kill that row
+ * too, and the invariant assertion would then "pass" by proving the opposite.
+ *
+ * Interpreter ported from `webhook.provider-row.spec.ts`.
+ */
+type Predicate = (row: Row) => boolean;
+
+/** A drizzle column chunk, as opposed to a literal or an operator. */
+function isColumn(chunk: unknown): boolean {
+  return (
+    !!chunk &&
+    typeof chunk === 'object' &&
+    typeof (chunk as any).name === 'string'
+  );
+}
+
+/** camelCase property for a snake_case SQL column. */
+function camel(sqlName: string): string {
+  return sqlName.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
+}
+
+/** Depth-first flatten of drizzle's nested `queryChunks`. */
+function flatten(chunks: unknown[], out: unknown[] = []): unknown[] {
+  for (const chunk of chunks) {
+    const nested = (chunk as any)?.queryChunks as unknown[] | undefined;
+    if (Array.isArray(nested)) flatten(nested, out);
+    else out.push(chunk);
+  }
+  return out;
+}
+
+function predicateFrom(condition: unknown): Predicate {
+  if (!condition) return () => true;
+  const top = (condition as any).queryChunks as unknown[] | undefined;
+  if (!Array.isArray(top)) {
+    throw new Error('The db fake only understands drizzle eq()/and() clauses.');
+  }
+  const chunks = flatten(top);
+
+  const pairs: { column: string; value: unknown }[] = [];
+  for (let i = 0; i < chunks.length; i++) {
+    const chunk: any = chunks[i];
+    if (isColumn(chunk)) {
+      // ['', {name}, ' = ', value, ...]
+      const op = chunks[i + 1] as any;
+      const opText = Array.isArray(op?.value) ? String(op.value[0]) : '';
+      // `inArray(col, <subquery>)` — the account-wide usage fan-out uses one.
+      // Interpreting a nested SELECT here would be a second query engine, and
+      // the tests that exercise it seed one owner, so the column is left
+      // unconstrained. Stated as an explicit BRANCH rather than a fallback:
+      // the `throw` below still fires for any other operator, so an
+      // unrecognised clause can never silently widen to "match everything",
+      // which is what the old table-wide predicate did for every query.
+      if (opText.includes(' in ')) {
+        while (i + 1 < chunks.length && !isColumn(chunks[i + 1])) i++;
+        continue;
+      }
+      if (!opText.includes('=')) {
+        throw new Error(`The db fake only understands '=', saw "${opText}".`);
+      }
+      // The bound value is a drizzle `Param`, not the raw literal.
+      const param = chunks[i + 2] as any;
+      const value =
+        param && typeof param === 'object' && 'value' in param
+          ? param.value
+          : param;
+      pairs.push({ column: camel(chunk.name), value });
+      i += 2;
+    }
+  }
+
+  // Zero pairs is legitimate only for a clause that was ENTIRELY a subquery
+  // `in` (the usage fan-out). Anything else reaching here means the walk
+  // understood nothing, and matching everything would be the silent widening
+  // this interpreter exists to prevent.
+  if (pairs.length === 0) return () => true;
+
+  return (row: Row) =>
+    pairs.every((p) => {
+      const actual = row[p.column];
+      // Dates compare by value; ids arrive as numbers or strings.
+      if (actual instanceof Date && p.value instanceof Date) {
+        return actual.getTime() === p.value.getTime();
+      }
+      return actual === p.value;
+    });
+}
+
 function rowsOf(name: string): Row[] {
   tables[name] = tables[name] ?? [];
   return tables[name];
@@ -55,30 +148,38 @@ function rowsOf(name: string): Row[] {
 const mockDb: any = {
   select: () => {
     let target = 'unknown';
+    let match: Predicate = () => true;
     const chain: any = {
       from: (t: unknown) => {
         target = tableName(t);
         return chain;
       },
-      where: () => chain,
+      where: (c: unknown) => {
+        match = predicateFrom(c);
+        return chain;
+      },
       limit: () => chain,
       then: (resolve: (v: unknown) => unknown) =>
-        Promise.resolve(rowsOf(target)).then(resolve),
+        Promise.resolve(rowsOf(target).filter(match)).then(resolve),
     };
     return chain;
   },
   update: (t: unknown) => {
     const target = tableName(t);
     let patch: Row = {};
+    let match: Predicate = () => true;
     const apply = (): void => {
-      for (const row of rowsOf(target)) Object.assign(row, patch);
+      for (const row of rowsOf(target)) {
+        if (match(row)) Object.assign(row, patch);
+      }
     };
     const chain: any = {
       set: (v: Row) => {
         patch = v;
         return chain;
       },
-      where: () => {
+      where: (c: unknown) => {
+        match = predicateFrom(c);
         apply();
         return chain;
       },
@@ -91,13 +192,18 @@ const mockDb: any = {
   },
   delete: (t: unknown) => {
     const target = tableName(t);
+    let match: Predicate = () => true;
+    const apply = (): void => {
+      tables[target] = rowsOf(target).filter((r) => !match(r));
+    };
     const chain: any = {
-      where: () => {
-        tables[target] = [];
+      where: (c: unknown) => {
+        match = predicateFrom(c);
+        apply();
         return chain;
       },
       then: (resolve: (v: unknown) => unknown) => {
-        tables[target] = [];
+        apply();
         return Promise.resolve([]).then(resolve);
       },
     };
@@ -118,6 +224,8 @@ const mockDb: any = {
 jest.mock('../../drizzle/db', () => ({ db: mockDb }));
 
 import { SubscriptionService } from './subscription.service';
+// The REAL liveness predicate the billing branches read.
+import { isLive } from './provider-subscription.util';
 
 const SUBSCRIPTION_ID = 42;
 
@@ -179,6 +287,45 @@ describe('resetBillingState', () => {
     // dead row holding it makes a later Lemon Squeezy signup raise 23505 after
     // LS has charged.
     expect(rowsOf('provider_subscriptions')[0].isDefault).toBe(false);
+  });
+
+  it('hands is_default to a live LEMON SQUEEZY row instead of stranding it', async () => {
+    // C1 through THIS endpoint. The reviewer named it as a trigger in its own
+    // right: `POST /billing/reset` on an account holding both providers.
+    // `endStripeProviderRows` is scoped to `provider = 'stripe'`, so the live
+    // Lemon Squeezy row survives untouched — the account is still being billed
+    // — and before the fix nothing handed the flag on. Zero defaults while LS
+    // charges makes `hasLiveBasePlan` answer false for a paying customer, and
+    // the very re-subscribe this endpoint exists to unblock then opens a
+    // SECOND live subscription.
+    rowsOf('provider_subscriptions').push({
+      id: 2,
+      subscriptionId: SUBSCRIPTION_ID,
+      provider: 'lemonsqueezy',
+      itemType: 'BASE_PLAN',
+      providerSubscriptionId: 'ls_sub_1',
+      providerStatus: 'active',
+      providerQuantity: 1,
+      endsAt: null,
+      isDefault: false,
+    });
+
+    await makeService().resetBillingState('ws-1', 'user-1');
+
+    const rows = rowsOf('provider_subscriptions');
+    const stripeRow = rows.find((r) => r.provider === 'stripe') as Row;
+    const lsRow = rows.find((r) => r.provider === 'lemonsqueezy') as Row;
+
+    // The Lemon Squeezy row is untouched by the Stripe-scoped UPDATE...
+    expect(lsRow.providerStatus).toBe('active');
+    // ...and it inherits the flag the dead Stripe row released.
+    expect(lsRow.isDefault).toBe(true);
+    expect(stripeRow.isDefault).toBe(false);
+
+    // The invariant, not just the field.
+    const defaults = rows.filter((r) => r.isDefault === true);
+    expect(defaults).toHaveLength(1);
+    expect(isLive(defaults[0] as never)).toBe(true);
   });
 
   it('still clears the legacy column and returns to FREE', async () => {
