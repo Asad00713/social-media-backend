@@ -265,6 +265,43 @@ export const providerSubscriptions = pgTable(
   },
 );
 
+/**
+ * What a plan or add-on is called at each payment provider.
+ *
+ * `plans.stripe_price_id` and `addon_pricing.stripe_price_id` name Stripe
+ * specifically, and the latter is NOT NULL — so they cannot answer "what is
+ * the Pro plan at Lemon Squeezy?". Adding a `lemonsqueezy_variant_id` beside
+ * each would repeat the problem for the provider after that.
+ *
+ * `providerRef` holds a Stripe price id (`price_...`) or a Lemon Squeezy
+ * variant id, whichever this provider uses to name the thing being sold.
+ */
+export const providerPrices = pgTable(
+  'provider_prices',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    provider: varchar('provider', { length: 20 }).notNull(),
+    /** Plan code (FREE/BASIC/PRO/MAX) for a plan, or NULL for an add-on. */
+    planCode: varchar('plan_code', { length: 20 }),
+    /** BASE_PLAN, or an add-on type. Mirrors provider_subscriptions.item_type. */
+    itemType: varchar('item_type', { length: 30 }).notNull(),
+    /** Stripe price id, or Lemon Squeezy variant id. */
+    providerRef: varchar('provider_ref', { length: 255 }).notNull(),
+    isActive: boolean('is_active').default(true).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => {
+    return {
+      uniqueProviderPrice: unique().on(
+        table.provider,
+        table.planCode,
+        table.itemType,
+      ),
+    };
+  },
+);
+
 // 6. Workspace Usage - Real-time usage tracking for enforcement
 export const workspaceUsage = pgTable('workspace_usage', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
@@ -605,6 +642,9 @@ export type NewSubscriptionItem = typeof subscriptionItems.$inferInsert;
 
 export type ProviderSubscription = typeof providerSubscriptions.$inferSelect;
 export type NewProviderSubscription = typeof providerSubscriptions.$inferInsert;
+
+export type ProviderPrice = typeof providerPrices.$inferSelect;
+export type NewProviderPrice = typeof providerPrices.$inferInsert;
 
 /**
  * The payment providers we can bill through.
