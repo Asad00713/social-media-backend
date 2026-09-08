@@ -4,6 +4,7 @@ import { BillingController } from './billing.controller';
 import { CustomerService } from './services/customer.service';
 import { SubscriptionService } from './services/subscription.service';
 import { WebhookService } from './services/webhook.service';
+import { LemonSqueezyWebhookService } from './services/lemonsqueezy-webhook.service';
 import { UsageService } from './services/usage.service';
 import { AddonService } from './services/addon.service';
 import { PlanChangeService } from './services/plan-change.service';
@@ -53,6 +54,7 @@ const PROVIDER_ADAPTER_REGISTRATION = {
     CustomerService,
     SubscriptionService,
     WebhookService,
+    LemonSqueezyWebhookService,
     UsageService,
     AddonService,
     PlanChangeService,
@@ -74,6 +76,7 @@ const PROVIDER_ADAPTER_REGISTRATION = {
     CustomerService,
     SubscriptionService,
     WebhookService,
+    LemonSqueezyWebhookService,
     UsageService,
     AddonService,
     PlanChangeService,

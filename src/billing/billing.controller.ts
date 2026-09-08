@@ -1,6 +1,7 @@
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 import {
+  BadRequestException,
   Controller,
   Post,
   Delete,
@@ -16,6 +17,7 @@ import {
 } from '@nestjs/common';
 import { SubscriptionService } from './services/subscription.service';
 import { WebhookService } from './services/webhook.service';
+import { LemonSqueezyWebhookService } from './services/lemonsqueezy-webhook.service';
 import { UsageService } from './services/usage.service';
 import { AddonService } from './services/addon.service';
 import type { PurchaseAddonOutcome } from './services/addon.service';
@@ -46,6 +48,7 @@ export class BillingController {
   constructor(
     private subscriptionService: SubscriptionService,
     private webhookService: WebhookService,
+    private lemonSqueezyWebhookService: LemonSqueezyWebhookService,
     private usageService: UsageService,
     private addonService: AddonService,
     private planChangeService: PlanChangeService,
@@ -440,6 +443,61 @@ export class BillingController {
 
     // Process webhook
     await this.webhookService.handleWebhook(event);
+
+    return { received: true };
+  }
+
+  /**
+   * Lemon Squeezy webhooks.
+   *
+   * Its own route with its own signature check, deliberately — neither webhook
+   * route can reach the other provider's subscriptions, which is the third of
+   * the design's three leak-prevention layers. There is nothing to route by
+   * payload here: the provider is already known from the URL.
+   *
+   * `req.rawBody` is the same mechanism the Stripe route above uses (Nest is
+   * created with `rawBody: true` in `main.ts`). It matters more here than
+   * anywhere: HMAC-SHA256 is computed over the exact bytes Lemon Squeezy
+   * signed, and `JSON.parse` then `JSON.stringify` reorders keys and changes
+   * whitespace, so verifying a re-serialised body would reject every genuine
+   * delivery.
+   *
+   * A failed verification is a 400, not a 500: an unsigned or forged body is a
+   * client error and Lemon Squeezy should not retry it. A genuine handler
+   * failure, by contrast, is left to propagate so the delivery IS retried.
+   */
+  @Post('webhooks/lemonsqueezy')
+  @HttpCode(HttpStatus.OK)
+  async handleLemonSqueezyWebhook(
+    @Req() req: RawBodyRequest<Request>,
+    @Headers('x-signature') signature: string,
+  ) {
+    const rawBody = req.rawBody;
+
+    if (!rawBody) {
+      throw new BadRequestException(
+        'Raw body is required for webhook verification',
+      );
+    }
+
+    if (!this.lemonSqueezyWebhookService.verifySignature(rawBody, signature)) {
+      throw new BadRequestException('Invalid Lemon Squeezy signature');
+    }
+
+    // Parsed only AFTER the signature passed, so nothing unverified is ever
+    // interpreted. A body that verified but is not JSON is a 400 rather than
+    // an uncaught SyntaxError.
+    let payload: { meta?: { event_name?: string } };
+    try {
+      payload = JSON.parse(rawBody.toString('utf8')) as {
+        meta?: { event_name?: string };
+      };
+    } catch {
+      throw new BadRequestException('Malformed Lemon Squeezy webhook body');
+    }
+
+    const eventName = payload?.meta?.event_name ?? '';
+    await this.lemonSqueezyWebhookService.handleEvent(eventName, payload);
 
     return { received: true };
   }
