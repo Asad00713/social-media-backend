@@ -107,17 +107,23 @@ export class StripeAdapter implements PaymentProviderAdapter {
       'BASE_PLAN',
     );
 
-    if (!base.providerItemId) {
+    if (!base.providerItemId || !base.providerSubscriptionId) {
       throw new BadRequestException(
         `Subscription ${subscriptionId} has no Stripe line item for its base plan.`,
       );
     }
 
-    await this.stripe.updateSubscriptionItem(
-      base.providerItemId,
-      1,
-      base.providerSubscriptionId ?? undefined,
-    );
+    // `updateSubscriptionItem` cannot change price — Stripe's subscription
+    // item update endpoint takes no `price` field, only `quantity`. Changing
+    // the plan means changing the PRICE the item points at, which is a
+    // subscription-level call (`items: [{ id, price }]`), the same shape the
+    // legacy `plan-change.service.ts` already uses. `proration_behavior:
+    // 'none'` mirrors that legacy call: a plan change is a scheduled swap of
+    // what the customer is on, not a mid-cycle charge/credit event here.
+    await this.stripe.updateSubscription(base.providerSubscriptionId, {
+      items: [{ id: base.providerItemId, price: priceId }],
+      proration_behavior: 'none',
+    });
 
     await this.db
       .update(providerSubscriptions)
@@ -138,7 +144,14 @@ export class StripeAdapter implements PaymentProviderAdapter {
     quantity: number,
   ): Promise<PurchaseResult> {
     const rows = await this.rowsFor(subscriptionId);
-    const existing = rows.find((r) => r.itemType === itemType);
+    // `rowsFor` deliberately returns every provider's rows so the Task 6
+    // guard can see a foreign default row. During the LS -> Stripe migration
+    // window an account can hold BOTH a Lemon Squeezy and a Stripe row for
+    // the same item type at once — this filter is what keeps that foreign
+    // row's id from being handed to a Stripe API call.
+    const existing = rows.find(
+      (r) => r.itemType === itemType && r.provider === PROVIDER,
+    );
 
     if (existing?.providerItemId) {
       await this.changeAddonQuantity(subscriptionId, itemType, quantity);
@@ -332,13 +345,25 @@ export class StripeAdapter implements PaymentProviderAdapter {
     return typed;
   }
 
-  /** Naming the item type matters: "not found" alone says nothing actionable. */
+  /**
+   * Naming the item type matters: "not found" alone says nothing actionable.
+   *
+   * Scoped to `provider === 'stripe'` deliberately — `rows` here is
+   * `rowsFor`'s full, unfiltered result (every provider, so the Task 6 guard
+   * can inspect the default row). During the LS -> Stripe migration window
+   * two rows can legitimately share an `itemType`, and picking one by
+   * `itemType` alone risks handing a Lemon Squeezy id to a Stripe call. This
+   * mirrors `findItem` in `provider-subscription.util.ts`, which scopes to
+   * the default provider for exactly this reason.
+   */
   private require(
     rows: ProviderRow[],
     itemType: ProviderItemType,
     subscriptionId: number,
   ): ProviderRow {
-    const row = rows.find((r) => r.itemType === itemType);
+    const row = rows.find(
+      (r) => r.itemType === itemType && r.provider === PROVIDER,
+    );
     if (!row) {
       throw new BadRequestException(
         `Subscription ${subscriptionId} has no ${PROVIDER} ${itemType} to change.`,

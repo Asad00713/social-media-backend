@@ -22,6 +22,7 @@ function makeAdapter(rows: Record<string, unknown>[] = []) {
   const stripe = {
     addSubscriptionItem: jest.fn().mockResolvedValue({ id: 'si_new' }),
     updateSubscriptionItem: jest.fn().mockResolvedValue({ id: 'si_new' }),
+    updateSubscription: jest.fn().mockResolvedValue({ id: 'sub_1' }),
     deleteSubscriptionItem: jest.fn().mockResolvedValue(undefined),
     pauseSubscription: jest.fn().mockResolvedValue(undefined),
     resumeSubscription: jest.fn().mockResolvedValue(undefined),
@@ -68,7 +69,11 @@ describe('StripeAdapter', () => {
   // Stripe can add an item and invoice server-side, so nothing is redirected.
   it('completes an add-on purchase without a checkout redirect', async () => {
     const { adapter } = makeAdapter([
-      { itemType: 'BASE_PLAN', providerSubscriptionId: 'sub_1' },
+      {
+        itemType: 'BASE_PLAN',
+        providerSubscriptionId: 'sub_1',
+        provider: 'stripe',
+      },
     ]);
     const result = await adapter.purchaseAddon(1, 'EXTRA_CHANNEL', 3);
     expect(result).toEqual({ status: 'completed', quantity: 3 });
@@ -76,7 +81,11 @@ describe('StripeAdapter', () => {
 
   it('cancels through the existing StripeService', async () => {
     const { adapter, stripe } = makeAdapter([
-      { itemType: 'BASE_PLAN', providerSubscriptionId: 'sub_1' },
+      {
+        itemType: 'BASE_PLAN',
+        providerSubscriptionId: 'sub_1',
+        provider: 'stripe',
+      },
     ]);
     await adapter.cancel(1, true);
     expect(stripe.cancelSubscription).toHaveBeenCalledWith('sub_1', true);
@@ -96,5 +105,57 @@ describe('StripeAdapter', () => {
     await expect(adapter.createCheckout('user-1', 'PRO', 'ws-1')).resolves.toEqual(
       { url: 'https://stripe.test/c/1' },
     );
+  });
+
+  // Regression pin for the line-115 hazard: `updateSubscriptionItem` has no
+  // `price` field on Stripe's API — it can only change `quantity`. Changing
+  // plan means changing which price the item points at, which is a
+  // subscription-level call (`items: [{ id, price }]`). Without this test the
+  // adapter could write the new plan into our DB while Stripe kept billing
+  // the old one, silently.
+  it('sends the new price id to Stripe when changing plan', async () => {
+    const { adapter, stripe, catalogue } = makeAdapter([
+      {
+        itemType: 'BASE_PLAN',
+        providerSubscriptionId: 'sub_1',
+        providerItemId: 'si_base',
+        provider: 'stripe',
+      },
+    ]);
+    catalogue.resolveRef.mockResolvedValue('price_pro');
+
+    await adapter.changePlan(1, 'PRO');
+
+    expect(stripe.updateSubscription).toHaveBeenCalledWith('sub_1', {
+      items: [{ id: 'si_base', price: 'price_pro' }],
+      proration_behavior: 'none',
+    });
+  });
+
+  // The migration-window hazard: during the LS -> Stripe cutover an account
+  // can hold a row from EACH provider for the same itemType (this is by
+  // design — see billing.schema.ts around the unique-per-(subscription,
+  // provider, itemType) index). The Task 6 guard only inspects the isDefault
+  // row, so it does not stop a later itemType lookup from picking the WRONG
+  // provider's row. This pins that the Stripe row is the one selected.
+  it('picks the Stripe row, not a same-itemType Lemon Squeezy row, during migration overlap', async () => {
+    const { adapter, stripe } = makeAdapter([
+      {
+        itemType: 'BASE_PLAN',
+        providerSubscriptionId: 'ls_sub_1',
+        provider: 'lemonsqueezy',
+        isDefault: false,
+      },
+      {
+        itemType: 'BASE_PLAN',
+        providerSubscriptionId: 'sub_1',
+        provider: 'stripe',
+        isDefault: true,
+      },
+    ]);
+
+    await adapter.cancel(1, true);
+
+    expect(stripe.cancelSubscription).toHaveBeenCalledWith('sub_1', true);
   });
 });
