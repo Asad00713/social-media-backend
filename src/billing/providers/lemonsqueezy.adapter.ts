@@ -85,17 +85,6 @@ export class LemonSqueezyAdapter implements PaymentProviderAdapter {
     planCode: string,
     workspaceId: string,
   ): Promise<{ url: string }> {
-    // A brand-new account has no existing Lemon Squeezy record to imply a
-    // store, so this is the one path where the store id is mandatory. Failing
-    // here names the variable; letting it through would fail inside the
-    // provider's API with an error that says nothing useful.
-    const storeId = process.env.LEMONSQUEEZY_STORE_ID;
-    if (!storeId) {
-      throw new InternalServerErrorException(
-        'LEMONSQUEEZY_STORE_ID is not set; a checkout cannot be created.',
-      );
-    }
-
     const variantId = await this.catalogue.resolveRef(
       PROVIDER,
       planCode,
@@ -399,16 +388,16 @@ export class LemonSqueezyAdapter implements PaymentProviderAdapter {
     quantity: number,
     custom: Record<string, string>,
   ): Promise<string> {
+    // The store is required on EVERY checkout — nothing is implied from an
+    // account's existing records. Verified live: POST /v1/checkouts without a
+    // store relationship answers 422 "The store.id field is required."
+    // Failing here names the variable; letting it through turns a clear local
+    // error into an opaque provider-side 422.
     const storeId = process.env.LEMONSQUEEZY_STORE_ID;
-
-    const relationships: Record<string, unknown> = {
-      variant: { data: { type: 'variants', id: String(variantId) } },
-    };
-    // An add-on checkout runs against an account that already has Lemon
-    // Squeezy records, so the store is implied; only a first-ever checkout
-    // hard-requires it, and `createCheckout` guards that itself.
-    if (storeId) {
-      relationships.store = { data: { type: 'stores', id: String(storeId) } };
+    if (!storeId) {
+      throw new InternalServerErrorException(
+        'LEMONSQUEEZY_STORE_ID is not set; a checkout cannot be created.',
+      );
     }
 
     const res = await this.client.post<LsCheckoutResponse>('checkouts', {
@@ -420,7 +409,10 @@ export class LemonSqueezyAdapter implements PaymentProviderAdapter {
             variant_quantities: [{ variant_id: Number(variantId), quantity }],
           },
         },
-        relationships,
+        relationships: {
+          store: { data: { type: 'stores', id: String(storeId) } },
+          variant: { data: { type: 'variants', id: String(variantId) } },
+        },
       },
     });
 

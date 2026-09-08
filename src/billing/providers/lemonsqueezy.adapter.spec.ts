@@ -1,6 +1,24 @@
 // src/billing/providers/lemonsqueezy.adapter.spec.ts
 import { LemonSqueezyAdapter } from './lemonsqueezy.adapter';
 
+// Every checkout needs a store: POST /v1/checkouts without a store
+// relationship answers 422 "The store.id field is required." Jest loads no
+// .env, so the adapter's guard would fire on the checkout tests. Set it here
+// rather than weakening the guard to suit the test.
+const OLD_STORE_ID = process.env.LEMONSQUEEZY_STORE_ID;
+
+beforeEach(() => {
+  process.env.LEMONSQUEEZY_STORE_ID = '12345';
+});
+
+afterEach(() => {
+  if (OLD_STORE_ID === undefined) {
+    delete process.env.LEMONSQUEEZY_STORE_ID;
+  } else {
+    process.env.LEMONSQUEEZY_STORE_ID = OLD_STORE_ID;
+  }
+});
+
 type Row = {
   id: number;
   itemType: string;
@@ -118,6 +136,17 @@ describe('LemonSqueezyAdapter.changeAddonQuantity', () => {
     );
   });
 
+  // The billing quantity our row reports must follow the quantity we just
+  // told the provider to charge for, or the two records disagree silently.
+  it('records the new billing quantity on our own row', async () => {
+    const { adapter, updates } = makeAdapter(fiveRows());
+    await adapter.changeAddonQuantity(1, 'EXTRA_MEMBER', 4);
+    expect(updates).toHaveLength(1);
+    expect(updates[0].set).toEqual(
+      expect.objectContaining({ providerQuantity: 4 }),
+    );
+  });
+
   it('throws when the account has no such add-on', async () => {
     const { adapter } = makeAdapter([
       { id: 1, itemType: 'BASE_PLAN', providerSubscriptionId: '100', providerItemId: '900' },
@@ -135,6 +164,18 @@ describe('LemonSqueezyAdapter.removeAddon', () => {
     const { adapter, client } = makeAdapter(fiveRows());
     await adapter.removeAddon(1, 'EXTRA_CHANNEL');
     expect(client.delete).toHaveBeenCalledWith('subscriptions/101');
+  });
+
+  // Cancelling at the provider without writing our row would leave the add-on
+  // reading active here while it is cancelled there — a divergence nothing
+  // would notice until reconciliation. Dropping the write must fail a test.
+  it('records the cancellation on our own row', async () => {
+    const { adapter, updates } = makeAdapter(fiveRows());
+    await adapter.removeAddon(1, 'EXTRA_CHANNEL');
+    expect(updates).toHaveLength(1);
+    expect(updates[0].set).toEqual(
+      expect.objectContaining({ providerStatus: 'cancelled' }),
+    );
   });
 });
 
