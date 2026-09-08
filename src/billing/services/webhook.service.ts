@@ -24,6 +24,10 @@ import {
 } from './invoice-sync.util';
 import { getSubscriptionPeriod } from './subscription-sync.util';
 import { StripeService } from '../../stripe/stripe.service';
+import {
+  endStripeProviderRows,
+  refreshStripeProviderRowStatus,
+} from '../providers/stripe-provider-row.util';
 
 @Injectable()
 export class WebhookService {
@@ -246,6 +250,19 @@ export class WebhookService {
       .set(updateData)
       .where(eq(subscriptions.id, existingSub[0].id));
 
+    // The same facts, into the OTHER table that holds them. `subscriptions`
+    // is what the dashboard renders; `provider_subscriptions` is what
+    // `isLive()` / `hasLiveBasePlan()` read to decide whether this account is
+    // being billed and whether a cancel must reach Stripe. Writing only the
+    // first left the second tracking whatever we last did through our own API
+    // and blind to everything Stripe does on its own — a dunning failure, a
+    // recovery, or a cancellation scheduled from the Stripe Dashboard, which
+    // arrives ONLY as this event. Refresh-not-upsert: see the util.
+    await refreshStripeProviderRowStatus({
+      subscriptionId: existingSub[0].id,
+      stripeSubscription: subscription,
+    });
+
     // If a paid→paid downgrade was scheduled, apply it once the period rolls over.
     await this.applyScheduledDowngradeIfDue(existingSub[0], period.start);
   }
@@ -333,6 +350,25 @@ export class WebhookService {
       return;
     }
     const existing = existingSub[0];
+
+    // End the PROVIDER rows first. They name the subscription Stripe has just
+    // deleted, and the write below nulls `stripe_subscription_id` — which is
+    // what `clearStaleStripeSubscription` keys on, so once that column is NULL
+    // nothing else can ever reach these rows to clean them up.
+    //
+    // Left behind, the BASE_PLAN row sat at `provider_status = 'active'`,
+    // `is_default = true`, naming a dead id. The account read as FREE locally
+    // while `hasLiveBasePlan()` — which every paid/unpaid branch keys on —
+    // answered TRUE from it (a row exists, so the legacy fallback never fires).
+    // The customer's next attempt to re-subscribe took the already-paying
+    // branch, handed Stripe the deleted id and 500'd with `resource_missing`,
+    // every time: they could not re-subscribe at all. The `is_default` flag
+    // also squatted on the one slot the partial unique index allows, so a
+    // later Lemon Squeezy signup would hit 23505 after LS had already charged.
+    //
+    // Ordered first so a crash mid-handler leaves the rows dead rather than
+    // live-looking, which is the cheaper of the two wrong states.
+    await endStripeProviderRows(existing.id);
 
     // A deleted Stripe subscription means the paid period has fully ended, so
     // the ACCOUNT falls back to FREE: reset the plan, drop limits to FREE on

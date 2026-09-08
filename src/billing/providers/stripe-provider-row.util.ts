@@ -168,3 +168,148 @@ function readPeriodEnd(stripeSubscription: Stripe.Subscription): Date | null {
     sub.items?.data?.[0]?.current_period_end ?? sub.current_period_end;
   return endUnix ? new Date(endUnix * 1000) : null;
 }
+
+/**
+ * Refresh the mutable billing facts on an account's Stripe BASE_PLAN row from
+ * a Stripe subscription object, WITHOUT creating one.
+ *
+ * For `customer.subscription.updated`, which is the event that carries every
+ * status transition Stripe makes on its own: a dunning failure moving
+ * `active` -> `past_due`, a recovery moving back, a cancellation scheduled
+ * from the Stripe Dashboard setting `cancel_at_period_end`, a trial
+ * converting, a renewal moving the period bounds.
+ *
+ * That handler used to write `status`, `cancelAtPeriodEnd` and the period
+ * bounds to `subscriptions` and stop there. `isLive()` and `hasLiveBasePlan()`
+ * read `provider_subscriptions.provider_status` / `ends_at`, so the two tables
+ * holding the same fact drifted apart the moment Stripe changed anything
+ * outside our own API calls — the identical shape as the round-1 defect, on a
+ * different pair of columns. A cancellation scheduled in the Dashboard left
+ * the provider row saying `active` with no `ends_at`, so the branch that
+ * decides whether to cancel at the provider was answering from data that had
+ * stopped tracking Stripe.
+ *
+ * UPDATE, never upsert. `customer.subscription.updated` fires for
+ * subscriptions we may not own a row for at all (an account mid-Checkout whose
+ * `checkout.session.completed` has not landed yet — Stripe does not guarantee
+ * event ordering). Inserting here would claim `is_default = true` for an
+ * account whose provider is not yet decided, and during the Lemon Squeezy
+ * overlap that flag is the cutover mechanism. Zero rows matched is the correct
+ * outcome; `handleCheckoutSessionCompleted` writes the row and a later
+ * `updated` refreshes it.
+ *
+ * NEVER THROWS, for the same reason as `writeStripeBasePlanRow`: a webhook
+ * that 500s is retried by Stripe, and failing the whole delivery over a
+ * bookkeeping refresh would also roll back the `subscriptions` write that
+ * already succeeded.
+ */
+export async function refreshStripeProviderRowStatus(input: {
+  /** Our `subscriptions.id`. */
+  subscriptionId: number;
+  stripeSubscription: Stripe.Subscription;
+}): Promise<void> {
+  const sub = input.stripeSubscription as unknown as {
+    id: string;
+    status?: string;
+    cancel_at_period_end?: boolean;
+  };
+
+  // Same rule as the writer: a period end is a RENEWAL date unless Stripe says
+  // the subscription actually stops there. Writing it into `endsAt`
+  // unconditionally would make every healthy subscriber read as expired the
+  // moment their period rolled over.
+  const periodEnd = readPeriodEnd(input.stripeSubscription);
+  const cancelling = Boolean(sub.cancel_at_period_end);
+
+  try {
+    await db
+      .update(providerSubscriptions)
+      .set({
+        providerStatus: sub.status ?? null,
+        endsAt: cancelling ? periodEnd : null,
+        renewsAt: cancelling ? null : periodEnd,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(providerSubscriptions.subscriptionId, input.subscriptionId),
+          eq(providerSubscriptions.provider, PROVIDER),
+          eq(providerSubscriptions.itemType, 'BASE_PLAN'),
+        ),
+      );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error(
+      `Failed to refresh the Stripe BASE_PLAN provider row for subscription ` +
+        `${input.subscriptionId} (${sub.id}): ${message}. Its provider_status ` +
+        `is now stale relative to Stripe.`,
+    );
+  }
+}
+
+/**
+ * End an account's Stripe provider rows because Stripe says the subscription
+ * is gone for good (`customer.subscription.deleted`).
+ *
+ * WHY THIS IS NOT `expireStripeProviderRows`
+ *
+ * Both mark the rows dead, and `isLive()` treats `expired` and `canceled`
+ * alike. The difference is `is_default`, and it is the whole point of this
+ * function. That flag names the provider currently billing the account, and
+ * the partial unique index `provider_subscriptions_one_default_idx` allows
+ * exactly ONE true row per subscription. A dead Stripe row that keeps the flag
+ * is squatting on the single slot: when the account later subscribes through
+ * Lemon Squeezy, claiming it raises 23505 — AFTER Lemon Squeezy has taken the
+ * customer's money.
+ *
+ * `expireStripeProviderRows` deliberately leaves the flag alone because it
+ * runs on a stale-id recovery where the account is expected to re-subscribe
+ * through Stripe immediately. Here the subscription has genuinely ended and
+ * the account is FREE, so nothing owns the slot.
+ *
+ * WHAT WENT WRONG WITHOUT IT
+ *
+ * `handleSubscriptionDeleted` nulled `subscriptions.stripe_subscription_id`,
+ * set the plan to FREE and deleted the `subscription_items` — and left the
+ * BASE_PLAN provider row at `provider_status = 'active'`, `is_default = true`.
+ * The account then read as FREE locally while holding a live-looking row
+ * naming a subscription Stripe had already deleted. On the customer's next
+ * attempt to re-subscribe, `hasLiveBasePlan()` returned TRUE (a row exists, so
+ * the legacy fallback never ran), `changePlan` took the already-paying branch,
+ * and the adapter handed Stripe the dead id — `resource_missing`, an uncaught
+ * 500, on every attempt. The customer could not re-subscribe at all.
+ *
+ * `clearStaleStripeSubscription` could not rescue it either: it early-returns
+ * on a null `stripeSubscriptionId`, which this handler had already nulled.
+ *
+ * NEVER THROWS — a webhook retry storm is worse than a stale flag, and the
+ * `subscriptions` write has already committed by the time this runs.
+ */
+export async function endStripeProviderRows(
+  subscriptionId: number,
+): Promise<void> {
+  try {
+    await db
+      .update(providerSubscriptions)
+      .set({
+        providerStatus: 'canceled',
+        isDefault: false,
+        endsAt: new Date(),
+        renewsAt: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(providerSubscriptions.subscriptionId, subscriptionId),
+          eq(providerSubscriptions.provider, PROVIDER),
+        ),
+      );
+  } catch (err: unknown) {
+    const message = err instanceof Error ? err.message : String(err);
+    logger.error(
+      `Failed to end the Stripe provider rows for subscription ` +
+        `${subscriptionId}: ${message}. The account may read as still billed ` +
+        `and its is_default slot may block a future Lemon Squeezy signup.`,
+    );
+  }
+}

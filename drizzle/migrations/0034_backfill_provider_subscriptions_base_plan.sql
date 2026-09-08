@@ -49,11 +49,27 @@ BEGIN;
 
 -- 1. The BASE_PLAN row: one per subscription that Stripe is actually billing.
 --
--- `is_default = true` because Stripe IS the provider for these accounts —
--- they predate Lemon Squeezy entirely. The partial unique index
--- provider_subscriptions_one_default_idx allows exactly one such row per
--- subscription, which is why only this statement sets the flag and the add-on
--- statement below does not.
+-- `is_default` is claimed only by a subscription that is actually still
+-- billing. The flag names the provider currently in charge of the account, and
+-- the partial unique index provider_subscriptions_one_default_idx allows
+-- exactly ONE true row per subscription — so a dead subscription holding it is
+-- squatting on the single slot. When that account later signs up through Lemon
+-- Squeezy, claiming the flag raises 23505 AFTER Lemon Squeezy has already
+-- charged the customer: the same post-charge shape as the add-on defect fixed
+-- earlier on this branch.
+--
+-- 'canceled' and 'incomplete' are the two statuses that mean nothing is being
+-- billed — an incomplete subscription never completed a first payment, a
+-- canceled one has stopped. Both still get their ROW: the row records what
+-- Stripe held, and provider_status copied from s.status already reads as
+-- not-live through isLive(), so hasLiveBasePlan() is correct either way. It is
+-- specifically the is_default SLOT that must be withheld.
+--
+-- 'past_due' and 'trialing' DO take the flag. Stripe is still trying to charge
+-- a past_due subscription, and cancelling it is still required.
+--
+-- The add-on statement below never sets the flag at all; the BASE_PLAN row is
+-- the only one that can carry it.
 --
 -- provider_status is taken from our own subscriptions.status rather than
 -- invented: 'active', 'past_due' and 'trialing' all read as live through
@@ -93,7 +109,7 @@ SELECT
   -- expired the moment their period rolled over.
   CASE WHEN s.cancel_at_period_end THEN s.current_period_end END,
   CASE WHEN s.cancel_at_period_end THEN NULL ELSE s.current_period_end END,
-  true,
+  (s.status NOT IN ('canceled', 'incomplete')),
   now(),
   now()
 FROM subscriptions s
@@ -103,9 +119,14 @@ LEFT JOIN subscription_items bi
 LEFT JOIN plans p
   ON p.code = s.plan_code
 WHERE s.stripe_subscription_id IS NOT NULL
-  -- 'free-plan' is a sentinel written by createFreeSubscription, not a Stripe
-  -- id. Backfilling it would tell hasLiveBasePlan() that a FREE account is
-  -- being billed, and downgradeToFree would then try to cancel it at Stripe.
+  -- Belt-and-braces, NOT a live case. Verified against the source:
+  -- createFreeSubscription OMITS stripe_subscription_id entirely (so it is
+  -- NULL), and the 'free-plan' literal at subscription.service.ts:326 is a
+  -- RESPONSE field that is never persisted. These two guards therefore match
+  -- no row in any database today. They are kept because they cost nothing, and
+  -- a sentinel id reaching this column later would tell hasLiveBasePlan() that
+  -- a FREE account is being billed — downgradeToFree would then try to cancel
+  -- it at Stripe.
   AND s.stripe_subscription_id <> 'free-plan'
   AND s.stripe_subscription_id NOT LIKE 'free-plan%'
 ON CONFLICT ON CONSTRAINT provider_subscriptions_sub_provider_item_unique

@@ -14,7 +14,10 @@ import { CustomerService } from './customer.service';
 import { SubscriptionLookupService } from './subscription-lookup.service';
 import { ProviderRegistryService } from '../providers/provider-registry.service';
 import { createStripeSubscriptionDirect } from '../providers/stripe-direct-subscribe.util';
-import { writeStripeBasePlanRow } from '../providers/stripe-provider-row.util';
+import {
+  endStripeProviderRows,
+  writeStripeBasePlanRow,
+} from '../providers/stripe-provider-row.util';
 import { db } from '../../drizzle/db';
 import {
   subscriptions,
@@ -384,6 +387,18 @@ export class SubscriptionService {
           updatedAt: new Date(),
         })
         .where(eq(subscriptions.id, sub[0].id));
+
+      // ...and end the PROVIDER rows, which hold the same fact in the table
+      // the billing branches actually read. This endpoint nulls
+      // `stripe_subscription_id` exactly like `handleSubscriptionDeleted`
+      // does, and had exactly the same hole: the reset account kept a
+      // BASE_PLAN row at `provider_status = 'active'`, `is_default = true`,
+      // so `hasLiveBasePlan()` still answered TRUE and the re-subscribe this
+      // endpoint EXISTS to unblock handed Stripe the dead id and 500'd with
+      // `resource_missing`. Nulling the column no longer clears the state on
+      // its own, and `clearStaleStripeSubscription` cannot recover it
+      // afterwards because it early-returns on the null column.
+      await endStripeProviderRows(sub[0].id);
     }
 
     return {

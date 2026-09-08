@@ -63,8 +63,19 @@ export interface LegacyStripeFacts {
 }
 
 /**
- * The sentinel `createFreeSubscription` writes into `stripe_subscription_id`.
- * It is not a Stripe id and nothing is being billed for it.
+ * Guards against a `free-plan` sentinel appearing in `stripe_subscription_id`.
+ *
+ * Defensive only — no such row exists. Verified against the source:
+ * `createFreeSubscription` OMITS the column entirely (leaving it NULL), and
+ * the `'free-plan'` literal at `subscription.service.ts:326` is a field on the
+ * RESPONSE object, never persisted. An earlier version of this comment
+ * asserted the sentinel WAS written here; it is not, and migration 0034 keeps
+ * the matching guards for the same defensive reason.
+ *
+ * Kept because the cost is one string comparison and the failure it prevents
+ * is expensive: a sentinel read as a real id tells `hasLiveBasePlan()` that a
+ * FREE account is being billed, and `downgradeToFree` would then try to cancel
+ * it at Stripe.
  */
 function isRealStripeSubscriptionId(id: string | null): boolean {
   return Boolean(id) && !id!.startsWith('free-plan');
