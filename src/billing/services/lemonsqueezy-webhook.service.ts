@@ -7,9 +7,14 @@ import {
   subscriptions,
   subscriptionItems,
   ProviderItemType,
+  ProviderSubscription,
 } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
 import { mapLemonSqueezyStatus } from '../providers/lemonsqueezy-status.util';
+// The SAME predicate `hasLiveBasePlan` reads. Re-homing `is_default` onto a row
+// this call would not consider live is how the account ends up holding a
+// default that still reads as unbilled — one definition of "live", not two.
+import { isLive } from './provider-subscription.util';
 
 const PROVIDER = 'lemonsqueezy' as const;
 
@@ -377,6 +382,26 @@ export class LemonSqueezyWebhookService {
     // until `ends_at`, so it is still this account's provider, and dropping
     // the flag would make `findItem`/`pickDefaultProvider` lose the account's
     // live subscription mid-period.
+    //
+    // RELEASING IS NOT ENOUGH ON ITS OWN. `is_default` does not merely mark a
+    // row as interesting, it names the provider billing THE ACCOUNT, and every
+    // reader funnels through it: `pickDefaultProvider` returns null without it,
+    // `findItem` returns null because it scopes to the default provider, and
+    // `hasLiveBasePlan` therefore answers FALSE. So clearing the flag off a
+    // dying add-on while a live base plan still bills the account does not
+    // leave the account defaultless-but-fine — it makes a PAYING customer read
+    // as unbilled. `plan-change.service.ts` then takes its FREE->paid branch
+    // and opens a SECOND live subscription (double-billing), and
+    // `provider-registry.service.ts` falls back to `configuredProvider()`, so a
+    // cancellation can be aimed at the wrong provider entirely.
+    //
+    // The invariant every write here must preserve: a live account holds
+    // EXACTLY ONE `is_default` row. So the flag is released here and, when
+    // something else on the account is still live, HANDED to it by
+    // `rehomeDefault` below — base plan first. The two writes are sequential
+    // and never overlap, because `provider_subscriptions_one_default_idx`
+    // allows exactly one true row per subscription and would raise 23505 the
+    // moment both held it.
     const providerPatch: Record<string, unknown> = {
       providerStatus: attrs.status ?? null,
       endsAt: dateOf(attrs.ends_at),
@@ -399,6 +424,18 @@ export class LemonSqueezyWebhookService {
       .update(providerSubscriptions)
       .set(providerPatch)
       .where(eq(providerSubscriptions.id, target.rowId));
+
+    // The flag has just been released off a dead row. If this row was the one
+    // holding it and anything else on the account is still live, the account
+    // now has NO default at all and reads as unbilled — hand it on.
+    //
+    // Only on the add-on path. `revokeBasePlan` deliberately kills EVERYTHING
+    // on the account (limits, entitlement rows, every sibling provider row)
+    // and there is nothing live left to hand it to; re-homing there would
+    // resurrect the flag onto a row that same call is about to mark expired.
+    if (terminal && target.isDefault && target.itemType !== 'BASE_PLAN') {
+      await this.rehomeDefault(target);
+    }
 
     if (target.itemType !== 'BASE_PLAN') {
       // An add-on that has genuinely expired stops entitling anything. Its
@@ -495,6 +532,82 @@ export class LemonSqueezyWebhookService {
     );
   }
 
+  /**
+   * The account's default provider row just died. Give the flag to whatever is
+   * still billing this account, so the account keeps reading as paid.
+   *
+   * WHY THIS EXISTS. Every Lemon Squeezy add-on is its OWN subscription, so an
+   * add-on ending fires `subscription_expired` for a subscription that is not
+   * the base plan. Mid-cutover the account's single `is_default` row can be
+   * that add-on — the base plan carrying `false` — and releasing the flag then
+   * leaves a customer whose base plan is still `active` with no default at all.
+   * `pickDefaultProvider` returns null, `findItem('BASE_PLAN')` returns null
+   * (it scopes to the default), `hasLiveBasePlan` answers false, and
+   * `plan-change.service.ts` routes their next paid->paid change through the
+   * FREE->paid branch: a second live subscription, billed twice.
+   *
+   * ORDER IS LOAD-BEARING. The caller has already written `is_default = false`
+   * onto the dying row before this runs. `provider_subscriptions_one_default_idx`
+   * is a partial UNIQUE index over `subscription_id where is_default`, so
+   * claiming the flag here while the dead row still held it would raise 23505
+   * mid-webhook — Lemon Squeezy would retry forever against a state that can
+   * never converge. Release first, claim second; never both at once.
+   *
+   * BASE PLAN FIRST, and only then a live add-on. `findItem` scopes every
+   * lookup to the default provider, so parking the flag on an add-on row makes
+   * `findItem('BASE_PLAN')` resolve while `hasLiveBasePlan` still works — but a
+   * base plan holding its own flag is the shape the rest of the system expects,
+   * and the add-on fallback exists only for the genuinely odd account whose
+   * base plan already lapsed while an add-on runs on.
+   *
+   * If nothing is live, the flag stays released — that is the correct end
+   * state, and the free slot is what lets the customer subscribe again at
+   * either provider.
+   */
+  private async rehomeDefault(target: Target): Promise<void> {
+    const siblings = await db
+      .select({
+        id: providerSubscriptions.id,
+        itemType: providerSubscriptions.itemType,
+        providerStatus: providerSubscriptions.providerStatus,
+        endsAt: providerSubscriptions.endsAt,
+        provider: providerSubscriptions.provider,
+        providerQuantity: providerSubscriptions.providerQuantity,
+        isDefault: providerSubscriptions.isDefault,
+      })
+      .from(providerSubscriptions)
+      .where(eq(providerSubscriptions.subscriptionId, target.subscriptionId));
+
+    // `isLive` is the same predicate `hasLiveBasePlan` reads, so the row this
+    // picks is by construction one that makes the account read as billed. It
+    // is deliberately NOT a status string comparison here: Lemon Squeezy's
+    // `cancelled` is still live until `ends_at`, and re-homing onto a
+    // `cancelled` base plan mid-period is exactly right.
+    const candidates = (siblings as ProviderSubscription[]).filter(
+      (row) => row.id !== target.rowId && isLive(row),
+    );
+    if (candidates.length === 0) return;
+
+    const heir =
+      candidates.find((row) => row.itemType === 'BASE_PLAN') ?? candidates[0];
+
+    // Already correct — an account can legitimately hold its default on a
+    // second row if some other path re-homed it first. Writing again would be
+    // harmless but the guard keeps the "exactly one" invariant explicit.
+    if (heir.isDefault) return;
+
+    await db
+      .update(providerSubscriptions)
+      .set({ isDefault: true, updatedAt: new Date() })
+      .where(eq(providerSubscriptions.id, heir.id));
+
+    this.logger.log(
+      `Moved is_default to provider row ${heir.id} (${heir.provider} ` +
+        `${heir.itemType}) after row ${target.rowId} expired; the account is ` +
+        `still being billed.`,
+    );
+  }
+
   /** One expired add-on: drop its bookkeeping row and re-apply limits. */
   private async revokeAddon(target: Target): Promise<void> {
     if (!ADDON_ITEM_TYPES.includes(target.itemType as ProviderItemType)) {
@@ -588,6 +701,29 @@ export class LemonSqueezyWebhookService {
       .update(subscriptions)
       .set({ status, updatedAt: new Date() })
       .where(eq(subscriptions.id, target.subscriptionId));
+
+    // BOTH tables or neither. Writing `subscriptions.status = 'past_due'` and
+    // leaving `provider_status = 'active'` is the same read/write divergence
+    // that produced this branch's recurring defect four times over: one table
+    // says the customer is in dunning and the other says nothing happened, and
+    // which answer a caller gets depends on which table it happens to read.
+    //
+    // Harmless TODAY — `isLive()` treats `past_due` as live either way, and
+    // `subscription_updated` follows every payment event and is the authority
+    // for the provider status — so this is closing the shape, not a live bug.
+    // It writes the SAME vocabulary the lifecycle path writes, so a subsequent
+    // `subscription_updated` simply overwrites it with the provider's own
+    // word.
+    //
+    // `past_due` MUST stay live in `isLive()`. It is a recoverable dunning
+    // state where the customer keeps access; making it terminal here would
+    // strip a customer whose retry is still pending, which is precisely the
+    // round-1 defect. Nothing in this write changes those semantics — it only
+    // stops the two tables from disagreeing.
+    await db
+      .update(providerSubscriptions)
+      .set({ providerStatus: status, updatedAt: new Date() })
+      .where(eq(providerSubscriptions.id, target.rowId));
   }
 
   // ------------------------------------------------------------------ shared
