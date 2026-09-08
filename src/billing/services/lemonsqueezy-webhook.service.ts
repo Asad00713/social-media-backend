@@ -429,10 +429,10 @@ export class LemonSqueezyWebhookService {
     // holding it and anything else on the account is still live, the account
     // now has NO default at all and reads as unbilled — hand it on.
     //
-    // Only on the add-on path. `revokeBasePlan` deliberately kills EVERYTHING
-    // on the account (limits, entitlement rows, every sibling provider row)
-    // and there is nothing live left to hand it to; re-homing there would
-    // resurrect the flag onto a row that same call is about to mark expired.
+    // ADD-ON PATH ONLY HERE. The base plan re-homes further down, AFTER
+    // `revokeBasePlan` has run — see the comment at that call site. Doing it
+    // here for a base plan would let LS siblings that `revokeBasePlan` is about
+    // to mark `expired` still look live and win the heir search.
     if (terminal && target.isDefault && target.itemType !== 'BASE_PLAN') {
       await this.rehomeDefault(target);
     }
@@ -472,6 +472,28 @@ export class LemonSqueezyWebhookService {
 
     if (terminal) {
       await this.revokeBasePlan(target);
+
+      // AFTER `revokeBasePlan`, never before, and only because of how narrowly
+      // that call actually reaches. It scopes its UPDATE to
+      // `provider = 'lemonsqueezy'`, so it does NOT kill everything on the
+      // account: a live STRIPE row survives it untouched. The dying LS base
+      // plan's own `is_default` was already released above, so without this
+      // the cutover account — LS base plan reaching its paid-through date
+      // after the customer moved to Stripe, which is the exact migration this
+      // whole provider abstraction exists for — is left with ZERO defaults
+      // while Stripe is actively billing it. `pickDefaultProvider` then
+      // returns null, `findItem` null, `hasLiveBasePlan` false, and
+      // `plan-change.service.ts` takes its FREE->paid branch: a SECOND live
+      // subscription on a customer Stripe already charges.
+      //
+      // THE ORDERING IS THE SAFETY. `revokeBasePlan` has by now marked every
+      // Lemon Squeezy sibling `expired`, so `rehomeDefault`'s real `isLive`
+      // filter rejects them all and only a genuinely live cross-provider row
+      // can inherit. Running before it would instead hand the flag to an LS
+      // row that this same call is about to expire.
+      if (target.isDefault) {
+        await this.rehomeDefault(target);
+      }
     }
   }
 

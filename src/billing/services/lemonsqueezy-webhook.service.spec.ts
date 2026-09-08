@@ -1066,6 +1066,90 @@ describe('a live account always holds exactly one is_default row', () => {
     expectDefaultInvariant();
   });
 
+  it('hands the flag to a live STRIPE row when the LS BASE PLAN expires', async () => {
+    // The cutover this whole branch exists for: the customer moved to Stripe,
+    // and the Lemon Squeezy base plan simply runs out its paid-through date.
+    // `revokeBasePlan` scopes its UPDATE to `provider = 'lemonsqueezy'`, so the
+    // live Stripe row survives it untouched — the account IS still being
+    // billed. Skipping the re-home on the base-plan path therefore left ZERO
+    // defaults on a paying account: `pickDefaultProvider` returns null,
+    // `hasLiveBasePlan` answers false, and `plan-change.service.ts` takes its
+    // FREE->paid branch to open a SECOND live subscription on a customer
+    // Stripe already bills.
+    //
+    // ORDER IS WHAT MAKES THIS SAFE. The re-home runs AFTER `revokeBasePlan`,
+    // which has already marked every LS sibling `expired`, so the real `isLive`
+    // filter excludes them and only the genuinely live Stripe row can inherit.
+    rowsOf('provider_subscriptions').push({
+      id: 3,
+      subscriptionId: SUBSCRIPTION_ID,
+      provider: 'stripe',
+      itemType: 'BASE_PLAN',
+      providerSubscriptionId: 'sub_stripe_1',
+      providerStatus: 'active',
+      providerQuantity: 1,
+      endsAt: null,
+      renewsAt: new Date('2026-11-07'),
+      isDefault: false,
+    });
+
+    await make().handleEvent(
+      'subscription_expired',
+      lifecycle(LS_SUB, { status: 'expired' }),
+    );
+
+    const stripeRow = rowsOf('provider_subscriptions').find(
+      (r) => r.provider === 'stripe',
+    ) as Row;
+    expect(stripeRow.isDefault).toBe(true);
+    // Both LS rows are dead and neither squats on the flag.
+    expect(baseRow().isDefault).toBe(false);
+    expect(addonRow().isDefault).toBe(false);
+    expectDefaultInvariant();
+  });
+
+  it('a live STRIPE ADD-ON inherits, not the LS add-on that is about to die', async () => {
+    // Pins the ORDERING, which is why the base-plan re-home sits AFTER
+    // `revokeBasePlan` instead of being a widened guard in place.
+    //
+    // Both surviving rows are add-ons, so the BASE_PLAN-first heir preference
+    // cannot break the tie and `candidates[0]` decides — and the LS add-on
+    // comes first. Re-homing BEFORE `revokeBasePlan` therefore hands the flag
+    // to the LS add-on while it still reads `active`; `revokeBasePlan` then
+    // clears `is_default` off every LS row, so the flag is thrown away and the
+    // live STRIPE add-on that is genuinely still billing inherits NOTHING.
+    // Zero defaults on a paying account: the double-billing path.
+    //
+    // Running AFTER means the LS add-on is already `expired` when the heir
+    // search runs, so the real `isLive` filter passes over it and the Stripe
+    // row wins.
+    addonRow().providerStatus = 'active';
+    rowsOf('provider_subscriptions').push({
+      id: 3,
+      subscriptionId: SUBSCRIPTION_ID,
+      provider: 'stripe',
+      itemType: 'EXTRA_CHANNELS',
+      providerSubscriptionId: 'sub_stripe_addon',
+      providerStatus: 'active',
+      providerQuantity: 1,
+      endsAt: null,
+      renewsAt: new Date('2026-11-07'),
+      isDefault: false,
+    });
+
+    await make().handleEvent(
+      'subscription_expired',
+      lifecycle(LS_SUB, { status: 'expired' }),
+    );
+
+    const stripeRow = rowsOf('provider_subscriptions').find(
+      (r) => r.provider === 'stripe',
+    ) as Row;
+    expect(stripeRow.isDefault).toBe(true);
+    expect(addonRow().isDefault).toBe(false);
+    expectDefaultInvariant();
+  });
+
   it('an expiring BASE PLAN leaves the whole account with no default', async () => {
     // The base-plan path must NOT re-home: `revokeBasePlan` deliberately kills
     // everything, so there is nothing live left and the slot belongs free.
