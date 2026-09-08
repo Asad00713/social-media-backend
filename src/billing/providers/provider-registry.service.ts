@@ -13,6 +13,7 @@ import {
   PAYMENT_PROVIDERS,
 } from '../../drizzle/schema';
 import { pickDefaultProvider } from '../services/provider-subscription.util';
+import type { PaymentProviderAdapter } from './payment-provider.interface';
 
 /**
  * Which payment provider an account bills through.
@@ -25,6 +26,55 @@ import { pickDefaultProvider } from '../services/provider-subscription.util';
 @Injectable()
 export class ProviderRegistryService {
   constructor(@Inject(DRIZZLE) private db: DbType) {}
+
+  /**
+   * Adapters register themselves at module boot (see `BillingModule`) rather
+   * than being injected here. Injecting them would make this service depend on
+   * every adapter, and each adapter already depends on catalogue/client
+   * services — a cycle waiting to happen, and a new provider could not be
+   * added without editing the registry.
+   */
+  private readonly adapters = new Map<
+    PaymentProvider,
+    PaymentProviderAdapter
+  >();
+
+  register(adapter: PaymentProviderAdapter): void {
+    this.adapters.set(adapter.name, adapter);
+  }
+
+  private adapterOf(provider: PaymentProvider): PaymentProviderAdapter {
+    const adapter = this.adapters.get(provider);
+    if (!adapter) {
+      throw new InternalServerErrorException(
+        `No adapter is registered for provider "${provider}".`,
+      );
+    }
+    return adapter;
+  }
+
+  /**
+   * The adapter that must handle a call made on behalf of an ACCOUNT — the
+   * signup/checkout path, where no subscription row exists yet.
+   */
+  async adapterFor(userId: string): Promise<PaymentProviderAdapter> {
+    return this.adapterOf(await this.providerForUser(userId));
+  }
+
+  /**
+   * The adapter that must handle a call against an EXISTING subscription.
+   *
+   * Falls back to the configured provider only when the subscription has no
+   * `provider_subscriptions` row at all (a legacy row predating this table).
+   */
+  async adapterForSubscription(
+    subscriptionId: number,
+  ): Promise<PaymentProviderAdapter> {
+    const provider =
+      (await this.defaultProviderFor(subscriptionId)) ??
+      this.configuredProvider();
+    return this.adapterOf(provider);
+  }
 
   /**
    * The provider new accounts are signed up with.

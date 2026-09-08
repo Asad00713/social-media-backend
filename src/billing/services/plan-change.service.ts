@@ -6,7 +6,6 @@ import {
   ForbiddenException,
 } from '@nestjs/common';
 import { eq, and, inArray } from 'drizzle-orm';
-import Stripe from 'stripe';
 import { db } from '../../drizzle/db';
 import {
   subscriptions,
@@ -21,6 +20,10 @@ import {
 import { StripeService } from '../../stripe/stripe.service';
 import { UsageService } from './usage.service';
 import { SubscriptionLookupService } from './subscription-lookup.service';
+import { ProviderRegistryService } from '../providers/provider-registry.service';
+import { createStripeSubscriptionDirect } from '../providers/stripe-direct-subscribe.util';
+import { clearStaleStripeSubscription } from '../providers/stripe-stale-subscription.util';
+import { invoiceStripeProrationsImmediately } from '../providers/stripe-immediate-invoice.util';
 import { NotificationEmitterService } from '../../notifications/notification-emitter.service';
 
 export interface PlanChangePreview {
@@ -80,6 +83,7 @@ export class PlanChangeService {
     private usageService: UsageService,
     private readonly lookup: SubscriptionLookupService,
     private notificationEmitter: NotificationEmitterService,
+    private readonly providers: ProviderRegistryService,
   ) {}
 
   // Preview plan change (shows proration, validation issues)
@@ -267,33 +271,24 @@ export class PlanChangeService {
     );
     const oldPlanCode = sub.planCode;
 
-    // Defensive: the stored stripeSubscriptionId may have been wiped on
-    // Stripe's side (test data reset, account switch, mode change). Verify
-    // it still exists before we try to mutate it. If it's gone, null it
-    // out in our DB and treat as a fresh subscribe — let the user proceed
-    // via Checkout instead of crashing.
-    if (sub.stripeSubscriptionId) {
-      try {
-        await this.stripeService.getSubscription(sub.stripeSubscriptionId);
-      } catch (err: any) {
-        if (err?.code === 'resource_missing') {
-          this.logger.warn(
-            `Stale stripe_subscription_id ${sub.stripeSubscriptionId} on workspace ${workspaceId} — clearing.`,
-          );
-          await db
-            .update(subscriptions)
-            .set({
-              stripeSubscriptionId: null,
-              status: 'incomplete',
-              updatedAt: new Date(),
-            })
-            .where(eq(subscriptions.id, sub.id));
-          // Wipe the in-memory copy so the rest of changePlan treats this
-          // as the "no existing Stripe subscription" path (Checkout flow).
-          sub.stripeSubscriptionId = null;
-        } else {
-          throw err;
-        }
+    // Which provider bills this account decides every branch below.
+    const adapter = await this.providers.adapterForSubscription(sub.id);
+
+    // Defensive, Stripe only: the stored stripeSubscriptionId may have been
+    // wiped on Stripe's side (test data reset, account switch, mode change).
+    // Verify it still exists before we try to mutate it. If it is gone, null
+    // it out and let the user proceed via Checkout instead of crashing.
+    if (adapter.name === 'stripe') {
+      const wasStale = await clearStaleStripeSubscription(
+        this.stripeService,
+        sub,
+        `workspace ${workspaceId}`,
+      );
+      if (wasStale) {
+        // The column is already nulled in the DB; wipe the in-memory copy so
+        // the rest of changePlan takes the "no existing subscription" path
+        // (Checkout flow) instead of calling Stripe with a dead id.
+        sub.stripeSubscriptionId = null;
       }
     }
 
@@ -333,101 +328,70 @@ export class PlanChangeService {
       );
     }
 
-    // 5. Handle Stripe subscription - either update existing or create new
+    // 5. Change the plan at whichever provider bills this account, or start a
+    //    brand-new paid subscription if the account is coming off FREE.
     let newStripeSubscriptionId: string | null = null;
     let newStripeSubscriptionItemId: string | null = null;
 
     if (sub.stripeSubscriptionId && targetPriceId) {
-      // Existing Stripe subscription - update it
-      const baseItem = await db
-        .select()
-        .from(subscriptionItems)
-        .where(
-          and(
-            eq(subscriptionItems.subscriptionId, sub.id),
-            eq(subscriptionItems.itemType, 'BASE_PLAN'),
-          ),
-        )
-        .limit(1);
+      // An existing paid subscription: one abstracted operation. The adapter
+      // owns the provider-specific shape of it - Stripe swaps the price on the
+      // BASE_PLAN line item, Lemon Squeezy PATCHes the subscription's variant.
+      await adapter.changePlan(sub.id, newPlanCode);
 
-      if (baseItem.length > 0 && baseItem[0].stripeSubscriptionItemId) {
-        // Update the subscription item to new price
-        const stripeSubscription = await this.stripeService.getSubscription(
+      // Upgrades charge immediately (industry standard). This is Stripe-only
+      // proration plumbing with no Lemon Squeezy equivalent - LS invoices the
+      // change itself via `invoice_immediately` inside its own adapter - so it
+      // is gated rather than abstracted.
+      if (preview.isUpgrade && adapter.name === 'stripe') {
+        await invoiceStripeProrationsImmediately(
+          this.stripeService,
           sub.stripeSubscriptionId,
         );
-
-        // Find the item ID in Stripe
-        const stripeItem: any = stripeSubscription.items.data.find(
-          (item: any) => item.id === baseItem[0].stripeSubscriptionItemId,
-        );
-
-        if (stripeItem) {
-          await this.stripeService.updateSubscription(
-            sub.stripeSubscriptionId,
-            {
-              items: [
-                {
-                  id: stripeItem.id,
-                  price: targetPriceId,
-                },
-              ],
-              proration_behavior: preview.isUpgrade
-                ? 'create_prorations'
-                : 'none',
-            },
-          );
-
-          // For upgrades, charge immediately (industry standard)
-          if (preview.isUpgrade) {
-            await this.invoiceImmediately(sub.stripeSubscriptionId);
-          }
-        }
-      } else {
-        // No existing item, add new one (this will invoice immediately via addSubscriptionItem)
-        await this.stripeService.addSubscriptionItem({
-          subscriptionId: sub.stripeSubscriptionId,
-          priceId: targetPriceId,
-          quantity: 1,
-        });
       }
     } else if (
       !sub.stripeSubscriptionId &&
       targetPriceId &&
       target.basePriceCents > 0
     ) {
-      // Upgrading from FREE plan - need to create a new Stripe subscription
+      // FREE -> paid with a card already on file. Like
+      // `SubscriptionService.createSubscription`, this is a Stripe-only path:
+      // it creates a subscription server-side from a stored payment method,
+      // which Lemon Squeezy has no endpoint for. Refuse other providers rather
+      // than silently billing them through Stripe - they go via Checkout.
+      if (adapter.name !== 'stripe') {
+        throw new BadRequestException(
+          `Upgrading from FREE is not supported directly for ${adapter.name} - ` +
+            'start a checkout session instead.',
+        );
+      }
+
       this.logger.log(
         `Creating new Stripe subscription for upgrade from FREE to ${newPlanCode}`,
       );
 
-      // Guard: FREE→paid upgrade requires a Stripe customer AND a card on
-      // file. The Checkout flow creates both before the webhook fires; a
-      // direct call on an account that never reached Stripe has neither.
+      // Guard: a FREE -> paid upgrade requires a Stripe customer. The Checkout
+      // flow creates one before the webhook fires; a direct call on an account
+      // that never reached Stripe has none. (The card check lives inside
+      // `createStripeSubscriptionDirect`.)
       if (!sub.stripeCustomerId) {
         throw new BadRequestException(
-          'This account has no Stripe customer yet — subscribe via Checkout',
+          'This account has no Stripe customer yet - subscribe via Checkout',
         );
       }
 
-      const hasCard = await this.stripeService.customerHasPaymentMethod(
-        sub.stripeCustomerId,
-      );
-      if (!hasCard) {
-        throw new BadRequestException(
-          'A payment method is required to upgrade to a paid plan — subscribe via Checkout',
-        );
-      }
-
-      // Create Stripe subscription
-      const stripeSubscription = await this.stripeService.createSubscription({
-        customerId: sub.stripeCustomerId,
-        priceId: targetPriceId,
-        metadata: {
-          workspaceId,
-          userId,
-          planCode: newPlanCode,
+      const stripeSubscription = await createStripeSubscriptionDirect(
+        this.stripeService,
+        {
+          stripeCustomerId: sub.stripeCustomerId,
+          stripePriceId: targetPriceId,
+          metadata: {
+            workspaceId,
+            userId,
+            planCode: newPlanCode,
+          },
         },
-      });
+      );
 
       newStripeSubscriptionId = stripeSubscription.id;
       newStripeSubscriptionItemId =
@@ -815,7 +779,8 @@ export class PlanChangeService {
     // Has a paid Stripe subscription: cancel at period end. The customer keeps
     // their paid plan until the period they already paid for ends, then Stripe
     // fires `customer.subscription.deleted` and the webhook resets us to FREE.
-    await this.stripeService.cancelSubscription(sub.stripeSubscriptionId, true);
+    const cancelAdapter = await this.providers.adapterForSubscription(sub.id);
+    await cancelAdapter.cancel(sub.id, true);
 
     await db
       .update(subscriptions)
@@ -868,36 +833,13 @@ export class PlanChangeService {
     oldPlanCode: string,
     preview: PlanChangePreview,
   ): Promise<PlanChangeResult> {
-    // Swap the Stripe price now (no proration). Harmless mid-period because the
-    // current period was already invoiced at the old price.
-    const baseItem = await db
-      .select()
-      .from(subscriptionItems)
-      .where(
-        and(
-          eq(subscriptionItems.subscriptionId, sub.id),
-          eq(subscriptionItems.itemType, 'BASE_PLAN'),
-        ),
-      )
-      .limit(1);
-
-    if (baseItem.length > 0 && baseItem[0].stripeSubscriptionItemId) {
-      const stripeSubscription = await this.stripeService.getSubscription(
-        sub.stripeSubscriptionId as string,
-      );
-      const stripeItem: any = stripeSubscription.items.data.find(
-        (item: any) => item.id === baseItem[0].stripeSubscriptionItemId,
-      );
-      if (stripeItem) {
-        await this.stripeService.updateSubscription(
-          sub.stripeSubscriptionId as string,
-          {
-            items: [{ id: stripeItem.id, price: targetPriceId }],
-            proration_behavior: 'none',
-          },
-        );
-      }
-    }
+    // Swap to the cheaper plan at the provider NOW, with no proration on
+    // Stripe's side. Harmless mid-period because the current period was
+    // already invoiced at the old price - the next invoice bills the lower
+    // one. `changePlan` is the same abstracted operation an upgrade uses; the
+    // difference between the two is our own scheduling, below, not the call.
+    const adapter = await this.providers.adapterForSubscription(sub.id);
+    await adapter.changePlan(sub.id, target.code);
 
     // Record the pending downgrade — plan/limits stay as-is until period end.
     await db
@@ -948,65 +890,5 @@ export class PlanChangeService {
         maxWorkspaces: target.maxWorkspaces,
       },
     };
-  }
-
-  /**
-   * Creates and pays an invoice immediately for any pending proration charges
-   * Industry standard approach for immediate billing of plan upgrades
-   */
-  private async invoiceImmediately(
-    stripeSubscriptionId: string,
-  ): Promise<void> {
-    try {
-      const stripe = this.stripeService.getClient();
-
-      // Get the subscription to find the customer ID and payment method
-      const subscription = await stripe.subscriptions.retrieve(
-        stripeSubscriptionId,
-        {
-          expand: ['default_payment_method'],
-        },
-      );
-      const customerId =
-        typeof subscription.customer === 'string'
-          ? subscription.customer
-          : subscription.customer.id;
-
-      // Get the payment method from subscription
-      const paymentMethodId =
-        typeof subscription.default_payment_method === 'string'
-          ? subscription.default_payment_method
-          : subscription.default_payment_method?.id;
-
-      // Create an invoice for any pending invoice items (prorations)
-      const invoice = await stripe.invoices.create({
-        customer: customerId,
-        subscription: stripeSubscriptionId,
-        auto_advance: true,
-      });
-
-      // If there are charges, pay the invoice immediately
-      if (invoice.amount_due > 0) {
-        // Use the subscription's payment method if available
-        const payParams: Stripe.InvoicePayParams = {};
-        if (paymentMethodId) {
-          payParams.payment_method = paymentMethodId;
-        }
-        await stripe.invoices.pay(invoice.id, payParams);
-        this.logger.log(
-          `Immediately charged ${invoice.amount_due} cents for plan upgrade`,
-        );
-      } else if (invoice.status === 'draft') {
-        // Finalize even if $0 (for record keeping)
-        await stripe.invoices.finalizeInvoice(invoice.id);
-      }
-    } catch (error: any) {
-      // If no pending items to invoice, that's okay
-      if (error.code === 'invoice_no_subscription_line_items') {
-        return;
-      }
-      this.logger.error(`Failed to create immediate invoice: ${error.message}`);
-      throw error;
-    }
   }
 }

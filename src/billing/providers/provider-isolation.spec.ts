@@ -28,6 +28,11 @@ const ALLOWED = [
   path.join('billing', 'services', 'subscription-sync.util.ts'),
   path.join('billing', 'services', 'payment-method.service.ts'),
   path.join('billing', 'services', 'customer.service.ts'),
+  // The Stripe webhook ROUTE. `constructWebhookEvent` verifies a Stripe
+  // webhook signature on `/webhooks/stripe`, a Stripe-only endpoint — there is
+  // nothing to route, because the provider is already known from the URL.
+  // Lemon Squeezy's webhook has its own route and its own signature check.
+  path.join('billing', 'billing.controller.ts'),
   path.join('drizzle', 'seeds'),
 ];
 
@@ -52,10 +57,10 @@ describe('provider isolation', () => {
     expect(files.length).toBeGreaterThan(50);
   });
 
-  // it.failing until Task 11 routes addon/plan-change/subscription through the
-  // registry. Kept running (not skipped) so the day it starts passing is
-  // visible, and so nobody widens ALLOWED instead of doing the work.
-  it.failing('has no stripeService call outside the adapters', () => {
+  // Passing as of Task 11, which routed addon/plan-change/subscription through
+  // the registry. It ran as `it.failing` from Task 7 until then, so the day it
+  // started passing was visible rather than silently arriving.
+  it('has no stripeService call outside the adapters', () => {
     const offenders = files.filter((f) =>
       /stripeService\./.test(fs.readFileSync(f, 'utf8')),
     );

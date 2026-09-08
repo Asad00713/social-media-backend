@@ -14,12 +14,18 @@ import {
   workspaceUsage,
   subscriptionChanges,
   workspace,
+  providerSubscriptions,
+  ProviderSubscription,
   NewSubscriptionItem,
   NewSubscriptionChange,
 } from '../../drizzle/schema';
 import { StripeService } from '../../stripe/stripe.service';
 import { UsageService } from './usage.service';
 import { SubscriptionLookupService } from './subscription-lookup.service';
+import { findItem } from './provider-subscription.util';
+import { ProviderRegistryService } from '../providers/provider-registry.service';
+import { isCheckoutRequired } from '../providers/payment-provider.interface';
+import { assertStripeSubscriptionExists } from '../providers/stripe-stale-subscription.util';
 
 export type AddonType =
   | 'EXTRA_CHANNEL'
@@ -35,6 +41,7 @@ export interface PurchaseAddonDto {
 }
 
 export interface AddonPurchaseResult {
+  status: 'completed';
   subscriptionItemId: number;
   stripeSubscriptionItemId: string;
   addonType: AddonType;
@@ -48,6 +55,26 @@ export interface AddonPurchaseResult {
   };
 }
 
+/**
+ * A brand-new Lemon Squeezy add-on cannot be created through their API - there
+ * is no `POST /v1/subscription-items` - so it has to start at a hosted
+ * checkout and completes later via webhook.
+ *
+ * Surfaced as its own variant rather than a thrown error or a silent no-op:
+ * the caller must redirect, and a discriminated union is what forces the
+ * frontend to handle it instead of reading `quantity` off a purchase that has
+ * not happened yet. Limits are NOT moved here - the webhook does that when the
+ * customer actually pays.
+ */
+export interface AddonCheckoutRequired {
+  status: 'checkout_required';
+  addonType: AddonType;
+  quantity: number;
+  checkoutUrl: string;
+}
+
+export type PurchaseAddonOutcome = AddonPurchaseResult | AddonCheckoutRequired;
+
 @Injectable()
 export class AddonService {
   private readonly logger = new Logger(AddonService.name);
@@ -56,10 +83,11 @@ export class AddonService {
     private stripeService: StripeService,
     private usageService: UsageService,
     private readonly lookup: SubscriptionLookupService,
+    private readonly providers: ProviderRegistryService,
   ) {}
 
   // Purchase add-on for a workspace
-  async purchaseAddon(dto: PurchaseAddonDto): Promise<AddonPurchaseResult> {
+  async purchaseAddon(dto: PurchaseAddonDto): Promise<PurchaseAddonOutcome> {
     const { workspaceId, userId, addonType, quantity } = dto;
 
     if (quantity < 1) {
@@ -109,35 +137,19 @@ export class AddonService {
       );
     }
 
-    // Defensive: the DB might reference a Stripe subscription that no longer
-    // exists (test data wiped, account changed, mode switched between test
-    // and live). Verify the subscription is still real on Stripe BEFORE we
-    // try to mutate it — gives the user a clear actionable error instead
-    // of a generic 500.
-    if (sub.stripeSubscriptionId) {
-      try {
-        await this.stripeService.getSubscription(sub.stripeSubscriptionId);
-      } catch (err: any) {
-        if (err?.code === 'resource_missing') {
-          this.logger.warn(
-            `Stale stripe_subscription_id ${sub.stripeSubscriptionId} for workspace ${workspaceId} — clearing and asking user to re-subscribe.`,
-          );
-          // Clear the orphan reference so the next subscribe call creates fresh.
-          await db
-            .update(subscriptions)
-            .set({
-              stripeSubscriptionId: null,
-              status: 'incomplete',
-              updatedAt: new Date(),
-            })
-            .where(eq(subscriptions.id, sub.id));
+    // Which provider bills this account decides everything below.
+    const adapter = await this.providers.adapterForSubscription(sub.id);
 
-          throw new BadRequestException(
-            'Your subscription is no longer linked to Stripe (this can happen if test data was reset or the Stripe account changed). Please go to Billing and re-subscribe to your current plan, then try adding the add-on again.',
-          );
-        }
-        throw err;
-      }
+    // Defensive, Stripe only: the DB might reference a Stripe subscription
+    // that no longer exists (test data wiped, account changed, mode switched
+    // between test and live). Verify BEFORE we try to mutate it — gives the
+    // user a clear actionable error instead of a generic 500.
+    if (adapter.name === 'stripe') {
+      await assertStripeSubscriptionExists(
+        this.stripeService,
+        sub,
+        `workspace ${workspaceId}`,
+      );
     }
 
     // 3. Get addon pricing for this plan
@@ -174,14 +186,13 @@ export class AddonService {
       );
     }
 
-    // 3.5 Read the provisioned Stripe price for this addon (read-only — prices
-    //     are provisioned out-of-band by the stripe-provision script).
+    // 3.5 The provider-specific price reference (Stripe price id / Lemon
+    //     Squeezy variant id) is resolved inside the adapter via the
+    //     catalogue. Reading `stripePriceId` here would have made every Lemon
+    //     Squeezy add-on fail on a column that provider never populates. It is
+    //     still read below, but only to keep the legacy `subscription_items`
+    //     bookkeeping row truthful.
     const stripePriceId = addonPrice.stripePriceId;
-    if (!stripePriceId) {
-      throw new BadRequestException(
-        `Add-on "${addonType}" for plan "${sub.planCode}" is not provisioned in Stripe — run the pricing provision script (npx ts-node src/drizzle/seeds/stripe-provision.ts)`,
-      );
-    }
 
     // 4. Check if subscription item already exists for this addon type
     const existingItem = await db
@@ -195,12 +206,11 @@ export class AddonService {
       )
       .limit(1);
 
-    let stripeSubscriptionItemId: string;
     let subscriptionItemId: number;
     let finalQuantity = quantity;
 
     if (existingItem.length > 0) {
-      // Update existing item - add to current quantity
+      // Add to the current quantity rather than replacing it.
       finalQuantity = existingItem[0].quantity + quantity;
 
       if (addonPrice.maxQuantity && finalQuantity > addonPrice.maxQuantity) {
@@ -209,55 +219,70 @@ export class AddonService {
             `You currently have ${existingItem[0].quantity}.`,
         );
       }
+    }
 
-      // Update in Stripe
-      if (existingItem[0].stripeSubscriptionItemId) {
-        await this.stripeService.updateSubscriptionItem(
-          existingItem[0].stripeSubscriptionItemId,
-          finalQuantity,
-          sub.stripeSubscriptionId!, // Pass subscription ID for immediate billing
-        );
-        stripeSubscriptionItemId = existingItem[0].stripeSubscriptionItemId;
-      } else {
-        // Create new Stripe item if none exists
-        const stripeItem = await this.stripeService.addSubscriptionItem({
-          subscriptionId: sub.stripeSubscriptionId!,
-          priceId: stripePriceId,
-          quantity: finalQuantity,
-        });
-        stripeSubscriptionItemId = stripeItem.id;
-      }
+    // Buy at whichever provider bills this account. `purchaseAddon` covers
+    // both "already have this add-on, raise the quantity" and "add a new one";
+    // the adapter owns that decision because the two providers model it
+    // differently - a line item on one subscription vs. a whole separate
+    // subscription.
+    const purchase = await adapter.purchaseAddon(
+      sub.id,
+      addonType,
+      finalQuantity,
+    );
 
-      // Update in database
+    // Lemon Squeezy cannot create a NEW add-on through its API, so it hands
+    // back a hosted-checkout url instead. Nothing has been bought yet: return
+    // the url so the frontend can redirect, and leave limits and bookkeeping
+    // to the webhook that fires once the customer pays. Writing limits here
+    // would grant the add-on to someone who may never complete checkout.
+    if (isCheckoutRequired(purchase)) {
+      this.logger.log(
+        `Add-on ${addonType} x${quantity} for workspace ${workspaceId} needs checkout at ${adapter.name}`,
+      );
+      return {
+        status: 'checkout_required',
+        addonType,
+        quantity: finalQuantity,
+        checkoutUrl: purchase.url,
+      };
+    }
+
+    // Keep the legacy `subscription_items` bookkeeping row in step. The
+    // provider's own item id now lives in `provider_subscriptions`, written by
+    // the adapter; this row is what the rest of the app still reads for
+    // quantities, so it must not drift.
+    const providerRows = await db
+      .select()
+      .from(providerSubscriptions)
+      .where(eq(providerSubscriptions.subscriptionId, sub.id));
+    const providerItemId =
+      findItem(providerRows as ProviderSubscription[], addonType)
+        ?.providerItemId ?? null;
+
+    if (existingItem.length > 0) {
       await db
         .update(subscriptionItems)
         .set({
           quantity: finalQuantity,
-          stripeSubscriptionItemId,
+          ...(providerItemId
+            ? { stripeSubscriptionItemId: providerItemId }
+            : {}),
           updatedAt: new Date(),
         })
         .where(eq(subscriptionItems.id, existingItem[0].id));
 
       subscriptionItemId = existingItem[0].id;
     } else {
-      // Create new subscription item in Stripe
-      const stripeItem = await this.stripeService.addSubscriptionItem({
-        subscriptionId: sub.stripeSubscriptionId!,
-        priceId: stripePriceId,
-        quantity,
-      });
-
-      stripeSubscriptionItemId = stripeItem.id;
-
-      // Create in database
       const [newItem] = await db
         .insert(subscriptionItems)
         .values({
           subscriptionId: sub.id,
-          stripeSubscriptionItemId,
+          stripeSubscriptionItemId: providerItemId,
           itemType: addonType,
           stripePriceId: stripePriceId,
-          quantity,
+          quantity: finalQuantity,
           unitPriceCents: addonPrice.pricePerUnitCents,
         } as NewSubscriptionItem)
         .returning();
@@ -303,8 +328,9 @@ export class AddonService {
     );
 
     return {
+      status: 'completed',
       subscriptionItemId,
-      stripeSubscriptionItemId,
+      stripeSubscriptionItemId: providerItemId ?? '',
       addonType,
       quantity: finalQuantity,
       unitPriceCents: addonPrice.pricePerUnitCents,
@@ -424,27 +450,20 @@ export class AddonService {
 
     const remainingQuantity = item.quantity - removeQty;
 
-    // 5. Update or delete in Stripe and database
+    // 5. Update or remove at the provider, then in our own tables. Removing
+    //    the last one is `removeAddon` (a line-item delete on Stripe, a
+    //    subscription cancel on Lemon Squeezy); a partial reduction is a
+    //    quantity change. Credits from either are handled provider-side.
+    const adapter = await this.providers.adapterForSubscription(sub.id);
+
     if (remainingQuantity === 0) {
-      // Delete the item entirely
-      // Note: Credits from removal are automatically applied to next invoice by Stripe
-      if (item.stripeSubscriptionItemId) {
-        await this.stripeService.deleteSubscriptionItem(
-          item.stripeSubscriptionItemId,
-        );
-      }
+      await adapter.removeAddon(sub.id, addonType);
 
       await db
         .delete(subscriptionItems)
         .where(eq(subscriptionItems.id, item.id));
     } else {
-      // Update quantity (reduction creates credits, applied to next invoice)
-      if (item.stripeSubscriptionItemId) {
-        await this.stripeService.updateSubscriptionItem(
-          item.stripeSubscriptionItemId,
-          remainingQuantity,
-        );
-      }
+      await adapter.changeAddonQuantity(sub.id, addonType, remainingQuantity);
 
       await db
         .update(subscriptionItems)

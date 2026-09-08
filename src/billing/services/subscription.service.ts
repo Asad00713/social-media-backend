@@ -12,6 +12,8 @@ import { upsertInvoiceFromStripe } from './invoice-sync.util';
 import { StripeService } from '../../stripe/stripe.service';
 import { CustomerService } from './customer.service';
 import { SubscriptionLookupService } from './subscription-lookup.service';
+import { ProviderRegistryService } from '../providers/provider-registry.service';
+import { createStripeSubscriptionDirect } from '../providers/stripe-direct-subscribe.util';
 import { db } from '../../drizzle/db';
 import {
   subscriptions,
@@ -52,11 +54,30 @@ export class SubscriptionService {
     private stripeService: StripeService,
     private customerService: CustomerService,
     private lookup: SubscriptionLookupService,
+    private readonly providers: ProviderRegistryService,
   ) {}
 
   async createSubscription(
     dto: CreateSubscriptionDto,
   ): Promise<SubscriptionResponse> {
+    // 0. This path is Stripe-only by construction: it takes a raw
+    //    `paymentMethodId`, creates the subscription server-side, and writes
+    //    `stripe_subscription_id` / `stripe_subscription_item_id` columns.
+    //    Lemon Squeezy has no equivalent — a subscription can only begin at a
+    //    hosted checkout there — so the abstraction has no `createSubscription`
+    //    operation to route to. Refuse BEFORE touching Stripe rather than
+    //    after: `getOrCreateStripeCustomer` used to run unconditionally on the
+    //    line below, so a Lemon Squeezy signup created a Stripe customer and
+    //    wrote `stripe_customer_id` to our database, silently and with no
+    //    error. Non-Stripe accounts are sent to Checkout, which IS routed.
+    const provider = await this.providers.providerForUser(dto.userId);
+    if (provider !== 'stripe') {
+      throw new BadRequestException(
+        `Direct subscription creation is not supported for ${provider} — ` +
+          'start a checkout session instead.',
+      );
+    }
+
     // 1. Get or create Stripe customer
     const { stripeCustomerId } =
       await this.customerService.getOrCreateStripeCustomer(dto.userId);
@@ -120,19 +141,7 @@ export class SubscriptionService {
       );
     }
 
-    // 6. Attach payment method if provided
-    if (dto.paymentMethodId) {
-      await this.stripeService.attachPaymentMethod(
-        dto.paymentMethodId,
-        stripeCustomerId,
-      );
-      await this.stripeService.setDefaultPaymentMethod(
-        stripeCustomerId,
-        dto.paymentMethodId,
-      );
-    }
-
-    // 7. Read the provisioned Stripe price for the plan (read-only — prices are
+    // 6. Read the provisioned Stripe price for the plan (read-only — prices are
     //    provisioned out-of-band by the stripe-provision script; FREE returned
     //    above at step 5, so only paid plans reach here).
     const stripePriceId = selectedPlan.stripePriceId;
@@ -143,29 +152,25 @@ export class SubscriptionService {
       );
     }
 
-    // Guard: a paid subscription must have a card. FREE→paid goes through
-    // Checkout; this direct path must never create an incomplete subscription.
-    if (!dto.paymentMethodId) {
-      const hasCard =
-        await this.stripeService.customerHasPaymentMethod(stripeCustomerId);
-      if (!hasCard) {
-        throw new BadRequestException(
-          'A payment method is required for a paid plan — subscribe via Checkout',
-        );
-      }
-    }
-
-    // 8. Create Stripe subscription
-    const stripeSubscription = await this.stripeService.createSubscription({
-      customerId: stripeCustomerId,
-      priceId: stripePriceId,
-      metadata: {
-        workspaceId: dto.workspaceId,
-        userId: dto.userId,
-        planCode: dto.planCode,
+    // 7. Attach the card and create the Stripe subscription. The Stripe calls
+    //    live inside the provider boundary (`stripe-direct-subscribe.util`)
+    //    because this direct path has no Lemon Squeezy equivalent and so
+    //    cannot be one of the abstracted operations — step 0 already refused
+    //    non-Stripe accounts.
+    const stripeSubscription = await createStripeSubscriptionDirect(
+      this.stripeService,
+      {
+        stripeCustomerId,
+        stripePriceId,
+        paymentMethodId: dto.paymentMethodId,
+        metadata: {
+          workspaceId: dto.workspaceId,
+          userId: dto.userId,
+          planCode: dto.planCode,
+        },
+        trialPeriodDays: dto.trialPeriodDays,
       },
-      trialPeriodDays: dto.trialPeriodDays,
-    });
+    );
 
     // 8. Save subscription to database (per-account, not per-workspace)
     const sub: any = stripeSubscription;
@@ -397,7 +402,11 @@ export class SubscriptionService {
       );
     }
 
-    // 2. Resolve the plan and ensure it is paid + provisioned.
+    // 2. Resolve the plan and ensure it is paid. The provider-specific price
+    //    reference (Stripe price id / Lemon Squeezy variant id) is resolved
+    //    inside the adapter via the catalogue — reading `stripePriceId` here
+    //    would have made a Lemon Squeezy checkout fail on a column it never
+    //    populates.
     const planRows = await db
       .select()
       .from(plans)
@@ -408,36 +417,17 @@ export class SubscriptionService {
     if (plan.basePriceCents <= 0) {
       throw new BadRequestException('FREE plan does not require checkout');
     }
-    if (!plan.stripePriceId) {
-      throw new BadRequestException(
-        `Plan "${plan.code}" is not provisioned in Stripe — run the pricing provision script`,
-      );
-    }
 
-    // 3. Stripe customer + redirect URLs.
-    const { stripeCustomerId } =
-      await this.customerService.getOrCreateStripeCustomer(dto.userId);
-    const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:3001';
-    // Frontend workspace routes live under `/w/:workspaceId/*`
-    // (see frontend lib/workspace-path.ts WORKSPACE_ROUTE_PREFIX).
-    const base = `${frontendUrl}/w/${dto.workspaceId}/settings/plans`;
-
-    const session = await this.stripeService.createCheckoutSession({
-      customerId: stripeCustomerId,
-      priceId: plan.stripePriceId,
-      successUrl: `${base}?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancelUrl: `${base}?checkout=cancelled`,
-      metadata: {
-        workspaceId: dto.workspaceId,
-        userId: dto.userId,
-        planCode: dto.planCode,
-      },
-    });
-
-    if (!session.url) {
-      throw new BadRequestException('Failed to create checkout session');
-    }
-    return { url: session.url };
+    // 3. Hand off to whichever provider bills this account. The Stripe
+    //    customer is created inside `StripeAdapter.createCheckout` and ONLY
+    //    there — it used to be created unconditionally right here, which meant
+    //    a Lemon Squeezy signup silently got a `stripe_customer_id`.
+    const adapter = await this.providers.adapterFor(dto.userId);
+    return await adapter.createCheckout(
+      dto.userId,
+      dto.planCode,
+      dto.workspaceId,
+    );
   }
 
   /**
@@ -614,11 +604,10 @@ export class SubscriptionService {
       throw new BadRequestException('Subscription is already paused');
     }
 
-    if (subscription.stripeSubscriptionId) {
-      await this.stripeService.pauseSubscription(
-        subscription.stripeSubscriptionId,
-      );
-    }
+    const adapter = await this.providers.adapterForSubscription(
+      subscription.id,
+    );
+    await adapter.pause(subscription.id);
 
     const pausedAt = new Date();
 
@@ -655,11 +644,10 @@ export class SubscriptionService {
       throw new BadRequestException('Subscription is not paused');
     }
 
-    if (subscription.stripeSubscriptionId) {
-      await this.stripeService.resumeSubscription(
-        subscription.stripeSubscriptionId,
-      );
-    }
+    const adapter = await this.providers.adapterForSubscription(
+      subscription.id,
+    );
+    await adapter.resume(subscription.id);
 
     await db
       .update(subscriptions)
@@ -673,7 +661,9 @@ export class SubscriptionService {
       addons,
     );
 
-    return { message: 'Subscription resumed. Your plan and channels are back.' };
+    return {
+      message: 'Subscription resumed. Your plan and channels are back.',
+    };
   }
 
   async cancelSubscription(
@@ -712,13 +702,11 @@ export class SubscriptionService {
       throw new BadRequestException('Cannot cancel free plan');
     }
 
-    // Cancel in Stripe
-    if (subscription.stripeSubscriptionId) {
-      await this.stripeService.cancelSubscription(
-        subscription.stripeSubscriptionId,
-        cancelAtPeriodEnd,
-      );
-    }
+    // Cancel at whichever provider bills this account.
+    const adapter = await this.providers.adapterForSubscription(
+      subscription.id,
+    );
+    await adapter.cancel(subscription.id, cancelAtPeriodEnd);
 
     // Update database
     if (cancelAtPeriodEnd) {

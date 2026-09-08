@@ -18,6 +18,7 @@ import { SubscriptionService } from './services/subscription.service';
 import { WebhookService } from './services/webhook.service';
 import { UsageService } from './services/usage.service';
 import { AddonService } from './services/addon.service';
+import type { PurchaseAddonOutcome } from './services/addon.service';
 import { PlanChangeService } from './services/plan-change.service';
 import { DashboardService } from './services/dashboard.service';
 import { InvoiceService } from './services/invoice.service';
@@ -179,6 +180,16 @@ export class BillingController {
     return await this.addonService.getCurrentAddons(workspaceId);
   }
 
+  /**
+   * Buy an add-on.
+   *
+   * Answers with one of TWO shapes, discriminated by `status`. Stripe can add
+   * the line item and invoice on the spot, so it returns
+   * `{ status: 'completed', ... }`. Lemon Squeezy has no API that creates a
+   * subscription, so a brand-new add-on comes back as
+   * `{ status: 'checkout_required', checkoutUrl }` and the frontend must
+   * redirect - nothing has been bought or granted yet at that point.
+   */
   @Post('workspaces/:workspaceId/addons')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
@@ -186,7 +197,7 @@ export class BillingController {
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
     @Body() body: PurchaseAddonBodyDto,
-  ) {
+  ): Promise<PurchaseAddonOutcome> {
     return await this.addonService.purchaseAddon({
       workspaceId,
       userId: user.userId,
