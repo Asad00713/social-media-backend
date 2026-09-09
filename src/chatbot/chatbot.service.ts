@@ -662,7 +662,10 @@ export class ChatbotService {
     try {
       // Get workspace preferred provider
       const [ws] = await db
-        .select({ preferredAiProvider: workspace.preferredAiProvider })
+        .select({
+          preferredAiProvider: workspace.preferredAiProvider,
+          ownerId: workspace.ownerId,
+        })
         .from(workspace)
         .where(eq(workspace.id, workspaceId))
         .limit(1);
@@ -670,17 +673,21 @@ export class ChatbotService {
       const preferred = ws?.preferredAiProvider;
       if (!preferred) return undefined; // use system default
 
-      // Check plan-based access
-      const [sub] = await db
-        .select({ planCode: subscriptions.planCode })
-        .from(subscriptions)
-        .where(
-          and(
-            eq(subscriptions.workspaceId, workspaceId),
-            eq(subscriptions.status, 'active'),
-          ),
-        )
-        .limit(1);
+      // Check plan-based access. The subscription is the owner's: it is
+      // account-scoped, so every workspace they own reads the same tier. The
+      // owner id came back on the row above, so this costs no extra query.
+      const [sub] = ws?.ownerId
+        ? await db
+            .select({ planCode: subscriptions.planCode })
+            .from(subscriptions)
+            .where(
+              and(
+                eq(subscriptions.userId, ws.ownerId),
+                eq(subscriptions.status, 'active'),
+              ),
+            )
+            .limit(1)
+        : [];
 
       const planCode = sub?.planCode || 'FREE';
       const allowed = PLAN_PROVIDERS[planCode] || PLAN_PROVIDERS.FREE;

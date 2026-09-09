@@ -7,6 +7,10 @@ import { WorkspaceSuspendedGuard } from './workspace-suspended.guard';
  * resolves to queued row-sets in sequence — the guard now issues two queries
  * (workspace row, then subscription row), so each call to `limit()` pops the
  * next queued result. Pass one array per expected query, in call order.
+ *
+ * The workspace row must carry `ownerId`: subscriptions are account-scoped, so
+ * the guard looks the subscription up by owner. A fixture without one models a
+ * workspace whose owner cannot be resolved, and the guard then allows through.
  */
 function mockDb(...rowsQueue: Array<Array<Record<string, unknown>>>) {
   const queue = [...rowsQueue];
@@ -58,7 +62,7 @@ describe('WorkspaceSuspendedGuard', () => {
   });
 
   it('allows an active workspace with no subscription row (free / never subscribed)', async () => {
-    const { db } = mockDb([{ isActive: true, reason: null }], []);
+    const { db } = mockDb([{ isActive: true, reason: null, ownerId: 'owner-1' }], []);
     const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
 
     await expect(
@@ -69,7 +73,7 @@ describe('WorkspaceSuspendedGuard', () => {
   it.each(['active', 'trialing', 'past_due', 'incomplete', 'canceled'])(
     'allows non-suspended status "%s"',
     async (status) => {
-      const { db } = mockDb([{ isActive: true, reason: null }], [{ status }]);
+      const { db } = mockDb([{ isActive: true, reason: null, ownerId: 'owner-1' }], [{ status }]);
       const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
 
       await expect(
@@ -81,7 +85,7 @@ describe('WorkspaceSuspendedGuard', () => {
   it.each(['unpaid', 'incomplete_expired'])(
     'blocks suspended status "%s" with a WORKSPACE_SUSPENDED 403 carrying reason "billing"',
     async (status) => {
-      const { db } = mockDb([{ isActive: true, reason: null }], [{ status }]);
+      const { db } = mockDb([{ isActive: true, reason: null, ownerId: 'owner-1' }], [{ status }]);
       const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
 
       await expect(
@@ -100,7 +104,7 @@ describe('WorkspaceSuspendedGuard', () => {
   );
 
   it('reads the analytics module\'s :wsId param too', async () => {
-    const { db, where } = mockDb([{ isActive: true, reason: null }], [{ status: 'unpaid' }]);
+    const { db, where } = mockDb([{ isActive: true, reason: null, ownerId: 'owner-1' }], [{ status: 'unpaid' }]);
     const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
 
     await expect(

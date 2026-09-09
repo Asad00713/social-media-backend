@@ -1,5 +1,5 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { eq, and, desc } from 'drizzle-orm';
+import { eq, desc } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
   subscriptions,
@@ -12,6 +12,8 @@ import {
   stripeCustomers,
   Plan,
 } from '../../drizzle/schema';
+import { SubscriptionLookupService } from './subscription-lookup.service';
+import { AccountChannelsService } from './account-channels.service';
 
 export interface BillingDashboard {
   subscription: {
@@ -89,6 +91,11 @@ export interface UserBillingSummary {
 export class DashboardService {
   private readonly logger = new Logger(DashboardService.name);
 
+  constructor(
+    private readonly lookup: SubscriptionLookupService,
+    private readonly accountChannels: AccountChannelsService,
+  ) {}
+
   // Get billing dashboard for a workspace
   async getWorkspaceDashboard(workspaceId: string): Promise<BillingDashboard> {
     // Get workspace
@@ -102,11 +109,12 @@ export class DashboardService {
       throw new NotFoundException('Workspace not found');
     }
 
-    // Get subscription with plan details
+    // Get the subscription that pays for this workspace — its owner's. The
+    // workspace row is already loaded, so use its ownerId directly.
     const subscription = await db
       .select()
       .from(subscriptions)
-      .where(eq(subscriptions.workspaceId, workspaceId))
+      .where(eq(subscriptions.userId, ws[0].ownerId))
       .limit(1);
 
     let subscriptionData: BillingDashboard['subscription'] = null;
@@ -144,16 +152,26 @@ export class DashboardService {
     let usageData: BillingDashboard['usage'] = null;
     if (usage.length > 0) {
       const u = usage[0];
-      const totalChannels = u.channelsLimit + u.extraChannelsPurchased;
+
+      // Channels are pooled across the ACCOUNT: the dashboard must show the
+      // ceiling that is actually enforced, not this workspace's stored row.
+      // Members and AI tokens remain per-workspace.
+      const ownerId = await this.lookup.getOwnerId(workspaceId);
+      const accountChannels = ownerId
+        ? await this.accountChannels.getUsage(ownerId)
+        : { used: u.channelsCount, limit: u.channelsLimit, available: 0 };
+
+      const totalChannels = accountChannels.limit;
+      const channelsUsed = accountChannels.used;
       const totalMembers = u.membersLimit + u.extraMembersPurchased;
       const totalAiTokens = u.aiTokensLimit + u.extraAiTokensPurchased;
 
       usageData = {
-        channelsCount: u.channelsCount,
+        channelsCount: channelsUsed,
         channelsLimit: totalChannels,
         channelsPercentage:
           totalChannels > 0
-            ? Math.round((u.channelsCount / totalChannels) * 100)
+            ? Math.round((channelsUsed / totalChannels) * 100)
             : 0,
         membersCount: u.membersCount,
         membersLimit: totalMembers,
@@ -255,11 +273,13 @@ export class DashboardService {
 
   // Get billing summary for a user (all workspaces)
   async getUserBillingSummary(userId: string): Promise<UserBillingSummary> {
-    // Get user's workspaces
+    // Get user's workspaces, oldest first (the first is the primary — the one
+    // that carries the account's purchased channels and seats).
     const workspaces = await db
       .select()
       .from(workspace)
-      .where(eq(workspace.ownerId, userId));
+      .where(eq(workspace.ownerId, userId))
+      .orderBy(workspace.createdAt, workspace.id);
 
     // Get Stripe customer
     const customer = await db
@@ -268,63 +288,72 @@ export class DashboardService {
       .where(eq(stripeCustomers.userId, userId))
       .limit(1);
 
-    const workspaceSummaries: UserBillingSummary['workspaces'] = [];
-    let totalMonthlySpend = 0;
+    // ONE subscription for the whole account. This used to read "each
+    // workspace's" subscription inside the loop — under account scope that
+    // returns the same row every time, so the monthly spend was multiplied by
+    // the number of workspaces owned. The cost is counted exactly once; the
+    // per-workspace rows report which plan covers them.
+    const sub = await this.lookup.findByUserId(userId);
 
-    for (const ws of workspaces) {
-      const subscription = await db
+    let totalMonthlySpend = 0;
+    let monthlyCost = 0;
+    let planName: string | null = null;
+
+    if (sub) {
+      const plan = await db
         .select()
-        .from(subscriptions)
-        .where(eq(subscriptions.workspaceId, ws.id))
+        .from(plans)
+        .where(eq(plans.code, sub.planCode))
         .limit(1);
 
-      if (subscription.length > 0) {
-        const sub = subscription[0];
-        const plan = await db
-          .select()
-          .from(plans)
-          .where(eq(plans.code, sub.planCode))
-          .limit(1);
+      planName = plan[0]?.name ?? sub.planCode;
+      monthlyCost = plan[0]?.basePriceCents || 0;
 
-        // Calculate workspace cost
-        let monthlyCost = plan[0]?.basePriceCents || 0;
+      const items = await db
+        .select()
+        .from(subscriptionItems)
+        .where(eq(subscriptionItems.subscriptionId, sub.id));
 
-        const items = await db
-          .select()
-          .from(subscriptionItems)
-          .where(eq(subscriptionItems.subscriptionId, sub.id));
+      for (const item of items) {
+        if (item.itemType !== 'BASE_PLAN') {
+          monthlyCost += item.unitPriceCents * item.quantity;
+        }
+      }
 
-        for (const item of items) {
-          if (item.itemType !== 'BASE_PLAN') {
-            monthlyCost += item.unitPriceCents * item.quantity;
-          }
+      if (sub.status === 'active') {
+        totalMonthlySpend = monthlyCost;
+      }
+    }
+
+    // The subscription's cost is billed once for the account, so it is
+    // attributed to the primary workspace; the others are covered at no
+    // additional charge and report $0.
+    const workspaceSummaries: UserBillingSummary['workspaces'] = workspaces.map(
+      (ws, index) => {
+        if (!sub) {
+          return {
+            id: ws.id,
+            name: ws.name,
+            planCode: 'NONE',
+            planName: 'No Plan',
+            monthlyCost: 0,
+            monthlyCostFormatted: '$0.00/month',
+            status: 'none',
+          };
         }
 
-        if (sub.status === 'active') {
-          totalMonthlySpend += monthlyCost;
-        }
-
-        workspaceSummaries.push({
+        const attributedCost = index === 0 ? monthlyCost : 0;
+        return {
           id: ws.id,
           name: ws.name,
           planCode: sub.planCode,
-          planName: plan[0]?.name || sub.planCode,
-          monthlyCost,
-          monthlyCostFormatted: `$${(monthlyCost / 100).toFixed(2)}/month`,
+          planName: planName ?? sub.planCode,
+          monthlyCost: attributedCost,
+          monthlyCostFormatted: `$${(attributedCost / 100).toFixed(2)}/month`,
           status: sub.status,
-        });
-      } else {
-        workspaceSummaries.push({
-          id: ws.id,
-          name: ws.name,
-          planCode: 'NONE',
-          planName: 'No Plan',
-          monthlyCost: 0,
-          monthlyCostFormatted: '$0.00/month',
-          status: 'none',
-        });
-      }
-    }
+        };
+      },
+    );
 
     return {
       totalWorkspaces: workspaces.length,
@@ -341,20 +370,17 @@ export class DashboardService {
     workspaceId: string,
     limit: number = 20,
   ): Promise<any[]> {
-    const subscription = await db
-      .select()
-      .from(subscriptions)
-      .where(eq(subscriptions.workspaceId, workspaceId))
-      .limit(1);
+    // Plan/add-on history belongs to the account's subscription — the owner's.
+    const subscription = await this.lookup.findByWorkspaceId(workspaceId);
 
-    if (subscription.length === 0) {
+    if (!subscription) {
       return [];
     }
 
     const changes = await db
       .select()
       .from(subscriptionChanges)
-      .where(eq(subscriptionChanges.subscriptionId, subscription[0].id))
+      .where(eq(subscriptionChanges.subscriptionId, subscription.id))
       .orderBy(desc(subscriptionChanges.createdAt))
       .limit(limit);
 

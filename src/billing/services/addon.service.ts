@@ -14,11 +14,18 @@ import {
   workspaceUsage,
   subscriptionChanges,
   workspace,
+  providerSubscriptions,
+  ProviderSubscription,
   NewSubscriptionItem,
   NewSubscriptionChange,
 } from '../../drizzle/schema';
 import { StripeService } from '../../stripe/stripe.service';
 import { UsageService } from './usage.service';
+import { SubscriptionLookupService } from './subscription-lookup.service';
+import { findItem } from './provider-subscription.util';
+import { ProviderRegistryService } from '../providers/provider-registry.service';
+import { isCheckoutRequired } from '../providers/payment-provider.interface';
+import { assertStripeSubscriptionExists } from '../providers/stripe-stale-subscription.util';
 
 export type AddonType =
   | 'EXTRA_CHANNEL'
@@ -34,6 +41,7 @@ export interface PurchaseAddonDto {
 }
 
 export interface AddonPurchaseResult {
+  status: 'completed';
   subscriptionItemId: number;
   stripeSubscriptionItemId: string;
   addonType: AddonType;
@@ -47,6 +55,26 @@ export interface AddonPurchaseResult {
   };
 }
 
+/**
+ * A brand-new Lemon Squeezy add-on cannot be created through their API - there
+ * is no `POST /v1/subscription-items` - so it has to start at a hosted
+ * checkout and completes later via webhook.
+ *
+ * Surfaced as its own variant rather than a thrown error or a silent no-op:
+ * the caller must redirect, and a discriminated union is what forces the
+ * frontend to handle it instead of reading `quantity` off a purchase that has
+ * not happened yet. Limits are NOT moved here - the webhook does that when the
+ * customer actually pays.
+ */
+export interface AddonCheckoutRequired {
+  status: 'checkout_required';
+  addonType: AddonType;
+  quantity: number;
+  checkoutUrl: string;
+}
+
+export type PurchaseAddonOutcome = AddonPurchaseResult | AddonCheckoutRequired;
+
 @Injectable()
 export class AddonService {
   private readonly logger = new Logger(AddonService.name);
@@ -54,10 +82,12 @@ export class AddonService {
   constructor(
     private stripeService: StripeService,
     private usageService: UsageService,
+    private readonly lookup: SubscriptionLookupService,
+    private readonly providers: ProviderRegistryService,
   ) {}
 
   // Purchase add-on for a workspace
-  async purchaseAddon(dto: PurchaseAddonDto): Promise<AddonPurchaseResult> {
+  async purchaseAddon(dto: PurchaseAddonDto): Promise<PurchaseAddonOutcome> {
     const { workspaceId, userId, addonType, quantity } = dto;
 
     if (quantity < 1) {
@@ -79,13 +109,14 @@ export class AddonService {
       throw new ForbiddenException('Only workspace owner can purchase add-ons');
     }
 
-    // 2. Get active subscription for this workspace
+    // 2. Get the account's active subscription. Ownership was just verified,
+    //    so `userId` IS the owner whose subscription pays for this workspace.
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, userId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -106,35 +137,19 @@ export class AddonService {
       );
     }
 
-    // Defensive: the DB might reference a Stripe subscription that no longer
-    // exists (test data wiped, account changed, mode switched between test
-    // and live). Verify the subscription is still real on Stripe BEFORE we
-    // try to mutate it — gives the user a clear actionable error instead
-    // of a generic 500.
-    if (sub.stripeSubscriptionId) {
-      try {
-        await this.stripeService.getSubscription(sub.stripeSubscriptionId);
-      } catch (err: any) {
-        if (err?.code === 'resource_missing') {
-          this.logger.warn(
-            `Stale stripe_subscription_id ${sub.stripeSubscriptionId} for workspace ${workspaceId} — clearing and asking user to re-subscribe.`,
-          );
-          // Clear the orphan reference so the next subscribe call creates fresh.
-          await db
-            .update(subscriptions)
-            .set({
-              stripeSubscriptionId: null,
-              status: 'incomplete',
-              updatedAt: new Date(),
-            })
-            .where(eq(subscriptions.id, sub.id));
+    // Which provider bills this account decides everything below.
+    const adapter = await this.providers.adapterForSubscription(sub.id);
 
-          throw new BadRequestException(
-            'Your subscription is no longer linked to Stripe (this can happen if test data was reset or the Stripe account changed). Please go to Billing and re-subscribe to your current plan, then try adding the add-on again.',
-          );
-        }
-        throw err;
-      }
+    // Defensive, Stripe only: the DB might reference a Stripe subscription
+    // that no longer exists (test data wiped, account changed, mode switched
+    // between test and live). Verify BEFORE we try to mutate it — gives the
+    // user a clear actionable error instead of a generic 500.
+    if (adapter.name === 'stripe') {
+      await assertStripeSubscriptionExists(
+        this.stripeService,
+        sub,
+        `workspace ${workspaceId}`,
+      );
     }
 
     // 3. Get addon pricing for this plan
@@ -171,14 +186,20 @@ export class AddonService {
       );
     }
 
-    // 3.5 Read the provisioned Stripe price for this addon (read-only — prices
-    //     are provisioned out-of-band by the stripe-provision script).
-    const stripePriceId = addonPrice.stripePriceId;
-    if (!stripePriceId) {
-      throw new BadRequestException(
-        `Add-on "${addonType}" for plan "${sub.planCode}" is not provisioned in Stripe — run the pricing provision script (npx ts-node src/drizzle/seeds/stripe-provision.ts)`,
-      );
-    }
+    // 3.5 The provider-specific price reference (Stripe price id / Lemon
+    //     Squeezy variant id) is resolved inside the adapter via the
+    //     catalogue. Reading `stripePriceId` here would have made every Lemon
+    //     Squeezy add-on fail on a column that provider never populates. It is
+    //     still read below, but only to keep the legacy `subscription_items`
+    //     bookkeeping row truthful.
+    //
+    //     Coerced to '' because `addon_pricing.stripe_price_id` is NULLABLE
+    //     while `subscription_items.stripe_price_id` is NOT NULL. For a Lemon
+    //     Squeezy add-on the source really is null, and the insert below runs
+    //     AFTER the provider has already charged the customer - so a raw
+    //     Postgres NOT NULL violation there would take their money and then
+    //     500. Matches how plan-change.service.ts writes the same column.
+    const stripePriceId = addonPrice.stripePriceId ?? '';
 
     // 4. Check if subscription item already exists for this addon type
     const existingItem = await db
@@ -192,69 +213,126 @@ export class AddonService {
       )
       .limit(1);
 
-    let stripeSubscriptionItemId: string;
+    // SEMANTICS OF THE NUMBER SENT TO THE PROVIDER — read this before changing
+    // it, because sending the wrong one bills the customer twice.
+    //
+    // `purchaseAddon` is ABSOLUTE when the provider already holds a record of
+    // this add-on (Stripe sets the line item's quantity; Lemon Squeezy PATCHes
+    // the subscription item's), and it is an INCREMENT when it does not,
+    // because there is nothing to add to — Lemon Squeezy opens a fresh hosted
+    // checkout for a NEW subscription, and that subscription bills for exactly
+    // the number in it, alongside anything already running.
+    //
+    // The service used to send `existing + quantity` unconditionally. That is
+    // right for the absolute case and WRONG for the checkout case, and the two
+    // disagree exactly when the `subscription_items` bookkeeping row exists
+    // while the `provider_subscriptions` row does not — a reachable state,
+    // since the Lemon Squeezy add-on `subscription_created` path is the one
+    // that writes the provider row, and a first checkout whose `custom_data`
+    // carried no resolvable account writes neither. The customer would then be
+    // charged `existing + quantity` on the NEW subscription while the original
+    // add-on subscription kept charging `existing`.
+    //
+    // So the sum is keyed on what the PROVIDER holds, not on what our
+    // bookkeeping table holds. The cap is still checked against the true total
+    // either way, so this cannot be used to exceed `maxQuantity`.
+    const providerRowsBefore = await db
+      .select()
+      .from(providerSubscriptions)
+      .where(eq(providerSubscriptions.subscriptionId, sub.id));
+    const providerHoldsAddon =
+      findItem(providerRowsBefore as ProviderSubscription[], addonType) !==
+      null;
+
+    const existingQuantity =
+      existingItem.length > 0 ? existingItem[0].quantity : 0;
+
+    // What the customer will hold once this purchase completes, used for the
+    // cap and for our own bookkeeping row.
+    const totalQuantity = existingQuantity + quantity;
+
+    // What the provider is asked for: the new total when it will REPLACE the
+    // figure it holds, the increment when it will bill a separate record.
+    const providerQuantity = providerHoldsAddon ? totalQuantity : quantity;
+
     let subscriptionItemId: number;
-    let finalQuantity = quantity;
+    const finalQuantity = totalQuantity;
 
     if (existingItem.length > 0) {
-      // Update existing item - add to current quantity
-      finalQuantity = existingItem[0].quantity + quantity;
-
       if (addonPrice.maxQuantity && finalQuantity > addonPrice.maxQuantity) {
         throw new BadRequestException(
           `Cannot add ${quantity} more. Maximum total for ${addonType} is ${addonPrice.maxQuantity}. ` +
             `You currently have ${existingItem[0].quantity}.`,
         );
       }
+    }
 
-      // Update in Stripe
-      if (existingItem[0].stripeSubscriptionItemId) {
-        await this.stripeService.updateSubscriptionItem(
-          existingItem[0].stripeSubscriptionItemId,
-          finalQuantity,
-          sub.stripeSubscriptionId!, // Pass subscription ID for immediate billing
-        );
-        stripeSubscriptionItemId = existingItem[0].stripeSubscriptionItemId;
-      } else {
-        // Create new Stripe item if none exists
-        const stripeItem = await this.stripeService.addSubscriptionItem({
-          subscriptionId: sub.stripeSubscriptionId!,
-          priceId: stripePriceId,
-          quantity: finalQuantity,
-        });
-        stripeSubscriptionItemId = stripeItem.id;
-      }
+    // Buy at whichever provider bills this account. `purchaseAddon` covers
+    // both "already have this add-on, raise the quantity" and "add a new one";
+    // the adapter owns that decision because the two providers model it
+    // differently - a line item on one subscription vs. a whole separate
+    // subscription.
+    const purchase = await adapter.purchaseAddon(
+      sub.id,
+      addonType,
+      providerQuantity,
+    );
 
-      // Update in database
+    // Lemon Squeezy cannot create a NEW add-on through its API, so it hands
+    // back a hosted-checkout url instead. Nothing has been bought yet: return
+    // the url so the frontend can redirect, and leave limits and bookkeeping
+    // to the webhook that fires once the customer pays. Writing limits here
+    // would grant the add-on to someone who may never complete checkout.
+    if (isCheckoutRequired(purchase)) {
+      this.logger.log(
+        `Add-on ${addonType} x${quantity} for workspace ${workspaceId} needs checkout at ${adapter.name}`,
+      );
+      return {
+        status: 'checkout_required',
+        addonType,
+        // What this checkout actually bills for. Reporting the cumulative
+        // total here would tell the frontend the customer is buying more than
+        // the checkout charges for whenever a separate add-on subscription is
+        // already running.
+        quantity: providerQuantity,
+        checkoutUrl: purchase.url,
+      };
+    }
+
+    // Keep the legacy `subscription_items` bookkeeping row in step. The
+    // provider's own item id now lives in `provider_subscriptions`, written by
+    // the adapter; this row is what the rest of the app still reads for
+    // quantities, so it must not drift.
+    const providerRows = await db
+      .select()
+      .from(providerSubscriptions)
+      .where(eq(providerSubscriptions.subscriptionId, sub.id));
+    const providerItemId =
+      findItem(providerRows as ProviderSubscription[], addonType)
+        ?.providerItemId ?? null;
+
+    if (existingItem.length > 0) {
       await db
         .update(subscriptionItems)
         .set({
           quantity: finalQuantity,
-          stripeSubscriptionItemId,
+          ...(providerItemId
+            ? { stripeSubscriptionItemId: providerItemId }
+            : {}),
           updatedAt: new Date(),
         })
         .where(eq(subscriptionItems.id, existingItem[0].id));
 
       subscriptionItemId = existingItem[0].id;
     } else {
-      // Create new subscription item in Stripe
-      const stripeItem = await this.stripeService.addSubscriptionItem({
-        subscriptionId: sub.stripeSubscriptionId!,
-        priceId: stripePriceId,
-        quantity,
-      });
-
-      stripeSubscriptionItemId = stripeItem.id;
-
-      // Create in database
       const [newItem] = await db
         .insert(subscriptionItems)
         .values({
           subscriptionId: sub.id,
-          stripeSubscriptionItemId,
+          stripeSubscriptionItemId: providerItemId,
           itemType: addonType,
           stripePriceId: stripePriceId,
-          quantity,
+          quantity: finalQuantity,
           unitPriceCents: addonPrice.pricePerUnitCents,
         } as NewSubscriptionItem)
         .returning();
@@ -262,9 +340,11 @@ export class AddonService {
       subscriptionItemId = newItem.id;
     }
 
-    // 5. Update workspace usage limits (pack size converts qty → resource units)
+    // 5. Update usage limits across the account (pack size converts qty →
+    //    resource units)
     await this.updateUsageLimitsForAddon(
-      workspaceId,
+      userId,
+      sub.planCode,
       addonType,
       finalQuantity,
       addonPrice.unitsPerQuantity,
@@ -277,7 +357,11 @@ export class AddonService {
       oldValue:
         existingItem.length > 0 ? { quantity: existingItem[0].quantity } : null,
       newValue: { addonType, quantity: finalQuantity },
-      prorationAmountCents: addonPrice.pricePerUnitCents * quantity,
+      // Null, not the full monthly price. Stripe pro-rates a mid-cycle add-on
+      // against the days left in the period, so the real charge is only known
+      // from the invoice it raises — writing the list price here recorded an
+      // amount the customer was never billed. The invoice is the source of truth.
+      prorationAmountCents: null,
       changedByUserId: userId,
       reason: `Purchased ${quantity} ${addonType}`,
     } as NewSubscriptionChange);
@@ -286,12 +370,17 @@ export class AddonService {
       `Add-on purchased: ${addonType} x${quantity} for workspace ${workspaceId}`,
     );
 
-    // Get updated limits
-    const usage = await this.usageService.getWorkspaceUsage(workspaceId);
+    // Report the limits the purchase actually moved. Purchased channels and
+    // seats land on the account's primary workspace, so reading the browsed
+    // workspace would report 0 and make a successful purchase look inert.
+    const usage = await this.usageService.getWorkspaceUsage(
+      (await this.lookup.getPrimaryWorkspaceId(userId)) ?? workspaceId,
+    );
 
     return {
+      status: 'completed',
       subscriptionItemId,
-      stripeSubscriptionItemId,
+      stripeSubscriptionItemId: providerItemId ?? '',
       addonType,
       quantity: finalQuantity,
       unitPriceCents: addonPrice.pricePerUnitCents,
@@ -326,13 +415,14 @@ export class AddonService {
       throw new ForbiddenException('Only workspace owner can manage add-ons');
     }
 
-    // 2. Get subscription
+    // 2. Get the account's subscription (ownership verified just above, so
+    //    `userId` is the owner).
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, userId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -369,12 +459,18 @@ export class AddonService {
       );
     }
 
-    // 4. Check if removal would violate current usage
-    const usage = await db
-      .select()
-      .from(workspaceUsage)
-      .where(eq(workspaceUsage.workspaceId, workspaceId))
-      .limit(1);
+    // 4. Check if removal would violate current usage. Purchased channels and
+    //    seats land ONLY on the account's primary workspace, so that is the
+    //    row the removal actually shrinks — reading the browsed workspace here
+    //    would compare against limits it never held.
+    const primaryWorkspaceId = await this.lookup.getPrimaryWorkspaceId(userId);
+    const usage = primaryWorkspaceId
+      ? await db
+          .select()
+          .from(workspaceUsage)
+          .where(eq(workspaceUsage.workspaceId, primaryWorkspaceId))
+          .limit(1)
+      : [];
 
     if (usage.length > 0) {
       const u = usage[0];
@@ -404,27 +500,20 @@ export class AddonService {
 
     const remainingQuantity = item.quantity - removeQty;
 
-    // 5. Update or delete in Stripe and database
+    // 5. Update or remove at the provider, then in our own tables. Removing
+    //    the last one is `removeAddon` (a line-item delete on Stripe, a
+    //    subscription cancel on Lemon Squeezy); a partial reduction is a
+    //    quantity change. Credits from either are handled provider-side.
+    const adapter = await this.providers.adapterForSubscription(sub.id);
+
     if (remainingQuantity === 0) {
-      // Delete the item entirely
-      // Note: Credits from removal are automatically applied to next invoice by Stripe
-      if (item.stripeSubscriptionItemId) {
-        await this.stripeService.deleteSubscriptionItem(
-          item.stripeSubscriptionItemId,
-        );
-      }
+      await adapter.removeAddon(sub.id, addonType);
 
       await db
         .delete(subscriptionItems)
         .where(eq(subscriptionItems.id, item.id));
     } else {
-      // Update quantity (reduction creates credits, applied to next invoice)
-      if (item.stripeSubscriptionItemId) {
-        await this.stripeService.updateSubscriptionItem(
-          item.stripeSubscriptionItemId,
-          remainingQuantity,
-        );
-      }
+      await adapter.changeAddonQuantity(sub.id, addonType, remainingQuantity);
 
       await db
         .update(subscriptionItems)
@@ -449,7 +538,8 @@ export class AddonService {
       .limit(1);
 
     await this.updateUsageLimitsForAddon(
-      workspaceId,
+      userId,
+      sub.planCode,
       addonType,
       remainingQuantity,
       removePricing?.unitsPerQuantity ?? 1,
@@ -480,12 +570,18 @@ export class AddonService {
 
   // Get available add-ons for a workspace's current plan
   async getAvailableAddons(workspaceId: string): Promise<any[]> {
+    // The subscription that pays for this workspace is its owner's.
+    const ownerId = await this.lookup.getOwnerId(workspaceId);
+    if (!ownerId) {
+      return [];
+    }
+
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, ownerId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -536,12 +632,18 @@ export class AddonService {
 
   // Get current add-ons for a workspace
   async getCurrentAddons(workspaceId: string): Promise<any[]> {
+    // The subscription that pays for this workspace is its owner's.
+    const ownerId = await this.lookup.getOwnerId(workspaceId);
+    if (!ownerId) {
+      return [];
+    }
+
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, ownerId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -573,16 +675,36 @@ export class AddonService {
       }));
   }
 
-  // Helper to update usage limits when add-ons change.
-  // `unitsPerQuantity` converts purchased quantity → granted resource units:
-  // 1 for seats/channels/workspaces, 5000 for an AI-token pack. Without it the
-  // AI-token limit grew by the pack COUNT (e.g. +1) instead of +5000 tokens.
+  /**
+   * Re-apply the account's limits after an add-on quantity changes.
+   *
+   * Two writes, in order:
+   *  1. The purchased totals (`extra*Purchased`) land on the account's PRIMARY
+   *     workspace only. Channel and seat limits are per-workspace, so spreading
+   *     purchases across workspaces — or letting a bought workspace carry the
+   *     tier's allowance — would make EXTRA_WORKSPACE a cheaper route to
+   *     channels. See resolveWorkspaceLimits.
+   *  2. Every owned workspace then re-derives its limits from plan + add-ons.
+   *     Writing only one row would strand the others on stale limits.
+   *
+   * `unitsPerQuantity` converts purchased quantity → granted resource units:
+   * 1 for seats/channels/workspaces, 5000 for an AI-token pack. Without it the
+   * AI-token limit grew by the pack COUNT (e.g. +1) instead of +5000 tokens.
+   */
   private async updateUsageLimitsForAddon(
-    workspaceId: string,
+    userId: string,
+    planCode: string,
     addonType: AddonType,
     newQuantity: number,
     unitsPerQuantity = 1,
   ): Promise<void> {
+    // EXTRA_WORKSPACE changes `maxWorkspaces`, which `getWorkspaceLimits`
+    // computes LIVE from plan + add-on items. It is never materialized into
+    // workspace_usage, so there is nothing to write here.
+    if (addonType === 'EXTRA_WORKSPACE') {
+      return;
+    }
+
     const updates: Record<string, number> = {};
 
     if (addonType === 'EXTRA_CHANNEL') {
@@ -593,8 +715,28 @@ export class AddonService {
       updates['extraAiTokensPurchased'] = newQuantity * unitsPerQuantity;
     }
 
-    if (Object.keys(updates).length > 0) {
-      await this.usageService.updateWorkspaceLimits(workspaceId, updates);
+    if (Object.keys(updates).length === 0) {
+      return;
     }
+
+    const primaryWorkspaceId = await this.lookup.getPrimaryWorkspaceId(userId);
+    if (!primaryWorkspaceId) {
+      this.logger.warn(`User ${userId} owns no workspace — no limits to apply`);
+      return;
+    }
+
+    await this.usageService.updateWorkspaceLimits(primaryWorkspaceId, updates);
+
+    const subscription = await this.lookup.findByUserId(userId);
+    const addons = subscription
+      ? await this.lookup.getAddonQuantities(subscription.id)
+      : {
+          extraChannels: 0,
+          extraMembers: 0,
+          extraWorkspaces: 0,
+          extraAiTokens: 0,
+        };
+
+    await this.lookup.applyLimitsToAllWorkspaces(userId, planCode, addons);
   }
 }

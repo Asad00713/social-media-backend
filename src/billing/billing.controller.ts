@@ -1,6 +1,7 @@
 import type { RawBodyRequest } from '@nestjs/common';
 import type { Request } from 'express';
 import {
+  BadRequestException,
   Controller,
   Post,
   Delete,
@@ -16,13 +17,25 @@ import {
 } from '@nestjs/common';
 import { SubscriptionService } from './services/subscription.service';
 import { WebhookService } from './services/webhook.service';
+import { LemonSqueezyWebhookService } from './services/lemonsqueezy-webhook.service';
 import { UsageService } from './services/usage.service';
 import { AddonService } from './services/addon.service';
+import type { PurchaseAddonOutcome } from './services/addon.service';
 import { PlanChangeService } from './services/plan-change.service';
 import { DashboardService } from './services/dashboard.service';
 import { InvoiceService } from './services/invoice.service';
 import { PaymentMethodService } from './services/payment-method.service';
 import { StripeService } from '../stripe/stripe.service';
+import {
+  CreateSubscriptionBodyDto,
+  CreateCheckoutSessionBodyDto,
+  CancelSubscriptionBodyDto,
+  PurchaseAddonBodyDto,
+  RemoveAddonBodyDto,
+  ChangePlanBodyDto,
+  AddPaymentMethodBodyDto,
+} from './dto/billing.dto';
+import type { AddonTypeDto } from './dto/billing.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { SkipSuspendCheck } from '../auth/decorators/skip-suspend-check.decorator';
@@ -35,6 +48,7 @@ export class BillingController {
   constructor(
     private subscriptionService: SubscriptionService,
     private webhookService: WebhookService,
+    private lemonSqueezyWebhookService: LemonSqueezyWebhookService,
     private usageService: UsageService,
     private addonService: AddonService,
     private planChangeService: PlanChangeService,
@@ -66,12 +80,7 @@ export class BillingController {
   async createSubscription(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body()
-    body: {
-      planCode: string;
-      paymentMethodId?: string;
-      trialPeriodDays?: number;
-    },
+    @Body() body: CreateSubscriptionBodyDto,
   ) {
     return await this.subscriptionService.createSubscription({
       workspaceId,
@@ -88,13 +97,31 @@ export class BillingController {
   async createCheckoutSession(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string },
-    @Body() body: { planCode: string },
+    @Body() body: CreateCheckoutSessionBodyDto,
   ) {
     return await this.subscriptionService.createCheckoutSession({
       workspaceId,
       userId: user.userId,
       planCode: body.planCode,
     });
+  }
+
+  /**
+   * Pause billing without cancelling. The safe alternative to a downgrade that
+   * would lock channels or lose scheduled work.
+   */
+  @Post('subscription/pause')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async pauseSubscription(@CurrentUser() user: { userId: string }) {
+    return await this.subscriptionService.pauseSubscription(user.userId);
+  }
+
+  @Post('subscription/resume')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async resumeSubscription(@CurrentUser() user: { userId: string }) {
+    return await this.subscriptionService.resumeSubscription(user.userId);
   }
 
   @Get('workspaces/:workspaceId/subscription')
@@ -111,7 +138,7 @@ export class BillingController {
   async cancelSubscription(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() body: { cancelAtPeriodEnd?: boolean },
+    @Body() body: CancelSubscriptionBodyDto,
   ) {
     return await this.subscriptionService.cancelSubscription(
       workspaceId,
@@ -156,22 +183,24 @@ export class BillingController {
     return await this.addonService.getCurrentAddons(workspaceId);
   }
 
+  /**
+   * Buy an add-on.
+   *
+   * Answers with one of TWO shapes, discriminated by `status`. Stripe can add
+   * the line item and invoice on the spot, so it returns
+   * `{ status: 'completed', ... }`. Lemon Squeezy has no API that creates a
+   * subscription, so a brand-new add-on comes back as
+   * `{ status: 'checkout_required', checkoutUrl }` and the frontend must
+   * redirect - nothing has been bought or granted yet at that point.
+   */
   @Post('workspaces/:workspaceId/addons')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async purchaseAddon(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body()
-    body: {
-      addonType:
-        | 'EXTRA_CHANNEL'
-        | 'EXTRA_MEMBER'
-        | 'EXTRA_WORKSPACE'
-        | 'EXTRA_AI_TOKENS';
-      quantity: number;
-    },
-  ) {
+    @Body() body: PurchaseAddonBodyDto,
+  ): Promise<PurchaseAddonOutcome> {
     return await this.addonService.purchaseAddon({
       workspaceId,
       userId: user.userId,
@@ -185,14 +214,9 @@ export class BillingController {
   @HttpCode(HttpStatus.OK)
   async removeAddon(
     @Param('workspaceId') workspaceId: string,
-    @Param('addonType')
-    addonType:
-      | 'EXTRA_CHANNEL'
-      | 'EXTRA_MEMBER'
-      | 'EXTRA_WORKSPACE'
-      | 'EXTRA_AI_TOKENS',
+    @Param('addonType') addonType: AddonTypeDto,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() body: { quantity?: number },
+    @Body() body: RemoveAddonBodyDto,
   ) {
     return await this.addonService.removeAddon(
       workspaceId,
@@ -235,7 +259,7 @@ export class BillingController {
   async changePlan(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
-    @Body() body: { newPlanCode: string },
+    @Body() body: ChangePlanBodyDto,
   ) {
     return await this.planChangeService.changePlan(
       workspaceId,
@@ -348,7 +372,7 @@ export class BillingController {
   @HttpCode(HttpStatus.CREATED)
   async addPaymentMethod(
     @CurrentUser() user: { userId: string; email: string },
-    @Body() body: { paymentMethodId: string; setAsDefault?: boolean },
+    @Body() body: AddPaymentMethodBodyDto,
   ) {
     return await this.paymentMethodService.addPaymentMethod(
       user.userId,
@@ -419,6 +443,61 @@ export class BillingController {
 
     // Process webhook
     await this.webhookService.handleWebhook(event);
+
+    return { received: true };
+  }
+
+  /**
+   * Lemon Squeezy webhooks.
+   *
+   * Its own route with its own signature check, deliberately — neither webhook
+   * route can reach the other provider's subscriptions, which is the third of
+   * the design's three leak-prevention layers. There is nothing to route by
+   * payload here: the provider is already known from the URL.
+   *
+   * `req.rawBody` is the same mechanism the Stripe route above uses (Nest is
+   * created with `rawBody: true` in `main.ts`). It matters more here than
+   * anywhere: HMAC-SHA256 is computed over the exact bytes Lemon Squeezy
+   * signed, and `JSON.parse` then `JSON.stringify` reorders keys and changes
+   * whitespace, so verifying a re-serialised body would reject every genuine
+   * delivery.
+   *
+   * A failed verification is a 400, not a 500: an unsigned or forged body is a
+   * client error and Lemon Squeezy should not retry it. A genuine handler
+   * failure, by contrast, is left to propagate so the delivery IS retried.
+   */
+  @Post('webhooks/lemonsqueezy')
+  @HttpCode(HttpStatus.OK)
+  async handleLemonSqueezyWebhook(
+    @Req() req: RawBodyRequest<Request>,
+    @Headers('x-signature') signature: string,
+  ) {
+    const rawBody = req.rawBody;
+
+    if (!rawBody) {
+      throw new BadRequestException(
+        'Raw body is required for webhook verification',
+      );
+    }
+
+    if (!this.lemonSqueezyWebhookService.verifySignature(rawBody, signature)) {
+      throw new BadRequestException('Invalid Lemon Squeezy signature');
+    }
+
+    // Parsed only AFTER the signature passed, so nothing unverified is ever
+    // interpreted. A body that verified but is not JSON is a 400 rather than
+    // an uncaught SyntaxError.
+    let payload: { meta?: { event_name?: string } };
+    try {
+      payload = JSON.parse(rawBody.toString('utf8')) as {
+        meta?: { event_name?: string };
+      };
+    } catch {
+      throw new BadRequestException('Malformed Lemon Squeezy webhook body');
+    }
+
+    const eventName = payload?.meta?.event_name ?? '';
+    await this.lemonSqueezyWebhookService.handleEvent(eventName, payload);
 
     return { received: true };
   }

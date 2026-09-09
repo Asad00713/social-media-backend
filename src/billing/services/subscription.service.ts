@@ -6,9 +6,18 @@ import {
 import { eq, and, sql } from 'drizzle-orm';
 import Stripe from 'stripe';
 import { buildSubscriptionSync } from './subscription-sync.util';
+import { buildUsageFanout } from './usage-fanout.util';
+import { getNextTokenResetDate } from './token-reset.util';
 import { upsertInvoiceFromStripe } from './invoice-sync.util';
 import { StripeService } from '../../stripe/stripe.service';
 import { CustomerService } from './customer.service';
+import { SubscriptionLookupService } from './subscription-lookup.service';
+import { ProviderRegistryService } from '../providers/provider-registry.service';
+import { createStripeSubscriptionDirect } from '../providers/stripe-direct-subscribe.util';
+import {
+  endStripeProviderRows,
+  writeStripeBasePlanRow,
+} from '../providers/stripe-provider-row.util';
 import { db } from '../../drizzle/db';
 import {
   subscriptions,
@@ -48,11 +57,31 @@ export class SubscriptionService {
   constructor(
     private stripeService: StripeService,
     private customerService: CustomerService,
+    private lookup: SubscriptionLookupService,
+    private readonly providers: ProviderRegistryService,
   ) {}
 
   async createSubscription(
     dto: CreateSubscriptionDto,
   ): Promise<SubscriptionResponse> {
+    // 0. This path is Stripe-only by construction: it takes a raw
+    //    `paymentMethodId`, creates the subscription server-side, and writes
+    //    `stripe_subscription_id` / `stripe_subscription_item_id` columns.
+    //    Lemon Squeezy has no equivalent — a subscription can only begin at a
+    //    hosted checkout there — so the abstraction has no `createSubscription`
+    //    operation to route to. Refuse BEFORE touching Stripe rather than
+    //    after: `getOrCreateStripeCustomer` used to run unconditionally on the
+    //    line below, so a Lemon Squeezy signup created a Stripe customer and
+    //    wrote `stripe_customer_id` to our database, silently and with no
+    //    error. Non-Stripe accounts are sent to Checkout, which IS routed.
+    const provider = await this.providers.providerForUser(dto.userId);
+    if (provider !== 'stripe') {
+      throw new BadRequestException(
+        `Direct subscription creation is not supported for ${provider} — ` +
+          'start a checkout session instead.',
+      );
+    }
+
     // 1. Get or create Stripe customer
     const { stripeCustomerId } =
       await this.customerService.getOrCreateStripeCustomer(dto.userId);
@@ -75,15 +104,16 @@ export class SubscriptionService {
       );
     }
 
-    // 3. Check if workspace already has a subscription
+    // 3. Check if the account (owner) already has a subscription — a
+    //    subscription is per-account now, not per-workspace.
     const existingSub = await db
       .select()
       .from(subscriptions)
-      .where(eq(subscriptions.workspaceId, dto.workspaceId))
+      .where(eq(subscriptions.userId, dto.userId))
       .limit(1);
 
     if (existingSub.length > 0) {
-      throw new BadRequestException('Workspace already has a subscription');
+      throw new BadRequestException('You already have a subscription');
     }
 
     // 4. Get plan details
@@ -101,26 +131,21 @@ export class SubscriptionService {
 
     // 5. Handle FREE plan (no Stripe subscription needed)
     if (dto.planCode === 'FREE') {
+      const ownedWorkspaces = await db
+        .select({ id: workspace.id, createdAt: workspace.createdAt })
+        .from(workspace)
+        .where(eq(workspace.ownerId, dto.userId))
+        .orderBy(workspace.createdAt, workspace.id);
+
       return await this.createFreeSubscription(
-        dto.workspaceId,
+        dto.userId,
+        ownedWorkspaces,
         stripeCustomerId,
         selectedPlan,
       );
     }
 
-    // 6. Attach payment method if provided
-    if (dto.paymentMethodId) {
-      await this.stripeService.attachPaymentMethod(
-        dto.paymentMethodId,
-        stripeCustomerId,
-      );
-      await this.stripeService.setDefaultPaymentMethod(
-        stripeCustomerId,
-        dto.paymentMethodId,
-      );
-    }
-
-    // 7. Read the provisioned Stripe price for the plan (read-only — prices are
+    // 6. Read the provisioned Stripe price for the plan (read-only — prices are
     //    provisioned out-of-band by the stripe-provision script; FREE returned
     //    above at step 5, so only paid plans reach here).
     const stripePriceId = selectedPlan.stripePriceId;
@@ -131,34 +156,30 @@ export class SubscriptionService {
       );
     }
 
-    // Guard: a paid subscription must have a card. FREE→paid goes through
-    // Checkout; this direct path must never create an incomplete subscription.
-    if (!dto.paymentMethodId) {
-      const hasCard =
-        await this.stripeService.customerHasPaymentMethod(stripeCustomerId);
-      if (!hasCard) {
-        throw new BadRequestException(
-          'A payment method is required for a paid plan — subscribe via Checkout',
-        );
-      }
-    }
-
-    // 8. Create Stripe subscription
-    const stripeSubscription = await this.stripeService.createSubscription({
-      customerId: stripeCustomerId,
-      priceId: stripePriceId,
-      metadata: {
-        workspaceId: dto.workspaceId,
-        userId: dto.userId,
-        planCode: dto.planCode,
+    // 7. Attach the card and create the Stripe subscription. The Stripe calls
+    //    live inside the provider boundary (`stripe-direct-subscribe.util`)
+    //    because this direct path has no Lemon Squeezy equivalent and so
+    //    cannot be one of the abstracted operations — step 0 already refused
+    //    non-Stripe accounts.
+    const stripeSubscription = await createStripeSubscriptionDirect(
+      this.stripeService,
+      {
+        stripeCustomerId,
+        stripePriceId,
+        paymentMethodId: dto.paymentMethodId,
+        metadata: {
+          workspaceId: dto.workspaceId,
+          userId: dto.userId,
+          planCode: dto.planCode,
+        },
+        trialPeriodDays: dto.trialPeriodDays,
       },
-      trialPeriodDays: dto.trialPeriodDays,
-    });
+    );
 
-    // 8. Save subscription to database
+    // 8. Save subscription to database (per-account, not per-workspace)
     const sub: any = stripeSubscription;
     const subscriptionData: any = {
-      workspaceId: dto.workspaceId,
+      userId: dto.userId,
       stripeCustomerId,
       stripeSubscriptionId: stripeSubscription.id,
       planCode: dto.planCode,
@@ -175,6 +196,18 @@ export class SubscriptionService {
       .values(subscriptionData as NewSubscription)
       .returning();
 
+    // 8b. Write the provider record alongside it. Same reason as in
+    // `persistStripeSubscription`: `hasLiveBasePlan()` reads
+    // `provider_subscriptions`, so a subscription created here without one is
+    // a subscription the cancel path will refuse to cancel while Stripe keeps
+    // billing it.
+    await writeStripeBasePlanRow({
+      subscriptionId: newSubscription.id,
+      stripeSubscription,
+      stripeCustomerId,
+      unitPriceCents: selectedPlan.basePriceCents,
+    });
+
     // 9. Create subscription item for base plan
     await db.insert(subscriptionItems).values({
       subscriptionId: newSubscription.id,
@@ -185,16 +218,42 @@ export class SubscriptionService {
       unitPriceCents: selectedPlan.basePriceCents,
     } as NewSubscriptionItem);
 
-    // 10. Initialize workspace usage
-    await db.insert(workspaceUsage).values({
-      workspaceId: dto.workspaceId,
-      channelsCount: 0,
-      channelsLimit: selectedPlan.channelsPerWorkspace,
-      extraChannelsPurchased: 0,
-      membersCount: 0,
-      membersLimit: selectedPlan.membersPerWorkspace,
-      extraMembersPurchased: 0,
-    } as NewWorkspaceUsage);
+    // 10. Initialize workspace usage for every workspace this account owns —
+    // one subscription now sets limits for all of them (fan-out per the
+    // primary-workspace rule: only the oldest gets channels/members).
+    const ownedWorkspacesForUsage = await db
+      .select({ id: workspace.id, createdAt: workspace.createdAt })
+      .from(workspace)
+      .where(eq(workspace.ownerId, dto.userId))
+      .orderBy(workspace.createdAt, workspace.id);
+
+    const initialUsageRows = buildUsageFanout(
+      ownedWorkspacesForUsage,
+      {
+        channelsPerWorkspace: selectedPlan.channelsPerWorkspace,
+        membersPerWorkspace: selectedPlan.membersPerWorkspace,
+        maxWorkspaces: selectedPlan.maxWorkspaces,
+        aiTokensPerMonth: selectedPlan.aiTokensPerMonth,
+        queuedPostsPerChannel: selectedPlan.queuedPostsPerChannel,
+      },
+      {
+        extraChannels: 0,
+        extraMembers: 0,
+        extraWorkspaces: 0,
+        extraAiTokens: 0,
+      },
+    );
+
+    for (const row of initialUsageRows) {
+      await db.insert(workspaceUsage).values({
+        ...row,
+        channelsCount: 0,
+        extraChannelsPurchased: 0,
+        membersCount: 0,
+        extraMembersPurchased: 0,
+        aiTokensResetDate: getNextTokenResetDate(),
+      } as NewWorkspaceUsage);
+    }
 
     // 11. Extract client secret for frontend
     const latestInvoice: any = sub.latest_invoice;
@@ -216,7 +275,8 @@ export class SubscriptionService {
   }
 
   private async createFreeSubscription(
-    workspaceId: string,
+    userId: string,
+    workspaces: { id: string; createdAt: Date }[],
     stripeCustomerId: string,
     plan: typeof plans.$inferSelect,
   ): Promise<SubscriptionResponse> {
@@ -225,7 +285,7 @@ export class SubscriptionService {
     const [newSubscription] = await db
       .insert(subscriptions)
       .values({
-        workspaceId,
+        userId,
         stripeCustomerId,
         planCode: 'FREE',
         status: 'active',
@@ -233,16 +293,36 @@ export class SubscriptionService {
       } as NewSubscription)
       .returning();
 
-    // Initialize workspace usage
-    await db.insert(workspaceUsage).values({
-      workspaceId,
-      channelsCount: 0,
-      channelsLimit: plan.channelsPerWorkspace,
-      extraChannelsPurchased: 0,
-      membersCount: 0,
-      membersLimit: plan.membersPerWorkspace,
-      extraMembersPurchased: 0,
-    } as NewWorkspaceUsage);
+    // Initialize workspace usage for every workspace the account owns — a
+    // single subscription now sets limits for all of them (fanned out per
+    // the primary-workspace rule: only the oldest gets channels/members).
+    const usageRows = buildUsageFanout(
+      workspaces,
+      {
+        channelsPerWorkspace: plan.channelsPerWorkspace,
+        membersPerWorkspace: plan.membersPerWorkspace,
+        maxWorkspaces: plan.maxWorkspaces,
+        aiTokensPerMonth: plan.aiTokensPerMonth,
+        queuedPostsPerChannel: plan.queuedPostsPerChannel,
+      },
+      {
+        extraChannels: 0,
+        extraMembers: 0,
+        extraWorkspaces: 0,
+        extraAiTokens: 0,
+      },
+    );
+
+    for (const row of usageRows) {
+      await db.insert(workspaceUsage).values({
+        ...row,
+        channelsCount: 0,
+        extraChannelsPurchased: 0,
+        membersCount: 0,
+        extraMembersPurchased: 0,
+        aiTokensResetDate: getNextTokenResetDate(),
+      } as NewWorkspaceUsage);
+    }
 
     return {
       subscriptionId: newSubscription.id,
@@ -281,11 +361,12 @@ export class SubscriptionService {
       );
     }
 
-    // Wipe subscription items first (FK to subscriptions)
+    // Wipe subscription items first (FK to subscriptions). Subscriptions are
+    // per-account now, so reset the (already-verified) owner's subscription.
     const sub = await db
       .select({ id: subscriptions.id })
       .from(subscriptions)
-      .where(eq(subscriptions.workspaceId, workspaceId))
+      .where(eq(subscriptions.userId, userId))
       .limit(1);
 
     if (sub.length > 0) {
@@ -306,6 +387,18 @@ export class SubscriptionService {
           updatedAt: new Date(),
         })
         .where(eq(subscriptions.id, sub[0].id));
+
+      // ...and end the PROVIDER rows, which hold the same fact in the table
+      // the billing branches actually read. This endpoint nulls
+      // `stripe_subscription_id` exactly like `handleSubscriptionDeleted`
+      // does, and had exactly the same hole: the reset account kept a
+      // BASE_PLAN row at `provider_status = 'active'`, `is_default = true`,
+      // so `hasLiveBasePlan()` still answered TRUE and the re-subscribe this
+      // endpoint EXISTS to unblock handed Stripe the dead id and 500'd with
+      // `resource_missing`. Nulling the column no longer clears the state on
+      // its own, and `clearStaleStripeSubscription` cannot recover it
+      // afterwards because it early-returns on the null column.
+      await endStripeProviderRows(sub[0].id);
     }
 
     return {
@@ -337,7 +430,11 @@ export class SubscriptionService {
       );
     }
 
-    // 2. Resolve the plan and ensure it is paid + provisioned.
+    // 2. Resolve the plan and ensure it is paid. The provider-specific price
+    //    reference (Stripe price id / Lemon Squeezy variant id) is resolved
+    //    inside the adapter via the catalogue — reading `stripePriceId` here
+    //    would have made a Lemon Squeezy checkout fail on a column it never
+    //    populates.
     const planRows = await db
       .select()
       .from(plans)
@@ -348,46 +445,28 @@ export class SubscriptionService {
     if (plan.basePriceCents <= 0) {
       throw new BadRequestException('FREE plan does not require checkout');
     }
-    if (!plan.stripePriceId) {
-      throw new BadRequestException(
-        `Plan "${plan.code}" is not provisioned in Stripe — run the pricing provision script`,
-      );
-    }
 
-    // 3. Stripe customer + redirect URLs.
-    const { stripeCustomerId } =
-      await this.customerService.getOrCreateStripeCustomer(dto.userId);
-    const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:3001';
-    // Frontend workspace routes live under `/w/:workspaceId/*`
-    // (see frontend lib/workspace-path.ts WORKSPACE_ROUTE_PREFIX).
-    const base = `${frontendUrl}/w/${dto.workspaceId}/settings/plans`;
-
-    const session = await this.stripeService.createCheckoutSession({
-      customerId: stripeCustomerId,
-      priceId: plan.stripePriceId,
-      successUrl: `${base}?checkout=success&session_id={CHECKOUT_SESSION_ID}`,
-      cancelUrl: `${base}?checkout=cancelled`,
-      metadata: {
-        workspaceId: dto.workspaceId,
-        userId: dto.userId,
-        planCode: dto.planCode,
-      },
-    });
-
-    if (!session.url) {
-      throw new BadRequestException('Failed to create checkout session');
-    }
-    return { url: session.url };
+    // 3. Hand off to whichever provider bills this account. The Stripe
+    //    customer is created inside `StripeAdapter.createCheckout` and ONLY
+    //    there — it used to be created unconditionally right here, which meant
+    //    a Lemon Squeezy signup silently got a `stripe_customer_id`.
+    const adapter = await this.providers.adapterFor(dto.userId);
+    return await adapter.createCheckout(
+      dto.userId,
+      dto.planCode,
+      dto.workspaceId,
+    );
   }
 
   /**
    * Idempotently persist a Stripe subscription into our DB (subscriptions +
-   * BASE_PLAN item + workspace_usage). Used by the checkout webhook and any
-   * direct path. Upserts on the workspace's existing row (FREE→paid updates the
-   * pre-existing FREE row rather than inserting a duplicate).
+   * BASE_PLAN item + a workspace_usage row per owned workspace). Used by the
+   * checkout webhook and any direct path. Upserts on the account's existing
+   * row (FREE→paid updates the pre-existing FREE row rather than inserting a
+   * duplicate) — a subscription is per-account now, not per-workspace.
    */
   async persistStripeSubscription(input: {
-    workspaceId: string;
+    userId: string;
     planCode: string;
     stripeCustomerId: string;
     stripeSubscription: Stripe.Subscription;
@@ -402,15 +481,43 @@ export class SubscriptionService {
       throw new NotFoundException(`Plan "${input.planCode}" not found`);
     }
 
-    const { subscriptionRow, baseItem, usageRow } = buildSubscriptionSync({
-      workspaceId: input.workspaceId,
+    // Deterministic order (createdAt, then id) so "primary workspace" never
+    // shifts between calls when two workspaces share a createdAt timestamp.
+    const workspaces = await db
+      .select({ id: workspace.id, createdAt: workspace.createdAt })
+      .from(workspace)
+      .where(eq(workspace.ownerId, input.userId))
+      .orderBy(workspace.createdAt, workspace.id);
+
+    const existingSubForAddons = await this.lookup.findByUserId(input.userId);
+    const addons = existingSubForAddons
+      ? await this.lookup.getAddonQuantities(existingSubForAddons.id)
+      : {
+          extraChannels: 0,
+          extraMembers: 0,
+          extraWorkspaces: 0,
+          extraAiTokens: 0,
+        };
+
+    const planLimits = {
+      channelsPerWorkspace: plan.channelsPerWorkspace,
+      membersPerWorkspace: plan.membersPerWorkspace,
+      maxWorkspaces: plan.maxWorkspaces,
+      aiTokensPerMonth: plan.aiTokensPerMonth,
+      queuedPostsPerChannel: plan.queuedPostsPerChannel,
+    };
+
+    const { subscriptionRow, baseItem, usageRows } = buildSubscriptionSync({
+      userId: input.userId,
+      workspaces,
       planCode: input.planCode,
-      plan,
+      plan: { ...planLimits, basePriceCents: plan.basePriceCents },
+      addons,
       stripeCustomerId: input.stripeCustomerId,
       stripeSubscription: input.stripeSubscription,
     });
 
-    // 1. Upsert the subscriptions row (UNIQUE workspace_id → updates FREE row).
+    // 1. Upsert the subscriptions row (UNIQUE user_id → updates FREE row).
     const subSet: Record<string, unknown> = {
       stripeCustomerId: sql`excluded.stripe_customer_id`,
       stripeSubscriptionId: sql`excluded.stripe_subscription_id`,
@@ -427,15 +534,30 @@ export class SubscriptionService {
     await db
       .insert(subscriptions)
       .values(subscriptionRow as NewSubscription)
-      .onConflictDoUpdate({ target: subscriptions.workspaceId, set: subSet });
+      .onConflictDoUpdate({ target: subscriptions.userId, set: subSet });
 
     // 2. Get the subscription id for the item upsert.
     const savedRows = await db
       .select({ id: subscriptions.id })
       .from(subscriptions)
-      .where(eq(subscriptions.workspaceId, input.workspaceId))
+      .where(eq(subscriptions.userId, input.userId))
       .limit(1);
     const subscriptionId = savedRows[0].id;
+
+    // 2b. Write the provider record. `provider_subscriptions` is the table
+    // `hasLiveBasePlan()` reads to decide whether this account is being billed
+    // — the provider-neutral replacement for `if (sub.stripeSubscriptionId)`.
+    // Nothing wrote the BASE_PLAN row before this, so every branch keyed on it
+    // read "unbilled" for real Stripe subscribers: `downgradeToFree` returned
+    // without cancelling (Stripe charged on), and a paid→paid `changePlan`
+    // created a SECOND live subscription. Idempotent, because Stripe
+    // redelivers `checkout.session.completed`.
+    await writeStripeBasePlanRow({
+      subscriptionId,
+      stripeSubscription: input.stripeSubscription,
+      stripeCustomerId: input.stripeCustomerId,
+      unitPriceCents: plan.basePriceCents,
+    });
 
     // 3. Upsert the BASE_PLAN item (UNIQUE subscription_id + item_type).
     await db
@@ -452,19 +574,29 @@ export class SubscriptionService {
         },
       });
 
-    // 4. Upsert workspace_usage limits (UNIQUE workspace_id).
-    await db
-      .insert(workspaceUsage)
-      .values(usageRow as NewWorkspaceUsage)
-      .onConflictDoUpdate({
-        target: workspaceUsage.workspaceId,
-        set: {
-          channelsLimit: sql`excluded.channels_limit`,
-          membersLimit: sql`excluded.members_limit`,
-          aiTokensLimit: sql`excluded.ai_tokens_limit`,
-          updatedAt: new Date(),
-        },
-      });
+    // 4. Upsert workspace_usage limits (UNIQUE workspace_id) — one row per
+    // owned workspace, since one subscription now covers all of them.
+    for (const usageRow of usageRows) {
+      await db
+        .insert(workspaceUsage)
+        .values({
+          ...usageRow,
+          aiTokensResetDate: getNextTokenResetDate(),
+        } as NewWorkspaceUsage)
+        .onConflictDoUpdate({
+          target: workspaceUsage.workspaceId,
+          set: {
+            channelsLimit: sql`excluded.channels_limit`,
+            membersLimit: sql`excluded.members_limit`,
+            aiTokensLimit: sql`excluded.ai_tokens_limit`,
+            updatedAt: new Date(),
+            // aiTokensResetDate is deliberately NOT updated here. It seeds a
+            // brand-new row only; carrying it into the conflict branch would
+            // push every existing workspace's rollover forward on every plan
+            // or add-on change, handing out a fresh allowance each time.
+          },
+        });
+    }
 
     // 5. Persist the subscription's first invoice now, while we hold the fully
     // expanded Stripe subscription (getSubscription expands `latest_invoice`).
@@ -479,17 +611,102 @@ export class SubscriptionService {
   }
 
   async getSubscriptionByWorkspaceId(workspaceId: string) {
-    const subscription = await db
-      .select()
-      .from(subscriptions)
-      .where(eq(subscriptions.workspaceId, workspaceId))
-      .limit(1);
-
-    if (subscription.length === 0) {
+    const subscription = await this.lookup.findByWorkspaceId(workspaceId);
+    if (!subscription) {
       throw new NotFoundException('Subscription not found for this workspace');
     }
+    return subscription;
+  }
 
-    return subscription[0];
+  /**
+   * Pause billing without tearing anything down.
+   *
+   * The category's cautionary tale is Publer, whose downgrade-to-free deletes
+   * scheduled posts; its own help centre tells users to pause instead. Offering
+   * pause directly gives a price-sensitive or seasonal customer somewhere to go
+   * that is not cancellation, and costs us nothing to hold.
+   *
+   * Limits drop to FREE for the duration — they are not paying — so channels
+   * over the free ceiling lock rather than disconnect, and resuming brings
+   * them straight back.
+   */
+  async pauseSubscription(
+    userId: string,
+  ): Promise<{ message: string; pausedAt: Date }> {
+    const subscription = await this.lookup.findByUserId(userId);
+
+    if (!subscription) {
+      throw new NotFoundException('No subscription to pause');
+    }
+
+    if (subscription.planCode === 'FREE') {
+      throw new BadRequestException('A free plan has nothing to pause');
+    }
+
+    if (subscription.status === 'paused') {
+      throw new BadRequestException('Subscription is already paused');
+    }
+
+    const adapter = await this.providers.adapterForSubscription(
+      subscription.id,
+    );
+    await adapter.pause(subscription.id);
+
+    const pausedAt = new Date();
+
+    await db
+      .update(subscriptions)
+      .set({ status: 'paused', updatedAt: pausedAt })
+      .where(eq(subscriptions.id, subscription.id));
+
+    // FREE limits while paused. Nothing is deleted: over-ceiling channels lock
+    // and come back on resume.
+    await this.lookup.applyLimitsToAllWorkspaces(userId, 'FREE', {
+      extraChannels: 0,
+      extraMembers: 0,
+      extraWorkspaces: 0,
+      extraAiTokens: 0,
+    });
+
+    return {
+      message:
+        'Subscription paused. Nothing was deleted — resume any time to restore your plan.',
+      pausedAt,
+    };
+  }
+
+  /** Resume a paused subscription and restore the plan's limits. */
+  async resumeSubscription(userId: string): Promise<{ message: string }> {
+    const subscription = await this.lookup.findByUserId(userId);
+
+    if (!subscription) {
+      throw new NotFoundException('No subscription to resume');
+    }
+
+    if (subscription.status !== 'paused') {
+      throw new BadRequestException('Subscription is not paused');
+    }
+
+    const adapter = await this.providers.adapterForSubscription(
+      subscription.id,
+    );
+    await adapter.resume(subscription.id);
+
+    await db
+      .update(subscriptions)
+      .set({ status: 'active', updatedAt: new Date() })
+      .where(eq(subscriptions.id, subscription.id));
+
+    const addons = await this.lookup.getAddonQuantities(subscription.id);
+    await this.lookup.applyLimitsToAllWorkspaces(
+      userId,
+      subscription.planCode,
+      addons,
+    );
+
+    return {
+      message: 'Subscription resumed. Your plan and channels are back.',
+    };
   }
 
   async cancelSubscription(
@@ -497,9 +714,6 @@ export class SubscriptionService {
     userId: string,
     cancelAtPeriodEnd: boolean = true,
   ): Promise<{ message: string }> {
-    // Get subscription
-    const subscription = await this.getSubscriptionByWorkspaceId(workspaceId);
-
     // Verify ownership
     const ws = await db
       .select()
@@ -513,18 +727,29 @@ export class SubscriptionService {
       );
     }
 
+    // Get subscription — subscriptions are per-account, so look it up by the
+    // (already-verified) owner rather than the workspace.
+    const subscription = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.userId, userId))
+      .limit(1)
+      .then((rows) => rows[0]);
+
+    if (!subscription) {
+      throw new NotFoundException('Subscription not found for this workspace');
+    }
+
     // Handle FREE plan
     if (subscription.planCode === 'FREE') {
       throw new BadRequestException('Cannot cancel free plan');
     }
 
-    // Cancel in Stripe
-    if (subscription.stripeSubscriptionId) {
-      await this.stripeService.cancelSubscription(
-        subscription.stripeSubscriptionId,
-        cancelAtPeriodEnd,
-      );
-    }
+    // Cancel at whichever provider bills this account.
+    const adapter = await this.providers.adapterForSubscription(
+      subscription.id,
+    );
+    await adapter.cancel(subscription.id, cancelAtPeriodEnd);
 
     // Update database
     if (cancelAtPeriodEnd) {

@@ -5,8 +5,7 @@ import {
   BadRequestException,
   ForbiddenException,
 } from '@nestjs/common';
-import { eq, and } from 'drizzle-orm';
-import Stripe from 'stripe';
+import { eq, and, inArray } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
   subscriptions,
@@ -15,11 +14,20 @@ import {
   workspaceUsage,
   subscriptionChanges,
   workspace,
+  providerSubscriptions,
+  ProviderSubscription,
   NewSubscriptionChange,
   NewSubscriptionItem,
 } from '../../drizzle/schema';
 import { StripeService } from '../../stripe/stripe.service';
 import { UsageService } from './usage.service';
+import { SubscriptionLookupService } from './subscription-lookup.service';
+import { hasLiveBasePlan } from './provider-subscription.util';
+import { ProviderRegistryService } from '../providers/provider-registry.service';
+import { createStripeSubscriptionDirect } from '../providers/stripe-direct-subscribe.util';
+import { writeStripeBasePlanRow } from '../providers/stripe-provider-row.util';
+import { clearStaleStripeSubscription } from '../providers/stripe-stale-subscription.util';
+import { invoiceStripeProrationsImmediately } from '../providers/stripe-immediate-invoice.util';
 import { NotificationEmitterService } from '../../notifications/notification-emitter.service';
 
 export interface PlanChangePreview {
@@ -77,8 +85,27 @@ export class PlanChangeService {
   constructor(
     private stripeService: StripeService,
     private usageService: UsageService,
+    private readonly lookup: SubscriptionLookupService,
     private notificationEmitter: NotificationEmitterService,
+    private readonly providers: ProviderRegistryService,
   ) {}
+
+  /**
+   * Every provider record for one of our subscriptions.
+   *
+   * The provider-neutral answer to "what is this account actually paying for",
+   * replacing the `sub.stripeSubscriptionId` reads that silently mis-branched
+   * every Lemon Squeezy account.
+   */
+  private async providerRowsFor(
+    subscriptionId: number,
+  ): Promise<ProviderSubscription[]> {
+    const rows = await db
+      .select()
+      .from(providerSubscriptions)
+      .where(eq(providerSubscriptions.subscriptionId, subscriptionId));
+    return rows as ProviderSubscription[];
+  }
 
   // Preview plan change (shows proration, validation issues)
   async previewPlanChange(
@@ -101,13 +128,14 @@ export class PlanChangeService {
       throw new ForbiddenException('Only workspace owner can change plans');
     }
 
-    // 2. Get current subscription
+    // 2. Get the account's current subscription (ownership verified above, so
+    //    `userId` is the owner who pays for this workspace).
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, userId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -152,8 +180,11 @@ export class PlanChangeService {
     const validationIssues: string[] = [];
 
     if (!isUpgrade) {
+      // Account-scoped: a downgrade re-limits EVERY workspace the user owns,
+      // so validating just this one would let a second workspace slip through
+      // over the new limit.
       const downgradeCheck = await this.usageService.canDowngrade(
-        workspaceId,
+        userId,
         newPlanCode,
       );
       validationIssues.push(...downgradeCheck.issues);
@@ -241,14 +272,15 @@ export class PlanChangeService {
       );
     }
 
-    // 2. Get subscription
+    // 2. Get the account's subscription (previewPlanChange already verified
+    //    that `userId` owns this workspace).
     this.logger.log(`[DEBUG] Step 2: Getting subscription...`);
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, userId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -260,33 +292,24 @@ export class PlanChangeService {
     );
     const oldPlanCode = sub.planCode;
 
-    // Defensive: the stored stripeSubscriptionId may have been wiped on
-    // Stripe's side (test data reset, account switch, mode change). Verify
-    // it still exists before we try to mutate it. If it's gone, null it
-    // out in our DB and treat as a fresh subscribe — let the user proceed
-    // via Checkout instead of crashing.
-    if (sub.stripeSubscriptionId) {
-      try {
-        await this.stripeService.getSubscription(sub.stripeSubscriptionId);
-      } catch (err: any) {
-        if (err?.code === 'resource_missing') {
-          this.logger.warn(
-            `Stale stripe_subscription_id ${sub.stripeSubscriptionId} on workspace ${workspaceId} — clearing.`,
-          );
-          await db
-            .update(subscriptions)
-            .set({
-              stripeSubscriptionId: null,
-              status: 'incomplete',
-              updatedAt: new Date(),
-            })
-            .where(eq(subscriptions.id, sub.id));
-          // Wipe the in-memory copy so the rest of changePlan treats this
-          // as the "no existing Stripe subscription" path (Checkout flow).
-          sub.stripeSubscriptionId = null;
-        } else {
-          throw err;
-        }
+    // Which provider bills this account decides every branch below.
+    const adapter = await this.providers.adapterForSubscription(sub.id);
+
+    // Defensive, Stripe only: the stored stripeSubscriptionId may have been
+    // wiped on Stripe's side (test data reset, account switch, mode change).
+    // Verify it still exists before we try to mutate it. If it is gone, null
+    // it out and let the user proceed via Checkout instead of crashing.
+    if (adapter.name === 'stripe') {
+      const wasStale = await clearStaleStripeSubscription(
+        this.stripeService,
+        sub,
+        `workspace ${workspaceId}`,
+      );
+      if (wasStale) {
+        // The column is already nulled in the DB; wipe the in-memory copy so
+        // the rest of changePlan takes the "no existing subscription" path
+        // (Checkout flow) instead of calling Stripe with a dead id.
+        sub.stripeSubscriptionId = null;
       }
     }
 
@@ -299,13 +322,34 @@ export class PlanChangeService {
 
     const target = newPlan[0];
 
-    // 4. Read the provisioned Stripe price for the target plan (read-only).
-    //    FREE (basePriceCents === 0) has no price — targetPriceId stays empty
-    //    and the downstream `if (sub.stripeSubscriptionId && targetPriceId)`
-    //    branch handles the free path.
+    // 4. Is the TARGET a paid plan? This is a property of the plan itself, not
+    //    of any provider. It used to be inferred from `target.stripePriceId`
+    //    being non-empty, which is a Stripe column - a Lemon Squeezy account
+    //    moving to a plan Stripe had never provisioned took the wrong branch.
+    const isTargetPaid = target.basePriceCents > 0;
+
+    // Does the account ALREADY pay someone? Read from `provider_subscriptions`
+    // (written by every provider), never from `stripeSubscriptionId` (NULL for
+    // every Lemon Squeezy account, which made `changePlan` fall through to the
+    // FREE-upgrade branch and throw a spurious 400 for LS paid->paid changes).
+    //
+    // `sub` is passed as the legacy fallback for the accounts that predate the
+    // provider table and have no row in it yet. Reading false for one of those
+    // sends a paid->paid change into the FREE->paid branch, which creates a
+    // SECOND live Stripe subscription and orphans the first. Note this reads
+    // the IN-MEMORY `sub`, which the stale check above has already nulled if
+    // the id was dead — so a stale account still routes to Checkout.
+    const isAlreadyPaying = hasLiveBasePlan(
+      await this.providerRowsFor(sub.id),
+      sub,
+    );
+
+    // Stripe's price id is still needed further down for the direct
+    // FREE -> paid path and for the `subscription_items` bookkeeping row, but
+    // it no longer decides any branch.
     const targetPriceId = target.stripePriceId;
 
-    if (!targetPriceId && target.basePriceCents > 0) {
+    if (!targetPriceId && isTargetPaid && adapter.name === 'stripe') {
       throw new BadRequestException(
         `Plan "${target.code}" is not provisioned in Stripe — run the pricing provision script (npx ts-node src/drizzle/seeds/stripe-provision.ts)`,
       );
@@ -315,109 +359,105 @@ export class PlanChangeService {
     // keeps their current plan + limits until `currentPeriodEnd`; we swap the
     // Stripe price now with NO proration (so the next invoice bills the lower
     // price), and the webhook flips our plan/limits once the period rolls over.
-    if (!preview.isUpgrade && sub.stripeSubscriptionId && targetPriceId) {
+    if (!preview.isUpgrade && isAlreadyPaying && isTargetPaid) {
       return await this.scheduleDowngrade(
         sub,
         userId,
         target,
-        targetPriceId,
         oldPlanCode,
         preview,
       );
     }
 
-    // 5. Handle Stripe subscription - either update existing or create new
+    // 5. Change the plan at whichever provider bills this account, or start a
+    //    brand-new paid subscription if the account is coming off FREE.
     let newStripeSubscriptionId: string | null = null;
     let newStripeSubscriptionItemId: string | null = null;
 
-    if (sub.stripeSubscriptionId && targetPriceId) {
-      // Existing Stripe subscription - update it
-      const baseItem = await db
-        .select()
-        .from(subscriptionItems)
-        .where(
-          and(
-            eq(subscriptionItems.subscriptionId, sub.id),
-            eq(subscriptionItems.itemType, 'BASE_PLAN'),
-          ),
-        )
-        .limit(1);
+    if (isAlreadyPaying && isTargetPaid) {
+      // An existing paid subscription: one abstracted operation. The adapter
+      // owns the provider-specific shape of it - Stripe swaps the price on the
+      // BASE_PLAN line item, Lemon Squeezy PATCHes the subscription's variant.
+      await adapter.changePlan(sub.id, newPlanCode);
 
-      if (baseItem.length > 0 && baseItem[0].stripeSubscriptionItemId) {
-        // Update the subscription item to new price
-        const stripeSubscription = await this.stripeService.getSubscription(
+      // Upgrades charge immediately (industry standard). This is Stripe-only
+      // proration plumbing with no Lemon Squeezy equivalent - LS invoices the
+      // change itself via `invoice_immediately` inside its own adapter - so it
+      // is gated rather than abstracted.
+      if (
+        preview.isUpgrade &&
+        adapter.name === 'stripe' &&
+        sub.stripeSubscriptionId
+      ) {
+        await invoiceStripeProrationsImmediately(
+          this.stripeService,
           sub.stripeSubscriptionId,
         );
-
-        // Find the item ID in Stripe
-        const stripeItem: any = stripeSubscription.items.data.find(
-          (item: any) => item.id === baseItem[0].stripeSubscriptionItemId,
-        );
-
-        if (stripeItem) {
-          await this.stripeService.updateSubscription(
-            sub.stripeSubscriptionId,
-            {
-              items: [
-                {
-                  id: stripeItem.id,
-                  price: targetPriceId,
-                },
-              ],
-              proration_behavior: preview.isUpgrade
-                ? 'create_prorations'
-                : 'none',
-            },
-          );
-
-          // For upgrades, charge immediately (industry standard)
-          if (preview.isUpgrade) {
-            await this.invoiceImmediately(sub.stripeSubscriptionId);
-          }
-        }
-      } else {
-        // No existing item, add new one (this will invoice immediately via addSubscriptionItem)
-        await this.stripeService.addSubscriptionItem({
-          subscriptionId: sub.stripeSubscriptionId,
-          priceId: targetPriceId,
-          quantity: 1,
-        });
       }
-    } else if (
-      !sub.stripeSubscriptionId &&
-      targetPriceId &&
-      target.basePriceCents > 0
-    ) {
-      // Upgrading from FREE plan - need to create a new Stripe subscription
+    } else if (!isAlreadyPaying && isTargetPaid) {
+      // FREE -> paid with a card already on file. Like
+      // `SubscriptionService.createSubscription`, this is a Stripe-only path:
+      // it creates a subscription server-side from a stored payment method,
+      // which Lemon Squeezy has no endpoint for. Refuse other providers rather
+      // than silently billing them through Stripe - they go via Checkout.
+      if (adapter.name !== 'stripe') {
+        throw new BadRequestException(
+          `Upgrading from FREE is not supported directly for ${adapter.name} - ` +
+            'start a checkout session instead.',
+        );
+      }
+
       this.logger.log(
         `Creating new Stripe subscription for upgrade from FREE to ${newPlanCode}`,
       );
 
-      // Guard: FREE→paid upgrade requires a card on file. The Checkout flow
-      // attaches the card before the webhook fires; direct calls must be blocked.
-      const hasCard = await this.stripeService.customerHasPaymentMethod(
-        sub.stripeCustomerId,
-      );
-      if (!hasCard) {
+      // Guard: a FREE -> paid upgrade requires a Stripe customer. The Checkout
+      // flow creates one before the webhook fires; a direct call on an account
+      // that never reached Stripe has none. (The card check lives inside
+      // `createStripeSubscriptionDirect`.)
+      if (!sub.stripeCustomerId) {
         throw new BadRequestException(
-          'A payment method is required to upgrade to a paid plan — subscribe via Checkout',
+          'This account has no Stripe customer yet - subscribe via Checkout',
         );
       }
 
-      // Create Stripe subscription
-      const stripeSubscription = await this.stripeService.createSubscription({
-        customerId: sub.stripeCustomerId,
-        priceId: targetPriceId,
-        metadata: {
-          workspaceId,
-          userId,
-          planCode: newPlanCode,
+      // Non-null by construction: `isTargetPaid` is true in this branch and
+      // the provisioning check above throws for a Stripe account whose target
+      // plan has no price. The other providers were refused a few lines up.
+      if (!targetPriceId) {
+        throw new BadRequestException(
+          `Plan "${target.code}" is not provisioned in Stripe — run the pricing provision script (npx ts-node src/drizzle/seeds/stripe-provision.ts)`,
+        );
+      }
+
+      const stripeSubscription = await createStripeSubscriptionDirect(
+        this.stripeService,
+        {
+          stripeCustomerId: sub.stripeCustomerId,
+          stripePriceId: targetPriceId,
+          metadata: {
+            workspaceId,
+            userId,
+            planCode: newPlanCode,
+          },
         },
-      });
+      );
 
       newStripeSubscriptionId = stripeSubscription.id;
       newStripeSubscriptionItemId =
         stripeSubscription.items.data[0]?.id || null;
+
+      // The account is now being billed, so say so in the table the branches
+      // read. Without this row the very next call into `changePlan` would
+      // again see `isAlreadyPaying === false` and create ANOTHER subscription,
+      // and `downgradeToFree` would strip the plan without cancelling this
+      // one. Upserts, so a retry of this path cannot collide.
+      await writeStripeBasePlanRow({
+        subscriptionId: sub.id,
+        stripeSubscription,
+        stripeCustomerId: sub.stripeCustomerId,
+        unitPriceCents: target.basePriceCents,
+      });
 
       this.logger.log(
         `Created Stripe subscription ${newStripeSubscriptionId} for workspace ${workspaceId}`,
@@ -502,21 +542,20 @@ export class PlanChangeService {
     }
     this.logger.log(`[DEBUG] Step 7 DONE`);
 
-    // 8. Update workspace usage limits
+    // 8. Update usage limits on EVERY workspace the account owns. One
+    //    subscription covers all of them, so writing a single row would leave
+    //    the rest on the OLD plan's limits with no error raised. The AI-token
+    //    allowance moves with the plan too — without that, an upgrade or
+    //    downgrade left the old limit and the Maestro meter never reflected the
+    //    new plan. `aiTokensUsedThisMonth` is intentionally NOT reset (no free
+    //    refill on every plan switch); the monthly reset does that.
     this.logger.log(`[DEBUG] Step 8: Updating workspace usage limits...`);
-    await db
-      .update(workspaceUsage)
-      .set({
-        channelsLimit: target.channelsPerWorkspace,
-        membersLimit: target.membersPerWorkspace,
-        // Keep the AI-token allowance in lockstep with the plan — without this
-        // an upgrade/downgrade left the old limit, so the Maestro meter never
-        // reflected the new plan. `aiTokensUsedThisMonth` is intentionally NOT
-        // reset (no free refill on every plan switch); the monthly reset does that.
-        aiTokensLimit: target.aiTokensPerMonth,
-        updatedAt: new Date(),
-      })
-      .where(eq(workspaceUsage.workspaceId, workspaceId));
+    const changeAddons = await this.lookup.getAddonQuantities(sub.id);
+    await this.lookup.applyLimitsToAllWorkspaces(
+      userId,
+      newPlanCode,
+      changeAddons,
+    );
     this.logger.log(`[DEBUG] Step 8 DONE`);
 
     // 9. Log the change
@@ -584,17 +623,21 @@ export class PlanChangeService {
 
   // Get available plans for upgrade/downgrade (with workspace context)
   async getAvailablePlans(workspaceId: string): Promise<any[]> {
-    // Get current subscription
-    const subscription = await db
-      .select()
-      .from(subscriptions)
-      .where(
-        and(
-          eq(subscriptions.workspaceId, workspaceId),
-          eq(subscriptions.status, 'active'),
-        ),
-      )
-      .limit(1);
+    // The subscription that pays for this workspace is its owner's.
+    const ownerId = await this.lookup.getOwnerId(workspaceId);
+
+    const subscription = ownerId
+      ? await db
+          .select()
+          .from(subscriptions)
+          .where(
+            and(
+              eq(subscriptions.userId, ownerId),
+              eq(subscriptions.status, 'active'),
+            ),
+          )
+          .limit(1)
+      : [];
 
     const currentPlanCode =
       subscription.length > 0 ? subscription[0].planCode : null;
@@ -605,15 +648,26 @@ export class PlanChangeService {
       .from(plans)
       .where(eq(plans.isActive, true));
 
-    // Get current usage for downgrade validation
-    let usage: { channelsCount: number; membersCount: number } | null = null;
-    if (subscription.length > 0) {
-      try {
-        usage = await this.usageService.getWorkspaceUsage(workspaceId);
-      } catch {
-        // No usage record yet
-      }
-    }
+    // Usage for downgrade validation, across EVERY workspace the account owns.
+    // A downgrade re-limits all of them, so a plan is only offered as
+    // switchable when every workspace fits under it — otherwise the list would
+    // advertise a downgrade that `changePlan` then rejects.
+    const ownedUsage =
+      subscription.length > 0 && ownerId
+        ? await db
+            .select({
+              workspaceName: workspace.name,
+              channelsCount: workspaceUsage.channelsCount,
+              membersCount: workspaceUsage.membersCount,
+            })
+            .from(workspace)
+            .innerJoin(
+              workspaceUsage,
+              eq(workspaceUsage.workspaceId, workspace.id),
+            )
+            .where(eq(workspace.ownerId, ownerId))
+            .orderBy(workspace.createdAt, workspace.id)
+        : [];
 
     return allPlans.map((plan) => {
       const isCurrent = plan.code === currentPlanCode;
@@ -624,24 +678,13 @@ export class PlanChangeService {
         ? this.planHierarchy[plan.code] < this.planHierarchy[currentPlanCode]
         : false;
 
-      // Check if downgrade is possible
-      let canDowngrade = true;
-      const downgradeIssues: string[] = [];
-
-      if (isDowngrade && usage) {
-        if (usage.channelsCount > plan.channelsPerWorkspace) {
-          canDowngrade = false;
-          downgradeIssues.push(
-            `You have ${usage.channelsCount} channels but this plan only allows ${plan.channelsPerWorkspace}`,
-          );
-        }
-        if (usage.membersCount > plan.membersPerWorkspace) {
-          canDowngrade = false;
-          downgradeIssues.push(
-            `You have ${usage.membersCount} members but this plan only allows ${plan.membersPerWorkspace}`,
-          );
-        }
-      }
+      // Check if downgrade is possible — same rule the enforcement path uses.
+      const downgradeIssues = isDowngrade
+        ? ownedUsage.flatMap((ws) =>
+            UsageService.describeDowngradeIssues(ws, plan),
+          )
+        : [];
+      const canDowngrade = downgradeIssues.length === 0;
 
       return {
         code: plan.code,
@@ -682,13 +725,13 @@ export class PlanChangeService {
       throw new ForbiddenException('Only workspace owner can change plans');
     }
 
-    // Get current subscription
+    // Get the account's current subscription (ownership verified above).
     const subscription = await db
       .select()
       .from(subscriptions)
       .where(
         and(
-          eq(subscriptions.workspaceId, workspaceId),
+          eq(subscriptions.userId, userId),
           eq(subscriptions.status, 'active'),
         ),
       )
@@ -704,11 +747,9 @@ export class PlanChangeService {
       throw new BadRequestException('Already on FREE plan');
     }
 
-    // Validate usage
-    const downgradeCheck = await this.usageService.canDowngrade(
-      workspaceId,
-      'FREE',
-    );
+    // Validate usage across every workspace the account owns — dropping to
+    // FREE re-limits all of them at once.
+    const downgradeCheck = await this.usageService.canDowngrade(userId, 'FREE');
     if (!downgradeCheck.canDowngrade) {
       throw new BadRequestException(
         `Cannot downgrade to FREE: ${downgradeCheck.issues.join(', ')}`,
@@ -729,8 +770,21 @@ export class PlanChangeService {
       maxWorkspaces: free.maxWorkspaces,
     };
 
-    // No Stripe subscription means nothing is being billed — flip to FREE now.
-    if (!sub.stripeSubscriptionId) {
+    // Nothing live at ANY provider means nothing is being billed - flip to
+    // FREE now. This used to ask `if (!sub.stripeSubscriptionId)`, which is
+    // NULL for every Lemon Squeezy account: the branch always fired, the
+    // customer was stripped to FREE limits, and the method returned without
+    // ever cancelling at Lemon Squeezy - so they kept being charged,
+    // indefinitely, with no error. `provider_subscriptions` is the table every
+    // provider writes, so it is what this must read.
+    //
+    // `sub` is the legacy fallback for accounts that predate the provider
+    // table. This is the branch that bills after cancellation: read false for
+    // a real Stripe subscriber and we strip their plan, delete their
+    // subscription_items, and return WITHOUT cancelling - Stripe charges them
+    // forever. A missing bookkeeping row must never be read as "nothing to
+    // cancel".
+    if (!hasLiveBasePlan(await this.providerRowsFor(sub.id), sub)) {
       await db
         .update(subscriptions)
         .set({
@@ -743,19 +797,33 @@ export class PlanChangeService {
         })
         .where(eq(subscriptions.id, sub.id));
 
+      // FREE limits land on EVERY workspace the account owns — writing one row
+      // would leave the rest on the plan the user just left. Add-ons don't
+      // carry over, so pass zeroes (the items are deleted just below).
+      await this.lookup.applyLimitsToAllWorkspaces(userId, 'FREE', {
+        extraChannels: 0,
+        extraMembers: 0,
+        extraWorkspaces: 0,
+        extraAiTokens: 0,
+      });
+
       await db
         .update(workspaceUsage)
         .set({
-          channelsLimit: free.channelsPerWorkspace,
-          membersLimit: free.membersPerWorkspace,
-          // FREE has no AI allowance and add-ons don't carry over.
-          aiTokensLimit: free.aiTokensPerMonth,
           extraChannelsPurchased: 0,
           extraMembersPurchased: 0,
           extraAiTokensPurchased: 0,
           updatedAt: new Date(),
         })
-        .where(eq(workspaceUsage.workspaceId, workspaceId));
+        .where(
+          inArray(
+            workspaceUsage.workspaceId,
+            db
+              .select({ id: workspace.id })
+              .from(workspace)
+              .where(eq(workspace.ownerId, userId)),
+          ),
+        );
 
       await db
         .delete(subscriptionItems)
@@ -783,10 +851,12 @@ export class PlanChangeService {
       };
     }
 
-    // Has a paid Stripe subscription: cancel at period end. The customer keeps
-    // their paid plan until the period they already paid for ends, then Stripe
-    // fires `customer.subscription.deleted` and the webhook resets us to FREE.
-    await this.stripeService.cancelSubscription(sub.stripeSubscriptionId, true);
+    // Something IS live at the provider: cancel at period end. The customer
+    // keeps their paid plan until the period they already paid for ends, then
+    // the provider's webhook (Stripe's `customer.subscription.deleted`, Lemon
+    // Squeezy's expiry) resets us to FREE.
+    const cancelAdapter = await this.providers.adapterForSubscription(sub.id);
+    await cancelAdapter.cancel(sub.id, true);
 
     await db
       .update(subscriptions)
@@ -825,50 +895,26 @@ export class PlanChangeService {
   /**
    * Schedule a paid → paid downgrade for the end of the current billing period.
    *
-   * Swaps the Stripe price now with `proration_behavior: 'none'` — the current
-   * period stays paid at the old price, and the next invoice bills the lower
-   * price — but leaves our plan/limits untouched. The pending change is recorded
-   * on the subscription row; `WebhookService.handleSubscriptionUpdated` flips the
-   * plan + limits when the period rolls over.
+   * Swaps the plan at the provider now (Stripe with `proration_behavior:
+   * 'none'`) — the current period stays paid at the old price, and the next
+   * invoice bills the lower one — but leaves our plan/limits untouched. The
+   * pending change is recorded on the subscription row; the provider's webhook
+   * flips the plan + limits when the period rolls over.
    */
   private async scheduleDowngrade(
     sub: typeof subscriptions.$inferSelect,
     userId: string,
     target: typeof plans.$inferSelect,
-    targetPriceId: string,
     oldPlanCode: string,
     preview: PlanChangePreview,
   ): Promise<PlanChangeResult> {
-    // Swap the Stripe price now (no proration). Harmless mid-period because the
-    // current period was already invoiced at the old price.
-    const baseItem = await db
-      .select()
-      .from(subscriptionItems)
-      .where(
-        and(
-          eq(subscriptionItems.subscriptionId, sub.id),
-          eq(subscriptionItems.itemType, 'BASE_PLAN'),
-        ),
-      )
-      .limit(1);
-
-    if (baseItem.length > 0 && baseItem[0].stripeSubscriptionItemId) {
-      const stripeSubscription = await this.stripeService.getSubscription(
-        sub.stripeSubscriptionId as string,
-      );
-      const stripeItem: any = stripeSubscription.items.data.find(
-        (item: any) => item.id === baseItem[0].stripeSubscriptionItemId,
-      );
-      if (stripeItem) {
-        await this.stripeService.updateSubscription(
-          sub.stripeSubscriptionId as string,
-          {
-            items: [{ id: stripeItem.id, price: targetPriceId }],
-            proration_behavior: 'none',
-          },
-        );
-      }
-    }
+    // Swap to the cheaper plan at the provider NOW, with no proration on
+    // Stripe's side. Harmless mid-period because the current period was
+    // already invoiced at the old price - the next invoice bills the lower
+    // one. `changePlan` is the same abstracted operation an upgrade uses; the
+    // difference between the two is our own scheduling, below, not the call.
+    const adapter = await this.providers.adapterForSubscription(sub.id);
+    await adapter.changePlan(sub.id, target.code);
 
     // Record the pending downgrade — plan/limits stay as-is until period end.
     await db
@@ -891,7 +937,7 @@ export class PlanChangeService {
     } as NewSubscriptionChange);
 
     this.logger.log(
-      `Scheduled downgrade for workspace ${sub.workspaceId}: ${oldPlanCode} -> ${target.code} at ${sub.currentPeriodEnd?.toISOString() ?? 'period end'}`,
+      `Scheduled downgrade for user ${sub.userId}: ${oldPlanCode} -> ${target.code} at ${sub.currentPeriodEnd?.toISOString() ?? 'period end'}`,
     );
 
     try {
@@ -919,65 +965,5 @@ export class PlanChangeService {
         maxWorkspaces: target.maxWorkspaces,
       },
     };
-  }
-
-  /**
-   * Creates and pays an invoice immediately for any pending proration charges
-   * Industry standard approach for immediate billing of plan upgrades
-   */
-  private async invoiceImmediately(
-    stripeSubscriptionId: string,
-  ): Promise<void> {
-    try {
-      const stripe = this.stripeService.getClient();
-
-      // Get the subscription to find the customer ID and payment method
-      const subscription = await stripe.subscriptions.retrieve(
-        stripeSubscriptionId,
-        {
-          expand: ['default_payment_method'],
-        },
-      );
-      const customerId =
-        typeof subscription.customer === 'string'
-          ? subscription.customer
-          : subscription.customer.id;
-
-      // Get the payment method from subscription
-      const paymentMethodId =
-        typeof subscription.default_payment_method === 'string'
-          ? subscription.default_payment_method
-          : subscription.default_payment_method?.id;
-
-      // Create an invoice for any pending invoice items (prorations)
-      const invoice = await stripe.invoices.create({
-        customer: customerId,
-        subscription: stripeSubscriptionId,
-        auto_advance: true,
-      });
-
-      // If there are charges, pay the invoice immediately
-      if (invoice.amount_due > 0) {
-        // Use the subscription's payment method if available
-        const payParams: Stripe.InvoicePayParams = {};
-        if (paymentMethodId) {
-          payParams.payment_method = paymentMethodId;
-        }
-        await stripe.invoices.pay(invoice.id, payParams);
-        this.logger.log(
-          `Immediately charged ${invoice.amount_due} cents for plan upgrade`,
-        );
-      } else if (invoice.status === 'draft') {
-        // Finalize even if $0 (for record keeping)
-        await stripe.invoices.finalizeInvoice(invoice.id);
-      }
-    } catch (error: any) {
-      // If no pending items to invoice, that's okay
-      if (error.code === 'invoice_no_subscription_line_items') {
-        return;
-      }
-      this.logger.error(`Failed to create immediate invoice: ${error.message}`);
-      throw error;
-    }
   }
 }

@@ -9,15 +9,16 @@ import { db } from '../../drizzle/db';
 import {
   workspaceUsage,
   usageEvents,
-  subscriptions,
   plans,
-  subscriptionItems,
   workspace,
   workspaceInvitation,
   NewUsageEvent,
 } from '../../drizzle/schema';
+import { SubscriptionLookupService } from './subscription-lookup.service';
+import { AccountChannelsService } from './account-channels.service';
+import { resolveMaxWorkspaces } from './limit-resolver.util';
 
-export type ResourceType = 'CHANNEL' | 'MEMBER' | 'WORKSPACE';
+export type ResourceType = 'CHANNEL' | 'MEMBER' | 'WORKSPACE' | 'POST';
 export type EventType =
   | 'CHANNEL_ADDED'
   | 'CHANNEL_REMOVED'
@@ -48,9 +49,28 @@ export interface WorkspaceLimits {
   workspacesAvailable: number;
 }
 
+/** One owned workspace's counted resources, for the downgrade check. */
+export interface DowngradeWorkspaceUsage {
+  workspaceName: string;
+  channelsCount: number;
+  membersCount: number;
+}
+
+/** The per-workspace ceilings of the plan being downgraded to. */
+export interface DowngradePlanLimits {
+  name: string;
+  channelsPerWorkspace: number;
+  membersPerWorkspace: number;
+}
+
 @Injectable()
 export class UsageService {
   private readonly logger = new Logger(UsageService.name);
+
+  constructor(
+    private readonly lookup: SubscriptionLookupService,
+    private readonly accountChannels: AccountChannelsService,
+  ) {}
 
   // Get usage limits for a workspace
   async getWorkspaceUsage(workspaceId: string): Promise<UsageLimits> {
@@ -68,11 +88,21 @@ export class UsageService {
 
     const u = usage[0];
     const totalAiTokens = u.aiTokensLimit + u.extraAiTokensPurchased;
+
+    // Channels are pooled across the ACCOUNT, so the numbers a workspace shows
+    // for them are the account's — the same ceiling and the same live count the
+    // connect path enforces. Reading this workspace's own row here would show a
+    // customer a limit that is not the one being applied to them.
+    // Members stay per-workspace.
+    const ownerId = await this.lookup.getOwnerId(workspaceId);
+    const channels = ownerId
+      ? await this.accountChannels.getUsage(ownerId)
+      : { used: u.channelsCount, limit: u.channelsLimit, available: 0 };
+
     return {
-      channelsLimit: u.channelsLimit + u.extraChannelsPurchased,
-      channelsCount: u.channelsCount,
-      channelsAvailable:
-        u.channelsLimit + u.extraChannelsPurchased - u.channelsCount,
+      channelsLimit: channels.limit,
+      channelsCount: channels.used,
+      channelsAvailable: Math.max(0, channels.available),
       membersLimit: u.membersLimit + u.extraMembersPurchased,
       membersCount: u.membersCount,
       membersAvailable:
@@ -87,57 +117,40 @@ export class UsageService {
     };
   }
 
-  // Check if user can create more workspaces
+  /**
+   * How many workspaces this account may own.
+   *
+   * Previously this looped over every workspace the user owned, read each
+   * one's own subscription, and kept the LARGEST maxWorkspaces it found — a
+   * workaround for workspace-scoped billing that was also exploitable (buy MAX
+   * on one workspace, FREE on another, and MAX's allowance applied to both).
+   * One account, one subscription, one lookup.
+   */
   async getWorkspaceLimits(userId: string): Promise<WorkspaceLimits> {
-    // Get user's workspaces
     const userWorkspaces = await db
-      .select()
+      .select({ id: workspace.id })
       .from(workspace)
       .where(eq(workspace.ownerId, userId));
 
-    // Get the highest plan limit from user's subscriptions
-    let maxWorkspaces = 1; // Default FREE plan limit
+    const subscription = await this.lookup.findByUserId(userId);
 
-    for (const ws of userWorkspaces) {
-      const subscription = await db
-        .select()
-        .from(subscriptions)
-        .where(
-          and(
-            eq(subscriptions.workspaceId, ws.id),
-            eq(subscriptions.status, 'active'),
-          ),
-        )
-        .limit(1);
+    // No subscription, or one that is not active, gets FREE's allowance.
+    const planCode =
+      subscription && subscription.status === 'active'
+        ? subscription.planCode
+        : 'FREE';
 
-      if (subscription.length > 0) {
-        const plan = await db
-          .select()
-          .from(plans)
-          .where(eq(plans.code, subscription[0].planCode))
-          .limit(1);
+    const plan = await this.lookup.getPlanLimits(planCode);
+    const addons = subscription
+      ? await this.lookup.getAddonQuantities(subscription.id)
+      : {
+          extraChannels: 0,
+          extraMembers: 0,
+          extraWorkspaces: 0,
+          extraAiTokens: 0,
+        };
 
-        if (plan.length > 0 && plan[0].maxWorkspaces > maxWorkspaces) {
-          maxWorkspaces = plan[0].maxWorkspaces;
-        }
-
-        // Check for extra workspaces purchased
-        const extraWorkspaces = await db
-          .select()
-          .from(subscriptionItems)
-          .where(
-            and(
-              eq(subscriptionItems.subscriptionId, subscription[0].id),
-              eq(subscriptionItems.itemType, 'EXTRA_WORKSPACE'),
-            ),
-          )
-          .limit(1);
-
-        if (extraWorkspaces.length > 0) {
-          maxWorkspaces += extraWorkspaces[0].quantity;
-        }
-      }
-    }
+    const maxWorkspaces = resolveMaxWorkspaces(plan, addons);
 
     return {
       maxWorkspaces,
@@ -428,24 +441,51 @@ export class UsageService {
     this.logger.log(`Updated limits for workspace ${workspaceId}`);
   }
 
-  // Check if downgrade is possible (usage within new limits)
-  async canDowngrade(
-    workspaceId: string,
-    newPlanCode: string,
-  ): Promise<{ canDowngrade: boolean; issues: string[] }> {
+  /**
+   * Pure: the downgrade complaints for ONE workspace, each naming its
+   * workspace.
+   *
+   * A downgrade re-limits every workspace the account owns, so the workspace
+   * blocking the user is often not the one they are looking at. "You have 7
+   * channels" without saying where sends them hunting.
+   */
+  static describeDowngradeIssues(
+    ws: DowngradeWorkspaceUsage,
+    plan: DowngradePlanLimits,
+  ): string[] {
     const issues: string[] = [];
 
-    // Get current usage
-    const currentUsage = await db
-      .select()
-      .from(workspaceUsage)
-      .where(eq(workspaceUsage.workspaceId, workspaceId))
-      .limit(1);
-
-    if (currentUsage.length === 0) {
-      return { canDowngrade: true, issues: [] };
+    if (ws.channelsCount > plan.channelsPerWorkspace) {
+      issues.push(
+        `Workspace "${ws.workspaceName}" has ${ws.channelsCount} channels but the ${plan.name} plan only allows ${plan.channelsPerWorkspace}. ` +
+          `Please remove ${ws.channelsCount - plan.channelsPerWorkspace} channel(s) from it first.`,
+      );
     }
 
+    if (ws.membersCount > plan.membersPerWorkspace) {
+      issues.push(
+        `Workspace "${ws.workspaceName}" has ${ws.membersCount} members but the ${plan.name} plan only allows ${plan.membersPerWorkspace}. ` +
+          `Please remove ${ws.membersCount - plan.membersPerWorkspace} member(s) from it first.`,
+      );
+    }
+
+    return issues;
+  }
+
+  /**
+   * Can this ACCOUNT drop to `newPlanCode`?
+   *
+   * This used to validate a single workspace. A subscription now covers every
+   * workspace the account owns and a downgrade re-limits all of them at once,
+   * so checking one let a user pass validation while a SECOND workspace still
+   * held channels over the new limit — downgrading it into a silently
+   * over-limit state. Every owned workspace is checked, and each complaint
+   * names the workspace that needs tidying.
+   */
+  async canDowngrade(
+    userId: string,
+    newPlanCode: string,
+  ): Promise<{ canDowngrade: boolean; issues: string[] }> {
     // Get new plan limits
     const newPlan = await db
       .select()
@@ -457,24 +497,25 @@ export class UsageService {
       return { canDowngrade: false, issues: ['Plan not found'] };
     }
 
-    const usage = currentUsage[0];
     const plan = newPlan[0];
 
-    // Check channels
-    if (usage.channelsCount > plan.channelsPerWorkspace) {
-      issues.push(
-        `You have ${usage.channelsCount} channels but the ${plan.name} plan only allows ${plan.channelsPerWorkspace}. ` +
-          `Please remove ${usage.channelsCount - plan.channelsPerWorkspace} channel(s) first.`,
-      );
-    }
+    // Every workspace the account owns, with its usage row. A workspace with no
+    // usage row has no counted resources to be over-limit on, so an inner join
+    // (which drops it) is the same answer as counting it at zero.
+    const rows = await db
+      .select({
+        workspaceName: workspace.name,
+        channelsCount: workspaceUsage.channelsCount,
+        membersCount: workspaceUsage.membersCount,
+      })
+      .from(workspace)
+      .innerJoin(workspaceUsage, eq(workspaceUsage.workspaceId, workspace.id))
+      .where(eq(workspace.ownerId, userId))
+      .orderBy(workspace.createdAt, workspace.id);
 
-    // Check members
-    if (usage.membersCount > plan.membersPerWorkspace) {
-      issues.push(
-        `You have ${usage.membersCount} members but the ${plan.name} plan only allows ${plan.membersPerWorkspace}. ` +
-          `Please remove ${usage.membersCount - plan.membersPerWorkspace} member(s) first.`,
-      );
-    }
+    const issues = rows.flatMap((row) =>
+      UsageService.describeDowngradeIssues(row, plan),
+    );
 
     return {
       canDowngrade: issues.length === 0,

@@ -80,7 +80,11 @@ export class WorkspaceSuspendedGuard implements CanActivate {
     if (!workspaceId) return true;
 
     const wsRows = await this.db
-      .select({ isActive: workspace.isActive, reason: workspace.suspendedReason })
+      .select({
+        isActive: workspace.isActive,
+        reason: workspace.suspendedReason,
+        ownerId: workspace.ownerId,
+      })
       .from(workspace)
       .where(eq(workspace.id, workspaceId))
       .limit(1);
@@ -96,12 +100,18 @@ export class WorkspaceSuspendedGuard implements CanActivate {
       });
     }
 
-    const rows = await this.db
-      .select({ status: subscriptions.status })
-      .from(subscriptions)
-      .where(eq(subscriptions.workspaceId, workspaceId))
-      .limit(1);
+    // Billing is account-scoped: the status that can suspend this workspace is
+    // its owner's. The owner id came back on the workspace row above.
+    const rows = ws?.ownerId
+      ? await this.db
+          .select({ status: subscriptions.status })
+          .from(subscriptions)
+          .where(eq(subscriptions.userId, ws.ownerId))
+          .limit(1)
+      : [];
 
+    // No subscription row (or no resolvable owner) must never lock a user out
+    // of the app — free and not-yet-billed accounts pass straight through.
     const status = rows[0]?.status;
     if (!status) return true;
 

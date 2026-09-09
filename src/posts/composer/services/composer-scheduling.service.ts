@@ -13,6 +13,7 @@ import { QUEUES } from '../../../queue/queue.module';
 import type { ScheduleDraftDto } from '../dto/schedule-draft.dto';
 import type { ChannelTarget } from '../types/draft.types';
 import { CalendarPushSyncService } from '../../../calendar-sync/services/calendar-push-sync.service';
+import { PostQueueService } from '../../../billing/services/post-queue.service';
 
 export interface ScheduleResult {
   postId: string;
@@ -35,6 +36,7 @@ export class ComposerSchedulingService {
     @InjectQueue(QUEUES.POST_PUBLISHING)
     private readonly publishingQueue: Queue,
     private readonly calendarPushSync: CalendarPushSyncService,
+    private readonly postQueue: PostQueueService,
   ) {}
 
   /**
@@ -108,6 +110,20 @@ export class ComposerSchedulingService {
       .from(posts)
       .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)))
       .limit(1);
+
+    // The same per-channel queue ceiling PostService.createPost enforces. This
+    // is a second, independent path to `status: 'scheduled'`, so a check on
+    // only the other one would be bypassable by using this composer.
+    //
+    // Skipped when the draft is ALREADY scheduled (a re-schedule): its own row
+    // is inside countQueuedForChannel's count, so it would be refused for
+    // occupying the slot it already holds.
+    if (existing[0]?.status !== 'scheduled') {
+      await this.postQueue.enforceQueueLimit(
+        workspaceId,
+        dto.channels.map((c) => String(c.channelId)),
+      );
+    }
 
     if (existing.length === 0) {
       await this.db.insert(posts).values({

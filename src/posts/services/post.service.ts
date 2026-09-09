@@ -29,6 +29,7 @@ import type { AgeBucket } from '../../channels/analytics/types/platform-capabili
 import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
 import { CalendarPushSyncService } from '../../calendar-sync/services/calendar-push-sync.service';
 import { CampaignStatusSyncListener } from '../../campaigns/campaign-status-sync.listener';
+import { PostQueueService } from '../../billing/services/post-queue.service';
 import type {
   PostStatusChangedPayload,
   PostStatusChangedTarget,
@@ -68,6 +69,7 @@ export class PostService {
     private readonly realtimeEmitter: AnalyticsEventEmitter,
     private readonly calendarPushSync: CalendarPushSyncService,
     private readonly campaignStatusSync: CampaignStatusSyncListener,
+    private readonly postQueue: PostQueueService,
   ) {}
 
   /**
@@ -148,6 +150,15 @@ export class PostService {
 
     // Determine initial status
     const status: PostStatus = dto.scheduledAt ? 'scheduled' : 'draft';
+
+    // Queue ceiling is per channel: a post targeting three channels takes one
+    // slot on each. Checked before the insert so nothing is written on refusal.
+    if (dto.scheduledAt) {
+      await this.postQueue.enforceQueueLimit(
+        workspaceId,
+        channelList.map((channel) => String(channel.id)),
+      );
+    }
 
     const [post] = await db
       .insert(posts)
@@ -327,6 +338,22 @@ export class PostService {
         updateData.scheduledAt = dto.scheduledAt;
         updateData.status = 'scheduled';
       }
+    }
+
+    // A draft promoted to `scheduled` faces the same per-channel ceiling as one
+    // created scheduled — otherwise "save as draft, then schedule" is a free
+    // bypass. Only on the draft -> scheduled transition: a post already in
+    // `scheduled` is counted by countQueuedForChannel itself, so re-saving it
+    // would be refused for occupying its own slot.
+    if (
+      updateData.status === 'scheduled' &&
+      existingPost.status !== 'scheduled'
+    ) {
+      const scheduledTargets = updateData.targets ?? existingPost.targets ?? [];
+      await this.postQueue.enforceQueueLimit(
+        workspaceId,
+        scheduledTargets.map((target) => String(target.channelId)),
+      );
     }
 
     let updatedPost;
@@ -858,6 +885,18 @@ export class PostService {
     if (disconnected.length > 0) {
       throw new BadRequestException(
         `Channel(s) not connected: ${disconnected.map((c) => c.accountName).join(', ')}`,
+      );
+    }
+
+    // A channel locked by a downgrade stays connected — its tokens and history
+    // are intact and it comes back on upgrade — but it must not publish, or the
+    // plan ceiling would mean nothing.
+    const locked = channelList.filter((c) => c.isActive === false);
+    if (locked.length > 0) {
+      throw new BadRequestException(
+        `Channel(s) locked by your current plan: ${locked
+          .map((c) => c.accountName)
+          .join(', ')}. Upgrade or free up a channel slot to use them again.`,
       );
     }
 

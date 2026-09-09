@@ -9,8 +9,10 @@ import {
   jsonb,
   bigserial,
   unique,
+  uniqueIndex,
+  index,
 } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import { users } from './users.schema';
 import { workspace } from './workspace.schema';
 
@@ -38,6 +40,11 @@ export const plans = pgTable('plans', {
   channelsPerWorkspace: integer('channels_per_workspace').notNull(),
   membersPerWorkspace: integer('members_per_workspace').notNull(),
   maxWorkspaces: integer('max_workspaces').notNull(),
+  // -1 = unlimited. Caps posts sitting in `scheduled` status per channel;
+  // publishing frees the slot, so there is no counter to reset.
+  queuedPostsPerChannel: integer('queued_posts_per_channel')
+    .notNull()
+    .default(-1),
   aiTokensPerMonth: integer('ai_tokens_per_month').default(0).notNull(), // 0=no AI, 2000=pro, 5000=max
   features: jsonb('features'),
   isActive: boolean('is_active').default(true).notNull(),
@@ -72,14 +79,14 @@ export const addonPricing = pgTable(
   },
 );
 
-// 4. Subscriptions - Per-workspace subscriptions
+// 4. Subscriptions - Per-user (account) subscriptions
 export const subscriptions = pgTable('subscriptions', {
   id: bigserial('id', { mode: 'number' }).primaryKey(),
-  workspaceId: uuid('workspace_id')
+  userId: uuid('user_id')
     .notNull()
     .unique()
-    .references(() => workspace.id, { onDelete: 'cascade' }),
-  stripeCustomerId: varchar('stripe_customer_id', { length: 255 }).notNull(),
+    .references(() => users.id, { onDelete: 'cascade' }),
+  stripeCustomerId: varchar('stripe_customer_id', { length: 255 }),
   stripeSubscriptionId: varchar('stripe_subscription_id', {
     length: 255,
   }).unique(),
@@ -123,6 +130,174 @@ export const subscriptionItems = pgTable(
   (table) => {
     return {
       uniqueSubscriptionItem: unique().on(table.subscriptionId, table.itemType),
+    };
+  },
+);
+
+/**
+ * What a payment provider holds on its side, for one of our subscriptions.
+ *
+ * WHY THIS TABLE EXISTS
+ *
+ * `subscriptions` is OUR model: one row per account, one plan, one status.
+ * That shape does not survive contact with every provider. A Lemon Squeezy
+ * subscription holds exactly ONE product variant — there is no
+ * `POST /v1/subscription-items`, and checkout takes a single variant — so an
+ * account on the Pro plan with three add-ons is FIVE Lemon Squeezy
+ * subscriptions, each with its own renewal date and invoice. On Stripe the
+ * same account is one subscription with four items.
+ *
+ * The alternative was to reshape `subscriptions` into one-row-per-provider-
+ * subscription. That would push a Lemon Squeezy API limitation into every
+ * query in the app: `mrrOf()` sums each row's items and falls back to
+ * `plans.base_price_cents`, so an account with three add-ons would report four
+ * times its revenue; `payingAccounts` counts subscription rows, so it would
+ * count that account four times; the plan-mix grouping would attribute an
+ * add-on's `plan_code` as if it were a tier. Twelve read paths take
+ * `LIMIT 1`/`findFirst` and would silently return whichever row came back
+ * first — a wrong entitlement with no error.
+ *
+ * So the provider's shape lives here instead, and our model stays ours. This
+ * is what Lago (`payment_provider_customers`), Medusa (`AccountHolder`),
+ * Saleor (`pspReference`) and Kill Bill all converged on independently: the
+ * domain table carries no provider columns, and a satellite row carries
+ * `(provider, external id, opaque payload)`.
+ *
+ * ENTITLEMENT vs BILLING
+ *
+ * `subscription_items.quantity` is the ENTITLEMENT — what the customer may
+ * use, and the only number guards may read. `providerQuantity` here is the
+ * BILLING figure — what the provider last told us it is charging for. They
+ * are equal most of the time and legitimately diverge in between: reduce an
+ * add-on mid-cycle and the provider's quantity drops at the renewal boundary
+ * while the entitlement should hold until the period the customer paid for
+ * actually ends. One column cannot hold both facts. Kill Bill separates these
+ * for the same reason.
+ */
+export const providerSubscriptions = pgTable(
+  'provider_subscriptions',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    subscriptionId: integer('subscription_id')
+      .notNull()
+      .references(() => subscriptions.id, { onDelete: 'cascade' }),
+    /** 'stripe' | 'lemonsqueezy'. A plain column, not an enum: adding a third
+     * provider must not require a migration. */
+    provider: varchar('provider', { length: 20 }).notNull(),
+    /**
+     * Which part of our subscription this provider record pays for:
+     * BASE_PLAN, EXTRA_CHANNEL, EXTRA_MEMBER, EXTRA_WORKSPACE, EXTRA_AI_TOKENS.
+     * Matches `subscription_items.item_type`.
+     *
+     * Stored, never inferred. A webhook arrives with a provider id and must be
+     * able to say what it concerns by reading a column — deriving "is this the
+     * base plan?" from a variant/price map at webhook time breaks silently the
+     * first time the catalogue changes.
+     */
+    itemType: varchar('item_type', { length: 30 }).notNull(),
+    /** The provider's subscription id (Stripe `sub_...`, Lemon Squeezy id). */
+    providerSubscriptionId: varchar('provider_subscription_id', {
+      length: 255,
+    }),
+    /** The provider's customer id (Stripe `cus_...`, Lemon Squeezy customer). */
+    providerCustomerId: varchar('provider_customer_id', { length: 255 }),
+    /**
+     * The line item within the provider subscription. Stripe: `si_...`.
+     * Lemon Squeezy: `first_subscription_item.id` — REQUIRED there, because
+     * quantity updates are keyed on the item, not the subscription.
+     */
+    providerItemId: varchar('provider_item_id', { length: 255 }),
+    /** Stripe price id, or Lemon Squeezy variant id. What was actually sold. */
+    providerPriceId: varchar('provider_price_id', { length: 255 }),
+    /** BILLING quantity. Never read this to decide access — see the note above. */
+    providerQuantity: integer('provider_quantity').default(1).notNull(),
+    unitPriceCents: integer('unit_price_cents'),
+    /** The provider's own status string, unmapped. Kept raw on purpose: Lemon
+     * Squeezy's `cancelled` means access CONTINUES until `ends_at` and only
+     * `expired` revokes, which is the opposite of what the word implies. The
+     * mapping to our status belongs in the adapter, not in the column. */
+    providerStatus: varchar('provider_status', { length: 30 }),
+    /** When this provider record stops billing. Lemon Squeezy `ends_at`. */
+    endsAt: timestamp('ends_at'),
+    renewsAt: timestamp('renews_at'),
+    /**
+     * The provider currently in charge of this account. Exactly one row per
+     * subscription may be true (enforced by a partial unique index below).
+     *
+     * This is the Lemon Squeezy -> Stripe cutover mechanism. Migration happens
+     * per account at ITS OWN renewal date, not in one window, so both
+     * providers are live at once for a whole billing cycle: new signups go to
+     * Stripe while existing customers finish their Lemon Squeezy period. The
+     * flag moves; no row is destroyed and no migration runs.
+     */
+    isDefault: boolean('is_default').default(false).notNull(),
+    /** Whatever else the provider returned. An escape hatch so a provider
+     * quirk never forces a migration. */
+    data: jsonb('data'),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => {
+    return {
+      // One provider record per (subscription, provider, item type). An
+      // account can hold a Lemon Squeezy EXTRA_CHANNEL and a Stripe
+      // EXTRA_CHANNEL at once — that is the cutover window, not a bug.
+      uniqueProviderItem: unique().on(
+        table.subscriptionId,
+        table.provider,
+        table.itemType,
+      ),
+      // Webhooks arrive knowing only the provider's id, so this is the hot
+      // lookup path. Scoped by provider because ids from two providers can
+      // collide in principle.
+      providerLookup: index('provider_subscriptions_lookup_idx').on(
+        table.provider,
+        table.providerSubscriptionId,
+      ),
+      // At most one default provider per subscription. Partial, so the many
+      // non-default rows do not contend.
+      oneDefaultPerSubscription: uniqueIndex(
+        'provider_subscriptions_one_default_idx',
+      )
+        .on(table.subscriptionId)
+        .where(sql`is_default`),
+    };
+  },
+);
+
+/**
+ * What a plan or add-on is called at each payment provider.
+ *
+ * `plans.stripe_price_id` and `addon_pricing.stripe_price_id` name Stripe
+ * specifically, and the latter is NOT NULL — so they cannot answer "what is
+ * the Pro plan at Lemon Squeezy?". Adding a `lemonsqueezy_variant_id` beside
+ * each would repeat the problem for the provider after that.
+ *
+ * `providerRef` holds a Stripe price id (`price_...`) or a Lemon Squeezy
+ * variant id, whichever this provider uses to name the thing being sold.
+ */
+export const providerPrices = pgTable(
+  'provider_prices',
+  {
+    id: bigserial('id', { mode: 'number' }).primaryKey(),
+    provider: varchar('provider', { length: 20 }).notNull(),
+    /** Plan code (FREE/BASIC/PRO/MAX) for a plan, or NULL for an add-on. */
+    planCode: varchar('plan_code', { length: 20 }),
+    /** BASE_PLAN, or an add-on type. Mirrors provider_subscriptions.item_type. */
+    itemType: varchar('item_type', { length: 30 }).notNull(),
+    /** Stripe price id, or Lemon Squeezy variant id. */
+    providerRef: varchar('provider_ref', { length: 255 }).notNull(),
+    isActive: boolean('is_active').default(true).notNull(),
+    createdAt: timestamp('created_at').defaultNow().notNull(),
+    updatedAt: timestamp('updated_at').defaultNow().notNull(),
+  },
+  (table) => {
+    return {
+      uniqueProviderPrice: unique().on(
+        table.provider,
+        table.planCode,
+        table.itemType,
+      ),
     };
   },
 );
@@ -322,15 +497,16 @@ export const stripeCustomersRelations = relations(
 export const subscriptionsRelations = relations(
   subscriptions,
   ({ one, many }) => ({
-    workspace: one(workspace, {
-      fields: [subscriptions.workspaceId],
-      references: [workspace.id],
+    user: one(users, {
+      fields: [subscriptions.userId],
+      references: [users.id],
     }),
     plan: one(plans, {
       fields: [subscriptions.planCode],
       references: [plans.code],
     }),
     subscriptionItems: many(subscriptionItems),
+    providerSubscriptions: many(providerSubscriptions),
     invoices: many(invoices),
     subscriptionChanges: many(subscriptionChanges),
     failedPayments: many(failedPayments),
@@ -342,6 +518,16 @@ export const subscriptionItemsRelations = relations(
   ({ one }) => ({
     subscription: one(subscriptions, {
       fields: [subscriptionItems.subscriptionId],
+      references: [subscriptions.id],
+    }),
+  }),
+);
+
+export const providerSubscriptionsRelations = relations(
+  providerSubscriptions,
+  ({ one }) => ({
+    subscription: one(subscriptions, {
+      fields: [providerSubscriptions.subscriptionId],
       references: [subscriptions.id],
     }),
   }),
@@ -453,6 +639,34 @@ export type NewSubscription = typeof subscriptions.$inferInsert;
 
 export type SubscriptionItem = typeof subscriptionItems.$inferSelect;
 export type NewSubscriptionItem = typeof subscriptionItems.$inferInsert;
+
+export type ProviderSubscription = typeof providerSubscriptions.$inferSelect;
+export type NewProviderSubscription = typeof providerSubscriptions.$inferInsert;
+
+export type ProviderPrice = typeof providerPrices.$inferSelect;
+export type NewProviderPrice = typeof providerPrices.$inferInsert;
+
+/**
+ * The payment providers we can bill through.
+ *
+ * Lemon Squeezy goes live first (Merchant of Record: it is the seller of
+ * record, handles tax itself, and pays out where Stripe does not). Stripe
+ * returns once the LLC and a live Stripe account exist. Both stay — accounts
+ * move over one at a time at their own renewal dates, so there is no moment
+ * when only one provider is in use.
+ */
+export const PAYMENT_PROVIDERS = ['stripe', 'lemonsqueezy'] as const;
+export type PaymentProvider = (typeof PAYMENT_PROVIDERS)[number];
+
+/** Which part of a subscription a provider record pays for. */
+export const PROVIDER_ITEM_TYPES = [
+  'BASE_PLAN',
+  'EXTRA_CHANNEL',
+  'EXTRA_MEMBER',
+  'EXTRA_WORKSPACE',
+  'EXTRA_AI_TOKENS',
+] as const;
+export type ProviderItemType = (typeof PROVIDER_ITEM_TYPES)[number];
 
 export type WorkspaceUsage = typeof workspaceUsage.$inferSelect;
 export type NewWorkspaceUsage = typeof workspaceUsage.$inferInsert;

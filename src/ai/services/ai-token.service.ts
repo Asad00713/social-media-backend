@@ -7,7 +7,9 @@ import {
 } from '@nestjs/common';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import type { DbType } from '../../drizzle/db';
+import { getNextTokenResetDate } from '../../billing/services/token-reset.util';
 import {
+  workspace,
   workspaceUsage,
   subscriptions,
   plans,
@@ -82,6 +84,18 @@ export class AiTokenService {
   constructor(@Inject(DRIZZLE) private db: DbType) {}
 
   /**
+   * The account that pays for this workspace. Null when the workspace is gone,
+   * which the caller treats the same as having no subscription.
+   */
+  private async resolveOwnerId(workspaceId: string): Promise<string | null> {
+    const row = await this.db.query.workspace.findFirst({
+      where: eq(workspace.id, workspaceId),
+      columns: { ownerId: true },
+    });
+    return row?.ownerId ?? null;
+  }
+
+  /**
    * Get the token cost for an operation
    */
   getOperationCost(operation: string): number {
@@ -97,13 +111,18 @@ export class AiTokenService {
   ): Promise<TokenCheckResult> {
     const tokensRequired = this.getOperationCost(operation);
 
-    // Get workspace subscription to check plan
-    const subscription = await this.db.query.subscriptions.findFirst({
-      where: eq(subscriptions.workspaceId, workspaceId),
-      with: {
-        plan: true,
-      },
-    });
+    // Subscriptions are account-scoped: the plan covering this workspace is
+    // its owner's. Resolve the owner first, then read their one subscription.
+    const ownerId = await this.resolveOwnerId(workspaceId);
+
+    const subscription = ownerId
+      ? await this.db.query.subscriptions.findFirst({
+          where: eq(subscriptions.userId, ownerId),
+          with: {
+            plan: true,
+          },
+        })
+      : null;
 
     if (!subscription || subscription.status !== 'active') {
       return {
@@ -286,12 +305,13 @@ export class AiTokenService {
   }
 
   /**
-   * Get the next monthly reset date (first of next month)
+   * Get the next monthly reset date (first of next month).
+   *
+   * Delegates so that this service and the four billing/workspace insert sites
+   * cannot drift apart on what "next cycle" means.
    */
   private getNextResetDate(): Date {
-    const now = new Date();
-    const nextMonth = new Date(now.getFullYear(), now.getMonth() + 1, 1);
-    return nextMonth;
+    return getNextTokenResetDate();
   }
 
   /**

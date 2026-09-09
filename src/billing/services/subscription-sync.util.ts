@@ -1,14 +1,18 @@
 import type Stripe from 'stripe';
+import { PlanLimits, AddonQuantities } from './limit-resolver.util';
+import {
+  buildUsageFanout,
+  WorkspaceRef,
+  WorkspaceLimitWrite,
+} from './usage-fanout.util';
 
 export interface SubscriptionSyncInput {
-  workspaceId: string;
+  userId: string;
+  /** Every workspace the account owns — limits fan out across all of them. */
+  workspaces: WorkspaceRef[];
   planCode: string;
-  plan: {
-    basePriceCents: number;
-    channelsPerWorkspace: number;
-    membersPerWorkspace: number;
-    aiTokensPerMonth: number;
-  };
+  plan: PlanLimits & { basePriceCents: number };
+  addons: AddonQuantities;
   stripeCustomerId: string;
   stripeSubscription: Stripe.Subscription;
 }
@@ -16,7 +20,8 @@ export interface SubscriptionSyncInput {
 export interface SubscriptionSyncValues {
   subscriptionRow: Record<string, unknown>;
   baseItem: Record<string, unknown>;
-  usageRow: Record<string, unknown>;
+  /** One row per owned workspace. Was a single row under workspace billing. */
+  usageRows: (WorkspaceLimitWrite & Record<string, unknown>)[];
 }
 
 /**
@@ -44,8 +49,9 @@ export function getSubscriptionPeriod(stripeSubscription: Stripe.Subscription): 
 /**
  * Pure mapping from a Stripe subscription + our plan into the DB row values
  * used to upsert `subscriptions`, the BASE_PLAN `subscription_items` row, and
- * `workspace_usage`. No DB access — unit-testable. Null timestamps are omitted
- * (Drizzle rejects explicit null for timestamp columns).
+ * `workspace_usage` (one row per owned workspace). No DB access —
+ * unit-testable. Null timestamps are omitted (Drizzle rejects explicit null
+ * for timestamp columns).
  */
 export function buildSubscriptionSync(
   input: SubscriptionSyncInput,
@@ -55,7 +61,7 @@ export function buildSubscriptionSync(
   const period = getSubscriptionPeriod(input.stripeSubscription);
 
   const subscriptionRow: Record<string, unknown> = {
-    workspaceId: input.workspaceId,
+    userId: input.userId,
     stripeCustomerId: input.stripeCustomerId,
     stripeSubscriptionId: sub.id,
     planCode: input.planCode,
@@ -76,19 +82,19 @@ export function buildSubscriptionSync(
     unitPriceCents: input.plan.basePriceCents,
   };
 
-  // Mirror createFreeSubscription's defaults for NOT-NULL count fields so that
-  // an upsert-insert (when no workspace_usage row exists yet) satisfies all
-  // NOT-NULL constraints without a DB default.
-  const usageRow: Record<string, unknown> = {
-    workspaceId: input.workspaceId,
-    channelsLimit: input.plan.channelsPerWorkspace,
-    membersLimit: input.plan.membersPerWorkspace,
-    aiTokensLimit: input.plan.aiTokensPerMonth,
+  // Mirror createFreeSubscription's defaults for NOT-NULL count fields so an
+  // upsert-insert (no workspace_usage row yet) satisfies every constraint.
+  const usageRows = buildUsageFanout(
+    input.workspaces,
+    input.plan,
+    input.addons,
+  ).map((write) => ({
+    ...write,
     channelsCount: 0,
     extraChannelsPurchased: 0,
     membersCount: 0,
     extraMembersPurchased: 0,
-  };
+  }));
 
-  return { subscriptionRow, baseItem, usageRow };
+  return { subscriptionRow, baseItem, usageRows };
 }

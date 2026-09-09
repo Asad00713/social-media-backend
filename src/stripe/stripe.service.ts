@@ -120,6 +120,30 @@ export class StripeService implements OnModuleInit {
     return await this.stripe.subscriptions.update(subscriptionId, params);
   }
 
+  /**
+   * Stop collecting payment without ending the subscription.
+   *
+   * The safe off-ramp for a customer who would otherwise cancel: nothing is
+   * deleted, no channel is disconnected, and resuming restores the plan
+   * exactly. `void` means the paused months are never billed retroactively —
+   * the alternative, `keep_as_draft`, would hand the customer a stack of
+   * invoices the moment they came back.
+   */
+  async pauseSubscription(subscriptionId: string): Promise<Stripe.Subscription> {
+    return await this.stripe.subscriptions.update(subscriptionId, {
+      pause_collection: { behavior: 'void' },
+    });
+  }
+
+  /** Resume a paused subscription; billing restarts on the normal anchor. */
+  async resumeSubscription(
+    subscriptionId: string,
+  ): Promise<Stripe.Subscription> {
+    return await this.stripe.subscriptions.update(subscriptionId, {
+      pause_collection: null,
+    });
+  }
+
   async cancelSubscription(
     subscriptionId: string,
     cancelAtPeriodEnd: boolean = true,
@@ -134,7 +158,18 @@ export class StripeService implements OnModuleInit {
   }
 
   // Subscription Item Methods (for add-ons)
-  // Industry standard: Charge full price immediately for add-ons
+  //
+  // An add-on bought mid-cycle is charged for the REMAINING days only, and the
+  // billing date never moves. Stripe computes that split itself from the
+  // subscription's current period — we do not calculate it.
+  //
+  // This previously passed `proration_behavior: 'none'` and then hand-built an
+  // invoice for the add-on's FULL monthly price. That overcharged every
+  // mid-cycle purchase: buy on day 16 of a 30-day cycle and the customer paid
+  // a whole month for 14 days, then paid again on the renewal date.
+  //
+  // `updateSubscriptionItem` and `deleteSubscriptionItem` below already do this
+  // correctly; this method was the outlier.
   async addSubscriptionItem(params: {
     subscriptionId: string;
     priceId: string;
@@ -144,181 +179,23 @@ export class StripeService implements OnModuleInit {
       `addSubscriptionItem called with: subscriptionId=${params.subscriptionId}, priceId=${params.priceId}, quantity=${params.quantity}`,
     );
 
-    // Get the subscription to find the customer ID
-    const subscription = await this.stripe.subscriptions.retrieve(
-      params.subscriptionId,
-      {
-        expand: ['default_payment_method'],
-      },
-    );
-    const customerId =
-      typeof subscription.customer === 'string'
-        ? subscription.customer
-        : subscription.customer.id;
-
-    // Get the payment method from subscription
-    const paymentMethodId =
-      typeof subscription.default_payment_method === 'string'
-        ? subscription.default_payment_method
-        : subscription.default_payment_method?.id;
-
-    // Save payment method to database if present
-    if (
-      subscription.default_payment_method &&
-      typeof subscription.default_payment_method !== 'string'
-    ) {
-      await this.savePaymentMethodToDatabase(
-        customerId,
-        subscription.default_payment_method,
-      );
-    }
-
-    // Add the subscription item WITHOUT proration (it will be billed starting next cycle)
+    // Add the item and let Stripe pro-rate it against the days left in the
+    // current period. The subscription's billing anchor is untouched, so the
+    // add-on simply joins the next invoice at full price.
     const item = await this.stripe.subscriptionItems.create({
       subscription: params.subscriptionId,
       price: params.priceId,
       quantity: params.quantity,
-      proration_behavior: 'none', // Don't create $0 proration items
+      proration_behavior: 'create_prorations',
     });
 
-    // Get the price details to know the amount
-    const price = await this.stripe.prices.retrieve(params.priceId);
-    const unitAmount = price.unit_amount || 0;
-    const totalAmount = unitAmount * params.quantity;
-
-    this.logger.log(
-      `Add-on price: ${unitAmount} cents, quantity: ${params.quantity}, total: ${totalAmount} cents`,
-    );
-
-    if (totalAmount > 0) {
-      // Create a draft invoice FIRST
-      const invoice = await this.stripe.invoices.create({
-        customer: customerId,
-        auto_advance: false, // Don't auto-advance, we control finalization
-        pending_invoice_items_behavior: 'exclude', // Don't include other pending items
-      });
-
-      this.logger.log(`Created draft invoice: ${invoice.id}`);
-
-      // Create invoice item and attach it to the specific invoice
-      const invoiceItem = await this.stripe.invoiceItems.create({
-        customer: customerId,
-        invoice: invoice.id, // Attach to this specific invoice
-        amount: totalAmount,
-        currency: price.currency,
-        description: `Add-on: ${params.quantity}x (first month charge)`,
-      });
-
-      this.logger.log(
-        `Created invoice item: ${invoiceItem.id} for ${totalAmount} cents, attached to invoice ${invoice.id}`,
-      );
-
-      // Finalize the invoice to lock in the amount
-      const finalizedInvoice = await this.stripe.invoices.finalizeInvoice(
-        invoice.id,
-      );
-
-      this.logger.log(
-        `Finalized invoice: ${finalizedInvoice.id}, amount_due: ${finalizedInvoice.amount_due}`,
-      );
-
-      // Now pay the invoice
-      let paidInvoice = finalizedInvoice;
-      if (finalizedInvoice.amount_due > 0) {
-        if (paymentMethodId) {
-          paidInvoice = await this.stripe.invoices.pay(finalizedInvoice.id, {
-            payment_method: paymentMethodId,
-          });
-          this.logger.log(
-            `Paid invoice ${finalizedInvoice.id} with payment method ${paymentMethodId}`,
-          );
-        } else {
-          paidInvoice = await this.stripe.invoices.pay(finalizedInvoice.id);
-          this.logger.log(
-            `Paid invoice ${finalizedInvoice.id} with default payment method`,
-          );
-        }
-      }
-
-      // Save invoice to database
-      await this.saveInvoiceToDatabase(
-        paidInvoice,
-        params.subscriptionId,
-        invoiceItem,
-      );
-    }
+    // Prorations sit as pending invoice items until the next cycle, so bill
+    // them now — the customer expects to pay when they click Buy. The helper
+    // also persists the invoice and tolerates a $0/nothing-to-invoice result
+    // (e.g. an add-on bought on the renewal date itself).
+    await this.invoiceSubscriptionImmediately(params.subscriptionId);
 
     return item;
-  }
-
-  /**
-   * Save a Stripe invoice to the database
-   */
-  private async saveInvoiceToDatabase(
-    stripeInvoice: Stripe.Invoice,
-    stripeSubscriptionId: string,
-    lineItem: Stripe.InvoiceItem,
-  ): Promise<void> {
-    try {
-      // Find subscription ID in our database
-      const subscription = await db
-        .select({ id: subscriptions.id })
-        .from(subscriptions)
-        .where(eq(subscriptions.stripeSubscriptionId, stripeSubscriptionId))
-        .limit(1);
-
-      const subscriptionId =
-        subscription.length > 0 ? subscription[0].id : null;
-
-      // Insert invoice
-      const [savedInvoice] = await db
-        .insert(invoices)
-        .values({
-          subscriptionId,
-          stripeInvoiceId: stripeInvoice.id,
-          subtotalCents: stripeInvoice.subtotal || 0,
-          taxCents: (stripeInvoice as any).tax || 0,
-          totalCents: stripeInvoice.total || 0,
-          amountPaidCents: stripeInvoice.amount_paid || 0,
-          amountDueCents: stripeInvoice.amount_due || 0,
-          currency: stripeInvoice.currency || 'usd',
-          status: stripeInvoice.status || 'paid',
-          periodStart: stripeInvoice.period_start
-            ? new Date(stripeInvoice.period_start * 1000)
-            : null,
-          periodEnd: stripeInvoice.period_end
-            ? new Date(stripeInvoice.period_end * 1000)
-            : null,
-          paidAt: stripeInvoice.status === 'paid' ? new Date() : null,
-          invoicePdfUrl: stripeInvoice.invoice_pdf || null,
-          hostedInvoiceUrl: stripeInvoice.hosted_invoice_url || null,
-        })
-        .returning();
-
-      this.logger.log(
-        `Saved invoice ${stripeInvoice.id} to database with ID ${savedInvoice.id}`,
-      );
-
-      // Insert line item
-      await db.insert(invoiceLineItems).values({
-        invoiceId: savedInvoice.id,
-        stripeLineItemId: lineItem.id,
-        description: lineItem.description || 'Add-on charge',
-        itemType: 'ADDON',
-        quantity: lineItem.quantity || 1,
-        unitPriceCents: lineItem.amount || 0,
-        totalCents: lineItem.amount || 0,
-        isProration: false,
-      });
-
-      this.logger.log(`Saved invoice line item for invoice ${savedInvoice.id}`);
-    } catch (error) {
-      this.logger.error(
-        `Failed to save invoice to database: ${error.message}`,
-        error.stack,
-      );
-      // Don't throw - invoice was already paid in Stripe, we just failed to save locally
-    }
   }
 
   async updateSubscriptionItem(
