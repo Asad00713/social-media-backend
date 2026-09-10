@@ -227,15 +227,24 @@ export class AuthController {
 
   // ==================== Email Verification ====================
 
+  // Email verification is pre-launch account setup: the user signing up is not
+  // allowlisted yet by definition, and cannot become a verified user without
+  // these. Gating them meant a non-allowlisted signup could create an account
+  // and then never verify it — a dead end with no way forward or back.
   @Post('verify-email')
   @HttpCode(HttpStatus.OK)
+  @SkipLaunchGate()
   async verifyEmail(@Body() dto: VerifyEmailDto) {
     return this.authService.verifyEmail(dto.token);
   }
 
+  // The primary verification path, and the one that actually broke: it carries
+  // a JWT (JwtAuthGuard), so unlike the unauthenticated routes here it was
+  // blocked on every single request rather than only sometimes.
   @Post('verify-otp')
   @HttpCode(HttpStatus.OK)
   @UseGuards(JwtAuthGuard)
+  @SkipLaunchGate()
   async verifyOtp(
     @CurrentUser() user: { userId: string; email: string },
     @Body() dto: VerifyOtpDto,
@@ -245,20 +254,27 @@ export class AuthController {
 
   @Post('resend-verification')
   @HttpCode(HttpStatus.OK)
+  @SkipLaunchGate()
   async resendVerification(@Body() dto: ResendVerificationDto) {
     return this.authService.resendVerificationEmail(dto.email);
   }
 
   // ==================== Password Reset ====================
 
+  // Password reset is account recovery, not product access. Both routes are
+  // unauthenticated, so the guard already lets them through for want of a
+  // token; the decorator makes that deliberate rather than incidental, and
+  // keeps them working if either ever starts carrying one.
   @Post('forgot-password')
   @HttpCode(HttpStatus.OK)
+  @SkipLaunchGate()
   async forgotPassword(@Body() dto: ForgotPasswordDto) {
     return this.authService.forgotPassword(dto.email);
   }
 
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
+  @SkipLaunchGate()
   async resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(dto.token, dto.password);
   }
