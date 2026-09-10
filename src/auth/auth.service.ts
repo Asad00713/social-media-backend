@@ -1,6 +1,8 @@
 import {
   Inject,
   Injectable,
+  InternalServerErrorException,
+  Logger,
   NotFoundException,
   UnauthorizedException,
   BadRequestException,
@@ -76,6 +78,8 @@ export interface MeResponse {
 
 @Injectable()
 export class AuthService {
+  private readonly logger = new Logger(AuthService.name);
+
   constructor(
     @Inject(DRIZZLE) private db: DbType,
     private usersService: UsersService,
@@ -100,8 +104,28 @@ export class AuthService {
     // deliberate database change now, made by someone who already has access.
     const user = await this.usersService.create(registerDto, 'USER');
 
-    // Generate verification token and send email
-    await this.sendVerificationEmailInternal(user.id, user.email, user.name);
+    // Generate verification token and send email.
+    //
+    // Deliberately non-fatal. The account row already exists by this point, so
+    // letting a mail failure escape would 500 the registration and leave an
+    // unverified account behind that the same person can never register again
+    // — every retry answers "User with this email already exists". That traps
+    // them permanently, which is strictly worse than a missing email.
+    //
+    // So we keep the 201 and let them through to the OTP screen, which carries
+    // a Resend button. The message tells them the truth about what happened
+    // instead of "check your email" for a message that was never sent.
+    let emailDelivered = true;
+    try {
+      await this.sendVerificationEmailInternal(user.id, user.email, user.name);
+    } catch (error) {
+      emailDelivered = false;
+      this.logger.error(
+        `Registration for ${user.email} completed but the verification email failed: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      );
+    }
 
     // Stamp signup-time last-seen and region from the request IP. Awaited
     // (recordSync) so the country is persisted before we return — a signup
@@ -115,8 +139,9 @@ export class AuthService {
     return {
       accessToken,
       user,
-      message:
-        'Registration successful. Please check your email to verify your account.',
+      message: emailDelivered
+        ? 'Registration successful. Please check your email to verify your account.'
+        : 'Your account was created, but we could not send the verification code. Use "Resend code" to try again.',
     };
   }
 
@@ -319,11 +344,32 @@ export class AuthService {
       expiresAt,
     );
 
-    await this.emailService.sendVerificationEmail(
+    const result = await this.emailService.sendVerificationEmail(
       email,
       otp,
       name || undefined,
     );
+
+    // sendEmail never throws — it reports failure in its return value, and
+    // this call site used to discard it. That silence is what reached a real
+    // user: a misconfigured RESEND_API_KEY meant no verification email was
+    // ever sent, while registration still answered 201 "check your email".
+    // They waited for a message that did not exist.
+    //
+    // The OTP is the only way to finish signing up, so a failure here is not a
+    // background concern to be logged and shrugged off — it has to surface.
+    if (!result.success) {
+      this.logger.error(
+        `Verification email to ${email} failed: ${result.error ?? 'unknown error'}`,
+      );
+      throw new InternalServerErrorException({
+        statusCode: 500,
+        error: 'Internal Server Error',
+        code: 'VERIFICATION_EMAIL_FAILED',
+        message:
+          'We could not send your verification email. Please try again in a moment.',
+      });
+    }
   }
 
   /**

@@ -130,14 +130,24 @@ export class EmailService {
     const { to, subject, html, text } = options;
 
     if (!this.resend) {
-      // Log the email instead of sending
-      this.logger.log(
+      // Log the email instead of sending.
+      //
+      // This reports FAILURE, not success. It used to return success: true,
+      // which made a missing API key indistinguishable from a delivered email
+      // to every caller — so a production box with no RESEND_API_KEY told each
+      // new user "check your email" for a message that was only ever written
+      // to a log file. Nothing was ever sent; nothing ever said so.
+      //
+      // Callers that genuinely don't care whether the mail lands (background
+      // notifications) can keep ignoring the result. The ones that gate a user
+      // flow on it — email verification, password reset — must not.
+      this.logger.error(
         `[EMAIL NOT SENT - No API Key] To: ${to}, Subject: ${subject}`,
       );
       this.logger.debug(`Email content: ${text || html.substring(0, 200)}`);
       return {
-        success: true,
-        messageId: `log-${Date.now()}`,
+        success: false,
+        error: 'Email service is not configured (RESEND_API_KEY is unset)',
       };
     }
 
