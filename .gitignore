@@ -68,3 +68,6 @@ _nest-bootlog.err.txt
 
 # SDD scratch (progress ledger, briefs)
 .superpowers/
+
+# Git worktrees for parallel efforts (anchored: a bare name would match src dirs)
+/.worktrees
