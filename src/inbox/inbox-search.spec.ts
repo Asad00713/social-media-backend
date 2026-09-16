@@ -3,6 +3,7 @@ import { join } from 'path';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import {
+  buildAliasedSearchCondition,
   buildSearchCondition,
   decodeThreadCursor,
   decodeThreadKey,
@@ -106,6 +107,66 @@ describe('buildSearchCondition', () => {
   it('declares the escape character LIKE should honour', () => {
     const { sql } = render(buildSearchCondition('x'));
     expect(sql).toContain("ESCAPE '\\'");
+  });
+});
+
+/**
+ * The aggregate listings are raw SQL over `FROM inbox_items i`. Postgres treats
+ * an alias as shadowing the table name, so a fully-qualified
+ * `"inbox_items"."text"` inside that query is an "invalid reference to
+ * FROM-clause entry" — a 500 on every search, which is exactly how this shipped
+ * the first time. A mocked-db unit test cannot see it, so these assert the
+ * rendered text directly.
+ */
+describe('buildAliasedSearchCondition', () => {
+  it('references the alias, never the table name', () => {
+    const { sql } = render(buildAliasedSearchCondition('refund', 'i'));
+    expect(sql).toContain('i.text');
+    expect(sql).toContain('i.author_handle');
+    expect(sql).toContain('i.author_display_name');
+    expect(sql).not.toContain('inbox_items');
+  });
+
+  it('binds the query the same way the unaliased predicate does', () => {
+    expect(render(buildAliasedSearchCondition('50%', 'i')).params).toEqual(
+      render(buildSearchCondition('50%')).params,
+    );
+  });
+
+  // Both forms have to stay interchangeable, or the trigram index serves one
+  // call site and not the other.
+  it('renders the same expression as the unaliased predicate once the qualifier is normalised', () => {
+    const aliased = render(buildAliasedSearchCondition('x', 'i')).sql;
+    const plain = unqualify(render(buildSearchCondition('x')).sql);
+    expect(aliased.replace(/\bi\./g, '')).toBe(plain);
+  });
+});
+
+/**
+ * The tests above prove the aliased helper is correct. They do NOT prove the
+ * aggregate queries call it — and calling the wrong one is precisely the bug
+ * that shipped: `listCommentThreads` and `listDmConversations` used the
+ * unaliased predicate inside `FROM inbox_items i`, so every search 500'd.
+ *
+ * Nothing reachable from a unit test executes that SQL, so this reads the
+ * source and asserts the call. Crude, but it is the only thing standing between
+ * a one-word edit and a broken search endpoint.
+ */
+describe('the aggregate listings use the aliased predicate', () => {
+  const service = readFileSync(join(__dirname, 'inbox.service.ts'), 'utf8');
+
+  it('builds its CTE search predicates against the table alias', () => {
+    const aliasedCalls = service.match(
+      /buildAliasedSearchCondition\(search, 'i'\)/g,
+    );
+    // One for comments, one for DMs.
+    expect(aliasedCalls).toHaveLength(2);
+  });
+
+  it('never drops the unaliased predicate into a bool_or aggregate', () => {
+    // `bool_or(...)` only appears inside the aggregate CTEs, where the table is
+    // aliased. The unaliased helper there is the FROM-clause error.
+    expect(service).not.toContain('bool_or(${buildSearchCondition(search)})');
   });
 });
 

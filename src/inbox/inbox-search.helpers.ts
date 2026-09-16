@@ -57,10 +57,34 @@ export function searchCaptionSql(): SQL {
  * `lower(...) LIKE lower-pattern` rather than `ILIKE` so the expression matches
  * the index definition exactly. A leading `%` is what `gin_trgm_ops`
  * accelerates, so the unanchored pattern is intentional.
+ *
+ * Use this in Drizzle query-builder `where(...)` clauses, where the table is
+ * referenced by its real name. Inside the hand-written aggregate CTEs the table
+ * carries an alias, and a fully-qualified `inbox_items.text` there is an
+ * "invalid reference to FROM-clause entry" — those callers want
+ * `buildAliasedSearchCondition` instead.
  */
 export function buildSearchCondition(query: string): SQL {
   const needle = `%${escapeLikePattern(query.toLowerCase())}%`;
   return sql`(${searchHaystackSql()} LIKE ${needle} ESCAPE '\\' OR ${searchCaptionSql()} LIKE ${needle} ESCAPE '\\')`;
+}
+
+/**
+ * The same predicate, written against a table ALIAS rather than the table name.
+ *
+ * The aggregate listings are raw SQL over `FROM inbox_items i`, so every column
+ * has to be reached as `i.<column>`. Drizzle's column references always render
+ * as `"inbox_items"."<column>"`, which Postgres rejects once the table has been
+ * aliased — the alias shadows the name.
+ *
+ * The expression text is otherwise identical to `searchHaystackSql()` and to
+ * `inbox_search_trgm_idx` in migration 0036, which is what keeps the trigram
+ * index usable; `inbox-search.spec.ts` pins all three together.
+ */
+export function buildAliasedSearchCondition(query: string, alias: string): SQL {
+  const needle = `%${escapeLikePattern(query.toLowerCase())}%`;
+  const a = sql.raw(alias);
+  return sql`((lower(coalesce(${a}.text, '')) || ' ' || lower(coalesce(${a}.author_handle, '')) || ' ' || lower(coalesce(${a}.author_display_name, ''))) LIKE ${needle} ESCAPE '\\' OR lower(coalesce(${a}.metadata->'post'->>'caption', '')) LIKE ${needle} ESCAPE '\\')`;
 }
 
 /** Normalise a raw `q` param: trimmed, or undefined when too short to run. */

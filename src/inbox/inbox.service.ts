@@ -41,6 +41,7 @@ import { InboxFolder } from './dto/list-comments.dto';
 import type { BulkActionDto, InboxBulkAction } from './dto/bulk-action.dto';
 import type { DecodedThreadKey } from './inbox-search.helpers';
 import {
+  buildAliasedSearchCondition,
   buildSearchCondition,
   decodeThreadCursor,
   decodeThreadKey,
@@ -495,7 +496,7 @@ export class InboxService {
     // post thread, which is what makes searching a commenter's name return the
     // post they commented on.
     const searchHaving = search
-      ? sql`AND bool_or(${buildSearchCondition(search)})`
+      ? sql`AND bool_or(${buildAliasedSearchCondition(search, 'i')})`
       : sql``;
     const statusHaving = statuses
       ? sql`AND bool_or(i.status = ANY(${statuses}))`
@@ -2512,7 +2513,7 @@ export class InboxService {
         : sql``;
 
     const searchHaving = search
-      ? sql`AND bool_or(${buildSearchCondition(search)})`
+      ? sql`AND bool_or(${buildAliasedSearchCondition(search, 'i')})`
       : sql``;
     const statusHaving = statuses
       ? sql`AND bool_or(i.status = ANY(${statuses}))`
