@@ -604,7 +604,13 @@ describe('get_inbox_summary', () => {
       fakeInbox({
         counts: {
           perChannel: [{ channelId: 1, comments: 2, dms: 1 }],
-          smartFolders: { all: 12, unread: 3, needs_reply: 2, done: 7 },
+          smartFolders: {
+            all: 12,
+            unread: 3,
+            needs_reply: 2,
+            replied: 0,
+            done: 7,
+          },
           total: 3,
         },
       }),
@@ -615,29 +621,38 @@ describe('get_inbox_summary', () => {
       CTX,
     )) as Record<string, unknown>;
 
-    expect(result.waitingMessages).toBe(5);
-    expect(result.unreadMessages).toBe(3);
-    expect(result.needsReplyMessages).toBe(2);
-    expect(result.totalMessages).toBe(12);
+    expect(result.waitingConversations).toBe(5);
+    expect(result.unreadConversations).toBe(3);
+    expect(result.needsReplyConversations).toBe(2);
+    expect(result.totalConversations).toBe(12);
   });
 
   /**
-   * The bug this locks down: getCounts counts individual comments and DMs,
-   * but the Inbox screen groups them into threads. Reporting the message
-   * count as a conversation count made the agent claim "19 conversations"
-   * while the user was looking at a list of 5 — the assistant contradicting
-   * the product. Both numbers now ship, each named for what it counts.
+   * The bug this locks down: the agent once claimed "19 conversations" while
+   * the Inbox showed 5, because it read a message count and called it
+   * conversations.
+   *
+   * The folder counts are thread counts now, so the two numbers agree by
+   * construction — but the per-channel badges are still MESSAGE counts, and
+   * that is where the same confusion can recur. Hence the explicit name:
+   * `perChannelUnreadMessages`.
    */
-  it('separates the message count from the conversation count', async () => {
+  it('reports folder counts and the grouped list in the same unit', async () => {
     const tools = createInboxTools(
       fakeInbox({
         counts: {
-          perChannel: [],
-          // 19 messages…
-          smartFolders: { all: 19, unread: 0, needs_reply: 19, done: 0 },
+          perChannel: [{ channelId: 1, comments: 19, dms: 0 }],
+          // 5 threads in the folders…
+          smartFolders: {
+            all: 5,
+            unread: 0,
+            needs_reply: 5,
+            replied: 0,
+            done: 0,
+          },
           total: 19,
         },
-        // …grouped into 3 comment threads + 2 DM conversations.
+        // …and the same 5 when the lists are grouped.
         comments: [
           commentThread({ id: '1:a' }),
           commentThread({ id: '1:b' }),
@@ -652,9 +667,13 @@ describe('get_inbox_summary', () => {
       CTX,
     )) as Record<string, unknown>;
 
-    expect(result.needsReplyMessages).toBe(19);
+    expect(result.needsReplyConversations).toBe(5);
     expect(result.conversationCount).toBe(5);
     expect(result.waitingConversationCount).toBe(5);
+    // The finer-grained count keeps its unit in its name.
+    expect(result.perChannelUnreadMessages).toEqual([
+      { channelId: 1, comments: 19, dms: 0 },
+    ]);
   });
 
   it('counts only the conversations that are actually waiting', async () => {

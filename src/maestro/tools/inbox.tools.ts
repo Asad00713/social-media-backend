@@ -258,14 +258,15 @@ export function createInboxTools(inbox: InboxService): AgentToolDefinition[] {
       name: 'get_inbox_summary',
       description:
         'Counts of what is sitting in the inbox. Use this for "anything waiting for me?", "how is my inbox looking", or as a cheap first check before deciding whether to list anything. Returns counts only — call list_conversations when the user wants to know WHO is waiting.\n\n' +
-        'COUNT THE RIGHT THING. Every count here is a count of MESSAGES (individual comments and DMs), not of conversations — `waitingMessages: 19` means 19 comments across a smaller number of threads. Say "19 comments need a reply", never "19 conversations": the Inbox screen groups those same 19 into a handful of threads, so calling them conversations contradicts what the user is looking at. `conversationCount` is the grouped number when you need it.',
+        'COUNT THE RIGHT THING. The `*Conversations` counts are threads — the rows the Inbox screen actually lists — so those are the numbers to quote: `waitingConversations: 5` means five threads need a reply. `unreadMessages` is the finer-grained count of individual comments and DMs inside those threads, and is usually larger. Never present a message count as a number of conversations.',
       inputSchema: {},
       handler: async (_args, ctx) => {
         // Two reads because they count different things. getCounts returns
-        // MESSAGE counts (what the sidebar badges show); the conversation count
-        // has to come from the grouped lists. Answering "is anything waiting"
-        // with only one of them is how the agent ended up telling the user it
-        // had "19 conversations" while the Inbox showed 5.
+        // THREAD counts for the folders (what the Inbox chips show) plus
+        // per-channel MESSAGE counts; the per-type conversation split has to
+        // come from the grouped lists. Answering "is anything waiting" with
+        // only one of them is how the agent ended up telling the user it had
+        // "19 conversations" while the Inbox showed 5.
         const [counts, comments, dms] = await Promise.all([
           inbox.getCounts(ctx.workspaceId, ctx.userId),
           inbox.listCommentThreads(ctx.workspaceId, ctx.userId, {
@@ -284,16 +285,22 @@ export function createInboxTools(inbox: InboxService): AgentToolDefinition[] {
         const waitingThreads = threads.filter((t) => needsAttention(t.status));
 
         return {
-          // Named so the unit is impossible to lose: these are messages.
-          waitingMessages: f.unread + f.needs_reply,
-          unreadMessages: f.unread,
-          needsReplyMessages: f.needs_reply,
-          doneMessages: f.done,
-          totalMessages: f.all,
-          // …and these are the threads the Inbox screen actually lists.
+          // Named so the unit is impossible to lose. The folder counts are
+          // THREAD counts — the same rows the Inbox screen lists — so these
+          // are the numbers to quote back to the user.
+          waitingConversations: f.unread + f.needs_reply,
+          unreadConversations: f.unread,
+          needsReplyConversations: f.needs_reply,
+          repliedConversations: f.replied,
+          doneConversations: f.done,
+          totalConversations: f.all,
+          // Cross-checked against the grouped lists, which also give the split
+          // by type. Should agree with totalConversations.
           conversationCount: threads.length,
           waitingConversationCount: waitingThreads.length,
-          perChannel: counts.perChannel,
+          // Per-channel badges are still MESSAGE counts — a channel badge
+          // answers "how much is unread here", not "how many threads".
+          perChannelUnreadMessages: counts.perChannel,
         };
       },
     },

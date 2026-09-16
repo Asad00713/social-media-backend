@@ -18,6 +18,7 @@ import { InboxService } from './inbox.service';
 import { ScheduledMessagesService } from './services/scheduled-messages.service';
 import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { ListCommentsDto } from './dto/list-comments.dto';
+import { BulkActionDto } from './dto/bulk-action.dto';
 import { ReplyDto } from './dto/reply.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { HideDto } from './dto/hide.dto';
@@ -54,6 +55,7 @@ export class InboxController {
       status: query.status,
       cursor: query.cursor,
       limit: query.limit,
+      q: query.q,
     });
   }
 
@@ -70,6 +72,7 @@ export class InboxController {
       status: query.status,
       cursor: query.cursor,
       limit: query.limit,
+      q: query.q,
     });
   }
 
@@ -170,6 +173,38 @@ export class InboxController {
     );
   }
 
+  /** Inverse of `threads/:threadKey/read` — puts the thread back in the queue. */
+  @Post('threads/:threadKey/unread')
+  @HttpCode(HttpStatus.OK)
+  async markThreadUnread(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('threadKey') threadKey: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.inboxService.markThreadUnread(
+      workspaceId,
+      user.userId,
+      threadKey,
+    );
+  }
+
+  /**
+   * Apply one action to many threads or items at once.
+   *
+   * Partial success is normal: the response reports `updatedCount` alongside a
+   * `failed` list, because a selection of 200 rows will routinely contain one
+   * a teammate has already archived.
+   */
+  @Post('bulk')
+  @HttpCode(HttpStatus.OK)
+  async bulkAction(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Body() dto: BulkActionDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.inboxService.bulkAction(workspaceId, user.userId, dto);
+  }
+
   @Get('counts')
   async getCounts(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -224,6 +259,7 @@ export class InboxController {
       status: query.status,
       cursor: query.cursor,
       limit: query.limit,
+      q: query.q,
     });
   }
 
@@ -280,6 +316,21 @@ export class InboxController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.inboxService.markDmConversationRead(
+      workspaceId,
+      user.userId,
+      threadKey,
+    );
+  }
+
+  /** Inverse of `dms/:threadKey/read`. */
+  @Post('dms/:threadKey/unread')
+  @HttpCode(HttpStatus.OK)
+  async markDmUnread(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('threadKey') threadKey: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.inboxService.markDmConversationUnread(
       workspaceId,
       user.userId,
       threadKey,

@@ -6,6 +6,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { and, asc, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
+import type { SQL } from 'drizzle-orm';
 import { db } from '../drizzle/db';
 import {
   inboxItems,
@@ -37,6 +38,18 @@ import type {
   FetchedDm,
 } from './adapters/inbox-adapter.interface';
 import { InboxFolder } from './dto/list-comments.dto';
+import type { BulkActionDto, InboxBulkAction } from './dto/bulk-action.dto';
+import type { DecodedThreadKey } from './inbox-search.helpers';
+import {
+  buildSearchCondition,
+  decodeThreadCursor,
+  decodeThreadKey,
+  deriveThreadStatusFromFlags,
+  deriveThreadStatusFromItems,
+  encodeThreadCursor,
+  folderToStatuses,
+  normalizeSearchQuery,
+} from './inbox-search.helpers';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { QUEUES } from '../queue/queue.module';
@@ -100,6 +113,72 @@ export interface CommentNodeDto {
 
 export interface CommentThreadDetail extends CommentThreadSummary {
   rootComments: CommentNodeDto[];
+}
+
+/**
+ * One row of the comment thread-aggregation query.
+ *
+ * Raw driver output, so the names are snake_case and the numeric aggregates
+ * arrive as strings — node-postgres returns bigint (`count(*)`) as a string to
+ * avoid precision loss, hence the `Number(...)` conversions at the mapping site.
+ */
+interface CommentThreadAggRow {
+  thread_key: string;
+  channel_id: number;
+  platform_post_id: string;
+  last_activity_at: string | Date;
+  total_count: string | number;
+  unread_count: string | number;
+  has_unread: boolean | null;
+  has_needs_reply: boolean | null;
+  all_done: boolean | null;
+  post_meta: { post?: Record<string, any> } | null;
+  latest_platform: SupportedPlatform;
+  latest_text: string | null;
+  latest_author_handle: string | null;
+  latest_author_display_name: string | null;
+  latest_author_avatar_url: string | null;
+}
+
+/**
+ * Target status for each non-archive bulk action.
+ *
+ * `mark_read` lands on `needs_reply` rather than a `read` status because no
+ * such status exists — "read but not yet answered" IS `needs_reply`.
+ */
+const BULK_ACTION_TARGET_STATUS: Record<
+  Exclude<InboxBulkAction, 'archive'>,
+  InboxItemStatus
+> = {
+  mark_read: 'needs_reply',
+  mark_unread: 'unread',
+  mark_done: 'done',
+};
+
+/** One row of the DM conversation-aggregation query. See `CommentThreadAggRow`. */
+interface DmConversationAggRow {
+  thread_key: string;
+  channel_id: number;
+  conversation_id: string;
+  last_activity_at: string | Date;
+  last_incoming_at: string | Date | null;
+  total_count: string | number;
+  unread_count: string | number;
+  has_unread: boolean | null;
+  has_needs_reply: boolean | null;
+  all_done: boolean | null;
+  participant_platform_id: string | null;
+  participant_handle: string | null;
+  participant_display_name: string | null;
+  participant_avatar_url: string | null;
+  latest_platform: SupportedPlatform;
+  latest_text: string | null;
+  latest_metadata: Record<string, any> | null;
+  latest_from_me: boolean;
+  latest_author_platform_id: string | null;
+  latest_author_handle: string | null;
+  latest_author_display_name: string | null;
+  latest_author_avatar_url: string | null;
 }
 
 // ============================================================================
@@ -186,11 +265,17 @@ export interface DmThreadDetail extends DmConversationSummaryDto {
 }
 
 export interface InboxCounts {
+  /** Per-channel unread ITEM counts — these label a channel, not a list. */
   perChannel: { channelId: number; comments: number; dms: number }[];
+  /**
+   * Folder badges, counted in THREADS so they match the number of rows the
+   * corresponding list renders.
+   */
   smartFolders: {
     all: number;
     unread: number;
     needs_reply: number;
+    replied: number;
     done: number;
   };
   total: number;
@@ -361,6 +446,23 @@ export class InboxService {
   // List threads (grouped by post)
   // ==========================================================================
 
+  /**
+   * List comment threads — one row per post, newest activity first.
+   *
+   * The thread is the unit of pagination. That matters: this used to fetch
+   * `limit * 10` rows, group them in a JS Map, and derive the cursor from the
+   * grouped array. Three things were wrong with that, all invisible until a
+   * workspace had real volume — a thread whose comments fell outside the
+   * over-fetch window was silently truncated, threads at a page boundary could
+   * be skipped or repeated, and the status filter applied per ITEM before
+   * grouping, so `folder=unread` built each thread from only its unread rows
+   * and then reported that subset as `totalCommentCount`.
+   *
+   * The aggregate below fixes all three by grouping in SQL over the whole
+   * table: counts are unconditional, filters are thread-level (`bool_or`), and
+   * the keyset runs on `(last_activity_at, thread_key)` so the boundary is
+   * total-ordered.
+   */
   async listCommentThreads(
     workspaceId: string,
     userId: string,
@@ -370,123 +472,175 @@ export class InboxService {
       status?: InboxItemStatus;
       cursor?: string;
       limit?: number;
+      q?: string;
     },
   ): Promise<{ threads: CommentThreadSummary[]; nextCursor: string | null }> {
     await this.assertWorkspaceAccess(workspaceId, userId);
 
     const limit = Math.min(options.limit ?? 20, 100);
-    const conditions = [
-      eq(inboxItems.workspaceId, workspaceId),
-      eq(inboxItems.type, 'comment'),
-      // Hide archived rows so a "deleted" thread drops out of the list. A new
-      // incoming comment inserts an un-archived row → the thread reappears.
-      isNull(inboxItems.archivedAt),
-    ];
+    const search = normalizeSearchQuery(options.q);
+    const statuses = folderToStatuses(options.folder, options.status);
+    const cursor = decodeThreadCursor(options.cursor);
 
-    if (options.channelId && options.channelId !== 'all') {
-      const channelIdNum = Number(options.channelId);
-      if (Number.isFinite(channelIdNum)) {
-        conditions.push(eq(inboxItems.channelId, channelIdNum));
-      }
-    }
+    const channelIdNum =
+      options.channelId && options.channelId !== 'all'
+        ? Number(options.channelId)
+        : undefined;
+    const channelFilter =
+      channelIdNum !== undefined && Number.isFinite(channelIdNum)
+        ? sql`AND i.channel_id = ${channelIdNum}`
+        : sql``;
 
-    // Folder → status mapping. 'all' = no extra filter.
-    const statusFilter = options.status ?? this.folderToStatus(options.folder);
-    if (statusFilter) {
-      conditions.push(eq(inboxItems.status, statusFilter));
-    }
+    // Thread-level, not row-level: a hit on any one comment surfaces the whole
+    // post thread, which is what makes searching a commenter's name return the
+    // post they commented on.
+    const searchHaving = search
+      ? sql`AND bool_or(${buildSearchCondition(search)})`
+      : sql``;
+    const statusHaving = statuses
+      ? sql`AND bool_or(i.status = ANY(${statuses}))`
+      : sql``;
 
-    if (options.cursor) {
-      const cursorDate = new Date(options.cursor);
-      if (!Number.isNaN(cursorDate.getTime())) {
-        conditions.push(lt(inboxItems.platformCreatedAt, cursorDate));
-      }
-    }
+    // Keyset. The timestamp alone is not unique — two threads can share a
+    // max() to the microsecond — so the thread key breaks the tie and makes
+    // the ordering total.
+    const cursorFilter = cursor
+      ? sql`WHERE (t.last_activity_at, t.thread_key) < (${cursor.at}, ${cursor.key})`
+      : sql``;
 
-    // Pull a generous batch of recent items; group in memory.
-    // Worth optimizing later with a per-post window function if list grows.
-    const rows = await db
-      .select()
-      .from(inboxItems)
-      .where(and(...conditions))
-      .orderBy(desc(inboxItems.platformCreatedAt))
-      .limit(limit * 10);
+    const result = await db.execute(sql`
+      WITH thread_agg AS (
+        SELECT
+          i.channel_id,
+          i.platform_post_id,
+          (i.channel_id::text || ':' || i.platform_post_id) AS thread_key,
+          max(i.platform_created_at) AS last_activity_at,
+          count(*) AS total_count,
+          count(*) FILTER (
+            WHERE i.status = 'unread' AND i.from_me = false
+          ) AS unread_count,
+          bool_or(i.status = 'unread' AND i.from_me = false) AS has_unread,
+          bool_or(i.status = 'needs_reply') AS has_needs_reply,
+          bool_and(i.status = 'done') AS all_done,
+          -- Our own reply rows carry no post snapshot, so picking the newest
+          -- row's metadata would lose the caption and thumbnail as soon as we
+          -- answer a thread. Take the newest metadata that actually has one.
+          (array_agg(i.metadata ORDER BY i.platform_created_at DESC)
+            FILTER (WHERE i.metadata->'post' IS NOT NULL))[1] AS post_meta
+        FROM inbox_items i
+        WHERE i.workspace_id = ${workspaceId}
+          AND i.type = 'comment'
+          AND i.archived_at IS NULL
+          AND i.platform_post_id IS NOT NULL
+          ${channelFilter}
+        GROUP BY i.channel_id, i.platform_post_id
+        HAVING true
+          ${searchHaving}
+          ${statusHaving}
+      ),
+      page AS (
+        SELECT t.* FROM thread_agg t
+        ${cursorFilter}
+        ORDER BY t.last_activity_at DESC, t.thread_key DESC
+        LIMIT ${limit + 1}
+      )
+      SELECT
+        p.thread_key,
+        p.channel_id,
+        p.platform_post_id,
+        p.last_activity_at,
+        p.total_count,
+        p.unread_count,
+        p.has_unread,
+        p.has_needs_reply,
+        p.all_done,
+        p.post_meta,
+        l.platform        AS latest_platform,
+        l.text            AS latest_text,
+        l.author_handle   AS latest_author_handle,
+        l.author_display_name AS latest_author_display_name,
+        l.author_avatar_url   AS latest_author_avatar_url
+      FROM page p
+      -- Runs at most (limit + 1) times, against inbox_post_idx — not once per
+      -- row of the table. That is why a lateral is the right tool here.
+      JOIN LATERAL (
+        SELECT platform, text, author_handle, author_display_name,
+               author_avatar_url
+        FROM inbox_items
+        WHERE workspace_id = ${workspaceId}
+          AND channel_id = p.channel_id
+          AND platform_post_id = p.platform_post_id
+          AND type = 'comment'
+          AND archived_at IS NULL
+        ORDER BY platform_created_at DESC
+        LIMIT 1
+      ) l ON true
+      ORDER BY p.last_activity_at DESC, p.thread_key DESC
+    `);
 
-    const groups = new Map<string, InboxItem[]>();
-    for (const row of rows) {
-      if (!row.platformPostId) continue;
-      const key = `${row.channelId}:${row.platformPostId}`;
-      const list = groups.get(key) ?? [];
-      list.push(row);
-      groups.set(key, list);
-    }
+    const rows = (result as unknown as { rows: CommentThreadAggRow[] }).rows;
+    const sliced = rows.slice(0, limit);
+    const hasMore = rows.length > limit;
 
-    // Map each group → summary. Use the freshest comment as the "latest".
-    // We previously filtered fromMe items out here, but that was too aggressive
-    // — it hid threads whose own-chained-replies had wrongly been flagged
-    // fromMe, plus legit external comments on platforms whose author-id wasn't
-    // captured cleanly. Show every thread; the per-row preview reflects the
-    // newest activity regardless of authorship.
-    const summariesRaw: { summary: CommentThreadSummary; latestAt: Date }[] =
-      [];
-    for (const [key, items] of groups) {
-      items.sort(
-        (a, b) => b.platformCreatedAt.getTime() - a.platformCreatedAt.getTime(),
-      );
-      const latest = items[0];
-      const unread = items.filter(
-        (i) => i.status === 'unread' && !i.fromMe,
-      ).length;
-      // Iterate to find post info — our own reply rows don't carry it.
-      const postMeta = this.resolvePostMeta(items);
+    const threads = sliced.map((row) => this.mapCommentThreadRow(row));
 
-      summariesRaw.push({
-        summary: {
-          id: key,
-          type: 'comment',
-          channelId: String(latest.channelId),
-          platform: latest.platform,
-          post: {
-            id: latest.platformPostId!,
-            caption: postMeta.caption ?? null,
-            thumbnailUrl: postMeta.thumbnailUrl,
-            mediaType: postMeta.mediaType ?? 'none',
-            publishedAt:
-              postMeta.publishedAt ?? latest.platformCreatedAt.toISOString(),
-            platformPostUrl: postMeta.platformPostUrl,
-          },
-          latestCommenter: {
-            handle: latest.authorHandle?.trim() || 'unknown',
-            // `||` so empty-string (Bluesky frequently returns "" for
-            // accounts that haven't set a display name) falls back to handle.
-            displayName:
-              latest.authorDisplayName?.trim() ||
-              latest.authorHandle?.trim() ||
-              'Unknown',
-            avatarUrl: latest.authorAvatarUrl ?? undefined,
-          },
-          status: this.deriveThreadStatus(items),
-          lastCommentText: latest.text ?? '',
-          contentRedacted: isContentRedacted(latest),
-          lastCommentAt: latest.platformCreatedAt.toISOString(),
-          unreadCount: unread,
-          totalCommentCount: items.length,
-        },
-        latestAt: latest.platformCreatedAt,
-      });
-    }
-
-    summariesRaw.sort((a, b) => b.latestAt.getTime() - a.latestAt.getTime());
-
-    const sliced = summariesRaw.slice(0, limit);
+    const last = sliced[sliced.length - 1];
     const nextCursor =
-      summariesRaw.length > limit
-        ? summariesRaw[limit - 1].latestAt.toISOString()
+      hasMore && last
+        ? encodeThreadCursor({
+            at: new Date(last.last_activity_at),
+            key: last.thread_key,
+          })
         : null;
 
+    return { threads, nextCursor };
+  }
+
+  /** Shape one aggregate row into the summary the API returns. */
+  private mapCommentThreadRow(row: CommentThreadAggRow): CommentThreadSummary {
+    const postMeta = (row.post_meta?.post ?? {}) as Partial<
+      CommentThreadSummary['post']
+    >;
+    const lastCommentAt = new Date(row.last_activity_at).toISOString();
+
     return {
-      threads: sliced.map((s) => s.summary),
-      nextCursor,
+      id: row.thread_key,
+      type: 'comment',
+      channelId: String(row.channel_id),
+      platform: row.latest_platform,
+      post: {
+        id: row.platform_post_id,
+        caption: postMeta.caption ?? null,
+        thumbnailUrl: postMeta.thumbnailUrl,
+        mediaType: postMeta.mediaType ?? 'none',
+        publishedAt: postMeta.publishedAt ?? lastCommentAt,
+        platformPostUrl: postMeta.platformPostUrl,
+      },
+      latestCommenter: {
+        handle: row.latest_author_handle?.trim() || 'unknown',
+        // `||` rather than `??` so an empty display name (Bluesky returns ""
+        // for accounts that never set one) falls back to the handle.
+        displayName:
+          row.latest_author_display_name?.trim() ||
+          row.latest_author_handle?.trim() ||
+          'Unknown',
+        avatarUrl: row.latest_author_avatar_url ?? undefined,
+      },
+      status: deriveThreadStatusFromFlags({
+        hasUnread: row.has_unread ?? false,
+        hasNeedsReply: row.has_needs_reply ?? false,
+        allDone: row.all_done ?? false,
+      }),
+      lastCommentText: row.latest_text ?? '',
+      contentRedacted: isContentRedacted({
+        platform: row.latest_platform,
+        text: row.latest_text,
+      }),
+      lastCommentAt,
+      // Unconditional count(*), so this stays the thread's true size even when
+      // a folder filter is narrowing which threads are listed.
+      unreadCount: Number(row.unread_count),
+      totalCommentCount: Number(row.total_count),
     };
   }
 
@@ -505,6 +659,7 @@ export class InboxService {
       status?: InboxItemStatus;
       cursor?: string;
       limit?: number;
+      q?: string;
     },
   ): Promise<{ mentions: MentionItemDto[]; nextCursor: string | null }> {
     await this.assertWorkspaceAccess(workspaceId, userId);
@@ -526,10 +681,17 @@ export class InboxService {
       }
     }
 
-    // Folder → status mapping. 'all' = no extra filter.
-    const statusFilter = options.status ?? this.folderToStatus(options.folder);
-    if (statusFilter) {
-      conditions.push(eq(inboxItems.status, statusFilter));
+    // Folder → status mapping. 'all' = no extra filter. Mentions are a flat
+    // list, so the filter stays row-level here — unlike the thread lists, there
+    // is no group for a `bool_or` to span.
+    const statuses = folderToStatuses(options.folder, options.status);
+    if (statuses) {
+      conditions.push(inArray(inboxItems.status, statuses));
+    }
+
+    const search = normalizeSearchQuery(options.q);
+    if (search) {
+      conditions.push(buildSearchCondition(search));
     }
 
     if (options.cursor) {
@@ -577,24 +739,14 @@ export class InboxService {
     };
   }
 
-  private folderToStatus(folder?: InboxFolder): InboxItemStatus | undefined {
-    if (!folder || folder === 'all') return undefined;
-    if (folder === 'unread') return 'unread';
-    if (folder === 'needs_reply') return 'needs_reply';
-    if (folder === 'done') return 'done';
-    return undefined;
-  }
-
   /**
-   * Thread-level status — used to pick a single colour for the list row.
-   * Priority: any unread → 'unread', any needs_reply → 'needs_reply',
-   * all replied → 'replied', all done → 'done'.
+   * Thread-level status for a set of rows — one colour for the list row.
+   *
+   * Delegates to the shared pure helper so this and the SQL aggregate path
+   * (which derives the same decision from `bool_or` flags) cannot drift.
    */
   private deriveThreadStatus(items: InboxItem[]): InboxItemStatus {
-    if (items.some((i) => i.status === 'unread' && !i.fromMe)) return 'unread';
-    if (items.some((i) => i.status === 'needs_reply')) return 'needs_reply';
-    if (items.every((i) => i.status === 'done')) return 'done';
-    return 'replied';
+    return deriveThreadStatusFromItems(items);
   }
 
   // ==========================================================================
@@ -1004,6 +1156,98 @@ export class InboxService {
     return { updatedCount: updated.length };
   }
 
+  /**
+   * Put a comment thread back in the queue — the inverse of `markThreadRead`.
+   *
+   * There is no `read` status: reading maps `unread -> needs_reply`, so
+   * un-reading maps back the other way. `replied` and `done` are included in
+   * the source set because the user gesture is "I want to see this again", and
+   * restricting it to `needs_reply` would make the button silently no-op on a
+   * thread they had just marked done.
+   *
+   * `from_me = false` is not optional. Every unread count filters on it
+   * (see `computeCounts`), so flipping our own replies to unread would corrupt
+   * every badge in the product.
+   */
+  async markThreadUnread(
+    workspaceId: string,
+    userId: string,
+    threadKey: string,
+  ): Promise<{ updatedCount: number }> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+
+    const decoded = decodeThreadKey(threadKey);
+    if (!decoded) throw new BadRequestException('Invalid thread key');
+
+    const updated = await db
+      .update(inboxItems)
+      .set({ status: 'unread', updatedAt: new Date() })
+      .where(
+        and(
+          eq(inboxItems.workspaceId, workspaceId),
+          eq(inboxItems.channelId, decoded.channelId),
+          eq(inboxItems.platformPostId, decoded.remainder),
+          eq(inboxItems.type, 'comment'),
+          inArray(inboxItems.status, ['needs_reply', 'replied', 'done']),
+          eq(inboxItems.fromMe, false),
+        ),
+      )
+      .returning({ id: inboxItems.id });
+
+    if (updated.length === 0) return { updatedCount: 0 };
+
+    for (const row of updated) {
+      this.emitter.emit(workspaceId, 'inbox.item.updated', {
+        id: row.id,
+        workspaceId,
+        channelId: decoded.channelId,
+        changes: { status: 'unread' },
+      });
+    }
+    void this.emitCounts(workspaceId);
+
+    return { updatedCount: updated.length };
+  }
+
+  /** As `markThreadUnread`, for a DM conversation. */
+  async markDmConversationUnread(
+    workspaceId: string,
+    userId: string,
+    threadKey: string,
+  ): Promise<{ updatedCount: number }> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+    const { channelId, conversationId } = this.decodeDmThreadKey(threadKey);
+
+    const updated = await db
+      .update(inboxItems)
+      .set({ status: 'unread', updatedAt: new Date() })
+      .where(
+        and(
+          eq(inboxItems.workspaceId, workspaceId),
+          eq(inboxItems.channelId, channelId),
+          eq(inboxItems.conversationId, conversationId),
+          eq(inboxItems.type, 'dm'),
+          inArray(inboxItems.status, ['needs_reply', 'replied', 'done']),
+          eq(inboxItems.fromMe, false),
+        ),
+      )
+      .returning({ id: inboxItems.id });
+
+    if (updated.length === 0) return { updatedCount: 0 };
+
+    for (const row of updated) {
+      this.emitter.emit(workspaceId, 'inbox.item.updated', {
+        id: row.id,
+        workspaceId,
+        channelId,
+        changes: { status: 'unread' },
+      });
+    }
+    void this.emitCounts(workspaceId);
+
+    return { updatedCount: updated.length };
+  }
+
   async updateThreadStatus(
     workspaceId: string,
     userId: string,
@@ -1044,6 +1288,155 @@ export class InboxService {
     void this.emitCounts(workspaceId);
 
     return { updatedCount: updated.length };
+  }
+
+  /**
+   * Apply one action to many threads (or many flat items) in a single request.
+   *
+   * Design notes worth keeping:
+   *
+   * - A stale or malformed key is reported in `failed`, not thrown. A bulk
+   *   action over 200 selected rows should not 400 because one of them was
+   *   archived by a teammate a second earlier.
+   * - Every WHERE still carries `workspace_id`, even though access is asserted
+   *   once up front. A thread key arrives from the client, so a forged one must
+   *   not be able to reach another tenant's rows.
+   * - One event for the whole batch, not one per row. `updateThreadStatus`
+   *   emits per item, which is fine for a single thread but would be thousands
+   *   of socket frames here; the frontend invalidates on the batch event just
+   *   the same.
+   */
+  async bulkAction(
+    workspaceId: string,
+    userId: string,
+    dto: BulkActionDto,
+  ): Promise<{
+    action: InboxBulkAction;
+    requestedThreads: number;
+    requestedItems: number;
+    updatedCount: number;
+    failed: { key: string; reason: string }[];
+  }> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+
+    const threadKeys = dto.threadKeys ?? [];
+    const itemIds = dto.itemIds ?? [];
+
+    if (threadKeys.length === 0 && itemIds.length === 0) {
+      throw new BadRequestException(
+        'Provide at least one of threadKeys or itemIds',
+      );
+    }
+    if (threadKeys.length > 0 && !dto.scope) {
+      throw new BadRequestException('scope is required when threadKeys is set');
+    }
+
+    const failed: { key: string; reason: string }[] = [];
+    const decodedKeys: DecodedThreadKey[] = [];
+    for (const key of threadKeys) {
+      const decoded = decodeThreadKey(key);
+      if (decoded) decodedKeys.push(decoded);
+      else failed.push({ key, reason: 'Invalid thread key' });
+    }
+
+    const now = new Date();
+    const isArchive = dto.action === 'archive';
+    const changes = isArchive
+      ? { archivedAt: now, updatedAt: now }
+      : { status: BULK_ACTION_TARGET_STATUS[dto.action], updatedAt: now };
+
+    // Which rows the action is allowed to touch. Marking read only affects
+    // unread incoming rows; marking unread only affects rows that were read.
+    // Both exclude our own messages. `done` and `archive` apply thread-wide.
+    const guard = (): SQL | undefined => {
+      switch (dto.action) {
+        case 'mark_read':
+          return and(
+            eq(inboxItems.status, 'unread'),
+            eq(inboxItems.fromMe, false),
+          );
+        case 'mark_unread':
+          return and(
+            inArray(inboxItems.status, ['needs_reply', 'replied', 'done']),
+            eq(inboxItems.fromMe, false),
+          );
+        case 'mark_done':
+          return undefined;
+        case 'archive':
+          return isNull(inboxItems.archivedAt);
+      }
+    };
+
+    const typeFilter =
+      dto.scope === 'dm'
+        ? eq(inboxItems.type, 'dm')
+        : eq(inboxItems.type, 'comment');
+    const groupingColumn =
+      dto.scope === 'dm' ? inboxItems.conversationId : inboxItems.platformPostId;
+
+    let updatedCount = 0;
+
+    await db.transaction(async (tx) => {
+      if (decodedKeys.length > 0) {
+        // One UPDATE for every thread, via a tuple IN list — not a loop of
+        // round trips. Values are bound, never interpolated.
+        const tuples = sql.join(
+          decodedKeys.map(
+            (k) => sql`(${k.channelId}, ${k.remainder})`,
+          ),
+          sql`, `,
+        );
+
+        const updated = await tx
+          .update(inboxItems)
+          .set(changes)
+          .where(
+            and(
+              eq(inboxItems.workspaceId, workspaceId),
+              typeFilter,
+              sql`(${inboxItems.channelId}, ${groupingColumn}) IN (${tuples})`,
+              guard(),
+            ),
+          )
+          .returning({ id: inboxItems.id });
+        updatedCount += updated.length;
+      }
+
+      if (itemIds.length > 0) {
+        const updated = await tx
+          .update(inboxItems)
+          .set(changes)
+          .where(
+            and(
+              eq(inboxItems.workspaceId, workspaceId),
+              inArray(inboxItems.id, itemIds),
+              guard(),
+            ),
+          )
+          .returning({ id: inboxItems.id });
+        updatedCount += updated.length;
+      }
+    });
+
+    if (updatedCount > 0) {
+      this.emitter.emit(workspaceId, 'inbox.bulk.updated', {
+        workspaceId,
+        action: dto.action,
+        scope: dto.scope,
+        threadKeys,
+        itemIds,
+        updatedCount,
+      });
+      void this.emitCounts(workspaceId);
+    }
+
+    return {
+      action: dto.action,
+      requestedThreads: threadKeys.length,
+      requestedItems: itemIds.length,
+      updatedCount,
+      failed,
+    };
   }
 
   async updateStatus(
@@ -1104,26 +1497,51 @@ export class InboxService {
       )
       .groupBy(inboxItems.channelId);
 
-    const folderRows = await db
-      .select({
-        all: sql<number>`count(*)`,
-        unread: sql<number>`count(*) filter (where ${inboxItems.status} = 'unread' and ${inboxItems.fromMe} = false)`,
-        needs_reply: sql<number>`count(*) filter (where ${inboxItems.status} = 'needs_reply')`,
-        done: sql<number>`count(*) filter (where ${inboxItems.status} = 'done')`,
-      })
-      .from(inboxItems)
-      .where(
-        and(
-          eq(inboxItems.workspaceId, workspaceId),
-          eq(inboxItems.type, 'comment'),
-          isNull(inboxItems.archivedAt),
-        ),
-      );
+    // Folder badges count THREADS, not items, because the list they label
+    // shows one row per thread. Counting items made a badge of "12 unread" sit
+    // above four rows, which reads as a bug rather than as two different units.
+    //
+    // A thread belongs to a folder when any of its rows matches — the same
+    // `bool_or` rule the list query filters by — so the badge and the list
+    // agree by construction. Grouped first, then counted.
+    const folderRows = await db.execute(sql`
+      WITH threads AS (
+        SELECT
+          bool_or(status = 'unread' AND from_me = false) AS has_unread,
+          bool_or(status = 'needs_reply') AS has_needs_reply,
+          bool_or(status = 'replied') AS has_replied,
+          bool_or(status = 'done') AS has_done
+        FROM inbox_items
+        WHERE workspace_id = ${workspaceId}
+          AND type = 'comment'
+          AND archived_at IS NULL
+          AND platform_post_id IS NOT NULL
+        GROUP BY channel_id, platform_post_id
+      )
+      SELECT
+        count(*) AS all,
+        count(*) FILTER (WHERE has_unread) AS unread,
+        count(*) FILTER (WHERE has_needs_reply) AS needs_reply,
+        count(*) FILTER (WHERE has_replied) AS replied,
+        count(*) FILTER (WHERE has_done) AS done
+      FROM threads
+    `);
 
-    const folder = folderRows[0] ?? {
+    const folder = (
+      folderRows as unknown as {
+        rows: {
+          all: string | number;
+          unread: string | number;
+          needs_reply: string | number;
+          replied: string | number;
+          done: string | number;
+        }[];
+      }
+    ).rows[0] ?? {
       all: 0,
       unread: 0,
       needs_reply: 0,
+      replied: 0,
       done: 0,
     };
 
@@ -1139,6 +1557,7 @@ export class InboxService {
         all: Number(folder.all),
         unread: Number(folder.unread),
         needs_reply: Number(folder.needs_reply),
+        replied: Number(folder.replied),
         done: Number(folder.done),
       },
       total: perChannel.reduce((acc, r) => acc + r.comments + r.dms, 0),
@@ -2054,8 +2473,12 @@ export class InboxService {
   }
 
   /**
-   * List DM conversations in this workspace, grouped by (channelId, conversationId).
-   * Mirrors `listCommentThreads` shape so the frontend reuses one list pattern.
+   * List DM conversations, grouped by (channelId, conversationId).
+   *
+   * Same SQL aggregation as `listCommentThreads` — see the rationale there —
+   * with the conversation id as the grouping key instead of the post id, plus
+   * two DM-specific aggregates (`participant`, `last_incoming_at`) so the
+   * lateral only ever needs to return the single newest row.
    */
   async listDmConversations(
     workspaceId: string,
@@ -2066,6 +2489,7 @@ export class InboxService {
       status?: InboxItemStatus;
       cursor?: string;
       limit?: number;
+      q?: string;
     },
   ): Promise<{
     threads: DmConversationSummaryDto[];
@@ -2074,135 +2498,244 @@ export class InboxService {
     await this.assertWorkspaceAccess(workspaceId, userId);
 
     const limit = Math.min(options.limit ?? 20, 100);
-    const conditions = [
-      eq(inboxItems.workspaceId, workspaceId),
-      eq(inboxItems.type, 'dm'),
-      // Hide archived rows so a "deleted" conversation drops out of the list.
-      // A new incoming message inserts an un-archived row → it reappears.
-      isNull(inboxItems.archivedAt),
-    ];
+    const search = normalizeSearchQuery(options.q);
+    const statuses = folderToStatuses(options.folder, options.status);
+    const cursor = decodeThreadCursor(options.cursor);
 
-    if (options.channelId && options.channelId !== 'all') {
-      const channelIdNum = Number(options.channelId);
-      if (Number.isFinite(channelIdNum)) {
-        conditions.push(eq(inboxItems.channelId, channelIdNum));
-      }
-    }
+    const channelIdNum =
+      options.channelId && options.channelId !== 'all'
+        ? Number(options.channelId)
+        : undefined;
+    const channelFilter =
+      channelIdNum !== undefined && Number.isFinite(channelIdNum)
+        ? sql`AND i.channel_id = ${channelIdNum}`
+        : sql``;
 
-    const statusFilter = options.status ?? this.folderToStatus(options.folder);
-    if (statusFilter) {
-      conditions.push(eq(inboxItems.status, statusFilter));
-    }
+    const searchHaving = search
+      ? sql`AND bool_or(${buildSearchCondition(search)})`
+      : sql``;
+    const statusHaving = statuses
+      ? sql`AND bool_or(i.status = ANY(${statuses}))`
+      : sql``;
+    const cursorFilter = cursor
+      ? sql`WHERE (t.last_activity_at, t.thread_key) < (${cursor.at}, ${cursor.key})`
+      : sql``;
 
-    if (options.cursor) {
-      const cursorDate = new Date(options.cursor);
-      if (!Number.isNaN(cursorDate.getTime())) {
-        conditions.push(lt(inboxItems.platformCreatedAt, cursorDate));
-      }
-    }
+    const result = await db.execute(sql`
+      WITH thread_agg AS (
+        SELECT
+          i.channel_id,
+          i.conversation_id,
+          (i.channel_id::text || ':' || i.conversation_id) AS thread_key,
+          max(i.platform_created_at) AS last_activity_at,
+          count(*) AS total_count,
+          count(*) FILTER (
+            WHERE i.status = 'unread' AND i.from_me = false
+          ) AS unread_count,
+          bool_or(i.status = 'unread' AND i.from_me = false) AS has_unread,
+          bool_or(i.status = 'needs_reply') AS has_needs_reply,
+          bool_and(i.status = 'done') AS all_done,
+          -- The reply window is measured from the last message THEY sent.
+          max(i.platform_created_at) FILTER (
+            WHERE i.from_me = false
+          ) AS last_incoming_at,
+          -- Participant = the freshest inbound author. Aggregated rather than
+          -- taken from the newest row, which may well be our own reply.
+          (array_agg(i.author_platform_id ORDER BY i.platform_created_at DESC)
+            FILTER (WHERE i.from_me = false))[1] AS participant_platform_id,
+          (array_agg(i.author_handle ORDER BY i.platform_created_at DESC)
+            FILTER (WHERE i.from_me = false))[1] AS participant_handle,
+          (array_agg(i.author_display_name ORDER BY i.platform_created_at DESC)
+            FILTER (WHERE i.from_me = false))[1] AS participant_display_name,
+          (array_agg(i.author_avatar_url ORDER BY i.platform_created_at DESC)
+            FILTER (WHERE i.from_me = false))[1] AS participant_avatar_url
+        FROM inbox_items i
+        WHERE i.workspace_id = ${workspaceId}
+          AND i.type = 'dm'
+          AND i.archived_at IS NULL
+          AND i.conversation_id IS NOT NULL
+          ${channelFilter}
+        GROUP BY i.channel_id, i.conversation_id
+        HAVING true
+          ${searchHaving}
+          ${statusHaving}
+      ),
+      page AS (
+        SELECT t.* FROM thread_agg t
+        ${cursorFilter}
+        ORDER BY t.last_activity_at DESC, t.thread_key DESC
+        LIMIT ${limit + 1}
+      )
+      SELECT
+        p.thread_key,
+        p.channel_id,
+        p.conversation_id,
+        p.last_activity_at,
+        p.last_incoming_at,
+        p.total_count,
+        p.unread_count,
+        p.has_unread,
+        p.has_needs_reply,
+        p.all_done,
+        p.participant_platform_id,
+        p.participant_handle,
+        p.participant_display_name,
+        p.participant_avatar_url,
+        l.platform  AS latest_platform,
+        l.text      AS latest_text,
+        l.metadata  AS latest_metadata,
+        l.from_me   AS latest_from_me,
+        l.author_platform_id     AS latest_author_platform_id,
+        l.author_handle          AS latest_author_handle,
+        l.author_display_name    AS latest_author_display_name,
+        l.author_avatar_url      AS latest_author_avatar_url
+      FROM page p
+      JOIN LATERAL (
+        SELECT platform, text, metadata, from_me, author_platform_id,
+               author_handle, author_display_name, author_avatar_url
+        FROM inbox_items
+        WHERE workspace_id = ${workspaceId}
+          AND channel_id = p.channel_id
+          AND conversation_id = p.conversation_id
+          AND type = 'dm'
+          AND archived_at IS NULL
+        ORDER BY platform_created_at DESC
+        LIMIT 1
+      ) l ON true
+      ORDER BY p.last_activity_at DESC, p.thread_key DESC
+    `);
 
-    const rows = await db
-      .select()
-      .from(inboxItems)
-      .where(and(...conditions))
-      .orderBy(desc(inboxItems.platformCreatedAt))
-      .limit(limit * 10);
+    const rows = (result as unknown as { rows: DmConversationAggRow[] }).rows;
+    const sliced = rows.slice(0, limit);
+    const hasMore = rows.length > limit;
 
-    // Group by (channelId, conversationId)
-    const groups = new Map<string, InboxItem[]>();
-    for (const row of rows) {
-      if (!row.conversationId) continue;
-      const key = `${row.channelId}:${row.conversationId}`;
-      const list = groups.get(key) ?? [];
-      list.push(row);
-      groups.set(key, list);
-    }
+    const replyWindows = await this.resolveReplyWindows(workspaceId, sliced);
 
-    const summariesRaw: {
-      summary: DmConversationSummaryDto;
-      latestAt: Date;
-    }[] = [];
+    const threads = sliced.map((row) =>
+      this.mapDmConversationRow(row, replyWindows.get(row.thread_key)),
+    );
 
-    for (const [key, items] of groups) {
-      items.sort(
-        (a, b) => b.platformCreatedAt.getTime() - a.platformCreatedAt.getTime(),
-      );
-      const latest = items[0];
-      const unread = items.filter(
-        (i) => i.status === 'unread' && !i.fromMe,
-      ).length;
-
-      // Participant = freshest non-fromMe author seen in the convo.
-      const incoming = items.find((i) => !i.fromMe) ?? latest;
-      const lastIncomingAt =
-        items
-          .filter((i) => !i.fromMe)
-          .map((i) => i.platformCreatedAt)
-          .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
-
-      // Reply-window state (only meaningful for FB/IG; safe no-op for others).
-      let replyWindow: DmConversationSummaryDto['replyWindow'];
-      if (this.dispatcher.supportsDm(latest.platform)) {
-        try {
-          const adapter = this.dispatcher.getDm(latest.platform);
-          const channel = await this.resolveChannel(
-            latest.channelId,
-            workspaceId,
-          );
-          const ws = await adapter.getReplyWindowState(
-            channel,
-            latest.conversationId!,
-            lastIncomingAt,
-          );
-          replyWindow = {
-            canReply: ws.canReply,
-            reason: ws.reason,
-            windowExpiresAt: ws.windowExpiresAt?.toISOString(),
-          };
-        } catch (err) {
-          this.logger.warn(
-            `Reply window state failed for ${latest.platform} convo ${key}: ${(err as Error).message}`,
-          );
-        }
-      }
-
-      summariesRaw.push({
-        summary: {
-          id: key,
-          type: 'dm',
-          channelId: String(latest.channelId),
-          platform: latest.platform,
-          conversationId: latest.conversationId!,
-          participant: {
-            platformId: incoming.authorPlatformId ?? 'unknown',
-            handle: incoming.authorHandle?.trim() || 'unknown',
-            displayName:
-              incoming.authorDisplayName?.trim() ||
-              incoming.authorHandle?.trim() ||
-              'Unknown',
-            avatarUrl: incoming.authorAvatarUrl ?? undefined,
-          },
-          lastMessageText: this.deriveLastMessagePreview(latest).text,
-          lastMessageKind: this.deriveLastMessagePreview(latest).kind,
-          lastMessageAt: latest.platformCreatedAt.toISOString(),
-          lastMessageFromMe: latest.fromMe,
-          status: this.deriveThreadStatus(items),
-          unreadCount: unread,
-          totalMessageCount: items.length,
-          replyWindow,
-        },
-        latestAt: latest.platformCreatedAt,
-      });
-    }
-
-    summariesRaw.sort((a, b) => b.latestAt.getTime() - a.latestAt.getTime());
-    const sliced = summariesRaw.slice(0, limit);
+    const last = sliced[sliced.length - 1];
     const nextCursor =
-      summariesRaw.length > limit
-        ? summariesRaw[limit - 1].latestAt.toISOString()
+      hasMore && last
+        ? encodeThreadCursor({
+            at: new Date(last.last_activity_at),
+            key: last.thread_key,
+          })
         : null;
 
-    return { threads: sliced.map((s) => s.summary), nextCursor };
+    return { threads, nextCursor };
+  }
+
+  /**
+   * Reply-window state for a page of conversations.
+   *
+   * Only meaningful for platforms with a bounded reply window (FB/IG's 24h);
+   * a safe no-op elsewhere. This used to run sequentially inside the listing
+   * loop, and `resolveChannel` — a DB read plus a token decrypt — ran once per
+   * conversation. A 20-row page therefore cost 20 round trips against what is
+   * typically one or two channels. Resolving each channel once and awaiting the
+   * adapter calls together turns that into a single round trip's latency.
+   *
+   * A failure here degrades the row (no window info) rather than failing the
+   * whole list, which is why each call is settled independently.
+   */
+  private async resolveReplyWindows(
+    workspaceId: string,
+    rows: DmConversationAggRow[],
+  ): Promise<Map<string, DmConversationSummaryDto['replyWindow']>> {
+    const windows = new Map<string, DmConversationSummaryDto['replyWindow']>();
+    const channelCache = new Map<number, Promise<ResolvedChannel>>();
+
+    const resolveOnce = (channelId: number): Promise<ResolvedChannel> => {
+      let pending = channelCache.get(channelId);
+      if (!pending) {
+        pending = this.resolveChannel(channelId, workspaceId);
+        channelCache.set(channelId, pending);
+      }
+      return pending;
+    };
+
+    const lookups = rows
+      .filter((row) => this.dispatcher.supportsDm(row.latest_platform))
+      .map(async (row) => {
+        const adapter = this.dispatcher.getDm(row.latest_platform);
+        const channel = await resolveOnce(row.channel_id);
+        const state = await adapter.getReplyWindowState(
+          channel,
+          row.conversation_id,
+          row.last_incoming_at ? new Date(row.last_incoming_at) : null,
+        );
+        windows.set(row.thread_key, {
+          canReply: state.canReply,
+          reason: state.reason,
+          windowExpiresAt: state.windowExpiresAt?.toISOString(),
+        });
+      });
+
+    const settled = await Promise.allSettled(lookups);
+    for (const outcome of settled) {
+      if (outcome.status === 'rejected') {
+        this.logger.warn(
+          `Reply window state failed: ${(outcome.reason as Error)?.message}`,
+        );
+      }
+    }
+
+    return windows;
+  }
+
+  /** Shape one DM aggregate row into the summary the API returns. */
+  private mapDmConversationRow(
+    row: DmConversationAggRow,
+    replyWindow: DmConversationSummaryDto['replyWindow'],
+  ): DmConversationSummaryDto {
+    // Fall back to the newest row's author when every message is ours — a
+    // conversation we opened and they have not answered yet.
+    const participantHandle =
+      row.participant_handle ?? row.latest_author_handle;
+    const participantDisplayName =
+      row.participant_display_name ?? row.latest_author_display_name;
+
+    const preview = this.deriveLastMessagePreview({
+      text: row.latest_text,
+      metadata: row.latest_metadata,
+    } as InboxItem);
+
+    return {
+      id: row.thread_key,
+      type: 'dm',
+      channelId: String(row.channel_id),
+      platform: row.latest_platform,
+      conversationId: row.conversation_id,
+      participant: {
+        platformId:
+          row.participant_platform_id ??
+          row.latest_author_platform_id ??
+          'unknown',
+        handle: participantHandle?.trim() || 'unknown',
+        displayName:
+          participantDisplayName?.trim() ||
+          participantHandle?.trim() ||
+          'Unknown',
+        avatarUrl:
+          row.participant_avatar_url ??
+          row.latest_author_avatar_url ??
+          undefined,
+      },
+      lastMessageText: preview.text,
+      lastMessageKind: preview.kind,
+      lastMessageAt: new Date(row.last_activity_at).toISOString(),
+      lastMessageFromMe: row.latest_from_me,
+      status: deriveThreadStatusFromFlags({
+        hasUnread: row.has_unread ?? false,
+        hasNeedsReply: row.has_needs_reply ?? false,
+        allDone: row.all_done ?? false,
+      }),
+      unreadCount: Number(row.unread_count),
+      totalMessageCount: Number(row.total_count),
+      replyWindow,
+    };
   }
 
   async getDmThread(

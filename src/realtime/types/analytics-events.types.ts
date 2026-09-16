@@ -12,6 +12,7 @@ export type AnalyticsEventName =
   | 'post.status.changed'
   | 'inbox.item.created'
   | 'inbox.item.updated'
+  | 'inbox.bulk.updated'
   | 'inbox.counts.changed'
   | 'scheduled.message.created'
   | 'scheduled.message.updated'
@@ -124,6 +125,25 @@ export interface InboxItemUpdatedPayload {
     /** Threads moderation (`manage_reply`) — reply hidden/unhidden state. */
     isHidden: boolean;
   }>;
+}
+
+/**
+ * One bulk action applied to many threads or items.
+ *
+ * Deliberately a single event rather than one `inbox.item.updated` per row:
+ * a 200-thread bulk would otherwise be thousands of frames, and the client
+ * reacts by invalidating its inbox queries either way.
+ */
+export interface InboxBulkUpdatedPayload {
+  workspaceId: string;
+  action: 'mark_read' | 'mark_unread' | 'mark_done' | 'archive';
+  /** Which list the thread keys came from; absent for an itemIds-only batch. */
+  scope?: 'comment' | 'dm';
+  threadKeys: string[];
+  itemIds: string[];
+  /** Rows actually changed — may be lower than the request, since each action
+   *  only touches rows it is allowed to (e.g. mark-read skips our own rows). */
+  updatedCount: number;
 }
 
 export interface InboxCountsChangedPayload {
@@ -250,6 +270,7 @@ export type AnalyticsEventPayloadMap = {
   'post.status.changed': PostStatusChangedPayload;
   'inbox.item.created': InboxItemCreatedPayload;
   'inbox.item.updated': InboxItemUpdatedPayload;
+  'inbox.bulk.updated': InboxBulkUpdatedPayload;
   'inbox.counts.changed': InboxCountsChangedPayload;
   'scheduled.message.created': ScheduledInboxCreatedPayload;
   'scheduled.message.updated': ScheduledInboxUpdatedPayload;

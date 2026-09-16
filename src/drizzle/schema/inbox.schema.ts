@@ -122,6 +122,20 @@ export const inboxItems = pgTable(
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
+  // THREE FURTHER INDEXES EXIST ON THIS TABLE THAT ARE NOT DECLARED HERE.
+  //
+  // Migration 0036 creates `inbox_search_trgm_idx`, `inbox_caption_trgm_idx`
+  // (both GIN/pg_trgm) and `inbox_thread_agg_idx` (partial). They are indexes
+  // over *expressions*, which drizzle-kit cannot model — so it does not know
+  // they exist and will report them as drift.
+  //
+  // Consequences, both of which this repo has been bitten by before:
+  //   - `npm run db:push` against a database that has them will DROP them.
+  //   - `npm run db:generate` will not re-create them; 0036 is hand-written.
+  //
+  // Inbox search and the thread-aggregation listing both depend on them, and
+  // without them those queries silently degrade to sequential scans of this
+  // table rather than failing loudly. Do not "clean them up".
   (table) => ({
     workspaceIdx: index('inbox_workspace_idx').on(table.workspaceId),
     workspaceStatusIdx: index('inbox_workspace_status_idx').on(
