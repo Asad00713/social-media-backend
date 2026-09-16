@@ -29,9 +29,10 @@ export function isExcluded(name: string): boolean {
   // `.PROD-SAFE.sql` variants are hand-run alternatives to a committed
   // migration that is unsafe on production (0030 deletes billing tables).
   // Running both would apply the same structural change twice.
-  // Case-insensitive: a lowercase variant of a destructive migration must not
-  // slip through and get executed.
-  return name.toLowerCase().includes('.prod-safe.');
+  // Case-insensitive, and tolerant of `-` vs `_`: this marker is the only thing
+  // standing between a hand-run alternative and the automatic execution of the
+  // destructive migration it replaces, so near-misses must still exclude.
+  return /\.prod[-_]safe\./i.test(name);
 }
 
 export function checksumOf(sql: string): string {
@@ -116,13 +117,30 @@ function blankNonSql(sql: string): string {
   return out.join('');
 }
 
-/** Every transaction-control statement in executable SQL, with its offset. */
+/**
+ * Every transaction-control statement in executable SQL, with its offset.
+ *
+ * The statement is matched from its keyword all the way to the terminating
+ * semicolon, NOT just `KEYWORD;`. Postgres accepts a tail on most of these —
+ * `COMMIT AND CHAIN;`, `BEGIN ISOLATION LEVEL SERIALIZABLE;`, `ROLLBACK TO
+ * SAVEPOINT s;` — and an earlier version that required the semicolon directly
+ * after the keyword missed every one of them. `COMMIT AND CHAIN;` is the worst:
+ * it commits and immediately opens a new transaction, so the runner's own
+ * transaction ends mid-file and everything before it is applied for good, while
+ * the applied-record rolls back with the remainder. The file then runs again on
+ * the next boot, half-applied.
+ */
 export function findTransactionControl(
   sql: string,
 ): { keyword: string; index: number }[] {
   const scannable = blankNonSql(sql);
+  // `END` is deliberately absent: `END;` closes a PL/pgSQL block far more often
+  // than it ends a transaction here, and a DO block's body is already blanked,
+  // so a bare `END;` in real SQL is vanishingly rare. `ABORT` and `PREPARE
+  // TRANSACTION` are present — ABORT is safe in effect but must not pass
+  // silently, and PREPARE TRANSACTION would strand a prepared transaction.
   const re =
-    /\b(?:BEGIN|COMMIT|ROLLBACK|END|START[ \t]+TRANSACTION)\b[ \t]*(?:TRANSACTION|WORK)?[ \t]*;/gi;
+    /\b(?:BEGIN|START[ \t]+TRANSACTION|COMMIT|ROLLBACK|ABORT|PREPARE[ \t]+TRANSACTION|SAVEPOINT|RELEASE[ \t]+SAVEPOINT)\b[^;]*;/gi;
   const found: { keyword: string; index: number }[] = [];
   let m: RegExpExecArray | null;
   while ((m = re.exec(scannable)) !== null) {
@@ -161,6 +179,9 @@ export function stripOuterTransaction(sql: string): string {
   const outsideIsInert = (text: string): boolean =>
     blankNonSql(text).trim().length === 0;
 
+  // Exactly `BEGIN;` and `COMMIT;` — a variant with a tail (`COMMIT AND CHAIN;`,
+  // `BEGIN ISOLATION LEVEL ...`) is never stripped, so it falls through to the
+  // rejection in readMigrations instead of being quietly removed.
   const wrapsWholeFile =
     /^BEGIN[ \t]*;$/i.test(first.keyword) &&
     /^COMMIT[ \t]*;$/i.test(last.keyword) &&

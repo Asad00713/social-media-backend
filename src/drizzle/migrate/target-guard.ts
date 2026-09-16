@@ -49,6 +49,21 @@ export function hostOf(connectionString: string): string {
   }
 }
 
+/** True when the URL carries a libpq `host=` parameter that overrides the URL. */
+export function hasHostOverride(connectionString: string): boolean {
+  try {
+    const params = new URL(connectionString).searchParams;
+    for (const key of params.keys()) {
+      if (key.toLowerCase() === 'host' || key.toLowerCase() === 'hostaddr') {
+        return true;
+      }
+    }
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Decide whether a command may run against this connection string.
  *
@@ -67,6 +82,21 @@ export function decideTarget(
       allowed: false,
       host: '(unparseable)',
       reason: 'DATABASE_URL could not be parsed as a URL.',
+    };
+  }
+
+  // node-postgres honours the libpq `host` query parameter, which OVERRIDES the
+  // hostname in the URL. A URL reading `@localhost` with `?host=<prod proxy>`
+  // would otherwise pass this guard and connect to production. Refuse outright
+  // rather than try to reimplement libpq's precedence rules.
+  if (hasHostOverride(connectionString)) {
+    return {
+      allowed: false,
+      host,
+      reason:
+        'DATABASE_URL carries a `host=` query parameter, which overrides the ' +
+        'hostname in the URL and so defeats this check. Put the real host in ' +
+        'the URL itself.',
     };
   }
   if (isLocal(host) || isDeployInternal(host)) return { allowed: true, host };

@@ -66,10 +66,21 @@ permanently, a later failure rolls back only the tail, and the applied-record is
 lost — leaving a half-applied migration that runs again on the next boot. A
 `DO $$ ... $$` block is fine; its `BEGIN` is PL/pgSQL, not a transaction.
 
+Every transaction-control variant is rejected, not just the plain ones:
+`COMMIT AND CHAIN;`, `BEGIN ISOLATION LEVEL ...`, `ABORT;`, `SAVEPOINT`,
+`PREPARE TRANSACTION` and friends. `COMMIT AND CHAIN;` is the one to remember —
+it commits and immediately opens a new transaction, which would end the runner's
+transaction mid-file with no visible `BEGIN`/`COMMIT` pair to notice.
+
 **`CREATE INDEX CONCURRENTLY` cannot be used.** Postgres refuses it inside a
 transaction, and every migration runs inside one. It fails loudly and leaves no
 invalid index, but the container will not boot. Build the index by hand, or take
 the lock with a plain `CREATE INDEX`.
+
+**A `host=` (or `hostaddr=`) query parameter is refused outright.** libpq — and
+so node-postgres — lets that parameter override the hostname in the URL, which
+would make `@localhost?host=<production>` read as local and connect to
+production. Put the real host in the URL itself.
 
 **Commands refuse to target a database that is neither localhost nor the
 deploy-internal network.** This repo's `.env` carries four `DATABASE_URL` lines,
@@ -119,6 +130,12 @@ the file disagree, and skipping past it stacks later migrations on a schema
 nobody can reproduce.
 
 ## Production history
+
+**These migrations do not replay from scratch.** `0002` fails on an empty
+database with an incompatible-types foreign key — a pre-existing defect in the
+old drizzle-generated files. It does not affect production, which is baselined
+past it, but disaster recovery rests on database backups, not on replaying this
+directory.
 
 Production was baselined through `0035_error_logs.sql` on 2026-09-16. Everything
 up to and including that file was applied by hand via the Railway console during

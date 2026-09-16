@@ -1,4 +1,9 @@
-import { decideTarget, hostOf, parseUpto } from './target-guard';
+import {
+  decideTarget,
+  hasHostOverride,
+  hostOf,
+  parseUpto,
+} from './target-guard';
 
 const LOCAL = 'postgresql://u:p@localhost:5432/schedura';
 const RAILWAY_INTERNAL = 'postgresql://u:p@postgres.railway.internal:5432/railway';
@@ -50,5 +55,56 @@ describe('parseUpto', () => {
   it('returns null when absent, so the caller can refuse to run', () => {
     expect(parseUpto([])).toBeNull();
     expect(parseUpto(['--upto'])).toBeNull();
+  });
+});
+
+describe('libpq host= override (round-2 review)', () => {
+  // node-postgres honours a `host=` query parameter, which OVERRIDES the URL's
+  // hostname. Without this check, `@localhost?host=<prod>` reads as local and
+  // connects to production.
+  it('refuses a localhost URL that redirects via ?host=', () => {
+    const d = decideTarget(
+      'postgresql://u:p@localhost:5432/schedura?host=thomas.proxy.rlwy.net',
+      false,
+    );
+    expect(d.allowed).toBe(false);
+    expect(d.reason).toMatch(/host=/);
+  });
+
+  it('refuses hostaddr= too', () => {
+    expect(
+      decideTarget('postgresql://u:p@localhost:5432/db?hostaddr=10.0.0.1', false)
+        .allowed,
+    ).toBe(false);
+  });
+
+  it('detects the override regardless of case', () => {
+    expect(
+      hasHostOverride('postgresql://u:p@localhost:5432/db?HOST=elsewhere'),
+    ).toBe(true);
+  });
+
+  it('leaves ordinary query parameters alone', () => {
+    expect(
+      hasHostOverride('postgresql://u:p@localhost:5432/db?sslmode=require'),
+    ).toBe(false);
+    expect(
+      decideTarget('postgresql://u:p@localhost:5432/db?sslmode=require', false)
+        .allowed,
+    ).toBe(true);
+  });
+
+  it('does not lock the container out — railway.internal still passes', () => {
+    expect(
+      decideTarget('postgresql://u:p@postgres.railway.internal:5432/railway', false)
+        .allowed,
+    ).toBe(true);
+  });
+
+  it('refuses a lookalike host that merely ends with the suffix pattern', () => {
+    expect(
+      decideTarget('postgresql://u:p@foo.railway.internal.evil.com:5432/db', false)
+        .allowed,
+    ).toBe(false);
   });
 });

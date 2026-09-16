@@ -224,9 +224,79 @@ describe('transaction-control safety (regressions from review)', () => {
   });
 });
 
-describe('isExcluded is case-insensitive', () => {
-  it('excludes a lowercase .prod-safe. variant too', () => {
+describe('isExcluded tolerates near-misses', () => {
+  // This marker is the only thing between a hand-run alternative and automatic
+  // execution of the destructive migration it replaces.
+  it('excludes any case', () => {
     expect(isExcluded('0030_x.prod-safe.sql')).toBe(true);
     expect(isExcluded('0030_x.Prod-Safe.sql')).toBe(true);
+    expect(isExcluded('0030_x.PROD-SAFE.sql')).toBe(true);
+  });
+
+  it('excludes the underscore spelling too', () => {
+    expect(isExcluded('0030_x.PROD_SAFE.sql')).toBe(true);
+    expect(isExcluded('0030_x.prod_safe.sql')).toBe(true);
+  });
+
+  it('still does not exclude ordinary migrations', () => {
+    expect(isExcluded('0030_billing_account_scope.sql')).toBe(false);
+    expect(isExcluded('0035_error_logs.sql')).toBe(false);
+  });
+});
+
+describe('transaction-control variants with a tail (round-2 review)', () => {
+  // Postgres accepts a tail on most transaction statements. An earlier regex
+  // required the semicolon right after the keyword and missed every one.
+  const leftoverAfterStrip = (sql: string) =>
+    findTransactionControl(stripOuterTransaction(sql)).map((c) => c.keyword);
+
+  it('catches COMMIT AND CHAIN — it commits AND reopens, splitting the file', () => {
+    const sql =
+      'BEGIN;\nCREATE TABLE a (id int);\nCOMMIT AND CHAIN;\n' +
+      'CREATE TABLE b (id int);\nCOMMIT;\n';
+    expect(leftoverAfterStrip(sql).length).toBeGreaterThan(0);
+    expect(readOne('0910_chain.sql', sql)).toThrow(UnsafeMigrationError);
+  });
+
+  it('catches BEGIN ISOLATION LEVEL ...', () => {
+    const sql =
+      'CREATE TABLE d3 (id int);\nCOMMIT;\n' +
+      'BEGIN ISOLATION LEVEL SERIALIZABLE;\nCREATE TABLE d4 (id int);\n';
+    expect(readOne('0911_isolation.sql', sql)).toThrow(UnsafeMigrationError);
+  });
+
+  it('catches ABORT — safe in effect, but must never pass silently', () => {
+    const sql = 'BEGIN;\nCREATE TABLE z (id int);\nABORT;\nCOMMIT;\n';
+    expect(readOne('0912_abort.sql', sql)).toThrow(UnsafeMigrationError);
+  });
+
+  it('catches PREPARE TRANSACTION, which would strand a prepared txn', () => {
+    const sql = "BEGIN;\nCREATE TABLE p (id int);\nPREPARE TRANSACTION 'g';\n";
+    expect(readOne('0913_prepare.sql', sql)).toThrow(UnsafeMigrationError);
+  });
+
+  it('catches SAVEPOINT / ROLLBACK TO SAVEPOINT', () => {
+    const sql = 'SAVEPOINT s;\nCREATE TABLE q (id int);\nROLLBACK TO SAVEPOINT s;\n';
+    expect(readOne('0914_savepoint.sql', sql)).toThrow(UnsafeMigrationError);
+  });
+
+  it('still strips the plain wrapper, and still accepts every real migration', () => {
+    const sql = 'BEGIN;\nALTER TABLE t ADD c int;\nCOMMIT;\n';
+    expect(leftoverAfterStrip(sql)).toEqual([]);
+    const files = readMigrations(join(process.cwd(), 'drizzle', 'migrations'));
+    expect(files.length).toBeGreaterThan(30);
+    for (const f of files) expect(findTransactionControl(f.sql)).toEqual([]);
+  });
+
+  it('does not mistake a DO block END; for transaction control', () => {
+    const sql = [
+      'DO $$',
+      'BEGIN',
+      "  RAISE NOTICE 'hi';",
+      'END;',
+      '$$;',
+      '',
+    ].join('\n');
+    expect(findTransactionControl(sql)).toEqual([]);
   });
 });
