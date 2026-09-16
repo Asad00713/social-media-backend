@@ -1,11 +1,24 @@
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import {
+  UnsafeMigrationError,
   checksumOf,
+  findTransactionControl,
   isExcluded,
   planMigrations,
+  readMigrations,
   stripOuterTransaction,
   type AppliedRow,
   type MigrationFile,
 } from './runner';
+
+/** Write one migration file into a fresh temp dir; returns a read thunk. */
+function readOne(name: string, sql: string): () => MigrationFile[] {
+  const dir = mkdtempSync(join(tmpdir(), 'mig-'));
+  writeFileSync(join(dir, name), sql, 'utf8');
+  return () => readMigrations(dir);
+}
 
 function file(name: string, sql = 'SELECT 1;'): MigrationFile {
   return { name, sql, checksum: checksumOf(sql) };
@@ -117,5 +130,103 @@ describe('planMigrations', () => {
     ]);
     expect(pending).toEqual([]);
     expect(drifted).toEqual([]);
+  });
+});
+
+describe('transaction-control safety (regressions from review)', () => {
+  // The executed SQL must never contain transaction control of its own. A stray
+  // COMMIT ends the runner's transaction early: everything before it commits
+  // permanently, a later failure rolls back only the tail, and the applied-row
+  // is lost — so the half-applied file runs again on the next boot.
+  const executedIsClean = (sql: string) =>
+    findTransactionControl(stripOuterTransaction(sql)).length === 0;
+
+  it('rejects a file with TWO BEGIN/COMMIT pairs instead of mangling it', () => {
+    const sql =
+      'BEGIN;\nCREATE TABLE a (id int);\nCOMMIT;\n\n' +
+      'BEGIN;\nCREATE TABLE b (id int);\nCOMMIT;\n';
+    expect(executedIsClean(sql)).toBe(false);
+    expect(readOne('0900_two_pairs.sql', sql)).toThrow(UnsafeMigrationError);
+  });
+
+  it('strips through a trailing block comment — a comment is inert', () => {
+    const sql = 'BEGIN;\nCREATE TABLE c (id int);\nCOMMIT;\n/* done */\n';
+    expect(executedIsClean(sql)).toBe(true);
+    const [file] = readOne('0901_trailing_block.sql', sql)();
+    expect(file.sql).not.toMatch(/\bCOMMIT\b/i);
+    expect(file.sql).toContain('CREATE TABLE c (id int);');
+  });
+
+  it('rejects BEGIN TRANSACTION; — an unbalanced open transaction', () => {
+    const sql = 'BEGIN TRANSACTION;\nCREATE TABLE d (id int);\nCOMMIT;\n';
+    expect(executedIsClean(sql)).toBe(false);
+    expect(readOne('0902_begin_transaction.sql', sql)).toThrow(
+      UnsafeMigrationError,
+    );
+  });
+
+  it('strips through a leading block comment, keeping the comment', () => {
+    const sql = '/* hdr */\nBEGIN;\nCREATE TABLE e (id int);\nCOMMIT;\n';
+    expect(executedIsClean(sql)).toBe(true);
+    const [file] = readOne('0903_leading_block.sql', sql)();
+    expect(file.sql).not.toMatch(/\bBEGIN\b/i);
+    expect(file.sql).toContain('/* hdr */');
+  });
+
+  it('accepts every real migration in drizzle/migrations', () => {
+    // The guard must reject dangerous shapes without rejecting the 36 files
+    // that actually ship — an over-strict guard would refuse to boot.
+    const files = readMigrations(join(process.cwd(), 'drizzle', 'migrations'));
+    expect(files.length).toBeGreaterThan(30);
+    for (const f of files) {
+      expect(findTransactionControl(f.sql)).toEqual([]);
+      expect(isExcluded(f.name)).toBe(false);
+    }
+  });
+
+  it('still accepts the ordinary wrapped shape, and strips it', () => {
+    const sql = 'BEGIN;\nALTER TABLE t ADD c int;\nCOMMIT;\n';
+    expect(executedIsClean(sql)).toBe(true);
+    const [file] = readOne('0904_ok.sql', sql)();
+    expect(file.sql).toContain('ALTER TABLE t ADD c int;');
+    expect(file.sql).not.toMatch(/BEGIN|COMMIT/i);
+  });
+
+  it('accepts a file with no transaction control at all', () => {
+    const sql = 'CREATE TABLE t (id int);\n';
+    expect(readOne('0905_bare.sql', sql)()[0].sql).toBe(sql);
+  });
+
+  it('does not mistake a DO block for a transaction', () => {
+    const sql = [
+      'BEGIN;',
+      'DO $$',
+      'BEGIN',
+      "  RAISE EXCEPTION 'x';",
+      'END $$;',
+      'COMMIT;',
+      '',
+    ].join('\n');
+    expect(executedIsClean(sql)).toBe(true);
+    const [file] = readOne('0906_do_block.sql', sql)();
+    expect(file.sql).toContain('DO $$');
+    expect(file.sql).toContain('END $$;');
+  });
+
+  it('does not mistake the word COMMIT inside a comment for one', () => {
+    const sql = '-- we COMMIT; nothing here\nCREATE TABLE t (id int);\n';
+    expect(findTransactionControl(sql)).toEqual([]);
+  });
+
+  it('does not mistake COMMIT inside a string literal for one', () => {
+    const sql = "SELECT 'COMMIT;' AS note;\n";
+    expect(findTransactionControl(sql)).toEqual([]);
+  });
+});
+
+describe('isExcluded is case-insensitive', () => {
+  it('excludes a lowercase .prod-safe. variant too', () => {
+    expect(isExcluded('0030_x.prod-safe.sql')).toBe(true);
+    expect(isExcluded('0030_x.Prod-Safe.sql')).toBe(true);
   });
 });

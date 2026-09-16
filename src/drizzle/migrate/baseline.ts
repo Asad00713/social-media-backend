@@ -2,6 +2,7 @@ import { join } from 'node:path';
 import { config } from 'dotenv';
 import { Pool } from 'pg';
 import { buildPoolConfig } from '../pool-config';
+import { decideTarget, parseUpto } from './target-guard';
 import { readMigrations } from './runner';
 
 config({ path: '.env' });
@@ -26,11 +27,6 @@ config({ path: '.env' });
 
 const MIGRATIONS_DIR = join(process.cwd(), 'drizzle', 'migrations');
 
-function parseUpto(argv: string[]): string | null {
-  const i = argv.indexOf('--upto');
-  if (i === -1 || !argv[i + 1]) return null;
-  return argv[i + 1];
-}
 
 const TRACKING_TABLE_DDL = `
   CREATE TABLE IF NOT EXISTS applied_migrations (
@@ -44,6 +40,15 @@ async function main(): Promise<void> {
   const url = process.env.DATABASE_URL;
   if (!url) {
     console.error('[baseline] DATABASE_URL is not set; refusing to run.');
+    process.exit(1);
+  }
+
+  const target = decideTarget(
+    url,
+    process.argv.includes('--i-know-this-is-production'),
+  );
+  if (!target.allowed) {
+    console.error(`[baseline] ${target.reason}`);
     process.exit(1);
   }
 

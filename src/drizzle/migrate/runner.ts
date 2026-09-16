@@ -21,12 +21,17 @@ export interface AppliedRow {
   checksum: string;
 }
 
+/** Thrown when a migration file cannot be executed safely. */
+export class UnsafeMigrationError extends Error {}
+
 /** Files deliberately never run by the runner. */
 export function isExcluded(name: string): boolean {
   // `.PROD-SAFE.sql` variants are hand-run alternatives to a committed
   // migration that is unsafe on production (0030 deletes billing tables).
   // Running both would apply the same structural change twice.
-  return name.includes('.PROD-SAFE.');
+  // Case-insensitive: a lowercase variant of a destructive migration must not
+  // slip through and get executed.
+  return name.toLowerCase().includes('.prod-safe.');
 }
 
 export function checksumOf(sql: string): string {
@@ -38,6 +43,95 @@ export function checksumOf(sql: string): string {
 }
 
 /**
+ * Blank out comments, dollar-quoted blocks and string literals, keeping offsets.
+ *
+ * Used only to find transaction-control keywords in executable SQL. A `BEGIN`
+ * opening a `DO $$ ... $$` block is PL/pgSQL, not a transaction, and the word
+ * "commit" appears in prose comments in these migrations. Replacing with spaces
+ * rather than deleting keeps indices aligned with the original string.
+ */
+function blankNonSql(sql: string): string {
+  const out = sql.split('');
+  const blank = (from: number, to: number): void => {
+    for (let k = from; k < to && k < out.length; k++) {
+      if (out[k] !== '\n') out[k] = ' ';
+    }
+  };
+
+  let i = 0;
+  while (i < sql.length) {
+    if (sql.startsWith('--', i)) {
+      const nl = sql.indexOf('\n', i);
+      const stop = nl === -1 ? sql.length : nl;
+      blank(i, stop);
+      i = stop;
+      continue;
+    }
+    if (sql.startsWith('/*', i)) {
+      // Postgres block comments nest.
+      let depth = 1;
+      let j = i + 2;
+      while (j < sql.length && depth > 0) {
+        if (sql.startsWith('/*', j)) {
+          depth++;
+          j += 2;
+        } else if (sql.startsWith('*/', j)) {
+          depth--;
+          j += 2;
+        } else {
+          j++;
+        }
+      }
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    const dollar = /^\$[A-Za-z_]*\$/.exec(sql.slice(i));
+    if (dollar) {
+      const tag = dollar[0];
+      const close = sql.indexOf(tag, i + tag.length);
+      const stop = close === -1 ? sql.length : close + tag.length;
+      blank(i, stop);
+      i = stop;
+      continue;
+    }
+    if (sql[i] === "'") {
+      let j = i + 1;
+      while (j < sql.length) {
+        if (sql[j] === "'" && sql[j + 1] === "'") {
+          j += 2;
+        } else if (sql[j] === "'") {
+          j++;
+          break;
+        } else {
+          j++;
+        }
+      }
+      blank(i, j);
+      i = j;
+      continue;
+    }
+    i++;
+  }
+  return out.join('');
+}
+
+/** Every transaction-control statement in executable SQL, with its offset. */
+export function findTransactionControl(
+  sql: string,
+): { keyword: string; index: number }[] {
+  const scannable = blankNonSql(sql);
+  const re =
+    /\b(?:BEGIN|COMMIT|ROLLBACK|END|START[ \t]+TRANSACTION)\b[ \t]*(?:TRANSACTION|WORK)?[ \t]*;/gi;
+  const found: { keyword: string; index: number }[] = [];
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(scannable)) !== null) {
+    found.push({ keyword: m[0].trim(), index: m.index });
+  }
+  return found;
+}
+
+/**
  * Remove a file's own outermost BEGIN/COMMIT so the runner owns the transaction.
  *
  * This is for correctness, not tidiness: the row recording a migration as
@@ -46,15 +140,40 @@ export function checksumOf(sql: string): string {
  * leave the migration applied but unrecorded — so it would run again. `0030`
  * drops a column; a second run is not survivable.
  *
- * Only a leading `BEGIN;` and a trailing `COMMIT;` are removed. A `BEGIN`
- * opening a `DO $$` block is PL/pgSQL, not a transaction, and carries no
- * semicolon — the anchors below leave it alone.
+ * Only the common shape is rewritten: exactly one leading `BEGIN;` and one
+ * trailing `COMMIT;` wrapping the whole file. Anything else — a second pair, a
+ * stray COMMIT, `BEGIN TRANSACTION;` — is left alone here and REJECTED by
+ * `readMigrations`. An earlier version matched more loosely and could leave a
+ * stray `COMMIT;` mid-body, which silently ends the runner's transaction:
+ * everything before it commits for good, a later failure rolls back only the
+ * tail, and the applied-record is lost, so the half-applied file runs again on
+ * the next boot. Rejecting beats rewriting — it turns data loss into a startup
+ * error.
  */
 export function stripOuterTransaction(sql: string): string {
-  const leading = /^((?:[ \t]*--[^\n]*\n|\s*)*?)BEGIN[ \t]*;/i;
-  const withoutBegin = sql.replace(leading, '$1');
-  const trailing = /COMMIT[ \t]*;((?:\s|--[^\n]*)*)$/i;
-  return withoutBegin.replace(trailing, '$1');
+  const control = findTransactionControl(sql);
+  if (control.length !== 2) return sql;
+
+  const [first, last] = control;
+  // Only comments and whitespace may sit outside the wrapper. Every migration
+  // here opens with an explanatory comment block, so blanking comments (rather
+  // than a bare trim) is what lets the common shape still be recognised.
+  const outsideIsInert = (text: string): boolean =>
+    blankNonSql(text).trim().length === 0;
+
+  const wrapsWholeFile =
+    /^BEGIN[ \t]*;$/i.test(first.keyword) &&
+    /^COMMIT[ \t]*;$/i.test(last.keyword) &&
+    outsideIsInert(sql.slice(0, first.index)) &&
+    outsideIsInert(sql.slice(last.index + last.keyword.length));
+
+  if (!wrapsWholeFile) return sql;
+
+  return (
+    sql.slice(0, first.index) +
+    sql.slice(first.index + first.keyword.length, last.index) +
+    sql.slice(last.index + last.keyword.length)
+  );
 }
 
 export function readMigrations(dir: string): MigrationFile[] {
@@ -64,11 +183,24 @@ export function readMigrations(dir: string): MigrationFile[] {
     .sort()
     .map((name) => {
       const raw = readFileSync(join(dir, name), 'utf8');
-      return {
-        name,
-        sql: stripOuterTransaction(raw),
-        checksum: checksumOf(raw),
-      };
+      const sql = stripOuterTransaction(raw);
+
+      // What we execute must contain NO transaction control of its own. A stray
+      // COMMIT would end the runner's transaction early and break the atomicity
+      // this whole design rests on. Refuse to start rather than half-apply.
+      const leftover = findTransactionControl(sql);
+      if (leftover.length > 0) {
+        throw new UnsafeMigrationError(
+          `${name}: contains transaction control the runner cannot own (` +
+            leftover.map((c) => c.keyword).join(', ') +
+            '). Each migration runs inside one transaction opened by the ' +
+            'runner, so a file may either wrap itself in a single leading ' +
+            'BEGIN; and trailing COMMIT;, or use none at all. A DO block is ' +
+            'fine — its BEGIN is PL/pgSQL, not a transaction.',
+        );
+      }
+
+      return { name, sql, checksum: checksumOf(raw) };
     });
 }
 
