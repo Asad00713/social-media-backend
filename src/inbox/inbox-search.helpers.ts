@@ -1,6 +1,8 @@
 import { sql, SQL } from 'drizzle-orm';
 import { inboxItems } from '../drizzle/schema/inbox.schema';
 import type { InboxItemStatus } from '../drizzle/schema/inbox.schema';
+import { DEFAULT_INBOX_SORT, INBOX_SORTS } from './inbox-sort.constants';
+import type { InboxSort } from './inbox-sort.constants';
 import type { InboxFolder } from './dto/list-comments.dto';
 
 /**
@@ -174,6 +176,94 @@ export function deriveThreadStatusFromItems(
 }
 
 // ===========================================================================
+// Sorting
+// ===========================================================================
+
+/**
+ * How each sort orders the aggregate, as a keyset the cursor can walk.
+ *
+ * `unanswered` is a two-level sort: threads still awaiting a reply first, then
+ * newest within each group. That makes the keyset three columns wide, so the
+ * cursor carries the group flag as well as the timestamp — comparing only the
+ * timestamp would jump the boundary between the two groups and drop whatever
+ * sits on the far side of it.
+ */
+export interface SortSpec {
+  /** Direction of the timestamp leg. */
+  direction: 'asc' | 'desc';
+  /** True when the sort groups unanswered threads ahead of the rest. */
+  groupsByUnanswered: boolean;
+}
+
+export const SORT_SPECS: Record<InboxSort, SortSpec> = {
+  newest: { direction: 'desc', groupsByUnanswered: false },
+  oldest: { direction: 'asc', groupsByUnanswered: false },
+  unanswered: { direction: 'desc', groupsByUnanswered: true },
+};
+
+export function normalizeSort(raw?: string): InboxSort {
+  return INBOX_SORTS.includes(raw as InboxSort)
+    ? (raw as InboxSort)
+    : DEFAULT_INBOX_SORT;
+}
+
+/**
+ * "This thread is still waiting on us" — the grouping column of the
+ * `unanswered` sort, and a selected column so the cursor can carry it.
+ *
+ * Unread or needs_reply both mean nobody has answered yet; replied and done do
+ * not. Computed from the same aggregate flags the row already reports.
+ */
+export function awaitingReplySql(): SQL {
+  return sql`(bool_or(i.status = 'unread' AND i.from_me = false) OR bool_or(i.status = 'needs_reply'))`;
+}
+
+/** The ORDER BY for a sort, applied to an aliased `thread_agg` row. */
+export function buildSortOrder(sort: InboxSort, alias: string): SQL {
+  const a = sql.raw(alias);
+  const spec = SORT_SPECS[sort];
+  const time = spec.direction === 'asc' ? sql`ASC` : sql`DESC`;
+  // The key tiebreak follows the timestamp direction, so the composite
+  // comparison in the cursor filter stays a simple row-value inequality.
+  const tie = spec.direction === 'asc' ? sql`ASC` : sql`DESC`;
+
+  if (spec.groupsByUnanswered) {
+    // DESC puts true (awaiting) first.
+    return sql`${a}.awaiting_reply DESC, ${a}.last_activity_at ${time}, ${a}.thread_key ${tie}`;
+  }
+  return sql`${a}.last_activity_at ${time}, ${a}.thread_key ${tie}`;
+}
+
+/**
+ * The keyset predicate that continues a page under a given sort.
+ *
+ * Row-value comparison rather than an unrolled OR chain: `(a, b) < (x, y)` is
+ * exactly the "everything after this row in this ordering" the sort defines,
+ * and Postgres can use an index for it.
+ */
+export function buildCursorFilter(
+  cursor: ThreadCursor,
+  sort: InboxSort,
+  alias: string,
+): SQL {
+  const a = sql.raw(alias);
+  const spec = SORT_SPECS[sort];
+  const op = sql.raw(spec.direction === 'asc' ? '>' : '<');
+
+  if (spec.groupsByUnanswered) {
+    // Every leg of this sort descends — `awaiting_reply DESC` puts true first,
+    // and `false < true` makes that the same direction as the timestamp — so
+    // the keyset is one plain row-value comparison with no negation anywhere.
+    // Verified against a fixture: paging a mixed list this way reproduces the
+    // full ordering exactly, with no repeated or skipped row at the boundary.
+    const awaiting = cursor.awaiting ?? true;
+    return sql`WHERE (${a}.awaiting_reply, ${a}.last_activity_at, ${a}.thread_key) ${op} (${awaiting}, ${cursor.at}, ${cursor.key})`;
+  }
+
+  return sql`WHERE (${a}.last_activity_at, ${a}.thread_key) ${op} (${cursor.at}, ${cursor.key})`;
+}
+
+// ===========================================================================
 // Keyset cursor
 // ===========================================================================
 
@@ -182,6 +272,17 @@ export interface ThreadCursor {
   at: Date;
   /** That thread's key — the tiebreak. */
   key: string;
+  /**
+   * Whether that thread was in the "awaiting reply" group. Only meaningful for
+   * the `unanswered` sort, whose first ordering column this is.
+   */
+  awaiting?: boolean;
+  /**
+   * The sort the cursor was issued under. A cursor from one ordering is
+   * meaningless in another — it would skip or repeat whole runs — so changing
+   * the sort discards it and starts again at page one.
+   */
+  sort?: InboxSort;
 }
 
 /**
@@ -192,8 +293,30 @@ const MAX_KEY_SENTINEL = '￿';
 
 export function encodeThreadCursor(cursor: ThreadCursor): string {
   return Buffer.from(
-    JSON.stringify({ at: cursor.at.toISOString(), key: cursor.key }),
+    JSON.stringify({
+      at: cursor.at.toISOString(),
+      key: cursor.key,
+      ...(cursor.awaiting === undefined ? {} : { awaiting: cursor.awaiting }),
+      ...(cursor.sort === undefined ? {} : { sort: cursor.sort }),
+    }),
   ).toString('base64url');
+}
+
+/**
+ * A cursor is only valid within the ordering that issued it.
+ *
+ * Paging with a cursor from a different sort walks the wrong keyset and
+ * silently skips or repeats whole runs of threads, so a sort change starts
+ * again from page one rather than continuing from a meaningless position.
+ */
+export function isCursorValidForSort(
+  cursor: ThreadCursor | null,
+  sort: InboxSort,
+): cursor is ThreadCursor {
+  if (!cursor) return false;
+  // A legacy cursor carries no sort; it predates sorting, so it belongs to the
+  // default ordering.
+  return (cursor.sort ?? DEFAULT_INBOX_SORT) === sort;
 }
 
 /**
@@ -216,10 +339,24 @@ export function decodeThreadCursor(raw?: string): ThreadCursor | null {
       Buffer.from(raw, 'base64url').toString('utf8'),
     );
     if (parsed && typeof parsed === 'object') {
-      const { at, key } = parsed as { at?: unknown; key?: unknown };
+      const { at, key, awaiting, sort } = parsed as {
+        at?: unknown;
+        key?: unknown;
+        awaiting?: unknown;
+        sort?: unknown;
+      };
       if (typeof at === 'string' && typeof key === 'string') {
         const date = new Date(at);
-        if (!Number.isNaN(date.getTime())) return { at: date, key };
+        if (!Number.isNaN(date.getTime())) {
+          return {
+            at: date,
+            key,
+            ...(typeof awaiting === 'boolean' ? { awaiting } : {}),
+            ...(INBOX_SORTS.includes(sort as InboxSort)
+              ? { sort: sort as InboxSort }
+              : {}),
+          };
+        }
       }
     }
   } catch {

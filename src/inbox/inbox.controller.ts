@@ -56,6 +56,7 @@ export class InboxController {
       cursor: query.cursor,
       limit: query.limit,
       q: query.q,
+      sort: query.sort,
     });
   }
 
@@ -73,6 +74,7 @@ export class InboxController {
       cursor: query.cursor,
       limit: query.limit,
       q: query.q,
+      sort: query.sort,
     });
   }
 
@@ -260,6 +262,7 @@ export class InboxController {
       cursor: query.cursor,
       limit: query.limit,
       q: query.q,
+      sort: query.sort,
     });
   }
 

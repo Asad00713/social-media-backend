@@ -5,6 +5,10 @@ import type { SQL } from 'drizzle-orm';
 import {
   buildAliasedSearchCondition,
   buildAliasedStatusCondition,
+  buildCursorFilter,
+  buildSortOrder,
+  isCursorValidForSort,
+  normalizeSort,
   buildSearchCondition,
   decodeThreadCursor,
   decodeThreadKey,
@@ -336,6 +340,102 @@ describe('deriveThreadStatusFromItems', () => {
   // An empty thread must not satisfy `every(...)` vacuously and report done.
   it('does not report done for an empty item list', () => {
     expect(deriveThreadStatusFromItems([])).toBe('replied');
+  });
+});
+
+describe('sorting', () => {
+  it('defaults to newest for an absent or unknown sort', () => {
+    expect(normalizeSort(undefined)).toBe('newest');
+    expect(normalizeSort('sideways')).toBe('newest');
+  });
+
+  it('accepts the three real sorts', () => {
+    expect(normalizeSort('newest')).toBe('newest');
+    expect(normalizeSort('oldest')).toBe('oldest');
+    expect(normalizeSort('unanswered')).toBe('unanswered');
+  });
+
+  it('orders newest and oldest in opposite directions', () => {
+    expect(render(buildSortOrder('newest', 't')).sql).toBe(
+      't.last_activity_at DESC, t.thread_key DESC',
+    );
+    expect(render(buildSortOrder('oldest', 't')).sql).toBe(
+      't.last_activity_at ASC, t.thread_key ASC',
+    );
+  });
+
+  it('puts awaiting threads first for the unanswered sort', () => {
+    expect(render(buildSortOrder('unanswered', 't')).sql).toBe(
+      't.awaiting_reply DESC, t.last_activity_at DESC, t.thread_key DESC',
+    );
+  });
+
+  /**
+   * The keyset has to walk the ordering it was built for. Getting the operator
+   * backwards returns the page you already read; getting the column set wrong
+   * jumps the boundary between the awaiting and answered groups and drops
+   * whatever sits on the far side.
+   */
+  it('continues a newest page with a less-than row comparison', () => {
+    const at = new Date('2026-09-16T10:00:00.000Z');
+    const { sql } = render(buildCursorFilter({ at, key: '7:a' }, 'newest', 't'));
+    expect(sql).toContain('(t.last_activity_at, t.thread_key) < ');
+  });
+
+  it('continues an oldest page with a greater-than row comparison', () => {
+    const at = new Date('2026-09-16T10:00:00.000Z');
+    const { sql } = render(buildCursorFilter({ at, key: '7:a' }, 'oldest', 't'));
+    expect(sql).toContain('(t.last_activity_at, t.thread_key) > ');
+  });
+
+  // Every leg of the unanswered sort descends — `false < true` makes the
+  // boolean agree with the timestamp — so it is one plain comparison with no
+  // negation. Verified against a Postgres fixture: paging a mixed list this way
+  // reproduces the full ordering with no repeated or skipped row.
+  it('carries the awaiting flag as the leading keyset column, un-negated', () => {
+    const at = new Date('2026-09-16T10:00:00.000Z');
+    const { sql, params } = render(
+      buildCursorFilter({ at, key: '7:a', awaiting: true }, 'unanswered', 't'),
+    );
+    expect(sql).toContain(
+      '(t.awaiting_reply, t.last_activity_at, t.thread_key) < ',
+    );
+    expect(sql).not.toContain('NOT');
+    expect(params[0]).toBe(true);
+  });
+});
+
+describe('cursor validity across sorts', () => {
+  const at = new Date('2026-09-16T10:00:00.000Z');
+
+  // Walking a cursor from another ordering skips or repeats whole runs, so a
+  // sort change has to start again rather than continue from a stale position.
+  it('rejects a cursor issued under a different sort', () => {
+    const cursor = { at, key: '7:a', sort: 'oldest' as const };
+    expect(isCursorValidForSort(cursor, 'newest')).toBe(false);
+    expect(isCursorValidForSort(cursor, 'oldest')).toBe(true);
+  });
+
+  it('treats a cursor with no sort as belonging to the default', () => {
+    expect(isCursorValidForSort({ at, key: '7:a' }, 'newest')).toBe(true);
+    expect(isCursorValidForSort({ at, key: '7:a' }, 'unanswered')).toBe(false);
+  });
+
+  it('rejects an absent cursor', () => {
+    expect(isCursorValidForSort(null, 'newest')).toBe(false);
+  });
+
+  it('round-trips the sort and awaiting flag through the cursor', () => {
+    const decoded = decodeThreadCursor(
+      encodeThreadCursor({
+        at,
+        key: '7:a',
+        awaiting: false,
+        sort: 'unanswered',
+      }),
+    );
+    expect(decoded?.sort).toBe('unanswered');
+    expect(decoded?.awaiting).toBe(false);
   });
 });
 

@@ -8,6 +8,8 @@ import {
   MaxLength,
 } from 'class-validator';
 import { Transform, Type } from 'class-transformer';
+import { INBOX_SORTS as SORTS } from '../inbox-sort.constants';
+import type { InboxSort as Sort } from '../inbox-sort.constants';
 import { INBOX_ITEM_STATUSES } from '../../drizzle/schema/inbox.schema';
 import type { InboxItemStatus } from '../../drizzle/schema/inbox.schema';
 
@@ -31,6 +33,9 @@ const FOLDERS: InboxFolder[] = [
   'replied',
   'done',
 ];
+
+export { INBOX_SORTS, DEFAULT_INBOX_SORT } from '../inbox-sort.constants';
+export type { InboxSort } from '../inbox-sort.constants';
 
 export class ListCommentsDto {
   /** Filter to comments on this channel id only. 'all' or omitted = every channel. */
@@ -78,4 +83,17 @@ export class ListCommentsDto {
   @MaxLength(200)
   @Transform(({ value }) => (typeof value === 'string' ? value.trim() : value))
   q?: string;
+
+  /**
+   * Result ordering. `newest` (the default) and `oldest` are plain recency;
+   * `unanswered` puts threads still awaiting a reply first, then newest within
+   * each group.
+   *
+   * A cursor is only valid within the sort that issued it — the service
+   * discards one from a different ordering rather than walking the wrong
+   * keyset, which would skip or repeat whole runs of threads.
+   */
+  @IsOptional()
+  @IsEnum(SORTS)
+  sort?: Sort;
 }

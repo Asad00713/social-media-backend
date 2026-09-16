@@ -5,7 +5,7 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { and, asc, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm';
 import type { SQL } from 'drizzle-orm';
 import { db } from '../drizzle/db';
 import {
@@ -41,8 +41,13 @@ import { InboxFolder } from './dto/list-comments.dto';
 import type { BulkActionDto, InboxBulkAction } from './dto/bulk-action.dto';
 import type { DecodedThreadKey } from './inbox-search.helpers';
 import {
+  awaitingReplySql,
   buildAliasedSearchCondition,
   buildAliasedStatusCondition,
+  buildCursorFilter,
+  buildSortOrder,
+  isCursorValidForSort,
+  normalizeSort,
   buildSearchCondition,
   decodeThreadCursor,
   decodeThreadKey,
@@ -134,6 +139,7 @@ interface CommentThreadAggRow {
   has_unread: boolean | null;
   has_needs_reply: boolean | null;
   all_done: boolean | null;
+  awaiting_reply: boolean | null;
   post_meta: { post?: Record<string, any> } | null;
   latest_platform: SupportedPlatform;
   latest_text: string | null;
@@ -169,6 +175,7 @@ interface DmConversationAggRow {
   has_unread: boolean | null;
   has_needs_reply: boolean | null;
   all_done: boolean | null;
+  awaiting_reply: boolean | null;
   participant_platform_id: string | null;
   participant_handle: string | null;
   participant_display_name: string | null;
@@ -475,6 +482,7 @@ export class InboxService {
       cursor?: string;
       limit?: number;
       q?: string;
+      sort?: string;
     },
   ): Promise<{ threads: CommentThreadSummary[]; nextCursor: string | null }> {
     await this.assertWorkspaceAccess(workspaceId, userId);
@@ -482,6 +490,7 @@ export class InboxService {
     const limit = Math.min(options.limit ?? 20, 100);
     const search = normalizeSearchQuery(options.q);
     const statuses = folderToStatuses(options.folder, options.status);
+    const sort = normalizeSort(options.sort);
     const cursor = decodeThreadCursor(options.cursor);
 
     const channelIdNum =
@@ -505,10 +514,13 @@ export class InboxService {
 
     // Keyset. The timestamp alone is not unique — two threads can share a
     // max() to the microsecond — so the thread key breaks the tie and makes
-    // the ordering total.
-    const cursorFilter = cursor
-      ? sql`WHERE (t.last_activity_at, t.thread_key) < (${cursor.at}, ${cursor.key})`
+    // the ordering total. A cursor issued under a different sort names a
+    // position in an ordering that no longer applies, so it is discarded
+    // rather than walked.
+    const cursorFilter = isCursorValidForSort(cursor, sort)
+      ? buildCursorFilter(cursor, sort, 't')
       : sql``;
+    const orderBy = buildSortOrder(sort, 't');
 
     const result = await db.execute(sql`
       WITH thread_agg AS (
@@ -524,6 +536,9 @@ export class InboxService {
           bool_or(i.status = 'unread' AND i.from_me = false) AS has_unread,
           bool_or(i.status = 'needs_reply') AS has_needs_reply,
           bool_and(i.status = 'done') AS all_done,
+          -- Selected, not just ordered by: the cursor carries this flag, since
+          -- it is the first ordering column of the "unanswered first" sort.
+          ${awaitingReplySql()} AS awaiting_reply,
           -- Our own reply rows carry no post snapshot, so picking the newest
           -- row's metadata would lose the caption and thumbnail as soon as we
           -- answer a thread. Take the newest metadata that actually has one.
@@ -543,7 +558,7 @@ export class InboxService {
       page AS (
         SELECT t.* FROM thread_agg t
         ${cursorFilter}
-        ORDER BY t.last_activity_at DESC, t.thread_key DESC
+        ORDER BY ${orderBy}
         LIMIT ${limit + 1}
       )
       SELECT
@@ -556,6 +571,7 @@ export class InboxService {
         p.has_unread,
         p.has_needs_reply,
         p.all_done,
+        p.awaiting_reply,
         p.post_meta,
         l.platform        AS latest_platform,
         l.text            AS latest_text,
@@ -577,7 +593,7 @@ export class InboxService {
         ORDER BY platform_created_at DESC
         LIMIT 1
       ) l ON true
-      ORDER BY p.last_activity_at DESC, p.thread_key DESC
+      ORDER BY ${buildSortOrder(sort, 'p')}
     `);
 
     const rows = (result as unknown as { rows: CommentThreadAggRow[] }).rows;
@@ -592,6 +608,8 @@ export class InboxService {
         ? encodeThreadCursor({
             at: new Date(last.last_activity_at),
             key: last.thread_key,
+            awaiting: last.awaiting_reply ?? undefined,
+            sort,
           })
         : null;
 
@@ -662,6 +680,7 @@ export class InboxService {
       cursor?: string;
       limit?: number;
       q?: string;
+      sort?: string;
     },
   ): Promise<{ mentions: MentionItemDto[]; nextCursor: string | null }> {
     await this.assertWorkspaceAccess(workspaceId, userId);
@@ -696,10 +715,21 @@ export class InboxService {
       conditions.push(buildSearchCondition(search));
     }
 
+    // Mentions carry no reply obligation, so the "unanswered first" grouping
+    // has nothing to group by and falls back to recency — which is what the
+    // other two sorts already are.
+    const oldestFirst = normalizeSort(options.sort) === 'oldest';
+
     if (options.cursor) {
       const cursorDate = new Date(options.cursor);
       if (!Number.isNaN(cursorDate.getTime())) {
-        conditions.push(lt(inboxItems.platformCreatedAt, cursorDate));
+        // The comparison has to follow the sort direction, or paging an
+        // oldest-first list walks backwards off the front of it.
+        conditions.push(
+          oldestFirst
+            ? gt(inboxItems.platformCreatedAt, cursorDate)
+            : lt(inboxItems.platformCreatedAt, cursorDate),
+        );
       }
     }
 
@@ -710,7 +740,11 @@ export class InboxService {
       .select()
       .from(inboxItems)
       .where(and(...conditions))
-      .orderBy(desc(inboxItems.platformCreatedAt))
+      .orderBy(
+        oldestFirst
+          ? asc(inboxItems.platformCreatedAt)
+          : desc(inboxItems.platformCreatedAt),
+      )
       .limit(limit + 1);
 
     const sliced = rows.slice(0, limit);
@@ -2492,6 +2526,7 @@ export class InboxService {
       cursor?: string;
       limit?: number;
       q?: string;
+      sort?: string;
     },
   ): Promise<{
     threads: DmConversationSummaryDto[];
@@ -2502,6 +2537,7 @@ export class InboxService {
     const limit = Math.min(options.limit ?? 20, 100);
     const search = normalizeSearchQuery(options.q);
     const statuses = folderToStatuses(options.folder, options.status);
+    const sort = normalizeSort(options.sort);
     const cursor = decodeThreadCursor(options.cursor);
 
     const channelIdNum =
@@ -2519,9 +2555,10 @@ export class InboxService {
     const statusHaving = statuses
       ? sql`AND bool_or(${buildAliasedStatusCondition(statuses, 'i')})`
       : sql``;
-    const cursorFilter = cursor
-      ? sql`WHERE (t.last_activity_at, t.thread_key) < (${cursor.at}, ${cursor.key})`
+    const cursorFilter = isCursorValidForSort(cursor, sort)
+      ? buildCursorFilter(cursor, sort, 't')
       : sql``;
+    const orderBy = buildSortOrder(sort, 't');
 
     const result = await db.execute(sql`
       WITH thread_agg AS (
@@ -2537,6 +2574,9 @@ export class InboxService {
           bool_or(i.status = 'unread' AND i.from_me = false) AS has_unread,
           bool_or(i.status = 'needs_reply') AS has_needs_reply,
           bool_and(i.status = 'done') AS all_done,
+          -- Selected, not just ordered by: the cursor carries this flag, since
+          -- it is the first ordering column of the "unanswered first" sort.
+          ${awaitingReplySql()} AS awaiting_reply,
           -- The reply window is measured from the last message THEY sent.
           max(i.platform_created_at) FILTER (
             WHERE i.from_me = false
@@ -2565,7 +2605,7 @@ export class InboxService {
       page AS (
         SELECT t.* FROM thread_agg t
         ${cursorFilter}
-        ORDER BY t.last_activity_at DESC, t.thread_key DESC
+        ORDER BY ${orderBy}
         LIMIT ${limit + 1}
       )
       SELECT
@@ -2579,6 +2619,7 @@ export class InboxService {
         p.has_unread,
         p.has_needs_reply,
         p.all_done,
+        p.awaiting_reply,
         p.participant_platform_id,
         p.participant_handle,
         p.participant_display_name,
@@ -2604,7 +2645,7 @@ export class InboxService {
         ORDER BY platform_created_at DESC
         LIMIT 1
       ) l ON true
-      ORDER BY p.last_activity_at DESC, p.thread_key DESC
+      ORDER BY ${buildSortOrder(sort, 'p')}
     `);
 
     const rows = (result as unknown as { rows: DmConversationAggRow[] }).rows;
@@ -2623,6 +2664,8 @@ export class InboxService {
         ? encodeThreadCursor({
             at: new Date(last.last_activity_at),
             key: last.thread_key,
+            awaiting: last.awaiting_reply ?? undefined,
+            sort,
           })
         : null;
 
