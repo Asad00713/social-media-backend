@@ -109,6 +109,16 @@ npm run db:migrate:sql          # applies only what comes after
 dangerous option should not be the easy one to reach by accident. Both
 `--upto <file>` and `--upto=<file>` work.
 
+**From a SQL console instead.** Railway's Postgres console has `psql` but no
+node, and the backend service's shell is not always available. `db:baseline`
+only inserts rows, so the same thing can be done in SQL — and it can be done
+BEFORE the first deploy, which matters: the container runs migrations on boot,
+so a deploy that lands on an unbaselined production database would treat all 36
+files as pending and re-run `0030`. `docs/baseline-production.sql` is that
+script, generated from the runner's own `checksumOf` so the values match what
+the container computes. Verified: after running it, the real runner reports
+"up to date" rather than drift, and a later migration still applies normally.
+
 ### If a deploy is blocked by a checksum mismatch
 
 `migrate` refuses to run — and with `&&` in the CMD the container will not boot
