@@ -18,9 +18,11 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
-    "db:generate": "drizzle-kit generate",
-    "db:migrate": "drizzle-kit migrate",
-    "db:push": "drizzle-kit push",
+    "db:generate": "echo \"REFUSING: drizzle-kit generate emits a journal-drift diff here (it has re-emitted 15 existing tables). Hand-write the migration.\" && exit 1",
+    "db:migrate": "echo \"REFUSING: drizzle-kit's journal knows only 26 of the SQL files and its tracking table is empty, so this would replay migrations against a live DB. Use db:migrate:sql instead.\" && exit 1",
+    "db:migrate:sql": "node dist/src/drizzle/migrate/migrate",
+    "db:baseline": "node dist/src/drizzle/migrate/baseline",
+    "db:push": "echo \"REFUSING: db:push rewrites the schema with no migration record. Write a numbered .sql migration and use db:migrate:sql.\" && exit 1",
     "db:studio": "drizzle-kit studio"
   },
   "dependencies": {
