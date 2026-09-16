@@ -32,12 +32,24 @@ RUN npm ci --omit=dev
 # Copy built files from builder stage
 COPY --from=builder /app/dist ./dist
 
+# The migration runner reads the raw .sql files at runtime, so they must exist
+# in the production image, not only in the builder stage.
+COPY --from=builder /app/drizzle ./drizzle
+
 # Verify dist was copied
 RUN ls -la dist/
 
 # Expose port
 EXPOSE 3000
 
-# Start the application directly (not via npm)
-# NestJS builds to dist/src/main.js
-CMD ["node", "dist/src/main"]
+# Migrations run BEFORE the app starts, in the same container, every deploy.
+#
+# This ordering is the point: on 2026-09-10 the billing code shipped while
+# migrations 0030-0034 sat unapplied, and because WorkspaceSuspendedGuard is a
+# global guard querying subscriptions.user_id, one missing column 500'd every
+# authenticated request in production.
+#
+# `&&` means a failed migration stops the boot. That is deliberate: a container
+# that will not start is a loud, recoverable failure, while a container serving
+# traffic against a schema it does not match is a silent outage.
+CMD ["sh", "-c", "node dist/src/drizzle/migrate/migrate && node dist/src/main"]
