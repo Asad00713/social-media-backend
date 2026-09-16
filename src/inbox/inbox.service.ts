@@ -42,6 +42,7 @@ import type { BulkActionDto, InboxBulkAction } from './dto/bulk-action.dto';
 import type { DecodedThreadKey } from './inbox-search.helpers';
 import {
   buildAliasedSearchCondition,
+  buildAliasedStatusCondition,
   buildSearchCondition,
   decodeThreadCursor,
   decodeThreadKey,
@@ -499,7 +500,7 @@ export class InboxService {
       ? sql`AND bool_or(${buildAliasedSearchCondition(search, 'i')})`
       : sql``;
     const statusHaving = statuses
-      ? sql`AND bool_or(i.status = ANY(${statuses}))`
+      ? sql`AND bool_or(${buildAliasedStatusCondition(statuses, 'i')})`
       : sql``;
 
     // Keyset. The timestamp alone is not unique — two threads can share a
@@ -2516,7 +2517,7 @@ export class InboxService {
       ? sql`AND bool_or(${buildAliasedSearchCondition(search, 'i')})`
       : sql``;
     const statusHaving = statuses
-      ? sql`AND bool_or(i.status = ANY(${statuses}))`
+      ? sql`AND bool_or(${buildAliasedStatusCondition(statuses, 'i')})`
       : sql``;
     const cursorFilter = cursor
       ? sql`WHERE (t.last_activity_at, t.thread_key) < (${cursor.at}, ${cursor.key})`

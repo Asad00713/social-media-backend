@@ -4,6 +4,7 @@ import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 import {
   buildAliasedSearchCondition,
+  buildAliasedStatusCondition,
   buildSearchCondition,
   decodeThreadCursor,
   decodeThreadKey,
@@ -143,6 +144,37 @@ describe('buildAliasedSearchCondition', () => {
 });
 
 /**
+ * `= ANY(${statuses})` looks right and is not: Drizzle unwraps a single-element
+ * array into a scalar parameter, so Postgres receives `'unread'` where it wants
+ * `{unread}` and fails with "malformed array literal". Every folder filter was
+ * a 500 because of it — and, like the alias bug, a mocked-db test cannot see it.
+ */
+describe('buildAliasedStatusCondition', () => {
+  it('binds each status as its own parameter rather than one array', () => {
+    const { sql, params } = render(
+      buildAliasedStatusCondition(['unread'], 'i'),
+    );
+    expect(params).toEqual(['unread']);
+    // An IN list, which survives the single-element case.
+    expect(sql).toContain('i.status IN ($1)');
+    expect(sql).not.toContain('ANY');
+  });
+
+  it('keeps every status when several are given', () => {
+    const { params } = render(
+      buildAliasedStatusCondition(['needs_reply', 'replied', 'done'], 'i'),
+    );
+    expect(params).toEqual(['needs_reply', 'replied', 'done']);
+  });
+
+  it('references the alias, never the table name', () => {
+    const { sql } = render(buildAliasedStatusCondition(['done'], 'i'));
+    expect(sql).toContain('i.status');
+    expect(sql).not.toContain('inbox_items');
+  });
+});
+
+/**
  * The tests above prove the aliased helper is correct. They do NOT prove the
  * aggregate queries call it — and calling the wrong one is precisely the bug
  * that shipped: `listCommentThreads` and `listDmConversations` used the
@@ -167,6 +199,15 @@ describe('the aggregate listings use the aliased predicate', () => {
     // `bool_or(...)` only appears inside the aggregate CTEs, where the table is
     // aliased. The unaliased helper there is the FROM-clause error.
     expect(service).not.toContain('bool_or(${buildSearchCondition(search)})');
+  });
+
+  it('filters folders with the IN-list helper, not a bare ANY()', () => {
+    const statusCalls = service.match(
+      /buildAliasedStatusCondition\(statuses, 'i'\)/g,
+    );
+    expect(statusCalls).toHaveLength(2);
+    // `= ANY(${array})` is the shape that 500s on a single-element filter.
+    expect(service).not.toContain('ANY(${statuses})');
   });
 });
 

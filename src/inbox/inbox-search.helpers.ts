@@ -87,6 +87,27 @@ export function buildAliasedSearchCondition(query: string, alias: string): SQL {
   return sql`((lower(coalesce(${a}.text, '')) || ' ' || lower(coalesce(${a}.author_handle, '')) || ' ' || lower(coalesce(${a}.author_display_name, ''))) LIKE ${needle} ESCAPE '\\' OR lower(coalesce(${a}.metadata->'post'->>'caption', '')) LIKE ${needle} ESCAPE '\\')`;
 }
 
+/**
+ * "This row has one of these statuses", written against a table alias.
+ *
+ * Deliberately an `IN (...)` list rather than `= ANY(${statuses})`. Drizzle
+ * unwraps a single-element array into a scalar parameter, so `ANY()` receives
+ * `'unread'` instead of `{unread}` and Postgres fails with
+ * "malformed array literal" — which made every folder filter a 500. Joining the
+ * values binds each one separately and cannot degrade that way.
+ */
+export function buildAliasedStatusCondition(
+  statuses: InboxItemStatus[],
+  alias: string,
+): SQL {
+  const a = sql.raw(alias);
+  const values = sql.join(
+    statuses.map((s) => sql`${s}`),
+    sql`, `,
+  );
+  return sql`${a}.status IN (${values})`;
+}
+
 /** Normalise a raw `q` param: trimmed, or undefined when too short to run. */
 export function normalizeSearchQuery(raw?: string): string | undefined {
   const trimmed = raw?.trim();
