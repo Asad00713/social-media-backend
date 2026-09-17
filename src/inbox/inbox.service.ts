@@ -81,6 +81,19 @@ export interface CommentThreadSummary {
     displayName: string;
     avatarUrl?: string;
   };
+  /**
+   * Everyone who commented on the post, deduplicated.
+   *
+   * A thread is a POST, not a person, and the list row says so by showing the
+   * faces on it rather than naming whoever spoke last. Inbound only — our own
+   * replies all carry the same page identity and would crowd out the actual
+   * participants.
+   */
+  commenters: {
+    handle: string;
+    displayName: string;
+    avatarUrl?: string;
+  }[];
   status: InboxItemStatus;
   lastCommentText: string;
   /**
@@ -160,6 +173,13 @@ interface CommentThreadAggRow {
   all_done: boolean | null;
   awaiting_reply: boolean | null;
   post_meta: { post?: Record<string, any> } | null;
+  commenters:
+    | {
+        handle: string | null;
+        displayName: string | null;
+        avatarUrl: string | null;
+      }[]
+    | null;
   latest_platform: SupportedPlatform;
   latest_text: string | null;
   latest_author_handle: string | null;
@@ -567,7 +587,24 @@ export class InboxService {
           -- row's metadata would lose the caption and thumbnail as soon as we
           -- answer a thread. Take the newest metadata that actually has one.
           (array_agg(i.metadata ORDER BY i.platform_created_at DESC)
-            FILTER (WHERE i.metadata->'post' IS NOT NULL))[1] AS post_meta
+            FILTER (WHERE i.metadata->'post' IS NOT NULL))[1] AS post_meta,
+          -- Everyone who commented, so the list row can show that a post has
+          -- five people talking on it rather than naming whoever spoke last.
+          -- Inbound only: our own replies all carry the same page identity
+          -- and would crowd out the real faces.
+          --
+          -- DISTINCT over the built object deduplicates a person who commented
+          -- ten times. It also orders the result by the object's own sort
+          -- rather than by recency, so the three faces the row draws are three
+          -- of the commenters rather than the three most recent — acceptable
+          -- for a face pile, and far simpler than the correlated subquery this
+          -- replaced, which Postgres rejected outright: it referenced
+          -- i.workspace_id, which is not in the GROUP BY.
+          jsonb_agg(DISTINCT jsonb_build_object(
+            'handle', i.author_handle,
+            'displayName', i.author_display_name,
+            'avatarUrl', i.author_avatar_url
+          )) FILTER (WHERE i.from_me = false) AS commenters
         FROM inbox_items i
         WHERE i.workspace_id = ${workspaceId}
           AND i.type = 'comment'
@@ -597,6 +634,7 @@ export class InboxService {
         p.all_done,
         p.awaiting_reply,
         p.post_meta,
+        p.commenters,
         l.platform        AS latest_platform,
         l.text            AS latest_text,
         l.author_handle   AS latest_author_handle,
@@ -670,6 +708,14 @@ export class InboxService {
           'Unknown',
         avatarUrl: row.latest_author_avatar_url ?? undefined,
       },
+      commenters: (row.commenters ?? []).map((c) => ({
+        handle: c.handle?.trim() || 'unknown',
+        // `||` not `??`, for the same reason as latestCommenter above: an
+        // empty display name falls back to the handle rather than rendering
+        // as a blank chip.
+        displayName: c.displayName?.trim() || c.handle?.trim() || 'Unknown',
+        avatarUrl: c.avatarUrl ?? undefined,
+      })),
       status: deriveThreadStatusFromFlags({
         hasUnread: row.has_unread ?? false,
         hasNeedsReply: row.has_needs_reply ?? false,
@@ -885,6 +931,10 @@ export class InboxService {
           latest.authorDisplayName ?? latest.authorHandle ?? 'Unknown',
         avatarUrl: latest.authorAvatarUrl ?? undefined,
       },
+      // Derived in JS here rather than in SQL: this path already holds every
+      // item in the thread, so a second query would read the same rows twice.
+      // Same rule as the list query — inbound only, deduplicated, newest first.
+      commenters: this.collectCommenters(items),
       status: this.deriveThreadStatus(items),
       lastCommentText: latest.text ?? '',
       contentRedacted: isContentRedacted(latest),
@@ -956,6 +1006,43 @@ export class InboxService {
   // ==========================================================================
   // Reply  (platform dispatch implemented in Task 8; for now just records DB)
   // ==========================================================================
+
+  /**
+   * The distinct people who commented, newest first.
+   *
+   * The list query's SQL equivalent returns them in the object's own sort
+   * order instead; both are "some of the commenters" to a face pile that
+   * draws three, and this path has the rows in hand so ordering them costs
+   * nothing.
+   *
+   * Inbound only: our own replies all carry the same page identity, so
+   * including them would put the same face on every thread and push out the
+   * participants the row exists to show.
+   */
+  private collectCommenters(
+    items: InboxItem[],
+  ): CommentThreadSummary['commenters'] {
+    const seen = new Map<string, CommentThreadSummary['commenters'][number]>();
+    const byNewest = [...items].sort(
+      (a, b) => b.platformCreatedAt.getTime() - a.platformCreatedAt.getTime(),
+    );
+
+    for (const item of byNewest) {
+      if (item.fromMe) continue;
+      const key = item.authorPlatformId ?? item.authorHandle ?? item.id;
+      if (seen.has(key)) continue;
+      seen.set(key, {
+        handle: item.authorHandle?.trim() || 'unknown',
+        displayName:
+          item.authorDisplayName?.trim() ||
+          item.authorHandle?.trim() ||
+          'Unknown',
+        avatarUrl: item.authorAvatarUrl ?? undefined,
+      });
+    }
+
+    return Array.from(seen.values());
+  }
 
   /** Build the public CommentNodeDto shape from an `inbox_items` row. */
   private itemToNode(

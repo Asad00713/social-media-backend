@@ -64,10 +64,12 @@ describe('InboxService.getThread — repliedBy', () => {
     });
 
     service = new InboxService(
-      { emit: jest.fn() } as never,
-      { get: jest.fn() } as never,
-      { getAccessToken: jest.fn() } as never,
-      { add: jest.fn() } as never,
+      { emit: jest.fn() } as never, // emitter
+      { get: jest.fn() } as never, // dispatcher
+      { getAccessToken: jest.fn() } as never, // channelService
+      {} as never, // facebookService
+      {} as never, // instagramService
+      { add: jest.fn() } as never, // pollQueue
     );
   });
 
