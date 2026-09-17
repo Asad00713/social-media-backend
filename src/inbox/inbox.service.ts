@@ -21,6 +21,7 @@ import {
   SupportedPlatform,
 } from '../drizzle/schema/channels.schema';
 import { workspace } from '../drizzle/schema/workspace.schema';
+import { users } from '../drizzle/schema/users.schema';
 import { workspaceInvitation } from '../drizzle/schema/workspace-invitation.schema';
 import {
   posts as postsTable,
@@ -116,6 +117,24 @@ export interface CommentNodeDto {
   /** Whether this reply is hidden on the platform (threads_manage_replies). */
   isHidden: boolean;
   replies: CommentNodeDto[];
+  /**
+   * The teammate who sent this reply, for replies we sent. Absent on inbound
+   * comments — those carry the commenter in `author` — and absent on replies
+   * made before this was recorded.
+   *
+   * `author` is the PLATFORM identity the reply was posted as (the page or
+   * profile), which is the same for everyone on the team. This is who in the
+   * workspace actually wrote it, which is the thing a colleague cannot
+   * otherwise tell.
+   *
+   * No avatar: the users table stores a name and an email and nothing else,
+   * so the client renders initials. Add the URL here when an avatar column
+   * lands rather than inventing one.
+   */
+  repliedBy?: {
+    id: string;
+    name: string;
+  };
 }
 
 export interface CommentThreadDetail extends CommentThreadSummary {
@@ -267,6 +286,11 @@ export interface DmMessageDto {
     contentType?: string;
     thumbnailUrl?: string;
   }>;
+  /** See `CommentNodeDto.repliedBy` — the teammate who sent this, if we did. */
+  repliedBy?: {
+    id: string;
+    name: string;
+  };
 }
 
 export interface DmThreadDetail extends DmConversationSummaryDto {
@@ -804,9 +828,15 @@ export class InboxService {
       throw new BadRequestException('Invalid thread key');
     }
 
-    const items = await db
-      .select()
+    // LEFT JOIN, not inner: a reply whose author has since been removed from
+    // the workspace must still appear, just without a name on it.
+    const rows = await db
+      .select({
+        item: inboxItems,
+        repliedByName: users.name,
+      })
       .from(inboxItems)
+      .leftJoin(users, eq(users.id, inboxItems.repliedByUserId))
       .where(
         and(
           eq(inboxItems.workspaceId, workspaceId),
@@ -817,11 +847,18 @@ export class InboxService {
       )
       .orderBy(asc(inboxItems.platformCreatedAt));
 
+    const items = rows.map((r) => r.item);
+    const repliedByName = new Map(
+      rows
+        .filter((r) => r.repliedByName)
+        .map((r) => [r.item.id, r.repliedByName as string]),
+    );
+
     if (items.length === 0) {
       throw new NotFoundException('Thread not found');
     }
 
-    const rootComments = this.buildCommentTree(items);
+    const rootComments = this.buildCommentTree(items, repliedByName);
     const latest = items[items.length - 1];
     const unread = items.filter(
       (i) => i.status === 'unread' && !i.fromMe,
@@ -892,32 +929,16 @@ export class InboxService {
   }
 
   /** Build CommentNode tree from flat rows by walking platformParentId pointers. */
-  private buildCommentTree(items: InboxItem[]): CommentNodeDto[] {
+  private buildCommentTree(
+    items: InboxItem[],
+    repliedByName?: Map<string, string>,
+  ): CommentNodeDto[] {
+    // Built through `itemToNode` rather than mapping the row again here: the
+    // two copies of this shape had already drifted once, and a field added to
+    // one silently missed the other.
     const byPlatformId = new Map<string, CommentNodeDto>();
     for (const item of items) {
-      const itemMeta = item.metadata ?? {};
-      byPlatformId.set(item.platformItemId, {
-        id: item.id,
-        parentId: item.platformParentId,
-        author: {
-          handle: item.authorHandle?.trim() || 'unknown',
-          displayName:
-            item.authorDisplayName?.trim() ||
-            item.authorHandle?.trim() ||
-            'Unknown',
-          avatarUrl: item.authorAvatarUrl ?? undefined,
-        },
-        text: item.text ?? '',
-        contentRedacted: isContentRedacted(item),
-        timestamp: item.platformCreatedAt.toISOString(),
-        fromMe: item.fromMe,
-        platformItemId: item.platformItemId,
-        status: item.status,
-        likeCount:
-          typeof itemMeta.likeCount === 'number' ? itemMeta.likeCount : 0,
-        isHidden: item.isHidden,
-        replies: [],
-      });
+      byPlatformId.set(item.platformItemId, this.itemToNode(item, repliedByName));
     }
 
     const roots: CommentNodeDto[] = [];
@@ -937,7 +958,10 @@ export class InboxService {
   // ==========================================================================
 
   /** Build the public CommentNodeDto shape from an `inbox_items` row. */
-  private itemToNode(item: InboxItem): CommentNodeDto {
+  private itemToNode(
+    item: InboxItem,
+    repliedByName?: Map<string, string>,
+  ): CommentNodeDto {
     const meta = item.metadata ?? {};
     return {
       id: item.id,
@@ -959,6 +983,13 @@ export class InboxService {
       likeCount: typeof meta.likeCount === 'number' ? meta.likeCount : 0,
       isHidden: item.isHidden,
       replies: [],
+      repliedBy:
+        item.repliedByUserId && repliedByName?.get(item.id)
+          ? {
+              id: item.repliedByUserId,
+              name: repliedByName.get(item.id) as string,
+            }
+          : undefined,
     };
   }
 
@@ -2791,9 +2822,16 @@ export class InboxService {
     await this.assertWorkspaceAccess(workspaceId, userId);
     const { channelId, conversationId } = this.decodeDmThreadKey(threadKey);
 
-    const items = await db
-      .select()
+    // LEFT JOIN so a reply by a since-removed teammate still appears, just
+    // without a name. See CommentNodeDto.repliedBy for why this is needed:
+    // the platform identity is the same for the whole team.
+    const dmRows = await db
+      .select({
+        item: inboxItems,
+        repliedByName: users.name,
+      })
       .from(inboxItems)
+      .leftJoin(users, eq(users.id, inboxItems.repliedByUserId))
       .where(
         and(
           eq(inboxItems.workspaceId, workspaceId),
@@ -2803,6 +2841,13 @@ export class InboxService {
         ),
       )
       .orderBy(asc(inboxItems.platformCreatedAt));
+
+    const items = dmRows.map((r) => r.item);
+    const dmRepliedByName = new Map(
+      dmRows
+        .filter((r) => r.repliedByName)
+        .map((r) => [r.item.id, r.repliedByName as string]),
+    );
 
     if (items.length === 0) {
       // Empty conversation isn't necessarily a 404 — caller may be opening a
@@ -2891,7 +2936,7 @@ export class InboxService {
       unreadCount: unread,
       totalMessageCount: items.length,
       replyWindow,
-      messages: items.map((it) => this.dmItemToDto(it)),
+      messages: items.map((it) => this.dmItemToDto(it, dmRepliedByName)),
     };
   }
 
@@ -2934,7 +2979,10 @@ export class InboxService {
     }
   }
 
-  private dmItemToDto(item: InboxItem): DmMessageDto {
+  private dmItemToDto(
+    item: InboxItem,
+    repliedByName?: Map<string, string>,
+  ): DmMessageDto {
     const md = item.metadata ?? {};
     const rawAttachments = Array.isArray(md.attachments) ? md.attachments : [];
     return {
@@ -2953,6 +3001,13 @@ export class InboxService {
       platformItemId: item.platformItemId,
       status: item.status,
       attachments: rawAttachments.length > 0 ? rawAttachments : undefined,
+      repliedBy:
+        item.repliedByUserId && repliedByName?.get(item.id)
+          ? {
+              id: item.repliedByUserId,
+              name: repliedByName.get(item.id) as string,
+            }
+          : undefined,
     };
   }
 
