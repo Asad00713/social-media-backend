@@ -5,7 +5,7 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { and, asc, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { db } from '../drizzle/db';
 import {
   inboxItems,
@@ -21,6 +21,7 @@ import {
 } from '../drizzle/schema/channels.schema';
 import { workspace } from '../drizzle/schema/workspace.schema';
 import { workspaceInvitation } from '../drizzle/schema/workspace-invitation.schema';
+import { users } from '../drizzle/schema/users.schema';
 import {
   posts as postsTable,
   PostTarget,
@@ -36,7 +37,7 @@ import type {
   DmConversationSummary as AdapterDmConversationSummary,
   FetchedDm,
 } from './adapters/inbox-adapter.interface';
-import { InboxFolder } from './dto/list-comments.dto';
+import { InboxFolder, InboxSort } from './dto/list-comments.dto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { QUEUES } from '../queue/queue.module';
@@ -95,6 +96,14 @@ export interface CommentNodeDto {
   likeCount: number;
   /** Whether this reply is hidden on the platform (threads_manage_replies). */
   isHidden: boolean;
+  /**
+   * Which teammate composed this, on rows we sent. `author` above is the
+   * platform identity — the page or profile — which is identical for everyone
+   * on the team, so this is the only thing that tells one colleague's reply
+   * from another's. Absent on inbound rows and on replies sent before the
+   * `authored_by_user_id` column existed.
+   */
+  repliedBy?: { id: string; name: string };
   replies: CommentNodeDto[];
 }
 
@@ -179,6 +188,8 @@ export interface DmMessageDto {
     contentType?: string;
     thumbnailUrl?: string;
   }>;
+  /** See `CommentNodeDto.repliedBy` — same semantics, per DM message. */
+  repliedBy?: { id: string; name: string };
 }
 
 export interface DmThreadDetail extends DmConversationSummaryDto {
@@ -222,6 +233,11 @@ export interface UpsertCommentInput {
   /** Cached post info (caption/thumbnail/etc) — stored under metadata.post. */
   postSnapshot?: Partial<CommentThreadSummary['post']>;
   metadata?: Record<string, any>;
+  /**
+   * The teammate who composed this row. Only meaningful with `fromMe: true` —
+   * ingested rows were written by someone outside the workspace.
+   */
+  authoredByUserId?: string | null;
 }
 
 /**
@@ -253,6 +269,33 @@ export function isContentRedacted(
   item: Pick<InboxItem, 'platform' | 'text'>,
 ): boolean {
   return item.platform === 'youtube' && item.text === null;
+}
+
+/** Shortest query we will run. See `buildSearchCondition`. */
+export const MIN_SEARCH_LENGTH = 2;
+
+/**
+ * `ILIKE` pattern for a user-typed query.
+ *
+ * The escaping is the point. `%`, `_` and `\` are all wildcards or escapes in
+ * a LIKE pattern, so a user searching for `50%` would otherwise match every
+ * row in the table, and `a_b` would match `axb`. Backslash goes first —
+ * escaping it after the others would double-escape what they just added.
+ *
+ * Exported as a pure function so it is unit-testable without the db singleton,
+ * following the `isContentRedacted` precedent above.
+ */
+export function buildSearchPattern(q: string): string {
+  const escaped = q
+    .replace(/\\/g, '\\\\')
+    .replace(/%/g, '\\%')
+    .replace(/_/g, '\\_');
+  return `%${escaped}%`;
+}
+
+/** Whether a query is worth running at all. */
+export function isSearchable(q?: string): boolean {
+  return !!q && q.trim().length >= MIN_SEARCH_LENGTH;
 }
 
 @Injectable()
@@ -370,6 +413,8 @@ export class InboxService {
       status?: InboxItemStatus;
       cursor?: string;
       limit?: number;
+      q?: string;
+      sort?: InboxSort;
     },
   ): Promise<{ threads: CommentThreadSummary[]; nextCursor: string | null }> {
     await this.assertWorkspaceAccess(workspaceId, userId);
@@ -382,6 +427,10 @@ export class InboxService {
       // incoming comment inserts an un-archived row → the thread reappears.
       isNull(inboxItems.archivedAt),
     ];
+
+    if (isSearchable(options.q)) {
+      conditions.push(this.searchCondition(options.q as string));
+    }
 
     if (options.channelId && options.channelId !== 'all') {
       const channelIdNum = Number(options.channelId);
@@ -476,7 +525,7 @@ export class InboxService {
       });
     }
 
-    summariesRaw.sort((a, b) => b.latestAt.getTime() - a.latestAt.getTime());
+    this.sortThreadSummaries(summariesRaw, options.sort);
 
     const sliced = summariesRaw.slice(0, limit);
     const nextCursor =
@@ -505,6 +554,8 @@ export class InboxService {
       status?: InboxItemStatus;
       cursor?: string;
       limit?: number;
+      q?: string;
+      sort?: InboxSort;
     },
   ): Promise<{ mentions: MentionItemDto[]; nextCursor: string | null }> {
     await this.assertWorkspaceAccess(workspaceId, userId);
@@ -518,6 +569,10 @@ export class InboxService {
       eq(inboxItems.isMention, true),
       isNull(inboxItems.archivedAt),
     ];
+
+    if (isSearchable(options.q)) {
+      conditions.push(this.searchCondition(options.q as string));
+    }
 
     if (options.channelId && options.channelId !== 'all') {
       const channelIdNum = Number(options.channelId);
@@ -535,18 +590,29 @@ export class InboxService {
     if (options.cursor) {
       const cursorDate = new Date(options.cursor);
       if (!Number.isNaN(cursorDate.getTime())) {
-        conditions.push(lt(inboxItems.platformCreatedAt, cursorDate));
+        conditions.push(
+          options.sort === 'oldest'
+            ? gt(inboxItems.platformCreatedAt, cursorDate)
+            : lt(inboxItems.platformCreatedAt, cursorDate),
+        );
       }
     }
 
     // Flat list — fetch one extra row past `limit` to know if there's a next
     // page, instead of the `limit * 10` over-fetch `listCommentThreads` needs
     // for its in-memory grouping.
+    // `oldest` flips the keyset direction, which is why the cursor comparison
+    // above is chosen from the same flag — a `lt` cursor walked ascending
+    // would page backwards past rows it already returned.
     const rows = await db
       .select()
       .from(inboxItems)
       .where(and(...conditions))
-      .orderBy(desc(inboxItems.platformCreatedAt))
+      .orderBy(
+        options.sort === 'oldest'
+          ? asc(inboxItems.platformCreatedAt)
+          : desc(inboxItems.platformCreatedAt),
+      )
       .limit(limit + 1);
 
     const sliced = rows.slice(0, limit);
@@ -577,10 +643,143 @@ export class InboxService {
     };
   }
 
+  /**
+   * Case-insensitive match across everything the user can see on a row: the
+   * message text, the author's handle and display name, and the cached post
+   * caption. Searching only `text` would miss "show me everything from
+   * @farhan", which is the more common query.
+   *
+   * `ILIKE` rather than full-text search, deliberately: users type partial
+   * handles (`@farh`), and FTS matches whole lexemes, so a prefix would score
+   * nothing. The trade-off is that this cannot use a b-tree index — acceptable
+   * at current volume, and the fix when it isn't is a `pg_trgm` GIN index on
+   * exactly this expression, not a different operator.
+   */
+  /**
+   * Order the grouped summaries in place.
+   *
+   * `unanswered` lifts threads still awaiting us — unread first, then
+   * needs_reply — and orders within each band by recency, so it reorders the
+   * list without removing anything from it.
+   *
+   * Sorting happens after grouping because the unit being ordered is the
+   * thread, not the row: a thread's position depends on its newest comment and
+   * its derived status, neither of which exists until the group is built.
+   */
+  private sortThreadSummaries(
+    rows: { summary: { status: InboxItemStatus; unreadCount: number }; latestAt: Date }[],
+    sort?: InboxSort,
+  ): void {
+    if (sort === 'oldest') {
+      rows.sort((a, b) => a.latestAt.getTime() - b.latestAt.getTime());
+      return;
+    }
+
+    if (sort === 'unanswered') {
+      const rank = (r: (typeof rows)[number]) => {
+        if (r.summary.unreadCount > 0) return 0;
+        if (r.summary.status === 'needs_reply') return 1;
+        return 2;
+      };
+      rows.sort(
+        (a, b) => rank(a) - rank(b) || b.latestAt.getTime() - a.latestAt.getTime(),
+      );
+      return;
+    }
+
+    rows.sort((a, b) => b.latestAt.getTime() - a.latestAt.getTime());
+  }
+
+  private searchCondition(q: string) {
+    const pattern = buildSearchPattern(q.trim());
+    const like = (col: unknown) =>
+      sql`coalesce(${col}, '') ILIKE ${pattern} ESCAPE '\\'`;
+    return sql`(${like(inboxItems.text)} OR ${like(inboxItems.authorHandle)} OR ${like(inboxItems.authorDisplayName)} OR ${like(sql`${inboxItems.metadata}->'post'->>'caption'`)})`;
+  }
+
+  /**
+   * Resolve the `authored_by_user_id`s present on a set of rows to display
+   * names, in ONE query.
+   *
+   * Batched deliberately: the alternative is a per-row lookup inside the tree
+   * builder, which on a 50-comment thread is 50 queries for what is usually
+   * one or two distinct teammates. Returns an empty map when no row carries an
+   * author, so an all-inbound thread costs no query at all.
+   *
+   * `users.name` is nullable, so the email's local part is the fallback and
+   * 'Teammate' the last resort — a reply whose author has since been deleted
+   * still has to render, and a bare uuid on screen would be worse than a
+   * generic word.
+   */
+  /**
+   * Pick the teammate for one row out of a pre-loaded map.
+   *
+   * Returns undefined rather than a placeholder when the map was not supplied
+   * — the write paths return a single freshly-created row and have the sending
+   * user in hand, so they set `repliedBy` themselves instead of paying for a
+   * lookup they do not need.
+   */
+  private resolveAuthor(
+    item: Pick<InboxItem, 'authoredByUserId'>,
+    authors?: Map<string, { id: string; name: string }>,
+  ): { id: string; name: string } | undefined {
+    if (!authors || !item.authoredByUserId) return undefined;
+    return authors.get(item.authoredByUserId);
+  }
+
+  /**
+   * The display name of the user who just sent something, for the row the
+   * write endpoints hand straight back.
+   *
+   * Without it the reply arrives with no teammate badge and only grows one on
+   * the next refetch, so what the user just sent would visibly change under
+   * them a moment later.
+   */
+  private async loadSelfAuthor(
+    userId: string,
+  ): Promise<{ id: string; name: string } | undefined> {
+    const map = await this.loadAuthorNames([{ authoredByUserId: userId }]);
+    return map.get(userId);
+  }
+
+  private async loadAuthorNames(
+    items: Pick<InboxItem, 'authoredByUserId'>[],
+  ): Promise<Map<string, { id: string; name: string }>> {
+    const ids = [
+      ...new Set(
+        items
+          .map((i) => i.authoredByUserId)
+          .filter((id): id is string => !!id),
+      ),
+    ];
+    if (ids.length === 0) return new Map();
+
+    const rows = await db
+      .select({ id: users.id, name: users.name, email: users.email })
+      .from(users)
+      .where(inArray(users.id, ids));
+
+    return new Map(
+      rows.map((r) => {
+        const local = r.email?.includes('@')
+          ? r.email.slice(0, r.email.indexOf('@'))
+          : r.email;
+        return [
+          r.id,
+          { id: r.id, name: r.name?.trim() || local?.trim() || 'Teammate' },
+        ];
+      }),
+    );
+  }
+
   private folderToStatus(folder?: InboxFolder): InboxItemStatus | undefined {
     if (!folder || folder === 'all') return undefined;
     if (folder === 'unread') return 'unread';
     if (folder === 'needs_reply') return 'needs_reply';
+    // `replied` used to fall through to the `undefined` below, which does not
+    // mean "match nothing" but "apply no filter" — so the Replied folder
+    // quietly returned the whole inbox while every other folder narrowed it.
+    if (folder === 'replied') return 'replied';
     if (folder === 'done') return 'done';
     return undefined;
   }
@@ -633,7 +832,10 @@ export class InboxService {
       throw new NotFoundException('Thread not found');
     }
 
-    const rootComments = this.buildCommentTree(items);
+    // One query for every teammate referenced in the thread, before the tree
+    // is built — see `loadAuthorNames`.
+    const authors = await this.loadAuthorNames(items);
+    const rootComments = this.buildCommentTree(items, authors);
     const latest = items[items.length - 1];
     const unread = items.filter(
       (i) => i.status === 'unread' && !i.fromMe,
@@ -704,11 +906,15 @@ export class InboxService {
   }
 
   /** Build CommentNode tree from flat rows by walking platformParentId pointers. */
-  private buildCommentTree(items: InboxItem[]): CommentNodeDto[] {
+  private buildCommentTree(
+    items: InboxItem[],
+    authors?: Map<string, { id: string; name: string }>,
+  ): CommentNodeDto[] {
     const byPlatformId = new Map<string, CommentNodeDto>();
     for (const item of items) {
       const itemMeta = item.metadata ?? {};
       byPlatformId.set(item.platformItemId, {
+        repliedBy: this.resolveAuthor(item, authors),
         id: item.id,
         parentId: item.platformParentId,
         author: {
@@ -749,9 +955,13 @@ export class InboxService {
   // ==========================================================================
 
   /** Build the public CommentNodeDto shape from an `inbox_items` row. */
-  private itemToNode(item: InboxItem): CommentNodeDto {
+  private itemToNode(
+    item: InboxItem,
+    repliedBy?: { id: string; name: string },
+  ): CommentNodeDto {
     const meta = item.metadata ?? {};
     return {
+      repliedBy,
       id: item.id,
       parentId: item.platformParentId,
       author: {
@@ -849,6 +1059,7 @@ export class InboxService {
       text: created.text,
       fromMe: true,
       platformCreatedAt: created.platformCreatedAt,
+      authoredByUserId: userId,
     });
 
     // Mark the parent as replied so the thread surfaces "replied" state.
@@ -884,7 +1095,7 @@ export class InboxService {
         ),
       }));
     if (!row) throw new Error('Failed to persist reply');
-    return this.itemToNode(row);
+    return this.itemToNode(row, await this.loadSelfAuthor(userId));
   }
 
   /**
@@ -937,6 +1148,7 @@ export class InboxService {
       text: created.text,
       fromMe: true,
       platformCreatedAt: created.platformCreatedAt,
+      authoredByUserId: userId,
     });
 
     const row =
@@ -948,7 +1160,7 @@ export class InboxService {
         ),
       }));
     if (!row) throw new Error('Failed to persist comment');
-    return this.itemToNode(row);
+    return this.itemToNode(row, await this.loadSelfAuthor(userId));
   }
 
   // ==========================================================================
@@ -1486,6 +1698,9 @@ export class InboxService {
       isMention: input.isMention ?? itemType === 'mention',
       platformCreatedAt: input.platformCreatedAt,
       metadata,
+      // Only ever set on our own rows; an ingested row was written by someone
+      // outside the workspace and has no teammate to attribute.
+      authoredByUserId: input.fromMe ? (input.authoredByUserId ?? null) : null,
     };
 
     // ON CONFLICT: insert wins for new rows; on collision we merge author
@@ -2066,6 +2281,8 @@ export class InboxService {
       status?: InboxItemStatus;
       cursor?: string;
       limit?: number;
+      q?: string;
+      sort?: InboxSort;
     },
   ): Promise<{
     threads: DmConversationSummaryDto[];
@@ -2081,6 +2298,10 @@ export class InboxService {
       // A new incoming message inserts an un-archived row → it reappears.
       isNull(inboxItems.archivedAt),
     ];
+
+    if (isSearchable(options.q)) {
+      conditions.push(this.searchCondition(options.q as string));
+    }
 
     if (options.channelId && options.channelId !== 'all') {
       const channelIdNum = Number(options.channelId);
@@ -2195,7 +2416,7 @@ export class InboxService {
       });
     }
 
-    summariesRaw.sort((a, b) => b.latestAt.getTime() - a.latestAt.getTime());
+    this.sortThreadSummaries(summariesRaw, options.sort);
     const sliced = summariesRaw.slice(0, limit);
     const nextCursor =
       summariesRaw.length > limit
@@ -2268,6 +2489,9 @@ export class InboxService {
         .map((i) => i.platformCreatedAt)
         .sort((a, b) => b.getTime() - a.getTime())[0] ?? null;
 
+    // One query for every teammate who sent a message in this conversation.
+    const dmAuthors = await this.loadAuthorNames(items);
+
     let replyWindow: DmConversationSummaryDto['replyWindow'];
     if (this.dispatcher.supportsDm(latest.platform)) {
       try {
@@ -2313,7 +2537,9 @@ export class InboxService {
       unreadCount: unread,
       totalMessageCount: items.length,
       replyWindow,
-      messages: items.map((it) => this.dmItemToDto(it)),
+      messages: items.map((it) =>
+        this.dmItemToDto(it, this.resolveAuthor(it, dmAuthors)),
+      ),
     };
   }
 
@@ -2356,10 +2582,14 @@ export class InboxService {
     }
   }
 
-  private dmItemToDto(item: InboxItem): DmMessageDto {
+  private dmItemToDto(
+    item: InboxItem,
+    repliedBy?: { id: string; name: string },
+  ): DmMessageDto {
     const md = item.metadata ?? {};
     const rawAttachments = Array.isArray(md.attachments) ? md.attachments : [];
     return {
+      repliedBy,
       id: item.id,
       author: {
         handle: item.authorHandle?.trim() || 'unknown',
@@ -2471,6 +2701,7 @@ export class InboxService {
       text: created.text,
       fromMe: true,
       platformCreatedAt: created.platformCreatedAt,
+      authoredByUserId: userId,
       attachments: hasAttachments
         ? attachments.map((a) => ({
             kind: a.kind,
@@ -2527,7 +2758,7 @@ export class InboxService {
         ),
       }));
     if (!row) throw new Error('Failed to persist DM');
-    return this.dmItemToDto(row);
+    return this.dmItemToDto(row, await this.loadSelfAuthor(userId));
   }
 
   /**
@@ -2610,6 +2841,7 @@ export class InboxService {
       text: created.text,
       fromMe: true,
       platformCreatedAt: created.platformCreatedAt,
+      authoredByUserId: userId,
     });
 
     void this.emitCounts(workspaceId);
@@ -2623,7 +2855,7 @@ export class InboxService {
         ),
       }));
     if (!row) throw new Error('Failed to persist DM');
-    return this.dmItemToDto(row);
+    return this.dmItemToDto(row, await this.loadSelfAuthor(userId));
   }
 
   /** Mark all unread inbound DM messages in a conversation as needs_reply. */
@@ -2682,6 +2914,8 @@ export class InboxService {
     fromMe?: boolean;
     platformCreatedAt: Date;
     metadata?: Record<string, any>;
+    /** The teammate who sent this. Only meaningful with `fromMe: true`. */
+    authoredByUserId?: string | null;
     /** Phase 2.3 — media attached to this message (image/voice/video/file). */
     attachments?: Array<{
       kind: 'image' | 'voice' | 'video' | 'file' | 'audio';
@@ -2714,6 +2948,8 @@ export class InboxService {
       fromMe: input.fromMe ?? false,
       platformCreatedAt: input.platformCreatedAt,
       metadata: mergedMetadata,
+      // See `upsertComment` — only our own rows carry a teammate.
+      authoredByUserId: input.fromMe ? (input.authoredByUserId ?? null) : null,
     };
 
     const inserted = await db
