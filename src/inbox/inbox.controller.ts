@@ -54,6 +54,8 @@ export class InboxController {
       status: query.status,
       cursor: query.cursor,
       limit: query.limit,
+      q: query.q,
+      sort: query.sort,
     });
   }
 
@@ -70,6 +72,8 @@ export class InboxController {
       status: query.status,
       cursor: query.cursor,
       limit: query.limit,
+      q: query.q,
+      sort: query.sort,
     });
   }
 
@@ -224,6 +228,8 @@ export class InboxController {
       status: query.status,
       cursor: query.cursor,
       limit: query.limit,
+      q: query.q,
+      sort: query.sort,
     });
   }
 

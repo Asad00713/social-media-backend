@@ -5,7 +5,7 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { and, asc, desc, eq, inArray, isNull, lt, sql } from 'drizzle-orm';
+import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm';
 import { db } from '../drizzle/db';
 import {
   inboxItems,
@@ -36,7 +36,7 @@ import type {
   DmConversationSummary as AdapterDmConversationSummary,
   FetchedDm,
 } from './adapters/inbox-adapter.interface';
-import { InboxFolder } from './dto/list-comments.dto';
+import { InboxFolder, InboxSort } from './dto/list-comments.dto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { QUEUES } from '../queue/queue.module';
@@ -255,6 +255,33 @@ export function isContentRedacted(
   return item.platform === 'youtube' && item.text === null;
 }
 
+/** Shortest query we will run. See `buildSearchCondition`. */
+export const MIN_SEARCH_LENGTH = 2;
+
+/**
+ * `ILIKE` pattern for a user-typed query.
+ *
+ * The escaping is the point. `%`, `_` and `\` are all wildcards or escapes in
+ * a LIKE pattern, so a user searching for `50%` would otherwise match every
+ * row in the table, and `a_b` would match `axb`. Backslash goes first —
+ * escaping it after the others would double-escape what they just added.
+ *
+ * Exported as a pure function so it is unit-testable without the db singleton,
+ * following the `isContentRedacted` precedent above.
+ */
+export function buildSearchPattern(q: string): string {
+  const escaped = q
+    .replace(/\\/g, '\\\\')
+    .replace(/%/g, '\\%')
+    .replace(/_/g, '\\_');
+  return `%${escaped}%`;
+}
+
+/** Whether a query is worth running at all. */
+export function isSearchable(q?: string): boolean {
+  return !!q && q.trim().length >= MIN_SEARCH_LENGTH;
+}
+
 @Injectable()
 export class InboxService {
   private readonly logger = new Logger(InboxService.name);
@@ -370,6 +397,8 @@ export class InboxService {
       status?: InboxItemStatus;
       cursor?: string;
       limit?: number;
+      q?: string;
+      sort?: InboxSort;
     },
   ): Promise<{ threads: CommentThreadSummary[]; nextCursor: string | null }> {
     await this.assertWorkspaceAccess(workspaceId, userId);
@@ -382,6 +411,10 @@ export class InboxService {
       // incoming comment inserts an un-archived row → the thread reappears.
       isNull(inboxItems.archivedAt),
     ];
+
+    if (isSearchable(options.q)) {
+      conditions.push(this.searchCondition(options.q as string));
+    }
 
     if (options.channelId && options.channelId !== 'all') {
       const channelIdNum = Number(options.channelId);
@@ -476,7 +509,7 @@ export class InboxService {
       });
     }
 
-    summariesRaw.sort((a, b) => b.latestAt.getTime() - a.latestAt.getTime());
+    this.sortThreadSummaries(summariesRaw, options.sort);
 
     const sliced = summariesRaw.slice(0, limit);
     const nextCursor =
@@ -505,6 +538,8 @@ export class InboxService {
       status?: InboxItemStatus;
       cursor?: string;
       limit?: number;
+      q?: string;
+      sort?: InboxSort;
     },
   ): Promise<{ mentions: MentionItemDto[]; nextCursor: string | null }> {
     await this.assertWorkspaceAccess(workspaceId, userId);
@@ -518,6 +553,10 @@ export class InboxService {
       eq(inboxItems.isMention, true),
       isNull(inboxItems.archivedAt),
     ];
+
+    if (isSearchable(options.q)) {
+      conditions.push(this.searchCondition(options.q as string));
+    }
 
     if (options.channelId && options.channelId !== 'all') {
       const channelIdNum = Number(options.channelId);
@@ -535,18 +574,29 @@ export class InboxService {
     if (options.cursor) {
       const cursorDate = new Date(options.cursor);
       if (!Number.isNaN(cursorDate.getTime())) {
-        conditions.push(lt(inboxItems.platformCreatedAt, cursorDate));
+        conditions.push(
+          options.sort === 'oldest'
+            ? gt(inboxItems.platformCreatedAt, cursorDate)
+            : lt(inboxItems.platformCreatedAt, cursorDate),
+        );
       }
     }
 
     // Flat list — fetch one extra row past `limit` to know if there's a next
     // page, instead of the `limit * 10` over-fetch `listCommentThreads` needs
     // for its in-memory grouping.
+    // `oldest` flips the keyset direction, which is why the cursor comparison
+    // above is chosen from the same flag — a `lt` cursor walked ascending
+    // would page backwards past rows it already returned.
     const rows = await db
       .select()
       .from(inboxItems)
       .where(and(...conditions))
-      .orderBy(desc(inboxItems.platformCreatedAt))
+      .orderBy(
+        options.sort === 'oldest'
+          ? asc(inboxItems.platformCreatedAt)
+          : desc(inboxItems.platformCreatedAt),
+      )
       .limit(limit + 1);
 
     const sliced = rows.slice(0, limit);
@@ -577,10 +627,68 @@ export class InboxService {
     };
   }
 
+  /**
+   * Case-insensitive match across everything the user can see on a row: the
+   * message text, the author's handle and display name, and the cached post
+   * caption. Searching only `text` would miss "show me everything from
+   * @farhan", which is the more common query.
+   *
+   * `ILIKE` rather than full-text search, deliberately: users type partial
+   * handles (`@farh`), and FTS matches whole lexemes, so a prefix would score
+   * nothing. The trade-off is that this cannot use a b-tree index — acceptable
+   * at current volume, and the fix when it isn't is a `pg_trgm` GIN index on
+   * exactly this expression, not a different operator.
+   */
+  /**
+   * Order the grouped summaries in place.
+   *
+   * `unanswered` lifts threads still awaiting us — unread first, then
+   * needs_reply — and orders within each band by recency, so it reorders the
+   * list without removing anything from it.
+   *
+   * Sorting happens after grouping because the unit being ordered is the
+   * thread, not the row: a thread's position depends on its newest comment and
+   * its derived status, neither of which exists until the group is built.
+   */
+  private sortThreadSummaries(
+    rows: { summary: { status: InboxItemStatus; unreadCount: number }; latestAt: Date }[],
+    sort?: InboxSort,
+  ): void {
+    if (sort === 'oldest') {
+      rows.sort((a, b) => a.latestAt.getTime() - b.latestAt.getTime());
+      return;
+    }
+
+    if (sort === 'unanswered') {
+      const rank = (r: (typeof rows)[number]) => {
+        if (r.summary.unreadCount > 0) return 0;
+        if (r.summary.status === 'needs_reply') return 1;
+        return 2;
+      };
+      rows.sort(
+        (a, b) => rank(a) - rank(b) || b.latestAt.getTime() - a.latestAt.getTime(),
+      );
+      return;
+    }
+
+    rows.sort((a, b) => b.latestAt.getTime() - a.latestAt.getTime());
+  }
+
+  private searchCondition(q: string) {
+    const pattern = buildSearchPattern(q.trim());
+    const like = (col: unknown) =>
+      sql`coalesce(${col}, '') ILIKE ${pattern} ESCAPE '\\'`;
+    return sql`(${like(inboxItems.text)} OR ${like(inboxItems.authorHandle)} OR ${like(inboxItems.authorDisplayName)} OR ${like(sql`${inboxItems.metadata}->'post'->>'caption'`)})`;
+  }
+
   private folderToStatus(folder?: InboxFolder): InboxItemStatus | undefined {
     if (!folder || folder === 'all') return undefined;
     if (folder === 'unread') return 'unread';
     if (folder === 'needs_reply') return 'needs_reply';
+    // `replied` used to fall through to the `undefined` below, which does not
+    // mean "match nothing" but "apply no filter" — so the Replied folder
+    // quietly returned the whole inbox while every other folder narrowed it.
+    if (folder === 'replied') return 'replied';
     if (folder === 'done') return 'done';
     return undefined;
   }
@@ -2066,6 +2174,8 @@ export class InboxService {
       status?: InboxItemStatus;
       cursor?: string;
       limit?: number;
+      q?: string;
+      sort?: InboxSort;
     },
   ): Promise<{
     threads: DmConversationSummaryDto[];
@@ -2081,6 +2191,10 @@ export class InboxService {
       // A new incoming message inserts an un-archived row → it reappears.
       isNull(inboxItems.archivedAt),
     ];
+
+    if (isSearchable(options.q)) {
+      conditions.push(this.searchCondition(options.q as string));
+    }
 
     if (options.channelId && options.channelId !== 'all') {
       const channelIdNum = Number(options.channelId);
@@ -2195,7 +2309,7 @@ export class InboxService {
       });
     }
 
-    summariesRaw.sort((a, b) => b.latestAt.getTime() - a.latestAt.getTime());
+    this.sortThreadSummaries(summariesRaw, options.sort);
     const sliced = summariesRaw.slice(0, limit);
     const nextCursor =
       summariesRaw.length > limit
