@@ -105,10 +105,25 @@ export const inboxItems = pgTable(
       .notNull(),
 
     // If a user replied to this from Schedura, track who + when.
+    //
+    // NOTE the direction: this is stamped on the INCOMING row that was
+    // answered, so it means "teammate X dealt with this". It is NOT the author
+    // of the row it sits on — see `authoredByUserId` below for that.
     repliedByUserId: uuid('replied_by_user_id').references(() => users.id, {
       onDelete: 'set null',
     }),
     repliedAt: timestamp('replied_at', { withTimezone: true }),
+
+    // Which teammate composed THIS row, on rows we sent (`from_me = true`).
+    //
+    // Both columns are needed. On a shared inbox the platform identity is the
+    // same for everyone — every reply goes out as the page or profile — so
+    // without this there is no way to tell one colleague's reply from
+    // another's. `repliedByUserId` cannot stand in: it lives on the inbound
+    // row, and a brand-new top-level comment answers no inbound row at all.
+    authoredByUserId: uuid('authored_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
 
     // Platform-specific extras: attachment urls, sentiment from API, like counts, etc.
     metadata: jsonb('metadata').$type<Record<string, any>>().default({}),
