@@ -126,8 +126,16 @@ export class EmailService {
     subject: string;
     html: string;
     text?: string;
+    /**
+     * Where a reply should go, when that is not the from-address.
+     *
+     * Needed by mail we send *about* someone rather than *to* them — a contact
+     * form enquiry arrives from our own Resend address, so without this a reply
+     * goes to us instead of to the person who wrote in.
+     */
+    replyTo?: string;
   }): Promise<EmailResult> {
-    const { to, subject, html, text } = options;
+    const { to, subject, html, text, replyTo } = options;
 
     if (!this.resend) {
       // Log the email instead of sending.
@@ -158,6 +166,7 @@ export class EmailService {
         subject,
         html,
         text,
+        ...(replyTo ? { replyTo } : {}),
       });
 
       if (result.error) {
