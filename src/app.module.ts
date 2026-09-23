@@ -21,6 +21,7 @@ import { MessagingOverviewModule } from './channels/messaging-overview/messaging
 import { MediaModule } from './media/media.module';
 import { DripModule } from './drips/drip.module';
 import { FeedbackModule } from './feedback/feedback.module';
+import { ContactModule } from './contact/contact.module';
 import { NotificationsModule } from './notifications/notifications.module';
 import { PexelsModule } from './pexels/pexels.module';
 import { StockMediaModule } from './stock-media/stock-media.module';
@@ -73,6 +74,7 @@ import { QUEUES } from './queue/queue.module';
     AiModule,
     DripModule,
     FeedbackModule,
+    ContactModule,
     NotificationsModule,
     PexelsModule,
     StockMediaModule,
