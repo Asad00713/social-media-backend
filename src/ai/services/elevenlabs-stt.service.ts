@@ -16,6 +16,11 @@ export interface TranscriptionOptions {
   languageCode?: string; // ISO 639-1 code, e.g., 'en', 'es', 'fr'
 }
 
+// ElevenLabs' speech-to-text model. `scribe_v1` is the accurate one; the
+// `_experimental` variant is faster but less so, and dictation is read back
+// before it is sent, so accuracy is worth more than latency here.
+const STT_MODEL_ID = 'scribe_v1';
+
 // Duration limits in seconds
 const MAX_DURATION_SECONDS = 180; // 3 minutes max
 const MIN_DURATION_SECONDS = 1; // At least 1 second
@@ -126,6 +131,10 @@ export class ElevenLabsSttService {
       const uint8Array = new Uint8Array(audioBuffer);
       const blob = new Blob([uint8Array], { type: mimeType });
       formData.append('file', blob, filename);
+      // Required by the API, not optional: without it every request comes back
+      // 422 {"loc":["body","model_id"],"msg":"Field required"} and the caller
+      // sees "Transcription failed: unknown".
+      formData.append('model_id', STT_MODEL_ID);
 
       // Add optional language code
       if (options?.languageCode) {
@@ -146,8 +155,11 @@ export class ElevenLabsSttService {
         this.logger.error(
           `ElevenLabs STT error: ${response.status} - ${errorText}`,
         );
+        // `statusText` is empty over HTTP/2, which rendered every failure as
+        // "Transcription failed: unknown" and sent whoever was debugging to
+        // the logs to find out what actually went wrong.
         throw new BadRequestException(
-          `Transcription failed: ${response.statusText}`,
+          `Transcription failed: ${describeSttError(errorText, response.status)}`,
         );
       }
 
@@ -208,4 +220,30 @@ export class ElevenLabsSttService {
   getMaxDuration(): number {
     return MAX_DURATION_SECONDS;
   }
+}
+
+/**
+ * The readable half of an ElevenLabs error body.
+ *
+ * Their errors arrive in two shapes: `{detail: {message}}` for rejections we
+ * can act on ("File is corrupted"), and `{detail: [{loc, msg}]}` for schema
+ * complaints. Anything else falls back to the status code, which at least says
+ * whether it was us or them.
+ */
+function describeSttError(body: string, status: number): string {
+  try {
+    const parsed = JSON.parse(body) as {
+      detail?: { message?: string } | Array<{ msg?: string }>;
+    };
+    const detail = parsed.detail;
+    if (Array.isArray(detail)) {
+      const msgs = detail.map((d) => d?.msg).filter(Boolean);
+      if (msgs.length) return msgs.join('; ');
+    } else if (detail?.message) {
+      return detail.message;
+    }
+  } catch {
+    // Not JSON — fall through to the status code.
+  }
+  return `HTTP ${status}`;
 }
