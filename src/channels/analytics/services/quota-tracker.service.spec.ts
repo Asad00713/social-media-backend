@@ -70,6 +70,27 @@ describe('QuotaTrackerService', () => {
     expect(publish.allowed).toBe(true);
   });
 
+  // An exhausted quota trips the reject branch on every subsequent call that
+  // day. That branch's warn persists a DB row, so warning every time turned an
+  // exhausted quota into hundreds of thousands of identical log rows. It must
+  // warn once per scope per day, however many calls are refused after.
+  it('warns only once per scope per day while a quota stays exhausted', async () => {
+    const warnSpy = jest
+      .spyOn((service as any).logger, 'warn')
+      .mockImplementation(() => undefined);
+
+    // Push inbox to exhaustion, then hammer it with refused calls.
+    await service.tryConsume('youtube', 2800, 'inbox');
+    for (let i = 0; i < 50; i += 1) {
+      const refused = await service.tryConsume('youtube', 100, 'inbox');
+      expect(refused.allowed).toBe(false);
+    }
+
+    // Fifty refusals, one warn.
+    expect(warnSpy).toHaveBeenCalledTimes(1);
+    warnSpy.mockRestore();
+  });
+
   it('falls back to the whole platform budget when no subsystem is given', async () => {
     const result = await service.tryConsume('youtube', 100);
     expect(result.allowed).toBe(true);
