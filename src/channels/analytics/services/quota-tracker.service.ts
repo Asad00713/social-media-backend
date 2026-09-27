@@ -59,9 +59,20 @@ export class QuotaTrackerService {
     const threshold = Math.floor(budget * 0.95);
 
     if (current + cost > threshold) {
-      this.logger.warn(
-        `Quota near-exhausted for ${scope}: ${current}/${budget} (threshold ${threshold})`,
-      );
+      // Warn once per scope per day, not on every rejected call. Once a
+      // platform hits its ceiling, every remaining call that day trips this
+      // branch — and this warn persists a DB row, so an exhausted quota was
+      // writing hundreds of thousands of identical log rows a day. A counter
+      // keyed to the scope+day is 1 only on the first rejection; later ones
+      // skip the warn (the caller still gets allowed: false either way).
+      const warnedKey = `quota-warned:${scope}:${this.dayKey()}`;
+      const warnCount = await this.redis.incrby(warnedKey, 1);
+      if (warnCount === 1) {
+        await this.redis.expire(warnedKey, 30 * 60 * 60);
+        this.logger.warn(
+          `Quota near-exhausted for ${scope}: ${current}/${budget} (threshold ${threshold})`,
+        );
+      }
       return { allowed: false, remaining: budget - current };
     }
 
