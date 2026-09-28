@@ -97,6 +97,40 @@ describe('QuotaTrackerService', () => {
     expect(result.remaining).toBe(9900);
   });
 
+  // Handlers gate a repeating error log (a dead channel token) on this so an
+  // auth failure that recurs every polling cycle logs once, not thousands of
+  // times a day. First call true for a key, the rest false.
+  it('shouldLogOncePerDay returns true once per key, then false', async () => {
+    expect(await service.shouldLogOncePerDay('channel:42')).toBe(true);
+    expect(await service.shouldLogOncePerDay('channel:42')).toBe(false);
+    expect(await service.shouldLogOncePerDay('channel:42')).toBe(false);
+    // A different key is independent.
+    expect(await service.shouldLogOncePerDay('channel:99')).toBe(true);
+  });
+
+  it('shouldLogOncePerDay fails open (true) when Redis throws', async () => {
+    const throwingRedis = {
+      async get() {
+        return null;
+      },
+      async incrby() {
+        throw new Error('redis down');
+      },
+      async expire() {
+        return 1;
+      },
+    };
+    const mod: TestingModule = await Test.createTestingModule({
+      imports: [ConfigModule.forRoot({ isGlobal: true })],
+      providers: [
+        QuotaTrackerService,
+        { provide: 'REDIS_CLIENT', useValue: throwingRedis },
+      ],
+    }).compile();
+    const svc = mod.get<QuotaTrackerService>(QuotaTrackerService);
+    expect(await svc.shouldLogOncePerDay('anything')).toBe(true);
+  });
+
   // YouTube's quota resets at midnight Pacific, not UTC. This instant is
   // 2026-07-18T04:00:00Z, which is 2026-07-17T21:00:00-07:00 in Los Angeles
   // (PDT) — same instant, different calendar date in each timezone. The day

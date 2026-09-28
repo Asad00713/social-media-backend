@@ -106,9 +106,25 @@ export class PostMetricSnapshotHandler {
     });
 
     if (result.status === 'failed') {
-      this.logger.error(
-        `Post snapshot failed postId=${postId}: ${result.error.message}`,
-      );
+      // A dead channel token fails every post on that channel, every polling
+      // cycle, forever — until the user reconnects. Retrying can't fix it, and
+      // each error() persists a DB row, so an auth failure was the single
+      // largest source of log rows. Log it once per channel per day; the post
+      // is skipped either way and picked up again on the next tier tick.
+      if (result.error.code === 'auth_failed') {
+        const shouldLog = await this.quota.shouldLogOncePerDay(
+          `post-snapshot-auth-failed:channel:${channelId}`,
+        );
+        if (shouldLog) {
+          this.logger.warn(
+            `Post snapshot auth failed for channel ${channelId} — token likely needs reconnect (postId=${postId})`,
+          );
+        }
+      } else {
+        this.logger.error(
+          `Post snapshot failed postId=${postId}: ${result.error.message}`,
+        );
+      }
       return { ok: false };
     }
 

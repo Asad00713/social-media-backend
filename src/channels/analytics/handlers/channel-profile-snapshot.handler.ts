@@ -234,9 +234,26 @@ export class ChannelProfileSnapshotHandler {
       );
     }
 
-    this.logger.error(
-      `Profile snapshot failed: channelId=${channelId} ${result.error.message}`,
-    );
+    // Same reasoning as the post-metric handler: a dead token fails this
+    // channel every cycle until reconnect, and each error() persists a DB row.
+    // The consecutive-failure/expired bookkeeping above already runs every
+    // time; only the log is throttled, to once per channel per day for an auth
+    // failure. Other failure codes stay at error() — they're rarer and may be
+    // transient.
+    if (result.error.code === 'auth_failed') {
+      const shouldLog = await this.quota.shouldLogOncePerDay(
+        `profile-snapshot-auth-failed:channel:${channelId}`,
+      );
+      if (shouldLog) {
+        this.logger.warn(
+          `Profile snapshot auth failed for channel ${channelId} — token likely needs reconnect`,
+        );
+      }
+    } else {
+      this.logger.error(
+        `Profile snapshot failed: channelId=${channelId} ${result.error.message}`,
+      );
+    }
     return { ok: false };
   }
 }
