@@ -16,6 +16,10 @@ import {
   MAESTRO_TONES,
   type MaestroTone,
 } from '../../drizzle/schema/users.schema';
+import {
+  AGENT_RUNTIMES,
+  type AgentRuntimeKind,
+} from '../runtime/runtime-selector';
 
 /** Models the UI may request. Kept in sync with the frontend model switcher. */
 export const MAESTRO_MODELS = [
@@ -139,6 +143,15 @@ export class SendMaestroMessageDto {
   @IsOptional()
   @IsBoolean()
   webSearch?: boolean;
+
+  /**
+   * Which runtime answers this turn: the Claude Agent SDK, or the Messages
+   * API. Omitted means `sdk` — the bridges and any older client keep the
+   * behaviour they have today.
+   */
+  @IsOptional()
+  @IsIn(AGENT_RUNTIMES)
+  runtime?: AgentRuntimeKind;
 
   /** Files (images/PDF) attached to this turn, already uploaded to R2. */
   @IsOptional()

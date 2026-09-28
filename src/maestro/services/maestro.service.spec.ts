@@ -85,6 +85,10 @@ function makeHarness(
       })()
     ),
   };
+  // The service picks its runtime through the selector now (SDK or Messages
+  // API). These tests are about what `streamMessage` does with the events,
+  // which is identical either way, so both kinds resolve to the same fake.
+  const runtimes = { forKind: () => runtime };
 
   const addMessage = jest
     .fn<Promise<{ id: string }>, unknown[]>()
@@ -148,7 +152,7 @@ function makeHarness(
   const groq = { isReady: () => false } as never;
 
   const service = new MaestroService(
-    runtime as never,
+    runtimes as never,
     conversations as never,
     users as never,
     stub, // workspaceService

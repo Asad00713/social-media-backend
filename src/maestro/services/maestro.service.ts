@@ -20,7 +20,10 @@ import { ScheduledMessagesService } from '../../inbox/services/scheduled-message
 import { DripService } from '../../drips/drip.service';
 import { PostService } from '../../posts/services/post.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
-import { ClaudeAgentSdkRuntime } from '../runtime/claude-agent-sdk.runtime';
+import {
+  AgentRuntimeSelector,
+  type AgentRuntimeKind,
+} from '../runtime/runtime-selector';
 import { MaestroKeyService } from './maestro-key.service';
 import { createUserTools } from '../tools/user.tools';
 import { isPendingAction, type PendingAction } from '../tools/confirm';
@@ -210,7 +213,7 @@ export class MaestroService {
   private readonly logger = new Logger(MaestroService.name);
 
   constructor(
-    private readonly runtime: ClaudeAgentSdkRuntime,
+    private readonly runtimes: AgentRuntimeSelector,
     private readonly conversations: ConversationService,
     private readonly usersService: UsersService,
     private readonly workspaceService: WorkspaceService,
@@ -722,6 +725,8 @@ export class MaestroService {
       onUserMessagePersisted?: () => void;
       /** Set when this turn answers a confirm card rather than being typed. */
       approval?: { messageId: string; option: string };
+      /** Which runtime answers this turn. Defaults to the Agent SDK. */
+      runtime?: AgentRuntimeKind;
     },
     signal: AbortSignal,
   ): AsyncGenerator<MaestroSseEvent> {
@@ -966,8 +971,13 @@ export class MaestroService {
     // turn must leave every named entity clickable.
     let maestroRefs: EntityReference[] = [];
 
+    // Both adapters implement the same port, so everything below — the SSE
+    // translation, the media/question/reference extraction, persistence — is
+    // shared. That is what makes the two tabs comparable.
+    const runtime = this.runtimes.forKind(params.runtime ?? 'sdk');
+
     try {
-      for await (const ev of this.runtime.run(input)) {
+      for await (const ev of runtime.run(input)) {
         if (signal.aborted) break;
         switch (ev.type) {
           case 'thinking_delta':

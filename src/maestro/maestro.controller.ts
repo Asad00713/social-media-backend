@@ -265,6 +265,7 @@ export class MaestroController {
           webSearch: dto.webSearch,
           attachments: dto.attachments,
           approval: dto.approval,
+          runtime: dto.runtime,
         },
         abortController.signal,
       )) {

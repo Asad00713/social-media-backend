@@ -28,6 +28,8 @@ import { MaestroController } from './maestro.controller';
 import { MaestroService } from './services/maestro.service';
 import { MaestroKeyService } from './services/maestro-key.service';
 import { ClaudeAgentSdkRuntime } from './runtime/claude-agent-sdk.runtime';
+import { MessagesApiRuntime } from './runtime/messages-api.runtime';
+import { AgentRuntimeSelector } from './runtime/runtime-selector';
 // Reuse the existing chatbot conversation persistence (same DB tables).
 // ConversationService + TokenTrackingService only depend on the global DRIZZLE provider.
 import { ConversationService } from '../chatbot/services/conversation.service';
@@ -86,6 +88,8 @@ import { MaestroBridgeProcessor } from './bridge/processors/maestro-bridge.proce
     MentionSearchService,
     MaestroKeyService,
     ClaudeAgentSdkRuntime,
+    MessagesApiRuntime,
+    AgentRuntimeSelector,
     ConversationService,
     TokenTrackingService,
     PexelsService,
