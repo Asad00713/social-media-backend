@@ -8,6 +8,7 @@ import type {
   AgentToolDefinition,
 } from '../maestro.types';
 import { runTool } from '../tools/run-tool';
+import { MAESTRO_API_RUNTIME_KEY_ENV } from '../auth/agent-auth';
 
 /**
  * Messages-API adapter for the `AgentRuntime` port.
@@ -76,9 +77,17 @@ export class MessagesApiRuntime implements AgentRuntime {
   private readonly logger = new Logger(MessagesApiRuntime.name);
 
   async *run(input: AgentRunInput): AsyncIterable<AgentEvent> {
-    const apiKey = input.env?.ANTHROPIC_API_KEY;
+    // Subscription mode strips ANTHROPIC_API_KEY so the SDK subprocess uses
+    // Claude Code's OAuth — but this runtime has no OAuth path, so it falls
+    // back to the key parked aside for exactly this case.
+    const apiKey =
+      input.env?.ANTHROPIC_API_KEY ?? input.env?.[MAESTRO_API_RUNTIME_KEY_ENV];
     if (!apiKey) {
-      yield { type: 'error', message: 'Maestro is not configured.' };
+      yield {
+        type: 'error',
+        message:
+          'Maestro is not configured: the API runtime needs an Anthropic API key.',
+      };
       return;
     }
 
@@ -186,7 +195,10 @@ export class MessagesApiRuntime implements AgentRuntime {
             type: 'tool_result',
             id: use.id,
             name: use.name,
-            output: outcome.text,
+            // Content blocks, not a bare string: the consumer digs the tool's
+            // JSON out of a text block to find references, media, question
+            // cards and web results. A string parses as none of those.
+            output: [{ type: 'text', text: outcome.text }],
             isError: outcome.isError,
           };
 

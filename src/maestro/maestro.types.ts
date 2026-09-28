@@ -58,7 +58,15 @@ export type AgentEvent =
       type: 'tool_result';
       id: string;
       name: string;
-      output: unknown;
+      /**
+       * Anthropic tool_result content blocks — `[{ type: 'text', text }]`.
+       *
+       * Typed, not `unknown`: the consumer reads the payload back out of the
+       * text block to find references, media, question cards and web results.
+       * A runtime that yields a bare string instead loses all four silently,
+       * which is exactly what happened before this was pinned down.
+       */
+      output: ToolResultContent;
       isError: boolean;
     }
   | {
@@ -66,6 +74,9 @@ export type AgentEvent =
       usage: { inputTokens: number; outputTokens: number; costUsd: number };
     }
   | { type: 'error'; message: string };
+
+/** A tool result as Anthropic models it: a list of content blocks. */
+export type ToolResultContent = { type: 'text'; text: string }[];
 
 /** Input to a single agent run (one user turn). */
 export interface AgentRunInput {

@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { MessagesApiRuntime } from './messages-api.runtime';
+import { MAESTRO_API_RUNTIME_KEY_ENV } from '../auth/agent-auth';
 import type {
   AgentEvent,
   AgentRunInput,
@@ -92,6 +93,12 @@ async function collect(input: AgentRunInput): Promise<AgentEvent[]> {
   return out;
 }
 
+/** The text a tool_result event carries, through its content blocks. */
+function textOf(ev: AgentEvent | undefined): string {
+  if (ev?.type !== 'tool_result') throw new Error('not a tool_result');
+  return ev.output.map((b) => b.text).join('');
+}
+
 /** The `messages` array of the Nth API call. */
 function messagesOfCall(n: number): Array<Record<string, unknown>> {
   return mockStream.mock.calls[n][0].messages;
@@ -148,9 +155,65 @@ describe('MessagesApiRuntime', () => {
     it('errors rather than calling out with no key', async () => {
       const events = await collect(input({ env: {} }));
       expect(events).toEqual([
-        { type: 'error', message: 'Maestro is not configured.' },
+        {
+          type: 'error',
+          message:
+            'Maestro is not configured: the API runtime needs an Anthropic API key.',
+        },
       ]);
       expect(mockStream).not.toHaveBeenCalled();
+    });
+
+    // Local dev runs MAESTRO_AUTH_MODE=subscription, which strips
+    // ANTHROPIC_API_KEY so the SDK subprocess uses Claude Code's OAuth. This
+    // runtime has no OAuth path, so it must find the key parked aside — or it
+    // is dead in exactly the setup it gets developed in.
+    // The consumer digs the tool's JSON out of a text block to find
+    // references, media, question cards and web results. A bare string parses
+    // as none of those — the answer arrives with its links hollowed out.
+    it('yields tool output as content blocks, not a bare string', async () => {
+      mockStream
+        .mockReturnValueOnce(
+          scriptReply({
+            content: [
+              { type: 'tool_use', id: 't-1', name: 'list_posts', input: {} },
+            ],
+            stopReason: 'tool_use',
+          }),
+        )
+        .mockReturnValueOnce(
+          scriptReply({ content: [{ type: 'text', text: 'Done' }] }),
+        );
+
+      const events = await collect(
+        input({
+          tools: [
+            tool({ handler: () => Promise.resolve({ kind: 'reference' }) }),
+          ],
+        }),
+      );
+
+      const result = events.find((e) => e.type === 'tool_result');
+      expect(Array.isArray((result as { output: unknown }).output)).toBe(true);
+      expect(result).toMatchObject({
+        output: [{ type: 'text', text: '{"kind":"reference"}' }],
+      });
+    });
+
+    it('uses the key parked aside by subscription mode', async () => {
+      mockStream.mockReturnValue(
+        scriptReply({
+          deltas: [{ type: 'text_delta', text: 'Two posts' }],
+          content: [{ type: 'text', text: 'Two posts' }],
+        }),
+      );
+
+      const events = await collect(
+        input({ env: { [MAESTRO_API_RUNTIME_KEY_ENV]: 'sk-parked' } }),
+      );
+
+      expect(events.filter((e) => e.type === 'error')).toEqual([]);
+      expect(events.map((e) => e.type)).toEqual(['text_delta', 'done']);
     });
   });
 
@@ -249,9 +312,7 @@ describe('MessagesApiRuntime', () => {
 
       const result = events.find((e) => e.type === 'tool_result');
       expect(result).toMatchObject({ isError: true });
-      expect(String((result as { output: string }).output)).toContain(
-        'DB is down',
-      );
+      expect(textOf(result)).toContain('DB is down');
       // The turn still finished.
       expect(events[events.length - 1].type).toBe('done');
     });
