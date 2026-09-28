@@ -5,6 +5,7 @@ import {
   varchar,
   boolean,
   text,
+  integer,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { users } from './users.schema';
@@ -38,6 +39,10 @@ export const workspace = pgTable('workspace', {
   // Marks the first-run Maestro wizard as finished, so it runs once, not on
   // every reload. Null = the user has not completed it yet.
   maestroOnboardedAt: timestamp('maestro_onboarded_at'),
+
+  // How many posts a week the team aims to publish. Drives the "Posting goal"
+  // ring on Home. Editable by members who can publish.
+  weeklyPostGoal: integer('weekly_post_goal').notNull().default(5),
 
   // Workspace suspension
   isActive: boolean('is_active').notNull().default(true),
