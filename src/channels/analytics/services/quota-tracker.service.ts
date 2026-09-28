@@ -107,6 +107,30 @@ export class QuotaTrackerService {
   }
 
   /**
+   * True at most once per `key` per day. Backed by the same Redis + Pacific-day
+   * bucket as the quota counters, so a repeating condition (an exhausted quota,
+   * a dead channel token) can be logged once instead of on every retry.
+   *
+   * Callers use it to gate a `logger.error/warn` — those persist a DB row, so
+   * a condition that recurs every polling cycle would otherwise write hundreds
+   * of thousands of identical rows a day. Fails open (returns true) if Redis is
+   * unreachable: better a duplicate log than a silently swallowed one.
+   */
+  async shouldLogOncePerDay(key: string): Promise<boolean> {
+    try {
+      const dayKey = `log-once:${key}:${this.dayKey()}`;
+      const count = await this.redis.incrby(dayKey, 1);
+      if (count === 1) {
+        await this.redis.expire(dayKey, 30 * 60 * 60);
+        return true;
+      }
+      return false;
+    } catch {
+      return true;
+    }
+  }
+
+  /**
    * YouTube's daily quota resets at midnight Pacific, not UTC. Deriving the
    * bucket from `toISOString()` (UTC) would roll our counter over at
    * 00:00 UTC — 16:00 or 17:00 Pacific — while YouTube's own quota day still
