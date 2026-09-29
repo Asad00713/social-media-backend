@@ -1,6 +1,8 @@
 import {
   computeStreakWeeks,
+  dailySeries,
   deltaPct,
+  isPulseRange,
   summarizeChannel,
   summarizeWindow,
   weekStart,
@@ -150,5 +152,87 @@ describe('computeStreakWeeks', () => {
   it('is zero when the last two weeks are empty', () => {
     expect(computeStreakWeeks([d('2026-09-08T09:00Z')], now)).toBe(0);
     expect(computeStreakWeeks([], now)).toBe(0);
+  });
+});
+
+describe('dailySeries', () => {
+  it('has one point per day in the window, summed across channels', () => {
+    const series = dailySeries(
+      [
+        row({
+          channelId: 1,
+          date: '2026-09-21',
+          postsPublished: 2,
+          totalLikes: 5,
+          totalComments: 1,
+          totalImpressions: 100,
+          followersGained: 3,
+        }),
+        row({
+          channelId: 2,
+          date: '2026-09-21',
+          postsPublished: 1,
+          totalShares: 4,
+          totalImpressions: 50,
+        }),
+        row({ channelId: 1, date: '2026-09-23', totalLikes: 2 }),
+      ],
+      '2026-09-21',
+      '2026-09-23',
+    );
+    expect(series).toEqual([
+      {
+        date: '2026-09-21',
+        postsPublished: 3,
+        impressions: 150,
+        engagements: 10,
+        followersGained: 3,
+      },
+      // A day with no rows at all is still on the line, at zero.
+      {
+        date: '2026-09-22',
+        postsPublished: 0,
+        impressions: null,
+        engagements: 0,
+        followersGained: null,
+      },
+      {
+        date: '2026-09-23',
+        postsPublished: 0,
+        impressions: null,
+        engagements: 2,
+        followersGained: null,
+      },
+    ]);
+  });
+
+  it('leaves out rows outside the window', () => {
+    const series = dailySeries(
+      [row({ date: '2026-09-20', postsPublished: 9 })],
+      '2026-09-21',
+      '2026-09-21',
+    );
+    expect(series).toEqual([
+      {
+        date: '2026-09-21',
+        postsPublished: 0,
+        impressions: null,
+        engagements: 0,
+        followersGained: null,
+      },
+    ]);
+  });
+
+  it('crosses a month end', () => {
+    expect(
+      dailySeries([], '2026-09-29', '2026-10-02').map((d) => d.date),
+    ).toEqual(['2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02']);
+  });
+});
+
+describe('isPulseRange', () => {
+  it('accepts 7, 30 and 90 days only', () => {
+    expect([7, 30, 90].every(isPulseRange)).toBe(true);
+    expect([0, 1, 14, 31, 365, NaN].some(isPulseRange)).toBe(false);
   });
 });

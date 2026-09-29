@@ -35,7 +35,24 @@ export interface ChannelSummary {
   postsThisWeek: number;
 }
 
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000;
+/** The windows Home's Performance can show. */
+export const PULSE_RANGES = [7, 30, 90] as const;
+export type PulseRange = (typeof PULSE_RANGES)[number];
+
+/** One day of the workspace, summed across channels — a sparkline point. */
+export interface PulseDay {
+  /** `YYYY-MM-DD`. */
+  date: string;
+  postsPublished: number;
+  /** null when no channel reported impressions that day. */
+  impressions: number | null;
+  engagements: number;
+  /** null when no channel reported follower changes that day. */
+  followersGained: number | null;
+}
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+const WEEK_MS = 7 * DAY_MS;
 /** How far back a streak is counted. Long enough for any realistic streak. */
 export const STREAK_LOOKBACK_WEEKS = 52;
 
@@ -134,4 +151,44 @@ export function computeStreakWeeks(publishedAt: Date[], now: Date): number {
     cursor -= WEEK_MS;
   }
   return streak;
+}
+
+export function isPulseRange(days: number): days is PulseRange {
+  return (PULSE_RANGES as readonly number[]).includes(days);
+}
+
+/**
+ * Every day from `from` to `to` (inclusive, `YYYY-MM-DD`), summed across
+ * channels. Days without a row still appear, at zero, so a sparkline's x-axis
+ * is time rather than "days we happened to have data".
+ */
+export function dailySeries(
+  rows: DailyRow[],
+  from: string,
+  to: string,
+): PulseDay[] {
+  const byDate = new Map<string, PulseDay>();
+  const end = Date.parse(`${to}T00:00:00Z`);
+  for (let t = Date.parse(`${from}T00:00:00Z`); t <= end; t += DAY_MS) {
+    const date = new Date(t).toISOString().slice(0, 10);
+    byDate.set(date, {
+      date,
+      postsPublished: 0,
+      impressions: null,
+      engagements: 0,
+      followersGained: null,
+    });
+  }
+
+  for (const r of rows) {
+    const day = byDate.get(r.date);
+    if (!day) continue;
+    day.postsPublished += r.postsPublished;
+    day.engagements += r.totalLikes + r.totalComments + r.totalShares;
+    if (r.totalImpressions !== null)
+      day.impressions = (day.impressions ?? 0) + r.totalImpressions;
+    if (r.followersGained !== null)
+      day.followersGained = (day.followersGained ?? 0) + r.followersGained;
+  }
+  return [...byDate.values()];
 }

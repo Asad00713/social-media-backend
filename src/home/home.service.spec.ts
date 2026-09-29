@@ -162,6 +162,101 @@ describe('HomeService.getSummary', () => {
   });
 });
 
+describe('HomeService.getPulse', () => {
+  const daily = (date: string, over: Record<string, number | null> = {}) => ({
+    channelId: 1,
+    date,
+    postsPublished: 0,
+    totalLikes: 0,
+    totalComments: 0,
+    totalShares: 0,
+    totalImpressions: null,
+    followersAtEndOfDay: null,
+    followersGained: null,
+    ...over,
+  });
+
+  it('compares the chosen number of days with the same span before, with a point per day', async () => {
+    const { db } = fakeDb([
+      [{ id: 1 }],
+      [
+        daily('2026-08-15', {
+          postsPublished: 4,
+          totalLikes: 8,
+          totalImpressions: 400,
+        }),
+        daily('2026-09-10', {
+          postsPublished: 6,
+          totalLikes: 30,
+          totalImpressions: 600,
+          followersGained: 12,
+        }),
+      ],
+    ]);
+
+    const p = await new HomeService(db as any).getPulse('ws1', 30, NOW);
+
+    // Whole UTC days ending yesterday, like the summary.
+    expect(p.days).toBe(30);
+    expect(p.window).toEqual({
+      from: '2026-08-31',
+      to: '2026-09-29',
+      previousFrom: '2026-08-01',
+      previousTo: '2026-08-30',
+    });
+    expect(p.pulse.postsPublished).toEqual({
+      value: 6,
+      previous: 4,
+      deltaPct: 50,
+    });
+    expect(p.pulse.engagements).toEqual({
+      value: 30,
+      previous: 8,
+      deltaPct: 275,
+      rate: 5,
+    });
+    expect(p.pulse.followersGained).toEqual({
+      value: 12,
+      previous: null,
+      deltaPct: null,
+    });
+    expect(p.series).toHaveLength(30);
+    expect(p.series[0].date).toBe('2026-08-31');
+    expect(p.series[29].date).toBe('2026-09-29');
+    expect(p.series.find((d) => d.date === '2026-09-10')).toEqual({
+      date: '2026-09-10',
+      postsPublished: 6,
+      impressions: 600,
+      engagements: 30,
+      followersGained: 12,
+    });
+  });
+
+  it('uses the same window as the summary for 7 days', async () => {
+    const { db } = fakeDb([[{ id: 1 }], []]);
+    const p = await new HomeService(db as any).getPulse('ws1', 7, NOW);
+    expect(p.window).toEqual({
+      from: '2026-09-23',
+      to: '2026-09-29',
+      previousFrom: '2026-09-16',
+      previousTo: '2026-09-22',
+    });
+    expect(p.series).toHaveLength(7);
+  });
+
+  it('skips the analytics query for a workspace with no channels', async () => {
+    const { db, calls } = fakeDb([[]]);
+    const p = await new HomeService(db as any).getPulse('ws1', 90, NOW);
+    expect(calls).toHaveLength(1);
+    expect(p.series).toHaveLength(90);
+    expect(p.pulse.impressions).toEqual({
+      value: null,
+      previous: null,
+      deltaPct: null,
+    });
+  });
+});
+
 describe('HomeService.setWeeklyPostGoal', () => {
   it('stores the goal and returns it', async () => {
     const { db } = fakeDb([[{ weeklyPostGoal: 9 }]]);
