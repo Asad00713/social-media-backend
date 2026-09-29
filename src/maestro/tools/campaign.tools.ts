@@ -6,8 +6,10 @@ import type {
 import type { AgentToolDefinition } from '../maestro.types';
 import {
   REFERENCE_USAGE_HINT,
+  formatWhen,
   withReferences,
   type EntityReference,
+  type ReferenceDetail,
 } from './references';
 
 /**
@@ -145,6 +147,40 @@ function summarize(c: CampaignDto) {
   };
 }
 
+/**
+ * The facts a hover card shows about a campaign.
+ *
+ * Chosen for what the chip CANNOT show: it already carries the name, the type
+ * icon and the status pill. These answer the next question — when does it run,
+ * and how far along is it — so the reader does not have to open the page to
+ * find out.
+ *
+ * Formatted here rather than on the frontend because these strings come from
+ * the same helpers the answer's prose uses, so a card and the sentence beside
+ * it cannot disagree.
+ */
+function detailsFor(c: CampaignDto): ReferenceDetail[] {
+  const details: ReferenceDetail[] = [
+    { label: 'Type', value: typeLabel(c.type) },
+  ];
+
+  const schedule = scheduleSummary(c);
+  if (schedule) details.push({ label: 'Schedule', value: schedule });
+
+  const { planned, published } = progressOf(c);
+  if (planned > 0) {
+    details.push({ label: 'Progress', value: `${published} of ${planned}` });
+  }
+
+  // Only worth showing while something is still coming: a finished campaign's
+  // next run is empty, and a draft has never had one. An unparseable one is
+  // dropped rather than printed as "Invalid Date".
+  const nextRun = formatWhen(c.nextRunAt);
+  if (nextRun) details.push({ label: 'Next run', value: nextRun });
+
+  return details;
+}
+
 function referenceFor(c: CampaignDto): EntityReference {
   return {
     kind: 'campaign',
@@ -154,6 +190,7 @@ function referenceFor(c: CampaignDto): EntityReference {
     // The raw type, not its label — the frontend maps this to the same icon the
     // Campaigns page draws on the card, so a chip looks like what it links to.
     variant: c.type,
+    details: detailsFor(c),
   };
 }
 

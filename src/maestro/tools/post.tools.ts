@@ -4,8 +4,10 @@ import type { AgentToolDefinition } from '../maestro.types';
 import { confirmCard, isConfirmed } from './confirm';
 import {
   REFERENCE_USAGE_HINT,
+  formatWhen,
   withReferences,
   type EntityReference,
+  type ReferenceDetail,
 } from './references';
 
 /** Per-channel publish target stored on a post (jsonb). */
@@ -139,6 +141,41 @@ export function chipLabel(post: PostRow): string {
   return `${trimmed.trimEnd()}…`;
 }
 
+/**
+ * The facts a hover card shows about a post.
+ *
+ * The chip carries an excerpt, one platform logo and the status. These answer
+ * what it cannot: WHEN it goes out, and whether the one logo is hiding others.
+ * A post going to four platforms looks single-platform on the chip, which is
+ * the misreading this row exists to prevent.
+ */
+function postDetails(post: PostRow): ReferenceDetail[] {
+  const details: ReferenceDetail[] = [];
+
+  const platforms = platformsOf(post);
+  if (platforms.length > 0) {
+    details.push({ label: 'Posting to', value: platforms.join(', ') });
+  }
+
+  const when = formatWhen(post.scheduledAt);
+  if (when) {
+    // The same timestamp means different things either side of publication,
+    // and a published post labelled "Scheduled" reads as still pending.
+    const label = post.status === 'published' ? 'Published' : 'Scheduled';
+    details.push({ label, value: when });
+  }
+
+  const media = mediaCount(post);
+  if (media > 0) {
+    details.push({
+      label: 'Media',
+      value: media === 1 ? '1 item' : `${media} items`,
+    });
+  }
+
+  return details;
+}
+
 export function postReference(post: PostRow): EntityReference {
   return {
     // A draft routes to the same editor as any other post, but the frontend
@@ -151,6 +188,7 @@ export function postReference(post: PostRow): EntityReference {
     // the first. Multi-platform posts read as that platform's post in the UI
     // too, so this matches what the user already sees.
     ...(platformsOf(post)[0] ? { platform: platformsOf(post)[0] } : {}),
+    details: postDetails(post),
   };
 }
 

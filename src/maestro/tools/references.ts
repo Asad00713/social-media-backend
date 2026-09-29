@@ -33,6 +33,14 @@ export const REFERENCE_KINDS = [
 
 export type ReferenceKind = (typeof REFERENCE_KINDS)[number];
 
+/** One labelled fact on a reference's hover card. */
+export interface ReferenceDetail {
+  /** Two or three words: "Next run", "Progress", "Last synced". */
+  label: string;
+  /** Already formatted for display — see `EntityReference.details`. */
+  value: string;
+}
+
 /**
  * One linkable entity. Deliberately NOT a URL: the backend does not own
  * frontend routing, and the model owning it would be worse still.
@@ -65,6 +73,20 @@ export interface EntityReference {
    * like the card it links to.
    */
   variant?: string;
+  /**
+   * A few labelled facts for the hover card, in the order they should read.
+   *
+   * The chip shows name, icon and status; a card built from only those would
+   * repeat the chip back at the reader. These are the things a tool already
+   * has in hand and the chip has no room for — when a campaign next runs, how
+   * far along it is, when a channel last synced.
+   *
+   * Values are pre-formatted strings, not raw data: the tool knows what its
+   * own numbers mean, and a card that had to interpret them would drift from
+   * the page it links to. Keep it to three or four — a hover card is a
+   * glance, not a page.
+   */
+  details?: ReferenceDetail[];
 }
 
 /** A tool result carrying linkable entities. */
@@ -148,8 +170,41 @@ export function isEntityReference(value: unknown): value is EntityReference {
     (REFERENCE_KINDS as readonly string[]).includes(r.kind) &&
     (r.status === undefined || typeof r.status === 'string') &&
     (r.platform === undefined || typeof r.platform === 'string') &&
-    (r.variant === undefined || typeof r.variant === 'string')
+    (r.variant === undefined || typeof r.variant === 'string') &&
+    (r.details === undefined ||
+      (Array.isArray(r.details) && r.details.every(isReferenceDetail)))
   );
+}
+
+/**
+ * A timestamp as a short phrase for a hover card: "Mar 4, 9:00 AM".
+ *
+ * Shared so every kind's card reads the same way — a channel's last post and a
+ * campaign's next run should not be spelled differently on two cards the user
+ * sees in one reply.
+ *
+ * Returns null for a missing or unparseable value rather than "Invalid Date",
+ * so the caller omits the row instead of printing a defect.
+ */
+export function formatWhen(
+  at: Date | string | null | undefined,
+): string | null {
+  if (!at) return null;
+  const d = new Date(at);
+  if (Number.isNaN(d.getTime())) return null;
+  return d.toLocaleString('en-US', {
+    month: 'short',
+    day: 'numeric',
+    hour: 'numeric',
+    minute: '2-digit',
+  });
+}
+
+/** True when `value` is a well-formed hover-card detail. */
+function isReferenceDetail(value: unknown): value is ReferenceDetail {
+  if (!value || typeof value !== 'object') return false;
+  const d = value as Record<string, unknown>;
+  return typeof d.label === 'string' && typeof d.value === 'string';
 }
 
 /** Strip a reference down to exactly the documented shape. */
@@ -161,7 +216,15 @@ function normalize(ref: EntityReference): EntityReference {
     ...(ref.status === undefined ? {} : { status: ref.status }),
     ...(ref.platform === undefined ? {} : { platform: ref.platform }),
     ...(ref.variant === undefined ? {} : { variant: ref.variant }),
+    ...(ref.details?.length
+      ? { details: ref.details.map(normalizeDetail) }
+      : {}),
   };
+}
+
+/** A detail, stripped to its two documented fields. */
+function normalizeDetail(detail: ReferenceDetail): ReferenceDetail {
+  return { label: String(detail.label), value: String(detail.value) };
 }
 
 /**

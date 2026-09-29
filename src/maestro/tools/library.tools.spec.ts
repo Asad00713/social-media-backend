@@ -120,9 +120,36 @@ describe('library tools', () => {
 
       // Plain text would be a dead end: the whole point of a chip is that the
       // name is a way INTO the library, not just a word in a sentence.
-      expect(refsOf(result)).toEqual([
-        { kind: 'media', id: 'm-1', label: 'Logo', status: 'image' },
-      ]);
+      //
+      // objectContaining, not an exact row: the hover card's `details` has its
+      // own test, and a whole-object match makes every future field a failure
+      // across five specs at once.
+      const refs = refsOf(result);
+      expect(refs).toHaveLength(1);
+      expect(refs[0]).toEqual(
+        expect.objectContaining({
+          kind: 'media',
+          id: 'm-1',
+          label: 'Logo',
+          status: 'image',
+        }),
+      );
+    });
+
+    /**
+     * A library chip says what the thing is called and which shelf it is on.
+     * The card answers whether it is worth reaching for — something saved once
+     * and never used again is the one to leave alone.
+     */
+    it('says how often an item has been used, on the hover card', async () => {
+      const tools = createLibraryTools(
+        fakeDeps({ items: [{ id: 'm-1', name: 'Logo', type: 'image' }] }),
+      );
+
+      const result = await tool(tools, 'search_library').handler({}, CTX);
+      const details = refsOf(result)[0].details ?? [];
+
+      expect(details).toContainEqual({ label: 'Used', value: 'never' });
     });
 
     it('defaults to media, so "show me my images" needs no argument', async () => {

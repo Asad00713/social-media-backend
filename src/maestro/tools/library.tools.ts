@@ -14,8 +14,10 @@ import type {
 } from '../../media-library/dto/media-library.dto';
 import {
   REFERENCE_USAGE_HINT,
+  formatWhen,
   withReferences,
   type EntityReference,
+  type ReferenceDetail,
 } from './references';
 
 /**
@@ -206,6 +208,35 @@ function subtypeOf(row: LibraryRow): string | null {
   return row.templateType ?? row.snippetType ?? row.type ?? null;
 }
 
+/**
+ * The facts a hover card shows about a library item.
+ *
+ * The chip names the item and which shelf it is on. These answer whether it is
+ * worth reaching for: where it lives, and whether anyone actually uses it. An
+ * item saved once and never used again is the one to leave alone.
+ */
+function libraryDetails(row: LibraryRow): ReferenceDetail[] {
+  const details: ReferenceDetail[] = [];
+
+  if (row.category?.name) {
+    details.push({ label: 'Folder', value: row.category.name });
+  }
+
+  const used = row.usageCount ?? 0;
+  details.push({
+    label: 'Used',
+    value: used === 0 ? 'never' : used === 1 ? 'once' : `${used} times`,
+  });
+
+  // formatWhen, not humanDate: the latter returns an ISO date for the model to
+  // read, which on a card beside "Last posted Mar 4, 9:00 AM" looks like a
+  // different system wrote it.
+  const lastUsed = formatWhen(row.lastUsedAt);
+  if (lastUsed) details.push({ label: 'Last used', value: lastUsed });
+
+  return details;
+}
+
 function chipFor(row: LibraryRow, kind: LibraryKind): EntityReference {
   return {
     kind: 'media',
@@ -214,6 +245,7 @@ function chipFor(row: LibraryRow, kind: LibraryKind): EntityReference {
     // The shelf, not the item — see SECTION_BY_KIND. Carried as status so the
     // chip reads "Logo · template" and the user knows where it lives.
     status: subtypeOf(row) ?? kind,
+    details: libraryDetails(row),
   };
 }
 

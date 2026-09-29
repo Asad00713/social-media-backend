@@ -91,15 +91,39 @@ describe('campaign tools', () => {
       )) as ReferencePayload;
 
       expect(isReferencePayload(result)).toBe(true);
-      expect(result.refs).toEqual([
-        {
+      // objectContaining, not toEqual: what the chip needs is asserted here,
+      // and the hover card's `details` has its own test below. A whole-object
+      // match would make every future field a failure in five specs at once.
+      expect(result.refs).toHaveLength(1);
+      expect(result.refs[0]).toEqual(
+        expect.objectContaining({
           kind: 'campaign',
           id: 'c-1',
           label: 'Launch week',
           status: 'active',
           variant: 'bulk',
-        },
-      ]);
+        }),
+      );
+    });
+
+    /**
+     * The hover card shows what the chip cannot fit. These are the facts the
+     * tool already had in hand — so the card is worth opening, rather than a
+     * bigger copy of the chip.
+     */
+    it('carries hover-card details the chip has no room for', async () => {
+      const tools = createCampaignTools(fakeService([campaignRow()]));
+      const result = (await tool(tools, 'list_campaigns').handler(
+        {},
+        CTX,
+      )) as ReferencePayload;
+
+      const labels = (result.refs[0].details ?? []).map((d) => d.label);
+      expect(labels).toContain('Type');
+      expect(labels).toContain('Schedule');
+
+      // Never a repeat of the pill beside it — that is the chip's job.
+      expect(labels).not.toContain('Status');
     });
 
     it("gives the reference the campaign's real status, so the chip is the right colour", async () => {

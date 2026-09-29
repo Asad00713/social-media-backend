@@ -49,17 +49,51 @@ export class ConversationService {
   }
 
   /**
-   * List conversations for a user in a workspace.
+   * A workspace's conversations, scoped to what the caller may see.
+   *
+   * `scope: 'workspace'` widens this to every member's conversations, for an
+   * owner or admin who is accountable for what the agent is being asked to do.
+   * The CALLER decides that, having checked the capability — this method does
+   * not re-derive permission from a role handed to it, because a service that
+   * both grants and enforces its own access is one refactor away from granting
+   * too much.
+   *
+   * Every row carries who held the conversation, in both scopes. A widened
+   * list without it is a pile of titles with no way to tell whose work is
+   * whose; and sending the field only sometimes would leave the frontend
+   * guessing which shape it got.
    */
-  async list(userId: string, workspaceId: string, limit = 20, offset = 0) {
+  async list(
+    userId: string,
+    workspaceId: string,
+    opts: { limit?: number; offset?: number; scope?: 'own' | 'workspace' } = {},
+  ) {
+    const { limit = 20, offset = 0, scope = 'own' } = opts;
     const results = await this.db.query.conversations.findMany({
-      where: and(
-        eq(conversations.userId, userId),
-        eq(conversations.workspaceId, workspaceId),
-      ),
+      where:
+        scope === 'workspace'
+          ? eq(conversations.workspaceId, workspaceId)
+          : and(
+              eq(conversations.userId, userId),
+              eq(conversations.workspaceId, workspaceId),
+            ),
       orderBy: [desc(conversations.isPinned), desc(conversations.updatedAt)],
       limit,
       offset,
+      with: {
+        // Named columns, never the whole row: `users` holds the password hash
+        // and every reset token, and a relational query that selects the lot
+        // would put them one serialization away from the client.
+        user: {
+          columns: {
+            id: true,
+            name: true,
+            email: true,
+            avatarUrl: true,
+            avatarColor: true,
+          },
+        },
+      },
     });
 
     return results;

@@ -7,8 +7,10 @@ import {
 import type { AgentToolDefinition } from '../maestro.types';
 import {
   REFERENCE_USAGE_HINT,
+  formatWhen,
   withReferences,
   type EntityReference,
+  type ReferenceDetail,
 } from './references';
 
 /** Platforms a user can connect. Mirrors the OAuth initiate surface. */
@@ -49,6 +51,29 @@ function channelHealth(ch: {
     return days <= 0 ? 'needs reconnect' : `expires in ${days}d`;
   }
   return 'connected';
+}
+
+/**
+ * The facts a hover card shows about a channel.
+ *
+ * The chip already carries the account name, the platform logo and the health
+ * pill, so these answer what it cannot: which handle this is, and whether the
+ * account is actually being used. An expired channel with no recent post is
+ * the case the user most needs to notice.
+ */
+function channelDetails(ch: {
+  username?: string | null;
+  lastPostedAt?: Date | string | null;
+}): ReferenceDetail[] {
+  const details: ReferenceDetail[] = [];
+  if (ch.username) details.push({ label: 'Account', value: `@${ch.username}` });
+
+  const lastPosted = formatWhen(ch.lastPostedAt);
+  // Omitted rather than shown as "never": a channel connected today has no
+  // last post, and "never" reads as a fault.
+  if (lastPosted) details.push({ label: 'Last posted', value: lastPosted });
+
+  return details;
 }
 
 /**
@@ -129,6 +154,7 @@ export function createChannelTools(
           label: it.name,
           status: it.health,
           platform: it.platform,
+          details: channelDetails(it),
         }));
 
         return withReferences(
@@ -228,6 +254,7 @@ export function createChannelTools(
               label: channelLabel(ch),
               status: 'connected',
               platform: ch.platform,
+              details: channelDetails(ch),
             })),
           );
         }

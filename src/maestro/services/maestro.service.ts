@@ -18,6 +18,8 @@ import { SlackService } from '../../channels/services/slack.service';
 import { InboxService } from '../../inbox/inbox.service';
 import { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
 import { DripService } from '../../drips/drip.service';
+import { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
+import { roleCan } from '../../workspace-members/role-capabilities';
 import { PostService } from '../../posts/services/post.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import {
@@ -237,6 +239,7 @@ export class MaestroService {
     private readonly libraryCategories: CategoryService,
     private readonly scheduledMessages: ScheduledMessagesService,
     private readonly drips: DripService,
+    private readonly roles: WorkspaceRoleService,
   ) {}
 
   /**
@@ -373,9 +376,24 @@ export class MaestroService {
     return this.conversations.create(userId, workspaceId, title);
   }
 
-  /** Conversations for the history list (most-recent first). */
+  /**
+   * Conversations for the history list (most-recent first).
+   *
+   * An owner or admin sees the whole workspace's; everyone else sees their
+   * own. The widening is a capability, not a role comparison written here, so
+   * it moves with the rest of the permission model rather than drifting from
+   * it — and a member whose role is later raised gets the wider list without
+   * this file changing.
+   *
+   * A missing role means no membership, which is narrower than MEMBER, so it
+   * falls through to 'own' rather than being treated as a failure.
+   */
   async listConversations(userId: string, workspaceId: string) {
-    return this.conversations.list(userId, workspaceId);
+    const role = await this.roles.getRole(workspaceId, userId);
+    const seesEveryone = role ? roleCan(role, 'maestro:view-all') : false;
+    return this.conversations.list(userId, workspaceId, {
+      scope: seesEveryone ? 'workspace' : 'own',
+    });
   }
 
   /**

@@ -66,15 +66,19 @@ describe('channel tools', () => {
       expect(isReferencePayload(result)).toBe(true);
       // `platform` rides along so the chip can show the brand logo without the
       // frontend digging it out of each tool's differently-shaped data.
-      expect(result.refs).toEqual([
-        {
+      // objectContaining, not toEqual: what the chip needs is asserted here,
+      // and the hover card's `details` has its own test. A whole-object match
+      // makes every future field a failure across five specs at once.
+      expect(result.refs).toHaveLength(1);
+      expect(result.refs[0]).toEqual(
+        expect.objectContaining({
           kind: 'channel',
           id: '1',
           label: 'Schedura',
           status: 'connected',
           platform: 'instagram',
-        },
-      ]);
+        }),
+      );
     });
 
     // A reference whose id does not match the entity produces a link to the

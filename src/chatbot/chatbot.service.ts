@@ -338,7 +338,10 @@ export class ChatbotService {
     limit?: number,
     offset?: number,
   ) {
-    return this.conversationService.list(userId, workspaceId, limit, offset);
+    return this.conversationService.list(userId, workspaceId, {
+      limit,
+      offset,
+    });
   }
 
   /**
