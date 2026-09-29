@@ -12,11 +12,14 @@ function channelRow(over: Record<string, unknown> = {}) {
     platform: 'instagram',
     accountName: 'Schedura',
     username: 'schedura',
+    accountType: 'business_account',
     isActive: true,
     connectionStatus: 'connected',
     isTokenExpired: false,
     refreshTokenExpiresInDays: null,
     lastPostedAt: null,
+    lastError: null,
+    tokenExpiresAt: null,
     ...over,
   };
 }
@@ -79,6 +82,135 @@ describe('channel tools', () => {
           platform: 'instagram',
         }),
       );
+    });
+
+    // The hover card is built from these. Each assertion below names the
+    // question the card answers, because a detail that reads well and answers
+    // nothing is the failure mode worth guarding.
+    describe('hover card details', () => {
+      it('carries the handle beside the label, not as a detail row', async () => {
+        const tools = createChannelTools(
+          fakeService([channelRow({ username: 'schedura' })]),
+        );
+
+        const result = (await tool(tools, 'list_channels').handler(
+          {},
+          CTX,
+        )) as ReferencePayload;
+
+        expect(result.refs[0].handle).toBe('@schedura');
+        // It identifies the account rather than describing it, so it belongs
+        // in the card's heading — a labelled "Account" row says the same
+        // thing twice.
+        expect(result.refs[0].details).not.toContainEqual(
+          expect.objectContaining({ label: 'Account' }),
+        );
+      });
+
+      it('omits the handle when the channel has none', async () => {
+        const tools = createChannelTools(
+          fakeService([channelRow({ username: null })]),
+        );
+
+        const result = (await tool(tools, 'list_channels').handler(
+          {},
+          CTX,
+        )) as ReferencePayload;
+
+        expect(result.refs[0].handle).toBeUndefined();
+      });
+
+      it('says why an expired channel is unhealthy, before anything else', async () => {
+        const tools = createChannelTools(
+          fakeService([
+            channelRow({
+              connectionStatus: 'expired',
+              isTokenExpired: true,
+              tokenExpiresAt: new Date('2026-03-04T09:00:00Z'),
+            }),
+          ]),
+        );
+
+        const result = (await tool(tools, 'list_channels').handler(
+          {},
+          CTX,
+        )) as ReferencePayload;
+
+        // First, because "why is this red" is the question the user is asking
+        // by hovering an unhealthy channel at all.
+        const first = result.refs[0].details?.[0];
+        expect(first?.label).toBe('Problem');
+        expect(first?.value).toContain('Sign-in expired');
+      });
+
+      it('summarises a provider error instead of showing the raw message', async () => {
+        const tools = createChannelTools(
+          fakeService([
+            channelRow({
+              connectionStatus: 'error',
+              lastError:
+                'Error validating access token: Session has expired on Tuesday.\n  at OAuthHandler.refresh (/app/dist/oauth.js:118:11)',
+            }),
+          ]),
+        );
+
+        const result = (await tool(tools, 'list_channels').handler(
+          {},
+          CTX,
+        )) as ReferencePayload;
+        const problem = result.refs[0].details?.[0];
+
+        expect(problem?.label).toBe('Problem');
+        // One sentence, no stack trace: the card has a single line for this.
+        expect(problem?.value).toBe(
+          'Error validating access token: Session has expired on Tuesday',
+        );
+      });
+
+      it('says nothing about problems when the channel is healthy', async () => {
+        const tools = createChannelTools(fakeService([channelRow()]));
+
+        const result = (await tool(tools, 'list_channels').handler(
+          {},
+          CTX,
+        )) as ReferencePayload;
+
+        expect(result.refs[0].details).not.toContainEqual(
+          expect.objectContaining({ label: 'Problem' }),
+        );
+      });
+
+      it('reads the account type as English, not as a database value', async () => {
+        const tools = createChannelTools(
+          fakeService([channelRow({ accountType: 'business_account' })]),
+        );
+
+        const result = (await tool(tools, 'list_channels').handler(
+          {},
+          CTX,
+        )) as ReferencePayload;
+
+        expect(result.refs[0].details).toContainEqual({
+          label: 'Type',
+          value: 'Business account',
+        });
+      });
+
+      // "never" reads as a fault on a channel connected an hour ago.
+      it('omits last posted rather than calling it never', async () => {
+        const tools = createChannelTools(
+          fakeService([channelRow({ lastPostedAt: null })]),
+        );
+
+        const result = (await tool(tools, 'list_channels').handler(
+          {},
+          CTX,
+        )) as ReferencePayload;
+
+        expect(result.refs[0].details).not.toContainEqual(
+          expect.objectContaining({ label: 'Last posted' }),
+        );
+      });
     });
 
     // A reference whose id does not match the entity produces a link to the

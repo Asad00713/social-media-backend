@@ -74,6 +74,14 @@ export interface EntityReference {
    */
   variant?: string;
   /**
+   * The account's @handle, when it has one that differs from its label.
+   *
+   * Sits beside the label rather than in `details` because it identifies the
+   * entity rather than describing it: a card shows it under the name, the way
+   * every social profile does, not as one more labelled row.
+   */
+  handle?: string;
+  /**
    * A few labelled facts for the hover card, in the order they should read.
    *
    * The chip shows name, icon and status; a card built from only those would
@@ -171,6 +179,7 @@ export function isEntityReference(value: unknown): value is EntityReference {
     (r.status === undefined || typeof r.status === 'string') &&
     (r.platform === undefined || typeof r.platform === 'string') &&
     (r.variant === undefined || typeof r.variant === 'string') &&
+    (r.handle === undefined || typeof r.handle === 'string') &&
     (r.details === undefined ||
       (Array.isArray(r.details) && r.details.every(isReferenceDetail)))
   );
@@ -216,6 +225,7 @@ function normalize(ref: EntityReference): EntityReference {
     ...(ref.status === undefined ? {} : { status: ref.status }),
     ...(ref.platform === undefined ? {} : { platform: ref.platform }),
     ...(ref.variant === undefined ? {} : { variant: ref.variant }),
+    ...(ref.handle === undefined ? {} : { handle: ref.handle }),
     ...(ref.details?.length
       ? { details: ref.details.map(normalizeDetail) }
       : {}),
