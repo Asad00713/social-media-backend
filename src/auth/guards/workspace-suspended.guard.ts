@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   CanActivate,
   ExecutionContext,
   ForbiddenException,
@@ -6,6 +7,7 @@ import {
   Injectable,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { isUUID } from 'class-validator';
 import { eq } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
@@ -78,6 +80,12 @@ export class WorkspaceSuspendedGuard implements CanActivate {
     const workspaceId =
       request.params?.workspaceId ?? request.params?.wsId ?? null;
     if (!workspaceId) return true;
+    // Workspace ids are uuid columns. Anything else would reach Postgres as an
+    // invalid uuid and come back a 500 — before the route's auth guard, since
+    // global guards run first. Reject it the way ParseUUIDPipe would.
+    if (!isUUID(workspaceId)) {
+      throw new BadRequestException('Validation failed (uuid is expected)');
+    }
 
     const wsRows = await this.db
       .select({
@@ -96,7 +104,8 @@ export class WorkspaceSuspendedGuard implements CanActivate {
         error: 'Forbidden',
         code: 'WORKSPACE_SUSPENDED',
         reason: ws.reason ?? 'manual',
-        message: 'This workspace has been suspended. Contact support for details.',
+        message:
+          'This workspace has been suspended. Contact support for details.',
       });
     }
 
