@@ -171,3 +171,38 @@ describe('WorkspaceMembersService.batchInvite seat gate', () => {
     ).rejects.toThrow(/SEAT_LIMIT_EXCEEDED/);
   });
 });
+
+describe('WorkspaceMembersService.getMembers last seen', () => {
+  it('returns lastLoginAt for the owner and every member', async () => {
+    const lastLogin = new Date('2026-09-20T10:00:00Z');
+    const findFirstUsers = jest.fn().mockResolvedValue({
+      id: 'owner1',
+      name: 'Owner',
+      email: 'o@x.com',
+      lastLoginAt: lastLogin,
+    });
+    const findMany = jest.fn().mockResolvedValue([
+      {
+        id: 'inv1',
+        role: 'MEMBER',
+        user: { id: 'u2', name: 'Sara', email: 's@x.com', lastLoginAt: null },
+        inviter: { id: 'owner1', name: 'Owner' },
+      },
+    ]);
+    const db: any = {
+      query: {
+        workspace: { findFirst: jest.fn().mockResolvedValue({ id: 'ws1', ownerId: 'owner1' }) },
+        users: { findFirst: findFirstUsers },
+        workspaceInvitation: { findFirst: jest.fn().mockResolvedValue(undefined), findMany },
+      },
+    };
+    const service = new WorkspaceMembersService(db, {} as any, {} as any, {} as any, {} as any);
+
+    const result = await service.getMembers('ws1', 'owner1');
+
+    expect(findFirstUsers.mock.calls[0][0].columns).toMatchObject({ lastLoginAt: true });
+    expect(findMany.mock.calls[0][0].with.user.columns).toMatchObject({ lastLoginAt: true });
+    expect(result.owner?.lastLoginAt).toEqual(lastLogin);
+    expect(result.members[0].user?.lastLoginAt).toBeNull();
+  });
+});

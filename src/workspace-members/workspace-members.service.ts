@@ -529,6 +529,7 @@ export class WorkspaceMembersService {
         id: true,
         name: true,
         email: true,
+        lastLoginAt: true,
       },
     });
 
@@ -551,6 +552,7 @@ export class WorkspaceMembersService {
             id: true,
             name: true,
             email: true,
+            lastLoginAt: true,
           },
         },
         inviter: {
