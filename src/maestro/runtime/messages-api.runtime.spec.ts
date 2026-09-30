@@ -18,9 +18,11 @@ import type {
 /** The request body the runtime sent, as far as these tests inspect it. */
 interface SentBody {
   messages: Array<Record<string, unknown>>;
+  system: Array<{ type: string; text: string; cache_control?: unknown }>;
   tools: Array<{
     name: string;
     input_schema: { properties?: Record<string, { description?: string }> };
+    cache_control?: unknown;
   }>;
   thinking?: { type: string; budget_tokens: number };
   max_tokens: number;
@@ -104,6 +106,11 @@ function messagesOfCall(n: number): Array<Record<string, unknown>> {
   return mockStream.mock.calls[n][0].messages;
 }
 
+/** The whole request body of the Nth API call. */
+function bodyOfCall(n: number): SentBody {
+  return mockStream.mock.calls[n][0];
+}
+
 describe('MessagesApiRuntime', () => {
   beforeEach(() => mockStream.mockReset());
 
@@ -178,7 +185,6 @@ describe('MessagesApiRuntime', () => {
             content: [
               { type: 'tool_use', id: 't-1', name: 'list_posts', input: {} },
             ],
-            stopReason: 'tool_use',
           }),
         )
         .mockReturnValueOnce(
@@ -451,6 +457,80 @@ describe('MessagesApiRuntime', () => {
       // Must leave room for the answer on top of the thinking budget, or the
       // API rejects the request outright.
       expect(body.max_tokens).toBeGreaterThan(body.thinking!.budget_tokens);
+    });
+  });
+
+  /**
+   * Caching is a prefix match over tools -> system -> messages, so a breakpoint
+   * only pays off if everything before it is byte-identical next time. The
+   * tools and the system prompt are; the transcript is not, which is why the
+   * last cached thing is the end of the system prompt.
+   *
+   * This matters more here than in a single-shot call: one user turn runs the
+   * loop up to eight times, and every pass resends the whole prompt and all
+   * the tool definitions.
+   */
+  describe('prompt caching', () => {
+    it('marks the last tool, so the whole tool list is cached', async () => {
+      mockStream.mockReturnValue(
+        scriptReply({ content: [{ type: 'text', text: 'ok' }] }),
+      );
+      await collect(
+        input({ tools: [tool({ name: 'a' }), tool({ name: 'b' })] }),
+      );
+      const { tools } = bodyOfCall(0);
+      expect(tools[0].cache_control).toBeUndefined();
+      expect(tools[tools.length - 1].cache_control).toEqual({
+        type: 'ephemeral',
+      });
+    });
+
+    it('marks the last system block, so the prompt is cached too', async () => {
+      mockStream.mockReturnValue(
+        scriptReply({ content: [{ type: 'text', text: 'ok' }] }),
+      );
+      await collect(
+        input({ systemPrompt: ['Static product knowledge.', 'Tone: warm.'] }),
+      );
+      const { system } = bodyOfCall(0);
+      expect(system).toHaveLength(2);
+      expect(system[0].cache_control).toBeUndefined();
+      expect(system[1].cache_control).toEqual({ type: 'ephemeral' });
+    });
+
+    it('does not mark the transcript, which changes every turn', async () => {
+      mockStream.mockReturnValue(
+        scriptReply({ content: [{ type: 'text', text: 'ok' }] }),
+      );
+      await collect(input());
+      for (const message of messagesOfCall(0)) {
+        expect(message).not.toHaveProperty('cache_control');
+      }
+    });
+
+    it('keeps the breakpoints on every pass of the loop', async () => {
+      // The loop is where this earns its money: the second call resends the
+      // same tools and prompt, and must still be able to read them from cache.
+      mockStream
+        .mockReturnValueOnce(
+          scriptReply({
+            content: [{ type: 'tool_use', id: 't1', name: 'a', input: {} }],
+          }),
+        )
+        .mockReturnValueOnce(
+          scriptReply({ content: [{ type: 'text', text: 'done' }] }),
+        );
+      await collect(input({ tools: [tool({ name: 'a' })] }));
+      expect(mockStream).toHaveBeenCalledTimes(2);
+      for (const call of [0, 1]) {
+        const body = bodyOfCall(call);
+        expect(body.tools[body.tools.length - 1].cache_control).toEqual({
+          type: 'ephemeral',
+        });
+        expect(body.system[body.system.length - 1].cache_control).toEqual({
+          type: 'ephemeral',
+        });
+      }
     });
   });
 });
