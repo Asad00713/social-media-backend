@@ -8,13 +8,71 @@ scheduled; each one gets a spec before it gets code.
 
 ---
 
+## The goal
+
+**Maestro should be able to do anything the user can do by hand.**
+
+Not a chat box bolted to the side of the product that answers questions and
+waits to be told what to do next — an assistant that works the product on
+the user's behalf, and that keeps working when nobody is typing at it.
+
+That is the bar every item below is measured against. Two things follow
+from it, and they are worth stating plainly because they are easy to lose
+sight of once the work is broken into tickets.
+
+### It needs the whole product, not a corner of it
+
+The app has 26 feature areas. Maestro's 43 tools reach 14 of them, and
+mostly to **read**: `list_posts`, `get_post`, `get_campaign`,
+`list_conversations`. The write tools that exist are narrow — publish a post
+that already exists, send a Slack or Discord message, save a snippet.
+
+So the gap is not "a few missing tools". Anything a user can do — compose,
+schedule, reschedule, edit, cancel, reply in the inbox, build a campaign,
+connect a channel, upload media, read insights — is something Maestro should
+eventually be able to do too, with the same validation and the same
+permissions the UI applies.
+
+The practical consequence: every tool should call the same service the
+controller calls, never reimplement it. A tool that builds its own version
+of "create a post" will be wrong the first time the composer's rules
+change, and nobody will notice until a user's post is rejected by a
+platform.
+
+### It should act without being asked
+
+A human assistant who only ever responded when spoken to would not be much
+of an assistant. Maestro knows when things are scheduled, what was posted,
+which channels are failing, what the user usually does. It should use that:
+notice when a habit breaks, notice when a channel has been disconnected for
+a week, notice when nothing is queued for tomorrow — and say so, with
+something useful attached rather than just an alert.
+
+This is the half that separates an assistant from a chatbot, and it is also
+the half that is easiest to get wrong: an assistant that speaks up too
+often, or is confidently wrong about what the user meant to do, is worse
+than one that stays quiet.
+
+### What this is not
+
+Not autonomy for its own sake. Maestro acting on the user's behalf means
+acting **as** the user — on their brand accounts, in public, under their
+name. Every capability below carries that weight, which is why confirmation
+flows, permissions and the ability to say "no, not that" are part of each
+feature and not a later hardening pass.
+
+---
+
 ## Backlog
+
+The items below are the path to that goal, ordered by dependency rather
+than appeal. The first one gates the rest.
 
 ### Write tools — Maestro cannot create anything yet
 
-**Status:** captured 2026-09-30 — blocks the three items below it.
+**Status:** captured 2026-09-30 — blocks everything below it.
 
-Maestro reads. Across all 18 tool files there is no `create_post`,
+Maestro reads. Across all 14 tool files there is no `create_post`,
 `draft_post` or `schedule_post`: the post tools are `list_posts`, `get_post`
 and `publish_post`, and the last one publishes a post that already exists.
 Posts are created in the composer, never by the agent.
@@ -25,18 +83,22 @@ waits for.
 
 **What it needs:**
 
-- `create_post` and `schedule_post`, with the same validation the composer
-  applies — per-platform character limits, media requirements, channel
-  eligibility. The agent must not be able to create a post the composer
-  would have refused.
+- `create_post` and `schedule_post` first, then the rest of what the user
+  can do: edit, reschedule, cancel, reply in the inbox, build a campaign,
+  upload media. The end state is parity with the UI, reached one area at a
+  time.
+- Each tool calls the **same service the controller calls**. Per-platform
+  character limits, media requirements and channel eligibility live in one
+  place; a tool that restates them will drift from the composer and fail in
+  production.
 - A decision about `confirmBeforeSend`. It exists and works for one action.
   Thirty posts is a different question: confirming each is unusable,
   confirming none is unsafe. Probably: confirm the *plan*, then execute.
 - The blast radius is real. A wrong caption, a wrong time, or a wrong
   channel is a public mistake on someone's brand account.
 
-**Where it lands:** `src/maestro/tools/post.tools.ts`, and whatever the
-composer uses for validation so the rules are shared rather than restated.
+**Where it lands:** `src/maestro/tools/post.tools.ts` and its siblings,
+wired to the existing services rather than to the database directly.
 
 ---
 
@@ -113,6 +175,10 @@ someone posts about the same few topics every morning at nine and then one
 morning does not, Maestro should say so — "you haven't posted today, want me
 to draft one? Last week you covered X and Y; either of those, or something
 else?"
+
+The same applies to everything else it can see: a channel that has been
+disconnected for a week, an empty queue for tomorrow, a campaign about to
+run out of content, an inbox filling up unanswered.
 
 **The pieces are all here already**, which is what makes this worth doing:
 
