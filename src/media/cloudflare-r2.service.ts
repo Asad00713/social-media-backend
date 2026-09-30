@@ -32,7 +32,8 @@ export type R2MediaKind =
   | 'voice'
   | 'video'
   | 'file'
-  | 'composer-video';
+  | 'composer-video'
+  | 'avatar';
 
 const KIND_TO_PREFIX: Record<R2MediaKind, string> = {
   image: 'inbox/images',
@@ -44,6 +45,12 @@ const KIND_TO_PREFIX: Record<R2MediaKind, string> = {
   // a single bucket avoids a bucket-rename migration; prefixes give us the
   // same isolation logically.
   'composer-video': 'composer/videos',
+  // Profile pictures are the one kind that belongs to a PERSON rather than a
+  // workspace: the same face follows a user into every workspace they join.
+  // Its own prefix keeps it out of any lifecycle rule that expires workspace
+  // media — an avatar deleted after 90 days would leave a hole in every list
+  // the user appears in.
+  avatar: 'avatars',
 };
 
 const MAX_BYTES: Record<R2MediaKind, number> = {
@@ -56,6 +63,10 @@ const MAX_BYTES: Record<R2MediaKind, number> = {
   // PUTs without chunking on our side — the AWS SDK's signature scheme is
   // size-agnostic when ContentLength is unsignableHeader (see below).
   'composer-video': 4 * 1024 * 1024 * 1024,
+  // 2 MB. An avatar is never drawn larger than a thumbnail, so a bigger file
+  // buys nothing visible and is paid for on every screen that lists people.
+  // The DTO enforces the same number before a URL is ever signed.
+  avatar: 2 * 1024 * 1024,
 };
 
 // Allow optional `;param=value` suffixes (e.g. `audio/webm;codecs=opus`,
@@ -69,6 +80,10 @@ const ALLOWED_MIME: Record<R2MediaKind, RegExp> = {
   video: /^video\/(mp4|webm|quicktime)(;.*)?$/i,
   file: /.*/,
   'composer-video': /^video\/(mp4|webm|quicktime)(;.*)?$/i,
+  // No GIF and no HEIC, unlike `image`: an avatar sits at 24-40px in a dozen
+  // places at once, where an animated GIF is a dozen loops running behind a
+  // list, and HEIC does not decode in Chrome or Firefox at all.
+  avatar: /^image\/(jpeg|png|webp)(;.*)?$/i,
 };
 
 /**
@@ -196,7 +211,14 @@ export class CloudflareR2Service {
     const ext = this.extensionFor(contentType, filename);
     const id = crypto.randomBytes(12).toString('hex');
     const safeUserId = userId.replace(/[^a-zA-Z0-9-]/g, '').slice(0, 12);
-    const key = `${KIND_TO_PREFIX[kind]}/${workspaceId}/${safeUserId}/${Date.now()}-${id}${ext}`;
+    // An avatar belongs to the person, not to a workspace — the same face
+    // follows them into every workspace they join — so its key leaves the
+    // workspace segment out. Every other kind is workspace media, and its
+    // path is what makes per-workspace lifecycle and billing queries possible.
+    const key =
+      kind === 'avatar'
+        ? `${KIND_TO_PREFIX[kind]}/${safeUserId}/${Date.now()}-${id}${ext}`
+        : `${KIND_TO_PREFIX[kind]}/${workspaceId}/${safeUserId}/${Date.now()}-${id}${ext}`;
 
     // IMPORTANT — keep the signed PutObjectCommand minimal:
     //  - `Metadata` adds `x-amz-meta-*` signed headers that the browser would
@@ -255,6 +277,29 @@ export class CloudflareR2Service {
       },
       expiresIn,
     };
+  }
+
+  /**
+   * True when `url` is one this service handed out for `kind`.
+   *
+   * A client that uploads a file then PATCHes the resulting URL back is
+   * trusted to send the right string — and a hostile one is trusted to send
+   * any string at all. Without this, a stored avatar URL could point anywhere:
+   * a tracking pixel that fires on every page listing that user, or an image
+   * that changes after review. Checking the base and prefix costs nothing and
+   * turns "any URL" into "a file we issued".
+   *
+   * Not proof the CALLER uploaded it — one user could pass another's avatar
+   * URL, which shows them someone else's face and nothing more.
+   */
+  isOwnPublicUrl(url: string, kind: R2MediaKind): boolean {
+    if (!this.publicUrlBase || !url) return false;
+    const prefix = `${this.publicUrlBase}/${KIND_TO_PREFIX[kind]}/`;
+    if (!url.startsWith(prefix)) return false;
+    // No traversal, no query, no fragment: the key we build has none of them,
+    // so anything carrying one was not built here.
+    const key = url.slice(prefix.length);
+    return key.length > 0 && !/[?#]/.test(key) && !key.includes('..');
   }
 
   /**

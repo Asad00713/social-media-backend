@@ -2,6 +2,17 @@ import { Logger } from '@nestjs/common';
 
 const logger = new Logger('MaestroAgentAuth');
 
+/**
+ * Where the platform API key is parked under subscription mode.
+ *
+ * Subscription mode strips `ANTHROPIC_API_KEY` so the Agent SDK subprocess
+ * genuinely uses the Claude Code OAuth session. But the Messages API runtime
+ * has no OAuth path at all — a stripped key leaves it with nothing. So the key
+ * moves aside under a name the SDK subprocess ignores, and the API runtime
+ * reads it from there.
+ */
+export const MAESTRO_API_RUNTIME_KEY_ENV = 'MAESTRO_API_RUNTIME_KEY';
+
 export type AgentAuthMode = 'apiKey' | 'subscription';
 
 /** Where the resolved API key came from — drives billing downstream. */
@@ -80,8 +91,12 @@ export function resolveAgentAuth(
       );
     }
     // Strip the API key so the subprocess genuinely uses the Claude Code OAuth
-    // rather than silently falling back to the console key.
+    // rather than silently falling back to the console key. It moves aside
+    // rather than vanishing: the Messages API runtime has no OAuth path, so
+    // stripping outright would leave that runtime with no credential at all.
+    const parked = options.workspaceApiKey?.trim() || env.ANTHROPIC_API_KEY;
     delete env.ANTHROPIC_API_KEY;
+    if (parked) env[MAESTRO_API_RUNTIME_KEY_ENV] = parked;
     logger.debug('Auth mode: subscription (local dev, Claude Code OAuth)');
     return { mode: 'subscription', keySource: 'platform', env };
   }

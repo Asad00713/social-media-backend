@@ -30,6 +30,23 @@ export const users = pgTable('users', {
   name: varchar('name', { length: 255 }),
   password: text('password').notNull(),
 
+  // Profile picture, stored in R2 and referenced by its public URL. Null means
+  // the UI falls back to initials — which every avatar does while loading, so
+  // an absent picture is a normal state rather than a missing one.
+  avatarUrl: text('avatar_url'),
+
+  // The colour behind those initials, chosen once at sign-up and then fixed.
+  //
+  // Stored rather than derived from the id at render time: a derived colour
+  // has to be computed identically everywhere it appears, and the day someone
+  // changes the palette or the hash, every user's colour changes with it. A
+  // person's avatar is how colleagues recognise them in a list — it should be
+  // as stable as their name.
+  //
+  // Holds a palette KEY ('amber', 'violet'), not a hex value, so light and
+  // dark themes can render the same identity differently. See AVATAR_COLORS.
+  avatarColor: varchar('avatar_color', { length: 20 }),
+
   // System-level role (USER or SUPER_ADMIN)
   role: userRoleEnum('role').default('USER').notNull(),
 

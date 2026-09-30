@@ -18,9 +18,14 @@ import { SlackService } from '../../channels/services/slack.service';
 import { InboxService } from '../../inbox/inbox.service';
 import { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
 import { DripService } from '../../drips/drip.service';
+import { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
+import { roleCan } from '../../workspace-members/role-capabilities';
 import { PostService } from '../../posts/services/post.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
-import { ClaudeAgentSdkRuntime } from '../runtime/claude-agent-sdk.runtime';
+import {
+  AgentRuntimeSelector,
+  type AgentRuntimeKind,
+} from '../runtime/runtime-selector';
 import { MaestroKeyService } from './maestro-key.service';
 import { createUserTools } from '../tools/user.tools';
 import { isPendingAction, type PendingAction } from '../tools/confirm';
@@ -210,7 +215,7 @@ export class MaestroService {
   private readonly logger = new Logger(MaestroService.name);
 
   constructor(
-    private readonly runtime: ClaudeAgentSdkRuntime,
+    private readonly runtimes: AgentRuntimeSelector,
     private readonly conversations: ConversationService,
     private readonly usersService: UsersService,
     private readonly workspaceService: WorkspaceService,
@@ -234,6 +239,7 @@ export class MaestroService {
     private readonly libraryCategories: CategoryService,
     private readonly scheduledMessages: ScheduledMessagesService,
     private readonly drips: DripService,
+    private readonly roles: WorkspaceRoleService,
   ) {}
 
   /**
@@ -370,9 +376,24 @@ export class MaestroService {
     return this.conversations.create(userId, workspaceId, title);
   }
 
-  /** Conversations for the history list (most-recent first). */
+  /**
+   * Conversations for the history list (most-recent first).
+   *
+   * An owner or admin sees the whole workspace's; everyone else sees their
+   * own. The widening is a capability, not a role comparison written here, so
+   * it moves with the rest of the permission model rather than drifting from
+   * it — and a member whose role is later raised gets the wider list without
+   * this file changing.
+   *
+   * A missing role means no membership, which is narrower than MEMBER, so it
+   * falls through to 'own' rather than being treated as a failure.
+   */
   async listConversations(userId: string, workspaceId: string) {
-    return this.conversations.list(userId, workspaceId);
+    const role = await this.roles.getRole(workspaceId, userId);
+    const seesEveryone = role ? roleCan(role, 'maestro:view-all') : false;
+    return this.conversations.list(userId, workspaceId, {
+      scope: seesEveryone ? 'workspace' : 'own',
+    });
   }
 
   /**
@@ -722,6 +743,8 @@ export class MaestroService {
       onUserMessagePersisted?: () => void;
       /** Set when this turn answers a confirm card rather than being typed. */
       approval?: { messageId: string; option: string };
+      /** Which runtime answers this turn. Defaults to the Agent SDK. */
+      runtime?: AgentRuntimeKind;
     },
     signal: AbortSignal,
   ): AsyncGenerator<MaestroSseEvent> {
@@ -966,8 +989,13 @@ export class MaestroService {
     // turn must leave every named entity clickable.
     let maestroRefs: EntityReference[] = [];
 
+    // Both adapters implement the same port, so everything below — the SSE
+    // translation, the media/question/reference extraction, persistence — is
+    // shared. That is what makes the two tabs comparable.
+    const runtime = this.runtimes.forKind(params.runtime ?? 'sdk');
+
     try {
-      for await (const ev of this.runtime.run(input)) {
+      for await (const ev of runtime.run(input)) {
         if (signal.aborted) break;
         switch (ev.type) {
           case 'thinking_delta':

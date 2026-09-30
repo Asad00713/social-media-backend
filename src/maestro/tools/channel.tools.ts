@@ -7,8 +7,10 @@ import {
 import type { AgentToolDefinition } from '../maestro.types';
 import {
   REFERENCE_USAGE_HINT,
+  formatWhen,
   withReferences,
   type EntityReference,
+  type ReferenceDetail,
 } from './references';
 
 /** Platforms a user can connect. Mirrors the OAuth initiate surface. */
@@ -49,6 +51,94 @@ function channelHealth(ch: {
     return days <= 0 ? 'needs reconnect' : `expires in ${days}d`;
   }
   return 'connected';
+}
+
+/**
+ * How an account type reads on a card. The column stores the platform's own
+ * vocabulary ('page', 'business_account'), which is jargon in a sentence.
+ */
+const ACCOUNT_TYPE_LABEL: Record<string, string> = {
+  page: 'Page',
+  profile: 'Profile',
+  channel: 'Channel',
+  business_account: 'Business account',
+  creator_account: 'Creator account',
+  group: 'Group',
+  board: 'Board',
+  workspace: 'Workspace',
+  server: 'Server',
+  bot: 'Bot',
+};
+
+/**
+ * Why a channel is unhealthy, in one short phrase.
+ *
+ * `lastError` is a provider message written for a developer — "Error
+ * validating access token: Session has expired" — so it is summarised rather
+ * than shown. The card has one line for this; a stack trace would push
+ * everything else off it.
+ */
+function channelProblem(ch: {
+  connectionStatus?: string;
+  isTokenExpired?: boolean;
+  lastError?: string | null;
+  tokenExpiresAt?: Date | string | null;
+}): string | null {
+  if (ch.connectionStatus === 'revoked') {
+    return 'Access was revoked on the platform';
+  }
+  if (ch.connectionStatus === 'expired' || ch.isTokenExpired) {
+    const when = formatWhen(ch.tokenExpiresAt);
+    return when ? `Sign-in expired ${when}` : 'Sign-in expired';
+  }
+  if (ch.connectionStatus === 'error') {
+    // First sentence only, and capped: providers return multi-line detail.
+    const first = (ch.lastError || '').split(/[.\n]/)[0]?.trim();
+    return first ? first.slice(0, 80) : 'Last sync failed';
+  }
+  return null;
+}
+
+/**
+ * The facts a hover card shows about a channel.
+ *
+ * The chip already carries the account name, the platform logo and the health
+ * pill, so these answer what it cannot: which handle this is, what kind of
+ * account it is, and whether it is actually being used.
+ *
+ * When a channel is unhealthy, WHY comes first. That is the question the user
+ * is asking by hovering it at all — a card that opens with a handle and stays
+ * silent about the red pill above it has answered the wrong thing.
+ */
+function channelDetails(ch: {
+  username?: string | null;
+  accountType?: string | null;
+  lastPostedAt?: Date | string | null;
+  connectionStatus?: string;
+  isTokenExpired?: boolean;
+  lastError?: string | null;
+  tokenExpiresAt?: Date | string | null;
+}): ReferenceDetail[] {
+  const details: ReferenceDetail[] = [];
+
+  const problem = channelProblem(ch);
+  if (problem) details.push({ label: 'Problem', value: problem });
+
+  if (ch.accountType) {
+    details.push({
+      label: 'Type',
+      value:
+        ACCOUNT_TYPE_LABEL[ch.accountType] ??
+        ch.accountType.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase()),
+    });
+  }
+
+  const lastPosted = formatWhen(ch.lastPostedAt);
+  // Omitted rather than shown as "never": a channel connected today has no
+  // last post, and "never" reads as a fault.
+  if (lastPosted) details.push({ label: 'Last posted', value: lastPosted });
+
+  return details;
 }
 
 /**
@@ -121,6 +211,13 @@ export function createChannelTools(
             username: ch.username ?? null,
             health: channelHealth(ch),
             lastPostedAt: ch.lastPostedAt ?? null,
+            // Card-only fields: the model does not need these in its answer,
+            // but the hover card is built from the same reference.
+            accountType: ch.accountType ?? null,
+            connectionStatus: ch.connectionStatus,
+            isTokenExpired: ch.isTokenExpired,
+            lastError: ch.lastError ?? null,
+            tokenExpiresAt: ch.tokenExpiresAt ?? null,
           }));
 
         const refs: EntityReference[] = items.map((it) => ({
@@ -129,6 +226,10 @@ export function createChannelTools(
           label: it.name,
           status: it.health,
           platform: it.platform,
+          // The handle rides on the reference rather than in `details`: the
+          // card shows it under the name, the way every social UI does.
+          ...(it.username ? { handle: `@${it.username}` } : {}),
+          details: channelDetails(it),
         }));
 
         return withReferences(
@@ -228,6 +329,7 @@ export function createChannelTools(
               label: channelLabel(ch),
               status: 'connected',
               platform: ch.platform,
+              details: channelDetails(ch),
             })),
           );
         }

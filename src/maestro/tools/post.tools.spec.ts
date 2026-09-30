@@ -83,15 +83,19 @@ describe('post tools', () => {
       )) as ReferencePayload;
 
       expect(isReferencePayload(result)).toBe(true);
-      expect(result.refs).toEqual([
-        {
+      // objectContaining, not toEqual: what the chip needs is asserted here,
+      // and the hover card's `details` has its own test. A whole-object match
+      // makes every future field a failure across five specs at once.
+      expect(result.refs).toHaveLength(1);
+      expect(result.refs[0]).toEqual(
+        expect.objectContaining({
           kind: 'draft',
           id: 'p-1',
           label: 'Autumn collection drops Friday',
           status: 'draft',
           platform: 'instagram',
-        },
-      ]);
+        }),
+      );
     });
 
     it('labels a published post as a post, not a draft', async () => {

@@ -1,4 +1,8 @@
-import { resolveAgentAuth, MaestroAuthUnavailableError } from './agent-auth';
+import {
+  resolveAgentAuth,
+  MaestroAuthUnavailableError,
+  MAESTRO_API_RUNTIME_KEY_ENV,
+} from './agent-auth';
 
 /**
  * These guard the credential decision that bills real money: which Anthropic
@@ -106,6 +110,37 @@ describe('resolveAgentAuth', () => {
       const auth = resolveAgentAuth({ workspaceApiKey: 'sk-ant-workspace' });
 
       expect(auth.keySource).toBe('platform');
+    });
+
+    // The API runtime has no OAuth path. Stripping the key outright — which is
+    // right for the SDK subprocess — would leave that runtime unable to run at
+    // all, so the key moves aside under a name the subprocess ignores.
+    it('parks the platform key where the API runtime can still find it', () => {
+      process.env.MAESTRO_AUTH_MODE = 'subscription';
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-platform';
+
+      const auth = resolveAgentAuth();
+
+      expect(auth.env.ANTHROPIC_API_KEY).toBeUndefined();
+      expect(auth.env[MAESTRO_API_RUNTIME_KEY_ENV]).toBe('sk-ant-platform');
+    });
+
+    it('parks the workspace key ahead of the platform one', () => {
+      process.env.MAESTRO_AUTH_MODE = 'subscription';
+      process.env.ANTHROPIC_API_KEY = 'sk-ant-platform';
+
+      const auth = resolveAgentAuth({ workspaceApiKey: 'sk-ant-workspace' });
+
+      expect(auth.env[MAESTRO_API_RUNTIME_KEY_ENV]).toBe('sk-ant-workspace');
+    });
+
+    it('parks nothing when there is no key to park', () => {
+      process.env.MAESTRO_AUTH_MODE = 'subscription';
+      delete process.env.ANTHROPIC_API_KEY;
+
+      const auth = resolveAgentAuth();
+
+      expect(auth.env[MAESTRO_API_RUNTIME_KEY_ENV]).toBeUndefined();
     });
   });
 

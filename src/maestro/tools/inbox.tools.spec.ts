@@ -394,13 +394,39 @@ describe('list_conversations', () => {
     ).refs;
 
     expect(refs).toHaveLength(2);
-    expect(refs).toContainEqual({
-      kind: 'conversation',
-      id: '1:post-a',
-      label: 'Sara Khan',
-      status: 'unread',
-      platform: 'instagram',
-    });
+    // objectContaining, not an exact row: what the chip needs is asserted
+    // here, and the hover card's `details` has its own test below.
+    expect(refs).toContainEqual(
+      expect.objectContaining({
+        kind: 'conversation',
+        id: '1:post-a',
+        label: 'Sara Khan',
+        status: 'unread',
+        platform: 'instagram',
+      }),
+    );
+  });
+
+  /**
+   * A conversation chip names the person and says a reply is waiting — but
+   * not what it is waiting ON. The message itself is the thing the reader
+   * wants, so the card leads with it.
+   */
+  it('carries the last message on the hover card, attributed', async () => {
+    const tools = createInboxTools(
+      fakeInbox({ comments: [commentThread()], dms: [dmConversation()] }),
+    );
+    const refs = payload(
+      await toolNamed(tools, 'list_conversations').handler({}, CTX),
+    ).refs;
+
+    const sara = refs.find((r) => r.id === '1:post-a');
+    const labels = (sara?.details ?? []).map((d) => d.label);
+
+    // "They said" / "You said": whose last word it was changes what the
+    // preview means — waiting on us, or waiting on them.
+    expect(labels).toContain('They said');
+    expect(labels).toContain('Last message');
   });
 
   // The chip shows a person, and a row whose sender has no display name would

@@ -17,6 +17,7 @@ import {
 import { eq, sql } from 'drizzle-orm';
 import * as bcrypt from 'bcrypt';
 import { UpdateUserDto } from './dto/update-user.dto';
+import { pickAvatarColor } from './avatar-colors';
 
 // Public user type that excludes sensitive fields
 export type PublicUser = Pick<
@@ -29,9 +30,54 @@ export type PublicUser = Pick<
   | 'lastAccessedWorkspaceId'
   | 'onboardingCompletedAt'
   | 'maestroTone'
+  | 'avatarUrl'
+  | 'avatarColor'
   | 'createdAt'
   | 'updatedAt'
 >;
+
+/**
+ * The columns a relational query selects to build a `PublicUser`.
+ *
+ * One list, used by every read, because the alternative is what this replaced:
+ * the same ten keys written out in three places and the same object assembled
+ * by hand in three more. A field added to `PublicUser` but missed in one of
+ * those six came back undefined for some callers and not others — which is the
+ * hardest kind of bug to see, because the type says it is there.
+ */
+const PUBLIC_USER_COLUMNS = {
+  id: true,
+  email: true,
+  name: true,
+  role: true,
+  isEmailVerified: true,
+  lastAccessedWorkspaceId: true,
+  onboardingCompletedAt: true,
+  maestroTone: true,
+  avatarUrl: true,
+  avatarColor: true,
+  createdAt: true,
+  updatedAt: true,
+} as const;
+
+/** Narrow a full row to the public shape. Counterpart to PUBLIC_USER_COLUMNS
+ *  for the paths that write and get the whole row back. */
+function toPublicUser(row: User): PublicUser {
+  return {
+    id: row.id,
+    email: row.email,
+    name: row.name,
+    role: row.role,
+    isEmailVerified: row.isEmailVerified,
+    lastAccessedWorkspaceId: row.lastAccessedWorkspaceId,
+    onboardingCompletedAt: row.onboardingCompletedAt,
+    maestroTone: row.maestroTone,
+    avatarUrl: row.avatarUrl,
+    avatarColor: row.avatarColor,
+    createdAt: row.createdAt,
+    updatedAt: row.updatedAt,
+  };
+}
 
 @Injectable()
 export class UsersService {
@@ -58,37 +104,19 @@ export class UsersService {
         name: createUserDto.name,
         password: hashedPassword,
         role,
+        // Assigned here, at the one moment a person enters the system, and
+        // never recomputed. An avatar is how colleagues pick someone out of a
+        // list, so it has to outlive a rename and a palette edit both.
+        avatarColor: pickAvatarColor(),
       })
       .returning();
 
-    return {
-      id: newUser.id,
-      email: newUser.email,
-      name: newUser.name,
-      role: newUser.role,
-      isEmailVerified: newUser.isEmailVerified,
-      lastAccessedWorkspaceId: newUser.lastAccessedWorkspaceId,
-      onboardingCompletedAt: newUser.onboardingCompletedAt,
-      maestroTone: newUser.maestroTone,
-      createdAt: newUser.createdAt,
-      updatedAt: newUser.updatedAt,
-    };
+    return toPublicUser(newUser);
   }
 
   async findAll(): Promise<PublicUser[]> {
     const allUsers = await this.db.query.users.findMany({
-      columns: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        isEmailVerified: true,
-        lastAccessedWorkspaceId: true,
-        onboardingCompletedAt: true,
-        maestroTone: true,
-        createdAt: true,
-        updatedAt: true,
-      },
+      columns: PUBLIC_USER_COLUMNS,
     });
 
     return allUsers;
@@ -97,18 +125,7 @@ export class UsersService {
   async findOne(id: string): Promise<PublicUser> {
     const user = await this.db.query.users.findFirst({
       where: eq(users.id, id),
-      columns: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        isEmailVerified: true,
-        lastAccessedWorkspaceId: true,
-        onboardingCompletedAt: true,
-        maestroTone: true,
-        createdAt: true,
-        updatedAt: true,
-      },
+      columns: PUBLIC_USER_COLUMNS,
     });
 
     if (!user) {
@@ -126,18 +143,9 @@ export class UsersService {
     const user = await this.db.query.users.findFirst({
       where: eq(users.id, id),
       columns: {
-        id: true,
-        email: true,
-        name: true,
-        role: true,
-        isEmailVerified: true,
-        lastAccessedWorkspaceId: true,
-        onboardingCompletedAt: true,
-        maestroTone: true,
+        ...PUBLIC_USER_COLUMNS,
         isActive: true,
         suspendedReason: true,
-        createdAt: true,
-        updatedAt: true,
       },
     });
 
@@ -251,18 +259,7 @@ export class UsersService {
       .where(eq(users.id, id))
       .returning();
 
-    return {
-      id: updatedUser.id,
-      email: updatedUser.email,
-      name: updatedUser.name,
-      role: updatedUser.role,
-      isEmailVerified: updatedUser.isEmailVerified,
-      lastAccessedWorkspaceId: updatedUser.lastAccessedWorkspaceId,
-      onboardingCompletedAt: updatedUser.onboardingCompletedAt,
-      maestroTone: updatedUser.maestroTone,
-      createdAt: updatedUser.createdAt,
-      updatedAt: updatedUser.updatedAt,
-    };
+    return toPublicUser(updatedUser);
   }
 
   /**
@@ -322,5 +319,31 @@ export class UsersService {
     }
 
     await this.db.delete(users).where(eq(users.id, id));
+  }
+
+  /**
+   * Point the user's avatar at an uploaded file, or clear it.
+   *
+   * `null` removes the picture and falls back to the initials, which still
+   * carry the colour assigned at sign-up — so removing a photo returns someone
+   * to the avatar their colleagues already knew them by, not to a blank.
+   *
+   * The previous file is NOT deleted from R2. Two reasons: a stale URL may
+   * still be rendering in an open tab, and an avatar is a few kilobytes
+   * against a bucket that holds video. A sweep of orphaned keys is a
+   * background job, not part of a click.
+   */
+  async setAvatar(id: string, avatarUrl: string | null): Promise<PublicUser> {
+    const [updated] = await this.db
+      .update(users)
+      .set({ avatarUrl, updatedAt: new Date() })
+      .where(eq(users.id, id))
+      .returning();
+
+    if (!updated) {
+      throw new NotFoundException(`User with ID ${id} not found`);
+    }
+
+    return toPublicUser(updated);
   }
 }

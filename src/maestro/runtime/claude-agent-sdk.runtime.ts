@@ -14,6 +14,11 @@ import {
 type AgentSdk = typeof import('@anthropic-ai/claude-agent-sdk');
 
 let sdkPromise: Promise<AgentSdk> | null = null;
+
+/** How the SDK is reached. Swappable for tests — see below. */
+let loadSdkImpl: () => Promise<AgentSdk> = () =>
+  import('@anthropic-ai/claude-agent-sdk');
+
 /**
  * Lazy ESM import. The Agent SDK is ESM-only (`"type": "module"`); NestJS
  * compiles to CommonJS, so a static `import` would emit a `require()` and crash
@@ -22,9 +27,27 @@ let sdkPromise: Promise<AgentSdk> | null = null;
  */
 function loadSdk(): Promise<AgentSdk> {
   if (!sdkPromise) {
-    sdkPromise = import('@anthropic-ai/claude-agent-sdk');
+    sdkPromise = loadSdkImpl();
   }
   return sdkPromise;
+}
+
+/**
+ * Swap the SDK loader. Tests only.
+ *
+ * A dynamic `import()` cannot be intercepted by `jest.mock` without
+ * `--experimental-vm-modules`, which is why this adapter had no tests at all —
+ * and why a `tool_result` that carried no tool name went unnoticed until it
+ * showed up as a step timeline that never stopped spinning. A seam here is
+ * cheaper than that.
+ *
+ * Pass `null` to restore the real loader.
+ */
+export function __setSdkLoaderForTests(
+  loader: (() => Promise<AgentSdk>) | null,
+): void {
+  sdkPromise = null;
+  loadSdkImpl = loader ?? (() => import('@anthropic-ai/claude-agent-sdk'));
 }
 
 /**
@@ -96,6 +119,15 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
       },
     });
 
+    // Which tool each call id belongs to.
+    //
+    // Anthropic's `tool_result` block carries only a `tool_use_id` — the name
+    // lives on the `tool_use` block that opened the call. Without this the
+    // result went out with an empty name, so a consumer could not tell WHICH
+    // tool had finished: the panel's timeline left every step spinning
+    // because nothing ever matched.
+    const toolNameById = new Map<string, string>();
+
     try {
       for await (const message of conversation) {
         switch (message.type) {
@@ -115,10 +147,12 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
           case 'assistant': {
             for (const block of message.message.content) {
               if (block.type === 'tool_use') {
+                const name = stripQualifiedToolName(block.name);
+                toolNameById.set(block.id, name);
                 yield {
                   type: 'tool_call',
                   id: block.id,
-                  name: stripQualifiedToolName(block.name),
+                  name,
                   input: block.input,
                 };
               }
@@ -132,13 +166,19 @@ export class ClaudeAgentSdkRuntime implements AgentRuntime {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any -- tool_result block
                 const b = block as any;
                 if (b?.type === 'tool_result') {
+                  const id = String(b.tool_use_id ?? '');
                   yield {
                     type: 'tool_result',
-                    id: b.tool_use_id ?? '',
-                    name: '',
+                    id,
+                    // Resolved from the call that opened it — the result block
+                    // itself has no name. Deleted as it is read: a call id is
+                    // used once, and a turn with many tool calls would
+                    // otherwise grow a map it never releases.
+                    name: toolNameById.get(id) ?? '',
                     output: b.content,
                     isError: Boolean(b.is_error),
                   };
+                  toolNameById.delete(id);
                 }
               }
             }

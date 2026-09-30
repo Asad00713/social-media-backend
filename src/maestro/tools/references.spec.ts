@@ -135,3 +135,42 @@ describe('references', () => {
     });
   });
 });
+
+/**
+ * `details` feeds the hover card. It passes through TWO gates on its way to
+ * the frontend — the type guard and `normalize`, which strips a reference to
+ * exactly its documented fields. A field missed by either is dropped in
+ * silence, and the card just renders without it.
+ */
+describe('reference details', () => {
+  const withDetails = {
+    kind: 'campaign' as const,
+    id: 'c1',
+    label: 'Autumn Launch',
+    details: [
+      { label: 'Schedule', value: 'Sep 1 → Sep 14' },
+      { label: 'Progress', value: '12 of 30' },
+    ],
+  };
+
+  it('accepts a reference carrying details', () => {
+    expect(isEntityReference(withDetails)).toBe(true);
+  });
+
+  it('survives the merge that reaches the frontend', () => {
+    const [merged] = mergeReferences([], [withDetails]);
+    expect(merged.details).toEqual(withDetails.details);
+  });
+
+  it('rejects a malformed detail rather than half-rendering it', () => {
+    expect(
+      isEntityReference({ ...withDetails, details: [{ label: 'Progress' }] }),
+    ).toBe(false);
+    expect(isEntityReference({ ...withDetails, details: 'nope' })).toBe(false);
+  });
+
+  it('is omitted, not empty, when a tool supplies none', () => {
+    const [merged] = mergeReferences([], [{ ...withDetails, details: [] }]);
+    expect('details' in merged).toBe(false);
+  });
+});

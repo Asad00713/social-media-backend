@@ -8,8 +8,10 @@ import type {
 import type { AgentToolDefinition } from '../maestro.types';
 import {
   REFERENCE_USAGE_HINT,
+  formatWhen,
   withReferences,
   type EntityReference,
+  type ReferenceDetail,
 } from './references';
 
 /**
@@ -176,6 +178,41 @@ function fromDmConversation(
   };
 }
 
+/** How much of a message a hover card can show before it stops being a glance. */
+const PREVIEW_LENGTH = 90;
+
+/**
+ * The facts a hover card shows about a conversation.
+ *
+ * The chip carries the person's name, the platform logo and the state — which
+ * says a reply is waiting without saying what it is waiting ON. The message
+ * itself is the thing the reader wants, so it leads.
+ */
+function conversationDetails(c: NormalizedConversation): ReferenceDetail[] {
+  const details: ReferenceDetail[] = [];
+
+  const message = (c.lastMessage ?? '').trim().replace(/\s+/g, ' ');
+  if (message) {
+    const preview =
+      message.length > PREVIEW_LENGTH
+        ? `${message.slice(0, PREVIEW_LENGTH)}…`
+        : message;
+    // Whose message it is changes what the preview means entirely: our own
+    // last word reads as "waiting on them", theirs as "waiting on us".
+    details.push({
+      label: c.lastMessageFromMe ? 'You said' : 'They said',
+      value: preview,
+    });
+  }
+
+  const when = formatWhen(c.lastMessageAt);
+  if (when) details.push({ label: 'Last message', value: when });
+
+  if (c.onPost) details.push({ label: 'On post', value: c.onPost });
+
+  return details;
+}
+
 /** One conversation as a chip: the person's name, its state, its platform logo. */
 function referenceFor(c: NormalizedConversation): EntityReference {
   return {
@@ -184,6 +221,7 @@ function referenceFor(c: NormalizedConversation): EntityReference {
     label: c.from,
     status: c.status,
     platform: c.platform,
+    details: conversationDetails(c),
   };
 }
 
