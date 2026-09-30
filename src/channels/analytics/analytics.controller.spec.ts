@@ -4,6 +4,7 @@ import { AnalyticsController } from './analytics.controller';
 import { AnalyticsService } from './services/analytics.service';
 import { ChannelOwnershipGuard } from './guards/channel-ownership.guard';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
+import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard';
 
 describe('AnalyticsController', () => {
   let controller: AnalyticsController;
@@ -34,6 +35,8 @@ describe('AnalyticsController', () => {
       .overrideGuard(AuthGuard('jwt'))
       .useValue({ canActivate: () => true })
       .overrideGuard(ChannelOwnershipGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(WorkspaceRoleGuard)
       .useValue({ canActivate: () => true })
       .compile();
 
