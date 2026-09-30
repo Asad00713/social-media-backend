@@ -1,4 +1,8 @@
-import { ExecutionContext, ForbiddenException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ExecutionContext,
+  ForbiddenException,
+} from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { WorkspaceSuspendedGuard } from './workspace-suspended.guard';
 
@@ -12,16 +16,23 @@ import { WorkspaceSuspendedGuard } from './workspace-suspended.guard';
  * the guard looks the subscription up by owner. A fixture without one models a
  * workspace whose owner cannot be resolved, and the guard then allows through.
  */
+const WS_1 = '0b6f2a44-6a47-4c1e-9b1e-3f1d2a5c7e01';
+const WS_2 = '6d9c1e2f-3b4a-4f5e-8a7b-9c0d1e2f3a42';
+
 function mockDb(...rowsQueue: Array<Array<Record<string, unknown>>>) {
   const queue = [...rowsQueue];
-  const limit = jest.fn().mockImplementation(() => Promise.resolve(queue.shift() ?? []));
+  const limit = jest
+    .fn()
+    .mockImplementation(() => Promise.resolve(queue.shift() ?? []));
   const where = jest.fn().mockReturnValue({ limit });
   const from = jest.fn().mockReturnValue({ where });
   const select = jest.fn().mockReturnValue({ from });
   return { db: { select } as never, select, from, where, limit };
 }
 
-function mockContext(params: Record<string, string | undefined>): ExecutionContext {
+function mockContext(
+  params: Record<string, string | undefined>,
+): ExecutionContext {
   return {
     switchToHttp: () => ({ getRequest: () => ({ params }) }),
     getHandler: () => ({}),
@@ -30,16 +41,38 @@ function mockContext(params: Record<string, string | undefined>): ExecutionConte
 }
 
 function mockReflector(skip: boolean): Reflector {
-  return { getAllAndOverride: jest.fn().mockReturnValue(skip) } as unknown as Reflector;
+  return {
+    getAllAndOverride: jest.fn().mockReturnValue(skip),
+  } as unknown as Reflector;
 }
 
 describe('WorkspaceSuspendedGuard', () => {
+  // Every workspace id is a uuid column: handing Postgres anything else throws
+  // "invalid input syntax for type uuid", which surfaced as a 500 on every
+  // workspace route — before auth, since this guard is global.
+  it.each([
+    ['workspaceId', 'probe'],
+    ['workspaceId', 'not-a-uuid-at-all'],
+    ['wsId', '123'],
+  ])(
+    'rejects a malformed %s (%s) with 400 and never queries the DB',
+    async (param, value) => {
+      const { db, select } = mockDb([]);
+      const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
+
+      await expect(
+        guard.canActivate(mockContext({ [param]: value })),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(select).not.toHaveBeenCalled();
+    },
+  );
+
   it('allows routes marked @SkipSuspendCheck without touching the DB', async () => {
     const { db, select } = mockDb([]);
     const guard = new WorkspaceSuspendedGuard(db, mockReflector(true));
 
     await expect(
-      guard.canActivate(mockContext({ workspaceId: 'ws-1' })),
+      guard.canActivate(mockContext({ workspaceId: WS_1 })),
     ).resolves.toBe(true);
     expect(select).not.toHaveBeenCalled();
   });
@@ -57,27 +90,33 @@ describe('WorkspaceSuspendedGuard', () => {
     const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
 
     await expect(
-      guard.canActivate(mockContext({ workspaceId: 'ws-1' })),
+      guard.canActivate(mockContext({ workspaceId: WS_1 })),
     ).resolves.toBe(true);
   });
 
   it('allows an active workspace with no subscription row (free / never subscribed)', async () => {
-    const { db } = mockDb([{ isActive: true, reason: null, ownerId: 'owner-1' }], []);
+    const { db } = mockDb(
+      [{ isActive: true, reason: null, ownerId: 'owner-1' }],
+      [],
+    );
     const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
 
     await expect(
-      guard.canActivate(mockContext({ workspaceId: 'ws-1' })),
+      guard.canActivate(mockContext({ workspaceId: WS_1 })),
     ).resolves.toBe(true);
   });
 
   it.each(['active', 'trialing', 'past_due', 'incomplete', 'canceled'])(
     'allows non-suspended status "%s"',
     async (status) => {
-      const { db } = mockDb([{ isActive: true, reason: null, ownerId: 'owner-1' }], [{ status }]);
+      const { db } = mockDb(
+        [{ isActive: true, reason: null, ownerId: 'owner-1' }],
+        [{ status }],
+      );
       const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
 
       await expect(
-        guard.canActivate(mockContext({ workspaceId: 'ws-1' })),
+        guard.canActivate(mockContext({ workspaceId: WS_1 })),
       ).resolves.toBe(true);
     },
   );
@@ -85,11 +124,14 @@ describe('WorkspaceSuspendedGuard', () => {
   it.each(['unpaid', 'incomplete_expired'])(
     'blocks suspended status "%s" with a WORKSPACE_SUSPENDED 403 carrying reason "billing"',
     async (status) => {
-      const { db } = mockDb([{ isActive: true, reason: null, ownerId: 'owner-1' }], [{ status }]);
+      const { db } = mockDb(
+        [{ isActive: true, reason: null, ownerId: 'owner-1' }],
+        [{ status }],
+      );
       const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
 
       await expect(
-        guard.canActivate(mockContext({ workspaceId: 'ws-1' })),
+        guard.canActivate(mockContext({ workspaceId: WS_1 })),
       ).rejects.toMatchObject({
         response: {
           statusCode: 403,
@@ -103,12 +145,15 @@ describe('WorkspaceSuspendedGuard', () => {
     },
   );
 
-  it('reads the analytics module\'s :wsId param too', async () => {
-    const { db, where } = mockDb([{ isActive: true, reason: null, ownerId: 'owner-1' }], [{ status: 'unpaid' }]);
+  it("reads the analytics module's :wsId param too", async () => {
+    const { db, where } = mockDb(
+      [{ isActive: true, reason: null, ownerId: 'owner-1' }],
+      [{ status: 'unpaid' }],
+    );
     const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
 
     await expect(
-      guard.canActivate(mockContext({ wsId: 'ws-2' })),
+      guard.canActivate(mockContext({ wsId: WS_2 })),
     ).rejects.toBeInstanceOf(ForbiddenException);
     expect(where).toHaveBeenCalled();
   });
@@ -118,7 +163,7 @@ describe('WorkspaceSuspendedGuard', () => {
     const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
 
     await expect(
-      guard.canActivate(mockContext({ workspaceId: 'ws-1' })),
+      guard.canActivate(mockContext({ workspaceId: WS_1 })),
     ).rejects.toMatchObject({
       response: {
         statusCode: 403,
@@ -135,7 +180,7 @@ describe('WorkspaceSuspendedGuard', () => {
     const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
 
     await expect(
-      guard.canActivate(mockContext({ workspaceId: 'ws-1' })),
+      guard.canActivate(mockContext({ workspaceId: WS_1 })),
     ).rejects.toMatchObject({
       response: {
         statusCode: 403,
@@ -152,7 +197,7 @@ describe('WorkspaceSuspendedGuard', () => {
     const guard = new WorkspaceSuspendedGuard(db, mockReflector(false));
 
     await expect(
-      guard.canActivate(mockContext({ workspaceId: 'ws-1' })),
+      guard.canActivate(mockContext({ workspaceId: WS_1 })),
     ).rejects.toBeInstanceOf(ForbiddenException);
     // Only one query (the workspace lookup) should have run.
     expect(select).toHaveBeenCalledTimes(1);

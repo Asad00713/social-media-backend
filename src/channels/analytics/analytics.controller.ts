@@ -19,12 +19,17 @@ import {
   type AnalyticsRange,
 } from './services/analytics.service';
 import { ChannelOwnershipGuard } from './guards/channel-ownership.guard';
+import { RequireCapability } from '../../workspace-members/require-capability.decorator';
+import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard';
 import { OverviewResponseDto } from './dto/overview-response.dto';
 
 const VALID_RANGES: AnalyticsRange[] = ['7d', '30d', 'mtd', 'lm', 'custom'];
 
+// Membership first: a non-member learns nothing, not even whether the channel
+// exists (ChannelOwnershipGuard would answer 404 vs 403).
 @Controller('analytics/workspaces/:wsId/channels/:channelId')
-@UseGuards(AuthGuard('jwt'), ChannelOwnershipGuard)
+@UseGuards(AuthGuard('jwt'), WorkspaceRoleGuard, ChannelOwnershipGuard)
+@RequireCapability('analytics:view')
 export class AnalyticsController {
   constructor(
     private readonly analytics: AnalyticsService,

@@ -16,6 +16,8 @@ export type PublicWorkspace = Omit<
   | 'maestroAnthropicKeyHint'
   | 'maestroAnthropicKeySetAt'
   | 'maestroOnboardedAt'
+  // Served by GET /home/workspaces/:id/summary; kept out of /auth/me.
+  | 'weeklyPostGoal'
 >;
 
 export type WorkspaceWithRole = PublicWorkspace & { role: WorkspaceRoleLabel };
