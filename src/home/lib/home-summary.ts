@@ -1,29 +1,22 @@
 /**
  * Pure aggregation for the Home summary. No I/O: the service fetches rows,
  * these functions turn them into numbers, so every rule here is unit-tested.
+ *
+ * Post numbers come from `PublishedPost`s (see post-performance). Follower
+ * numbers come from the daily rollup, whose follower columns, unlike its
+ * engagement ones, are genuinely per day.
  */
+import {
+  engagementsOf,
+  type PublishedPost,
+} from '../../post-performance/post-performance';
 
-export interface DailyRow {
+/** A channel's followers on one day, from the daily rollup. */
+export interface FollowerRow {
   channelId: number;
   /** `YYYY-MM-DD`, one row per channel per day. */
   date: string;
-  postsPublished: number;
-  totalLikes: number;
-  totalComments: number;
-  totalShares: number;
-  totalImpressions: number | null;
   followersAtEndOfDay: number | null;
-  followersGained: number | null;
-}
-
-export interface WindowSummary {
-  postsPublished: number;
-  /** null when no channel reported impressions for the window. */
-  impressions: number | null;
-  engagements: number;
-  /** engagements / impressions × 100, one decimal; null without impressions. */
-  engagementRate: number | null;
-  /** null when no channel reported follower changes for the window. */
   followersGained: number | null;
 }
 
@@ -67,52 +60,31 @@ export function deltaPct(
   return round1(((current - previous) / previous) * 100);
 }
 
-/** Sums a window of daily rows across every channel. */
-export function summarizeWindow(rows: DailyRow[]): WindowSummary {
-  let postsPublished = 0;
-  let engagements = 0;
-  let impressions: number | null = null;
-  let followersGained: number | null = null;
-
+/** Follower gains summed across rows; null when no channel reported a change. */
+export function followersGainedOf(rows: FollowerRow[]): number | null {
+  let gained: number | null = null;
   for (const r of rows) {
-    postsPublished += r.postsPublished;
-    engagements += r.totalLikes + r.totalComments + r.totalShares;
-    if (r.totalImpressions !== null)
-      impressions = (impressions ?? 0) + r.totalImpressions;
-    if (r.followersGained !== null)
-      followersGained = (followersGained ?? 0) + r.followersGained;
+    if (r.followersGained !== null) gained = (gained ?? 0) + r.followersGained;
   }
-
-  return {
-    postsPublished,
-    impressions,
-    engagements,
-    engagementRate: impressions
-      ? round1((engagements / impressions) * 100)
-      : null,
-    followersGained,
-  };
+  return gained;
 }
 
 /**
  * One channel over the window: its latest known follower count, the gain
- * across the window, and growth relative to where the window started.
+ * across the window, growth relative to where the window started, and how
+ * many posts it published.
  */
 export function summarizeChannel(
   channelId: number,
-  rows: DailyRow[],
+  rows: FollowerRow[],
+  postsThisWeek: number,
 ): ChannelSummary {
   const sorted = [...rows].sort((a, b) => a.date.localeCompare(b.date));
   let followers: number | null = null;
-  let followersGained: number | null = null;
-  let postsThisWeek = 0;
-
   for (const r of sorted) {
     if (r.followersAtEndOfDay !== null) followers = r.followersAtEndOfDay;
-    if (r.followersGained !== null)
-      followersGained = (followersGained ?? 0) + r.followersGained;
-    postsThisWeek += r.postsPublished;
   }
+  const followersGained = followersGainedOf(rows);
 
   const startingFollowers =
     followers !== null && followersGained !== null
@@ -159,11 +131,13 @@ export function isPulseRange(days: number): days is PulseRange {
 
 /**
  * Every day from `from` to `to` (inclusive, `YYYY-MM-DD`), summed across
- * channels. Days without a row still appear, at zero, so a sparkline's x-axis
- * is time rather than "days we happened to have data".
+ * channels: each post on the day it went out, with its latest numbers. Days
+ * with nothing still appear, at zero, so a sparkline's x-axis is time rather
+ * than "days we happened to have data".
  */
 export function dailySeries(
-  rows: DailyRow[],
+  posts: PublishedPost[],
+  followers: FollowerRow[],
   from: string,
   to: string,
 ): PulseDay[] {
@@ -180,15 +154,18 @@ export function dailySeries(
     });
   }
 
-  for (const r of rows) {
-    const day = byDate.get(r.date);
+  for (const p of posts) {
+    const day = byDate.get(p.publishedOn);
     if (!day) continue;
-    day.postsPublished += r.postsPublished;
-    day.engagements += r.totalLikes + r.totalComments + r.totalShares;
-    if (r.totalImpressions !== null)
-      day.impressions = (day.impressions ?? 0) + r.totalImpressions;
-    if (r.followersGained !== null)
-      day.followersGained = (day.followersGained ?? 0) + r.followersGained;
+    day.postsPublished += 1;
+    day.engagements += engagementsOf(p);
+    if (p.impressions !== null)
+      day.impressions = (day.impressions ?? 0) + p.impressions;
+  }
+  for (const r of followers) {
+    const day = byDate.get(r.date);
+    if (!day || r.followersGained === null) continue;
+    day.followersGained = (day.followersGained ?? 0) + r.followersGained;
   }
   return [...byDate.values()];
 }

@@ -3,9 +3,18 @@ import { and, eq, gte, inArray, isNotNull, lt } from 'drizzle-orm';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import { channelAnalyticsDaily } from '../drizzle/schema/channel-analytics-daily.schema';
-import { socialMediaChannels } from '../drizzle/schema/channels.schema';
+import {
+  CHANNEL_CATEGORY,
+  socialMediaChannels,
+  type SupportedPlatform,
+} from '../drizzle/schema/channels.schema';
 import { posts } from '../drizzle/schema/posts.schema';
 import { workspace } from '../drizzle/schema/workspace.schema';
+import {
+  totalsOf,
+  type PublishedPost,
+} from '../post-performance/post-performance';
+import { PostPerformanceRepository } from '../post-performance/post-performance.repository';
 import type {
   HomePulseDto,
   HomeSummaryDto,
@@ -18,10 +27,10 @@ import {
   computeStreakWeeks,
   dailySeries,
   deltaPct,
+  followersGainedOf,
   summarizeChannel,
-  summarizeWindow,
   weekStart,
-  type DailyRow,
+  type FollowerRow,
   type PulseRange,
 } from './lib/home-summary';
 
@@ -34,7 +43,10 @@ function metric(value: number | null, previous: number | null): PulseMetric {
   return { value, previous, deltaPct: deltaPct(value, previous) };
 }
 
-/** Midnight UTC today. Windows end the day before: today's rollup is still being written. */
+/**
+ * Midnight UTC today. Windows end the day before: today's posts have barely
+ * been measured and today's follower rollup is still being written.
+ */
 function utcToday(now: Date): Date {
   return new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
@@ -52,10 +64,18 @@ function windowOf(today: Date, days: number): PulseWindow {
   };
 }
 
-/** The window's totals against the span before, from rows covering both. */
-function pulseOf(rows: DailyRow[], window: PulseWindow): Pulse {
-  const cur = summarizeWindow(rows.filter((r) => r.date >= window.from));
-  const prev = summarizeWindow(rows.filter((r) => r.date < window.from));
+/**
+ * The window's totals against the span before, from posts and follower rows
+ * covering both.
+ */
+function pulseOf(
+  published: PublishedPost[],
+  followers: FollowerRow[],
+  window: PulseWindow,
+): Pulse {
+  const inWindow = (d: string) => d >= window.from;
+  const cur = totalsOf(published.filter((p) => inWindow(p.publishedOn)));
+  const prev = totalsOf(published.filter((p) => !inWindow(p.publishedOn)));
   return {
     postsPublished: metric(cur.postsPublished, prev.postsPublished),
     impressions: metric(cur.impressions, prev.impressions),
@@ -63,21 +83,40 @@ function pulseOf(rows: DailyRow[], window: PulseWindow): Pulse {
       ...metric(cur.engagements, prev.engagements),
       rate: cur.engagementRate,
     },
-    followersGained: metric(cur.followersGained, prev.followersGained),
+    followersGained: metric(
+      followersGainedOf(followers.filter((r) => inWindow(r.date))),
+      followersGainedOf(followers.filter((r) => !inWindow(r.date))),
+    ),
   };
 }
+
+interface ActiveChannel {
+  id: number;
+  platform: SupportedPlatform;
+}
+
+/**
+ * Performance counts social channels only. A Slack or Telegram message is a
+ * publication, but it has no audience numbers to measure. Decided by the
+ * platform, not the stored `category` column, which older rows may mislabel.
+ */
+const isSocial = (c: ActiveChannel) =>
+  CHANNEL_CATEGORY[c.platform] === 'social';
 
 /**
  * Everything the Home overview needs that the rest of the API can't give in
  * one call: a workspace-wide weekly pulse with a real week-over-week change,
  * per-channel follower growth, and the posting streak.
  *
- * Windows are whole UTC days and end yesterday, because the daily rollup for
- * today is still being written — a half-day would always look like a drop.
+ * Windows are whole UTC days and end yesterday: a half-day would always look
+ * like a drop.
  */
 @Injectable()
 export class HomeService {
-  constructor(@Inject(DRIZZLE) private readonly db: DbType) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: DbType,
+    private readonly postPerformance: PostPerformanceRepository,
+  ) {}
 
   async getSummary(
     workspaceId: string,
@@ -85,10 +124,20 @@ export class HomeService {
   ): Promise<HomeSummaryDto> {
     const today = utcToday(now);
     const window = windowOf(today, 7);
-    const channelIds = await this.activeChannelIds(workspaceId);
-    const daily = await this.dailyRows(channelIds, window.previousFrom, today);
+    const channels = await this.activeChannels(workspaceId);
+    const followers = await this.followerRows(
+      channels,
+      window.previousFrom,
+      today,
+    );
+    const published = await this.publishedPosts(
+      workspaceId,
+      channels,
+      window.previousFrom,
+      today,
+    );
 
-    const published: { publishedAt: Date | null }[] = await this.db
+    const streakPosts: { publishedAt: Date | null }[] = await this.db
       .select({ publishedAt: posts.publishedAt })
       .from(posts)
       .where(
@@ -111,20 +160,27 @@ export class HomeService {
       .where(eq(workspace.id, workspaceId));
     if (!ws) throw new NotFoundException('Workspace not found');
 
-    const current = daily.filter((r) => r.date >= window.from);
+    const currentFollowers = followers.filter((r) => r.date >= window.from);
+    const currentPosts = published.filter((p) => p.publishedOn >= window.from);
+    const social = new Set(channels.filter(isSocial).map((c) => c.id));
 
-    const publishedDates = published
+    const publishedDates = streakPosts
       .filter((p): p is { publishedAt: Date } => p.publishedAt !== null)
       .map((p) => new Date(p.publishedAt));
     const thisWeek = weekStart(now).getTime();
 
     return {
       window,
-      pulse: pulseOf(daily, window),
-      channels: channelIds.map((id) =>
+      pulse: pulseOf(
+        published.filter((p) => social.has(p.channelId)),
+        followers.filter((r) => social.has(r.channelId)),
+        window,
+      ),
+      channels: channels.map(({ id }) =>
         summarizeChannel(
           id,
-          current.filter((r) => r.channelId === id),
+          currentFollowers.filter((r) => r.channelId === id),
+          currentPosts.filter((p) => p.channelId === id).length,
         ),
       ),
       streakWeeks: computeStreakWeeks(publishedDates, now),
@@ -146,52 +202,82 @@ export class HomeService {
   ): Promise<HomePulseDto> {
     const today = utcToday(now);
     const window = windowOf(today, days);
-    const channelIds = await this.activeChannelIds(workspaceId);
-    const daily = await this.dailyRows(channelIds, window.previousFrom, today);
+    const channels = (await this.activeChannels(workspaceId)).filter(isSocial);
+    const followers = await this.followerRows(
+      channels,
+      window.previousFrom,
+      today,
+    );
+    const published = await this.publishedPosts(
+      workspaceId,
+      channels,
+      window.previousFrom,
+      today,
+    );
     return {
       days,
       window,
-      pulse: pulseOf(daily, window),
-      series: dailySeries(daily, window.from, window.to),
+      pulse: pulseOf(published, followers, window),
+      series: dailySeries(published, followers, window.from, window.to),
     };
   }
 
-  private async activeChannelIds(workspaceId: string): Promise<number[]> {
-    const rows: { id: number }[] = await this.db
-      .select({ id: socialMediaChannels.id })
+  private activeChannels(workspaceId: string): Promise<ActiveChannel[]> {
+    return this.db
+      .select({
+        id: socialMediaChannels.id,
+        platform: socialMediaChannels.platform,
+      })
       .from(socialMediaChannels)
       .where(
         and(
           eq(socialMediaChannels.workspaceId, workspaceId),
           eq(socialMediaChannels.isActive, true),
         ),
-      );
-    return rows.map((c) => c.id);
+      ) as Promise<ActiveChannel[]>;
   }
 
-  /** Daily rollup rows from `fromIso` up to, not including, `before`. */
-  private async dailyRows(
-    channelIds: number[],
+  /** Posts the channels published from `fromIso` up to, not including, `before`. */
+  private publishedPosts(
+    workspaceId: string,
+    channels: ActiveChannel[],
     fromIso: string,
     before: Date,
-  ): Promise<DailyRow[]> {
-    if (!channelIds.length) return [];
+  ): Promise<PublishedPost[]> {
+    if (!channels.length) return Promise.resolve([]);
+    return this.postPerformance.publishedPosts(
+      workspaceId,
+      channels.map((c) => c.id),
+      fromIso,
+      isoDate(before),
+    );
+  }
+
+  /**
+   * Follower rollup rows from `fromIso` up to, not including, `before`. Only
+   * the follower columns: the rollup's engagement sums repeat each post's
+   * lifetime numbers once per day it was snapshotted (see post-performance).
+   */
+  private async followerRows(
+    channels: ActiveChannel[],
+    fromIso: string,
+    before: Date,
+  ): Promise<FollowerRow[]> {
+    if (!channels.length) return [];
     return this.db
       .select({
         channelId: channelAnalyticsDaily.channelId,
         date: channelAnalyticsDaily.date,
-        postsPublished: channelAnalyticsDaily.postsPublished,
-        totalLikes: channelAnalyticsDaily.totalLikes,
-        totalComments: channelAnalyticsDaily.totalComments,
-        totalShares: channelAnalyticsDaily.totalShares,
-        totalImpressions: channelAnalyticsDaily.totalImpressions,
         followersAtEndOfDay: channelAnalyticsDaily.followersAtEndOfDay,
         followersGained: channelAnalyticsDaily.followersGained,
       })
       .from(channelAnalyticsDaily)
       .where(
         and(
-          inArray(channelAnalyticsDaily.channelId, channelIds),
+          inArray(
+            channelAnalyticsDaily.channelId,
+            channels.map((c) => c.id),
+          ),
           gte(channelAnalyticsDaily.date, fromIso),
           lt(channelAnalyticsDaily.date, isoDate(before)),
         ),

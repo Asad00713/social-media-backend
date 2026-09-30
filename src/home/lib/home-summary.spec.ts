@@ -1,24 +1,31 @@
+import type { PublishedPost } from '../../post-performance/post-performance';
 import {
   computeStreakWeeks,
   dailySeries,
   deltaPct,
+  followersGainedOf,
   isPulseRange,
   summarizeChannel,
-  summarizeWindow,
   weekStart,
-  type DailyRow,
+  type FollowerRow,
 } from './home-summary';
 
-const row = (over: Partial<DailyRow>): DailyRow => ({
+const row = (over: Partial<FollowerRow>): FollowerRow => ({
   channelId: 1,
   date: '2026-09-20',
-  postsPublished: 0,
-  totalLikes: 0,
-  totalComments: 0,
-  totalShares: 0,
-  totalImpressions: null,
   followersAtEndOfDay: null,
   followersGained: null,
+  ...over,
+});
+
+const post = (over: Partial<PublishedPost>): PublishedPost => ({
+  postId: 'p1',
+  channelId: 1,
+  publishedOn: '2026-09-20',
+  likes: null,
+  comments: null,
+  shares: null,
+  impressions: null,
   ...over,
 });
 
@@ -34,62 +41,43 @@ describe('deltaPct', () => {
   });
 });
 
-describe('summarizeWindow', () => {
-  it('sums posts, impressions, engagements and follower gains across channels', () => {
-    const s = summarizeWindow([
-      row({
-        channelId: 1,
-        postsPublished: 2,
-        totalLikes: 10,
-        totalComments: 3,
-        totalShares: 1,
-        totalImpressions: 400,
-        followersGained: 5,
-      }),
-      row({
-        channelId: 2,
-        postsPublished: 1,
-        totalLikes: 6,
-        totalImpressions: 100,
-        followersGained: -2,
-      }),
-    ]);
-    expect(s).toEqual({
-      postsPublished: 3,
-      impressions: 500,
-      engagements: 20,
-      engagementRate: 4,
-      followersGained: 3,
-    });
+describe('followersGainedOf', () => {
+  it('adds the daily gains across channels, losses included', () => {
+    expect(
+      followersGainedOf([
+        row({ channelId: 1, followersGained: 5 }),
+        row({ channelId: 2, followersGained: -2 }),
+        row({ channelId: 2, date: '2026-09-21', followersGained: 4 }),
+      ]),
+    ).toBe(7);
   });
 
-  it('reports unknown impressions and follower gains as null, not zero', () => {
-    const s = summarizeWindow([row({ postsPublished: 1, totalLikes: 4 })]);
-    expect(s.impressions).toBeNull();
-    expect(s.engagementRate).toBeNull();
-    expect(s.followersGained).toBeNull();
-    expect(s.engagements).toBe(4);
+  it('is null, not zero, when no channel reported a change', () => {
+    expect(followersGainedOf([row({})])).toBeNull();
+    expect(followersGainedOf([])).toBeNull();
   });
 });
 
 describe('summarizeChannel', () => {
   it('takes the latest follower count and computes growth over the window', () => {
-    const c = summarizeChannel(7, [
-      row({
-        channelId: 7,
-        date: '2026-09-21',
-        followersAtEndOfDay: 1000,
-        followersGained: 10,
-        postsPublished: 1,
-      }),
-      row({
-        channelId: 7,
-        date: '2026-09-23',
-        followersAtEndOfDay: 1030,
-        followersGained: 20,
-        postsPublished: 2,
-      }),
-    ]);
+    const c = summarizeChannel(
+      7,
+      [
+        row({
+          channelId: 7,
+          date: '2026-09-21',
+          followersAtEndOfDay: 1000,
+          followersGained: 10,
+        }),
+        row({
+          channelId: 7,
+          date: '2026-09-23',
+          followersAtEndOfDay: 1030,
+          followersGained: 20,
+        }),
+      ],
+      3,
+    );
     expect(c).toEqual({
       channelId: 7,
       followers: 1030,
@@ -100,11 +88,13 @@ describe('summarizeChannel', () => {
   });
 
   it('has no growth when the starting count is unknown or zero', () => {
-    expect(summarizeChannel(7, []).growthPct).toBeNull();
+    expect(summarizeChannel(7, [], 0).growthPct).toBeNull();
     expect(
-      summarizeChannel(7, [
-        row({ channelId: 7, followersAtEndOfDay: 5, followersGained: 5 }),
-      ]).growthPct,
+      summarizeChannel(
+        7,
+        [row({ channelId: 7, followersAtEndOfDay: 5, followersGained: 5 })],
+        0,
+      ).growthPct,
     ).toBeNull();
   });
 });
@@ -156,39 +146,38 @@ describe('computeStreakWeeks', () => {
 });
 
 describe('dailySeries', () => {
-  it('has one point per day in the window, summed across channels', () => {
+  it('puts each post on the day it went out, summed across channels', () => {
     const series = dailySeries(
       [
-        row({
-          channelId: 1,
-          date: '2026-09-21',
-          postsPublished: 2,
-          totalLikes: 5,
-          totalComments: 1,
-          totalImpressions: 100,
-          followersGained: 3,
+        post({
+          postId: 'a',
+          publishedOn: '2026-09-21',
+          likes: 5,
+          comments: 1,
+          impressions: 100,
         }),
-        row({
+        post({
+          postId: 'b',
           channelId: 2,
-          date: '2026-09-21',
-          postsPublished: 1,
-          totalShares: 4,
-          totalImpressions: 50,
+          publishedOn: '2026-09-21',
+          shares: 4,
+          impressions: 50,
         }),
-        row({ channelId: 1, date: '2026-09-23', totalLikes: 2 }),
+        post({ postId: 'c', publishedOn: '2026-09-23', likes: 2 }),
       ],
+      [row({ date: '2026-09-21', followersGained: 3 })],
       '2026-09-21',
       '2026-09-23',
     );
     expect(series).toEqual([
       {
         date: '2026-09-21',
-        postsPublished: 3,
+        postsPublished: 2,
         impressions: 150,
         engagements: 10,
         followersGained: 3,
       },
-      // A day with no rows at all is still on the line, at zero.
+      // A day with nothing at all is still on the line, at zero.
       {
         date: '2026-09-22',
         postsPublished: 0,
@@ -198,7 +187,7 @@ describe('dailySeries', () => {
       },
       {
         date: '2026-09-23',
-        postsPublished: 0,
+        postsPublished: 1,
         impressions: null,
         engagements: 2,
         followersGained: null,
@@ -206,9 +195,10 @@ describe('dailySeries', () => {
     ]);
   });
 
-  it('leaves out rows outside the window', () => {
+  it('leaves out posts and follower days outside the window', () => {
     const series = dailySeries(
-      [row({ date: '2026-09-20', postsPublished: 9 })],
+      [post({ publishedOn: '2026-09-20', likes: 9 })],
+      [row({ date: '2026-09-20', followersGained: 9 })],
       '2026-09-21',
       '2026-09-21',
     );
@@ -225,7 +215,7 @@ describe('dailySeries', () => {
 
   it('crosses a month end', () => {
     expect(
-      dailySeries([], '2026-09-29', '2026-10-02').map((d) => d.date),
+      dailySeries([], [], '2026-09-29', '2026-10-02').map((d) => d.date),
     ).toEqual(['2026-09-29', '2026-09-30', '2026-10-01', '2026-10-02']);
   });
 });
