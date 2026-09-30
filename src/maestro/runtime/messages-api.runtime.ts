@@ -98,6 +98,20 @@ export class MessagesApiRuntime implements AgentRuntime {
       description: t.description,
       input_schema: toInputSchema(t),
     }));
+    // Cache everything up to and including the tool list.
+    //
+    // Caching is a prefix match rendered tools -> system -> messages, so one
+    // breakpoint on the LAST tool covers all of them. The list is built the
+    // same way, in the same order, on every turn, so the bytes match and the
+    // whole block reads from cache.
+    //
+    // This pays for itself inside a single user turn, never mind across a
+    // conversation: the loop below runs up to `maxTurns` times, and every
+    // pass resends all of these definitions.
+    const lastTool = tools[tools.length - 1];
+    if (lastTool) {
+      lastTool.cache_control = { type: 'ephemeral' };
+    }
 
     let messages: Anthropic.MessageParam[];
     try {
@@ -238,16 +252,30 @@ export class MessagesApiRuntime implements AgentRuntime {
    * System prompt as content blocks.
    *
    * An array `systemPrompt` is kept as separate blocks rather than joined: the
-   * static product knowledge is the same on every turn, so keeping it in its
-   * own block leaves it cacheable later without reshaping this.
+   * static product knowledge is the same on every turn, and the last block
+   * carries the cache breakpoint that covers all of them.
    */
   private systemBlocks(input: AgentRunInput): Anthropic.TextBlockParam[] {
     const parts = Array.isArray(input.systemPrompt)
       ? input.systemPrompt
       : [input.systemPrompt];
-    return parts
+    const blocks: Anthropic.TextBlockParam[] = parts
       .filter((text) => text && text.trim())
       .map((text) => ({ type: 'text' as const, text }));
+
+    // The second breakpoint, at the end of the prompt.
+    //
+    // Everything before it is stable for this conversation: the product
+    // knowledge is a constant, and the tone and policy blocks are resolved
+    // once per turn from settings that rarely change. The transcript that
+    // follows is different on every call, so it is deliberately left
+    // uncached — marking it would write a new cache entry per turn and
+    // never read one back.
+    const last = blocks[blocks.length - 1];
+    if (last) {
+      last.cache_control = { type: 'ephemeral' };
+    }
+    return blocks;
   }
 
   /**
