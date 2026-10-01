@@ -31,6 +31,7 @@ import { createUserTools } from '../tools/user.tools';
 import { isPendingAction, type PendingAction } from '../tools/confirm';
 import { createMediaTools } from '../tools/media.tools';
 import { createInteractionTools } from '../tools/interaction.tools';
+import { createNavigateTools } from '../tools/navigate.tools';
 import { createWebTools } from '../tools/web.tools';
 import { createDiscordTools } from '../tools/discord.tools';
 import { createSlackTools } from '../tools/slack.tools';
@@ -63,6 +64,8 @@ import {
   STATIC_SYSTEM_PROMPT,
   CONFIRM_BEFORE_SEND_POLICY,
   tonePolicy,
+  todayPolicy,
+  pagePolicy,
   bridgeChannelPolicy,
 } from '../prompt/system-prompt';
 import { z } from 'zod';
@@ -516,6 +519,11 @@ export class MaestroService {
   private buildTools(opts: {
     confirmBeforeSend: boolean;
     webSearchEnabled: boolean;
+    /**
+     * Whether the caller has a UI to navigate. False on the bridges, where
+     * "I've opened Billing for you" would be a lie — there is no page there.
+     */
+    canNavigate?: boolean;
   }): AgentToolDefinition[] {
     const { confirmBeforeSend, webSearchEnabled } = opts;
     return [
@@ -548,6 +556,8 @@ export class MaestroService {
         campaigns: this.campaigns,
       }),
       ...createInteractionTools(),
+      // Only where there is a page to navigate: the bridges are plain chat.
+      ...(opts.canNavigate ? createNavigateTools() : []),
     ];
   }
 
@@ -745,6 +755,15 @@ export class MaestroService {
       approval?: { messageId: string; option: string };
       /** Which runtime answers this turn. Defaults to the Agent SDK. */
       runtime?: AgentRuntimeKind;
+      /**
+       * The screen the user is on. Present only for browser turns — its
+       * absence is what tells the agent it has no UI to navigate.
+       */
+      pageContext?: {
+        page: string;
+        label: string;
+        entity?: { kind: string; id: string };
+      };
     },
     signal: AbortSignal,
   ): AsyncGenerator<MaestroSseEvent> {
@@ -943,6 +962,14 @@ export class MaestroService {
     if (params.sourceChannel) {
       promptParts.push(bridgeChannelPolicy(params.sourceChannel));
     }
+    // LAST, and deliberately so. Everything above is stable for this user, so
+    // it stays a readable cache prefix; this block's text changes once a day.
+    // Putting it last means the daily change invalidates nothing before it.
+    promptParts.push(todayPolicy());
+    // After today's date, for the same reason: it changes as the user moves
+    // around the app, so it must not sit inside the cached prefix.
+    const pageBlock = pagePolicy(params.pageContext);
+    if (pageBlock) promptParts.push(pageBlock);
     const systemPrompt: string | string[] =
       promptParts.length === 1 ? promptParts[0] : promptParts;
 
@@ -952,7 +979,12 @@ export class MaestroService {
       history,
       userMessage: message,
       attachments,
-      tools: this.buildTools({ confirmBeforeSend, webSearchEnabled }),
+      tools: this.buildTools({
+        confirmBeforeSend,
+        webSearchEnabled,
+        // A page context means a browser sent this turn; the bridges send none.
+        canNavigate: Boolean(params.pageContext),
+      }),
       model,
       env: auth.env,
       abortController,
@@ -988,6 +1020,12 @@ export class MaestroService {
     // later result replaces an earlier one): asking about two things in one
     // turn must leave every named entity clickable.
     let maestroRefs: EntityReference[] = [];
+    // Where this turn sent the user, if anywhere. Unlike refs this does NOT
+    // accumulate: two navigations in one turn leave the user at the second,
+    // so recording the first would point the record at a page they passed
+    // through rather than the one they are on.
+    let maestroNavigated: { destination: string; reason?: string } | null =
+      null;
 
     // Both adapters implement the same port, so everything below — the SSE
     // translation, the media/question/reference extraction, persistence — is
@@ -1069,6 +1107,17 @@ export class MaestroService {
               };
             } else if (isReferencePayload(data)) {
               maestroRefs = mergeReferences(maestroRefs, data.refs);
+            } else if (
+              data?.kind === 'navigate' &&
+              data.ok !== false &&
+              typeof data.destination === 'string'
+            ) {
+              maestroNavigated = {
+                destination: data.destination,
+                ...(typeof data.reason === 'string' && data.reason
+                  ? { reason: data.reason }
+                  : {}),
+              };
             } else if (data?.kind === 'web') {
               if (Array.isArray(data.images) && data.images.length > 0) {
                 maestroMedia = {
@@ -1129,7 +1178,11 @@ export class MaestroService {
 
       const hasRefs = maestroRefs.length > 0;
       const metadata =
-        maestroMedia || maestroQuestion || maestroWeb || hasRefs
+        maestroMedia ||
+        maestroQuestion ||
+        maestroWeb ||
+        hasRefs ||
+        maestroNavigated
           ? {
               ...(maestroMedia ? { maestroMedia } : {}),
               ...(maestroQuestion ? { maestroQuestion } : {}),
@@ -1137,10 +1190,20 @@ export class MaestroService {
               // Without this a reference renders live but dies on reload —
               // the marker would survive in the text with nothing to resolve it.
               ...(hasRefs ? { maestroRefs } : {}),
+              // Same reason, for the same failure: the navigation itself is
+              // gone the moment it happens, so a turn that moved the user
+              // would come back from history looking like it did nothing.
+              ...(maestroNavigated ? { maestroNavigated } : {}),
             }
           : undefined;
 
-      if (displayText || maestroMedia || maestroQuestion || maestroWeb) {
+      if (
+        displayText ||
+        maestroMedia ||
+        maestroQuestion ||
+        maestroWeb ||
+        maestroNavigated
+      ) {
         const saved = await this.conversations.addMessage(
           conversationId,
           'assistant',

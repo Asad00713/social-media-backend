@@ -17,7 +17,7 @@ export function createWebTools(
     {
       name: 'web_search',
       description:
-        'Search the live web when you do not know the answer, need current / up-to-date information, or the user asks about something outside this app and your other tools. Returns source results (and optionally web images). Briefly summarise and cite — the UI shows the sources. IMPORTANT: web images are NOT licensed for publishing; for post images use search_media (Unsplash/Pexels) instead, and tell the user so.',
+        `Search the live web. USE IT WHENEVER: the user says to search / google / look something up (always, even if you think you know); the answer could have changed since your training cutoff (news, prices, releases, "latest", "current", "today", this year, "did X happen yet"); a platform fact that moves (character limits, aspect ratios, API or policy changes); a person, product, company, tool or term you cannot confidently place; or the user wants a picture of a real-world subject (type: "images"). DO NOT use it for the user's own workspace data (other tools cover posts, channels, campaigns, inbox, library, schedule), for writing captions or hashtags, or for stable general knowledge. Search before answering, never after. Returns source results (and optionally web images). Summarise in your own words and cite with [1], [2] — the UI shows the sources. IMPORTANT: web images are NOT licensed for publishing; for post images use search_media (Unsplash/Pexels) instead, and tell the user so.`,
       inputSchema: {
         query: z.string().describe('The web search query.'),
         type: z
