@@ -1020,6 +1020,12 @@ export class MaestroService {
     // later result replaces an earlier one): asking about two things in one
     // turn must leave every named entity clickable.
     let maestroRefs: EntityReference[] = [];
+    // Where this turn sent the user, if anywhere. Unlike refs this does NOT
+    // accumulate: two navigations in one turn leave the user at the second,
+    // so recording the first would point the record at a page they passed
+    // through rather than the one they are on.
+    let maestroNavigated: { destination: string; reason?: string } | null =
+      null;
 
     // Both adapters implement the same port, so everything below — the SSE
     // translation, the media/question/reference extraction, persistence — is
@@ -1101,6 +1107,17 @@ export class MaestroService {
               };
             } else if (isReferencePayload(data)) {
               maestroRefs = mergeReferences(maestroRefs, data.refs);
+            } else if (
+              data?.kind === 'navigate' &&
+              data.ok !== false &&
+              typeof data.destination === 'string'
+            ) {
+              maestroNavigated = {
+                destination: data.destination,
+                ...(typeof data.reason === 'string' && data.reason
+                  ? { reason: data.reason }
+                  : {}),
+              };
             } else if (data?.kind === 'web') {
               if (Array.isArray(data.images) && data.images.length > 0) {
                 maestroMedia = {
@@ -1161,7 +1178,11 @@ export class MaestroService {
 
       const hasRefs = maestroRefs.length > 0;
       const metadata =
-        maestroMedia || maestroQuestion || maestroWeb || hasRefs
+        maestroMedia ||
+        maestroQuestion ||
+        maestroWeb ||
+        hasRefs ||
+        maestroNavigated
           ? {
               ...(maestroMedia ? { maestroMedia } : {}),
               ...(maestroQuestion ? { maestroQuestion } : {}),
@@ -1169,10 +1190,20 @@ export class MaestroService {
               // Without this a reference renders live but dies on reload —
               // the marker would survive in the text with nothing to resolve it.
               ...(hasRefs ? { maestroRefs } : {}),
+              // Same reason, for the same failure: the navigation itself is
+              // gone the moment it happens, so a turn that moved the user
+              // would come back from history looking like it did nothing.
+              ...(maestroNavigated ? { maestroNavigated } : {}),
             }
           : undefined;
 
-      if (displayText || maestroMedia || maestroQuestion || maestroWeb) {
+      if (
+        displayText ||
+        maestroMedia ||
+        maestroQuestion ||
+        maestroWeb ||
+        maestroNavigated
+      ) {
         const saved = await this.conversations.addMessage(
           conversationId,
           'assistant',
