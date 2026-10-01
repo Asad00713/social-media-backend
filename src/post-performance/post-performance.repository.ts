@@ -74,7 +74,7 @@ export class PostPerformanceRepository {
         t.channel_id,
         to_char(p.published_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS published_on,
         p.published_at,
-        left(coalesce(p.content, ''), 280) AS content,
+        coalesce(p.content, '') AS content,
         coalesce(p.media_items, '[]'::jsonb) AS media_items,
         coalesce(p.metadata->>'syncedFrom', '') = 'platform' AS imported,
         t.permalink,
@@ -82,7 +82,7 @@ export class PostPerformanceRepository {
         m.comments_count,
         m.shares_count,
         m.impressions_count,
-        m.media_type
+        mt.media_type
       FROM posts p
       CROSS JOIN LATERAL (
         -- One row per channel: a post can target one channel twice (e.g. two
@@ -96,15 +96,24 @@ export class PostPerformanceRepository {
         GROUP BY e->>'channelId'
       ) t
       LEFT JOIN LATERAL (
-        SELECT
-          s.likes_count, s.comments_count, s.shares_count, s.impressions_count,
-          s.platform_metrics->>'mediaType' AS media_type
+        SELECT s.likes_count, s.comments_count, s.shares_count, s.impressions_count
         FROM post_metric_snapshots s
         WHERE s.post_id = p.id
           AND s.channel_id::text = t.channel_id
         ORDER BY s.snapshot_at DESC
         LIMIT 1
       ) m ON true
+      LEFT JOIN LATERAL (
+        -- The newest snapshot that says what the post is. Threads and X only
+        -- report it when the post is imported; later metric snapshots omit it.
+        SELECT s.platform_metrics->>'mediaType' AS media_type
+        FROM post_metric_snapshots s
+        WHERE s.post_id = p.id
+          AND s.channel_id::text = t.channel_id
+          AND s.platform_metrics->>'mediaType' IS NOT NULL
+        ORDER BY s.snapshot_at DESC
+        LIMIT 1
+      ) mt ON true
       WHERE p.workspace_id = ${workspaceId}
         AND p.status IN ('published', 'partially_published')
         AND p.published_at >= ${new Date(`${from}T00:00:00Z`)}

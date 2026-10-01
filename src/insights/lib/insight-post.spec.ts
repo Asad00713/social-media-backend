@@ -138,6 +138,20 @@ describe('toInsightPost', () => {
     expect(toInsightPost(post({}), 'x').thumbnailUrl).toBeNull();
   });
 
+  it('trims the caption to 280 characters without splitting an emoji', () => {
+    const caption = `${'a'.repeat(279)}👋 and more`;
+    expect(toInsightPost(post({ content: caption }), 'x').content).toBe(
+      `${'a'.repeat(279)}👋`,
+    );
+  });
+
+  it('keeps the whole caption when asked to', () => {
+    const caption = 'b'.repeat(1500);
+    expect(toInsightPost(post({ content: caption }), 'x', null).content).toBe(
+      caption,
+    );
+  });
+
   it('has no rate without impressions, or with zero impressions', () => {
     expect(
       toInsightPost(post({ likes: 5 }), 'bluesky').engagementRate,

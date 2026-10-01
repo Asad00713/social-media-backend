@@ -27,6 +27,9 @@ export interface InsightPost {
   engagementRate: number | null;
 }
 
+/** Cards and the table show this much of a caption; the CSV gets all of it. */
+export const CAPTION_PREVIEW_CHARS = 280;
+
 /** Every post on these platforms is a video, whatever was stored. */
 const VIDEO_PLATFORMS = new Set(['youtube', 'tiktok']);
 
@@ -67,14 +70,24 @@ export function classifyFormat(
   return 'image';
 }
 
-export function toInsightPost(p: PublishedPost, platform: string): InsightPost {
+/** The first `n` characters, counted by code point so an emoji isn't split. */
+const preview = (s: string, n: number): string =>
+  s.length <= n ? s : Array.from(s).slice(0, n).join('');
+
+/** `captionChars: null` keeps the whole caption. */
+export function toInsightPost(
+  p: PublishedPost,
+  platform: string,
+  captionChars: number | null = CAPTION_PREVIEW_CHARS,
+): InsightPost {
   const engagements = engagementsOf(p);
   const first = p.mediaItems[0];
   return {
     postId: p.postId,
     channelId: p.channelId,
     publishedAt: p.publishedAt,
-    content: p.content,
+    content:
+      captionChars === null ? p.content : preview(p.content, captionChars),
     format: classifyFormat(p, platform),
     thumbnailUrl: first ? (first.thumbnailUrl ?? first.url) : null,
     permalink: p.permalink,

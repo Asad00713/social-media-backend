@@ -34,14 +34,17 @@ export interface PublishedPost {
   impressions: number | null;
   /** When it went out, ISO 8601. */
   publishedAt: string;
-  /** Caption, first 280 characters; '' when there is none. */
+  /** The whole caption; '' when there is none. Insights trims it for cards. */
   content: string;
   mediaItems: PostMediaItem[];
   /** Imported from the platform rather than composed in Schedura. */
   imported: boolean;
   /** The post on the platform, when the target recorded it. */
   permalink: string | null;
-  /** Latest snapshot's `platform_metrics.mediaType` (Instagram, Threads, X). */
+  /**
+   * `platform_metrics.mediaType` from the newest snapshot that has one
+   * (Instagram, Threads, X).
+   */
   mediaType: string | null;
 }
 

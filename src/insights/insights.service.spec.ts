@@ -243,6 +243,27 @@ describe('InsightsService.posts', () => {
     expect(page.hasMore).toBe(true);
   });
 
+  it('sends the card preview of a long caption, not all of it', async () => {
+    const { db } = fakeDb([CHANNELS]);
+    const page = await new InsightsService(
+      db as any,
+      repoWith([post({ content: 'd'.repeat(1200) })]) as any,
+    ).posts(
+      'ws1',
+      7,
+      undefined,
+      {
+        format: 'all',
+        sort: 'publishedAt',
+        order: 'desc',
+        limit: 10,
+        offset: 0,
+      },
+      NOW,
+    );
+    expect(page.rows[0].content).toHaveLength(280);
+  });
+
   it('is empty past the end', async () => {
     const { db } = fakeDb([CHANNELS]);
     const page = await new InsightsService(
@@ -282,5 +303,21 @@ describe('InsightsService.csv', () => {
     );
     expect(filename).toBe('schedura-posts-2026-09-23-2026-09-29.csv');
     expect(body).toContain('asad_codm,instagram,text,Hi');
+  });
+
+  it('exports the whole caption, not the card preview', async () => {
+    const { db } = fakeDb([CHANNELS]);
+    const long = 'c'.repeat(1200);
+    const { body } = await new InsightsService(
+      db as any,
+      repoWith([post({ content: long })]) as any,
+    ).csv(
+      'ws1',
+      7,
+      undefined,
+      { format: 'all', sort: 'publishedAt', order: 'desc' },
+      NOW,
+    );
+    expect(body).toContain(`,${long},`);
   });
 });

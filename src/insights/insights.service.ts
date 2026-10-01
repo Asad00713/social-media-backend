@@ -33,7 +33,11 @@ import {
   type CsvChannel,
 } from './lib/content-table';
 import { freshnessOf, type SyncStateRow } from './lib/freshness';
-import { toInsightPost, type InsightPost } from './lib/insight-post';
+import {
+  CAPTION_PREVIEW_CHARS,
+  toInsightPost,
+  type InsightPost,
+} from './lib/insight-post';
 import { parseChannels, type TableQuery } from './lib/query';
 import { bestTimes, formatStats, topPosts } from './lib/rankings';
 import { daySeries, followerTotals } from './lib/series';
@@ -178,6 +182,7 @@ export class InsightsService {
       channels,
       table,
       now,
+      null,
     );
     const labels = new Map<number, CsvChannel>(
       social.map((c) => [c.id, { name: c.accountName, platform: c.platform }]),
@@ -188,13 +193,17 @@ export class InsightsService {
     };
   }
 
-  /** The window's posts as table rows, filtered and sorted. */
+  /**
+   * The window's posts as table rows, filtered and sorted. Captions are the
+   * card preview unless `captionChars` is null (the CSV wants all of it).
+   */
   private async tableRows(
     workspaceId: string,
     days: PeriodDays,
     channels: string | undefined,
     table: Pick<TableQuery, 'format' | 'sort' | 'order'>,
     now: Date,
+    captionChars: number | null = CAPTION_PREVIEW_CHARS,
   ) {
     const today = utcToday(now);
     const window = windowOf(today, days);
@@ -211,7 +220,9 @@ export class InsightsService {
       today,
     );
     const rows = filterAndSort(
-      published.map((p) => toInsightPost(p, platformOf.get(p.channelId) ?? '')),
+      published.map((p) =>
+        toInsightPost(p, platformOf.get(p.channelId) ?? '', captionChars),
+      ),
       table,
     );
     return { rows, social, window };
