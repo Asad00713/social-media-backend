@@ -2,12 +2,13 @@ import type { PublishedPost } from '../post-performance/post-performance';
 import { InsightsService } from './insights.service';
 
 /**
- * A db double whose `select()` chains resolve, in call order, to the arrays
- * given. The service issues: channels, follower rows, sync state.
+ * A db double whose query chains resolve, in call order, to the arrays given.
+ * The service issues: channels, follower rows, follower seed, sync state.
  */
 interface Chain extends PromiseLike<unknown[]> {
   from: () => Chain;
   where: () => Chain;
+  orderBy: () => Chain;
 }
 function fakeDb(results: unknown[][]) {
   let i = 0;
@@ -16,12 +17,14 @@ function fakeDb(results: unknown[][]) {
     const c: Chain = {
       from: () => c,
       where: () => c,
+      orderBy: () => c,
       then: (resolve, reject) =>
         Promise.resolve(results[i++] ?? []).then(resolve, reject),
     };
     return c;
   };
-  return { db: { select: () => (calls.push('select'), chain()) }, calls };
+  const query = () => (calls.push('select'), chain());
+  return { db: { select: query, selectDistinctOn: query }, calls };
 }
 
 const NOW = new Date('2026-09-30T12:00:00Z');
@@ -63,6 +66,7 @@ describe('InsightsService.overview', () => {
           followersGained: 10,
         },
       ],
+      [], // no older follower count to seed
       [
         {
           channelId: 1,
@@ -147,7 +151,7 @@ describe('InsightsService.overview', () => {
   });
 
   it('narrows to the asked-for channels and drops ones that are not social or not here', async () => {
-    const { db } = fakeDb([CHANNELS, [], []]);
+    const { db } = fakeDb([CHANNELS, [], [], []]);
     const repo = repoWith([]);
     const o = await new InsightsService(db as any, repo as any).overview(
       'ws1',
@@ -163,6 +167,36 @@ describe('InsightsService.overview', () => {
       '2026-09-16',
       '2026-09-30',
     );
+  });
+
+  it("carries a channel's last known followers whatever the range", async () => {
+    // The rollup stopped writing follower counts in July: the window has no
+    // rows, so the count comes from the seed (newest non-null row before it).
+    const { db } = fakeDb([
+      CHANNELS,
+      [],
+      [
+        {
+          channelId: 1,
+          date: '2026-07-01',
+          followersAtEndOfDay: 800,
+          followersGained: null,
+        },
+      ],
+      [],
+    ]);
+    const o = await new InsightsService(
+      db as any,
+      repoWith([]) as any,
+    ).overview('ws1', 7, undefined, 'UTC', NOW);
+    expect(o.kpis.followers).toEqual({
+      value: 800,
+      gained: null,
+      growthPct: null,
+      previousGained: null,
+    });
+    expect(o.channels[0]).toMatchObject({ channelId: 1, followers: 800 });
+    expect(o.series.every((d) => d.followers === 800)).toBe(true);
   });
 
   it('skips the queries when no channel is left, and answers with empty sections', async () => {

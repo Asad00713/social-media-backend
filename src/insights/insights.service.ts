@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { and, eq, gte, inArray, lt } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, isNotNull, lt } from 'drizzle-orm';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import { channelAnalyticsDaily } from '../drizzle/schema/channel-analytics-daily.schema';
@@ -44,8 +44,6 @@ import { daySeries, followerTotals } from './lib/series';
 
 /** Posts this young are still gaining; the chart draws them dashed. */
 const STILL_COLLECTING_DAYS = 3;
-/** Follower rows this far before the window seed the carried-forward count. */
-const FOLLOWER_LOOKBACK_DAYS = 31;
 
 interface SocialChannel {
   id: number;
@@ -88,12 +86,7 @@ export class InsightsService {
     );
     const followers = await this.followerRows(
       channelIds,
-      isoDate(
-        new Date(
-          Date.parse(`${window.previousFrom}T00:00:00Z`) -
-            FOLLOWER_LOOKBACK_DAYS * DAY_MS,
-        ),
-      ),
+      window.previousFrom,
       today,
     );
     const syncRows = await this.syncState(channelIds);
@@ -266,14 +259,20 @@ export class InsightsService {
     );
   }
 
-  /** Follower rollup rows from `fromIso` up to, not including, `before`. */
+  /**
+   * Follower rollup rows from `fromIso` up to, not including, `before`, plus
+   * each channel's newest known count before `fromIso` to seed the carry. The
+   * seed is found however old it is, so a channel whose rollup stopped long
+   * ago shows the same count whichever range is picked. It carries no gain:
+   * gains are only ever counted inside a window.
+   */
   private async followerRows(
     channelIds: number[],
     fromIso: string,
     before: Date,
   ): Promise<FollowerRow[]> {
     if (!channelIds.length) return [];
-    return this.db
+    const inRange = await this.db
       .select({
         channelId: channelAnalyticsDaily.channelId,
         date: channelAnalyticsDaily.date,
@@ -288,6 +287,25 @@ export class InsightsService {
           lt(channelAnalyticsDaily.date, isoDate(before)),
         ),
       );
+    const seeds = await this.db
+      .selectDistinctOn([channelAnalyticsDaily.channelId], {
+        channelId: channelAnalyticsDaily.channelId,
+        date: channelAnalyticsDaily.date,
+        followersAtEndOfDay: channelAnalyticsDaily.followersAtEndOfDay,
+      })
+      .from(channelAnalyticsDaily)
+      .where(
+        and(
+          inArray(channelAnalyticsDaily.channelId, channelIds),
+          lt(channelAnalyticsDaily.date, fromIso),
+          isNotNull(channelAnalyticsDaily.followersAtEndOfDay),
+        ),
+      )
+      .orderBy(
+        channelAnalyticsDaily.channelId,
+        desc(channelAnalyticsDaily.date),
+      );
+    return [...seeds.map((r) => ({ ...r, followersGained: null })), ...inRange];
   }
 
   private async syncState(channelIds: number[]): Promise<SyncStateRow[]> {
