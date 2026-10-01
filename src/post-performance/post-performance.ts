@@ -12,6 +12,8 @@
  * Pure: the repository fetches, these functions count.
  */
 
+import { round1 } from './period';
+
 /** One post on one channel. A post sent to two channels is two of these. */
 export interface PublishedPost {
   postId: string;
@@ -36,8 +38,6 @@ export interface PostTotals {
    */
   engagementRate: number | null;
 }
-
-const round1 = (n: number) => Math.round(n * 10) / 10;
 
 /** Likes, comments and shares; an unreported count adds nothing. */
 export function engagementsOf(p: PublishedPost): number {

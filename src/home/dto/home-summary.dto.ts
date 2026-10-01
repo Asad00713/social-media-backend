@@ -1,21 +1,11 @@
 import { IsInt, Max, Min } from 'class-validator';
 import type { ChannelSummary, PulseDay, PulseRange } from '../lib/home-summary';
 
-export interface PulseMetric {
-  /** This window's total; null when no channel reported the metric. */
-  value: number | null;
-  previous: number | null;
-  /** % change vs the previous window, one decimal; null when not comparable. */
-  deltaPct: number | null;
-}
+import type { MetricChange, PeriodWindow } from '../../post-performance/period';
 
+export type PulseMetric = MetricChange;
 /** Inclusive UTC dates: the window and the same span just before it. */
-export interface PulseWindow {
-  from: string;
-  to: string;
-  previousFrom: string;
-  previousTo: string;
-}
+export type PulseWindow = PeriodWindow;
 
 export interface Pulse {
   postsPublished: PulseMetric;
