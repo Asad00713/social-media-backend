@@ -63,6 +63,7 @@ import {
   STATIC_SYSTEM_PROMPT,
   CONFIRM_BEFORE_SEND_POLICY,
   tonePolicy,
+  todayPolicy,
   bridgeChannelPolicy,
 } from '../prompt/system-prompt';
 import { z } from 'zod';
@@ -943,6 +944,10 @@ export class MaestroService {
     if (params.sourceChannel) {
       promptParts.push(bridgeChannelPolicy(params.sourceChannel));
     }
+    // LAST, and deliberately so. Everything above is stable for this user, so
+    // it stays a readable cache prefix; this block's text changes once a day.
+    // Putting it last means the daily change invalidates nothing before it.
+    promptParts.push(todayPolicy());
     const systemPrompt: string | string[] =
       promptParts.length === 1 ? promptParts[0] : promptParts;
 
