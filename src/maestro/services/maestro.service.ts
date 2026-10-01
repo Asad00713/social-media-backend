@@ -31,6 +31,7 @@ import { createUserTools } from '../tools/user.tools';
 import { isPendingAction, type PendingAction } from '../tools/confirm';
 import { createMediaTools } from '../tools/media.tools';
 import { createInteractionTools } from '../tools/interaction.tools';
+import { createNavigateTools } from '../tools/navigate.tools';
 import { createWebTools } from '../tools/web.tools';
 import { createDiscordTools } from '../tools/discord.tools';
 import { createSlackTools } from '../tools/slack.tools';
@@ -64,6 +65,7 @@ import {
   CONFIRM_BEFORE_SEND_POLICY,
   tonePolicy,
   todayPolicy,
+  pagePolicy,
   bridgeChannelPolicy,
 } from '../prompt/system-prompt';
 import { z } from 'zod';
@@ -517,6 +519,11 @@ export class MaestroService {
   private buildTools(opts: {
     confirmBeforeSend: boolean;
     webSearchEnabled: boolean;
+    /**
+     * Whether the caller has a UI to navigate. False on the bridges, where
+     * "I've opened Billing for you" would be a lie — there is no page there.
+     */
+    canNavigate?: boolean;
   }): AgentToolDefinition[] {
     const { confirmBeforeSend, webSearchEnabled } = opts;
     return [
@@ -549,6 +556,8 @@ export class MaestroService {
         campaigns: this.campaigns,
       }),
       ...createInteractionTools(),
+      // Only where there is a page to navigate: the bridges are plain chat.
+      ...(opts.canNavigate ? createNavigateTools() : []),
     ];
   }
 
@@ -746,6 +755,15 @@ export class MaestroService {
       approval?: { messageId: string; option: string };
       /** Which runtime answers this turn. Defaults to the Agent SDK. */
       runtime?: AgentRuntimeKind;
+      /**
+       * The screen the user is on. Present only for browser turns — its
+       * absence is what tells the agent it has no UI to navigate.
+       */
+      pageContext?: {
+        page: string;
+        label: string;
+        entity?: { kind: string; id: string };
+      };
     },
     signal: AbortSignal,
   ): AsyncGenerator<MaestroSseEvent> {
@@ -948,6 +966,10 @@ export class MaestroService {
     // it stays a readable cache prefix; this block's text changes once a day.
     // Putting it last means the daily change invalidates nothing before it.
     promptParts.push(todayPolicy());
+    // After today's date, for the same reason: it changes as the user moves
+    // around the app, so it must not sit inside the cached prefix.
+    const pageBlock = pagePolicy(params.pageContext);
+    if (pageBlock) promptParts.push(pageBlock);
     const systemPrompt: string | string[] =
       promptParts.length === 1 ? promptParts[0] : promptParts;
 
@@ -957,7 +979,12 @@ export class MaestroService {
       history,
       userMessage: message,
       attachments,
-      tools: this.buildTools({ confirmBeforeSend, webSearchEnabled }),
+      tools: this.buildTools({
+        confirmBeforeSend,
+        webSearchEnabled,
+        // A page context means a browser sent this turn; the bridges send none.
+        canNavigate: Boolean(params.pageContext),
+      }),
       model,
       env: auth.env,
       abortController,

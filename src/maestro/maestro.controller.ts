@@ -266,6 +266,7 @@ export class MaestroController {
           attachments: dto.attachments,
           approval: dto.approval,
           runtime: dto.runtime,
+          pageContext: dto.pageContext,
         },
         abortController.signal,
       )) {

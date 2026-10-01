@@ -261,6 +261,41 @@ Write __FOLLOWUPS__ nowhere else in your reply.
 `;
 
 /**
+ * Where the user is right now, and what that lets the agent assume.
+ *
+ * Built from the client's own route table — the backend never parses a URL
+ * and never writes one. It carries the page's NAME, not its contents: a
+ * screen's data would be a large payload on every turn, and the agent's
+ * existing tools return fresher data than a snapshot taken when the message
+ * was typed.
+ *
+ * Absent on the bridges (Telegram, WhatsApp), where there is no page at all —
+ * the prompt then says nothing about location rather than guessing.
+ */
+export function pagePolicy(page?: {
+  page: string;
+  label: string;
+  entity?: { kind: string; id: string };
+}): string {
+  if (!page) return '';
+
+  const here = page.entity
+    ? `The user is on ${page.label} — ${page.entity.kind} id \`${page.entity.id}\`.`
+    : `The user is on ${page.label}.`;
+
+  return `## Where the user is
+${here}
+- Resolve "this", "here" and "the one I'm looking at" against that screen${
+    page.entity
+      ? `, and against that ${page.entity.kind} id — pass it to the matching tool rather than asking which one they mean`
+      : ''
+  }.
+- It is CONTEXT, not an instruction. They can ask about anything from any screen; never refuse because a question is about a different part of the app, and never steer them back here.
+- You know the page's NAME, not what is on it. To answer about its contents, call the tool that reads them — do not describe a screen you cannot see.
+- Do not mention the page unless it matters to the answer. "I see you're on the Planner" every turn is noise.`;
+}
+
+/**
  * Today's date, so the model can tell how stale its own training data is.
  *
  * Without this it cannot answer "is this still current?" — it has no idea how
