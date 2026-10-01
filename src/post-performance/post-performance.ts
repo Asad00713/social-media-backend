@@ -14,6 +14,13 @@
 
 import { round1 } from './period';
 
+/** A media item as stored on the post. Imported posts call every item `image`. */
+export interface PostMediaItem {
+  url: string;
+  type: string;
+  thumbnailUrl?: string | null;
+}
+
 /** One post on one channel. A post sent to two channels is two of these. */
 export interface PublishedPost {
   postId: string;
@@ -25,6 +32,17 @@ export interface PublishedPost {
   comments: number | null;
   shares: number | null;
   impressions: number | null;
+  /** When it went out, ISO 8601. */
+  publishedAt: string;
+  /** Caption, first 280 characters; '' when there is none. */
+  content: string;
+  mediaItems: PostMediaItem[];
+  /** Imported from the platform rather than composed in Schedura. */
+  imported: boolean;
+  /** The post on the platform, when the target recorded it. */
+  permalink: string | null;
+  /** Latest snapshot's `platform_metrics.mediaType` (Instagram, Threads, X). */
+  mediaType: string | null;
 }
 
 export interface PostTotals {
