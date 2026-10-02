@@ -11,6 +11,13 @@ import {
 import { posts } from '../drizzle/schema/posts.schema';
 import { workspace } from '../drizzle/schema/workspace.schema';
 import {
+  DAY_MS,
+  isoDate,
+  metricChange as metric,
+  utcToday,
+  windowOf,
+} from '../post-performance/period';
+import {
   totalsOf,
   type PublishedPost,
 } from '../post-performance/post-performance';
@@ -19,14 +26,12 @@ import type {
   HomePulseDto,
   HomeSummaryDto,
   Pulse,
-  PulseMetric,
   PulseWindow,
 } from './dto/home-summary.dto';
 import {
   STREAK_LOOKBACK_WEEKS,
   computeStreakWeeks,
   dailySeries,
-  deltaPct,
   followersGainedOf,
   summarizeChannel,
   weekStart,
@@ -34,35 +39,7 @@ import {
   type PulseRange,
 } from './lib/home-summary';
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const PUBLISHED_STATUSES = ['published', 'partially_published'] as const;
-
-const isoDate = (d: Date) => d.toISOString().slice(0, 10);
-
-function metric(value: number | null, previous: number | null): PulseMetric {
-  return { value, previous, deltaPct: deltaPct(value, previous) };
-}
-
-/**
- * Midnight UTC today. Windows end the day before: today's posts have barely
- * been measured and today's follower rollup is still being written.
- */
-function utcToday(now: Date): Date {
-  return new Date(
-    Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate()),
-  );
-}
-
-/** The last `days` complete days and the same span before them. */
-function windowOf(today: Date, days: number): PulseWindow {
-  const from = new Date(today.getTime() - days * DAY_MS);
-  return {
-    from: isoDate(from),
-    to: isoDate(new Date(today.getTime() - DAY_MS)),
-    previousFrom: isoDate(new Date(today.getTime() - 2 * days * DAY_MS)),
-    previousTo: isoDate(new Date(from.getTime() - DAY_MS)),
-  };
-}
 
 /**
  * The window's totals against the span before, from posts and follower rows

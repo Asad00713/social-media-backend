@@ -7,18 +7,26 @@
  * engagement ones, are genuinely per day.
  */
 import {
+  followersGainedOf,
+  type FollowerRow,
+} from '../../post-performance/followers';
+import {
+  PERIOD_DAYS,
+  deltaPct,
+  isPeriodDays,
+  round1,
+  type PeriodDays,
+} from '../../post-performance/period';
+import {
   engagementsOf,
   type PublishedPost,
 } from '../../post-performance/post-performance';
 
-/** A channel's followers on one day, from the daily rollup. */
-export interface FollowerRow {
-  channelId: number;
-  /** `YYYY-MM-DD`, one row per channel per day. */
-  date: string;
-  followersAtEndOfDay: number | null;
-  followersGained: number | null;
-}
+// Home's names for the shared period helpers; its specs and DTOs use them.
+export { deltaPct, followersGainedOf, type FollowerRow };
+export const PULSE_RANGES = PERIOD_DAYS;
+export type PulseRange = PeriodDays;
+export const isPulseRange = isPeriodDays;
 
 export interface ChannelSummary {
   channelId: number;
@@ -27,10 +35,6 @@ export interface ChannelSummary {
   growthPct: number | null;
   postsThisWeek: number;
 }
-
-/** The windows Home's Performance can show. */
-export const PULSE_RANGES = [7, 30, 90] as const;
-export type PulseRange = (typeof PULSE_RANGES)[number];
 
 /** One day of the workspace, summed across channels — a sparkline point. */
 export interface PulseDay {
@@ -48,26 +52,6 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const WEEK_MS = 7 * DAY_MS;
 /** How far back a streak is counted. Long enough for any realistic streak. */
 export const STREAK_LOOKBACK_WEEKS = 52;
-
-const round1 = (n: number) => Math.round(n * 10) / 10;
-
-/** Percentage change, one decimal. Null when either side is unknown or the base is 0. */
-export function deltaPct(
-  current: number | null,
-  previous: number | null,
-): number | null {
-  if (current === null || previous === null || previous === 0) return null;
-  return round1(((current - previous) / previous) * 100);
-}
-
-/** Follower gains summed across rows; null when no channel reported a change. */
-export function followersGainedOf(rows: FollowerRow[]): number | null {
-  let gained: number | null = null;
-  for (const r of rows) {
-    if (r.followersGained !== null) gained = (gained ?? 0) + r.followersGained;
-  }
-  return gained;
-}
 
 /**
  * One channel over the window: its latest known follower count, the gain
@@ -123,10 +107,6 @@ export function computeStreakWeeks(publishedAt: Date[], now: Date): number {
     cursor -= WEEK_MS;
   }
   return streak;
-}
-
-export function isPulseRange(days: number): days is PulseRange {
-  return (PULSE_RANGES as readonly number[]).includes(days);
 }
 
 /**

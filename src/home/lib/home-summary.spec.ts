@@ -26,6 +26,12 @@ const post = (over: Partial<PublishedPost>): PublishedPost => ({
   comments: null,
   shares: null,
   impressions: null,
+  publishedAt: '2026-09-20T10:00:00.000Z',
+  content: '',
+  mediaItems: [],
+  imported: false,
+  permalink: null,
+  mediaType: null,
   ...over,
 });
 

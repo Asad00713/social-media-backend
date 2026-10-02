@@ -43,6 +43,7 @@ import { CalendarSyncModule } from './calendar-sync/calendar-sync.module';
 import { CampaignsModule } from './campaigns/campaigns.module';
 import { WhatsAppTemplatesModule } from './whatsapp-templates/whatsapp-templates.module';
 import { HomeModule } from './home/home.module';
+import { InsightsModule } from './insights/insights.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
@@ -95,6 +96,7 @@ import { QUEUES } from './queue/queue.module';
     CampaignsModule,
     WhatsAppTemplatesModule,
     HomeModule,
+    InsightsModule,
     BullBoardModule.forRoot({
       // Moved off '/admin/queues' so it stops swallowing the admin queue API,
       // which lives under that same prefix. Bull Board keeps its full job
