@@ -493,6 +493,117 @@ describe('MaestroService.streamMessage', () => {
       expect(meta.maestroMedia.items).toHaveLength(1);
     });
 
+    /**
+     * A navigation leaves no trace on screen: the page simply changes. The
+     * record of it lives only in the saved message, so these are the cases
+     * where "the app moved and nobody can tell why" comes back.
+     */
+    const navResult = (payload: Record<string, unknown>) =>
+      ({
+        type: 'tool_result',
+        name: 'navigate_to',
+        output: [{ type: 'text', text: JSON.stringify(payload) }],
+        isError: false,
+      }) as AgentEvent;
+
+    it('records where the turn sent the user', async () => {
+      const h = makeHarness([
+        navResult({
+          kind: 'navigate',
+          ok: true,
+          destination: 'settings-profile',
+          reason: 'to change your picture',
+        }),
+        ...textDeltas('Opened it.'),
+        DONE_EVENT,
+      ]);
+
+      await run(h);
+
+      const meta = h.addMessage.mock.calls[1][3] as {
+        maestroNavigated: { destination: string; reason?: string };
+      };
+      expect(meta.maestroNavigated).toEqual({
+        destination: 'settings-profile',
+        reason: 'to change your picture',
+      });
+    });
+
+    it('stores a destination name, never a URL', async () => {
+      // Routes belong to the frontend. A path saved here would outlive the
+      // build that knew it and send someone to a page that moved.
+      const h = makeHarness([
+        navResult({ kind: 'navigate', ok: true, destination: 'inbox' }),
+        ...textDeltas('Here.'),
+        DONE_EVENT,
+      ]);
+
+      await run(h);
+
+      const meta = h.addMessage.mock.calls[1][3];
+      expect(JSON.stringify(meta)).not.toContain('/w/');
+      expect(JSON.stringify(meta)).not.toContain('http');
+    });
+
+    it('keeps only the last of several navigations', async () => {
+      // The user ends up at the second one. Recording the first would point
+      // the record at a page they merely passed through.
+      const h = makeHarness([
+        navResult({ kind: 'navigate', ok: true, destination: 'planner' }),
+        navResult({ kind: 'navigate', ok: true, destination: 'inbox' }),
+        ...textDeltas('Done.'),
+        DONE_EVENT,
+      ]);
+
+      await run(h);
+
+      const meta = h.addMessage.mock.calls[1][3] as {
+        maestroNavigated: { destination: string };
+      };
+      expect(meta.maestroNavigated.destination).toBe('inbox');
+    });
+
+    it('records nothing when the navigation was refused', async () => {
+      // Nothing moved, so a record of a move would be a lie. The name is
+      // deliberately present and valid-looking: a refusal that carried no
+      // destination at all would be rejected by the type check anyway, and
+      // would not exercise the `ok` guard this test exists for.
+      const h = makeHarness([
+        navResult({
+          kind: 'navigate',
+          ok: false,
+          destination: 'settings-billing',
+          error: 'refused',
+        }),
+        ...textDeltas('I could not open that.'),
+        DONE_EVENT,
+      ]);
+
+      await run(h);
+
+      const meta = h.addMessage.mock.calls[1][3] as
+        | { maestroNavigated?: unknown }
+        | undefined;
+      expect(meta?.maestroNavigated).toBeUndefined();
+    });
+
+    it('still completes a turn that only navigated', async () => {
+      // If the model moves the page and says nothing, dropping the message
+      // would erase the navigation with it.
+      const h = makeHarness([
+        navResult({ kind: 'navigate', ok: true, destination: 'drafts' }),
+        DONE_EVENT,
+      ]);
+
+      const events = await run(h);
+
+      expect(names(events)).toContain('message_complete');
+      const meta = h.addMessage.mock.calls[1][3] as {
+        maestroNavigated: { destination: string };
+      };
+      expect(meta.maestroNavigated.destination).toBe('drafts');
+    });
+
     it('saves nothing extra when the turn produced no output at all', async () => {
       const h = makeHarness([DONE_EVENT]);
 

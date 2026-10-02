@@ -123,6 +123,48 @@ export class MaestroApprovalDto {
   option!: string;
 }
 
+/**
+ * The entity a route names, when it names one — the campaign on a campaign
+ * page, the post being edited. Lets the agent act on "this one" without
+ * asking which.
+ */
+export class MaestroPageEntityDto {
+  @IsString()
+  @MaxLength(40)
+  kind!: string;
+
+  @IsString()
+  @MaxLength(200)
+  id!: string;
+}
+
+/**
+ * Where the user is in the app when they send this turn.
+ *
+ * Deliberately a DESCRIPTION, not the page's data: a screen's contents would
+ * be a large payload on every message, and the tools the agent already has
+ * return fresher data than a snapshot taken when the message was typed.
+ *
+ * The client builds this from its own route table, so the names here are the
+ * frontend's vocabulary; the backend only passes them through to the prompt.
+ */
+export class MaestroPageContextDto {
+  /** Stable key for the screen, e.g. 'planner', 'settings-profile'. */
+  @IsString()
+  @MaxLength(60)
+  page!: string;
+
+  /** How to say it in prose, e.g. "the Planner". */
+  @IsString()
+  @MaxLength(120)
+  label!: string;
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MaestroPageEntityDto)
+  entity?: MaestroPageEntityDto;
+}
+
 export class SendMaestroMessageDto {
   @IsString()
   @MaxLength(8000)
@@ -172,6 +214,16 @@ export class SendMaestroMessageDto {
   @ValidateNested()
   @Type(() => MaestroApprovalDto)
   approval?: MaestroApprovalDto;
+
+  /**
+   * The screen the user is looking at. Absent for the bridges (Telegram,
+   * WhatsApp) and any older client — there is no page there, and the prompt
+   * simply says nothing about location.
+   */
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => MaestroPageContextDto)
+  pageContext?: MaestroPageContextDto;
 }
 
 /** Save a workspace's own Anthropic API key (BYOK). */

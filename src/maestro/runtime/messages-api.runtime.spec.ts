@@ -485,17 +485,42 @@ describe('MessagesApiRuntime', () => {
       });
     });
 
-    it('marks the last system block, so the prompt is cached too', async () => {
+    it('marks the second-to-last system block, leaving the daily date outside', async () => {
+      // The LAST system block is today's date, which changes at midnight.
+      // Marking that one would move the breakpoint onto text that is new
+      // every day, so the first turn of each day would write a fresh entry
+      // and read nothing back -- the cache would quietly stop paying for
+      // itself. Marking the block before it keeps the constant prefix
+      // cacheable and lets the date ride along uncached.
       mockStream.mockReturnValue(
         scriptReply({ content: [{ type: 'text', text: 'ok' }] }),
       );
       await collect(
-        input({ systemPrompt: ['Static product knowledge.', 'Tone: warm.'] }),
+        input({
+          systemPrompt: [
+            'Static product knowledge.',
+            'Tone: warm.',
+            "Today is 2026-10-01.",
+          ],
+        }),
       );
       const { system } = bodyOfCall(0);
-      expect(system).toHaveLength(2);
+      expect(system).toHaveLength(3);
       expect(system[0].cache_control).toBeUndefined();
       expect(system[1].cache_control).toEqual({ type: 'ephemeral' });
+      expect(system[2].cache_control).toBeUndefined();
+    });
+
+    it('still caches a single-block prompt', async () => {
+      // With nothing to hold out, the only block IS the stable prefix -- the
+      // hold-out rule must not leave such a prompt uncached entirely.
+      mockStream.mockReturnValue(
+        scriptReply({ content: [{ type: 'text', text: 'ok' }] }),
+      );
+      await collect(input({ systemPrompt: 'Static product knowledge.' }));
+      const { system } = bodyOfCall(0);
+      expect(system).toHaveLength(1);
+      expect(system[0].cache_control).toEqual({ type: 'ephemeral' });
     });
 
     it('does not mark the transcript, which changes every turn', async () => {
@@ -527,7 +552,8 @@ describe('MessagesApiRuntime', () => {
         expect(body.tools[body.tools.length - 1].cache_control).toEqual({
           type: 'ephemeral',
         });
-        expect(body.system[body.system.length - 1].cache_control).toEqual({
+        // Single-block prompt in this fixture, so the breakpoint is on it.
+        expect(body.system[0].cache_control).toEqual({
           type: 'ephemeral',
         });
       }

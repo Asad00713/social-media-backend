@@ -252,8 +252,8 @@ export class MessagesApiRuntime implements AgentRuntime {
    * System prompt as content blocks.
    *
    * An array `systemPrompt` is kept as separate blocks rather than joined: the
-   * static product knowledge is the same on every turn, and the last block
-   * carries the cache breakpoint that covers all of them.
+   * static product knowledge is the same on every turn, and one block carries
+   * a cache breakpoint that covers everything before it.
    */
   private systemBlocks(input: AgentRunInput): Anthropic.TextBlockParam[] {
     const parts = Array.isArray(input.systemPrompt)
@@ -263,17 +263,25 @@ export class MessagesApiRuntime implements AgentRuntime {
       .filter((text) => text && text.trim())
       .map((text) => ({ type: 'text' as const, text }));
 
-    // The second breakpoint, at the end of the prompt.
+    // The second breakpoint, at the end of the STABLE part of the prompt.
     //
-    // Everything before it is stable for this conversation: the product
+    // Everything up to it is stable for this conversation: the product
     // knowledge is a constant, and the tone and policy blocks are resolved
     // once per turn from settings that rarely change. The transcript that
     // follows is different on every call, so it is deliberately left
     // uncached — marking it would write a new cache entry per turn and
     // never read one back.
-    const last = blocks[blocks.length - 1];
-    if (last) {
-      last.cache_control = { type: 'ephemeral' };
+    //
+    // The LAST block is today's date, which changes once a day. Marking that
+    // one would move the breakpoint onto text that is new every midnight, so
+    // the first turn of every day would write a fresh entry and read nothing
+    // back. Marking the one before it keeps the whole constant prefix
+    // cacheable and lets the date ride along uncached — a few dozen tokens.
+    const breakpointIndex =
+      blocks.length > 1 ? blocks.length - 2 : blocks.length - 1;
+    const marked = blocks[breakpointIndex];
+    if (marked) {
+      marked.cache_control = { type: 'ephemeral' };
     }
     return blocks;
   }
