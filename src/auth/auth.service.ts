@@ -6,6 +6,8 @@ import {
   NotFoundException,
   UnauthorizedException,
   BadRequestException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -405,8 +407,21 @@ export class AuthService {
         user.emailVerificationTokenExpiresAt.getTime() - OTP_TTL_MS;
       const ageMs = Date.now() - issuedAt;
       if (ageMs < RESEND_COOLDOWN_MS) {
-        throw new BadRequestException(
-          'Please wait before requesting another verification email.',
+        // 429 with the true remaining wait, so the countdown on the code screen
+        // resumes from the server's clock instead of restarting at 60.
+        const retryAfterSeconds = Math.max(
+          1,
+          Math.ceil((RESEND_COOLDOWN_MS - ageMs) / 1000),
+        );
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.TOO_MANY_REQUESTS,
+            error: 'Too Many Requests',
+            code: 'CODE_COOLDOWN',
+            message: `Wait ${retryAfterSeconds}s before requesting another code.`,
+            retryAfterSeconds,
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
         );
       }
     }

@@ -160,3 +160,37 @@ describe('AuthService.verifyEmailWithOtp attempt limit', () => {
     expect(body.code).toBe('CODE_EXPIRED');
   });
 });
+
+describe('AuthService.resendVerificationEmail cooldown', () => {
+  it('answers 429 CODE_COOLDOWN with the seconds left', async () => {
+    // Issued 20s ago → 10-minute expiry is 9m40s away → 40s of cooldown left.
+    const issuedAt = Date.now() - 20_000;
+    const { service } = makeAuthService({
+      usersService: {
+        findByEmail: jest.fn().mockResolvedValue({
+          id: 'u1',
+          email: 'a@b.co',
+          isEmailVerified: false,
+          emailVerificationTokenExpiresAt: new Date(issuedAt + 10 * 60_000),
+        }),
+      },
+    });
+
+    try {
+      await service.resendVerificationEmail('a@b.co');
+      throw new Error('expected a 429');
+    } catch (e) {
+      expect(e).toBeInstanceOf(HttpException);
+      expect((e as HttpException).getStatus()).toBe(
+        HttpStatus.TOO_MANY_REQUESTS,
+      );
+      const body = (e as HttpException).getResponse() as Record<
+        string,
+        unknown
+      >;
+      expect(body.code).toBe('CODE_COOLDOWN');
+      expect(body.retryAfterSeconds).toBeGreaterThanOrEqual(39);
+      expect(body.retryAfterSeconds).toBeLessThanOrEqual(41);
+    }
+  });
+});
