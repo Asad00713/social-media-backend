@@ -6,6 +6,7 @@ import {
   varchar,
   text,
   boolean,
+  integer,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { workspace } from './workspace.schema';
@@ -28,7 +29,9 @@ export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: varchar('email', { length: 255 }).notNull().unique(),
   name: varchar('name', { length: 255 }),
-  password: text('password').notNull(),
+  // Null for accounts created through Google sign-in. They can set one later
+  // from Profile or "Forgot password?", which work the same for them.
+  password: text('password'),
 
   // Profile picture, stored in R2 and referenced by its public URL. Null means
   // the UI falls back to initials — which every avatar does while loading, so
@@ -56,6 +59,12 @@ export const users = pgTable('users', {
   emailVerificationTokenExpiresAt: timestamp(
     'email_verification_token_expires_at',
   ),
+  // Wrong guesses against the current signup code. Six digits is a million
+  // combinations — brute-forceable inside ten minutes without a ceiling.
+  // Reset to 0 whenever a new code is issued.
+  emailVerificationAttempts: integer('email_verification_attempts')
+    .default(0)
+    .notNull(),
 
   // Password reset
   passwordResetToken: varchar('password_reset_token', { length: 255 }),
@@ -63,6 +72,10 @@ export const users = pgTable('users', {
 
   // Last accessed workspace for redirect on login
   lastAccessedWorkspaceId: uuid('last_accessed_workspace_id'),
+
+  // Google's stable account id (`sub`). Matched before email, so a user who
+  // changes the address on their Google account still reaches this row.
+  googleSub: varchar('google_sub', { length: 255 }).unique(),
 
   // Stamped when the user finishes the multi-step onboarding flow
   // (workspace → persona → invite → connect). Null while onboarding is

@@ -196,8 +196,10 @@ export class AuthService {
       password: _password,
       emailVerificationToken: _evt,
       emailVerificationTokenExpiresAt: _evte,
+      emailVerificationAttempts: _eva,
       passwordResetToken: _prt,
       passwordResetTokenExpiresAt: _prte,
+      googleSub: _gs,
       ...publicUser
     } = user;
 
@@ -210,7 +212,9 @@ export class AuthService {
   async validateUser(email: string, password: string): Promise<User | null> {
     const user = await this.usersService.findByEmail(email);
 
-    if (!user) {
+    // A Google-only account has no password. bcrypt.compare throws on null, so
+    // answer the way a wrong password does instead of a 500.
+    if (!user || !user.password) {
       return null;
     }
 
