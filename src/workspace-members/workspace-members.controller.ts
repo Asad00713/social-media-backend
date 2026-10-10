@@ -17,6 +17,7 @@ import { UpdateMemberDto } from './dto/update-member.dto';
 import { BatchInviteDto } from './dto/batch-invite.dto';
 import { WorkspaceRoleGuard } from './workspace-role.guard';
 import { RequireCapability } from './require-capability.decorator';
+import { SkipLaunchGate } from '../auth/decorators/skip-launch-gate.decorator';
 
 @Controller('workspace-members')
 @UseGuards(JwtAuthGuard)
@@ -84,6 +85,9 @@ export class WorkspaceMembersController {
   }
 
   // Accept invitation
+  // Gate-exempt: a non-allowlisted invitee must still be able to join the
+  // workspace they were invited to. Everything else stays locked until launch.
+  @SkipLaunchGate()
   @Post('invitations/accept')
   acceptInvitation(
     @Query('token') token: string,

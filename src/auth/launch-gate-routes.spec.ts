@@ -2,6 +2,7 @@ import { Reflector } from '@nestjs/core';
 import { AuthController } from './auth.controller';
 import { SKIP_LAUNCH_GATE } from './decorators/skip-launch-gate.decorator';
 import { GoogleAuthController } from './google/google-auth.controller';
+import { WorkspaceMembersController } from '../workspace-members/workspace-members.controller';
 
 /**
  * The launch gate blocks non-allowlisted users from the whole app. That is the
@@ -73,6 +74,21 @@ describe('launch gate route exemptions', () => {
     it('the whole Google controller skips the gate', () => {
       expect(
         reflector.get<boolean>(SKIP_LAUNCH_GATE, GoogleAuthController),
+      ).toBe(true);
+    });
+  });
+
+  describe('invitations', () => {
+    it('accepting an invitation skips the gate', () => {
+      // With the allowlist on, a non-allowlisted invitee got a 403 here and
+      // the invite was never accepted. The gate still blocks the rest of the
+      // app for them until launch; it just no longer eats the invitation.
+      expect(
+        reflector.get<boolean>(
+          SKIP_LAUNCH_GATE,
+          WorkspaceMembersController.prototype
+            .acceptInvitation as unknown as () => unknown,
+        ),
       ).toBe(true);
     });
   });
