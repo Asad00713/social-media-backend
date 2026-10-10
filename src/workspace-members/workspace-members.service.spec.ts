@@ -1,3 +1,4 @@
+import { PgDialect } from 'drizzle-orm/pg-core';
 import { WorkspaceMembersService } from './workspace-members.service';
 
 describe('WorkspaceMembersService.inviteMember email', () => {
@@ -204,5 +205,51 @@ describe('WorkspaceMembersService.getMembers last seen', () => {
     expect(findMany.mock.calls[0][0].with.user.columns).toMatchObject({ lastLoginAt: true });
     expect(result.owner?.lastLoginAt).toEqual(lastLogin);
     expect(result.members[0].user?.lastLoginAt).toBeNull();
+  });
+});
+
+describe('WorkspaceMembersService.inviteMember email case', () => {
+  it('matches users and invitations case-insensitively and stores lowercase', async () => {
+    const dialect = new PgDialect();
+    const userFind = jest.fn().mockImplementation(async (arg: any) =>
+      dialect.sqlToQuery(arg.where).sql.includes('"users"."id" =')
+        ? { id: 'owner1', email: 'Owner@Acme.com' }
+        : undefined,
+    );
+    const invFind = jest.fn().mockResolvedValue(undefined);
+    const values = jest.fn().mockReturnValue({
+      returning: () =>
+        Promise.resolve([
+          { id: 'i', email: 'sara@x.com', role: 'MEMBER', token: 't', expiresAt: new Date() },
+        ]),
+    });
+    const db: any = {
+      query: {
+        workspace: { findFirst: jest.fn().mockResolvedValue({ id: 'ws1', ownerId: 'owner1', name: 'A' }) },
+        users: { findFirst: userFind },
+        workspaceInvitation: { findFirst: invFind },
+      },
+      insert: () => ({ values }),
+    };
+    const service = new WorkspaceMembersService(
+      db,
+      { enforceMemberLimit: jest.fn() } as any,
+      { sendWorkspaceInvitation: jest.fn().mockResolvedValue({}) } as any,
+      {} as any,
+      { isPlatformSuperAdmin: jest.fn().mockResolvedValue(false) } as any,
+    );
+
+    await service.inviteMember('ws1', { email: ' Sara@X.com ', role: 'MEMBER' } as any, 'owner1');
+
+    const emailLookup = dialect.sqlToQuery(userFind.mock.calls[1][0].where);
+    expect(emailLookup.sql).toContain('lower("users"."email")');
+    expect(emailLookup.params).toEqual(['sara@x.com']);
+    const invLookup = dialect.sqlToQuery(invFind.mock.calls[invFind.mock.calls.length - 1][0].where);
+    expect(invLookup.sql).toContain('lower("workspace_invitations"."email")');
+    expect(values.mock.calls[0][0].email).toBe('sara@x.com');
+
+    await expect(
+      service.inviteMember('ws1', { email: 'OWNER@acme.com' } as any, 'owner1'),
+    ).rejects.toThrow('already the workspace owner');
   });
 });

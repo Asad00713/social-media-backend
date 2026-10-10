@@ -6,6 +6,8 @@ import {
   NotFoundException,
   UnauthorizedException,
   BadRequestException,
+  HttpException,
+  HttpStatus,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
@@ -20,6 +22,7 @@ import {
   generateOtp,
   generateSecureToken,
   hash,
+  secureCompare,
 } from '../common/utils/encryption.util';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import { LoginActivityService } from './services/login-activity.service';
@@ -33,6 +36,10 @@ import {
   type PublicWorkspace,
 } from './workspace-membership.util';
 import { isEmailAllowlisted } from './allowlist';
+import {
+  MAX_CODE_ATTEMPTS,
+  verificationCodeError,
+} from './verification-code-error';
 
 // Columns returned to the client for any workspace row reachable from
 // /auth/me. Deliberately excludes `suspensionNote` (admin-only note) and
@@ -145,7 +152,6 @@ export class AuthService {
     };
   }
 
-
   async login(loginDto: LoginDto, ip?: string): Promise<AuthResponse> {
     const user = await this.validateUser(loginDto.email, loginDto.password);
 
@@ -196,8 +202,10 @@ export class AuthService {
       password: _password,
       emailVerificationToken: _evt,
       emailVerificationTokenExpiresAt: _evte,
+      emailVerificationAttempts: _eva,
       passwordResetToken: _prt,
       passwordResetTokenExpiresAt: _prte,
+      googleSub: _gs,
       ...publicUser
     } = user;
 
@@ -210,7 +218,9 @@ export class AuthService {
   async validateUser(email: string, password: string): Promise<User | null> {
     const user = await this.usersService.findByEmail(email);
 
-    if (!user) {
+    // A Google-only account has no password. bcrypt.compare throws on null, so
+    // answer the way a wrong password does instead of a 500.
+    if (!user || !user.password) {
       return null;
     }
 
@@ -397,8 +407,21 @@ export class AuthService {
         user.emailVerificationTokenExpiresAt.getTime() - OTP_TTL_MS;
       const ageMs = Date.now() - issuedAt;
       if (ageMs < RESEND_COOLDOWN_MS) {
-        throw new BadRequestException(
-          'Please wait before requesting another verification email.',
+        // 429 with the true remaining wait, so the countdown on the code screen
+        // resumes from the server's clock instead of restarting at 60.
+        const retryAfterSeconds = Math.max(
+          1,
+          Math.ceil((RESEND_COOLDOWN_MS - ageMs) / 1000),
+        );
+        throw new HttpException(
+          {
+            statusCode: HttpStatus.TOO_MANY_REQUESTS,
+            error: 'Too Many Requests',
+            code: 'CODE_COOLDOWN',
+            message: `Wait ${retryAfterSeconds}s before requesting another code.`,
+            retryAfterSeconds,
+          },
+          HttpStatus.TOO_MANY_REQUESTS,
         );
       }
     }
@@ -462,27 +485,60 @@ export class AuthService {
       return { message: 'Email is already verified.' };
     }
 
-    if (!user.emailVerificationToken || !user.emailVerificationTokenExpiresAt) {
-      throw new BadRequestException(
-        'No verification code is pending. Please request a new one.',
+    if (
+      !user.emailVerificationToken ||
+      !user.emailVerificationTokenExpiresAt ||
+      user.emailVerificationTokenExpiresAt < new Date()
+    ) {
+      throw verificationCodeError(
+        'CODE_EXPIRED',
+        'This code has expired. Send a new one.',
       );
     }
 
-    if (user.emailVerificationTokenExpiresAt < new Date()) {
-      throw new BadRequestException(
-        'Verification code has expired. Please request a new one.',
+    // The attempt is claimed atomically BEFORE the comparison, so a parallel
+    // burst cannot test more than MAX_CODE_ATTEMPTS codes: every request
+    // spends one of the five, whether or not its guess is right. Null means
+    // the ceiling was already reached (or the code was replaced meanwhile).
+    const attempts = await this.usersService.incrementVerificationAttempts(
+      user.id,
+      user.emailVerificationToken,
+      MAX_CODE_ATTEMPTS,
+    );
+
+    if (attempts === null) {
+      await this.usersService.clearEmailVerificationToken(
+        user.id,
+        user.emailVerificationToken,
+      );
+      throw verificationCodeError(
+        'CODE_LOCKED',
+        'This code has expired. Send a new one.',
       );
     }
 
-    const hashedOtp = hash(otp);
-    if (hashedOtp !== user.emailVerificationToken) {
-      throw new BadRequestException('Invalid verification code.');
+    if (secureCompare(hash(otp), user.emailVerificationToken)) {
+      await this.usersService.verifyEmail(user.id);
+      await this.notificationEmitter.emailVerified(user.id);
+      return { message: 'Email verified successfully.' };
     }
 
-    await this.usersService.verifyEmail(user.id);
-    await this.notificationEmitter.emailVerified(user.id);
+    if (attempts >= MAX_CODE_ATTEMPTS) {
+      await this.usersService.clearEmailVerificationToken(
+        user.id,
+        user.emailVerificationToken,
+      );
+      throw verificationCodeError(
+        'CODE_LOCKED',
+        'This code has expired. Send a new one.',
+      );
+    }
 
-    return { message: 'Email verified successfully.' };
+    throw verificationCodeError(
+      'CODE_INVALID',
+      'That code didn’t work. Check the email and try again.',
+      { attemptsLeft: MAX_CODE_ATTEMPTS - attempts },
+    );
   }
 
   // ==================== Password Reset ====================

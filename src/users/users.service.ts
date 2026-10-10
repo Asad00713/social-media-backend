@@ -14,10 +14,11 @@ import {
   users,
   UserRole,
 } from 'src/drizzle/schema';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, lt, sql } from 'drizzle-orm';
 import * as bcrypt from 'bcrypt';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { pickAvatarColor } from './avatar-colors';
+import { normalizeEmail } from './normalize-email';
 
 // Public user type that excludes sensitive fields
 export type PublicUser = Pick<
@@ -87,8 +88,10 @@ export class UsersService {
     createUserDto: CreateUserDto,
     role: UserRole = 'USER',
   ): Promise<PublicUser> {
+    const email = normalizeEmail(createUserDto.email);
+
     const existingUser = await this.db.query.users.findFirst({
-      where: eq(users.email, createUserDto.email),
+      where: sql`lower(${users.email}) = ${email}`,
     });
 
     if (existingUser) {
@@ -100,7 +103,7 @@ export class UsersService {
     const [newUser] = await this.db
       .insert(users)
       .values({
-        email: createUserDto.email,
+        email,
         name: createUserDto.name,
         password: hashedPassword,
         role,
@@ -182,6 +185,8 @@ export class UsersService {
       .set({
         emailVerificationToken: token,
         emailVerificationTokenExpiresAt: expiresAt,
+        // A new code starts with a clean slate of guesses.
+        emailVerificationAttempts: 0,
         updatedAt: new Date(),
       })
       .where(eq(users.id, userId));
@@ -197,6 +202,58 @@ export class UsersService {
                 email_verification_token_expires_at = NULL,
                 updated_at = ${new Date()}
             WHERE id = ${userId}
+        `);
+  }
+
+  /**
+   * Claims one guess against the code identified by `tokenHash` and returns
+   * the new total — or null when the count was already at `max`, or the code
+   * is no longer the live one. Both conditions are in the WHERE clause, not
+   * compared in JS afterwards: Postgres serialises updates to the row, so a
+   * parallel burst cannot claim more than `max` attempts, and a stale request
+   * holding an old hash cannot spend attempts of a freshly resent code.
+   */
+  async incrementVerificationAttempts(
+    userId: string,
+    tokenHash: string,
+    max: number,
+  ): Promise<number | null> {
+    const rows = await this.db
+      .update(users)
+      .set({
+        emailVerificationAttempts: sql`${users.emailVerificationAttempts} + 1`,
+      })
+      .where(
+        and(
+          eq(users.id, userId),
+          eq(users.emailVerificationToken, tokenHash),
+          lt(users.emailVerificationAttempts, max),
+        ),
+      )
+      .returning({ attempts: users.emailVerificationAttempts });
+
+    return rows[0]?.attempts ?? null;
+  }
+
+  /**
+   * Cancels the pending code so the next try has to send a fresh one. Scoped
+   * to `tokenHash` so a stale request cannot wipe a code that was resent
+   * after it read the row.
+   */
+  async clearEmailVerificationToken(
+    userId: string,
+    tokenHash: string,
+  ): Promise<void> {
+    // Raw SQL for the same reason as verifyEmail: Drizzle's timestamp mapping
+    // mishandles explicit nulls here.
+    await this.db.execute(sql`
+            UPDATE users
+            SET
+                email_verification_token = NULL,
+                email_verification_token_expires_at = NULL,
+                updated_at = ${new Date()}
+            WHERE id = ${userId}
+              AND email_verification_token = ${tokenHash}
         `);
   }
 
@@ -230,8 +287,10 @@ export class UsersService {
   }
 
   async findByEmail(email: string): Promise<User | undefined> {
+    // lower() on the column, not just the input: accounts created before
+    // 2026-10 were stored exactly as typed.
     const user = await this.db.query.users.findFirst({
-      where: eq(users.email, email),
+      where: sql`lower(${users.email}) = ${normalizeEmail(email)}`,
     });
 
     return user;
@@ -346,4 +405,75 @@ export class UsersService {
 
     return toPublicUser(updated);
   }
+
+  async findByGoogleSub(sub: string): Promise<User | undefined> {
+    return this.db.query.users.findFirst({ where: eq(users.googleSub, sub) });
+  }
+
+  /**
+   * An account born from Google sign-in: no password, email already proven.
+   * A parallel callback for the same person can win the insert race; that
+   * surfaces as a unique violation, and the row it created is the answer.
+   * The same fallback covers users_email_lower_unique (a case-only duplicate
+   * email): findByEmail matches lower(email), so it finds that row.
+   */
+  async createFromGoogle(input: {
+    email: string;
+    name: string | null;
+    googleSub: string;
+  }): Promise<User> {
+    try {
+      const [row] = await this.db
+        .insert(users)
+        .values({
+          email: input.email,
+          name: input.name,
+          password: null,
+          role: 'USER',
+          isEmailVerified: true,
+          googleSub: input.googleSub,
+          avatarColor: pickAvatarColor(),
+        })
+        .returning();
+      return row;
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+      const existing =
+        (await this.findByGoogleSub(input.googleSub)) ??
+        (await this.findByEmail(input.email));
+      if (!existing) throw error;
+      return existing;
+    }
+  }
+
+  /**
+   * Google proved the mailbox, so the address is verified. The sub is linked
+   * only when the row has none, and a name only fills an empty one — a name
+   * the person typed themselves is never overwritten by Google's.
+   */
+  async applyGoogleSignIn(
+    userId: string,
+    input: {
+      googleSub: string | null;
+      name: string | null;
+      clearPassword: boolean;
+    },
+  ): Promise<void> {
+    await this.db.execute(sql`
+      UPDATE users
+      SET
+        is_email_verified = true,
+        google_sub = COALESCE(google_sub, ${input.googleSub}),
+        name = COALESCE(name, ${input.name}),
+        password = CASE WHEN ${input.clearPassword} THEN NULL ELSE password END,
+        updated_at = ${new Date()}
+      WHERE id = ${userId}
+    `);
+  }
+}
+
+/** node-postgres reports unique violations as 23505, sometimes wrapped by Drizzle. */
+function isUniqueViolation(error: unknown): boolean {
+  const e = error as { code?: string; cause?: { code?: string } } | null;
+  return e?.code === '23505' || e?.cause?.code === '23505';
 }
