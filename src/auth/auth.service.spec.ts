@@ -105,11 +105,21 @@ async function codeOf(p: Promise<unknown>) {
 }
 
 describe('AuthService.verifyEmailWithOtp attempt limit', () => {
-  it('verifies a correct code without counting an attempt', async () => {
+  it('claims an attempt, then verifies a correct code', async () => {
     const { service, usersService } = otpService(pendingUser());
     await service.verifyEmailWithOtp('u1', CODE);
+    expect(usersService.incrementVerificationAttempts).toHaveBeenCalledWith(
+      'u1',
+      hash(CODE),
+      5,
+    );
     expect(usersService.verifyEmail).toHaveBeenCalledWith('u1');
-    expect(usersService.incrementVerificationAttempts).not.toHaveBeenCalled();
+  });
+
+  it('accepts the correct code on the fifth claimed attempt', async () => {
+    const { service, usersService } = otpService(pendingUser(), 5);
+    await service.verifyEmailWithOtp('u1', CODE);
+    expect(usersService.verifyEmail).toHaveBeenCalledWith('u1');
   });
 
   it('answers CODE_INVALID with attemptsLeft after a wrong guess', async () => {
@@ -122,7 +132,10 @@ describe('AuthService.verifyEmailWithOtp attempt limit', () => {
     const { service, usersService } = otpService(pendingUser(), 5);
     const body = await codeOf(service.verifyEmailWithOtp('u1', '000000'));
     expect(body.code).toBe('CODE_LOCKED');
-    expect(usersService.clearEmailVerificationToken).toHaveBeenCalledWith('u1');
+    expect(usersService.clearEmailVerificationToken).toHaveBeenCalledWith(
+      'u1',
+      hash(CODE),
+    );
   });
 
   it('locks when a parallel request already spent the last attempt', async () => {
@@ -137,12 +150,18 @@ describe('AuthService.verifyEmailWithOtp attempt limit', () => {
   });
 
   it('refuses even a correct code once the ceiling is reached', async () => {
+    // The guarded increment matched nothing: the count is already at 5.
     const { service, usersService } = otpService(
       pendingUser({ emailVerificationAttempts: 5 }),
+      null,
     );
     const body = await codeOf(service.verifyEmailWithOtp('u1', CODE));
     expect(body.code).toBe('CODE_LOCKED');
     expect(usersService.verifyEmail).not.toHaveBeenCalled();
+    expect(usersService.clearEmailVerificationToken).toHaveBeenCalledWith(
+      'u1',
+      hash(CODE),
+    );
   });
 
   it.each([
@@ -165,7 +184,7 @@ describe('AuthService.resendVerificationEmail cooldown', () => {
   it('answers 429 CODE_COOLDOWN with the seconds left', async () => {
     // Issued 20s ago → 10-minute expiry is 9m40s away → 40s of cooldown left.
     const issuedAt = Date.now() - 20_000;
-    const { service } = makeAuthService({
+    const { service, emailService } = makeAuthService({
       usersService: {
         findByEmail: jest.fn().mockResolvedValue({
           id: 'u1',
@@ -176,21 +195,16 @@ describe('AuthService.resendVerificationEmail cooldown', () => {
       },
     });
 
-    try {
-      await service.resendVerificationEmail('a@b.co');
-      throw new Error('expected a 429');
-    } catch (e) {
-      expect(e).toBeInstanceOf(HttpException);
-      expect((e as HttpException).getStatus()).toBe(
-        HttpStatus.TOO_MANY_REQUESTS,
-      );
-      const body = (e as HttpException).getResponse() as Record<
-        string,
-        unknown
-      >;
-      expect(body.code).toBe('CODE_COOLDOWN');
-      expect(body.retryAfterSeconds).toBeGreaterThanOrEqual(39);
-      expect(body.retryAfterSeconds).toBeLessThanOrEqual(41);
-    }
+    const failure = service.resendVerificationEmail('a@b.co');
+    await expect(failure).rejects.toBeInstanceOf(HttpException);
+    await expect(failure).rejects.toMatchObject({
+      status: HttpStatus.TOO_MANY_REQUESTS,
+    });
+    const error = (await failure.catch((e: unknown) => e)) as HttpException;
+    const body = error.getResponse() as Record<string, unknown>;
+    expect(body.code).toBe('CODE_COOLDOWN');
+    expect(body.retryAfterSeconds).toBeGreaterThanOrEqual(39);
+    expect(body.retryAfterSeconds).toBeLessThanOrEqual(41);
+    expect(emailService.sendVerificationEmail).not.toHaveBeenCalled();
   });
 });

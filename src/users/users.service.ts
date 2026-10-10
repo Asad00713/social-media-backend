@@ -206,14 +206,16 @@ export class UsersService {
   }
 
   /**
-   * Counts one wrong guess and returns the new total — or null when the count
-   * was already at `max`. The ceiling is in the WHERE clause, not compared in
-   * JS afterwards, so two parallel wrong guesses at 4 cannot both be counted
-   * as the fifth: Postgres serialises the row update and the second matches
-   * nothing.
+   * Claims one guess against the code identified by `tokenHash` and returns
+   * the new total — or null when the count was already at `max`, or the code
+   * is no longer the live one. Both conditions are in the WHERE clause, not
+   * compared in JS afterwards: Postgres serialises updates to the row, so a
+   * parallel burst cannot claim more than `max` attempts, and a stale request
+   * holding an old hash cannot spend attempts of a freshly resent code.
    */
   async incrementVerificationAttempts(
     userId: string,
+    tokenHash: string,
     max: number,
   ): Promise<number | null> {
     const rows = await this.db
@@ -222,15 +224,26 @@ export class UsersService {
         emailVerificationAttempts: sql`${users.emailVerificationAttempts} + 1`,
       })
       .where(
-        and(eq(users.id, userId), lt(users.emailVerificationAttempts, max)),
+        and(
+          eq(users.id, userId),
+          eq(users.emailVerificationToken, tokenHash),
+          lt(users.emailVerificationAttempts, max),
+        ),
       )
       .returning({ attempts: users.emailVerificationAttempts });
 
     return rows[0]?.attempts ?? null;
   }
 
-  /** Cancels the pending code so the next try has to send a fresh one. */
-  async clearEmailVerificationToken(userId: string): Promise<void> {
+  /**
+   * Cancels the pending code so the next try has to send a fresh one. Scoped
+   * to `tokenHash` so a stale request cannot wipe a code that was resent
+   * after it read the row.
+   */
+  async clearEmailVerificationToken(
+    userId: string,
+    tokenHash: string,
+  ): Promise<void> {
     // Raw SQL for the same reason as verifyEmail: Drizzle's timestamp mapping
     // mishandles explicit nulls here.
     await this.db.execute(sql`
@@ -240,6 +253,7 @@ export class UsersService {
                 email_verification_token_expires_at = NULL,
                 updated_at = ${new Date()}
             WHERE id = ${userId}
+              AND email_verification_token = ${tokenHash}
         `);
   }
 

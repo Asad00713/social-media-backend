@@ -496,10 +496,21 @@ export class AuthService {
       );
     }
 
-    // Checked before the comparison: once the ceiling is reached even the right
-    // code is refused, otherwise the limit only slows a brute force down.
-    if (user.emailVerificationAttempts >= MAX_CODE_ATTEMPTS) {
-      await this.usersService.clearEmailVerificationToken(user.id);
+    // The attempt is claimed atomically BEFORE the comparison, so a parallel
+    // burst cannot test more than MAX_CODE_ATTEMPTS codes: every request
+    // spends one of the five, whether or not its guess is right. Null means
+    // the ceiling was already reached (or the code was replaced meanwhile).
+    const attempts = await this.usersService.incrementVerificationAttempts(
+      user.id,
+      user.emailVerificationToken,
+      MAX_CODE_ATTEMPTS,
+    );
+
+    if (attempts === null) {
+      await this.usersService.clearEmailVerificationToken(
+        user.id,
+        user.emailVerificationToken,
+      );
       throw verificationCodeError(
         'CODE_LOCKED',
         'This code has expired. Send a new one.',
@@ -512,13 +523,11 @@ export class AuthService {
       return { message: 'Email verified successfully.' };
     }
 
-    const attempts = await this.usersService.incrementVerificationAttempts(
-      user.id,
-      MAX_CODE_ATTEMPTS,
-    );
-
-    if (attempts === null || attempts >= MAX_CODE_ATTEMPTS) {
-      await this.usersService.clearEmailVerificationToken(user.id);
+    if (attempts >= MAX_CODE_ATTEMPTS) {
+      await this.usersService.clearEmailVerificationToken(
+        user.id,
+        user.emailVerificationToken,
+      );
       throw verificationCodeError(
         'CODE_LOCKED',
         'This code has expired. Send a new one.',
