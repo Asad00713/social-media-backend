@@ -1,6 +1,7 @@
 import { Reflector } from '@nestjs/core';
 import { AuthController } from './auth.controller';
 import { SKIP_LAUNCH_GATE } from './decorators/skip-launch-gate.decorator';
+import { GoogleAuthController } from './google/google-auth.controller';
 
 /**
  * The launch gate blocks non-allowlisted users from the whole app. That is the
@@ -60,8 +61,19 @@ describe('launch gate route exemptions', () => {
     // The exemption list must not grow to cover routes that are the actual
     // product. Login is deliberately gated: a non-allowlisted user gets the
     // Under-development screen rather than a session into a locked app.
-    it.each(['login', 'register'] as const)('%s does NOT skip the gate', (m) => {
-      expect(skips(m)).toBe(false);
+    it.each(['login', 'register'] as const)(
+      '%s does NOT skip the gate',
+      (m) => {
+        expect(skips(m)).toBe(false);
+      },
+    );
+  });
+
+  describe('Google sign-in stays reachable', () => {
+    it('the whole Google controller skips the gate', () => {
+      expect(
+        reflector.get<boolean>(SKIP_LAUNCH_GATE, GoogleAuthController),
+      ).toBe(true);
     });
   });
 });

@@ -405,4 +405,68 @@ export class UsersService {
 
     return toPublicUser(updated);
   }
+
+  async findByGoogleSub(sub: string): Promise<User | undefined> {
+    return this.db.query.users.findFirst({ where: eq(users.googleSub, sub) });
+  }
+
+  /**
+   * An account born from Google sign-in: no password, email already proven.
+   * A parallel callback for the same person can win the insert race; that
+   * surfaces as a unique violation, and the row it created is the answer.
+   */
+  async createFromGoogle(input: {
+    email: string;
+    name: string | null;
+    googleSub: string;
+  }): Promise<User> {
+    try {
+      const [row] = await this.db
+        .insert(users)
+        .values({
+          email: input.email,
+          name: input.name,
+          password: null,
+          role: 'USER',
+          isEmailVerified: true,
+          googleSub: input.googleSub,
+          avatarColor: pickAvatarColor(),
+        })
+        .returning();
+      return row;
+    } catch (error) {
+      if (!isUniqueViolation(error)) throw error;
+      const existing =
+        (await this.findByGoogleSub(input.googleSub)) ??
+        (await this.findByEmail(input.email));
+      if (!existing) throw error;
+      return existing;
+    }
+  }
+
+  /**
+   * Google proved the mailbox, so the address is verified. The sub is linked
+   * only when the row has none, and a name only fills an empty one — a name
+   * the person typed themselves is never overwritten by Google's.
+   */
+  async applyGoogleSignIn(
+    userId: string,
+    input: { googleSub: string | null; name: string | null },
+  ): Promise<void> {
+    await this.db.execute(sql`
+      UPDATE users
+      SET
+        is_email_verified = true,
+        google_sub = COALESCE(google_sub, ${input.googleSub}),
+        name = COALESCE(name, ${input.name}),
+        updated_at = ${new Date()}
+      WHERE id = ${userId}
+    `);
+  }
+}
+
+/** node-postgres reports unique violations as 23505, sometimes wrapped by Drizzle. */
+function isUniqueViolation(error: unknown): boolean {
+  const e = error as { code?: string; cause?: { code?: string } } | null;
+  return e?.code === '23505' || e?.cause?.code === '23505';
 }

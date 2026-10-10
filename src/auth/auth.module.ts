@@ -12,6 +12,9 @@ import { AdminChallengeService } from './admin-challenge.service';
 import { AllowlistGuard } from './guards/allowlist.guard';
 import { GeoipService } from './services/geoip.service';
 import { LoginActivityService } from './services/login-activity.service';
+import { GoogleOAuthClient } from './google/google-oauth.client';
+import { GoogleAuthService } from './google/google-auth.service';
+import { GoogleAuthController } from './google/google-auth.controller';
 
 @Module({
   imports: [UsersModule, PassportModule, JwtModule.register({}), EmailModule],
@@ -20,6 +23,8 @@ import { LoginActivityService } from './services/login-activity.service';
     AdminChallengeService,
     GeoipService,
     LoginActivityService,
+    GoogleOAuthClient,
+    GoogleAuthService,
     JwtStrategy,
     JwtRefreshStrategy,
     // Global launch-gate enforcement (see AllowlistGuard). Registered here
@@ -30,6 +35,6 @@ import { LoginActivityService } from './services/login-activity.service';
     // cleanly here without needing to re-import them into AppModule.
     { provide: APP_GUARD, useClass: AllowlistGuard },
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, GoogleAuthController],
 })
 export class AuthModule {}
