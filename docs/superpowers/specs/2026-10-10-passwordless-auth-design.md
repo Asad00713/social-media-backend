@@ -69,7 +69,8 @@ The migration is verified on local Postgres with `BEGIN … ROLLBACK`. The user 
 - **Password rule:** unchanged, at least 8 characters with upper, lower and a digit.
 
 **`POST /auth/verify-otp`** (JWT)
-- **Before comparing:** if `email_verification_attempts >= 5`, clear the token and answer `401 { code: 'CODE_LOCKED' }`.
+- **Before comparing:** if `email_verification_attempts >= 5`, clear the token and answer `400 { code: 'CODE_LOCKED' }`.
+- **Every code error is a 400, never a 401.** The frontend API client answers any 401 by refreshing the token and replaying the request. A wrong code returned as 401 would be submitted twice and spend two attempts.
 - **Wrong code:** increment the attempts atomically (`SET attempts = attempts + 1 … RETURNING`) and answer `{ code: 'CODE_INVALID', attemptsLeft }`. On the 5th wrong try, clear the token.
 - **Expired or missing token:** `{ code: 'CODE_EXPIRED' }`.
 - **Codes on the response:** today these errors are bare 400s with prose only. Adding a `code` lets the frontend map each one to the design's copy.
@@ -103,7 +104,7 @@ The migration is verified on local Postgres with `BEGIN … ROLLBACK`. The user 
 2. Require that `state` matches.
 3. Handle Google's `error`: `access_denied` becomes `cancelled`, anything else becomes `error`.
 4. Exchange the code with the verifier (server-to-server `fetch`).
-5. Verify the `id_token` with `google-auth-library` `OAuth2Client.verifyIdToken`. This is the one new dependency.
+5. Validate the `id_token` claims: `iss` is `https://accounts.google.com` or `accounts.google.com`, `aud` equals our client id, and `exp` is in the future. No new dependency. The token comes straight from Google's token endpoint over TLS, authenticated with our client secret, and OIDC Core §3.1.3.7 allows TLS to stand in for the signature check in exactly that case.
 6. Require `email_verified === true`, otherwise answer `EMAIL_UNVERIFIED`.
 7. **Find the user:**
    - by `google_sub` first;
@@ -248,7 +249,7 @@ The migration is verified on local Postgres with `BEGIN … ROLLBACK`. The user 
   - suspended;
   - create.
 
-  The token and JWKS endpoints are stubbed.
+  The token endpoint is stubbed.
 - **`launch-gate-routes.spec`:** covers invitation accept.
 - **Migration:** on local Postgres in `BEGIN … ROLLBACK`.
 
