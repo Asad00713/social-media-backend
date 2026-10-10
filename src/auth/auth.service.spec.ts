@@ -1,4 +1,6 @@
 import * as bcrypt from 'bcrypt';
+import { BadRequestException, HttpException, HttpStatus } from '@nestjs/common';
+import { hash } from '../common/utils/encryption.util';
 import { AuthService } from './auth.service';
 
 jest.mock('bcrypt', () => ({ compare: jest.fn(), hash: jest.fn() }));
@@ -46,7 +48,9 @@ describe('AuthService.validateUser', () => {
       },
     });
 
-    await expect(service.validateUser('a@b.co', 'whatever')).resolves.toBeNull();
+    await expect(
+      service.validateUser('a@b.co', 'whatever'),
+    ).resolves.toBeNull();
     expect(bcrypt.compare).not.toHaveBeenCalled();
   });
 
@@ -59,5 +63,100 @@ describe('AuthService.validateUser', () => {
 
     await expect(service.validateUser('a@b.co', 'pw')).resolves.toBe(user);
     expect(bcrypt.compare).toHaveBeenCalledWith('pw', 'hash');
+  });
+});
+
+const CODE = '123456';
+
+function pendingUser(over: Record<string, unknown> = {}) {
+  return {
+    id: 'u1',
+    email: 'a@b.co',
+    isEmailVerified: false,
+    emailVerificationToken: hash(CODE),
+    emailVerificationTokenExpiresAt: new Date(Date.now() + 5 * 60_000),
+    emailVerificationAttempts: 0,
+    ...over,
+  };
+}
+
+function otpService(user: unknown, increment: number | null = 1) {
+  const findFirst = jest.fn().mockResolvedValue(user);
+  const usersService = {
+    verifyEmail: jest.fn(),
+    incrementVerificationAttempts: jest.fn().mockResolvedValue(increment),
+    clearEmailVerificationToken: jest.fn(),
+  };
+  const built = makeAuthService({
+    db: { query: { users: { findFirst } } },
+    usersService,
+  });
+  return { ...built, usersService };
+}
+
+async function codeOf(p: Promise<unknown>) {
+  try {
+    await p;
+  } catch (e) {
+    expect(e).toBeInstanceOf(BadRequestException);
+    return (e as BadRequestException).getResponse() as Record<string, unknown>;
+  }
+  throw new Error('expected a BadRequestException');
+}
+
+describe('AuthService.verifyEmailWithOtp attempt limit', () => {
+  it('verifies a correct code without counting an attempt', async () => {
+    const { service, usersService } = otpService(pendingUser());
+    await service.verifyEmailWithOtp('u1', CODE);
+    expect(usersService.verifyEmail).toHaveBeenCalledWith('u1');
+    expect(usersService.incrementVerificationAttempts).not.toHaveBeenCalled();
+  });
+
+  it('answers CODE_INVALID with attemptsLeft after a wrong guess', async () => {
+    const { service } = otpService(pendingUser(), 2);
+    const body = await codeOf(service.verifyEmailWithOtp('u1', '000000'));
+    expect(body).toMatchObject({ code: 'CODE_INVALID', attemptsLeft: 3 });
+  });
+
+  it('locks and clears the code on the fifth wrong guess', async () => {
+    const { service, usersService } = otpService(pendingUser(), 5);
+    const body = await codeOf(service.verifyEmailWithOtp('u1', '000000'));
+    expect(body.code).toBe('CODE_LOCKED');
+    expect(usersService.clearEmailVerificationToken).toHaveBeenCalledWith('u1');
+  });
+
+  it('locks when a parallel request already spent the last attempt', async () => {
+    // incrementVerificationAttempts returns null when the guarded UPDATE
+    // matched nothing — the count was already at the ceiling.
+    const { service } = otpService(
+      pendingUser({ emailVerificationAttempts: 4 }),
+      null,
+    );
+    const body = await codeOf(service.verifyEmailWithOtp('u1', '000000'));
+    expect(body.code).toBe('CODE_LOCKED');
+  });
+
+  it('refuses even a correct code once the ceiling is reached', async () => {
+    const { service, usersService } = otpService(
+      pendingUser({ emailVerificationAttempts: 5 }),
+    );
+    const body = await codeOf(service.verifyEmailWithOtp('u1', CODE));
+    expect(body.code).toBe('CODE_LOCKED');
+    expect(usersService.verifyEmail).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [
+      'expired',
+      { emailVerificationTokenExpiresAt: new Date(Date.now() - 1000) },
+    ],
+    [
+      'missing',
+      { emailVerificationToken: null, emailVerificationTokenExpiresAt: null },
+    ],
+  ])('answers CODE_EXPIRED when the code is %s', async (_label, over) => {
+    const { service } = otpService(pendingUser(over));
+    const body = await codeOf(service.verifyEmailWithOtp('u1', CODE));
+    expect(body.code).toBe('CODE_EXPIRED');
   });
 });

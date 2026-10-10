@@ -20,6 +20,7 @@ import {
   generateOtp,
   generateSecureToken,
   hash,
+  secureCompare,
 } from '../common/utils/encryption.util';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import { LoginActivityService } from './services/login-activity.service';
@@ -33,6 +34,10 @@ import {
   type PublicWorkspace,
 } from './workspace-membership.util';
 import { isEmailAllowlisted } from './allowlist';
+import {
+  MAX_CODE_ATTEMPTS,
+  verificationCodeError,
+} from './verification-code-error';
 
 // Columns returned to the client for any workspace row reachable from
 // /auth/me. Deliberately excludes `suspensionNote` (admin-only note) and
@@ -144,7 +149,6 @@ export class AuthService {
         : 'Your account was created, but we could not send the verification code. Use "Resend code" to try again.',
     };
   }
-
 
   async login(loginDto: LoginDto, ip?: string): Promise<AuthResponse> {
     const user = await this.validateUser(loginDto.email, loginDto.password);
@@ -466,27 +470,51 @@ export class AuthService {
       return { message: 'Email is already verified.' };
     }
 
-    if (!user.emailVerificationToken || !user.emailVerificationTokenExpiresAt) {
-      throw new BadRequestException(
-        'No verification code is pending. Please request a new one.',
+    if (
+      !user.emailVerificationToken ||
+      !user.emailVerificationTokenExpiresAt ||
+      user.emailVerificationTokenExpiresAt < new Date()
+    ) {
+      throw verificationCodeError(
+        'CODE_EXPIRED',
+        'This code has expired. Send a new one.',
       );
     }
 
-    if (user.emailVerificationTokenExpiresAt < new Date()) {
-      throw new BadRequestException(
-        'Verification code has expired. Please request a new one.',
+    // Checked before the comparison: once the ceiling is reached even the right
+    // code is refused, otherwise the limit only slows a brute force down.
+    if (user.emailVerificationAttempts >= MAX_CODE_ATTEMPTS) {
+      await this.usersService.clearEmailVerificationToken(user.id);
+      throw verificationCodeError(
+        'CODE_LOCKED',
+        'This code has expired. Send a new one.',
       );
     }
 
-    const hashedOtp = hash(otp);
-    if (hashedOtp !== user.emailVerificationToken) {
-      throw new BadRequestException('Invalid verification code.');
+    if (secureCompare(hash(otp), user.emailVerificationToken)) {
+      await this.usersService.verifyEmail(user.id);
+      await this.notificationEmitter.emailVerified(user.id);
+      return { message: 'Email verified successfully.' };
     }
 
-    await this.usersService.verifyEmail(user.id);
-    await this.notificationEmitter.emailVerified(user.id);
+    const attempts = await this.usersService.incrementVerificationAttempts(
+      user.id,
+      MAX_CODE_ATTEMPTS,
+    );
 
-    return { message: 'Email verified successfully.' };
+    if (attempts === null || attempts >= MAX_CODE_ATTEMPTS) {
+      await this.usersService.clearEmailVerificationToken(user.id);
+      throw verificationCodeError(
+        'CODE_LOCKED',
+        'This code has expired. Send a new one.',
+      );
+    }
+
+    throw verificationCodeError(
+      'CODE_INVALID',
+      'That code didn’t work. Check the email and try again.',
+      { attemptsLeft: MAX_CODE_ATTEMPTS - attempts },
+    );
   }
 
   // ==================== Password Reset ====================

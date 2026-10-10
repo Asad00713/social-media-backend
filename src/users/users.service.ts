@@ -14,7 +14,7 @@ import {
   users,
   UserRole,
 } from 'src/drizzle/schema';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, lt, sql } from 'drizzle-orm';
 import * as bcrypt from 'bcrypt';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { pickAvatarColor } from './avatar-colors';
@@ -185,6 +185,8 @@ export class UsersService {
       .set({
         emailVerificationToken: token,
         emailVerificationTokenExpiresAt: expiresAt,
+        // A new code starts with a clean slate of guesses.
+        emailVerificationAttempts: 0,
         updatedAt: new Date(),
       })
       .where(eq(users.id, userId));
@@ -196,6 +198,44 @@ export class UsersService {
             UPDATE users
             SET
                 is_email_verified = true,
+                email_verification_token = NULL,
+                email_verification_token_expires_at = NULL,
+                updated_at = ${new Date()}
+            WHERE id = ${userId}
+        `);
+  }
+
+  /**
+   * Counts one wrong guess and returns the new total — or null when the count
+   * was already at `max`. The ceiling is in the WHERE clause, not compared in
+   * JS afterwards, so two parallel wrong guesses at 4 cannot both be counted
+   * as the fifth: Postgres serialises the row update and the second matches
+   * nothing.
+   */
+  async incrementVerificationAttempts(
+    userId: string,
+    max: number,
+  ): Promise<number | null> {
+    const rows = await this.db
+      .update(users)
+      .set({
+        emailVerificationAttempts: sql`${users.emailVerificationAttempts} + 1`,
+      })
+      .where(
+        and(eq(users.id, userId), lt(users.emailVerificationAttempts, max)),
+      )
+      .returning({ attempts: users.emailVerificationAttempts });
+
+    return rows[0]?.attempts ?? null;
+  }
+
+  /** Cancels the pending code so the next try has to send a fresh one. */
+  async clearEmailVerificationToken(userId: string): Promise<void> {
+    // Raw SQL for the same reason as verifyEmail: Drizzle's timestamp mapping
+    // mishandles explicit nulls here.
+    await this.db.execute(sql`
+            UPDATE users
+            SET
                 email_verification_token = NULL,
                 email_verification_token_expires_at = NULL,
                 updated_at = ${new Date()}
