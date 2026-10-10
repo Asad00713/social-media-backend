@@ -31,6 +31,7 @@ interface StatePayload {
 export interface GoogleCallbackResult {
   redirectUrl: string;
   session: { userId: string; email: string } | null;
+  mode: GoogleAuthMode;
 }
 
 @Injectable()
@@ -56,29 +57,41 @@ export class GoogleAuthService {
       };
     }
 
-    const state = generateSecureToken(32);
-    const verifier = generateCodeVerifier();
-    // The state and PKCE verifier ride in a signed cookie rather than a table:
-    // there is no user yet to hang a row on, and a signature is all that is
-    // needed to know the callback is answering OUR redirect.
-    const payload: StatePayload = {
-      state,
-      verifier,
-      mode,
-      purpose: 'google-auth',
-    };
-    const stateCookie = this.jwt.sign(payload, {
-      secret: this.stateSecret(),
-      expiresIn: STATE_TTL,
-    });
-
-    return {
-      redirectUrl: this.client.buildAuthUrl(
+    try {
+      const state = generateSecureToken(32);
+      const verifier = generateCodeVerifier();
+      // The state and PKCE verifier ride in a signed cookie rather than a table:
+      // there is no user yet to hang a row on, and a signature is all that is
+      // needed to know the callback is answering OUR redirect.
+      const payload: StatePayload = {
         state,
-        generateCodeChallenge(verifier),
-      ),
-      stateCookie,
-    };
+        verifier,
+        mode,
+        purpose: 'google-auth',
+      };
+      const stateCookie = this.jwt.sign(payload, {
+        secret: this.stateSecret(),
+        expiresIn: STATE_TTL,
+      });
+
+      return {
+        redirectUrl: this.client.buildAuthUrl(
+          state,
+          generateCodeChallenge(verifier),
+        ),
+        stateCookie,
+      };
+    } catch (error) {
+      // No signing secret is a configuration gap, not a crash: the popup still
+      // lands on the done page.
+      this.logger.warn(
+        `Google sign-in could not start: ${error instanceof Error ? error.message : 'unknown'}`,
+      );
+      return {
+        redirectUrl: this.done('error', mode, 'GOOGLE_NOT_CONFIGURED'),
+        stateCookie: null,
+      };
+    }
   }
 
   async callback(
@@ -123,39 +136,51 @@ export class GoogleAuthService {
       return this.fail('error', mode, 'GOOGLE_ERROR');
     }
 
-    const email = normalizeEmail(claims.email);
-    const [bySub, byEmail] = await Promise.all([
-      this.users.findByGoogleSub(claims.sub),
-      this.users.findByEmail(email),
-    ]);
+    try {
+      const email = normalizeEmail(claims.email);
+      const [bySub, byEmail] = await Promise.all([
+        this.users.findByGoogleSub(claims.sub),
+        this.users.findByEmail(email),
+      ]);
 
-    const decision = decideGoogleSignIn({
-      claims,
-      bySub: toCandidate(bySub),
-      byEmail: toCandidate(byEmail),
-    });
-
-    if (decision.kind === 'refuse')
-      return this.fail('error', mode, decision.code);
-
-    if (decision.kind === 'create') {
-      const created = await this.users.createFromGoogle({
-        email,
-        name: claims.name,
-        googleSub: claims.sub,
+      const decision = decideGoogleSignIn({
+        claims,
+        bySub: toCandidate(bySub),
+        byEmail: toCandidate(byEmail),
       });
-      await this.loginActivity.recordSync(created.id, ip);
-      return this.succeed(mode, created.id, created.email);
-    }
 
-    await this.users.applyGoogleSignIn(decision.user.id, {
-      googleSub: decision.linkSub ? claims.sub : null,
-      name: claims.name,
-    });
-    await this.loginActivity.record(decision.user.id, ip);
-    // The stored email, not Google's spelling: the session's email claim is
-    // compared against the allowlist and shown back to the user.
-    return this.succeed(mode, decision.user.id, decision.user.email);
+      if (decision.kind === 'refuse')
+        return this.fail('error', mode, decision.code);
+
+      if (decision.kind === 'create') {
+        const created = await this.users.createFromGoogle({
+          email,
+          name: claims.name,
+          googleSub: claims.sub,
+        });
+        await this.loginActivity.recordSync(created.id, ip);
+        return this.succeed(mode, created.id, created.email);
+      }
+
+      await this.users.applyGoogleSignIn(decision.user.id, {
+        googleSub: decision.linkSub ? claims.sub : null,
+        name: claims.name,
+        // Pre-hijack: an unverified row's password was never proven to belong to
+        // the mailbox owner (anyone could have registered their address). Google
+        // has now proven it, so the password goes; the owner can set one again
+        // via Forgot password or Profile.
+        clearPassword: !decision.user.isEmailVerified,
+      });
+      await this.loginActivity.record(decision.user.id, ip);
+      // The stored email, not Google's spelling: the session's email claim is
+      // compared against the allowlist and shown back to the user.
+      return this.succeed(mode, decision.user.id, decision.user.email);
+    } catch (error) {
+      this.logger.warn(
+        `Google sign-in failed after exchange: ${error instanceof Error ? error.message : 'unknown'}`,
+      );
+      return this.fail('error', mode, 'GOOGLE_ERROR');
+    }
   }
 
   private succeed(
@@ -166,6 +191,7 @@ export class GoogleAuthService {
     return {
       redirectUrl: this.done('success', mode),
       session: { userId, email },
+      mode,
     };
   }
 
@@ -174,7 +200,12 @@ export class GoogleAuthService {
     mode: GoogleAuthMode,
     code?: string,
   ): GoogleCallbackResult {
-    return { redirectUrl: this.done(status, mode, code), session: null };
+    return { redirectUrl: this.done(status, mode, code), session: null, mode };
+  }
+
+  /** Where to land when something fails after the callback already answered. */
+  failureUrl(mode: GoogleAuthMode): string {
+    return this.done('error', mode, 'GOOGLE_ERROR');
   }
 
   private done(
@@ -205,6 +236,7 @@ function toCandidate(
         role: string;
         isActive: boolean;
         googleSub: string | null;
+        isEmailVerified: boolean;
       }
     | undefined,
 ): GoogleCandidate | null {
@@ -215,5 +247,6 @@ function toCandidate(
     role: user.role,
     isActive: user.isActive,
     googleSub: user.googleSub,
+    isEmailVerified: user.isEmailVerified,
   };
 }

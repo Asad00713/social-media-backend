@@ -66,16 +66,20 @@ export class GoogleAuthController {
     // state to match.
     res.clearCookie(GOOGLE_STATE_COOKIE, STATE_COOKIE_OPTIONS);
 
-    const { redirectUrl, session } = await this.google.callback(
+    const { redirectUrl, session, mode } = await this.google.callback(
       query,
       stateCookie,
       ip,
     );
     if (session) {
-      setRefreshCookie(
-        res,
-        await this.auth.generateRefreshToken(session.userId, session.email),
-      );
+      try {
+        setRefreshCookie(
+          res,
+          await this.auth.generateRefreshToken(session.userId, session.email),
+        );
+      } catch {
+        return res.redirect(302, this.google.failureUrl(mode));
+      }
     }
     return res.redirect(302, redirectUrl);
   }

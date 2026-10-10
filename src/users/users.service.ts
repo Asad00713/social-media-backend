@@ -451,7 +451,11 @@ export class UsersService {
    */
   async applyGoogleSignIn(
     userId: string,
-    input: { googleSub: string | null; name: string | null },
+    input: {
+      googleSub: string | null;
+      name: string | null;
+      clearPassword: boolean;
+    },
   ): Promise<void> {
     await this.db.execute(sql`
       UPDATE users
@@ -459,6 +463,7 @@ export class UsersService {
         is_email_verified = true,
         google_sub = COALESCE(google_sub, ${input.googleSub}),
         name = COALESCE(name, ${input.name}),
+        password = CASE WHEN ${input.clearPassword} THEN NULL ELSE password END,
         updated_at = ${new Date()}
       WHERE id = ${userId}
     `);

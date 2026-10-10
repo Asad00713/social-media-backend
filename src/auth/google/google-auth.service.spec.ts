@@ -22,7 +22,11 @@ const claims = {
 };
 
 function build(
-  over: { configured?: boolean; users?: Record<string, jest.Mock> } = {},
+  over: {
+    configured?: boolean;
+    noSecrets?: boolean;
+    users?: Record<string, jest.Mock>;
+  } = {},
 ) {
   const jwt = new JwtService({});
   const client = {
@@ -45,7 +49,9 @@ function build(
   const service = new GoogleAuthService(
     client as never,
     jwt,
-    config as never,
+    (over.noSecrets
+      ? { get: (k: string) => (k === 'FRONTEND_URL' ? FRONTEND : undefined) }
+      : config) as never,
     users as never,
     loginActivity as never,
   );
@@ -79,6 +85,16 @@ describe('GoogleAuthService.start', () => {
   });
 });
 
+describe('GoogleAuthService.start without secrets', () => {
+  it('lands on the done page with GOOGLE_NOT_CONFIGURED instead of throwing', () => {
+    const b = build({ noSecrets: true });
+    expect(b.service.start('popup')).toEqual({
+      redirectUrl: `${FRONTEND}/auth/google/done?status=error&code=GOOGLE_NOT_CONFIGURED&mode=popup`,
+      stateCookie: null,
+    });
+  });
+});
+
 describe('GoogleAuthService.callback', () => {
   it('rejects a missing state cookie with STATE_INVALID (Review Focus 4)', async () => {
     const b = build();
@@ -86,6 +102,7 @@ describe('GoogleAuthService.callback', () => {
     expect(r).toEqual({
       redirectUrl: `${FRONTEND}/auth/google/done?status=error&code=STATE_INVALID&mode=redirect`,
       session: null,
+      mode: 'redirect',
     });
   });
 
@@ -138,6 +155,7 @@ describe('GoogleAuthService.callback', () => {
     expect(r).toEqual({
       redirectUrl: `${FRONTEND}/auth/google/done?status=success&mode=popup`,
       session: { userId: 'new', email: 'sara@gmail.com' },
+      mode: 'popup',
     });
   });
 
@@ -148,6 +166,7 @@ describe('GoogleAuthService.callback', () => {
       role: 'USER',
       isActive: true,
       googleSub: null,
+      isEmailVerified: true,
     };
     const b = build({
       users: { findByEmail: jest.fn().mockResolvedValue(existing) },
@@ -159,7 +178,9 @@ describe('GoogleAuthService.callback', () => {
     expect(b.users.applyGoogleSignIn).toHaveBeenCalledWith('u1', {
       googleSub: 'g-1',
       name: 'Sara',
+      clearPassword: false,
     });
+    expect(b.loginActivity.record).toHaveBeenCalledWith('u1', undefined);
     expect(r.session).toEqual({ userId: 'u1', email: 'Sara@Gmail.com' });
   });
 
@@ -170,6 +191,7 @@ describe('GoogleAuthService.callback', () => {
       role: 'SUPER_ADMIN',
       isActive: true,
       googleSub: null,
+      isEmailVerified: true,
     };
     const b = build({
       users: { findByEmail: jest.fn().mockResolvedValue(admin) },
@@ -180,7 +202,59 @@ describe('GoogleAuthService.callback', () => {
     expect(r).toEqual({
       redirectUrl: `${FRONTEND}/auth/google/done?status=error&code=ADMIN_ACCOUNT&mode=popup`,
       session: null,
+      mode: 'popup',
     });
     expect(b.users.applyGoogleSignIn).not.toHaveBeenCalled();
+  });
+
+  it('turns a database failure after the exchange into GOOGLE_ERROR', async () => {
+    const b = build({
+      users: { findByEmail: jest.fn().mockRejectedValue(new Error('db down')) },
+    });
+    const { stateCookie, state } = begin(b);
+    const r = await b.service.callback({ code: 'c', state }, stateCookie);
+    expect(r.redirectUrl).toContain('code=GOOGLE_ERROR');
+    expect(r.session).toBeNull();
+  });
+
+  it('refuses a suspended existing user', async () => {
+    const suspended = {
+      id: 'u2',
+      email: 'sara@gmail.com',
+      role: 'USER',
+      isActive: false,
+      googleSub: null,
+      isEmailVerified: true,
+    };
+    const b = build({
+      users: { findByEmail: jest.fn().mockResolvedValue(suspended) },
+    });
+    const { stateCookie, state } = begin(b);
+    const r = await b.service.callback({ code: 'c', state }, stateCookie);
+    expect(r.redirectUrl).toContain('code=ACCOUNT_SUSPENDED');
+    expect(r.session).toBeNull();
+    expect(b.users.applyGoogleSignIn).not.toHaveBeenCalled();
+  });
+
+  it('drops the password when linking an UNVERIFIED row (pre-hijack)', async () => {
+    const unverified = {
+      id: 'u3',
+      email: 'sara@gmail.com',
+      role: 'USER',
+      isActive: true,
+      googleSub: null,
+      isEmailVerified: false,
+    };
+    const b = build({
+      users: { findByEmail: jest.fn().mockResolvedValue(unverified) },
+    });
+    const { stateCookie, state } = begin(b);
+    await b.service.callback({ code: 'c', state }, stateCookie, '9.9.9.9');
+    expect(b.users.applyGoogleSignIn).toHaveBeenCalledWith('u3', {
+      googleSub: 'g-1',
+      name: 'Sara',
+      clearPassword: true,
+    });
+    expect(b.loginActivity.record).toHaveBeenCalledWith('u3', '9.9.9.9');
   });
 });

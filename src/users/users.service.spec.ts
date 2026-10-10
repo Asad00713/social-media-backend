@@ -46,3 +46,41 @@ describe('UsersService email matching', () => {
     expect(values.mock.calls[0][0].email).toBe('sara@daybreak.co');
   });
 });
+
+describe('UsersService.createFromGoogle', () => {
+  const input = { email: 'sara@gmail.com', name: 'Sara', googleSub: 'g-1' };
+  const build = (rejection: unknown, findFirst: jest.Mock) => {
+    const returning = jest.fn().mockRejectedValue(rejection);
+    const insert = jest.fn().mockReturnValue({
+      values: jest.fn().mockReturnValue({ returning }),
+    });
+    return new UsersService({
+      query: { users: { findFirst } },
+      insert,
+    } as never);
+  };
+
+  it('returns the row a racing callback created (unique violation by sub)', async () => {
+    const row = { id: 'won' };
+    const findFirst = jest.fn().mockResolvedValue(row);
+    const service = build({ code: '23505' }, findFirst);
+    await expect(service.createFromGoogle(input)).resolves.toBe(row);
+  });
+
+  it('falls back to the email when the wrapped violation finds no sub match', async () => {
+    const row = { id: 'by-email' };
+    const findFirst = jest
+      .fn()
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce(row);
+    const service = build({ cause: { code: '23505' } }, findFirst);
+    await expect(service.createFromGoogle(input)).resolves.toBe(row);
+    expect(findFirst).toHaveBeenCalledTimes(2);
+  });
+
+  it('rethrows anything that is not a unique violation', async () => {
+    const boom = new Error('connection lost');
+    const service = build(boom, jest.fn());
+    await expect(service.createFromGoogle(input)).rejects.toBe(boom);
+  });
+});

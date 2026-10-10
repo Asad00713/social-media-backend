@@ -14,6 +14,7 @@ export interface GoogleCandidate {
   role: string;
   isActive: boolean;
   googleSub: string | null;
+  isEmailVerified: boolean;
 }
 
 export type GoogleSignInDecision =

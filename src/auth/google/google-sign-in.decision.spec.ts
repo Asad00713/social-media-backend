@@ -16,6 +16,7 @@ const user = (over: Partial<GoogleCandidate> = {}): GoogleCandidate => ({
   role: 'USER',
   isActive: true,
   googleSub: null,
+  isEmailVerified: true,
   ...over,
 });
 
