@@ -18,6 +18,7 @@ import { eq, sql } from 'drizzle-orm';
 import * as bcrypt from 'bcrypt';
 import { UpdateUserDto } from './dto/update-user.dto';
 import { pickAvatarColor } from './avatar-colors';
+import { normalizeEmail } from './normalize-email';
 
 // Public user type that excludes sensitive fields
 export type PublicUser = Pick<
@@ -87,8 +88,10 @@ export class UsersService {
     createUserDto: CreateUserDto,
     role: UserRole = 'USER',
   ): Promise<PublicUser> {
+    const email = normalizeEmail(createUserDto.email);
+
     const existingUser = await this.db.query.users.findFirst({
-      where: eq(users.email, createUserDto.email),
+      where: sql`lower(${users.email}) = ${email}`,
     });
 
     if (existingUser) {
@@ -100,7 +103,7 @@ export class UsersService {
     const [newUser] = await this.db
       .insert(users)
       .values({
-        email: createUserDto.email,
+        email,
         name: createUserDto.name,
         password: hashedPassword,
         role,
@@ -230,8 +233,10 @@ export class UsersService {
   }
 
   async findByEmail(email: string): Promise<User | undefined> {
+    // lower() on the column, not just the input: accounts created before
+    // 2026-10 were stored exactly as typed.
     const user = await this.db.query.users.findFirst({
-      where: eq(users.email, email),
+      where: sql`lower(${users.email}) = ${normalizeEmail(email)}`,
     });
 
     return user;
