@@ -414,6 +414,8 @@ export class UsersService {
    * An account born from Google sign-in: no password, email already proven.
    * A parallel callback for the same person can win the insert race; that
    * surfaces as a unique violation, and the row it created is the answer.
+   * The same fallback covers users_email_lower_unique (a case-only duplicate
+   * email): findByEmail matches lower(email), so it finds that row.
    */
   async createFromGoogle(input: {
     email: string;

@@ -42,6 +42,9 @@ export class GoogleOAuthClient {
   ): Promise<GoogleClaims> {
     const res = await fetch(TOKEN_URL, {
       method: 'POST',
+      // A hung Google must not leave the sign-in popup hanging; the callback's
+      // catch turns the abort into GOOGLE_ERROR.
+      signal: AbortSignal.timeout(10_000),
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body: new URLSearchParams({
         code,

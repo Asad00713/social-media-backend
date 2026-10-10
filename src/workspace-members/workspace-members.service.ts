@@ -19,6 +19,7 @@ import { UsageService } from 'src/billing/services/usage.service';
 import { EmailService } from 'src/email/email.service';
 import { UsersService } from 'src/users/users.service';
 import { WorkspaceRoleService } from './workspace-role.service';
+import { normalizeEmail } from 'src/users/normalize-email';
 
 @Injectable()
 export class WorkspaceMembersService {
@@ -66,18 +67,22 @@ export class WorkspaceMembersService {
       }
     }
 
+    // Accounts are stored lowercased now but older rows keep their typed case,
+    // so every comparison below is case-insensitive on both sides.
+    const email = normalizeEmail(inviteMemberDto.email);
+
     // 2. Get owner's email to check if inviting themselves
     const owner = await this.db.query.users.findFirst({
       where: eq(users.id, workspaceData.ownerId),
     });
 
-    if (owner?.email === inviteMemberDto.email) {
+    if (owner && normalizeEmail(owner.email) === email) {
       throw new ConflictException('User is already the workspace owner');
     }
 
     // 3. Check if user exists
     const userToInvite = await this.db.query.users.findFirst({
-      where: eq(users.email, inviteMemberDto.email),
+      where: sql`lower(${users.email}) = ${email}`,
     });
 
     // 4. If user exists, check if already a member (check ACCEPTED invitations)
@@ -102,7 +107,7 @@ export class WorkspaceMembersService {
       await this.db.query.workspaceInvitation.findFirst({
         where: and(
           eq(workspaceInvitation.workspaceId, workspaceId),
-          eq(workspaceInvitation.email, inviteMemberDto.email),
+          sql`lower(${workspaceInvitation.email}) = ${email}`,
           eq(workspaceInvitation.status, 'PENDING'),
         ),
       });
@@ -125,7 +130,7 @@ export class WorkspaceMembersService {
       .insert(workspaceInvitation)
       .values({
         workspaceId,
-        email: inviteMemberDto.email,
+        email,
         userId: userToInvite?.id || null,
         role: (inviteMemberDto.role || MemberRole.MEMBER) as
           | 'ADMIN'
@@ -144,7 +149,7 @@ export class WorkspaceMembersService {
       columns: { name: true },
     });
     try {
-      await this.emailService.sendWorkspaceInvitation(inviteMemberDto.email, {
+      await this.emailService.sendWorkspaceInvitation(email, {
         workspaceName,
         inviterName: inviterUser?.name ?? undefined,
         role: invitation.role as 'ADMIN' | 'MEMBER' | 'GUEST',

@@ -53,6 +53,8 @@ export class GoogleAuthController {
   }
 
   @Get('callback')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 30, ttl: 15 * 60 * 1000 } })
   async callback(
     @Query() query: { code?: string; state?: string; error?: string },
     @Req() req: Request,
