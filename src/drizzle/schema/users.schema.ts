@@ -7,9 +7,8 @@ import {
   text,
   boolean,
   integer,
-  uniqueIndex,
 } from 'drizzle-orm/pg-core';
-import { relations, sql } from 'drizzle-orm';
+import { relations } from 'drizzle-orm';
 import { workspace } from './workspace.schema';
 
 // System-level user roles
@@ -26,106 +25,99 @@ export const MAESTRO_TONES = ['simple', 'professional', 'detailed'] as const;
 export type MaestroTone = (typeof MAESTRO_TONES)[number];
 export const maestroToneEnum = pgEnum('maestro_tone', MAESTRO_TONES);
 
-export const users = pgTable(
-  'users',
-  {
-    id: uuid('id').primaryKey().defaultRandom(),
-    email: varchar('email', { length: 255 }).notNull().unique(),
-    name: varchar('name', { length: 255 }),
-    // Null for accounts created through Google sign-in. They can set one later
-    // from Profile or "Forgot password?", which work the same for them.
-    password: text('password'),
+export const users = pgTable('users', {
+  id: uuid('id').primaryKey().defaultRandom(),
+  email: varchar('email', { length: 255 }).notNull().unique(),
+  name: varchar('name', { length: 255 }),
+  // Null for accounts created through Google sign-in. They can set one later
+  // from Profile or "Forgot password?", which work the same for them.
+  password: text('password'),
 
-    // Profile picture, stored in R2 and referenced by its public URL. Null means
-    // the UI falls back to initials — which every avatar does while loading, so
-    // an absent picture is a normal state rather than a missing one.
-    avatarUrl: text('avatar_url'),
+  // Profile picture, stored in R2 and referenced by its public URL. Null means
+  // the UI falls back to initials — which every avatar does while loading, so
+  // an absent picture is a normal state rather than a missing one.
+  avatarUrl: text('avatar_url'),
 
-    // The colour behind those initials, chosen once at sign-up and then fixed.
-    //
-    // Stored rather than derived from the id at render time: a derived colour
-    // has to be computed identically everywhere it appears, and the day someone
-    // changes the palette or the hash, every user's colour changes with it. A
-    // person's avatar is how colleagues recognise them in a list — it should be
-    // as stable as their name.
-    //
-    // Holds a palette KEY ('amber', 'violet'), not a hex value, so light and
-    // dark themes can render the same identity differently. See AVATAR_COLORS.
-    avatarColor: varchar('avatar_color', { length: 20 }),
+  // The colour behind those initials, chosen once at sign-up and then fixed.
+  //
+  // Stored rather than derived from the id at render time: a derived colour
+  // has to be computed identically everywhere it appears, and the day someone
+  // changes the palette or the hash, every user's colour changes with it. A
+  // person's avatar is how colleagues recognise them in a list — it should be
+  // as stable as their name.
+  //
+  // Holds a palette KEY ('amber', 'violet'), not a hex value, so light and
+  // dark themes can render the same identity differently. See AVATAR_COLORS.
+  avatarColor: varchar('avatar_color', { length: 20 }),
 
-    // System-level role (USER or SUPER_ADMIN)
-    role: userRoleEnum('role').default('USER').notNull(),
+  // System-level role (USER or SUPER_ADMIN)
+  role: userRoleEnum('role').default('USER').notNull(),
 
-    // Email verification
-    isEmailVerified: boolean('is_email_verified').default(false).notNull(),
-    emailVerificationToken: varchar('email_verification_token', {
-      length: 255,
-    }),
-    emailVerificationTokenExpiresAt: timestamp(
-      'email_verification_token_expires_at',
-    ),
-    // Wrong guesses against the current signup code. Six digits is a million
-    // combinations — brute-forceable inside ten minutes without a ceiling.
-    // Reset to 0 whenever a new code is issued.
-    emailVerificationAttempts: integer('email_verification_attempts')
-      .default(0)
-      .notNull(),
+  // Email verification
+  isEmailVerified: boolean('is_email_verified').default(false).notNull(),
+  emailVerificationToken: varchar('email_verification_token', {
+    length: 255,
+  }),
+  emailVerificationTokenExpiresAt: timestamp(
+    'email_verification_token_expires_at',
+  ),
+  // Wrong guesses against the current signup code. Six digits is a million
+  // combinations — brute-forceable inside ten minutes without a ceiling.
+  // Reset to 0 whenever a new code is issued.
+  emailVerificationAttempts: integer('email_verification_attempts')
+    .default(0)
+    .notNull(),
 
-    // Password reset
-    passwordResetToken: varchar('password_reset_token', { length: 255 }),
-    passwordResetTokenExpiresAt: timestamp('password_reset_token_expires_at'),
+  // Password reset
+  passwordResetToken: varchar('password_reset_token', { length: 255 }),
+  passwordResetTokenExpiresAt: timestamp('password_reset_token_expires_at'),
 
-    // Last accessed workspace for redirect on login
-    lastAccessedWorkspaceId: uuid('last_accessed_workspace_id'),
+  // Last accessed workspace for redirect on login
+  lastAccessedWorkspaceId: uuid('last_accessed_workspace_id'),
 
-    // Google's stable account id (`sub`). Matched before email, so a user who
-    // changes the address on their Google account still reaches this row.
-    googleSub: varchar('google_sub', { length: 255 }).unique(),
+  // Google's stable account id (`sub`). Matched before email, so a user who
+  // changes the address on their Google account still reaches this row.
+  googleSub: varchar('google_sub', { length: 255 }).unique(),
 
-    // Stamped when the user finishes the multi-step onboarding flow
-    // (workspace → persona → invite → connect). Null while onboarding is
-    // in progress. Source of truth for route-guard gating so the decision
-    // is per-user (server-side) instead of per-browser (localStorage).
-    onboardingCompletedAt: timestamp('onboarding_completed_at'),
+  // Stamped when the user finishes the multi-step onboarding flow
+  // (workspace → persona → invite → connect). Null while onboarding is
+  // in progress. Source of truth for route-guard gating so the decision
+  // is per-user (server-side) instead of per-browser (localStorage).
+  onboardingCompletedAt: timestamp('onboarding_completed_at'),
 
-    // Account suspension
-    isActive: boolean('is_active').default(true).notNull(),
-    suspendedAt: timestamp('suspended_at'),
-    suspendedReason: varchar('suspended_reason', { length: 50 }), // non_payment, policy_violation, abuse, manual
-    suspendedById: uuid('suspended_by_id'),
-    suspensionNote: text('suspension_note'),
+  // Account suspension
+  isActive: boolean('is_active').default(true).notNull(),
+  suspendedAt: timestamp('suspended_at'),
+  suspendedReason: varchar('suspended_reason', { length: 50 }), // non_payment, policy_violation, abuse, manual
+  suspendedById: uuid('suspended_by_id'),
+  suspensionNote: text('suspension_note'),
 
-    // Last login tracking
-    lastLoginAt: timestamp('last_login_at'),
-    // Where the last session signed in from. The IP is captured at auth time;
-    // country/countryCode are resolved from it (best-effort, may lag or be null).
-    lastLoginIp: varchar('last_login_ip', { length: 45 }), // fits IPv6
-    country: varchar('country', { length: 100 }),
-    countryCode: varchar('country_code', { length: 2 }), // ISO 3166-1 alpha-2
+  // Last login tracking
+  lastLoginAt: timestamp('last_login_at'),
+  // Where the last session signed in from. The IP is captured at auth time;
+  // country/countryCode are resolved from it (best-effort, may lag or be null).
+  lastLoginIp: varchar('last_login_ip', { length: 45 }), // fits IPv6
+  country: varchar('country', { length: 100 }),
+  countryCode: varchar('country_code', { length: 2 }), // ISO 3166-1 alpha-2
 
-    // How Maestro should pitch its replies to THIS user. Per-user, not
-    // per-workspace: one workspace holds people of very different technical
-    // comfort, so a workspace-wide setting would let one member's choice change
-    // the assistant for everyone else. Server-side rather than localStorage for
-    // the same reason as onboardingCompletedAt above -- the person who most needs
-    // 'simple' is the least likely to re-pick it on every new device.
-    maestroTone: maestroToneEnum('maestro_tone')
-      .default('professional')
-      .notNull(),
+  // How Maestro should pitch its replies to THIS user. Per-user, not
+  // per-workspace: one workspace holds people of very different technical
+  // comfort, so a workspace-wide setting would let one member's choice change
+  // the assistant for everyone else. Server-side rather than localStorage for
+  // the same reason as onboardingCompletedAt above -- the person who most needs
+  // 'simple' is the least likely to re-pick it on every new device.
+  maestroTone: maestroToneEnum('maestro_tone')
+    .default('professional')
+    .notNull(),
 
-    // Inactivity email tracking
-    inactivityEmail15DaysSentAt: timestamp('inactivity_email_15_days_sent_at'),
-    inactivityEmail25DaysSentAt: timestamp('inactivity_email_25_days_sent_at'),
-    inactivityEmail30DaysSentAt: timestamp('inactivity_email_30_days_sent_at'),
+  // Inactivity email tracking
+  inactivityEmail15DaysSentAt: timestamp('inactivity_email_15_days_sent_at'),
+  inactivityEmail25DaysSentAt: timestamp('inactivity_email_25_days_sent_at'),
+  inactivityEmail30DaysSentAt: timestamp('inactivity_email_30_days_sent_at'),
 
-    createdAt: timestamp('created_at').defaultNow().notNull(),
-    updatedAt: timestamp('updated_at').defaultNow().notNull(),
-  },
-  (table) => [
-    // Lookups match lower(email); this makes that uniqueness real (migration 0038).
-    uniqueIndex('users_email_lower_unique').on(sql`lower(${table.email})`),
-  ],
-);
+  createdAt: timestamp('created_at').defaultNow().notNull(),
+  updatedAt: timestamp('updated_at').defaultNow().notNull(),
+});
 
 // Relations will be defined after importing other schemas
 // export const usersRelations = relations(users, ({ many }) => ({
