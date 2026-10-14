@@ -24,6 +24,7 @@ import {
   type SkipReason,
 } from './first-week.types';
 import { LlmOutputError, normaliseBrand } from './lib/first-week-parse';
+import { safeTimeZone } from './lib/first-week-slots';
 import { toDraftView, toProfileView } from './lib/first-week-view';
 
 export interface ScheduleResult {
@@ -75,7 +76,7 @@ export class FirstWeekService {
       profile: profile ? this.viewOf(profile, now) : null,
       drafts,
       hasChannels: channelCount > 0,
-      timezone: ws.timezone,
+      timezone: safeTimeZone(ws.timezone),
       tokensResetAt: usage.resetsAt ? usage.resetsAt.toISOString() : null,
     };
   }

@@ -164,34 +164,50 @@ export class FirstWeekRunService {
       platform: source.platform,
       captions: source.captions,
     });
-    // Parse INSIDE the metered operation: executeWithTokens only deducts when
-    // the callback resolves, so an unparseable answer costs the person nothing.
-    const { result: brand } = await this.tokens.executeWithTokens(
-      workspaceId,
-      userId,
-      'brand_learn',
-      source.platform,
-      `Brand profile from ${source.captions.length} ${source.platform} posts`,
-      async () => {
-        const raw = await this.ai.complete(system, user, {
-          temperature: 0.3,
-          maxTokens: 512,
-        });
-        return { result: parseBrandJson(raw), outputLength: raw.length };
-      },
-    );
-
-    await this.repo.saveLearnedBrand(workspaceId, {
-      brand,
-      sourceChannelId: source.channelId,
-      sourcePlatform: source.platform,
-      postsRead: source.captions.length,
-    });
-    if (source.platform === 'instagram' && source.profilePictureUrl) {
-      await this.repo.setWorkspaceLogoIfEmpty(
+    // Parse AND save INSIDE the metered operation: executeWithTokens only
+    // deducts when the callback resolves, so an unparseable answer or a failed
+    // save costs the person nothing and a retry never charges twice.
+    let started = false;
+    let brand: BrandInput;
+    try {
+      ({
+        result: { brand },
+      } = await this.tokens.executeWithTokens(
         workspaceId,
-        source.profilePictureUrl,
-      );
+        userId,
+        'brand_learn',
+        source.platform,
+        `Brand profile from ${source.captions.length} ${source.platform} posts`,
+        async () => {
+          started = true;
+          const raw = await this.ai.complete(system, user, {
+            temperature: 0.3,
+            maxTokens: 512,
+          });
+          const learned = parseBrandJson(raw);
+          await this.repo.saveLearnedBrand(workspaceId, {
+            brand: learned,
+            sourceChannelId: source.channelId,
+            sourcePlatform: source.platform,
+            postsRead: source.captions.length,
+          });
+          if (source.platform === 'instagram' && source.profilePictureUrl) {
+            await this.repo.setWorkspaceLogoIfEmpty(
+              workspaceId,
+              source.profilePictureUrl,
+            );
+          }
+          return { result: { brand: learned }, outputLength: raw.length };
+        },
+      ));
+    } catch (err) {
+      // Only a refusal before the callback ran is "no tokens"; anything the
+      // callback threw propagates so the job retries.
+      if (!started && isTokenShortage(err)) {
+        await this.repo.setStatus(workspaceId, 'no_tokens');
+        return { kind: 'no_tokens' };
+      }
+      throw err;
     }
     return { kind: 'ok', brand, captions: source.captions };
   }

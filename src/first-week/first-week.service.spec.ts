@@ -138,6 +138,17 @@ describe('FirstWeekService.getState', () => {
     expect(s.tokensResetAt).toBe('2026-11-01T00:00:00.000Z');
   });
 
+  it('reports UTC instead of an invalid stored timezone', async () => {
+    const { svc, repo } = make();
+    repo.getWorkspace.mockResolvedValueOnce({
+      id: WS,
+      timezone: 'Not/AZone',
+      ownerId: 'owner',
+      logo: null,
+    });
+    expect((await svc.getState(WS, NOW)).timezone).toBe('UTC');
+  });
+
   it('is profile: null with no drafts for a workspace that never started one', async () => {
     const { svc, repo } = make({ profile: null });
     repo.countPublishingChannels.mockResolvedValue(0);

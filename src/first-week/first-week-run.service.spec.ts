@@ -546,6 +546,37 @@ describe('FirstWeekRunService', () => {
       expect(h.deducted).toEqual([]);
     });
 
+    it('brand_learn is not charged when saving the brand fails, so a retry never double-charges', async () => {
+      const h = harness();
+      h.repo.saveLearnedBrand.mockRejectedValueOnce(new Error('db down'));
+      await expect(
+        h.svc.execute({ workspaceId: WS, mode: 'posts' }, NOW),
+      ).rejects.toThrow('db down');
+      expect(h.deducted).toEqual([]);
+    });
+
+    it('a refusal before brand_learn ran ends as no_tokens', async () => {
+      const h = harness();
+      h.tokens.executeWithTokens.mockRejectedValueOnce(
+        new BadRequestException('Insufficient tokens'),
+      );
+      expect(await h.svc.execute({ workspaceId: WS, mode: 'posts' }, NOW)).toBe(
+        'no_tokens',
+      );
+      expect(h.repo.profile.status).toBe('no_tokens');
+    });
+
+    it('a token-looking error thrown INSIDE brand_learn propagates so it retries', async () => {
+      const h = harness();
+      h.repo.saveLearnedBrand.mockRejectedValueOnce(
+        new BadRequestException('Insufficient tokens'),
+      );
+      await expect(
+        h.svc.execute({ workspaceId: WS, mode: 'posts' }, NOW),
+      ).rejects.toThrow('Insufficient tokens');
+      expect(h.repo.profile.status).not.toBe('no_tokens');
+    });
+
     it('a token race inside executeWithTokens ends as no_tokens, not a retry', async () => {
       const h = harness({ complete: [1, 2, 3, 4, 5].map(draftJson) });
       h.repo.profile = {
