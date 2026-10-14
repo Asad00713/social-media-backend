@@ -43,6 +43,7 @@ import { CalendarSyncModule } from './calendar-sync/calendar-sync.module';
 import { CampaignsModule } from './campaigns/campaigns.module';
 import { WhatsAppTemplatesModule } from './whatsapp-templates/whatsapp-templates.module';
 import { HomeModule } from './home/home.module';
+import { FirstWeekModule } from './first-week/first-week.module';
 import { InsightsModule } from './insights/insights.module';
 import { WorkspaceHubModule } from './workspace-hub/workspace-hub.module';
 import { BullBoardModule } from '@bull-board/nestjs';
@@ -97,6 +98,7 @@ import { QUEUES } from './queue/queue.module';
     CampaignsModule,
     WhatsAppTemplatesModule,
     HomeModule,
+    FirstWeekModule,
     InsightsModule,
     WorkspaceHubModule,
     BullBoardModule.forRoot({
