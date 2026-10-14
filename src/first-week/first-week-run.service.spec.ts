@@ -526,6 +526,26 @@ describe('FirstWeekRunService', () => {
       expect(h.repo.drafts).toHaveLength(4);
     });
 
+    it('a provider BadRequest inside the callback rejects (retries), is not no_tokens, and deducts nothing', async () => {
+      const h = harness();
+      h.repo.profile = {
+        ...h.repo.profile,
+        sells: 'Coffee',
+        voice: ['Warm'],
+        audience: 'Everyone',
+        status: 'drafting',
+        source: 'described',
+      };
+      h.ai.complete.mockRejectedValueOnce(
+        new BadRequestException('AI is not configured'),
+      );
+      await expect(
+        h.svc.execute({ workspaceId: WS, mode: 'described' }, NOW),
+      ).rejects.toThrow('AI is not configured');
+      expect(h.repo.profile.status).toBe('drafting');
+      expect(h.deducted).toEqual([]);
+    });
+
     it('a token race inside executeWithTokens ends as no_tokens, not a retry', async () => {
       const h = harness({ complete: [1, 2, 3, 4, 5].map(draftJson) });
       h.repo.profile = {

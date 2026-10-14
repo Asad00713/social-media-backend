@@ -249,6 +249,7 @@ export class FirstWeekRunService {
       // The stock lookup and the INSERT run inside the metered callback:
       // tokens are deducted only after the row is safely written, so a failed
       // insert (retry) or a slot another run filled first is never charged.
+      let started = false; // token refusals are raised before the callback runs
       let draft: ReturnType<typeof parseDraftJson>;
       try {
         ({
@@ -260,6 +261,7 @@ export class FirstWeekRunService {
           platforms.join(',') || undefined,
           `First-week post ${slot.slot + 1} of 5`,
           async () => {
+            started = true;
             const raw = await this.ai.complete(system, user, {
               temperature: 0.8,
               maxTokens: 400,
@@ -303,7 +305,7 @@ export class FirstWeekRunService {
           doneSlots.add(slot.slot);
           continue;
         }
-        if (isTokenShortage(err)) {
+        if (!started && isTokenShortage(err)) {
           await this.repo.refreshDraftedCount(workspaceId);
           await this.repo.setStatus(workspaceId, 'no_tokens');
           return 'no_tokens';
