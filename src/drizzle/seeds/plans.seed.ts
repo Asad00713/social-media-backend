@@ -18,7 +18,7 @@ export async function seedPlans() {
       channelsPerWorkspace: 3,
       membersPerWorkspace: 1,
       maxWorkspaces: 1,
-      aiTokensPerMonth: 0, // No AI for free plan
+      aiTokensPerMonth: 100, // Enough for the first week (about 33) plus a few captions
       features: {
         basicScheduling: true,
         analytics: false,
@@ -26,7 +26,7 @@ export async function seedPlans() {
         apiAccess: false,
         prioritySupport: false,
         whiteLabel: false,
-        aiFeatures: false,
+        aiFeatures: true,
       },
       isActive: true,
     },
