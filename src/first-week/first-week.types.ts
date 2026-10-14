@@ -10,6 +10,12 @@ export const RETRYABLE_STATUSES: readonly FirstWeekStatus[] = [
   'no_tokens',
 ];
 
+/**
+ * A run in `reading` or `drafting` that has not touched its row for this long
+ * is treated as stalled (process died before enqueueing, or the job stalled).
+ */
+export const STALE_RUN_MS = 10 * 60 * 1000;
+
 /** BullMQ job payload. `userId` is who pays and authors; falls back to the workspace owner. */
 export interface FirstWeekJobData {
   workspaceId: string;
