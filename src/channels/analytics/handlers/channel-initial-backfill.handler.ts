@@ -11,6 +11,7 @@ import { AdapterRegistryService } from '../services/adapter-registry.service';
 import { QuotaTrackerService } from '../services/quota-tracker.service';
 import { decrypt } from '../../../common/utils/encryption.util';
 import { ChannelRecentPostsSyncHandler } from './channel-recent-posts-sync.handler';
+import { FirstWeekTriggerService } from '../../../first-week/first-week-trigger.service';
 
 export interface ChannelInitialBackfillJob {
   channelId: number;
@@ -26,6 +27,7 @@ export class ChannelInitialBackfillHandler {
     private readonly quota: QuotaTrackerService,
     private readonly recentPostsSync: ChannelRecentPostsSyncHandler,
     @Inject(DRIZZLE) private readonly db: any,
+    private readonly firstWeek: FirstWeekTriggerService,
   ) {}
 
   async handle(data: ChannelInitialBackfillJob): Promise<{ ok: boolean }> {
@@ -121,6 +123,23 @@ export class ChannelInitialBackfillHandler {
 
     await this.markBackfillStatus(channelId, 'completed');
     this.logger.log(`Initial backfill completed for channelId=${channelId}`);
+
+    // Home "first week": the first channel to finish backfilling starts it.
+    // Only when the posts were actually synced (a quota-deferred sync would
+    // look like "no posts" and wrongly ask the person to describe the brand).
+    // Never allowed to fail the backfill.
+    if (syncResult.ok) {
+      try {
+        await this.firstWeek.onChannelBackfilled(
+          data.workspaceId,
+          channel.connectedByUserId ?? null,
+        );
+      } catch (err) {
+        this.logger.warn(
+          `First-week trigger failed for workspace ${data.workspaceId}: ${err instanceof Error ? err.message : String(err)}`,
+        );
+      }
+    }
     return { ok: true };
   }
 
