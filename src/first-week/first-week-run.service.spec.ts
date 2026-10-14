@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return, @typescript-eslint/require-await -- test doubles are loosely typed */
+import { BadRequestException } from '@nestjs/common';
 import { FirstWeekRunService } from './first-week-run.service';
 import { LlmOutputError } from './lib/first-week-parse';
 import type { SourceCandidate } from './lib/first-week-targets';
@@ -476,6 +477,72 @@ describe('FirstWeekRunService', () => {
       expect([a, b]).toEqual(['ready', 'ready']);
       expect(h.repo.drafts).toHaveLength(5);
       expect(new Set(h.repo.drafts.map((d) => d.id)).size).toBe(5);
+      expect(h.deducted).toHaveLength(5); // the slot a run lost is never charged
+    });
+
+    it('a failed insert deducts nothing, and the retry pays for that slot exactly once', async () => {
+      const h = harness({
+        complete: [1, 2, 3, 4, 5].map(draftJson).concat(draftJson(1)),
+      });
+      h.repo.profile = {
+        ...h.repo.profile,
+        sells: 'Coffee',
+        voice: ['Warm'],
+        audience: 'Everyone',
+        status: 'drafting',
+        source: 'described',
+      };
+      const real = h.repo.insertDraft.getMockImplementation()!;
+      h.repo.insertDraft.mockImplementationOnce(async () => {
+        throw new Error('db down');
+      });
+      await expect(
+        h.svc.execute({ workspaceId: WS, mode: 'described' }, NOW),
+      ).rejects.toThrow('db down');
+      expect(h.deducted).toEqual([]);
+      h.repo.insertDraft.mockImplementation(real);
+      expect(
+        await h.svc.execute({ workspaceId: WS, mode: 'described' }, NOW),
+      ).toBe('ready');
+      expect(h.repo.drafts).toHaveLength(5);
+      expect(h.deducted).toHaveLength(5);
+    });
+
+    it('a slot another run filled first is not charged and the loop continues', async () => {
+      const h = harness({ complete: [1, 2, 3, 4, 5].map(draftJson) });
+      h.repo.profile = {
+        ...h.repo.profile,
+        sells: 'Coffee',
+        voice: ['Warm'],
+        audience: 'Everyone',
+        status: 'drafting',
+        source: 'described',
+      };
+      h.repo.insertDraft.mockImplementationOnce(async () => false);
+      expect(
+        await h.svc.execute({ workspaceId: WS, mode: 'described' }, NOW),
+      ).toBe('ready');
+      expect(h.deducted).toHaveLength(4);
+      expect(h.repo.drafts).toHaveLength(4);
+    });
+
+    it('a token race inside executeWithTokens ends as no_tokens, not a retry', async () => {
+      const h = harness({ complete: [1, 2, 3, 4, 5].map(draftJson) });
+      h.repo.profile = {
+        ...h.repo.profile,
+        sells: 'Coffee',
+        voice: ['Warm'],
+        audience: 'Everyone',
+        status: 'drafting',
+        source: 'described',
+      };
+      h.tokens.executeWithTokens.mockRejectedValueOnce(
+        new BadRequestException('Insufficient tokens'),
+      );
+      expect(
+        await h.svc.execute({ workspaceId: WS, mode: 'described' }, NOW),
+      ).toBe('no_tokens');
+      expect(h.repo.profile.status).toBe('no_tokens');
     });
 
     it('drafts on when the source channel was deleted mid-week (id nulled)', async () => {

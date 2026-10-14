@@ -1,5 +1,10 @@
 import { randomUUID } from 'node:crypto';
-import { Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { AiTextService } from '../ai/ai-text.service';
 import { AiTokenService } from '../ai/services/ai-token.service';
 import { FirstWeekRepository, type NewDraftRow } from './first-week.repository';
@@ -25,6 +30,17 @@ export type RunOutcome =
   | 'needs_description'
   | 'no_tokens'
   | 'skipped';
+
+/** Another run already wrote this slot's draft; abort the metered call so nothing is deducted. */
+class SlotTakenError extends Error {
+  constructor(slot: number) {
+    super(`First-week slot ${slot} was already drafted`);
+  }
+}
+
+/** executeWithTokens' own refusal (a token race after hasTokens), as opposed to a failure of the work. */
+const isTokenShortage = (err: unknown): boolean =>
+  err instanceof BadRequestException || err instanceof ForbiddenException;
 
 /** How many of the person's own posts to show the model as style examples. */
 const SAMPLE_CAPTIONS = 6;
@@ -230,51 +246,71 @@ export class FirstWeekRunService {
         previousCaptions: captions,
         platforms,
       });
-      const { result: draft } = await this.tokens.executeWithTokens(
-        workspaceId,
-        userId,
-        'first_week_draft',
-        platforms.join(',') || undefined,
-        `First-week post ${slot.slot + 1} of 5`,
-        async () => {
-          const raw = await this.ai.complete(system, user, {
-            temperature: 0.8,
-            maxTokens: 400,
-          });
-          return { result: parseDraftJson(raw), outputLength: raw.length };
-        },
-      );
-
-      const image = await this.stock.find(draft.imageQuery);
-      const inserted = await this.repo.insertDraft({
-        id: firstWeekDraftId(workspaceId, slot.slot),
-        workspaceId,
-        createdById: userId,
-        content: draft.caption,
-        mediaItems: (image
-          ? [
-              {
-                id: randomUUID(),
-                type: 'image',
-                url: image.url,
-                width: image.width,
-                height: image.height,
-                altText: image.alt,
-                sizeBytes: 0,
-              },
-            ]
-          : []) as unknown as NewDraftRow['mediaItems'],
-        targets: targets as unknown as NewDraftRow['targets'],
-        status: 'draft',
-        platformContent: {},
-        metadata: {
-          source: FIRST_WEEK_SOURCE,
-          firstWeekSlot: slot.slot,
-          suggestedAt: slot.at.toISOString(),
-          ...(image ? { imageCredit: image.credit } : {}),
-        } as unknown as NewDraftRow['metadata'],
-      });
-      if (inserted) captions.push(draft.caption);
+      // The stock lookup and the INSERT run inside the metered callback:
+      // tokens are deducted only after the row is safely written, so a failed
+      // insert (retry) or a slot another run filled first is never charged.
+      let draft: ReturnType<typeof parseDraftJson>;
+      try {
+        ({
+          result: { draft },
+        } = await this.tokens.executeWithTokens(
+          workspaceId,
+          userId,
+          'first_week_draft',
+          platforms.join(',') || undefined,
+          `First-week post ${slot.slot + 1} of 5`,
+          async () => {
+            const raw = await this.ai.complete(system, user, {
+              temperature: 0.8,
+              maxTokens: 400,
+            });
+            const parsed = parseDraftJson(raw);
+            const image = await this.stock.find(parsed.imageQuery);
+            const inserted = await this.repo.insertDraft({
+              id: firstWeekDraftId(workspaceId, slot.slot),
+              workspaceId,
+              createdById: userId,
+              content: parsed.caption,
+              mediaItems: (image
+                ? [
+                    {
+                      id: randomUUID(),
+                      type: 'image',
+                      url: image.url,
+                      width: image.width,
+                      height: image.height,
+                      altText: image.alt,
+                      sizeBytes: 0,
+                    },
+                  ]
+                : []) as unknown as NewDraftRow['mediaItems'],
+              targets: targets as unknown as NewDraftRow['targets'],
+              status: 'draft',
+              platformContent: {},
+              metadata: {
+                source: FIRST_WEEK_SOURCE,
+                firstWeekSlot: slot.slot,
+                suggestedAt: slot.at.toISOString(),
+                ...(image ? { imageCredit: image.credit } : {}),
+              } as unknown as NewDraftRow['metadata'],
+            });
+            if (!inserted) throw new SlotTakenError(slot.slot);
+            return { result: { draft: parsed }, outputLength: raw.length };
+          },
+        ));
+      } catch (err) {
+        if (err instanceof SlotTakenError) {
+          doneSlots.add(slot.slot);
+          continue;
+        }
+        if (isTokenShortage(err)) {
+          await this.repo.refreshDraftedCount(workspaceId);
+          await this.repo.setStatus(workspaceId, 'no_tokens');
+          return 'no_tokens';
+        }
+        throw err;
+      }
+      captions.push(draft.caption);
       doneSlots.add(slot.slot);
       await this.repo.refreshDraftedCount(workspaceId);
     }
