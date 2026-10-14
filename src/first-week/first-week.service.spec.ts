@@ -265,6 +265,56 @@ describe('FirstWeekService.saveBrand', () => {
     },
   );
 
+  const stale = new Date(NOW.getTime() - 10 * 60 * 1000 - 1);
+
+  it('saves the brand and enqueues from a stale reading profile with no brand', async () => {
+    const { svc, repo, queue } = make({
+      profile: profile({
+        sells: null,
+        voice: [],
+        audience: null,
+        status: 'reading',
+        updatedAt: stale,
+      }),
+    });
+    await svc.saveBrand(WS, 'u1', dto, NOW);
+    expect(repo.saveDescribedBrand).toHaveBeenCalledWith(WS, clean);
+    expect(queue.enqueue).toHaveBeenCalledWith({
+      workspaceId: WS,
+      mode: 'described',
+      userId: 'u1',
+    });
+  });
+
+  it('re-enqueues (not just touches) a stale drafting profile with a brand', async () => {
+    const { svc, repo, queue } = make({
+      profile: profile({ status: 'drafting', updatedAt: stale }),
+    });
+    await svc.saveBrand(WS, 'u1', dto, NOW);
+    expect(repo.updateBrand).toHaveBeenCalledWith(WS, clean);
+    expect(repo.setStatus).toHaveBeenCalledWith(WS, 'drafting', null);
+    expect(queue.enqueue).toHaveBeenCalledTimes(1);
+  });
+
+  it.each(['failed', 'no_tokens'])(
+    're-enqueues from %s when a brand already exists',
+    async (status) => {
+      const { svc, repo, queue } = make({ profile: profile({ status }) });
+      await svc.saveBrand(WS, 'u1', dto);
+      expect(repo.updateBrand).toHaveBeenCalledWith(WS, clean);
+      expect(queue.enqueue).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('only updates the brand while a run is fresh drafting', async () => {
+    const { svc, repo, queue } = make({
+      profile: profile({ status: 'drafting', updatedAt: NOW }),
+    });
+    await svc.saveBrand(WS, 'u1', dto, NOW);
+    expect(repo.updateBrand).toHaveBeenCalledWith(WS, clean);
+    expect(queue.enqueue).not.toHaveBeenCalled();
+  });
+
   it('409s while Maestro is still reading the posts', async () => {
     const { svc, queue } = make({
       profile: profile({

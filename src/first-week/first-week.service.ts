@@ -92,6 +92,7 @@ export class FirstWeekService {
     workspaceId: string,
     userId: string,
     dto: { sells: string; voice: string[]; audience: string },
+    now: Date = new Date(),
   ): Promise<FirstWeekProfileView> {
     let brand: BrandInput;
     try {
@@ -115,15 +116,23 @@ export class FirstWeekService {
         // Lost a race with the backfill trigger: treat as an edit.
         await this.repo.updateBrand(workspaceId, brand);
       }
-    } else if (!existing.sells) {
-      if (existing.status === 'reading') {
-        throw new ConflictException(
-          'Maestro is still reading your posts. Try again in a moment.',
-        );
+    } else if (this.isRetryable(existing, now)) {
+      // Effective status is failed-like (including a stalled run): store the
+      // brand, then re-run exactly as retry does.
+      if (existing.sells) {
+        await this.repo.updateBrand(workspaceId, brand);
+        await this.rerun(existing, userId);
+      } else {
+        await this.repo.saveDescribedBrand(workspaceId, brand);
+        await this.rerun({ ...existing, source: 'described' }, userId);
       }
-      await this.repo.saveDescribedBrand(workspaceId, brand);
-      await this.start({ workspaceId, mode: 'described', userId });
+    } else if (!existing.sells) {
+      // Fresh reading with no brand yet.
+      throw new ConflictException(
+        'Maestro is still reading your posts. Try again in a moment.',
+      );
     } else {
+      // Fresh drafting or ready: an edit of the words only, no redraft.
       await this.repo.updateBrand(workspaceId, brand);
     }
     return this.profileViewOrThrow(workspaceId);
@@ -138,21 +147,30 @@ export class FirstWeekService {
     const profile = await this.repo.getProfile(workspaceId);
     if (!profile)
       throw new NotFoundException('There is no first week to retry');
-    if (
-      !RETRYABLE_STATUSES.includes(profile.status) &&
-      !isStalled(profile, now)
-    ) {
+    if (!this.isRetryable(profile, now)) {
       throw new ConflictException(
         `A first week in status "${profile.status}" cannot be retried`,
       );
     }
+    await this.rerun(profile, userId);
+    return this.profileViewOrThrow(workspaceId);
+  }
+
+  /** failed / needs_description / no_tokens, or a reading/drafting run that has stalled. */
+  private isRetryable(profile: BrandProfileRow, now: Date): boolean {
+    return (
+      RETRYABLE_STATUSES.includes(profile.status) || isStalled(profile, now)
+    );
+  }
+
+  private async rerun(profile: BrandProfileRow, userId: string): Promise<void> {
+    const workspaceId = profile.workspaceId;
     const mode: FirstWeekMode = profile.source;
     // Back to reading only when the brand still has to be learned; otherwise
     // pick up at drafting (the run never re-learns, or re-charges, a stored brand).
     const next = mode === 'posts' && !profile.sells ? 'reading' : 'drafting';
     await this.repo.setStatus(workspaceId, next, null);
     await this.start({ workspaceId, mode, userId });
-    return this.profileViewOrThrow(workspaceId);
   }
 
   /**
@@ -254,6 +272,6 @@ export class FirstWeekService {
   ): Promise<FirstWeekProfileView> {
     const profile = await this.repo.getProfile(workspaceId);
     if (!profile) throw new NotFoundException('First week not found');
-    return toProfileView(profile);
+    return this.viewOf(profile, new Date());
   }
 }
