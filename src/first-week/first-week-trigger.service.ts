@@ -1,8 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { FirstWeekQueueService } from './first-week-queue.service';
 import { FirstWeekRepository } from './first-week.repository';
+import { FIRST_WEEK_MAX_WORKSPACE_AGE_MS } from './first-week.types';
 
-export type TriggerResult = 'started' | 'exists' | 'error';
+export type TriggerResult =
+  | 'started'
+  | 'exists'
+  | 'error'
+  | 'skipped_old'
+  | 'needs_description';
 
 /**
  * Starts a workspace's first week the first time a channel finishes its
@@ -22,7 +28,9 @@ export class FirstWeekTriggerService {
   async onChannelBackfilled(
     workspaceId: string,
     userId: string | null,
+    now: Date = new Date(),
   ): Promise<TriggerResult> {
+    if (!(await this.isNewWorkspace(workspaceId, now))) return 'skipped_old';
     const created = await this.repo.insertProfileIfAbsent(workspaceId, {
       source: 'posts',
       status: 'reading',
@@ -49,5 +57,34 @@ export class FirstWeekTriggerService {
       );
       return 'error';
     }
+  }
+
+  /**
+   * The backfill could not read the posts (failed, quota-deferred, no
+   * adapter). A new workspace still gets a way forward: a
+   * `needs_description` profile so Home offers Describe. No run is enqueued.
+   * An existing profile is never touched.
+   */
+  async onBackfillUnreadable(
+    workspaceId: string,
+    now: Date = new Date(),
+  ): Promise<TriggerResult> {
+    if (!(await this.isNewWorkspace(workspaceId, now))) return 'skipped_old';
+    const created = await this.repo.insertProfileIfAbsent(workspaceId, {
+      source: 'posts',
+      status: 'needs_description',
+    });
+    return created ? 'needs_description' : 'exists';
+  }
+
+  private async isNewWorkspace(
+    workspaceId: string,
+    now: Date,
+  ): Promise<boolean> {
+    const createdAt = await this.repo.getWorkspaceCreatedAt(workspaceId);
+    return (
+      createdAt !== null &&
+      now.getTime() - createdAt.getTime() <= FIRST_WEEK_MAX_WORKSPACE_AGE_MS
+    );
   }
 }

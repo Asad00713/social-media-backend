@@ -54,6 +54,15 @@ export class FirstWeekRepository {
     return row ?? null;
   }
 
+  async getWorkspaceCreatedAt(workspaceId: string): Promise<Date | null> {
+    const [row] = await this.db
+      .select({ createdAt: workspace.createdAt })
+      .from(workspace)
+      .where(eq(workspace.id, workspaceId))
+      .limit(1);
+    return row?.createdAt ?? null;
+  }
+
   async getWorkspace(workspaceId: string): Promise<WorkspaceLite | null> {
     const [row] = await this.db
       .select({

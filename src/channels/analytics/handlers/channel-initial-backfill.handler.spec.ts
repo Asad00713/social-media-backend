@@ -57,6 +57,10 @@ function make(
       if (opts.triggerThrows) throw new Error('redis down');
       return 'started';
     }),
+    onBackfillUnreadable: jest.fn(async () => {
+      if (opts.triggerThrows) throw new Error('redis down');
+      return 'needs_description';
+    }),
   };
   // select #1 = the channel; select #2 = today's snapshot (present, so the profile re-fetch is skipped)
   const db = fakeDb([[CHANNEL], [{ channelId: 7 }]]);
@@ -77,16 +81,25 @@ describe('ChannelInitialBackfillHandler first-week hook', () => {
     expect(firstWeek.onChannelBackfilled).toHaveBeenCalledWith('w1', 'user-1');
   });
 
-  it('does not start it when the recent-posts sync did not succeed (quota, auth)', async () => {
+  it('does not start it when the recent-posts sync did not succeed (quota, auth), but offers Describe', async () => {
     const { handler, firstWeek } = make({ syncOk: false });
     await handler.handle({ channelId: 7, workspaceId: 'w1' });
     expect(firstWeek.onChannelBackfilled).not.toHaveBeenCalled();
+    expect(firstWeek.onBackfillUnreadable).toHaveBeenCalledWith('w1');
   });
 
-  it('does not start it for a channel with no adapter', async () => {
+  it('does not start it for a channel with no adapter, but offers Describe', async () => {
     const { handler, firstWeek } = make({ hasAdapter: false });
     await handler.handle({ channelId: 7, workspaceId: 'w1' });
     expect(firstWeek.onChannelBackfilled).not.toHaveBeenCalled();
+    expect(firstWeek.onBackfillUnreadable).toHaveBeenCalledWith('w1');
+  });
+
+  it('a throwing unreadable hook never fails the backfill', async () => {
+    const { handler } = make({ syncOk: false, triggerThrows: true });
+    await expect(
+      handler.handle({ channelId: 7, workspaceId: 'w1' }),
+    ).resolves.toEqual({ ok: true });
   });
 
   it('a throwing trigger never fails the backfill', async () => {
