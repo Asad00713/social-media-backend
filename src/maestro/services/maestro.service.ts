@@ -3,6 +3,7 @@ import {
   Logger,
   ForbiddenException,
   BadRequestException,
+  NotFoundException,
 } from '@nestjs/common';
 import type { MaestroTone } from '../../drizzle/schema/users.schema';
 import { UsersService } from '../../users/users.service';
@@ -783,6 +784,22 @@ export class MaestroService {
       userId,
       workspaceId: conversation.workspaceId,
     };
+
+    // Owning the conversation is not enough: the workspace may have removed
+    // the caller since it was created. Re-check membership on every turn, so a
+    // former member can neither read its data nor spend its tokens.
+    try {
+      await this.access.assertCan(ctx.workspaceId, userId, 'posts:draft');
+    } catch (err) {
+      if (err instanceof NotFoundException) {
+        yield {
+          event: 'error',
+          data: { message: "You're no longer a member of this workspace." },
+        };
+        return;
+      }
+      throw err;
+    }
 
     // Resolve the Anthropic credential BEFORE persisting anything. A
     // misconfigured deployment (no ANTHROPIC_API_KEY) must surface as a clean

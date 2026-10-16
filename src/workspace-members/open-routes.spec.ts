@@ -124,6 +124,60 @@ describe('ChatbotController (workspace id in body/query)', () => {
   );
 });
 
+// Owning a conversation is not enough: its workspace may have removed the
+// caller since. Every streamed turn re-checks membership.
+describe('ChatbotController (streamed turns on an existing conversation)', () => {
+  async function* noEvents() {}
+  const svc = {
+    getConversation: jest.fn().mockResolvedValue({ id: 'c', workspaceId: 'w' }),
+    processMessage: jest.fn(() => noEvents()),
+    regenerateResponse: jest.fn(() => noEvents()),
+  };
+  function fakeRes() {
+    return {
+      setHeader: jest.fn(),
+      on: jest.fn(),
+      write: jest.fn(),
+      end: jest.fn(),
+    };
+  }
+  beforeEach(() => jest.clearAllMocks());
+
+  const turns: Array<[string, (c: any) => Promise<unknown>]> = [
+    [
+      'sendMessage',
+      (c) => c.sendMessage(user, 'c', { message: 'hi' }, fakeRes()),
+    ],
+    [
+      'regenerateResponse',
+      (c) => c.regenerateResponse(user, 'c', {}, fakeRes()),
+    ],
+  ];
+
+  it.each(turns)(
+    '%s: a former member gets NotFound and no turn runs',
+    async (_n, run) => {
+      const c = make(ChatbotController, {
+        chatbotService: svc,
+        access: noAccess(),
+      });
+      await expect(run(c)).rejects.toBeInstanceOf(NotFoundException);
+      expect(svc.processMessage).not.toHaveBeenCalled();
+      expect(svc.regenerateResponse).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(turns)(
+    '%s: a member runs the turn on the conversation’s own workspace',
+    async (_n, run) => {
+      const access = okAccess();
+      const c = make(ChatbotController, { chatbotService: svc, access });
+      await run(c);
+      expect(access.assertCan).toHaveBeenCalledWith('w', 'u1', 'posts:draft');
+    },
+  );
+});
+
 describe('MaestroController', () => {
   const maestro = {
     createConversation: jest.fn().mockResolvedValue({ id: 'c' }),

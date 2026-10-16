@@ -358,6 +358,12 @@ export class ChatbotController {
       conversationId,
       user.userId,
     );
+    // The workspace may have removed the caller since the conversation began.
+    await this.access.assertCan(
+      conversation.workspaceId,
+      user.userId,
+      'posts:draft',
+    );
 
     const abortController = new AbortController();
     res.on('close', () => {
@@ -493,6 +499,12 @@ export class ChatbotController {
     const conversation = await this.chatbotService.getConversation(
       conversationId,
       user.userId,
+    );
+    // The workspace may have removed the caller since the conversation began.
+    await this.access.assertCan(
+      conversation.workspaceId,
+      user.userId,
+      'posts:draft',
     );
 
     // Set up abort handling for client disconnect

@@ -76,7 +76,7 @@ function makeHarness(
     /** Stands in for the Slack connection the approved tool resolves. */
     slackConn?: unknown;
     /** Roles the caller holds: 'viewer' may not send; default is a member. */
-    role?: 'viewer';
+    role?: 'viewer' | 'removed';
   } = {},
 ): Harness {
   const runInputs: { systemPrompt: string | string[] }[] = [];
@@ -155,10 +155,12 @@ function makeHarness(
   };
   const groq = { isReady: () => false } as never;
   // A viewer can draft but is refused everything that sends or publishes.
+  // Someone removed from the workspace is refused everything.
   const access = {
     assertCan: jest.fn((_ws: string, _user: string, cap: string) =>
-      opts.role === 'viewer' &&
-      ['inbox:reply', 'posts:publish', 'channels:manage'].includes(cap)
+      opts.role === 'removed' ||
+      (opts.role === 'viewer' &&
+        ['inbox:reply', 'posts:publish', 'channels:manage'].includes(cap))
         ? Promise.reject(new NotFoundException('Not found'))
         : Promise.resolve('MEMBER'),
     ),
@@ -711,6 +713,38 @@ describe('MaestroService.streamMessage', () => {
       expect(names(events)).toEqual(['error']);
       // The turn is refused before anything is persisted.
       expect(h.addMessage).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('membership', () => {
+    // Owning the conversation is not enough: its workspace may have removed
+    // the caller since it was created.
+    it('refuses a turn once the caller has left the workspace, and saves nothing', async () => {
+      const h = makeHarness([...textDeltas('should not run'), DONE_EVENT], {
+        role: 'removed',
+      });
+
+      const events = await run(h);
+
+      expect(names(events)).toEqual(['error']);
+      expect(events[0].data.message).toContain('no longer a member');
+      expect(h.addMessage).not.toHaveBeenCalled();
+    });
+
+    it('refuses an approval once the caller has left the workspace, and runs nothing', async () => {
+      const h = makeHarness([DONE_EVENT], {
+        messages: [cardMessage()],
+        slackConn: { accessToken: 'tok', channelId: 'ch-1' },
+        role: 'removed',
+      });
+
+      const events = await run(h, undefined, {
+        messageId: CARD_ID,
+        option: YES,
+      });
+
+      expect(names(events)).toEqual(['error']);
+      expect(h.inbox.sendDm).not.toHaveBeenCalled();
     });
   });
 
