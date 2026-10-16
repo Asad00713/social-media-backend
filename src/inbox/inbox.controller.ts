@@ -27,6 +27,8 @@ import { ListScheduledMessagesDto } from './dto/list-scheduled-messages.dto';
 import { CreateInboxUploadUrlDto } from './dto/create-upload-url.dto';
 import { SendDmDto } from './dto/send-dm.dto';
 import { SendDmTemplateDto } from './dto/send-dm-template.dto';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { RequireCapability } from '../workspace-members/require-capability.decorator';
 
 interface AuthUser {
   userId: string;
@@ -34,7 +36,7 @@ interface AuthUser {
 }
 
 @Controller('inbox/workspaces/:workspaceId')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class InboxController {
   constructor(
     private readonly inboxService: InboxService,
@@ -43,6 +45,7 @@ export class InboxController {
   ) {}
 
   @Get('comments')
+  @RequireCapability('inbox:view')
   async listComments(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Query() query: ListCommentsDto,
@@ -61,6 +64,7 @@ export class InboxController {
 
   /** Flat list of @mentions (account-level, not tied to a post/thread). */
   @Get('mentions')
+  @RequireCapability('inbox:view')
   async mentions(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Query() query: ListCommentsDto,
@@ -78,6 +82,7 @@ export class InboxController {
   }
 
   @Get('threads/:threadKey')
+  @RequireCapability('inbox:view')
   async getThread(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('threadKey') threadKey: string,
@@ -87,6 +92,7 @@ export class InboxController {
   }
 
   @Post('comments/:itemId/reply')
+  @RequireCapability('inbox:reply')
   async reply(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('itemId', ParseUUIDPipe) itemId: string,
@@ -97,6 +103,7 @@ export class InboxController {
   }
 
   @Post('threads/:threadKey/comments')
+  @RequireCapability('inbox:reply')
   async commentOnPost(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('threadKey') threadKey: string,
@@ -112,6 +119,7 @@ export class InboxController {
   }
 
   @Patch('comments/:itemId/status')
+  @RequireCapability('inbox:reply')
   async updateStatus(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('itemId', ParseUUIDPipe) itemId: string,
@@ -131,6 +139,7 @@ export class InboxController {
    * platforms reject with a 400 via `inboxService.hideComment`).
    */
   @Patch('comments/:itemId/hide')
+  @RequireCapability('inbox:reply')
   async hide(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('itemId', ParseUUIDPipe) itemId: string,
@@ -146,6 +155,7 @@ export class InboxController {
   }
 
   @Patch('threads/:threadKey/status')
+  @RequireCapability('inbox:reply')
   async updateThreadStatus(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('threadKey') threadKey: string,
@@ -161,6 +171,7 @@ export class InboxController {
   }
 
   @Post('threads/:threadKey/read')
+  @RequireCapability('inbox:view')
   @HttpCode(HttpStatus.OK)
   async markThreadRead(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -175,6 +186,7 @@ export class InboxController {
   }
 
   @Get('counts')
+  @RequireCapability('inbox:view')
   async getCounts(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @CurrentUser() user: AuthUser,
@@ -188,6 +200,7 @@ export class InboxController {
    * channel async. Use after first connecting a channel, or for manual refresh.
    */
   @Post('sync')
+  @RequireCapability('inbox:reply')
   @HttpCode(HttpStatus.ACCEPTED)
   async syncNow(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -205,6 +218,7 @@ export class InboxController {
    * `fields` list to what we want (`['messages', 'comments', ...]`).
    */
   @Get('webhook-status')
+  @RequireCapability('inbox:view')
   async getWebhookStatus(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @CurrentUser() user: AuthUser,
@@ -217,6 +231,7 @@ export class InboxController {
   // ==========================================================================
 
   @Get('dms')
+  @RequireCapability('inbox:view')
   async listDmConversations(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Query() query: ListCommentsDto,
@@ -234,6 +249,7 @@ export class InboxController {
   }
 
   @Get('dms/:threadKey')
+  @RequireCapability('inbox:view')
   async getDmThread(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('threadKey') threadKey: string,
@@ -243,6 +259,7 @@ export class InboxController {
   }
 
   @Post('dms/:threadKey/messages')
+  @RequireCapability('inbox:reply')
   async sendDm(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('threadKey') threadKey: string,
@@ -263,6 +280,7 @@ export class InboxController {
   }
 
   @Post('dms/:threadKey/template')
+  @RequireCapability('inbox:reply')
   async sendDmTemplate(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('threadKey') threadKey: string,
@@ -279,6 +297,7 @@ export class InboxController {
   }
 
   @Post('dms/:threadKey/read')
+  @RequireCapability('inbox:view')
   @HttpCode(HttpStatus.OK)
   async markDmRead(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -297,6 +316,7 @@ export class InboxController {
   // ==========================================================================
 
   @Get('scheduled')
+  @RequireCapability('inbox:view')
   async listScheduled(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Query() query: ListScheduledMessagesDto,
@@ -306,6 +326,7 @@ export class InboxController {
   }
 
   @Get('scheduled/counts')
+  @RequireCapability('inbox:view')
   async scheduledCounts(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @CurrentUser() user: AuthUser,
@@ -314,6 +335,7 @@ export class InboxController {
   }
 
   @Post('scheduled')
+  @RequireCapability('inbox:reply')
   async createScheduled(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Body() dto: CreateScheduledMessageDto,
@@ -323,6 +345,7 @@ export class InboxController {
   }
 
   @Get('scheduled/:id')
+  @RequireCapability('inbox:view')
   async getScheduled(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('id', ParseUUIDPipe) id: string,
@@ -332,6 +355,7 @@ export class InboxController {
   }
 
   @Patch('scheduled/:id')
+  @RequireCapability('inbox:reply')
   async updateScheduled(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('id', ParseUUIDPipe) id: string,
@@ -347,6 +371,7 @@ export class InboxController {
   }
 
   @Delete('scheduled/:id')
+  @RequireCapability('inbox:reply')
   @HttpCode(HttpStatus.OK)
   async cancelScheduled(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -362,6 +387,7 @@ export class InboxController {
   // ==========================================================================
 
   @Post('uploads/presign')
+  @RequireCapability('inbox:reply')
   async createUploadUrl(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Body() dto: CreateInboxUploadUrlDto,
@@ -389,6 +415,7 @@ export class InboxController {
   // ==========================================================================
 
   @Delete('comments/:itemId')
+  @RequireCapability('inbox:reply')
   @HttpCode(HttpStatus.OK)
   async deleteComment(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -399,6 +426,7 @@ export class InboxController {
   }
 
   @Delete('dms/:itemId')
+  @RequireCapability('inbox:reply')
   @HttpCode(HttpStatus.OK)
   async deleteDm(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -415,6 +443,7 @@ export class InboxController {
   // ==========================================================================
 
   @Delete('dms/conversation/:threadKey')
+  @RequireCapability('inbox:reply')
   @HttpCode(HttpStatus.OK)
   async archiveDmConversation(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
@@ -429,6 +458,7 @@ export class InboxController {
   }
 
   @Delete('comments/thread/:threadKey')
+  @RequireCapability('inbox:reply')
   @HttpCode(HttpStatus.OK)
   async archiveCommentThread(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

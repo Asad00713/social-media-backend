@@ -11,6 +11,7 @@ import { ComposerAiService } from './composer-ai.service';
 import { InboxAiService } from './inbox-ai.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { GeminiChatProvider } from '../chatbot/llm/gemini.provider';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 
 // GeminiChatProvider is provided here directly (not imported from
 // ChatbotModule) to avoid a circular module dependency: ChatbotModule
@@ -19,7 +20,7 @@ import { GeminiChatProvider } from '../chatbot/llm/gemini.provider';
 // (already available via ConfigModule here), so instantiating a second,
 // AiModule-scoped copy is cheap and side-effect-free.
 @Module({
-  imports: [ConfigModule, DrizzleModule],
+  imports: [WorkspaceRoleModule, ConfigModule, DrizzleModule],
   controllers: [AiController],
   providers: [
     GroqService,

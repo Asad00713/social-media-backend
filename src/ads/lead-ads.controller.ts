@@ -18,6 +18,8 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { db } from '../drizzle/db';
 import { leadRoutes, leadForms } from '../drizzle/schema';
 import { signWebhookPayload } from './utils/hmac';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { RequireCapability } from '../workspace-members/require-capability.decorator';
 
 interface AuthUser {
   userId: string;
@@ -41,7 +43,7 @@ interface TestWebhookBody {
 }
 
 @Controller('ads/workspaces/:wid')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class LeadAdsController {
   constructor() {}
 
@@ -68,6 +70,7 @@ export class LeadAdsController {
   // --------------------------------------------------------------------------
 
   @Get('lead-forms/:formId/routes')
+  @RequireCapability('channels:manage')
   async listRoutes(
     @Param('wid') wid: string,
     @Param('formId') formId: string,
@@ -88,6 +91,7 @@ export class LeadAdsController {
   // --------------------------------------------------------------------------
 
   @Post('lead-forms/:formId/routes')
+  @RequireCapability('channels:manage')
   async createRoute(
     @Param('wid') wid: string,
     @Param('formId') formId: string,
@@ -115,6 +119,7 @@ export class LeadAdsController {
   // --------------------------------------------------------------------------
 
   @Patch('lead-forms/:formId/routes/:id')
+  @RequireCapability('channels:manage')
   async updateRoute(
     @Param('wid') wid: string,
     @Param('formId') formId: string,
@@ -150,6 +155,7 @@ export class LeadAdsController {
   // --------------------------------------------------------------------------
 
   @Delete('lead-forms/:formId/routes/:id')
+  @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.OK)
   async deleteRoute(
     @Param('wid') wid: string,
@@ -176,6 +182,7 @@ export class LeadAdsController {
   // --------------------------------------------------------------------------
 
   @Post('lead-forms/:formId/routes/test-webhook')
+  @RequireCapability('channels:manage')
   async testWebhook(
     @Param('wid') wid: string,
     @Param('formId') formId: string,

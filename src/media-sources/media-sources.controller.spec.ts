@@ -2,6 +2,7 @@ import { Test } from '@nestjs/testing';
 import { MediaSourcesController } from './media-sources.controller';
 import { MediaSourcesService } from './media-sources.service';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 
 describe('MediaSourcesController', () => {
   it('browse route delegates to service with parsed channelId', async () => {
@@ -14,6 +15,8 @@ describe('MediaSourcesController', () => {
       providers: [{ provide: MediaSourcesService, useValue: service }],
     })
       .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(WorkspaceRoleGuard)
       .useValue({ canActivate: () => true })
       .compile();
     const ctrl = mod.get(MediaSourcesController);
@@ -35,6 +38,8 @@ describe('MediaSourcesController', () => {
       providers: [{ provide: MediaSourcesService, useValue: service }],
     })
       .overrideGuard(JwtAuthGuard)
+      .useValue({ canActivate: () => true })
+      .overrideGuard(WorkspaceRoleGuard)
       .useValue({ canActivate: () => true })
       .compile();
     const ctrl = mod.get(MediaSourcesController);

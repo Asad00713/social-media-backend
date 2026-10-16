@@ -15,9 +15,11 @@ import {
   GetMentionsDto,
   CreateReplyDto,
 } from './dto/community.dto';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { RequireCapability } from '../workspace-members/require-capability.decorator';
 
 @Controller('community')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class CommunityController {
   constructor(private readonly communityService: CommunityService) {}
 
@@ -26,6 +28,7 @@ export class CommunityController {
    * POST /community/workspaces/:workspaceId/comments
    */
   @Post('workspaces/:workspaceId/comments')
+  @RequireCapability('inbox:view')
   @HttpCode(HttpStatus.OK)
   async getPostComments(
     @Param('workspaceId') workspaceId: string,
@@ -48,6 +51,7 @@ export class CommunityController {
    * POST /community/workspaces/:workspaceId/comments/full
    */
   @Post('workspaces/:workspaceId/comments/full')
+  @RequireCapability('inbox:view')
   @HttpCode(HttpStatus.OK)
   async getFullPostComments(
     @Param('workspaceId') workspaceId: string,
@@ -69,6 +73,7 @@ export class CommunityController {
    * POST /community/workspaces/:workspaceId/mentions
    */
   @Post('workspaces/:workspaceId/mentions')
+  @RequireCapability('inbox:view')
   @HttpCode(HttpStatus.OK)
   async getMentions(
     @Param('workspaceId') workspaceId: string,
@@ -85,6 +90,7 @@ export class CommunityController {
    * POST /community/workspaces/:workspaceId/reply
    */
   @Post('workspaces/:workspaceId/reply')
+  @RequireCapability('inbox:reply')
   async createReply(
     @Param('workspaceId') workspaceId: string,
     @Body() dto: CreateReplyDto,

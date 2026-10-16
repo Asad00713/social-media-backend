@@ -38,12 +38,14 @@ import { MediaModule } from '../media/media.module';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
 import { WhatsAppTemplatesModule } from '../whatsapp-templates/whatsapp-templates.module';
 import { QUEUES } from '../queue/queue.module';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 
 @Module({
   // ChannelsModule exposes platform services + ChannelService (token decrypt/refresh).
   // BullModule.registerQueue() is needed locally so this module can inject the
   // INBOX_POLLING queue token; the queue itself is configured once in QueueModule.
   imports: [
+    WorkspaceRoleModule,
     forwardRef(() => ChannelsModule),
     MediaModule,
     // Circular by design: scheduled messages push to calendars

@@ -37,6 +37,8 @@ import { audienceToMetaTargeting } from './utils/audience-to-targeting';
 import { db } from '../drizzle/db';
 import { adAccounts, adCampaigns, adSets, leads } from '../drizzle/schema';
 import { eq, and, desc } from 'drizzle-orm';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { RequireCapability } from '../workspace-members/require-capability.decorator';
 
 interface AuthUser {
   userId: string;
@@ -44,7 +46,7 @@ interface AuthUser {
 }
 
 @Controller('ads/workspaces/:workspaceId')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class AdsController {
   constructor(
     private readonly adAccounts: AdAccountsService,
@@ -67,6 +69,7 @@ export class AdsController {
    * GET /ads/workspaces/:workspaceId/ad-accounts
    */
   @Get('ad-accounts')
+  @RequireCapability('analytics:view')
   async list(@Param('workspaceId') wid: string) {
     const rows = await this.adAccounts.list(wid);
     return {
@@ -90,6 +93,7 @@ export class AdsController {
    * POST /ads/workspaces/:workspaceId/ad-accounts/sync/:channelId
    */
   @Post('ad-accounts/sync/:channelId')
+  @RequireCapability('channels:manage')
   async sync(
     @Param('workspaceId') wid: string,
     @Param('channelId') channelId: string,
@@ -103,6 +107,7 @@ export class AdsController {
    * GET /ads/workspaces/:workspaceId/channels/:channelId/posts-for-boost
    */
   @Get('channels/:channelId/posts-for-boost')
+  @RequireCapability('analytics:view')
   async postsForBoost(
     @Param('workspaceId') wid: string,
     @Param('channelId') channelId: string,
@@ -123,6 +128,7 @@ export class AdsController {
    * GET /ads/workspaces/:workspaceId/drafts
    */
   @Get('drafts')
+  @RequireCapability('posts:draft')
   listDrafts(@Param('workspaceId') wid: string, @CurrentUser() user: AuthUser) {
     return this.drafts.list(wid, user.userId);
   }
@@ -133,6 +139,7 @@ export class AdsController {
    * Body: UpsertDraftDto — include `id` to update, omit to create.
    */
   @Post('drafts')
+  @RequireCapability('posts:draft')
   upsertDraft(
     @Param('workspaceId') wid: string,
     @CurrentUser() user: AuthUser,
@@ -146,6 +153,7 @@ export class AdsController {
    * GET /ads/workspaces/:workspaceId/drafts/:id
    */
   @Get('drafts/:id')
+  @RequireCapability('posts:draft')
   getDraft(
     @Param('workspaceId') wid: string,
     @Param('id') id: string,
@@ -159,6 +167,7 @@ export class AdsController {
    * DELETE /ads/workspaces/:workspaceId/drafts/:id
    */
   @Delete('drafts/:id')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   deleteDraft(
     @Param('workspaceId') wid: string,
@@ -177,6 +186,7 @@ export class AdsController {
    * POST /ads/workspaces/:workspaceId/boost
    */
   @Post('boost')
+  @RequireCapability('channels:manage')
   createBoost(
     @Param('workspaceId') wid: string,
     @CurrentUser() user: AuthUser,
@@ -190,6 +200,7 @@ export class AdsController {
    * GET /ads/workspaces/:workspaceId/boost/:campaignId
    */
   @Get('boost/:campaignId')
+  @RequireCapability('analytics:view')
   async getBoost(
     @Param('workspaceId') wid: string,
     @Param('campaignId') campaignId: string,
@@ -235,6 +246,7 @@ export class AdsController {
    * PATCH /ads/workspaces/:workspaceId/boost/:campaignId
    */
   @Patch('boost/:campaignId')
+  @RequireCapability('channels:manage')
   editBoost(
     @Param('workspaceId') wid: string,
     @Param('campaignId') campaignId: string,
@@ -252,6 +264,7 @@ export class AdsController {
    * POST /ads/workspaces/:workspaceId/lead-campaigns
    */
   @Post('lead-campaigns')
+  @RequireCapability('channels:manage')
   createLeadCampaign(
     @Param('workspaceId') wid: string,
     @CurrentUser() user: AuthUser,
@@ -271,6 +284,7 @@ export class AdsController {
    * Defaults to the last 7 days when `since` is omitted.
    */
   @Get('campaigns/:campaignId/insights')
+  @RequireCapability('analytics:view')
   getCampaignInsights(
     @Param('workspaceId') wid: string,
     @Param('campaignId') campaignId: string,
@@ -289,6 +303,7 @@ export class AdsController {
    * GET /ads/workspaces/:workspaceId/campaigns
    */
   @Get('campaigns')
+  @RequireCapability('analytics:view')
   async listCampaigns(@Param('workspaceId') wid: string) {
     const rows = await db
       .select()
@@ -304,6 +319,7 @@ export class AdsController {
    * Body: { status: 'ACTIVE' | 'PAUSED' | 'ARCHIVED' }
    */
   @Patch('campaigns/:id/status')
+  @RequireCapability('channels:manage')
   updateCampaignStatus(
     @Param('workspaceId') wid: string,
     @Param('id') id: string,
@@ -318,6 +334,7 @@ export class AdsController {
    * Body: { dailyBudgetMinor: number }
    */
   @Patch('adsets/:id/budget')
+  @RequireCapability('channels:manage')
   updateAdSetBudget(
     @Param('workspaceId') wid: string,
     @Param('id') id: string,
@@ -337,6 +354,7 @@ export class AdsController {
    * Returns up to 200 rows ordered by capturedAt desc.
    */
   @Get('leads')
+  @RequireCapability('analytics:view')
   async listLeads(
     @Param('workspaceId') wid: string,
     @Query('formId') formId?: string,
@@ -366,6 +384,7 @@ export class AdsController {
    * Returns empty array when q.length < 2.
    */
   @Get('targeting/interests')
+  @RequireCapability('analytics:view')
   async searchInterests(
     @Param('workspaceId') wid: string,
     @Query('q') q: string,
@@ -391,6 +410,7 @@ export class AdsController {
    * Returns empty array when q.length < 2.
    */
   @Get('targeting/geo-locations')
+  @RequireCapability('analytics:view')
   async searchGeoLocations(
     @Param('workspaceId') wid: string,
     @Query('q') q: string,
@@ -416,6 +436,7 @@ export class AdsController {
    * Returns empty array when q.length < 2.
    */
   @Get('targeting/languages')
+  @RequireCapability('analytics:view')
   async searchLanguages(
     @Param('workspaceId') wid: string,
     @Query('q') q: string,
@@ -441,6 +462,7 @@ export class AdsController {
    * Returns empty array when q.length < 2.
    */
   @Get('targeting/behaviors')
+  @RequireCapability('analytics:view')
   async searchBehaviors(
     @Param('workspaceId') wid: string,
     @Query('q') q: string,
@@ -466,6 +488,7 @@ export class AdsController {
    * Returns empty array when q.length < 2.
    */
   @Get('targeting/demographics')
+  @RequireCapability('analytics:view')
   async searchDemographics(
     @Param('workspaceId') wid: string,
     @Query('q') q: string,
@@ -490,6 +513,7 @@ export class AdsController {
    * Body: DeliveryEstimateDto
    */
   @Post('targeting/delivery-estimate')
+  @RequireCapability('analytics:view')
   async getDeliveryEstimate(
     @Param('workspaceId') wid: string,
     @Body() body: DeliveryEstimateDto,

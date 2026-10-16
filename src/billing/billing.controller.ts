@@ -39,6 +39,8 @@ import type { AddonTypeDto } from './dto/billing.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { SkipSuspendCheck } from '../auth/decorators/skip-suspend-check.decorator';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { RequireCapability } from '../workspace-members/require-capability.decorator';
 
 // Billing stays reachable while a workspace is suspended — otherwise a
 // suspended user could never pay to recover. See WorkspaceSuspendedGuard.
@@ -65,7 +67,8 @@ export class BillingController {
    * requires adding a payment method first.
    */
   @Post('workspaces/:workspaceId/reset')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async resetBillingState(
     @Param('workspaceId') workspaceId: string,
@@ -75,7 +78,8 @@ export class BillingController {
   }
 
   @Post('workspaces/:workspaceId/subscription')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.CREATED)
   async createSubscription(
     @Param('workspaceId') workspaceId: string,
@@ -92,7 +96,8 @@ export class BillingController {
   }
 
   @Post('workspaces/:workspaceId/checkout-session')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async createCheckoutSession(
     @Param('workspaceId') workspaceId: string,
@@ -125,7 +130,8 @@ export class BillingController {
   }
 
   @Get('workspaces/:workspaceId/subscription')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('team:view')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getSubscription(@Param('workspaceId') workspaceId: string) {
     return await this.subscriptionService.getSubscriptionByWorkspaceId(
       workspaceId,
@@ -133,7 +139,8 @@ export class BillingController {
   }
 
   @Delete('workspaces/:workspaceId/subscription')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async cancelSubscription(
     @Param('workspaceId') workspaceId: string,
@@ -149,7 +156,8 @@ export class BillingController {
 
   // Usage endpoints
   @Get('workspaces/:workspaceId/usage')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('team:view')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getWorkspaceUsage(@Param('workspaceId') workspaceId: string) {
     return await this.usageService.getWorkspaceUsage(workspaceId);
   }
@@ -163,7 +171,8 @@ export class BillingController {
   }
 
   @Post('workspaces/:workspaceId/usage/recalculate')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async recalculateUsage(@Param('workspaceId') workspaceId: string) {
     await this.usageService.recalculateWorkspaceUsage(workspaceId);
@@ -172,13 +181,15 @@ export class BillingController {
 
   // Add-on endpoints
   @Get('workspaces/:workspaceId/addons')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getAvailableAddons(@Param('workspaceId') workspaceId: string) {
     return await this.addonService.getAvailableAddons(workspaceId);
   }
 
   @Get('workspaces/:workspaceId/addons/current')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getCurrentAddons(@Param('workspaceId') workspaceId: string) {
     return await this.addonService.getCurrentAddons(workspaceId);
   }
@@ -194,7 +205,8 @@ export class BillingController {
    * redirect - nothing has been bought or granted yet at that point.
    */
   @Post('workspaces/:workspaceId/addons')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.CREATED)
   async purchaseAddon(
     @Param('workspaceId') workspaceId: string,
@@ -210,7 +222,8 @@ export class BillingController {
   }
 
   @Delete('workspaces/:workspaceId/addons/:addonType')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async removeAddon(
     @Param('workspaceId') workspaceId: string,
@@ -234,13 +247,15 @@ export class BillingController {
   }
 
   @Get('workspaces/:workspaceId/plans')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getPlansForWorkspace(@Param('workspaceId') workspaceId: string) {
     return await this.planChangeService.getAvailablePlans(workspaceId);
   }
 
   @Get('workspaces/:workspaceId/plan-change/preview')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async previewPlanChange(
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string; email: string },
@@ -254,7 +269,8 @@ export class BillingController {
   }
 
   @Post('workspaces/:workspaceId/plan-change')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async changePlan(
     @Param('workspaceId') workspaceId: string,
@@ -269,7 +285,8 @@ export class BillingController {
   }
 
   @Post('workspaces/:workspaceId/downgrade-to-free')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async downgradeToFree(
     @Param('workspaceId') workspaceId: string,
@@ -283,7 +300,8 @@ export class BillingController {
 
   // Dashboard endpoints
   @Get('workspaces/:workspaceId/dashboard')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getWorkspaceDashboard(@Param('workspaceId') workspaceId: string) {
     return await this.dashboardService.getWorkspaceDashboard(workspaceId);
   }
@@ -297,7 +315,8 @@ export class BillingController {
   }
 
   @Get('workspaces/:workspaceId/subscription-history')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getSubscriptionHistory(
     @Param('workspaceId') workspaceId: string,
     @Query('limit') limit?: string,
@@ -310,7 +329,8 @@ export class BillingController {
 
   // Invoice endpoints
   @Get('workspaces/:workspaceId/invoices')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getWorkspaceInvoices(
     @Param('workspaceId') workspaceId: string,
     @Query('limit') limit?: string,
@@ -363,7 +383,8 @@ export class BillingController {
   }
 
   @Get('workspaces/:workspaceId/upcoming-invoice')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('billing:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getUpcomingInvoice(@Param('workspaceId') workspaceId: string) {
     return await this.invoiceService.getUpcomingInvoice(workspaceId);
   }

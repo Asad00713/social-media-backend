@@ -22,6 +22,7 @@ import { CatalogueService } from './providers/catalogue.service';
 import { LemonSqueezyClient } from './providers/lemonsqueezy.client';
 import { StripeAdapter } from './providers/stripe.adapter';
 import { LemonSqueezyAdapter } from './providers/lemonsqueezy.adapter';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 
 /**
  * Adapters announce themselves to the registry at boot instead of being
@@ -48,7 +49,12 @@ const PROVIDER_ADAPTER_REGISTRATION = {
 };
 
 @Module({
-  imports: [StripeModule, DrizzleModule, NotificationsModule],
+  imports: [
+    WorkspaceRoleModule,
+    StripeModule,
+    DrizzleModule,
+    NotificationsModule,
+  ],
   providers: [
     BillingService,
     CustomerService,

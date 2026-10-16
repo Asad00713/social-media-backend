@@ -8,6 +8,7 @@ import { NotificationRoutesController } from './notification-routes.controller';
 import { NotificationRoutesService } from './notification-routes.service';
 import { NotificationDispatcherService } from './notification-dispatcher.service';
 import { ChannelsModule } from '../channels/channels.module';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 
 @Global() // Make this module global so other services can inject NotificationsService
 @Module({
@@ -15,7 +16,11 @@ import { ChannelsModule } from '../channels/channels.module';
   // so connecting one needs the account-wide ceiling), and BillingModule
   // imports this module — Channels -> Billing -> Notifications -> Channels.
   // Both sides of that cycle must be forwardRef'd or Nest cannot build it.
-  imports: [JwtModule.register({}), forwardRef(() => ChannelsModule)],
+  imports: [
+    WorkspaceRoleModule,
+    JwtModule.register({}),
+    forwardRef(() => ChannelsModule),
+  ],
   controllers: [NotificationsController, NotificationRoutesController],
   providers: [
     NotificationsService,
