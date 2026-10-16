@@ -4,6 +4,7 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
+import { carryFirstWeekMeta } from '../../../first-week/lib/first-week-metadata';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
@@ -110,6 +111,10 @@ export class ComposerSchedulingService {
       .from(posts)
       .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)))
       .limit(1);
+
+    // A first-week draft keeps its tag when scheduled from the composer (the
+    // composer's own `source: 'composer'` above would otherwise erase it).
+    Object.assign(metadata, carryFirstWeekMeta(existing[0]?.metadata));
 
     // The same per-channel queue ceiling PostService.createPost enforces. This
     // is a second, independent path to `status: 'scheduled'`, so a check on

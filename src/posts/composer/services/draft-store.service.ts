@@ -1,4 +1,5 @@
 import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { carryFirstWeekMeta } from '../../../first-week/lib/first-week-metadata';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { posts } from '../../../drizzle/schema/posts.schema';
@@ -37,6 +38,8 @@ export class DraftStoreService {
       linkPreview: dto.base.linkPreview,
       schedule: dto.schedule,
       title: dto.title,
+      // A first-week draft must stay one after a person edits it in the composer.
+      ...carryFirstWeekMeta(existing[0]?.metadata),
     };
 
     if (existing.length === 0) {

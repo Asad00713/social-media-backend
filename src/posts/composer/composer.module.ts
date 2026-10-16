@@ -46,6 +46,12 @@ import { BillingModule } from '../../billing/billing.module';
       useExisting: ChannelCredentialsAdapter,
     },
   ],
-  exports: [ComposerValidatorService, PayloadResolverService],
+  exports: [
+    ComposerValidatorService,
+    PayloadResolverService,
+    // For FirstWeekModule: it schedules/unschedules drafts through the composer's own path.
+    DraftStoreService,
+    ComposerSchedulingService,
+  ],
 })
 export class ComposerModule {}

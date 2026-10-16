@@ -84,3 +84,85 @@ describe('UsersService.createFromGoogle', () => {
     await expect(service.createFromGoogle(input)).rejects.toBe(boom);
   });
 });
+
+describe('UsersService public user shape', () => {
+  it('update returns useCase, null for a user who never answered', async () => {
+    // The onboarding wizard reads useCase back from /auth/me to preselect
+    // "Who are you posting for?". A key that is missing instead of null
+    // would read as undefined on the client and silently break that default.
+    const row = {
+      id: 'u1',
+      email: 'sara@daybreak.co',
+      name: 'Sara',
+      role: 'USER',
+      isEmailVerified: true,
+      lastAccessedWorkspaceId: null,
+      onboardingCompletedAt: null,
+      maestroTone: 'professional',
+      avatarUrl: null,
+      avatarColor: 'amber',
+      useCase: null,
+      createdAt: new Date(0),
+      updatedAt: new Date(0),
+      password: 'hash',
+    };
+    const returning = jest
+      .fn()
+      .mockResolvedValue([{ ...row, useCase: 'clients' }]);
+    const where = jest.fn().mockReturnValue({ returning });
+    const set = jest.fn().mockReturnValue({ where });
+    const update = jest.fn().mockReturnValue({ set });
+    const service = new UsersService({
+      query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
+      update,
+    } as never);
+
+    const result = await service.update('u1', { useCase: 'clients' });
+
+    expect(result.useCase).toBe('clients');
+    expect(result).not.toHaveProperty('password');
+  });
+
+  it('selects useCase for every public read', async () => {
+    const findFirst = jest.fn().mockResolvedValue({ id: 'u1' });
+    const service = new UsersService({
+      query: { users: { findFirst } },
+    } as never);
+
+    await service.findOne('u1');
+
+    expect(findFirst.mock.calls[0][0].columns).toMatchObject({
+      useCase: true,
+    });
+  });
+
+  it('a name-only update does not touch useCase', async () => {
+    const row = { id: 'u1', useCase: 'clients' };
+    const returning = jest.fn().mockResolvedValue([row]);
+    const where = jest.fn().mockReturnValue({ returning });
+    const set = jest.fn().mockReturnValue({ where });
+    const service = new UsersService({
+      query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
+      update: jest.fn().mockReturnValue({ set }),
+    } as never);
+
+    await service.update('u1', { name: 'Sara' });
+
+    expect(set.mock.calls[0][0]).not.toHaveProperty('useCase');
+  });
+
+  it('update returns useCase as null (key present) when the row has none', async () => {
+    const row = { id: 'u1', useCase: null };
+    const returning = jest.fn().mockResolvedValue([row]);
+    const where = jest.fn().mockReturnValue({ returning });
+    const set = jest.fn().mockReturnValue({ where });
+    const service = new UsersService({
+      query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
+      update: jest.fn().mockReturnValue({ set }),
+    } as never);
+
+    const result = await service.update('u1', { name: 'Sara' });
+
+    expect(result).toHaveProperty('useCase', null);
+  });
+});

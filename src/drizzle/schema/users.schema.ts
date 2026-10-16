@@ -25,6 +25,13 @@ export const MAESTRO_TONES = ['simple', 'professional', 'detailed'] as const;
 export type MaestroTone = (typeof MAESTRO_TONES)[number];
 export const maestroToneEnum = pgEnum('maestro_tone', MAESTRO_TONES);
 
+// Who the person posts for, asked once in onboarding step 1. It picks the
+// copy and Home cards for an agency ("My clients") vs a single brand.
+// Nullable: everyone who signed up before the question existed has no answer.
+export const USER_USE_CASES = ['own_brand', 'clients'] as const;
+export type UserUseCase = (typeof USER_USE_CASES)[number];
+export const userUseCaseEnum = pgEnum('user_use_case', USER_USE_CASES);
+
 export const users = pgTable('users', {
   id: uuid('id').primaryKey().defaultRandom(),
   email: varchar('email', { length: 255 }).notNull().unique(),
@@ -109,6 +116,8 @@ export const users = pgTable('users', {
   maestroTone: maestroToneEnum('maestro_tone')
     .default('professional')
     .notNull(),
+
+  useCase: userUseCaseEnum('use_case'),
 
   // Inactivity email tracking
   inactivityEmail15DaysSentAt: timestamp('inactivity_email_15_days_sent_at'),

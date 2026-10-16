@@ -31,6 +31,7 @@ export type PublicUser = Pick<
   | 'lastAccessedWorkspaceId'
   | 'onboardingCompletedAt'
   | 'maestroTone'
+  | 'useCase'
   | 'avatarUrl'
   | 'avatarColor'
   | 'createdAt'
@@ -55,6 +56,7 @@ const PUBLIC_USER_COLUMNS = {
   lastAccessedWorkspaceId: true,
   onboardingCompletedAt: true,
   maestroTone: true,
+  useCase: true,
   avatarUrl: true,
   avatarColor: true,
   createdAt: true,
@@ -73,6 +75,7 @@ function toPublicUser(row: User): PublicUser {
     lastAccessedWorkspaceId: row.lastAccessedWorkspaceId,
     onboardingCompletedAt: row.onboardingCompletedAt,
     maestroTone: row.maestroTone,
+    useCase: row.useCase,
     avatarUrl: row.avatarUrl,
     avatarColor: row.avatarColor,
     createdAt: row.createdAt,
