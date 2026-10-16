@@ -161,18 +161,25 @@ export class ComposerSchedulingService {
         );
     }
 
-    // Remove any prior delayed job for this draft (e.g. user re-schedules).
+    // Remove any prior delayed job for this draft (e.g. user re-schedules) —
+    // both the composer's own and whatever job posts.job_id names (a
+    // PostService-scheduled job), or the old one would still fire.
     const jobId = `composer-publish-${dto.draftId}`;
-    const prior = await this.publishingQueue.getJob(jobId);
-    if (prior) {
-      await prior.remove();
-    }
+    await this.removeJobs(jobId, existing[0]?.jobId);
 
-    await this.publishingQueue.add(
+    const job = await this.publishingQueue.add(
       'publish',
       { postId: dto.draftId },
       { jobId, delay, attempts: 3 },
     );
+
+    // Record the job on the row: PostService.updatePost/deletePost cancel by
+    // posts.job_id, so an unrecorded job cannot be cancelled when the post is
+    // moved and would publish at its old time.
+    await this.db
+      .update(posts)
+      .set({ jobId: String(job?.id ?? jobId) })
+      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)));
 
     this.logger.log(
       `Scheduled draft ${dto.draftId} for ${scheduledAt.toISOString()} (delay=${delay}ms)`,
@@ -189,18 +196,50 @@ export class ComposerSchedulingService {
     };
   }
 
+  /**
+   * Removes the composer's job and, when it is a different job, the one the
+   * row records. A job that is already gone is not an error.
+   */
+  private async removeJobs(
+    composerJobId: string,
+    recordedJobId?: string | null,
+  ): Promise<void> {
+    const ids = new Set([composerJobId]);
+    if (recordedJobId) ids.add(recordedJobId);
+    for (const id of ids) {
+      try {
+        const job = await this.publishingQueue.getJob(id);
+        if (job) await job.remove();
+      } catch (error) {
+        this.logger.warn(
+          `Failed to remove job ${id}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  }
+
   /** Cancels a scheduled draft — removes the BullMQ job and resets status. */
   async cancel(
     workspaceId: string,
     draftId: string,
   ): Promise<{ success: true }> {
-    const jobId = `composer-publish-${draftId}`;
-    const job = await this.publishingQueue.getJob(jobId);
-    if (job) await job.remove();
+    const [row] = await this.db
+      .select()
+      .from(posts)
+      .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)))
+      .limit(1);
+    await this.removeJobs(`composer-publish-${draftId}`, row?.jobId);
 
     await this.db
       .update(posts)
-      .set({ status: 'draft', scheduledAt: null, updatedAt: new Date() })
+      .set({
+        status: 'draft',
+        scheduledAt: null,
+        jobId: null,
+        updatedAt: new Date(),
+      })
       .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)));
 
     // The draft is no longer scheduled — remove its calendar event(s) now
