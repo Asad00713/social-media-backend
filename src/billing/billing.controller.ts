@@ -181,14 +181,14 @@ export class BillingController {
 
   // Add-on endpoints
   @Get('workspaces/:workspaceId/addons')
-  @RequireCapability('billing:manage')
+  @RequireCapability('team:view')
   @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getAvailableAddons(@Param('workspaceId') workspaceId: string) {
     return await this.addonService.getAvailableAddons(workspaceId);
   }
 
   @Get('workspaces/:workspaceId/addons/current')
-  @RequireCapability('billing:manage')
+  @RequireCapability('team:view')
   @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getCurrentAddons(@Param('workspaceId') workspaceId: string) {
     return await this.addonService.getCurrentAddons(workspaceId);
@@ -247,7 +247,7 @@ export class BillingController {
   }
 
   @Get('workspaces/:workspaceId/plans')
-  @RequireCapability('billing:manage')
+  @RequireCapability('team:view')
   @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getPlansForWorkspace(@Param('workspaceId') workspaceId: string) {
     return await this.planChangeService.getAvailablePlans(workspaceId);

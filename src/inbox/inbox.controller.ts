@@ -200,7 +200,7 @@ export class InboxController {
    * channel async. Use after first connecting a channel, or for manual refresh.
    */
   @Post('sync')
-  @RequireCapability('inbox:reply')
+  @RequireCapability('inbox:view')
   @HttpCode(HttpStatus.ACCEPTED)
   async syncNow(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
