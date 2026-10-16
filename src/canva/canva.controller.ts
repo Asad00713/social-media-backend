@@ -27,6 +27,7 @@ import {
 } from './dto/canva.dto';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
 import { randomBytes } from 'crypto';
 import { db } from '../drizzle/db';
 import { oauthStates, NewOAuthState } from '../drizzle/schema/channels.schema';
@@ -38,6 +39,7 @@ export class CanvaController {
   constructor(
     private readonly canvaService: CanvaService,
     private readonly canvaConnectionService: CanvaConnectionService,
+    private readonly access: WorkspaceAccessService,
   ) {}
 
   // ==========================================================================
@@ -82,6 +84,8 @@ export class CanvaController {
     if (!workspaceId) {
       throw new Error('Workspace ID is required for Canva OAuth');
     }
+    // The state row binds the callback to this workspace's Canva connection.
+    await this.access.assertCan(workspaceId, user.userId, 'channels:manage');
 
     await db.insert(oauthStates).values({
       stateToken: state,

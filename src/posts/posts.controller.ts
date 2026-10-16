@@ -12,6 +12,7 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PostService } from './services/post.service';
 import { CreatePostDto, UpdatePostDto, PostQueryDto } from './dto/post.dto';
@@ -242,6 +243,7 @@ export class PostsController {
    * Get queue status for monitoring
    */
   @Get('queue/status')
+  @UseGuards(SuperAdminGuard)
   async getQueueStatus() {
     const status = await this.postService.getQueueStatus();
     return { queue: status };
@@ -255,6 +257,7 @@ export class PostsController {
    * Get rate limit status for all platforms
    */
   @Get('rate-limits')
+  @UseGuards(SuperAdminGuard)
   async getRateLimitStatus() {
     const status = await this.postService.getRateLimitStatus();
     return { rateLimits: status };
@@ -264,6 +267,7 @@ export class PostsController {
    * Get rate limit status for a specific platform
    */
   @Get('rate-limits/:platform')
+  @UseGuards(SuperAdminGuard)
   async getPlatformRateLimitStatus(@Param('platform') platform: string) {
     const status = await this.postService.getPlatformRateLimitStatus(
       platform as any,

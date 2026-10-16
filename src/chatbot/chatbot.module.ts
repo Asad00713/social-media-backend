@@ -10,6 +10,7 @@ import { ChannelsModule } from '../channels/channels.module';
 import { AiModule } from '../ai/ai.module';
 import { PexelsModule } from '../pexels/pexels.module';
 import { MediaLibraryModule } from '../media-library/media-library.module';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 
 // External services (injected for tool factories)
 import { UsersService } from '../users/users.service';
@@ -69,6 +70,7 @@ import { createMediaActionTools } from './tools/media-action.tools';
     AiModule,
     PexelsModule,
     MediaLibraryModule,
+    WorkspaceRoleModule,
   ],
   controllers: [ChatbotController],
   providers: [

@@ -339,15 +339,25 @@ export class BillingController {
 
   @Get('invoices/:invoiceId')
   @UseGuards(JwtAuthGuard)
-  async getInvoiceDetails(@Param('invoiceId') invoiceId: string) {
-    return await this.invoiceService.getInvoiceDetails(parseInt(invoiceId, 10));
+  async getInvoiceDetails(
+    @Param('invoiceId') invoiceId: string,
+    @CurrentUser() user: { userId: string; role?: string },
+  ) {
+    return await this.invoiceService.getInvoiceDetails(
+      parseInt(invoiceId, 10),
+      user,
+    );
   }
 
   @Get('invoices/:invoiceId/pdf')
   @UseGuards(JwtAuthGuard)
-  async getInvoicePdf(@Param('invoiceId') invoiceId: string) {
+  async getInvoicePdf(
+    @Param('invoiceId') invoiceId: string,
+    @CurrentUser() user: { userId: string; role?: string },
+  ) {
     const pdfUrl = await this.invoiceService.getInvoicePdfUrl(
       parseInt(invoiceId, 10),
+      user,
     );
     return { pdfUrl };
   }

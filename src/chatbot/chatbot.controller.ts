@@ -16,6 +16,8 @@ import {
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
+import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
 import { ChatbotRateLimitGuard } from './guards/chatbot-rate-limit.guard';
 import { ChatbotService } from './chatbot.service';
 import { TokenTrackingService } from './services/token-tracking.service';
@@ -40,10 +42,11 @@ export class ChatbotController {
     private readonly tokenTracking: TokenTrackingService,
     private readonly llmRouter: LLMRouterService,
     private readonly claudeProvider: ClaudeChatProvider,
+    private readonly access: WorkspaceAccessService,
   ) {}
 
   // ==========================================================================
-  // Test Endpoint (no auth required)
+  // Test Endpoint (super admin only)
   // ==========================================================================
 
   /**
@@ -51,6 +54,7 @@ export class ChatbotController {
    * GET /chatbot/test-claude?message=Hello
    */
   @Get('test-claude')
+  @UseGuards(JwtAuthGuard, SuperAdminGuard)
   async testClaude(@Query('message') message?: string) {
     try {
       const response = await this.claudeProvider.chat(
@@ -99,6 +103,7 @@ export class ChatbotController {
     @CurrentUser() user: { userId: string; email: string },
     @Body() dto: CreateConversationDto,
   ) {
+    await this.access.assertCan(dto.workspaceId, user.userId, 'posts:draft');
     const conversation = await this.chatbotService.createConversation(
       user.userId,
       dto.workspaceId,
@@ -154,10 +159,12 @@ export class ChatbotController {
   @Get('conversations/shared')
   @UseGuards(JwtAuthGuard)
   async getSharedConversations(
+    @CurrentUser() user: { userId: string; email: string },
     @Query('workspaceId') workspaceId: string,
     @Query('limit') limit?: number,
     @Query('offset') offset?: number,
   ) {
+    await this.access.assertCan(workspaceId, user.userId, 'posts:draft');
     const conversations = await this.chatbotService.listSharedConversations(
       workspaceId,
       limit,
@@ -292,9 +299,11 @@ export class ChatbotController {
   @Get('conversations/:id/shared')
   @UseGuards(JwtAuthGuard)
   async getSharedConversation(
+    @CurrentUser() user: { userId: string; email: string },
     @Param('id') conversationId: string,
     @Query('workspaceId') workspaceId: string,
   ) {
+    await this.access.assertCan(workspaceId, user.userId, 'posts:draft');
     const conversation = await this.chatbotService.getSharedConversation(
       conversationId,
       workspaceId,
@@ -394,7 +403,15 @@ export class ChatbotController {
    */
   @Get('usage')
   @UseGuards(JwtAuthGuard)
-  async getUsage(@Query() query: UsageQueryDto) {
+  async getUsage(
+    @CurrentUser() user: { userId: string; email: string },
+    @Query() query: UsageQueryDto,
+  ) {
+    await this.access.assertCan(
+      query.workspaceId,
+      user.userId,
+      'analytics:view',
+    );
     const usage = await this.tokenTracking.getUsageSummary(query.workspaceId);
     return { usage };
   }
@@ -408,7 +425,13 @@ export class ChatbotController {
    */
   @Get('providers')
   @UseGuards(JwtAuthGuard)
-  async getProviders(@Query('workspaceId') workspaceId: string) {
+  async getProviders(
+    @CurrentUser() user: { userId: string; email: string },
+    @Query('workspaceId') workspaceId: string,
+  ) {
+    if (workspaceId) {
+      await this.access.assertCan(workspaceId, user.userId, 'posts:draft');
+    }
     const available = this.llmRouter.getAvailableProviders();
     const preference = workspaceId
       ? await this.chatbotService.getProviderPreference(workspaceId)

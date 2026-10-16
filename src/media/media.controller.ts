@@ -19,6 +19,8 @@ import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
+import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
 import { CloudinaryService } from './cloudinary.service';
 import { TikTokMediaProxyService } from './tiktok-media-proxy.service';
 import { BunnyCDNService } from './bunnycdn.service';
@@ -39,6 +41,7 @@ export class MediaController {
     private readonly tiktokProxyService: TikTokMediaProxyService,
     private readonly bunnyCDNService: BunnyCDNService,
     private readonly r2Service: CloudflareR2Service,
+    private readonly access: WorkspaceAccessService,
   ) {}
 
   // ==========================================================================
@@ -205,7 +208,7 @@ export class MediaController {
    * Use query param for key since it may contain slashes
    */
   @Delete('bunnycdn/file')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SuperAdminGuard)
   @HttpCode(HttpStatus.OK)
   async deleteFromBunnyCDN(@Query('key') key: string) {
     if (!key) {
@@ -224,7 +227,7 @@ export class MediaController {
    * List files in BunnyCDN folder
    */
   @Get('bunnycdn/list')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SuperAdminGuard)
   @HttpCode(HttpStatus.OK)
   async listBunnyCDNFiles(@Query('folder') folder?: string) {
     const files = await this.bunnyCDNService.listFiles(folder || '');
@@ -338,7 +341,7 @@ export class MediaController {
    * Delete media by public ID
    */
   @Delete()
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SuperAdminGuard)
   @HttpCode(HttpStatus.OK)
   async deleteMedia(@Body() dto: DeleteMediaDto) {
     const success = await this.cloudinaryService.delete(
@@ -412,11 +415,9 @@ export class MediaController {
    * directly to R2 via the returned `uploadUrl` — Schedura's API never
    * touches the video, which is critical for multi-GB TikTok uploads.
    *
-   * Workspace membership is NOT verified here yet (consistent with the
-   * existing Cloudinary upload endpoint, which also doesn't). The R2 key
-   * path embeds the authenticated userId, so a user can't write under
-   * someone else's identity even if they spoof the workspaceId. Tightening
-   * this to membership-check parity is a follow-up.
+   * The caller must be able to draft in `dto.workspaceId`; the R2 key path
+   * embeds that workspace, so without the check anyone could write under a
+   * foreign workspace's prefix.
    */
   @Post('r2/presign-composer-video')
   @UseGuards(JwtAuthGuard)
@@ -425,6 +426,7 @@ export class MediaController {
     @Body() dto: PresignComposerVideoDto,
     @CurrentUser() user: { userId: string; email: string },
   ) {
+    await this.access.assertCan(dto.workspaceId, user.userId, 'posts:draft');
     return this.r2Service.createPresignedUpload({
       workspaceId: dto.workspaceId,
       userId: user.userId,

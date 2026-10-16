@@ -1,6 +1,7 @@
 import { ExecutionContext, ForbiddenException } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import { WorkspaceRoleGuard } from './workspace-role.guard';
+import type { WorkspaceRoleService } from './workspace-role.service';
 
 function ctx(params: any, user: any): ExecutionContext {
   return { switchToHttp: () => ({ getRequest: () => ({ params, user }) }), getHandler: () => ({}), getClass: () => ({}) } as any;
@@ -52,5 +53,36 @@ describe('WorkspaceRoleGuard', () => {
       getClass: () => ({}),
     } as any;
     await expect(guard.canActivate(ctx)).resolves.toBe(true);
+  });
+  describe('req.workspaceRole', () => {
+    function run(role: string | null, isSuper: boolean) {
+      const req: {
+        user: { userId: string };
+        params: { workspaceId: string };
+        workspaceRole?: string;
+      } = {
+        user: { userId: 'u' },
+        params: { workspaceId: 'w' },
+      };
+      const guard = new WorkspaceRoleGuard(
+        { getAllAndOverride: () => 'posts:draft' } as unknown as Reflector,
+        {
+          getRole: () => Promise.resolve(role),
+          isPlatformSuperAdmin: () => Promise.resolve(isSuper),
+        } as unknown as WorkspaceRoleService,
+      );
+      const c = {
+        switchToHttp: () => ({ getRequest: () => req }),
+        getHandler: () => ({}),
+        getClass: () => ({}),
+      } as unknown as ExecutionContext;
+      return guard.canActivate(c).then(() => req);
+    }
+    it('is the resolved role', async () => {
+      expect((await run('GUEST', false)).workspaceRole).toBe('GUEST');
+    });
+    it('is SUPER_ADMIN for a platform super admin', async () => {
+      expect((await run(null, true)).workspaceRole).toBe('SUPER_ADMIN');
+    });
   });
 });

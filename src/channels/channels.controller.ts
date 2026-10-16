@@ -31,6 +31,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
+import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
+import type { Capability } from '../workspace-members/role-capabilities';
 import { ChannelService } from './services/channel.service';
 import { OAuthService } from './services/oauth.service';
 import { FacebookService } from './services/facebook.service';
@@ -148,7 +150,27 @@ export class ChannelsController {
     private readonly calendarReconcileQueue: Queue,
     private readonly youtubeDataDeletion: YoutubeDataDeletionService,
     private readonly googleRevoke: GoogleOauthRevokeService,
+    private readonly access: WorkspaceAccessService,
   ) {}
+
+  /**
+   * Load a channel addressed only by its numeric id (body `channelId`) and
+   * prove the caller may act on the channel's OWN workspace.
+   *
+   * These routes have no workspace in the path, so WorkspaceRoleGuard cannot
+   * protect them. A bare id lookup would let any logged-in user publish as,
+   * delete from, or read any customer's channel. Not-a-member and
+   * no-such-channel are both NotFound, so ids cannot be probed.
+   */
+  private async getChannelForCaller(
+    channelId: number,
+    userId: string,
+    cap: Capability,
+  ) {
+    const channel = await this.channelService.getChannelForPosting(channelId);
+    await this.access.assertCan(channel.workspaceId, userId, cap);
+    return channel;
+  }
 
   // ==========================================================================
   // OAuth Flow Endpoints
@@ -2433,9 +2455,14 @@ export class ChannelsController {
   @Post('twitter/me')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getTwitterProfile(@Body() dto: { channelId: number }) {
-    const channel = await this.channelService.getChannelForPosting(
+  async getTwitterProfile(
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: { channelId: number },
+  ) {
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'analytics:view',
     );
 
     if (channel.platform !== 'twitter') {
@@ -2458,11 +2485,14 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async getTwitterTweets(
+    @CurrentUser() user: { userId: string; email: string },
     @Body() dto: { channelId: number },
     @Query('paginationToken') paginationToken?: string,
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'analytics:view',
     );
 
     if (channel.platform !== 'twitter') {
@@ -2849,6 +2879,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postImageToInstagram(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -2857,8 +2888,10 @@ export class ChannelsController {
     },
   ) {
     // Get channel to retrieve access token and account ID
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'instagram') {
@@ -2911,6 +2944,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postVideoToInstagram(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -2919,8 +2953,10 @@ export class ChannelsController {
       isReel?: boolean;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'instagram') {
@@ -2975,6 +3011,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postCarouselToInstagram(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -2982,8 +3019,10 @@ export class ChannelsController {
       caption?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'instagram') {
@@ -3036,6 +3075,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postStoryToInstagram(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3043,8 +3083,10 @@ export class ChannelsController {
       mediaType: 'IMAGE' | 'VIDEO';
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'instagram') {
@@ -3096,6 +3138,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postStoryToFacebook(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3103,8 +3146,10 @@ export class ChannelsController {
       mediaType: 'IMAGE' | 'VIDEO';
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'facebook') {
@@ -3266,6 +3311,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postTextToThreads(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3273,8 +3319,10 @@ export class ChannelsController {
       replyToId?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'threads') {
@@ -3308,6 +3356,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postImageToThreads(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3316,8 +3365,10 @@ export class ChannelsController {
       replyToId?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'threads') {
@@ -3352,6 +3403,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postVideoToThreads(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3360,8 +3412,10 @@ export class ChannelsController {
       replyToId?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'threads') {
@@ -3396,6 +3450,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postCarouselToThreads(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3404,8 +3459,10 @@ export class ChannelsController {
       replyToId?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'threads') {
@@ -3560,9 +3617,14 @@ export class ChannelsController {
   @Post('bluesky/refresh')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async refreshBlueskySession(@Body() dto: { channelId: number }) {
-    const channel = await this.channelService.getChannelForPosting(
+  async refreshBlueskySession(
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: { channelId: number },
+  ) {
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'channels:manage',
     );
 
     if (channel.platform !== 'bluesky') {
@@ -3609,6 +3671,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postTextToBluesky(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3616,8 +3679,10 @@ export class ChannelsController {
       replyTo?: { uri: string; cid: string };
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'bluesky') {
@@ -3657,6 +3722,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postImageToBluesky(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3665,8 +3731,10 @@ export class ChannelsController {
       altTexts?: string[];
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'bluesky') {
@@ -3717,6 +3785,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postVideoToBluesky(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3725,8 +3794,10 @@ export class ChannelsController {
       altText?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'bluesky') {
@@ -3767,6 +3838,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postLinkToBluesky(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3777,8 +3849,10 @@ export class ChannelsController {
       linkThumbUrl?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'bluesky') {
@@ -3821,14 +3895,17 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async deleteBlueskyPost(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
       postUri: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'bluesky') {
@@ -4041,9 +4118,14 @@ export class ChannelsController {
   @Post('mastodon/me')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getMastodonProfile(@Body() dto: { channelId: number }) {
-    const channel = await this.channelService.getChannelForPosting(
+  async getMastodonProfile(
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: { channelId: number },
+  ) {
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'analytics:view',
     );
 
     if (channel.platform !== 'mastodon') {
@@ -4068,10 +4150,13 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async getMastodonPosts(
+    @CurrentUser() user: { userId: string; email: string },
     @Body() dto: { channelId: number; limit?: number; maxId?: string },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'analytics:view',
     );
 
     if (channel.platform !== 'mastodon') {
@@ -4103,6 +4188,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postTextToMastodon(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -4113,8 +4199,10 @@ export class ChannelsController {
       spoilerText?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'mastodon') {
@@ -4159,6 +4247,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postImageToMastodon(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -4168,8 +4257,10 @@ export class ChannelsController {
       visibility?: 'public' | 'unlisted' | 'private' | 'direct';
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'mastodon') {
@@ -4221,6 +4312,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postVideoToMastodon(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -4230,8 +4322,10 @@ export class ChannelsController {
       visibility?: 'public' | 'unlisted' | 'private' | 'direct';
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'mastodon') {
@@ -4273,14 +4367,17 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async deleteMastodonPost(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
       postId: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'mastodon') {
