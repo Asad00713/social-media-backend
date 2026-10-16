@@ -27,22 +27,10 @@ import {
   type AgentRuntimeKind,
 } from '../runtime/runtime-selector';
 import { MaestroKeyService } from './maestro-key.service';
-import { createUserTools } from '../tools/user.tools';
+import { assembleMaestroTools } from '../tools/assemble';
+import { gateTools } from '../tools/capability-gate';
+import { WorkspaceAccessService } from '../../workspace-members/workspace-access.service';
 import { isPendingAction, type PendingAction } from '../tools/confirm';
-import { createMediaTools } from '../tools/media.tools';
-import { createInteractionTools } from '../tools/interaction.tools';
-import { createNavigateTools } from '../tools/navigate.tools';
-import { createWebTools } from '../tools/web.tools';
-import { createDiscordTools } from '../tools/discord.tools';
-import { createSlackTools } from '../tools/slack.tools';
-import { createTelegramTools } from '../tools/telegram.tools';
-import { createWhatsAppTools } from '../tools/whatsapp.tools';
-import { createPostTools } from '../tools/post.tools';
-import { createChannelTools } from '../tools/channel.tools';
-import { createCampaignTools } from '../tools/campaign.tools';
-import { createLibraryTools } from '../tools/library.tools';
-import { createInboxTools } from '../tools/inbox.tools';
-import { createPlannerTools } from '../tools/planner.tools';
 import {
   mergeReferences,
   isReferencePayload,
@@ -243,6 +231,7 @@ export class MaestroService {
     private readonly scheduledMessages: ScheduledMessagesService,
     private readonly drips: DripService,
     private readonly roles: WorkspaceRoleService,
+    private readonly access: WorkspaceAccessService,
   ) {}
 
   /**
@@ -525,40 +514,36 @@ export class MaestroService {
      */
     canNavigate?: boolean;
   }): AgentToolDefinition[] {
-    const { confirmBeforeSend, webSearchEnabled } = opts;
-    return [
-      ...createUserTools(this.usersService, this.workspaceService),
-      ...createMediaTools(this.unsplash, this.pexels),
-      ...(webSearchEnabled ? createWebTools(this.tavily) : []),
-      ...createDiscordTools(this.discord, this.inbox, { confirmBeforeSend }),
-      ...createSlackTools(this.slack, this.inbox, { confirmBeforeSend }),
-      ...createTelegramTools(this.inbox, { confirmBeforeSend }),
-      ...createWhatsAppTools(this.inbox, { confirmBeforeSend }),
-      ...createPostTools(this.posts, { confirmBeforeSend }),
-      ...createChannelTools(this.channels),
-      ...createCampaignTools(this.campaigns),
-      ...createLibraryTools(
+    return gateTools(
+      assembleMaestroTools(
         {
-          items: this.libraryItems,
-          templates: this.libraryTemplates,
-          snippets: this.librarySnippets,
-          links: this.libraryLinks,
-          categories: this.libraryCategories,
+          users: this.usersService,
+          workspaces: this.workspaceService,
+          unsplash: this.unsplash,
+          pexels: this.pexels,
+          tavily: this.tavily,
+          discord: this.discord,
+          slack: this.slack,
+          inbox: this.inbox,
+          posts: this.posts,
+          channels: this.channels,
+          campaigns: this.campaigns,
+          scheduledMessages: this.scheduledMessages,
+          drips: this.drips,
+          library: {
+            items: this.libraryItems,
+            templates: this.libraryTemplates,
+            snippets: this.librarySnippets,
+            links: this.libraryLinks,
+            categories: this.libraryCategories,
+          },
         },
-        { confirmBeforeSend },
+        opts,
       ),
-      ...createInboxTools(this.inbox),
-      ...createPlannerTools({
-        posts: this.posts,
-        scheduledMessages: this.scheduledMessages,
-        drips: this.drips,
-        workspaces: this.workspaceService,
-        campaigns: this.campaigns,
-      }),
-      ...createInteractionTools(),
-      // Only where there is a page to navigate: the bridges are plain chat.
-      ...(opts.canNavigate ? createNavigateTools() : []),
-    ];
+      // A WRITE tool is held to the same workspace role as the REST route that
+      // does the same thing, so a Viewer cannot publish or message through chat.
+      this.access,
+    );
   }
 
   /**
@@ -633,7 +618,18 @@ export class MaestroService {
       return null;
     }
 
-    const result = await tool.handler(parsed.data, ctx);
+    // A handler may THROW, notably the role check in gateTools when the
+    // caller's role no longer allows this action. That must come back as a
+    // failed result the reply can explain, not end the stream.
+    let result: unknown;
+    try {
+      result = await tool.handler(parsed.data, ctx);
+    } catch (err) {
+      result = {
+        ok: false,
+        message: err instanceof Error ? err.message : 'the action failed.',
+      };
+    }
     await this.conversations.setMessageMetadata(approval.messageId, {
       ...(meta ?? {}),
       maestroResolved: { approved: true, at: new Date().toISOString() },

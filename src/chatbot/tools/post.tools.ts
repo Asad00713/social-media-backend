@@ -1,6 +1,8 @@
 import type { PostService } from '../../posts/services/post.service';
 import type { ChannelService } from '../../channels/services/channel.service';
+import type { WorkspaceAccessService } from '../../workspace-members/workspace-access.service';
 import { ChatbotTool, ToolContext, ToolResult } from './tool.interface';
+import { assertToolAccess } from './tool-access';
 
 /**
  * Normalize a mediaItems parameter — LLMs may pass strings instead of objects,
@@ -36,6 +38,7 @@ function normalizeMediaItems(raw: any): Array<{
 export function createPostTools(
   postService: PostService,
   channelService: ChannelService,
+  access: Pick<WorkspaceAccessService, 'assertCan'>,
 ): ChatbotTool[] {
   return [
     {
@@ -265,6 +268,9 @@ export function createPostTools(
         context: ToolContext,
       ): Promise<ToolResult> => {
         try {
+          // WRITE: drafting needs posts:draft; the role then travels into
+          // PostService, which refuses a Viewer's scheduledAt.
+          const role = await assertToolAccess(access, context, 'posts:draft');
           const dto: any = {
             content: params.content,
             targetChannelIds: params.targetChannelIds,
@@ -280,6 +286,7 @@ export function createPostTools(
             context.workspaceId,
             context.userId,
             dto,
+            role,
           );
 
           // Look up channel details for each target to enrich the preview
@@ -376,6 +383,7 @@ export function createPostTools(
         context: ToolContext,
       ): Promise<ToolResult> => {
         try {
+          const role = await assertToolAccess(access, context, 'posts:draft');
           const dto: any = {};
           if (params.content !== undefined) dto.content = params.content;
           if (params.mediaItems !== undefined) {
@@ -393,6 +401,7 @@ export function createPostTools(
             context.workspaceId,
             context.userId,
             dto,
+            role,
           );
           return {
             success: true,
@@ -441,10 +450,12 @@ export function createPostTools(
         context: ToolContext,
       ): Promise<ToolResult> => {
         try {
+          const role = await assertToolAccess(access, context, 'posts:draft');
           await postService.deletePost(
             params.postId,
             context.workspaceId,
             context.userId,
+            role,
           );
           return {
             success: true,

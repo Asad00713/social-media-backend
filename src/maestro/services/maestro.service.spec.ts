@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { MaestroService } from './maestro.service';
 import type { AgentEvent } from '../maestro.types';
 
@@ -60,6 +61,7 @@ interface Harness {
   getDecryptedKey: jest.Mock<Promise<string | null>, unknown[]>;
   runInputs: { systemPrompt: string | string[] }[];
   users: { getMaestroTone: jest.Mock };
+  inbox: { sendDm: jest.Mock };
 }
 
 function makeHarness(
@@ -73,6 +75,8 @@ function makeHarness(
     tone?: 'simple' | 'professional' | 'detailed';
     /** Stands in for the Slack connection the approved tool resolves. */
     slackConn?: unknown;
+    /** Roles the caller holds: 'viewer' may not send; default is a member. */
+    role?: 'viewer';
   } = {},
 ): Harness {
   const runInputs: { systemPrompt: string | string[] }[] = [];
@@ -150,6 +154,15 @@ function makeHarness(
     getMaestroTone: jest.fn().mockResolvedValue(opts.tone ?? 'professional'),
   };
   const groq = { isReady: () => false } as never;
+  // A viewer can draft but is refused everything that sends or publishes.
+  const access = {
+    assertCan: jest.fn((_ws: string, _user: string, cap: string) =>
+      opts.role === 'viewer' &&
+      ['inbox:reply', 'posts:publish', 'channels:manage'].includes(cap)
+        ? Promise.reject(new NotFoundException('Not found'))
+        : Promise.resolve('MEMBER'),
+    ),
+  } as never;
 
   const service = new MaestroService(
     runtimes as never,
@@ -169,6 +182,15 @@ function makeHarness(
     { getDecryptedKey } as never,
     stub, // channels
     stub, // campaigns
+    stub, // libraryItems
+    stub, // libraryTemplates
+    stub, // librarySnippets
+    stub, // libraryLinks
+    stub, // libraryCategories
+    stub, // scheduledMessages
+    stub, // drips
+    stub, // roles
+    access,
   );
 
   jest
@@ -183,6 +205,7 @@ function makeHarness(
     setMessageMetadata,
     runInputs,
     users,
+    inbox: inbox as unknown as { sendDm: jest.Mock },
   };
 }
 
@@ -725,6 +748,24 @@ describe('MaestroService.streamMessage', () => {
       expect(order[order.length - 1]).toBe('done');
       // The scripted runtime text never appears — the model was not consulted.
       expect(streamedText(events)).not.toContain('should not run');
+    });
+
+    it('refuses an approved send when the caller is only a viewer, and sends nothing', async () => {
+      const h = makeHarness([DONE_EVENT], {
+        messages: [cardMessage()],
+        slackConn: { accessToken: 'tok', channelId: 'ch-1' },
+        role: 'viewer',
+      });
+
+      const events = await run(h, undefined, {
+        messageId: CARD_ID,
+        option: YES,
+      });
+
+      const results = events.filter((e) => e.event === 'tool_result');
+      expect(JSON.stringify(results)).toContain('does not allow');
+      expect(h.inbox.sendDm).not.toHaveBeenCalled();
+      expect(names(events)[names(events).length - 1]).toBe('done');
     });
 
     it('emits no second confirm card', async () => {
