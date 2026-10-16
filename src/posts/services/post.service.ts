@@ -324,9 +324,9 @@ export class PostService {
     // Update scheduling
     let clearScheduledAt = false;
     if (dto.scheduledAt !== undefined) {
-      // Cancel existing job if any
+      // Cancel the existing publish job(s), whichever path scheduled them
+      await this.cancelPublishJobs(existingPost);
       if (existingPost.jobId) {
-        await this.cancelScheduledJob(existingPost.jobId);
         updateData.jobId = null;
       }
 
@@ -424,10 +424,8 @@ export class PostService {
       );
     }
 
-    // Cancel scheduled job if exists
-    if (post.jobId) {
-      await this.cancelScheduledJob(post.jobId);
-    }
+    // Cancel scheduled job(s) if any
+    await this.cancelPublishJobs(post);
 
     // Load the calendar link rows into memory BEFORE deleting the post:
     // calendar_item_links cascade-delete with the post, so afterwards we'd lose
@@ -515,7 +513,7 @@ export class PostService {
       previousStatus,
       status: 'publishing',
       targets: post.targets,
-      publishedAt: null,
+      publishedAt: post.publishedAt ?? null,
       lastError: null,
       triggeredBy,
       triggeredByUserId: userId,
@@ -525,8 +523,20 @@ export class PostService {
     const updatedTargets: PostTarget[] = [];
     let allSuccess = true;
     let anySuccess = false;
+    // A success from THIS run (not a carried-over one) — only that restamps
+    // the post's publishedAt.
+    let newSuccess = false;
 
     for (const target of post.targets) {
+      // A retry must not re-post to a channel that already went out — that
+      // would duplicate the live post. Carry it over untouched; it still
+      // counts as a success for the post's final status.
+      if (target.status === 'published') {
+        updatedTargets.push(target);
+        anySuccess = true;
+        continue;
+      }
+
       try {
         // Check global rate limit for this platform
         const globalRateLimit = await this.rateLimiterService.checkRateLimit(
@@ -613,6 +623,7 @@ export class PostService {
           publishedAt: new Date().toISOString(),
         });
         anySuccess = true;
+        newSuccess = true;
 
         await this.enqueuePostSnapshotTrail(
           postId,
@@ -678,7 +689,7 @@ export class PostService {
       targets: updatedTargets,
       updatedAt: new Date(),
     };
-    if (anySuccess) {
+    if (newSuccess) {
       postUpdateData.publishedAt = new Date();
     }
     if (!allSuccess) {
@@ -994,6 +1005,24 @@ export class PostService {
     );
 
     return job.id as string;
+  }
+
+  /**
+   * Cancel every delayed publish job a post may have. Two paths enqueue them:
+   * PostService (id recorded in posts.job_id) and the composer
+   * (`composer-publish-<id>`, which older rows never recorded). Removing only
+   * one leaves the other to publish at the post's old time.
+   */
+  private async cancelPublishJobs(
+    post: Pick<typeof posts.$inferSelect, 'id' | 'jobId'>,
+  ): Promise<void> {
+    const composerJobId = `composer-publish-${post.id}`;
+    if (post.jobId) {
+      await this.cancelScheduledJob(post.jobId);
+    }
+    if (post.jobId !== composerJobId) {
+      await this.cancelScheduledJob(composerJobId);
+    }
   }
 
   /**
