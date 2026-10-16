@@ -17,10 +17,12 @@ import {
   ExternalEventDto,
   ExternalEventsService,
 } from './services/external-events.service';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { RequireCapability } from '../workspace-members/require-capability.decorator';
 import { ListExternalEventsDto } from './dto/list-external-events.dto';
 
 @Controller('calendar-sync')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class CalendarSyncController {
   private readonly logger = new Logger(CalendarSyncController.name);
 
@@ -40,6 +42,9 @@ export class CalendarSyncController {
    * DETACHED so the request returns 202 immediately instead of hanging on a
    * potentially long per-post provider loop.
    */
+  // channels:manage: the backfill writes to the workspace's provider calendars,
+  // the same level that connects a calendar in the first place.
+  @RequireCapability('channels:manage')
   @Post('workspaces/:workspaceId/backfill')
   @HttpCode(HttpStatus.ACCEPTED)
   async backfill(
@@ -72,6 +77,8 @@ export class CalendarSyncController {
    * Auth: same membership check as the backfill endpoint — workspace owner or an
    * ACCEPTED member; otherwise 403.
    */
+  // posts:draft (GUEST): same level as reading the planner calendar itself.
+  @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId/external-events')
   async listExternalEvents(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

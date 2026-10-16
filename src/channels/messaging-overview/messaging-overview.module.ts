@@ -2,6 +2,7 @@ import { Module, Provider } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import Redis from 'ioredis';
 import { ChannelsModule } from '../channels.module';
+import { WorkspaceRoleModule } from '../../workspace-members/workspace-role.module';
 import { InboxModule } from '../../inbox/inbox.module';
 import { MessagingOverviewController } from './messaging-overview.controller';
 import { MessagingOverviewService } from './messaging-overview.service';
@@ -21,7 +22,7 @@ const MessagingRedisProvider: Provider = {
 };
 
 @Module({
-  imports: [ConfigModule, ChannelsModule, InboxModule],
+  imports: [ConfigModule, ChannelsModule, InboxModule, WorkspaceRoleModule],
   controllers: [MessagingOverviewController],
   providers: [MessagingOverviewService, MessagingRedisProvider],
 })
