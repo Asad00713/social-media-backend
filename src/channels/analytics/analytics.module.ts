@@ -9,6 +9,7 @@ import { RedisClientProvider } from './redis-client.provider';
 import { ChannelLookupRepoProvider } from './guards/channel-ownership.guard';
 import { QUEUES } from '../../queue/queue.module';
 import { WorkspaceRoleModule } from '../../workspace-members/workspace-role.module';
+import { FirstWeekTriggerModule } from '../../first-week/first-week-trigger.module';
 import { ChannelSnapshotsDispatcherProcessor } from './processors/channel-snapshots-dispatcher.processor';
 import { ChannelProfileSnapshotHandler } from './handlers/channel-profile-snapshot.handler';
 import { PostMetricSnapshotHandler } from './handlers/post-metric-snapshot.handler';
@@ -49,6 +50,7 @@ import { TwitterAnalyticsAdapter } from './adapters/twitter/twitter-analytics.ad
     BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS }),
     // The capability guard only; not WorkspaceMembersModule (see its docs).
     WorkspaceRoleModule,
+    FirstWeekTriggerModule,
   ],
   controllers: [
     AnalyticsController,

@@ -30,3 +30,4 @@ export * from './campaigns.schema';
 export * from './evergreen.schema';
 export * from './admin-audit-logs.schema';
 export * from './whatsapp-templates.schema';
+export * from './workspace-brand-profile.schema';
