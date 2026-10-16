@@ -182,6 +182,23 @@ describe('PostService.publishPost retry', () => {
     });
   });
 
+  it('a retry that succeeds keeps the time the post first went out, so it does not move on the calendar', async () => {
+    const { svc } = make();
+    currentRow = retryRow();
+    await svc.publishPost('p1', 'w1', 'u1');
+    const final = updates[updates.length - 1];
+    expect(final.status).toBe('published');
+    expect(final.publishedAt ?? firstPublishedAt).toEqual(firstPublishedAt);
+  });
+
+  it('a retry that succeeds clears the old "some channels failed" error', async () => {
+    const { svc } = make();
+    currentRow = { ...retryRow(), lastError: 'Some channels failed to publish' };
+    await svc.publishPost('p1', 'w1', 'u1');
+    const final = updates[updates.length - 1];
+    expect(final.lastError).toBeNull();
+  });
+
   it('stays partially_published and keeps the original publishedAt when the retry fails again', async () => {
     const { svc, publisher } = make();
     publisher.publish.mockRejectedValueOnce(new Error('still down'));

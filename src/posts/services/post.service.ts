@@ -689,12 +689,15 @@ export class PostService {
       targets: updatedTargets,
       updatedAt: new Date(),
     };
-    if (newSuccess) {
+    // The post's publishedAt is when it FIRST went out: a retry that lands
+    // later must not restamp it, or the post jumps to the retry's day on
+    // every calendar that places posts by it.
+    if (newSuccess && !post.publishedAt) {
       postUpdateData.publishedAt = new Date();
     }
-    if (!allSuccess) {
-      postUpdateData.lastError = 'Some channels failed to publish';
-    }
+    postUpdateData.lastError = allSuccess
+      ? null
+      : 'Some channels failed to publish';
     const [updatedPost] = await db
       .update(posts)
       .set(postUpdateData)
