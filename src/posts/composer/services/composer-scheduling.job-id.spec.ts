@@ -31,7 +31,9 @@ function make(existing: any[]) {
     });
   const queue = {
     getJob: jest.fn(async (id: string) => jobs.get(id) ?? null),
-    add: jest.fn(async (_n: string, _d: any, opts: any) => ({ id: opts.jobId })),
+    add: jest.fn(async (_n: string, _d: any, opts: any) => ({
+      id: opts.jobId,
+    })),
   };
   const calendar = {
     syncPost: jest.fn(async () => undefined),
