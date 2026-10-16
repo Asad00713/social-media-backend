@@ -12,6 +12,8 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { RequireCapability } from '../workspace-members/require-capability.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { DripService } from './drip.service';
 import {
@@ -24,7 +26,7 @@ import {
 } from './dto/drip.dto';
 
 @Controller('drips')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class DripController {
   constructor(private readonly dripService: DripService) {}
 
@@ -35,6 +37,7 @@ export class DripController {
   /**
    * Create a new drip campaign
    */
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId')
   @HttpCode(HttpStatus.CREATED)
   async createDripCampaign(
@@ -57,6 +60,7 @@ export class DripController {
   /**
    * Get all drip campaigns for a workspace
    */
+  @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId')
   async getWorkspaceDripCampaigns(
     @Param('workspaceId') workspaceId: string,
@@ -82,6 +86,7 @@ export class DripController {
   /**
    * Scheduled drip posts across the workspace for the calendar.
    */
+  @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId/scheduled-posts')
   async getWorkspaceScheduledDripPosts(
     @Param('workspaceId') workspaceId: string,
@@ -98,6 +103,7 @@ export class DripController {
   /**
    * Get a specific drip campaign
    */
+  @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId/:campaignId')
   async getDripCampaign(
     @Param('workspaceId') workspaceId: string,
@@ -113,6 +119,7 @@ export class DripController {
   /**
    * Update a drip campaign (only draft campaigns can be modified)
    */
+  @RequireCapability('posts:publish')
   @Put('workspaces/:workspaceId/:campaignId')
   async updateDripCampaign(
     @Param('workspaceId') workspaceId: string,
@@ -136,6 +143,7 @@ export class DripController {
   /**
    * Delete a drip campaign
    */
+  @RequireCapability('posts:publish')
   @Delete('workspaces/:workspaceId/:campaignId')
   @HttpCode(HttpStatus.OK)
   async deleteDripCampaign(
@@ -158,6 +166,7 @@ export class DripController {
   /**
    * Activate a drip campaign (starts generating posts and scheduling jobs)
    */
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/:campaignId/activate')
   @HttpCode(HttpStatus.OK)
   async activateDripCampaign(
@@ -180,6 +189,7 @@ export class DripController {
   /**
    * Pause a drip campaign (stops new posts, keeps existing posts)
    */
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/:campaignId/pause')
   @HttpCode(HttpStatus.OK)
   async pauseDripCampaign(
@@ -202,6 +212,7 @@ export class DripController {
   /**
    * Cancel a drip campaign (stops and marks as cancelled)
    */
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/:campaignId/cancel')
   @HttpCode(HttpStatus.OK)
   async cancelDripCampaign(
@@ -228,6 +239,7 @@ export class DripController {
   /**
    * Get all posts for a drip campaign
    */
+  @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId/:campaignId/posts')
   async getDripPosts(
     @Param('workspaceId') workspaceId: string,
@@ -251,6 +263,7 @@ export class DripController {
   /**
    * Get a specific drip post
    */
+  @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId/posts/:dripPostId')
   async getDripPost(
     @Param('workspaceId') workspaceId: string,
@@ -263,6 +276,7 @@ export class DripController {
   /**
    * Update drip post content (user edits AI-generated content)
    */
+  @RequireCapability('posts:publish')
   @Put('workspaces/:workspaceId/posts/:dripPostId')
   async updateDripPostContent(
     @Param('workspaceId') workspaceId: string,
@@ -286,6 +300,7 @@ export class DripController {
   /**
    * Approve a drip post (approve AI-generated content without edits)
    */
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/posts/:dripPostId/approve')
   @HttpCode(HttpStatus.OK)
   async approveDripPost(
@@ -308,6 +323,7 @@ export class DripController {
   /**
    * Skip a drip post (don't publish this occurrence)
    */
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/posts/:dripPostId/skip')
   @HttpCode(HttpStatus.OK)
   async skipDripPost(
@@ -334,6 +350,7 @@ export class DripController {
   /**
    * Get campaign history (audit log)
    */
+  @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId/:campaignId/history')
   async getCampaignHistory(
     @Param('workspaceId') workspaceId: string,
@@ -349,6 +366,7 @@ export class DripController {
   /**
    * Get campaign statistics
    */
+  @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId/:campaignId/stats')
   async getCampaignStats(
     @Param('workspaceId') workspaceId: string,

@@ -4,6 +4,7 @@ import { PostsController } from './posts.controller';
 import { PostService } from './services/post.service';
 import { ChannelsModule } from '../channels/channels.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { QueueModule, QUEUES } from '../queue/queue.module';
 import { AnalyticsModule } from '../channels/analytics/analytics.module';
 import { MediaModule } from '../media/media.module';
@@ -40,6 +41,7 @@ import { PostPublishProcessor } from './processors/post-publish.processor';
   imports: [
     ChannelsModule,
     DrizzleModule,
+    WorkspaceRoleModule,
     QueueModule,
     BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS }),
     AnalyticsModule,

@@ -12,6 +12,8 @@ import {
   HttpStatus,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { RequireCapability } from '../workspace-members/require-capability.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { CampaignsService } from './campaigns.service';
 import {
@@ -28,7 +30,7 @@ import {
 } from './dto/campaigns.dto';
 
 @Controller('campaigns')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class CampaignsController {
   constructor(private readonly campaignsService: CampaignsService) {}
 
@@ -38,11 +40,13 @@ export class CampaignsController {
 
   // NOTE: `status-counts` MUST be declared before the `:id` route below, or
   // Nest will match "status-counts" as an `:id` param value.
+  @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId/status-counts')
   async statusCounts(@Param('workspaceId') workspaceId: string) {
     return this.campaignsService.statusCounts(workspaceId);
   }
 
+  @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId')
   async list(
     @Param('workspaceId') workspaceId: string,
@@ -54,6 +58,7 @@ export class CampaignsController {
     });
   }
 
+  @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId/:id')
   async getOne(
     @Param('workspaceId') workspaceId: string,
@@ -66,6 +71,7 @@ export class CampaignsController {
   // Write — CRUD
   // ==========================================================================
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId')
   @HttpCode(HttpStatus.CREATED)
   async createSimple(
@@ -76,6 +82,7 @@ export class CampaignsController {
     return this.campaignsService.createSimple(workspaceId, user.userId, dto);
   }
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/drip')
   @HttpCode(HttpStatus.CREATED)
   async createDrip(
@@ -86,6 +93,7 @@ export class CampaignsController {
     return this.campaignsService.createDrip(workspaceId, user.userId, dto);
   }
 
+  @RequireCapability('posts:publish')
   @Patch('workspaces/:workspaceId/:id')
   async update(
     @Param('workspaceId') workspaceId: string,
@@ -95,6 +103,7 @@ export class CampaignsController {
     return this.campaignsService.update(workspaceId, id, dto);
   }
 
+  @RequireCapability('posts:publish')
   @Delete('workspaces/:workspaceId/:id')
   @HttpCode(HttpStatus.OK)
   async remove(
@@ -109,6 +118,7 @@ export class CampaignsController {
   // Lifecycle
   // ==========================================================================
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/:id/launch')
   @HttpCode(HttpStatus.OK)
   async launch(
@@ -118,6 +128,7 @@ export class CampaignsController {
     return this.campaignsService.launch(workspaceId, id);
   }
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/:id/pause')
   @HttpCode(HttpStatus.OK)
   async pause(
@@ -127,6 +138,7 @@ export class CampaignsController {
     return this.campaignsService.pause(workspaceId, id);
   }
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/:id/resume')
   @HttpCode(HttpStatus.OK)
   async resume(
@@ -136,6 +148,7 @@ export class CampaignsController {
     return this.campaignsService.resume(workspaceId, id);
   }
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/:id/duplicate')
   @HttpCode(HttpStatus.OK)
   async duplicate(
@@ -150,6 +163,7 @@ export class CampaignsController {
   // Days
   // ==========================================================================
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/:id/days')
   @HttpCode(HttpStatus.OK)
   async addDay(
@@ -160,6 +174,7 @@ export class CampaignsController {
     return this.campaignsService.addDay(workspaceId, id, dto.date);
   }
 
+  @RequireCapability('posts:publish')
   @Delete('workspaces/:workspaceId/:id/days/:date')
   @HttpCode(HttpStatus.OK)
   async removeDay(
@@ -170,6 +185,7 @@ export class CampaignsController {
     return this.campaignsService.removeDay(workspaceId, id, date);
   }
 
+  @RequireCapability('posts:publish')
   @Patch('workspaces/:workspaceId/:id/days/:date')
   async setDaySkip(
     @Param('workspaceId') workspaceId: string,
@@ -184,6 +200,7 @@ export class CampaignsController {
   // Events (slots)
   // ==========================================================================
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/:id/events')
   @HttpCode(HttpStatus.OK)
   async addEvent(
@@ -194,6 +211,7 @@ export class CampaignsController {
     return this.campaignsService.addEvent(workspaceId, id, dto);
   }
 
+  @RequireCapability('posts:publish')
   @Patch('workspaces/:workspaceId/:id/events')
   async updateEvent(
     @Param('workspaceId') workspaceId: string,
@@ -203,6 +221,7 @@ export class CampaignsController {
     return this.campaignsService.updateEvent(workspaceId, id, dto);
   }
 
+  @RequireCapability('posts:publish')
   @Delete('workspaces/:workspaceId/:id/events')
   @HttpCode(HttpStatus.OK)
   async removeEvent(
@@ -217,6 +236,7 @@ export class CampaignsController {
   // AI mock (Phase 1)
   // ==========================================================================
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/:id/events/ai/generate')
   @HttpCode(HttpStatus.OK)
   async generateAi(
@@ -232,6 +252,7 @@ export class CampaignsController {
     );
   }
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/:id/events/ai/approve')
   @HttpCode(HttpStatus.OK)
   async approveAi(
@@ -247,6 +268,7 @@ export class CampaignsController {
     );
   }
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/:id/events/ai/skip')
   @HttpCode(HttpStatus.OK)
   async skipAi(

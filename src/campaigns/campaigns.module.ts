@@ -9,6 +9,7 @@ import { CampaignPublishingService } from './campaign-publishing.service';
 import { EvergreenFireProcessor } from './processors/evergreen-fire.processor';
 import { EvergreenReconcileCron } from './evergreen-reconcile.cron';
 import { DrizzleModule } from '../drizzle/drizzle.module';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { PostsModule } from '../posts/posts.module';
 import { AiModule } from '../ai/ai.module';
 import { QUEUES } from '../queue/queue.module';
@@ -16,6 +17,7 @@ import { QUEUES } from '../queue/queue.module';
 @Module({
   imports: [
     DrizzleModule,
+    WorkspaceRoleModule,
     BullModule.registerQueue(
       { name: QUEUES.POST_PUBLISHING },
       { name: QUEUES.EVERGREEN_ROTATION },

@@ -1,5 +1,7 @@
 import { Controller, Post, Patch, Delete, Body, Param, UseGuards, HttpCode, HttpStatus } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { RequireCapability } from '../workspace-members/require-capability.decorator';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { EvergreenService } from './evergreen.service';
 import { EvergreenScoringService } from './evergreen-scoring.service';
@@ -15,7 +17,7 @@ import {
 } from './dto/evergreen.dto';
 
 @Controller('campaigns')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class EvergreenController {
   constructor(
     private readonly evergreen: EvergreenService,
@@ -26,6 +28,7 @@ export class EvergreenController {
   // Campaign
   // ==========================================================================
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/evergreen')
   @HttpCode(HttpStatus.CREATED)
   async createCampaign(
@@ -40,6 +43,7 @@ export class EvergreenController {
   // Categories
   // ==========================================================================
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/evergreen/:id/categories')
   @HttpCode(HttpStatus.OK)
   async addCategory(
@@ -50,6 +54,7 @@ export class EvergreenController {
     return this.evergreen.addCategory(workspaceId, id, dto);
   }
 
+  @RequireCapability('posts:publish')
   @Patch('workspaces/:workspaceId/evergreen/:id/categories/:catId')
   async updateCategory(
     @Param('workspaceId') workspaceId: string,
@@ -60,6 +65,7 @@ export class EvergreenController {
     return this.evergreen.updateCategory(workspaceId, id, catId, dto);
   }
 
+  @RequireCapability('posts:publish')
   @Patch('workspaces/:workspaceId/evergreen/:id/categories/:catId/active')
   async setCategoryActive(
     @Param('workspaceId') workspaceId: string,
@@ -70,6 +76,7 @@ export class EvergreenController {
     return this.evergreen.setCategoryActive(workspaceId, id, catId, dto.isActive);
   }
 
+  @RequireCapability('posts:publish')
   @Delete('workspaces/:workspaceId/evergreen/:id/categories/:catId')
   @HttpCode(HttpStatus.OK)
   async removeCategory(
@@ -84,6 +91,7 @@ export class EvergreenController {
   // Pool posts
   // ==========================================================================
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/evergreen/:id/categories/:catId/posts')
   @HttpCode(HttpStatus.OK)
   async addPost(
@@ -99,6 +107,7 @@ export class EvergreenController {
   // positional arg (Task 4, already committed), so these routes carry
   // `:catId` even though the design doc's flatter `.../posts/:postId` shape
   // does not. See task-5-report.md for the full rationale.
+  @RequireCapability('posts:publish')
   @Patch('workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId')
   async updatePost(
     @Param('workspaceId') workspaceId: string,
@@ -110,6 +119,7 @@ export class EvergreenController {
     return this.evergreen.updatePost(workspaceId, id, catId, postId, dto);
   }
 
+  @RequireCapability('posts:publish')
   @Delete('workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId')
   @HttpCode(HttpStatus.OK)
   async removePost(
@@ -130,6 +140,7 @@ export class EvergreenController {
   // `.../posts/:postId/variations` shape).
   // ==========================================================================
 
+  @RequireCapability('posts:publish')
   @Post(
     'workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId/variations/generate',
   )
@@ -152,6 +163,7 @@ export class EvergreenController {
     );
   }
 
+  @RequireCapability('posts:publish')
   @Post('workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId/variations')
   @HttpCode(HttpStatus.OK)
   async addVariation(
@@ -164,6 +176,7 @@ export class EvergreenController {
     return this.evergreen.addVariation(workspaceId, id, catId, postId, dto);
   }
 
+  @RequireCapability('posts:publish')
   @Delete(
     'workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId/variations/:variationId',
   )
@@ -188,6 +201,7 @@ export class EvergreenController {
   // without a second round-trip.
   // ==========================================================================
 
+  @RequireCapability('posts:publish')
   @Post(
     'workspaces/:workspaceId/evergreen/:id/categories/:catId/posts/:postId/freshness-check',
   )

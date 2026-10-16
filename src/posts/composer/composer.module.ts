@@ -14,6 +14,7 @@ import { ComposerSchedulingService } from './services/composer-scheduling.servic
 import { QueueModule } from '../../queue/queue.module';
 import { ChannelsModule } from '../../channels/channels.module';
 import { DrizzleModule } from '../../drizzle/drizzle.module';
+import { WorkspaceRoleModule } from '../../workspace-members/workspace-role.module';
 import { PostsModule } from '../posts.module';
 import { CalendarSyncModule } from '../../calendar-sync/calendar-sync.module';
 // For PostQueueService — the same scheduling ceiling PostsModule enforces.
@@ -22,6 +23,7 @@ import { BillingModule } from '../../billing/billing.module';
 @Module({
   imports: [
     DrizzleModule,
+    WorkspaceRoleModule,
     ChannelsModule,
     PostsModule,
     QueueModule,

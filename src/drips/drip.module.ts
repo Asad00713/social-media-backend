@@ -3,6 +3,7 @@ import { DripController } from './drip.controller';
 import { DripService } from './drip.service';
 import { DripProcessor } from './processors/drip.processor';
 import { DrizzleModule } from '../drizzle/drizzle.module';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { QueueModule } from '../queue/queue.module';
 import { AiModule } from '../ai/ai.module';
 import { PostsModule } from '../posts/posts.module';
@@ -11,6 +12,7 @@ import { EmailModule } from '../email/email.module';
 @Module({
   imports: [
     DrizzleModule,
+    WorkspaceRoleModule,
     QueueModule,
     AiModule,
     EmailModule,

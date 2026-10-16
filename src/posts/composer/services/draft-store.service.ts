@@ -1,4 +1,10 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ForbiddenException,
+  Inject,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { isViewer, type CallerRole } from '../../guest-rules';
 import { carryFirstWeekMeta } from '../../../first-week/lib/first-week-metadata';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
@@ -25,12 +31,17 @@ export class DraftStoreService {
     workspaceId: string,
     userId: string,
     dto: SaveDraftDto,
+    role?: CallerRole,
   ): Promise<Draft> {
     const existing = await this.db
       .select()
       .from(posts)
       .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)))
       .limit(1);
+
+    if (existing.length > 0 && isViewer(role)) {
+      this.assertViewerOwnsDraft(existing[0], userId);
+    }
 
     const metadata = {
       hashtags: dto.base.hashtags,
@@ -102,10 +113,30 @@ export class DraftStoreService {
     return rows.map((r: any) => this.toDraft(r));
   }
 
+  /** A viewer may only change drafts they created themselves. */
+  private assertViewerOwnsDraft(row: any, userId: string): void {
+    if (row.status !== 'draft') {
+      throw new ForbiddenException('Viewers can only change drafts');
+    }
+    if (row.createdById !== userId) {
+      throw new ForbiddenException('Viewers can only change their own drafts');
+    }
+  }
+
   async delete(
     workspaceId: string,
     draftId: string,
+    userId?: string,
+    role?: CallerRole,
   ): Promise<{ success: true }> {
+    if (isViewer(role)) {
+      const rows = await this.db
+        .select()
+        .from(posts)
+        .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)))
+        .limit(1);
+      if (rows.length > 0) this.assertViewerOwnsDraft(rows[0], userId ?? '');
+    }
     await this.db
       .delete(posts)
       .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)));
