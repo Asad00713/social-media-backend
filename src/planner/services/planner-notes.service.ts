@@ -148,11 +148,15 @@ export class PlannerNotesService {
     _role: CallerRole,
     dto: UpdateNoteDto,
   ): Promise<PlannerNoteDto> {
+    // `null` passes @IsOptional(), but neither column is nullable.
+    if (dto.body == null && dto.color == null) {
+      throw new BadRequestException('Nothing to update');
+    }
     const [row] = await this.db
       .update(calendarNotes)
       .set({
-        ...(dto.body !== undefined && { body: dto.body }),
-        ...(dto.color !== undefined && { color: dto.color }),
+        ...(dto.body != null && { body: dto.body }),
+        ...(dto.color != null && { color: dto.color }),
         updatedById: userId,
         updatedAt: new Date(),
       })

@@ -161,6 +161,20 @@ describe('PlannerNotesService', () => {
       ).resolves.toMatchObject({ id: 'n1', author: { id: 'user-9' } });
     });
 
+    it.each([
+      [{}],
+      [{ body: null }],
+      [{ color: null }],
+      [{ body: null, color: null }],
+    ])('answers 400 to the empty patch %j without writing', async (patch) => {
+      const db = fakeDb();
+      const svc = new PlannerNotesService(db);
+      const p = svc.update(WS, 'n1', ME, 'MEMBER', patch as never);
+      await expect(p).rejects.toBeInstanceOf(BadRequestException);
+      await expect(p).rejects.toThrow('Nothing to update');
+      expect(db.update).not.toHaveBeenCalled();
+    });
+
     it('lets a MEMBER delete a note another member wrote', async () => {
       const svc = new PlannerNotesService(fakeDb(chain([{ id: 'n1' }])));
       await expect(svc.remove(WS, 'n1', ME, 'MEMBER')).resolves.toBeUndefined();
