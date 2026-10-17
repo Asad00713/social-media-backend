@@ -8,7 +8,7 @@ import {
   index,
   integer,
 } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import { users } from './users.schema';
 import { workspace } from './workspace.schema';
 import { socialMediaChannels, SupportedPlatform } from './channels.schema';
@@ -120,6 +120,13 @@ export const posts = pgTable(
       }>()
       .default({}),
 
+    // "Ready to schedule" flag, cleared by the posts_clear_ready trigger
+    // (migration 0041) whenever the post leaves 'draft'.
+    readyAt: timestamp('ready_at', { withTimezone: true }),
+    readyById: uuid('ready_by_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+
     // Job tracking (for BullMQ)
     jobId: varchar('job_id', { length: 100 }), // BullMQ job ID for scheduled posts
 
@@ -141,6 +148,9 @@ export const posts = pgTable(
     index('posts_status_idx').on(table.status),
     index('posts_scheduled_at_idx').on(table.scheduledAt),
     index('posts_created_at_idx').on(table.createdAt),
+    index('posts_workspace_draft_idx')
+      .on(table.workspaceId, table.updatedAt.desc())
+      .where(sql`${table.status} = 'draft'`),
   ],
 );
 

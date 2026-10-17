@@ -46,6 +46,8 @@ export const NOTIFICATION_TYPES = [
   'user_inactive_25_days',
   'user_deactivated_30_days',
   'user_deleted_365_days',
+  // Planner
+  'draft_ready',
   // General
   'system_announcement',
 ] as const;

@@ -359,6 +359,34 @@ export class NotificationEmitterService {
     );
   }
 
+  // ==================== Planner ====================
+
+  async draftReady(
+    userId: string,
+    args: {
+      workspaceId: string;
+      postId: string;
+      markedByName: string;
+      preview: string;
+    },
+  ) {
+    return this.emitNotification(
+      userId,
+      'draft_ready',
+      'Draft ready to schedule',
+      `${args.markedByName} marked a draft ready: "${args.preview}"`,
+      {
+        priority: 'medium',
+        metadata: {
+          workspaceId: args.workspaceId,
+          postId: args.postId,
+          markedByName: args.markedByName,
+        },
+        actionUrl: `/w/${args.workspaceId}/planner?post=${args.postId}`,
+      },
+    );
+  }
+
   // ==================== System ====================
 
   async systemAnnouncement(
