@@ -162,8 +162,8 @@ New code, by responsibility:
 - Produces (`rollback-db.ts`):
   - `describeDb: typeof describe` (`describe` when `process.env.PLANNER_DB_TESTS === '1'`, else `describe.skip`).
   - `withRollbackDb<T>(migrations: string[], fn: (db: DbType, client: PoolClient) => Promise<T>): Promise<T>`: refuses unless `DATABASE_URL` host is `localhost`/`127.0.0.1`; opens a `pg` client, `BEGIN`, `SET LOCAL TIME ZONE 'Asia/Karachi'` (so UTC-vs-local bugs show), executes each named file from `drizzle/migrations/` (twice, to prove idempotency), runs `fn` with `drizzle(client, { schema })`, always `ROLLBACK`s.
-- Produces (schema): `posts.readAt: timestamptz | null`, `posts.readById: uuid | null` (FK `users.id` `ON DELETE SET NULL`); index `posts_workspace_draft_idx` on `(workspace_id, updated_at DESC) WHERE status = 'draft'`.
-- Produces (emitter): `NotificationEmitterService.draftReady(userId: string, args: { workspaceId: string; workspaceSlug: string; postId: string; markedByName: string; preview: string }): Promise<Notification>`: type `draft_ready`, priority `medium`, title `Draft ready to schedule`, message `<markedByName> marked a draft ready: "<preview>"`, `actionUrl: /<workspaceSlug>/planner?post=<postId>`, metadata `{ workspaceId, postId, markedByName }`.
+- Produces (schema): `posts.readyAt: timestamptz | null`, `posts.readyById: uuid | null` (FK `users.id` `ON DELETE SET NULL`); index `posts_workspace_draft_idx` on `(workspace_id, updated_at DESC) WHERE status = 'draft'`.
+- Produces (emitter): `NotificationEmitterService.draftReady(userId: string, args: { workspaceId: string; postId: string; markedByName: string; preview: string }): Promise<Notification>`: type `draft_ready`, priority `medium`, title `Draft ready to schedule`, message `<markedByName> marked a draft ready: "<preview>"`, `actionUrl: /w/<workspaceId>/planner?post=<postId>`, metadata `{ workspaceId, postId, markedByName }`.
 - Migration `0041_post_ready.sql` (idempotent, with the repo's WHY/SAFETY/ROLLBACK header): `ADD COLUMN IF NOT EXISTS ready_at / ready_by_id`; `CREATE INDEX IF NOT EXISTS`; `ALTER TYPE "public"."notification_type" ADD VALUE IF NOT EXISTS 'draft_ready' BEFORE 'system_announcement'`; and a trigger `posts_clear_ready` (`CREATE OR REPLACE FUNCTION` + `DROP TRIGGER IF EXISTS` + `CREATE TRIGGER … BEFORE UPDATE ON posts FOR EACH ROW WHEN (NEW.status <> 'draft' AND NEW.ready_at IS NOT NULL)` setting both columns to NULL). The trigger is how "cleared automatically when the post leaves `draft`" (spec §7.3) holds on every writer (PostService, composer scheduling, publish orchestrator, campaigns, first-week) without touching each.
 
 - [ ] **Step 1: Failing DB spec** (`post-ready.migration.db.spec.ts`, `describeDb`), after applying `0041_post_ready.sql`: (a) `ready_at`, `ready_by_id` exist in `information_schema.columns`; (b) `pg_enum` holds `draft_ready` for `notification_type`; (c) insert a draft with `ready_at = now()`, `UPDATE posts SET status = 'scheduled'`, then `ready_at IS NULL AND ready_by_id IS NULL`; (d) updating a ready draft's `content` only leaves `ready_at` set; (e) deleting the `ready_by_id` user sets `ready_by_id` NULL while `ready_at` stays (use a throwaway user row inside the transaction).
@@ -189,7 +189,7 @@ New code, by responsibility:
   - `presentPost(row: PostRow, ctx: { users: Map<string, UserRef> }): PlannerPostDto` where `type PostRow = typeof posts.$inferSelect`.
   - `bucketByDate(posts: PlannerPostDto[], timeZone: string): Record<string, PlannerPostDto[]>` keyed by the workspace-local date of `occurredAt`.
   - `class CalendarQueryDto { @IsISO8601() from: string; @IsISO8601() to: string }`
-  - `PlannerPostsService`: `constructor(@Inject(DRIZZLE) db: DbType)`; `present(rows: PostRow[]): Promise<PlannerPostDto[]>` (one batched `users` query for authors and `readBy`); `getCalendar(workspaceId: string, from: Date, to: Date): Promise<PlannerCalendarDto>` (uses `calendarRangeWhere`); `getOne(workspaceId: string, postId: string): Promise<PlannerPostDto>` (404 when the id is not in that workspace).
+  - `PlannerPostsService`: `constructor(@Inject(DRIZZLE) db: DbType)`; `present(rows: PostRow[]): Promise<PlannerPostDto[]>` (one batched `users` query for authors and `readyBy`); `getCalendar(workspaceId: string, from: Date, to: Date): Promise<PlannerCalendarDto>` (uses `calendarRangeWhere`); `getOne(workspaceId: string, postId: string): Promise<PlannerPostDto>` (404 when the id is not in that workspace).
 - Behaviour:
   - `displayStatus = derivePostStatus(status, targets)`; `status` stays the stored value. Each target keeps its raw fields and gains normalized `status` plus `failure` (non-null only when its status is `failed`; uses `target.errorCode ?? classify(target.errorMessage ?? post.lastError)`).
   - `occurredAt = publishedAt ?? scheduledAt`; `campaignId = metadata.campaignId ?? null`; `author.name = users.name ?? email local part`; `jobId` is not exposed.
@@ -272,7 +272,7 @@ New code, by responsibility:
 
 **Interfaces:**
 - Produces:
-  - `buildDuplicate(source: PostRow, userId: string): typeof posts.$inferInsert`: status `draft`; `scheduledAt`/`publishedAt`/`jobId`/`lastError` null; `retryCount '0'`; `readAt`/`readById` null; `createdById = userId`; targets rebuilt as `{ channelId, platform, status: 'draft', publishStatus: 'queued', retryCount: 0 }` plus the source's `destination` and `contentOverride` only; `metadata` keeps everything except `campaignId`, `schedule`, `firstWeekSlot`, `suggestedAt`, `imageCredit`, and `source` when it is `first_week` (becomes `composer`); `content`, `mediaItems`, `platformContent` copied.
+  - `buildDuplicate(source: PostRow, userId: string): typeof posts.$inferInsert`: status `draft`; `scheduledAt`/`publishedAt`/`jobId`/`lastError` null; `retryCount '0'`; `readyAt`/`readyById` null; `createdById = userId`; targets rebuilt as `{ channelId, platform, status: 'draft', publishStatus: 'queued', retryCount: 0 }` plus the source's `destination` and `contentOverride` only; `metadata` keeps everything except `campaignId`, `schedule`, `firstWeekSlot`, `suggestedAt`, `imageCredit`, and `source` when it is `first_week` (becomes `composer`); `content`, `mediaItems`, `platformContent` copied.
   - `PostDraftsService.duplicate(workspaceId: string, postId: string, userId: string): Promise<PlannerPostDto>`; route `POST /posts/workspaces/:workspaceId/:postId/duplicate`, `@RequireCapability('posts:draft')`, status 201 body `{ post }`. A Guest may duplicate any post in their workspace (that is "Copy to a new draft").
 
 - [ ] **Step 1: Failing tests**
@@ -682,8 +682,8 @@ interface PlannerPost {
   createdAt: string;
   updatedAt: string;                 // "Edited …" and Drafts ordering
   author: PlannerUserRef;
-  readAt: string | null;             // non-null only for drafts marked ready
-  readBy: { id: string; name: string } | null;
+  readyAt: string | null;             // non-null only for drafts marked ready
+  readyBy: { id: string; name: string } | null;
 }
 ```
 
@@ -713,7 +713,7 @@ interface PlannerPost {
   interface DraftReadyNotification {            // existing notification row shape
     type: 'draft_ready'; title: 'Draft ready to schedule';
     message: string;                            // '<name> marked a draft ready: "<preview>"'
-    actionUrl: string;                          // '/<workspaceSlug>/planner?post=<postId>'
+    actionUrl: string;                          // '/w/<workspaceId>/planner?post=<postId>'
     metadata: { workspaceId: string; postId: string; markedByName: string };
   }
   ```
