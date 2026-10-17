@@ -138,7 +138,7 @@ export class PostPerformanceRepository {
         FROM post_metric_snapshots s
         WHERE s.post_id = p.id
           AND s.channel_id::text = t.channel_id
-        ORDER BY s.snapshot_at DESC
+        ORDER BY s.snapshot_at DESC, s.id DESC
         LIMIT 1
       ) m ON true
       LEFT JOIN LATERAL (
@@ -149,7 +149,7 @@ export class PostPerformanceRepository {
         WHERE s.post_id = p.id
           AND s.channel_id::text = t.channel_id
           AND s.platform_metrics->>'mediaType' IS NOT NULL
-        ORDER BY s.snapshot_at DESC
+        ORDER BY s.snapshot_at DESC, s.id DESC
         LIMIT 1
       ) mt ON true
       WHERE ${postWhere}

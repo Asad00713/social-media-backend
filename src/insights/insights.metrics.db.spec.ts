@@ -189,6 +189,21 @@ describeDb('InsightsService.postMetrics', () => {
       expect(rows[0].usualMultiplier).toBe(2);
     }));
 
+  it('gives an unmeasured post no multiplier even when the channel has a usual', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'm6');
+      const c = await w.channel('a');
+      for (const [i, e] of [4, 5, 5, 5, 6].entries()) {
+        const q = await publish(client, w, [c], 5 + i);
+        await snap(client, q, c, 1, counts(e));
+      }
+      const target = await publish(client, w, [c], 1);
+      const rows = await svc.postMetrics(w.workspaceId, [target], NOW);
+      expect(rows).toHaveLength(1);
+      expect(rows[0].engagements).toBe(0);
+      expect(rows[0].usualMultiplier).toBeNull();
+    }));
+
   it('returns nothing for a post id from another workspace', () =>
     run(async (svc, client) => {
       const mine = await workspace(client, 'm5a');

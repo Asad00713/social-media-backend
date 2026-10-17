@@ -214,10 +214,10 @@ export class InsightsService {
         likes: p.likes,
         comments: p.comments,
         engagements,
-        usualMultiplier: usualMultiplier(
-          engagements,
-          usual.get(p.channelId) ?? [],
-        ),
+        // No data is not "0x the usual": leave it unanswered.
+        usualMultiplier: isMeasured(p)
+          ? usualMultiplier(engagements, usual.get(p.channelId) ?? [])
+          : null,
       };
     });
   }
