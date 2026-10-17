@@ -203,6 +203,28 @@ describe('PostService refusal codes', () => {
       expect(s.history).not.toHaveBeenCalled();
     });
 
+    it('updatePost: a queue-limit refusal makes no cancel, write or history', async () => {
+      const svc = makeService(post('draft', [{ channelId: '1' }]));
+      const limit = new BadRequestException('Queue limit reached');
+      (svc as any).postQueue.enforceQueueLimit = jest
+        .fn()
+        .mockRejectedValue(limit);
+      const s = spies(svc);
+      await expect(
+        svc.updatePost(
+          'p1',
+          WS,
+          'u1',
+          { scheduledAt: new Date(Date.now() + 3_600_000) } as any,
+          'MEMBER',
+        ),
+      ).rejects.toBe(limit);
+      expect(s.cancel).not.toHaveBeenCalled();
+      expect(s.update).not.toHaveBeenCalled();
+      expect(s.execute).not.toHaveBeenCalled();
+      expect(s.history).not.toHaveBeenCalled();
+    });
+
     it('createPost: 400 SCHEDULE_IN_PAST, no insert or history', async () => {
       const svc = makeService(post('draft'));
       const s = spies(svc);

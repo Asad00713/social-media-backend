@@ -13,7 +13,6 @@ import { db } from '../../drizzle/db';
 import { derivePostStatus } from '../lib/post-status';
 import {
   assertNotInPast,
-  isScheduleInPast,
   refusal,
   scheduleInPastRefusal,
 } from '../lib/refusal';
@@ -368,6 +367,21 @@ export class PostService {
       }));
     }
 
+    // Every check that can refuse runs here, before the first side effect
+    // (job cancel, row write, history). A draft promoted to `scheduled` faces
+    // the same per-channel ceiling as one created scheduled — otherwise "save
+    // as draft, then schedule" is a free bypass. Only on the draft -> scheduled
+    // transition: a post already in `scheduled` is counted by
+    // countQueuedForChannel itself, so re-saving it would be refused for
+    // occupying its own slot.
+    if (dto.scheduledAt && existingPost.status !== 'scheduled') {
+      const scheduledTargets = updateData.targets ?? existingPost.targets ?? [];
+      await this.postQueue.enforceQueueLimit(
+        workspaceId,
+        scheduledTargets.map((target) => String(target.channelId)),
+      );
+    }
+
     // Update scheduling
     let clearScheduledAt = false;
     if (dto.scheduledAt !== undefined) {
@@ -385,22 +399,6 @@ export class PostService {
         updateData.scheduledAt = dto.scheduledAt;
         updateData.status = 'scheduled';
       }
-    }
-
-    // A draft promoted to `scheduled` faces the same per-channel ceiling as one
-    // created scheduled — otherwise "save as draft, then schedule" is a free
-    // bypass. Only on the draft -> scheduled transition: a post already in
-    // `scheduled` is counted by countQueuedForChannel itself, so re-saving it
-    // would be refused for occupying its own slot.
-    if (
-      updateData.status === 'scheduled' &&
-      existingPost.status !== 'scheduled'
-    ) {
-      const scheduledTargets = updateData.targets ?? existingPost.targets ?? [];
-      await this.postQueue.enforceQueueLimit(
-        workspaceId,
-        scheduledTargets.map((target) => String(target.channelId)),
-      );
     }
 
     let updatedPost;
@@ -1043,7 +1041,7 @@ export class PostService {
       `Scheduling job for post ${postId}: scheduledAt=${scheduleDate.toISOString()}, delay=${delay}ms`,
     );
 
-    if (isScheduleInPast(scheduleDate)) {
+    if (delay < 0) {
       throw scheduleInPastRefusal();
     }
 
