@@ -8,6 +8,7 @@ import { WorkspaceRoleService } from '../workspace-members/workspace-role.servic
 import { PostsController } from './posts.controller';
 import { PostService } from './services/post.service';
 import { PlannerPostsService } from './services/planner-posts.service';
+import { PostDraftsService } from './services/post-drafts.service';
 
 const WS = '11111111-1111-4111-8111-111111111111';
 const POST = '22222222-2222-4222-8222-222222222222';
@@ -17,6 +18,7 @@ describe('PostsController planner reads over HTTP', () => {
   let app: INestApplication<App>;
   const roles = { getRole: jest.fn(), isPlatformSuperAdmin: jest.fn() };
   const planner = { getCalendar: jest.fn(), getOne: jest.fn() };
+  const drafts = { list: jest.fn() };
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -26,6 +28,7 @@ describe('PostsController planner reads over HTTP', () => {
         { provide: WorkspaceRoleService, useValue: roles },
         { provide: PostService, useValue: {} },
         { provide: PlannerPostsService, useValue: planner },
+        { provide: PostDraftsService, useValue: drafts },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -61,6 +64,7 @@ describe('PostsController planner reads over HTTP', () => {
       timezone: 'UTC',
     });
     planner.getOne.mockResolvedValue({ id: POST });
+    drafts.list.mockResolvedValue({ drafts: [], total: 0, nextCursor: null });
   });
 
   const cal = (qs: string) =>
@@ -104,6 +108,33 @@ describe('PostsController planner reads over HTTP', () => {
       .get(`/posts/workspaces/${WS}/abc`)
       .expect(400);
     expect(planner.getOne).not.toHaveBeenCalled();
+  });
+
+  describe('drafts', () => {
+    const get = (qs = '') =>
+      request(app.getHttpServer()).get(`/posts/workspaces/${WS}/drafts${qs}`);
+
+    it.each(['?limit=0', '?limit=101', '?limit=abc', '?cursor=%%%'])(
+      'answers 400 to %s',
+      async (qs) => {
+        await get(qs).expect(400);
+        expect(drafts.list).not.toHaveBeenCalled();
+      },
+    );
+
+    it('lets a guest list drafts and reaches listDrafts, not getPost', async () => {
+      await get().expect(200, { drafts: [], total: 0, nextCursor: null });
+      expect(drafts.list).toHaveBeenCalledWith(WS, {
+        limit: 30,
+        cursor: undefined,
+      });
+      expect(planner.getOne).not.toHaveBeenCalled();
+    });
+
+    it('passes limit and cursor through', async () => {
+      await get('?limit=5&cursor=abc').expect(200);
+      expect(drafts.list).toHaveBeenCalledWith(WS, { limit: 5, cursor: 'abc' });
+    });
   });
 
   it('refuses a non-member without calling the service', async () => {

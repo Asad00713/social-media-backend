@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { PostsController } from './posts.controller';
 import { PostService } from './services/post.service';
+import { PostDraftsService } from './services/post-drafts.service';
 import { PlannerPostsService } from './services/planner-posts.service';
 import { ChannelsModule } from '../channels/channels.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
@@ -56,6 +57,7 @@ import { PostPublishProcessor } from './processors/post-publish.processor';
   providers: [
     PostService,
     PlannerPostsService,
+    PostDraftsService,
     PublisherFactory,
     TwitterPublisher,
     FacebookPublisher,
@@ -73,6 +75,11 @@ import { PostPublishProcessor } from './processors/post-publish.processor';
     PostPublishProcessor,
     CampaignStatusSyncListener,
   ],
-  exports: [PostService, PlannerPostsService, PublisherFactory],
+  exports: [
+    PostService,
+    PlannerPostsService,
+    PostDraftsService,
+    PublisherFactory,
+  ],
 })
 export class PostsModule {}

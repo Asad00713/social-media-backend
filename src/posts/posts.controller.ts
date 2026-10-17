@@ -22,6 +22,8 @@ import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PostService } from './services/post.service';
 import { PlannerPostsService } from './services/planner-posts.service';
+import { PostDraftsService } from './services/post-drafts.service';
+import { ListDraftsQueryDto } from './dto/draft-ops.dto';
 import { CalendarQueryDto } from './dto/calendar-query.dto';
 import { CreatePostDto, UpdatePostDto, PostQueryDto } from './dto/post.dto';
 
@@ -34,6 +36,7 @@ export class PostsController {
   constructor(
     private readonly postService: PostService,
     private readonly plannerPosts: PlannerPostsService,
+    private readonly drafts: PostDraftsService,
   ) {}
 
   // ==========================================================================
@@ -122,6 +125,22 @@ export class PostsController {
       );
     }
     return await this.plannerPosts.getCalendar(workspaceId, from, to);
+  }
+
+  /**
+   * Paged drafts, ready ones first. MUST be declared before the ':postId'
+   * routes, or "drafts" is matched as a post id.
+   */
+  @RequireCapability('posts:draft')
+  @Get('workspaces/:workspaceId/drafts')
+  async listDrafts(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Query() query: ListDraftsQueryDto,
+  ) {
+    return await this.drafts.list(workspaceId, {
+      limit: query.limit ?? 30,
+      cursor: query.cursor,
+    });
   }
 
   /**

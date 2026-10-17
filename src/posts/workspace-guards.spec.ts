@@ -20,6 +20,7 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
       createPost: 'posts:draft',
       getWorkspacePosts: 'posts:draft',
       getCalendarPosts: 'posts:draft',
+      listDrafts: 'posts:draft',
       getPost: 'posts:draft',
       updatePost: 'posts:draft',
       deletePost: 'posts:draft',
