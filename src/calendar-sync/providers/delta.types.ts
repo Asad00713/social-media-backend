@@ -37,6 +37,11 @@ export interface NormalizedExternalEvent {
   postId?: string;
   /** The tagged scheduled-message id, when the event is a MESSAGE event we wrote. */
   messageId?: string;
+  /**
+   * Number of attendees on the event (Google `attendees.length`, Graph
+   * `attendees.length`). Null when the provider sent no attendee list.
+   */
+  attendeeCount?: number | null;
   /** Provider concurrency token (Google `etag`, Graph `@odata.etag`). */
   etag?: string;
   /** Raw provider payload (persisted to `external_calendar_events.raw`). */
@@ -81,6 +86,13 @@ export interface CalendarDeltaOptions {
   accessToken: string;
   /** PRIMARY calendar id for this connection. Defaults to `'primary'`. */
   calendarId?: string;
+  /**
+   * False for a SECONDARY calendar. Only Outlook cares: its primary stream is
+   * `/me/calendarView/delta`, a secondary one is
+   * `/me/calendars/{id}/calendarView/delta`. Google addresses every calendar by
+   * id already. Defaults to true.
+   */
+  isPrimary?: boolean;
   /**
    * Stored cursor from `calendar_sync_state` (Google syncToken / Graph
    * deltaLink). Absent/null → bounded full list.

@@ -30,6 +30,7 @@ interface GoogleEvent {
   updated?: string;
   start?: { dateTime?: string; date?: string; timeZone?: string };
   end?: { dateTime?: string; date?: string; timeZone?: string };
+  attendees?: unknown[];
   extendedProperties?: {
     private?: Record<string, string>;
     shared?: Record<string, string>;
@@ -222,6 +223,7 @@ function normalizeGoogleEvent(
     isOurs: Boolean(postId || messageId),
     postId: postId || undefined,
     messageId: messageId || undefined,
+    attendeeCount: Array.isArray(item.attendees) ? item.attendees.length : null,
     etag: item.etag,
     raw: item,
   };

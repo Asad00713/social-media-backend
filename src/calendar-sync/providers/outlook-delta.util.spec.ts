@@ -247,4 +247,56 @@ describe('fetchOutlookCalendarDelta', () => {
       fetchOutlookCalendarDelta({ accessToken: ACCESS_TOKEN, now: NOW }),
     ).rejects.toThrow(/500/);
   });
+
+  it('counts attendees, and reports null when the event carries none', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        value: [
+          { ...plainEvent, attendees: [{}, {}, {}] },
+          { ...plainEvent, id: 'evt-solo' },
+        ],
+        '@odata.deltaLink': DELTA_LINK,
+      }),
+    );
+
+    const result = await fetchOutlookCalendarDelta({
+      accessToken: ACCESS_TOKEN,
+      now: NOW,
+    });
+
+    expect(result.changed.map((e) => e.attendeeCount)).toEqual([3, null]);
+  });
+
+  it('streams a NON-primary calendar from its own calendarView/delta route', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ value: [], '@odata.deltaLink': DELTA_LINK }),
+    );
+
+    await fetchOutlookCalendarDelta({
+      accessToken: ACCESS_TOKEN,
+      calendarId: 'AAMk/cal+1=',
+      isPrimary: false,
+      now: NOW,
+    });
+
+    expect(fetchMock.mock.calls[0][0]).toContain(
+      `/me/calendars/${encodeURIComponent('AAMk/cal+1=')}/calendarView/delta?`,
+    );
+  });
+
+  it('keeps the default-calendar route for the primary, whatever calendarId it carries', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({ value: [], '@odata.deltaLink': DELTA_LINK }),
+    );
+
+    await fetchOutlookCalendarDelta({
+      accessToken: ACCESS_TOKEN,
+      calendarId: 'AAMk-primary-id',
+      now: NOW,
+    });
+
+    const url = fetchMock.mock.calls[0][0];
+    expect(url).toContain('/me/calendarView/delta?');
+    expect(url).not.toContain('/me/calendars/');
+  });
 });

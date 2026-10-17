@@ -1,5 +1,15 @@
 import { Inject, Injectable, Logger, forwardRef } from '@nestjs/common';
-import { and, eq, gte, inArray, lte, notInArray } from 'drizzle-orm';
+import {
+  and,
+  eq,
+  gte,
+  inArray,
+  isNull,
+  lte,
+  notInArray,
+  or,
+  type SQL,
+} from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { posts } from '../../drizzle/schema/posts.schema';
@@ -13,6 +23,8 @@ import {
   calendarSyncState,
   CalendarSyncStateRow,
   externalCalendarEvents,
+  externalCalendars,
+  type ExternalCalendarRow,
 } from '../../drizzle/schema/calendar-sync.schema';
 import { ChannelService } from '../../channels/services/channel.service';
 import {
@@ -41,6 +53,7 @@ import {
   postToEventInput,
 } from '../calendar-sync.mapper';
 import { CalendarPushSyncService } from './calendar-push-sync.service';
+import { ExternalCalendarsService } from './external-calendars.service';
 
 // Calendar channel platforms that participate in the pull (external import).
 const CALENDAR_PLATFORMS = ['google_calendar', 'outlook_calendar'] as const;
@@ -111,6 +124,13 @@ interface CalendarWriteService {
  * scheduled message, and an app-newer edit is re-pushed to the provider. Neither
  * a post nor a message is ever hard-deleted.
  *
+ * Every OTHER calendar of the connection (`external_calendars`, discovered by
+ * `ExternalCalendarsService`) is pulled too, each with its own cursor, but only
+ * ever as read-only external data: Schedura writes to the primary calendar
+ * alone, so the ownership / two-way logic below never sees a secondary event.
+ * Provider push subscriptions (webhooks) stay on the primary calendar;
+ * secondary calendars refresh on the 15-minute poll.
+ *
  * `reconcile()` never throws: it is driven by BullMQ/webhooks where one broken
  * connection must not stall the others. Every per-event apply is likewise
  * isolated — one bad event must not abort the rest of the run.
@@ -133,6 +153,7 @@ export class CalendarPullSyncService {
     private readonly scheduledMessages: ScheduledMessagesService,
     // RealtimeModule is @Global, so no module import is needed for this.
     private readonly events: AnalyticsEventEmitter,
+    private readonly externalCalendars: ExternalCalendarsService,
   ) {}
 
   /**
@@ -161,10 +182,34 @@ export class CalendarPullSyncService {
         accessToken,
       );
 
+      // Discover every calendar of the connection (never throws; a failed list
+      // keeps the rows we already have).
+      const { calendars, primaryIsNew } =
+        await this.externalCalendars.syncCalendarList(channel, accessToken);
+      const primaryRow =
+        calendars.find((row) => row.providerCalendarId === calendarId) ??
+        calendars.find((row) => row.isPrimary);
+
       const now = new Date();
 
       let storedCursor =
         provider === 'google' ? state.syncToken : state.deltaLink;
+
+      // First sight of the primary calendar row: claim the events imported
+      // before 0044 and force ONE full resync so every event is re-stamped with
+      // `calendar_id` / `attendee_count`. This is the backfill for existing
+      // connections, driven by the regular 15-minute poll.
+      if (primaryRow && primaryIsNew) {
+        await this.externalCalendars.claimUnassignedEvents(
+          channel.id,
+          calendarId,
+          primaryRow.id,
+        );
+        if (storedCursor) {
+          await this.clearCursor(state.id, provider);
+          storedCursor = null;
+        }
+      }
 
       // The cursor freezes the bounded window it was minted with, so age it out
       // periodically and re-run a full list to roll the window forward.
@@ -214,6 +259,7 @@ export class CalendarPullSyncService {
         provider,
         calendarId,
         delta,
+        primaryRow?.id ?? null,
       );
 
       // A TRUNCATED run (page cap hit) only saw a PREFIX of the provider's
@@ -228,7 +274,15 @@ export class CalendarPullSyncService {
       // previously imported inside the window that is no longer present is gone
       // (deleted while we were disconnected) → prune it.
       if (isFullSync && isCompleteRun) {
-        await this.pruneMissingInWindow(channel.id, seenIds, now);
+        // Scoped to the primary calendar (and pre-0044 rows with no calendar):
+        // a channel-wide prune would delete every secondary calendar's events.
+        const col = externalCalendarEvents.calendarId;
+        await this.pruneMissingInWindow(
+          channel.id,
+          seenIds,
+          now,
+          primaryRow ? or(isNull(col), eq(col, primaryRow.id)) : isNull(col),
+        );
       }
 
       await this.persistCursor(
@@ -242,6 +296,30 @@ export class CalendarPullSyncService {
         `Calendar pull for channel ${channelId} (${provider}): ${delta.changed.length} changed, ${delta.deleted.length} deleted, full=${isFullSync}, truncated=${delta.truncated}`,
       );
 
+      // Every other calendar of the connection, each isolated from the rest.
+      let changedCount = delta.changed.length;
+      let deletedCount = delta.deleted.length;
+      for (const row of calendars) {
+        if (row.id === primaryRow?.id) continue;
+        try {
+          const counts = await this.pullSecondaryCalendar(
+            channel,
+            provider,
+            accessToken,
+            row,
+            now,
+          );
+          changedCount += counts.changed;
+          deletedCount += counts.deleted;
+        } catch (error) {
+          const message =
+            error instanceof Error ? error.message : String(error);
+          this.logger.warn(
+            `Secondary calendar ${row.id} pull failed for channel ${channelId}: ${message}`,
+          );
+        }
+      }
+
       // Tell any open calendar view to refetch. Without this the browser only
       // learns about a provider-side change when the tab regains focus, which is
       // why a Google event created in the next tab never appeared until reload.
@@ -251,13 +329,13 @@ export class CalendarPullSyncService {
       // the cheap direction to be wrong in: invalidateQueries only refetches
       // queries that are actually mounted, so a workspace with no calendar open
       // pays nothing, and we never miss a real change.
-      if (delta.changed.length > 0 || delta.deleted.length > 0) {
+      if (changedCount > 0 || deletedCount > 0) {
         this.events.emit(channel.workspaceId, 'calendar.external.changed', {
           workspaceId: channel.workspaceId,
           channelId,
           provider,
-          changed: delta.changed.length,
-          deleted: delta.deleted.length,
+          changed: changedCount,
+          deleted: deletedCount,
         });
       }
     } catch (error) {
@@ -282,6 +360,7 @@ export class CalendarPullSyncService {
     provider: Provider,
     calendarId: string,
     delta: CalendarDeltaResult,
+    calendarRowId: string | null,
   ): Promise<string[]> {
     // AUTHORITATIVE ownership check: an event is OURS when a
     // `calendar_item_links` row points at it, regardless of what the provider
@@ -303,7 +382,13 @@ export class CalendarPullSyncService {
         await this.applyOwnedChange(channel, event);
         continue;
       }
-      await this.upsertExternalEvent(channel, provider, calendarId, event);
+      await this.upsertExternalEvent(
+        channel,
+        provider,
+        calendarId,
+        event,
+        calendarRowId,
+      );
       imported.push(event.externalEventId);
     }
 
@@ -324,6 +409,118 @@ export class CalendarPullSyncService {
     }
 
     return imported;
+  }
+
+  // ==========================================================================
+  // Secondary calendars (read-only external data, one cursor per calendar)
+  // ==========================================================================
+
+  /**
+   * Pull ONE non-primary calendar. Every event is plain external data: Schedura
+   * only ever writes to the primary calendar, so nothing here goes through the
+   * ownership / two-way logic (`applyOwnedChange`), and a tombstone only
+   * removes the stored row. The cursor, the 7-day full-resync rule and the
+   * prune all live on the calendar's own `external_calendars` row.
+   * Throws on a provider failure; the caller isolates it per calendar.
+   */
+  private async pullSecondaryCalendar(
+    channel: CalendarChannel,
+    provider: Provider,
+    accessToken: string,
+    row: ExternalCalendarRow,
+    now: Date,
+  ): Promise<{ changed: number; deleted: number }> {
+    let cursor = provider === 'google' ? row.syncToken : row.deltaLink;
+
+    // Same rule as the primary: the cursor freezes its window, so age it out.
+    if (
+      cursor &&
+      (!row.lastFullSyncAt ||
+        now.getTime() - row.lastFullSyncAt.getTime() > FULL_RESYNC_MAX_AGE_MS)
+    ) {
+      await this.clearSecondaryCursor(row.id, provider);
+      cursor = null;
+    }
+
+    const options = {
+      accessToken,
+      calendarId: row.providerCalendarId,
+      isPrimary: false,
+      now,
+    };
+    let isFullSync = !cursor;
+    let delta = await this.runDelta(provider, { ...options, cursor });
+
+    if (delta.needsFullResync) {
+      await this.clearSecondaryCursor(row.id, provider);
+      isFullSync = true;
+      delta = await this.runDelta(provider, { ...options, cursor: null });
+      if (delta.needsFullResync) {
+        throw new Error('full resync demanded another resync');
+      }
+    }
+
+    const seen: string[] = [];
+    for (const event of delta.changed) {
+      await this.upsertExternalEvent(
+        channel,
+        provider,
+        row.providerCalendarId,
+        event,
+        row.id,
+      );
+      seen.push(event.externalEventId);
+    }
+
+    for (const chunk of chunkIds(delta.deleted, 200)) {
+      await db
+        .delete(externalCalendarEvents)
+        .where(
+          and(
+            eq(externalCalendarEvents.channelId, channel.id),
+            eq(externalCalendarEvents.calendarId, row.id),
+            inArray(externalCalendarEvents.externalEventId, chunk),
+          ),
+        );
+    }
+
+    // A truncated run saw only a prefix: no prune, no cursor, not a full sync.
+    const isCompleteRun = !delta.truncated;
+    if (isFullSync && isCompleteRun) {
+      await this.pruneMissingInWindow(
+        channel.id,
+        seen,
+        now,
+        eq(externalCalendarEvents.calendarId, row.id),
+      );
+    }
+
+    const stamp = new Date();
+    const set: Record<string, unknown> = { updatedAt: stamp };
+    if (isFullSync && isCompleteRun) set.lastFullSyncAt = stamp;
+    if (isCompleteRun && delta.nextCursor) {
+      set[provider === 'google' ? 'syncToken' : 'deltaLink'] = delta.nextCursor;
+    }
+    await db
+      .update(externalCalendars)
+      .set(set)
+      .where(eq(externalCalendars.id, row.id));
+
+    return { changed: delta.changed.length, deleted: delta.deleted.length };
+  }
+
+  private async clearSecondaryCursor(
+    rowId: string,
+    provider: Provider,
+  ): Promise<void> {
+    await db
+      .update(externalCalendars)
+      .set(
+        provider === 'google'
+          ? { syncToken: null, updatedAt: new Date() }
+          : { deltaLink: null, updatedAt: new Date() },
+      )
+      .where(eq(externalCalendars.id, rowId));
   }
 
   // ==========================================================================
@@ -807,11 +1004,14 @@ export class CalendarPullSyncService {
     provider: Provider,
     calendarId: string,
     event: NormalizedExternalEvent,
+    calendarRowId: string | null,
   ): Promise<void> {
     const values = {
       workspaceId: channel.workspaceId,
       channelId: channel.id,
       provider,
+      calendarId: calendarRowId,
+      attendeeCount: event.attendeeCount ?? null,
       externalCalendarId: event.calendarId || calendarId,
       externalEventId: event.externalEventId,
       title: event.title,
@@ -835,6 +1035,8 @@ export class CalendarPullSyncService {
         set: {
           provider: values.provider,
           externalCalendarId: values.externalCalendarId,
+          calendarId: values.calendarId,
+          attendeeCount: values.attendeeCount,
           title: values.title,
           startsAt: values.startsAt,
           endsAt: values.endsAt,
@@ -850,16 +1052,20 @@ export class CalendarPullSyncService {
   /**
    * After a bounded FULL list, drop the channel's previously-imported events
    * that fall inside the same window but were not returned this run.
+   * `calendarScope` restricts the prune to the calendar that was listed: a full
+   * list of one calendar says nothing about the events of another.
    */
   private async pruneMissingInWindow(
     channelId: number,
     seenIds: string[],
     now: Date,
+    calendarScope: SQL | undefined,
   ): Promise<void> {
     const { timeMin, timeMax } = fullSyncWindow(now);
 
     const inWindow = and(
       eq(externalCalendarEvents.channelId, channelId),
+      calendarScope,
       gte(externalCalendarEvents.startsAt, timeMin),
       lte(externalCalendarEvents.startsAt, timeMax),
     );

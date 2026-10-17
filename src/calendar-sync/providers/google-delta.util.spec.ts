@@ -286,4 +286,26 @@ describe('fetchGoogleCalendarDelta', () => {
       fetchGoogleCalendarDelta({ accessToken: ACCESS_TOKEN, now: NOW }),
     ).rejects.toThrow(/500/);
   });
+
+  it('counts attendees, and reports null when the event carries none', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        items: [
+          {
+            ...plainEvent,
+            attendees: [{ email: 'a@x.test' }, { email: 'b@x.test' }, {}],
+          },
+          { ...plainEvent, id: 'evt-solo' },
+        ],
+        nextSyncToken: 't',
+      }),
+    );
+
+    const result = await fetchGoogleCalendarDelta({
+      accessToken: ACCESS_TOKEN,
+      now: NOW,
+    });
+
+    expect(result.changed.map((e) => e.attendeeCount)).toEqual([3, null]);
+  });
 });

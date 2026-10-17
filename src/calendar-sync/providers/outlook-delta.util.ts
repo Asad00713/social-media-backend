@@ -28,6 +28,7 @@ interface GraphDeltaEvent {
   subject?: string;
   isAllDay?: boolean;
   webLink?: string;
+  attendees?: unknown[];
   lastModifiedDateTime?: string;
   start?: { dateTime?: string; timeZone?: string };
   end?: { dateTime?: string; timeZone?: string };
@@ -69,6 +70,7 @@ export async function fetchOutlookCalendarDelta(
   const {
     accessToken,
     calendarId = 'primary',
+    isPrimary = true,
     cursor,
     now = new Date(),
     maxPages = DEFAULT_MAX_PAGES,
@@ -79,7 +81,8 @@ export async function fetchOutlookCalendarDelta(
 
   // A stored deltaLink is a complete URL (it already carries the window + the
   // delta token), so it is used verbatim.
-  let url: string | undefined = cursor || buildInitialUrl(now);
+  let url: string | undefined =
+    cursor || buildInitialUrl(now, isPrimary ? undefined : calendarId);
   let nextCursor: string | undefined;
   let pages = 0;
 
@@ -166,7 +169,7 @@ export async function fetchOutlookCalendarDelta(
  * resolved from `calendar_item_links` in the pull service instead (see the
  * module doc above).
  */
-function buildInitialUrl(now: Date): string {
+function buildInitialUrl(now: Date, secondaryCalendarId?: string): string {
   const { timeMin, timeMax } = fullSyncWindow(now);
 
   const query = [
@@ -174,7 +177,12 @@ function buildInitialUrl(now: Date): string {
     `endDateTime=${encodeURIComponent(timeMax.toISOString())}`,
   ].join('&');
 
-  return `${API_BASE_URL}/me/calendarView/delta?${query}`;
+  // A secondary calendar has its own delta stream; the primary keeps the
+  // default-calendar route untouched.
+  const base = secondaryCalendarId
+    ? `${API_BASE_URL}/me/calendars/${encodeURIComponent(secondaryCalendarId)}/calendarView/delta`
+    : `${API_BASE_URL}/me/calendarView/delta`;
+  return `${base}?${query}`;
 }
 
 /**
@@ -214,6 +222,7 @@ function normalizeGraphEvent(
     isOurs: Boolean(postId || messageId),
     postId: postId || undefined,
     messageId: messageId || undefined,
+    attendeeCount: Array.isArray(item.attendees) ? item.attendees.length : null,
     etag: item['@odata.etag'],
     raw: item,
   };

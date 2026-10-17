@@ -90,6 +90,48 @@ export const calendarItemLinks = pgTable(
 );
 
 // -----------------------------------------------------------------------------
+// 1b. external_calendars — every calendar a connection can see (Google
+//     calendarList / Graph /me/calendars). Each carries its OWN delta cursor so
+//     secondary calendars are pulled independently of the primary one (whose
+//     cursor stays on `calendar_sync_state`). Deleting a row cascades its events.
+// -----------------------------------------------------------------------------
+export const externalCalendars = pgTable(
+  'external_calendars',
+  {
+    id: uuid('id').primaryKey().defaultRandom(),
+    workspaceId: uuid('workspace_id')
+      .notNull()
+      .references(() => workspace.id, { onDelete: 'cascade' }),
+    channelId: integer('channel_id')
+      .notNull()
+      .references(() => socialMediaChannels.id, { onDelete: 'cascade' }),
+    providerCalendarId: varchar('provider_calendar_id', {
+      length: 512,
+    }).notNull(),
+    name: text('name').notNull(),
+    color: varchar('color', { length: 16 }),
+    isPrimary: boolean('is_primary').default(false).notNull(),
+    accountEmail: text('account_email'),
+    syncToken: text('sync_token'), // Google
+    deltaLink: text('delta_link'), // Outlook / Graph
+    lastFullSyncAt: timestamp('last_full_sync_at', { withTimezone: true }),
+    createdAt: timestamp('created_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+    updatedAt: timestamp('updated_at', { withTimezone: true })
+      .defaultNow()
+      .notNull(),
+  },
+  (t) => ({
+    uqChannelCalendar: unique('external_calendars_channel_calendar_uq').on(
+      t.channelId,
+      t.providerCalendarId,
+    ),
+    ixWorkspace: index('external_calendars_workspace_ix').on(t.workspaceId),
+  }),
+);
+
+// -----------------------------------------------------------------------------
 // 2. external_calendar_events — read-only import of the user's OTHER calendar
 //    events (events WITHOUT our schedura_post_id tag), shown in the unified
 //    calendar view. Kept fresh by delta pulls.
@@ -106,6 +148,12 @@ export const externalCalendarEvents = pgTable(
       .references(() => socialMediaChannels.id, { onDelete: 'cascade' }),
     provider: varchar('provider', { length: 20 }).notNull(),
     externalCalendarId: varchar('external_calendar_id', { length: 512 }),
+    // Which `external_calendars` row the event belongs to. NULL for rows
+    // imported before 0044 until the primary calendar's one-time backfill.
+    calendarId: uuid('calendar_id').references(() => externalCalendars.id, {
+      onDelete: 'cascade',
+    }),
+    attendeeCount: integer('attendee_count'),
     externalEventId: varchar('external_event_id', { length: 512 }).notNull(),
     title: text('title'),
     startsAt: timestamp('starts_at'),
@@ -125,6 +173,7 @@ export const externalCalendarEvents = pgTable(
       t.workspaceId,
       t.startsAt,
     ),
+    ixCalendar: index('ece_calendar_ix').on(t.calendarId),
   }),
 );
 
@@ -201,6 +250,20 @@ export const externalCalendarEventsRelations = relations(
   }),
 );
 
+export const externalCalendarsRelations = relations(
+  externalCalendars,
+  ({ one }) => ({
+    workspace: one(workspace, {
+      fields: [externalCalendars.workspaceId],
+      references: [workspace.id],
+    }),
+    channel: one(socialMediaChannels, {
+      fields: [externalCalendars.channelId],
+      references: [socialMediaChannels.id],
+    }),
+  }),
+);
+
 export const calendarSyncStateRelations = relations(
   calendarSyncState,
   ({ one }) => ({
@@ -216,6 +279,8 @@ export const calendarSyncStateRelations = relations(
 // =============================================================================
 export type CalendarItemLink = typeof calendarItemLinks.$inferSelect;
 export type NewCalendarItemLink = typeof calendarItemLinks.$inferInsert;
+export type ExternalCalendarRow = typeof externalCalendars.$inferSelect;
+export type NewExternalCalendarRow = typeof externalCalendars.$inferInsert;
 export type ExternalCalendarEvent = typeof externalCalendarEvents.$inferSelect;
 export type NewExternalCalendarEvent =
   typeof externalCalendarEvents.$inferInsert;

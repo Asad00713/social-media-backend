@@ -42,6 +42,7 @@ import {
 } from '../../drizzle/schema/calendar-sync.schema';
 import { CalendarPushSyncService } from './calendar-push-sync.service';
 import { CalendarPullSyncService } from './calendar-pull-sync.service';
+import { ExternalCalendarsService } from './external-calendars.service';
 
 // Handles onto the mocked db module's internals.
 const dbMock = jest.requireMock('../../drizzle/db') as unknown as {
@@ -143,6 +144,7 @@ describe('CalendarPullSyncService — external delete write-back (never hard-del
       postService,
       scheduledMessages,
       { emit: jest.fn() } as unknown as AnalyticsEventEmitter,
+      {} as ExternalCalendarsService,
     ) as unknown as PullSyncInternals;
   });
 

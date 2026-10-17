@@ -15,6 +15,7 @@ import { CalendarPushSyncService } from './services/calendar-push-sync.service';
 import { CalendarPullSyncService } from './services/calendar-pull-sync.service';
 import { CalendarSubscriptionService } from './services/calendar-subscription.service';
 import { ExternalEventsService } from './services/external-events.service';
+import { ExternalCalendarsService } from './services/external-calendars.service';
 import { CalendarReconcileProcessor } from './processors/calendar-reconcile.processor';
 import { CalendarRenewalProcessor } from './processors/calendar-renewal.processor';
 
@@ -41,6 +42,10 @@ import { CalendarRenewalProcessor } from './processors/calendar-renewal.processo
 // polls every 15 min as the safety net. ChannelsController subscribes on connect
 // and tears down on disconnect, so ChannelsModule ↔ CalendarSyncModule is now
 // circular too → forwardRef on both sides.
+// Every calendar of a connection (migration 0044): ExternalCalendarsService
+// discovers them and the pull service reads each one with its own cursor.
+// Provider push subscriptions stay on the primary calendar; secondary
+// calendars refresh on the 15-minute poll.
 // Task F extends the same two-way machinery to SCHEDULED INBOX MESSAGES (comment
 // replies + DMs): the push service mirrors pending messages onto the calendars,
 // and the pull service applies external moves/deletes back via
@@ -64,6 +69,7 @@ import { CalendarRenewalProcessor } from './processors/calendar-renewal.processo
     CalendarPullSyncService,
     CalendarSubscriptionService,
     ExternalEventsService,
+    ExternalCalendarsService,
     CalendarReconcileProcessor,
     CalendarRenewalProcessor,
     CalendarSyncScheduler,
@@ -73,6 +79,7 @@ import { CalendarRenewalProcessor } from './processors/calendar-renewal.processo
     CalendarPullSyncService,
     CalendarSubscriptionService,
     ExternalEventsService,
+    ExternalCalendarsService,
   ],
 })
 export class CalendarSyncModule {}

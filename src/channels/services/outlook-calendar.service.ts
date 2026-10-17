@@ -120,6 +120,9 @@ interface GraphCalendar {
   canEdit?: boolean;
 }
 
+/** Page cap for the calendar list walk. */
+const CALENDAR_LIST_MAX_PAGES = 10;
+
 /**
  * Outlook Calendar integration via Microsoft Graph.
  *
@@ -153,6 +156,53 @@ export class OutlookCalendarService {
     return (data.value || []).map((cal: GraphCalendar) =>
       this.mapGraphCalendar(cal),
     );
+  }
+
+  /**
+   * Every calendar of the account, following `@odata.nextLink`. `complete` is
+   * false when the page cap stopped the walk with pages still pending, so a
+   * caller must not treat a calendar missing from `calendars` as deleted.
+   * Throws on any failed page (a partial list is never returned as success).
+   */
+  async listCalendarsComplete(
+    accessToken: string,
+  ): Promise<{ calendars: Calendar[]; complete: boolean }> {
+    const calendars: Calendar[] = [];
+    let url: string | undefined = `${this.apiBaseUrl}/me/calendars?$top=100`;
+    for (let page = 0; page < CALENDAR_LIST_MAX_PAGES; page++) {
+      const response = await fetch(url, {
+        headers: { Authorization: `Bearer ${accessToken}` },
+      });
+      if (!response.ok) {
+        throw new Error(`Outlook calendars failed (${response.status})`);
+      }
+      const data = await response.json();
+      calendars.push(
+        ...((data.value || []) as GraphCalendar[]).map((cal) =>
+          this.mapGraphCalendar(cal),
+        ),
+      );
+      url = data['@odata.nextLink'] || undefined;
+      if (!url) return { calendars, complete: true };
+    }
+    return { calendars, complete: false };
+  }
+
+  /**
+   * The signed-in account's mailbox address (`User.Read`), or null when Graph
+   * has none to give. Never throws on a non-OK response.
+   */
+  async getAccountEmail(accessToken: string): Promise<string | null> {
+    const response = await fetch(
+      `${this.apiBaseUrl}/me?$select=mail,userPrincipalName`,
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+    );
+    if (!response.ok) return null;
+    const data = (await response.json()) as {
+      mail?: string | null;
+      userPrincipalName?: string | null;
+    };
+    return data.mail || data.userPrincipalName || null;
   }
 
   /**
