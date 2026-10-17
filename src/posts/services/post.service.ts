@@ -11,10 +11,7 @@ import { isViewer, type CallerRole } from '../guest-rules';
 import { eq, and, desc, inArray, sql, gte, lte } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { derivePostStatus } from '../lib/post-status';
-import {
-  assertNotInPast,
-  refusal,
-} from '../lib/refusal';
+import { assertNotInPast, refusal } from '../lib/refusal';
 import { calendarRangeWhere, occurredAtSql } from '../lib/post-status.sql';
 import {
   posts,
@@ -180,8 +177,9 @@ export class PostService {
     // Queue ceiling is per channel: a post targeting three channels takes one
     // slot on each. Checked before the insert so nothing is written on refusal.
     if (dto.scheduledAt) {
-      // Refused before anything is written (the job-scheduling backstop
-      // below would throw only after the insert).
+      // Refused before anything is written. The job-scheduling backstop
+      // below only clamps a past delay to 0, so it would still publish a
+      // past-dated post immediately, after the insert.
       assertNotInPast(dto.scheduledAt);
       await this.postQueue.enforceQueueLimit(
         workspaceId,
