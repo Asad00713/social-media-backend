@@ -265,6 +265,36 @@ describeDb('CampaignsService.listSpans', () => {
       expect(names(spans)).toEqual(['mars']);
     }));
 
+  it('keeps a campaign whose span ends days later in a far-ahead workspace zone', () =>
+    run(async (svc, client, db) => {
+      // UTC-12 campaign, slot 23:30 on D = 11:30 UTC on D+1 = D+2 01:30 in UTC+14.
+      const kiritimati = await workspace(client, 'ki', 'Pacific/Kiritimati');
+      const id = await campaign(client, kiritimati, {
+        name: 'far',
+        start: '2026-07-01',
+        end: '2026-07-01',
+        tz: 'Etc/GMT+12',
+        time: '23:30',
+      });
+      await slot(client, id, '2026-07-01');
+      await client.query(
+        `UPDATE campaign_slot_content SET time = '23:30' WHERE campaign_id = $1`,
+        [id],
+      );
+      const spans = await svc.listSpans(
+        kiritimati.workspaceId,
+        utc('2026-07-03'),
+        utc('2026-07-10'),
+        NOW,
+        db,
+      );
+      expect(spans).toHaveLength(1);
+      expect(spans[0]).toMatchObject({
+        startDate: '2026-07-03',
+        endDate: '2026-07-03',
+      });
+    }));
+
   it('runs a constant number of queries however many campaigns match', () =>
     run(async (svc, client, db) => {
       const w = await workspace(client, 'a');

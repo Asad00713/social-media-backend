@@ -66,7 +66,7 @@ function firstTimeOf(schedule: CampaignScheduleJson, date: string): string {
  * different date for two workspaces.
  */
 export function computeSpan(input: {
-  campaign: Campaign;
+  campaign: Pick<Campaign, 'schedule'>;
   slots: SpanSlot[];
   skippedDates: Set<string>;
   workspaceTz: string;
@@ -82,8 +82,10 @@ export function computeSpan(input: {
   const instantOf = (s: SpanSlot): Date =>
     s.scheduledAt ?? wallClockToUtc(s.date, s.time, schedule.timezone);
 
-  const scheduleEnd = schedule.type === 'evergreen' ? null : schedule.endDate;
-  const openEnded = scheduleEnd === null;
+  // `== null`: a legacy drip row may lack the `endDate` key entirely.
+  const scheduleEnd =
+    schedule.type === 'evergreen' ? null : (schedule.endDate ?? null);
+  const openEnded = scheduleEnd == null;
 
   let startDate: string;
   let endDate: string | null;

@@ -636,14 +636,23 @@ export class CampaignsService {
     const windowEnd = zonedClock(to, tz).date;
 
     const candidates = await conn
-      .select()
+      .select({
+        id: campaigns.id,
+        name: campaigns.name,
+        type: campaigns.type,
+        status: campaigns.status,
+        schedule: campaigns.schedule,
+        channelIds: campaigns.channelIds,
+      })
       .from(campaigns)
       .where(
         and(
           eq(campaigns.workspaceId, workspaceId),
           ne(campaigns.status, 'draft'),
-          sql`${campaigns.schedule}->>'startDate' <= ${addDays(windowEnd, 1)}`,
-          sql`(${campaigns.schedule}->>'endDate' IS NULL OR ${campaigns.schedule}->>'endDate' >= ${addDays(windowStart, -1)})`,
+          // 2 days of slack: zones differ by up to 26h (UTC-12 vs UTC+14), so a
+          // slot's local date can shift by up to 2 days against the schedule.
+          sql`${campaigns.schedule}->>'startDate' <= ${addDays(windowEnd, 2)}`,
+          sql`(${campaigns.schedule}->>'endDate' IS NULL OR ${campaigns.schedule}->>'endDate' >= ${addDays(windowStart, -2)})`,
         ),
       );
     if (candidates.length === 0) return [];

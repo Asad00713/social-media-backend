@@ -121,6 +121,22 @@ describe('computeSpan', () => {
     expect(span(evergreen, [slot('2026-07-01', '09:00')]).endDate).toBeNull();
   });
 
+  it('treats a legacy drip with no endDate key as open-ended, with or without slots', () => {
+    const legacy = {
+      type: 'drip',
+      startDate: '2026-07-01',
+      weekdays: [1],
+      times: ['09:00'],
+      timezone: 'UTC',
+      blackoutDates: [],
+    } as unknown as CampaignScheduleJson;
+    expect(span(legacy, [])).toMatchObject({
+      startDate: '2026-07-01',
+      endDate: null,
+    });
+    expect(span(legacy, [slot('2026-07-01', '09:00')]).endDate).toBeNull();
+  });
+
   it('falls back to the schedule dates when there are no slots', () => {
     expect(span(bulk(), [], 'UTC')).toEqual({
       startDate: '2026-07-01',
