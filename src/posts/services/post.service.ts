@@ -10,6 +10,7 @@ import { Queue } from 'bullmq';
 import { isViewer, type CallerRole } from '../guest-rules';
 import { eq, and, desc, inArray, sql, gte, lte } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
+import { calendarRangeWhere, occurredAtSql } from '../lib/post-status.sql';
 import {
   posts,
   postHistory,
@@ -1130,26 +1131,11 @@ export class PostService {
     fromDate: Date,
     toDate: Date,
   ): Promise<(typeof posts.$inferSelect)[]> {
-    const occurredAt = sql`COALESCE(${posts.publishedAt}, ${posts.scheduledAt})`;
-
     return await db
       .select()
       .from(posts)
-      .where(
-        and(
-          eq(posts.workspaceId, workspaceId),
-          inArray(posts.status, [
-            'scheduled',
-            'publishing',
-            'published',
-            'failed',
-            'partially_published',
-          ]),
-          gte(occurredAt, fromDate),
-          lte(occurredAt, toDate),
-        ),
-      )
-      .orderBy(occurredAt);
+      .where(calendarRangeWhere(workspaceId, fromDate, toDate))
+      .orderBy(occurredAtSql);
   }
 
   /**

@@ -10,6 +10,7 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  BadRequestException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentWorkspaceRole } from '../workspace-members/current-workspace-role.decorator';
@@ -19,12 +20,20 @@ import { RequireCapability } from '../workspace-members/require-capability.decor
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PostService } from './services/post.service';
+import { PlannerPostsService } from './services/planner-posts.service';
+import { CalendarQueryDto } from './dto/calendar-query.dto';
 import { CreatePostDto, UpdatePostDto, PostQueryDto } from './dto/post.dto';
+
+const MAX_CALENDAR_SPAN_DAYS = 100;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 @Controller('posts')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class PostsController {
-  constructor(private readonly postService: PostService) {}
+  constructor(
+    private readonly postService: PostService,
+    private readonly plannerPosts: PlannerPostsService,
+  ) {}
 
   // ==========================================================================
   // Post CRUD Operations
@@ -96,40 +105,22 @@ export class PostsController {
   @Get('workspaces/:workspaceId/calendar')
   async getCalendarPosts(
     @Param('workspaceId') workspaceId: string,
-    @Query('from') from: string,
-    @Query('to') to: string,
+    @Query() query: CalendarQueryDto,
   ) {
-    if (!from || !to) {
-      throw new Error('from and to date parameters are required');
+    const from = new Date(query.from);
+    const to = new Date(query.to);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+      throw new BadRequestException('from and to must be valid dates');
     }
-
-    const calendarPosts = await this.postService.getCalendarPosts(
-      workspaceId,
-      new Date(from),
-      new Date(to),
-    );
-
-    // Group by the date the post actually occupies. `publishedAt` first: a post
-    // published immediately has no `scheduledAt`, so keying on that alone
-    // dropped every "post now" from this map entirely.
-    const byDate: Record<string, typeof calendarPosts> = {};
-
-    for (const post of calendarPosts) {
-      const occurredAt = post.publishedAt ?? post.scheduledAt;
-      if (occurredAt) {
-        const dateKey = occurredAt.toISOString().split('T')[0];
-        if (!byDate[dateKey]) {
-          byDate[dateKey] = [];
-        }
-        byDate[dateKey].push(post);
-      }
+    if (from > to) {
+      throw new BadRequestException('from must not be after to');
     }
-
-    return {
-      posts: calendarPosts,
-      byDate,
-      total: calendarPosts.length,
-    };
+    if (to.getTime() - from.getTime() > MAX_CALENDAR_SPAN_DAYS * DAY_MS) {
+      throw new BadRequestException(
+        `The calendar range is limited to ${MAX_CALENDAR_SPAN_DAYS} days`,
+      );
+    }
+    return await this.plannerPosts.getCalendar(workspaceId, from, to);
   }
 
   /**
@@ -141,7 +132,7 @@ export class PostsController {
     @Param('workspaceId') workspaceId: string,
     @Param('postId') postId: string,
   ) {
-    const post = await this.postService.getPost(postId, workspaceId);
+    const post = await this.plannerPosts.getOne(workspaceId, postId);
     return { post };
   }
 
