@@ -1,6 +1,11 @@
-import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
+import {
+  Processor,
+  WorkerHost,
+  OnWorkerEvent,
+  InjectQueue,
+} from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
-import { Job } from 'bullmq';
+import { Job, Queue } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { withRetry } from '../../drizzle/db-utils';
@@ -18,7 +23,11 @@ interface PublishJobData {
 export class PostPublishProcessor extends WorkerHost {
   private readonly logger = new Logger(PostPublishProcessor.name);
 
-  constructor(private readonly postService: PostService) {
+  constructor(
+    private readonly postService: PostService,
+    @InjectQueue(QUEUES.POST_PUBLISHING)
+    private readonly publishingQueue: Queue,
+  ) {
     super();
   }
 
@@ -34,8 +43,10 @@ export class PostPublishProcessor extends WorkerHost {
       );
 
       if (!post) {
-        this.logger.error(`Post ${postId} not found`);
-        throw new Error(`Post ${postId} not found`);
+        // Deleted after the job was queued — nothing to publish, and
+        // throwing would only make BullMQ retry it three times.
+        this.logger.warn(`Post ${postId} not found, skipping`);
+        return { skipped: true, reason: 'Post not found' };
       }
 
       // Check if post is still scheduled (not already published/cancelled)
@@ -44,6 +55,24 @@ export class PostPublishProcessor extends WorkerHost {
           `Post ${postId} is no longer scheduled (status: ${post.status}), skipping`,
         );
         return { skipped: true, reason: `Post status is ${post.status}` };
+      }
+
+      // A newer job has taken over this post (it was moved/rescheduled). Skip
+      // ONLY if that job really exists: campaign publishing enqueues with
+      // delay 0 and writes job_id just after add(), so a just-added job can
+      // run while the row still names the previous, already-removed job.
+      // Skipping on a mere id mismatch would drop that publish forever.
+      if (post.jobId && post.jobId !== job.id) {
+        const current = await this.publishingQueue.getJob(post.jobId);
+        if (current) {
+          this.logger.log(
+            `Job ${job.id} for post ${postId} is superseded by ${post.jobId}, skipping`,
+          );
+          return {
+            skipped: true,
+            reason: `Superseded by job ${post.jobId}`,
+          };
+        }
       }
 
       // Use the existing publishPost method which handles all the logic

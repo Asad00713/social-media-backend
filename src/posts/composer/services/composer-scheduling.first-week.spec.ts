@@ -15,7 +15,7 @@ function make(existing: any[]) {
     }),
     update: () => ({
       set: (v: any) => {
-        captured.updated = v;
+        captured.updated ??= v; // first write = the row content; later ones are bookkeeping
         return { where: async () => undefined };
       },
     }),
