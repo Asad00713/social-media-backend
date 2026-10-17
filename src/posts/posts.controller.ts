@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentWorkspaceRole } from '../workspace-members/current-workspace-role.decorator';
@@ -130,7 +131,7 @@ export class PostsController {
   @Get('workspaces/:workspaceId/:postId')
   async getPost(
     @Param('workspaceId') workspaceId: string,
-    @Param('postId') postId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
   ) {
     const post = await this.plannerPosts.getOne(workspaceId, postId);
     return { post };

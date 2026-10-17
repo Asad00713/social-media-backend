@@ -99,6 +99,13 @@ describe('PostsController planner reads over HTTP', () => {
     expect(planner.getOne).toHaveBeenCalledWith(WS, POST);
   });
 
+  it('answers 400 to a non-UUID post id without calling the service', async () => {
+    await request(app.getHttpServer())
+      .get(`/posts/workspaces/${WS}/abc`)
+      .expect(400);
+    expect(planner.getOne).not.toHaveBeenCalled();
+  });
+
   it('refuses a non-member without calling the service', async () => {
     roles.getRole.mockResolvedValue(null);
     await cal('?from=2026-06-01T00:00:00Z&to=2026-06-30T00:00:00Z').expect(403);

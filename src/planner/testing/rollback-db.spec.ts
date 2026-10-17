@@ -32,4 +32,12 @@ describe('assertLocalDatabase', () => {
     ).toThrow(/PGHOST/);
     expect(assertLocalDatabase(url, { PGHOST: '127.0.0.1' })).toBe(url);
   });
+
+  it('refuses a non-local PGHOSTADDR but allows 127.0.0.1', () => {
+    const url = 'postgres://u@localhost/db';
+    expect(() => assertLocalDatabase(url, { PGHOSTADDR: '10.0.0.1' })).toThrow(
+      /PGHOSTADDR/,
+    );
+    expect(assertLocalDatabase(url, { PGHOSTADDR: '127.0.0.1' })).toBe(url);
+  });
 });

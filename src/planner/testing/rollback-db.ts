@@ -46,6 +46,11 @@ export function assertLocalDatabase(
       `Refusing to run DB specs: PGHOST is "${env.PGHOST}", not local`,
     );
   }
+  if (env.PGHOSTADDR && env.PGHOSTADDR !== '127.0.0.1') {
+    throw new Error(
+      `Refusing to run DB specs: PGHOSTADDR is "${env.PGHOSTADDR}", not local`,
+    );
+  }
   return url;
 }
 
