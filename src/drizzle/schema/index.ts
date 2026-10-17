@@ -31,3 +31,4 @@ export * from './evergreen.schema';
 export * from './admin-audit-logs.schema';
 export * from './whatsapp-templates.schema';
 export * from './workspace-brand-profile.schema';
+export * from './calendar-notes.schema';
