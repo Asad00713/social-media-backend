@@ -5,8 +5,8 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { and, desc, eq, inArray } from 'drizzle-orm';
-import { db } from '../drizzle/db';
+import { and, desc, eq, inArray, ne, sql } from 'drizzle-orm';
+import { db, type DbType } from '../drizzle/db';
 import {
   campaigns,
   campaignDays,
@@ -20,7 +20,13 @@ import {
 } from '../drizzle/schema/campaigns.schema';
 import { socialMediaChannels } from '../drizzle/schema/channels.schema';
 import { posts } from '../drizzle/schema/posts.schema';
+import {
+  addDays,
+  loadWorkspaceTimezone,
+  zonedClock,
+} from '../planner/lib/workspace-time';
 import { computeSlotSchedule } from './campaign-schedule.util';
+import { cadenceOf, computeSpan, type Cadence } from './lib/campaign-span';
 import { CampaignPublishingService } from './campaign-publishing.service';
 import { EvergreenService, type EvergreenCampaignDto } from './evergreen.service';
 
@@ -56,6 +62,26 @@ export interface CampaignMetricsDto {
   postsPublished: number;
   postsFailed: number;
   postsSkipped: number;
+}
+
+/** One bar on the Planner calendar: no slot content, just where and how much. */
+export interface CampaignSpanDto {
+  id: string;
+  name: string;
+  type: 'bulk' | 'drip' | 'evergreen';
+  status: 'scheduled' | 'active' | 'paused' | 'completed' | 'failed';
+  /** yyyy-MM-dd in the WORKSPACE zone, from the first slot instant. */
+  startDate: string;
+  /** Workspace zone; null = open-ended. */
+  endDate: string | null;
+  /** The campaign's own zone (decides when slots fire only). */
+  timezone: string;
+  channelIds: string[];
+  postsPlanned: number;
+  postsPublished: number;
+  /** Next scheduled slot instant. */
+  nextPostAt: string | null;
+  cadence: Cadence;
 }
 
 export interface CampaignDto {
@@ -587,6 +613,114 @@ export class CampaignsService {
         daysByCampaign.get(row.id) ?? [],
         slotsByCampaign.get(row.id) ?? [],
       ),
+    );
+  }
+
+  /**
+   * Non-draft campaigns whose span overlaps `[from, to]`, for the calendar
+   * bars. SQL only pre-filters coarsely (the schedule's own dates, one day of
+   * slack each side for the zone difference); the exact span is computed in
+   * TS by `computeSpan` so the rule lives in one place. Queries: workspace
+   * zone, campaigns, then ONE days query and ONE slots query for all the
+   * candidates (never per campaign). `conn` lets a test pass a transaction.
+   */
+  async listSpans(
+    workspaceId: string,
+    from: Date,
+    to: Date,
+    now: Date = new Date(),
+    conn: DbType = db,
+  ): Promise<CampaignSpanDto[]> {
+    const tz = await loadWorkspaceTimezone(conn, workspaceId);
+    const windowStart = zonedClock(from, tz).date;
+    const windowEnd = zonedClock(to, tz).date;
+
+    const candidates = await conn
+      .select()
+      .from(campaigns)
+      .where(
+        and(
+          eq(campaigns.workspaceId, workspaceId),
+          ne(campaigns.status, 'draft'),
+          sql`${campaigns.schedule}->>'startDate' <= ${addDays(windowEnd, 1)}`,
+          sql`(${campaigns.schedule}->>'endDate' IS NULL OR ${campaigns.schedule}->>'endDate' >= ${addDays(windowStart, -1)})`,
+        ),
+      );
+    if (candidates.length === 0) return [];
+
+    const ids = candidates.map((c) => c.id);
+    const [days, slots] = await Promise.all([
+      conn
+        .select({
+          campaignId: campaignDays.campaignId,
+          date: campaignDays.date,
+          skip: campaignDays.skip,
+        })
+        .from(campaignDays)
+        .where(inArray(campaignDays.campaignId, ids)),
+      conn
+        .select({
+          campaignId: campaignSlotContent.campaignId,
+          date: campaignSlotContent.date,
+          time: campaignSlotContent.time,
+          content: campaignSlotContent.content,
+          scheduledAt: campaignSlotContent.scheduledAt,
+          slotStatus: campaignSlotContent.slotStatus,
+        })
+        .from(campaignSlotContent)
+        .where(inArray(campaignSlotContent.campaignId, ids)),
+    ]);
+
+    const groupByCampaign = <T extends { campaignId: string }>(rows: T[]) => {
+      const out = new Map<string, T[]>();
+      for (const row of rows) {
+        const list = out.get(row.campaignId);
+        if (list) list.push(row);
+        else out.set(row.campaignId, [row]);
+      }
+      return out;
+    };
+    const daysBy = groupByCampaign(days);
+    const slotsBy = groupByCampaign(slots);
+
+    const spans: CampaignSpanDto[] = [];
+    for (const campaign of candidates) {
+      const campaignDaysRows = daysBy.get(campaign.id) ?? [];
+      const campaignSlots = slotsBy.get(campaign.id) ?? [];
+      const span = computeSpan({
+        campaign,
+        slots: campaignSlots,
+        skippedDates: new Set(
+          campaignDaysRows.filter((d) => d.skip).map((d) => d.date),
+        ),
+        workspaceTz: tz,
+        now,
+      });
+      const overlaps =
+        span.startDate <= windowEnd &&
+        (span.endDate === null || span.endDate >= windowStart);
+      if (!overlaps) continue;
+      const metrics = this.computeMetrics(campaignDaysRows, campaignSlots);
+      spans.push({
+        id: campaign.id,
+        name: campaign.name,
+        type: campaign.type as CampaignSpanDto['type'],
+        status: campaign.status as CampaignSpanDto['status'],
+        startDate: span.startDate,
+        endDate: span.endDate,
+        timezone: campaign.schedule.timezone,
+        channelIds: (campaign.channelIds as string[] | null) ?? [],
+        postsPlanned: metrics.postsPlanned,
+        postsPublished: metrics.postsPublished,
+        nextPostAt: span.nextPostAt,
+        cadence: cadenceOf(campaign.schedule),
+      });
+    }
+    return spans.sort(
+      (a, b) =>
+        a.startDate.localeCompare(b.startDate) ||
+        a.name.localeCompare(b.name) ||
+        a.id.localeCompare(b.id),
     );
   }
 

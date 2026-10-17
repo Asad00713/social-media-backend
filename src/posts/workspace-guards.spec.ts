@@ -51,6 +51,7 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
     CampaignsController,
     {
       statusCounts: 'posts:draft',
+      spans: 'posts:draft',
       list: 'posts:draft',
       getOne: 'posts:draft',
       createSimple: 'posts:publish',

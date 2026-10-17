@@ -117,7 +117,8 @@ describeDb('planner_preferences (0043) and PlannerPreferencesService', () => {
         svc.update(u, ws, patch as unknown as Parameters<typeof svc.update>[2]),
       ).resolves.toEqual(PLANNER_PREF_DEFAULTS);
       expect(await stored(client, u, ws)).toEqual([]);
-    }));
+    }),
+  );
 
   it('two users in one workspace stay independent; so do two workspaces', () =>
     run(async (svc, client) => {

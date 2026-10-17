@@ -7,6 +7,13 @@
 // objects for the column/value pairs the service actually uses.
 
 import { randomUUID } from 'crypto';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
+import { Test } from '@nestjs/testing';
+import request from 'supertest';
+import type { App } from 'supertest/types';
+import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { WorkspaceRoleService } from '../workspace-members/workspace-role.service';
 import {
   campaigns as campaignsTable,
   campaignDays as campaignDaysTable,
@@ -419,5 +426,104 @@ describe('CampaignsController (DB-mocked happy path)', () => {
     await expect(
       controller.getOne(randomUUID(), created.id),
     ).rejects.toThrow('Campaign not found');
+  });
+});
+
+describe('CampaignsController spans over HTTP', () => {
+  let app: INestApplication<App>;
+  const roles = { getRole: jest.fn(), isPlatformSuperAdmin: jest.fn() };
+  const service = {
+    listSpans: jest.fn(),
+    getOne: jest.fn(),
+    list: jest.fn(),
+    statusCounts: jest.fn(),
+  };
+  const WS = '11111111-1111-4111-8111-111111111111';
+  const url = (qs: string, ws = WS) =>
+    `/campaigns/workspaces/${ws}/spans${qs}`;
+  const DAY = 24 * 3600_000;
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [CampaignsController],
+      providers: [
+        WorkspaceRoleGuard,
+        { provide: WorkspaceRoleService, useValue: roles },
+        { provide: CampaignsService, useValue: service },
+      ],
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({
+        canActivate: (ctx: {
+          switchToHttp: () => { getRequest: () => { user?: unknown } };
+        }) => {
+          ctx.switchToHttp().getRequest().user = { userId: 'user-1' };
+          return true;
+        },
+      })
+      .compile();
+    app = moduleRef.createNestApplication();
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    );
+    await app.init();
+  });
+  afterAll(() => app.close());
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    roles.getRole.mockResolvedValue('GUEST');
+    roles.isPlatformSuperAdmin.mockResolvedValue(false);
+    service.listSpans.mockResolvedValue([]);
+  });
+
+  const get = (qs: string, ws?: string) =>
+    request(app.getHttpServer()).get(url(qs, ws));
+
+  it('lets a GUEST read, and reaches spans rather than getOne', async () => {
+    await get('?from=2026-03-01&to=2026-03-31').expect(200, []);
+    expect(service.listSpans).toHaveBeenCalledTimes(1);
+    const [ws, from, to] = service.listSpans.mock.calls[0] as [
+      string,
+      Date,
+      Date,
+    ];
+    expect(ws).toBe(WS);
+    expect(from).toEqual(new Date('2026-03-01'));
+    expect(to).toEqual(new Date('2026-03-31'));
+    expect(service.getOne).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [''],
+    ['?to=2026-03-31'],
+    ['?from=2026-03-01'],
+    ['?from=banana&to=2026-03-31'],
+    ['?from=2026-03-01&to=2026-03-31&x=1'],
+    ['?from=2026-03-31&to=2026-03-01'],
+  ])('answers 400 to %s', async (qs) => {
+    await get(qs).expect(400);
+    expect(service.listSpans).not.toHaveBeenCalled();
+  });
+
+  it('allows a window of exactly 400 days and refuses 401', async () => {
+    const from = new Date('2026-01-01T00:00:00.000Z');
+    const at = (days: number) =>
+      `?from=${from.toISOString()}&to=${new Date(from.getTime() + days * DAY).toISOString()}`;
+    await get(at(400)).expect(200);
+    await get(at(401)).expect(400);
+    expect(service.listSpans).toHaveBeenCalledTimes(1);
+  });
+
+  it('answers 403 to a non-member and 400 to a non-uuid workspace', async () => {
+    roles.getRole.mockResolvedValue(null);
+    await get('?from=2026-03-01&to=2026-03-31').expect(403);
+    roles.getRole.mockResolvedValue('GUEST');
+    await get('?from=2026-03-01&to=2026-03-31', 'nope').expect(400);
+    expect(service.listSpans).not.toHaveBeenCalled();
   });
 });
