@@ -223,9 +223,9 @@ describe('PostDraftsService.setReady atomicity', () => {
   it('rolls the flag back and notifies nobody when the history write fails', async () => {
     const world = draft();
     const { svc, draftReady } = make(world, undefined, { failHistory: true });
-    await expect(
-      svc.setReady(WS, POST, ACTOR, 'MEMBER', true),
-    ).rejects.toThrow('history down');
+    await expect(svc.setReady(WS, POST, ACTOR, 'MEMBER', true)).rejects.toThrow(
+      'history down',
+    );
     expect(world.post!.readyAt).toBeNull();
     expect(draftReady).not.toHaveBeenCalled();
   });

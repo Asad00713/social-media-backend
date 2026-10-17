@@ -180,6 +180,21 @@ export class PostsController {
   }
 
   /**
+   * Copy a post into a new draft. Any member, Guest included, may copy.
+   */
+  @RequireCapability('posts:draft')
+  @Post('workspaces/:workspaceId/:postId/duplicate')
+  @HttpCode(HttpStatus.CREATED)
+  async duplicatePost(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
+    @CurrentUser() user: { userId: string; email: string },
+  ) {
+    const post = await this.drafts.duplicate(workspaceId, postId, user.userId);
+    return { post };
+  }
+
+  /**
    * Update a post
    */
   @RequireCapability('posts:draft')

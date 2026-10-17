@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- DB rows from raw pg queries are untyped */
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- DB rows from raw pg queries are untyped */
 import { NotFoundException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { describeDb, withRollbackDb } from '../../planner/testing/rollback-db';
@@ -237,5 +237,62 @@ describeDb('PostDraftsService.setReady', () => {
         'marked_ready',
         'unmarked_ready',
       ]);
+    }));
+});
+
+describeDb('PostDraftsService.duplicate', () => {
+  const run = (
+    fn: (svc: PostDraftsService, client: PoolClient) => Promise<void>,
+  ) =>
+    withRollbackDb([MIGRATION], async (db, client) => {
+      const svc = new PostDraftsService(db, new PlannerPostsService(db), {
+        draftReady: jest.fn(),
+      } as any);
+      await fn(svc, client);
+    });
+
+  it('persists a new draft row with a new id, leaving the source alone', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'dup');
+      const src = await post(client, w, {
+        status: 'published',
+        ready: true,
+        updatedAt: '2026-03-01T10:00:00Z',
+        label: 'Launch',
+      });
+      const out = await svc.duplicate(w.workspaceId, src, w.userId);
+      expect(out.id).not.toBe(src);
+      const rows = await client.query(
+        `SELECT id, status, content, ready_at, scheduled_at FROM posts WHERE workspace_id = $1 ORDER BY created_at`,
+        [w.workspaceId],
+      );
+      expect(rows.rows).toHaveLength(2);
+      const copy = rows.rows.find((r) => r.id === out.id);
+      expect(copy).toMatchObject({
+        status: 'draft',
+        content: 'Launch',
+        ready_at: null,
+        scheduled_at: null,
+      });
+      const orig = rows.rows.find((r) => r.id === src);
+      expect(orig.status).toBe('published');
+      expect(orig.ready_at).not.toBeNull();
+    }));
+
+  it('404s a post from another workspace and inserts nothing', () =>
+    run(async (svc, client) => {
+      const a = await workspace(client, 'a');
+      const b = await workspace(client, 'b');
+      const foreign = await post(client, b, {
+        updatedAt: '2026-03-01T10:00:00Z',
+      });
+      await expect(
+        svc.duplicate(a.workspaceId, foreign, a.userId),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      const n = await client.query(
+        `SELECT count(*)::int AS n FROM posts WHERE workspace_id = ANY($1::uuid[])`,
+        [[a.workspaceId, b.workspaceId]],
+      );
+      expect(n.rows[0].n).toBe(1);
     }));
 });

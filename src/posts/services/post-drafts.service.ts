@@ -26,6 +26,7 @@ import { NotificationEmitterService } from '../../notifications/notification-emi
 import type { DraftsPageDto } from '../dto/draft-ops.dto';
 import type { PlannerPostDto } from '../dto/planner-post.dto';
 import { isViewer, type CallerRole } from '../guest-rules';
+import { buildDuplicate } from '../lib/duplicate-post';
 import { decodeDraftCursor, encodeDraftCursor } from '../lib/draft-cursor';
 import { PlannerPostsService } from './planner-posts.service';
 
@@ -122,6 +123,28 @@ export class PostDraftsService {
       await this.notifyReady(workspaceId, postId, userId, post.content);
     }
     return this.planner.getOne(workspaceId, postId);
+  }
+
+  /**
+   * "Copy to a new draft": any member, Guest included, may copy any post in
+   * the workspace. The source is looked up inside the workspace, so another
+   * tenant's id is a 404 and inserts nothing.
+   */
+  async duplicate(
+    workspaceId: string,
+    postId: string,
+    userId: string,
+  ): Promise<PlannerPostDto> {
+    const [source] = await this.db
+      .select()
+      .from(posts)
+      .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId)));
+    if (!source) throw new NotFoundException('Post not found');
+    const [created] = await this.db
+      .insert(posts)
+      .values(buildDuplicate(source, userId))
+      .returning({ id: posts.id });
+    return this.planner.getOne(workspaceId, created.id);
   }
 
   /** A viewer may only change their own drafts. */

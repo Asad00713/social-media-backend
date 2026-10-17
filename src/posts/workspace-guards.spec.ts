@@ -27,6 +27,7 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
       publishPost: 'posts:publish',
       getPostHistory: 'posts:draft',
       setReady: 'posts:draft',
+      duplicatePost: 'posts:draft',
       getQueueStatus: null,
       getRateLimitStatus: null,
       getPlatformRateLimitStatus: null,

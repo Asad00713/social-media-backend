@@ -18,7 +18,7 @@ describe('PostsController planner reads over HTTP', () => {
   let app: INestApplication<App>;
   const roles = { getRole: jest.fn(), isPlatformSuperAdmin: jest.fn() };
   const planner = { getCalendar: jest.fn(), getOne: jest.fn() };
-  const drafts = { list: jest.fn(), setReady: jest.fn() };
+  const drafts = { list: jest.fn(), setReady: jest.fn(), duplicate: jest.fn() };
   const postService = {
     updatePost: jest.fn(),
     deletePost: jest.fn(),
@@ -72,6 +72,7 @@ describe('PostsController planner reads over HTTP', () => {
     planner.getOne.mockResolvedValue({ id: POST });
     drafts.list.mockResolvedValue({ drafts: [], total: 0, nextCursor: null });
     drafts.setReady.mockResolvedValue({ id: POST });
+    drafts.duplicate.mockResolvedValue({ id: 'new-1' });
   });
 
   const cal = (qs: string) =>
@@ -174,6 +175,29 @@ describe('PostsController planner reads over HTTP', () => {
         'GUEST',
         true,
       );
+    });
+  });
+
+  describe('duplicate', () => {
+    const dup = (ws = WS, id = POST) =>
+      request(app.getHttpServer()).post(
+        `/posts/workspaces/${ws}/${id}/duplicate`,
+      );
+
+    it('lets a guest copy a post: 201 with the new post', async () => {
+      await dup().expect(201, { post: { id: 'new-1' } });
+      expect(drafts.duplicate).toHaveBeenCalledWith(WS, POST, 'user-1');
+    });
+
+    it('refuses a non-member', async () => {
+      roles.getRole.mockResolvedValue(null);
+      await dup().expect(403);
+      expect(drafts.duplicate).not.toHaveBeenCalled();
+    });
+
+    it('answers 400 to a non-UUID post id', async () => {
+      await dup(WS, 'abc').expect(400);
+      expect(drafts.duplicate).not.toHaveBeenCalled();
     });
   });
 
