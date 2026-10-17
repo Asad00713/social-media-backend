@@ -201,5 +201,24 @@ describeDb('PlannerLookupService', () => {
           at: null,
         });
       }));
+
+    it('skips a timeless newest post and returns the older post instant', () =>
+      run(async (svc, client) => {
+        const w = await workspace(client, 'a');
+        await post(client, w, {
+          scheduledAt: '2026-05-01T09:00:00Z',
+          createdAt: '2026-01-01T00:00:00Z',
+          channelIds: ['1'],
+        });
+        // Newest created, non-draft, but neither published_at nor scheduled_at.
+        await post(client, w, {
+          status: 'scheduled',
+          createdAt: '2026-01-09T00:00:00Z',
+          channelIds: ['1'],
+        });
+        await expect(svc.lastPostTime(w.workspaceId, [1])).resolves.toEqual({
+          at: '2026-05-01T09:00:00.000Z',
+        });
+      }));
   });
 });
