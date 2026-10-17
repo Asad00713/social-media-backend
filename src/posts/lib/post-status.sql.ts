@@ -16,6 +16,32 @@ export const NON_DRAFT_STATUSES = [
   'partially_published',
 ] as const;
 
+/**
+ * SQL twin of `derivePostStatus(...) === 'partially_published'`. Only a stored
+ * `published` or `failed` row is re-derived from its targets (every other
+ * stored value is taken as is). A target is published when EITHER status field
+ * says so; it is failed when it is not published and either field says failed.
+ */
+export function isPartlyPublishedSql(): SQL {
+  return sql`(
+    ${posts.status} = 'partially_published'
+    OR (
+      ${posts.status} IN ('published', 'failed')
+      AND jsonb_typeof(${posts.targets}) = 'array'
+      AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements(${posts.targets}) AS t
+        WHERE t->>'status' = 'published' OR t->>'publishStatus' = 'published'
+      )
+      AND EXISTS (
+        SELECT 1 FROM jsonb_array_elements(${posts.targets}) AS t
+        WHERE COALESCE(t->>'status', '') <> 'published'
+          AND COALESCE(t->>'publishStatus', '') <> 'published'
+          AND (t->>'status' = 'failed' OR t->>'publishStatus' = 'failed')
+      )
+    )
+  )`;
+}
+
 export function calendarRangeWhere(
   workspaceId: string,
   from: Date,
