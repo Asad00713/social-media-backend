@@ -27,7 +27,7 @@ interface World {
  * A fake drizzle db. Reads answer by table name; the post update honours the
  * "ready_at IS [NOT] NULL" guard by checking the state it is asked to change.
  */
-function makeDb(world: World) {
+function makeDb(world: World, opts: { failHistory?: boolean } = {}) {
   const sets: Array<Record<string, unknown>> = [];
   const history: Array<Record<string, unknown>> = [];
   const db: any = {
@@ -65,16 +65,31 @@ function makeDb(world: World) {
     }),
     insert: () => ({
       values: (v: Record<string, unknown>) => {
+        if (opts.failHistory) return Promise.reject(new Error('history down'));
         history.push(v);
         return Promise.resolve();
       },
     }),
+    // Rolls the post back when the callback throws, like a real transaction.
+    transaction: async (fn: (tx: any) => Promise<unknown>) => {
+      const snapshot = world.post ? { ...world.post } : null;
+      try {
+        return await fn(db);
+      } catch (err) {
+        if (world.post && snapshot) Object.assign(world.post, snapshot);
+        throw err;
+      }
+    },
   };
   return { db, sets, history };
 }
 
-function make(world: World, draftReady = jest.fn().mockResolvedValue({})) {
-  const { db, sets, history } = makeDb(world);
+function make(
+  world: World,
+  draftReady = jest.fn().mockResolvedValue({}),
+  opts: { failHistory?: boolean } = {},
+) {
+  const { db, sets, history } = makeDb(world, opts);
   const planner = { getOne: jest.fn().mockResolvedValue({ id: POST }) };
   const svc = new PostDraftsService(db, planner as any, { draftReady } as any);
   return { svc, sets, history, draftReady, planner };
@@ -201,6 +216,18 @@ describe('PostDraftsService.setReady', () => {
     const { preview } = draftReady.mock.calls[0][1];
     expect(preview.length).toBeLessThanOrEqual(READY_PREVIEW_MAX);
     expect(preview.endsWith('…')).toBe(true);
+  });
+});
+
+describe('PostDraftsService.setReady atomicity', () => {
+  it('rolls the flag back and notifies nobody when the history write fails', async () => {
+    const world = draft();
+    const { svc, draftReady } = make(world, undefined, { failHistory: true });
+    await expect(
+      svc.setReady(WS, POST, ACTOR, 'MEMBER', true),
+    ).rejects.toThrow('history down');
+    expect(world.post!.readyAt).toBeNull();
+    expect(draftReady).not.toHaveBeenCalled();
   });
 });
 

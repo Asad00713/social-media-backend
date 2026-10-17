@@ -85,35 +85,41 @@ export class PostDraftsService {
     if (isViewer(role)) this.assertViewerOwnsDraft(post, userId);
 
     // The WHERE makes the transition atomic: two concurrent "ready" clicks
-    // cannot both see a row come back.
-    const changed = await this.db
-      .update(posts)
-      .set(
-        ready
-          ? { readyAt: sql`now()`, readyById: userId }
-          : { readyAt: null, readyById: null },
-      )
-      .where(
-        and(
-          eq(posts.id, postId),
-          eq(posts.workspaceId, workspaceId),
-          eq(posts.status, 'draft'),
-          ready ? isNull(posts.readyAt) : isNotNull(posts.readyAt),
-        ),
-      )
-      .returning({ id: posts.id });
-
-    if (changed.length > 0) {
-      await this.db.insert(postHistory).values({
-        postId,
-        action: ready ? 'marked_ready' : 'unmarked_ready',
-        previousStatus: 'draft',
-        newStatus: 'draft',
-        performedById: userId,
-      });
-      if (ready) {
-        await this.notifyReady(workspaceId, postId, userId, post.content);
+    // cannot both see a row come back. The flag and its history commit
+    // together: a failed history write must not leave the flag set, or a
+    // retry would find nothing to change and the history would be lost.
+    const changed = await this.db.transaction(async (tx) => {
+      const rows = await tx
+        .update(posts)
+        .set(
+          ready
+            ? { readyAt: sql`now()`, readyById: userId }
+            : { readyAt: null, readyById: null },
+        )
+        .where(
+          and(
+            eq(posts.id, postId),
+            eq(posts.workspaceId, workspaceId),
+            eq(posts.status, 'draft'),
+            ready ? isNull(posts.readyAt) : isNotNull(posts.readyAt),
+          ),
+        )
+        .returning({ id: posts.id });
+      if (rows.length > 0) {
+        await tx.insert(postHistory).values({
+          postId,
+          action: ready ? 'marked_ready' : 'unmarked_ready',
+          previousStatus: 'draft',
+          newStatus: 'draft',
+          performedById: userId,
+        });
       }
+      return rows.length > 0;
+    });
+
+    // Only after the commit: nobody is told about a flag that rolled back.
+    if (changed && ready) {
+      await this.notifyReady(workspaceId, postId, userId, post.content);
     }
     return this.planner.getOne(workspaceId, postId);
   }
