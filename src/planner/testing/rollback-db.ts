@@ -1,11 +1,13 @@
 import 'dotenv/config';
 import { readFileSync } from 'fs';
 import { join } from 'path';
-import { Client, type PoolClient } from 'pg';
-import { drizzle, type NodePgDatabase } from 'drizzle-orm/node-postgres';
+import { Client, type Pool, type PoolClient } from 'pg';
+import { drizzle } from 'drizzle-orm/node-postgres';
 import * as schema from '../../drizzle/schema';
+// Type-only (erased): the app's own db type, so services accept the harness db.
+import type { DbType as AppDbType } from '../../drizzle/db';
 
-export type DbType = NodePgDatabase<typeof schema>;
+export type DbType = AppDbType;
 
 /** `describe` only when PLANNER_DB_TESTS=1, so CI never needs a database. */
 export const describeDb: typeof describe =
@@ -75,7 +77,10 @@ export async function withRollbackDb<T>(
       await client.query(sql);
     }
     const poolClient = client as unknown as PoolClient;
-    const db = drizzle(poolClient, { schema });
+    // The app's db is built on a Pool and carries `$client: Pool`. A single
+    // transactional Client is the narrowest stand-in: it exposes the same
+    // `query` surface drizzle uses, and `$client` is never read by services.
+    const db = drizzle(poolClient as unknown as Pool, { schema });
     return await fn(db, poolClient);
   } finally {
     try {

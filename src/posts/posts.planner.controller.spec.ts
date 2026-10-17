@@ -151,7 +151,7 @@ describe('PostsController planner reads over HTTP', () => {
         .post(`/posts/workspaces/${ws}/${id}/ready`)
         .send(body as object);
 
-    it.each([
+    it.each<[unknown, string]>([
       [{ ready: 'yes' }, 'a string'],
       [{}, 'no ready key'],
       [{ ready: true, extra: 1 }, 'an extra key'],
