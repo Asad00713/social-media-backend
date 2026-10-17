@@ -21,12 +21,29 @@ const MIGRATIONS_DIR = join(
   'migrations',
 );
 
-function assertLocalDatabase(url: string | undefined): string {
+export function assertLocalDatabase(
+  url: string | undefined,
+  env: NodeJS.ProcessEnv = process.env,
+): string {
   if (!url) throw new Error('DATABASE_URL is not set');
-  const host = new URL(url).hostname;
+  const parsed = new URL(url);
+  const host = parsed.hostname;
   if (!LOCAL_HOSTS.has(host)) {
     throw new Error(
       `Refusing to run DB specs against non-local host "${host}"`,
+    );
+  }
+  // libpq lets a query parameter or PGHOST override the URL host.
+  for (const key of ['host', 'hostaddr']) {
+    if (parsed.searchParams.has(key)) {
+      throw new Error(
+        `Refusing to run DB specs: DATABASE_URL carries a "${key}" override`,
+      );
+    }
+  }
+  if (env.PGHOST && !LOCAL_HOSTS.has(env.PGHOST)) {
+    throw new Error(
+      `Refusing to run DB specs: PGHOST is "${env.PGHOST}", not local`,
     );
   }
   return url;
