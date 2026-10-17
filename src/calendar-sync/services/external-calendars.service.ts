@@ -2,6 +2,7 @@ import { Inject, Injectable, Logger } from '@nestjs/common';
 import { and, asc, desc, eq, inArray, isNull } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
+import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import {
   externalCalendarEvents,
   externalCalendars,
@@ -17,6 +18,17 @@ import { OutlookCalendarService } from '../../channels/services/outlook-calendar
 export const MAX_CALENDARS_PER_CONNECTION = 25;
 
 export type { ExternalCalendarRow };
+
+/** A connected calendar as served to the Planner. */
+export interface ExternalCalendarDto {
+  id: string;
+  channelId: number;
+  provider: 'google' | 'outlook';
+  accountEmail: string | null;
+  name: string;
+  color: string | null;
+  isPrimary: boolean;
+}
 
 interface CalendarChannelRef {
   id: number;
@@ -186,6 +198,36 @@ export class ExternalCalendarsService {
       .from(externalCalendars)
       .where(eq(externalCalendars.workspaceId, workspaceId))
       .orderBy(desc(externalCalendars.isPrimary), asc(externalCalendars.name));
+  }
+
+  /** The workspace's calendars of active connections, primary first. */
+  async listCalendarDtos(workspaceId: string): Promise<ExternalCalendarDto[]> {
+    const rows = await this.db
+      .select({
+        id: externalCalendars.id,
+        channelId: externalCalendars.channelId,
+        platform: socialMediaChannels.platform,
+        accountEmail: externalCalendars.accountEmail,
+        name: externalCalendars.name,
+        color: externalCalendars.color,
+        isPrimary: externalCalendars.isPrimary,
+      })
+      .from(externalCalendars)
+      .innerJoin(
+        socialMediaChannels,
+        eq(externalCalendars.channelId, socialMediaChannels.id),
+      )
+      .where(
+        and(
+          eq(externalCalendars.workspaceId, workspaceId),
+          eq(socialMediaChannels.isActive, true),
+        ),
+      )
+      .orderBy(desc(externalCalendars.isPrimary), asc(externalCalendars.name));
+    return rows.map(({ platform, ...rest }) => ({
+      ...rest,
+      provider: platform === 'google_calendar' ? 'google' : 'outlook',
+    }));
   }
 
   /**
