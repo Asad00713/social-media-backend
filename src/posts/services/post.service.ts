@@ -14,7 +14,6 @@ import { derivePostStatus } from '../lib/post-status';
 import {
   assertNotInPast,
   refusal,
-  scheduleInPastRefusal,
 } from '../lib/refusal';
 import { calendarRangeWhere, occurredAtSql } from '../lib/post-status.sql';
 import {
@@ -1035,15 +1034,15 @@ export class PostService {
     // Ensure scheduledAt is a Date object
     const scheduleDate =
       scheduledAt instanceof Date ? scheduledAt : new Date(scheduledAt);
-    const delay = scheduleDate.getTime() - Date.now();
+    // assertNotInPast refuses a past time upstream, before any side effect. By
+    // here the cancel and the row write have run, so a delay that went negative
+    // while the request was in flight is clamped, never thrown: throwing would
+    // leave the post with no job.
+    const delay = Math.max(0, scheduleDate.getTime() - Date.now());
 
     this.logger.log(
       `Scheduling job for post ${postId}: scheduledAt=${scheduleDate.toISOString()}, delay=${delay}ms`,
     );
-
-    if (delay < 0) {
-      throw scheduleInPastRefusal();
-    }
 
     const jobId = `post-${postId}-${Date.now()}`;
 

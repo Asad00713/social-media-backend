@@ -1,6 +1,6 @@
 import type { PoolClient } from 'pg';
 import { posts, type PostStatus } from '../../drizzle/schema/posts.schema';
-import { derivePostStatus } from '../../posts/lib/post-status';
+import { derivePostStatus, type TargetLike } from '../../posts/lib/post-status';
 import { isPartlyPublishedSql } from '../../posts/lib/post-status.sql';
 import { PlannerPostsService } from '../../posts/services/planner-posts.service';
 import {
@@ -9,6 +9,7 @@ import {
   type DbType,
 } from '../testing/rollback-db';
 import type { ListTab } from '../dto/planner-list.dto';
+import { encodeListCursor } from '../lib/list-cursor';
 import { PlannerListService } from './planner-list.service';
 
 const MIGRATION = '0041_post_ready.sql';
@@ -259,7 +260,10 @@ describeDb('PlannerListService.list', () => {
             scheduledAt: iso(t + HOUR),
             targets,
           });
-          expected.set(id, derivePostStatus(status as PostStatus, targets));
+          expected.set(
+            id,
+            derivePostStatus(status as PostStatus, targets as TargetLike[]),
+          );
         }
       }
       const partly = await db
@@ -343,6 +347,70 @@ describeDb('PlannerListService.list', () => {
       expect(pages).toBe(3);
       expect(seen).toHaveLength(5);
       expect(new Set(seen)).toEqual(new Set(made));
+    }));
+
+  it('a row count that is an exact multiple of limit ends with nextCursor null', () =>
+    run(async (svc, client, now) => {
+      const w = await workspace(client, 'a');
+      const t = now.getTime();
+      for (let i = 1; i <= 4; i++) {
+        await post(client, w, {
+          status: 'published',
+          publishedAt: iso(t - i * HOUR),
+          targets: [{ channelId: '1', status: 'published' }],
+        });
+      }
+      const first = await svc.list(
+        w.workspaceId,
+        { tab: 'all', limit: 2 },
+        now,
+      );
+      expect(first.rows).toHaveLength(2);
+      expect(first.nextCursor).not.toBeNull();
+      const last = await svc.list(
+        w.workspaceId,
+        { tab: 'all', limit: 2, cursor: first.nextCursor ?? undefined },
+        now,
+      );
+      expect(last.rows).toHaveLength(2);
+      expect(last.nextCursor).toBeNull();
+      const one = await svc.list(w.workspaceId, { tab: 'all', limit: 4 }, now);
+      expect(one.rows).toHaveLength(4);
+      expect(one.nextCursor).toBeNull();
+    }));
+
+  it('a cursor from another tab is a 400, never a silent wrong page', () =>
+    run(async (svc, client, now) => {
+      const w = await workspace(client, 'a');
+      const t = now.getTime();
+      for (let i = 1; i <= 3; i++) {
+        await post(client, w, {
+          status: 'published',
+          publishedAt: iso(t - i * HOUR),
+          targets: [{ channelId: '1', status: 'published' }],
+        });
+      }
+      const page = await svc.list(w.workspaceId, { tab: 'all', limit: 1 }, now);
+      await expect(
+        svc.list(
+          w.workspaceId,
+          { tab: 'published', limit: 1, cursor: page.nextCursor ?? undefined },
+          now,
+        ),
+      ).rejects.toThrow('Invalid cursor');
+    }));
+
+  it('an out-of-range cursor key is a 400, not a database error', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'a');
+      const cursor = encodeListCursor({
+        key: '99999999999999999999',
+        id: '33333333-3333-4333-8333-333333333333',
+        tab: 'all',
+      });
+      await expect(
+        svc.list(w.workspaceId, { tab: 'all', limit: 2, cursor }),
+      ).rejects.toThrow('Invalid cursor');
     }));
 
   it('rejects a malformed cursor', () =>

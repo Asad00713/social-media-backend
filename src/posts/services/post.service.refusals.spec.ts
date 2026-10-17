@@ -225,6 +225,26 @@ describe('PostService refusal codes', () => {
       expect(s.history).not.toHaveBeenCalled();
     });
 
+    it('schedulePublishJob: a delay that just went negative enqueues with delay 0, never throws', async () => {
+      const svc = makeService(post('draft'));
+      const add = jest.fn().mockResolvedValue({ id: 'job-1' });
+      (svc as any).publishingQueue = { add };
+      // The upstream assertNotInPast passed; the clock then moved past the time.
+      const justPassed = new Date(Date.now() - 5);
+      await expect(
+        (
+          svc as unknown as {
+            schedulePublishJob: (id: string, at: Date) => Promise<string>;
+          }
+        ).schedulePublishJob('p1', justPassed),
+      ).resolves.toBe('job-1');
+      expect(add).toHaveBeenCalledWith(
+        'publish-post',
+        { postId: 'p1' },
+        expect.objectContaining({ delay: 0 }),
+      );
+    });
+
     it('createPost: 400 SCHEDULE_IN_PAST, no insert or history', async () => {
       const svc = makeService(post('draft'));
       const s = spies(svc);

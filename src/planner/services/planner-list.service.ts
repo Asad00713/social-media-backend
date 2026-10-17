@@ -25,7 +25,9 @@ import { decodeListCursor, encodeListCursor } from '../lib/list-cursor';
 /**
  * The calendar instant: `COALESCE(published_at, scheduled_at)`. An immediate
  * publish can carry neither, so `created_at` closes the chain; a NULL sort key
- * would drop the row out of every keyset comparison.
+ * would drop the row out of every keyset comparison. This chain differs from
+ * `occurredAtSql` (post-status.sql.ts) on purpose: the list key includes
+ * `created_at` so rows with no time are not dropped from keyset paging.
  */
 const occurredSql = sql`COALESCE(${posts.publishedAt}, ${posts.scheduledAt}, ${posts.createdAt})`;
 /** Millisecond sort key: one precision, one column type, both sides. */
@@ -68,7 +70,7 @@ export class PlannerListService {
     const tab = tabWhere(q.tab, now);
 
     const ascending = q.tab === 'upcoming';
-    const cursor = q.cursor ? decodeListCursor(q.cursor) : null;
+    const cursor = q.cursor ? decodeListCursor(q.cursor, q.tab) : null;
     const keyset = cursor
       ? ascending
         ? sql`(${keyMsSql}, ${posts.id}) > (${cursor.key}::bigint, ${cursor.id}::uuid)`
@@ -100,7 +102,11 @@ export class PlannerListService {
     const last = page[page.length - 1];
     const nextCursor =
       rows.length > q.limit && last
-        ? encodeListCursor({ key: String(last.key), id: last.post.id })
+        ? encodeListCursor({
+            key: String(last.key),
+            id: last.post.id,
+            tab: q.tab,
+          })
         : null;
 
     return {
