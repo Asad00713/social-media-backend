@@ -62,6 +62,13 @@ describe('ListScheduledMessagesDto range params', () => {
     ).toHaveLength(0);
   });
 
+  it('rejects non-calendar ISO forms (week and ordinal dates)', () => {
+    for (const v of ['2026-W10', '2026-060']) {
+      expect(errorsFor({ from: v }).length).toBeGreaterThan(0);
+      expect(errorsFor({ to: v }).length).toBeGreaterThan(0);
+    }
+  });
+
   it('rejects from=banana (a 400 under the global ValidationPipe)', () => {
     expect(errorsFor({ from: 'banana' }).length).toBeGreaterThan(0);
     expect(errorsFor({ to: 'banana' }).length).toBeGreaterThan(0);
@@ -76,6 +83,7 @@ describe('ScheduledMessagesService.list range', () => {
     });
     expect(q.sql).toMatch(/"scheduled_at" >= \$/);
     expect(q.sql).toMatch(/"scheduled_at" <= \$/);
+    expect(q.params).toContain(WS);
     const stamps = q.params.map((p) =>
       p instanceof Date ? p.toISOString() : p,
     );
