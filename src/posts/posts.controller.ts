@@ -23,7 +23,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PostService } from './services/post.service';
 import { PlannerPostsService } from './services/planner-posts.service';
 import { PostDraftsService } from './services/post-drafts.service';
-import { ListDraftsQueryDto } from './dto/draft-ops.dto';
+import { ListDraftsQueryDto, SetReadyDto } from './dto/draft-ops.dto';
 import { CalendarQueryDto } from './dto/calendar-query.dto';
 import { CreatePostDto, UpdatePostDto, PostQueryDto } from './dto/post.dto';
 
@@ -149,10 +149,33 @@ export class PostsController {
   @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId/:postId')
   async getPost(
-    @Param('workspaceId') workspaceId: string,
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('postId', ParseUUIDPipe) postId: string,
   ) {
     const post = await this.plannerPosts.getOne(workspaceId, postId);
+    return { post };
+  }
+
+  /**
+   * Flag a draft ready, or clear the flag. Viewers may flag only their own.
+   */
+  @RequireCapability('posts:draft')
+  @Post('workspaces/:workspaceId/:postId/ready')
+  @HttpCode(HttpStatus.OK)
+  async setReady(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
+    @CurrentUser() user: { userId: string; email: string },
+    @CurrentWorkspaceRole() role: CallerRole,
+    @Body() dto: SetReadyDto,
+  ) {
+    const post = await this.drafts.setReady(
+      workspaceId,
+      postId,
+      user.userId,
+      role,
+      dto.ready,
+    );
     return { post };
   }
 
@@ -163,7 +186,7 @@ export class PostsController {
   @Put('workspaces/:workspaceId/:postId')
   async updatePost(
     @Param('workspaceId') workspaceId: string,
-    @Param('postId') postId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
     @CurrentUser() user: { userId: string; email: string },
     @CurrentWorkspaceRole() role: CallerRole,
     @Body() dto: UpdatePostDto,
@@ -198,7 +221,7 @@ export class PostsController {
   @HttpCode(HttpStatus.OK)
   async deletePost(
     @Param('workspaceId') workspaceId: string,
-    @Param('postId') postId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
     @CurrentUser() user: { userId: string; email: string },
     @CurrentWorkspaceRole() role: CallerRole,
   ) {
@@ -218,7 +241,7 @@ export class PostsController {
   @HttpCode(HttpStatus.OK)
   async publishPost(
     @Param('workspaceId') workspaceId: string,
-    @Param('postId') postId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
     @CurrentUser() user: { userId: string; email: string },
   ) {
     const post = await this.postService.publishPost(
@@ -261,7 +284,7 @@ export class PostsController {
   @Get('workspaces/:workspaceId/:postId/history')
   async getPostHistory(
     @Param('workspaceId') workspaceId: string,
-    @Param('postId') postId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
   ) {
     const history = await this.postService.getPostHistory(postId, workspaceId);
     return { history };

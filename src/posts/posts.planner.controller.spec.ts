@@ -18,7 +18,13 @@ describe('PostsController planner reads over HTTP', () => {
   let app: INestApplication<App>;
   const roles = { getRole: jest.fn(), isPlatformSuperAdmin: jest.fn() };
   const planner = { getCalendar: jest.fn(), getOne: jest.fn() };
-  const drafts = { list: jest.fn() };
+  const drafts = { list: jest.fn(), setReady: jest.fn() };
+  const postService = {
+    updatePost: jest.fn(),
+    deletePost: jest.fn(),
+    publishPost: jest.fn(),
+    getPostHistory: jest.fn(),
+  };
 
   beforeAll(async () => {
     const moduleRef = await Test.createTestingModule({
@@ -26,7 +32,7 @@ describe('PostsController planner reads over HTTP', () => {
       providers: [
         WorkspaceRoleGuard,
         { provide: WorkspaceRoleService, useValue: roles },
-        { provide: PostService, useValue: {} },
+        { provide: PostService, useValue: postService },
         { provide: PlannerPostsService, useValue: planner },
         { provide: PostDraftsService, useValue: drafts },
       ],
@@ -65,6 +71,7 @@ describe('PostsController planner reads over HTTP', () => {
     });
     planner.getOne.mockResolvedValue({ id: POST });
     drafts.list.mockResolvedValue({ drafts: [], total: 0, nextCursor: null });
+    drafts.setReady.mockResolvedValue({ id: POST });
   });
 
   const cal = (qs: string) =>
@@ -134,6 +141,57 @@ describe('PostsController planner reads over HTTP', () => {
     it('passes limit and cursor through', async () => {
       await get('?limit=5&cursor=abc').expect(200);
       expect(drafts.list).toHaveBeenCalledWith(WS, { limit: 5, cursor: 'abc' });
+    });
+  });
+
+  describe('ready', () => {
+    const ready = (body: unknown, ws = WS, id = POST) =>
+      request(app.getHttpServer())
+        .post(`/posts/workspaces/${ws}/${id}/ready`)
+        .send(body as object);
+
+    it.each([
+      [{ ready: 'yes' }, 'a string'],
+      [{}, 'no ready key'],
+      [{ ready: true, extra: 1 }, 'an extra key'],
+    ])('answers 400 to %j (%s)', async (body) => {
+      await ready(body).expect(400);
+      expect(drafts.setReady).not.toHaveBeenCalled();
+    });
+
+    it('answers 400 to a non-UUID post id or workspace id', async () => {
+      await ready({ ready: true }, WS, 'abc').expect(400);
+      await ready({ ready: true }, 'abc', POST).expect(400);
+      expect(drafts.setReady).not.toHaveBeenCalled();
+    });
+
+    it('lets a guest flag a draft, passing caller and role', async () => {
+      await ready({ ready: true }).expect(200, { post: { id: POST } });
+      expect(drafts.setReady).toHaveBeenCalledWith(
+        WS,
+        POST,
+        'user-1',
+        'GUEST',
+        true,
+      );
+    });
+  });
+
+  describe('a non-UUID post id is a 400, never a 500', () => {
+    const base = `/posts/workspaces/${WS}/abc`;
+    const http = () => request(app.getHttpServer());
+    it.each([
+      ['update', () => http().put(base).send({})],
+      ['delete', () => http().delete(base)],
+      ['publish', () => http().post(`${base}/publish`)],
+      ['history', () => http().get(`${base}/history`)],
+    ])('%s', async (_kind, call) => {
+      roles.getRole.mockResolvedValue('OWNER');
+      await call().expect(400);
+      expect(postService.updatePost).not.toHaveBeenCalled();
+      expect(postService.deletePost).not.toHaveBeenCalled();
+      expect(postService.publishPost).not.toHaveBeenCalled();
+      expect(postService.getPostHistory).not.toHaveBeenCalled();
     });
   });
 

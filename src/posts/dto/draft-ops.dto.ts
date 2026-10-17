@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  IsBoolean,
   IsInt,
   IsOptional,
   IsString,
@@ -23,6 +24,11 @@ export class ListDraftsQueryDto {
   @MaxLength(512)
   @Matches(/^[A-Za-z0-9_-]+$/, { message: 'Invalid cursor' })
   cursor?: string;
+}
+
+export class SetReadyDto {
+  @IsBoolean()
+  ready: boolean;
 }
 
 export interface DraftsPageDto {

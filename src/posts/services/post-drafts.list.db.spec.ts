@@ -1,3 +1,5 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- DB rows from raw pg queries are untyped */
+import { NotFoundException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { describeDb, withRollbackDb } from '../../planner/testing/rollback-db';
 import { PlannerPostsService } from './planner-posts.service';
@@ -42,7 +44,9 @@ describeDb('PostDraftsService.list', () => {
     fn: (svc: PostDraftsService, client: PoolClient) => Promise<void>,
   ) =>
     withRollbackDb([MIGRATION], async (db, client) => {
-      const svc = new PostDraftsService(db, new PlannerPostsService(db));
+      const svc = new PostDraftsService(db, new PlannerPostsService(db), {
+        draftReady: jest.fn(),
+      } as any);
       await fn(svc, client);
     });
 
@@ -124,5 +128,114 @@ describeDb('PostDraftsService.list', () => {
       await expect(
         svc.list(w.workspaceId, { limit: 2, cursor: '!!' }),
       ).rejects.toThrow('Invalid cursor');
+    }));
+});
+
+async function user(client: PoolClient, tag: string) {
+  const u = await client.query<{ id: string }>(
+    `INSERT INTO users (email, name) VALUES ($1, $2) RETURNING id`,
+    [`m-${tag}-${Math.random().toString(36).slice(2, 8)}@example.test`, tag],
+  );
+  return u.rows[0].id;
+}
+
+async function invite(
+  client: PoolClient,
+  w: { userId: string; workspaceId: string },
+  userId: string,
+  role: string,
+  status: string,
+) {
+  await client.query(
+    `INSERT INTO workspace_invitations
+       (workspace_id, email, user_id, role, status, invited_by, token, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '7 days')`,
+    [
+      w.workspaceId,
+      `i-${Math.random().toString(36).slice(2, 8)}@example.test`,
+      userId,
+      role,
+      status,
+      w.userId,
+      Math.random().toString(36).slice(2),
+    ],
+  );
+}
+
+describeDb('PostDraftsService.setReady', () => {
+  const run = (
+    fn: (
+      svc: PostDraftsService,
+      client: PoolClient,
+      draftReady: jest.Mock,
+    ) => Promise<void>,
+  ) =>
+    withRollbackDb([MIGRATION], async (db, client) => {
+      const draftReady = jest.fn().mockResolvedValue({});
+      const svc = new PostDraftsService(db, new PlannerPostsService(db), {
+        draftReady,
+      } as any);
+      await fn(svc, client, draftReady);
+    });
+
+  it('404s a post id that belongs to another workspace', () =>
+    run(async (svc, client) => {
+      const a = await workspace(client, 'a');
+      const b = await workspace(client, 'b');
+      const foreign = await post(client, b, {
+        updatedAt: '2026-03-01T10:00:00Z',
+      });
+      await expect(
+        svc.setReady(a.workspaceId, foreign, a.userId, 'OWNER', true),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      const { rows } = await client.query(
+        `SELECT ready_at FROM posts WHERE id = $1`,
+        [foreign],
+      );
+      expect(rows[0].ready_at).toBeNull();
+    }));
+
+  it('flags without touching updated_at, notifies owner + accepted MEMBER only, once', () =>
+    run(async (svc, client, draftReady) => {
+      const w = await workspace(client, 'a');
+      const actor = await user(client, 'actor');
+      const member = await user(client, 'member');
+      const guest = await user(client, 'guest');
+      const pending = await user(client, 'pending');
+      await invite(client, w, actor, 'MEMBER', 'ACCEPTED');
+      await invite(client, w, member, 'MEMBER', 'ACCEPTED');
+      await invite(client, w, guest, 'GUEST', 'ACCEPTED');
+      await invite(client, w, pending, 'MEMBER', 'PENDING');
+      const id = await post(client, w, { updatedAt: '2026-03-01T10:00:00Z' });
+
+      const dto = await svc.setReady(w.workspaceId, id, actor, 'MEMBER', true);
+      expect(dto.readyAt).not.toBeNull();
+      const { rows } = await client.query(
+        `SELECT ready_by_id, to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS u FROM posts WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0].ready_by_id).toBe(actor);
+      expect(rows[0].u).toBe('2026-03-01T10:00:00');
+      expect(draftReady.mock.calls.map((c) => c[0]).sort()).toEqual(
+        [w.userId, member].sort(),
+      );
+
+      await svc.setReady(w.workspaceId, id, actor, 'MEMBER', true);
+      expect(draftReady).toHaveBeenCalledTimes(2);
+
+      await svc.setReady(w.workspaceId, id, actor, 'MEMBER', false);
+      const after = await client.query(
+        `SELECT ready_at, ready_by_id FROM posts WHERE id = $1`,
+        [id],
+      );
+      expect(after.rows[0]).toEqual({ ready_at: null, ready_by_id: null });
+      const hist = await client.query(
+        `SELECT action FROM post_history WHERE post_id = $1 ORDER BY created_at, id`,
+        [id],
+      );
+      expect(hist.rows.map((r) => r.action).sort()).toEqual([
+        'marked_ready',
+        'unmarked_ready',
+      ]);
     }));
 });
