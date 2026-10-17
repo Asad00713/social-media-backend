@@ -1,4 +1,4 @@
-/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-return, @typescript-eslint/require-await -- test doubles are loosely typed */
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return, @typescript-eslint/require-await -- test doubles are loosely typed */
 import { BadRequestException } from '@nestjs/common';
 
 jest.mock('../../drizzle/db', () => {
@@ -20,6 +20,7 @@ jest.mock('../../drizzle/db', () => {
   };
 });
 
+import { db } from '../../drizzle/db';
 import { PostService } from './post.service';
 
 const WS = 'ws1';
@@ -46,7 +47,7 @@ function makeService(existing: Record<string, unknown>) {
   return svc;
 }
 
-async function refusal(promise: Promise<unknown>) {
+async function bodyOf(promise: Promise<unknown>) {
   try {
     await promise;
   } catch (e) {
@@ -67,7 +68,7 @@ const post = (status: string, targets: unknown[] = []) => ({
 describe('PostService refusal codes', () => {
   it('update of a published post carries POST_ALREADY_PUBLISHED', async () => {
     const svc = makeService(post('published'));
-    const body = await refusal(
+    const body = await bodyOf(
       svc.updatePost('p1', WS, 'u1', { content: 'y' } as any, 'MEMBER'),
     );
     expect(body).toMatchObject({
@@ -81,7 +82,7 @@ describe('PostService refusal codes', () => {
     const svc = makeService(
       post('published', [{ channelId: '1', status: 'published' }]),
     );
-    const body = await refusal(svc.deletePost('p1', WS, 'u1', 'MEMBER'));
+    const body = await bodyOf(svc.deletePost('p1', WS, 'u1', 'MEMBER'));
     expect(body).toMatchObject({
       message:
         'Cannot delete a published post. It must be deleted from each platform individually.',
@@ -91,7 +92,7 @@ describe('PostService refusal codes', () => {
 
   it('a schedule time one minute ago carries SCHEDULE_IN_PAST', async () => {
     const svc = makeService(post('draft'));
-    const body = await refusal(
+    const body = await bodyOf(
       svc.updatePost(
         'p1',
         WS,
@@ -117,7 +118,7 @@ describe('PostService refusal codes', () => {
           { channelId: '2', status: 'failed' },
         ]),
       );
-      const body = await refusal(svc.deletePost('p1', WS, 'u1', 'MEMBER'));
+      const body = await bodyOf(svc.deletePost('p1', WS, 'u1', 'MEMBER'));
       expect(body).toMatchObject({
         message: PARTLY,
         code: 'POST_PARTLY_PUBLISHED',
@@ -131,7 +132,7 @@ describe('PostService refusal codes', () => {
           { channelId: '2', status: 'failed' },
         ]),
       );
-      const body = await refusal(svc.deletePost('p1', WS, 'u1', 'MEMBER'));
+      const body = await bodyOf(svc.deletePost('p1', WS, 'u1', 'MEMBER'));
       expect(body.code).toBe('POST_PARTLY_PUBLISHED');
     });
 
@@ -142,7 +143,7 @@ describe('PostService refusal codes', () => {
           { channelId: '2', status: 'failed' },
         ]),
       );
-      const body = await refusal(svc.deletePost('p1', WS, 'u1', 'MEMBER'));
+      const body = await bodyOf(svc.deletePost('p1', WS, 'u1', 'MEMBER'));
       expect(body.code).toBe('POST_PARTLY_PUBLISHED');
     });
 
@@ -160,6 +161,65 @@ describe('PostService refusal codes', () => {
       await expect(
         svc.deletePost('p1', WS, 'u1', 'MEMBER'),
       ).resolves.toBeUndefined();
+    });
+  });
+
+  describe('a refused past schedule changes nothing', () => {
+    const PAST = () => new Date(Date.now() - 60_000);
+
+    function spies(svc: PostService) {
+      return {
+        update: jest.spyOn(db as any, 'update'),
+        insert: jest.spyOn(db as any, 'insert'),
+        execute: jest.spyOn(db as any, 'execute'),
+        cancel: (svc as any).cancelPublishJobs as jest.Mock,
+        history: (svc as any).recordHistory as jest.Mock,
+      };
+    }
+
+    afterEach(() => jest.restoreAllMocks());
+
+    it('updatePost: 400 SCHEDULE_IN_PAST, no cancel, write or history', async () => {
+      const svc = makeService(post('scheduled'));
+      const s = spies(svc);
+      const body = await bodyOf(
+        svc.updatePost(
+          'p1',
+          WS,
+          'u1',
+          { scheduledAt: PAST() } as any,
+          'MEMBER',
+        ),
+      );
+      expect(body).toMatchObject({
+        statusCode: 400,
+        message: 'Cannot schedule a post in the past',
+        error: 'Bad Request',
+        code: 'SCHEDULE_IN_PAST',
+      });
+      expect(s.cancel).not.toHaveBeenCalled();
+      expect(s.update).not.toHaveBeenCalled();
+      expect(s.execute).not.toHaveBeenCalled();
+      expect(s.history).not.toHaveBeenCalled();
+    });
+
+    it('createPost: 400 SCHEDULE_IN_PAST, no insert or history', async () => {
+      const svc = makeService(post('draft'));
+      const s = spies(svc);
+      const body = await bodyOf(
+        svc.createPost(
+          WS,
+          'u1',
+          { content: 'x', targetChannelIds: [], scheduledAt: PAST() } as any,
+          'MEMBER',
+        ),
+      );
+      expect(body).toMatchObject({
+        statusCode: 400,
+        code: 'SCHEDULE_IN_PAST',
+      });
+      expect(s.insert).not.toHaveBeenCalled();
+      expect(s.history).not.toHaveBeenCalled();
     });
   });
 });

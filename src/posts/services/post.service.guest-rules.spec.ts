@@ -92,7 +92,7 @@ describe('PostService Guest rules (role GUEST = viewer)', () => {
             {
               content: 'x',
               targetChannelIds: [],
-              scheduledAt: new Date(),
+              scheduledAt: new Date(Date.now() + 3_600_000),
             } as any,
             role,
           ),

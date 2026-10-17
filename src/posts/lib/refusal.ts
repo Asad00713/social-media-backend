@@ -18,3 +18,17 @@ export function refusal(message: string, code: RefusalCode) {
     code,
   });
 }
+
+/** The one "past" rule for scheduling: strictly before now. */
+export function isScheduleInPast(scheduledAt: Date | string): boolean {
+  return new Date(scheduledAt).getTime() < Date.now();
+}
+
+/** Throws SCHEDULE_IN_PAST. Call before any write, cancel or history entry. */
+export function assertNotInPast(scheduledAt: Date | string): void {
+  if (isScheduleInPast(scheduledAt)) throw scheduleInPastRefusal();
+}
+
+export function scheduleInPastRefusal() {
+  return refusal('Cannot schedule a post in the past', 'SCHEDULE_IN_PAST');
+}

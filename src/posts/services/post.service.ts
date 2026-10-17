@@ -11,7 +11,12 @@ import { isViewer, type CallerRole } from '../guest-rules';
 import { eq, and, desc, inArray, sql, gte, lte } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { derivePostStatus } from '../lib/post-status';
-import { refusal } from '../lib/refusal';
+import {
+  assertNotInPast,
+  isScheduleInPast,
+  refusal,
+  scheduleInPastRefusal,
+} from '../lib/refusal';
 import { calendarRangeWhere, occurredAtSql } from '../lib/post-status.sql';
 import {
   posts,
@@ -177,6 +182,9 @@ export class PostService {
     // Queue ceiling is per channel: a post targeting three channels takes one
     // slot on each. Checked before the insert so nothing is written on refusal.
     if (dto.scheduledAt) {
+      // Refused before anything is written (the job-scheduling backstop
+      // below would throw only after the insert).
+      assertNotInPast(dto.scheduledAt);
       await this.postQueue.enforceQueueLimit(
         workspaceId,
         channelList.map((channel) => String(channel.id)),
@@ -318,6 +326,12 @@ export class PostService {
     // Can't update published posts
     if (existingPost.status === 'published') {
       throw refusal('Cannot update a published post', 'POST_ALREADY_PUBLISHED');
+    }
+
+    // A past time is refused before the live job is cancelled or anything is
+    // written, so a refusal leaves the post exactly as it was.
+    if (dto.scheduledAt) {
+      assertNotInPast(dto.scheduledAt);
     }
 
     // Build update data
@@ -1029,8 +1043,8 @@ export class PostService {
       `Scheduling job for post ${postId}: scheduledAt=${scheduleDate.toISOString()}, delay=${delay}ms`,
     );
 
-    if (delay < 0) {
-      throw refusal('Cannot schedule a post in the past', 'SCHEDULE_IN_PAST');
+    if (isScheduleInPast(scheduleDate)) {
+      throw scheduleInPastRefusal();
     }
 
     const jobId = `post-${postId}-${Date.now()}`;
