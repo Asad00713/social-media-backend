@@ -46,10 +46,13 @@ export class PlannerPreferencesService {
     workspaceId: string,
     patch: UpdatePlannerPrefsDto,
   ): Promise<PlannerPrefs> {
-    // Nothing to merge: no write, no row created.
-    if (Object.values(patch).every((v) => v === undefined)) {
-      return await this.get(userId, workspaceId);
-    }
+    // A patch that carries no known, valid value (empty, null-only, an empty
+    // `show`) changes nothing: no transaction, no row created. The one
+    // exception is `visibleCalendarIds: null`, which removes a stored key.
+    const hasEffect =
+      Object.keys(mergePrefs(undefined, patch)).length > 0 ||
+      patch.visibleCalendarIds === null;
+    if (!hasEffect) return await this.get(userId, workspaceId);
     const merged = await this.db.transaction(async (tx) => {
       await tx
         .insert(plannerPreferences)

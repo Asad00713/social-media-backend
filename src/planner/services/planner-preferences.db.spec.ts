@@ -106,6 +106,19 @@ describeDb('planner_preferences (0043) and PlannerPreferencesService', () => {
       });
     }));
 
+  it.each([
+    ['a null-only body', { postSize: null }],
+    ['an empty show', { show: {} }],
+  ])('%s creates no row', (_label, patch) =>
+    run(async (svc, client) => {
+      const u = await user(client, 'a');
+      const ws = await workspace(client, u, 'a');
+      await expect(
+        svc.update(u, ws, patch as unknown as Parameters<typeof svc.update>[2]),
+      ).resolves.toEqual(PLANNER_PREF_DEFAULTS);
+      expect(await stored(client, u, ws)).toEqual([]);
+    }));
+
   it('two users in one workspace stay independent; so do two workspaces', () =>
     run(async (svc, client) => {
       const a = await user(client, 'a');
@@ -169,7 +182,7 @@ describeDb('planner_preferences (0043) and PlannerPreferencesService', () => {
       }));
   });
 
-  it('two first PUTs on the same pair both succeed and keep both keys', () =>
+  it('sequential PUTs over an existing row both succeed and keep both keys', () =>
     run(async (svc, client) => {
       // One connection serialises them, but the ensure-row step must not
       // fail when the row already exists (what the loser of a race sees).
