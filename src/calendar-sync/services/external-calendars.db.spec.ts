@@ -1,5 +1,9 @@
 import type { PoolClient } from 'pg';
-import { describeDb, withRollbackDb } from '../../planner/testing/rollback-db';
+import {
+  describeDb,
+  withRollbackDb,
+  type DbType,
+} from '../../planner/testing/rollback-db';
 import type { GoogleCalendarService } from '../../channels/services/google-calendar.service';
 import type { OutlookCalendarService } from '../../channels/services/outlook-calendar.service';
 import {
@@ -256,4 +260,112 @@ describeDb('external_calendars (0044) and ExternalCalendarsService', () => {
         ).toBe(true);
       }));
   });
+});
+
+describeDb('one event row per calendar (0044 unique key)', () => {
+  const run = (fn: (client: PoolClient, db: DbType) => Promise<void>) =>
+    withRollbackDb([MIGRATION], async (db, client) => fn(client, db));
+
+  const calendars = async (
+    client: PoolClient,
+    c: { workspaceId: string; channel: { id: number } },
+  ) => {
+    const r = await client.query<{ id: string }>(
+      `INSERT INTO external_calendars (workspace_id, channel_id, provider_calendar_id, name)
+       VALUES ($1, $2, 'primary-id', 'P'), ($1, $2, 'mkt-id', 'M') RETURNING id`,
+      [c.workspaceId, c.channel.id],
+    );
+    return { primary: r.rows[0].id, mkt: r.rows[1].id };
+  };
+
+  const rowsOf = async (client: PoolClient, channelId: number) =>
+    (
+      await client.query<{
+        external_event_id: string;
+        external_calendar_id: string;
+        calendar_id: string | null;
+      }>(
+        `SELECT external_event_id, external_calendar_id, calendar_id
+           FROM external_calendar_events WHERE channel_id = $1 ORDER BY external_calendar_id`,
+        [channelId],
+      )
+    ).rows;
+
+  it('holds the same event id on two calendars as two rows, each with its own calendar_id', () =>
+    run(async (client) => {
+      const c = await connection(client, 'dup');
+      const cal = await calendars(client, c);
+      await event(client, c, 'shared', cal.primary, 'primary-id');
+      await event(client, c, 'shared', cal.mkt, 'mkt-id');
+
+      const rows = await rowsOf(client, c.channel.id);
+      expect(rows.map((r) => [r.external_calendar_id, r.calendar_id])).toEqual([
+        ['mkt-id', cal.mkt],
+        ['primary-id', cal.primary],
+      ]);
+    }));
+
+  it('still rejects the same event twice on one calendar', () =>
+    run(async (client) => {
+      const c = await connection(client, 'dup2');
+      const cal = await calendars(client, c);
+      await event(client, c, 'e', cal.primary, 'primary-id');
+      await client.query('SAVEPOINT s');
+      await expect(
+        event(client, c, 'e', cal.primary, 'primary-id'),
+      ).rejects.toMatchObject({ code: '23505' });
+      await client.query('ROLLBACK TO SAVEPOINT s');
+    }));
+
+  it('a tombstone scoped to the primary calendar removes only the primary copy', () =>
+    run(async (client) => {
+      const c = await connection(client, 'tomb');
+      const cal = await calendars(client, c);
+      await event(client, c, 'shared', cal.primary, 'primary-id');
+      await event(client, c, 'shared', cal.mkt, 'mkt-id');
+
+      await client.query(
+        `DELETE FROM external_calendar_events
+          WHERE channel_id = $1 AND external_calendar_id = 'primary-id' AND external_event_id = ANY($2)`,
+        [c.channel.id, ['shared']],
+      );
+
+      expect(
+        (await rowsOf(client, c.channel.id)).map((r) => r.calendar_id),
+      ).toEqual([cal.mkt]);
+    }));
+
+  it('deleting a secondary calendar row removes only its own copy', () =>
+    run(async (client) => {
+      const c = await connection(client, 'delcal');
+      const cal = await calendars(client, c);
+      await event(client, c, 'shared', cal.primary, 'primary-id');
+      await event(client, c, 'shared', cal.mkt, 'mkt-id');
+
+      await client.query(`DELETE FROM external_calendars WHERE id = $1`, [
+        cal.mkt,
+      ]);
+
+      expect(
+        (await rowsOf(client, c.channel.id)).map((r) => r.calendar_id),
+      ).toEqual([cal.primary]);
+    }));
+
+  it('legacy rows (calendar_id NULL, external_calendar_id set) coexist and are claimed', () =>
+    run(async (client, db) => {
+      const c = await connection(client, 'legacy');
+      const cal = await calendars(client, c);
+      await event(client, c, 'old', null, 'primary-id');
+      await event(client, c, 'old', cal.mkt, 'mkt-id');
+
+      await new ExternalCalendarsService(
+        db as never,
+        {} as GoogleCalendarService,
+        {} as OutlookCalendarService,
+      ).claimUnassignedEvents(c.channel.id, 'primary-id', cal.primary);
+
+      expect(
+        (await rowsOf(client, c.channel.id)).map((r) => r.calendar_id),
+      ).toEqual([cal.mkt, cal.primary]);
+    }));
 });

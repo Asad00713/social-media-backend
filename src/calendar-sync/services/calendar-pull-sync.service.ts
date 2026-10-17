@@ -184,8 +184,17 @@ export class CalendarPullSyncService {
 
       // Discover every calendar of the connection (never throws; a failed list
       // keeps the rows we already have).
-      const { calendars, primaryIsNew } =
-        await this.externalCalendars.syncCalendarList(channel, accessToken);
+      let calendars: ExternalCalendarRow[] = [];
+      let primaryIsNew = false;
+      try {
+        ({ calendars, primaryIsNew } =
+          await this.externalCalendars.syncCalendarList(channel, accessToken));
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        this.logger.warn(
+          `Calendar discovery failed for channel ${channelId}: ${message} - pulling the primary calendar only`,
+        );
+      }
       const primaryRow =
         calendars.find((row) => row.providerCalendarId === calendarId) ??
         calendars.find((row) => row.isPrimary);
@@ -395,14 +404,15 @@ export class CalendarPullSyncService {
     if (delta.deleted.length > 0) {
       // Chunked so a large tombstone batch can't blow the bind-parameter limit.
       for (const chunk of chunkIds(delta.deleted, 200)) {
-        await db
-          .delete(externalCalendarEvents)
-          .where(
-            and(
-              eq(externalCalendarEvents.channelId, channel.id),
-              inArray(externalCalendarEvents.externalEventId, chunk),
-            ),
-          );
+        await db.delete(externalCalendarEvents).where(
+          and(
+            eq(externalCalendarEvents.channelId, channel.id),
+            // This delta is the primary calendar's: a copy of the same event
+            // on another calendar is not deleted by it.
+            eq(externalCalendarEvents.externalCalendarId, calendarId),
+            inArray(externalCalendarEvents.externalEventId, chunk),
+          ),
+        );
       }
       // A tombstone for an event WE wrote also unschedules the linked post.
       await this.applyOwnedDeletions(channel, delta.deleted);
@@ -496,7 +506,9 @@ export class CalendarPullSyncService {
     }
 
     const stamp = new Date();
-    const set: Record<string, unknown> = { updatedAt: stamp };
+    const set: Partial<typeof externalCalendars.$inferInsert> = {
+      updatedAt: stamp,
+    };
     if (isFullSync && isCompleteRun) set.lastFullSyncAt = stamp;
     if (isCompleteRun && delta.nextCursor) {
       set[provider === 'google' ? 'syncToken' : 'deltaLink'] = delta.nextCursor;
@@ -1030,11 +1042,11 @@ export class CalendarPullSyncService {
       .onConflictDoUpdate({
         target: [
           externalCalendarEvents.channelId,
+          externalCalendarEvents.externalCalendarId,
           externalCalendarEvents.externalEventId,
         ],
         set: {
           provider: values.provider,
-          externalCalendarId: values.externalCalendarId,
           calendarId: values.calendarId,
           attendeeCount: values.attendeeCount,
           title: values.title,

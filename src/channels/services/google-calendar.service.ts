@@ -112,7 +112,12 @@ export class GoogleCalendarService {
     const calendars: Calendar[] = [];
     let pageToken: string | undefined;
     for (let page = 0; page < CALENDAR_LIST_MAX_PAGES; page++) {
-      const params = new URLSearchParams({ maxResults: '250' });
+      // showHidden: visibility is a per-user Planner toggle, so a calendar hidden
+      // in Google must still be listed (else its row and events would be deleted).
+      const params = new URLSearchParams({
+        maxResults: '250',
+        showHidden: 'true',
+      });
       if (pageToken) params.set('pageToken', pageToken);
       const response = await fetch(
         `${this.apiBaseUrl}/users/me/calendarList?${params.toString()}`,
@@ -121,8 +126,11 @@ export class GoogleCalendarService {
       if (!response.ok) {
         throw new Error(`Google calendarList failed (${response.status})`);
       }
-      const data = await response.json();
-      calendars.push(...((data.items as Calendar[]) || []));
+      const data = (await response.json()) as {
+        items?: Calendar[];
+        nextPageToken?: string;
+      };
+      calendars.push(...(data.items ?? []));
       pageToken = data.nextPageToken || undefined;
       if (!pageToken) return { calendars, complete: true };
     }

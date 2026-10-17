@@ -6,6 +6,8 @@ jest.mock('../../drizzle/db', () => {
   const state = {
     selectByTable: new Map<unknown, unknown[]>(),
     deletedTables: [] as unknown[],
+    deleteConds: [] as unknown[],
+    conflictTargets: [] as unknown[],
     updates: [] as Array<{ table: unknown; set: Record<string, unknown> }>,
     inserts: [] as Array<{ table: unknown; values: Record<string, unknown> }>,
   };
@@ -22,12 +24,22 @@ jest.mock('../../drizzle/db', () => {
       insert: jest.fn((table: unknown) => ({
         values: jest.fn((values: Record<string, unknown>) => {
           state.inserts.push({ table, values });
-          return { onConflictDoUpdate: jest.fn(() => Promise.resolve()) };
+          return {
+            onConflictDoUpdate: jest.fn((arg: { target: unknown }) => {
+              state.conflictTargets.push(arg.target);
+              return Promise.resolve();
+            }),
+          };
         }),
       })),
       delete: jest.fn((table: unknown) => {
         state.deletedTables.push(table);
-        return { where: jest.fn(() => Promise.resolve()) };
+        return {
+          where: jest.fn((cond: unknown) => {
+            state.deleteConds.push(cond);
+            return Promise.resolve();
+          }),
+        };
       }),
       update: jest.fn((table: unknown) => ({
         set: jest.fn((values: Record<string, unknown>) => {
@@ -52,6 +64,8 @@ import { OutlookCalendarService } from '../../channels/services/outlook-calendar
 import { PostService } from '../../posts/services/post.service';
 import { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
 import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import {
   calendarSyncState,
@@ -72,6 +86,8 @@ const dbMock = jest.requireMock('../../drizzle/db') as unknown as {
   __state: {
     selectByTable: Map<unknown, unknown[]>;
     deletedTables: unknown[];
+    deleteConds: unknown[];
+    conflictTargets: unknown[];
     updates: Array<{ table: unknown; set: Record<string, unknown> }>;
     inserts: Array<{ table: unknown; values: Record<string, unknown> }>;
   };
@@ -179,6 +195,8 @@ describe('CalendarPullSyncService.reconcile', () => {
     jest.clearAllMocks();
     dbMock.__state.selectByTable.clear();
     dbMock.__state.deletedTables.length = 0;
+    dbMock.__state.deleteConds.length = 0;
+    dbMock.__state.conflictTargets.length = 0;
     dbMock.__state.updates.length = 0;
     dbMock.__state.inserts.length = 0;
 
@@ -608,6 +626,53 @@ describe('CalendarPullSyncService.reconcile', () => {
         'calendar.external.changed',
         expect.objectContaining({ changed: 1 }),
       );
+    });
+
+    it('keys an event upsert on (channel, calendar, event) so one meeting on two calendars is two rows', async () => {
+      seedState();
+      fetchGoogleDeltaMock.mockResolvedValue(
+        deltaResult({ changed: [externalEvent('evt-1')] }),
+      );
+
+      await service.reconcile(CHANNEL_ID);
+
+      expect(dbMock.__state.conflictTargets).toEqual([
+        [
+          externalCalendarEvents.channelId,
+          externalCalendarEvents.externalCalendarId,
+          externalCalendarEvents.externalEventId,
+        ],
+      ]);
+    });
+
+    it('scopes a primary tombstone to the primary calendar, so a secondary copy survives', async () => {
+      seedState({ syncToken: 'tok', lastFullSyncAt: new Date() });
+      fetchGoogleDeltaMock.mockResolvedValue(
+        deltaResult({ deleted: ['shared-evt'] }),
+      );
+
+      await service.reconcile(CHANNEL_ID);
+
+      const dialect = new PgDialect();
+      const params = dbMock.__state.deleteConds.map(
+        (c) => dialect.sqlToQuery(c as SQL).params,
+      );
+      expect(params).toContainEqual(
+        expect.arrayContaining([CHANNEL_ID, 'primary', 'shared-evt']),
+      );
+    });
+
+    it('still pulls the primary calendar when the calendar list sync throws', async () => {
+      seedState();
+      syncCalendarList.mockRejectedValue(new Error('db down'));
+      fetchGoogleDeltaMock.mockResolvedValue(
+        deltaResult({ changed: [externalEvent('evt-1')] }),
+      );
+
+      await expect(service.reconcile(CHANNEL_ID)).resolves.toBeUndefined();
+
+      expect(fetchGoogleDeltaMock).toHaveBeenCalledTimes(1);
+      expect(eventInserts()).toHaveLength(1);
     });
   });
 });

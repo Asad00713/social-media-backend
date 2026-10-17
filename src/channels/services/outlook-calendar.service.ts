@@ -176,11 +176,12 @@ export class OutlookCalendarService {
       if (!response.ok) {
         throw new Error(`Outlook calendars failed (${response.status})`);
       }
-      const data = await response.json();
+      const data = (await response.json()) as {
+        value?: GraphCalendar[];
+        '@odata.nextLink'?: string;
+      };
       calendars.push(
-        ...((data.value || []) as GraphCalendar[]).map((cal) =>
-          this.mapGraphCalendar(cal),
-        ),
+        ...(data.value ?? []).map((cal) => this.mapGraphCalendar(cal)),
       );
       url = data['@odata.nextLink'] || undefined;
       if (!url) return { calendars, complete: true };

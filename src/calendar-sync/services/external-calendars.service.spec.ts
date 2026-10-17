@@ -311,4 +311,29 @@ describe('ExternalCalendarsService.syncCalendarList', () => {
     expect(state.updates).toHaveLength(1);
     expect(state.updates[0]).toMatchObject({ name: 'Team' });
   });
+
+  it('keeps the stored account email when the Outlook lookup returns nothing', async () => {
+    const { service, outlook, state } = build([
+      row({
+        id: 'r1',
+        providerCalendarId: 'AAMk1',
+        name: 'AAMK1',
+        isPrimary: true,
+        accountEmail: 'me@outlook.test',
+      }),
+    ]);
+    outlook.getAccountEmail.mockResolvedValue(null);
+    outlook.listCalendarsComplete.mockResolvedValue({
+      complete: true,
+      calendars: [cal('AAMk1', { primary: true })],
+    });
+
+    const result = await service.syncCalendarList(
+      { ...CHANNEL, platform: 'outlook_calendar' },
+      'tok',
+    );
+
+    expect(state.updates).toHaveLength(0);
+    expect(result.calendars[0].accountEmail).toBe('me@outlook.test');
+  });
 });

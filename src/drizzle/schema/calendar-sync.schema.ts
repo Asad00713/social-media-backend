@@ -165,8 +165,10 @@ export const externalCalendarEvents = pgTable(
     fetchedAt: timestamp('fetched_at').defaultNow().notNull(),
   },
   (t) => ({
-    uqChannelEvent: unique('ece_channel_event_uq').on(
+    // Per provider calendar: Google reuses an event id on every calendar copy.
+    uqChannelCalendarEvent: unique('ece_channel_calendar_event_uq').on(
       t.channelId,
+      t.externalCalendarId,
       t.externalEventId,
     ),
     ixWorkspaceTime: index('ece_workspace_time_ix').on(

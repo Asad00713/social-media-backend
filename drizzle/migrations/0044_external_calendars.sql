@@ -10,18 +10,30 @@
 -- owning row; NULL for rows imported before this migration, backfilled by the
 -- next primary pull) and attendee_count. The new columns are timestamptz; the
 -- existing starts_at/ends_at (timestamp WITHOUT time zone) are left alone.
+-- An event is now unique per (channel, provider calendar, event id) instead of
+-- (channel, event id): Google gives a meeting the same id on every calendar it
+-- sits on, and the old key made two calendars share (and delete) one row.
+-- external_calendar_id is used rather than calendar_id because legacy rows carry
+-- the former while calendar_id is NULL on them (NULLs would allow duplicates).
 --
 -- SAFETY
 -- The boot migrator runs this file in ONE transaction. Everything is
 -- idempotent and additive:
 --   * CREATE TABLE / CREATE INDEX IF NOT EXISTS; ADD COLUMN IF NOT EXISTS.
 --   * Existing rows are not read, changed or dropped (calendar_id is nullable).
+--   * The unique key is widened, never narrowed: every row that satisfied
+--     (channel_id, external_event_id) satisfies the new key, so it cannot fail.
 --
 -- ROLLBACK
 --   DROP INDEX IF EXISTS ece_calendar_ix;
 --   ALTER TABLE external_calendar_events DROP COLUMN IF EXISTS calendar_id;
 --   ALTER TABLE external_calendar_events DROP COLUMN IF EXISTS attendee_count;
 --   DROP TABLE IF EXISTS external_calendars CASCADE;
+--   ALTER TABLE external_calendar_events DROP CONSTRAINT IF EXISTS ece_channel_calendar_event_uq;
+--   ALTER TABLE external_calendar_events ADD CONSTRAINT ece_channel_event_uq
+--     UNIQUE (channel_id, external_event_id);
+--   (the re-add fails if a meeting is now stored once per calendar: delete the
+--   extra copies first)
 --
 -- Never run `db:push` against prod. The boot migrator applies this file.
 
@@ -53,3 +65,16 @@ ALTER TABLE "external_calendar_events"
 
 CREATE INDEX IF NOT EXISTS "ece_calendar_ix"
   ON "external_calendar_events" ("calendar_id");
+
+ALTER TABLE "external_calendar_events"
+  DROP CONSTRAINT IF EXISTS "ece_channel_event_uq";
+
+DO $$ BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_constraint WHERE conname = 'ece_channel_calendar_event_uq'
+  ) THEN
+    ALTER TABLE "external_calendar_events"
+      ADD CONSTRAINT "ece_channel_calendar_event_uq"
+      UNIQUE ("channel_id", "external_calendar_id", "external_event_id");
+  END IF;
+END $$;

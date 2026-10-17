@@ -128,6 +128,10 @@ export class ExternalCalendarsService {
         accountEmail,
       };
       const current = kept.get(cal.id);
+      // A lookup that found nothing must not erase an email we already have.
+      if (!wanted.accountEmail && current?.accountEmail) {
+        wanted.accountEmail = current.accountEmail;
+      }
 
       if (current) {
         if (
