@@ -141,6 +141,19 @@ export class TwitterService {
         options: string[];
         durationMinutes: number;
       };
+      /**
+       * Who may reply — X's `reply_settings`.
+       *
+       * The enum has no `everyone`: an unrestricted post is one that omits
+       * the field entirely. `everyone` is only ever a value X RETURNS. So
+       * the caller passes `undefined` for "anyone may reply", and passing
+       * the literal string would have X reject the request.
+       */
+      replySettings?:
+        | 'following'
+        | 'mentionedUsers'
+        | 'subscribers'
+        | 'verified';
     },
   ): Promise<Tweet> {
     const body: Record<string, any> = { text };
@@ -162,6 +175,11 @@ export class TwitterService {
         options: options.poll.options,
         duration_minutes: options.poll.durationMinutes,
       };
+    }
+
+    // Omitted, never nulled: see the option's note above.
+    if (options?.replySettings) {
+      body.reply_settings = options.replySettings;
     }
 
     const response = await fetch(`${this.apiBaseUrl}/tweets`, {

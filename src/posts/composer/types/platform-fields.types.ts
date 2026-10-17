@@ -11,7 +11,22 @@ export interface ThreadPost {
 
 export interface TwitterFields {
   thread?: ThreadPost[];
-  replyControl?: 'everyone' | 'following' | 'mentioned_only';
+  /**
+   * Who may reply, as the composer stores it.
+   *
+   * These are X's own `reply_settings` values plus `everyone`, which X does
+   * NOT accept on write — it is what the API returns for an unrestricted
+   * post, and the publisher turns it into an omitted field.
+   *
+   * This previously read `mentioned_only`, which X rejects outright; the
+   * spelling it wants is `mentionedUsers`.
+   */
+  replyControl?:
+    | 'everyone'
+    | 'following'
+    | 'mentionedUsers'
+    | 'subscribers'
+    | 'verified';
   pollOptions?: string[];
   pollDurationMinutes?: number;
 }

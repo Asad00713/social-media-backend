@@ -7,6 +7,20 @@ import {
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
+/** X's `reply_settings` write enum — note it has no `everyone`. */
+type TwitterReplySettings =
+  | 'following'
+  | 'mentionedUsers'
+  | 'subscribers'
+  | 'verified';
+
+const VALID_REPLY_SETTINGS: TwitterReplySettings[] = [
+  'following',
+  'mentionedUsers',
+  'subscribers',
+  'verified',
+];
+
 @Injectable()
 export class TwitterPublisher extends BasePublisher {
   readonly platform: SupportedPlatform = 'twitter';
@@ -106,7 +120,12 @@ export class TwitterPublisher extends BasePublisher {
       | undefined;
 
     if (Array.isArray(thread) && thread.length > 1) {
-      return this.publishThread(accessToken, thread, oauth1Credentials);
+      return this.publishThread(
+        accessToken,
+        thread,
+        oauth1Credentials,
+        this.getReplySettings(metadata),
+      );
     }
 
     // Single-tweet mode (default)
@@ -130,6 +149,7 @@ export class TwitterPublisher extends BasePublisher {
     const result = await this.twitterService.createTweet(accessToken, content, {
       mediaIds,
       poll,
+      replySettings: this.getReplySettings(metadata),
     });
 
     this.logger.log(`Published tweet: ${result.id}`);
@@ -151,6 +171,7 @@ export class TwitterPublisher extends BasePublisher {
     accessToken: string,
     tweets: Array<{ text: string; mediaItems?: MediaItem[] }>,
     oauth1Credentials: TwitterOAuth1Credentials | undefined,
+    replySettings?: TwitterReplySettings,
   ): Promise<PublishResult> {
     let replyToId: string | undefined;
     let rootId: string | undefined;
@@ -175,6 +196,10 @@ export class TwitterPublisher extends BasePublisher {
           {
             mediaIds,
             replyToTweetId: replyToId,
+            // Only the root post carries it. X applies the conversation's
+            // reply rules from the post that starts it, and sending it on
+            // a reply restricts replies to that reply instead.
+            replySettings: i === 0 ? replySettings : undefined,
           },
         );
         if (!rootId) rootId = result.id;
@@ -196,6 +221,24 @@ export class TwitterPublisher extends BasePublisher {
       platformPostUrl: `https://twitter.com/i/web/status/${rootId}`,
       metadata: { threadIds: postedIds },
     };
+  }
+
+  /**
+   * What to send as `reply_settings`, or undefined to leave it unset.
+   *
+   * `everyone` is the composer's word for "no restriction" and is NOT in
+   * X's write enum, so it maps to an omitted field. Anything unrecognised
+   * is dropped rather than forwarded: a value X does not know fails the
+   * whole request, and losing a reply restriction is better than losing
+   * the post.
+   */
+  private getReplySettings(
+    metadata: Record<string, any> | undefined,
+  ): TwitterReplySettings | undefined {
+    const value = metadata?.replyControl;
+    return VALID_REPLY_SETTINGS.includes(value as TwitterReplySettings)
+      ? (value as TwitterReplySettings)
+      : undefined;
   }
 
   /**
