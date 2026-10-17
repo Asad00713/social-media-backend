@@ -11,9 +11,13 @@ import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
-import type { InsightsOverviewDto, InsightsPostsDto } from './dto/insights.dto';
+import type {
+  InsightsOverviewDto,
+  InsightsPostsDto,
+  PostChannelMetricsDto,
+} from './dto/insights.dto';
 import { InsightsService } from './insights.service';
-import { parseDays, parseTableQuery, parseTz } from './lib/query';
+import { parseDays, parsePostIds, parseTableQuery, parseTz } from './lib/query';
 
 @Controller('insights/workspaces/:workspaceId')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
@@ -55,6 +59,20 @@ export class InsightsController {
       channels,
       parseTableQuery({ format, sort, order, limit, offset }),
     );
+  }
+
+  /** Latest numbers for up to 50 posts, per channel, against its usual. */
+  @Get('posts/metrics')
+  async metrics(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Query('postIds') postIds?: string,
+  ): Promise<{ metrics: PostChannelMetricsDto[] }> {
+    return {
+      metrics: await this.insights.postMetrics(
+        workspaceId,
+        parsePostIds(postIds),
+      ),
+    };
   }
 
   /** The same table, every row, as a CSV download. */
