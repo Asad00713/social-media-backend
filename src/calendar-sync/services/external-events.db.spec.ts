@@ -56,7 +56,12 @@ async function seed(client: PoolClient) {
       [workspaceId, channelId, p.rows[0].id, eventId],
     );
   };
-  return { workspaceId, channelId, cal, ev, link };
+  const deactivate = () =>
+    client.query(
+      `UPDATE social_media_channels SET is_active = false WHERE id = $1`,
+      [channelId],
+    );
+  return { client, workspaceId, channelId, cal, ev, link, deactivate };
 }
 
 const range = ['2026-03-01T00:00:00Z', '2026-03-31T00:00:00Z'] as const;
@@ -129,5 +134,48 @@ describeDb('ExternalEventsService against Postgres', () => {
         color: '#112233',
         isPrimary: true,
       });
+    }));
+
+  it('leaves an inactive channel calendars and events out of both lists', () =>
+    run(async (svc, s, db) => {
+      const cal = await s.cal('primary-id', 'Work', true);
+      await s.ev('a', cal, 'primary-id');
+      const calendars = new ExternalCalendarsService(
+        db,
+        {} as never,
+        {} as never,
+      );
+      expect(await calendars.listCalendarDtos(s.workspaceId)).toHaveLength(1);
+      expect(
+        await svc.listExternalEvents(s.workspaceId, ...range),
+      ).toHaveLength(1);
+
+      await s.deactivate();
+
+      expect(await calendars.listCalendarDtos(s.workspaceId)).toEqual([]);
+      expect(await svc.listExternalEvents(s.workspaceId, ...range)).toEqual([]);
+    }));
+
+  it("never returns another workspace's calendars or events", () =>
+    run(async (svc, s, db) => {
+      const mine = await s.cal('primary-id', 'Work', true);
+      await s.ev('mine', mine, 'primary-id');
+      const other = await seed(s.client);
+      const theirs = await other.cal('their-id', 'Theirs', true);
+      await other.ev('theirs', theirs, 'their-id');
+
+      const calendars = new ExternalCalendarsService(
+        db,
+        {} as never,
+        {} as never,
+      );
+      expect(
+        (await calendars.listCalendarDtos(s.workspaceId)).map((c) => c.id),
+      ).toEqual([mine]);
+      expect(
+        (await svc.listExternalEvents(s.workspaceId, ...range)).map(
+          (e) => e.title,
+        ),
+      ).toEqual(['mine']);
     }));
 });

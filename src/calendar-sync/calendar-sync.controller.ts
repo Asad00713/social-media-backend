@@ -100,7 +100,7 @@ export class CalendarSyncController {
     );
   }
 
-  /** The workspace's connected calendars (all connections, primary first). */
+  /** The workspace's connected calendars (active connections only, primary first). */
   @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId/calendars')
   async listCalendars(
