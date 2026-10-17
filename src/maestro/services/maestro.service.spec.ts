@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { MaestroService } from './maestro.service';
 import type { AgentEvent } from '../maestro.types';
 
@@ -60,6 +61,7 @@ interface Harness {
   getDecryptedKey: jest.Mock<Promise<string | null>, unknown[]>;
   runInputs: { systemPrompt: string | string[] }[];
   users: { getMaestroTone: jest.Mock };
+  inbox: { sendDm: jest.Mock };
 }
 
 function makeHarness(
@@ -73,6 +75,8 @@ function makeHarness(
     tone?: 'simple' | 'professional' | 'detailed';
     /** Stands in for the Slack connection the approved tool resolves. */
     slackConn?: unknown;
+    /** Roles the caller holds: 'viewer' may not send; default is a member. */
+    role?: 'viewer' | 'removed';
   } = {},
 ): Harness {
   const runInputs: { systemPrompt: string | string[] }[] = [];
@@ -150,6 +154,17 @@ function makeHarness(
     getMaestroTone: jest.fn().mockResolvedValue(opts.tone ?? 'professional'),
   };
   const groq = { isReady: () => false } as never;
+  // A viewer can draft but is refused everything that sends or publishes.
+  // Someone removed from the workspace is refused everything.
+  const access = {
+    assertCan: jest.fn((_ws: string, _user: string, cap: string) =>
+      opts.role === 'removed' ||
+      (opts.role === 'viewer' &&
+        ['inbox:reply', 'posts:publish', 'channels:manage'].includes(cap))
+        ? Promise.reject(new NotFoundException('Not found'))
+        : Promise.resolve('MEMBER'),
+    ),
+  } as never;
 
   const service = new MaestroService(
     runtimes as never,
@@ -169,6 +184,15 @@ function makeHarness(
     { getDecryptedKey } as never,
     stub, // channels
     stub, // campaigns
+    stub, // libraryItems
+    stub, // libraryTemplates
+    stub, // librarySnippets
+    stub, // libraryLinks
+    stub, // libraryCategories
+    stub, // scheduledMessages
+    stub, // drips
+    stub, // roles
+    access,
   );
 
   jest
@@ -183,6 +207,7 @@ function makeHarness(
     setMessageMetadata,
     runInputs,
     users,
+    inbox: inbox as unknown as { sendDm: jest.Mock },
   };
 }
 
@@ -691,6 +716,38 @@ describe('MaestroService.streamMessage', () => {
     });
   });
 
+  describe('membership', () => {
+    // Owning the conversation is not enough: its workspace may have removed
+    // the caller since it was created.
+    it('refuses a turn once the caller has left the workspace, and saves nothing', async () => {
+      const h = makeHarness([...textDeltas('should not run'), DONE_EVENT], {
+        role: 'removed',
+      });
+
+      const events = await run(h);
+
+      expect(names(events)).toEqual(['error']);
+      expect(events[0].data.message).toContain('no longer a member');
+      expect(h.addMessage).not.toHaveBeenCalled();
+    });
+
+    it('refuses an approval once the caller has left the workspace, and runs nothing', async () => {
+      const h = makeHarness([DONE_EVENT], {
+        messages: [cardMessage()],
+        slackConn: { accessToken: 'tok', channelId: 'ch-1' },
+        role: 'removed',
+      });
+
+      const events = await run(h, undefined, {
+        messageId: CARD_ID,
+        option: YES,
+      });
+
+      expect(names(events)).toEqual(['error']);
+      expect(h.inbox.sendDm).not.toHaveBeenCalled();
+    });
+  });
+
   describe('auth failure', () => {
     it('reports a clean error and saves nothing when no key is configured', async () => {
       delete process.env.ANTHROPIC_API_KEY;
@@ -725,6 +782,24 @@ describe('MaestroService.streamMessage', () => {
       expect(order[order.length - 1]).toBe('done');
       // The scripted runtime text never appears — the model was not consulted.
       expect(streamedText(events)).not.toContain('should not run');
+    });
+
+    it('refuses an approved send when the caller is only a viewer, and sends nothing', async () => {
+      const h = makeHarness([DONE_EVENT], {
+        messages: [cardMessage()],
+        slackConn: { accessToken: 'tok', channelId: 'ch-1' },
+        role: 'viewer',
+      });
+
+      const events = await run(h, undefined, {
+        messageId: CARD_ID,
+        option: YES,
+      });
+
+      const results = events.filter((e) => e.event === 'tool_result');
+      expect(JSON.stringify(results)).toContain('does not allow');
+      expect(h.inbox.sendDm).not.toHaveBeenCalled();
+      expect(names(events)[names(events).length - 1]).toBe('done');
     });
 
     it('emits no second confirm card', async () => {

@@ -4,9 +4,10 @@ import { CommunityService } from './services/community.service';
 import { CommunityProviderFactory } from './providers/community-provider.factory';
 import { TwitterCommunityProvider } from './providers/twitter-community.provider';
 import { ChannelsModule } from '../channels/channels.module';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 
 @Module({
-  imports: [ChannelsModule],
+  imports: [WorkspaceRoleModule, ChannelsModule],
   controllers: [CommunityController],
   providers: [
     CommunityService,

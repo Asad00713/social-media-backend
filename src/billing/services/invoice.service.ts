@@ -39,6 +39,12 @@ export interface InvoiceDetails {
   createdAt: Date;
 }
 
+/** The authenticated caller, as set on the request by JwtAuthGuard. */
+export interface InvoiceCaller {
+  userId: string;
+  role?: string;
+}
+
 export interface InvoiceListItem {
   id: number;
   stripeInvoiceId: string;
@@ -102,20 +108,42 @@ export class InvoiceService {
     };
   }
 
-  // Get invoice details
-  async getInvoiceDetails(invoiceId: number): Promise<InvoiceDetails> {
-    const invoice = await db
-      .select()
+  /**
+   * Load an invoice only if the caller may see it: the owner of the invoice's
+   * subscription, or a platform super admin. Everyone else gets the same
+   * NotFound as a missing id, so invoice ids cannot be probed.
+   */
+  private async findInvoiceForCaller(
+    invoiceId: number,
+    caller: InvoiceCaller,
+  ): Promise<typeof invoices.$inferSelect> {
+    const rows = await db
+      .select({ invoice: invoices, ownerId: subscriptions.userId })
       .from(invoices)
+      .leftJoin(subscriptions, eq(invoices.subscriptionId, subscriptions.id))
       .where(eq(invoices.id, invoiceId))
       .limit(1);
 
-    if (invoice.length === 0) {
+    const row = rows[0];
+    const isSuperAdmin = caller.role === 'SUPER_ADMIN';
+    if (!row || (!isSuperAdmin && row.ownerId !== caller.userId)) {
       throw new NotFoundException('Invoice not found');
     }
+    return row.invoice;
+  }
 
-    const inv = invoice[0];
+  // Get invoice details
+  async getInvoiceDetails(
+    invoiceId: number,
+    caller: InvoiceCaller,
+  ): Promise<InvoiceDetails> {
+    const inv = await this.findInvoiceForCaller(invoiceId, caller);
+    return this.buildInvoiceDetails(inv);
+  }
 
+  private async buildInvoiceDetails(
+    inv: typeof invoices.$inferSelect,
+  ): Promise<InvoiceDetails> {
     // Get line items
     const lineItems = await db
       .select()
@@ -165,7 +193,8 @@ export class InvoiceService {
       return null;
     }
 
-    return this.getInvoiceDetails(invoice[0].id);
+    // Internal lookup (webhook paths): no caller to authorise.
+    return this.buildInvoiceDetails(invoice[0]);
   }
 
   // Get invoices for a user (all workspaces)
@@ -234,16 +263,12 @@ export class InvoiceService {
   }
 
   // Download invoice PDF (returns URL from Stripe)
-  async getInvoicePdfUrl(invoiceId: number): Promise<string> {
-    const invoice = await db
-      .select()
-      .from(invoices)
-      .where(eq(invoices.id, invoiceId))
-      .limit(1);
-
-    if (invoice.length === 0) {
-      throw new NotFoundException('Invoice not found');
-    }
+  async getInvoicePdfUrl(
+    invoiceId: number,
+    caller: InvoiceCaller,
+  ): Promise<string> {
+    const found = await this.findInvoiceForCaller(invoiceId, caller);
+    const invoice = [found];
 
     // If we have cached PDF URL, return it
     if (invoice[0].invoicePdfUrl) {

@@ -7,6 +7,8 @@ import {
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
+import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard';
+import { RequireCapability } from '../../workspace-members/require-capability.decorator';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { InboxService } from '../../inbox/inbox.service';
 import { ChannelService } from '../services/channel.service';
@@ -22,7 +24,8 @@ interface AuthUser {
 const VALID_RANGES: MessagingRange[] = ['7d', '30d', '90d'];
 
 @Controller('analytics/workspaces/:workspaceId/channels/:channelId')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+@RequireCapability('analytics:view')
 export class MessagingOverviewController {
   constructor(
     private readonly service: MessagingOverviewService,

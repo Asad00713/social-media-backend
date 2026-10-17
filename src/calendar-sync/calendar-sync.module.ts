@@ -1,6 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { ChannelsModule } from '../channels/channels.module';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { PostsModule } from '../posts/posts.module';
 import { InboxModule } from '../inbox/inbox.module';
 import {
@@ -48,6 +49,7 @@ import { CalendarRenewalProcessor } from './processors/calendar-renewal.processo
 // circular for exactly the same reason PostsModule is → forwardRef on both sides.
 @Module({
   imports: [
+    WorkspaceRoleModule,
     forwardRef(() => ChannelsModule),
     forwardRef(() => PostsModule),
     forwardRef(() => InboxModule),

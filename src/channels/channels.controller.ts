@@ -31,6 +31,8 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
+import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
+import type { Capability } from '../workspace-members/role-capabilities';
 import { ChannelService } from './services/channel.service';
 import { OAuthService } from './services/oauth.service';
 import { FacebookService } from './services/facebook.service';
@@ -148,7 +150,27 @@ export class ChannelsController {
     private readonly calendarReconcileQueue: Queue,
     private readonly youtubeDataDeletion: YoutubeDataDeletionService,
     private readonly googleRevoke: GoogleOauthRevokeService,
+    private readonly access: WorkspaceAccessService,
   ) {}
+
+  /**
+   * Load a channel addressed only by its numeric id (body `channelId`) and
+   * prove the caller may act on the channel's OWN workspace.
+   *
+   * These routes have no workspace in the path, so WorkspaceRoleGuard cannot
+   * protect them. A bare id lookup would let any logged-in user publish as,
+   * delete from, or read any customer's channel. Not-a-member and
+   * no-such-channel are both NotFound, so ids cannot be probed.
+   */
+  private async getChannelForCaller(
+    channelId: number,
+    userId: string,
+    cap: Capability,
+  ) {
+    const channel = await this.channelService.getChannelForPosting(channelId);
+    await this.access.assertCan(channel.workspaceId, userId, cap);
+    return channel;
+  }
 
   // ==========================================================================
   // OAuth Flow Endpoints
@@ -891,7 +913,8 @@ export class ChannelsController {
    * Get all channels for a workspace
    */
   @Get('workspaces/:workspaceId')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getWorkspaceChannels(
     @Param('workspaceId') workspaceId: string,
     @Query() query: ChannelQueryDto,
@@ -903,7 +926,8 @@ export class ChannelsController {
    * Get a single channel
    */
   @Get('workspaces/:workspaceId/:channelId')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getChannel(
     @Param('workspaceId') workspaceId: string,
     @Param('channelId') channelId: string,
@@ -1158,7 +1182,8 @@ export class ChannelsController {
    * Get channel statistics for a workspace
    */
   @Get('workspaces/:workspaceId/stats')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('analytics:view')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getChannelStats(@Param('workspaceId') workspaceId: string) {
     return await this.channelService.getChannelStats(workspaceId);
   }
@@ -1167,7 +1192,8 @@ export class ChannelsController {
    * Get channels with expiring tokens
    */
   @Get('workspaces/:workspaceId/expiring')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('analytics:view')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async getExpiringChannels(
     @Param('workspaceId') workspaceId: string,
     @Query('days') days?: string,
@@ -1530,7 +1556,8 @@ export class ChannelsController {
    * then uses the stored OAuth token to fetch boards from Pinterest.
    */
   @Get('workspaces/:workspaceId/:channelId/pinterest/boards')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async listPinterestBoardsForChannel(
     @Param('workspaceId') workspaceId: string,
     @Param('channelId') channelId: string,
@@ -1559,7 +1586,8 @@ export class ChannelsController {
    * Reddit — list the user's subscribed + moderated subreddits.
    */
   @Get('workspaces/:workspaceId/:channelId/reddit/subreddits')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async listRedditSubreddits(
     @Param('workspaceId') workspaceId: string,
     @Param('channelId') channelId: string,
@@ -1585,7 +1613,8 @@ export class ChannelsController {
    * Reddit — list link flairs configured for a given subreddit.
    */
   @Get('workspaces/:workspaceId/:channelId/reddit/flairs')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async listRedditFlairs(
     @Param('workspaceId') workspaceId: string,
     @Param('channelId') channelId: string,
@@ -1615,7 +1644,8 @@ export class ChannelsController {
    * Create a new Pinterest board
    */
   @Post('workspaces/:workspaceId/:channelId/pinterest/boards')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('channels:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.CREATED)
   async createPinterestBoard(
     @Param('workspaceId') workspaceId: string,
@@ -1644,7 +1674,8 @@ export class ChannelsController {
    * Update an existing Pinterest board's name / description / privacy.
    */
   @Patch('workspaces/:workspaceId/:channelId/pinterest/boards/:boardId')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('channels:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async updatePinterestBoard(
     @Param('workspaceId') workspaceId: string,
     @Param('channelId') channelId: string,
@@ -1666,7 +1697,8 @@ export class ChannelsController {
    * Delete a Pinterest board and all its pins.
    */
   @Delete('workspaces/:workspaceId/:channelId/pinterest/boards/:boardId')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('channels:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.NO_CONTENT)
   async deletePinterestBoard(
     @Param('workspaceId') workspaceId: string,
@@ -1684,7 +1716,8 @@ export class ChannelsController {
    * Create a pin on Pinterest (image or video)
    */
   @Post('workspaces/:workspaceId/:channelId/pinterest/pin')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:publish')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.CREATED)
   async createPinterestPin(
     @Param('workspaceId') workspaceId: string,
@@ -1820,7 +1853,8 @@ export class ChannelsController {
    * Upload a video to YouTube
    */
   @Post('workspaces/:workspaceId/:channelId/youtube/upload')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:publish')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.CREATED)
   async uploadYouTubeVideo(
     @Param('workspaceId') workspaceId: string,
@@ -1862,7 +1896,8 @@ export class ChannelsController {
    * Get video status after upload
    */
   @Post('workspaces/:workspaceId/:channelId/youtube/video/:videoId/status')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async getYouTubeVideoStatus(
     @Param('workspaceId') workspaceId: string,
@@ -1962,7 +1997,8 @@ export class ChannelsController {
    * Create a LinkedIn post (text, image, video, or link)
    */
   @Post('workspaces/:workspaceId/:channelId/linkedin/post')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:publish')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.CREATED)
   async createLinkedInPost(
     @Param('workspaceId') workspaceId: string,
@@ -2139,7 +2175,8 @@ export class ChannelsController {
    * Get TikTok profile info
    */
   @Post('workspaces/:workspaceId/:channelId/tiktok/me')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async getTikTokProfile(
     @Param('workspaceId') workspaceId: string,
@@ -2156,7 +2193,8 @@ export class ChannelsController {
    * Get TikTok videos
    */
   @Post('workspaces/:workspaceId/:channelId/tiktok/videos')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('analytics:view')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async getTikTokVideos(
     @Param('workspaceId') workspaceId: string,
@@ -2175,7 +2213,8 @@ export class ChannelsController {
    * Uses channelId to automatically decrypt and use the stored access token
    */
   @Post('workspaces/:workspaceId/:channelId/tiktok/creator-info')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async getTikTokCreatorInfo(
     @Param('workspaceId') workspaceId: string,
@@ -2193,7 +2232,8 @@ export class ChannelsController {
    * TikTok will pull the video from the provided URL
    */
   @Post('workspaces/:workspaceId/:channelId/tiktok/post')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:publish')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.CREATED)
   async postTikTokVideo(
     @Param('workspaceId') workspaceId: string,
@@ -2259,7 +2299,8 @@ export class ChannelsController {
    * Get TikTok video publish status
    */
   @Get('workspaces/:workspaceId/:channelId/tiktok/status/:publishId')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:publish')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async getTikTokPublishStatus(
     @Param('workspaceId') workspaceId: string,
@@ -2291,7 +2332,8 @@ export class ChannelsController {
    * Wait for TikTok video publish to complete (polling)
    */
   @Post('workspaces/:workspaceId/:channelId/tiktok/wait/:publishId')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:publish')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async waitForTikTokPublish(
     @Param('workspaceId') workspaceId: string,
@@ -2433,9 +2475,14 @@ export class ChannelsController {
   @Post('twitter/me')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getTwitterProfile(@Body() dto: { channelId: number }) {
-    const channel = await this.channelService.getChannelForPosting(
+  async getTwitterProfile(
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: { channelId: number },
+  ) {
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'analytics:view',
     );
 
     if (channel.platform !== 'twitter') {
@@ -2458,11 +2505,14 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async getTwitterTweets(
+    @CurrentUser() user: { userId: string; email: string },
     @Body() dto: { channelId: number },
     @Query('paginationToken') paginationToken?: string,
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'analytics:view',
     );
 
     if (channel.platform !== 'twitter') {
@@ -2849,6 +2899,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postImageToInstagram(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -2857,8 +2908,10 @@ export class ChannelsController {
     },
   ) {
     // Get channel to retrieve access token and account ID
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'instagram') {
@@ -2911,6 +2964,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postVideoToInstagram(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -2919,8 +2973,10 @@ export class ChannelsController {
       isReel?: boolean;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'instagram') {
@@ -2975,6 +3031,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postCarouselToInstagram(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -2982,8 +3039,10 @@ export class ChannelsController {
       caption?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'instagram') {
@@ -3036,6 +3095,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postStoryToInstagram(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3043,8 +3103,10 @@ export class ChannelsController {
       mediaType: 'IMAGE' | 'VIDEO';
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'instagram') {
@@ -3096,6 +3158,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postStoryToFacebook(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3103,8 +3166,10 @@ export class ChannelsController {
       mediaType: 'IMAGE' | 'VIDEO';
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'facebook') {
@@ -3266,6 +3331,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postTextToThreads(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3273,8 +3339,10 @@ export class ChannelsController {
       replyToId?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'threads') {
@@ -3308,6 +3376,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postImageToThreads(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3316,8 +3385,10 @@ export class ChannelsController {
       replyToId?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'threads') {
@@ -3352,6 +3423,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postVideoToThreads(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3360,8 +3432,10 @@ export class ChannelsController {
       replyToId?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'threads') {
@@ -3396,6 +3470,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postCarouselToThreads(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3404,8 +3479,10 @@ export class ChannelsController {
       replyToId?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'threads') {
@@ -3560,9 +3637,14 @@ export class ChannelsController {
   @Post('bluesky/refresh')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async refreshBlueskySession(@Body() dto: { channelId: number }) {
-    const channel = await this.channelService.getChannelForPosting(
+  async refreshBlueskySession(
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: { channelId: number },
+  ) {
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'channels:manage',
     );
 
     if (channel.platform !== 'bluesky') {
@@ -3609,6 +3691,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postTextToBluesky(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3616,8 +3699,10 @@ export class ChannelsController {
       replyTo?: { uri: string; cid: string };
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'bluesky') {
@@ -3657,6 +3742,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postImageToBluesky(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3665,8 +3751,10 @@ export class ChannelsController {
       altTexts?: string[];
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'bluesky') {
@@ -3717,6 +3805,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postVideoToBluesky(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3725,8 +3814,10 @@ export class ChannelsController {
       altText?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'bluesky') {
@@ -3767,6 +3858,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postLinkToBluesky(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -3777,8 +3869,10 @@ export class ChannelsController {
       linkThumbUrl?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'bluesky') {
@@ -3821,14 +3915,17 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async deleteBlueskyPost(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
       postUri: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'bluesky') {
@@ -4041,9 +4138,14 @@ export class ChannelsController {
   @Post('mastodon/me')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
-  async getMastodonProfile(@Body() dto: { channelId: number }) {
-    const channel = await this.channelService.getChannelForPosting(
+  async getMastodonProfile(
+    @CurrentUser() user: { userId: string; email: string },
+    @Body() dto: { channelId: number },
+  ) {
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'analytics:view',
     );
 
     if (channel.platform !== 'mastodon') {
@@ -4068,10 +4170,13 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async getMastodonPosts(
+    @CurrentUser() user: { userId: string; email: string },
     @Body() dto: { channelId: number; limit?: number; maxId?: string },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'analytics:view',
     );
 
     if (channel.platform !== 'mastodon') {
@@ -4103,6 +4208,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postTextToMastodon(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -4113,8 +4219,10 @@ export class ChannelsController {
       spoilerText?: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'mastodon') {
@@ -4159,6 +4267,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postImageToMastodon(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -4168,8 +4277,10 @@ export class ChannelsController {
       visibility?: 'public' | 'unlisted' | 'private' | 'direct';
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'mastodon') {
@@ -4221,6 +4332,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
   async postVideoToMastodon(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
@@ -4230,8 +4342,10 @@ export class ChannelsController {
       visibility?: 'public' | 'unlisted' | 'private' | 'direct';
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'mastodon') {
@@ -4273,14 +4387,17 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async deleteMastodonPost(
+    @CurrentUser() user: { userId: string; email: string },
     @Body()
     dto: {
       channelId: number;
       postId: string;
     },
   ) {
-    const channel = await this.channelService.getChannelForPosting(
+    const channel = await this.getChannelForCaller(
       dto.channelId,
+      user.userId,
+      'posts:publish',
     );
 
     if (channel.platform !== 'mastodon') {
@@ -5613,7 +5730,8 @@ export class ChannelsController {
    * Returns paginated results with a `nextCursor` for subsequent pages.
    */
   @Get('workspaces/:workspaceId/slack/:channelId/conversations')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('inbox:view')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async listSlackConversations(
     @Param('workspaceId') wid: string,
     @Param('channelId') channelId: string,
@@ -5639,7 +5757,8 @@ export class ChannelsController {
    * Supports optional `query` substring filter and pagination cursor.
    */
   @Get('workspaces/:workspaceId/slack/:channelId/members')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('inbox:view')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async listSlackMembers(
     @Param('workspaceId') wid: string,
     @Param('channelId') channelId: string,
@@ -5661,7 +5780,8 @@ export class ChannelsController {
    * the inbox. Idempotent — safe to call multiple times.
    */
   @Post('workspaces/:workspaceId/slack/:channelId/join')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:publish')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @HttpCode(HttpStatus.OK)
   async joinSlackChannel(
     @Param('workspaceId') wid: string,
@@ -5694,7 +5814,8 @@ export class ChannelsController {
    * Records the outbound message in the inbox for conversation threading.
    */
   @Post('workspaces/:workspaceId/slack/:channelId/start-dm')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:publish')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async startSlackDm(
     @Param('workspaceId') wid: string,
     @Param('channelId') channelId: string,
@@ -5741,7 +5862,8 @@ export class ChannelsController {
    * The bot is automatically the creator and therefore a member.
    */
   @Post('workspaces/:workspaceId/slack/:channelId/conversations/create')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('channels:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async createSlackChannel(
     @Param('workspaceId') wid: string,
     @Param('channelId') channelId: string,
@@ -5771,7 +5893,8 @@ export class ChannelsController {
 
   /** List the text channels of the connected Discord server. */
   @Get('workspaces/:workspaceId/discord/:channelId/channels')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('inbox:view')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async listDiscordChannels(
     @Param('workspaceId') wid: string,
     @Param('channelId') channelId: string,
@@ -5793,7 +5916,8 @@ export class ChannelsController {
 
   /** Post a message into a Discord channel of the connected server. */
   @Post('workspaces/:workspaceId/discord/:channelId/send')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('posts:publish')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async sendDiscordChannelMessage(
     @Param('workspaceId') wid: string,
     @Param('channelId') channelId: string,
@@ -5818,7 +5942,8 @@ export class ChannelsController {
    *  bot to hold MANAGE_CHANNELS (granted via the invite permissions bitfield —
    *  bots connected before that change must reconnect). */
   @Post('workspaces/:workspaceId/discord/:channelId/channels/create')
-  @UseGuards(JwtAuthGuard)
+  @RequireCapability('channels:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   async createDiscordChannel(
     @Param('workspaceId') wid: string,
     @Param('channelId') channelId: string,

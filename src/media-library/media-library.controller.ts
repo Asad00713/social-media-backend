@@ -41,9 +41,11 @@ import {
   SavedLinkQueryDto,
   RecycleBinQueryDto,
 } from './dto/media-library.dto';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { RequireCapability } from '../workspace-members/require-capability.decorator';
 
 @Controller('workspaces/:workspaceId/media-library')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class MediaLibraryController {
   constructor(
     private readonly categoryService: CategoryService,
@@ -58,6 +60,7 @@ export class MediaLibraryController {
   // ==========================================================================
 
   @Post('categories')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.CREATED)
   async createCategory(
     @Param('workspaceId') workspaceId: string,
@@ -67,6 +70,7 @@ export class MediaLibraryController {
   }
 
   @Get('categories')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async getCategories(
     @Param('workspaceId') workspaceId: string,
@@ -76,12 +80,14 @@ export class MediaLibraryController {
   }
 
   @Get('categories/grouped')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async getCategoriesGrouped(@Param('workspaceId') workspaceId: string) {
     return this.categoryService.findAllGroupedByType(workspaceId);
   }
 
   @Get('categories/:categoryId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async getCategory(
     @Param('workspaceId') workspaceId: string,
@@ -91,6 +97,7 @@ export class MediaLibraryController {
   }
 
   @Put('categories/:categoryId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async updateCategory(
     @Param('workspaceId') workspaceId: string,
@@ -101,6 +108,7 @@ export class MediaLibraryController {
   }
 
   @Delete('categories/:categoryId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async deleteCategory(
     @Param('workspaceId') workspaceId: string,
@@ -110,6 +118,7 @@ export class MediaLibraryController {
   }
 
   @Post('categories/reorder')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async reorderCategories(
     @Param('workspaceId') workspaceId: string,
@@ -123,6 +132,7 @@ export class MediaLibraryController {
   // ==========================================================================
 
   @Post('items')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.CREATED)
   async createMediaItem(
     @Param('workspaceId') workspaceId: string,
@@ -133,6 +143,7 @@ export class MediaLibraryController {
   }
 
   @Get('items')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async getMediaItems(
     @Param('workspaceId') workspaceId: string,
@@ -142,6 +153,7 @@ export class MediaLibraryController {
   }
 
   @Get('items/recent')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async getRecentMediaItems(
     @Param('workspaceId') workspaceId: string,
@@ -151,6 +163,7 @@ export class MediaLibraryController {
   }
 
   @Get('items/:itemId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async getMediaItem(
     @Param('workspaceId') workspaceId: string,
@@ -160,6 +173,7 @@ export class MediaLibraryController {
   }
 
   @Put('items/:itemId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async updateMediaItem(
     @Param('workspaceId') workspaceId: string,
@@ -170,6 +184,7 @@ export class MediaLibraryController {
   }
 
   @Delete('items/:itemId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async deleteMediaItem(
     @Param('workspaceId') workspaceId: string,
@@ -180,6 +195,7 @@ export class MediaLibraryController {
   }
 
   @Post('items/:itemId/restore')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async restoreMediaItem(
     @Param('workspaceId') workspaceId: string,
@@ -189,6 +205,7 @@ export class MediaLibraryController {
   }
 
   @Delete('items/:itemId/permanent')
+  @RequireCapability('posts:publish')
   @HttpCode(HttpStatus.OK)
   async permanentDeleteMediaItem(
     @Param('workspaceId') workspaceId: string,
@@ -200,6 +217,7 @@ export class MediaLibraryController {
   /** Called when an asset is placed into a post, so the Library can show what
    *  is actually being used. */
   @Post('items/:itemId/use')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async recordMediaItemUsage(
     @Param('workspaceId') workspaceId: string,
@@ -209,6 +227,7 @@ export class MediaLibraryController {
   }
 
   @Post('items/bulk')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async bulkActionMediaItems(
     @Param('workspaceId') workspaceId: string,
@@ -223,6 +242,7 @@ export class MediaLibraryController {
   // ==========================================================================
 
   @Post('templates')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.CREATED)
   async createTemplate(
     @Param('workspaceId') workspaceId: string,
@@ -233,6 +253,7 @@ export class MediaLibraryController {
   }
 
   @Get('templates')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async getTemplates(
     @Param('workspaceId') workspaceId: string,
@@ -242,6 +263,7 @@ export class MediaLibraryController {
   }
 
   @Get('templates/:templateId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async getTemplate(
     @Param('workspaceId') workspaceId: string,
@@ -251,6 +273,7 @@ export class MediaLibraryController {
   }
 
   @Put('templates/:templateId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async updateTemplate(
     @Param('workspaceId') workspaceId: string,
@@ -261,6 +284,7 @@ export class MediaLibraryController {
   }
 
   @Post('templates/:templateId/clone')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.CREATED)
   async cloneTemplate(
     @Param('workspaceId') workspaceId: string,
@@ -277,6 +301,7 @@ export class MediaLibraryController {
   }
 
   @Delete('templates/:templateId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async deleteTemplate(
     @Param('workspaceId') workspaceId: string,
@@ -291,6 +316,7 @@ export class MediaLibraryController {
   }
 
   @Post('templates/:templateId/restore')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async restoreTemplate(
     @Param('workspaceId') workspaceId: string,
@@ -300,6 +326,7 @@ export class MediaLibraryController {
   }
 
   @Delete('templates/:templateId/permanent')
+  @RequireCapability('posts:publish')
   @HttpCode(HttpStatus.OK)
   async permanentDeleteTemplate(
     @Param('workspaceId') workspaceId: string,
@@ -311,6 +338,7 @@ export class MediaLibraryController {
   /** Called when a template is applied to a post, so "Recently used" and the
    *  "Most used" sort mean something for templates too. */
   @Post('templates/:templateId/use')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async recordTemplateUsage(
     @Param('workspaceId') workspaceId: string,
@@ -324,6 +352,7 @@ export class MediaLibraryController {
   // ==========================================================================
 
   @Post('snippets')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.CREATED)
   async createTextSnippet(
     @Param('workspaceId') workspaceId: string,
@@ -334,6 +363,7 @@ export class MediaLibraryController {
   }
 
   @Get('snippets')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async getTextSnippets(
     @Param('workspaceId') workspaceId: string,
@@ -343,6 +373,7 @@ export class MediaLibraryController {
   }
 
   @Get('snippets/:snippetId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async getTextSnippet(
     @Param('workspaceId') workspaceId: string,
@@ -352,6 +383,7 @@ export class MediaLibraryController {
   }
 
   @Put('snippets/:snippetId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async updateTextSnippet(
     @Param('workspaceId') workspaceId: string,
@@ -362,6 +394,7 @@ export class MediaLibraryController {
   }
 
   @Delete('snippets/:snippetId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async deleteTextSnippet(
     @Param('workspaceId') workspaceId: string,
@@ -376,6 +409,7 @@ export class MediaLibraryController {
   }
 
   @Post('snippets/:snippetId/restore')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async restoreTextSnippet(
     @Param('workspaceId') workspaceId: string,
@@ -385,6 +419,7 @@ export class MediaLibraryController {
   }
 
   @Delete('snippets/:snippetId/permanent')
+  @RequireCapability('posts:publish')
   @HttpCode(HttpStatus.OK)
   async permanentDeleteTextSnippet(
     @Param('workspaceId') workspaceId: string,
@@ -395,6 +430,7 @@ export class MediaLibraryController {
 
   /** Called when a snippet is copied or inserted into a post. */
   @Post('snippets/:snippetId/use')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async recordTextSnippetUsage(
     @Param('workspaceId') workspaceId: string,
@@ -408,6 +444,7 @@ export class MediaLibraryController {
   // ==========================================================================
 
   @Post('links')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.CREATED)
   async createSavedLink(
     @Param('workspaceId') workspaceId: string,
@@ -418,6 +455,7 @@ export class MediaLibraryController {
   }
 
   @Get('links')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async getSavedLinks(
     @Param('workspaceId') workspaceId: string,
@@ -427,6 +465,7 @@ export class MediaLibraryController {
   }
 
   @Get('links/:linkId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async getSavedLink(
     @Param('workspaceId') workspaceId: string,
@@ -436,6 +475,7 @@ export class MediaLibraryController {
   }
 
   @Put('links/:linkId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async updateSavedLink(
     @Param('workspaceId') workspaceId: string,
@@ -446,6 +486,7 @@ export class MediaLibraryController {
   }
 
   @Post('links/:linkId/refresh-preview')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async refreshLinkPreview(
     @Param('workspaceId') workspaceId: string,
@@ -455,6 +496,7 @@ export class MediaLibraryController {
   }
 
   @Delete('links/:linkId')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async deleteSavedLink(
     @Param('workspaceId') workspaceId: string,
@@ -465,6 +507,7 @@ export class MediaLibraryController {
   }
 
   @Post('links/:linkId/restore')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async restoreSavedLink(
     @Param('workspaceId') workspaceId: string,
@@ -474,6 +517,7 @@ export class MediaLibraryController {
   }
 
   @Delete('links/:linkId/permanent')
+  @RequireCapability('posts:publish')
   @HttpCode(HttpStatus.OK)
   async permanentDeleteSavedLink(
     @Param('workspaceId') workspaceId: string,
@@ -484,6 +528,7 @@ export class MediaLibraryController {
 
   /** Called when a saved link is opened or added to a post. */
   @Post('links/:linkId/use')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async recordSavedLinkUsage(
     @Param('workspaceId') workspaceId: string,
@@ -497,6 +542,7 @@ export class MediaLibraryController {
   // ==========================================================================
 
   @Get('recycle-bin')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async getRecycleBin(
     @Param('workspaceId') workspaceId: string,
@@ -558,6 +604,7 @@ export class MediaLibraryController {
   }
 
   @Post('recycle-bin/empty')
+  @RequireCapability('posts:publish')
   @HttpCode(HttpStatus.OK)
   async emptyRecycleBin(@Param('workspaceId') workspaceId: string) {
     // Get all items in recycle bin and permanently delete them

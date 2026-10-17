@@ -13,6 +13,7 @@ import { AdInsightsSyncProcessor } from './processors/ad-insights-sync.processor
 import { AdInsightsSyncScheduler } from './schedulers/ad-insights-sync.scheduler';
 import { AdMutationsService } from './services/ad-mutations.service';
 import { BoostEditService } from './services/boost-edit.service';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 
 /**
  * AdsModule — Meta Ads Phase 1
@@ -33,7 +34,13 @@ import { BoostEditService } from './services/boost-edit.service';
  *   - AdMutationsService — same pattern
  */
 @Module({
-  imports: [ChannelsModule, RealtimeModule, EmailModule, QueueModule],
+  imports: [
+    WorkspaceRoleModule,
+    ChannelsModule,
+    RealtimeModule,
+    EmailModule,
+    QueueModule,
+  ],
   controllers: [AdsController, LeadAdsController],
   providers: [
     AdDraftsService,

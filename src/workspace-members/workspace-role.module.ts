@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { WorkspaceRoleService } from './workspace-role.service';
 import { WorkspaceRoleGuard } from './workspace-role.guard';
+import { WorkspaceAccessService } from './workspace-access.service';
 
 /**
  * Lightweight module exposing workspace role resolution + the capability guard.
@@ -13,7 +14,7 @@ import { WorkspaceRoleGuard } from './workspace-role.guard';
  * NotificationsModule circular-dependency loop.
  */
 @Module({
-  providers: [WorkspaceRoleService, WorkspaceRoleGuard],
-  exports: [WorkspaceRoleService, WorkspaceRoleGuard],
+  providers: [WorkspaceRoleService, WorkspaceRoleGuard, WorkspaceAccessService],
+  exports: [WorkspaceRoleService, WorkspaceRoleGuard, WorkspaceAccessService],
 })
 export class WorkspaceRoleModule {}

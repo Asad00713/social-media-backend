@@ -8,9 +8,10 @@ import { SavedLinkService } from './services/saved-link.service';
 import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service';
 import { MediaModule } from '../media/media.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 
 @Module({
-  imports: [DrizzleModule, MediaModule],
+  imports: [WorkspaceRoleModule, DrizzleModule, MediaModule],
   controllers: [MediaLibraryController],
   providers: [
     CategoryService,

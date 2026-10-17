@@ -10,6 +10,7 @@ import { ChannelsModule } from '../channels/channels.module';
 import { AiModule } from '../ai/ai.module';
 import { PexelsModule } from '../pexels/pexels.module';
 import { MediaLibraryModule } from '../media-library/media-library.module';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 
 // External services (injected for tool factories)
 import { UsersService } from '../users/users.service';
@@ -51,6 +52,7 @@ import { ToolRegistryService } from './tools/tool-registry.service';
 import { createUserTools } from './tools/user.tools';
 import { createChannelTools } from './tools/channel.tools';
 import { createPostTools } from './tools/post.tools';
+import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
 import { createNavigationTools } from './tools/navigation.tools';
 import { createWebSearchTools } from './tools/web-search.tools';
 import { createStockImageTools } from './tools/stock-image.tools';
@@ -69,6 +71,7 @@ import { createMediaActionTools } from './tools/media-action.tools';
     AiModule,
     PexelsModule,
     MediaLibraryModule,
+    WorkspaceRoleModule,
   ],
   controllers: [ChatbotController],
   providers: [
@@ -112,13 +115,14 @@ export class ChatbotModule implements OnModuleInit {
     private readonly dropboxService: DropboxService,
     private readonly googlePhotosService: GooglePhotosService,
     private readonly mediaItemService: MediaItemService,
+    private readonly access: WorkspaceAccessService,
   ) {}
 
   onModuleInit() {
     this.toolRegistry.registerMany([
       ...createUserTools(this.usersService, this.workspaceService),
       ...createChannelTools(this.channelService),
-      ...createPostTools(this.postService, this.channelService),
+      ...createPostTools(this.postService, this.channelService, this.access),
       ...createNavigationTools(),
       ...createWebSearchTools(this.tavilyService),
       ...createStockImageTools(this.unsplashService, this.pexelsService),

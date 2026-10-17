@@ -20,6 +20,8 @@ import type {
   ComposerCanvaImportResult,
   ComposerCanvaStatus,
 } from './canva-composer.types';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { RequireCapability } from '../workspace-members/require-capability.decorator';
 
 const DEFAULT_DESIGNS_LIMIT = 30;
 
@@ -34,7 +36,7 @@ const DEFAULT_DESIGNS_LIMIT = 30;
  * since the JWT payload doesn't carry `workspaceId` for every session.
  */
 @Controller('canva/composer/workspaces/:workspaceId')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class CanvaComposerController {
   constructor(
     private readonly connectionService: CanvaConnectionService,
@@ -43,6 +45,7 @@ export class CanvaComposerController {
   ) {}
 
   @Get('status')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async status(
     @Param('workspaceId') workspaceId: string,
@@ -63,6 +66,7 @@ export class CanvaComposerController {
    * or not a connection existed, so the client can treat it as the new status.
    */
   @Delete('connection')
+  @RequireCapability('channels:manage')
   @HttpCode(HttpStatus.OK)
   async disconnect(
     @Param('workspaceId') workspaceId: string,
@@ -72,6 +76,7 @@ export class CanvaComposerController {
   }
 
   @Post('designs')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async designs(
     @Param('workspaceId') workspaceId: string,
@@ -102,6 +107,7 @@ export class CanvaComposerController {
   }
 
   @Post('import')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async import(
     @Param('workspaceId') workspaceId: string,

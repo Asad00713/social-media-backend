@@ -15,6 +15,7 @@ import {
 import type { Response } from 'express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
 import { MaestroService } from './services/maestro.service';
 import {
   MentionSearchService,
@@ -42,6 +43,7 @@ export class MaestroController {
     private readonly maestro: MaestroService,
     private readonly bridge: BridgeService,
     private readonly mentions: MentionSearchService,
+    private readonly access: WorkspaceAccessService,
   ) {}
 
   /** List the caller's Maestro bridge connections (Telegram/WhatsApp/Email). */
@@ -87,6 +89,7 @@ export class MaestroController {
     @CurrentUser() user: { userId: string; email: string },
     @Body() dto: CreateMaestroConversationDto,
   ) {
+    await this.access.assertCan(dto.workspaceId, user.userId, 'posts:draft');
     const conversation = await this.maestro.createConversation(
       user.userId,
       dto.workspaceId,
@@ -115,6 +118,7 @@ export class MaestroController {
     @CurrentUser() user: { userId: string; email: string },
     @Body() dto: PresignMaestroAttachmentDto,
   ) {
+    await this.access.assertCan(dto.workspaceId, user.userId, 'posts:draft');
     return this.maestro.presignAttachment(user.userId, dto);
   }
 
@@ -131,6 +135,7 @@ export class MaestroController {
     @Query('q') q?: string,
     @Query('type') type?: string,
   ) {
+    await this.access.assertCan(workspaceId, user.userId, 'posts:draft');
     return this.mentions.search({
       workspaceId,
       userId: user.userId,
@@ -206,7 +211,11 @@ export class MaestroController {
 
   /** Current AI-token budget for the workspace (powers the UI meter). */
   @Get('usage')
-  async getUsage(@Query('workspaceId') workspaceId: string) {
+  async getUsage(
+    @CurrentUser() user: { userId: string; email: string },
+    @Query('workspaceId') workspaceId: string,
+  ) {
+    await this.access.assertCan(workspaceId, user.userId, 'analytics:view');
     const budget = await this.maestro.getUsage(workspaceId);
     return { budget };
   }

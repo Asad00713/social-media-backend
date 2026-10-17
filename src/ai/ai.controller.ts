@@ -41,9 +41,11 @@ import {
   PLATFORMS,
   TONES,
 } from './dto/ai.dto';
+import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import { RequireCapability } from '../workspace-members/require-capability.decorator';
 
 @Controller('ai')
-@UseGuards(JwtAuthGuard)
+@UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class AiController {
   constructor(
     private readonly groqService: GroqService,
@@ -91,6 +93,7 @@ export class AiController {
    * Get AI usage for a workspace
    */
   @Get('workspaces/:workspaceId/usage')
+  @RequireCapability('analytics:view')
   @HttpCode(HttpStatus.OK)
   async getWorkspaceUsage(@Param('workspaceId') workspaceId: string) {
     const usage = await this.aiTokenService.getWorkspaceAiUsage(workspaceId);
@@ -120,6 +123,7 @@ export class AiController {
    * Generate a social media post
    */
   @Post('workspaces/:workspaceId/generate/post')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async generatePost(
     @Param('workspaceId') workspaceId: string,
@@ -150,6 +154,7 @@ export class AiController {
    * Generate a caption for media content
    */
   @Post('workspaces/:workspaceId/generate/caption')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async generateCaption(
     @Param('workspaceId') workspaceId: string,
@@ -181,6 +186,7 @@ export class AiController {
    * Generate hashtags for a topic
    */
   @Post('workspaces/:workspaceId/generate/hashtags')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async generateHashtags(
     @Param('workspaceId') workspaceId: string,
@@ -210,6 +216,7 @@ export class AiController {
    * Generate content ideas
    */
   @Post('workspaces/:workspaceId/generate/ideas')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async generateIdeas(
     @Param('workspaceId') workspaceId: string,
@@ -240,6 +247,7 @@ export class AiController {
    * Generate YouTube video metadata (title, description, tags)
    */
   @Post('workspaces/:workspaceId/generate/youtube-metadata')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async generateYouTubeMetadata(
     @Param('workspaceId') workspaceId: string,
@@ -268,6 +276,7 @@ export class AiController {
    * Repurpose content from one platform to another
    */
   @Post('workspaces/:workspaceId/repurpose')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async repurposeContent(
     @Param('workspaceId') workspaceId: string,
@@ -297,6 +306,7 @@ export class AiController {
    * Improve an existing post
    */
   @Post('workspaces/:workspaceId/improve')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async improvePost(
     @Param('workspaceId') workspaceId: string,
@@ -326,6 +336,7 @@ export class AiController {
    * Generate a thread (Twitter/Threads)
    */
   @Post('workspaces/:workspaceId/generate/thread')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async generateThread(
     @Param('workspaceId') workspaceId: string,
@@ -355,6 +366,7 @@ export class AiController {
    * Generate a social media bio
    */
   @Post('workspaces/:workspaceId/generate/bio')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async generateBio(
     @Param('workspaceId') workspaceId: string,
@@ -384,6 +396,7 @@ export class AiController {
    * Translate content to another language
    */
   @Post('workspaces/:workspaceId/translate')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async translateContent(
     @Param('workspaceId') workspaceId: string,
@@ -413,6 +426,7 @@ export class AiController {
    * Generate multiple variations of a post
    */
   @Post('workspaces/:workspaceId/generate/variations')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async generateVariations(
     @Param('workspaceId') workspaceId: string,
@@ -447,6 +461,7 @@ export class AiController {
    * fallback). Billed as one unit regardless of count, mirroring per-channel.
    */
   @Post('workspaces/:workspaceId/generate/caption-variants')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async generateCaptionVariants(
     @Param('workspaceId') workspaceId: string,
@@ -471,6 +486,7 @@ export class AiController {
    * are requested.
    */
   @Post('workspaces/:workspaceId/generate/per-channel')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   generatePerChannel(
     @Param('workspaceId') workspaceId: string,
@@ -489,6 +505,7 @@ export class AiController {
    * Gemini-primary via InboxAiService.
    */
   @Post('workspaces/:workspaceId/inbox/suggest-reply')
+  @RequireCapability('inbox:reply')
   @HttpCode(HttpStatus.OK)
   async suggestReply(
     @Param('workspaceId') workspaceId: string,
@@ -507,6 +524,7 @@ export class AiController {
    * Analyze a post and get improvement suggestions
    */
   @Post('workspaces/:workspaceId/analyze')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   async analyzePost(
     @Param('workspaceId') workspaceId: string,
@@ -555,6 +573,7 @@ export class AiController {
    * Supported formats: MP3, WAV, WebM, OGG, M4A
    */
   @Post('workspaces/:workspaceId/transcribe')
+  @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
   @UseInterceptors(
     FileInterceptor('audio', {

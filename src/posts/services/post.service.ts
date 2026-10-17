@@ -3,9 +3,11 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
+import { isViewer, type CallerRole } from '../guest-rules';
 import { eq, and, desc, inArray, sql, gte, lte } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
@@ -127,6 +129,19 @@ export class PostService {
     this.realtimeEmitter.emit(args.workspaceId, 'post.status.changed', payload);
   }
 
+  /** A viewer may only change drafts they created themselves. */
+  private assertViewerOwnsDraft(
+    post: { status: string; createdById: string | null },
+    userId: string,
+  ): void {
+    if (post.status !== 'draft') {
+      throw new ForbiddenException('Viewers can only change drafts');
+    }
+    if (post.createdById !== userId) {
+      throw new ForbiddenException('Viewers can only change their own drafts');
+    }
+  }
+
   /**
    * Create a new post (draft or scheduled)
    */
@@ -134,7 +149,12 @@ export class PostService {
     workspaceId: string,
     userId: string,
     dto: CreatePostDto,
+    role?: CallerRole,
   ): Promise<typeof posts.$inferSelect> {
+    if (dto.scheduledAt && isViewer(role)) {
+      throw new ForbiddenException('Only members can schedule posts');
+    }
+
     // Validate channels belong to workspace
     const channelList = await this.validateChannels(
       workspaceId,
@@ -279,8 +299,18 @@ export class PostService {
     workspaceId: string,
     userId: string,
     dto: UpdatePostDto,
+    role?: CallerRole,
   ): Promise<typeof posts.$inferSelect> {
+    const viewer = isViewer(role);
+    if (viewer && dto.scheduledAt !== undefined) {
+      throw new ForbiddenException('Only members can schedule posts');
+    }
+
     const existingPost = await this.getPost(postId, workspaceId);
+
+    if (viewer) {
+      this.assertViewerOwnsDraft(existingPost, userId);
+    }
 
     // Can't update published posts
     if (existingPost.status === 'published') {
@@ -414,8 +444,13 @@ export class PostService {
     postId: string,
     workspaceId: string,
     userId: string,
+    role?: CallerRole,
   ): Promise<void> {
     const post = await this.getPost(postId, workspaceId);
+
+    if (isViewer(role)) {
+      this.assertViewerOwnsDraft(post, userId);
+    }
 
     // Can't delete published posts (they're already on platforms)
     if (post.status === 'published') {
