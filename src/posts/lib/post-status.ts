@@ -38,3 +38,16 @@ export function derivePostStatus(
   const hasFailed = statuses.includes('failed');
   return hasPublished && hasFailed ? 'partially_published' : postStatus;
 }
+
+/**
+ * How many of a post's targets are live on their platform, whatever the
+ * stored post status says. Used by the guards that must never orphan a
+ * published post (delete, move to drafts).
+ */
+export function publishedTargetState(
+  targets: TargetLike[],
+): 'none' | 'some' | 'all' {
+  const published = targets.filter((t) => either(t, 'published')).length;
+  if (published === 0) return 'none';
+  return published === targets.length ? 'all' : 'some';
+}

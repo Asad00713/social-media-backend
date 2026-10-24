@@ -10,7 +10,7 @@ import { Queue } from 'bullmq';
 import { isViewer, type CallerRole } from '../guest-rules';
 import { eq, and, desc, inArray, sql, gte, lte } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
-import { derivePostStatus } from '../lib/post-status';
+import { derivePostStatus, publishedTargetState } from '../lib/post-status';
 import { assertNotInPast, refusal } from '../lib/refusal';
 import { calendarRangeWhere, occurredAtSql } from '../lib/post-status.sql';
 import {
@@ -324,6 +324,24 @@ export class PostService {
       throw refusal('Cannot update a published post', 'POST_ALREADY_PUBLISHED');
     }
 
+    // Moving a partly published post (to drafts or to a new time) would strand
+    // its live targets on a row that can then be deleted. Refused up front.
+    if (dto.scheduledAt !== undefined) {
+      const state = publishedTargetState(existingPost.targets ?? []);
+      if (state === 'all') {
+        throw refusal(
+          'Cannot update a published post',
+          'POST_ALREADY_PUBLISHED',
+        );
+      }
+      if (state === 'some') {
+        throw refusal(
+          'Some channels already published this post. It cannot be rescheduled or moved to drafts.',
+          'POST_PARTLY_PUBLISHED',
+        );
+      }
+    }
+
     // A past time is refused before the live job is cancelled or anything is
     // written, so a refusal leaves the post exactly as it was.
     if (dto.scheduledAt) {
@@ -467,9 +485,11 @@ export class PostService {
     // Some channels published and others did not: deleting the row would
     // orphan the live posts (spec §6.5). Checked before the plain published
     // case because a `published` row can still mix published and failed.
+    const publishedState = publishedTargetState(post.targets ?? []);
     if (
+      publishedState === 'some' ||
       derivePostStatus(post.status, post.targets ?? []) ===
-      'partially_published'
+        'partially_published'
     ) {
       throw refusal(
         'Some channels already published this post. Delete it from each platform instead.',
@@ -478,7 +498,7 @@ export class PostService {
     }
 
     // Can't delete published posts (they're already on platforms)
-    if (post.status === 'published') {
+    if (post.status === 'published' || publishedState === 'all') {
       throw refusal(
         'Cannot delete a published post. It must be deleted from each platform individually.',
         'POST_ALREADY_PUBLISHED',

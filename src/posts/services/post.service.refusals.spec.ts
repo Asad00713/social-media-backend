@@ -164,6 +164,65 @@ describe('PostService refusal codes', () => {
     });
   });
 
+  describe('orphaning a partly published post', () => {
+    const MIXED = [
+      { channelId: '1', status: 'published' },
+      { channelId: '2', status: 'failed' },
+    ];
+
+    it.each([['failed'], ['publishing']])(
+      'refuses PUT scheduledAt null on a %s post with mixed targets, before any side effect',
+      async (status) => {
+        const svc = makeService(post(status, MIXED));
+        const body = await bodyOf(
+          svc.updatePost(
+            'p1',
+            WS,
+            'u1',
+            { scheduledAt: null } as any,
+            'MEMBER',
+          ),
+        );
+        expect(body.code).toBe('POST_PARTLY_PUBLISHED');
+        expect((svc as any).cancelPublishJobs).not.toHaveBeenCalled();
+        expect((svc as any).recordHistory).not.toHaveBeenCalled();
+      },
+    );
+
+    it('refuses PUT with a new date on a partly published post', async () => {
+      const svc = makeService(post('failed', MIXED));
+      const body = await bodyOf(
+        svc.updatePost(
+          'p1',
+          WS,
+          'u1',
+          { scheduledAt: new Date(Date.now() + 3_600_000) } as any,
+          'MEMBER',
+        ),
+      );
+      expect(body.code).toBe('POST_PARTLY_PUBLISHED');
+    });
+
+    it('refuses DELETE of a stored-failed post with mixed targets', async () => {
+      const svc = makeService(post('failed', MIXED));
+      const body = await bodyOf(svc.deletePost('p1', WS, 'u1', 'MEMBER'));
+      expect(body.code).toBe('POST_PARTLY_PUBLISHED');
+    });
+
+    it('refuses DELETE of a legacy stored-draft row with a published target', async () => {
+      const svc = makeService(
+        post('draft', [{ channelId: '1', status: 'published' }]),
+      );
+      const body = await bodyOf(svc.deletePost('p1', WS, 'u1', 'MEMBER'));
+      expect(body.code).toBe('POST_ALREADY_PUBLISHED');
+      const mixed = makeService(post('draft', MIXED));
+      const mixedBody = await bodyOf(
+        mixed.deletePost('p1', WS, 'u1', 'MEMBER'),
+      );
+      expect(mixedBody.code).toBe('POST_PARTLY_PUBLISHED');
+    });
+  });
+
   describe('a refused past schedule changes nothing', () => {
     const PAST = () => new Date(Date.now() - 60_000);
 
