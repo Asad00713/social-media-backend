@@ -15,7 +15,10 @@ export function describeFailure(input: {
   errorCode?: PublishErrorCode;
   errorMessage?: string | null;
 }): PostFailure {
-  const name = PLATFORM_CONFIG[input.platform].name;
+  const name =
+    (PLATFORM_CONFIG as Record<string, { name: string } | undefined>)[
+      input.platform
+    ]?.name ?? String(input.platform);
   const text = input.errorMessage?.trim() ?? '';
   const code =
     input.errorCode ?? (text ? classifyPublishError(text).code : undefined);

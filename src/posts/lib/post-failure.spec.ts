@@ -61,4 +61,15 @@ describe('describeFailure', () => {
       describeFailure({ platform: 'twitter', errorMessage: '' }).message,
     ).toBe('X (Twitter) could not publish this post.');
   });
+
+  it('survives a platform missing from PLATFORM_CONFIG', () => {
+    expect(
+      describeFailure({
+        platform: 'myspace' as never,
+        errorCode: 'rate_limited',
+      }).message,
+    ).toBe(
+      'myspace is limiting how often you can post. Wait a little, then retry.',
+    );
+  });
 });
