@@ -31,7 +31,7 @@ export const GENERAL_TIMES: Partial<
   Record<SupportedPlatform, GeneralWindow[]>
 > = {
   // Source: Sprout Social, https://sproutsocial.com/insights/best-times-to-post-on-social-media/
-  // Mon 12-1pm; Tue & Wed 12-8pm; Thu 12-2pm. Local time.
+  // Mon 12-1pm; Tue and Wed 12-8pm; Thu 12-2pm and 8pm. Local time.
   facebook: [
     { weekday: 1, hour: 12 },
     { weekday: 2, hour: 12 },
@@ -41,7 +41,7 @@ export const GENERAL_TIMES: Partial<
     { weekday: 4, hour: 12 },
   ],
   // Source: Sprout Social, https://sproutsocial.com/insights/best-times-to-post-on-social-media/
-  // Mon 2-4pm; Tue 1-7pm; Wed 12-9pm; Thu 12-2pm. Local time.
+  // Mon 2-4pm; Tue 1-7pm; Wed 12-9pm and 11pm; Thu 12-2pm. Local time.
   instagram: [
     { weekday: 1, hour: 14 },
     { weekday: 2, hour: 13 },
@@ -51,7 +51,7 @@ export const GENERAL_TIMES: Partial<
     { weekday: 4, hour: 12 },
   ],
   // Source: Sprout Social, https://sproutsocial.com/insights/best-times-to-post-on-social-media/
-  // Mon 1-2pm; Tue 11am-5pm; Wed 11am-4pm; Thu 1-5pm; Fri 11am. Local time.
+  // Mon 1-2pm; Tue 11am-5pm; Wed 11am-4pm; Thu 11am and 1-5pm; Fri 11am and 1-2pm. Local time.
   linkedin: [
     { weekday: 1, hour: 13 },
     { weekday: 2, hour: 11 },
@@ -61,7 +61,7 @@ export const GENERAL_TIMES: Partial<
     { weekday: 5, hour: 11 },
   ],
   // Source: Sprout Social, https://sproutsocial.com/insights/best-times-to-post-on-social-media/
-  // Mon 2-3pm; Tue/Wed/Thu 12-6pm. Local time.
+  // Mon 2-3pm and 5pm; Tue-Thu 12-6pm. Local time.
   twitter: [
     { weekday: 1, hour: 14 },
     { weekday: 2, hour: 12 },
@@ -81,7 +81,7 @@ export const GENERAL_TIMES: Partial<
     { weekday: 5, hour: 15 },
   ],
   // Source: Sprout Social, https://sproutsocial.com/insights/best-times-to-post-on-social-media/
-  // Mon 10am-12pm; Tue 7am & 10am-1pm; Wed 8am-1pm; Thu 10-11am; Fri 10-11am. Local time.
+  // Mon 10am-12pm and 2-3pm; Tue 7am and 10am-1pm; Wed 8am-1pm and 3pm; Thu 10-11am and 2-4pm; Fri 10-11am. Local time.
   pinterest: [
     { weekday: 1, hour: 10 },
     { weekday: 2, hour: 7 },
