@@ -7,6 +7,12 @@ import { isMeasured, median } from '../../post-performance/engagement-stats';
 import { generalWindowsFor } from './general-times';
 import { zonedClock } from './workspace-time';
 
+/** The fields the best-times maths reads; callers may keep only these. */
+export type BestTimePost = Pick<
+  PublishedPost,
+  'channelId' | 'publishedAt' | 'likes' | 'comments' | 'shares' | 'impressions'
+>;
+
 export const BEST_TIMES_WINDOW_DAYS = 90;
 export const MIN_POSTS_FOR_OWN = 15;
 export const MIN_POSTS_PER_BUCKET = 2;
@@ -30,7 +36,7 @@ const round2 = (n: number): number => Math.round(n * 100) / 100;
  * once per channel.
  */
 export function computeOwnBestTimes(
-  posts: PublishedPost[],
+  posts: BestTimePost[],
   timeZone: string,
   now: Date,
 ): { postCount: number; windows: BestTimeWindow[] } {
@@ -82,7 +88,7 @@ export function computeOwnBestTimes(
 /** One channel's best times; `posts` must be that channel's own posts only. */
 export function resolveBestTimes(args: {
   platform: SupportedPlatform;
-  posts: PublishedPost[];
+  posts: BestTimePost[];
   timeZone: string;
   now: Date;
   forceGeneral: boolean;

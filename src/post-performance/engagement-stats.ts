@@ -4,7 +4,9 @@ import type { PublishedPost } from './post-performance';
 export const MIN_POSTS_FOR_USUAL = 5;
 
 /** Whether the platform has reported any count for this post on this channel. */
-export function isMeasured(p: PublishedPost): boolean {
+export function isMeasured(
+  p: Pick<PublishedPost, 'likes' | 'comments' | 'shares' | 'impressions'>,
+): boolean {
   return (
     p.likes !== null ||
     p.comments !== null ||

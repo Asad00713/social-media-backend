@@ -28,6 +28,10 @@ export class BestTimesCache<V> {
     return entry.value;
   }
 
+  delete(key: string): void {
+    this.entries.delete(key);
+  }
+
   set(key: string, version: string, value: V): void {
     this.entries.delete(key);
     while (this.entries.size >= this.maxEntries) {

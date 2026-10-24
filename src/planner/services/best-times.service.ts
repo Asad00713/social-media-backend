@@ -8,11 +8,14 @@ import {
   type SupportedPlatform,
 } from '../../drizzle/schema/channels.schema';
 import { postMetricSnapshots } from '../../drizzle/schema/post-metric-snapshots.schema';
-import type { PublishedPost } from '../../post-performance/post-performance';
 import { PostPerformanceRepository } from '../../post-performance/post-performance.repository';
 import type { BestTimesDto } from '../dto/best-times.dto';
 import { BestTimesCache } from '../lib/best-times-cache';
-import { BEST_TIMES_WINDOW_DAYS, resolveBestTimes } from '../lib/best-times';
+import {
+  BEST_TIMES_WINDOW_DAYS,
+  resolveBestTimes,
+  type BestTimePost,
+} from '../lib/best-times';
 import { loadWorkspaceTimezone } from '../lib/workspace-time';
 import { PlannerPreferencesService } from './planner-preferences.service';
 
@@ -27,7 +30,7 @@ interface SocialChannel {
 
 /** What the cache keeps: each channel, with only that channel's posts. */
 interface ChannelPosts extends SocialChannel {
-  posts: PublishedPost[];
+  posts: BestTimePost[];
 }
 
 const isoDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
@@ -45,7 +48,7 @@ const isoDate = (ms: number): string => new Date(ms).toISOString().slice(0, 10);
  */
 @Injectable()
 export class BestTimesService {
-  private readonly cache = new BestTimesCache<ChannelPosts[]>(
+  private readonly cache = new BestTimesCache<Promise<ChannelPosts[]>>(
     CACHE_TTL_MS,
     CACHE_MAX_ENTRIES,
     () => Date.now(),
@@ -74,13 +77,20 @@ export class BestTimesService {
     const forceGeneral = prefs.bestTimesSource === 'general';
 
     const ids = channels.map((c) => c.id);
-    const version = `${await this.latestSnapshotMs(ids)}:${ids.join(',')}`;
+    const version = `${await this.latestSnapshotMs(workspaceId, ids)}:${ids.join(',')}`;
     const key = `${workspaceId}:${timezone}`;
-    let grouped = this.cache.get(key, version);
-    if (!grouped) {
-      grouped = await this.loadChannelPosts(workspaceId, channels, now);
-      this.cache.set(key, version, grouped);
+    // The in-flight promise is cached, so concurrent cold requests share one
+    // query; a failed load is dropped so the next request retries.
+    let pending = this.cache.get(key, version);
+    if (!pending) {
+      const load = this.loadChannelPosts(workspaceId, channels, now);
+      pending = load;
+      this.cache.set(key, version, load);
+      load.catch(() => {
+        if (this.cache.get(key, version) === load) this.cache.delete(key);
+      });
     }
+    const grouped = await pending;
 
     return {
       timezone,
@@ -111,10 +121,18 @@ export class BestTimesService {
       isoDate(now.getTime() - BEST_TIMES_WINDOW_DAYS * DAY_MS),
       isoDate(now.getTime() + DAY_MS),
     );
-    const byChannel = new Map<number, PublishedPost[]>();
+    const byChannel = new Map<number, BestTimePost[]>();
     for (const p of posts) {
       const list = byChannel.get(p.channelId) ?? [];
-      list.push(p);
+      // Keep only what the maths reads: not captions, media or permalinks.
+      list.push({
+        channelId: p.channelId,
+        publishedAt: p.publishedAt,
+        likes: p.likes,
+        comments: p.comments,
+        shares: p.shares,
+        impressions: p.impressions,
+      });
       byChannel.set(p.channelId, list);
     }
     return channels.map((c) => ({ ...c, posts: byChannel.get(c.id) ?? [] }));
@@ -139,11 +157,25 @@ export class BestTimesService {
   }
 
   /** Newest snapshot time (ms) across these channels; 0 when none yet. */
-  protected async latestSnapshotMs(channelIds: number[]): Promise<number> {
+  protected async latestSnapshotMs(
+    workspaceId: string,
+    channelIds: number[],
+  ): Promise<number> {
+    // Joined to the channel so the workspace predicate is part of the query,
+    // not only a property of the ids the caller happened to pass.
     const [row] = await this.db
       .select({ latest: max(postMetricSnapshots.snapshotAt) })
       .from(postMetricSnapshots)
-      .where(inArray(postMetricSnapshots.channelId, channelIds));
+      .innerJoin(
+        socialMediaChannels,
+        eq(socialMediaChannels.id, postMetricSnapshots.channelId),
+      )
+      .where(
+        and(
+          eq(socialMediaChannels.workspaceId, workspaceId),
+          inArray(postMetricSnapshots.channelId, channelIds),
+        ),
+      );
     return row?.latest ? new Date(row.latest).getTime() : 0;
   }
 }

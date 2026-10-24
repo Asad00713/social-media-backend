@@ -166,6 +166,27 @@ describe('BestTimesService', () => {
     expect(publishedPosts).toHaveBeenCalledTimes(1);
   });
 
+  it('concurrent cold requests share one query', async () => {
+    const { service, publishedPosts } = build({
+      channels: [{ id: 1, platform: 'instagram' }],
+    });
+    await Promise.all([
+      service.getForWorkspace('w', 'u', NOW),
+      service.getForWorkspace('w', 'u', NOW),
+    ]);
+    expect(publishedPosts).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed load is not cached', async () => {
+    const { service, publishedPosts } = build({
+      channels: [{ id: 1, platform: 'instagram' }],
+    });
+    publishedPosts.mockRejectedValueOnce(new Error('db down'));
+    await expect(service.getForWorkspace('w', 'u', NOW)).rejects.toThrow();
+    await expect(service.getForWorkspace('w', 'u', NOW)).resolves.toBeDefined();
+    expect(publishedPosts).toHaveBeenCalledTimes(2);
+  });
+
   it('recomputes when a newer snapshot exists', async () => {
     const { service, publishedPosts, state } = build({
       channels: [{ id: 1, platform: 'instagram' }],
