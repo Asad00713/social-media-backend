@@ -172,6 +172,7 @@ describe('PlannerNotesService', () => {
       const p = svc.update(WS, 'n1', ME, 'MEMBER', patch as never);
       await expect(p).rejects.toBeInstanceOf(BadRequestException);
       await expect(p).rejects.toThrow('Nothing to update');
+      // eslint-disable-next-line @typescript-eslint/unbound-method
       expect(db.update).not.toHaveBeenCalled();
     });
 

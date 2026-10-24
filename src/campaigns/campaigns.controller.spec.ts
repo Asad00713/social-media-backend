@@ -439,8 +439,7 @@ describe('CampaignsController spans over HTTP', () => {
     statusCounts: jest.fn(),
   };
   const WS = '11111111-1111-4111-8111-111111111111';
-  const url = (qs: string, ws = WS) =>
-    `/campaigns/workspaces/${ws}/spans${qs}`;
+  const url = (qs: string, ws = WS) => `/campaigns/workspaces/${ws}/spans${qs}`;
   const DAY = 24 * 3600_000;
 
   beforeAll(async () => {
