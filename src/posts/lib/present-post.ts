@@ -32,9 +32,24 @@ function presentTarget(
   post: PostRow,
 ): PlannerPostTargetDto {
   const status = targetStatusOf(target, post.status);
+  // Explicit fields only: stored targets also carry internals (publishStatus,
+  // retryCount, attemptedAt) that are not part of the API contract.
+  const optional: Partial<PlannerPostTargetDto> = {
+    platformPostId: target.platformPostId,
+    platformPostUrl: target.platformPostUrl,
+    publishedAt: target.publishedAt,
+    errorMessage: target.errorMessage,
+    errorCode: target.errorCode,
+    destination: target.destination,
+    contentOverride: target.contentOverride,
+  };
+  for (const key of Object.keys(optional) as (keyof typeof optional)[]) {
+    if (optional[key] === undefined) delete optional[key];
+  }
   return {
-    ...target,
+    ...optional,
     channelId: String(target.channelId),
+    platform: target.platform,
     status,
     failure:
       status === 'failed'

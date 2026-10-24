@@ -84,6 +84,34 @@ describe('presentPost', () => {
     expect(dto.targets[0].failure?.message).toMatch(/limiting how often/);
   });
 
+  it('exposes only the contract fields of a target, not stored internals', () => {
+    const dto = presentPost(
+      row({
+        status: 'published',
+        targets: [
+          {
+            channelId: 7,
+            platform: 'twitter',
+            status: 'published',
+            publishStatus: 'published',
+            retryCount: 3,
+            attemptedAt: '2026-10-01T00:00:00Z',
+            platformPostId: 'abc',
+          },
+        ] as never,
+      }),
+      { users },
+    );
+    expect(Object.keys(dto.targets[0]).sort()).toEqual([
+      'channelId',
+      'failure',
+      'platform',
+      'platformPostId',
+      'status',
+    ]);
+    expect(dto.targets[0].channelId).toBe('7');
+  });
+
   it('gives a published target no failure', () => {
     const dto = presentPost(
       row({
