@@ -66,3 +66,30 @@ describe('ExternalEventsService serialisation', () => {
     });
   });
 });
+
+describe('ExternalEventsService range cap', () => {
+  const svc = () => serviceWith([]);
+
+  it('allows exactly 100 days', async () => {
+    await expect(
+      svc().listExternalEvents(
+        'ws',
+        '2026-01-01T00:00:00Z',
+        '2026-04-11T00:00:00Z',
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it('refuses a window longer than 100 days with a 400', async () => {
+    await expect(
+      svc().listExternalEvents(
+        'ws',
+        '2026-01-01T00:00:00Z',
+        '2026-04-12T00:00:00Z',
+      ),
+    ).rejects.toMatchObject({
+      status: 400,
+      message: 'The calendar range is limited to 100 days',
+    });
+  });
+});

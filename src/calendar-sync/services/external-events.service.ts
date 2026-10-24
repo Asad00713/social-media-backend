@@ -35,6 +35,10 @@ export interface ExternalEventDto {
   attendeeCount: number | null;
 }
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Same cap as the calendar posts endpoint. */
+const MAX_CALENDAR_SPAN_DAYS = 100;
+
 /**
  * ExternalEventsService — read side of the external import.
  *
@@ -77,6 +81,11 @@ export class ExternalEventsService {
     }
     if (from.getTime() > to.getTime()) {
       throw new BadRequestException('`from` must be before `to`');
+    }
+    if (to.getTime() - from.getTime() > MAX_CALENDAR_SPAN_DAYS * DAY_MS) {
+      throw new BadRequestException(
+        `The calendar range is limited to ${MAX_CALENDAR_SPAN_DAYS} days`,
+      );
     }
 
     const rows = await this.db
