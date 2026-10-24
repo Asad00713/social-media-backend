@@ -94,6 +94,20 @@ describeDb('PlannerLookupService', () => {
         );
       }));
 
+    it('reads an offset zone such as +05:00 with the right sign', () =>
+      run(async (svc, client) => {
+        // 2026-12-31T20:00Z is 2027-01-01 01:00 at +05:00 (and Dec 31 at -05:00).
+        const w = await workspace(client, 'a', '+05:00');
+        await post(client, w, { scheduledAt: '2026-12-31T20:00:00Z' });
+        expect(counts(await svc.monthCounts(w.workspaceId, 2027))).toEqual([
+          1,
+          ...zeros(11),
+        ]);
+        expect(counts(await svc.monthCounts(w.workspaceId, 2026))).toEqual(
+          zeros(12),
+        );
+      }));
+
     it('treats an invalid stored zone as UTC', () =>
       run(async (svc, client) => {
         const w = await workspace(client, 'a', 'Mars/Olympus');

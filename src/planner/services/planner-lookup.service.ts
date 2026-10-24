@@ -21,7 +21,7 @@ import type {
   MonthCountsDto,
   NextPostDto,
 } from '../dto/planner-list.dto';
-import { loadWorkspaceTimezone } from '../lib/workspace-time';
+import { loadWorkspaceTimezone, wallClockToUtc } from '../lib/workspace-time';
 
 /**
  * "Occurred" here is `occurredAtSql` (COALESCE(published_at, scheduled_at)),
@@ -46,29 +46,32 @@ export class PlannerLookupService {
     year: number,
   ): Promise<MonthCountsDto> {
     const zone = await loadWorkspaceTimezone(this.db, workspaceId);
-    // The zone is a bound parameter. `timestamptz AT TIME ZONE zone` is the
-    // wall-clock timestamp there, so year and month are local.
-    const local = sql`(${occurredAtSql} AT TIME ZONE ${zone})`;
-    const month = sql<number>`extract(month from ${local})::int`;
-    const rows = await this.db
-      .select({ month, count: sql<string>`count(*)` })
-      .from(posts)
-      .where(
-        and(
-          this.nonDraft(workspaceId),
-          sql`extract(year from ${local})::int = ${year}`,
-        ),
-      )
-      // Ordinal: the zone is a bound parameter, so a repeated expression would
-      // carry a different placeholder and not match the select list.
-      .groupBy(sql`1`);
-    const byMonth = new Map(
-      rows.map((r) => [Number(r.month), Number(r.count)]),
+    // Month boundaries are computed here, in the workspace zone, and the
+    // database only compares instants. Postgres `AT TIME ZONE` would read an
+    // offset zone such as '+05:00' as POSIX (sign inverted) and fail on zones
+    // it does not know that Intl accepts.
+    const pad = (n: number): string => String(n).padStart(2, '0');
+    const bounds = Array.from({ length: 13 }, (_, i) =>
+      i < 12
+        ? wallClockToUtc(`${year}-${pad(i + 1)}-01`, '00:00', zone)
+        : wallClockToUtc(`${year + 1}-01-01`, '00:00', zone),
     );
+    const columns = Array.from(
+      { length: 12 },
+      (_, i) =>
+        sql`count(*) FILTER (WHERE ${occurredAtSql} >= ${bounds[i].toISOString()}::timestamptz AND ${occurredAtSql} < ${bounds[i + 1].toISOString()}::timestamptz)::int`,
+    );
+    const result = await this.db.execute(
+      sql`SELECT ${sql.join(
+        columns.map((c, i) => sql`${c} AS ${sql.identifier(`m${i + 1}`)}`),
+        sql`, `,
+      )} FROM ${posts} WHERE ${this.nonDraft(workspaceId)}`,
+    );
+    const row = (result.rows[0] ?? {}) as Record<string, number | string>;
     return {
       months: Array.from({ length: 12 }, (_, i) => ({
         month: i + 1,
-        count: byMonth.get(i + 1) ?? 0,
+        count: Number(row[`m${i + 1}`] ?? 0),
       })),
     };
   }
