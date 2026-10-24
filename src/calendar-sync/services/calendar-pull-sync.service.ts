@@ -8,6 +8,7 @@ import {
   lte,
   notInArray,
   or,
+  sql,
   type SQL,
 } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
@@ -1047,7 +1048,8 @@ export class CalendarPullSyncService {
         ],
         set: {
           provider: values.provider,
-          calendarId: values.calendarId,
+          // A failed calendar discovery passes null: keep the stored attribution.
+          calendarId: sql`COALESCE(excluded.calendar_id, ${externalCalendarEvents.calendarId})`,
           attendeeCount: values.attendeeCount,
           title: values.title,
           startsAt: values.startsAt,
