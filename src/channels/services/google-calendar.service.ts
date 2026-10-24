@@ -72,6 +72,9 @@ export interface PostEventData {
   workspaceName?: string;
 }
 
+/** Page cap for the calendar list walk (250 calendars per page). */
+const CALENDAR_LIST_MAX_PAGES = 10;
+
 @Injectable()
 export class GoogleCalendarService {
   private readonly logger = new Logger(GoogleCalendarService.name);
@@ -95,6 +98,43 @@ export class GoogleCalendarService {
 
     const data = await response.json();
     return data.items || [];
+  }
+
+  /**
+   * Every calendar of the account, following `nextPageToken`. `complete` is
+   * false when the page cap stopped the walk with pages still pending, so a
+   * caller must not treat a calendar missing from `calendars` as deleted.
+   * Throws on any failed page (a partial list is never returned as success).
+   */
+  async listCalendarsComplete(
+    accessToken: string,
+  ): Promise<{ calendars: Calendar[]; complete: boolean }> {
+    const calendars: Calendar[] = [];
+    let pageToken: string | undefined;
+    for (let page = 0; page < CALENDAR_LIST_MAX_PAGES; page++) {
+      // showHidden: visibility is a per-user Planner toggle, so a calendar hidden
+      // in Google must still be listed (else its row and events would be deleted).
+      const params = new URLSearchParams({
+        maxResults: '250',
+        showHidden: 'true',
+      });
+      if (pageToken) params.set('pageToken', pageToken);
+      const response = await fetch(
+        `${this.apiBaseUrl}/users/me/calendarList?${params.toString()}`,
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+      );
+      if (!response.ok) {
+        throw new Error(`Google calendarList failed (${response.status})`);
+      }
+      const data = (await response.json()) as {
+        items?: Calendar[];
+        nextPageToken?: string;
+      };
+      calendars.push(...(data.items ?? []));
+      pageToken = data.nextPageToken || undefined;
+      if (!pageToken) return { calendars, complete: true };
+    }
+    return { calendars, complete: false };
   }
 
   /**

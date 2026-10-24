@@ -48,3 +48,20 @@ export interface InsightsPostsDto {
   rows: InsightPost[];
   hasMore: boolean;
 }
+
+/** One post on one channel: its latest numbers and how they compare to usual. */
+export interface PostChannelMetricsDto {
+  postId: string;
+  channelId: number;
+  /** "Views": the platform's impressions; null if it reports none. */
+  views: number | null;
+  likes: number | null;
+  comments: number | null;
+  /** Likes + comments + shares. */
+  engagements: number;
+  /**
+   * Engagements over the channel's median over the last 90 days; null below
+   * 5 measured posts or when that median is 0.
+   */
+  usualMultiplier: number | null;
+}

@@ -1,5 +1,5 @@
 import { Inject, Injectable } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import type { PostMediaItem, PublishedPost } from './post-performance';
@@ -67,7 +67,45 @@ export class PostPerformanceRepository {
       channelIds.map((id) => sql`${String(id)}`),
       sql`, `,
     );
+    return this.query(
+      sql`AND e->>'channelId' IN (${ids})`,
+      sql`p.workspace_id = ${workspaceId}
+        AND p.status IN ('published', 'partially_published')
+        AND p.published_at >= ${new Date(`${from}T00:00:00Z`)}
+        AND p.published_at < ${new Date(`${before}T00:00:00Z`)}`,
+    );
+  }
 
+  /**
+   * The same rows as `publishedPosts` for the given posts, whatever their date
+   * or channel. Ids that belong to another workspace match nothing: the
+   * workspace predicate is part of the query, not a check done afterwards.
+   */
+  async publishedPostsByIds(
+    workspaceId: string,
+    postIds: string[],
+  ): Promise<PublishedPost[]> {
+    if (!postIds.length) return [];
+    const ids = sql.join(
+      postIds.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    );
+    return this.query(
+      sql``,
+      sql`p.workspace_id = ${workspaceId}
+        AND p.status IN ('published', 'partially_published')
+        AND p.id IN (${ids})`,
+    );
+  }
+
+  /**
+   * `channelFilter` narrows the per-channel targets (an `AND ...` clause or
+   * nothing); `postWhere` narrows the posts.
+   */
+  private async query(
+    channelFilter: SQL,
+    postWhere: SQL,
+  ): Promise<PublishedPost[]> {
     const result = await this.db.execute(sql`
       SELECT
         p.id AS post_id,
@@ -92,7 +130,7 @@ export class PostPerformanceRepository {
           max(e->>'platformPostUrl') AS permalink
         FROM jsonb_array_elements(p.targets) e
         WHERE (e->>'status' = 'published' OR e->>'publishStatus' = 'published')
-          AND e->>'channelId' IN (${ids})
+          ${channelFilter}
         GROUP BY e->>'channelId'
       ) t
       LEFT JOIN LATERAL (
@@ -100,7 +138,7 @@ export class PostPerformanceRepository {
         FROM post_metric_snapshots s
         WHERE s.post_id = p.id
           AND s.channel_id::text = t.channel_id
-        ORDER BY s.snapshot_at DESC
+        ORDER BY s.snapshot_at DESC, s.id DESC
         LIMIT 1
       ) m ON true
       LEFT JOIN LATERAL (
@@ -111,13 +149,10 @@ export class PostPerformanceRepository {
         WHERE s.post_id = p.id
           AND s.channel_id::text = t.channel_id
           AND s.platform_metrics->>'mediaType' IS NOT NULL
-        ORDER BY s.snapshot_at DESC
+        ORDER BY s.snapshot_at DESC, s.id DESC
         LIMIT 1
       ) mt ON true
-      WHERE p.workspace_id = ${workspaceId}
-        AND p.status IN ('published', 'partially_published')
-        AND p.published_at >= ${new Date(`${from}T00:00:00Z`)}
-        AND p.published_at < ${new Date(`${before}T00:00:00Z`)}
+      WHERE ${postWhere}
     `);
 
     return (result.rows as unknown as PublishedPostRow[]).map(toPublishedPost);

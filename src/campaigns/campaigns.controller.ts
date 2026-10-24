@@ -6,6 +6,8 @@ import {
   Delete,
   Body,
   Param,
+  ParseUUIDPipe,
+  BadRequestException,
   Query,
   UseGuards,
   HttpCode,
@@ -28,6 +30,7 @@ import {
   RemoveEventDto,
   AiEventDto,
 } from './dto/campaigns.dto';
+import { MAX_SPAN_RANGE_DAYS, SpansQueryDto } from './dto/spans-query.dto';
 
 @Controller('campaigns')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
@@ -44,6 +47,27 @@ export class CampaignsController {
   @Get('workspaces/:workspaceId/status-counts')
   async statusCounts(@Param('workspaceId') workspaceId: string) {
     return this.campaignsService.statusCounts(workspaceId);
+  }
+
+  // NOTE: like `status-counts`, `spans` MUST stay above the `:id` route.
+  @RequireCapability('posts:draft')
+  @Get('workspaces/:workspaceId/spans')
+  async spans(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Query() query: SpansQueryDto,
+  ) {
+    const from = new Date(query.from);
+    const to = new Date(query.to);
+    if (from.getTime() > to.getTime()) {
+      throw new BadRequestException('`from` must not be after `to`');
+    }
+    const days = (to.getTime() - from.getTime()) / 86_400_000;
+    if (days > MAX_SPAN_RANGE_DAYS) {
+      throw new BadRequestException(
+        `The window may span at most ${MAX_SPAN_RANGE_DAYS} days`,
+      );
+    }
+    return this.campaignsService.listSpans(workspaceId, from, to);
   }
 
   @RequireCapability('posts:draft')

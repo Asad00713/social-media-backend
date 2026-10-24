@@ -14,6 +14,10 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { CalendarPushSyncService } from './services/calendar-push-sync.service';
 import {
+  ExternalCalendarDto,
+  ExternalCalendarsService,
+} from './services/external-calendars.service';
+import {
   ExternalEventDto,
   ExternalEventsService,
 } from './services/external-events.service';
@@ -29,6 +33,7 @@ export class CalendarSyncController {
   constructor(
     private readonly pushSyncService: CalendarPushSyncService,
     private readonly externalEventsService: ExternalEventsService,
+    private readonly externalCalendarsService: ExternalCalendarsService,
   ) {}
 
   /**
@@ -93,5 +98,16 @@ export class CalendarSyncController {
       query.from,
       query.to,
     );
+  }
+
+  /** The workspace's connected calendars (active connections only, primary first). */
+  @RequireCapability('posts:draft')
+  @Get('workspaces/:workspaceId/calendars')
+  async listCalendars(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @CurrentUser() user: { userId: string; email: string },
+  ): Promise<ExternalCalendarDto[]> {
+    await this.pushSyncService.assertWorkspaceAccess(workspaceId, user.userId);
+    return this.externalCalendarsService.listCalendarDtos(workspaceId);
   }
 }

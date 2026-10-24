@@ -1,10 +1,12 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { and, asc, eq, gte, inArray, isNull, lte, or } from 'drizzle-orm';
-import { db } from '../../drizzle/db';
+import type { DbType } from '../../drizzle/db';
+import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import {
   calendarItemLinks,
   externalCalendarEvents,
+  externalCalendars,
 } from '../../drizzle/schema/calendar-sync.schema';
 
 // Calendar channel platforms whose events we mirror.
@@ -24,7 +26,18 @@ export interface ExternalEventDto {
   endsAt: string;
   isAllDay: boolean;
   htmlLink?: string;
+  /** `external_calendars.id`; null only until the connection's next sync. */
+  calendarId: string | null;
+  /** The calendar's name, or the connection's account name before the sync. */
+  calendarName: string;
+  calendarColor: string | null;
+  accountEmail: string | null;
+  attendeeCount: number | null;
 }
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** Same cap as the calendar posts endpoint. */
+const MAX_CALENDAR_SPAN_DAYS = 100;
 
 /**
  * ExternalEventsService — read side of the external import.
@@ -36,6 +49,8 @@ export interface ExternalEventDto {
  */
 @Injectable()
 export class ExternalEventsService {
+  constructor(@Inject(DRIZZLE) private readonly db: DbType) {}
+
   /**
    * External events of a workspace's connected calendars that OVERLAP the
    * `[fromISO, toISO]` window, oldest start first.
@@ -49,6 +64,9 @@ export class ExternalEventsService {
    * just wrote BEFORE its link row commits — importing it as "external". This
    * filter guarantees such a raced (or otherwise stale) row can never surface as
    * a duplicate card, whatever the pull service happened to persist.
+   *
+   * All-day events keep `startsAt` at UTC midnight of their calendar date; no
+   * zone conversion is applied here.
    */
   async listExternalEvents(
     workspaceId: string,
@@ -64,8 +82,13 @@ export class ExternalEventsService {
     if (from.getTime() > to.getTime()) {
       throw new BadRequestException('`from` must be before `to`');
     }
+    if (to.getTime() - from.getTime() > MAX_CALENDAR_SPAN_DAYS * DAY_MS) {
+      throw new BadRequestException(
+        `The calendar range is limited to ${MAX_CALENDAR_SPAN_DAYS} days`,
+      );
+    }
 
-    const rows = await db
+    const rows = await this.db
       .select({
         id: externalCalendarEvents.id,
         title: externalCalendarEvents.title,
@@ -74,11 +97,22 @@ export class ExternalEventsService {
         isAllDay: externalCalendarEvents.isAllDay,
         htmlLink: externalCalendarEvents.htmlLink,
         platform: socialMediaChannels.platform,
+        channelAccountName: socialMediaChannels.accountName,
+        calendarId: externalCalendarEvents.calendarId,
+        attendeeCount: externalCalendarEvents.attendeeCount,
+        calendarName: externalCalendars.name,
+        calendarColor: externalCalendars.color,
+        accountEmail: externalCalendars.accountEmail,
       })
       .from(externalCalendarEvents)
       .innerJoin(
         socialMediaChannels,
         eq(externalCalendarEvents.channelId, socialMediaChannels.id),
+      )
+      // Events imported before 0044 have no calendar row yet: left join.
+      .leftJoin(
+        externalCalendars,
+        eq(externalCalendarEvents.calendarId, externalCalendars.id),
       )
       // Anti-join against the link table (index-backed by `cpl_channel_event_ix`):
       // an event WE wrote for a post is never an "external" event, even if a
@@ -128,6 +162,11 @@ export class ExternalEventsService {
         ).toISOString(),
         isAllDay: row.isAllDay,
         htmlLink: row.htmlLink ?? undefined,
+        calendarId: row.calendarId ?? null,
+        calendarName: row.calendarName ?? row.channelAccountName ?? '',
+        calendarColor: row.calendarColor ?? null,
+        accountEmail: row.accountEmail ?? null,
+        attendeeCount: row.attendeeCount ?? null,
       }));
   }
 }

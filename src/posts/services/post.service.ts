@@ -10,6 +10,9 @@ import { Queue } from 'bullmq';
 import { isViewer, type CallerRole } from '../guest-rules';
 import { eq, and, desc, inArray, sql, gte, lte } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
+import { derivePostStatus, publishedTargetState } from '../lib/post-status';
+import { assertNotInPast, refusal } from '../lib/refusal';
+import { calendarRangeWhere, occurredAtSql } from '../lib/post-status.sql';
 import {
   posts,
   postHistory,
@@ -174,6 +177,10 @@ export class PostService {
     // Queue ceiling is per channel: a post targeting three channels takes one
     // slot on each. Checked before the insert so nothing is written on refusal.
     if (dto.scheduledAt) {
+      // Refused before anything is written. The job-scheduling backstop
+      // below only clamps a past delay to 0, so it would still publish a
+      // past-dated post immediately, after the insert.
+      assertNotInPast(dto.scheduledAt);
       await this.postQueue.enforceQueueLimit(
         workspaceId,
         channelList.map((channel) => String(channel.id)),
@@ -314,7 +321,31 @@ export class PostService {
 
     // Can't update published posts
     if (existingPost.status === 'published') {
-      throw new BadRequestException('Cannot update a published post');
+      throw refusal('Cannot update a published post', 'POST_ALREADY_PUBLISHED');
+    }
+
+    // Moving a partly published post (to drafts or to a new time) would strand
+    // its live targets on a row that can then be deleted. Refused up front.
+    if (dto.scheduledAt !== undefined) {
+      const state = publishedTargetState(existingPost.targets ?? []);
+      if (state === 'all') {
+        throw refusal(
+          'Cannot update a published post',
+          'POST_ALREADY_PUBLISHED',
+        );
+      }
+      if (state === 'some') {
+        throw refusal(
+          'Some channels already published this post. It cannot be rescheduled or moved to drafts.',
+          'POST_PARTLY_PUBLISHED',
+        );
+      }
+    }
+
+    // A past time is refused before the live job is cancelled or anything is
+    // written, so a refusal leaves the post exactly as it was.
+    if (dto.scheduledAt) {
+      assertNotInPast(dto.scheduledAt);
     }
 
     // Build update data
@@ -351,6 +382,21 @@ export class PostService {
       }));
     }
 
+    // Every check that can refuse runs here, before the first side effect
+    // (job cancel, row write, history). A draft promoted to `scheduled` faces
+    // the same per-channel ceiling as one created scheduled — otherwise "save
+    // as draft, then schedule" is a free bypass. Only on the draft -> scheduled
+    // transition: a post already in `scheduled` is counted by
+    // countQueuedForChannel itself, so re-saving it would be refused for
+    // occupying its own slot.
+    if (dto.scheduledAt && existingPost.status !== 'scheduled') {
+      const scheduledTargets = updateData.targets ?? existingPost.targets ?? [];
+      await this.postQueue.enforceQueueLimit(
+        workspaceId,
+        scheduledTargets.map((target) => String(target.channelId)),
+      );
+    }
+
     // Update scheduling
     let clearScheduledAt = false;
     if (dto.scheduledAt !== undefined) {
@@ -368,22 +414,6 @@ export class PostService {
         updateData.scheduledAt = dto.scheduledAt;
         updateData.status = 'scheduled';
       }
-    }
-
-    // A draft promoted to `scheduled` faces the same per-channel ceiling as one
-    // created scheduled — otherwise "save as draft, then schedule" is a free
-    // bypass. Only on the draft -> scheduled transition: a post already in
-    // `scheduled` is counted by countQueuedForChannel itself, so re-saving it
-    // would be refused for occupying its own slot.
-    if (
-      updateData.status === 'scheduled' &&
-      existingPost.status !== 'scheduled'
-    ) {
-      const scheduledTargets = updateData.targets ?? existingPost.targets ?? [];
-      await this.postQueue.enforceQueueLimit(
-        workspaceId,
-        scheduledTargets.map((target) => String(target.channelId)),
-      );
     }
 
     let updatedPost;
@@ -452,10 +482,26 @@ export class PostService {
       this.assertViewerOwnsDraft(post, userId);
     }
 
+    // Some channels published and others did not: deleting the row would
+    // orphan the live posts (spec §6.5). Checked before the plain published
+    // case because a `published` row can still mix published and failed.
+    const publishedState = publishedTargetState(post.targets ?? []);
+    if (
+      publishedState === 'some' ||
+      derivePostStatus(post.status, post.targets ?? []) ===
+        'partially_published'
+    ) {
+      throw refusal(
+        'Some channels already published this post. Delete it from each platform instead.',
+        'POST_PARTLY_PUBLISHED',
+      );
+    }
+
     // Can't delete published posts (they're already on platforms)
-    if (post.status === 'published') {
-      throw new BadRequestException(
+    if (post.status === 'published' || publishedState === 'all') {
+      throw refusal(
         'Cannot delete a published post. It must be deleted from each platform individually.',
+        'POST_ALREADY_PUBLISHED',
       );
     }
 
@@ -1006,15 +1052,15 @@ export class PostService {
     // Ensure scheduledAt is a Date object
     const scheduleDate =
       scheduledAt instanceof Date ? scheduledAt : new Date(scheduledAt);
-    const delay = scheduleDate.getTime() - Date.now();
+    // assertNotInPast refuses a past time upstream, before any side effect. By
+    // here the cancel and the row write have run, so a delay that went negative
+    // while the request was in flight is clamped, never thrown: throwing would
+    // leave the post with no job.
+    const delay = Math.max(0, scheduleDate.getTime() - Date.now());
 
     this.logger.log(
       `Scheduling job for post ${postId}: scheduledAt=${scheduleDate.toISOString()}, delay=${delay}ms`,
     );
-
-    if (delay < 0) {
-      throw new BadRequestException('Cannot schedule a post in the past');
-    }
 
     const jobId = `post-${postId}-${Date.now()}`;
 
@@ -1130,26 +1176,11 @@ export class PostService {
     fromDate: Date,
     toDate: Date,
   ): Promise<(typeof posts.$inferSelect)[]> {
-    const occurredAt = sql`COALESCE(${posts.publishedAt}, ${posts.scheduledAt})`;
-
     return await db
       .select()
       .from(posts)
-      .where(
-        and(
-          eq(posts.workspaceId, workspaceId),
-          inArray(posts.status, [
-            'scheduled',
-            'publishing',
-            'published',
-            'failed',
-            'partially_published',
-          ]),
-          gte(occurredAt, fromDate),
-          lte(occurredAt, toDate),
-        ),
-      )
-      .orderBy(occurredAt);
+      .where(calendarRangeWhere(workspaceId, fromDate, toDate))
+      .orderBy(occurredAtSql);
   }
 
   /**

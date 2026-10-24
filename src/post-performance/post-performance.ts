@@ -61,7 +61,9 @@ export interface PostTotals {
 }
 
 /** Likes, comments and shares; an unreported count adds nothing. */
-export function engagementsOf(p: PublishedPost): number {
+export function engagementsOf(
+  p: Pick<PublishedPost, 'likes' | 'comments' | 'shares'>,
+): number {
   return (p.likes ?? 0) + (p.comments ?? 0) + (p.shares ?? 0);
 }
 

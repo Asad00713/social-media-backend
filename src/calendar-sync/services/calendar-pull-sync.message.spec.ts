@@ -46,6 +46,7 @@ import { NormalizedExternalEvent } from '../providers/delta.types';
 import { contentHash, messageToEventInput } from '../calendar-sync.mapper';
 import { CalendarPushSyncService } from './calendar-push-sync.service';
 import { CalendarPullSyncService } from './calendar-pull-sync.service';
+import { ExternalCalendarsService } from './external-calendars.service';
 
 const dbMock = jest.requireMock('../../drizzle/db') as unknown as {
   __state: {
@@ -190,6 +191,7 @@ describe('CalendarPullSyncService — owned-event dispatch (post vs scheduled me
         cancelFromCalendar,
       } as unknown as ScheduledMessagesService,
       { emit: jest.fn() } as unknown as AnalyticsEventEmitter,
+      {} as ExternalCalendarsService,
     ) as unknown as PullSyncInternals;
   });
 

@@ -1,0 +1,298 @@
+/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- DB rows from raw pg queries are untyped */
+import { NotFoundException } from '@nestjs/common';
+import type { PoolClient } from 'pg';
+import { describeDb, withRollbackDb } from '../../planner/testing/rollback-db';
+import { PlannerPostsService } from './planner-posts.service';
+import { PostDraftsService } from './post-drafts.service';
+
+const MIGRATION = '0041_post_ready.sql';
+
+async function workspace(client: PoolClient, tag: string) {
+  const u = await client.query<{ id: string }>(
+    `INSERT INTO users (email) VALUES ($1) RETURNING id`,
+    [`u-${tag}-${Math.random().toString(36).slice(2, 8)}@example.test`],
+  );
+  const w = await client.query<{ id: string }>(
+    `INSERT INTO workspace (name, slug, owner_id) VALUES ($1, $2, $3) RETURNING id`,
+    [tag, `${tag}-${Math.random().toString(36).slice(2, 8)}`, u.rows[0].id],
+  );
+  return { userId: u.rows[0].id, workspaceId: w.rows[0].id };
+}
+
+async function post(
+  client: PoolClient,
+  w: { userId: string; workspaceId: string },
+  o: { status?: string; ready?: boolean; updatedAt: string; label?: string },
+) {
+  const r = await client.query<{ id: string }>(
+    `INSERT INTO posts (workspace_id, created_by_id, status, content, ready_at, updated_at)
+     VALUES ($1, $2, $3, $4, $5, $6::timestamptz) RETURNING id`,
+    [
+      w.workspaceId,
+      w.userId,
+      o.status ?? 'draft',
+      o.label ?? 'x',
+      o.ready ? '2026-01-01T00:00:00Z' : null,
+      o.updatedAt,
+    ],
+  );
+  return r.rows[0].id;
+}
+
+describeDb('PostDraftsService.list', () => {
+  const run = (
+    fn: (svc: PostDraftsService, client: PoolClient) => Promise<void>,
+  ) =>
+    withRollbackDb([MIGRATION], async (db, client) => {
+      const svc = new PostDraftsService(db, new PlannerPostsService(db), {
+        draftReady: jest.fn(),
+      } as any);
+      await fn(svc, client);
+    });
+
+  it('lists only drafts, ready first, then newest edit first; total is unpaged', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'a');
+      const other = await workspace(client, 'b');
+      const oldReady = await post(client, w, {
+        ready: true,
+        updatedAt: '2026-03-01T10:00:00Z',
+      });
+      const newReady = await post(client, w, {
+        ready: true,
+        updatedAt: '2026-03-02T10:00:00Z',
+      });
+      const newest = await post(client, w, {
+        updatedAt: '2026-03-05T10:00:00Z',
+      });
+      const oldest = await post(client, w, {
+        updatedAt: '2026-03-03T10:00:00Z',
+      });
+      const mid = await post(client, w, { updatedAt: '2026-03-04T10:00:00Z' });
+      await post(client, w, {
+        status: 'scheduled',
+        updatedAt: '2026-03-09T10:00:00Z',
+      });
+      await post(client, w, {
+        status: 'published',
+        updatedAt: '2026-03-09T10:00:00Z',
+      });
+      await post(client, other, { updatedAt: '2026-03-09T10:00:00Z' });
+
+      const page = await svc.list(w.workspaceId, { limit: 30 });
+      expect(page.total).toBe(5);
+      expect(page.nextCursor).toBeNull();
+      expect(page.drafts.map((d) => d.id)).toEqual([
+        newReady,
+        oldReady,
+        newest,
+        mid,
+        oldest,
+      ]);
+      expect(page.drafts[0].readyAt).not.toBeNull();
+      expect(page.drafts[2].readyAt).toBeNull();
+    }));
+
+  it('pages with no duplicate and no gap, incl. identical updated_at to the microsecond', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'a');
+      const other = await workspace(client, 'b');
+      await post(client, other, { updatedAt: '2026-03-09T10:00:00Z' });
+      await post(client, w, { ready: true, updatedAt: '2026-03-01T10:00:00Z' });
+      await post(client, w, { ready: true, updatedAt: '2026-03-02T10:00:00Z' });
+      await post(client, w, { updatedAt: '2026-03-05T10:00:00Z' });
+      // Two drafts tied to the microsecond; they straddle the page 2 / 3 boundary.
+      const tied = '2026-03-04 10:00:00.123456+00';
+      await post(client, w, { updatedAt: tied });
+      await post(client, w, { updatedAt: tied });
+
+      const seen: string[] = [];
+      let cursor: string | undefined;
+      let pages = 0;
+      do {
+        const page = await svc.list(w.workspaceId, { limit: 2, cursor });
+        expect(page.total).toBe(5);
+        seen.push(...page.drafts.map((d) => d.id));
+        cursor = page.nextCursor ?? undefined;
+        pages++;
+      } while (cursor && pages < 10);
+
+      expect(pages).toBe(3);
+      expect(seen).toHaveLength(5);
+      expect(new Set(seen).size).toBe(5);
+    }));
+
+  it('rejects a malformed cursor', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'a');
+      await expect(
+        svc.list(w.workspaceId, { limit: 2, cursor: '!!' }),
+      ).rejects.toThrow('Invalid cursor');
+    }));
+});
+
+async function user(client: PoolClient, tag: string) {
+  const u = await client.query<{ id: string }>(
+    `INSERT INTO users (email, name) VALUES ($1, $2) RETURNING id`,
+    [`m-${tag}-${Math.random().toString(36).slice(2, 8)}@example.test`, tag],
+  );
+  return u.rows[0].id;
+}
+
+async function invite(
+  client: PoolClient,
+  w: { userId: string; workspaceId: string },
+  userId: string,
+  role: string,
+  status: string,
+) {
+  await client.query(
+    `INSERT INTO workspace_invitations
+       (workspace_id, email, user_id, role, status, invited_by, token, expires_at)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, now() + interval '7 days')`,
+    [
+      w.workspaceId,
+      `i-${Math.random().toString(36).slice(2, 8)}@example.test`,
+      userId,
+      role,
+      status,
+      w.userId,
+      Math.random().toString(36).slice(2),
+    ],
+  );
+}
+
+describeDb('PostDraftsService.setReady', () => {
+  const run = (
+    fn: (
+      svc: PostDraftsService,
+      client: PoolClient,
+      draftReady: jest.Mock,
+    ) => Promise<void>,
+  ) =>
+    withRollbackDb([MIGRATION], async (db, client) => {
+      const draftReady = jest.fn().mockResolvedValue({});
+      const svc = new PostDraftsService(db, new PlannerPostsService(db), {
+        draftReady,
+      } as any);
+      await fn(svc, client, draftReady);
+    });
+
+  it('404s a post id that belongs to another workspace', () =>
+    run(async (svc, client) => {
+      const a = await workspace(client, 'a');
+      const b = await workspace(client, 'b');
+      const foreign = await post(client, b, {
+        updatedAt: '2026-03-01T10:00:00Z',
+      });
+      await expect(
+        svc.setReady(a.workspaceId, foreign, a.userId, 'OWNER', true),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      const { rows } = await client.query(
+        `SELECT ready_at FROM posts WHERE id = $1`,
+        [foreign],
+      );
+      expect(rows[0].ready_at).toBeNull();
+    }));
+
+  it('flags without touching updated_at, notifies owner + accepted MEMBER only, once', () =>
+    run(async (svc, client, draftReady) => {
+      const w = await workspace(client, 'a');
+      const actor = await user(client, 'actor');
+      const member = await user(client, 'member');
+      const guest = await user(client, 'guest');
+      const pending = await user(client, 'pending');
+      await invite(client, w, actor, 'MEMBER', 'ACCEPTED');
+      await invite(client, w, member, 'MEMBER', 'ACCEPTED');
+      await invite(client, w, guest, 'GUEST', 'ACCEPTED');
+      await invite(client, w, pending, 'MEMBER', 'PENDING');
+      const id = await post(client, w, { updatedAt: '2026-03-01T10:00:00Z' });
+
+      const dto = await svc.setReady(w.workspaceId, id, actor, 'MEMBER', true);
+      expect(dto.readyAt).not.toBeNull();
+      const { rows } = await client.query(
+        `SELECT ready_by_id, to_char(updated_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS') AS u FROM posts WHERE id = $1`,
+        [id],
+      );
+      expect(rows[0].ready_by_id).toBe(actor);
+      expect(rows[0].u).toBe('2026-03-01T10:00:00');
+      expect(draftReady.mock.calls.map((c) => c[0]).sort()).toEqual(
+        [w.userId, member].sort(),
+      );
+
+      await svc.setReady(w.workspaceId, id, actor, 'MEMBER', true);
+      expect(draftReady).toHaveBeenCalledTimes(2);
+
+      await svc.setReady(w.workspaceId, id, actor, 'MEMBER', false);
+      const after = await client.query(
+        `SELECT ready_at, ready_by_id FROM posts WHERE id = $1`,
+        [id],
+      );
+      expect(after.rows[0]).toEqual({ ready_at: null, ready_by_id: null });
+      const hist = await client.query(
+        `SELECT action FROM post_history WHERE post_id = $1 ORDER BY created_at, id`,
+        [id],
+      );
+      expect(hist.rows.map((r) => r.action).sort()).toEqual([
+        'marked_ready',
+        'unmarked_ready',
+      ]);
+    }));
+});
+
+describeDb('PostDraftsService.duplicate', () => {
+  const run = (
+    fn: (svc: PostDraftsService, client: PoolClient) => Promise<void>,
+  ) =>
+    withRollbackDb([MIGRATION], async (db, client) => {
+      const svc = new PostDraftsService(db, new PlannerPostsService(db), {
+        draftReady: jest.fn(),
+      } as any);
+      await fn(svc, client);
+    });
+
+  it('persists a new draft row with a new id, leaving the source alone', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'dup');
+      const src = await post(client, w, {
+        status: 'published',
+        ready: true,
+        updatedAt: '2026-03-01T10:00:00Z',
+        label: 'Launch',
+      });
+      const out = await svc.duplicate(w.workspaceId, src, w.userId);
+      expect(out.id).not.toBe(src);
+      const rows = await client.query(
+        `SELECT id, status, content, ready_at, scheduled_at FROM posts WHERE workspace_id = $1 ORDER BY created_at`,
+        [w.workspaceId],
+      );
+      expect(rows.rows).toHaveLength(2);
+      const copy = rows.rows.find((r) => r.id === out.id);
+      expect(copy).toMatchObject({
+        status: 'draft',
+        content: 'Launch',
+        ready_at: null,
+        scheduled_at: null,
+      });
+      const orig = rows.rows.find((r) => r.id === src);
+      expect(orig.status).toBe('published');
+      expect(orig.ready_at).not.toBeNull();
+    }));
+
+  it('404s a post from another workspace and inserts nothing', () =>
+    run(async (svc, client) => {
+      const a = await workspace(client, 'a');
+      const b = await workspace(client, 'b');
+      const foreign = await post(client, b, {
+        updatedAt: '2026-03-01T10:00:00Z',
+      });
+      await expect(
+        svc.duplicate(a.workspaceId, foreign, a.userId),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      const n = await client.query(
+        `SELECT count(*)::int AS n FROM posts WHERE workspace_id = ANY($1::uuid[])`,
+        [[a.workspaceId, b.workspaceId]],
+      );
+      expect(n.rows[0].n).toBe(1);
+    }));
+});

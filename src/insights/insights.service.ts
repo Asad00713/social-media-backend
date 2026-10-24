@@ -20,11 +20,20 @@ import {
   type PeriodDays,
 } from '../post-performance/period';
 import {
+  engagementsOf,
   totalsOf,
   type PublishedPost,
 } from '../post-performance/post-performance';
 import { PostPerformanceRepository } from '../post-performance/post-performance.repository';
-import type { InsightsOverviewDto, InsightsPostsDto } from './dto/insights.dto';
+import {
+  isMeasured,
+  usualMultiplier,
+} from '../post-performance/engagement-stats';
+import type {
+  InsightsOverviewDto,
+  InsightsPostsDto,
+  PostChannelMetricsDto,
+} from './dto/insights.dto';
 import { channelBreakdown } from './lib/breakdown';
 import {
   filterAndSort,
@@ -44,6 +53,9 @@ import { daySeries, followerTotals } from './lib/series';
 
 /** Posts this young are still gaining; the chart draws them dashed. */
 const STILL_COLLECTING_DAYS = 3;
+
+/** How far back a channel's "usual" engagement looks. */
+const USUAL_WINDOW_DAYS = 90;
 
 interface SocialChannel {
   id: number;
@@ -160,6 +172,54 @@ export class InsightsService {
       rows: rows.slice(table.offset, table.offset + table.limit),
       hasMore: table.offset + table.limit < rows.length,
     };
+  }
+
+  /**
+   * Each given post on each channel it published to, with that channel's
+   * latest snapshot and how its engagements compare to the channel's usual:
+   * the median over its measured posts of the last 90 days. Ids from another
+   * workspace match nothing.
+   */
+  async postMetrics(
+    workspaceId: string,
+    postIds: string[],
+    now = new Date(),
+  ): Promise<PostChannelMetricsDto[]> {
+    const rows = await this.postPerformance.publishedPostsByIds(
+      workspaceId,
+      postIds,
+    );
+    if (!rows.length) return [];
+    const channelIds = [...new Set(rows.map((r) => r.channelId))];
+    const today = utcToday(now);
+    const sample = await this.postPerformance.publishedPosts(
+      workspaceId,
+      channelIds,
+      isoDate(new Date(today.getTime() - USUAL_WINDOW_DAYS * DAY_MS)),
+      isoDate(new Date(today.getTime() + DAY_MS)),
+    );
+    const usual = new Map<number, number[]>();
+    for (const p of sample) {
+      if (!isMeasured(p)) continue;
+      const list = usual.get(p.channelId) ?? [];
+      list.push(engagementsOf(p));
+      usual.set(p.channelId, list);
+    }
+    return rows.map((p) => {
+      const engagements = engagementsOf(p);
+      return {
+        postId: p.postId,
+        channelId: p.channelId,
+        views: p.impressions,
+        likes: p.likes,
+        comments: p.comments,
+        engagements,
+        // No data is not "0x the usual": leave it unanswered.
+        usualMultiplier: isMeasured(p)
+          ? usualMultiplier(engagements, usual.get(p.channelId) ?? [])
+          : null,
+      };
+    });
   }
 
   async csv(

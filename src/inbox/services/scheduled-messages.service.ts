@@ -8,7 +8,7 @@ import {
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, gte, inArray, lte } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
   scheduledInboxMessages,
@@ -580,6 +580,16 @@ export class ScheduledMessagesService {
     }
     if (options.threadKey) {
       conditions.push(eq(scheduledInboxMessages.threadKey, options.threadKey));
+    }
+    if (options.from) {
+      conditions.push(
+        gte(scheduledInboxMessages.scheduledAt, new Date(options.from)),
+      );
+    }
+    if (options.to) {
+      conditions.push(
+        lte(scheduledInboxMessages.scheduledAt, new Date(options.to)),
+      );
     }
     if (options.status) {
       conditions.push(eq(scheduledInboxMessages.status, options.status));

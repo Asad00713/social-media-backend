@@ -117,3 +117,21 @@ export function parseTableQuery(raw: {
     offset: intIn(raw.offset, 0, 0, 1_000_000, 'offset'),
   };
 }
+
+export const MAX_METRIC_POSTS = 50;
+const UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+
+/** `postIds=a,b`: 1..50 uuids, each exactly once. */
+export function parsePostIds(raw?: string): string[] {
+  const parts = (raw ?? '').split(',').map((s) => s.trim());
+  if (parts.length < 1 || parts.length > MAX_METRIC_POSTS) {
+    throw new BadRequestException(
+      `postIds must list 1 to ${MAX_METRIC_POSTS} ids`,
+    );
+  }
+  if (parts.some((s) => !UUID.test(s))) {
+    throw new BadRequestException('postIds must be comma-separated uuids');
+  }
+  return [...new Set(parts)];
+}

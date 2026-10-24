@@ -1,4 +1,7 @@
-import { toPublishedPost } from './post-performance.repository';
+import {
+  PostPerformanceRepository,
+  toPublishedPost,
+} from './post-performance.repository';
 
 describe('toPublishedPost', () => {
   const base = {
@@ -49,5 +52,14 @@ describe('toPublishedPost', () => {
     expect(p.imported).toBe(false);
     expect(p.permalink).toBeNull();
     expect(p.mediaType).toBeNull();
+  });
+});
+
+describe('PostPerformanceRepository.publishedPostsByIds', () => {
+  it('asks the database nothing when there are no ids', async () => {
+    const db = { execute: jest.fn() };
+    const repo = new PostPerformanceRepository(db as never);
+    expect(await repo.publishedPostsByIds('ws', [])).toEqual([]);
+    expect(db.execute).not.toHaveBeenCalled();
   });
 });

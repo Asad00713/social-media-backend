@@ -10,6 +10,8 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  BadRequestException,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentWorkspaceRole } from '../workspace-members/current-workspace-role.decorator';
@@ -19,12 +21,23 @@ import { RequireCapability } from '../workspace-members/require-capability.decor
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { PostService } from './services/post.service';
+import { PlannerPostsService } from './services/planner-posts.service';
+import { PostDraftsService } from './services/post-drafts.service';
+import { ListDraftsQueryDto, SetReadyDto } from './dto/draft-ops.dto';
+import { CalendarQueryDto } from './dto/calendar-query.dto';
 import { CreatePostDto, UpdatePostDto, PostQueryDto } from './dto/post.dto';
+
+const MAX_CALENDAR_SPAN_DAYS = 100;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 @Controller('posts')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class PostsController {
-  constructor(private readonly postService: PostService) {}
+  constructor(
+    private readonly postService: PostService,
+    private readonly plannerPosts: PlannerPostsService,
+    private readonly drafts: PostDraftsService,
+  ) {}
 
   // ==========================================================================
   // Post CRUD Operations
@@ -96,40 +109,38 @@ export class PostsController {
   @Get('workspaces/:workspaceId/calendar')
   async getCalendarPosts(
     @Param('workspaceId') workspaceId: string,
-    @Query('from') from: string,
-    @Query('to') to: string,
+    @Query() query: CalendarQueryDto,
   ) {
-    if (!from || !to) {
-      throw new Error('from and to date parameters are required');
+    const from = new Date(query.from);
+    const to = new Date(query.to);
+    if (Number.isNaN(from.getTime()) || Number.isNaN(to.getTime())) {
+      throw new BadRequestException('from and to must be valid dates');
     }
-
-    const calendarPosts = await this.postService.getCalendarPosts(
-      workspaceId,
-      new Date(from),
-      new Date(to),
-    );
-
-    // Group by the date the post actually occupies. `publishedAt` first: a post
-    // published immediately has no `scheduledAt`, so keying on that alone
-    // dropped every "post now" from this map entirely.
-    const byDate: Record<string, typeof calendarPosts> = {};
-
-    for (const post of calendarPosts) {
-      const occurredAt = post.publishedAt ?? post.scheduledAt;
-      if (occurredAt) {
-        const dateKey = occurredAt.toISOString().split('T')[0];
-        if (!byDate[dateKey]) {
-          byDate[dateKey] = [];
-        }
-        byDate[dateKey].push(post);
-      }
+    if (from > to) {
+      throw new BadRequestException('from must not be after to');
     }
+    if (to.getTime() - from.getTime() > MAX_CALENDAR_SPAN_DAYS * DAY_MS) {
+      throw new BadRequestException(
+        `The calendar range is limited to ${MAX_CALENDAR_SPAN_DAYS} days`,
+      );
+    }
+    return await this.plannerPosts.getCalendar(workspaceId, from, to);
+  }
 
-    return {
-      posts: calendarPosts,
-      byDate,
-      total: calendarPosts.length,
-    };
+  /**
+   * Paged drafts, ready ones first. MUST be declared before the ':postId'
+   * routes, or "drafts" is matched as a post id.
+   */
+  @RequireCapability('posts:draft')
+  @Get('workspaces/:workspaceId/drafts')
+  async listDrafts(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Query() query: ListDraftsQueryDto,
+  ) {
+    return await this.drafts.list(workspaceId, {
+      limit: query.limit ?? 30,
+      cursor: query.cursor,
+    });
   }
 
   /**
@@ -138,10 +149,48 @@ export class PostsController {
   @RequireCapability('posts:draft')
   @Get('workspaces/:workspaceId/:postId')
   async getPost(
-    @Param('workspaceId') workspaceId: string,
-    @Param('postId') postId: string,
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
   ) {
-    const post = await this.postService.getPost(postId, workspaceId);
+    const post = await this.plannerPosts.getOne(workspaceId, postId);
+    return { post };
+  }
+
+  /**
+   * Flag a draft ready, or clear the flag. Viewers may flag only their own.
+   */
+  @RequireCapability('posts:draft')
+  @Post('workspaces/:workspaceId/:postId/ready')
+  @HttpCode(HttpStatus.OK)
+  async setReady(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
+    @CurrentUser() user: { userId: string; email: string },
+    @CurrentWorkspaceRole() role: CallerRole,
+    @Body() dto: SetReadyDto,
+  ) {
+    const post = await this.drafts.setReady(
+      workspaceId,
+      postId,
+      user.userId,
+      role,
+      dto.ready,
+    );
+    return { post };
+  }
+
+  /**
+   * Copy a post into a new draft. Any member, Guest included, may copy.
+   */
+  @RequireCapability('posts:draft')
+  @Post('workspaces/:workspaceId/:postId/duplicate')
+  @HttpCode(HttpStatus.CREATED)
+  async duplicatePost(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
+    @CurrentUser() user: { userId: string; email: string },
+  ) {
+    const post = await this.drafts.duplicate(workspaceId, postId, user.userId);
     return { post };
   }
 
@@ -152,7 +201,7 @@ export class PostsController {
   @Put('workspaces/:workspaceId/:postId')
   async updatePost(
     @Param('workspaceId') workspaceId: string,
-    @Param('postId') postId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
     @CurrentUser() user: { userId: string; email: string },
     @CurrentWorkspaceRole() role: CallerRole,
     @Body() dto: UpdatePostDto,
@@ -187,7 +236,7 @@ export class PostsController {
   @HttpCode(HttpStatus.OK)
   async deletePost(
     @Param('workspaceId') workspaceId: string,
-    @Param('postId') postId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
     @CurrentUser() user: { userId: string; email: string },
     @CurrentWorkspaceRole() role: CallerRole,
   ) {
@@ -207,7 +256,7 @@ export class PostsController {
   @HttpCode(HttpStatus.OK)
   async publishPost(
     @Param('workspaceId') workspaceId: string,
-    @Param('postId') postId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
     @CurrentUser() user: { userId: string; email: string },
   ) {
     const post = await this.postService.publishPost(
@@ -250,7 +299,7 @@ export class PostsController {
   @Get('workspaces/:workspaceId/:postId/history')
   async getPostHistory(
     @Param('workspaceId') workspaceId: string,
-    @Param('postId') postId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
   ) {
     const history = await this.postService.getPostHistory(postId, workspaceId);
     return { history };

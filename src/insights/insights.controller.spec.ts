@@ -17,6 +17,7 @@ describe('InsightsController over HTTP', () => {
     overview: jest.fn(),
     posts: jest.fn(),
     csv: jest.fn(),
+    postMetrics: jest.fn(),
   };
 
   beforeAll(async () => {
@@ -49,6 +50,7 @@ describe('InsightsController over HTTP', () => {
     roles.isPlatformSuperAdmin.mockResolvedValue(false);
     insights.overview.mockResolvedValue({ ok: true });
     insights.posts.mockResolvedValue({ rows: [] });
+    insights.postMetrics.mockResolvedValue([{ postId: 'a' }]);
     insights.csv.mockResolvedValue({
       filename: 'schedura-posts-a-b.csv',
       body: '\uFEFFx\r\n',
@@ -120,5 +122,42 @@ describe('InsightsController over HTTP', () => {
     // The body arrives as sent; supertest may or may not keep the BOM when
     // decoding, so assert on what follows it.
     expect(res.text.replace(/^\uFEFF/, '')).toBe('x\r\n');
+  });
+
+  describe('posts/metrics', () => {
+    const A = '22222222-2222-4222-8222-222222222222';
+    const B = '33333333-3333-4333-8333-333333333333';
+    const uuids = (n: number) =>
+      Array.from(
+        { length: n },
+        (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+      );
+    const get = (q: string) =>
+      request(app.getHttpServer()).get(
+        `/insights/workspaces/${WS}/posts/metrics${q}`,
+      );
+
+    it('lets a guest read metrics for 1..50 post ids', async () => {
+      await get(`?postIds=${A},${B}`).expect(200, {
+        metrics: [{ postId: 'a' }],
+      });
+      expect(insights.postMetrics).toHaveBeenCalledWith(WS, [A, B]);
+      await get(`?postIds=${uuids(50).join(',')}`).expect(200);
+    });
+
+    it('answers 400 to 51 ids, a non-uuid, an empty entry or a missing list', async () => {
+      await get(`?postIds=${uuids(51).join(',')}`).expect(400);
+      await get('?postIds=notauuid').expect(400);
+      await get(`?postIds=${A},`).expect(400);
+      await get('?postIds=').expect(400);
+      await get('').expect(400);
+      expect(insights.postMetrics).not.toHaveBeenCalled();
+    });
+
+    it('refuses a signed-in user who is not in the workspace', async () => {
+      roles.getRole.mockResolvedValue(null);
+      await get(`?postIds=${A}`).expect(403);
+      expect(insights.postMetrics).not.toHaveBeenCalled();
+    });
   });
 });
