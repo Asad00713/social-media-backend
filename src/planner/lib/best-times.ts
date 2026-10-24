@@ -23,7 +23,12 @@ export interface BestTimeWindow {
 
 const round2 = (n: number): number => Math.round(n * 100) / 100;
 
-/** The workspace's own best (weekday, hour) buckets from measured posts. */
+/**
+ * The best (weekday, hour) buckets from measured posts. Takes ONE channel's
+ * posts: the post count, the 15-post gate and the "x your usual" baseline are
+ * all per channel, so the caller must pass only that channel's posts and call
+ * once per channel.
+ */
 export function computeOwnBestTimes(
   posts: PublishedPost[],
   timeZone: string,
@@ -74,6 +79,7 @@ export function computeOwnBestTimes(
   };
 }
 
+/** One channel's best times; `posts` must be that channel's own posts only. */
 export function resolveBestTimes(args: {
   platform: SupportedPlatform;
   posts: PublishedPost[];
