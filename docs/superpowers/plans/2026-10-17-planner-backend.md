@@ -722,8 +722,8 @@ interface PlannerPost {
 - Body: none. Response (201): `{ post: PlannerPost }`, a new draft: content, media, platformContent and channels kept; time, platform ids, errors, campaign and first-week tags dropped; `createdById` = caller. 404 when not in this workspace.
 
 **DELETE `/posts/workspaces/:workspaceId/:postId`** (changed refusals, same route/cap `posts:draft`). A post that is partly published is now refused. Codes (HTTP 400, body also has `code`):
-- `POST_ALREADY_PUBLISHED`: update or delete of a published post.
-- `POST_PARTLY_PUBLISHED`: delete of a partly published post.
+- `POST_ALREADY_PUBLISHED`: update or delete of a published post (every target published), including a `PUT` with `scheduledAt`.
+- `POST_PARTLY_PUBLISHED`: delete, reschedule or move-to-drafts (`PUT` with `scheduledAt`) of a post where some targets are published and some are not (failed or still publishing); either would orphan the live posts.
 - `SCHEDULE_IN_PAST`: schedule/reschedule/undo to a time in the past (`PUT` with `scheduledAt`).
 
 **Reused unchanged** (shapes as today): `PUT /posts/workspaces/:ws/:postId` with `{ scheduledAt: string | null }` (reschedule, schedule a draft, move to drafts; Viewer → 403; `targetChannelIds` must NOT be sent for moves), `POST /posts/workspaces/:ws/:postId/publish` (cap `posts:publish`; retries only the failed channels), `POST /composer/workspaces/:ws/...`. A Viewer sending `scheduledAt` gets 403 `Only members can schedule posts`.

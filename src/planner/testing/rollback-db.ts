@@ -13,6 +13,11 @@ export type DbType = AppDbType;
 export const describeDb: typeof describe =
   process.env.PLANNER_DB_TESTS === '1' ? describe : describe.skip;
 
+// Each rollback setup replays every migration on one connection (8-17s), which
+// overruns jest's 5s default. Run DB specs with `--runInBand`: parallel suites
+// replaying migrations against one database deadlock on catalog locks.
+if (process.env.PLANNER_DB_TESTS === '1') jest.setTimeout(30_000);
+
 const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1']);
 const MIGRATIONS_DIR = join(
   __dirname,
