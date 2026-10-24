@@ -14,8 +14,13 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CanvaConnectionService } from './canva-connection.service';
 import { CanvaService } from './canva.service';
 import { CloudinaryService } from '../media/cloudinary.service';
-import { ListComposerDesignsDto, ImportComposerDesignDto } from './dto/composer.dto';
+import {
+  ListComposerDesignsDto,
+  ImportComposerDesignDto,
+  CreateComposerDesignDto,
+} from './dto/composer.dto';
 import type {
+  ComposerCanvaCreateResult,
   ComposerCanvaDesignsResult,
   ComposerCanvaImportResult,
   ComposerCanvaStatus,
@@ -104,6 +109,41 @@ export class CanvaComposerController {
       }));
 
     return { items, continuation: result.continuation };
+  }
+
+  /**
+   * Create a design at a size this post needs, and hand back the Canva
+   * window to finish it in.
+   *
+   * `posts:draft` like the rest of this controller: creating a design
+   * is part of drafting a post, and it writes nothing of ours — the
+   * design lives in the person's own Canva account.
+   */
+  @Post('designs/create')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.CREATED)
+  async createDesign(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: CreateComposerDesignDto,
+  ): Promise<ComposerCanvaCreateResult> {
+    const accessToken =
+      await this.connectionService.getValidAccessToken(workspaceId);
+
+    const design = await this.canvaService.createDesignAtSize(accessToken, {
+      width: dto.width,
+      height: dto.height,
+      title: dto.title,
+    });
+
+    // A design with no edit URL cannot be finished, and returning one
+    // would leave the dialog waiting for a window that never opens.
+    if (!design.editUrl) {
+      throw new BadRequestException(
+        'Canva created the design but returned no edit link',
+      );
+    }
+
+    return { id: design.id, title: design.title, editUrl: design.editUrl };
   }
 
   @Post('import')
