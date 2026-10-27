@@ -28,15 +28,43 @@ type Row = {
 
 function fiveRows(): Row[] {
   return [
-    { id: 1, itemType: 'BASE_PLAN', providerSubscriptionId: '100', providerItemId: '900' },
-    { id: 2, itemType: 'EXTRA_CHANNEL', providerSubscriptionId: '101', providerItemId: '901' },
-    { id: 3, itemType: 'EXTRA_MEMBER', providerSubscriptionId: '102', providerItemId: '902' },
-    { id: 4, itemType: 'EXTRA_WORKSPACE', providerSubscriptionId: '103', providerItemId: '903' },
-    { id: 5, itemType: 'EXTRA_AI_TOKENS', providerSubscriptionId: '104', providerItemId: '904' },
+    {
+      id: 1,
+      itemType: 'BASE_PLAN',
+      providerSubscriptionId: '100',
+      providerItemId: '900',
+    },
+    {
+      id: 2,
+      itemType: 'EXTRA_CHANNEL',
+      providerSubscriptionId: '101',
+      providerItemId: '901',
+    },
+    {
+      id: 3,
+      itemType: 'EXTRA_MEMBER',
+      providerSubscriptionId: '102',
+      providerItemId: '902',
+    },
+    {
+      id: 4,
+      itemType: 'EXTRA_WORKSPACE',
+      providerSubscriptionId: '103',
+      providerItemId: '903',
+    },
+    {
+      id: 5,
+      itemType: 'EXTRA_AI_TOKENS',
+      providerSubscriptionId: '104',
+      providerItemId: '904',
+    },
   ];
 }
 
-function makeAdapter(rows: Row[], clientOverrides: Record<string, jest.Mock> = {}) {
+function makeAdapter(
+  rows: Row[],
+  clientOverrides: Record<string, jest.Mock> = {},
+) {
   const updates: { id: number; set: Record<string, unknown> }[] = [];
   const db = {
     select: jest.fn().mockReturnValue({
@@ -93,7 +121,12 @@ describe('LemonSqueezyAdapter.purchaseAddon', () => {
   // hosted checkout.
   it('returns a checkout url for an add-on the account does not have', async () => {
     const { adapter } = makeAdapter([
-      { id: 1, itemType: 'BASE_PLAN', providerSubscriptionId: '100', providerItemId: '900' },
+      {
+        id: 1,
+        itemType: 'BASE_PLAN',
+        providerSubscriptionId: '100',
+        providerItemId: '900',
+      },
     ]);
     const result = await adapter.purchaseAddon(1, 'EXTRA_CHANNEL', 2);
     expect(result).toEqual({
@@ -149,7 +182,12 @@ describe('LemonSqueezyAdapter.changeAddonQuantity', () => {
 
   it('throws when the account has no such add-on', async () => {
     const { adapter } = makeAdapter([
-      { id: 1, itemType: 'BASE_PLAN', providerSubscriptionId: '100', providerItemId: '900' },
+      {
+        id: 1,
+        itemType: 'BASE_PLAN',
+        providerSubscriptionId: '100',
+        providerItemId: '900',
+      },
     ]);
     await expect(
       adapter.changeAddonQuantity(1, 'EXTRA_CHANNEL', 2),
@@ -256,5 +294,86 @@ describe('LemonSqueezyAdapter.pause / resume', () => {
     const { adapter, client } = makeAdapter(fiveRows());
     await adapter.pause(1);
     expect(client.patch).toHaveBeenCalledTimes(5);
+  });
+});
+
+describe('LemonSqueezyAdapter checkout redirect', () => {
+  const OLD_FRONTEND = process.env.FRONTEND_URL;
+  const OLD_STORE = process.env.LEMONSQUEEZY_STORE_ID;
+
+  beforeEach(() => {
+    process.env.FRONTEND_URL = 'https://app.test';
+    process.env.LEMONSQUEEZY_STORE_ID = '462839';
+  });
+
+  afterEach(() => {
+    if (OLD_FRONTEND === undefined) delete process.env.FRONTEND_URL;
+    else process.env.FRONTEND_URL = OLD_FRONTEND;
+    if (OLD_STORE === undefined) delete process.env.LEMONSQUEEZY_STORE_ID;
+    else process.env.LEMONSQUEEZY_STORE_ID = OLD_STORE;
+  });
+
+  /** The posted checkout body, whatever the call shape. */
+  function postedBody(client: { post: jest.Mock }): {
+    data: { attributes: Record<string, unknown> };
+  } {
+    const calls = client.post.mock.calls as unknown[][];
+    return calls[0][1] as { data: { attributes: Record<string, unknown> } };
+  }
+
+  it('sends the customer back to the workspace plans page', async () => {
+    const { adapter, client } = makeAdapter([]);
+
+    await adapter.createCheckout('user-1', 'BASIC', 'ws-9');
+
+    const attrs = postedBody(client).data.attributes;
+    expect(attrs.product_options).toEqual({
+      redirect_url: 'https://app.test/w/ws-9/settings/plans?checkout=success',
+    });
+  });
+
+  // The param Stripe already sends; `plans-shell.tsx` keys its success toast
+  // and its poll-until-the-plan-flips on it, so both providers must match.
+  it('uses the same ?checkout=success param as the Stripe adapter', async () => {
+    const { adapter, client } = makeAdapter([]);
+
+    await adapter.createCheckout('user-1', 'PRO', 'ws-9');
+
+    const opts = postedBody(client).data.attributes.product_options as {
+      redirect_url: string;
+    };
+    expect(opts.redirect_url).toContain('?checkout=success');
+    expect(opts.redirect_url).toContain('/settings/plans');
+  });
+
+  // `/settings/plans` only exists nested under `/w/:workspaceId`, so an add-on
+  // checkout — which has no workspace — must send NO redirect rather than a
+  // URL that would 404.
+  it('omits product_options entirely for an add-on checkout', async () => {
+    // `purchaseAddon` reads the account from `subscriptions` before opening a
+    // checkout, so the row has to exist — and it carries no workspace, which
+    // is exactly why this checkout cannot be given a redirect.
+    const { adapter, client } = makeAdapter([
+      { userId: 'user-1', planCode: 'PRO' } as never,
+    ]);
+
+    await adapter.purchaseAddon(1, 'EXTRA_CHANNEL', 2);
+
+    const attrs = postedBody(client).data.attributes;
+    expect(attrs).not.toHaveProperty('product_options');
+  });
+
+  it('falls back to localhost when FRONTEND_URL is unset', async () => {
+    delete process.env.FRONTEND_URL;
+    const { adapter, client } = makeAdapter([]);
+
+    await adapter.createCheckout('user-1', 'BASIC', 'ws-9');
+
+    const opts = postedBody(client).data.attributes.product_options as {
+      redirect_url: string;
+    };
+    expect(opts.redirect_url).toBe(
+      'http://localhost:3001/w/ws-9/settings/plans?checkout=success',
+    );
   });
 });

@@ -383,6 +383,31 @@ export class LemonSqueezyAdapter implements PaymentProviderAdapter {
       .where(eq(providerSubscriptions.id, row.id));
   }
 
+  /**
+   * Where Lemon Squeezy sends the customer once they have paid, or undefined
+   * when this checkout has no workspace to return to.
+   *
+   * Without it they are stranded on Lemon Squeezy's own receipt page with no
+   * way back, which reads as a failed purchase even though the webhook has
+   * already upgraded them. The query string matches what `StripeAdapter`
+   * sends, so `plans-shell.tsx` shows one success toast and polls until the
+   * plan flips, whichever provider billed.
+   *
+   * Undefined for an add-on: `purchaseAddon` resolves the account from
+   * `subscriptions`, which holds a user and a plan but no workspace, and
+   * `/settings/plans` only exists nested under `/w/:workspaceId` — a
+   * workspace-less URL would 404. Threading the workspace down would change
+   * the shared `PaymentProvider` interface and both adapters, which is a
+   * larger change than this fix; an add-on then keeps today's behaviour rather
+   * than gaining a broken redirect. Omitting the key entirely is what Lemon
+   * Squeezy treats as "no redirect", so this must not fall back to a string.
+   */
+  private returnUrl(workspaceId?: string): string | undefined {
+    if (!workspaceId) return undefined;
+    const frontendUrl = process.env.FRONTEND_URL ?? 'http://localhost:3001';
+    return `${frontendUrl}/w/${workspaceId}/settings/plans?checkout=success`;
+  }
+
   private async openCheckout(
     variantId: string,
     quantity: number,
@@ -400,6 +425,8 @@ export class LemonSqueezyAdapter implements PaymentProviderAdapter {
       );
     }
 
+    const redirectUrl = this.returnUrl(custom['workspace_id']);
+
     const res = await this.client.post<LsCheckoutResponse>('checkouts', {
       data: {
         type: 'checkouts',
@@ -408,6 +435,11 @@ export class LemonSqueezyAdapter implements PaymentProviderAdapter {
             custom,
             variant_quantities: [{ variant_id: Number(variantId), quantity }],
           },
+          // Spread, so an add-on checkout (no workspace) sends no
+          // `product_options` at all rather than an explicit undefined.
+          ...(redirectUrl
+            ? { product_options: { redirect_url: redirectUrl } }
+            : {}),
         },
         relationships: {
           store: { data: { type: 'stores', id: String(storeId) } },
