@@ -84,8 +84,9 @@ describe('InboxSettingsController over HTTP', () => {
     [{ defaultLater: 'never' }, 'bad enum'],
     [{ markDoneOnReply: 'yes' }, 'not a boolean'],
     [{ extra: 1 }, 'extra key'],
-  ])('answers 400 to %j (%s)', async (body, why) => {
-    expect(why).toBeTruthy();
+    [{ notify: null }, 'null enum'],
+    [{ aiQuickReplies: null }, 'null boolean'],
+  ])('answers 400 to %j (%s)', async (body) => {
     await request(app.getHttpServer()).put(url).send(body).expect(400);
     expect(settings.update).not.toHaveBeenCalled();
   });

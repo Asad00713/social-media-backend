@@ -1,4 +1,4 @@
-import { IsBoolean, IsIn, IsOptional } from 'class-validator';
+import { IsBoolean, IsIn, ValidateIf } from 'class-validator';
 import {
   INBOX_DEFAULT_LATER,
   INBOX_NOTIFY,
@@ -6,25 +6,25 @@ import {
   type InboxNotify,
 } from '../../../drizzle/schema/inbox-user-settings.schema';
 
-/** PUT body: every key optional; only the keys sent are written. */
+/** PUT body: every key optional (undefined only, null is a 400); only the keys sent are written. */
 export class UpdateInboxSettingsDto {
-  @IsOptional()
+  @ValidateIf((_, v) => v !== undefined)
   @IsBoolean()
   markDoneOnReply?: boolean;
 
-  @IsOptional()
+  @ValidateIf((_, v) => v !== undefined)
   @IsIn([...INBOX_DEFAULT_LATER])
   defaultLater?: InboxDefaultLater;
 
-  @IsOptional()
+  @ValidateIf((_, v) => v !== undefined)
   @IsIn([...INBOX_NOTIFY])
   notify?: InboxNotify;
 
-  @IsOptional()
+  @ValidateIf((_, v) => v !== undefined)
   @IsBoolean()
   replyWindowWarnings?: boolean;
 
-  @IsOptional()
+  @ValidateIf((_, v) => v !== undefined)
   @IsBoolean()
   aiQuickReplies?: boolean;
 }
