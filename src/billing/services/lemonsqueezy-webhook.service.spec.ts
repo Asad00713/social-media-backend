@@ -332,14 +332,25 @@ function make(): LemonSqueezyWebhookService {
 /** A paying Lemon Squeezy account: a base plan and one add-on subscription. */
 function seedPayingAccount(): void {
   tables = {
-    // The catalogue `applyPurchasedPlan` validates a checkout's plan_code
-    // against, so an unknown code cannot reach the column every limit check
-    // reads.
-    plans: [
-      { id: 1, code: 'FREE' },
-      { id: 2, code: 'BASIC' },
-      { id: 3, code: 'PRO' },
-      { id: 4, code: 'MAX' },
+    // The catalogue `applyPurchasedPlan` resolves a PAID VARIANT through, so
+    // the plan comes from what was charged rather than from custom_data.
+    provider_prices: [
+      {
+        id: 1,
+        provider: 'lemonsqueezy',
+        itemType: 'BASE_PLAN',
+        planCode: 'BASIC',
+        providerRef: '111',
+        isActive: true,
+      },
+      {
+        id: 2,
+        provider: 'lemonsqueezy',
+        itemType: 'BASE_PLAN',
+        planCode: 'MAX',
+        providerRef: '222',
+        isActive: true,
+      },
     ],
     subscriptions: [
       {
@@ -1449,7 +1460,11 @@ describe('the plan a checkout was for reaches subscriptions.plan_code', () => {
       'subscription_created',
       lifecycle(
         'ls_sub_basic',
-        { status: 'active', first_subscription_item: { id: 'i', quantity: 1 } },
+        {
+          status: 'active',
+          variant_id: 111,
+          first_subscription_item: { id: 'i', quantity: 1 },
+        },
         { user_id: 'user-1', item_type: 'BASE_PLAN', plan_code: 'BASIC' },
       ),
     );
@@ -1463,7 +1478,11 @@ describe('the plan a checkout was for reaches subscriptions.plan_code', () => {
       'subscription_created',
       lifecycle(
         'ls_sub_addon',
-        { status: 'active', first_subscription_item: { id: 'i', quantity: 2 } },
+        {
+          status: 'active',
+          variant_id: 222,
+          first_subscription_item: { id: 'i', quantity: 2 },
+        },
         {
           user_id: 'user-1',
           item_type: 'EXTRA_MEMBER',
@@ -1479,13 +1498,46 @@ describe('the plan a checkout was for reaches subscriptions.plan_code', () => {
   // custom_data is echoed back from our own request, but it arrives over the
   // network on a public endpoint — an unvalidated value would land in the
   // column every limit check reads.
-  it('ignores a plan code that is not in the plans table', async () => {
+  // THE ENTITLEMENT BYPASS. Lemon Squeezy lets custom values be set as query
+  // parameters on a checkout link, so `plan_code` is attacker-influenceable.
+  // Paying for the BASIC variant while naming MAX must grant BASIC.
+  it('applies the paid variant, not a custom_data plan that disagrees', async () => {
+    lookup.findByUserId.mockReset();
+    lookup.findByUserId.mockResolvedValue({ id: SUBSCRIPTION_ID });
+    accountRow().planCode = 'FREE';
+    tables.provider_subscriptions = [];
+
+    await make().handleEvent(
+      'subscription_created',
+      lifecycle(
+        'ls_sub_forged',
+        {
+          status: 'active',
+          variant_id: 111, // BASIC
+          first_subscription_item: { id: 'i', quantity: 1 },
+        },
+        { user_id: 'user-1', item_type: 'BASE_PLAN', plan_code: 'MAX' },
+      ),
+    );
+
+    expect(accountRow().planCode).toBe('BASIC');
+  });
+
+  it('ignores a variant that maps to no provider_prices row', async () => {
+    lookup.findByUserId.mockReset();
+    lookup.findByUserId.mockResolvedValue({ id: SUBSCRIPTION_ID });
+    tables.provider_subscriptions = [];
+
     await make().handleEvent(
       'subscription_created',
       lifecycle(
         'ls_sub_bogus',
-        { status: 'active', first_subscription_item: { id: 'i', quantity: 1 } },
-        { user_id: 'user-1', item_type: 'BASE_PLAN', plan_code: 'ENTERPRISE' },
+        {
+          status: 'active',
+          variant_id: 999,
+          first_subscription_item: { id: 'i', quantity: 1 },
+        },
+        { user_id: 'user-1', item_type: 'BASE_PLAN', plan_code: 'MAX' },
       ),
     );
 
@@ -1494,7 +1546,9 @@ describe('the plan a checkout was for reaches subscriptions.plan_code', () => {
 
   // The money has already moved and the provider row is already written;
   // throwing would 500 a delivery Lemon Squeezy will not retry.
-  it('keeps the provider row when plan_code is missing', async () => {
+  it('keeps the provider row when variant_id is missing', async () => {
+    lookup.findByUserId.mockReset();
+    lookup.findByUserId.mockResolvedValue({ id: SUBSCRIPTION_ID });
     tables.provider_subscriptions = [];
 
     await make().handleEvent(

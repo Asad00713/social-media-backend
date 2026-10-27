@@ -6,7 +6,7 @@ import {
   providerSubscriptions,
   subscriptions,
   subscriptionItems,
-  plans,
+  providerPrices,
   ProviderItemType,
 } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
@@ -358,7 +358,7 @@ export class LemonSqueezyWebhookService {
     // plan, before any webhook arrives — there is no equivalent moment here,
     // so this is that moment.
     if (itemType === 'BASE_PLAN') {
-      await this.applyPurchasedPlan(subscriptionId, custom);
+      await this.applyPurchasedPlan(subscriptionId, attrs, custom);
     }
 
     const claimed = await db
@@ -376,44 +376,70 @@ export class LemonSqueezyWebhookService {
   }
 
   /**
-   * Move the account onto the plan its checkout was for.
+   * Move the account onto the plan that was actually paid for.
    *
-   * The code comes from `checkout_data.custom`, which the adapter populates
-   * from the plan the customer chose, and it is checked against `plans`
-   * before it is written. That check is not ceremony: `custom_data` is echoed
-   * back from a request we made, but it arrives over the network on a public
-   * endpoint, and an unvalidated value here would put an arbitrary string in
-   * the column every limit check reads.
+   * The plan is derived from `variant_id` — the item Lemon Squeezy charged
+   * for — resolved through `provider_prices`, the same table the checkout
+   * used to turn a plan code INTO that variant. It is deliberately NOT taken
+   * from `custom_data`: that object is echoed back from the checkout, and
+   * Lemon Squeezy lets custom values be set as query parameters on a checkout
+   * link, so it is attacker-influenceable input. Trusting it here would let a
+   * buyer pay for BASIC and name MAX, and this column is what every limit
+   * check reads. The variant is the one field the customer cannot alter
+   * without changing what they are charged.
    *
-   * A code we cannot place is logged and skipped rather than thrown. The
-   * webhook has already been paid for and the provider row is already
-   * written; throwing would 500 a delivery Lemon Squeezy will not retry, and
-   * lose the row too.
+   * `custom_data.plan_code` is still read, but only to be compared: a
+   * mismatch means the catalogue and the checkout disagree, which is worth a
+   * loud log even though the paid variant still wins.
+   *
+   * Anything unresolvable is logged and skipped rather than thrown. The money
+   * has already moved and the provider row is already written; throwing would
+   * 500 a delivery Lemon Squeezy will not retry, and lose the row too.
    */
   private async applyPurchasedPlan(
     subscriptionId: number,
+    attrs: LsSubscriptionAttributes,
     custom: Record<string, unknown>,
   ): Promise<void> {
-    const planCode = strOf(custom['plan_code']);
-    if (!planCode) {
+    const variantId = idOf(attrs.variant_id);
+    if (!variantId) {
       this.logger.error(
         `subscription_created for account ${subscriptionId} carried no ` +
-          `plan_code; the account keeps its current plan.`,
+          `variant_id; the account keeps its current plan.`,
       );
       return;
     }
 
-    const known = await db
-      .select({ code: plans.code })
-      .from(plans)
-      .where(eq(plans.code, planCode));
+    const rows = await db
+      .select({ planCode: providerPrices.planCode })
+      .from(providerPrices)
+      .where(
+        and(
+          eq(providerPrices.provider, PROVIDER),
+          eq(providerPrices.itemType, 'BASE_PLAN'),
+          eq(providerPrices.providerRef, variantId),
+        ),
+      );
 
-    if ((known as { code: string }[]).length === 0) {
+    const planCode = (rows as { planCode: string | null }[])[0]?.planCode;
+    if (!planCode) {
       this.logger.error(
-        `subscription_created for account ${subscriptionId} named plan ` +
-          `"${planCode}", which is not in the plans table; ignoring it.`,
+        `subscription_created for account ${subscriptionId} paid for variant ` +
+          `${variantId}, which maps to no BASE_PLAN row in provider_prices; ` +
+          `the account keeps its current plan. Seed provider_prices for it.`,
       );
       return;
+    }
+
+    // Not a reason to refuse the plan the customer paid for, but it means the
+    // checkout named one plan and billed another.
+    const claimed = strOf(custom['plan_code']);
+    if (claimed && claimed !== planCode) {
+      this.logger.error(
+        `subscription_created for account ${subscriptionId} claimed plan ` +
+          `"${claimed}" but paid for variant ${variantId} ("${planCode}"); ` +
+          `applying the plan that was paid for.`,
+      );
     }
 
     await db
