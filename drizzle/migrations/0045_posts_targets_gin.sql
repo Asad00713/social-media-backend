@@ -11,7 +11,9 @@
 -- SAFETY
 -- Additive and idempotent (CREATE INDEX IF NOT EXISTS); no rows are read,
 -- changed or dropped. A plain CREATE INDEX takes a write lock on `posts` for
--- the duration of the build (seconds at current size); reads are not blocked.
+-- the duration of the build: writes to posts (publishing, scheduling) block for
+-- the whole build; check the posts row count before deploy. Reads are not
+-- blocked.
 -- CONCURRENTLY is impossible here because the boot migrator runs every file
 -- inside one transaction.
 --

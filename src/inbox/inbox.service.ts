@@ -300,28 +300,39 @@ export function isSearchable(q?: string): boolean {
 }
 
 /**
- * Exact lookup of our post for a (channelId, platformPostId) pair: one indexed
- * containment query (posts_targets_gin_idx), newest first, LIMIT 1. Targets
- * store channelId as a string in current rows and as a number in older ones, so
- * both forms are matched; each @> is index-assisted.
+ * Exact lookup of our post for a (channelId, platformPostId) pair, newest
+ * first, LIMIT 1. Targets store channelId as a string in current rows and as a
+ * number in older ones, so both forms are matched; each @> is index-assisted
+ * by posts_targets_gin_idx.
+ *
+ * The containment filter sits in a MATERIALIZED CTE so it is a fence: without
+ * it, for a post that is not ours (no match) the planner can pick a backwards
+ * walk of posts_created_at_idx for ORDER BY .. LIMIT 1 and scan the whole
+ * table. The GIN index always drives; the sort happens on the few matches.
  */
-export function findOurPostIdQuery(
-  database: DbType,
-  channelId: number,
-  platformPostId: string,
-) {
+export function findOurPostIdQuery(channelId: number, platformPostId: string) {
   const asString = JSON.stringify([
     { channelId: String(channelId), platformPostId },
   ]);
   const asNumber = JSON.stringify([{ channelId, platformPostId }]);
-  return database
-    .select({ id: postsTable.id })
-    .from(postsTable)
-    .where(
-      sql`(${postsTable.targets} @> ${asString}::jsonb OR ${postsTable.targets} @> ${asNumber}::jsonb)`,
+  return sql`
+    WITH matches AS MATERIALIZED (
+      SELECT "id", "created_at" FROM "posts"
+      WHERE ("targets" @> ${asString}::jsonb OR "targets" @> ${asNumber}::jsonb)
     )
-    .orderBy(desc(postsTable.createdAt))
-    .limit(1);
+    SELECT "id" FROM matches ORDER BY "created_at" DESC LIMIT 1`;
+}
+
+/** Runs {@link findOurPostIdQuery}; returns the post id or null. */
+export async function findOurPostIdRows(
+  database: DbType,
+  channelId: number,
+  platformPostId: string,
+): Promise<{ id: string }[]> {
+  const res = await database.execute<{ id: string }>(
+    findOurPostIdQuery(channelId, platformPostId),
+  );
+  return res.rows;
 }
 
 @Injectable()
@@ -693,7 +704,10 @@ export class InboxService {
    * its derived status, neither of which exists until the group is built.
    */
   private sortThreadSummaries(
-    rows: { summary: { status: InboxItemStatus; unreadCount: number }; latestAt: Date }[],
+    rows: {
+      summary: { status: InboxItemStatus; unreadCount: number };
+      latestAt: Date;
+    }[],
     sort?: InboxSort,
   ): void {
     if (sort === 'oldest') {
@@ -708,7 +722,8 @@ export class InboxService {
         return 2;
       };
       rows.sort(
-        (a, b) => rank(a) - rank(b) || b.latestAt.getTime() - a.latestAt.getTime(),
+        (a, b) =>
+          rank(a) - rank(b) || b.latestAt.getTime() - a.latestAt.getTime(),
       );
       return;
     }
@@ -773,9 +788,7 @@ export class InboxService {
   ): Promise<Map<string, { id: string; name: string }>> {
     const ids = [
       ...new Set(
-        items
-          .map((i) => i.authoredByUserId)
-          .filter((id): id is string => !!id),
+        items.map((i) => i.authoredByUserId).filter((id): id is string => !!id),
       ),
     ];
     if (ids.length === 0) return new Map();
@@ -2221,7 +2234,7 @@ export class InboxService {
     channelId: number,
     platformPostId: string,
   ): Promise<string | null> {
-    const [row] = await findOurPostIdQuery(db, channelId, platformPostId);
+    const [row] = await findOurPostIdRows(db, channelId, platformPostId);
     return row?.id ?? null;
   }
 

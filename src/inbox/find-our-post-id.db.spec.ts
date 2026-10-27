@@ -1,6 +1,7 @@
 import type { PoolClient } from 'pg';
 import { describeDb, withRollbackDb } from '../planner/testing/rollback-db';
-import { findOurPostIdQuery } from './inbox.service';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import { findOurPostIdQuery, findOurPostIdRows } from './inbox.service';
 
 const MIGRATION = '0045_posts_targets_gin.sql';
 
@@ -63,7 +64,7 @@ describeDb('findOurPostId (F3)', () => {
           ),
         );
       }
-      const [row] = await findOurPostIdQuery(db, ch, 'p-0');
+      const [row] = await findOurPostIdRows(db, ch, 'p-0');
       expect(row?.id).toBe(ids[0]);
     }));
 
@@ -73,7 +74,7 @@ describeDb('findOurPostId (F3)', () => {
       const ch = await s.channel('a');
       const other = await s.channel('b');
       await s.post([{ channelId: String(other), platformPostId: 'dup' }], 5);
-      const rows = await findOurPostIdQuery(db, ch, 'dup');
+      const rows = await findOurPostIdRows(db, ch, 'dup');
       expect(rows).toHaveLength(0);
     }));
 
@@ -82,7 +83,7 @@ describeDb('findOurPostId (F3)', () => {
       const s = await seed(client);
       const ch = await s.channel('a');
       const id = await s.post([{ channelId: ch, platformPostId: 'num' }], 5);
-      const [row] = await findOurPostIdQuery(db, ch, 'num');
+      const [row] = await findOurPostIdRows(db, ch, 'num');
       expect(row?.id).toBe(id);
     }));
 
@@ -91,24 +92,39 @@ describeDb('findOurPostId (F3)', () => {
       const s = await seed(client);
       const ch = await s.channel('a');
       await s.post([{ channelId: String(ch), platformPostId: 'x' }], 5);
-      expect(await findOurPostIdQuery(db, ch, 'nope')).toHaveLength(0);
+      expect(await findOurPostIdRows(db, ch, 'nope')).toHaveLength(0);
     }));
 
-  it('is served by posts_targets_gin_idx', () =>
+  it('returns the newest when two posts hold the same platformPostId', () =>
+    withRollbackDb([MIGRATION], async (db, client) => {
+      const s = await seed(client);
+      const ch = await s.channel('a');
+      const target = [{ channelId: String(ch), platformPostId: 'same' }];
+      await s.post(target, 100);
+      const newest = await s.post(target, 1);
+      await s.post(target, 50);
+      const rows = await findOurPostIdRows(db, ch, 'same');
+      expect(rows).toHaveLength(1);
+      expect(rows[0].id).toBe(newest);
+    }));
+
+  it('the GIN index drives the lookup', () =>
     withRollbackDb([MIGRATION], async (db, client) => {
       const s = await seed(client);
       const ch = await s.channel('a');
       await s.post([{ channelId: String(ch), platformPostId: 'x' }], 5);
-      // The planner may prefer walking posts_created_at_idx for ORDER BY ..
-      // LIMIT 1; force the bitmap path so the predicate's own index shows up.
+      // seqscan off only because the table is tiny; the CTE fence is what
+      // keeps the planner off posts_created_at_idx.
       await client.query(`SET LOCAL enable_seqscan = off`);
-      await client.query(`SET LOCAL enable_indexscan = off`);
-      const { sql, params } = findOurPostIdQuery(db, ch, 'x').toSQL();
+      const { sql, params } = new PgDialect().sqlToQuery(
+        findOurPostIdQuery(ch, 'nope'),
+      );
       const plan = await client.query<Record<string, string>>(
         `EXPLAIN ${sql}`,
         params,
       );
       const text = plan.rows.map((r) => r['QUERY PLAN']).join('\n');
       expect(text).toContain('posts_targets_gin_idx');
+      expect(text).not.toContain('posts_created_at_idx');
     }));
 });
