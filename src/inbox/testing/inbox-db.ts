@@ -9,7 +9,10 @@ import {
  * Migration files every inbox DB spec replays, in order. Later tasks append
  * their files here.
  */
-export const INBOX_MIGRATIONS: string[] = [];
+export const INBOX_MIGRATIONS: string[] = [
+  '0046_inbox_items_thread_key.sql',
+  '0047_inbox_conversations.sql',
+];
 
 export const describeInboxDb = describeDb;
 

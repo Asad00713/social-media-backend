@@ -33,3 +33,4 @@ export * from './whatsapp-templates.schema';
 export * from './workspace-brand-profile.schema';
 export * from './calendar-notes.schema';
 export * from './planner-preferences.schema';
+export * from './inbox-conversations.schema';

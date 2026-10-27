@@ -10,7 +10,7 @@ import {
   integer,
   unique,
 } from 'drizzle-orm/pg-core';
-import { relations } from 'drizzle-orm';
+import { relations, sql } from 'drizzle-orm';
 import { users } from './users.schema';
 import { workspace } from './workspace.schema';
 import { socialMediaChannels, SupportedPlatform } from './channels.schema';
@@ -134,10 +134,32 @@ export const inboxItems = pgTable(
     // a fresh (un-archived) row, which makes the conversation reappear.
     archivedAt: timestamp('archived_at', { withTimezone: true }),
 
+    // Conversation this row belongs to (migration 0046). STORED GENERATED, so
+    // never written; mirrored by deriveThreadKey in inbox/conversations/lib.
+    threadKey: text('thread_key').generatedAlwaysAs(
+      sql`CASE WHEN type = 'dm' THEN channel_id::text || ':' || conversation_id WHEN platform_post_id IS NOT NULL THEN channel_id::text || ':' || platform_post_id ELSE channel_id::text || ':mention:' || COALESCE(metadata->>'mentionRoot', platform_item_id) END`,
+    ),
+
     createdAt: timestamp('created_at').defaultNow().notNull(),
     updatedAt: timestamp('updated_at').defaultNow().notNull(),
   },
   (table) => ({
+    workspaceThreadIdx: index('inbox_items_ws_thread_idx').on(
+      table.workspaceId,
+      table.threadKey,
+      table.platformCreatedAt,
+    ),
+    authorIdx: index('inbox_items_author_idx').on(
+      table.workspaceId,
+      table.authorPlatformId,
+    ),
+    workspaceAuthoredIdx: index('inbox_items_ws_authored_idx')
+      .on(table.workspaceId, table.platformCreatedAt)
+      .where(sql`${table.authoredByUserId} IS NOT NULL`),
+    searchTrgmIdx: index('inbox_items_search_trgm_idx').using(
+      'gin',
+      sql`(coalesce(${table.text}, '') || ' ' || coalesce(${table.authorHandle}, '') || ' ' || coalesce(${table.authorDisplayName}, '')) gin_trgm_ops`,
+    ),
     workspaceIdx: index('inbox_workspace_idx').on(table.workspaceId),
     workspaceStatusIdx: index('inbox_workspace_status_idx').on(
       table.workspaceId,
