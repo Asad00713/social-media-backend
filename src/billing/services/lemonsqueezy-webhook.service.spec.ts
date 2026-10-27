@@ -332,6 +332,15 @@ function make(): LemonSqueezyWebhookService {
 /** A paying Lemon Squeezy account: a base plan and one add-on subscription. */
 function seedPayingAccount(): void {
   tables = {
+    // The catalogue `applyPurchasedPlan` validates a checkout's plan_code
+    // against, so an unknown code cannot reach the column every limit check
+    // reads.
+    plans: [
+      { id: 1, code: 'FREE' },
+      { id: 2, code: 'BASIC' },
+      { id: 3, code: 'PRO' },
+      { id: 4, code: 'MAX' },
+    ],
     subscriptions: [
       {
         id: SUBSCRIPTION_ID,
@@ -1418,5 +1427,86 @@ describe('unhandled events', () => {
 
     expect(accountRow().planCode).toBe('PRO');
     expect(baseRow().providerStatus).toBe('active');
+  });
+});
+
+describe('the plan a checkout was for reaches subscriptions.plan_code', () => {
+  // The whole point: every billing row was written correctly and the account
+  // still read its OLD plan, because nothing on this path set plan_code.
+  it('moves the account onto the purchased plan', async () => {
+    // An earlier test queues a `mockResolvedValueOnce(null)` on this lookup
+    // and never consumes it, because its own event carries `subscription_id`
+    // directly. `jest.clearAllMocks()` clears calls but NOT that queue, so the
+    // stale `null` surfaces here — a base-plan checkout carries only
+    // `user_id`, so this is the first test that actually calls it. Resetting
+    // drops the queue; the default below is then what answers.
+    lookup.findByUserId.mockReset();
+    lookup.findByUserId.mockResolvedValue({ id: SUBSCRIPTION_ID });
+    accountRow().planCode = 'FREE';
+    tables.provider_subscriptions = [];
+
+    await make().handleEvent(
+      'subscription_created',
+      lifecycle(
+        'ls_sub_basic',
+        { status: 'active', first_subscription_item: { id: 'i', quantity: 1 } },
+        { user_id: 'user-1', item_type: 'BASE_PLAN', plan_code: 'BASIC' },
+      ),
+    );
+
+    expect(accountRow().planCode).toBe('BASIC');
+  });
+
+  // An add-on buys capacity, not a different plan.
+  it('leaves the plan alone for an add-on checkout', async () => {
+    await make().handleEvent(
+      'subscription_created',
+      lifecycle(
+        'ls_sub_addon',
+        { status: 'active', first_subscription_item: { id: 'i', quantity: 2 } },
+        {
+          user_id: 'user-1',
+          item_type: 'EXTRA_MEMBER',
+          plan_code: 'MAX',
+          subscription_id: String(SUBSCRIPTION_ID),
+        },
+      ),
+    );
+
+    expect(accountRow().planCode).toBe('PRO');
+  });
+
+  // custom_data is echoed back from our own request, but it arrives over the
+  // network on a public endpoint — an unvalidated value would land in the
+  // column every limit check reads.
+  it('ignores a plan code that is not in the plans table', async () => {
+    await make().handleEvent(
+      'subscription_created',
+      lifecycle(
+        'ls_sub_bogus',
+        { status: 'active', first_subscription_item: { id: 'i', quantity: 1 } },
+        { user_id: 'user-1', item_type: 'BASE_PLAN', plan_code: 'ENTERPRISE' },
+      ),
+    );
+
+    expect(accountRow().planCode).toBe('PRO');
+  });
+
+  // The money has already moved and the provider row is already written;
+  // throwing would 500 a delivery Lemon Squeezy will not retry.
+  it('keeps the provider row when plan_code is missing', async () => {
+    tables.provider_subscriptions = [];
+
+    await make().handleEvent(
+      'subscription_created',
+      lifecycle(
+        'ls_sub_noplan',
+        { status: 'active', first_subscription_item: { id: 'i', quantity: 1 } },
+        { user_id: 'user-1', item_type: 'BASE_PLAN' },
+      ),
+    );
+
+    expect(accountRow().planCode).toBe('PRO');
+    expect(rowsOf('provider_subscriptions')).toHaveLength(1);
   });
 });

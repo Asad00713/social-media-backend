@@ -6,6 +6,7 @@ import {
   providerSubscriptions,
   subscriptions,
   subscriptionItems,
+  plans,
   ProviderItemType,
 } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
@@ -346,6 +347,20 @@ export class LemonSqueezyWebhookService {
     // keeps the flag and this new Lemon Squeezy row does not steal it.
     await rehomeDefault({ subscriptionId });
 
+    // The plan the customer actually bought.
+    //
+    // `applyStatus` writes `subscriptions.status` but never its `plan_code`,
+    // and nothing else on this path does either: the only assignment in this
+    // file sets 'FREE' on termination. So a paid Lemon Squeezy checkout wrote
+    // every billing row correctly and still left the account reading FREE,
+    // which is the column the UI and every limit check read. Stripe does not
+    // have the bug because its direct path writes the row itself, with the
+    // plan, before any webhook arrives — there is no equivalent moment here,
+    // so this is that moment.
+    if (itemType === 'BASE_PLAN') {
+      await this.applyPurchasedPlan(subscriptionId, custom);
+    }
+
     const claimed = await db
       .select({ isDefault: providerSubscriptions.isDefault })
       .from(providerSubscriptions)
@@ -358,6 +373,53 @@ export class LemonSqueezyWebhookService {
       isDefault: Boolean((claimed as { isDefault: boolean }[])[0]?.isDefault),
       providerStatus: attrs.status ?? null,
     };
+  }
+
+  /**
+   * Move the account onto the plan its checkout was for.
+   *
+   * The code comes from `checkout_data.custom`, which the adapter populates
+   * from the plan the customer chose, and it is checked against `plans`
+   * before it is written. That check is not ceremony: `custom_data` is echoed
+   * back from a request we made, but it arrives over the network on a public
+   * endpoint, and an unvalidated value here would put an arbitrary string in
+   * the column every limit check reads.
+   *
+   * A code we cannot place is logged and skipped rather than thrown. The
+   * webhook has already been paid for and the provider row is already
+   * written; throwing would 500 a delivery Lemon Squeezy will not retry, and
+   * lose the row too.
+   */
+  private async applyPurchasedPlan(
+    subscriptionId: number,
+    custom: Record<string, unknown>,
+  ): Promise<void> {
+    const planCode = strOf(custom['plan_code']);
+    if (!planCode) {
+      this.logger.error(
+        `subscription_created for account ${subscriptionId} carried no ` +
+          `plan_code; the account keeps its current plan.`,
+      );
+      return;
+    }
+
+    const known = await db
+      .select({ code: plans.code })
+      .from(plans)
+      .where(eq(plans.code, planCode));
+
+    if ((known as { code: string }[]).length === 0) {
+      this.logger.error(
+        `subscription_created for account ${subscriptionId} named plan ` +
+          `"${planCode}", which is not in the plans table; ignoring it.`,
+      );
+      return;
+    }
+
+    await db
+      .update(subscriptions)
+      .set({ planCode, updatedAt: new Date() })
+      .where(eq(subscriptions.id, subscriptionId));
   }
 
   /**
