@@ -27,6 +27,8 @@ describe('WebhooksController — Meta signature + verify token', () => {
   let processMeta: jest.SpyInstance;
   let processThreads: jest.SpyInstance;
 
+  const server = () => app.getHttpServer() as Parameters<typeof request>[0];
+
   async function build() {
     const queueNames = [
       QUEUES.LEAD_INTAKE,
@@ -91,7 +93,7 @@ describe('WebhooksController — Meta signature + verify token', () => {
 
     it('accepts a correctly signed delivery and processes it', async () => {
       await build();
-      const res = await request(app.getHttpServer())
+      const res = await request(server())
         .post(`/webhooks/${source}`)
         .set('Content-Type', 'application/json')
         .set('X-Hub-Signature-256', sign(secret, raw))
@@ -105,7 +107,7 @@ describe('WebhooksController — Meta signature + verify token', () => {
 
     it('rejects an unsigned delivery', async () => {
       await build();
-      const res = await request(app.getHttpServer())
+      const res = await request(server())
         .post(`/webhooks/${source}`)
         .set('Content-Type', 'application/json')
         .send(raw);
@@ -115,7 +117,7 @@ describe('WebhooksController — Meta signature + verify token', () => {
 
     it('rejects a delivery signed with the wrong secret', async () => {
       await build();
-      const res = await request(app.getHttpServer())
+      const res = await request(server())
         .post(`/webhooks/${source}`)
         .set('Content-Type', 'application/json')
         .set('X-Hub-Signature-256', sign('wrong', raw))
@@ -125,9 +127,25 @@ describe('WebhooksController — Meta signature + verify token', () => {
     });
   });
 
+  it('rejects unsigned deliveries on every endpoint when no secret is configured', async () => {
+    delete process.env.META_APP_SECRET;
+    delete process.env.INSTAGRAM_CLIENT_SECRET;
+    delete process.env.THREADS_CLIENT_SECRET;
+    await build();
+    for (const source of ['instagram', 'facebook', 'threads']) {
+      const res = await request(server())
+        .post(`/webhooks/${source}`)
+        .set('Content-Type', 'application/json')
+        .send('{}');
+      expect(res.status).toBe(401);
+    }
+    expect(processMeta).not.toHaveBeenCalled();
+    expect(processThreads).not.toHaveBeenCalled();
+  });
+
   it('refuses verification when no verify token is configured', async () => {
     await build();
-    const res = await request(app.getHttpServer()).get(
+    const res = await request(server()).get(
       '/webhooks/facebook?hub.mode=subscribe&hub.verify_token=webondev_verify_123&hub.challenge=x',
     );
     expect(res.status).toBe(403);
@@ -136,7 +154,7 @@ describe('WebhooksController — Meta signature + verify token', () => {
   it('answers the challenge when the configured token matches', async () => {
     process.env.META_WEBHOOK_VERIFY_TOKEN = 't';
     await build();
-    const res = await request(app.getHttpServer()).get(
+    const res = await request(server()).get(
       '/webhooks/facebook?hub.mode=subscribe&hub.verify_token=t&hub.challenge=x',
     );
     expect(res.status).toBe(200);
