@@ -39,6 +39,7 @@ import type {
 } from './adapters/inbox-adapter.interface';
 import { InboxFolder, InboxSort } from './dto/list-comments.dto';
 import { InjectQueue } from '@nestjs/bullmq';
+import { pollDedupId } from './schedulers/poll-dedup';
 import { Queue } from 'bullmq';
 import { QUEUES } from '../queue/queue.module';
 
@@ -2118,6 +2119,11 @@ export class InboxService {
         {
           delay: i * 250,
           jobId: `inbox-sync-${eligible[i].id}-${Math.floor(Date.now() / 60_000)}`,
+          // One active poll per channel (shared with the cron). A sync while
+          // that channel's poll is running is ignored for that channel; the
+          // sync already reset last_inbox_poll_at, so the next cron poll
+          // does the full refresh.
+          deduplication: { id: pollDedupId(eligible[i].id) },
         },
       );
     }
