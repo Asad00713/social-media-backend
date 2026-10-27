@@ -1,4 +1,4 @@
-import { undoFor, type PatchState } from './undo';
+import { undoFor, type PatchConversationBody, type PatchState } from './undo';
 
 const L = new Date('2026-10-30T09:00:00.000Z');
 const toReply: PatchState = {
@@ -7,14 +7,22 @@ const toReply: PatchState = {
   laterUntilReply: false,
   assigneeUserId: null,
 };
+const later = (o: Partial<PatchState> = {}): PatchState => ({
+  ...toReply,
+  status: 'later',
+  laterUntil: L,
+  ...o,
+});
+
+type Row = [string, PatchConversationBody, PatchState, PatchConversationBody];
 
 describe('undoFor', () => {
-  it.each([
+  it.each<Row>([
     ['done from to_reply', { status: 'done' }, toReply, { status: 'to_reply' }],
     [
       'done from later',
       { status: 'done' },
-      { ...toReply, status: 'later', laterUntil: L },
+      later(),
       { status: 'later', laterUntil: L.toISOString(), laterUntilReply: false },
     ],
     ['assign', { assigneeUserId: 'u2' }, toReply, { assigneeUserId: null }],
@@ -33,10 +41,28 @@ describe('undoFor', () => {
     [
       'laterUntil patch undoes via status',
       { laterUntil: '2026-11-01T00:00:00.000Z' },
-      { ...toReply, status: 'later', laterUntil: L, laterUntilReply: true },
+      later({ laterUntilReply: true }),
       { status: 'later', laterUntil: L.toISOString(), laterUntilReply: true },
     ],
-  ] as const)('%s', (_n, patch, prev, expected) => {
-    expect(undoFor(patch as never, prev as PatchState)).toEqual(expected);
+    [
+      'laterUntilReply is emitted only when prev was later',
+      { status: 'later', laterUntilReply: true },
+      toReply,
+      { status: 'to_reply' },
+    ],
+    [
+      'later prev with no time keeps laterUntil null',
+      { status: 'done' },
+      later({ laterUntil: null, laterUntilReply: true }),
+      { status: 'later', laterUntil: null, laterUntilReply: true },
+    ],
+    [
+      'unrelated keys are not undone',
+      { assigneeUserId: 'u2' },
+      later(),
+      { assigneeUserId: null },
+    ],
+  ])('%s', (_name, patch, prev, expected) => {
+    expect(undoFor(patch, prev)).toEqual(expected);
   });
 });

@@ -30,6 +30,7 @@ export function undoFor(
   const touchesStatus =
     patch.status !== undefined ||
     patch.laterUntil !== undefined ||
+    patch.laterUntilReply !== undefined ||
     patch.laterPreset !== undefined;
   if (touchesStatus) {
     undo.status = prev.status;
@@ -37,12 +38,6 @@ export function undoFor(
       undo.laterUntil = prev.laterUntil ? prev.laterUntil.toISOString() : null;
       undo.laterUntilReply = prev.laterUntilReply;
     }
-  }
-  if (
-    patch.laterUntilReply !== undefined &&
-    undo.laterUntilReply === undefined
-  ) {
-    undo.laterUntilReply = prev.laterUntilReply;
   }
   if (patch.assigneeUserId !== undefined) {
     undo.assigneeUserId = prev.assigneeUserId;

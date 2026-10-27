@@ -47,6 +47,16 @@ describe('sendLaterCap', () => {
       '2026-10-27T09:30:00Z',
       { latestSendLaterAt: null, canSendLater: true },
     ],
+    [
+      CLOSES,
+      '2026-10-27T10:00:00Z',
+      { latestSendLaterAt: '2026-10-27T09:59:00.000Z', canSendLater: false },
+    ],
+    [
+      CLOSES,
+      '2026-10-27T11:00:00Z',
+      { latestSendLaterAt: '2026-10-27T09:59:00.000Z', canSendLater: false },
+    ],
   ])('closes %s at %s', (closes, now, expected) => {
     expect(sendLaterCap(closes, new Date(now))).toEqual(expected);
   });

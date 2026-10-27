@@ -74,6 +74,7 @@ describe('applyLifecycle', () => {
     const r = applyLifecycle(prev, facts({ lastInboundAt: t2 }), refresh, now);
     expect(r.next.status).toBe('later');
     expect(r.next.laterUntil).toEqual(t3);
+    expect(r.reopened).toBe(false);
   });
 
   it('4. same lastInboundAt stays done', () => {
@@ -352,5 +353,124 @@ describe('applyLifecycle', () => {
     expect(applyLifecycle(null, facts(), refresh, now).next.status).toBe(
       'to_reply',
     );
+  });
+});
+
+describe('applyLifecycle hardening', () => {
+  const echo = (o: Partial<ThreadFacts> = {}) =>
+    facts({
+      lastPlatformOutboundAt: t3,
+      lastOutboundAt: t3,
+      unansweredInbound: 0,
+      ...o,
+    });
+
+  it('R5: a stale platform echo (not newer than prev.lastOutboundAt) does not close', () => {
+    const r = applyLifecycle(
+      state({ lastOutboundAt: t3 }),
+      echo({ lastPlatformOutboundAt: t3 }),
+      refresh,
+      now,
+    );
+    expect(r.next.status).toBe('to_reply');
+    expect(r.next).toMatchObject(noDone);
+  });
+
+  it('R5: an older platform reply than prev.lastOutboundAt does not close', () => {
+    const r = applyLifecycle(
+      state({ lastOutboundAt: t3 }),
+      echo({ lastPlatformOutboundAt: t2 }),
+      refresh,
+      now,
+    );
+    expect(r.next.status).toBe('to_reply');
+  });
+
+  it('R5: a later platform reply never overwrites a manual done', () => {
+    const prev = state({
+      status: 'done',
+      doneVia: 'manual',
+      doneByUserId: 'u1',
+      doneAt: t2,
+    });
+    const r = applyLifecycle(prev, echo(), refresh, now);
+    expect(r.next).toMatchObject({
+      status: 'done',
+      doneVia: 'manual',
+      doneByUserId: 'u1',
+      doneAt: t2,
+    });
+  });
+
+  it('R5: a platform reply closes a later thread', () => {
+    const prev = state({ status: 'later', laterUntil: t4 });
+    const r = applyLifecycle(prev, echo(), refresh, now);
+    expect(r.next).toMatchObject({
+      status: 'done',
+      doneVia: 'platform',
+      doneByUserId: null,
+      doneAt: t3,
+    });
+  });
+
+  it('our echo arrives before the author stamp: rule 2 then rule 3 in one call', () => {
+    const r = applyLifecycle(
+      state(),
+      echo({ lastPlatformOutboundAt: t2, lastOutboundAt: t2 }),
+      { kind: 'outbound', userId: 'u1', markDone: true, at: t2 },
+      now,
+    );
+    expect(r.next).toMatchObject({
+      status: 'done',
+      doneVia: 'reply',
+      doneByUserId: 'u1',
+      doneAt: t2,
+    });
+    expect(r.markedDone).toBe(true);
+  });
+
+  it('legacy_status with no open legacy rows keeps an existing done as it was', () => {
+    const r = applyLifecycle(
+      doneReply({ doneAt: t2 }),
+      facts({ openLegacyInbound: 0 }),
+      { kind: 'legacy_status', userId: 'u2' },
+      now,
+    );
+    expect(r.next).toMatchObject({
+      status: 'done',
+      doneVia: 'reply',
+      doneByUserId: 'u1',
+      doneAt: t2,
+    });
+  });
+
+  it('manual later carries laterUntilReply', () => {
+    const r = applyLifecycle(
+      state(),
+      facts(),
+      {
+        kind: 'manual',
+        userId: 'u1',
+        status: 'later',
+        laterUntil: null,
+        laterUntilReply: true,
+      },
+      now,
+    );
+    expect(r.next).toMatchObject({
+      status: 'later',
+      laterUntil: null,
+      laterUntilReply: true,
+    });
+  });
+
+  it('manual to_reply from done clears every done field', () => {
+    const r = applyLifecycle(
+      doneReply(),
+      facts(),
+      { kind: 'manual', userId: 'u1', status: 'to_reply' },
+      now,
+    );
+    expect(r.next).toMatchObject({ status: 'to_reply', ...noDone });
   });
 });
