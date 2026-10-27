@@ -6,12 +6,14 @@ import {
   varchar,
   integer,
   index,
+  jsonb,
 } from 'drizzle-orm/pg-core';
 import { relations } from 'drizzle-orm';
 import { users } from './users.schema';
 import { workspace } from './workspace.schema';
 import { socialMediaChannels } from './channels.schema';
 import { inboxItems } from './inbox.schema';
+import { inboxConversations } from './inbox-conversations.schema';
 
 export const SCHEDULED_INBOX_TYPES = ['comment', 'dm'] as const;
 export type ScheduledInboxType = (typeof SCHEDULED_INBOX_TYPES)[number];
@@ -24,6 +26,13 @@ export const SCHEDULED_INBOX_STATUSES = [
   'cancelled',
 ] as const;
 export type ScheduledInboxStatus = (typeof SCHEDULED_INBOX_STATUSES)[number];
+
+export interface ScheduledAttachment {
+  kind: 'image' | 'video' | 'audio' | 'voice' | 'file';
+  url: string;
+  contentType: string | null;
+  thumbnailUrl: string | null;
+}
 
 /**
  * scheduled_inbox_messages — comment-replies or DMs queued to fire in the future.
@@ -94,6 +103,19 @@ export const scheduledInboxMessages = pgTable(
       },
     ),
 
+    // Media sent with the reply (migration 0051).
+    attachments: jsonb('attachments')
+      .$type<ScheduledAttachment[]>()
+      .notNull()
+      .default([]),
+
+    // The inbox_conversations row this reply belongs to (0051). Distinct from
+    // `conversationId` above, which is the PLATFORM dm id.
+    inboxConversationId: uuid('inbox_conversation_id').references(
+      () => inboxConversations.id,
+      { onDelete: 'set null' },
+    ),
+
     errorMessage: text('error_message'),
     attempts: integer('attempts').default(0).notNull(),
 
@@ -111,6 +133,10 @@ export const scheduledInboxMessages = pgTable(
     ),
     scheduledAtIdx: index('scheduled_inbox_scheduled_at_idx').on(
       table.scheduledAt,
+    ),
+    convStatusIdx: index('scheduled_inbox_conv_status_idx').on(
+      table.inboxConversationId,
+      table.status,
     ),
     threadKeyIdx: index('scheduled_inbox_thread_key_idx').on(
       table.workspaceId,

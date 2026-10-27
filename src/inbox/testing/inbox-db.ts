@@ -12,6 +12,10 @@ import {
 export const INBOX_MIGRATIONS: string[] = [
   '0046_inbox_items_thread_key.sql',
   '0047_inbox_conversations.sql',
+  '0048_inbox_notes.sql',
+  '0049_inbox_saved_replies.sql',
+  '0050_inbox_user_settings.sql',
+  '0051_scheduled_inbox_messages_conversation.sql',
 ];
 
 export const describeInboxDb = describeDb;
