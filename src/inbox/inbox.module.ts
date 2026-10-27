@@ -3,6 +3,8 @@ import { BullModule } from '@nestjs/bullmq';
 import { InboxController } from './inbox.controller';
 import { WebhooksController } from '../channels/webhooks.controller';
 import { InboxService } from './inbox.service';
+import { InboxSettingsController } from './conversations/inbox-settings.controller';
+import { InboxSettingsService } from './conversations/services/inbox-settings.service';
 import { InboxDispatcher } from './services/inbox-dispatcher.service';
 import { BlueskyInboxAdapter } from './adapters/bluesky-inbox.adapter';
 import { MastodonInboxAdapter } from './adapters/mastodon-inbox.adapter';
@@ -68,9 +70,10 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
       { name: QUEUES.MAESTRO_BRIDGE },
     ),
   ],
-  controllers: [InboxController, WebhooksController],
+  controllers: [InboxController, InboxSettingsController, WebhooksController],
   providers: [
     InboxService,
+    InboxSettingsService,
     InboxDispatcher,
     BlueskyInboxAdapter,
     MastodonInboxAdapter,
