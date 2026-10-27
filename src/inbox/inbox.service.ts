@@ -6,7 +6,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm';
-import { db } from '../drizzle/db';
+import { db, type DbType } from '../drizzle/db';
 import {
   inboxItems,
   InboxItem,
@@ -296,6 +296,31 @@ export function buildSearchPattern(q: string): string {
 /** Whether a query is worth running at all. */
 export function isSearchable(q?: string): boolean {
   return !!q && q.trim().length >= MIN_SEARCH_LENGTH;
+}
+
+/**
+ * Exact lookup of our post for a (channelId, platformPostId) pair: one indexed
+ * containment query (posts_targets_gin_idx), newest first, LIMIT 1. Targets
+ * store channelId as a string in current rows and as a number in older ones, so
+ * both forms are matched; each @> is index-assisted.
+ */
+export function findOurPostIdQuery(
+  database: DbType,
+  channelId: number,
+  platformPostId: string,
+) {
+  const asString = JSON.stringify([
+    { channelId: String(channelId), platformPostId },
+  ]);
+  const asNumber = JSON.stringify([{ channelId, platformPostId }]);
+  return database
+    .select({ id: postsTable.id })
+    .from(postsTable)
+    .where(
+      sql`(${postsTable.targets} @> ${asString}::jsonb OR ${postsTable.targets} @> ${asNumber}::jsonb)`,
+    )
+    .orderBy(desc(postsTable.createdAt))
+    .limit(1);
 }
 
 @Injectable()
@@ -2190,25 +2215,8 @@ export class InboxService {
     channelId: number,
     platformPostId: string,
   ): Promise<string | null> {
-    // Posts store targets as JSONB; scan recent posts referencing this channel.
-    const rows = await db
-      .select({ id: postsTable.id, targets: postsTable.targets })
-      .from(postsTable)
-      .where(
-        sql`${postsTable.targets} @> ${JSON.stringify([{ channelId: String(channelId) }])}::jsonb`,
-      )
-      .limit(50);
-
-    for (const r of rows) {
-      const targets = r.targets ?? [];
-      const hit = targets.find(
-        (t) =>
-          String(t.channelId) === String(channelId) &&
-          t.platformPostId === platformPostId,
-      );
-      if (hit) return r.id;
-    }
-    return null;
+    const [row] = await findOurPostIdQuery(db, channelId, platformPostId);
+    return row?.id ?? null;
   }
 
   // ==========================================================================
