@@ -1820,7 +1820,16 @@ export class InboxService {
     userId: string,
   ): Promise<{ deleted: number; channels: number[] }> {
     await this.assertWorkspaceAccess(workspaceId, userId);
+    return this.cleanupOrphanedThreadKeysForWorkspace(workspaceId);
+  }
 
+  /**
+   * The cleanup body without a membership check. Destructive, so the only
+   * route that reaches it is the super-admin one (InboxAdminController).
+   */
+  async cleanupOrphanedThreadKeysForWorkspace(
+    workspaceId: string,
+  ): Promise<{ deleted: number; channels: number[] }> {
     const result = await db.execute(sql`
       DELETE FROM inbox_items
       WHERE workspace_id = ${workspaceId}
@@ -1978,14 +1987,8 @@ export class InboxService {
     channels: number[];
     webhookActivated: number;
     webhookErrors: { channelId: number; reason: string }[];
-    cleanedUp: number;
   }> {
     await this.assertWorkspaceAccess(workspaceId, userId);
-
-    // Defensive: remove inbox_items whose post-id is actually a comment-id.
-    // This heals any rows that were ingested before the canonical-root
-    // resolution fix landed in the Bluesky adapter.
-    const cleanup = await this.cleanupOrphanedThreadKeys(workspaceId, userId);
 
     const supported = this.dispatcher.supportedPlatforms();
 
@@ -2099,7 +2102,6 @@ export class InboxService {
       channels: eligible.map((r) => r.id),
       webhookActivated,
       webhookErrors,
-      cleanedUp: cleanup.deleted,
     };
   }
 

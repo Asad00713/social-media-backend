@@ -20,6 +20,8 @@ const SUPER_ADMIN_ONLY =
   'AdminController is behind JwtAuthGuard + SuperAdminGuard: platform staff act on any workspace, so a workspace role does not apply';
 const OPEN_ROUTES: Record<string, string> = {
   'GET /admin/workspaces/:workspaceId': SUPER_ADMIN_ONLY,
+  'POST /admin/inbox/workspaces/:workspaceId/cleanup-orphaned-thread-keys':
+    SUPER_ADMIN_ONLY,
   'GET /admin/workspaces/:workspaceId/posts': SUPER_ADMIN_ONLY,
   'GET /admin/workspaces/:workspaceId/media': SUPER_ADMIN_ONLY,
   'GET /admin/workspaces/:workspaceId/billing': SUPER_ADMIN_ONLY,
