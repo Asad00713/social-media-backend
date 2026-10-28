@@ -1,5 +1,5 @@
 import type { InboxItem } from '../../../drizzle/schema/inbox.schema';
-import { isContentRedacted } from '../../inbox.service';
+import { isContentRedacted } from './content-redaction';
 import type { CommentActions, CommentNode, UserRef } from '../dto/contract';
 
 /** The drizzle row type of `inbox_items`. */
@@ -42,7 +42,7 @@ export function commentNodeOf(
 
 /**
  * Roots (no parent in the set) oldest first; replies oldest first; unlimited
- * depth. Items link by `platformParentId` -> `platformItemId`. Linear time.
+ * depth. Items link by `platformParentId` -> `platformItemId`. Cost is O(n x depth) for the cycle check (fine at thread sizes).
  */
 export function buildCommentTree(
   items: CommentItemRecord[],

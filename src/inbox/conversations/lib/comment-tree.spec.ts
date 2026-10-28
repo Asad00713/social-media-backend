@@ -80,13 +80,29 @@ describe('buildCommentTree', () => {
     expect(tree).toHaveLength(1);
   });
 
-  it('survives a parent cycle without looping', () => {
+  it('turns a parent cycle into roots, oldest first, without looping', () => {
     const tree = buildCommentTree(
-      [item('x', 'y', 1), item('y', 'x', 2)],
+      [item('y', 'x', 2), item('x', 'y', 1)],
       none,
       actionsFor,
     );
-    expect(Array.isArray(tree)).toBe(true);
+    expect(tree.map((n) => n.id)).toEqual(['uuid-x', 'uuid-y']);
+    expect(
+      tree.every((n) => n.parentId === null && n.replies.length === 0),
+    ).toBe(true);
+  });
+
+  it('builds a 500-level chain in under 100 ms', () => {
+    const items = Array.from({ length: 500 }, (_, i) =>
+      item(`n${i}`, i === 0 ? null : `n${i - 1}`, i),
+    );
+    const t0 = performance.now();
+    const tree = buildCommentTree(items, none, actionsFor);
+    expect(performance.now() - t0).toBeLessThan(100);
+    let depth = 0;
+    for (let n = tree[0]; n; n = n.replies[0]) depth++;
+    expect(tree).toHaveLength(1);
+    expect(depth).toBe(500);
   });
 
   it('resolves sentBy through the users map', () => {
