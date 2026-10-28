@@ -479,7 +479,12 @@ export class MaestroService {
           multiSelect: Boolean(q.multiSelect),
         };
       })
-      .filter((q) => q.question && q.options.length > 0);
+      // Option-less questions survive here too, so a bridge user is asked the
+      // same thing a panel user is. The bridge renders options as a reply
+      // keyboard and falls back to plain text without them — which is the
+      // right shape for an open question: they just answer in their next
+      // message. Dropping it here instead made the turn end silently.
+      .filter((q) => q.question);
     return questions.length ? { questions } : null;
   }
 
