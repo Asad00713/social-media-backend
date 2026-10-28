@@ -170,10 +170,30 @@ describeInboxDb('ConversationPresenter', () => {
         const c = await seedConv(client, workspaceId, ch, {
           threadKey: `${ch}:abc`,
         });
+        // another workspace holds a conversation with the SAME thread key
+        const other = await seedWorkspace(client);
+        const otherCh = await seedChannel(
+          client,
+          other.workspaceId,
+          'facebook',
+        );
+        const otherConv = await seedConv(client, other.workspaceId, otherCh, {
+          threadKey: `${ch}:abc`,
+        });
+        await seedConv(client, other.workspaceId, otherCh, {
+          threadKey: `${ch}:only-other`,
+        });
         const presenter = new ConversationPresenter(db);
         expect(
           (await presenter.loadRowByThreadKey(workspaceId, `${ch}:abc`))?.id,
         ).toBe(c);
+        expect(
+          (await presenter.loadRowByThreadKey(other.workspaceId, `${ch}:abc`))
+            ?.id,
+        ).toBe(otherConv);
+        expect(
+          await presenter.loadRowByThreadKey(workspaceId, `${ch}:only-other`),
+        ).toBeNull();
         expect(
           await presenter.loadRowByThreadKey(workspaceId, 'nope'),
         ).toBeNull();
@@ -189,6 +209,48 @@ describeInboxDb('ConversationPresenter', () => {
         await seedConv(client, workspaceId, ch);
         await seedConv(client, workspaceId, ch, { archived: true });
         await seedConv(client, workspaceId, ch, { status: 'later' });
+        await seedConv(client, workspaceId, ch, { status: 'done' });
+        // a failed-only reply counts; an archived conversation's never does
+        const failedOnly = await seedConv(client, workspaceId, ch);
+        const archived = await seedConv(client, workspaceId, ch, {
+          archived: true,
+        });
+        await seedScheduled(
+          client,
+          workspaceId,
+          ch,
+          failedOnly,
+          'failed',
+          '2026-10-27T11:00:00Z',
+          ownerId,
+        );
+        await seedScheduled(
+          client,
+          workspaceId,
+          ch,
+          archived,
+          'pending',
+          '2026-10-27T11:00:00Z',
+          ownerId,
+        );
+        // another workspace with its own conversations must not bleed in
+        const other = await seedWorkspace(client);
+        const otherCh = await seedChannel(
+          client,
+          other.workspaceId,
+          'facebook',
+        );
+        const o1 = await seedConv(client, other.workspaceId, otherCh);
+        await seedConv(client, other.workspaceId, otherCh, { status: 'later' });
+        await seedScheduled(
+          client,
+          other.workspaceId,
+          otherCh,
+          o1,
+          'pending',
+          '2026-10-27T09:00:00Z',
+          other.ownerId,
+        );
         await seedScheduled(
           client,
           workspaceId,
@@ -212,7 +274,7 @@ describeInboxDb('ConversationPresenter', () => {
           workspaceId,
           new Date('2026-10-26T12:00:00Z'),
         );
-        expect(counts).toMatchObject({ toReply: 2, later: 1, scheduled: 1 });
+        expect(counts).toMatchObject({ toReply: 3, later: 1, scheduled: 2 });
         expect(counts.answeredToday).toEqual({ total: 0, by: [] });
       }));
 
@@ -246,6 +308,24 @@ describeInboxDb('ConversationPresenter', () => {
         await reply('c3', '2026-10-26T19:50:00Z', mate); // today
         await reply('c4', '2026-10-26T18:30:00Z', ownerId); // 23:30 local: yesterday
         await reply('c5', '2026-10-26T19:35:00Z', null); // platform reply: never
+
+        // another workspace's replies today must not bleed in
+        const other = await seedWorkspace(client, { timezone: 'Asia/Karachi' });
+        const otherCh = await seedChannel(
+          client,
+          other.workspaceId,
+          'facebook',
+        );
+        await seedItem(client, {
+          workspaceId: other.workspaceId,
+          channelId: otherCh,
+          platform: 'facebook',
+          type: 'dm',
+          conversationId: 'c1',
+          fromMe: true,
+          authoredByUserId: other.ownerId,
+          platformCreatedAt: new Date('2026-10-26T19:30:00Z'),
+        });
 
         const { answeredToday } = await new ConversationPresenter(db).counts(
           workspaceId,
