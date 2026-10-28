@@ -6,6 +6,7 @@ import {
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
+import { SKIP_SUSPEND_CHECK } from '../auth/decorators/skip-suspend-check.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { InboxAdminController } from './inbox-admin.controller';
@@ -71,5 +72,11 @@ describe('InboxAdminController over HTTP', () => {
   it('rejects a non-uuid workspace id with 400', async () => {
     await request(app.getHttpServer()).post(url('nope')).expect(400);
     expect(inbox.cleanupOrphanedThreadKeysForWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('stays reachable while a workspace is suspended', () => {
+    expect(Reflect.getMetadata(SKIP_SUSPEND_CHECK, InboxAdminController)).toBe(
+      true,
+    );
   });
 });
