@@ -50,6 +50,9 @@ import { QUEUES } from '../queue/queue.module';
  * Registered in `InboxModule` (not ChannelsModule) so it can inject
  * InboxService without a circular dep.
  */
+/** Rejected-delivery warnings are logged at most this often per source. */
+const REJECT_WARN_INTERVAL_MS = 60_000;
+
 @Controller('webhooks')
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
@@ -153,6 +156,17 @@ export class WebhooksController {
   // Meta — event delivery
   // ==========================================================================
 
+  /** Unauthenticated callers can POST at will, so log a reject at most once per source per minute. */
+  private readonly lastRejectWarnAt = new Map<string, number>();
+
+  private warnRejectedDelivery(source: MetaWebhookSource): void {
+    const now = Date.now();
+    const last = this.lastRejectWarnAt.get(source);
+    if (last !== undefined && now - last < REJECT_WARN_INTERVAL_MS) return;
+    this.lastRejectWarnAt.set(source, now);
+    this.logger.warn(`${source} webhook signature verification failed`);
+  }
+
   private isSignedMetaDelivery(
     source: MetaWebhookSource,
     req: ExpressRequest,
@@ -162,9 +176,7 @@ export class WebhooksController {
       req.headers['x-hub-signature-256'] as string | undefined,
       (req as ExpressRequest & { rawBody?: Buffer }).rawBody,
     );
-    if (!ok) {
-      this.logger.warn(`${source} webhook signature verification failed`);
-    }
+    if (!ok) this.warnRejectedDelivery(source);
     return ok;
   }
 

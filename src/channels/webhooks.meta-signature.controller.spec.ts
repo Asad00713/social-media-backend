@@ -1,5 +1,5 @@
 import { Test } from '@nestjs/testing';
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, Logger } from '@nestjs/common';
 import { getQueueToken } from '@nestjs/bullmq';
 import { createHmac } from 'node:crypto';
 import request from 'supertest';
@@ -159,5 +159,41 @@ describe('WebhooksController — Meta signature + verify token', () => {
     );
     expect(res.status).toBe(200);
     expect(res.text).toBe('x');
+  });
+
+  describe('rejected-delivery warning throttle', () => {
+    afterEach(() => jest.useRealTimers());
+
+    it('logs at most once per source per minute and still returns 401', async () => {
+      await build();
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      const hit = (source: string) =>
+        request(server())
+          .post(`/webhooks/${source}`)
+          .set('Content-Type', 'application/json')
+          .send('{}');
+      const rejects = () =>
+        warn.mock.calls.filter((c) =>
+          String(c[0]).includes('signature verification failed'),
+        ).length;
+
+      expect((await hit('instagram')).status).toBe(401);
+      expect((await hit('instagram')).status).toBe(401);
+      expect(rejects()).toBe(1);
+
+      await hit('facebook');
+      expect(rejects()).toBe(2);
+
+      jest.advanceTimersByTime(59_000);
+      await hit('instagram');
+      expect(rejects()).toBe(2);
+
+      jest.advanceTimersByTime(2_000);
+      expect((await hit('instagram')).status).toBe(401);
+      expect(rejects()).toBe(3);
+    });
   });
 });
