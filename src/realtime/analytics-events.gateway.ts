@@ -13,6 +13,13 @@ import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { and, eq } from 'drizzle-orm';
 import { db } from '../drizzle/db';
+import { users } from '../drizzle/schema/users.schema';
+import { WorkspaceRoleService } from '../workspace-members/workspace-role.service';
+import { roleCan } from '../workspace-members/role-capabilities';
+import type {
+  TypingClientEvent,
+  UserRef,
+} from '../inbox/conversations/dto/contract';
 import { workspace } from '../drizzle/schema/workspace.schema';
 import { workspaceInvitation } from '../drizzle/schema/workspace-invitation.schema';
 import type {
@@ -23,7 +30,15 @@ import type {
 interface AuthedSocket extends Socket {
   userId?: string;
   email?: string;
+  /** Cached `{ id, name, avatarUrl }` for typing relays (looked up once per socket). */
+  typingUser?: UserRef;
+  /** conversationId -> epoch ms of the last relayed `start`. */
+  typingStartAt?: Map<string, number>;
 }
+
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const TYPING_START_MIN_GAP_MS = 1000;
 
 @WebSocketGateway({
   namespace: '/realtime',
@@ -44,6 +59,7 @@ export class AnalyticsEventsGateway
   constructor(
     private readonly jwtService: JwtService,
     private readonly config: ConfigService,
+    private readonly roles: WorkspaceRoleService,
   ) {}
 
   async handleConnection(socket: AuthedSocket): Promise<void> {
@@ -105,6 +121,77 @@ export class AnalyticsEventsGateway
       `Socket ${socket.id} (user ${socket.userId}) joined workspace ${data.workspaceId}`,
     );
     return { ok: true };
+  }
+
+  /**
+   * "Is replying…" presence. Ephemeral: relayed to the other sockets in the
+   * workspace room (every member holds at least inbox:view) and never stored.
+   * The sender needs inbox:reply. `socket.to` excludes the sender itself.
+   */
+  @SubscribeMessage('inbox:typing')
+  async onInboxTyping(
+    @ConnectedSocket() socket: AuthedSocket,
+    @MessageBody() data: TypingClientEvent,
+  ): Promise<{ ok: boolean; reason?: string }> {
+    if (!socket.userId) return { ok: false, reason: 'unauthenticated' };
+    if (
+      !data ||
+      typeof data.workspaceId !== 'string' ||
+      !UUID_RE.test(data.workspaceId) ||
+      typeof data.conversationId !== 'string' ||
+      !UUID_RE.test(data.conversationId) ||
+      (data.state !== 'start' && data.state !== 'stop')
+    ) {
+      return { ok: false, reason: 'invalid_payload' };
+    }
+    const room = this.workspaceRoom(data.workspaceId);
+    if (!socket.rooms.has(room)) return { ok: false, reason: 'not_subscribed' };
+
+    const now = Date.now();
+    const lastStarts = (socket.typingStartAt ??= new Map<string, number>());
+    if (data.state === 'start') {
+      const last = lastStarts.get(data.conversationId);
+      if (last !== undefined && now - last < TYPING_START_MIN_GAP_MS) {
+        return { ok: true }; // rate-limited: dropped
+      }
+    }
+
+    const role = await this.roles.getRole(data.workspaceId, socket.userId);
+    if (!role || !roleCan(role, 'inbox:reply')) {
+      return { ok: false, reason: 'forbidden' };
+    }
+
+    const user = await this.typingUserFor(socket);
+    if (!user) return { ok: false, reason: 'unknown_user' };
+
+    if (data.state === 'start') lastStarts.set(data.conversationId, now);
+    socket.to(room).emit('inbox.typing', {
+      workspaceId: data.workspaceId,
+      conversationId: data.conversationId,
+      user,
+      state: data.state,
+    });
+    return { ok: true };
+  }
+
+  private async typingUserFor(socket: AuthedSocket): Promise<UserRef | null> {
+    if (socket.typingUser) return socket.typingUser;
+    try {
+      const row = await db.query.users.findFirst({
+        where: eq(users.id, socket.userId as string),
+        columns: { id: true, name: true, avatarUrl: true },
+      });
+      if (!row) return null;
+      socket.typingUser = {
+        id: row.id,
+        name: row.name ?? '',
+        avatarUrl: row.avatarUrl ?? null,
+      };
+      return socket.typingUser;
+    } catch (err) {
+      this.logger.error(`Typing user lookup failed: ${(err as Error).message}`);
+      return null;
+    }
   }
 
   private async userHasWorkspaceAccess(
