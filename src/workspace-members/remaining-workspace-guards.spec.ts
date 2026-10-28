@@ -188,7 +188,7 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
       updateStatus: 'inbox:reply',
       hide: 'inbox:reply',
       updateThreadStatus: 'inbox:reply',
-      syncNow: 'inbox:view',
+      syncNow: 'inbox:reply',
       sendDm: 'inbox:reply',
       sendDmTemplate: 'inbox:reply',
       createScheduled: 'inbox:reply',

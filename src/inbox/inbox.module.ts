@@ -1,6 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { InboxController } from './inbox.controller';
+import { InboxAdminController } from './inbox-admin.controller';
 import { WebhooksController } from '../channels/webhooks.controller';
 import { InboxService } from './inbox.service';
 import { InboxSettingsController } from './conversations/inbox-settings.controller';
@@ -85,6 +86,7 @@ import {
   ],
   controllers: [
     InboxController,
+    InboxAdminController,
     InboxSettingsController,
     WebhooksController,
     ...CONVERSATION_API_CONTROLLERS,
