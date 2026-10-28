@@ -42,6 +42,15 @@ import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
 import { WhatsAppTemplatesModule } from '../whatsapp-templates/whatsapp-templates.module';
 import { QUEUES } from '../queue/queue.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
+import {
+  CONVERSATION_API_CONTROLLERS,
+  CONVERSATION_API_EXPORTS,
+  CONVERSATION_API_PROVIDERS,
+} from './conversations/conversation-api.providers';
+import {
+  MESSAGING_CONTROLLERS,
+  MESSAGING_PROVIDERS,
+} from './conversations/messaging.providers';
 
 @Module({
   // ChannelsModule exposes platform services + ChannelService (token decrypt/refresh).
@@ -69,9 +78,16 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
       { name: QUEUES.DISCORD_INGEST },
       { name: QUEUES.WHATSAPP_INGEST },
       { name: QUEUES.MAESTRO_BRIDGE },
+      { name: QUEUES.INBOX_LATER },
     ),
   ],
-  controllers: [InboxController, InboxSettingsController, WebhooksController],
+  controllers: [
+    InboxController,
+    InboxSettingsController,
+    WebhooksController,
+    ...CONVERSATION_API_CONTROLLERS,
+    ...MESSAGING_CONTROLLERS,
+  ],
   providers: [
     InboxService,
     InboxSettingsService,
@@ -106,12 +122,15 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     YoutubeRetentionService,
     YoutubeRetentionScheduler,
     RedisClientProvider,
+    ...CONVERSATION_API_PROVIDERS,
+    ...MESSAGING_PROVIDERS,
   ],
   exports: [
     InboxService,
     InboxDispatcher,
     ScheduledMessagesService,
     SlackBackfillService,
+    ...CONVERSATION_API_EXPORTS,
   ],
 })
 export class InboxModule {}
