@@ -14,24 +14,17 @@ export interface CommentActionInput {
   kind: ConversationKind;
   fromMe: boolean;
   deleted: boolean;
-  isHidden: boolean;
   createdAt: Date;
   privateReplySentAt: Date | null;
   /** Viewer has inbox:reply (Guests do not). */
   canReply: boolean;
   accountLabel: string;
-  /**
-   * Bluesky only: how many replies the post's threadgate already hides.
-   * Optional; absent means "below the limit".
-   */
-  postHiddenReplyCount?: number;
 }
 
 /** Body of the `400 { reason }` the action routes send when a flag has no reason. */
 export const DISALLOWED_FALLBACK = "This isn't available for this comment";
 
 const PRIVATE_REPLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
-const BLUESKY_MAX_HIDDEN_REPLIES = 300;
 
 const YES: ActionFlag = { allowed: true };
 const no = (reason?: string): ActionFlag =>
@@ -45,7 +38,6 @@ const REASONS = {
   threadsLike: "Threads doesn't let apps like replies",
   youtubeLike: "YouTube doesn't let apps like comments",
   mastodonHide: "Mastodon doesn't let you hide replies",
-  blueskyHideLimit: 'Bluesky allows 300 hidden replies per post',
 } as const;
 
 function platformLike(platform: Platform): ActionFlag {
@@ -86,12 +78,11 @@ function platformHide(input: CommentActionInput): ActionFlag {
     // Not offered, per spec (heldForReview ruling)
     case 'youtube':
       return no(REASONS.youtubeHide);
-    // Threadgate record `hiddenReplies`, owner only, max 300
+    // Threadgate record `hiddenReplies`, owner only. The 300-per-post cap is
+    // enforced by the hide adapter (400 { reason }), not here (preflight D17).
     // https://docs.bsky.app/docs/advanced-guides/moderation
     case 'bluesky':
-      return (input.postHiddenReplyCount ?? 0) >= BLUESKY_MAX_HIDDEN_REPLIES
-        ? no(REASONS.blueskyHideLimit)
-        : YES;
+      return YES;
     case 'mastodon':
       return no(REASONS.mastodonHide);
     default:
