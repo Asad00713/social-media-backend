@@ -1,0 +1,201 @@
+import { Logger } from '@nestjs/common';
+import { InboxRealtimeService } from './inbox-realtime.service';
+import { computeLegacyCounts } from '../../legacy-counts';
+
+jest.mock('../../legacy-counts', () => ({
+  computeLegacyCounts: jest.fn(),
+}));
+
+const WS = 'ws-1';
+const legacy = {
+  perChannel: [{ channelId: 1, comments: 2, dms: 3 }],
+  smartFolders: { all: 1, unread: 1, needs_reply: 0, done: 0 },
+  total: 5,
+};
+const counts = {
+  toReply: 4,
+  later: 1,
+  scheduled: 0,
+  answeredToday: { total: 0, by: [] },
+};
+
+/** Advance fake time, then let the flush's awaited queries settle. */
+async function tick(ms: number): Promise<void> {
+  await jest.advanceTimersByTimeAsync(ms);
+  for (let i = 0; i < 20; i++) await Promise.resolve();
+}
+
+describe('InboxRealtimeService', () => {
+  let emitter: { emit: jest.Mock };
+  let presenter: { loadRows: jest.Mock; counts: jest.Mock };
+  let db: { execute: jest.Mock };
+  let archived: Map<string, string | null>;
+  let service: InboxRealtimeService;
+  let logError: jest.SpyInstance;
+
+  const emitted = (name: string) =>
+    (
+      emitter.emit.mock.calls as [string, string, Record<string, unknown>][]
+    ).filter((c) => c[1] === name);
+
+  beforeEach(() => {
+    jest.useFakeTimers();
+    logError = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    emitter = { emit: jest.fn() };
+    archived = new Map();
+    presenter = {
+      loadRows: jest.fn((ws: string, ids: string[]) =>
+        Promise.resolve(ids.map((id) => ({ id }))),
+      ),
+      counts: jest.fn().mockResolvedValue(counts),
+    };
+    // The flush selects archived_at for the id; a missing key = row gone.
+    db = {
+      execute: jest.fn((q: { queryChunks: unknown[] }) => {
+        // drizzle keeps interpolated strings raw in queryChunks.
+        const id = q.queryChunks.find(
+          (v): v is string => typeof v === 'string' && /^c[0-9]+$/.test(v),
+        );
+        const known = id !== undefined && archived.has(id);
+        return Promise.resolve({
+          rows: known ? [{ archived_at: archived.get(id) }] : [],
+        });
+      }),
+    };
+    (computeLegacyCounts as jest.Mock).mockResolvedValue(legacy);
+    service = new InboxRealtimeService(
+      emitter as never,
+      presenter as never,
+      db as never,
+    );
+    archived.set('c1', null);
+    archived.set('c2', null);
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+    jest.restoreAllMocks();
+  });
+
+  describe('conversationChanged', () => {
+    it('collapses 400 calls inside 250 ms into one upserted after 300 ms', async () => {
+      for (let i = 0; i < 400; i++) {
+        service.conversationChanged(WS, 'c1');
+        if (i % 2 === 1) await tick(1); // ~200ms total
+      }
+      // The loop ends at 200 ms; the last call was at 199 ms.
+      await tick(298);
+      expect(emitted('inbox.conversation.upserted')).toHaveLength(0);
+      await tick(1);
+      const ups = emitted('inbox.conversation.upserted');
+      expect(ups).toHaveLength(1);
+      expect(ups[0]).toEqual([
+        WS,
+        'inbox.conversation.upserted',
+        { workspaceId: WS, row: { id: 'c1' } },
+      ]);
+      expect(presenter.loadRows).toHaveBeenCalledTimes(1);
+    });
+
+    it('debounces per conversation id', async () => {
+      service.conversationChanged(WS, 'c1');
+      service.conversationChanged(WS, 'c2');
+      await tick(300);
+      expect(emitted('inbox.conversation.upserted')).toHaveLength(2);
+    });
+
+    it('emits removed when the row is archived', async () => {
+      archived.set('c1', '2026-10-20T00:00:00Z');
+      service.conversationChanged(WS, 'c1');
+      await tick(300);
+      expect(emitted('inbox.conversation.upserted')).toHaveLength(0);
+      expect(emitted('inbox.conversation.removed')[0][2]).toEqual({
+        workspaceId: WS,
+        id: 'c1',
+      });
+    });
+
+    it('emits removed when the row is gone', async () => {
+      service.conversationChanged(WS, 'c9');
+      await tick(300);
+      expect(emitted('inbox.conversation.removed')).toHaveLength(1);
+    });
+  });
+
+  describe('conversationRemoved', () => {
+    it('emits removed immediately and cancels a pending upsert', async () => {
+      service.conversationChanged(WS, 'c1');
+      service.conversationRemoved(WS, 'c1');
+      expect(emitted('inbox.conversation.removed')).toHaveLength(1);
+      await tick(1000);
+      expect(emitted('inbox.conversation.upserted')).toHaveLength(0);
+      expect(emitted('inbox.conversation.removed')).toHaveLength(1);
+    });
+  });
+
+  describe('timelineAppended', () => {
+    it('emits immediately', () => {
+      service.timelineAppended(WS, 'c1', null, 'cm1');
+      expect(emitter.emit).toHaveBeenCalledWith(WS, 'inbox.timeline.appended', {
+        workspaceId: WS,
+        conversationId: 'c1',
+        entry: null,
+        commentId: 'cm1',
+      });
+    });
+  });
+
+  describe('countsChanged', () => {
+    it('debounces 500 ms, max wait 2000 ms, then once more after calls stop', async () => {
+      for (let t = 0; t < 3000; t += 100) {
+        service.countsChanged(WS);
+        await tick(100);
+      }
+      // The max wait forced one flush at 2000 ms.
+      expect(emitted('inbox.conversation.counts.changed')).toHaveLength(1);
+      // The last call was at 2900 ms; the trailing flush is due at 3400 ms.
+      await tick(399);
+      expect(emitted('inbox.conversation.counts.changed')).toHaveLength(1);
+      await tick(1);
+      expect(emitted('inbox.conversation.counts.changed')).toHaveLength(2);
+      await tick(5000);
+      expect(emitted('inbox.conversation.counts.changed')).toHaveLength(2);
+    });
+
+    it('emits both events with exactly their payloads', async () => {
+      service.countsChanged(WS);
+      await tick(500);
+      expect(emitted('inbox.conversation.counts.changed')[0][2]).toStrictEqual({
+        workspaceId: WS,
+        counts,
+      });
+      const old = emitted('inbox.counts.changed')[0][2];
+      expect(old).toStrictEqual({
+        workspaceId: WS,
+        perChannel: legacy.perChannel,
+        smartFolders: legacy.smartFolders,
+      });
+      expect(old).not.toHaveProperty('counts');
+    });
+  });
+
+  it('logs a failing flush and still serves the next one', async () => {
+    presenter.counts.mockRejectedValueOnce(new Error('boom'));
+    service.countsChanged(WS);
+    await tick(500);
+    expect(logError).toHaveBeenCalled();
+    expect(emitter.emit).not.toHaveBeenCalled();
+    service.countsChanged(WS);
+    await tick(500);
+    expect(emitted('inbox.conversation.counts.changed')).toHaveLength(1);
+
+    presenter.loadRows.mockRejectedValueOnce(new Error('boom'));
+    service.conversationChanged(WS, 'c1');
+    await tick(300);
+    service.conversationChanged(WS, 'c1');
+    await tick(300);
+    expect(emitted('inbox.conversation.upserted')).toHaveLength(1);
+  });
+});

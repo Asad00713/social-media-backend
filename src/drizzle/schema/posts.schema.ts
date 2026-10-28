@@ -151,6 +151,11 @@ export const posts = pgTable(
     index('posts_workspace_draft_idx')
       .on(table.workspaceId, table.updatedAt.desc())
       .where(sql`${table.status} = 'draft'`),
+    // Migration 0045: serves the `targets @> ...` lookup in findOurPostId.
+    index('posts_targets_gin_idx').using(
+      'gin',
+      sql`${table.targets} jsonb_path_ops`,
+    ),
   ],
 );
 

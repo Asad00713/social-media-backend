@@ -6,7 +6,7 @@ import {
   BadRequestException,
 } from '@nestjs/common';
 import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm';
-import { db } from '../drizzle/db';
+import { db, type DbType } from '../drizzle/db';
 import {
   inboxItems,
   InboxItem,
@@ -31,6 +31,8 @@ import { ChannelService } from '../channels/services/channel.service';
 import { FacebookService } from '../channels/services/facebook.service';
 import { InstagramService } from '../channels/services/instagram.service';
 import { InboxDispatcher } from './services/inbox-dispatcher.service';
+import { InboxRealtimeService } from './conversations/services/inbox-realtime.service';
+import { computeLegacyCounts } from './legacy-counts';
 import { whatsappMessageTemplates } from '../drizzle/schema/whatsapp-templates.schema';
 import type {
   ResolvedChannel,
@@ -39,6 +41,7 @@ import type {
 } from './adapters/inbox-adapter.interface';
 import { InboxFolder, InboxSort } from './dto/list-comments.dto';
 import { InjectQueue } from '@nestjs/bullmq';
+import { pollDedupId } from './schedulers/poll-dedup';
 import { Queue } from 'bullmq';
 import { QUEUES } from '../queue/queue.module';
 
@@ -298,6 +301,42 @@ export function isSearchable(q?: string): boolean {
   return !!q && q.trim().length >= MIN_SEARCH_LENGTH;
 }
 
+/**
+ * Exact lookup of our post for a (channelId, platformPostId) pair, newest
+ * first, LIMIT 1. Targets store channelId as a string in current rows and as a
+ * number in older ones, so both forms are matched; each @> is index-assisted
+ * by posts_targets_gin_idx.
+ *
+ * The containment filter sits in a MATERIALIZED CTE so it is a fence: without
+ * it, for a post that is not ours (no match) the planner can pick a backwards
+ * walk of posts_created_at_idx for ORDER BY .. LIMIT 1 and scan the whole
+ * table. The GIN index always drives; the sort happens on the few matches.
+ */
+export function findOurPostIdQuery(channelId: number, platformPostId: string) {
+  const asString = JSON.stringify([
+    { channelId: String(channelId), platformPostId },
+  ]);
+  const asNumber = JSON.stringify([{ channelId, platformPostId }]);
+  return sql`
+    WITH matches AS MATERIALIZED (
+      SELECT "id", "created_at" FROM "posts"
+      WHERE ("targets" @> ${asString}::jsonb OR "targets" @> ${asNumber}::jsonb)
+    )
+    SELECT "id" FROM matches ORDER BY "created_at" DESC LIMIT 1`;
+}
+
+/** Runs {@link findOurPostIdQuery}; returns the post id or null. */
+export async function findOurPostIdRows(
+  database: DbType,
+  channelId: number,
+  platformPostId: string,
+): Promise<{ id: string }[]> {
+  const res = await database.execute<{ id: string }>(
+    findOurPostIdQuery(channelId, platformPostId),
+  );
+  return res.rows;
+}
+
 @Injectable()
 export class InboxService {
   private readonly logger = new Logger(InboxService.name);
@@ -309,6 +348,7 @@ export class InboxService {
     private readonly facebookService: FacebookService,
     private readonly instagramService: InstagramService,
     @InjectQueue(QUEUES.INBOX_POLLING) private readonly pollQueue: Queue,
+    private readonly realtime: InboxRealtimeService,
   ) {}
 
   /** Resolve our own identity on a channel for `fromMe` row authorship. */
@@ -667,7 +707,10 @@ export class InboxService {
    * its derived status, neither of which exists until the group is built.
    */
   private sortThreadSummaries(
-    rows: { summary: { status: InboxItemStatus; unreadCount: number }; latestAt: Date }[],
+    rows: {
+      summary: { status: InboxItemStatus; unreadCount: number };
+      latestAt: Date;
+    }[],
     sort?: InboxSort,
   ): void {
     if (sort === 'oldest') {
@@ -682,7 +725,8 @@ export class InboxService {
         return 2;
       };
       rows.sort(
-        (a, b) => rank(a) - rank(b) || b.latestAt.getTime() - a.latestAt.getTime(),
+        (a, b) =>
+          rank(a) - rank(b) || b.latestAt.getTime() - a.latestAt.getTime(),
       );
       return;
     }
@@ -747,9 +791,7 @@ export class InboxService {
   ): Promise<Map<string, { id: string; name: string }>> {
     const ids = [
       ...new Set(
-        items
-          .map((i) => i.authoredByUserId)
-          .filter((id): id is string => !!id),
+        items.map((i) => i.authoredByUserId).filter((id): id is string => !!id),
       ),
     ];
     if (ids.length === 0) return new Map();
@@ -1298,63 +1340,8 @@ export class InboxService {
     return this.computeCounts(workspaceId);
   }
 
-  private async computeCounts(workspaceId: string): Promise<InboxCounts> {
-    // Per-channel unread comment counts
-    const perChannelRows = await db
-      .select({
-        channelId: inboxItems.channelId,
-        comments: sql<number>`count(*) filter (where ${inboxItems.type} = 'comment' and ${inboxItems.status} = 'unread' and ${inboxItems.fromMe} = false)`,
-        dms: sql<number>`count(*) filter (where ${inboxItems.type} = 'dm' and ${inboxItems.status} = 'unread' and ${inboxItems.fromMe} = false)`,
-      })
-      .from(inboxItems)
-      .where(
-        and(
-          eq(inboxItems.workspaceId, workspaceId),
-          // Archived (inbox-deleted) rows must not count toward badges.
-          isNull(inboxItems.archivedAt),
-        ),
-      )
-      .groupBy(inboxItems.channelId);
-
-    const folderRows = await db
-      .select({
-        all: sql<number>`count(*)`,
-        unread: sql<number>`count(*) filter (where ${inboxItems.status} = 'unread' and ${inboxItems.fromMe} = false)`,
-        needs_reply: sql<number>`count(*) filter (where ${inboxItems.status} = 'needs_reply')`,
-        done: sql<number>`count(*) filter (where ${inboxItems.status} = 'done')`,
-      })
-      .from(inboxItems)
-      .where(
-        and(
-          eq(inboxItems.workspaceId, workspaceId),
-          eq(inboxItems.type, 'comment'),
-          isNull(inboxItems.archivedAt),
-        ),
-      );
-
-    const folder = folderRows[0] ?? {
-      all: 0,
-      unread: 0,
-      needs_reply: 0,
-      done: 0,
-    };
-
-    const perChannel = perChannelRows.map((r) => ({
-      channelId: r.channelId,
-      comments: Number(r.comments),
-      dms: Number(r.dms),
-    }));
-
-    return {
-      perChannel,
-      smartFolders: {
-        all: Number(folder.all),
-        unread: Number(folder.unread),
-        needs_reply: Number(folder.needs_reply),
-        done: Number(folder.done),
-      },
-      total: perChannel.reduce((acc, r) => acc + r.comments + r.dms, 0),
-    };
+  private computeCounts(workspaceId: string): Promise<InboxCounts> {
+    return computeLegacyCounts(db, workspaceId);
   }
 
   // ==========================================================================
@@ -1626,20 +1613,12 @@ export class InboxService {
     return { success: true, archivedCount: updated.length };
   }
 
-  /** Fire-and-forget counts emit after mutations. */
-  private async emitCounts(workspaceId: string): Promise<void> {
-    try {
-      const counts = await this.computeCounts(workspaceId);
-      this.emitter.emit(workspaceId, 'inbox.counts.changed', {
-        workspaceId,
-        perChannel: counts.perChannel,
-        smartFolders: counts.smartFolders,
-      });
-    } catch (err) {
-      this.logger.error(
-        `Failed to emit inbox counts for ws=${workspaceId}: ${(err as Error).message}`,
-      );
-    }
+  /**
+   * Fire-and-forget counts emit after mutations. The realtime service
+   * debounces and emits both the legacy and the new counts event.
+   */
+  private emitCounts(workspaceId: string): void {
+    this.realtime.countsChanged(workspaceId);
   }
 
   // ==========================================================================
@@ -1814,13 +1793,13 @@ export class InboxService {
    *
    * Idempotent + safe — only deletes rows whose post_id provably refers to
    * a comment in the same channel. Returns the number deleted.
+   *
+   * No membership check: destructive, so the only route that reaches it is
+   * the super-admin one (InboxAdminController).
    */
-  async cleanupOrphanedThreadKeys(
+  async cleanupOrphanedThreadKeysForWorkspace(
     workspaceId: string,
-    userId: string,
   ): Promise<{ deleted: number; channels: number[] }> {
-    await this.assertWorkspaceAccess(workspaceId, userId);
-
     const result = await db.execute(sql`
       DELETE FROM inbox_items
       WHERE workspace_id = ${workspaceId}
@@ -1978,14 +1957,8 @@ export class InboxService {
     channels: number[];
     webhookActivated: number;
     webhookErrors: { channelId: number; reason: string }[];
-    cleanedUp: number;
   }> {
     await this.assertWorkspaceAccess(workspaceId, userId);
-
-    // Defensive: remove inbox_items whose post-id is actually a comment-id.
-    // This heals any rows that were ingested before the canonical-root
-    // resolution fix landed in the Bluesky adapter.
-    const cleanup = await this.cleanupOrphanedThreadKeys(workspaceId, userId);
 
     const supported = this.dispatcher.supportedPlatforms();
 
@@ -2090,6 +2063,13 @@ export class InboxService {
         {
           delay: i * 250,
           jobId: `inbox-sync-${eligible[i].id}-${Math.floor(Date.now() / 60_000)}`,
+          // One active poll per channel (shared with the cron). A sync that
+          // arrives while that channel's poll is running is dropped, and the
+          // running poll may overwrite the last_inbox_poll_at reset this sync
+          // just made; the next scheduled poll then continues from whatever
+          // cursor is stored. That race predates this change (it existed
+          // before dedup was added) and is not made worse by it.
+          deduplication: { id: pollDedupId(eligible[i].id) },
         },
       );
     }
@@ -2099,7 +2079,6 @@ export class InboxService {
       channels: eligible.map((r) => r.id),
       webhookActivated,
       webhookErrors,
-      cleanedUp: cleanup.deleted,
     };
   }
 
@@ -2188,25 +2167,8 @@ export class InboxService {
     channelId: number,
     platformPostId: string,
   ): Promise<string | null> {
-    // Posts store targets as JSONB; scan recent posts referencing this channel.
-    const rows = await db
-      .select({ id: postsTable.id, targets: postsTable.targets })
-      .from(postsTable)
-      .where(
-        sql`${postsTable.targets} @> ${JSON.stringify([{ channelId: String(channelId) }])}::jsonb`,
-      )
-      .limit(50);
-
-    for (const r of rows) {
-      const targets = r.targets ?? [];
-      const hit = targets.find(
-        (t) =>
-          String(t.channelId) === String(channelId) &&
-          t.platformPostId === platformPostId,
-      );
-      if (hit) return r.id;
-    }
-    return null;
+    const [row] = await findOurPostIdRows(db, channelId, platformPostId);
+    return row?.id ?? null;
   }
 
   // ==========================================================================

@@ -133,7 +133,7 @@ export class ConversationPresenter {
     );
     const byId = new Map(records.map((r) => [r.id, r]));
     const out: ConversationRow[] = [];
-    for (const id of ids) {
+    for (const id of new Set(ids)) {
       const rec = byId.get(id);
       if (rec) out.push(presentRow(rec, now));
     }

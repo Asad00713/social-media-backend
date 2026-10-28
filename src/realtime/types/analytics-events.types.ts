@@ -2,6 +2,13 @@ import type {
   ComposerPublishStateChangedPayload,
   ComposerDraftStatusChangedPayload,
 } from './composer-events.types';
+import type {
+  ConversationCountsChangedEvent,
+  ConversationRemovedEvent,
+  ConversationUpsertedEvent,
+  TimelineAppendedEvent,
+  TypingEvent,
+} from '../../inbox/conversations/dto/contract';
 
 export type AnalyticsEventName =
   | 'channel.snapshot.updated'
@@ -13,6 +20,11 @@ export type AnalyticsEventName =
   | 'inbox.item.created'
   | 'inbox.item.updated'
   | 'inbox.counts.changed'
+  | 'inbox.conversation.upserted'
+  | 'inbox.conversation.removed'
+  | 'inbox.conversation.counts.changed'
+  | 'inbox.timeline.appended'
+  | 'inbox.typing'
   | 'scheduled.message.created'
   | 'scheduled.message.updated'
   | 'scheduled.message.cancelled'
@@ -251,6 +263,11 @@ export type AnalyticsEventPayloadMap = {
   'inbox.item.created': InboxItemCreatedPayload;
   'inbox.item.updated': InboxItemUpdatedPayload;
   'inbox.counts.changed': InboxCountsChangedPayload;
+  'inbox.conversation.upserted': ConversationUpsertedEvent;
+  'inbox.conversation.removed': ConversationRemovedEvent;
+  'inbox.conversation.counts.changed': ConversationCountsChangedEvent;
+  'inbox.timeline.appended': TimelineAppendedEvent;
+  'inbox.typing': TypingEvent;
   'scheduled.message.created': ScheduledInboxCreatedPayload;
   'scheduled.message.updated': ScheduledInboxUpdatedPayload;
   'scheduled.message.cancelled': ScheduledInboxCancelledPayload;
