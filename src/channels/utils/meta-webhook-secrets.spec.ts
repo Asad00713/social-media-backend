@@ -30,6 +30,59 @@ describe('metaSigningSecrets', () => {
   });
 });
 
+describe('metaSigningSecrets - Facebook app secret', () => {
+  const env = {
+    INSTAGRAM_CLIENT_SECRET: 'ig',
+    META_APP_SECRET: 'meta',
+    FACEBOOK_CLIENT_SECRET: 'fbclient',
+    THREADS_CLIENT_SECRET: 'th',
+  };
+
+  it('facebook accepts META_APP_SECRET then FACEBOOK_CLIENT_SECRET', () => {
+    expect(metaSigningSecrets('facebook', env)).toEqual(['meta', 'fbclient']);
+  });
+
+  it('instagram accepts its own, META_APP_SECRET, then FACEBOOK_CLIENT_SECRET', () => {
+    expect(metaSigningSecrets('instagram', env)).toEqual([
+      'ig',
+      'meta',
+      'fbclient',
+    ]);
+  });
+
+  it('threads stays its own then META_APP_SECRET', () => {
+    expect(metaSigningSecrets('threads', env)).toEqual(['th', 'meta']);
+  });
+
+  it('trims, drops blanks and de-duplicates', () => {
+    expect(
+      metaSigningSecrets('facebook', {
+        META_APP_SECRET: ' same ',
+        FACEBOOK_CLIENT_SECRET: 'same',
+      }),
+    ).toEqual(['same']);
+    expect(
+      metaSigningSecrets('instagram', {
+        META_APP_SECRET: '  ',
+        FACEBOOK_CLIENT_SECRET: 'fbclient',
+      }),
+    ).toEqual(['fbclient']);
+  });
+
+  it('verifies a delivery signed with FACEBOOK_CLIENT_SECRET', () => {
+    const body = Buffer.from('{"a":1}');
+    expect(
+      isValidMetaDelivery('facebook', sign('fbclient', body), body, env),
+    ).toBe(true);
+    expect(
+      isValidMetaDelivery('instagram', sign('fbclient', body), body, env),
+    ).toBe(true);
+    expect(
+      isValidMetaDelivery('threads', sign('fbclient', body), body, env),
+    ).toBe(false);
+  });
+});
+
 describe('isValidMetaDelivery', () => {
   const env = { INSTAGRAM_CLIENT_SECRET: 'ig', META_APP_SECRET: 'fb' };
   const body = Buffer.from('{"a":1}');
