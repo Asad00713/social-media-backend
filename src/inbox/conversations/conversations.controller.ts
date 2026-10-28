@@ -19,7 +19,7 @@ import { ConversationPresenter } from './services/conversation-presenter.service
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class ConversationsController {
   constructor(
-    private readonly list_: ConversationListService,
+    private readonly listService: ConversationListService,
     private readonly presenter: ConversationPresenter,
   ) {}
 
@@ -30,10 +30,10 @@ export class ConversationsController {
     @CurrentUser() user: { userId: string },
     @Query() query: ListConversationsQueryDto,
   ): Promise<ListConversationsResponse> {
-    return await this.list_.list(workspaceId, user.userId, query);
+    return await this.listService.list(workspaceId, user.userId, query);
   }
 
-  // Declared before any `:id` route so "counts" is never read as an id.
+  // Keep `counts` declared BEFORE any `:id` route (Task 12b adds them) so it is never read as an id.
   @RequireCapability('inbox:view')
   @Get('counts')
   async counts(

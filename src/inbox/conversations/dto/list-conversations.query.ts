@@ -39,6 +39,8 @@ export class ListConversationsQueryDto {
         ),
   )
   @IsInt({ each: true })
+  @Min(1, { each: true })
+  @Max(2147483647, { each: true })
   @ArrayMaxSize(50)
   channelIds?: number[];
 
@@ -61,6 +63,7 @@ export class ListConversationsQueryDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(500)
   cursor?: string;
 
   @IsOptional()

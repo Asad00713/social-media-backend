@@ -273,6 +273,13 @@ describeInboxDb('ConversationListService', () => {
       const c = await seedConv(client, workspaceId, ch, {
         searchText: 'about 500 things',
       });
+      // A DONE conversation containing "a": it is outside the to_reply view,
+      // so it only shows up if the one-letter query were (wrongly) applied.
+      const doneA = await seedConv(client, workspaceId, ch, {
+        status: 'done',
+        doneAt: new Date(NOW.getTime() - DAY).toISOString(),
+        searchText: 'a done thread',
+      });
       const ids = async (s: string) =>
         (await svc.list(workspaceId, ownerId, q({ q: s }), NOW)).rows
           .map((r) => r.id)
@@ -280,6 +287,54 @@ describeInboxDb('ConversationListService', () => {
       expect(await ids('pumpkin')).toEqual([a]);
       expect(await ids('50%')).toEqual([b]);
       expect(await ids('a')).toEqual([a, b, c].sort());
+      expect(await ids('a')).not.toContain(doneA);
+    }));
+
+  it('stays inside its workspace for list, total and search', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId, ch, svc } = await setup(db, client);
+      const other = await seedWorkspace(client);
+      const otherCh = await seedChannel(client, other.workspaceId, 'facebook');
+      const mine = await seedConv(client, workspaceId, ch, {
+        threadKey: `${otherCh}:shared`,
+        searchText: 'unrelated words',
+        unread: 1,
+        assignee: ownerId,
+      });
+      // Same text, kind, status, unread and assignee shape, other workspace.
+      await seedConv(client, other.workspaceId, otherCh, {
+        searchText: 'pumpkin latte',
+        unread: 1,
+        assignee: other.ownerId,
+      });
+      // An item in the other workspace whose thread_key equals one of ours.
+      await seedItem(client, {
+        workspaceId: other.workspaceId,
+        channelId: otherCh,
+        platform: 'facebook',
+        type: 'dm',
+        conversationId: 'shared',
+        platformCreatedAt: new Date('2026-10-01T00:00:00Z'),
+        text: 'Pumpkin latte please',
+      });
+      const list = await svc.list(workspaceId, ownerId, q(), NOW);
+      expect(list.rows.map((r) => r.id)).toEqual([mine]);
+      expect(list.total).toBe(1);
+      const filtered = await svc.list(
+        workspaceId,
+        ownerId,
+        q({ unread: true, assigned: 'me', type: 'message' }),
+        NOW,
+      );
+      expect(filtered.total).toBe(1);
+      const found = await svc.list(
+        workspaceId,
+        ownerId,
+        q({ q: 'pumpkin' }),
+        NOW,
+      );
+      expect(found.rows).toEqual([]);
+      expect(found.total).toBe(0);
     }));
 
   it('sort=window: 2h before 20h before no window', () =>
