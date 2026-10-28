@@ -5,6 +5,7 @@ import { WebhooksController } from '../channels/webhooks.controller';
 import { InboxService } from './inbox.service';
 import { InboxSettingsController } from './conversations/inbox-settings.controller';
 import { InboxSettingsService } from './conversations/services/inbox-settings.service';
+import { ConversationPresenter } from './conversations/services/conversation-presenter.service';
 import { InboxDispatcher } from './services/inbox-dispatcher.service';
 import { BlueskyInboxAdapter } from './adapters/bluesky-inbox.adapter';
 import { MastodonInboxAdapter } from './adapters/mastodon-inbox.adapter';
@@ -74,6 +75,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
   providers: [
     InboxService,
     InboxSettingsService,
+    ConversationPresenter,
     InboxDispatcher,
     BlueskyInboxAdapter,
     MastodonInboxAdapter,
