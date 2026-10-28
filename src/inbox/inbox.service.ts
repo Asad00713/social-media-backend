@@ -1853,18 +1853,9 @@ export class InboxService {
    *
    * Idempotent + safe — only deletes rows whose post_id provably refers to
    * a comment in the same channel. Returns the number deleted.
-   */
-  async cleanupOrphanedThreadKeys(
-    workspaceId: string,
-    userId: string,
-  ): Promise<{ deleted: number; channels: number[] }> {
-    await this.assertWorkspaceAccess(workspaceId, userId);
-    return this.cleanupOrphanedThreadKeysForWorkspace(workspaceId);
-  }
-
-  /**
-   * The cleanup body without a membership check. Destructive, so the only
-   * route that reaches it is the super-admin one (InboxAdminController).
+   *
+   * No membership check: destructive, so the only route that reaches it is
+   * the super-admin one (InboxAdminController).
    */
   async cleanupOrphanedThreadKeysForWorkspace(
     workspaceId: string,
@@ -2132,10 +2123,12 @@ export class InboxService {
         {
           delay: i * 250,
           jobId: `inbox-sync-${eligible[i].id}-${Math.floor(Date.now() / 60_000)}`,
-          // One active poll per channel (shared with the cron). A sync while
-          // that channel's poll is running is ignored for that channel; the
-          // sync already reset last_inbox_poll_at, so the next cron poll
-          // does the full refresh.
+          // One active poll per channel (shared with the cron). A sync that
+          // arrives while that channel's poll is running is dropped, and the
+          // running poll may overwrite the last_inbox_poll_at reset this sync
+          // just made; the next scheduled poll then continues from whatever
+          // cursor is stored. That race predates this change (it existed
+          // before dedup was added) and is not made worse by it.
           deduplication: { id: pollDedupId(eligible[i].id) },
         },
       );

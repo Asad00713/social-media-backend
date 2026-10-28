@@ -119,12 +119,10 @@ describe('InboxService.syncNow', () => {
       service as any,
       'cleanupOrphanedThreadKeysForWorkspace',
     );
-    const legacy = jest.spyOn(service as any, 'cleanupOrphanedThreadKeys');
 
     const result = await service.syncNow(WS, 'user-1');
 
     expect(cleanup).not.toHaveBeenCalled();
-    expect(legacy).not.toHaveBeenCalled();
     expect(result).not.toHaveProperty('cleanedUp');
     expect(result).toEqual({
       queued: 0,
@@ -132,5 +130,50 @@ describe('InboxService.syncNow', () => {
       webhookActivated: 0,
       webhookErrors: [],
     });
+  });
+
+  it('enqueues each poll with the per-channel dedup id and reports queued', async () => {
+    const { db } = jest.requireMock('../drizzle/db') as {
+      db: { select: jest.Mock; update: jest.Mock };
+    };
+    db.select.mockReturnValueOnce({
+      from: () => ({
+        where: () =>
+          Promise.resolve([
+            { id: 7, platform: 'twitter', platformAccountId: 'a' },
+            { id: 9, platform: 'twitter', platformAccountId: 'b' },
+          ]),
+      }),
+    });
+    db.update.mockReturnValueOnce({
+      set: () => ({ where: () => Promise.resolve() }),
+    });
+    const add = jest.fn();
+    const service = new InboxService(
+      {} as never,
+      { supportedPlatforms: () => ['twitter'] } as never,
+      {} as never,
+      {} as never,
+      {} as never,
+      { add } as never,
+    );
+    jest
+      .spyOn(service as any, 'assertWorkspaceAccess')
+      .mockResolvedValue(undefined);
+
+    const result = await service.syncNow(WS, 'user-1');
+
+    expect(result.queued).toBe(2);
+    expect(add).toHaveBeenCalledTimes(2);
+    expect(add).toHaveBeenCalledWith(
+      'poll',
+      { channelId: 7 },
+      expect.objectContaining({ deduplication: { id: 'inbox-poll-7' } }),
+    );
+    expect(add).toHaveBeenCalledWith(
+      'poll',
+      { channelId: 9 },
+      expect.objectContaining({ deduplication: { id: 'inbox-poll-9' } }),
+    );
   });
 });
