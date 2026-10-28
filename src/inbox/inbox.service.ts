@@ -31,6 +31,8 @@ import { ChannelService } from '../channels/services/channel.service';
 import { FacebookService } from '../channels/services/facebook.service';
 import { InstagramService } from '../channels/services/instagram.service';
 import { InboxDispatcher } from './services/inbox-dispatcher.service';
+import { InboxRealtimeService } from './conversations/services/inbox-realtime.service';
+import { computeLegacyCounts } from './legacy-counts';
 import { whatsappMessageTemplates } from '../drizzle/schema/whatsapp-templates.schema';
 import type {
   ResolvedChannel,
@@ -309,6 +311,7 @@ export class InboxService {
     private readonly facebookService: FacebookService,
     private readonly instagramService: InstagramService,
     @InjectQueue(QUEUES.INBOX_POLLING) private readonly pollQueue: Queue,
+    private readonly realtime: InboxRealtimeService,
   ) {}
 
   /** Resolve our own identity on a channel for `fromMe` row authorship. */
@@ -1298,63 +1301,8 @@ export class InboxService {
     return this.computeCounts(workspaceId);
   }
 
-  private async computeCounts(workspaceId: string): Promise<InboxCounts> {
-    // Per-channel unread comment counts
-    const perChannelRows = await db
-      .select({
-        channelId: inboxItems.channelId,
-        comments: sql<number>`count(*) filter (where ${inboxItems.type} = 'comment' and ${inboxItems.status} = 'unread' and ${inboxItems.fromMe} = false)`,
-        dms: sql<number>`count(*) filter (where ${inboxItems.type} = 'dm' and ${inboxItems.status} = 'unread' and ${inboxItems.fromMe} = false)`,
-      })
-      .from(inboxItems)
-      .where(
-        and(
-          eq(inboxItems.workspaceId, workspaceId),
-          // Archived (inbox-deleted) rows must not count toward badges.
-          isNull(inboxItems.archivedAt),
-        ),
-      )
-      .groupBy(inboxItems.channelId);
-
-    const folderRows = await db
-      .select({
-        all: sql<number>`count(*)`,
-        unread: sql<number>`count(*) filter (where ${inboxItems.status} = 'unread' and ${inboxItems.fromMe} = false)`,
-        needs_reply: sql<number>`count(*) filter (where ${inboxItems.status} = 'needs_reply')`,
-        done: sql<number>`count(*) filter (where ${inboxItems.status} = 'done')`,
-      })
-      .from(inboxItems)
-      .where(
-        and(
-          eq(inboxItems.workspaceId, workspaceId),
-          eq(inboxItems.type, 'comment'),
-          isNull(inboxItems.archivedAt),
-        ),
-      );
-
-    const folder = folderRows[0] ?? {
-      all: 0,
-      unread: 0,
-      needs_reply: 0,
-      done: 0,
-    };
-
-    const perChannel = perChannelRows.map((r) => ({
-      channelId: r.channelId,
-      comments: Number(r.comments),
-      dms: Number(r.dms),
-    }));
-
-    return {
-      perChannel,
-      smartFolders: {
-        all: Number(folder.all),
-        unread: Number(folder.unread),
-        needs_reply: Number(folder.needs_reply),
-        done: Number(folder.done),
-      },
-      total: perChannel.reduce((acc, r) => acc + r.comments + r.dms, 0),
-    };
+  private computeCounts(workspaceId: string): Promise<InboxCounts> {
+    return computeLegacyCounts(db, workspaceId);
   }
 
   // ==========================================================================
@@ -1626,20 +1574,12 @@ export class InboxService {
     return { success: true, archivedCount: updated.length };
   }
 
-  /** Fire-and-forget counts emit after mutations. */
-  private async emitCounts(workspaceId: string): Promise<void> {
-    try {
-      const counts = await this.computeCounts(workspaceId);
-      this.emitter.emit(workspaceId, 'inbox.counts.changed', {
-        workspaceId,
-        perChannel: counts.perChannel,
-        smartFolders: counts.smartFolders,
-      });
-    } catch (err) {
-      this.logger.error(
-        `Failed to emit inbox counts for ws=${workspaceId}: ${(err as Error).message}`,
-      );
-    }
+  /**
+   * Fire-and-forget counts emit after mutations. The realtime service
+   * debounces and emits both the legacy and the new counts event.
+   */
+  private emitCounts(workspaceId: string): void {
+    this.realtime.countsChanged(workspaceId);
   }
 
   // ==========================================================================
