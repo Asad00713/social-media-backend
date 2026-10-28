@@ -4,6 +4,9 @@ import {
   YOUTUBE_RETENTION_DAYS,
 } from './youtube-retention.service';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
+import { ConversationSyncService } from '../conversations/services/conversation-sync.service';
+
+const sync = { syncThreads: jest.fn().mockResolvedValue([]) };
 
 const execute = jest.fn();
 const fakeDb = { execute };
@@ -13,6 +16,7 @@ async function build() {
     providers: [
       YoutubeRetentionService,
       { provide: DRIZZLE, useValue: fakeDb },
+      { provide: ConversationSyncService, useValue: sync },
     ],
   }).compile();
   return mod.get(YoutubeRetentionService);
@@ -121,5 +125,34 @@ describe('YoutubeRetentionService', () => {
     const svc = await build();
     await svc.wipeExpiredContent(new Date('2026-07-18T00:00:00Z'));
     expect(sqlText()).toContain('IS NOT NULL');
+  });
+
+  it('re-syncs the affected conversations once per workspace after the wipe', async () => {
+    sync.syncThreads.mockClear();
+    execute.mockResolvedValue({
+      rowCount: 3,
+      rows: [
+        { workspace_id: 'w1', thread_key: '1:v1' },
+        { workspace_id: 'w1', thread_key: '1:v1' },
+        { workspace_id: 'w2', thread_key: '2:v2' },
+      ],
+    });
+    const svc = await build();
+    await svc.wipeExpiredContent(new Date('2026-07-18T00:00:00Z'));
+    expect(sync.syncThreads).toHaveBeenCalledTimes(2);
+    expect(sync.syncThreads).toHaveBeenCalledWith('w1', new Set(['1:v1']));
+    expect(sync.syncThreads).toHaveBeenCalledWith('w2', new Set(['2:v2']));
+  });
+
+  it('does not fail the retention run when a sync throws', async () => {
+    sync.syncThreads.mockRejectedValueOnce(new Error('boom'));
+    execute.mockResolvedValue({
+      rowCount: 1,
+      rows: [{ workspace_id: 'w1', thread_key: '1:v1' }],
+    });
+    const svc = await build();
+    await expect(
+      svc.wipeExpiredContent(new Date('2026-07-18T00:00:00Z')),
+    ).resolves.toMatchObject({ wiped: 1 });
   });
 });

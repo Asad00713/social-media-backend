@@ -6,6 +6,7 @@ import {
   YOUTUBE_RETENTION_DAYS,
 } from '../services/youtube-retention.service';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
+import { ConversationSyncService } from '../conversations/services/conversation-sync.service';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -72,6 +73,10 @@ describe('retention boundary (real service)', () => {
       providers: [
         YoutubeRetentionService,
         { provide: DRIZZLE, useValue: db },
+        {
+          provide: ConversationSyncService,
+          useValue: { syncThreads: jest.fn() },
+        },
       ],
     }).compile();
     const service = mod.get(YoutubeRetentionService);

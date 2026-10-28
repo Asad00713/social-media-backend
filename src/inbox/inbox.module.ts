@@ -133,6 +133,7 @@ import {
   ],
   exports: [
     InboxService,
+    ConversationSyncService,
     InboxDispatcher,
     ScheduledMessagesService,
     SlackBackfillService,

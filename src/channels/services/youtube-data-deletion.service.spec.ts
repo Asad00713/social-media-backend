@@ -1,6 +1,9 @@
 import { Test } from '@nestjs/testing';
 import { YoutubeDataDeletionService } from './youtube-data-deletion.service';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
+import { ConversationSyncService } from '../../inbox/conversations/services/conversation-sync.service';
+
+const sync = { syncThreads: jest.fn().mockResolvedValue([]) };
 
 const execute = jest.fn();
 const fakeDb = {
@@ -13,6 +16,7 @@ async function build() {
     providers: [
       YoutubeDataDeletionService,
       { provide: DRIZZLE, useValue: fakeDb },
+      { provide: ConversationSyncService, useValue: sync },
     ],
   }).compile();
   return mod.get(YoutubeDataDeletionService);
@@ -26,6 +30,24 @@ describe('YoutubeDataDeletionService', () => {
   beforeEach(() => {
     execute.mockReset();
     execute.mockResolvedValue({ rowCount: 3, rows: [] });
+  });
+
+  it('re-syncs the deleted items conversations after the transaction commits', async () => {
+    sync.syncThreads.mockClear();
+    execute.mockResolvedValueOnce({
+      rowCount: 2,
+      rows: [
+        { workspace_id: 'ws', thread_key: '1:v1' },
+        { workspace_id: 'ws', thread_key: '1:v2' },
+      ],
+    });
+    const svc = await build();
+    await svc.deleteAllYoutubeData(1, 'ws');
+    expect(sync.syncThreads).toHaveBeenCalledWith(
+      'ws',
+      new Set(['1:v1', '1:v2']),
+    );
+    expect(allStatementsSql()).toContain('RETURNING workspace_id, thread_key');
   });
 
   it('reports what it deleted from every table', async () => {

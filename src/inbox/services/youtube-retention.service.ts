@@ -1,12 +1,18 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
+import { ConversationSyncService } from '../conversations/services/conversation-sync.service';
 
 /**
  * YouTube Developer Policy III.E.4.c: Authorized Data other than analytics and
  * statistics must be deleted or refreshed within 30 calendar days.
  */
 export const YOUTUBE_RETENTION_DAYS = 30;
+
+interface WipedRow {
+  workspace_id: string;
+  thread_key: string | null;
+}
 
 export interface RetentionResult {
   wiped: number;
@@ -53,7 +59,10 @@ export interface RetentionResult {
 export class YoutubeRetentionService {
   private readonly logger = new Logger(YoutubeRetentionService.name);
 
-  constructor(@Inject(DRIZZLE) private readonly db: any) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: any,
+    private readonly conversationSync: ConversationSyncService,
+  ) {}
 
   async wipeExpiredContent(now: Date = new Date()): Promise<RetentionResult> {
     const cutoff = new Date(
@@ -80,9 +89,33 @@ export class YoutubeRetentionService {
           OR author_platform_id IS NOT NULL
           OR metadata ? 'authorChannelUrl'
         )
+      RETURNING workspace_id, thread_key
     `);
 
     const wiped = Number(result?.rowCount ?? 0);
+
+    // The conversation copies (snippet, author label, participant, search text)
+    // were derived from the words just wiped, so recompute them. The wipe has
+    // committed; a sync failure is logged and must not fail the retention job.
+    const keysByWorkspace = new Map<string, Set<string>>();
+    const wipedRows = (result as { rows?: WipedRow[] } | undefined)?.rows;
+    for (const r of wipedRows ?? []) {
+      if (!r.thread_key) continue;
+      const set = keysByWorkspace.get(r.workspace_id) ?? new Set<string>();
+      set.add(r.thread_key);
+      keysByWorkspace.set(r.workspace_id, set);
+    }
+    for (const [workspaceId, keys] of keysByWorkspace) {
+      try {
+        await this.conversationSync.syncThreads(workspaceId, keys);
+      } catch (err) {
+        this.logger.error(
+          `YouTube retention: conversation sync failed for workspace ${workspaceId}: ${
+            err instanceof Error ? err.message : String(err)
+          }`,
+        );
+      }
+    }
     if (wiped > 0) {
       this.logger.log(
         `YouTube retention: wiped content on ${wiped} inbox items older than ` +

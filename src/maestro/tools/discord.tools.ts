@@ -335,6 +335,7 @@ export function createDiscordTools(
             conversationId: channel.id,
             platformItemId: sent.id,
             text,
+            authoredByUserId: ctx.userId,
             attachments: imageUrls.map((url) => ({
               kind: 'image' as const,
               url,
