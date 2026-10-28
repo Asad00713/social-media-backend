@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import type { DbType } from '../../../drizzle/db';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
@@ -83,6 +83,8 @@ const lockOf = (workspaceId: string, threadKey: string) =>
  */
 @Injectable()
 export class ConversationSyncService {
+  private readonly logger = new Logger(ConversationSyncService.name);
+
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
     private readonly realtime: InboxRealtimeService,
@@ -150,7 +152,12 @@ export class ConversationSyncService {
       `);
       const from = ids.rows.find((r) => r.thread_key === fromKey);
       const to = ids.rows.find((r) => r.thread_key === toKey);
-      if (!from || !to) return;
+      if (!from || !to) {
+        this.logger.warn(
+          `rekey ${fromKey} -> ${toKey} in ws=${workspaceId}: nothing to move (from=${!!from}, to=${!!to}); was the item re-keyed first?`,
+        );
+        return;
+      }
       await tx.execute(sql`
         UPDATE inbox_notes SET conversation_id = ${to.id}::uuid
          WHERE conversation_id = ${from.id}::uuid

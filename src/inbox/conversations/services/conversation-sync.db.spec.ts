@@ -263,6 +263,95 @@ describeInboxDb('ConversationSyncService.syncThread', () => {
       });
     }));
 
+  it('keeps the customer as title and participant when we replied last', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const inbound = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'instagram',
+        type: 'dm',
+        conversationId: 'thr1',
+        text: 'help',
+        authorHandle: 'maya',
+        authorDisplayName: 'Maya K',
+        authorPlatformId: 'ig-77',
+        platformCreatedAt: T0,
+      });
+      await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'instagram',
+        type: 'dm',
+        conversationId: 'thr1',
+        fromMe: true,
+        authoredByUserId: ownerId,
+        authorHandle: 'ourbrand',
+        authorDisplayName: 'Our Brand',
+        authorPlatformId: 'ig-us',
+        text: 'on it',
+        platformCreatedAt: at(1),
+      });
+      const { service } = build(db);
+      await service.syncThread(workspaceId, inbound.threadKey!);
+      expect(await conv(client, workspaceId, inbound.threadKey!)).toMatchObject(
+        {
+          title: 'Maya K',
+          participant_handle: 'maya',
+          participant_name: 'Maya K',
+          participant_platform_id: 'ig-77',
+          last_from_me: true,
+          last_snippet: 'on it',
+        },
+      );
+    }));
+
+  it('does not treat our own authored reply as a platform reply (keep-open stays open)', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const inbound = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'instagram',
+        type: 'dm',
+        conversationId: 'thr1',
+        text: 'help',
+        authorHandle: 'maya',
+        platformCreatedAt: T0,
+      });
+      const key = inbound.threadKey!;
+      const { service } = build(db);
+      await service.syncThread(workspaceId, key);
+      await client.query(
+        `UPDATE inbox_items SET replied_at = $2 WHERE id = $1`,
+        [inbound.id, at(1)],
+      );
+      await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'instagram',
+        type: 'dm',
+        conversationId: 'thr1',
+        fromMe: true,
+        authoredByUserId: ownerId,
+        text: 'checking, will follow up',
+        platformCreatedAt: at(1),
+      });
+      const res = await service.syncThread(workspaceId, key, {
+        kind: 'outbound',
+        userId: ownerId,
+        markDone: false,
+        at: at(1),
+      });
+      expect(res.status).toBe('to_reply');
+      expect(await conv(client, workspaceId, key)).toMatchObject({
+        status: 'to_reply',
+        done_via: null,
+      });
+    }));
+
   it('a hidden unanswered comment does not keep the thread open after the others are answered', () =>
     withInboxDb(async (db, client) => {
       const { workspaceId } = await seedWorkspace(client);
@@ -422,6 +511,10 @@ describeInboxDb('ConversationSyncService.syncThread', () => {
       const sp = texts.findIndex((t) => t.includes('savepoint'));
       expect(sp).toBeGreaterThanOrEqual(0);
       expect(texts[sp + 1]).toContain('pg_advisory_xact_lock');
+      // The lock key mixes in the workspace id and the thread key.
+      const lockCall = JSON.stringify(spy.mock.calls[sp + 1]);
+      expect(lockCall).toContain(workspaceId);
+      expect(lockCall).toContain(a.threadKey!);
       spy.mockRestore();
     }));
 
