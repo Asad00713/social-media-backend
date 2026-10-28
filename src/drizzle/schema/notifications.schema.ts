@@ -48,6 +48,10 @@ export const NOTIFICATION_TYPES = [
   'user_deleted_365_days',
   // Planner
   'draft_ready',
+  // Inbox
+  'inbox_assigned',
+  'inbox_note_mention',
+  'inbox_new_message',
   // General
   'system_announcement',
 ] as const;
