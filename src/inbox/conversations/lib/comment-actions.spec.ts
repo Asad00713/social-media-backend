@@ -153,6 +153,19 @@ describe('commentActions: overrides', () => {
     ).toStrictEqual(NO);
   });
 
+  it.each(['facebook', 'instagram', 'youtube'] as Platform[])(
+    "delete on someone else's %s mention is not allowed, our own still is",
+    (platform) => {
+      expect(
+        commentActions(input({ kind: 'mention', platform }), NOW).delete,
+      ).toStrictEqual(NO);
+      expect(
+        commentActions(input({ kind: 'mention', platform, fromMe: true }), NOW)
+          .delete,
+      ).toStrictEqual(YES);
+    },
+  );
+
   it('private reply expires after 7 days', () => {
     const old = commentActions(
       input({ createdAt: new Date(NOW.getTime() - 7 * DAY - MINUTE) }),

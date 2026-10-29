@@ -222,6 +222,12 @@ export class BlueskyInboxAdapter implements PlatformInboxAdapter {
   ): Promise<{ likeRef?: string | null }> {
     const did = resolveDid(channel);
     if (!did) throw new Error('Bluesky channel is missing DID');
+    // Already liked: a second createRecord would orphan a public like record
+    // that metadata.likeUri no longer points at, so it could never be undone.
+    if (liked && item.metadata?.likedByUs === true) {
+      const known = item.metadata.likeUri;
+      return { likeRef: typeof known === 'string' ? known : null };
+    }
     if (!liked) {
       const likeUri = item.metadata?.likeUri;
       // No record to delete: nothing is liked, so there is nothing to undo.

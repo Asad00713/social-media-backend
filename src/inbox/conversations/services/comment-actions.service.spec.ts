@@ -1,4 +1,11 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
+import { PgDialect } from 'drizzle-orm/pg-core';
+import type { SQL } from 'drizzle-orm';
 import type { DbType } from '../../../drizzle/db';
 import type { InboxItem } from '../../../drizzle/schema/inbox.schema';
 import type { SocialMediaChannel } from '../../../drizzle/schema/channels.schema';
@@ -17,6 +24,40 @@ import { CommentActionsService } from './comment-actions.service';
 const WS = 'ws-1';
 const USER = 'user-1';
 const DAY = 24 * 60 * 60 * 1000;
+
+/**
+ * The service writes metadata as one SQL jsonb patch. Render it and apply the
+ * same semantics to the fake row (the real SQL is proven in
+ * comment-actions.db.spec.ts): merge params[0], then likeCount + params[1]
+ * floored at 0.
+ */
+function applyMetadata(
+  row: InboxItem | undefined,
+  value: unknown,
+): Record<string, unknown> {
+  const base = row?.metadata ?? {};
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('queryChunks' in value)
+  ) {
+    return value as Record<string, unknown>;
+  }
+  const { params } = new PgDialect().sqlToQuery(value as SQL);
+  const patch = JSON.parse(params[0] as string) as Record<string, unknown>;
+  const out: Record<string, unknown> = { ...base, ...patch };
+  if (typeof params[1] === 'number') {
+    const current = typeof base.likeCount === 'number' ? base.likeCount : 0;
+    out.likeCount = Math.max(0, current + params[1]);
+  }
+  return out;
+}
+
+/** The JSON patch a metadata write carried. */
+function patchOf(update: Record<string, unknown>): Record<string, unknown> {
+  const { params } = new PgDialect().sqlToQuery(update.metadata as SQL);
+  return JSON.parse(params[0] as string) as Record<string, unknown>;
+}
 
 function itemRow(over: Partial<InboxItem> = {}): InboxItem {
   return {
@@ -72,6 +113,7 @@ function channelRow(
 
 function setup(row: InboxItem | undefined, channel = channelRow()) {
   const calls: string[] = [];
+  const findConversation = jest.fn().mockResolvedValue({ id: 'dm-looked-up' });
   const updates: Array<Record<string, unknown>> = [];
   // No `transaction` on purpose: the service must never open one (D1).
   const db = {
@@ -79,6 +121,7 @@ function setup(row: InboxItem | undefined, channel = channelRow()) {
       inboxItems: { findFirst: jest.fn().mockResolvedValue(row) },
       socialMediaChannels: { findFirst: jest.fn().mockResolvedValue(channel) },
       users: { findFirst: jest.fn().mockResolvedValue(undefined) },
+      inboxConversations: { findFirst: findConversation },
     },
     update: jest.fn(() => ({
       set: (values: Record<string, unknown>) => {
@@ -86,7 +129,16 @@ function setup(row: InboxItem | undefined, channel = channelRow()) {
         updates.push(values);
         return {
           where: () => ({
-            returning: () => Promise.resolve([{ ...row, ...values }]),
+            returning: () =>
+              Promise.resolve([
+                {
+                  ...row,
+                  ...values,
+                  ...(values.metadata === undefined
+                    ? {}
+                    : { metadata: applyMetadata(row, values.metadata) }),
+                },
+              ]),
           }),
         };
       },
@@ -122,9 +174,8 @@ function setup(row: InboxItem | undefined, channel = channelRow()) {
   const dispatcher = {
     get: jest.fn().mockReturnValue(adapter as unknown as PlatformInboxAdapter),
   };
-  const channels = {
-    getAccessToken: jest.fn().mockResolvedValue('tok'),
-  };
+  const getAccessToken = jest.fn().mockResolvedValue('tok');
+  const channels = { getAccessToken };
   const inbox = {
     upsertDm: jest.fn().mockResolvedValue(null),
   };
@@ -163,6 +214,8 @@ function setup(row: InboxItem | undefined, channel = channelRow()) {
     emitter,
     updates,
     calls,
+    getAccessToken,
+    findConversation,
   };
 }
 
@@ -176,6 +229,11 @@ async function reasonOf(p: Promise<unknown>): Promise<unknown> {
 }
 
 describe('CommentActionsService', () => {
+  beforeEach(() => {
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+  });
+  afterEach(() => jest.restoreAllMocks());
+
   describe('every action', () => {
     it('404s for an item outside the workspace', async () => {
       const t = setup(undefined);
@@ -251,7 +309,7 @@ describe('CommentActionsService', () => {
       );
       t.adapter.likeComment.mockResolvedValueOnce({ likeRef: 'at://like/1' });
       await t.service.like(WS, 'item-1', USER, true);
-      expect(t.updates[0].metadata).toMatchObject({ likeUri: 'at://like/1' });
+      expect(patchOf(t.updates[0])).toMatchObject({ likeUri: 'at://like/1' });
 
       const t2 = setup(
         itemRow({
@@ -261,7 +319,7 @@ describe('CommentActionsService', () => {
         channelRow({ platform: 'bluesky' }),
       );
       await t2.service.like(WS, 'item-1', USER, false);
-      expect(t2.updates[0].metadata).toMatchObject({ likeUri: null });
+      expect(patchOf(t2.updates[0])).toMatchObject({ likeUri: null });
     });
   });
 
@@ -314,14 +372,11 @@ describe('CommentActionsService', () => {
       await t.service.delete(WS, 'item-1', USER);
       expect(t.adapter.deleteComment).toHaveBeenCalledTimes(1);
       expect(t.adapter.moderateDelete).not.toHaveBeenCalled();
-      expect(t.updates[0]).toMatchObject({
-        status: 'done',
-        text: '[deleted]',
-        metadata: { keep: 1, deletedByUserId: USER },
-      });
-      expect(
-        (t.updates[0].metadata as Record<string, unknown>).deletedAt,
-      ).toEqual(expect.any(String));
+      expect(t.updates[0]).toMatchObject({ status: 'done', text: '[deleted]' });
+      expect(patchOf(t.updates[0])).toMatchObject({ deletedByUserId: USER });
+      expect(patchOf(t.updates[0]).deletedAt).toEqual(expect.any(String));
+      // a patch, not the whole object: other keys are not rewritten
+      expect(patchOf(t.updates[0])).not.toHaveProperty('keep');
       expect(t.sync.syncThread).toHaveBeenCalledWith(WS, '5:post-1');
     });
 
@@ -382,9 +437,9 @@ describe('CommentActionsService', () => {
         }),
       );
       expect(out).toEqual({ conversationId: 'dm-conv' });
-      expect(t.updates[0].metadata).toMatchObject({
-        privateReplySentAt: expect.any(String) as string,
-      });
+      expect(patchOf(t.updates[0]).privateReplySentAt).toEqual(
+        expect.any(String),
+      );
       // the comment's own conversation is told which comment changed
       expect(t.realtime.timelineAppended).toHaveBeenCalledWith(
         WS,
@@ -392,6 +447,69 @@ describe('CommentActionsService', () => {
         null,
         'item-1',
       );
+    });
+
+    it('writes privateReplySentAt BEFORE the DM row (feeds the comment flag; moving it later must fail)', async () => {
+      const t = setup(itemRow());
+      t.inbox.upsertDm.mockImplementation(() => {
+        t.calls.push('upsertDm');
+        return Promise.resolve(null);
+      });
+      t.sync.syncThread.mockImplementation(() => {
+        t.calls.push('syncThread');
+        return Promise.resolve({ conversationId: 'c' } as Awaited<
+          ReturnType<ConversationSyncService['syncThread']>
+        >);
+      });
+      await t.service.privateReply(WS, 'item-1', USER, 'hi');
+      expect(t.calls.indexOf('db.update')).toBeGreaterThan(-1);
+      expect(t.calls.indexOf('db.update')).toBeLessThan(
+        t.calls.indexOf('upsertDm'),
+      );
+      expect(t.calls.indexOf('upsertDm')).toBeLessThan(
+        t.calls.indexOf('syncThread'),
+      );
+    });
+
+    it('a failing DM sync after delivery is still 200: resync queued, comment refreshed, id looked up', async () => {
+      const t = setup(itemRow());
+      t.sync.syncThread.mockImplementation((_ws, key) =>
+        key === '5:page-1:psid-9'
+          ? Promise.reject(new Error('db down'))
+          : Promise.resolve({ conversationId: 'comment-conv' } as Awaited<
+              ReturnType<ConversationSyncService['syncThread']>
+            >),
+      );
+      const out = await t.service.privateReply(WS, 'item-1', USER, 'hi');
+      expect(out).toEqual({ conversationId: 'dm-looked-up' });
+      expect(t.resync.enqueue).toHaveBeenCalledWith(WS, '5:page-1:psid-9');
+      expect(t.realtime.timelineAppended).toHaveBeenCalledWith(
+        WS,
+        'comment-conv',
+        null,
+        'item-1',
+      );
+    });
+
+    it('a failing upsertDm after delivery is still 200 and returns null when no conversation exists yet', async () => {
+      const t = setup(itemRow());
+      t.inbox.upsertDm.mockRejectedValueOnce(new Error('insert failed'));
+      t.findConversation.mockResolvedValue(undefined);
+      const out = await t.service.privateReply(WS, 'item-1', USER, 'hi');
+      expect(out).toEqual({ conversationId: null });
+      expect(t.resync.enqueue).toHaveBeenCalledWith(WS, '5:page-1:psid-9');
+    });
+
+    it('a platform that sent no message id skips the DM row but still syncs and answers 200', async () => {
+      const t = setup(itemRow());
+      t.adapter.sendPrivateReply.mockResolvedValueOnce({
+        recipientPlatformId: 'psid-9',
+        platformItemId: null,
+        platformCreatedAt: new Date(),
+      });
+      const out = await t.service.privateReply(WS, 'item-1', USER, 'hi');
+      expect(t.inbox.upsertDm).not.toHaveBeenCalled();
+      expect(out).toEqual({ conversationId: 'conv-1' });
     });
 
     it('a second private reply is 400 with the fallback reason', async () => {
@@ -412,6 +530,85 @@ describe('CommentActionsService', () => {
         reasonOf(t.service.privateReply(WS, 'item-1', USER, 'late')),
       ).resolves.toEqual({ reason: DISALLOWED_FALLBACK });
     });
+  });
+
+  describe('errors raised while talking to the platform (I2)', () => {
+    async function errOf(p: Promise<unknown>): Promise<InboxSendError> {
+      const e: unknown = await p.catch((x: unknown) => x);
+      expect(e).toBeInstanceOf(InboxSendError);
+      return e as InboxSendError;
+    }
+
+    it('an expired-token BadRequest from token resolution is 409 CHANNEL_DISCONNECTED', async () => {
+      const t = setup(itemRow());
+      t.getAccessToken.mockRejectedValueOnce(
+        new BadRequestException(
+          'Access token has expired. Please reconnect this channel.',
+        ),
+      );
+      const e = await errOf(t.service.hide(WS, 'item-1', USER, true));
+      expect(e.getStatus()).toBe(409);
+      expect(e.getResponse()).toMatchObject({ code: 'CHANNEL_DISCONNECTED' });
+      expect(t.updates).toHaveLength(0);
+    });
+
+    it('a plan-locked 403 passes through, not REPLY_WINDOW_CLOSED', async () => {
+      const t = setup(itemRow());
+      const locked = new ForbiddenException('Channel locked by your plan');
+      t.getAccessToken.mockRejectedValueOnce(locked);
+      await expect(t.service.hide(WS, 'item-1', USER, true)).rejects.toBe(
+        locked,
+      );
+    });
+
+    it("a platform service's BadRequest (own-comment delete on Bluesky) is 502 PLATFORM_ERROR", async () => {
+      const t = setup(
+        itemRow({ platform: 'bluesky', fromMe: true }),
+        channelRow({ platform: 'bluesky' }),
+      );
+      t.adapter.deleteComment.mockRejectedValueOnce(
+        new BadRequestException('Failed to delete post from Bluesky'),
+      );
+      const e = await errOf(t.service.delete(WS, 'item-1', USER));
+      expect(e.getStatus()).toBe(502);
+      expect(e.getResponse()).toMatchObject({ code: 'PLATFORM_ERROR' });
+    });
+
+    it('a deliberate 400 { reason } from an adapter (Bluesky 300 cap) is kept', async () => {
+      const t = setup(
+        itemRow({ platform: 'bluesky' }),
+        channelRow({ platform: 'bluesky' }),
+      );
+      const cap = new BadRequestException({ reason: 'Up to 300 replies' });
+      t.adapter.hideComment.mockRejectedValueOnce(cap);
+      await expect(t.service.hide(WS, 'item-1', USER, true)).rejects.toBe(cap);
+    });
+  });
+
+  describe('adapter without the method', () => {
+    it.each([
+      ['like', 'likeComment'],
+      ['hide', 'hideComment'],
+      ['privateReply', 'sendPrivateReply'],
+      ['delete', 'moderateDelete'],
+    ] as const)(
+      '%s with no %s is 400 with the fallback reason',
+      async (action, method) => {
+        const t = setup(itemRow());
+        (t.adapter as Record<string, unknown>)[method] = undefined;
+        const call =
+          action === 'like'
+            ? t.service.like(WS, 'item-1', USER, true)
+            : action === 'hide'
+              ? t.service.hide(WS, 'item-1', USER, true)
+              : action === 'privateReply'
+                ? t.service.privateReply(WS, 'item-1', USER, 'x')
+                : t.service.delete(WS, 'item-1', USER);
+        await expect(reasonOf(call)).resolves.toEqual({
+          reason: DISALLOWED_FALLBACK,
+        });
+      },
+    );
   });
 
   describe('platform failures and ordering', () => {

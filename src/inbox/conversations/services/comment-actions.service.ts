@@ -5,7 +5,8 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
+import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import type { DbType } from '../../../drizzle/db';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import {
@@ -16,6 +17,7 @@ import {
   socialMediaChannels,
   type SocialMediaChannel,
 } from '../../../drizzle/schema/channels.schema';
+import { inboxConversations } from '../../../drizzle/schema/inbox-conversations.schema';
 import { users } from '../../../drizzle/schema/users.schema';
 import { ChannelService } from '../../../channels/services/channel.service';
 import { AnalyticsEventEmitter } from '../../../realtime/analytics-event-emitter.service';
@@ -42,6 +44,7 @@ import { InboxRealtimeService } from './inbox-realtime.service';
 type ActionName = keyof CommentActions;
 
 interface Prepared {
+  now: Date;
   row: InboxItem;
   channelRow: SocialMediaChannel;
   adapter: PlatformInboxAdapter;
@@ -105,16 +108,13 @@ export class CommentActionsService {
 
     const meta = metaOf(row);
     const wasLiked = meta.likedByUs === true;
-    const count = typeof meta.likeCount === 'number' ? meta.likeCount : 0;
     // Liking twice (or unliking what was never liked) must not drift the count.
     const delta = wasLiked === liked ? 0 : liked ? 1 : -1;
     const updated = await this.updateRow(row, {
-      metadata: {
-        ...meta,
-        likedByUs: liked,
-        likeUri: liked ? likeRef : null,
-        likeCount: Math.max(0, count + delta),
-      },
+      metadata: this.patchMetadata(
+        { likedByUs: liked, likeUri: liked ? likeRef : null },
+        delta,
+      ),
       updatedAt: new Date(),
     });
 
@@ -192,11 +192,10 @@ export class CommentActionsService {
     const updated = await this.updateRow(row, {
       status: 'done',
       text: '[deleted]',
-      metadata: {
-        ...metaOf(row),
+      metadata: this.patchMetadata({
         deletedAt: now.toISOString(),
         deletedByUserId: userId,
-      },
+      }),
       updatedAt: now,
     });
     await this.afterAction(workspaceId, updated);
@@ -209,13 +208,19 @@ export class CommentActionsService {
     return { ok: true, success: true, deletedAt: now.toISOString() };
   }
 
+  /**
+   * The conversation id is null only when the DM row has not reached the inbox
+   * yet (its sync failed and was queued, or the platform sent no message id and
+   * the webhook echo will create it). The message itself was delivered either
+   * way, so this never reports a delivered private reply as a failure.
+   */
   async privateReply(
     workspaceId: string,
     itemId: string,
     userId: string,
     text: string,
-  ): Promise<{ conversationId: string }> {
-    const { row, channelRow, adapter } = await this.prepare(
+  ): Promise<{ conversationId: string | null }> {
+    const { row, channelRow, adapter, now } = await this.prepare(
       workspaceId,
       itemId,
       'privateReply',
@@ -235,52 +240,85 @@ export class CommentActionsService {
     // The same conversation id rule ingestMetaMessagingEvent uses, so the
     // webhook echo of this message lands in the same conversation.
     const dmConversationId = `${channel.platformAccountId}:${sent.recipientPlatformId}`;
-
-    // The one-per-comment guard lives on the comment: write it before anything
-    // that can fail, so a retry cannot send a second private reply.
-    const updated = await this.updateRow(row, {
-      metadata: {
-        ...metaOf(row),
-        privateReplySentAt: new Date().toISOString(),
-      },
-      updatedAt: new Date(),
-    });
-
-    await this.inbox.upsertDm({
-      workspaceId,
-      channelId: row.channelId,
-      platform: row.platform,
-      conversationId: dmConversationId,
-      platformItemId: sent.platformItemId,
-      authorPlatformId: channel.platformAccountId,
-      authorHandle:
-        channel.username?.replace(/^@+/, '').trim() || channel.accountName,
-      authorDisplayName: channel.accountName,
-      authorAvatarUrl: channel.profilePictureUrl,
-      text,
-      fromMe: true,
-      platformCreatedAt: sent.platformCreatedAt,
-      authoredByUserId: userId,
-    });
     const dmKey = deriveThreadKey({
       channelId: row.channelId,
       type: 'dm',
       platformPostId: null,
       conversationId: dmConversationId,
-      platformItemId: sent.platformItemId,
+      platformItemId: sent.platformItemId ?? '',
     });
-    if (!dmKey) {
-      throw new Error('Could not derive the private reply thread key');
-    }
-    const synced = await this.sync.syncThread(workspaceId, dmKey);
-    if (!synced.conversationId) {
-      throw new Error(
-        'Private reply sent, but its conversation was not created',
+
+    // The one-per-comment guard lives on the comment (and feeds the comment's
+    // privateReply flag): write it first, before anything that can fail after
+    // the send, so a retry can never send a second private reply.
+    let updated = row;
+    try {
+      updated = await this.updateRow(row, {
+        metadata: this.patchMetadata({ privateReplySentAt: now.toISOString() }),
+        updatedAt: now,
+      });
+    } catch (err) {
+      this.logger.error(
+        `could not record privateReplySentAt on ${row.id}: ${errMsg(err)}`,
       );
     }
 
+    // The DM is delivered. From here nothing may turn into a failure response.
+    let conversationId: string | null = null;
+    try {
+      if (sent.platformItemId) {
+        await this.inbox.upsertDm({
+          workspaceId,
+          channelId: row.channelId,
+          platform: row.platform,
+          conversationId: dmConversationId,
+          platformItemId: sent.platformItemId,
+          authorPlatformId: channel.platformAccountId,
+          authorHandle:
+            channel.username?.replace(/^@+/, '').trim() || channel.accountName,
+          authorDisplayName: channel.accountName,
+          authorAvatarUrl: channel.profilePictureUrl,
+          text,
+          fromMe: true,
+          platformCreatedAt: sent.platformCreatedAt,
+          authoredByUserId: userId,
+        });
+      }
+      if (dmKey) {
+        conversationId =
+          (await this.sync.syncThread(workspaceId, dmKey)).conversationId ??
+          null;
+      }
+    } catch (err) {
+      this.logger.error(
+        `private reply delivered but its DM row or sync failed (${dmKey}): ${errMsg(err)}`,
+      );
+      if (dmKey) await this.resync.enqueue(workspaceId, dmKey);
+      conversationId = await this.findConversationId(workspaceId, dmKey);
+    }
+
     await this.afterAction(workspaceId, updated);
-    return { conversationId: synced.conversationId };
+    return { conversationId };
+  }
+
+  private async findConversationId(
+    workspaceId: string,
+    threadKey: string | null,
+  ): Promise<string | null> {
+    if (!threadKey) return null;
+    try {
+      const found = await this.db.query.inboxConversations.findFirst({
+        where: and(
+          eq(inboxConversations.workspaceId, workspaceId),
+          eq(inboxConversations.threadKey, threadKey),
+        ),
+        columns: { id: true },
+      });
+      return found?.id ?? null;
+    } catch (err) {
+      this.logger.error(`conversation lookup failed: ${errMsg(err)}`);
+      return null;
+    }
   }
 
   // --------------------------------------------------------------------------
@@ -311,18 +349,25 @@ export class CommentActionsService {
     });
     if (!channelRow) throw new NotFoundException('Channel not found');
 
-    const flag = this.actionsOf(row, channelRow)[action];
+    const now = new Date();
+    const flag = this.actionsOf(row, channelRow, now)[action];
     if (!flag.allowed) {
       throw new BadRequestException({
         reason: flag.reason ?? DISALLOWED_FALLBACK,
       });
     }
-    return { row, channelRow, adapter: this.dispatcher.get(row.platform) };
+    return {
+      now,
+      row,
+      channelRow,
+      adapter: this.dispatcher.get(row.platform),
+    };
   }
 
   private actionsOf(
     row: InboxItem,
     channelRow: SocialMediaChannel,
+    now: Date,
   ): CommentActions {
     return commentActions(
       {
@@ -336,7 +381,7 @@ export class CommentActionsService {
         canReply: true,
         accountLabel: channelRow.username ?? channelRow.accountName,
       },
-      new Date(),
+      now,
     );
   }
 
@@ -346,8 +391,10 @@ export class CommentActionsService {
 
   /** Runs a platform call and maps whatever it throws onto the contract's errors. */
   private async platformCall<T>(fn: () => Promise<T>): Promise<T> {
-    return withSendError(fn, (err) =>
-      this.logger.error(`comment action failed: ${errMsg(err)}`),
+    return withSendError(
+      fn,
+      (err) => this.logger.error(`comment action failed: ${errMsg(err)}`),
+      { fromPlatform: true },
     );
   }
 
@@ -375,16 +422,27 @@ export class CommentActionsService {
     };
   }
 
+  /**
+   * Atomic jsonb merge: concurrent actions (a poll refreshing likeCount, a
+   * second teammate) keep each other's keys. `likeDelta` is applied to the
+   * stored count in SQL and never goes below 0.
+   */
+  private patchMetadata(patch: Record<string, unknown>, likeDelta?: number) {
+    const merged = sql`coalesce(${inboxItems.metadata}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`;
+    if (likeDelta === undefined) return merged;
+    return sql`${merged} || jsonb_build_object('likeCount', greatest(0, coalesce((${inboxItems.metadata}->>'likeCount')::int, 0) + ${likeDelta}::int))`;
+  }
+
   private async updateRow(
     row: InboxItem,
-    set: Partial<typeof inboxItems.$inferInsert>,
+    set: PgUpdateSetSource<typeof inboxItems>,
   ): Promise<InboxItem> {
     const [updated] = await this.db
       .update(inboxItems)
       .set(set)
       .where(eq(inboxItems.id, row.id))
       .returning();
-    return updated ?? { ...row, ...set };
+    return updated ?? row;
   }
 
   /**
@@ -428,6 +486,10 @@ export class CommentActionsService {
       });
       if (u) sentBy = { id: u.id, name: u.name ?? '', avatarUrl: u.avatarUrl };
     }
-    return commentNodeOf(row, sentBy, this.actionsOf(row, channelRow));
+    return commentNodeOf(
+      row,
+      sentBy,
+      this.actionsOf(row, channelRow, new Date()),
+    );
   }
 }

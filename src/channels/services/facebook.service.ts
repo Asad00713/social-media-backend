@@ -1,4 +1,10 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  HttpStatus,
+} from '@nestjs/common';
+import { InboxSendError } from '../../inbox/conversations/lib/send-error';
 import type {
   FetchedDm,
   CreatedDm,
@@ -1494,7 +1500,7 @@ export class FacebookService {
     pageAccessToken: string,
     commentId: string,
     text: string,
-  ): Promise<{ recipientId: string; messageId: string }> {
+  ): Promise<{ recipientId: string; messageId: string | null }> {
     const url = new URL(`${this.graphApiUrl}/${pageId}/messages`);
     url.searchParams.set('access_token', pageAccessToken);
     const res = await fetch(url.toString(), {
@@ -1514,10 +1520,25 @@ export class FacebookService {
       message_id?: string;
       recipient_id?: string;
     };
-    if (!data.message_id || !data.recipient_id) {
-      throw new Error('Facebook private reply: no message_id returned');
+    // The platform accepted the message. Without a recipient there is no DM
+    // conversation to open, and retrying cannot help (one private reply per
+    // comment), so this is a non-retryable failure; a missing message id is
+    // tolerated (the webhook echo creates the row).
+    if (!data.recipient_id) {
+      throw new InboxSendError(HttpStatus.BAD_GATEWAY, {
+        code: 'PLATFORM_ERROR',
+        message:
+          'Facebook private reply was accepted but returned no recipient',
+        retryable: false,
+      });
     }
-    return { recipientId: data.recipient_id, messageId: data.message_id };
+    if (!data.message_id) {
+      this.logger.warn('Facebook private reply: accepted without a message_id');
+    }
+    return {
+      recipientId: data.recipient_id,
+      messageId: data.message_id ?? null,
+    };
   }
 
   /**

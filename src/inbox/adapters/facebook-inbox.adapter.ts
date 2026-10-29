@@ -124,7 +124,7 @@ export class FacebookInboxAdapter implements PlatformInboxAdapter {
     text: string,
   ): Promise<{
     recipientPlatformId: string;
-    platformItemId: string;
+    platformItemId: string | null;
     platformCreatedAt: Date;
   }> {
     const sent = await this.facebook.sendPrivateReply(

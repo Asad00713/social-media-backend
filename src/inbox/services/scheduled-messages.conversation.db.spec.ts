@@ -42,15 +42,16 @@ function build(db: DbType) {
     conversationChanged: jest.fn(),
     countsChanged: jest.fn(),
   };
+  const emitter = { emit: jest.fn() };
   const service = new ScheduledMessagesService(
-    fake<AnalyticsEventEmitter>({ emit: jest.fn() }),
+    fake<AnalyticsEventEmitter>(emitter),
     fake<Queue>(queue),
     fake<CalendarPushSyncService>({
       syncMessage: jest.fn().mockResolvedValue(undefined),
     }),
     fake<InboxRealtimeService>(realtime),
   );
-  return { service, queue, realtime, job };
+  return { service, queue, realtime, job, emitter };
 }
 
 async function seedConv(
@@ -79,8 +80,18 @@ async function seedConv(
   return r.rows[0].id;
 }
 
+interface ScheduledRowShape {
+  status: string;
+  attempts: number;
+  type: string;
+  thread_key: string;
+  inbox_conversation_id: string | null;
+  attachments: Array<{ kind: string; url: string; thumbnailUrl: null }>;
+  queue_job_id: string | null;
+}
+
 async function rowOf(client: PoolClient, id: string) {
-  const r = await client.query(
+  const r = await client.query<ScheduledRowShape>(
     `SELECT * FROM scheduled_inbox_messages WHERE id = $1`,
     [id],
   );
@@ -158,7 +169,9 @@ describeInboxDb('ScheduledMessagesService with conversations', () => {
       expect(dto.by).toMatchObject({ id: ownerId });
       expect(dto.attachments).toHaveLength(1);
 
-      const opts = queue.add.mock.calls[0][2] as { jobId: string };
+      const opts = (queue.add.mock.calls[0] as unknown[])[2] as {
+        jobId: string;
+      };
       expect(opts.jobId).not.toContain(':');
       expect(realtime.timelineAppended).toHaveBeenCalledWith(
         workspaceId,
@@ -326,6 +339,141 @@ describeInboxDb('ScheduledMessagesService with conversations', () => {
       expect((await rowOf(client, id)).status).toBe('cancelled');
       expect(job.remove).toHaveBeenCalled();
       expect(realtime.countsChanged).toHaveBeenCalledWith(workspaceId);
+    }));
+
+  it('a sendAt less than 2 minutes out is a 400 that names sendAt, not the legacy field', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId, conv } = await dmWorld(client);
+      const { service } = build(db);
+      const err: unknown = await service
+        .create(workspaceId, ownerId, {
+          inboxConversationId: conv,
+          text: 'hi',
+          sendAt: new Date(Date.now() + 90_000).toISOString(),
+        } as CreateScheduledMessageDto)
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({ status: 400 });
+      expect((err as Error).message).toMatch(/sendAt/);
+      expect((err as Error).message).not.toMatch(/scheduledAt/);
+    }));
+
+  it('cancel survives a job-removal failure: row cancelled, event and announce still go out', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId, ch, conv } = await dmWorld(client);
+      const id = await seedRow(client, {
+        workspaceId,
+        channelId: ch,
+        convId: conv,
+        by: ownerId,
+        status: 'pending',
+        at: new Date(Date.now() + HOUR),
+      });
+      const { service, job, realtime, emitter } = build(db);
+      job.remove.mockRejectedValueOnce(new Error('redis blip'));
+
+      const body = await service.cancel(workspaceId, ownerId, id);
+
+      expect(body.ok).toBe(true);
+      expect((await rowOf(client, id)).status).toBe('cancelled');
+      expect(emitter.emit).toHaveBeenCalledWith(
+        workspaceId,
+        'scheduled.message.cancelled',
+        expect.objectContaining({ id }),
+      );
+      expect(realtime.countsChanged).toHaveBeenCalledWith(workspaceId);
+    }));
+
+  it('cancelling a failed reply is idempotent and offers no undo (restore only takes cancelled)', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId, ch, conv } = await dmWorld(client);
+      const id = await seedRow(client, {
+        workspaceId,
+        channelId: ch,
+        convId: conv,
+        by: ownerId,
+        status: 'failed',
+        at: new Date(Date.now() + HOUR),
+      });
+      const { service } = build(db);
+      const body = await service.cancel(workspaceId, ownerId, id);
+      expect(body).toEqual({ ok: true, success: true });
+      expect(body).not.toHaveProperty('undo');
+      expect((await rowOf(client, id)).status).toBe('failed');
+    }));
+
+  it('restore re-checks the reply window like create (400)', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId, ch } = await dmWorld(client);
+      const at = new Date(Date.now() + 3 * HOUR);
+      const closed = await seedConv(client, workspaceId, ch, {
+        kind: 'dm',
+        threadKey: `${ch}:win`,
+        windowClosesAt: new Date(Date.now() + HOUR),
+      });
+      const id = await seedRow(client, {
+        workspaceId,
+        channelId: ch,
+        convId: closed,
+        by: ownerId,
+        status: 'cancelled',
+        at,
+      });
+      const { service, queue } = build(db);
+      await expect(
+        service.restore(workspaceId, ownerId, id),
+      ).rejects.toMatchObject({ status: 400 });
+      expect((await rowOf(client, id)).status).toBe('cancelled');
+      expect(queue.add).not.toHaveBeenCalled();
+    }));
+
+  it('send-now when the queue add fails leaves a recoverable failed row, not a 500', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId, ch, conv } = await dmWorld(client);
+      const id = await seedRow(client, {
+        workspaceId,
+        channelId: ch,
+        convId: conv,
+        by: ownerId,
+        status: 'pending',
+        at: new Date(Date.now() + HOUR),
+      });
+      const { service, queue, emitter } = build(db);
+      queue.add.mockRejectedValueOnce(new Error('redis down'));
+
+      const dto = await service.sendNow(workspaceId, ownerId, id);
+
+      expect(dto.status).toBe('failed');
+      expect(dto.error).toMatch(/Send now/i);
+      const row = await rowOf(client, id);
+      expect(row.status).toBe('failed');
+      expect(emitter.emit).toHaveBeenCalledWith(
+        workspaceId,
+        'scheduled.message.updated',
+        expect.objectContaining({ id, status: 'failed' }),
+      );
+      // and Send now works again once the queue is back
+      const again = await service.sendNow(workspaceId, ownerId, id);
+      expect(again.status).toBe('pending');
+    }));
+
+  it('restore when the old job cannot be removed ends failed, not a 500 after commit', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId, ch, conv } = await dmWorld(client);
+      const id = await seedRow(client, {
+        workspaceId,
+        channelId: ch,
+        convId: conv,
+        by: ownerId,
+        status: 'cancelled',
+        at: new Date(Date.now() + HOUR),
+      });
+      const { service, job, queue } = build(db);
+      job.remove.mockRejectedValueOnce(new Error('job is locked'));
+
+      const dto = await service.restore(workspaceId, ownerId, id);
+
+      expect(dto.status).toBe('failed');
+      expect(queue.add).not.toHaveBeenCalled();
     }));
 
   it('restore re-queues a cancelled reply, and refuses when the time has passed', () =>

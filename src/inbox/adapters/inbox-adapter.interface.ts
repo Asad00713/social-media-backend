@@ -153,7 +153,8 @@ export interface PlatformInboxAdapter {
     text: string,
   ): Promise<{
     recipientPlatformId: string;
-    platformItemId: string;
+    /** Null when the platform accepted the message but sent no id; the webhook echo then creates the row. */
+    platformItemId: string | null;
     platformCreatedAt: Date;
   }>;
 

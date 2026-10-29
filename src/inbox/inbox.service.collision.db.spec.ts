@@ -22,7 +22,8 @@ import {
   withInboxDb,
 } from './testing/inbox-db';
 import { InboxService } from './inbox.service';
-import type { InboxItem } from '../drizzle/schema/inbox.schema';
+import { eq } from 'drizzle-orm';
+import { inboxItems, type InboxItem } from '../drizzle/schema/inbox.schema';
 
 interface Checks {
   assertNoDmCollision(
@@ -79,7 +80,7 @@ async function reason(p: Promise<void>): Promise<Refusal | null> {
 
 async function targetOf(db: DbType, id: string): Promise<InboxItem> {
   const row = await db.query.inboxItems.findFirst({
-    where: (t, { eq }) => eq(t.id, id),
+    where: eq(inboxItems.id, id),
   });
   if (!row) throw new Error('seed missing');
   return row;
@@ -197,6 +198,61 @@ describeInboxDb('REPLIED_FIRST collision predicates (real Postgres)', () => {
             ),
           ),
         ).toBeNull();
+      }));
+  });
+
+  describe('comments: the boundary is strict', () => {
+    it('a target answered at exactly typingStartedAt does not collide, one ms later does', () =>
+      withInboxDb(async (db, client) => {
+        const { workspaceId } = await seedWorkspace(client);
+        const mate = await seedMember(client, workspaceId, 'MEMBER');
+        const me = await seedMember(client, workspaceId, 'MEMBER');
+        const ch = await seedChannel(client, workspaceId, 'youtube');
+        const base = {
+          workspaceId,
+          channelId: ch,
+          platform: 'youtube',
+          type: 'comment' as const,
+          platformPostId: 'v1',
+          platformCreatedAt: BEFORE,
+        };
+        const atBoundary = await seedItem(client, {
+          ...base,
+          platformItemId: 'AT',
+          repliedAt: SINCE,
+        });
+        const justAfter = await seedItem(client, {
+          ...base,
+          platformItemId: 'AFTER',
+          repliedAt: new Date(SINCE.getTime() + 1),
+        });
+        for (const id of [atBoundary.id, justAfter.id]) {
+          await client.query(
+            `UPDATE inbox_items SET replied_by_user_id = $2 WHERE id = $1`,
+            [id, mate],
+          );
+        }
+        const svc = checks(db);
+        expect(
+          await reason(
+            svc.assertNoCommentCollision(
+              workspaceId,
+              await targetOf(db, atBoundary.id),
+              me,
+              SINCE,
+            ),
+          ),
+        ).toBeNull();
+        expect(
+          await reason(
+            svc.assertNoCommentCollision(
+              workspaceId,
+              await targetOf(db, justAfter.id),
+              me,
+              SINCE,
+            ),
+          ),
+        ).toMatchObject({ code: 'REPLIED_FIRST' });
       }));
   });
 

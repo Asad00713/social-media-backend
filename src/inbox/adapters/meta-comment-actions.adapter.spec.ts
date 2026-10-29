@@ -1,5 +1,6 @@
 import { FacebookService } from '../../channels/services/facebook.service';
 import { InstagramService } from '../../channels/services/instagram.service';
+import { InboxSendError } from '../conversations/lib/send-error';
 import { json, mockFetch } from '../testing/fetch-mock';
 import { FacebookInboxAdapter } from './facebook-inbox.adapter';
 import { InstagramInboxAdapter } from './instagram-inbox.adapter';
@@ -28,12 +29,12 @@ describe('FacebookInboxAdapter comment actions', () => {
     net = mockFetch();
     await adapter.likeComment(
       channel('facebook'),
-      { platformItemId: 'c1', metadata: null },
+      { platformItemId: 'c1' },
       true,
     );
     await adapter.likeComment(
       channel('facebook'),
-      { platformItemId: 'c1', metadata: null },
+      { platformItemId: 'c1' },
       false,
     );
     expect(net.requests.map((r) => [r.method, r.url])).toEqual([
@@ -86,14 +87,33 @@ describe('FacebookInboxAdapter comment actions', () => {
     expect(out.platformCreatedAt).toBeInstanceOf(Date);
   });
 
+  it('a private reply accepted without a message id still succeeds (id null)', async () => {
+    net = mockFetch(() => json({ recipient_id: 'psid-9' }));
+    const out = await adapter.sendPrivateReply(
+      channel('facebook'),
+      'c1',
+      'thanks!',
+    );
+    expect(out.platformItemId).toBeNull();
+    expect(out.recipientPlatformId).toBe('psid-9');
+  });
+
+  it('a private reply accepted without a recipient is a non-retryable PLATFORM_ERROR', async () => {
+    net = mockFetch(() => json({ message_id: 'm-1' }));
+    const err: unknown = await adapter
+      .sendPrivateReply(channel('facebook'), 'c1', 'x')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(InboxSendError);
+    expect((err as InboxSendError).getResponse()).toMatchObject({
+      code: 'PLATFORM_ERROR',
+      retryable: false,
+    });
+  });
+
   it('surfaces a platform refusal', async () => {
     net = mockFetch(() => json({ error: { message: '(#10) no' } }, 400));
     await expect(
-      adapter.likeComment(
-        channel('facebook'),
-        { platformItemId: 'c1', metadata: null },
-        true,
-      ),
+      adapter.likeComment(channel('facebook'), { platformItemId: 'c1' }, true),
     ).rejects.toThrow(/Facebook like failed: 400/);
   });
 });
@@ -146,6 +166,6 @@ describe('InstagramInboxAdapter comment actions', () => {
   });
 
   it('has no like: the capability matrix keeps it out of reach', () => {
-    expect(adapter.likeComment).toBeUndefined();
+    expect('likeComment' in adapter).toBe(false);
   });
 });

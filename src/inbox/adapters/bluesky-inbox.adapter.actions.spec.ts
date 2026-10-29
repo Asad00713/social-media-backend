@@ -72,6 +72,20 @@ describe('BlueskyInboxAdapter.likeComment', () => {
     });
   });
 
+  it('does not create a second like record when the item is already liked', async () => {
+    net = mockFetch();
+    const out = await adapter.likeComment(
+      channel,
+      {
+        platformItemId: REPLY,
+        metadata: { likedByUs: true, likeUri: 'at://like/first', cid: 'c' },
+      },
+      true,
+    );
+    expect(net.requests).toHaveLength(0);
+    expect(out).toEqual({ likeRef: 'at://like/first' });
+  });
+
   it('unlikes by deleting the record at metadata.likeUri', async () => {
     net = mockFetch();
     const out = await adapter.likeComment(

@@ -162,6 +162,20 @@ describe('CommentActionsController over HTTP', () => {
     expect(actions.privateReply).not.toHaveBeenCalled();
   });
 
+  it('the legacy PATCH hide delegates with (workspace, item, user, hidden) in that order', async () => {
+    const legacyApp = await build([InboxController]);
+    try {
+      actions.hide.mockResolvedValue({ success: true, isHidden: true });
+      await request(legacyApp.getHttpServer())
+        .patch(`${base}/${ITEM}/hide`)
+        .send({ hidden: true })
+        .expect(200, { success: true, isHidden: true });
+      expect(actions.hide).toHaveBeenCalledWith(WS, ITEM, 'user-1', true);
+    } finally {
+      await legacyApp.close();
+    }
+  });
+
   it('rejects an item id that is not a uuid', async () => {
     await http().post(`${base}/nope/like`).send({ liked: true }).expect(400);
     await http().delete(`${base}/nope`).expect(400);
