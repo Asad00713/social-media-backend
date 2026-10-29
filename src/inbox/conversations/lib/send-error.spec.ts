@@ -87,6 +87,25 @@ describe('toSendError', () => {
     });
   });
 
+  it.each([
+    'Could not generate a preview',
+    'Failed to moderate the comment',
+    'Integrated with the accelerated pipeline',
+  ])('"%s" is NOT a rate limit: it stays 502 PLATFORM_ERROR', (msg) => {
+    const out = bodyOf(toSendError(new Error(msg)));
+    expect(out.status).toBe(502);
+    expect(out.body).toMatchObject({ code: 'PLATFORM_ERROR' });
+  });
+
+  it.each([
+    'rate limit reached',
+    'Rate-limit exceeded for this app',
+    'Too many requests',
+    'HTTP 429 from platform',
+  ])('"%s" is a rate limit', (msg) => {
+    expect(bodyOf(toSendError(new Error(msg))).status).toBe(429);
+  });
+
   it('maps a thrown non-Error value to PLATFORM_ERROR', () => {
     expect(bodyOf(toSendError('boom')).body).toMatchObject({
       code: 'PLATFORM_ERROR',

@@ -110,7 +110,7 @@ export class CommentActionsService {
     const wasLiked = meta.likedByUs === true;
     // Liking twice (or unliking what was never liked) must not drift the count.
     const delta = wasLiked === liked ? 0 : liked ? 1 : -1;
-    const updated = await this.updateRow(row, {
+    const updated = await this.updateAfterPlatform(row, {
       metadata: this.patchMetadata(
         { likedByUs: liked, likeUri: liked ? likeRef : null },
         delta,
@@ -140,7 +140,7 @@ export class CommentActionsService {
       await adapter.hideComment!(channel, row.platformItemId, hidden);
     });
 
-    const updated = await this.updateRow(row, {
+    const updated = await this.updateAfterPlatform(row, {
       isHidden: hidden,
       updatedAt: new Date(),
     });
@@ -189,7 +189,7 @@ export class CommentActionsService {
 
     // Soft delete: keep the audit trail.
     const now = new Date();
-    const updated = await this.updateRow(row, {
+    const updated = await this.updateAfterPlatform(row, {
       status: 'done',
       text: '[deleted]',
       metadata: this.patchMetadata({
@@ -239,14 +239,25 @@ export class CommentActionsService {
 
     // The same conversation id rule ingestMetaMessagingEvent uses, so the
     // webhook echo of this message lands in the same conversation.
-    const dmConversationId = `${channel.platformAccountId}:${sent.recipientPlatformId}`;
-    const dmKey = deriveThreadKey({
-      channelId: row.channelId,
-      type: 'dm',
-      platformPostId: null,
-      conversationId: dmConversationId,
-      platformItemId: sent.platformItemId ?? '',
-    });
+    // Without a recipient there is no DM key: the message is delivered, the
+    // webhook echo will open the conversation.
+    const dmConversationId = sent.recipientPlatformId
+      ? `${channel.platformAccountId}:${sent.recipientPlatformId}`
+      : null;
+    const dmKey = dmConversationId
+      ? deriveThreadKey({
+          channelId: row.channelId,
+          type: 'dm',
+          platformPostId: null,
+          conversationId: dmConversationId,
+          platformItemId: sent.platformItemId ?? '',
+        })
+      : null;
+    if (!dmConversationId) {
+      this.logger.warn(
+        `private reply on ${row.platform} item ${row.id} was accepted without a recipient id; its DM will arrive by webhook`,
+      );
+    }
 
     // The one-per-comment guard lives on the comment (and feeds the comment's
     // privateReply flag): write it first, before anything that can fail after
@@ -266,7 +277,7 @@ export class CommentActionsService {
     // The DM is delivered. From here nothing may turn into a failure response.
     let conversationId: string | null = null;
     try {
-      if (sent.platformItemId) {
+      if (sent.platformItemId && dmConversationId) {
         await this.inbox.upsertDm({
           workspaceId,
           channelId: row.channelId,
@@ -295,6 +306,11 @@ export class CommentActionsService {
       );
       if (dmKey) await this.resync.enqueue(workspaceId, dmKey);
       conversationId = await this.findConversationId(workspaceId, dmKey);
+    }
+
+    // No DM key to sync: make sure the comment's conversation catches up.
+    if (!dmKey && row.threadKey) {
+      await this.resync.enqueue(workspaceId, row.threadKey);
     }
 
     await this.afterAction(workspaceId, updated);
@@ -431,6 +447,28 @@ export class CommentActionsService {
     const merged = sql`coalesce(${inboxItems.metadata}, '{}'::jsonb) || ${JSON.stringify(patch)}::jsonb`;
     if (likeDelta === undefined) return merged;
     return sql`${merged} || jsonb_build_object('likeCount', greatest(0, coalesce((${inboxItems.metadata}->>'likeCount')::int, 0) + ${likeDelta}::int))`;
+  }
+
+  /**
+   * The platform call already succeeded: a failing row write must not become
+   * a 500 (a retry would repeat the platform action). Log it, queue a resync
+   * and carry on with the row we have.
+   */
+  private async updateAfterPlatform(
+    row: InboxItem,
+    set: PgUpdateSetSource<typeof inboxItems>,
+  ): Promise<InboxItem> {
+    try {
+      return await this.updateRow(row, set);
+    } catch (err) {
+      this.logger.error(
+        `row update failed after a successful platform call on ${row.id}: ${errMsg(err)}`,
+      );
+      if (row.threadKey) {
+        await this.resync.enqueue(row.workspaceId, row.threadKey);
+      }
+      return row;
+    }
   }
 
   private async updateRow(

@@ -109,7 +109,7 @@ export class InstagramInboxAdapter implements PlatformInboxAdapter {
     platformCommentId: string,
     text: string,
   ): Promise<{
-    recipientPlatformId: string;
+    recipientPlatformId: string | null;
     platformItemId: string | null;
     platformCreatedAt: Date;
   }> {

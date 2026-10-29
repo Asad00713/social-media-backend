@@ -215,6 +215,7 @@ function setup(row: InboxItem | undefined, channel = channelRow()) {
     updates,
     calls,
     getAccessToken,
+    db,
     findConversation,
   };
 }
@@ -500,6 +501,26 @@ describe('CommentActionsService', () => {
       expect(t.resync.enqueue).toHaveBeenCalledWith(WS, '5:page-1:psid-9');
     });
 
+    it('a delivered private reply with no recipient id is 200 null: guard written, resyncs queued, warned, no DM row', async () => {
+      const t = setup(itemRow());
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
+      t.adapter.sendPrivateReply.mockResolvedValueOnce({
+        recipientPlatformId: null,
+        platformItemId: 'm-1',
+        platformCreatedAt: new Date(),
+      });
+      const out = await t.service.privateReply(WS, 'item-1', USER, 'hi');
+      expect(out).toEqual({ conversationId: null });
+      expect(patchOf(t.updates[0]).privateReplySentAt).toEqual(
+        expect.any(String),
+      );
+      expect(t.inbox.upsertDm).not.toHaveBeenCalled();
+      expect(t.resync.enqueue).toHaveBeenCalledWith(WS, '5:post-1');
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('item-1'));
+    });
+
     it('a platform that sent no message id skips the DM row but still syncs and answers 200', async () => {
       const t = setup(itemRow());
       t.adapter.sendPrivateReply.mockResolvedValueOnce({
@@ -582,6 +603,41 @@ describe('CommentActionsService', () => {
       const cap = new BadRequestException({ reason: 'Up to 300 replies' });
       t.adapter.hideComment.mockRejectedValueOnce(cap);
       await expect(t.service.hide(WS, 'item-1', USER, true)).rejects.toBe(cap);
+    });
+  });
+
+  describe('a failing row update after the platform call succeeded', () => {
+    function failingUpdates(t: ReturnType<typeof setup>) {
+      (t.db.update as jest.Mock).mockImplementation(() => {
+        throw new Error('db blip');
+      });
+    }
+
+    it('like: still returns the node, queues a resync, no 500', async () => {
+      const t = setup(itemRow());
+      failingUpdates(t);
+      const out = await t.service.like(WS, 'item-1', USER, true);
+      expect(out.node.id).toBe('item-1');
+      expect(t.adapter.likeComment).toHaveBeenCalledTimes(1);
+      expect(t.resync.enqueue).toHaveBeenCalledWith(WS, '5:post-1');
+    });
+
+    it('hide: still succeeds and queues a resync', async () => {
+      const t = setup(itemRow());
+      failingUpdates(t);
+      await expect(
+        t.service.hide(WS, 'item-1', USER, true),
+      ).resolves.toMatchObject({ success: true });
+      expect(t.resync.enqueue).toHaveBeenCalledWith(WS, '5:post-1');
+    });
+
+    it('delete: still succeeds and queues a resync', async () => {
+      const t = setup(itemRow({ fromMe: true }));
+      failingUpdates(t);
+      await expect(t.service.delete(WS, 'item-1', USER)).resolves.toMatchObject(
+        { ok: true },
+      );
+      expect(t.resync.enqueue).toHaveBeenCalledWith(WS, '5:post-1');
     });
   });
 

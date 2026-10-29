@@ -45,7 +45,9 @@ export class ChannelNotConnectedError extends Error {
 }
 
 const AUTH_FAILURE = /token|expired|revoked|unauthori[sz]ed|401|reconnect/i;
-const RATE_LIMIT = /rate|429|too many/i;
+// Whole words / known phrases only: a bare /rate/ also matches "generate"
+// and "moderate".
+const RATE_LIMIT = /\brate[- ]limit|too many requests|\b429\b/i;
 
 const messageOf = (err: unknown): string =>
   err instanceof Error ? err.message : String(err);

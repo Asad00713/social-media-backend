@@ -388,12 +388,15 @@ export class ScheduledMessagesService {
   }
 
   /** Not in the future → 409 SEND_TIME_PASSED; under the 2 minute lead → 400. */
-  private assertSendTime(sendAt: Date): number {
+  private assertSendTime(
+    sendAt: Date,
+    field: 'sendAt' | 'scheduledAt' = 'sendAt',
+  ): number {
     const delay = sendAt.getTime() - Date.now();
     if (delay <= 0) throw this.sendTimePassed();
     if (delay < MIN_LEAD_MS) {
       throw new BadRequestException(
-        'sendAt must be at least 2 minutes in the future',
+        `${field} must be at least 2 minutes in the future`,
       );
     }
     return delay;
@@ -624,7 +627,10 @@ export class ScheduledMessagesService {
       throw new BadRequestException('sendAt is required');
     }
     const scheduledAt = new Date(sendAtRaw);
-    const delay = this.assertSendTime(scheduledAt);
+    const delay = this.assertSendTime(
+      scheduledAt,
+      dto.sendAt ? 'sendAt' : 'scheduledAt',
+    );
 
     const trimmedText = dto.text.trim();
     if (!this.stripHtml(trimmedText)) {
@@ -783,7 +789,10 @@ export class ScheduledMessagesService {
     const sendAtRaw = dto.sendAt ?? dto.scheduledAt;
     if (sendAtRaw) {
       newScheduledAt = new Date(sendAtRaw);
-      this.assertSendTime(newScheduledAt);
+      this.assertSendTime(
+        newScheduledAt,
+        dto.sendAt ? 'sendAt' : 'scheduledAt',
+      );
       const conversation = existing.inboxConversationId
         ? await this.findConversation(workspaceId, {
             id: existing.inboxConversationId,

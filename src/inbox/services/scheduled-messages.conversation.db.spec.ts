@@ -357,6 +357,39 @@ describeInboxDb('ScheduledMessagesService with conversations', () => {
       expect((err as Error).message).not.toMatch(/scheduledAt/);
     }));
 
+  it('the lead-time 400 names the field the caller sent (legacy scheduledAt on create and update)', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId, ch, conv } = await dmWorld(client);
+      const soon = new Date(Date.now() + 90_000).toISOString();
+      const { service } = build(db);
+      const created: unknown = await service
+        .create(workspaceId, ownerId, {
+          type: 'dm',
+          threadKey: `${ch}:pg:9`,
+          text: 'hi',
+          scheduledAt: soon,
+        } as CreateScheduledMessageDto)
+        .catch((e: unknown) => e);
+      expect((created as Error).message).toMatch(/^scheduledAt must/);
+
+      const id = await seedRow(client, {
+        workspaceId,
+        channelId: ch,
+        convId: conv,
+        by: ownerId,
+        status: 'pending',
+        at: new Date(Date.now() + HOUR),
+      });
+      const updated: unknown = await service
+        .update(workspaceId, ownerId, id, { scheduledAt: soon })
+        .catch((e: unknown) => e);
+      expect((updated as Error).message).toMatch(/^scheduledAt must/);
+      const updatedNew: unknown = await service
+        .update(workspaceId, ownerId, id, { sendAt: soon })
+        .catch((e: unknown) => e);
+      expect((updatedNew as Error).message).toMatch(/^sendAt must/);
+    }));
+
   it('cancel survives a job-removal failure: row cancelled, event and announce still go out', () =>
     withInboxDb(async (db, client) => {
       const { workspaceId, ownerId, ch, conv } = await dmWorld(client);

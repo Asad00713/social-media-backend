@@ -1,6 +1,5 @@
 import { FacebookService } from '../../channels/services/facebook.service';
 import { InstagramService } from '../../channels/services/instagram.service';
-import { InboxSendError } from '../conversations/lib/send-error';
 import { json, mockFetch } from '../testing/fetch-mock';
 import { FacebookInboxAdapter } from './facebook-inbox.adapter';
 import { InstagramInboxAdapter } from './instagram-inbox.adapter';
@@ -98,16 +97,11 @@ describe('FacebookInboxAdapter comment actions', () => {
     expect(out.recipientPlatformId).toBe('psid-9');
   });
 
-  it('a private reply accepted without a recipient is a non-retryable PLATFORM_ERROR', async () => {
+  it('a private reply accepted without a recipient is delivered: it resolves with a null recipient', async () => {
     net = mockFetch(() => json({ message_id: 'm-1' }));
-    const err: unknown = await adapter
-      .sendPrivateReply(channel('facebook'), 'c1', 'x')
-      .catch((e: unknown) => e);
-    expect(err).toBeInstanceOf(InboxSendError);
-    expect((err as InboxSendError).getResponse()).toMatchObject({
-      code: 'PLATFORM_ERROR',
-      retryable: false,
-    });
+    const out = await adapter.sendPrivateReply(channel('facebook'), 'c1', 'x');
+    expect(out.recipientPlatformId).toBeNull();
+    expect(out.platformItemId).toBe('m-1');
   });
 
   it('surfaces a platform refusal', async () => {

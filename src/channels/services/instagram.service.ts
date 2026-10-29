@@ -1,10 +1,4 @@
-import {
-  Injectable,
-  Logger,
-  BadRequestException,
-  HttpStatus,
-} from '@nestjs/common';
-import { InboxSendError } from '../../inbox/conversations/lib/send-error';
+import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import type {
   FetchedDm,
   CreatedDm,
@@ -1993,7 +1987,7 @@ export class InstagramService {
     accessToken: string,
     commentId: string,
     text: string,
-  ): Promise<{ recipientId: string; messageId: string | null }> {
+  ): Promise<{ recipientId: string | null; messageId: string | null }> {
     const url = new URL(`${this.instagramApiUrl}/${igUserId}/messages`);
     url.searchParams.set('access_token', accessToken);
     const res = await fetch(url.toString(), {
@@ -2013,25 +2007,17 @@ export class InstagramService {
       message_id?: string;
       recipient_id?: string;
     };
-    // The platform accepted the message. Without a recipient there is no DM
-    // conversation to open, and retrying cannot help (one private reply per
-    // comment), so this is a non-retryable failure; a missing message id is
-    // tolerated (the webhook echo creates the row).
-    if (!data.recipient_id) {
-      throw new InboxSendError(HttpStatus.BAD_GATEWAY, {
-        code: 'PLATFORM_ERROR',
-        message:
-          'Instagram private reply was accepted but returned no recipient',
-        retryable: false,
-      });
-    }
-    if (!data.message_id) {
+    // The message is delivered. A missing recipient or message id must never
+    // turn that into a failure: the caller degrades (no DM row / no
+    // conversation id yet) and the webhook echo fills the gap.
+    if (!data.recipient_id || !data.message_id) {
       this.logger.warn(
-        'Instagram private reply: accepted without a message_id',
+        'Instagram private reply accepted without ' +
+          (data.recipient_id ? 'a message_id' : 'a recipient_id'),
       );
     }
     return {
-      recipientId: data.recipient_id,
+      recipientId: data.recipient_id ?? null,
       messageId: data.message_id ?? null,
     };
   }
