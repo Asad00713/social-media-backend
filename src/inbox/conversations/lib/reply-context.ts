@@ -55,9 +55,11 @@ export async function loadReplyContext(
     .limit(1);
   if (!conv) throw new NotFoundException('Conversation not found');
 
+  // Hidden items (moderation) never reach the model, like redacted ones.
   const inThread = and(
     eq(inboxItems.workspaceId, workspaceId),
     eq(inboxItems.threadKey, conv.threadKey),
+    eq(inboxItems.isHidden, false),
   );
   const columns = {
     id: inboxItems.id,

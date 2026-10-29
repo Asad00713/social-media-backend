@@ -40,8 +40,8 @@ export interface QuickRepliesInput {
  * `suggest` rewrites a draft, so it needs a non-blank one. 400 otherwise.
  */
 export function assertSuggestReplyInput(input: SuggestReplyInput): void {
-  const hasConversation = input.conversationId !== undefined;
-  const hasMessages = input.messages !== undefined;
+  const hasConversation = input.conversationId != null;
+  const hasMessages = input.messages != null;
   if (hasConversation === hasMessages) {
     throw new BadRequestException(
       'Provide either conversationId or platform + messages',
@@ -80,7 +80,7 @@ export class InboxAiService {
 
     let platform: string;
     let messages: { author: 'me' | 'customer'; text: string }[];
-    if (input.conversationId !== undefined) {
+    if (input.conversationId != null) {
       ({ platform, messages } = await loadReplyContext(
         this.db,
         workspaceId,

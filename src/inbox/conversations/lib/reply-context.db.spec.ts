@@ -156,6 +156,46 @@ describeInboxDb('loadReplyContext', () => {
       ]);
     }));
 
+  it('keeps hidden items away from the model', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId } = await seedWorkspace(client);
+      const channelId = await seedChannel(client, workspaceId, 'threads');
+      const a = await seedItem(client, {
+        workspaceId,
+        channelId,
+        platform: 'threads',
+        type: 'comment',
+        platformPostId: 'p9',
+        text: 'abusive',
+        platformCreatedAt: at(1),
+      });
+      await seedItem(client, {
+        workspaceId,
+        channelId,
+        platform: 'threads',
+        type: 'comment',
+        platformPostId: 'p9',
+        text: 'fine',
+        platformCreatedAt: at(2),
+      });
+      await client.query(
+        'UPDATE inbox_items SET is_hidden = true WHERE id = $1',
+        [a.id],
+      );
+      const convId = await seedConversation(client, {
+        workspaceId,
+        channelId,
+        platform: 'threads',
+        kind: 'comment_thread',
+        threadKey: `${channelId}:p9`,
+      });
+      const all = await loadReplyContext(db, workspaceId, convId);
+      expect(all.messages.map((m) => m.text)).toEqual(['fine']);
+      await expect(
+        loadReplyContext(db, workspaceId, convId, a.id),
+      ).rejects.toBeInstanceOf(NotFoundException);
+    }));
+
   it('404 for a conversation in another workspace holding the same thread_key', () =>
     withInboxDb(async (db, client) => {
       const a = await seedWorkspace(client);

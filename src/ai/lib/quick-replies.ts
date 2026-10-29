@@ -8,22 +8,22 @@ function stripFence(raw: string): string {
   return (m ? m[1] : raw).trim();
 }
 
+/** Strict: a JSON array of exactly 3 strings (a code fence is tolerated). */
 function candidates(raw: string): string[] {
   const body = stripFence(raw);
   try {
     const parsed: unknown = JSON.parse(body);
-    if (Array.isArray(parsed)) {
-      return parsed.filter((v): v is string => typeof v === 'string');
+    if (
+      Array.isArray(parsed) &&
+      parsed.length === QUICK_REPLY_COUNT &&
+      parsed.every((v) => typeof v === 'string')
+    ) {
+      return parsed as string[];
     }
   } catch {
-    // not JSON: fall through to one reply per line
+    // not JSON
   }
-  return body.split(/\r?\n/).map((l) =>
-    l
-      .trim()
-      .replace(/^(?:(?:[-*•]+|\d+\s*[.)])\s*)+/, '')
-      .replace(/^["'“”‘’]+|["'“”‘’]+$/g, ''),
-  );
+  throw new ServiceUnavailableException('AI returned too few suggestions');
 }
 
 /** Cut to the limit at the last word boundary, without a dangling mark. */
@@ -42,8 +42,9 @@ function clip(text: string): string {
 }
 
 /**
- * Turns the model output into exactly three short replies: JSON array (also
- * fenced) or one per line; trimmed, de-duplicated, each cut to 60 chars.
+ * Turns the model output into exactly three short replies. Only a JSON array
+ * of exactly 3 non-empty strings is accepted (optionally in a ```json fence);
+ * anything else is a 503. Each reply is trimmed and cut to 60 chars.
  */
 export function parseQuickReplies(raw: string): string[] {
   const seen = new Set<string>();
