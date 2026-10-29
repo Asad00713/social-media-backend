@@ -1,4 +1,3 @@
-/* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-call -- jest mocks are untyped */
 import { ConfigModule } from '@nestjs/config';
 import { Test } from '@nestjs/testing';
 import { AiController } from './ai.controller';
@@ -20,7 +19,7 @@ describe('AiModule wiring', () => {
     expect(moduleRef.get(AiController)).toBeInstanceOf(AiController);
     const svc = moduleRef.get(InboxAiService);
     expect(svc).toBeInstanceOf(InboxAiService);
-    expect((svc as any).db).toBe(db);
+    expect((svc as unknown as { db: unknown }).db).toBe(db);
     await moduleRef.close();
   });
 });
