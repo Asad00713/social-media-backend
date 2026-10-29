@@ -28,14 +28,15 @@ import { LaterWakeService } from './later-wake.service';
 
 type Ts = Date | string | null;
 
-interface ConversationRef {
+// A type alias, not an interface: db.execute<T> needs an implicit index signature.
+type ConversationRef = {
   id: string;
   thread_key: string;
   status: ConversationStatus;
   later_until: Ts;
   later_until_reply: boolean;
   assignee_user_id: string | null;
-}
+};
 
 const toDate = (v: Ts): Date | null =>
   v === null ? null : v instanceof Date ? v : new Date(v);

@@ -6,6 +6,8 @@ import { ConversationListService } from './services/conversation-list.service';
 import { SavedRepliesService } from './services/saved-replies.service';
 import { ConversationMutationsService } from './services/conversation-mutations.service';
 import { LaterWakeService } from './services/later-wake.service';
+import { InboxNotesController } from './inbox-notes.controller';
+import { InboxNotesService } from './services/inbox-notes.service';
 
 // Owned by Lane A (conversation API). Spread into InboxModule once, so lanes never edit inbox.module.ts.
 export const CONVERSATION_API_PROVIDERS: Provider[] = [
@@ -13,10 +15,12 @@ export const CONVERSATION_API_PROVIDERS: Provider[] = [
   SavedRepliesService,
   LaterWakeService,
   ConversationMutationsService,
+  InboxNotesService,
   InboxLaterProcessor,
 ];
 export const CONVERSATION_API_CONTROLLERS: Type<unknown>[] = [
   ConversationsController,
   SavedRepliesController,
+  InboxNotesController,
 ];
 export const CONVERSATION_API_EXPORTS: Provider[] = [ConversationListService];
