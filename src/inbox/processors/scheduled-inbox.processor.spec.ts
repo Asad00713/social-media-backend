@@ -1,9 +1,11 @@
+import { Logger } from '@nestjs/common';
 import { UnrecoverableError, type Job } from 'bullmq';
 import type { ScheduledInboxMessage } from '../../drizzle/schema/scheduled-inbox-messages.schema';
 import type { WorkspaceRole } from '../../workspace-members/role-capabilities';
 import type { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
 import type { InboxService } from '../inbox.service';
 import type { ScheduledMessagesService } from '../services/scheduled-messages.service';
+import type { ConversationResyncService } from '../conversations/services/conversation-resync.service';
 import {
   ScheduledInboxProcessor,
   type ScheduledInboxFireJob,
@@ -40,10 +42,12 @@ function setup(role: WorkspaceRole | null, claimed = row()) {
     commentOnPost: jest.fn().mockResolvedValue({ id: 'item-3' }),
   };
   const roles = { getRole: jest.fn().mockResolvedValue(role) };
+  const resync = { enqueue: jest.fn().mockResolvedValue(undefined) };
   const processor = new ScheduledInboxProcessor(
     fake<ScheduledMessagesService>(scheduled),
     fake<InboxService>(inbox),
     fake<WorkspaceRoleService>(roles),
+    fake<ConversationResyncService>(resync),
   );
   const job = fake<Job<ScheduledInboxFireJob>>({
     id: 'j1',
@@ -53,7 +57,7 @@ function setup(role: WorkspaceRole | null, claimed = row()) {
     timestamp: Date.now(),
     opts: { attempts: 3 },
   });
-  return { processor, scheduled, inbox, roles, job };
+  return { processor, scheduled, inbox, roles, resync, job };
 }
 
 describe('ScheduledInboxProcessor capability at fire', () => {
@@ -134,3 +138,61 @@ describe('ScheduledInboxProcessor capability at fire', () => {
     expect(scheduled.markFailed).not.toHaveBeenCalled();
   });
 });
+
+describe('ScheduledInboxProcessor after delivery (I1)', () => {
+  const silence = () =>
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+
+  it.each([
+    ['dm', row(), 'sendDm'],
+    [
+      'nested reply',
+      row({ type: 'comment', parentItemId: 'p-1', threadKey: '4:post' }),
+      'reply',
+    ],
+    [
+      'top-level comment',
+      row({ type: 'comment', threadKey: '4:post' }),
+      'commentOnPost',
+    ],
+  ] as const)(
+    '%s: a failing markSent never resets to pending nor rethrows into a retry',
+    async (_n, claimed, method) => {
+      const { processor, scheduled, inbox, resync, job } = setup(
+        'MEMBER',
+        claimed,
+      );
+      scheduled.markSent.mockRejectedValue(new Error('db blip'));
+      silence();
+
+      await expect(processor.process(job)).resolves.toEqual({ ok: true });
+
+      expect(inbox[method]).toHaveBeenCalledTimes(1);
+      expect(scheduled.markSent).toHaveBeenCalled();
+      expect(scheduled.resetToPendingForRetry).not.toHaveBeenCalled();
+      expect(scheduled.markFailed).not.toHaveBeenCalled();
+      expect(resync.enqueue).toHaveBeenCalledWith(WS, claimed.threadKey);
+    },
+  );
+
+  it('a send delivered without our copy (id "") is marked sent with no item id', async () => {
+    const { processor, scheduled, inbox, job } = setup('MEMBER');
+    inbox.sendDm.mockResolvedValue({ id: '' });
+
+    await expect(processor.process(job)).resolves.toEqual({ ok: true });
+
+    expect(scheduled.markSent).toHaveBeenCalledWith('s1', null);
+    expect(scheduled.resetToPendingForRetry).not.toHaveBeenCalled();
+  });
+
+  it('a failure BEFORE delivery still retries', async () => {
+    const { processor, scheduled, inbox, job } = setup('MEMBER');
+    inbox.sendDm.mockRejectedValue(new Error('platform 500'));
+    silence();
+
+    await expect(processor.process(job)).rejects.toThrow('platform 500');
+    expect(scheduled.resetToPendingForRetry).toHaveBeenCalledTimes(1);
+    expect(scheduled.markSent).not.toHaveBeenCalled();
+  });
+});
+

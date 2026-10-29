@@ -303,6 +303,79 @@ export function isContentRedacted(
   return item.platform === 'youtube' && item.text === null;
 }
 
+/**
+ * The `id` of a send DTO whose message the platform accepted but whose row we
+ * could not write (I1). The controller then answers `row: null`, and the
+ * scheduled processor marks its row sent without an item id.
+ */
+export const UNRECORDED_SEND_ID = '';
+
+/** What a platform hands back for a delivered comment or DM. */
+interface DeliveredSend {
+  platformItemId: string;
+  platformParentId?: string | null;
+  text: string;
+  platformCreatedAt: Date;
+}
+
+/** Our own identity on a channel, as it is written onto the rows we send. */
+interface DeliveredIdentity {
+  handle: string;
+  displayName: string;
+  avatarUrl?: string;
+}
+
+type ChannelIdentitySource = Pick<
+  ResolvedChannel,
+  'username' | 'accountName' | 'profilePictureUrl' | 'platformAccountId'
+>;
+
+/** The same identity `loadMyIdentity` reads, from a channel already in hand. */
+function identityOfChannel(ch: ChannelIdentitySource): DeliveredIdentity {
+  return {
+    handle: ch.username?.replace(/^@+/, '').trim() || ch.accountName,
+    displayName: ch.accountName,
+    avatarUrl: ch.profilePictureUrl ?? undefined,
+  };
+}
+
+function dmIdentityOfChannel(
+  ch: ChannelIdentitySource,
+): DeliveredIdentity & { platformId: string } {
+  return { ...identityOfChannel(ch), platformId: ch.platformAccountId };
+}
+
+function authorOf(identity: DeliveredIdentity): CommentNodeDto['author'] {
+  return {
+    handle: identity.handle,
+    displayName: identity.displayName,
+    avatarUrl: identity.avatarUrl,
+  };
+}
+
+/** The legacy node for a delivered comment that has no row (I1). */
+function unrecordedNode(
+  created: DeliveredSend,
+  identity: DeliveredIdentity,
+  repliedBy: { id: string; name: string } | undefined,
+): CommentNodeDto {
+  return {
+    repliedBy,
+    id: UNRECORDED_SEND_ID,
+    parentId: created.platformParentId ?? null,
+    author: authorOf(identity),
+    text: created.text,
+    contentRedacted: false,
+    timestamp: created.platformCreatedAt.toISOString(),
+    fromMe: true,
+    platformItemId: created.platformItemId,
+    status: 'replied',
+    likeCount: 0,
+    isHidden: false,
+    replies: [],
+  };
+}
+
 /** Shortest query we will run. See `buildSearchCondition`. */
 export const MIN_SEARCH_LENGTH = 2;
 
@@ -520,6 +593,68 @@ export class InboxService {
     return withSendError(fn);
   }
 
+  /**
+   * I1: a step that runs AFTER the platform accepted a send. It must never
+   * fail the call: a 5xx makes the client retry and a throw makes the
+   * scheduled processor retry, and both post the message twice. Logs and
+   * yields null instead.
+   */
+  private async afterDelivery<T>(
+    what: string,
+    step: () => Promise<T>,
+  ): Promise<T | null> {
+    try {
+      return await step();
+    } catch (err) {
+      this.logger.error(
+        `${what} failed after a delivered send: ${errMsg(err)}`,
+      );
+      return null;
+    }
+  }
+
+  /** Our row for a delivered send, when the upsert returned none (an echo won). */
+  private async findOwnRow(
+    channelId: number,
+    platformItemId: string,
+  ): Promise<InboxItem | null> {
+    const row = await this.afterDelivery('own row read', () =>
+      db.query.inboxItems.findFirst({
+        where: and(
+          eq(inboxItems.channelId, channelId),
+          eq(inboxItems.platformItemId, platformItemId),
+        ),
+      }),
+    );
+    return row ?? null;
+  }
+
+  private async selfAuthorAfterDelivery(
+    userId: string,
+  ): Promise<{ id: string; name: string } | undefined> {
+    return (
+      (await this.afterDelivery('sender name read', () =>
+        this.loadSelfAuthor(userId),
+      )) ?? undefined
+    );
+  }
+
+  /**
+   * I1: the send is delivered but our copy of it is not written. Queue a
+   * resync carrying the outbound intent, so the conversation catches up once
+   * the webhook echo or the next poll stores the row. Never throws.
+   */
+  private async resyncUnrecorded(
+    workspaceId: string,
+    threadKey: string | null | undefined,
+    intent: SyncIntent,
+  ): Promise<void> {
+    this.logger.error(
+      `no row for a send in ${threadKey ?? '(no thread key)'} after a delivered send; answering without it and queueing a resync`,
+    );
+    if (threadKey) await this.resync.enqueue(workspaceId, threadKey, intent);
+  }
+
   async userRefOf(userId: string | null): Promise<UserRef | null> {
     if (!userId) return null;
     const u = await db.query.users.findFirst({
@@ -657,6 +792,10 @@ export class InboxService {
     workspaceId: string,
     itemId: string,
   ): Promise<InboxItem> {
+    // A delivered send with no row (I1): the builder falls back to row: null.
+    if (itemId === UNRECORDED_SEND_ID) {
+      throw new NotFoundException('The send was delivered but not recorded');
+    }
     const item = await db.query.inboxItems.findFirst({
       where: and(
         eq(inboxItems.id, itemId),
@@ -1408,7 +1547,8 @@ export class InboxService {
     // Keyed by the comment being answered: the collision check is per comment,
     // so replies to different comments on a busy post never queue.
     const lockKey = `${parent.channelId}:${parent.platformItemId}`;
-    const { created, newRow, repliedAt } = await this.sendLock.withSendLock(
+    const { created, newRow, repliedAt, myIdentity } =
+      await this.sendLock.withSendLock(
       lockKey,
       userId,
       async () => {
@@ -1437,9 +1577,14 @@ export class InboxService {
               ),
         );
 
+        // From here on the reply is delivered (I1): no step below may fail
+        // the call.
         // Use the channel's own identity for our reply row — gives the inbox UI
         // the actual handle/displayName instead of a placeholder "me"/"You".
-        const myIdentity = await this.loadMyIdentity(parent.channelId);
+        const myIdentity =
+          (await this.afterDelivery('identity read', () =>
+            this.loadMyIdentity(parent.channelId),
+          )) ?? identityOfChannel(channel);
         const base = {
           workspaceId,
           channelId: parent.channelId,
@@ -1454,27 +1599,29 @@ export class InboxService {
           platformCreatedAt: created.platformCreatedAt,
           authoredByUserId: userId,
         };
-        const newRow = isMention
-          ? // Same generated thread_key as the mention it answers.
-            await this.upsertInboxItem(
-              {
-                ...base,
-                platformParentId: parent.platformItemId,
-                isMention: false,
-                metadata: {
-                  mentionRoot:
-                    (parent.metadata as { mentionRoot?: string } | null)
-                      ?.mentionRoot ?? parent.platformItemId,
+        const newRow = await this.afterDelivery('reply row write', () =>
+          isMention
+            ? // Same generated thread_key as the mention it answers.
+              this.upsertInboxItem(
+                {
+                  ...base,
+                  platformParentId: parent.platformItemId,
+                  isMention: false,
+                  metadata: {
+                    mentionRoot:
+                      (parent.metadata as { mentionRoot?: string } | null)
+                        ?.mentionRoot ?? parent.platformItemId,
+                  },
                 },
-              },
-              'mention',
-            )
-          : await this.upsertComment({
-              ...base,
-              platformParentId: created.platformParentId,
-              platformPostId: parent.platformPostId!,
-              ourPostId: parent.ourPostId,
-            });
+                'mention',
+              )
+            : this.upsertComment({
+                ...base,
+                platformParentId: created.platformParentId,
+                platformPostId: parent.platformPostId!,
+                ourPostId: parent.ourPostId,
+              }),
+        );
 
         // Mark the target as replied INSIDE the lock: the next sender's
         // collision check reads this row's replied_at, which is the only
@@ -1499,7 +1646,7 @@ export class InboxService {
             `could not mark ${parent.id} replied after a delivered reply: ${errMsg(err)}`,
           );
         }
-        return { created, newRow, repliedAt };
+        return { created, newRow, repliedAt, myIdentity };
       },
     );
 
@@ -1516,23 +1663,23 @@ export class InboxService {
 
     void this.emitCounts(workspaceId);
 
-    const row =
-      newRow ??
-      (await db.query.inboxItems.findFirst({
-        where: and(
-          eq(inboxItems.channelId, parent.channelId),
-          eq(inboxItems.platformItemId, created.platformItemId),
-        ),
-      }));
-    if (!row) throw new Error('Failed to persist reply');
-    await this.stampAuthor(row.id, userId);
-    await this.syncAfterAction(workspaceId, parent.threadKey, {
+    const intent: SyncIntent = {
       kind: 'outbound',
       userId,
       markDone: await this.resolveMarkDone(workspaceId, userId, opts),
       at: created.platformCreatedAt,
-    });
-    return this.itemToNode(row, await this.loadSelfAuthor(userId));
+    };
+    const row =
+      newRow ??
+      (await this.findOwnRow(parent.channelId, created.platformItemId));
+    const repliedBy = await this.selfAuthorAfterDelivery(userId);
+    if (!row) {
+      await this.resyncUnrecorded(workspaceId, parent.threadKey, intent);
+      return unrecordedNode(created, myIdentity, repliedBy);
+    }
+    await this.stampAuthor(row.id, userId);
+    await this.syncAfterAction(workspaceId, parent.threadKey, intent);
+    return this.itemToNode(row, repliedBy);
   }
 
   /**
@@ -1572,43 +1719,45 @@ export class InboxService {
       adapter.commentOnPost(channel, platformPostId, text),
     );
 
-    const newRow = await this.upsertComment({
-      workspaceId,
-      channelId,
-      platform: channelRow.platform as SupportedPlatform,
-      platformItemId: created.platformItemId,
-      platformParentId: created.platformParentId,
-      platformPostId,
-      ourPostId: await this.findOurPostId(channelId, platformPostId),
-      authorPlatformId: channelRow.platformAccountId,
-      authorHandle:
-        channelRow.username?.replace(/^@+/, '').trim() ||
-        channelRow.accountName,
-      authorDisplayName: channelRow.accountName,
-      authorAvatarUrl: channelRow.profilePictureUrl ?? undefined,
-      text: created.text,
-      fromMe: true,
-      platformCreatedAt: created.platformCreatedAt,
-      authoredByUserId: userId,
-    });
+    // From here on the comment is delivered (I1): no step below may fail the
+    // call.
+    const identity = identityOfChannel(channelRow);
+    const newRow = await this.afterDelivery('comment row write', async () =>
+      this.upsertComment({
+        workspaceId,
+        channelId,
+        platform: channelRow.platform as SupportedPlatform,
+        platformItemId: created.platformItemId,
+        platformParentId: created.platformParentId,
+        platformPostId,
+        ourPostId: await this.findOurPostId(channelId, platformPostId),
+        authorPlatformId: channelRow.platformAccountId,
+        authorHandle: identity.handle,
+        authorDisplayName: identity.displayName,
+        authorAvatarUrl: identity.avatarUrl,
+        text: created.text,
+        fromMe: true,
+        platformCreatedAt: created.platformCreatedAt,
+        authoredByUserId: userId,
+      }),
+    );
 
-    const row =
-      newRow ??
-      (await db.query.inboxItems.findFirst({
-        where: and(
-          eq(inboxItems.channelId, channelId),
-          eq(inboxItems.platformItemId, created.platformItemId),
-        ),
-      }));
-    if (!row) throw new Error('Failed to persist comment');
-    await this.stampAuthor(row.id, userId);
-    await this.syncAfterAction(workspaceId, row.threadKey ?? threadKey, {
+    const intent: SyncIntent = {
       kind: 'outbound',
       userId,
       markDone: false,
       at: created.platformCreatedAt,
-    });
-    return this.itemToNode(row, await this.loadSelfAuthor(userId));
+    };
+    const row =
+      newRow ?? (await this.findOwnRow(channelId, created.platformItemId));
+    const repliedBy = await this.selfAuthorAfterDelivery(userId);
+    if (!row) {
+      await this.resyncUnrecorded(workspaceId, threadKey, intent);
+      return unrecordedNode(created, identity, repliedBy);
+    }
+    await this.stampAuthor(row.id, userId);
+    await this.syncAfterAction(workspaceId, row.threadKey ?? threadKey, intent);
+    return this.itemToNode(row, repliedBy);
   }
 
   // ==========================================================================
@@ -3368,7 +3517,7 @@ export class InboxService {
 
     // One send at a time per conversation (see reply()).
     // Keyed by the decoded ids: '07:c' and '7:c' are the same conversation.
-    const { created, newRow } = await this.sendLock.withSendLock(
+    const { created, newRow, myIdentity } = await this.sendLock.withSendLock(
       `${channelId}:${conversationId}`,
       userId,
       async () => {
@@ -3392,31 +3541,38 @@ export class InboxService {
               )
             : adapter.sendDm(channel, conversationId, text),
         );
-        const myIdentity = await this.loadMyDmIdentity(channelId);
+        // From here on the DM is delivered (I1): no step below may fail the
+        // call.
+        const myIdentity =
+          (await this.afterDelivery('DM identity read', () =>
+            this.loadMyDmIdentity(channelId),
+          )) ?? dmIdentityOfChannel(channel);
 
-        const newRow = await this.upsertDm({
-          workspaceId,
-          channelId,
-          platform,
-          conversationId: created.conversationId,
-          platformItemId: created.platformItemId,
-          authorPlatformId: myIdentity.platformId,
-          authorHandle: myIdentity.handle,
-          authorDisplayName: myIdentity.displayName,
-          authorAvatarUrl: myIdentity.avatarUrl,
-          text: created.text,
-          fromMe: true,
-          platformCreatedAt: created.platformCreatedAt,
-          authoredByUserId: userId,
-          attachments: hasAttachments
-            ? attachments.map((a) => ({
-                kind: a.kind,
-                url: a.url,
-                contentType: a.contentType,
-              }))
-            : undefined,
-        });
-        return { created, newRow };
+        const newRow = await this.afterDelivery('DM row write', () =>
+          this.upsertDm({
+            workspaceId,
+            channelId,
+            platform,
+            conversationId: created.conversationId,
+            platformItemId: created.platformItemId,
+            authorPlatformId: myIdentity.platformId,
+            authorHandle: myIdentity.handle,
+            authorDisplayName: myIdentity.displayName,
+            authorAvatarUrl: myIdentity.avatarUrl,
+            text: created.text,
+            fromMe: true,
+            platformCreatedAt: created.platformCreatedAt,
+            authoredByUserId: userId,
+            attachments: hasAttachments
+              ? attachments.map((a) => ({
+                  kind: a.kind,
+                  url: a.url,
+                  contentType: a.contentType,
+                }))
+              : undefined,
+          }),
+        );
+        return { created, newRow, myIdentity };
       },
     );
 
@@ -3488,23 +3644,61 @@ export class InboxService {
 
     void this.emitCounts(workspaceId);
 
-    const row =
-      newRow ??
-      (await db.query.inboxItems.findFirst({
-        where: and(
-          eq(inboxItems.channelId, channelId),
-          eq(inboxItems.platformItemId, created.platformItemId),
-        ),
-      }));
-    if (!row) throw new Error('Failed to persist DM');
-    await this.stampAuthor(row.id, userId);
-    await this.syncAfterAction(workspaceId, row.threadKey ?? threadKey, {
+    return this.finishDmSend(workspaceId, userId, opts, {
+      channelId,
+      conversationId,
+      created,
+      newRow,
+      myIdentity,
+    });
+  }
+
+  /**
+   * The shared tail of a delivered DM send (I1: never fails the call). With
+   * our row: stamp the author, sync, answer the legacy DTO. Without it: queue
+   * a resync carrying the outbound intent and answer from what the platform
+   * returned, with UNRECORDED_SEND_ID as the id.
+   */
+  private async finishDmSend(
+    workspaceId: string,
+    userId: string,
+    opts: SendOptions,
+    sent: {
+      channelId: number;
+      conversationId: string;
+      created: DeliveredSend;
+      newRow: InboxItem | null;
+      myIdentity: DeliveredIdentity;
+    },
+  ): Promise<DmMessageDto> {
+    const { channelId, created } = sent;
+    // The canonical key ('07:c' and '7:c' are the same conversation).
+    const threadKey = `${channelId}:${sent.conversationId}`;
+    const intent: SyncIntent = {
       kind: 'outbound',
       userId,
       markDone: await this.resolveMarkDone(workspaceId, userId, opts),
       at: created.platformCreatedAt,
-    });
-    return this.dmItemToDto(row, await this.loadSelfAuthor(userId));
+    };
+    const row =
+      sent.newRow ?? (await this.findOwnRow(channelId, created.platformItemId));
+    const repliedBy = await this.selfAuthorAfterDelivery(userId);
+    if (!row) {
+      await this.resyncUnrecorded(workspaceId, threadKey, intent);
+      return {
+        repliedBy,
+        id: UNRECORDED_SEND_ID,
+        author: authorOf(sent.myIdentity),
+        text: created.text,
+        timestamp: created.platformCreatedAt.toISOString(),
+        fromMe: true,
+        platformItemId: created.platformItemId,
+        status: 'replied',
+      };
+    }
+    await this.stampAuthor(row.id, userId);
+    await this.syncAfterAction(workspaceId, row.threadKey ?? threadKey, intent);
+    return this.dmItemToDto(row, repliedBy);
   }
 
   /**
@@ -3572,43 +3766,40 @@ export class InboxService {
     const created = await this.sendStep(() =>
       adapter.sendTemplateDm!(channel, conversationId, name, language),
     );
-    const myIdentity = await this.loadMyDmIdentity(channelId);
+    // From here on the template is delivered (I1): no step below may fail
+    // the call.
+    const myIdentity =
+      (await this.afterDelivery('DM identity read', () =>
+        this.loadMyDmIdentity(channelId),
+      )) ?? dmIdentityOfChannel(channel);
 
-    const newRow = await this.upsertDm({
-      workspaceId,
-      channelId,
-      platform,
-      conversationId: created.conversationId,
-      platformItemId: created.platformItemId,
-      authorPlatformId: myIdentity.platformId,
-      authorHandle: myIdentity.handle,
-      authorDisplayName: myIdentity.displayName,
-      authorAvatarUrl: myIdentity.avatarUrl,
-      text: created.text,
-      fromMe: true,
-      platformCreatedAt: created.platformCreatedAt,
-      authoredByUserId: userId,
-    });
+    const newRow = await this.afterDelivery('DM row write', () =>
+      this.upsertDm({
+        workspaceId,
+        channelId,
+        platform,
+        conversationId: created.conversationId,
+        platformItemId: created.platformItemId,
+        authorPlatformId: myIdentity.platformId,
+        authorHandle: myIdentity.handle,
+        authorDisplayName: myIdentity.displayName,
+        authorAvatarUrl: myIdentity.avatarUrl,
+        text: created.text,
+        fromMe: true,
+        platformCreatedAt: created.platformCreatedAt,
+        authoredByUserId: userId,
+      }),
+    );
 
     void this.emitCounts(workspaceId);
 
-    const row =
-      newRow ??
-      (await db.query.inboxItems.findFirst({
-        where: and(
-          eq(inboxItems.channelId, channelId),
-          eq(inboxItems.platformItemId, created.platformItemId),
-        ),
-      }));
-    if (!row) throw new Error('Failed to persist DM');
-    await this.stampAuthor(row.id, userId);
-    await this.syncAfterAction(workspaceId, row.threadKey ?? threadKey, {
-      kind: 'outbound',
-      userId,
-      markDone: await this.resolveMarkDone(workspaceId, userId, opts),
-      at: created.platformCreatedAt,
+    return this.finishDmSend(workspaceId, userId, opts, {
+      channelId,
+      conversationId,
+      created,
+      newRow,
+      myIdentity,
     });
-    return this.dmItemToDto(row, await this.loadSelfAuthor(userId));
   }
 
   /** Mark all unread inbound DM messages in a conversation as needs_reply. */

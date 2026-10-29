@@ -3,7 +3,8 @@ import { Logger, OnModuleInit } from '@nestjs/common';
 import { Job, UnrecoverableError } from 'bullmq';
 import { QUEUES } from '../../queue/queue.module';
 import { ScheduledMessagesService } from '../services/scheduled-messages.service';
-import { InboxService } from '../inbox.service';
+import { InboxService, UNRECORDED_SEND_ID } from '../inbox.service';
+import { ConversationResyncService } from '../conversations/services/conversation-resync.service';
 import { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
 import { roleCan } from '../../workspace-members/role-capabilities';
 
@@ -23,8 +24,12 @@ export interface ScheduledInboxFireJob {
  *   2. Dispatch to InboxService.sendDm | reply | commentOnPost depending on
  *      type + whether parentItemId is set.
  *   3. On success: mark sent + link inbox row id.
- *   4. On error: throw — BullMQ retries (attempts=3, exponential backoff).
- *      Final retry: caller (this) marks failed and emits SSE.
+ *   4. On error BEFORE delivery: throw — BullMQ retries (attempts=3,
+ *      exponential backoff). Final retry: caller (this) marks failed and
+ *      emits SSE.
+ *   5. Once the platform has the message (I1), nothing may reset the row to
+ *      pending or rethrow: a retry would post it twice. markSent is
+ *      best-effort; its failure is logged and the conversation resynced.
  */
 @Processor(QUEUES.SCHEDULED_INBOX)
 export class ScheduledInboxProcessor
@@ -37,6 +42,7 @@ export class ScheduledInboxProcessor
     private readonly scheduledService: ScheduledMessagesService,
     private readonly inboxService: InboxService,
     private readonly roles: WorkspaceRoleService,
+    private readonly resync: ConversationResyncService,
   ) {
     super();
   }
@@ -68,6 +74,7 @@ export class ScheduledInboxProcessor
 
     const isFinalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
 
+    let inboxItemId: string | null;
     try {
       const userId = claimed.createdByUserId;
       if (!userId) {
@@ -80,8 +87,6 @@ export class ScheduledInboxProcessor
       if (!role || !roleCan(role, 'inbox:reply')) {
         throw new UnrecoverableError(CREATOR_CANNOT_REPLY_MESSAGE);
       }
-
-      let inboxItemId: string | null = null;
 
       const attachments = (claimed.attachments ?? []).map((a) => ({
         kind: a.kind === 'voice' ? ('audio' as const) : a.kind,
@@ -118,12 +123,6 @@ export class ScheduledInboxProcessor
           inboxItemId = result.id;
         }
       }
-
-      await this.scheduledService.markSent(scheduledId, inboxItemId);
-      this.logger.log(
-        `Scheduled fire ${scheduledId}: ${claimed.type} sent → inbox item ${inboxItemId}`,
-      );
-      return { ok: true };
     } catch (err) {
       const message = (err as Error).message || 'Unknown error';
       this.logger.error(
@@ -144,5 +143,22 @@ export class ScheduledInboxProcessor
       }
       throw err;
     }
+
+    // Delivered (I1). A send that could not write its row answers with
+    // UNRECORDED_SEND_ID, so the scheduled row links no item.
+    if (inboxItemId === UNRECORDED_SEND_ID) inboxItemId = null;
+    try {
+      await this.scheduledService.markSent(scheduledId, inboxItemId);
+    } catch (err) {
+      this.logger.error(
+        `Scheduled fire ${scheduledId}: ${claimed.type} was DELIVERED but could not be marked sent; it will not be retried: ${(err as Error).message}`,
+      );
+      await this.resync.enqueue(claimed.workspaceId, claimed.threadKey);
+      return { ok: true };
+    }
+    this.logger.log(
+      `Scheduled fire ${scheduledId}: ${claimed.type} sent → inbox item ${inboxItemId ?? '(not recorded)'}`,
+    );
+    return { ok: true };
   }
 }

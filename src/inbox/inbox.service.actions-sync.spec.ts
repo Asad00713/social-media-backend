@@ -36,6 +36,9 @@ interface Script {
   onSelect: (keys: string[]) => Array<Record<string, unknown>>;
   // Runs when a reply marks its target replied; may delay it (a slow UPDATE).
   onRepliedUpdate: ((values: Record<string, unknown>) => Promise<void>) | null;
+  // Results the next inboxItems.findFirst calls return, in order, before
+  // falling back to `item` (lets a test make the post-upsert lookup miss).
+  findQueue: unknown[];
 }
 const script: Script = {
   item: {},
@@ -46,6 +49,7 @@ const script: Script = {
   failFlip: false,
   onSelect: () => script.selected,
   onRepliedUpdate: null,
+  findQueue: [],
 };
 
 function chain(
@@ -130,7 +134,13 @@ jest.mock('../drizzle/db', () => ({
       );
     }),
     query: {
-      inboxItems: { findFirst: jest.fn(() => Promise.resolve(script.item)) },
+      inboxItems: {
+        findFirst: jest.fn(() =>
+          Promise.resolve(
+            script.findQueue.length > 0 ? script.findQueue.shift() : script.item,
+          ),
+        ),
+      },
       socialMediaChannels: {
         findFirst: jest.fn(() => Promise.resolve(script.channel)),
       },
@@ -389,6 +399,7 @@ beforeEach(() => {
   script.user = null;
   script.onSelect = () => script.selected;
   script.onRepliedUpdate = null;
+  script.findQueue = [];
   script.item = ROW;
   script.channel = {
     id: CH,
@@ -1028,3 +1039,186 @@ describe('lock scope and the replied_at write (review fixes)', () => {
     expect(set.mock.calls[0][0]).toBe(`inbox-send:${CH}:c1`);
   });
 });
+
+// ---------------------------------------------------------------------------
+// I1: once the platform accepted the send, nothing after it may fail the call
+// (a 5xx makes the client retry and a throw makes BullMQ retry: both post the
+// message twice).
+// ---------------------------------------------------------------------------
+describe('a delivered send never fails (I1)', () => {
+  const fail = () => Promise.reject(new Error('db blip'));
+
+  interface Case {
+    name: string;
+    item?: Record<string, unknown>;
+    platform?: string;
+    breakIt: (i: Internals) => void;
+    // reply() reads its parent with findFirst before the send
+    readsParent: boolean;
+    run: (c: Ctx) => Promise<{ id: string }>;
+    sent: (c: Ctx) => jest.Mock;
+    key: string;
+    intent: SyncIntent;
+  }
+
+  const CASES: Case[] = [
+    {
+      name: 'reply: the reply-row upsert throws',
+      item: { ...ROW, fromMe: false },
+      breakIt: (i) => (i.upsertComment = jest.fn(fail)),
+      readsParent: true,
+      run: (c) => c.service.reply(WS, USER, 'row-1', 'hi'),
+      sent: (c) => c.adapter.replyToComment,
+      key: `${CH}:p1`,
+      intent: outbound(true),
+    },
+    {
+      name: 'reply on a mention: the mention-row upsert throws',
+      item: {
+        ...ROW,
+        type: 'mention',
+        platform: 'threads',
+        platformItemId: 'm1',
+        platformPostId: null,
+        fromMe: false,
+        threadKey: `${CH}:mention:m1`,
+      },
+      breakIt: (i) => (i.upsertInboxItem = jest.fn(fail)),
+      readsParent: true,
+      run: (c) => c.service.reply(WS, USER, 'row-1', 'hi'),
+      sent: (c) => c.adapter.replyToComment,
+      key: `${CH}:mention:m1`,
+      intent: outbound(true),
+    },
+    {
+      name: 'commentOnPost: the comment-row upsert throws',
+      breakIt: (i) => (i.upsertComment = jest.fn(fail)),
+      readsParent: false,
+      run: (c) => c.service.commentOnPost(WS, USER, `${CH}:p1`, 'hi'),
+      sent: (c) => c.adapter.commentOnPost,
+      key: `${CH}:p1`,
+      intent: outbound(false),
+    },
+    {
+      name: 'commentOnPost: findOurPostId throws',
+      breakIt: (i) => (i.findOurPostId = fail),
+      readsParent: false,
+      run: (c) => c.service.commentOnPost(WS, USER, `${CH}:p1`, 'hi'),
+      sent: (c) => c.adapter.commentOnPost,
+      key: `${CH}:p1`,
+      intent: outbound(false),
+    },
+    {
+      name: 'sendDm: the DM-row upsert throws',
+      item: DM_ROW,
+      breakIt: (i) => (i.upsertDm = jest.fn(fail)),
+      readsParent: false,
+      run: (c) => c.service.sendDm(WS, USER, `${CH}:conv`, 'hi'),
+      sent: (c) => c.adapter.sendDm,
+      key: `${CH}:conv`,
+      intent: outbound(true),
+    },
+    {
+      name: 'sendDmTemplate: the DM-row upsert throws',
+      item: DM_ROW,
+      platform: 'whatsapp',
+      breakIt: (i) => (i.upsertDm = jest.fn(fail)),
+      readsParent: false,
+      run: (c) => c.service.sendDmTemplate(WS, USER, `${CH}:conv`, 'tpl', 'en'),
+      sent: (c) => c.adapter.sendTemplateDm,
+      key: `${CH}:conv`,
+      intent: outbound(true),
+    },
+  ];
+
+  it.each(CASES)(
+    '$name: resolves, sends once, queues a resync, answers with no row id',
+    async (k) => {
+      script.item = k.item ?? ROW;
+      if (k.platform) {
+        script.channel = { ...script.channel, platform: k.platform };
+      }
+      const c = build();
+      k.breakIt(c.service as unknown as Internals);
+      // The lookup after the failed upsert misses: there is no row at all.
+      script.findQueue = k.readsParent ? [script.item, undefined] : [undefined];
+      const error = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+
+      const res = await k.run(c);
+
+      expect(k.sent(c)).toHaveBeenCalledTimes(1);
+      expect(res.id).toBe('');
+      expect(c.resync.enqueue).toHaveBeenCalledWith(WS, k.key, k.intent);
+      expect(error).toHaveBeenCalledWith(
+        expect.stringContaining('after a delivered send'),
+      );
+    },
+  );
+
+  it.each([
+    [
+      'reply: loadMyIdentity throws',
+      ROW,
+      (i: Internals) => (i.loadMyIdentity = fail),
+      (c: Ctx) => c.service.reply(WS, USER, 'row-1', 'hi'),
+      (c: Ctx) => c.adapter.replyToComment,
+    ],
+    [
+      'reply: loadSelfAuthor throws',
+      ROW,
+      (i: Internals) => (i.loadSelfAuthor = fail),
+      (c: Ctx) => c.service.reply(WS, USER, 'row-1', 'hi'),
+      (c: Ctx) => c.adapter.replyToComment,
+    ],
+    [
+      'sendDm: loadMyDmIdentity throws',
+      DM_ROW,
+      (i: Internals) => (i.loadMyDmIdentity = fail),
+      (c: Ctx) => c.service.sendDm(WS, USER, `${CH}:conv`, 'hi'),
+      (c: Ctx) => c.adapter.sendDm,
+    ],
+    [
+      'commentOnPost: loadSelfAuthor throws',
+      ROW,
+      (i: Internals) => (i.loadSelfAuthor = fail),
+      (c: Ctx) => c.service.commentOnPost(WS, USER, `${CH}:p1`, 'hi'),
+      (c: Ctx) => c.adapter.commentOnPost,
+    ],
+  ] as const)(
+    '%s: the row is still written and the call resolves',
+    async (_n, item, breakIt, run, sent) => {
+      script.item = { ...item, fromMe: false };
+      const c = build();
+      breakIt(c.service as unknown as Internals);
+      jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+      await expect(run(c)).resolves.toBeDefined();
+      expect(sent(c)).toHaveBeenCalledTimes(1);
+      expect(c.sync.syncThread).toHaveBeenCalledTimes(1);
+    },
+  );
+
+  it('reply: with no identity the row is written as the resolved channel', async () => {
+    script.item = { ...ROW, fromMe: false };
+    const c = build();
+    const i = c.service as unknown as Internals;
+    i.loadMyIdentity = fail;
+    i.resolveChannel = () =>
+      Promise.resolve({
+        platformAccountId: 'acct',
+        username: '@brand',
+        accountName: 'Brand',
+        profilePictureUrl: null,
+      });
+    jest.spyOn(Logger.prototype, 'error').mockImplementation(() => undefined);
+    await c.service.reply(WS, USER, 'row-1', 'hi');
+    expect(i.upsertComment).toHaveBeenCalledWith(
+      expect.objectContaining({
+        authorHandle: 'brand',
+        authorDisplayName: 'Brand',
+      }),
+    );
+  });
+});
+
