@@ -3,7 +3,7 @@
 // `insert...returning` resolves the scripted upserted row, `update` records
 // every statement in call order.
 const calls: string[] = [];
-let preRead: Array<{ threadKey: string | null; fromMe: boolean }> = [];
+let preRead: Array<Record<string, unknown>> = [];
 let upserted: Array<Record<string, unknown>> = [];
 let insertedValues: Record<string, unknown> | null = null;
 
@@ -95,6 +95,9 @@ function row(over: Record<string, unknown> = {}) {
     threadKey: `${CH}:p1`,
     fromMe: false,
     authoredByUserId: null,
+    isHidden: false,
+    authorPlatformId: null,
+    ourPostId: null,
     status: 'unread',
     text: 'hi',
     authorHandle: 'ana',
@@ -120,6 +123,27 @@ const dmRow = (over: Record<string, unknown> = {}) =>
     ...over,
   });
 
+/** The pre-read the service takes before an upsert, mirroring `r`'s columns. */
+const pre = (
+  r: Record<string, unknown>,
+  over: Record<string, unknown> = {},
+) => ({
+  threadKey: r.threadKey,
+  fromMe: r.fromMe,
+  authorDisplayName: r.authorDisplayName,
+  authorHandle: r.authorHandle,
+  authorAvatarUrl: r.authorAvatarUrl,
+  authorPlatformId: r.authorPlatformId ?? null,
+  platformParentId: r.platformParentId,
+  ourPostId: r.ourPostId ?? null,
+  status: r.status,
+  isHidden: r.isHidden ?? false,
+  text: r.text,
+  postCaption: null,
+  postThumbnail: null,
+  ...over,
+});
+
 function build() {
   const emitter = { emit: jest.fn() };
   const sync = {
@@ -133,6 +157,10 @@ function build() {
     syncThreads: jest.fn(async () => []),
   };
   const realtime = { timelineAppended: jest.fn(), countsChanged: jest.fn() };
+  const resync = {
+    enqueue: jest.fn(async () => undefined),
+    syncOrEnqueue: jest.fn(async () => undefined),
+  };
   const service = new InboxService(
     emitter as never,
     {} as never,
@@ -142,8 +170,9 @@ function build() {
     {} as never,
     realtime as never,
     sync as never,
+    resync as never,
   );
-  return { service, sync, realtime, emitter };
+  return { service, sync, realtime, emitter, resync };
 }
 
 const commentInput = {
@@ -192,8 +221,9 @@ describe('InboxService ingest -> syncThread (R1)', () => {
 
   it('a merge that keeps the key and from_me does not sync', async () => {
     const { service, sync, realtime } = build();
-    preRead = [{ threadKey: `${CH}:p1`, fromMe: false }];
-    upserted = [row({ inserted: false })];
+    const r = row({ inserted: false });
+    preRead = [pre(r)] as never;
+    upserted = [r];
     await service.upsertComment(commentInput as never);
     expect(sync.syncThread).not.toHaveBeenCalled();
     expect(sync.rekey).not.toHaveBeenCalled();
@@ -202,23 +232,23 @@ describe('InboxService ingest -> syncThread (R1)', () => {
 
   it('a merge that flips from_me syncs', async () => {
     const { service, sync } = build();
-    preRead = [{ threadKey: `${CH}:p1`, fromMe: false }];
-    upserted = [row({ inserted: false, fromMe: true })];
+    const r = row({ inserted: false, fromMe: true });
+    preRead = [pre(r, { fromMe: false })] as never;
+    upserted = [r];
     await service.upsertComment(commentInput as never);
     expect(sync.syncThread).toHaveBeenCalledTimes(1);
   });
 
   it('a mention upgraded to a comment moves our replies and re-keys', async () => {
     const { service, sync } = build();
-    preRead = [{ threadKey: `${CH}:mention:m7`, fromMe: false }];
-    upserted = [
-      row({
-        inserted: false,
-        platformItemId: 'm7',
-        platformPostId: 'p9',
-        threadKey: `${CH}:p9`,
-      }),
-    ];
+    const r = row({
+      inserted: false,
+      platformItemId: 'm7',
+      platformPostId: 'p9',
+      threadKey: `${CH}:p9`,
+    });
+    preRead = [pre(r, { threadKey: `${CH}:mention:m7` })] as never;
+    upserted = [r];
     await service.upsertComment({
       ...commentInput,
       platformItemId: 'm7',
@@ -259,7 +289,7 @@ describe('InboxService ingest -> syncThread (R1)', () => {
   });
 
   it('a from_me dm WITH authoredByUserId issues no R5 update and broadcasts sentBy', async () => {
-    const { service, realtime } = build();
+    const { service, realtime, sync } = build();
     upserted = [dmRow({ fromMe: true, authoredByUserId: 'u1' })];
     await service.upsertDm({
       ...dmInput,
@@ -267,6 +297,13 @@ describe('InboxService ingest -> syncThread (R1)', () => {
       authoredByUserId: 'u1',
     });
     expect(calls).not.toContain('set:repliedAt');
+    // An authored send is an OUTBOUND by that teammate, never a platform reply.
+    expect(sync.syncThread).toHaveBeenCalledWith(WS, `${CH}:conv`, {
+      kind: 'outbound',
+      userId: 'u1',
+      markDone: false,
+      at: NOW,
+    });
     expect(realtime.timelineAppended).toHaveBeenCalledWith(
       WS,
       'conv-1',
@@ -325,7 +362,7 @@ describe('InboxService ingest -> syncThread (R1)', () => {
   });
 
   it('a Discord gateway delete re-syncs the deleted message thread', async () => {
-    const { service, sync } = build();
+    const { service, resync } = build();
     preRead = [];
     const { db } = jest.requireMock('../drizzle/db');
     db.select.mockReturnValueOnce(
@@ -338,16 +375,168 @@ describe('InboxService ingest -> syncThread (R1)', () => {
       channelId: CH,
       platformItemId: 'd1',
     });
-    expect(sync.syncThreads).toHaveBeenCalledWith(WS, [`${CH}:dc`]);
+    expect(resync.syncOrEnqueue).toHaveBeenCalledWith(WS, [`${CH}:dc`]);
   });
 
   it('the orphan cleanup re-syncs every deleted row thread', async () => {
-    const { service, sync } = build();
+    const { service, resync } = build();
     await service.cleanupOrphanedThreadKeysForWorkspace(WS);
-    expect(sync.syncThreads).toHaveBeenCalledWith(WS, [
+    expect(resync.syncOrEnqueue).toHaveBeenCalledWith(WS, [
       '7:p1',
       '7:p1',
       '7:conv',
     ]);
+  });
+});
+
+describe('change detection (I1) and R5 on merges (I2)', () => {
+  it('an author name filled in by a later merge syncs the thread', async () => {
+    const { service, sync } = build();
+    const r = row({ inserted: false, authorDisplayName: 'Ana' });
+    preRead = [pre(r, { authorDisplayName: null })] as never;
+    upserted = [r];
+    await service.upsertComment(commentInput as never);
+    expect(sync.syncThread).toHaveBeenCalledTimes(1);
+  });
+
+  it.each([
+    ['author handle', { authorHandle: null }],
+    ['author avatar', { authorAvatarUrl: 'https://old/a.png' }],
+    ['author platform id', { authorPlatformId: 'old' }],
+    ['parent id becoming known', { platformParentId: 'older' }],
+    ['status', { status: 'read' }],
+    ['text', { text: 'older text' }],
+  ])('a merge that changes %s syncs the thread', async (_n, over) => {
+    const { service, sync } = build();
+    const r = row({ inserted: false });
+    preRead = [pre(r, over)] as never;
+    upserted = [r];
+    await service.upsertComment(commentInput as never);
+    expect(sync.syncThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('a post snapshot added by a later merge syncs the thread', async () => {
+    const { service, sync } = build();
+    const r = row({
+      inserted: false,
+      metadata: {
+        post: { caption: 'Autumn', thumbnailUrl: 'https://t/1.png' },
+      },
+    });
+    preRead = [pre(r, { postCaption: null, postThumbnail: null })] as never;
+    upserted = [r];
+    await service.upsertComment(commentInput as never);
+    expect(sync.syncThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('a hidden flip syncs the thread', async () => {
+    const { service, sync } = build();
+    const r = row({ inserted: false, isHidden: true });
+    preRead = [pre(r, { isHidden: false })] as never;
+    upserted = [r];
+    await service.upsertComment(commentInput as never);
+    expect(sync.syncThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('a merge whose pre-read found nothing (concurrent insert) still syncs', async () => {
+    const { service, sync } = build();
+    preRead = [];
+    upserted = [row({ inserted: false })];
+    await service.upsertComment(commentInput as never);
+    expect(sync.syncThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('a from_me false->true merge without an author stamps the parent replied BEFORE syncing (R5)', async () => {
+    const { service } = build();
+    const r = row({
+      inserted: false,
+      fromMe: true,
+      platformItemId: 'r1',
+      platformParentId: 'c1',
+    });
+    preRead = [pre(r, { fromMe: false })] as never;
+    upserted = [r];
+    await service.upsertComment({
+      ...commentInput,
+      platformItemId: 'r1',
+      platformParentId: 'c1',
+      fromMe: true,
+    } as never);
+    expect(calls.indexOf('set:repliedAt')).toBeGreaterThan(-1);
+    expect(calls.indexOf('set:repliedAt')).toBeLessThan(
+      calls.indexOf('syncThread'),
+    );
+  });
+
+  it('a from_me row whose parent only became known on this merge runs R5', async () => {
+    const { service } = build();
+    const r = row({
+      inserted: false,
+      fromMe: true,
+      platformItemId: 'r1',
+      platformParentId: 'c1',
+    });
+    preRead = [pre(r, { platformParentId: null })] as never;
+    upserted = [r];
+    await service.upsertComment({
+      ...commentInput,
+      platformItemId: 'r1',
+      fromMe: true,
+    } as never);
+    expect(calls).toContain('set:repliedAt');
+  });
+
+  it('a from_me merge that changes nothing runs no R5', async () => {
+    const { service } = build();
+    const r = row({ inserted: false, fromMe: true, platformParentId: 'c1' });
+    preRead = [pre(r)] as never;
+    upserted = [r];
+    await service.upsertComment({ ...commentInput, fromMe: true } as never);
+    expect(calls).not.toContain('set:repliedAt');
+  });
+});
+
+describe('a failed sync is retried through the resync queue (I3)', () => {
+  it('enqueues the thread when syncThread throws, and still resolves', async () => {
+    const { service, sync, resync } = build();
+    sync.syncThread.mockRejectedValueOnce(new Error('boom'));
+    upserted = [row()];
+    await expect(
+      service.upsertComment(commentInput as never),
+    ).resolves.toBeTruthy();
+    expect(resync.enqueue).toHaveBeenCalledWith(WS, `${CH}:p1`);
+  });
+
+  it('a failed R5 update still attempts the sync', async () => {
+    const { service, sync } = build();
+    const { db } = jest.requireMock('../drizzle/db');
+    db.update.mockImplementationOnce(() => {
+      throw new Error('r5 failed');
+    });
+    upserted = [dmRow({ fromMe: true })];
+    await service.upsertDm({ ...dmInput, fromMe: true });
+    expect(sync.syncThread).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed rekey is logged, leaves the old key alone, and still syncs the new one', async () => {
+    const { service, sync, resync } = build();
+    sync.rekey.mockRejectedValueOnce(new Error('rekey failed'));
+    const r = row({
+      inserted: false,
+      platformItemId: 'm7',
+      platformPostId: 'p9',
+      threadKey: `${CH}:p9`,
+    });
+    preRead = [pre(r, { threadKey: `${CH}:mention:m7` })] as never;
+    upserted = [r];
+    await service.upsertComment({
+      ...commentInput,
+      platformItemId: 'm7',
+      platformPostId: 'p9',
+    } as never);
+    expect(sync.syncThread).toHaveBeenCalledWith(WS, `${CH}:p9`, {
+      kind: 'refresh',
+    });
+    expect(resync.enqueue).not.toHaveBeenCalledWith(WS, `${CH}:mention:m7`);
   });
 });

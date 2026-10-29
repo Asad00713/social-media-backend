@@ -44,7 +44,9 @@ import { InstagramService } from '../channels/services/instagram.service';
 import { InboxDispatcher } from './services/inbox-dispatcher.service';
 import { InboxRealtimeService } from './conversations/services/inbox-realtime.service';
 import { ConversationSyncService } from './conversations/services/conversation-sync.service';
+import { ConversationResyncService } from './conversations/services/conversation-resync.service';
 import { messageEntryOf } from './conversations/lib/timeline-entry';
+import type { SyncIntent } from './conversations/lib/lifecycle';
 import { computeLegacyCounts } from './legacy-counts';
 import { whatsappMessageTemplates } from '../drizzle/schema/whatsapp-templates.schema';
 import type {
@@ -350,6 +352,59 @@ export async function findOurPostIdRows(
   return res.rows;
 }
 
+const errMsg = (err: unknown): string =>
+  err instanceof Error ? err.message : String(err);
+
+interface IngestFingerprint {
+  threadKey: string | null;
+  fromMe: boolean;
+  authorDisplayName: string | null;
+  authorHandle: string | null;
+  authorAvatarUrl: string | null;
+  authorPlatformId: string | null;
+  platformParentId: string | null;
+  ourPostId: string | null;
+  status: string;
+  isHidden: boolean;
+  text: string | null;
+  postCaption: string | null;
+  postThumbnail: string | null;
+}
+
+/** The same fields, read off a returned (merged) row. */
+function fingerprintOf(row: InboxItem): IngestFingerprint {
+  const post = (
+    row.metadata as {
+      post?: { caption?: unknown; thumbnailUrl?: unknown };
+    } | null
+  )?.post;
+  return {
+    threadKey: row.threadKey,
+    fromMe: row.fromMe,
+    authorDisplayName: row.authorDisplayName,
+    authorHandle: row.authorHandle,
+    authorAvatarUrl: row.authorAvatarUrl,
+    authorPlatformId: row.authorPlatformId,
+    platformParentId: row.platformParentId,
+    ourPostId: row.ourPostId,
+    status: row.status,
+    isHidden: row.isHidden,
+    text: row.text,
+    postCaption: typeof post?.caption === 'string' ? post.caption : null,
+    postThumbnail:
+      typeof post?.thumbnailUrl === 'string' ? post.thumbnailUrl : null,
+  };
+}
+
+function ingestFingerprintDiffers(
+  a: IngestFingerprint,
+  b: IngestFingerprint,
+): boolean {
+  return (Object.keys(a) as Array<keyof IngestFingerprint>).some(
+    (k) => (a[k] ?? null) !== (b[k] ?? null),
+  );
+}
+
 /** `(xmax = 0)` is true only for a freshly inserted row of an upsert. */
 const returningWithInserted = {
   ...getTableColumns(inboxItems),
@@ -369,6 +424,7 @@ export class InboxService {
     @InjectQueue(QUEUES.INBOX_POLLING) private readonly pollQueue: Queue,
     private readonly realtime: InboxRealtimeService,
     private readonly conversationSync: ConversationSyncService,
+    private readonly resync: ConversationResyncService,
   ) {}
 
   /** Resolve our own identity on a channel for `fromMe` row authorship. */
@@ -1645,13 +1701,34 @@ export class InboxService {
   // Ingest (used by webhooks + polling worker)
   // ==========================================================================
 
-  /** The row's thread key + from_me BEFORE an upsert (unique index lookup). */
+  /**
+   * Everything `syncThread` reads from an item (thread key, direction, author
+   * block, post snapshot, status, hidden flag, text), BEFORE an upsert. Compared
+   * against the merged row so a re-poll that fills any of them resyncs, while
+   * one that only refreshed a like counter does not.
+   */
   private async readExistingIngestKey(
     channelId: number,
     platformItemId: string,
-  ): Promise<{ threadKey: string | null; fromMe: boolean } | undefined> {
+  ): Promise<IngestFingerprint | undefined> {
     const [existing] = await db
-      .select({ threadKey: inboxItems.threadKey, fromMe: inboxItems.fromMe })
+      .select({
+        threadKey: inboxItems.threadKey,
+        fromMe: inboxItems.fromMe,
+        authorDisplayName: inboxItems.authorDisplayName,
+        authorHandle: inboxItems.authorHandle,
+        authorAvatarUrl: inboxItems.authorAvatarUrl,
+        authorPlatformId: inboxItems.authorPlatformId,
+        platformParentId: inboxItems.platformParentId,
+        ourPostId: inboxItems.ourPostId,
+        status: inboxItems.status,
+        isHidden: inboxItems.isHidden,
+        text: inboxItems.text,
+        postCaption: sql<string | null>`${inboxItems.metadata}->'post'->>'caption'`,
+        postThumbnail: sql<
+          string | null
+        >`${inboxItems.metadata}->'post'->>'thumbnailUrl'`,
+      })
       .from(inboxItems)
       .where(
         and(
@@ -1665,33 +1742,57 @@ export class InboxService {
 
   /**
    * R1: every ingest ends here. Runs AFTER the upsert committed (D1: the sync
-   * opens its own transaction). A re-poll that only refreshed a counter needs
-   * no sync. A failure is logged, never thrown: the row is already stored and
-   * a derived-table hiccup must not fail the webhook or the poll job.
+   * opens its own transaction). A re-poll that changed nothing syncThread reads
+   * needs no sync. Each step has its own try: a failed R5 or rekey must not skip
+   * the sync, and a failed sync is queued for a retry (never left stale).
    */
   private async syncAfterIngest(
     row: InboxItem,
     isInsert: boolean,
-    before: { threadKey: string | null; fromMe: boolean } | undefined,
+    before: IngestFingerprint | undefined,
   ): Promise<void> {
     const key = row.threadKey;
     if (!key) return;
     const keyMoved = !!before?.threadKey && before.threadKey !== key;
-    const fromMeFlipped = !!before && before.fromMe !== row.fromMe;
-    if (!isInsert && !keyMoved && !fromMeFlipped) return;
+    // `!before && !isInsert`: another writer inserted between our pre-read and
+    // the upsert, so its sync may have run before this merge committed.
+    const changed =
+      isInsert ||
+      !before ||
+      ingestFingerprintDiffers(before, fingerprintOf(row));
+    if (!changed) return;
 
-    try {
-      // R5: a reply made on the platform itself (no teammate authored it)
-      // answers what it replies to. Runs BEFORE the sync so the lifecycle sees
-      // the inbound as answered.
-      if (isInsert && row.fromMe && !row.authoredByUserId) {
+    // R5: a reply made on the platform itself (no teammate authored it)
+    // answers what it replies to. Runs BEFORE the sync so the lifecycle sees
+    // the inbound as answered. Also fires when a merge flips from_me to true
+    // (the Facebook webhook echo of a Page comment, corrected by the poll) or
+    // when the parent only became known on this merge.
+    const becameOurs = isInsert || !before || !before.fromMe;
+    const parentLearned =
+      !before || (before.platformParentId == null && !!row.platformParentId);
+    if (
+      row.fromMe &&
+      !row.authoredByUserId &&
+      (becameOurs || parentLearned)
+    ) {
+      try {
         await this.markRepliedOnPlatform(row);
+      } catch (err) {
+        this.logger.error(
+          `R5 reply stamp failed for item ${row.id}: ${errMsg(err)}`,
+        );
       }
+    }
 
-      if (keyMoved && before?.threadKey) {
+    if (keyMoved && before?.threadKey) {
+      try {
         // R3: a mention that turned out to be a comment on a known post. Our
         // replies to it follow, then the conversation (notes, scheduled) moves.
-        if (row.type === 'comment' && row.platformPostId) {
+        if (
+          before.threadKey.includes(':mention:') &&
+          row.type === 'comment' &&
+          row.platformPostId
+        ) {
           await db
             .update(inboxItems)
             .set({ platformPostId: row.platformPostId })
@@ -1707,22 +1808,52 @@ export class InboxService {
           before.threadKey,
           key,
         );
+      } catch (err) {
+        // The old key is left alone: syncing it with no items would delete
+        // the conversation that still holds the notes.
+        this.logger.error(
+          `rekey ${before.threadKey} -> ${key} failed for item ${row.id}: ${errMsg(err)}`,
+        );
       }
+    }
+
+    let conversationId: string | null = null;
+    try {
+      // A NEW row a teammate authored (Slack start-DM, Maestro's Discord send)
+      // is an outbound by that teammate, not a reply made on the platform:
+      // a brand-new outbound-only thread is then Done via reply, not via
+      // platform. Anything else is a plain refresh.
+      const intent: SyncIntent =
+        isInsert && row.fromMe && row.authoredByUserId
+          ? {
+              kind: 'outbound',
+              userId: row.authoredByUserId,
+              markDone: false,
+              at: row.platformCreatedAt,
+            }
+          : { kind: 'refresh' };
       const result = await this.conversationSync.syncThread(
         row.workspaceId,
         key,
-        { kind: 'refresh' },
+        intent,
       );
-
-      if (isInsert && result.conversationId) {
-        await this.emitTimelineAppended(row, result.conversationId);
-      }
+      conversationId = result.conversationId;
     } catch (err) {
       this.logger.error(
-        `conversation sync failed for ${key} (item ${row.id}): ${
-          err instanceof Error ? err.message : String(err)
-        }`,
+        `conversation sync failed for ${key} (item ${row.id}), queued for retry: ${errMsg(err)}`,
       );
+      await this.resync.enqueue(row.workspaceId, key);
+      return;
+    }
+
+    if (isInsert && conversationId) {
+      try {
+        await this.emitTimelineAppended(row, conversationId);
+      } catch (err) {
+        this.logger.error(
+          `timeline event failed for item ${row.id}: ${errMsg(err)}`,
+        );
+      }
     }
   }
 
@@ -1898,6 +2029,9 @@ export class InboxService {
           // fromMe can only upgrade false→true (never downgrade): if a later
           // poll discovers it's actually our reply, mark it as such.
           fromMe: sql`${inboxItems.fromMe} OR EXCLUDED.from_me`,
+          // An existing author is never wiped; an authored send that merges
+          // onto its own webhook echo gains its author.
+          authoredByUserId: sql`COALESCE(${inboxItems.authoredByUserId}, EXCLUDED.authored_by_user_id)`,
           // mention-ness only upgrades false→true: once the mentions poll flags
           // an item as @mentioning us it stays flagged, even when the comment
           // poll re-ingests the same row with is_mention=false.
@@ -2021,15 +2155,7 @@ export class InboxService {
       .map((r) => r.thread_key)
       .filter((k): k is string => typeof k === 'string');
     if (keys.length > 0) {
-      try {
-        await this.conversationSync.syncThreads(workspaceId, keys);
-      } catch (err) {
-        this.logger.error(
-          `cleanupOrphanedThreadKeys: conversation sync failed: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      }
+      await this.resync.syncOrEnqueue(workspaceId, keys);
     }
 
     return { deleted: rows.length, channels };
@@ -3120,6 +3246,7 @@ export class InboxService {
           authorDisplayName: sql`COALESCE(${inboxItems.authorDisplayName}, EXCLUDED.author_display_name)`,
           authorAvatarUrl: sql`COALESCE(${inboxItems.authorAvatarUrl}, EXCLUDED.author_avatar_url)`,
           fromMe: sql`${inboxItems.fromMe} OR EXCLUDED.from_me`,
+          authoredByUserId: sql`COALESCE(${inboxItems.authoredByUserId}, EXCLUDED.authored_by_user_id)`,
           metadata: sql`${inboxItems.metadata} || EXCLUDED.metadata`,
           updatedAt: new Date(),
         },
@@ -3273,17 +3400,7 @@ export class InboxService {
       .where(eq(inboxItems.id, row.id));
 
     if (row.threadKey) {
-      try {
-        await this.conversationSync.syncThreads(input.workspaceId, [
-          row.threadKey,
-        ]);
-      } catch (err) {
-        this.logger.error(
-          `softDeleteDm: conversation sync failed for ${row.threadKey}: ${
-            err instanceof Error ? err.message : String(err)
-          }`,
-        );
-      }
+      await this.resync.syncOrEnqueue(input.workspaceId, [row.threadKey]);
     }
 
     this.emitter.emit(input.workspaceId, 'inbox.item.updated', {

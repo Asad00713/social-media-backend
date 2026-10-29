@@ -6,6 +6,7 @@ import {
   withInboxDb,
 } from '../testing/inbox-db';
 import { ConversationSyncService } from '../conversations/services/conversation-sync.service';
+import { ConversationResyncService } from '../conversations/services/conversation-resync.service';
 import {
   presentRow,
   type ConversationRecord,
@@ -50,7 +51,10 @@ describeInboxDb('YoutubeRetentionService x conversations', () => {
       const { workspaceId } = await seedWorkspace(client);
       const ch = await seedChannel(client, workspaceId, 'youtube');
       const sync = new ConversationSyncService(db, rt as never);
-      const retention = new YoutubeRetentionService(db, sync);
+      const retention = new YoutubeRetentionService(
+        db,
+        new ConversationResyncService({ add: jest.fn() } as never, sync),
+      );
 
       const old = await seedItem(client, {
         workspaceId,
@@ -140,5 +144,51 @@ describeInboxDb('YoutubeRetentionService x conversations', () => {
       const kept = await read(fresh.threadKey!);
       expect(kept.last_snippet).toContain('kingfisher');
       expect(kept.search_text).toContain('kingfisher');
+    }));
+
+  it('self-heals a conversation whose items were wiped by an earlier run whose sync failed', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'youtube');
+      const sync = new ConversationSyncService(db, rt as never);
+      const retention = new YoutubeRetentionService(
+        db,
+        new ConversationResyncService({ add: jest.fn() } as never, sync),
+      );
+      // The item is already wiped (text and author null), so the wipe's
+      // `text IS NOT NULL ...` guard never selects it again.
+      const item = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'youtube',
+        type: 'comment',
+        platformPostId: 'vid-w',
+        text: null,
+        platformCreatedAt: daysAgo(40),
+      });
+      await sync.syncThread(workspaceId, item.threadKey!);
+      await client.query(
+        `UPDATE inbox_conversations
+            SET last_snippet = 'zebrafinch', last_author_label = 'oldfan',
+                search_text = 'zebrafinch oldfan'
+          WHERE workspace_id = $1 AND thread_key = $2`,
+        [workspaceId, item.threadKey],
+      );
+
+      const res = await retention.wipeExpiredContent(NOW);
+      expect(res.wiped).toBe(0);
+
+      const after = await client.query<{
+        last_snippet: string | null;
+        last_author_label: string | null;
+        search_text: string;
+      }>(
+        `SELECT last_snippet, last_author_label, search_text
+           FROM inbox_conversations WHERE workspace_id = $1 AND thread_key = $2`,
+        [workspaceId, item.threadKey],
+      );
+      expect(after.rows[0].last_snippet).toBeNull();
+      expect(after.rows[0].last_author_label).toBeNull();
+      expect(after.rows[0].search_text).not.toContain('zebrafinch');
     }));
 });

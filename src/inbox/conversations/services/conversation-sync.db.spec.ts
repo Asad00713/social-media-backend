@@ -395,6 +395,65 @@ describeInboxDb('ConversationSyncService.syncThread', () => {
       });
     }));
 
+  it('a hidden inbound does not count as unread or inbound activity and never reopens a Done thread', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const inbound = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'instagram',
+        type: 'dm',
+        conversationId: 'thr-h',
+        text: 'help',
+        authorHandle: 'maya',
+        status: 'replied',
+        repliedAt: at(1),
+        platformCreatedAt: T0,
+      });
+      const key = inbound.threadKey!;
+      await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'instagram',
+        type: 'dm',
+        conversationId: 'thr-h',
+        fromMe: true,
+        authoredByUserId: ownerId,
+        text: 'on it',
+        platformCreatedAt: at(1),
+      });
+      const { service } = build(db);
+      await service.syncThread(workspaceId, key, {
+        kind: 'outbound',
+        userId: ownerId,
+        markDone: true,
+        at: at(1),
+      });
+      const before = await conv(client, workspaceId, key);
+      expect(before).toMatchObject({ status: 'done' });
+
+      const spam = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'instagram',
+        type: 'dm',
+        conversationId: 'thr-h',
+        text: 'buy followers',
+        authorHandle: 'spammer',
+        platformCreatedAt: at(60),
+      });
+      await client.query(
+        `UPDATE inbox_items SET is_hidden = true WHERE id = $1`,
+        [spam.id],
+      );
+      const res = await service.syncThread(workspaceId, key);
+      expect(res).toMatchObject({ reopened: false, status: 'done' });
+      const after = await conv(client, workspaceId, key);
+      expect(after).toMatchObject({ status: 'done', unread_count: 0 });
+      expect(after!.last_inbound_at).toEqual(before!.last_inbound_at);
+    }));
+
   it('sets archived_at when every item is archived and clears it on a new unarchived inbound', () =>
     withInboxDb(async (db, client) => {
       const { workspaceId } = await seedWorkspace(client);

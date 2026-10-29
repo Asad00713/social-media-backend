@@ -5820,6 +5820,7 @@ export class ChannelsController {
     @Param('workspaceId') wid: string,
     @Param('channelId') channelId: string,
     @Body() body: StartSlackDmBodyDto,
+    @CurrentUser() user: { userId: string; email: string },
   ) {
     const channel = await this.channelService.getChannelById(
       Number(channelId),
@@ -5848,6 +5849,9 @@ export class ChannelsController {
       platformItemId: ts,
       text: body.text,
       fromMe: true,
+      // The teammate who opened the DM: without it the row reads as a reply
+      // made on Slack itself (R5), and the new conversation lands in Done.
+      authoredByUserId: user.userId,
       authorPlatformId: body.userId,
       authorHandle: recipient?.handle ?? null,
       authorDisplayName: recipient?.displayName ?? null,

@@ -1,7 +1,11 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
-import { ConversationSyncService } from '../../inbox/conversations/services/conversation-sync.service';
+import { ConversationResyncService } from '../../inbox/conversations/services/conversation-resync.service';
+
+interface Executor {
+  execute(query: SQL): Promise<unknown>;
+}
 
 interface DeletedRow {
   workspace_id: string;
@@ -58,7 +62,7 @@ export class YoutubeDataDeletionService {
 
   constructor(
     @Inject(DRIZZLE) private readonly db: any,
-    private readonly conversationSync: ConversationSyncService,
+    private readonly resync: ConversationResyncService,
   ) {}
 
   async deleteAllYoutubeData(
@@ -117,17 +121,20 @@ export class YoutubeDataDeletionService {
     });
 
     // Their conversations lost their items. The transaction above has
-    // committed, so the sync may open its own (D1). Failures are logged: the
-    // user's data is already gone.
-    try {
-      await this.conversationSync.syncThreads(workspaceId, deletedKeys);
-    } catch (err) {
-      this.logger.error(
-        `YouTube data deletion: conversation sync failed for channel ${channelId}: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
+    // committed, so the sync may open its own (D1). Also sweep this channel's
+    // remaining YouTube conversations: a previous call whose sync failed left
+    // them behind, and the items that named their keys are gone. A failed sync
+    // is queued for a retry.
+    const leftover = (await (this.db as Executor).execute(sql`
+      SELECT thread_key FROM inbox_conversations
+       WHERE workspace_id = ${workspaceId}
+         AND channel_id = ${channelId}
+         AND platform = 'youtube'
+    `)) as { rows?: Array<{ thread_key: string | null }> } | undefined;
+    for (const r of leftover?.rows ?? []) {
+      if (r.thread_key) deletedKeys.add(r.thread_key);
     }
+    await this.resync.syncOrEnqueue(workspaceId, deletedKeys);
 
     this.logger.log(
       `YouTube data deletion for channel ${channelId} (workspace ${workspaceId}): ` +

@@ -22,6 +22,7 @@ export const QUEUES = {
   EVERGREEN_ROTATION: 'evergreen-rotation',
   FIRST_WEEK: 'first-week',
   INBOX_LATER: 'inbox-later',
+  INBOX_RESYNC: 'inbox-resync',
 } as const;
 
 @Module({
@@ -78,6 +79,7 @@ export const QUEUES = {
       { name: QUEUES.EVERGREEN_ROTATION },
       { name: QUEUES.FIRST_WEEK },
       { name: QUEUES.INBOX_LATER },
+      { name: QUEUES.INBOX_RESYNC },
     ),
   ],
   providers: [RateLimiterService],

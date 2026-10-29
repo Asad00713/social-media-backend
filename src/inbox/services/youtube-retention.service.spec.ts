@@ -4,9 +4,9 @@ import {
   YOUTUBE_RETENTION_DAYS,
 } from './youtube-retention.service';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
-import { ConversationSyncService } from '../conversations/services/conversation-sync.service';
+import { ConversationResyncService } from '../conversations/services/conversation-resync.service';
 
-const sync = { syncThreads: jest.fn().mockResolvedValue([]) };
+const sync = { syncOrEnqueue: jest.fn().mockResolvedValue(undefined) };
 
 const execute = jest.fn();
 const fakeDb = { execute };
@@ -16,7 +16,7 @@ async function build() {
     providers: [
       YoutubeRetentionService,
       { provide: DRIZZLE, useValue: fakeDb },
-      { provide: ConversationSyncService, useValue: sync },
+      { provide: ConversationResyncService, useValue: sync },
     ],
   }).compile();
   return mod.get(YoutubeRetentionService);
@@ -128,8 +128,8 @@ describe('YoutubeRetentionService', () => {
   });
 
   it('re-syncs the affected conversations once per workspace after the wipe', async () => {
-    sync.syncThreads.mockClear();
-    execute.mockResolvedValue({
+    sync.syncOrEnqueue.mockClear();
+    execute.mockResolvedValueOnce({
       rowCount: 3,
       rows: [
         { workspace_id: 'w1', thread_key: '1:v1' },
@@ -139,20 +139,24 @@ describe('YoutubeRetentionService', () => {
     });
     const svc = await build();
     await svc.wipeExpiredContent(new Date('2026-07-18T00:00:00Z'));
-    expect(sync.syncThreads).toHaveBeenCalledTimes(2);
-    expect(sync.syncThreads).toHaveBeenCalledWith('w1', new Set(['1:v1']));
-    expect(sync.syncThreads).toHaveBeenCalledWith('w2', new Set(['2:v2']));
+    expect(sync.syncOrEnqueue).toHaveBeenCalledTimes(2);
+    expect(sync.syncOrEnqueue).toHaveBeenCalledWith('w1', new Set(['1:v1']));
+    expect(sync.syncOrEnqueue).toHaveBeenCalledWith('w2', new Set(['2:v2']));
   });
 
-  it('does not fail the retention run when a sync throws', async () => {
-    sync.syncThreads.mockRejectedValueOnce(new Error('boom'));
-    execute.mockResolvedValue({
-      rowCount: 1,
-      rows: [{ workspace_id: 'w1', thread_key: '1:v1' }],
-    });
+  it('also re-syncs stale conversations whose items were already wiped (self-heal)', async () => {
+    sync.syncOrEnqueue.mockClear();
+    execute
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({
+        rows: [{ workspace_id: 'w1', thread_key: '1:old' }],
+      });
     const svc = await build();
-    await expect(
-      svc.wipeExpiredContent(new Date('2026-07-18T00:00:00Z')),
-    ).resolves.toMatchObject({ wiped: 1 });
+    const res = await svc.wipeExpiredContent(new Date('2026-07-18T00:00:00Z'));
+    expect(res.wiped).toBe(0);
+    expect(sync.syncOrEnqueue).toHaveBeenCalledWith('w1', new Set(['1:old']));
+    expect(JSON.stringify(execute.mock.calls[1][0])).toContain(
+      'inbox_conversations',
+    );
   });
 });

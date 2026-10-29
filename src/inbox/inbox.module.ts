@@ -8,6 +8,10 @@ import { InboxSettingsController } from './conversations/inbox-settings.controll
 import { InboxSettingsService } from './conversations/services/inbox-settings.service';
 import { ConversationPresenter } from './conversations/services/conversation-presenter.service';
 import { ConversationSyncService } from './conversations/services/conversation-sync.service';
+import {
+  ConversationResyncProcessor,
+  ConversationResyncService,
+} from './conversations/services/conversation-resync.service';
 import { InboxRealtimeService } from './conversations/services/inbox-realtime.service';
 import { InboxDispatcher } from './services/inbox-dispatcher.service';
 import { BlueskyInboxAdapter } from './adapters/bluesky-inbox.adapter';
@@ -82,6 +86,7 @@ import {
       { name: QUEUES.WHATSAPP_INGEST },
       { name: QUEUES.MAESTRO_BRIDGE },
       { name: QUEUES.INBOX_LATER },
+      { name: QUEUES.INBOX_RESYNC },
     ),
   ],
   controllers: [
@@ -97,6 +102,8 @@ import {
     InboxSettingsService,
     ConversationPresenter,
     ConversationSyncService,
+    ConversationResyncService,
+    ConversationResyncProcessor,
     InboxRealtimeService,
     InboxDispatcher,
     BlueskyInboxAdapter,
@@ -134,6 +141,7 @@ import {
   exports: [
     InboxService,
     ConversationSyncService,
+    ConversationResyncService,
     InboxDispatcher,
     ScheduledMessagesService,
     SlackBackfillService,
