@@ -2,6 +2,7 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PostService } from '../../posts/services/post.service';
 import { ChannelService } from '../../channels/services/channel.service';
 import { CampaignsService } from '../../campaigns/campaigns.service';
+import { isSearchable } from '../../inbox/inbox.service';
 import { ConversationListService } from '../../inbox/conversations/services/conversation-list.service';
 import type { ListConversationsQueryDto } from '../../inbox/conversations/dto/list-conversations.query';
 import { WorkspaceMembersService } from '../../workspace-members/workspace-members.service';
@@ -48,6 +49,12 @@ export interface MentionResult {
 const RECENT_PER_TYPE = 4;
 /** How many rows one type contributes to a filtered search. */
 const SEARCH_PER_TYPE = 6;
+
+/** The Inbox tabs a conversation mention can come from. */
+const CONVERSATION_MENTION_VIEWS = ['to_reply', 'later', 'done'] as const;
+
+/** How many rows per tab to fetch when a short query is filtered here. */
+const SHORT_QUERY_FETCH = 50;
 
 function matches(haystack: string | null | undefined, needle: string): boolean {
   if (!needle) return true;
@@ -312,22 +319,52 @@ export class MentionSearchService {
     // Direct messages only. Comment threads are named by the post they hang
     // off, so mentioning one would read as mentioning the post — @-ing the post
     // itself is the clearer gesture, and it is already in the list.
+    //
+    // Every tab but Scheduled is searched: a DM parked in Later or finished in
+    // Done is still someone the user may want to point at. Scheduled rows are
+    // the same conversations again, queued to send.
     const term = q.trim();
-    const { rows } = await this.conversationList.list(workspaceId, userId, {
-      view: 'to_reply',
-      type: 'message',
-      ...(term ? { q: term } : {}),
-      limit,
-    } as ListConversationsQueryDto);
+    // The list service ignores a query shorter than its minimum, so a short
+    // one would come back unfiltered. Fetch a wider page without it and filter
+    // here instead.
+    const local = term !== '' && !isSearchable(term);
+    const perView = local ? SHORT_QUERY_FETCH : limit;
 
-    return rows.slice(0, limit).map((r) => ({
-      type: 'conversation' as const,
-      // `id` is the conversation uuid — the Inbox opens it as ?c=<id>.
-      id: r.id,
-      label: r.title || 'Conversation',
-      context: r.platform,
-      platform: r.platform,
-      status: r.status,
-    }));
+    const pages = await Promise.all(
+      CONVERSATION_MENTION_VIEWS.map((view) =>
+        this.conversationList.list(workspaceId, userId, {
+          view,
+          type: 'message',
+          ...(term && !local ? { q: term } : {}),
+          limit: perView,
+        } as ListConversationsQueryDto),
+      ),
+    );
+
+    const seen = new Set<string>();
+    return pages
+      .flatMap((p) => p.rows)
+      .filter((r) => {
+        if (seen.has(r.id)) return false;
+        seen.add(r.id);
+        return true;
+      })
+      .filter(
+        (r) =>
+          !local ||
+          matches(r.title, term) ||
+          matches(r.snippet.authorLabel, term),
+      )
+      .sort((a, b) => b.lastMessageAt.localeCompare(a.lastMessageAt))
+      .slice(0, limit)
+      .map((r) => ({
+        type: 'conversation' as const,
+        // `id` is the conversation uuid — the Inbox opens it as ?c=<id>.
+        id: r.id,
+        label: r.title || 'Conversation',
+        context: r.platform,
+        platform: r.platform,
+        status: r.status,
+      }));
   }
 }

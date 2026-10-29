@@ -1,3 +1,4 @@
+import { ForbiddenException, NotFoundException } from '@nestjs/common';
 import { z } from 'zod';
 import type {
   CommentNode,
@@ -167,13 +168,17 @@ function flattenComments(nodes: CommentNode[], depth = 0): FlatMessage[] {
  */
 function messagesOf(d: ConversationDetail): {
   messages: FlatMessage[];
-  olderMessagesNotShown: number;
+  /** Which end was cut: DMs keep the newest, comment trees keep the first. */
+  cut: 'older' | 'newer';
+  notShown: number;
 } {
   if (d.comments) {
     const flat = flattenComments(d.comments);
     return {
       messages: flat.slice(0, MAX_THREAD_MESSAGES),
-      olderMessagesNotShown: Math.max(0, flat.length - MAX_THREAD_MESSAGES),
+      // A tree is read top-down, so the cut drops the NEWEST comments.
+      cut: 'newer',
+      notShown: Math.max(0, flat.length - MAX_THREAD_MESSAGES),
     };
   }
   const all: FlatMessage[] = [];
@@ -191,7 +196,8 @@ function messagesOf(d: ConversationDetail): {
   const shown = all.slice(-MAX_THREAD_MESSAGES);
   return {
     messages: shown,
-    olderMessagesNotShown: all.length - shown.length,
+    cut: 'older',
+    notShown: all.length - shown.length,
   };
 }
 
@@ -270,9 +276,17 @@ export function createInboxTools(deps: InboxToolDeps): AgentToolDefinition[] {
           (TYPES as readonly string[]).includes(args.type)
             ? (args.type as InboxType)
             : 'all';
-        const channel = Number(
-          typeof args.channelId === 'string' ? args.channelId.trim() : NaN,
-        );
+        const rawChannel =
+          typeof args.channelId === 'string' ? args.channelId.trim() : '';
+        const channel = Number(rawChannel);
+        // A channel that cannot be parsed must not quietly widen the question
+        // to every channel.
+        if (rawChannel !== '' && !(Number.isInteger(channel) && channel > 0)) {
+          return {
+            error:
+              'channelId must be a channel id from list_channels (a number).',
+          };
+        }
         const limit = Math.min(
           Math.max(Math.trunc(Number(args.limit)) || DEFAULT_LIMIT, 1),
           MAX_LIMIT,
@@ -282,9 +296,7 @@ export function createInboxTools(deps: InboxToolDeps): AgentToolDefinition[] {
           view,
           type,
           limit,
-          ...(Number.isInteger(channel) && channel > 0
-            ? { channelIds: [channel] }
-            : {}),
+          ...(rawChannel !== '' ? { channelIds: [channel] } : {}),
         } as ListConversationsQueryDto;
 
         const res = await deps.list.list(ctx.workspaceId, ctx.userId, query);
@@ -333,11 +345,19 @@ export function createInboxTools(deps: InboxToolDeps): AgentToolDefinition[] {
           detail = UUID_RE.test(id)
             ? await deps.detail.getDetail(ctx.workspaceId, id, ctx.userId)
             : await deps.detail.getDetailByKey(ctx.workspaceId, id, ctx.userId);
-        } catch {
-          return NOT_FOUND;
+        } catch (err) {
+          // Only "no such conversation" or "not yours" read as not found. An
+          // outage must stay an error, not turn into a confident "no such id".
+          if (
+            err instanceof NotFoundException ||
+            err instanceof ForbiddenException
+          ) {
+            return NOT_FOUND;
+          }
+          throw err;
         }
 
-        const { messages, olderMessagesNotShown } = messagesOf(detail);
+        const { messages, cut, notShown } = messagesOf(detail);
         const caption = detail.post?.caption;
 
         return withReferences(
@@ -348,7 +368,11 @@ export function createInboxTools(deps: InboxToolDeps): AgentToolDefinition[] {
               ? { mention: { text: preview(detail.mention.text, 400) } }
               : {}),
             messages,
-            ...(olderMessagesNotShown > 0 ? { olderMessagesNotShown } : {}),
+            ...(notShown > 0
+              ? cut === 'older'
+                ? { olderMessagesNotShown: notShown }
+                : { newerMessagesNotShown: notShown }
+              : {}),
           },
           [referenceFor(detail.row)],
         );

@@ -83,6 +83,7 @@ function fakes(
     rows?: ConversationRow[];
     detail?: ConversationDetail;
     legacy?: Record<string, string>; // threadKey -> uuid
+    fail?: Error; // thrown by the detail service, as an outage would
   } = {},
   calls: Call[] = [],
 ) {
@@ -125,6 +126,7 @@ function fakes(
     detail: {
       getDetail: (ws: string, id: string, viewer: string) => {
         calls.push({ method: 'getDetail', args: [ws, id, viewer] });
+        if (data.fail) throw data.fail;
         guard(ws);
         if (id !== UUID_A || !data.detail) {
           throw new NotFoundException('Conversation not found');
@@ -197,6 +199,17 @@ describe('get_inbox_summary', () => {
 });
 
 describe('list_conversations', () => {
+  it('refuses a channelId that is not a number rather than widening to every channel', async () => {
+    const calls: Call[] = [];
+    const out = await tool('list_conversations', {}, calls).handler(
+      { channelId: 'abc' },
+      CTX,
+    );
+    expect(out).toEqual({
+      error: expect.stringContaining('channelId') as unknown,
+    });
+    expect(calls).toHaveLength(0);
+  });
   it('defaults to the to_reply view, all types, limit 15', async () => {
     const calls: Call[] = [];
     await tool('list_conversations', { rows: [row()] }, calls).handler({}, CTX);
@@ -443,6 +456,53 @@ describe('get_conversation', () => {
         CTX,
       ),
     ).toEqual(miss);
+  });
+
+  it('a caller in another workspace cannot read a known conversation', async () => {
+    // The id exists in ws-1; only the guard on the caller workspace refuses it.
+    const out = await tool('get_conversation', { detail: dmDetail }).handler(
+      { conversationId: UUID_A },
+      { userId: 'u1', workspaceId: 'ws-other' },
+    );
+    expect(out).toEqual({
+      error: 'No conversation with that id in this workspace.',
+    });
+  });
+
+  it('does not disguise an infrastructure failure as a missing conversation', async () => {
+    await expect(
+      tool('get_conversation', {
+        detail: dmDetail,
+        fail: new Error('db down'),
+      }).handler({ conversationId: UUID_A }, CTX),
+    ).rejects.toThrow('db down');
+  });
+
+  it('names the cut correctly when a comment tree is over the cap', async () => {
+    const node = (i: number) =>
+      ({
+        id: `c${i}`,
+        parentId: null,
+        author,
+        text: `c ${i}`,
+        at: '2026-08-27T10:00:00Z',
+        fromMe: false,
+        replies: [],
+        contentRedacted: false,
+      }) as never;
+    const d = detail({
+      row: row({ kind: 'comment_thread' }),
+      comments: Array.from({ length: 35 }, (_, i) => node(i)),
+    });
+    const out = unwrap(
+      await tool('get_conversation', { detail: d }).handler(
+        { conversationId: UUID_A },
+        CTX,
+      ),
+    ) as Record<string, unknown>;
+    // The FIRST 30 are kept, so what is dropped is the newest, not the oldest.
+    expect(out.newerMessagesNotShown).toBe(5);
+    expect(out.olderMessagesNotShown).toBeUndefined();
   });
 
   it('reads the caller workspace, ignoring a hostile workspaceId argument', async () => {
