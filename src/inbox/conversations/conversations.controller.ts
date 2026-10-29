@@ -18,13 +18,16 @@ import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard
 import { BulkConversationsDto } from './dto/bulk.dto';
 import type {
   BulkResult,
+  ConversationDetail,
   ConversationRow,
   InboxCounts,
   ListConversationsResponse,
   MutationResult,
+  ProfileStats,
 } from './dto/contract';
 import { PatchConversationDto } from './dto/patch-conversation.dto';
 import { ListConversationsQueryDto } from './dto/list-conversations.query';
+import { ConversationDetailService } from './services/conversation-detail.service';
 import { ConversationListService } from './services/conversation-list.service';
 import { ConversationMutationsService } from './services/conversation-mutations.service';
 import { ConversationPresenter } from './services/conversation-presenter.service';
@@ -36,6 +39,7 @@ export class ConversationsController {
     private readonly listService: ConversationListService,
     private readonly presenter: ConversationPresenter,
     private readonly mutations: ConversationMutationsService,
+    private readonly detail: ConversationDetailService,
   ) {}
 
   @RequireCapability('inbox:view')
@@ -48,13 +52,48 @@ export class ConversationsController {
     return await this.listService.list(workspaceId, user.userId, query);
   }
 
-  // Keep `counts` declared BEFORE any `:id` route (Task 12b adds them) so it is never read as an id.
+  // Keep `counts` and `by-key/:threadKey` declared BEFORE any `:id` route so they are never read as an id.
   @RequireCapability('inbox:view')
   @Get('counts')
   async counts(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
   ): Promise<InboxCounts> {
     return await this.presenter.counts(workspaceId);
+  }
+
+  // The client URL-encodes the key (it may hold `:` and `/`, e.g. Bluesky at:// URIs);
+  // Express hands it to us decoded.
+  @RequireCapability('inbox:view')
+  @Get('by-key/:threadKey')
+  async byKey(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('threadKey') threadKey: string,
+    @CurrentUser() user: { userId: string },
+  ): Promise<ConversationDetail> {
+    return await this.detail.getDetailByKey(
+      workspaceId,
+      threadKey,
+      user.userId,
+    );
+  }
+
+  @RequireCapability('inbox:view')
+  @Get(':id')
+  async getDetail(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: { userId: string },
+  ): Promise<ConversationDetail> {
+    return await this.detail.getDetail(workspaceId, id, user.userId);
+  }
+
+  @RequireCapability('inbox:view')
+  @Get(':id/profile')
+  async profile(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<ProfileStats> {
+    return await this.detail.getProfile(workspaceId, id);
   }
 
   @RequireCapability('inbox:reply')

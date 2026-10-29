@@ -7,6 +7,7 @@ import { REQUIRE_CAPABILITY } from '../../workspace-members/require-capability.d
 import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard';
 import { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
 import { ConversationsController } from './conversations.controller';
+import { ConversationDetailService } from './services/conversation-detail.service';
 import { ConversationMutationsService } from './services/conversation-mutations.service';
 import { ConversationListService } from './services/conversation-list.service';
 import { ConversationPresenter } from './services/conversation-presenter.service';
@@ -26,6 +27,11 @@ describe('ConversationsController over HTTP', () => {
     remove: jest.fn(),
     restore: jest.fn(),
   };
+  const detail = {
+    getDetail: jest.fn(),
+    getDetailByKey: jest.fn(),
+    getProfile: jest.fn(),
+  };
   const CONV = '22222222-2222-4222-8222-222222222222';
   const url = `/inbox/workspaces/${WS}/conversations`;
   const empty = { rows: [], nextCursor: null, total: 0 };
@@ -39,6 +45,7 @@ describe('ConversationsController over HTTP', () => {
         { provide: ConversationListService, useValue: list },
         { provide: ConversationPresenter, useValue: presenter },
         { provide: ConversationMutationsService, useValue: mutations },
+        { provide: ConversationDetailService, useValue: detail },
       ],
     })
       .overrideGuard(JwtAuthGuard)
@@ -70,6 +77,8 @@ describe('ConversationsController over HTTP', () => {
     list.list.mockResolvedValue(empty);
     presenter.counts.mockResolvedValue({ toReply: 1 });
     for (const m of Object.values(mutations)) m.mockResolvedValue({ ok: true });
+    for (const m of Object.values(detail))
+      m.mockResolvedValue({ ok: 'detail' });
   });
 
   it('lets a GUEST list with a parsed query', async () => {
@@ -138,6 +147,65 @@ describe('ConversationsController over HTTP', () => {
       ) as string | undefined;
     expect(cap('list')).toBe('inbox:view');
     expect(cap('counts')).toBe('inbox:view');
+  });
+
+  describe('detail and profile', () => {
+    const KEY = '12:at://did:plc:x/app.bsky.feed.post/y';
+
+    it('lets a GUEST read a conversation detail', async () => {
+      await request(app.getHttpServer())
+        .get(`${url}/${CONV}`)
+        .expect(200, { ok: 'detail' });
+      expect(detail.getDetail).toHaveBeenCalledWith(WS, CONV, 'user-1');
+    });
+
+    it('answers 400 to a non-uuid id on detail and profile', async () => {
+      await request(app.getHttpServer()).get(`${url}/not-a-uuid`).expect(400);
+      await request(app.getHttpServer())
+        .get(`${url}/not-a-uuid/profile`)
+        .expect(400);
+      expect(detail.getDetail).not.toHaveBeenCalled();
+      expect(detail.getProfile).not.toHaveBeenCalled();
+    });
+
+    it('still routes counts to counts, not to :id', async () => {
+      await request(app.getHttpServer()).get(`${url}/counts`).expect(200);
+      expect(presenter.counts).toHaveBeenCalledTimes(1);
+      expect(detail.getDetail).not.toHaveBeenCalled();
+    });
+
+    it('routes by-key with the decoded key (colons and slashes)', async () => {
+      await request(app.getHttpServer())
+        .get(`${url}/by-key/${encodeURIComponent(KEY)}`)
+        .expect(200);
+      expect(detail.getDetailByKey).toHaveBeenCalledWith(WS, KEY, 'user-1');
+      expect(detail.getDetail).not.toHaveBeenCalled();
+    });
+
+    it('lets a GUEST read a profile', async () => {
+      await request(app.getHttpServer())
+        .get(`${url}/${CONV}/profile`)
+        .expect(200);
+      expect(detail.getProfile).toHaveBeenCalledWith(WS, CONV);
+    });
+
+    it('answers 403 to a non-member on the new routes', async () => {
+      roles.getRole.mockResolvedValue(null);
+      await request(app.getHttpServer()).get(`${url}/${CONV}`).expect(403);
+      await request(app.getHttpServer()).get(`${url}/by-key/a%3Ab`).expect(403);
+      expect(detail.getDetail).not.toHaveBeenCalled();
+    });
+
+    it('declares inbox:view on byKey, getDetail and profile', () => {
+      for (const n of ['byKey', 'getDetail', 'profile'] as const) {
+        expect(
+          Reflect.getMetadata(
+            REQUIRE_CAPABILITY,
+            ConversationsController.prototype[n],
+          ) as string | undefined,
+        ).toBe('inbox:view');
+      }
+    });
   });
 
   describe('mutations', () => {

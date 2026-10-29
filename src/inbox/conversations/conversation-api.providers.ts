@@ -6,6 +6,7 @@ import { ConversationListService } from './services/conversation-list.service';
 import { SavedRepliesService } from './services/saved-replies.service';
 import { ConversationMutationsService } from './services/conversation-mutations.service';
 import { LaterWakeService } from './services/later-wake.service';
+import { ConversationDetailService } from './services/conversation-detail.service';
 import { InboxNotesController } from './inbox-notes.controller';
 import { InboxNotesService } from './services/inbox-notes.service';
 
@@ -16,6 +17,7 @@ export const CONVERSATION_API_PROVIDERS: Provider[] = [
   LaterWakeService,
   ConversationMutationsService,
   InboxNotesService,
+  ConversationDetailService,
   InboxLaterProcessor,
 ];
 export const CONVERSATION_API_CONTROLLERS: Type<unknown>[] = [
