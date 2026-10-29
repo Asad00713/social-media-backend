@@ -1,3 +1,4 @@
+import { Logger } from '@nestjs/common';
 import { AnalyticsEventsGateway } from './analytics-events.gateway';
 
 const findUser = jest.fn();
@@ -24,6 +25,9 @@ interface FakeSocket {
   userId: string | undefined;
   rooms: Set<string>;
   to: jest.Mock;
+  typingStartAt?: Map<string, number>;
+  typingRoles?: Map<string, unknown>;
+  typingUser?: unknown;
 }
 
 function build(role: string | null = 'MEMBER') {
@@ -83,7 +87,7 @@ describe('AnalyticsEventsGateway inbox:typing', () => {
     const { gateway, socket, fake, emit } = build();
     fake.userId = undefined;
     const r = await gateway.onInboxTyping(socket, msg());
-    expect(r.ok).toBe(false);
+    expect(r).toEqual({ ok: false, reason: 'unauthenticated' });
     expect(emit).not.toHaveBeenCalled();
   });
 
@@ -134,17 +138,118 @@ describe('AnalyticsEventsGateway inbox:typing', () => {
     expect(emit).toHaveBeenCalledTimes(3);
   });
 
-  it('stop always relays, even right after a start', async () => {
+  it('a stop right after a start still relays', async () => {
     const { gateway, socket, emit } = build();
     await gateway.onInboxTyping(socket, msg());
     await gateway.onInboxTyping(socket, msg({ state: 'stop' }));
-    await gateway.onInboxTyping(socket, msg({ state: 'stop' }));
-    expect(emit).toHaveBeenCalledTimes(3);
+    expect(emit).toHaveBeenCalledTimes(2);
     expect(emit).toHaveBeenLastCalledWith(
       'inbox.typing',
       expect.objectContaining({ state: 'stop' }),
     );
   });
+
+  it('throttles stops too: a second stop within 1s is dropped, no DB work', async () => {
+    const { gateway, socket, emit, getRole } = build();
+    await gateway.onInboxTyping(socket, msg({ state: 'stop' }));
+    await gateway.onInboxTyping(socket, msg({ state: 'stop' }));
+    expect(emit).toHaveBeenCalledTimes(1);
+    expect(getRole).toHaveBeenCalledTimes(1);
+    jest.advanceTimersByTime(1000);
+    await gateway.onInboxTyping(socket, msg({ state: 'stop' }));
+    expect(emit).toHaveBeenCalledTimes(2);
+  });
+
+  it('a start/stop loop costs one role lookup and one user lookup in total', async () => {
+    const { gateway, socket, getRole } = build();
+    for (let i = 0; i < 20; i++) {
+      await gateway.onInboxTyping(socket, msg());
+      await gateway.onInboxTyping(socket, msg({ state: 'stop' }));
+      jest.advanceTimersByTime(1000);
+    }
+    expect(getRole).toHaveBeenCalledTimes(1);
+    expect(findUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('claims the throttle slot before awaiting: concurrent starts relay once', async () => {
+    const { gateway, socket, emit } = build();
+    await Promise.all([
+      gateway.onInboxTyping(socket, msg()),
+      gateway.onInboxTyping(socket, msg()),
+      gateway.onInboxTyping(socket, msg()),
+    ]);
+    expect(emit).toHaveBeenCalledTimes(1);
+  });
+
+  it('caches the role for 60s per workspace, then looks it up again', async () => {
+    const { gateway, socket, getRole } = build();
+    await gateway.onInboxTyping(socket, msg());
+    jest.advanceTimersByTime(59_000);
+    await gateway.onInboxTyping(socket, msg());
+    expect(getRole).toHaveBeenCalledTimes(1);
+    jest.advanceTimersByTime(1_000);
+    await gateway.onInboxTyping(socket, msg());
+    expect(getRole).toHaveBeenCalledTimes(2);
+  });
+
+  it('a cached denial keeps denying without another lookup', async () => {
+    const { gateway, socket, emit, getRole } = build('GUEST');
+    await gateway.onInboxTyping(socket, msg());
+    jest.advanceTimersByTime(1000);
+    const r = await gateway.onInboxTyping(socket, msg());
+    expect(r).toEqual({ ok: false, reason: 'forbidden' });
+    expect(getRole).toHaveBeenCalledTimes(1);
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('drops the per-socket caches and throttle map on disconnect', async () => {
+    const { gateway, socket, fake, getRole } = build();
+    await gateway.onInboxTyping(socket, msg());
+    expect(fake.typingStartAt?.size).toBe(1);
+    gateway.handleDisconnect(socket);
+    expect(fake.typingStartAt).toBeUndefined();
+    expect(fake.typingRoles).toBeUndefined();
+    expect(fake.typingUser).toBeUndefined();
+    // a fresh event on a reused object would look everything up again
+    await gateway.onInboxTyping(socket, msg());
+    expect(getRole).toHaveBeenCalledTimes(2);
+  });
+
+  it('unknown_user: no users row means no relay', async () => {
+    findUser.mockResolvedValue(null);
+    const { gateway, socket, emit } = build();
+    await expect(gateway.onInboxTyping(socket, msg())).resolves.toEqual({
+      ok: false,
+      reason: 'unknown_user',
+    });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it('a user lookup error is swallowed and logged, not thrown', async () => {
+    findUser.mockRejectedValue(new Error('db down'));
+    const errorSpy = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    const { gateway, socket, emit } = build();
+    await expect(gateway.onInboxTyping(socket, msg())).resolves.toEqual({
+      ok: false,
+      reason: 'unknown_user',
+    });
+    expect(emit).not.toHaveBeenCalled();
+    expect(errorSpy).toHaveBeenCalledWith(expect.stringContaining('db down'));
+    errorSpy.mockRestore();
+  });
+
+  it.each([[null], [undefined], ['x'], [42], [{}]])(
+    'rejects a malformed payload without throwing: %p',
+    async (payload) => {
+      const { gateway, socket, emit } = build();
+      await expect(
+        gateway.onInboxTyping(socket, payload as unknown as TypingMsg),
+      ).resolves.toEqual({ ok: false, reason: 'invalid_payload' });
+      expect(emit).not.toHaveBeenCalled();
+    },
+  );
 
   it('looks the user up once per socket', async () => {
     const { gateway, socket } = build();

@@ -16,6 +16,7 @@ import { db } from '../drizzle/db';
 import { users } from '../drizzle/schema/users.schema';
 import { WorkspaceRoleService } from '../workspace-members/workspace-role.service';
 import { roleCan } from '../workspace-members/role-capabilities';
+import type { WorkspaceRole } from '../workspace-members/role-capabilities';
 import type {
   TypingClientEvent,
   UserRef,
@@ -27,18 +28,28 @@ import type {
   AnalyticsEventPayloadMap,
 } from './types/analytics-events.types';
 
+interface CachedRole {
+  role: WorkspaceRole | null;
+  expiresAt: number;
+}
+
 interface AuthedSocket extends Socket {
   userId?: string;
   email?: string;
   /** Cached `{ id, name, avatarUrl }` for typing relays (looked up once per socket). */
   typingUser?: UserRef;
-  /** conversationId -> epoch ms of the last relayed `start`. */
+  /** `<conversationId>:<state>` -> epoch ms the throttle slot was claimed. */
   typingStartAt?: Map<string, number>;
+  /** workspaceId -> role (null = no membership) with an expiry, 60 s TTL. */
+  typingRoles?: Map<string, CachedRole>;
 }
 
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-const TYPING_START_MIN_GAP_MS = 1000;
+/** Min gap between relays of the same state for one conversation on one socket. */
+const TYPING_MIN_GAP_MS = 1000;
+/** How long a socket reuses a looked-up role; revocation window, like the room join. */
+const TYPING_ROLE_TTL_MS = 60_000;
 
 @WebSocketGateway({
   namespace: '/realtime',
@@ -91,6 +102,9 @@ export class AnalyticsEventsGateway
   }
 
   handleDisconnect(socket: AuthedSocket): void {
+    delete socket.typingStartAt;
+    delete socket.typingRoles;
+    delete socket.typingUser;
     this.logger.log(
       `Socket ${socket.id} disconnected (user ${socket.userId ?? 'unknown'})`,
     );
@@ -147,16 +161,19 @@ export class AnalyticsEventsGateway
     const room = this.workspaceRoom(data.workspaceId);
     if (!socket.rooms.has(room)) return { ok: false, reason: 'not_subscribed' };
 
+    // Claim the throttle slot synchronously, before any await, so concurrent
+    // events cannot both pass. Kept on denial too: a denied or failing socket
+    // must not be able to hammer the DB either. Dropped events answer ok.
     const now = Date.now();
-    const lastStarts = (socket.typingStartAt ??= new Map<string, number>());
-    if (data.state === 'start') {
-      const last = lastStarts.get(data.conversationId);
-      if (last !== undefined && now - last < TYPING_START_MIN_GAP_MS) {
-        return { ok: true }; // rate-limited: dropped
-      }
+    const slots = (socket.typingStartAt ??= new Map<string, number>());
+    const slotKey = `${data.conversationId}:${data.state}`;
+    const last = slots.get(slotKey);
+    if (last !== undefined && now - last < TYPING_MIN_GAP_MS) {
+      return { ok: true };
     }
+    slots.set(slotKey, now);
 
-    const role = await this.roles.getRole(data.workspaceId, socket.userId);
+    const role = await this.roleFor(socket, data.workspaceId, socket.userId);
     if (!role || !roleCan(role, 'inbox:reply')) {
       return { ok: false, reason: 'forbidden' };
     }
@@ -164,7 +181,6 @@ export class AnalyticsEventsGateway
     const user = await this.typingUserFor(socket);
     if (!user) return { ok: false, reason: 'unknown_user' };
 
-    if (data.state === 'start') lastStarts.set(data.conversationId, now);
     socket.to(room).emit('inbox.typing', {
       workspaceId: data.workspaceId,
       conversationId: data.conversationId,
@@ -172,6 +188,22 @@ export class AnalyticsEventsGateway
       state: data.state,
     });
     return { ok: true };
+  }
+
+  private async roleFor(
+    socket: AuthedSocket,
+    workspaceId: string,
+    userId: string,
+  ): Promise<WorkspaceRole | null> {
+    const cache = (socket.typingRoles ??= new Map<string, CachedRole>());
+    const hit = cache.get(workspaceId);
+    if (hit && hit.expiresAt > Date.now()) return hit.role;
+    const role = await this.roles.getRole(workspaceId, userId);
+    cache.set(workspaceId, {
+      role,
+      expiresAt: Date.now() + TYPING_ROLE_TTL_MS,
+    });
+    return role;
   }
 
   private async typingUserFor(socket: AuthedSocket): Promise<UserRef | null> {
