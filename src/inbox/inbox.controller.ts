@@ -17,6 +17,7 @@ import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { InboxService } from './inbox.service';
 import { ScheduledMessagesService } from './services/scheduled-messages.service';
 import { CommentActionsService } from './conversations/services/comment-actions.service';
+import { ReplyResponseBuilder } from './conversations/services/reply-response.builder';
 import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { ListCommentsDto } from './dto/list-comments.dto';
 import { ReplyDto } from './dto/reply.dto';
@@ -28,6 +29,7 @@ import { ListScheduledMessagesDto } from './dto/list-scheduled-messages.dto';
 import { CreateInboxUploadUrlDto } from './dto/create-upload-url.dto';
 import { SendDmDto } from './dto/send-dm.dto';
 import { SendDmTemplateDto } from './dto/send-dm-template.dto';
+import { toSendOptions } from './dto/send-options.dto';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
 
@@ -44,6 +46,7 @@ export class InboxController {
     private readonly scheduledMessagesService: ScheduledMessagesService,
     private readonly r2Service: CloudflareR2Service,
     private readonly commentActions: CommentActionsService,
+    private readonly replyResponse: ReplyResponseBuilder,
   ) {}
 
   @Get('comments')
@@ -101,7 +104,18 @@ export class InboxController {
     @Body() dto: ReplyDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.inboxService.reply(workspaceId, user.userId, itemId, dto.text);
+    // UNION during cutover: the legacy node fields plus `node` and `row`.
+    const sent = await this.inboxService.reply(
+      workspaceId,
+      user.userId,
+      itemId,
+      dto.text,
+      toSendOptions(dto),
+    );
+    return {
+      ...sent,
+      ...(await this.replyResponse.forComment(workspaceId, user.userId, sent)),
+    };
   }
 
   @Post('threads/:threadKey/comments')
@@ -112,12 +126,17 @@ export class InboxController {
     @Body() dto: ReplyDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.inboxService.commentOnPost(
+    // markDone does not apply to a new top-level comment.
+    const sent = await this.inboxService.commentOnPost(
       workspaceId,
       user.userId,
       threadKey,
       dto.text,
     );
+    return {
+      ...sent,
+      ...(await this.replyResponse.forComment(workspaceId, user.userId, sent)),
+    };
   }
 
   @Patch('comments/:itemId/status')
@@ -269,7 +288,7 @@ export class InboxController {
     @Body() dto: SendDmDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.inboxService.sendDm(
+    const sent = await this.inboxService.sendDm(
       workspaceId,
       user.userId,
       threadKey,
@@ -279,7 +298,12 @@ export class InboxController {
         url: a.url,
         contentType: a.contentType,
       })),
+      toSendOptions(dto),
     );
+    return {
+      ...sent,
+      ...(await this.replyResponse.forDm(workspaceId, user.userId, sent)),
+    };
   }
 
   @Post('dms/:threadKey/template')
@@ -290,13 +314,18 @@ export class InboxController {
     @Body() dto: SendDmTemplateDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.inboxService.sendDmTemplate(
+    const sent = await this.inboxService.sendDmTemplate(
       workspaceId,
       user.userId,
       threadKey,
       dto.name,
       dto.language,
+      toSendOptions(dto),
     );
+    return {
+      ...sent,
+      ...(await this.replyResponse.forDm(workspaceId, user.userId, sent)),
+    };
   }
 
   @Post('dms/:threadKey/read')

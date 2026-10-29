@@ -1,4 +1,5 @@
 import {
+  ConflictException,
   ForbiddenException,
   Injectable,
   Logger,
@@ -15,6 +16,8 @@ import {
   inArray,
   isNull,
   lt,
+  ne,
+  or,
   sql,
 } from 'drizzle-orm';
 import { db, type DbType } from '../drizzle/db';
@@ -50,6 +53,13 @@ import {
   InboxSettingsService,
 } from './conversations/services/inbox-settings.service';
 import { InboxNotifyService } from './conversations/services/inbox-notify.service';
+import { SendLockService } from './conversations/services/send-lock.service';
+import {
+  ChannelNotConnectedError,
+  ReplyWindowClosedError,
+  toSendError,
+} from './conversations/lib/send-error';
+import type { UserRef } from './conversations/dto/contract';
 import { messageEntryOf } from './conversations/lib/timeline-entry';
 import type { SyncIntent } from './conversations/lib/lifecycle';
 import { computeLegacyCounts } from './legacy-counts';
@@ -65,7 +75,10 @@ import { pollDedupId } from './schedulers/poll-dedup';
 import { Queue } from 'bullmq';
 import { QUEUES } from '../queue/queue.module';
 
-/** Per-send options. `typingStartedAt` and `force` are consumed by Task 18. */
+/**
+ * Per-send options. `typingStartedAt` (set, with no `force`) turns on the
+ * REPLIED_FIRST collision check; `markDone` overrides the sender's setting.
+ */
 export interface SendOptions {
   markDone?: boolean;
   typingStartedAt?: Date;
@@ -442,6 +455,7 @@ export class InboxService {
     private readonly resync: ConversationResyncService,
     private readonly inboxSettings: InboxSettingsService,
     private readonly notify: InboxNotifyService,
+    private readonly sendLock: SendLockService,
   ) {}
 
   /**
@@ -506,6 +520,163 @@ export class InboxService {
     }
   }
 
+  /** Runs a send step and maps whatever it throws onto the contract's failure shape. */
+  private async sendStep<T>(fn: () => Promise<T>): Promise<T> {
+    try {
+      return await fn();
+    } catch (err) {
+      throw toSendError(err);
+    }
+  }
+
+  private async userRefOf(userId: string | null): Promise<UserRef | null> {
+    if (!userId) return null;
+    const u = await db.query.users.findFirst({
+      where: eq(users.id, userId),
+      columns: { id: true, name: true, avatarUrl: true },
+    });
+    return u ? { id: u.id, name: u.name ?? '', avatarUrl: u.avatarUrl } : null;
+  }
+
+  /** 409 REPLIED_FIRST: someone answered after the sender started typing. */
+  private async refuseRepliedFirst(found: {
+    text: string | null;
+    at: Date;
+    byUserId: string | null;
+  }): Promise<never> {
+    throw new ConflictException({
+      code: 'REPLIED_FIRST',
+      reply: {
+        by: await this.userRefOf(found.byUserId),
+        text: found.text ?? '',
+        at: found.at.toISOString(),
+      },
+    });
+  }
+
+  /**
+   * DM collision: the latest outbound row of the conversation after
+   * `typingStartedAt`, from anyone but the sender. Run INSIDE the send lock.
+   */
+  private async assertNoDmCollision(
+    workspaceId: string,
+    channelId: number,
+    conversationId: string,
+    userId: string,
+    since: Date,
+  ): Promise<void> {
+    const [found] = await db
+      .select({
+        id: inboxItems.id,
+        text: inboxItems.text,
+        platformCreatedAt: inboxItems.platformCreatedAt,
+        authoredByUserId: inboxItems.authoredByUserId,
+      })
+      .from(inboxItems)
+      .where(
+        and(
+          eq(inboxItems.workspaceId, workspaceId),
+          eq(inboxItems.channelId, channelId),
+          eq(inboxItems.conversationId, conversationId),
+          eq(inboxItems.fromMe, true),
+          gt(inboxItems.platformCreatedAt, since),
+          or(
+            isNull(inboxItems.authoredByUserId),
+            ne(inboxItems.authoredByUserId, userId),
+          ),
+        ),
+      )
+      .orderBy(desc(inboxItems.platformCreatedAt))
+      .limit(1);
+    if (found) {
+      await this.refuseRepliedFirst({
+        text: found.text,
+        at: found.platformCreatedAt,
+        byUserId: found.authoredByUserId,
+      });
+    }
+  }
+
+  /**
+   * Comment collision, PER COMMENT: an outbound reply under the target comment,
+   * or the target itself marked answered, after `typingStartedAt`. Teammates
+   * answering different comments on one post never collide. Run INSIDE the
+   * send lock.
+   */
+  private async assertNoCommentCollision(
+    workspaceId: string,
+    target: InboxItem,
+    userId: string,
+    since: Date,
+  ): Promise<void> {
+    const [found] = await db
+      .select({
+        id: inboxItems.id,
+        text: inboxItems.text,
+        platformCreatedAt: inboxItems.platformCreatedAt,
+        authoredByUserId: inboxItems.authoredByUserId,
+      })
+      .from(inboxItems)
+      .where(
+        and(
+          eq(inboxItems.workspaceId, workspaceId),
+          eq(inboxItems.channelId, target.channelId),
+          eq(inboxItems.fromMe, true),
+          eq(inboxItems.platformParentId, target.platformItemId),
+          gt(inboxItems.platformCreatedAt, since),
+          or(
+            isNull(inboxItems.authoredByUserId),
+            ne(inboxItems.authoredByUserId, userId),
+          ),
+        ),
+      )
+      .orderBy(desc(inboxItems.platformCreatedAt))
+      .limit(1);
+    if (found) {
+      await this.refuseRepliedFirst({
+        text: found.text,
+        at: found.platformCreatedAt,
+        byUserId: found.authoredByUserId,
+      });
+    }
+
+    // Answered without a row of ours under it (marked replied, or on the platform).
+    const fresh = await db.query.inboxItems.findFirst({
+      where: eq(inboxItems.id, target.id),
+      columns: { repliedAt: true, repliedByUserId: true },
+    });
+    if (
+      fresh?.repliedAt &&
+      fresh.repliedAt > since &&
+      fresh.repliedByUserId !== userId
+    ) {
+      await this.refuseRepliedFirst({
+        text: null,
+        at: fresh.repliedAt,
+        byUserId: fresh.repliedByUserId,
+      });
+    }
+  }
+
+  /**
+   * The item a send just wrote, for the response builders (the send methods
+   * return the frozen legacy DTOs, which do not carry what the new `node` /
+   * `entry` need).
+   */
+  async loadItemForResponse(
+    workspaceId: string,
+    itemId: string,
+  ): Promise<InboxItem> {
+    const item = await db.query.inboxItems.findFirst({
+      where: and(
+        eq(inboxItems.id, itemId),
+        eq(inboxItems.workspaceId, workspaceId),
+      ),
+    });
+    if (!item) throw new NotFoundException('Item not found');
+    return item;
+  }
+
   /** Resolve our own identity on a channel for `fromMe` row authorship. */
   private async loadMyIdentity(channelId: number): Promise<{
     handle: string;
@@ -532,6 +703,7 @@ export class InboxService {
   private async resolveChannel(
     channelId: number,
     workspaceId: string,
+    requireConnected = false,
   ): Promise<ResolvedChannel> {
     const channel = await db.query.socialMediaChannels.findFirst({
       where: and(
@@ -540,6 +712,10 @@ export class InboxService {
       ),
     });
     if (!channel) throw new NotFoundException('Channel not found');
+    // A send never reaches the platform on a channel that needs reconnecting.
+    if (requireConnected && channel.connectionStatus !== 'connected') {
+      throw new ChannelNotConnectedError();
+    }
 
     // getAccessToken handles decryption + auto-refresh.
     const accessToken = await this.channelService.getAccessToken(
@@ -1201,13 +1377,18 @@ export class InboxService {
       ),
     });
     if (!parent) throw new NotFoundException('Comment not found');
-    if (!parent.platformPostId) {
+    // A Threads @mention has no post: it is answered in place, keeping the
+    // mention conversation's key.
+    const isMention = parent.type === 'mention';
+    if (!isMention && !parent.platformPostId) {
       throw new BadRequestException(
         'Cannot reply — parent comment has no associated post',
       );
     }
 
-    const channel = await this.resolveChannel(parent.channelId, workspaceId);
+    const channel = await this.sendStep(() =>
+      this.resolveChannel(parent.channelId, workspaceId, true),
+    );
     const adapter = this.dispatcher.get(parent.platform);
 
     // YouTube's comments API enforces a 2-level depth — `parentId` MUST be a
@@ -1231,34 +1412,81 @@ export class InboxService {
       }
     }
 
-    const created = await adapter.replyToComment(
-      channel,
-      apiParent.platformItemId,
-      apiParent.platformPostId ?? parent.platformPostId,
-      text,
+    // One send at a time per conversation: the collision check, the platform
+    // call and the row write share the lock, so the next sender's check sees
+    // this row.
+    const lockKey =
+      parent.threadKey ?? `${parent.channelId}:${parent.platformItemId}`;
+    const { created, newRow } = await this.sendLock.withSendLock(
+      lockKey,
+      userId,
+      async () => {
+        if (opts.typingStartedAt && !opts.force) {
+          await this.assertNoCommentCollision(
+            workspaceId,
+            parent,
+            userId,
+            opts.typingStartedAt,
+          );
+        }
+
+        const created = await this.sendStep(() =>
+          isMention
+            ? adapter.replyToComment(
+                channel,
+                parent.platformItemId,
+                parent.platformItemId,
+                text,
+              )
+            : adapter.replyToComment(
+                channel,
+                apiParent.platformItemId,
+                apiParent.platformPostId ?? parent.platformPostId!,
+                text,
+              ),
+        );
+
+        // Use the channel's own identity for our reply row — gives the inbox UI
+        // the actual handle/displayName instead of a placeholder "me"/"You".
+        const myIdentity = await this.loadMyIdentity(parent.channelId);
+        const base = {
+          workspaceId,
+          channelId: parent.channelId,
+          platform: parent.platform,
+          platformItemId: created.platformItemId,
+          authorPlatformId: channel.platformAccountId,
+          authorHandle: myIdentity.handle,
+          authorDisplayName: myIdentity.displayName,
+          authorAvatarUrl: myIdentity.avatarUrl,
+          text: created.text,
+          fromMe: true,
+          platformCreatedAt: created.platformCreatedAt,
+          authoredByUserId: userId,
+        };
+        const newRow = isMention
+          ? // Same generated thread_key as the mention it answers.
+            await this.upsertInboxItem(
+              {
+                ...base,
+                platformParentId: parent.platformItemId,
+                isMention: false,
+                metadata: {
+                  mentionRoot:
+                    (parent.metadata as { mentionRoot?: string } | null)
+                      ?.mentionRoot ?? parent.platformItemId,
+                },
+              },
+              'mention',
+            )
+          : await this.upsertComment({
+              ...base,
+              platformParentId: created.platformParentId,
+              platformPostId: parent.platformPostId!,
+              ourPostId: parent.ourPostId,
+            });
+        return { created, newRow };
+      },
     );
-
-    // Use the channel's own identity for our reply row — gives the inbox UI
-    // the actual handle/displayName instead of a placeholder "me"/"You".
-    const myIdentity = await this.loadMyIdentity(parent.channelId);
-
-    const newRow = await this.upsertComment({
-      workspaceId,
-      channelId: parent.channelId,
-      platform: parent.platform,
-      platformItemId: created.platformItemId,
-      platformParentId: created.platformParentId,
-      platformPostId: parent.platformPostId,
-      ourPostId: parent.ourPostId,
-      authorPlatformId: channel.platformAccountId,
-      authorHandle: myIdentity.handle,
-      authorDisplayName: myIdentity.displayName,
-      authorAvatarUrl: myIdentity.avatarUrl,
-      text: created.text,
-      fromMe: true,
-      platformCreatedAt: created.platformCreatedAt,
-      authoredByUserId: userId,
-    });
 
     // Mark the parent as replied so the thread surfaces "replied" state.
     await db
@@ -1329,12 +1557,16 @@ export class InboxService {
       throw new NotFoundException('Channel not found in workspace');
     }
 
-    const channel = await this.resolveChannel(channelId, workspaceId);
+    const channel = await this.sendStep(() =>
+      this.resolveChannel(channelId, workspaceId, true),
+    );
     const adapter = this.dispatcher.get(
       channelRow.platform as SupportedPlatform,
     );
 
-    const created = await adapter.commentOnPost(channel, platformPostId, text);
+    const created = await this.sendStep(() =>
+      adapter.commentOnPost(channel, platformPostId, text),
+    );
 
     const newRow = await this.upsertComment({
       workspaceId,
@@ -3090,7 +3322,9 @@ export class InboxService {
     }
 
     const adapter = this.dispatcher.getDm(platform);
-    const channel = await this.resolveChannel(channelId, workspaceId);
+    const channel = await this.sendStep(() =>
+      this.resolveChannel(channelId, workspaceId, true),
+    );
 
     // 24h window check — server is source of truth.
     const lastIncomingAtRow = await db
@@ -3108,13 +3342,11 @@ export class InboxService {
       .limit(1);
     const lastIncomingAt = lastIncomingAtRow[0]?.at ?? null;
 
-    const windowState = await adapter.getReplyWindowState(
-      channel,
-      conversationId,
-      lastIncomingAt,
+    const windowState = await this.sendStep(() =>
+      adapter.getReplyWindowState(channel, conversationId, lastIncomingAt),
     );
     if (!windowState.canReply) {
-      throw new ForbiddenException(
+      throw new ReplyWindowClosedError(
         windowState.reason ?? 'Cannot reply to this conversation right now',
       );
     }
@@ -3122,46 +3354,64 @@ export class InboxService {
     // Dispatch with attachments when adapter supports them, otherwise fall
     // back to text-only path. Attachments empty array also falls through.
     const hasAttachments = attachments && attachments.length > 0;
-    let created: Awaited<ReturnType<typeof adapter.sendDm>>;
-    if (hasAttachments) {
-      if (!adapter.sendDmWithAttachments) {
-        throw new BadRequestException(
-          `Platform '${platform}' does not support DM attachments yet.`,
-        );
-      }
-      created = await adapter.sendDmWithAttachments(
-        channel,
-        conversationId,
-        text,
-        attachments,
+    if (hasAttachments && !adapter.sendDmWithAttachments) {
+      throw new BadRequestException(
+        `Platform '${platform}' does not support DM attachments yet.`,
       );
-    } else {
-      created = await adapter.sendDm(channel, conversationId, text);
     }
-    const myIdentity = await this.loadMyDmIdentity(channelId);
 
-    const newRow = await this.upsertDm({
-      workspaceId,
-      channelId,
-      platform,
-      conversationId: created.conversationId,
-      platformItemId: created.platformItemId,
-      authorPlatformId: myIdentity.platformId,
-      authorHandle: myIdentity.handle,
-      authorDisplayName: myIdentity.displayName,
-      authorAvatarUrl: myIdentity.avatarUrl,
-      text: created.text,
-      fromMe: true,
-      platformCreatedAt: created.platformCreatedAt,
-      authoredByUserId: userId,
-      attachments: hasAttachments
-        ? attachments.map((a) => ({
-            kind: a.kind,
-            url: a.url,
-            contentType: a.contentType,
-          }))
-        : undefined,
-    });
+    // One send at a time per conversation (see reply()).
+    const { created, newRow } = await this.sendLock.withSendLock(
+      threadKey,
+      userId,
+      async () => {
+        if (opts.typingStartedAt && !opts.force) {
+          await this.assertNoDmCollision(
+            workspaceId,
+            channelId,
+            conversationId,
+            userId,
+            opts.typingStartedAt,
+          );
+        }
+
+        const created = await this.sendStep(() =>
+          hasAttachments
+            ? adapter.sendDmWithAttachments!(
+                channel,
+                conversationId,
+                text,
+                attachments,
+              )
+            : adapter.sendDm(channel, conversationId, text),
+        );
+        const myIdentity = await this.loadMyDmIdentity(channelId);
+
+        const newRow = await this.upsertDm({
+          workspaceId,
+          channelId,
+          platform,
+          conversationId: created.conversationId,
+          platformItemId: created.platformItemId,
+          authorPlatformId: myIdentity.platformId,
+          authorHandle: myIdentity.handle,
+          authorDisplayName: myIdentity.displayName,
+          authorAvatarUrl: myIdentity.avatarUrl,
+          text: created.text,
+          fromMe: true,
+          platformCreatedAt: created.platformCreatedAt,
+          authoredByUserId: userId,
+          attachments: hasAttachments
+            ? attachments.map((a) => ({
+                kind: a.kind,
+                url: a.url,
+                contentType: a.contentType,
+              }))
+            : undefined,
+        });
+        return { created, newRow };
+      },
+    );
 
     // Auto-mark prior inbound unread messages in this conversation as replied
     // — the user just answered, so those incoming messages no longer count as
@@ -3247,6 +3497,7 @@ export class InboxService {
     threadKey: string,
     name: string,
     language: string,
+    opts: SendOptions = {},
   ): Promise<DmMessageDto> {
     await this.assertWorkspaceAccess(workspaceId, userId);
     const { channelId, conversationId } = this.decodeDmThreadKey(threadKey);
@@ -3293,12 +3544,11 @@ export class InboxService {
       );
     }
 
-    const channel = await this.resolveChannel(channelId, workspaceId);
-    const created = await adapter.sendTemplateDm(
-      channel,
-      conversationId,
-      name,
-      language,
+    const channel = await this.sendStep(() =>
+      this.resolveChannel(channelId, workspaceId, true),
+    );
+    const created = await this.sendStep(() =>
+      adapter.sendTemplateDm!(channel, conversationId, name, language),
     );
     const myIdentity = await this.loadMyDmIdentity(channelId);
 
@@ -3333,7 +3583,7 @@ export class InboxService {
     await this.syncAfterAction(workspaceId, row.threadKey ?? threadKey, {
       kind: 'outbound',
       userId,
-      markDone: false,
+      markDone: await this.resolveMarkDone(workspaceId, userId, opts),
       at: created.platformCreatedAt,
     });
     return this.dmItemToDto(row, await this.loadSelfAuthor(userId));

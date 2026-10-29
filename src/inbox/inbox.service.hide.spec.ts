@@ -86,6 +86,7 @@ describe('InboxService.hideComment', () => {
       {} as any, // ConversationResyncService — unused on this path
       {} as any, // InboxSettingsService — unused on this path
       {} as any, // InboxNotifyService — unused on this path
+      {} as any, // SendLockService — unused on this path
     );
 
     // emitCounts is a fire-and-forget side effect unrelated to hideComment's

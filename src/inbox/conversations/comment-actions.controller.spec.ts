@@ -15,6 +15,7 @@ import { InboxService } from '../inbox.service';
 import { ScheduledMessagesService } from '../services/scheduled-messages.service';
 import { CommentActionsController } from './comment-actions.controller';
 import { CommentActionsService } from './services/comment-actions.service';
+import { ReplyResponseBuilder } from './services/reply-response.builder';
 
 const WS = '11111111-1111-4111-8111-111111111111';
 const ITEM = '22222222-2222-4222-8222-222222222222';
@@ -38,6 +39,7 @@ async function build(
       WorkspaceRoleGuard,
       { provide: WorkspaceRoleService, useValue: roles },
       { provide: CommentActionsService, useValue: actions },
+      { provide: ReplyResponseBuilder, useValue: {} },
       { provide: InboxService, useValue: inbox },
       { provide: ScheduledMessagesService, useValue: {} },
       { provide: CloudflareR2Service, useValue: {} },

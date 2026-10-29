@@ -7,6 +7,7 @@ import {
 import {
   ChannelNotConnectedError,
   InboxSendError,
+  ReplyWindowClosedError,
   toSendError,
 } from './send-error';
 
@@ -17,9 +18,9 @@ function bodyOf(e: unknown): { status: number; body: unknown } {
 }
 
 describe('toSendError', () => {
-  it('maps the reply-window ForbiddenException to 403 REPLY_WINDOW_CLOSED', () => {
+  it('the reply-window check (ReplyWindowClosedError) is 403 REPLY_WINDOW_CLOSED, not retryable', () => {
     expect(
-      bodyOf(toSendError(new ForbiddenException('Window closed'))),
+      bodyOf(toSendError(new ReplyWindowClosedError('Window closed'))),
     ).toEqual({
       status: 403,
       body: {
@@ -28,6 +29,11 @@ describe('toSendError', () => {
         retryable: false,
       },
     });
+  });
+
+  it('a plain ForbiddenException (a workspace-access refusal) is NOT a closed window (D19)', () => {
+    const forbidden = new ForbiddenException('Not a member');
+    expect(toSendError(forbidden)).toBe(forbidden);
   });
 
   it('maps a channel that is not connected to 409 CHANNEL_DISCONNECTED', () => {

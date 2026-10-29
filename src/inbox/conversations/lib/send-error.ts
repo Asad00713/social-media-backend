@@ -1,4 +1,4 @@
-import { ForbiddenException, HttpException, HttpStatus } from '@nestjs/common';
+import { HttpException, HttpStatus } from '@nestjs/common';
 import type { SendFailureCode } from '../dto/contract';
 
 /** Body of every failed send/action: `{ code, message, retryable }`. */
@@ -11,6 +11,21 @@ export interface SendErrorBody {
 export class InboxSendError extends HttpException {
   constructor(status: HttpStatus, body: SendErrorBody) {
     super(body, status);
+  }
+}
+
+/**
+ * The reply-window check refused the send (D19). Thrown by the check itself,
+ * so a ForbiddenException from anywhere else (workspace access) is never
+ * mistaken for a closed window.
+ */
+export class ReplyWindowClosedError extends InboxSendError {
+  constructor(message = 'Cannot reply to this conversation right now') {
+    super(HttpStatus.FORBIDDEN, {
+      code: 'REPLY_WINDOW_CLOSED',
+      message,
+      retryable: false,
+    });
   }
 }
 
@@ -33,17 +48,10 @@ const messageOf = (err: unknown): string =>
 /**
  * Maps whatever a send or platform call threw onto the contract's failure
  * shape. HTTP exceptions the service raised on purpose (404, 400, the
- * REPLIED_FIRST 409, an InboxSendError already built) pass through unchanged;
- * a ForbiddenException is the reply-window check.
+ * REPLIED_FIRST 409, an InboxSendError such as ReplyWindowClosedError) pass
+ * through unchanged.
  */
 export function toSendError(err: unknown): unknown {
-  if (err instanceof ForbiddenException) {
-    return new InboxSendError(HttpStatus.FORBIDDEN, {
-      code: 'REPLY_WINDOW_CLOSED',
-      message: err.message,
-      retryable: false,
-    });
-  }
   if (err instanceof HttpException) return err;
 
   const message = messageOf(err);
