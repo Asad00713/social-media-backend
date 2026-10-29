@@ -110,6 +110,23 @@ export class MastodonInboxAdapter implements PlatformInboxAdapter {
     };
   }
 
+  async likeComment(
+    channel: ResolvedChannel,
+    item: { platformItemId: string },
+    liked: boolean,
+  ): Promise<{ likeRef?: string | null }> {
+    const instanceUrl = resolveInstanceUrl(channel);
+    if (!instanceUrl)
+      throw new Error('Mastodon channel is missing instanceUrl');
+    await this.mastodon.setFavourite(
+      instanceUrl,
+      channel.accessToken,
+      item.platformItemId,
+      liked,
+    );
+    return {};
+  }
+
   // Phase 2.3 — Mastodon allows deleting any status authored by the
   // authenticated user. Replies (comments) and direct-visibility statuses
   // (DMs) both go through the same endpoint, so the DM adapter delegates

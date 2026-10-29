@@ -1956,6 +1956,72 @@ export class InstagramService {
     return true;
   }
 
+  /**
+   * Hide (or unhide) a comment on our media.
+   * Endpoint: POST /{ig-comment-id}?hide=true|false
+   * https://developers.facebook.com/docs/instagram-platform/instagram-graph-api/reference/ig-comment
+   */
+  async setCommentHidden(
+    accessToken: string,
+    commentId: string,
+    hidden: boolean,
+  ): Promise<void> {
+    const url = new URL(`${this.instagramApiUrl}/${commentId}`);
+    url.searchParams.set('access_token', accessToken);
+    url.searchParams.set('hide', String(hidden));
+    const res = await fetch(url.toString(), { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`IG setCommentHidden failed: ${err}`);
+      throw new Error(`Instagram hide failed: ${res.status} ${err}`);
+    }
+  }
+
+  /**
+   * Private reply to a comment: a DM addressed to the comment, once per
+   * comment within 7 days.
+   * https://developers.facebook.com/docs/instagram-platform/private-replies/
+   */
+  async sendPrivateReply(
+    igUserId: string,
+    accessToken: string,
+    commentId: string,
+    text: string,
+  ): Promise<{ recipientId: string | null; messageId: string | null }> {
+    const url = new URL(`${this.instagramApiUrl}/${igUserId}/messages`);
+    url.searchParams.set('access_token', accessToken);
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipient: { comment_id: commentId },
+        message: { text },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`IG private reply failed: ${err}`);
+      throw new Error(`Instagram private reply failed: ${res.status} ${err}`);
+    }
+    const data = (await res.json()) as {
+      message_id?: string;
+      recipient_id?: string;
+    };
+    // The message is delivered. A missing recipient or message id must never
+    // turn that into a failure: the caller degrades (no DM row / no
+    // conversation id yet) and the webhook echo fills the gap.
+    if (!data.recipient_id || !data.message_id) {
+      this.logger.warn(
+        'Instagram private reply accepted without ' +
+          (data.recipient_id ? 'a message_id' : 'a recipient_id'),
+      );
+    }
+    return {
+      recipientId: data.recipient_id ?? null,
+      messageId: data.message_id ?? null,
+    };
+  }
+
   async sendDirectMessage(
     igUserId: string,
     accessToken: string,

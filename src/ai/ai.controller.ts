@@ -10,6 +10,7 @@ import {
   UseInterceptors,
   UploadedFile,
   BadRequestException,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
@@ -21,7 +22,7 @@ import {
 } from './services/ai-token.service';
 import { ElevenLabsSttService } from './services/elevenlabs-stt.service';
 import { ComposerAiService } from './composer-ai.service';
-import { InboxAiService } from './inbox-ai.service';
+import { InboxAiService, assertSuggestReplyInput } from './inbox-ai.service';
 import {
   GeneratePostDto,
   GenerateCaptionDto,
@@ -38,6 +39,7 @@ import {
   AnalyzePostDto,
   GeneratePerChannelDto,
   SuggestReplyDto,
+  QuickRepliesDto,
   PLATFORMS,
   TONES,
 } from './dto/ai.dto';
@@ -508,15 +510,36 @@ export class AiController {
   @RequireCapability('inbox:reply')
   @HttpCode(HttpStatus.OK)
   async suggestReply(
-    @Param('workspaceId') workspaceId: string,
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @CurrentUser() user: { userId: string },
     @Body() dto: SuggestReplyDto,
   ) {
+    assertSuggestReplyInput(dto);
     return this.inboxAiService.suggestReply(workspaceId, user.userId, {
+      conversationId: dto.conversationId,
+      commentId: dto.commentId,
       platform: dto.platform,
       messages: dto.messages,
       instruction: dto.instruction ?? 'suggest',
       draft: dto.draft,
+    });
+  }
+
+  /**
+   * Three short one-tap replies to a comment. Metered as one suggest_reply
+   * unit.
+   */
+  @Post('workspaces/:workspaceId/inbox/quick-replies')
+  @RequireCapability('inbox:reply')
+  @HttpCode(HttpStatus.OK)
+  async quickReplies(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @CurrentUser() user: { userId: string },
+    @Body() dto: QuickRepliesDto,
+  ) {
+    return this.inboxAiService.quickReplies(workspaceId, user.userId, {
+      conversationId: dto.conversationId,
+      commentId: dto.commentId,
     });
   }
 

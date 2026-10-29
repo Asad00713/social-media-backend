@@ -47,6 +47,7 @@ function build(db: DbType) {
     resync as never,
     { get: jest.fn() } as never,
     { newInbound: jest.fn() } as never,
+    {} as never, // SendLockService: unused on this path
   );
   return { service, sync, resync, rt };
 }

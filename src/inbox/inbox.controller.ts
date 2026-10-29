@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   HttpCode,
+  Logger,
   HttpStatus,
   Param,
   ParseUUIDPipe,
@@ -16,9 +17,12 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { InboxService } from './inbox.service';
 import { ScheduledMessagesService } from './services/scheduled-messages.service';
+import { CommentActionsService } from './conversations/services/comment-actions.service';
+import { ReplyResponseBuilder } from './conversations/services/reply-response.builder';
 import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { ListCommentsDto } from './dto/list-comments.dto';
 import { ReplyDto } from './dto/reply.dto';
+import { CommentOnPostDto } from './dto/comment-on-post.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { HideDto } from './dto/hide.dto';
 import { CreateScheduledMessageDto } from './dto/create-scheduled-message.dto';
@@ -27,6 +31,7 @@ import { ListScheduledMessagesDto } from './dto/list-scheduled-messages.dto';
 import { CreateInboxUploadUrlDto } from './dto/create-upload-url.dto';
 import { SendDmDto } from './dto/send-dm.dto';
 import { SendDmTemplateDto } from './dto/send-dm-template.dto';
+import { toSendOptions } from './dto/send-options.dto';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
 
@@ -38,11 +43,35 @@ interface AuthUser {
 @Controller('inbox/workspaces/:workspaceId')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class InboxController {
+  private readonly logger = new Logger(InboxController.name);
+
   constructor(
     private readonly inboxService: InboxService,
     private readonly scheduledMessagesService: ScheduledMessagesService,
     private readonly r2Service: CloudflareR2Service,
+    private readonly commentActions: CommentActionsService,
+    private readonly replyResponse: ReplyResponseBuilder,
   ) {}
+
+  /**
+   * The send already reached the platform and the row is written, so building
+   * the new half of the response must never turn it into an error (the client
+   * would keep a failed bubble and the retry would double-post). On failure
+   * the legacy body is still returned with `row: null`; the realtime
+   * `conversation.upserted` event delivers the row.
+   */
+  private async responseOrFallback<T extends object>(
+    build: () => Promise<T>,
+  ): Promise<T | { row: null }> {
+    try {
+      return await build();
+    } catch (err) {
+      this.logger.error(
+        `reply response build failed after a delivered send: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { row: null };
+    }
+  }
 
   @Get('comments')
   @RequireCapability('inbox:view')
@@ -99,7 +128,20 @@ export class InboxController {
     @Body() dto: ReplyDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.inboxService.reply(workspaceId, user.userId, itemId, dto.text);
+    // UNION during cutover: the legacy node fields plus `node` and `row`.
+    const sent = await this.inboxService.reply(
+      workspaceId,
+      user.userId,
+      itemId,
+      dto.text,
+      toSendOptions(dto),
+    );
+    return {
+      ...sent,
+      ...(await this.responseOrFallback(() =>
+        this.replyResponse.forComment(workspaceId, user.userId, sent),
+      )),
+    };
   }
 
   @Post('threads/:threadKey/comments')
@@ -107,15 +149,22 @@ export class InboxController {
   async commentOnPost(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('threadKey') threadKey: string,
-    @Body() dto: ReplyDto,
+    @Body() dto: CommentOnPostDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.inboxService.commentOnPost(
+    // markDone does not apply to a new top-level comment.
+    const sent = await this.inboxService.commentOnPost(
       workspaceId,
       user.userId,
       threadKey,
       dto.text,
     );
+    return {
+      ...sent,
+      ...(await this.responseOrFallback(() =>
+        this.replyResponse.forComment(workspaceId, user.userId, sent),
+      )),
+    };
   }
 
   @Patch('comments/:itemId/status')
@@ -135,8 +184,9 @@ export class InboxController {
   }
 
   /**
-   * Moderate a reply on our own post (Threads `manage_reply` today; other
-   * platforms reject with a 400 via `inboxService.hideComment`).
+   * Legacy route for hiding a reply. It delegates to the same service as
+   * `POST comments/:itemId/hide`, so the platform matrix is enforced the same
+   * way; the body is the old `{ success, isHidden }` plus the new `node`.
    */
   @Patch('comments/:itemId/hide')
   @RequireCapability('inbox:reply')
@@ -146,10 +196,10 @@ export class InboxController {
     @Body() dto: HideDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.inboxService.hideComment(
+    return this.commentActions.hide(
       workspaceId,
-      user.userId,
       itemId,
+      user.userId,
       dto.hidden,
     );
   }
@@ -266,7 +316,7 @@ export class InboxController {
     @Body() dto: SendDmDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.inboxService.sendDm(
+    const sent = await this.inboxService.sendDm(
       workspaceId,
       user.userId,
       threadKey,
@@ -276,7 +326,14 @@ export class InboxController {
         url: a.url,
         contentType: a.contentType,
       })),
+      toSendOptions(dto),
     );
+    return {
+      ...sent,
+      ...(await this.responseOrFallback(() =>
+        this.replyResponse.forDm(workspaceId, user.userId, sent),
+      )),
+    };
   }
 
   @Post('dms/:threadKey/template')
@@ -287,13 +344,20 @@ export class InboxController {
     @Body() dto: SendDmTemplateDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.inboxService.sendDmTemplate(
+    const sent = await this.inboxService.sendDmTemplate(
       workspaceId,
       user.userId,
       threadKey,
       dto.name,
       dto.language,
+      toSendOptions(dto),
     );
+    return {
+      ...sent,
+      ...(await this.responseOrFallback(() =>
+        this.replyResponse.forDm(workspaceId, user.userId, sent),
+      )),
+    };
   }
 
   @Post('dms/:threadKey/read')
@@ -381,6 +445,28 @@ export class InboxController {
     return this.scheduledMessagesService.cancel(workspaceId, user.userId, id);
   }
 
+  @Post('scheduled/:id/send-now')
+  @RequireCapability('inbox:reply')
+  @HttpCode(HttpStatus.OK)
+  async sendNow(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.scheduledMessagesService.sendNow(workspaceId, user.userId, id);
+  }
+
+  @Post('scheduled/:id/restore')
+  @RequireCapability('inbox:reply')
+  @HttpCode(HttpStatus.OK)
+  async restoreScheduled(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.scheduledMessagesService.restore(workspaceId, user.userId, id);
+  }
+
   // ==========================================================================
   // Media uploads (Phase 2.3) — presigned PUT URL for inbox DM attachments.
   // Browser uploads directly to Cloudflare R2; backend never touches bytes.
@@ -414,16 +500,7 @@ export class InboxController {
   // AND deletes from the platform side via the per-platform adapter.
   // ==========================================================================
 
-  @Delete('comments/:itemId')
-  @RequireCapability('inbox:reply')
-  @HttpCode(HttpStatus.OK)
-  async deleteComment(
-    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
-    @Param('itemId', ParseUUIDPipe) itemId: string,
-    @CurrentUser() user: AuthUser,
-  ) {
-    return this.inboxService.deleteComment(workspaceId, user.userId, itemId);
-  }
+  // `DELETE comments/:itemId` lives in CommentActionsController now.
 
   @Delete('dms/:itemId')
   @RequireCapability('inbox:reply')

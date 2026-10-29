@@ -2,12 +2,14 @@ import { Global, Module } from '@nestjs/common';
 import { JwtModule } from '@nestjs/jwt';
 import { ConfigModule, ConfigService } from '@nestjs/config';
 import { AnalyticsEventsGateway } from './analytics-events.gateway';
+import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { AnalyticsEventEmitter } from './analytics-event-emitter.service';
 
 @Global() // expose emitter app-wide without per-module import
 @Module({
   imports: [
     ConfigModule,
+    WorkspaceRoleModule,
     JwtModule.registerAsync({
       imports: [ConfigModule],
       inject: [ConfigService],

@@ -22,6 +22,8 @@ import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { WorkspaceRoleService } from '../workspace-members/workspace-role.service';
 import { InboxController } from './inbox.controller';
 import { InboxService } from './inbox.service';
+import { CommentActionsService } from './conversations/services/comment-actions.service';
+import { ReplyResponseBuilder } from './conversations/services/reply-response.builder';
 import { ScheduledMessagesService } from './services/scheduled-messages.service';
 
 const WS = '11111111-1111-4111-8111-111111111111';
@@ -38,6 +40,8 @@ describe('POST /inbox/workspaces/:id/sync over HTTP', () => {
         WorkspaceRoleGuard,
         { provide: WorkspaceRoleService, useValue: roles },
         { provide: InboxService, useValue: inbox },
+        { provide: CommentActionsService, useValue: {} },
+        { provide: ReplyResponseBuilder, useValue: {} },
         { provide: ScheduledMessagesService, useValue: {} },
         { provide: CloudflareR2Service, useValue: {} },
       ],
@@ -116,6 +120,7 @@ describe('InboxService.syncNow', () => {
       {} as never,
       {} as never,
       { newInbound: jest.fn() } as never,
+      {} as never, // SendLockService: unused on this path
     );
     jest
       .spyOn(service as any, 'assertWorkspaceAccess')
@@ -166,6 +171,7 @@ describe('InboxService.syncNow', () => {
       {} as never,
       {} as never,
       { newInbound: jest.fn() } as never,
+      {} as never, // SendLockService: unused on this path
     );
     jest
       .spyOn(service as any, 'assertWorkspaceAccess')

@@ -84,6 +84,48 @@ export class InstagramInboxAdapter implements PlatformInboxAdapter {
     };
   }
 
+  async hideComment(
+    channel: ResolvedChannel,
+    platformItemId: string,
+    hidden: boolean,
+  ): Promise<void> {
+    await this.instagram.setCommentHidden(
+      channel.accessToken,
+      platformItemId,
+      hidden,
+    );
+  }
+
+  // Someone else's comment on our media: same call as deleting our own.
+  async moderateDelete(
+    channel: ResolvedChannel,
+    platformItemId: string,
+  ): Promise<void> {
+    await this.instagram.deleteComment(channel.accessToken, platformItemId);
+  }
+
+  async sendPrivateReply(
+    channel: ResolvedChannel,
+    platformCommentId: string,
+    text: string,
+  ): Promise<{
+    recipientPlatformId: string | null;
+    platformItemId: string | null;
+    platformCreatedAt: Date;
+  }> {
+    const sent = await this.instagram.sendPrivateReply(
+      channel.platformAccountId,
+      channel.accessToken,
+      platformCommentId,
+      text,
+    );
+    return {
+      recipientPlatformId: sent.recipientId,
+      platformItemId: sent.messageId,
+      platformCreatedAt: new Date(),
+    };
+  }
+
   // Phase 2.3 — delete an IG comment authored by the connected business account.
   async deleteComment(
     channel: ResolvedChannel,

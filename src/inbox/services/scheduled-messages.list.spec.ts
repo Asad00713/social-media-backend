@@ -44,6 +44,7 @@ async function whereFor(obj: Record<string, unknown>) {
     {} as never,
     {} as never,
     {} as never,
+    {} as never,
   );
   await svc.list(WS, 'u', dto(obj));
   return new PgDialect().sqlToQuery(capturedWhere as unknown as SQL);

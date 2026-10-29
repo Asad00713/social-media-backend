@@ -211,6 +211,64 @@ export class BlueskyInboxAdapter implements PlatformInboxAdapter {
   }
 
   // ──────────────────────────────────────────────────────────────────────
+  // Like: an app.bsky.feed.like record whose subject is { uri, cid }. The cid
+  // comes from the ingested metadata, else from getPosts. Unlike deletes the
+  // record we kept in metadata.likeUri.
+  // ──────────────────────────────────────────────────────────────────────
+  async likeComment(
+    channel: ResolvedChannel,
+    item: { platformItemId: string; metadata: Record<string, unknown> | null },
+    liked: boolean,
+  ): Promise<{ likeRef?: string | null }> {
+    const did = resolveDid(channel);
+    if (!did) throw new Error('Bluesky channel is missing DID');
+    // Already liked: a second createRecord would orphan a public like record
+    // that metadata.likeUri no longer points at, so it could never be undone.
+    if (liked && item.metadata?.likedByUs === true) {
+      const known = item.metadata.likeUri;
+      return { likeRef: typeof known === 'string' ? known : null };
+    }
+    if (!liked) {
+      const likeUri = item.metadata?.likeUri;
+      // No record to delete: nothing is liked, so there is nothing to undo.
+      if (typeof likeUri !== 'string') return { likeRef: null };
+      await this.bluesky.unlikePost(channel.accessToken, did, likeUri);
+      return { likeRef: null };
+    }
+    const knownCid = item.metadata?.cid;
+    const cid =
+      typeof knownCid === 'string'
+        ? knownCid
+        : (
+            await this.bluesky.resolvePostRef(
+              channel.accessToken,
+              item.platformItemId,
+            )
+          ).cid;
+    const likeUri = await this.bluesky.likePost(channel.accessToken, did, {
+      uri: item.platformItemId,
+      cid,
+    });
+    return { likeRef: likeUri };
+  }
+
+  // Hide = add the reply to the root post's threadgate `hiddenReplies`.
+  async hideComment(
+    channel: ResolvedChannel,
+    platformItemId: string,
+    hidden: boolean,
+  ): Promise<void> {
+    const did = resolveDid(channel);
+    if (!did) throw new Error('Bluesky channel is missing DID');
+    await this.bluesky.setReplyHidden(
+      channel.accessToken,
+      did,
+      platformItemId,
+      hidden,
+    );
+  }
+
+  // ──────────────────────────────────────────────────────────────────────
   // Delete (Phase 2.3) — Bluesky deletes go through repo.deleteRecord on
   // the post's collection. The service.deletePost already wraps that call
   // and handles the rkey extraction from the AT URI.
