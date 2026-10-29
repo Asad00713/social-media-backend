@@ -18,6 +18,9 @@ import { DiscordService } from '../../channels/services/discord.service';
 import { SlackService } from '../../channels/services/slack.service';
 import { InboxService } from '../../inbox/inbox.service';
 import { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
+import { ConversationDetailService } from '../../inbox/conversations/services/conversation-detail.service';
+import { ConversationListService } from '../../inbox/conversations/services/conversation-list.service';
+import { ConversationPresenter } from '../../inbox/conversations/services/conversation-presenter.service';
 import { DripService } from '../../drips/drip.service';
 import { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
 import { roleCan } from '../../workspace-members/role-capabilities';
@@ -220,6 +223,9 @@ export class MaestroService {
     private readonly slack: SlackService,
     private readonly posts: PostService,
     private readonly inbox: InboxService,
+    private readonly conversationPresenter: ConversationPresenter,
+    private readonly conversationList: ConversationListService,
+    private readonly conversationDetail: ConversationDetailService,
     private readonly r2: CloudflareR2Service,
     private readonly keys: MaestroKeyService,
     private readonly channels: ChannelService,
@@ -526,6 +532,11 @@ export class MaestroService {
           discord: this.discord,
           slack: this.slack,
           inbox: this.inbox,
+          conversations: {
+            presenter: this.conversationPresenter,
+            list: this.conversationList,
+            detail: this.conversationDetail,
+          },
           posts: this.posts,
           channels: this.channels,
           campaigns: this.campaigns,

@@ -180,6 +180,9 @@ function makeHarness(
     slack,
     stub, // posts
     inbox,
+    stub, // conversationPresenter
+    stub, // conversationList
+    stub, // conversationDetail
     stub, // r2
     { getDecryptedKey } as never,
     stub, // channels
