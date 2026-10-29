@@ -96,6 +96,37 @@ async function seedConversation(
   return res.conversationId!;
 }
 
+/** A thread holding only our own outbound message: nothing to mark unread. */
+async function seedOutboundOnly(
+  client: PoolClient,
+  db: DbType,
+  workspaceId: string,
+  channelId: number,
+  convo: string,
+): Promise<string> {
+  const item = await seedItem(client, {
+    workspaceId,
+    channelId,
+    platform: 'instagram',
+    type: 'dm',
+    conversationId: convo,
+    fromMe: true,
+    status: 'replied',
+    text: 'hi',
+    authorPlatformId: `p-${convo}`,
+    platformCreatedAt: T0,
+  });
+  const res = await new ConversationSyncService(
+    db,
+    fake<InboxRealtimeService>({
+      conversationChanged: jest.fn(),
+      conversationRemoved: jest.fn(),
+      countsChanged: jest.fn(),
+    }),
+  ).syncThread(workspaceId, item.threadKey!);
+  return res.conversationId!;
+}
+
 const archivedAt = async (client: PoolClient, id: string) =>
   (
     await client.query<{ archived_at: Date | null }>(
@@ -305,38 +336,83 @@ describeInboxDb('ConversationMutationsService', () => {
       expect(untouched.rows[0].status).toBe('to_reply');
     }));
 
-  it('bulk later, assign and unread go through the same paths', () =>
+  it('bulk later, assign and unread act on EVERY row', () =>
     withInboxDb(async (db, client) => {
       const { workspaceId, ownerId } = await seedWorkspace(client);
       const ch = await seedChannel(client, workspaceId, 'instagram');
-      const c1 = await seedConversation(client, db, workspaceId, ch, 'a1');
+      const ids = [
+        await seedConversation(client, db, workspaceId, ch, 'a1'),
+        await seedConversation(client, db, workspaceId, ch, 'a2'),
+        await seedConversation(client, db, workspaceId, ch, 'a3'),
+      ];
       const member = await seedMember(client, workspaceId, 'MEMBER');
       const { svc, schedule, assigned } = build(db);
 
       const later = await svc.bulk(
         workspaceId,
         ownerId,
-        { ids: [c1], action: 'later', laterUntil: '2026-11-01T08:00:00.000Z' },
+        { ids, action: 'later', laterUntil: '2026-11-01T08:00:00.000Z' },
         NOW,
       );
-      expect(later.rows[0].status).toBe('later');
-      expect(schedule).toHaveBeenCalledTimes(1);
+      expect(later.rows).toHaveLength(3);
+      for (const r of later.rows) {
+        expect(r.status).toBe('later');
+        expect(r.laterUntil).toBe('2026-11-01T08:00:00.000Z');
+      }
+      expect(schedule).toHaveBeenCalledTimes(3);
+      expect([...later.undo.ids].sort()).toEqual([...ids].sort());
+      for (const id of ids) {
+        expect(later.undo.previous[id]).toEqual({ status: 'to_reply' });
+      }
 
       const assign = await svc.bulk(workspaceId, ownerId, {
-        ids: [c1],
+        ids,
         action: 'assign',
         assigneeUserId: member,
       });
-      expect(assign.rows[0].assignee?.id).toBe(member);
-      expect(assigned).toHaveBeenCalledTimes(1);
+      expect(assign.rows).toHaveLength(3);
+      for (const r of assign.rows) expect(r.assignee?.id).toBe(member);
+      expect(assigned).toHaveBeenCalledTimes(3);
+      for (const id of ids) {
+        expect(assign.undo.previous[id]).toEqual({ assigneeUserId: null });
+      }
 
-      await svc.markRead(workspaceId, c1);
+      for (const id of ids) await svc.markRead(workspaceId, id);
       const unread = await svc.bulk(workspaceId, ownerId, {
-        ids: [c1],
+        ids,
         action: 'unread',
       });
-      expect(unread.rows[0].unreadCount).toBe(1);
-      expect(unread.undo.previous[c1]).toEqual({});
+      expect(unread.rows).toHaveLength(3);
+      for (const r of unread.rows) expect(r.unreadCount).toBe(1);
+      for (const id of ids) expect(unread.undo.previous[id]).toEqual({});
+    }));
+
+  it('bulk unread skips a thread with nothing inbound, and says so by omission', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const withInbound = await seedConversation(
+        client,
+        db,
+        workspaceId,
+        ch,
+        'i',
+      );
+      const outboundOnly = await seedOutboundOnly(
+        client,
+        db,
+        workspaceId,
+        ch,
+        'o',
+      );
+      const { svc } = build(db);
+      const res = await svc.bulk(workspaceId, ownerId, {
+        ids: [outboundOnly, withInbound],
+        action: 'unread',
+      });
+      expect(res.rows.map((r) => r.id)).toEqual([withInbound]);
+      expect(res.undo.ids).toEqual([withInbound]);
+      expect(Object.keys(res.undo.previous)).toEqual([withInbound]);
     }));
 
   it('read marks every inbound item needs_reply; unread flips the latest back', () =>
@@ -363,6 +439,8 @@ describeInboxDb('ConversationMutationsService', () => {
       );
       const { svc } = build(db);
 
+      const before = await svc.markUnread(workspaceId, id, ownerId);
+      expect(before.row.unreadCount).toBeGreaterThan(0);
       const read = await svc.markRead(workspaceId, id);
       expect(read.row.unreadCount).toBe(0);
       const items = await client.query<{ status: string }>(
@@ -422,11 +500,246 @@ describeInboxDb('ConversationMutationsService', () => {
       expect(await svc.remove(workspaceId, id)).toEqual({ ok: true });
       expect(await archivedAt(client, id)).not.toBeNull();
       expect(await ids()).toEqual([]);
+      expect(removed).toHaveBeenCalledTimes(1);
       expect(removed).toHaveBeenCalledWith(workspaceId, id);
 
       const restored = await svc.restore(workspaceId, id);
       expect(restored.row.id).toBe(id);
       expect(await archivedAt(client, id)).toBeNull();
       expect(await ids()).toEqual([id]);
+    }));
+
+  it('Later preset: later_today is judged in the workspace zone, not UTC', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client, {
+        timezone: 'Asia/Karachi',
+      });
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const id = await seedConversation(client, db, workspaceId, ch, 'a');
+      const { svc } = build(db);
+      // 13:30Z is 18:30 in Karachi (passed), though only 13:30 in UTC.
+      await expect(
+        svc.patch(
+          workspaceId,
+          id,
+          ownerId,
+          { status: 'later', laterPreset: 'later_today' },
+          new Date('2026-10-26T13:30:00.000Z'),
+        ),
+      ).rejects.toThrow('That time has passed');
+      // 12:00Z is 17:00 in Karachi: 18:00 local is 13:00Z (UTC would say 18:00Z).
+      const ok = await svc.patch(
+        workspaceId,
+        id,
+        ownerId,
+        { status: 'later', laterPreset: 'later_today' },
+        NOW,
+      );
+      expect(ok.row.laterUntil).toBe('2026-10-26T13:00:00.000Z');
+    }));
+
+  it('replaying the undo of a Later snooze restores the exact time and re-schedules it', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const id = await seedConversation(client, db, workspaceId, ch, 'a');
+      const { svc, schedule } = build(db);
+      const X = '2026-11-01T08:00:00.000Z';
+      await svc.patch(
+        workspaceId,
+        id,
+        ownerId,
+        { status: 'later', laterUntil: X },
+        NOW,
+      );
+
+      const done = await svc.patch(
+        workspaceId,
+        id,
+        ownerId,
+        { status: 'done' },
+        NOW,
+      );
+      expect(done.row.status).toBe('done');
+      schedule.mockClear();
+      const back = await svc.patch(
+        workspaceId,
+        id,
+        ownerId,
+        done.undo as PatchConversationDto,
+        NOW,
+      );
+      expect(back.row.status).toBe('later');
+      expect(back.row.laterUntil).toBe(X);
+      expect(back.row.laterUntilReply).toBe(false);
+      expect(back.row.doneVia).toBeNull();
+      expect(schedule).toHaveBeenCalledTimes(1);
+      expect(schedule.mock.calls[0][1].toISOString()).toBe(X);
+
+      // A later-until-reply snooze comes back as such.
+      await svc.patch(
+        workspaceId,
+        id,
+        ownerId,
+        { status: 'later', laterUntilReply: true },
+        NOW,
+      );
+      const done2 = await svc.patch(
+        workspaceId,
+        id,
+        ownerId,
+        { status: 'done' },
+        NOW,
+      );
+      const back2 = await svc.patch(
+        workspaceId,
+        id,
+        ownerId,
+        done2.undo as PatchConversationDto,
+        NOW,
+      );
+      expect(back2.row.status).toBe('later');
+      expect(back2.row.laterUntil).toBeNull();
+      expect(back2.row.laterUntilReply).toBe(true);
+    }));
+
+  it('replaying the undo of an assignment restores the previous assignee', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const id = await seedConversation(client, db, workspaceId, ch, 'a');
+      const m1 = await seedMember(client, workspaceId, 'MEMBER');
+      const m2 = await seedMember(client, workspaceId, 'ADMIN');
+      const { svc } = build(db);
+      await svc.patch(workspaceId, id, ownerId, { assigneeUserId: m1 });
+      const second = await svc.patch(workspaceId, id, ownerId, {
+        assigneeUserId: m2,
+      });
+      expect(second.row.assignee?.id).toBe(m2);
+      const back = await svc.patch(
+        workspaceId,
+        id,
+        ownerId,
+        second.undo as PatchConversationDto,
+      );
+      expect(back.row.assignee?.id).toBe(m1);
+      const first = await svc.patch(workspaceId, id, ownerId, {
+        assigneeUserId: null,
+      });
+      const again = await svc.patch(
+        workspaceId,
+        id,
+        ownerId,
+        first.undo as PatchConversationDto,
+      );
+      expect(again.row.assignee?.id).toBe(m1);
+    }));
+
+  it('later fields without status later are a 400 and change nothing', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const id = await seedConversation(client, db, workspaceId, ch, 'a');
+      const { svc, schedule } = build(db);
+      await svc.patch(
+        workspaceId,
+        id,
+        ownerId,
+        { status: 'later', laterUntil: '2026-11-01T08:00:00.000Z' },
+        NOW,
+      );
+      schedule.mockClear();
+      const bodies: PatchConversationDto[] = [
+        { laterUntil: '2026-11-02T08:00:00.000Z' },
+        { laterPreset: 'tomorrow' },
+        { laterUntilReply: true },
+        { status: 'done', laterUntil: '2026-11-02T08:00:00.000Z' },
+      ];
+      for (const body of bodies) {
+        await expect(
+          svc.patch(workspaceId, id, ownerId, body, NOW),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      }
+      expect(schedule).not.toHaveBeenCalled();
+      const [row] = await new ConversationPresenter(db).loadRows(workspaceId, [
+        id,
+      ]);
+      expect(row.status).toBe('later');
+      expect(row.laterUntil).toBe('2026-11-01T08:00:00.000Z');
+    }));
+
+  it('bulk assign needs assigneeUserId: missing is a 400, explicit null unassigns', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const id = await seedConversation(client, db, workspaceId, ch, 'a');
+      const member = await seedMember(client, workspaceId, 'MEMBER');
+      const { svc } = build(db);
+      await svc.patch(workspaceId, id, ownerId, { assigneeUserId: member });
+      await expect(
+        svc.bulk(workspaceId, ownerId, { ids: [id], action: 'assign' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      const [still] = await new ConversationPresenter(db).loadRows(
+        workspaceId,
+        [id],
+      );
+      expect(still.assignee?.id).toBe(member);
+
+      const res = await svc.bulk(workspaceId, ownerId, {
+        ids: [id],
+        action: 'assign',
+        assigneeUserId: null,
+      });
+      expect(res.rows[0].assignee).toBeNull();
+      expect(res.undo.previous[id]).toEqual({ assigneeUserId: member });
+    }));
+
+  it('a failing wake.schedule after the commit does not fail the PATCH', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const id = await seedConversation(client, db, workspaceId, ch, 'a');
+      const { svc, schedule } = build(db);
+      schedule.mockRejectedValueOnce(new Error('redis down'));
+      const res = await svc.patch(
+        workspaceId,
+        id,
+        ownerId,
+        { status: 'later', laterUntil: '2026-11-01T08:00:00.000Z' },
+        NOW,
+      );
+      expect(res.row.status).toBe('later');
+      expect(res.undo).toEqual({ status: 'to_reply' });
+    }));
+
+  it('every single-conversation mutation answers 404 across workspaces and changes nothing', () =>
+    withInboxDb(async (db, client) => {
+      const a = await seedWorkspace(client);
+      const b = await seedWorkspace(client);
+      const ch = await seedChannel(client, a.workspaceId, 'instagram');
+      const id = await seedConversation(client, db, a.workspaceId, ch, 'a');
+      const { svc } = build(db);
+      const ws = b.workspaceId;
+      await expect(svc.markRead(ws, id)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      await expect(svc.markUnread(ws, id, b.ownerId)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      await expect(svc.remove(ws, id)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      await expect(svc.restore(ws, id)).rejects.toBeInstanceOf(
+        NotFoundException,
+      );
+      expect(await archivedAt(client, id)).toBeNull();
+      const items = await client.query<{
+        status: string;
+        archived_at: Date | null;
+      }>(
+        `SELECT status, archived_at FROM inbox_items WHERE workspace_id = $1`,
+        [a.workspaceId],
+      );
+      expect(items.rows).toEqual([{ status: 'unread', archived_at: null }]);
     }));
 });

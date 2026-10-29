@@ -58,6 +58,7 @@ export class ConversationsController {
   }
 
   @RequireCapability('inbox:reply')
+  @HttpCode(200)
   @Post('bulk')
   async bulk(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,

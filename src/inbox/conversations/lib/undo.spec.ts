@@ -39,10 +39,22 @@ describe('undoFor', () => {
       { status: 'to_reply' },
     ],
     [
-      'laterUntil patch undoes via status',
+      'laterUntil alone is not a status change',
       { laterUntil: '2026-11-01T00:00:00.000Z' },
       later({ laterUntilReply: true }),
-      { status: 'later', laterUntil: L.toISOString(), laterUntilReply: true },
+      {},
+    ],
+    [
+      'laterPreset alone is not a status change',
+      { laterPreset: 'tomorrow' },
+      later(),
+      {},
+    ],
+    [
+      'laterUntilReply alone is not a status change',
+      { laterUntilReply: true },
+      later(),
+      {},
     ],
     [
       'laterUntilReply is emitted only when prev was later',

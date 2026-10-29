@@ -27,11 +27,9 @@ export function undoFor(
   prev: PatchState,
 ): PatchConversationBody {
   const undo: PatchConversationBody = {};
-  const touchesStatus =
-    patch.status !== undefined ||
-    patch.laterUntil !== undefined ||
-    patch.laterUntilReply !== undefined ||
-    patch.laterPreset !== undefined;
+  // Later fields only mean something next to status 'later' (the service
+  // rejects them alone), so they never count on their own.
+  const touchesStatus = patch.status !== undefined;
   if (touchesStatus) {
     undo.status = prev.status;
     if (prev.status === 'later') {

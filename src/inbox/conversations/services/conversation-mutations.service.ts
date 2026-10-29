@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
@@ -49,6 +50,8 @@ const toDate = (v: Ts): Date | null =>
  */
 @Injectable()
 export class ConversationMutationsService {
+  private readonly logger = new Logger(ConversationMutationsService.name);
+
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
     private readonly sync: ConversationSyncService,
@@ -76,6 +79,12 @@ export class ConversationMutationsService {
     body: BulkConversationsDto,
     now: Date = new Date(),
   ): Promise<BulkResult> {
+    if (body.action === 'assign' && body.assigneeUserId === undefined) {
+      // A missing key must never read as "unassign everything"; null is explicit.
+      throw new BadRequestException(
+        'assigneeUserId is required (null unassigns)',
+      );
+    }
     const rows: ConversationRow[] = [];
     const previous: BulkResult['undo']['previous'] = {};
     for (const id of new Set(body.ids)) {
@@ -96,7 +105,7 @@ export class ConversationMutationsService {
         body.action === 'done'
           ? { status: 'done' }
           : body.action === 'assign'
-            ? { assigneeUserId: body.assigneeUserId ?? null }
+            ? { assigneeUserId: body.assigneeUserId }
             : {
                 status: 'later',
                 laterUntil: body.laterUntil,
@@ -196,6 +205,16 @@ export class ConversationMutationsService {
       assigneeUserId: conv.assignee_user_id,
     };
 
+    const hasLaterFields =
+      body.laterUntil !== undefined ||
+      body.laterPreset !== undefined ||
+      body.laterUntilReply !== undefined;
+    if (hasLaterFields && body.status !== 'later') {
+      throw new BadRequestException(
+        "laterUntil, laterPreset and laterUntilReply require status 'later'",
+      );
+    }
+
     let laterUntil: Date | null = null;
     if (body.status === 'later') {
       laterUntil = await this.resolveLaterUntil(workspaceId, body, now);
@@ -219,7 +238,16 @@ export class ConversationMutationsService {
     // Commits before anything below runs (D1).
     await this.sync.syncThread(workspaceId, conv.thread_key, intent, now);
 
-    if (laterUntil) await this.wake.schedule(conv.id, laterUntil, now);
+    if (laterUntil) {
+      try {
+        await this.wake.schedule(conv.id, laterUntil, now);
+      } catch (err) {
+        // Committed already; the minute sweep wakes it if the job was lost.
+        this.logger.warn(
+          `wake job not scheduled for ${conv.id}: ${(err as Error).message}`,
+        );
+      }
+    }
     if (body.assigneeUserId && body.assigneeUserId !== prev.assigneeUserId) {
       await this.notify.assigned({
         workspaceId,

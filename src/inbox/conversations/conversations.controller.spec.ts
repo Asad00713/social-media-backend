@@ -204,11 +204,11 @@ describe('ConversationsController over HTTP', () => {
       expect(mutations.patch).not.toHaveBeenCalled();
     });
 
-    it('accepts null laterUntil and null assignee', async () => {
+    it('accepts a null assignee (unassign)', async () => {
       roles.getRole.mockResolvedValue('MEMBER');
       await request(app.getHttpServer())
         .patch(base)
-        .send({ laterUntil: null, assigneeUserId: null })
+        .send({ assigneeUserId: null })
         .expect(200);
     });
 
@@ -230,7 +230,7 @@ describe('ConversationsController over HTTP', () => {
       await request(app.getHttpServer())
         .post(`${url}/bulk`)
         .send({ ids: Array.from({ length: 100 }, () => CONV), action: 'done' })
-        .expect(201);
+        .expect(200);
     });
 
     it('routes a non-uuid id to 400, never to the service', async () => {
