@@ -2,7 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { PostService } from '../../posts/services/post.service';
 import { ChannelService } from '../../channels/services/channel.service';
 import { CampaignsService } from '../../campaigns/campaigns.service';
-import { InboxService } from '../../inbox/inbox.service';
+import { ConversationListService } from '../../inbox/conversations/services/conversation-list.service';
+import type { ListConversationsQueryDto } from '../../inbox/conversations/dto/list-conversations.query';
 import { WorkspaceMembersService } from '../../workspace-members/workspace-members.service';
 import { MediaItemService } from '../../media-library/services/media-item.service';
 import { TemplateService } from '../../media-library/services/template.service';
@@ -80,7 +81,7 @@ export class MentionSearchService {
     private readonly posts: PostService,
     private readonly channels: ChannelService,
     private readonly campaigns: CampaignsService,
-    private readonly inbox: InboxService,
+    private readonly conversationList: ConversationListService,
     private readonly members: WorkspaceMembersService,
     private readonly mediaItems: MediaItemService,
     private readonly templates: TemplateService,
@@ -287,8 +288,9 @@ export class MentionSearchService {
       });
     }
     for (const m of roster.members) {
-      const u = (m as { user?: { id: string; name: string | null; email: string } })
-        .user;
+      const u = (
+        m as { user?: { id: string; name: string | null; email: string } }
+      ).user;
       if (!u) continue;
       rows.push({
         type: 'member',
@@ -307,30 +309,25 @@ export class MentionSearchService {
     q: string,
     limit: number,
   ): Promise<MentionResult[]> {
-    // DMs only. Comment threads are named by the post they hang off, so
-    // mentioning one would read as mentioning the post — @-ing the post itself
-    // is the clearer gesture, and it is already in the list.
-    const { threads } = await this.inbox.listDmConversations(
-      workspaceId,
-      userId,
-      { limit: 40 },
-    );
+    // Direct messages only. Comment threads are named by the post they hang
+    // off, so mentioning one would read as mentioning the post — @-ing the post
+    // itself is the clearer gesture, and it is already in the list.
+    const term = q.trim();
+    const { rows } = await this.conversationList.list(workspaceId, userId, {
+      view: 'to_reply',
+      type: 'message',
+      ...(term ? { q: term } : {}),
+      limit,
+    } as ListConversationsQueryDto);
 
-    return threads
-      .filter((t) =>
-        matches(t.participant?.displayName ?? t.participant?.handle, q),
-      )
-      .slice(0, limit)
-      .map((t) => ({
-        type: 'conversation' as const,
-        // `id` is the thread key the Inbox routes on — NOT conversationId,
-        // which is the platform's own id and does not open anything.
-        id: t.id,
-        label:
-          t.participant?.displayName ?? t.participant?.handle ?? 'Conversation',
-        context: t.platform,
-        platform: t.platform,
-        status: t.status,
-      }));
+    return rows.slice(0, limit).map((r) => ({
+      type: 'conversation' as const,
+      // `id` is the conversation uuid — the Inbox opens it as ?c=<id>.
+      id: r.id,
+      label: r.title || 'Conversation',
+      context: r.platform,
+      platform: r.platform,
+      status: r.status,
+    }));
   }
 }

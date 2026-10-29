@@ -18,6 +18,7 @@ function stubDeps() {
     discord: s,
     slack: s,
     inbox: s,
+    conversations: s,
     posts: s,
     channels: s,
     campaigns: s,

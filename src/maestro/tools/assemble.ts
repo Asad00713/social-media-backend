@@ -7,6 +7,7 @@ import type { TavilyService } from '../../ai/services/tavily.service';
 import type { DiscordService } from '../../channels/services/discord.service';
 import type { SlackService } from '../../channels/services/slack.service';
 import type { InboxService } from '../../inbox/inbox.service';
+import type { InboxToolDeps } from './inbox.tools';
 import type { ScheduledMessagesService } from '../../inbox/services/scheduled-messages.service';
 import type { DripService } from '../../drips/drip.service';
 import type { PostService } from '../../posts/services/post.service';
@@ -38,6 +39,8 @@ export interface MaestroToolDeps {
   discord: DiscordService;
   slack: SlackService;
   inbox: InboxService;
+  /** Conversation-model services behind the inbox read tools. */
+  conversations: InboxToolDeps;
   posts: PostService;
   channels: ChannelService;
   campaigns: CampaignsService;
@@ -80,7 +83,7 @@ export function assembleMaestroTools(
     ...createChannelTools(d.channels),
     ...createCampaignTools(d.campaigns),
     ...createLibraryTools(d.library, { confirmBeforeSend }),
-    ...createInboxTools(d.inbox),
+    ...createInboxTools(d.conversations),
     ...createPlannerTools({
       posts: d.posts,
       scheduledMessages: d.scheduledMessages,

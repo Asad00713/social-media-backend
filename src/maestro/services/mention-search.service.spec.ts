@@ -26,7 +26,7 @@ function makeService(
       owner: { id: string; name: string | null; email: string } | null;
       members: unknown[];
     };
-    dms?: Record<string, unknown>[];
+    conversationRows?: Record<string, unknown>[];
     failing?: string[];
   } = {},
   calls: Call[] = [],
@@ -57,12 +57,14 @@ function makeService(
       return Promise.resolve(guard('channels', data.channels ?? []));
     },
   };
-  const listed = (source: string, rows: unknown[]) => (
+  const listed =
+    (source: string, rows: unknown[]) =>
     (workspaceId: string, query: unknown) => {
       calls.push({ source, workspaceId, arg: query });
-      return Promise.resolve(guard(source, { items: rows, total: rows.length }));
-    }
-  );
+      return Promise.resolve(
+        guard(source, { items: rows, total: rows.length }),
+      );
+    };
   const templates = { findAll: listed('templates', data.templates ?? []) };
   const snippets = { findAll: listed('snippets', data.snippets ?? []) };
   const mediaItems = { findAll: listed('media', data.media ?? []) };
@@ -78,10 +80,14 @@ function makeService(
     },
   };
   const inbox = {
-    listDmConversations: (workspaceId: string, userId: string) => {
-      calls.push({ source: 'inbox', workspaceId, arg: userId });
+    list: (workspaceId: string, userId: string, q: unknown) => {
+      calls.push({ source: 'inbox', workspaceId, arg: { userId, q } });
       return Promise.resolve(
-        guard('inbox', { threads: data.dms ?? [], nextCursor: null }),
+        guard('inbox', {
+          rows: data.conversationRows ?? [],
+          nextCursor: null,
+          total: 0,
+        }),
       );
     },
   };
@@ -265,15 +271,15 @@ describe('MentionSearchService', () => {
     expect(channel.platform).toBe('instagram');
   });
 
-  it('routes a conversation by its thread key, not the platform id', async () => {
+  it('routes a conversation by its uuid, not the thread key', async () => {
     const service = makeService({
-      dms: [
+      conversationRows: [
         {
-          id: '2:conv-b',
-          conversationId: 'conv-b',
+          id: '11111111-1111-4111-8111-111111111111',
+          threadKey: '2:conv-b',
           platform: 'facebook',
-          status: 'needs_reply',
-          participant: { displayName: 'Omar Hassan', handle: 'omar.h' },
+          status: 'to_reply',
+          title: 'Omar Hassan',
         },
       ],
     });
@@ -285,10 +291,27 @@ describe('MentionSearchService', () => {
     });
 
     const conv = byType(results, 'conversation')[0];
-    // `conversationId` is the platform's own id and opens nothing; `id` is what
-    // the Inbox routes on.
-    expect(conv.id).toBe('2:conv-b');
+    // `id` is the conversation uuid — the Inbox opens it with ?c=<id>, never
+    // the legacy thread key.
+    expect(conv.id).toBe('11111111-1111-4111-8111-111111111111');
+    expect(conv.status).toBe('to_reply');
     expect(conv.label).toBe('Omar Hassan');
+  });
+
+  it('asks the conversation list for DMs matching the query, in the caller workspace', async () => {
+    const calls: Call[] = [];
+    const service = makeService({}, calls);
+    await service.search({
+      workspaceId: WORKSPACE,
+      userId: USER,
+      query: 'omar',
+    });
+    const hit = calls.find((c) => c.source === 'inbox');
+    expect(hit?.workspaceId).toBe(WORKSPACE);
+    expect(hit?.arg).toEqual({
+      userId: USER,
+      q: expect.objectContaining({ type: 'message', q: 'omar' }) as unknown,
+    });
   });
 
   it('returns nothing rather than everything when nothing matches', async () => {

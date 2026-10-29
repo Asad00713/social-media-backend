@@ -1,856 +1,457 @@
+import { NotFoundException } from '@nestjs/common';
 import type {
-  InboxService,
-  CommentThreadSummary,
-  DmConversationSummaryDto,
-  CommentThreadDetail,
-  DmThreadDetail,
+  ConversationDetail,
+  ConversationRow,
   InboxCounts,
-} from '../../inbox/inbox.service';
+} from '../../inbox/conversations/dto/contract';
 import type { AgentToolDefinition, ToolContext } from '../maestro.types';
 import { createInboxTools } from './inbox.tools';
 import { isReferencePayload, type ReferencePayload } from './references';
 
 const CTX: ToolContext = { userId: 'u1', workspaceId: 'ws-1' };
+const UUID_A = '11111111-1111-4111-8111-111111111111';
+const UUID_B = '22222222-2222-4222-8222-222222222222';
+const FOREIGN = '99999999-9999-4999-8999-999999999999';
 
-function commentThread(
-  over: Partial<CommentThreadSummary> = {},
-): CommentThreadSummary {
+function row(over: Partial<ConversationRow> = {}): ConversationRow {
   return {
-    id: '1:post-a',
-    type: 'comment',
-    channelId: '1',
-    platform: 'instagram' as CommentThreadSummary['platform'],
-    post: {
-      id: 'post-a',
-      caption: 'Our autumn collection is live',
-      mediaType: 'image',
-      publishedAt: '2026-08-20T10:00:00.000Z',
+    id: UUID_A,
+    kind: 'dm',
+    threadKey: '2:conv-b',
+    channelId: 2,
+    channelLabel: 'Shop FB',
+    platform: 'facebook',
+    status: 'to_reply',
+    title: 'Omar Hassan',
+    avatarUrl: null,
+    thumbnailUrl: null,
+    snippet: {
+      authorLabel: 'Omar Hassan',
+      text: 'Is the discount still valid?',
+      fromMe: false,
     },
-    latestCommenter: {
-      handle: 'sara_k',
-      displayName: 'Sara Khan',
-    },
-    status: 'unread',
-    lastCommentText: 'Do you ship to Canada?',
-    contentRedacted: false,
-    lastCommentAt: '2026-08-27T10:00:00.000Z',
     unreadCount: 1,
-    totalCommentCount: 3,
-    ...over,
-  };
-}
-
-function dmConversation(
-  over: Partial<DmConversationSummaryDto> = {},
-): DmConversationSummaryDto {
-  return {
-    id: '2:conv-b',
-    type: 'dm',
-    channelId: '2',
-    platform: 'facebook' as DmConversationSummaryDto['platform'],
-    conversationId: 'conv-b',
-    participant: {
-      platformId: 'p-9',
-      handle: 'omar.h',
-      displayName: 'Omar Hassan',
-    },
-    lastMessageText: 'Is the discount still valid?',
-    lastMessageKind: 'text',
     lastMessageAt: '2026-08-27T12:00:00.000Z',
-    lastMessageFromMe: false,
-    status: 'needs_reply',
-    unreadCount: 0,
-    totalMessageCount: 5,
+    assignee: { id: 'u9', name: 'Dana Lee', avatarUrl: null },
+    assignedBy: null,
+    assignedAt: null,
+    laterUntil: null,
+    laterUntilReply: false,
+    doneBy: null,
+    doneAt: null,
+    doneVia: null,
+    replyWindow: { closesAt: null, state: 'open' },
+    scheduled: null,
+    contentRedacted: false,
     ...over,
   };
 }
 
-interface Recorded {
-  method: string;
-  workspaceId: string;
-  userId: string;
-  options?: unknown;
-  threadKey?: string;
-}
-
-/**
- * A stand-in for InboxService that records how it was called.
- *
- * Deliberately filters by workspace itself, the way the real service does, so a
- * tool that leaked a caller-supplied workspace id would return the wrong rows
- * rather than silently passing.
- */
-function fakeInbox(
-  data: {
-    comments?: CommentThreadSummary[];
-    dms?: DmConversationSummaryDto[];
-    counts?: InboxCounts;
-    commentDetail?: CommentThreadDetail;
-    dmDetail?: DmThreadDetail;
-  },
-  calls: Recorded[] = [],
-) {
-  const guard = (workspaceId: string, userId: string) => {
-    if (workspaceId !== CTX.workspaceId || userId !== CTX.userId) {
-      throw new Error('Forbidden');
-    }
-  };
-
+function detail(over: Partial<ConversationDetail> = {}): ConversationDetail {
   return {
-    listCommentThreads: (
-      workspaceId: string,
-      userId: string,
-      options: Record<string, unknown>,
-    ) => {
-      calls.push({
-        method: 'listCommentThreads',
-        workspaceId,
-        userId,
-        options,
-      });
-      guard(workspaceId, userId);
-      let out = data.comments ?? [];
-      if (options.status) out = out.filter((t) => t.status === options.status);
-      if (options.channelId)
-        out = out.filter((t) => t.channelId === options.channelId);
-      return Promise.resolve({ threads: out, nextCursor: null });
-    },
-    listDmConversations: (
-      workspaceId: string,
-      userId: string,
-      options: Record<string, unknown>,
-    ) => {
-      calls.push({
-        method: 'listDmConversations',
-        workspaceId,
-        userId,
-        options,
-      });
-      guard(workspaceId, userId);
-      let out = data.dms ?? [];
-      if (options.status) out = out.filter((d) => d.status === options.status);
-      if (options.channelId)
-        out = out.filter((d) => d.channelId === options.channelId);
-      return Promise.resolve({ threads: out, nextCursor: null });
-    },
-    getCounts: (workspaceId: string, userId: string) => {
-      calls.push({ method: 'getCounts', workspaceId, userId });
-      guard(workspaceId, userId);
-      return Promise.resolve(
-        data.counts ?? {
-          perChannel: [],
-          smartFolders: { all: 0, unread: 0, needs_reply: 0, done: 0 },
-          total: 0,
-        },
-      );
-    },
-    getThread: (workspaceId: string, userId: string, threadKey: string) => {
-      calls.push({ method: 'getThread', workspaceId, userId, threadKey });
-      guard(workspaceId, userId);
-      if (!data.commentDetail || data.commentDetail.id !== threadKey) {
-        return Promise.reject(new Error('Not found'));
-      }
-      return Promise.resolve(data.commentDetail);
-    },
-    getDmThread: (workspaceId: string, userId: string, threadKey: string) => {
-      calls.push({ method: 'getDmThread', workspaceId, userId, threadKey });
-      guard(workspaceId, userId);
-      if (!data.dmDetail || data.dmDetail.id !== threadKey) {
-        return Promise.reject(new Error('Not found'));
-      }
-      return Promise.resolve(data.dmDetail);
-    },
-  } as unknown as InboxService;
+    row: row(),
+    participant: null,
+    post: null,
+    mention: null,
+    comments: null,
+    timeline: [],
+    latestSendLaterAt: null,
+    canSendLater: true,
+    ...over,
+  };
 }
 
-function toolNamed(tools: AgentToolDefinition[], name: string) {
-  const tool = tools.find((t) => t.name === name);
-  if (!tool) throw new Error(`No tool named ${name}`);
-  return tool;
-}
+const author = {
+  handle: 'omar.h',
+  displayName: 'Omar Hassan',
+  avatarUrl: null,
+};
 
-/** Unwrap a reference payload, failing loudly if the tool did not produce one. */
-function payload(result: unknown): ReferencePayload {
-  if (!isReferencePayload(result)) {
-    throw new Error(
-      `Expected a reference payload, got ${JSON.stringify(result)}`,
-    );
-  }
-  return result;
+interface Call {
+  method: string;
+  args: unknown[];
 }
 
 /**
- * One conversation as list_conversations reports it.
- *
- * Declared rather than reached for via `any` so the assertions below are
- * type-checked: a renamed field fails to compile instead of quietly asserting
- * `undefined === undefined`.
+ * Stand-ins for the three conversation services that record how they were
+ * called. Like the real ones they refuse another workspace's data, so a tool
+ * that leaked a caller-supplied workspace would get nothing back.
  */
-interface ListedConversation {
-  id: string;
-  type: 'comment' | 'dm';
-  status: string;
-  lastMessage: string;
-  lastMessageFromMe?: boolean;
-  lastMessageAt: string;
-  suggestedAction?: string;
-  cannotReply?: string;
+function fakes(
+  data: {
+    counts?: InboxCounts;
+    rows?: ConversationRow[];
+    detail?: ConversationDetail;
+    legacy?: Record<string, string>; // threadKey -> uuid
+  } = {},
+  calls: Call[] = [],
+) {
+  const guard = (ws: string) => {
+    if (ws !== CTX.workspaceId) throw new NotFoundException('Not found');
+  };
+  return {
+    presenter: {
+      counts: (ws: string) => {
+        calls.push({ method: 'counts', args: [ws] });
+        guard(ws);
+        return Promise.resolve(
+          data.counts ?? {
+            toReply: 4,
+            later: 2,
+            scheduled: 1,
+            answeredToday: {
+              total: 7,
+              by: [
+                { id: 'u9', name: 'Dana Lee', avatarUrl: null },
+                { id: 'u8', name: 'Sam Ortiz', avatarUrl: null },
+              ],
+            },
+          },
+        );
+      },
+    },
+    list: {
+      list: (ws: string, userId: string, q: Record<string, unknown>) => {
+        calls.push({ method: 'list', args: [ws, userId, q] });
+        guard(ws);
+        const rows = data.rows ?? [];
+        return Promise.resolve({
+          rows,
+          nextCursor: null,
+          total: rows.length,
+        });
+      },
+    },
+    detail: {
+      getDetail: (ws: string, id: string, viewer: string) => {
+        calls.push({ method: 'getDetail', args: [ws, id, viewer] });
+        guard(ws);
+        if (id !== UUID_A || !data.detail) {
+          throw new NotFoundException('Conversation not found');
+        }
+        return Promise.resolve(data.detail);
+      },
+      getDetailByKey: (ws: string, key: string, viewer: string) => {
+        calls.push({ method: 'getDetailByKey', args: [ws, key, viewer] });
+        guard(ws);
+        const id = data.legacy?.[key];
+        if (!id) throw new NotFoundException('Conversation not found');
+        return Promise.resolve(data.detail);
+      },
+    },
+  };
 }
 
-interface ListData {
-  total: number;
-  showing: number;
-  needsAttentionCount: number;
-  handledCount: number;
-  needsAttention: ListedConversation[];
-  handled: ListedConversation[];
-  filteredByStatus?: string;
-  filteredByType?: string;
+function tool(
+  name: string,
+  data: Parameters<typeof fakes>[0] = {},
+  calls: Call[] = [],
+): AgentToolDefinition {
+  const f = fakes(data, calls);
+  const found = createInboxTools({
+    presenter: f.presenter as never,
+    list: f.list as never,
+    detail: f.detail as never,
+  }).find((t) => t.name === name);
+  if (!found) throw new Error(`no tool ${name}`);
+  return found;
 }
 
-interface DetailData {
-  conversation: ListedConversation;
-  comments?: Array<{ from: string; depth: number; fromMe: boolean }>;
-  messages?: Array<{ from: string; text: string }>;
-}
+/** The tool's own data, unwrapped from its reference envelope. */
+const unwrap = (result: unknown): unknown => {
+  expect(isReferencePayload(result)).toBe(true);
+  return (result as ReferencePayload).data;
+};
 
-function dataOf<T>(result: unknown): T {
-  return payload(result).data as T;
-}
+const refsOf = (result: unknown): ReferencePayload['refs'] => {
+  expect(isReferencePayload(result)).toBe(true);
+  return (result as ReferencePayload).refs;
+};
 
-/** Both groups together — most assertions care about the row, not its group. */
-function allRows(data: ListData): ListedConversation[] {
-  return [...data.needsAttention, ...data.handled];
-}
-
-describe('list_conversations', () => {
-  it('merges comments and DMs into one list', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        comments: [commentThread()],
-        dms: [dmConversation()],
-      }),
-    );
-
-    const data = dataOf<ListData>(
-      await toolNamed(tools, 'list_conversations').handler({}, CTX),
-    );
-
-    expect(data.total).toBe(2);
-    expect(
-      allRows(data)
-        .map((c) => c.id)
-        .sort(),
-    ).toEqual(['1:post-a', '2:conv-b']);
+describe('get_inbox_summary', () => {
+  it('reports every number as a conversation count under a unit-named field', async () => {
+    const out = (await tool('get_inbox_summary').handler({}, CTX)) as Record<
+      string,
+      unknown
+    >;
+    expect(out).toEqual({
+      toReplyConversations: 4,
+      laterConversations: 2,
+      scheduledConversations: 1,
+      answeredToday: { total: 7, by: ['Dana Lee', 'Sam Ortiz'] },
+    });
   });
 
-  // Sorting is only observable through what the limit KEEPS: the two lists are
-  // split by status afterwards, so asserting their order proves nothing. Two
-  // comments and one newer DM, limited to 2, must keep the DM — which happens
-  // only if the merged list was ordered before it was trimmed.
-  it('keeps the newest across both sources when trimming to the limit', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        comments: [
-          commentThread({
-            id: '1:old',
-            lastCommentAt: '2026-08-01T00:00:00.000Z',
-          }),
-          commentThread({
-            id: '1:older',
-            lastCommentAt: '2026-07-01T00:00:00.000Z',
-          }),
-        ],
-        dms: [
-          dmConversation({
-            id: '2:new',
-            lastMessageAt: '2026-08-27T00:00:00.000Z',
-          }),
-        ],
-      }),
-    );
-
-    const data = dataOf<ListData>(
-      await toolNamed(tools, 'list_conversations').handler({ limit: 2 }, CTX),
-    );
-
-    const kept = allRows(data).map((c) => c.id);
-    expect(kept).toContain('2:new');
-    expect(kept).not.toContain('1:older');
+  it('says in its description that the numbers are conversation counts', () => {
+    expect(tool('get_inbox_summary').description).toMatch(/CONVERSATION/);
   });
 
-  it('splits what needs a reply from what is handled', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        comments: [
-          commentThread({ id: '1:a', status: 'unread' }),
-          commentThread({ id: '1:b', status: 'done' }),
-          commentThread({ id: '1:c', status: 'replied' }),
-        ],
-        dms: [dmConversation({ id: '2:d', status: 'needs_reply' })],
-      }),
-    );
-
-    const data = dataOf<ListData>(
-      await toolNamed(tools, 'list_conversations').handler({}, CTX),
-    );
-
-    expect(data.needsAttentionCount).toBe(2);
-    expect(data.handledCount).toBe(2);
-    expect(data.needsAttention.map((c: { id: string }) => c.id).sort()).toEqual(
-      ['1:a', '2:d'],
-    );
-  });
-
-  it('carries a suggested action for the ones that are waiting', async () => {
-    const tools = createInboxTools(
-      fakeInbox({ comments: [commentThread({ status: 'unread' })] }),
-    );
-
-    const data = dataOf<ListData>(
-      await toolNamed(tools, 'list_conversations').handler({}, CTX),
-    );
-
-    expect(data.needsAttention[0].suggestedAction).toBe('read it and reply');
-  });
-
-  it('gives no suggested action to a handled conversation', async () => {
-    const tools = createInboxTools(
-      fakeInbox({ comments: [commentThread({ status: 'done' })] }),
-    );
-
-    const data = dataOf<ListData>(
-      await toolNamed(tools, 'list_conversations').handler({}, CTX),
-    );
-
-    expect(data.handled[0].suggestedAction).toBeUndefined();
-  });
-
-  // `replied` maps to no smart folder in the sidebar. Filtering by status
-  // rather than folder is what keeps it reachable through the agent.
-  it('can still find a replied conversation, which no smart folder holds', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        comments: [
-          commentThread({ id: '1:a', status: 'replied' }),
-          commentThread({ id: '1:b', status: 'done' }),
-        ],
-      }),
-    );
-
-    const data = dataOf<ListData>(
-      await toolNamed(tools, 'list_conversations').handler(
-        { status: 'replied' },
-        CTX,
-      ),
-    );
-
-    expect(data.showing).toBe(1);
-    expect(data.handled[0].id).toBe('1:a');
-  });
-
-  it('skips the DM query entirely when asked only for comments', async () => {
-    const calls: Recorded[] = [];
-    const tools = createInboxTools(
-      fakeInbox(
-        { comments: [commentThread()], dms: [dmConversation()] },
-        calls,
-      ),
-    );
-
-    const data = dataOf<ListData>(
-      await toolNamed(tools, 'list_conversations').handler(
-        { type: 'comment' },
-        CTX,
-      ),
-    );
-
-    expect(calls.some((c) => c.method === 'listDmConversations')).toBe(false);
-    expect(data.showing).toBe(1);
-    expect(data.filteredByType).toBe('comment');
-  });
-
-  it('skips the comment query when asked only for DMs', async () => {
-    const calls: Recorded[] = [];
-    const tools = createInboxTools(
-      fakeInbox(
-        { comments: [commentThread()], dms: [dmConversation()] },
-        calls,
-      ),
-    );
-
-    await toolNamed(tools, 'list_conversations').handler({ type: 'dm' }, CTX);
-
-    expect(calls.some((c) => c.method === 'listCommentThreads')).toBe(false);
-  });
-
-  it('emits one clickable reference per conversation', async () => {
-    const tools = createInboxTools(
-      fakeInbox({ comments: [commentThread()], dms: [dmConversation()] }),
-    );
-
-    const refs = payload(
-      await toolNamed(tools, 'list_conversations').handler({}, CTX),
-    ).refs;
-
-    expect(refs).toHaveLength(2);
-    // objectContaining, not an exact row: what the chip needs is asserted
-    // here, and the hover card's `details` has its own test below.
-    expect(refs).toContainEqual(
-      expect.objectContaining({
-        kind: 'conversation',
-        id: '1:post-a',
-        label: 'Sara Khan',
-        status: 'unread',
-        platform: 'instagram',
-      }),
-    );
-  });
-
-  /**
-   * A conversation chip names the person and says a reply is waiting — but
-   * not what it is waiting ON. The message itself is the thing the reader
-   * wants, so the card leads with it.
-   */
-  it('carries the last message on the hover card, attributed', async () => {
-    const tools = createInboxTools(
-      fakeInbox({ comments: [commentThread()], dms: [dmConversation()] }),
-    );
-    const refs = payload(
-      await toolNamed(tools, 'list_conversations').handler({}, CTX),
-    ).refs;
-
-    const sara = refs.find((r) => r.id === '1:post-a');
-    const labels = (sara?.details ?? []).map((d) => d.label);
-
-    // "They said" / "You said": whose last word it was changes what the
-    // preview means — waiting on us, or waiting on them.
-    expect(labels).toContain('They said');
-    expect(labels).toContain('Last message');
-  });
-
-  // The chip shows a person, and a row whose sender has no display name would
-  // otherwise render as an empty link.
-  it('falls back to the handle when a sender has no display name', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        comments: [
-          commentThread({
-            latestCommenter: { handle: 'sara_k', displayName: '' },
-          }),
-        ],
-      }),
-    );
-
-    const refs = payload(
-      await toolNamed(tools, 'list_conversations').handler({}, CTX),
-    ).refs;
-
-    expect(refs[0].label).toBe('sara_k');
-  });
-
-  it('never leaves a chip label blank', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        comments: [
-          commentThread({
-            latestCommenter: { handle: '', displayName: '   ' },
-          }),
-        ],
-      }),
-    );
-
-    const refs = payload(
-      await toolNamed(tools, 'list_conversations').handler({}, CTX),
-    ).refs;
-
-    expect(refs[0].label).toBe('Unknown sender');
-  });
-
-  it('clamps the limit to the maximum', async () => {
-    const calls: Recorded[] = [];
-    const tools = createInboxTools(fakeInbox({}, calls));
-
-    await toolNamed(tools, 'list_conversations').handler({ limit: 999 }, CTX);
-
-    const options = calls[0].options as { limit: number };
-    expect(options.limit).toBe(50);
-  });
-
-  it('trims the merged list to the limit', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        comments: [
-          commentThread({ id: '1:a' }),
-          commentThread({ id: '1:b' }),
-          commentThread({ id: '1:c' }),
-        ],
-      }),
-    );
-
-    const data = dataOf<ListData>(
-      await toolNamed(tools, 'list_conversations').handler({ limit: 2 }, CTX),
-    );
-
-    expect(data.showing).toBe(2);
-    expect(data.total).toBe(3);
-  });
-
-  // A blank preview reads as "nothing was said", which is wrong for a photo.
-  it('describes a non-text message by its kind instead of showing nothing', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        dms: [
-          dmConversation({ lastMessageText: '', lastMessageKind: 'image' }),
-        ],
-      }),
-    );
-
-    const data = dataOf<ListData>(
-      await toolNamed(tools, 'list_conversations').handler({}, CTX),
-    );
-
-    expect(allRows(data)[0].lastMessage).toBe('[image]');
-  });
-
-  it('says when content was wiped by a retention policy', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        comments: [
-          commentThread({ lastCommentText: '', contentRedacted: true }),
-        ],
-      }),
-    );
-
-    const data = dataOf<ListData>(
-      await toolNamed(tools, 'list_conversations').handler({}, CTX),
-    );
-
-    expect(allRows(data)[0].lastMessage).toBe(
-      '[removed by platform retention policy]',
-    );
-  });
-
-  /**
-   * Two DM rows for the same person are indistinguishable unless the answer
-   * can say something about each. The preview is that something — but only if
-   * the agent knows WHOSE words it is quoting. Both of these conversations end
-   * with the user's own outbound message, so presenting that text as what the
-   * other person said would be wrong twice over.
-   */
-  it('says whose words the preview is', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        dms: [
-          dmConversation({
-            id: '2:mine',
-            lastMessageText: 'New maestro message',
-            lastMessageFromMe: true,
-          }),
-          dmConversation({
-            id: '2:theirs',
-            lastMessageText: 'Is the discount still valid?',
-            lastMessageFromMe: false,
-          }),
-        ],
-      }),
-    );
-
-    const data = dataOf<ListData>(
-      await toolNamed(tools, 'list_conversations').handler({}, CTX),
-    );
-
-    const rows = allRows(data);
-    expect(rows.find((r) => r.id === '2:mine')?.lastMessageFromMe).toBe(true);
-    expect(rows.find((r) => r.id === '2:theirs')?.lastMessageFromMe).toBe(
-      false,
-    );
-  });
-
-  // Whether the user CAN reply changes what the agent should offer to do.
-  it('surfaces a closed reply window', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        dms: [
-          dmConversation({
-            replyWindow: { canReply: false, reason: '24-hour window expired' },
-          }),
-        ],
-      }),
-    );
-
-    const data = dataOf<ListData>(
-      await toolNamed(tools, 'list_conversations').handler({}, CTX),
-    );
-
-    expect(allRows(data)[0].cannotReply).toBe('24-hour window expired');
-  });
-
-  it('says nothing about the reply window when replying is allowed', async () => {
-    const tools = createInboxTools(
-      fakeInbox({ dms: [dmConversation({ replyWindow: { canReply: true } })] }),
-    );
-
-    const data = dataOf<ListData>(
-      await toolNamed(tools, 'list_conversations').handler({}, CTX),
-    );
-
-    expect(allRows(data)[0].cannotReply).toBeUndefined();
-  });
-
-  // The tenant boundary: the workspace comes from ctx, never from arguments.
-  it('reads the caller workspace, ignoring any workspaceId argument', async () => {
-    const calls: Recorded[] = [];
-    const tools = createInboxTools(fakeInbox({}, calls));
-
-    await toolNamed(tools, 'list_conversations').handler(
-      { workspaceId: 'ws-someone-else' },
+  it('reads the caller workspace, ignoring a hostile workspaceId argument', async () => {
+    const calls: Call[] = [];
+    await tool('get_inbox_summary', {}, calls).handler(
+      { workspaceId: FOREIGN },
       CTX,
     );
-
-    expect(calls.every((c) => c.workspaceId === 'ws-1')).toBe(true);
-  });
-
-  it('passes the caller userId, ignoring any userId argument', async () => {
-    const calls: Recorded[] = [];
-    const tools = createInboxTools(fakeInbox({}, calls));
-
-    await toolNamed(tools, 'list_conversations').handler(
-      { userId: 'u-someone-else' },
-      CTX,
-    );
-
-    expect(calls.every((c) => c.userId === 'u1')).toBe(true);
+    expect(calls[0].args[0]).toBe(CTX.workspaceId);
   });
 });
 
-describe('get_inbox_summary', () => {
-  it('names the count that needs a person, not just raw folders', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        counts: {
-          perChannel: [{ channelId: 1, comments: 2, dms: 1 }],
-          smartFolders: { all: 12, unread: 3, needs_reply: 2, done: 7 },
-          total: 3,
-        },
-      }),
-    );
-
-    const result = (await toolNamed(tools, 'get_inbox_summary').handler(
-      {},
-      CTX,
-    )) as Record<string, unknown>;
-
-    expect(result.waitingMessages).toBe(5);
-    expect(result.unreadMessages).toBe(3);
-    expect(result.needsReplyMessages).toBe(2);
-    expect(result.totalMessages).toBe(12);
+describe('list_conversations', () => {
+  it('defaults to the to_reply view, all types, limit 15', async () => {
+    const calls: Call[] = [];
+    await tool('list_conversations', { rows: [row()] }, calls).handler({}, CTX);
+    expect(calls[0].args).toEqual([
+      'ws-1',
+      'u1',
+      expect.objectContaining({ view: 'to_reply', type: 'all', limit: 15 }),
+    ]);
   });
 
-  /**
-   * The bug this locks down: getCounts counts individual comments and DMs,
-   * but the Inbox screen groups them into threads. Reporting the message
-   * count as a conversation count made the agent claim "19 conversations"
-   * while the user was looking at a list of 5 — the assistant contradicting
-   * the product. Both numbers now ship, each named for what it counts.
-   */
-  it('separates the message count from the conversation count', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        counts: {
-          perChannel: [],
-          // 19 messages…
-          smartFolders: { all: 19, unread: 0, needs_reply: 19, done: 0 },
-          total: 19,
-        },
-        // …grouped into 3 comment threads + 2 DM conversations.
-        comments: [
-          commentThread({ id: '1:a' }),
-          commentThread({ id: '1:b' }),
-          commentThread({ id: '1:c' }),
+  it('passes view, type, channel and limit through', async () => {
+    const calls: Call[] = [];
+    await tool('list_conversations', {}, calls).handler(
+      { view: 'later', type: 'comment', channelId: '7', limit: 5 },
+      CTX,
+    );
+    expect(calls[0].args[2]).toEqual(
+      expect.objectContaining({
+        view: 'later',
+        type: 'comment',
+        channelIds: [7],
+        limit: 5,
+      }),
+    );
+  });
+
+  it('clamps the limit to 1..50 and falls back on invalid enums', async () => {
+    const calls: Call[] = [];
+    const t = tool('list_conversations', {}, calls);
+    await t.handler({ limit: 500, view: 'bogus', type: 'dm' }, CTX);
+    await t.handler({ limit: -3 }, CTX);
+    expect(calls[0].args[2]).toEqual(
+      expect.objectContaining({ limit: 50, view: 'to_reply', type: 'all' }),
+    );
+    expect(calls[1].args[2]).toEqual(expect.objectContaining({ limit: 1 }));
+  });
+
+  it('returns conversation uuids, statuses, assignee name and reply window', async () => {
+    const out = unwrap(
+      await tool('list_conversations', {
+        rows: [
+          row(),
+          row({
+            id: UUID_B,
+            status: 'later',
+            assignee: null,
+            replyWindow: { closesAt: '2026-08-28T00:00:00Z', state: 'closing' },
+          }),
         ],
-        dms: [dmConversation({ id: '2:d' }), dmConversation({ id: '2:e' })],
+      }).handler({}, CTX),
+    ) as {
+      conversations: Array<Record<string, unknown>>;
+    };
+    expect(out.conversations[0]).toEqual(
+      expect.objectContaining({
+        id: UUID_A,
+        kind: 'dm',
+        status: 'to_reply',
+        title: 'Omar Hassan',
+        snippet: 'Is the discount still valid?',
+        assignee: 'Dana Lee',
+        lastMessageAt: '2026-08-27T12:00:00.000Z',
+        replyWindow: expect.objectContaining({ state: 'open' }) as unknown,
       }),
     );
-
-    const result = (await toolNamed(tools, 'get_inbox_summary').handler(
-      {},
-      CTX,
-    )) as Record<string, unknown>;
-
-    expect(result.needsReplyMessages).toBe(19);
-    expect(result.conversationCount).toBe(5);
-    expect(result.waitingConversationCount).toBe(5);
+    expect(out.conversations[1]).toEqual(
+      expect.objectContaining({ id: UUID_B, assignee: null }),
+    );
   });
 
-  it('counts only the conversations that are actually waiting', async () => {
-    const tools = createInboxTools(
-      fakeInbox({
-        comments: [
-          commentThread({ id: '1:a', status: 'unread' }),
-          commentThread({ id: '1:b', status: 'done' }),
-        ],
-        dms: [dmConversation({ id: '2:c', status: 'replied' })],
-      }),
+  it('emits references keyed by the uuid with the conversation status', async () => {
+    const refs = refsOf(
+      await tool('list_conversations', {
+        rows: [row(), row({ id: UUID_B, status: 'done' })],
+      }).handler({}, CTX),
     );
-
-    const result = (await toolNamed(tools, 'get_inbox_summary').handler(
-      {},
-      CTX,
-    )) as Record<string, unknown>;
-
-    expect(result.conversationCount).toBe(3);
-    expect(result.waitingConversationCount).toBe(1);
+    expect(refs.map((r) => [r.kind, r.id, r.status])).toEqual([
+      ['conversation', UUID_A, 'to_reply'],
+      ['conversation', UUID_B, 'done'],
+    ]);
   });
 
-  it('reads the caller workspace, ignoring any workspaceId argument', async () => {
-    const calls: Recorded[] = [];
-    const tools = createInboxTools(fakeInbox({}, calls));
-
-    await toolNamed(tools, 'get_inbox_summary').handler(
-      { workspaceId: 'ws-someone-else' },
+  it('reads the caller workspace and user, ignoring hostile arguments', async () => {
+    const calls: Call[] = [];
+    await tool('list_conversations', {}, calls).handler(
+      { workspaceId: FOREIGN, userId: 'attacker' },
       CTX,
     );
-
-    expect(calls[0].workspaceId).toBe('ws-1');
+    expect(calls[0].args.slice(0, 2)).toEqual(['ws-1', 'u1']);
   });
 });
 
 describe('get_conversation', () => {
-  const commentDetail: CommentThreadDetail = {
-    ...commentThread(),
-    rootComments: [
+  const dmDetail = detail({
+    timeline: [
       {
-        id: 'c1',
-        parentId: null,
-        author: { handle: 'sara_k', displayName: 'Sara Khan' },
-        text: 'Do you ship to Canada?',
-        contentRedacted: false,
-        timestamp: '2026-08-27T10:00:00.000Z',
-        fromMe: false,
-        platformItemId: 'pi-1',
-        status: 'unread',
-        likeCount: 0,
-        isHidden: false,
-        replies: [
-          {
-            id: 'c2',
-            parentId: 'c1',
-            author: { handle: 'brand', displayName: 'Our Brand' },
-            text: 'Yes we do!',
-            contentRedacted: false,
-            timestamp: '2026-08-27T10:05:00.000Z',
-            fromMe: true,
-            platformItemId: 'pi-2',
-            status: 'replied',
-            likeCount: 0,
-            isHidden: false,
-            replies: [],
-          },
-        ],
+        kind: 'message',
+        id: 'm1',
+        from: 'them',
+        author,
+        text: 'Hello',
+        at: '2026-08-27T10:00:00Z',
+        attachments: [],
+        sentBy: null,
+        canDelete: false,
+      },
+      {
+        kind: 'note',
+        id: 'n1',
+        author: { id: 'u9', name: 'Dana Lee', avatarUrl: null },
+        body: 'INTERNAL SECRET',
+        mentions: [],
+        at: '2026-08-27T10:30:00Z',
+        canDelete: true,
+      },
+      {
+        kind: 'message',
+        id: 'm2',
+        from: 'me',
+        author: { handle: 'shop', displayName: 'Shop', avatarUrl: null },
+        text: 'Hi Omar',
+        at: '2026-08-27T11:00:00Z',
+        attachments: [],
+        sentBy: null,
+        canDelete: true,
       },
     ],
-  };
-
-  it('flattens a nested comment tree into reading order', async () => {
-    const tools = createInboxTools(fakeInbox({ commentDetail }));
-
-    const data = dataOf<DetailData>(
-      await toolNamed(tools, 'get_conversation').handler(
-        { conversationId: '1:post-a', type: 'comment' },
-        CTX,
-      ),
-    );
-
-    expect(data.comments.map((c: { from: string }) => c.from)).toEqual([
-      'Sara Khan',
-      'Our Brand',
-    ]);
-    expect(data.comments[1].depth).toBe(1);
-    expect(data.comments[1].fromMe).toBe(true);
   });
 
-  it('returns the whole DM conversation with the newest messages', async () => {
-    const dmDetail: DmThreadDetail = {
-      ...dmConversation(),
-      messages: [
-        {
-          id: 'm1',
-          author: { handle: 'omar.h', displayName: 'Omar Hassan' },
-          text: 'Is the discount still valid?',
-          timestamp: '2026-08-27T12:00:00.000Z',
-          fromMe: false,
-          platformItemId: 'pi-1',
-          status: 'needs_reply',
-        },
-      ],
-    };
-    const tools = createInboxTools(fakeInbox({ dmDetail }));
-
-    const data = dataOf<DetailData>(
-      await toolNamed(tools, 'get_conversation').handler(
-        { conversationId: '2:conv-b', type: 'dm' },
+  it('reads a uuid through getDetail with the caller tenant', async () => {
+    const calls: Call[] = [];
+    const out = unwrap(
+      await tool('get_conversation', { detail: dmDetail }, calls).handler(
+        { conversationId: UUID_A },
         CTX,
       ),
-    );
+    ) as {
+      messages: Array<{ text: string; fromMe: boolean }>;
+    };
+    expect(calls[0]).toEqual({
+      method: 'getDetail',
+      args: ['ws-1', UUID_A, 'u1'],
+    });
+    expect(out.messages.map((m) => [m.text, m.fromMe])).toEqual([
+      ['Hello', false],
+      ['Hi Omar', true],
+    ]);
+  });
 
-    expect(data.messages).toHaveLength(1);
-    expect(data.messages[0].from).toBe('Omar Hassan');
-    expect(data.conversation.status).toBe('needs_reply');
+  it('never returns internal notes', async () => {
+    const out = await tool('get_conversation', { detail: dmDetail }).handler(
+      { conversationId: UUID_A },
+      CTX,
+    );
+    expect(JSON.stringify(out)).not.toContain('INTERNAL SECRET');
+  });
+
+  it('resolves a legacy thread key to the uuid before reading', async () => {
+    const calls: Call[] = [];
+    const out = await tool(
+      'get_conversation',
+      { detail: dmDetail, legacy: { '12:abc': UUID_A } },
+      calls,
+    ).handler({ conversationId: '12:abc' }, CTX);
+    expect(calls[0]).toEqual({
+      method: 'getDetailByKey',
+      args: ['ws-1', '12:abc', 'u1'],
+    });
+    expect(refsOf(out)[0].id).toBe(UUID_A);
+  });
+
+  it('keeps at most the 30 newest messages, oldest first', async () => {
+    const many = detail({
+      timeline: Array.from({ length: 40 }, (_, i) => ({
+        kind: 'message' as const,
+        id: `m${i}`,
+        from: 'them' as const,
+        author,
+        text: `msg ${i}`,
+        at: '2026-08-27T10:00:00Z',
+        attachments: [],
+        sentBy: null,
+        canDelete: false,
+      })),
+    });
+    const out = unwrap(
+      await tool('get_conversation', { detail: many }).handler(
+        { conversationId: UUID_A },
+        CTX,
+      ),
+    ) as { messages: Array<{ text: string }>; olderMessagesNotShown: number };
+    expect(out.messages).toHaveLength(30);
+    expect(out.messages[0].text).toBe('msg 10');
+    expect(out.messages[29].text).toBe('msg 39');
+    expect(out.olderMessagesNotShown).toBe(10);
+  });
+
+  it('flattens a comment tree and returns the post caption', async () => {
+    const node = (id: string, text: string, replies: never[] = []) =>
+      ({
+        id,
+        parentId: null,
+        author,
+        text,
+        at: '2026-08-27T10:00:00Z',
+        fromMe: false,
+        replies,
+        contentRedacted: false,
+      }) as never;
+    const d = detail({
+      row: row({ kind: 'comment_thread' }),
+      post: { caption: 'Autumn drop' } as never,
+      comments: [node('c1', 'root', [node('c2', 'child')] as never[])],
+    });
+    const out = unwrap(
+      await tool('get_conversation', { detail: d }).handler(
+        { conversationId: UUID_A },
+        CTX,
+      ),
+    ) as { messages: Array<{ text: string; depth: number }>; post: unknown };
+    expect(out.messages.map((m) => [m.text, m.depth])).toEqual([
+      ['root', 0],
+      ['child', 1],
+    ]);
+    expect(out.post).toEqual({ caption: 'Autumn drop' });
   });
 
   it('requires a conversation id', async () => {
-    const tools = createInboxTools(fakeInbox({}));
-
-    const result = (await toolNamed(tools, 'get_conversation').handler(
-      { conversationId: '   ', type: 'comment' },
-      CTX,
-    )) as { error?: string };
-
-    expect(result.error).toBe('A conversation id is required.');
+    const out = await tool('get_conversation').handler({}, CTX);
+    expect(out).toEqual({ error: 'A conversation id is required.' });
   });
 
-  it('reports an unknown conversation without leaking why', async () => {
-    const tools = createInboxTools(fakeInbox({ commentDetail }));
-
-    const result = (await toolNamed(tools, 'get_conversation').handler(
-      { conversationId: '1:nope', type: 'comment' },
-      CTX,
-    )) as { error?: string };
-
-    expect(result.error).toBe(
-      'No conversation with that id in this workspace.',
-    );
+  it('reports another workspace or unknown id without saying which', async () => {
+    const miss = { error: 'No conversation with that id in this workspace.' };
+    expect(
+      await tool('get_conversation', { detail: dmDetail }).handler(
+        { conversationId: FOREIGN },
+        CTX,
+      ),
+    ).toEqual(miss);
+    expect(
+      await tool('get_conversation', { detail: dmDetail }).handler(
+        { conversationId: 'nope:key' },
+        CTX,
+      ),
+    ).toEqual(miss);
   });
 
-  // A conversation in another workspace must be indistinguishable from one that
-  // never existed — the service throws, and the tool must not say more.
-  it('cannot read a conversation from another workspace', async () => {
-    const tools = createInboxTools(fakeInbox({ commentDetail }));
-
-    const result = (await toolNamed(tools, 'get_conversation').handler(
-      { conversationId: '1:post-a', type: 'comment' },
-      { userId: 'u1', workspaceId: 'ws-other' },
-    )) as { error?: string };
-
-    expect(result.error).toBe(
-      'No conversation with that id in this workspace.',
-    );
-  });
-
-  it('reads the caller workspace, ignoring any workspaceId argument', async () => {
-    const calls: Recorded[] = [];
-    const tools = createInboxTools(fakeInbox({ commentDetail }, calls));
-
-    await toolNamed(tools, 'get_conversation').handler(
-      {
-        conversationId: '1:post-a',
-        type: 'comment',
-        workspaceId: 'ws-someone-else',
-      },
+  it('reads the caller workspace, ignoring a hostile workspaceId argument', async () => {
+    const calls: Call[] = [];
+    await tool('get_conversation', { detail: dmDetail }, calls).handler(
+      { conversationId: UUID_A, workspaceId: FOREIGN, userId: 'attacker' },
       CTX,
     );
-
-    expect(calls[0].workspaceId).toBe('ws-1');
+    expect(calls[0].args[0]).toBe('ws-1');
+    expect(calls[0].args[2]).toBe('u1');
   });
 });
