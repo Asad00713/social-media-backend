@@ -285,7 +285,12 @@ Provide only the translated content.`,
   suggestReply: (
     platform: string,
     messages: { author: 'me' | 'customer'; text: string }[],
-    instruction: 'suggest' | 'rephrase' | 'shorten' | 'friendly',
+    instruction:
+      | 'suggest'
+      | 'rephrase'
+      | 'shorten'
+      | 'friendly'
+      | 'translate_en',
     draft?: string,
   ) => {
     const transcript = messages
@@ -299,7 +304,9 @@ Provide only the translated content.`,
           ? `Here is my current draft reply:\n${draft ?? ''}\n\nRewrite it to be clearer and better, keeping the same meaning.`
           : instruction === 'shorten'
             ? `Here is my current draft reply:\n${draft ?? ''}\n\nRewrite it to be shorter and punchier, keeping the key point.`
-            : `Here is my current draft reply:\n${draft ?? ''}\n\nRewrite it to be warmer and friendlier, keeping the meaning.`;
+            : instruction === 'translate_en'
+              ? `Here is my current draft reply:\n${draft ?? ''}\n\nTranslate it into natural English, keeping the meaning and tone. If it is already English, return it unchanged.`
+              : `Here is my current draft reply:\n${draft ?? ''}\n\nRewrite it to be warmer and friendlier, keeping the meaning.`;
 
     return `Platform: ${platform}
 
@@ -308,6 +315,21 @@ ${transcript}
 
 ${task}`;
   },
+};
+
+export const QUICK_REPLIES_PROMPT = (
+  platform: string,
+  messages: { author: 'me' | 'customer'; text: string }[],
+) => {
+  const transcript = messages
+    .map((m) => `${m.author === 'me' ? 'me' : 'customer'}: ${m.text}`)
+    .join('\n');
+  return `Platform: ${platform}
+
+Conversation so far:
+${transcript}
+
+Write exactly 3 different short replies from me to the latest customer message. Each reply must be at most 60 characters. Output only a JSON array of exactly 3 strings, for example ["Thanks!","We will DM you","Glad you like it"].`;
 };
 
 // Tone options for users to select
