@@ -90,6 +90,32 @@ export class YouTubeService {
   }
 
   /**
+   * Delete someone else's comment from our video. YouTube has no delete for
+   * other people's comments: `rejected` removes it from the video and cannot
+   * be undone (owner only).
+   *
+   * Endpoint: POST /youtube/v3/comments/setModerationStatus?id=..&moderationStatus=rejected
+   * Requires scope: youtube.force-ssl
+   * https://developers.google.com/youtube/v3/docs/comments/setModerationStatus
+   */
+  async rejectComment(accessToken: string, commentId: string): Promise<void> {
+    await this.reserveQuota(50, 'inbox', 'comments.setModerationStatus');
+    const url = new URL(`${this.apiBaseUrl}/comments/setModerationStatus`);
+    url.searchParams.set('id', commentId);
+    url.searchParams.set('moderationStatus', 'rejected');
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    // 204 No Content on success.
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`YouTube rejectComment failed: ${err}`);
+      throw new Error(`YouTube reject failed: ${res.status} ${err}`);
+    }
+  }
+
+  /**
    * Get the authenticated user's YouTube channel
    */
   async getCurrentChannel(accessToken: string): Promise<YouTubeChannel> {

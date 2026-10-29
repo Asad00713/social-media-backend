@@ -178,6 +178,7 @@ function build() {
     resync as never,
     { get: jest.fn() } as never,
     notify as never,
+    {} as never, // SendLockService: unused on this path
   );
   return { service, sync, realtime, emitter, resync, notify };
 }

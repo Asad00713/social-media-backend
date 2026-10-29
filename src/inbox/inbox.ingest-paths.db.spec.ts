@@ -49,6 +49,7 @@ function buildInbox(db: DbType) {
     { enqueue: jest.fn(), syncOrEnqueue: jest.fn() } as never,
     { get: jest.fn() } as never,
     { newInbound: jest.fn() } as never,
+    {} as never, // SendLockService: unused on this path
   );
   return { inbox, rt };
 }

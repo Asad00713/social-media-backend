@@ -85,6 +85,61 @@ export class FacebookInboxAdapter implements PlatformInboxAdapter {
     };
   }
 
+  async likeComment(
+    channel: ResolvedChannel,
+    item: { platformItemId: string },
+    liked: boolean,
+  ): Promise<{ likeRef?: string | null }> {
+    await this.facebook.setCommentLike(
+      channel.accessToken,
+      item.platformItemId,
+      liked,
+    );
+    return {};
+  }
+
+  async hideComment(
+    channel: ResolvedChannel,
+    platformItemId: string,
+    hidden: boolean,
+  ): Promise<void> {
+    await this.facebook.setCommentHidden(
+      channel.accessToken,
+      platformItemId,
+      hidden,
+    );
+  }
+
+  // Someone else's comment on the Page's post: same call as deleting our own.
+  async moderateDelete(
+    channel: ResolvedChannel,
+    platformItemId: string,
+  ): Promise<void> {
+    await this.facebook.deleteComment(channel.accessToken, platformItemId);
+  }
+
+  async sendPrivateReply(
+    channel: ResolvedChannel,
+    platformCommentId: string,
+    text: string,
+  ): Promise<{
+    recipientPlatformId: string;
+    platformItemId: string;
+    platformCreatedAt: Date;
+  }> {
+    const sent = await this.facebook.sendPrivateReply(
+      channel.platformAccountId,
+      channel.accessToken,
+      platformCommentId,
+      text,
+    );
+    return {
+      recipientPlatformId: sent.recipientId,
+      platformItemId: sent.messageId,
+      platformCreatedAt: new Date(),
+    };
+  }
+
   // Phase 2.3 — delete a comment authored by the page.
   async deleteComment(
     channel: ResolvedChannel,

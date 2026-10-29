@@ -8,10 +8,11 @@ import {
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { and, desc, eq, gte, inArray, lte } from 'drizzle-orm';
+import { and, eq, gte, inArray, lte } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
   scheduledInboxMessages,
+  type ScheduledAttachment,
   type ScheduledInboxMessage,
   type ScheduledInboxStatus,
   type ScheduledInboxType,
@@ -21,11 +22,20 @@ import {
   type SupportedPlatform,
 } from '../../drizzle/schema/channels.schema';
 import { inboxItems } from '../../drizzle/schema/inbox.schema';
+import {
+  inboxConversations,
+  type InboxConversationKind,
+} from '../../drizzle/schema/inbox-conversations.schema';
+import { users } from '../../drizzle/schema/users.schema';
 import { workspace } from '../../drizzle/schema/workspace.schema';
 import { workspaceInvitation } from '../../drizzle/schema/workspace-invitation.schema';
 import { QUEUES } from '../../queue/queue.module';
 import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
 import { CalendarPushSyncService } from '../../calendar-sync/services/calendar-push-sync.service';
+import { InboxRealtimeService } from '../conversations/services/inbox-realtime.service';
+import { scheduledEntryOf } from '../conversations/lib/timeline-entry';
+import type { Attachment, UserRef } from '../conversations/dto/contract';
+import type { DmAttachmentDto } from '../dto/send-dm.dto';
 import type { CreateScheduledMessageDto } from '../dto/create-scheduled-message.dto';
 import type { UpdateScheduledMessageDto } from '../dto/update-scheduled-message.dto';
 import type { ListScheduledMessagesDto } from '../dto/list-scheduled-messages.dto';
@@ -57,6 +67,36 @@ export interface ScheduledMessageDto {
   platform?: SupportedPlatform;
 }
 
+/**
+ * The scheduled-message shape every route returns. A permanent superset of
+ * `ScheduledMessageDto`: the Planner keeps reading the old fields, the new
+ * Inbox reads the new ones.
+ */
+export interface ScheduledDto extends ScheduledMessageDto {
+  /** The inbox_conversations row; `conversationId` stays the platform id. */
+  inboxConversationId: string | null;
+  sendAt: string;
+  by: UserRef | null;
+  attachments: Attachment[];
+  error: string | null;
+}
+
+export interface CancelResultDto {
+  ok: true;
+  undo: { restoreId: string };
+  /** The old body, kept until the old Inbox is removed (Task 25). */
+  success: true;
+}
+
+interface ConversationRef {
+  id: string;
+  kind: InboxConversationKind;
+  threadKey: string;
+  replyWindowClosesAt: Date | null;
+}
+
+const WINDOW_MARGIN_MS = 60_000;
+
 export interface ScheduledCountsDto {
   total: number;
   perThread: Record<string, number>;
@@ -74,6 +114,7 @@ export class ScheduledMessagesService {
     // messages push to calendars, calendars write back to scheduled messages)
     // → forwardRef on both module imports. Mirrors PostService ↔ CalendarSync.
     private readonly calendarPushSync: CalendarPushSyncService,
+    private readonly realtime: InboxRealtimeService,
   ) {}
 
   /**
@@ -164,6 +205,245 @@ export class ScheduledMessagesService {
     };
   }
 
+  /** Every old field unchanged, plus the Inbox superset (`ScheduledDto`). */
+  toScheduledDto(
+    row: ScheduledInboxMessage,
+    by: UserRef | null,
+    platform?: SupportedPlatform,
+    inboxConversationId: string | null = row.inboxConversationId,
+  ): ScheduledDto {
+    return {
+      ...this.toDto(row, platform),
+      inboxConversationId,
+      sendAt: row.scheduledAt.toISOString(),
+      by,
+      attachments: row.attachments ?? [],
+      error: row.errorMessage,
+    };
+  }
+
+  /**
+   * Presents rows with their creators and conversations resolved in batches.
+   * A legacy row without `inbox_conversation_id` is matched by
+   * `(workspace_id, thread_key)`.
+   */
+  private async presentMany(
+    rows: ScheduledInboxMessage[],
+    platformByChannel?: Map<number, SupportedPlatform>,
+  ): Promise<ScheduledDto[]> {
+    if (rows.length === 0) return [];
+
+    const platforms =
+      platformByChannel ??
+      (await this.platformsOf(rows.map((r) => r.channelId)));
+
+    const userIds = Array.from(
+      new Set(rows.map((r) => r.createdByUserId).filter((u) => u !== null)),
+    );
+    const byUser = new Map<string, UserRef>();
+    if (userIds.length > 0) {
+      const found = await db
+        .select({
+          id: users.id,
+          name: users.name,
+          avatarUrl: users.avatarUrl,
+        })
+        .from(users)
+        .where(inArray(users.id, userIds));
+      for (const u of found) {
+        byUser.set(u.id, {
+          id: u.id,
+          name: u.name ?? '',
+          avatarUrl: u.avatarUrl,
+        });
+      }
+    }
+
+    const unlinked = rows.filter((r) => r.inboxConversationId === null);
+    const convByKey = new Map<string, string>();
+    if (unlinked.length > 0) {
+      const found = await db
+        .select({
+          id: inboxConversations.id,
+          workspaceId: inboxConversations.workspaceId,
+          threadKey: inboxConversations.threadKey,
+        })
+        .from(inboxConversations)
+        .where(
+          and(
+            inArray(
+              inboxConversations.workspaceId,
+              Array.from(new Set(unlinked.map((r) => r.workspaceId))),
+            ),
+            inArray(
+              inboxConversations.threadKey,
+              Array.from(new Set(unlinked.map((r) => r.threadKey))),
+            ),
+          ),
+        );
+      for (const c of found) {
+        convByKey.set(`${c.workspaceId}|${c.threadKey}`, c.id);
+      }
+    }
+
+    return rows.map((row) =>
+      this.toScheduledDto(
+        row,
+        row.createdByUserId ? (byUser.get(row.createdByUserId) ?? null) : null,
+        platforms.get(row.channelId),
+        row.inboxConversationId ??
+          convByKey.get(`${row.workspaceId}|${row.threadKey}`) ??
+          null,
+      ),
+    );
+  }
+
+  private async platformsOf(
+    channelIds: number[],
+  ): Promise<Map<number, SupportedPlatform>> {
+    const found = await db
+      .select({
+        id: socialMediaChannels.id,
+        platform: socialMediaChannels.platform,
+      })
+      .from(socialMediaChannels)
+      .where(inArray(socialMediaChannels.id, Array.from(new Set(channelIds))));
+    return new Map(found.map((c) => [c.id, c.platform as SupportedPlatform]));
+  }
+
+  private async presentOne(row: ScheduledInboxMessage): Promise<ScheduledDto> {
+    const [dto] = await this.presentMany([row]);
+    return dto;
+  }
+
+  /**
+   * Tells the Inbox views a scheduled reply changed. Called only after the
+   * database write has committed; a realtime failure never fails the operation.
+   * A reply that is no longer waiting (sent, cancelled) appends no entry.
+   */
+  private async announce(
+    row: ScheduledInboxMessage,
+    presented?: ScheduledDto,
+  ): Promise<void> {
+    try {
+      const dto = presented ?? (await this.presentOne(row));
+      const convId = dto.inboxConversationId;
+      if (convId) {
+        const waiting = row.status !== 'sent' && row.status !== 'cancelled';
+        this.realtime.timelineAppended(
+          row.workspaceId,
+          convId,
+          waiting ? scheduledEntryOf(row, dto.by) : null,
+          row.parentItemId,
+        );
+        this.realtime.conversationChanged(row.workspaceId, convId);
+      }
+      this.realtime.countsChanged(row.workspaceId);
+    } catch (error) {
+      this.logger.warn(
+        `Realtime announce failed for scheduled message ${row.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /** Presents the row, announces it, and returns the presented form. */
+  private async finish(row: ScheduledInboxMessage): Promise<ScheduledDto> {
+    const dto = await this.presentOne(row);
+    await this.announce(row, dto);
+    return dto;
+  }
+
+  private async findConversation(
+    workspaceId: string,
+    by: { id: string } | { threadKey: string },
+  ): Promise<ConversationRef | null> {
+    const [row] = await db
+      .select({
+        id: inboxConversations.id,
+        kind: inboxConversations.kind,
+        threadKey: inboxConversations.threadKey,
+        replyWindowClosesAt: inboxConversations.replyWindowClosesAt,
+      })
+      .from(inboxConversations)
+      .where(
+        and(
+          eq(inboxConversations.workspaceId, workspaceId),
+          'id' in by
+            ? eq(inboxConversations.id, by.id)
+            : eq(inboxConversations.threadKey, by.threadKey),
+        ),
+      )
+      .limit(1);
+    return row ?? null;
+  }
+
+  private sendTimePassed(): ConflictException {
+    return new ConflictException({
+      code: 'SEND_TIME_PASSED',
+      message: 'That time has passed',
+    });
+  }
+
+  /** Not in the future → 409 SEND_TIME_PASSED; under the 2 minute lead → 400. */
+  private assertSendTime(sendAt: Date): number {
+    const delay = sendAt.getTime() - Date.now();
+    if (delay <= 0) throw this.sendTimePassed();
+    if (delay < MIN_LEAD_MS) {
+      throw new BadRequestException(
+        'scheduledAt must be at least 2 minutes in the future',
+      );
+    }
+    return delay;
+  }
+
+  private assertInsideReplyWindow(
+    sendAt: Date,
+    conversation: ConversationRef | null,
+  ): void {
+    const closes = conversation?.replyWindowClosesAt;
+    if (closes && sendAt.getTime() > closes.getTime() - WINDOW_MARGIN_MS) {
+      throw new BadRequestException(
+        'That time is after the reply window closes',
+      );
+    }
+  }
+
+  private toStoredAttachments(
+    attachments: DmAttachmentDto[],
+  ): ScheduledAttachment[] {
+    return attachments.map((a) => ({
+      kind: a.kind,
+      url: a.url,
+      contentType: a.contentType,
+      thumbnailUrl: null,
+    }));
+  }
+
+  /**
+   * (Re)arms the delayed BullMQ job for a row. BullMQ ignores an add whose job
+   * id already exists in ANY state, so a prior job is removed first. The id
+   * must never contain ':' (BullMQ rejects it; that crashed prod once).
+   */
+  private async armJob(
+    id: string,
+    delay: number,
+    replace: boolean,
+  ): Promise<string> {
+    const jobId = this.jobIdFor(id);
+    if (replace) {
+      const prior = await this.queue.getJob(jobId);
+      if (prior) await prior.remove();
+    }
+    await this.queue.add(
+      'fire',
+      { scheduledId: id },
+      { jobId, delay: Math.max(0, delay), attempts: 3 },
+    );
+    return jobId;
+  }
+
   private toEventBase(row: ScheduledInboxMessage): ScheduledInboxEventBase {
     return {
       id: row.id,
@@ -197,7 +477,11 @@ export class ScheduledMessagesService {
    */
   private async resolveTarget(
     workspaceId: string,
-    dto: CreateScheduledMessageDto,
+    dto: {
+      type: ScheduledInboxType;
+      threadKey: string;
+      parentItemId?: string;
+    },
   ): Promise<{
     channelId: number;
     platform: SupportedPlatform;
@@ -291,36 +575,72 @@ export class ScheduledMessagesService {
     workspaceId: string,
     userId: string,
     dto: CreateScheduledMessageDto,
-  ): Promise<ScheduledMessageDto> {
+  ): Promise<ScheduledDto> {
     await this.assertWorkspaceAccess(workspaceId, userId);
 
-    const scheduledAt = new Date(dto.scheduledAt);
-    const delay = scheduledAt.getTime() - Date.now();
-    if (delay < MIN_LEAD_MS) {
-      throw new BadRequestException(
-        'scheduledAt must be at least 2 minutes in the future',
-      );
+    const sendAtRaw = dto.sendAt ?? dto.scheduledAt;
+    if (!sendAtRaw) {
+      throw new BadRequestException('sendAt is required');
     }
+    const scheduledAt = new Date(sendAtRaw);
+    const delay = this.assertSendTime(scheduledAt);
 
     const trimmedText = dto.text.trim();
     if (!this.stripHtml(trimmedText)) {
       throw new BadRequestException('Message text cannot be empty');
     }
 
-    const target = await this.resolveTarget(workspaceId, dto);
+    // Either shape ends in a type, a thread key and (when known) the
+    // conversation row; the validators guarantee exactly one shape.
+    let conversation: ConversationRef | null;
+    let type: ScheduledInboxType;
+    let threadKey: string;
+    if (dto.inboxConversationId) {
+      conversation = await this.findConversation(workspaceId, {
+        id: dto.inboxConversationId,
+      });
+      if (!conversation) throw new NotFoundException('Conversation not found');
+      type = conversation.kind === 'dm' ? 'dm' : 'comment';
+      threadKey = conversation.threadKey;
+    } else {
+      if (!dto.type || !dto.threadKey) {
+        throw new BadRequestException(
+          'Send inboxConversationId, or type together with threadKey',
+        );
+      }
+      type = dto.type;
+      threadKey = dto.threadKey;
+      conversation = await this.findConversation(workspaceId, { threadKey });
+    }
+
+    const attachments = dto.attachments ?? [];
+    if (attachments.length > 0 && type !== 'dm') {
+      throw new BadRequestException(
+        'Attachments can only be scheduled on messages',
+      );
+    }
+    this.assertInsideReplyWindow(scheduledAt, conversation);
+
+    const target = await this.resolveTarget(workspaceId, {
+      type,
+      threadKey,
+      parentItemId: dto.parentItemId,
+    });
 
     const [row] = await db
       .insert(scheduledInboxMessages)
       .values({
         workspaceId,
         channelId: target.channelId,
-        type: dto.type,
-        threadKey: dto.threadKey,
+        type,
+        threadKey,
         parentItemId: target.parentItemId,
         platformPostId: target.platformPostId,
         conversationId: target.conversationId,
+        inboxConversationId: conversation?.id ?? null,
         targetLabel: dto.targetLabel ?? null,
         text: trimmedText,
+        attachments: this.toStoredAttachments(attachments),
         scheduledAt,
         timezone: dto.timezone ?? null,
         status: 'pending',
@@ -328,12 +648,8 @@ export class ScheduledMessagesService {
       })
       .returning();
 
-    const jobId = this.jobIdFor(row.id);
-    await this.queue.add(
-      'fire',
-      { scheduledId: row.id },
-      { jobId, delay, attempts: 3 },
-    );
+    // The row is committed; only now does the job and any event go out.
+    const jobId = await this.armJob(row.id, delay, false);
 
     await db
       .update(scheduledInboxMessages)
@@ -341,7 +657,7 @@ export class ScheduledMessagesService {
       .where(eq(scheduledInboxMessages.id, row.id));
 
     this.logger.log(
-      `Scheduled ${dto.type} ${row.id} for ${scheduledAt.toISOString()} (delay=${delay}ms, channel=${target.channelId})`,
+      `Scheduled ${type} ${row.id} for ${scheduledAt.toISOString()} (delay=${delay}ms, channel=${target.channelId})`,
     );
 
     const refreshed = { ...row, queueJobId: jobId } as ScheduledInboxMessage;
@@ -354,7 +670,7 @@ export class ScheduledMessagesService {
     // Mirror the new scheduled message onto the workspace's connected calendars.
     this.syncCalendarForMessage(row.id);
 
-    return this.toDto(refreshed, target.platform);
+    return this.finish(refreshed);
   }
 
   async update(
@@ -362,7 +678,7 @@ export class ScheduledMessagesService {
     userId: string,
     id: string,
     dto: UpdateScheduledMessageDto,
-  ): Promise<ScheduledMessageDto> {
+  ): Promise<ScheduledDto> {
     await this.assertWorkspaceAccess(workspaceId, userId);
     return this.applyUpdate(workspaceId, id, dto);
   }
@@ -382,7 +698,7 @@ export class ScheduledMessagesService {
     workspaceId: string,
     id: string,
     dto: UpdateScheduledMessageDto,
-  ): Promise<ScheduledMessageDto> {
+  ): Promise<ScheduledDto> {
     return this.applyUpdate(workspaceId, id, dto);
   }
 
@@ -390,14 +706,8 @@ export class ScheduledMessagesService {
     workspaceId: string,
     id: string,
     dto: UpdateScheduledMessageDto,
-  ): Promise<ScheduledMessageDto> {
-    const existing = await db.query.scheduledInboxMessages.findFirst({
-      where: and(
-        eq(scheduledInboxMessages.id, id),
-        eq(scheduledInboxMessages.workspaceId, workspaceId),
-      ),
-    });
-    if (!existing) throw new NotFoundException('Scheduled message not found');
+  ): Promise<ScheduledDto> {
+    const existing = await this.loadOrThrow(workspaceId, id);
     if (existing.status !== 'pending') {
       throw new ConflictException(
         `Cannot edit a scheduled message in status '${existing.status}'`,
@@ -414,37 +724,34 @@ export class ScheduledMessagesService {
       updates.text = trimmed;
     }
 
-    let newScheduledAt: Date | null = null;
-    if (dto.scheduledAt) {
-      newScheduledAt = new Date(dto.scheduledAt);
-      const delay = newScheduledAt.getTime() - Date.now();
-      if (delay < MIN_LEAD_MS) {
+    if (dto.attachments !== undefined) {
+      if (dto.attachments.length > 0 && existing.type !== 'dm') {
         throw new BadRequestException(
-          'scheduledAt must be at least 2 minutes in the future',
+          'Attachments can only be scheduled on messages',
         );
       }
+      updates.attachments = this.toStoredAttachments(dto.attachments);
+    }
+
+    let newScheduledAt: Date | null = null;
+    const sendAtRaw = dto.sendAt ?? dto.scheduledAt;
+    if (sendAtRaw) {
+      newScheduledAt = new Date(sendAtRaw);
+      this.assertSendTime(newScheduledAt);
+      const conversation = existing.inboxConversationId
+        ? await this.findConversation(workspaceId, {
+            id: existing.inboxConversationId,
+          })
+        : await this.findConversation(workspaceId, {
+            threadKey: existing.threadKey,
+          });
+      this.assertInsideReplyWindow(newScheduledAt, conversation);
       updates.scheduledAt = newScheduledAt;
     }
     if (dto.timezone !== undefined) {
       updates.timezone = dto.timezone;
     }
-
-    // If time changed, swap the BullMQ job.
-    if (newScheduledAt) {
-      const jobId = this.jobIdFor(id);
-      const prior = await this.queue.getJob(jobId);
-      if (prior) await prior.remove();
-      await this.queue.add(
-        'fire',
-        { scheduledId: id },
-        {
-          jobId,
-          delay: newScheduledAt.getTime() - Date.now(),
-          attempts: 3,
-        },
-      );
-      updates.queueJobId = jobId;
-    }
+    if (newScheduledAt) updates.queueJobId = this.jobIdFor(id);
 
     const [row] = await db
       .update(scheduledInboxMessages)
@@ -452,10 +759,10 @@ export class ScheduledMessagesService {
       .where(eq(scheduledInboxMessages.id, id))
       .returning();
 
-    const channel = await db.query.socialMediaChannels.findFirst({
-      where: eq(socialMediaChannels.id, row.channelId),
-      columns: { platform: true },
-    });
+    // If the time changed, swap the BullMQ job — after the write has committed.
+    if (newScheduledAt) {
+      await this.armJob(id, newScheduledAt.getTime() - Date.now(), true);
+    }
 
     this.emitter.emit(
       workspaceId,
@@ -468,14 +775,14 @@ export class ScheduledMessagesService {
     // hash of exactly this body, so this push is a no-op (no ping-pong).
     this.syncCalendarForMessage(id);
 
-    return this.toDto(row, channel?.platform as SupportedPlatform | undefined);
+    return this.finish(row);
   }
 
   async cancel(
     workspaceId: string,
     userId: string,
     id: string,
-  ): Promise<{ success: true }> {
+  ): Promise<CancelResultDto> {
     await this.assertWorkspaceAccess(workspaceId, userId);
     return this.applyCancel(workspaceId, id);
   }
@@ -492,7 +799,7 @@ export class ScheduledMessagesService {
   async cancelFromCalendar(
     workspaceId: string,
     id: string,
-  ): Promise<{ success: true }> {
+  ): Promise<CancelResultDto> {
     return this.applyCancel(workspaceId, id, { pushToCalendar: false });
   }
 
@@ -500,16 +807,15 @@ export class ScheduledMessagesService {
     workspaceId: string,
     id: string,
     options: { pushToCalendar?: boolean } = {},
-  ): Promise<{ success: true }> {
+  ): Promise<CancelResultDto> {
     const { pushToCalendar = true } = options;
+    const result: CancelResultDto = {
+      ok: true,
+      undo: { restoreId: id },
+      success: true,
+    };
 
-    const existing = await db.query.scheduledInboxMessages.findFirst({
-      where: and(
-        eq(scheduledInboxMessages.id, id),
-        eq(scheduledInboxMessages.workspaceId, workspaceId),
-      ),
-    });
-    if (!existing) throw new NotFoundException('Scheduled message not found');
+    const existing = await this.loadOrThrow(workspaceId, id);
     if (existing.status !== 'pending') {
       // Already done — treat as idempotent for failed/cancelled, conflict for sending/sent.
       if (existing.status === 'sending' || existing.status === 'sent') {
@@ -517,17 +823,28 @@ export class ScheduledMessagesService {
           `Cannot cancel — message is ${existing.status}`,
         );
       }
-      return { success: true };
+      return result;
     }
 
-    const jobId = this.jobIdFor(id);
-    const prior = await this.queue.getJob(jobId);
-    if (prior) await prior.remove();
-
-    await db
+    // Flip the status first: a fire that races this finds nothing to claim.
+    const [row] = await db
       .update(scheduledInboxMessages)
       .set({ status: 'cancelled', updatedAt: new Date() })
-      .where(eq(scheduledInboxMessages.id, id));
+      .where(
+        and(
+          eq(scheduledInboxMessages.id, id),
+          eq(scheduledInboxMessages.status, 'pending'),
+        ),
+      )
+      .returning();
+    if (!row) {
+      throw new ConflictException(
+        'Cannot cancel — message is no longer pending',
+      );
+    }
+
+    const prior = await this.queue.getJob(this.jobIdFor(id));
+    if (prior) await prior.remove();
 
     this.emitter.emit(workspaceId, 'scheduled.message.cancelled', {
       id,
@@ -542,15 +859,106 @@ export class ScheduledMessagesService {
       this.syncCalendarForMessage(id);
     }
 
-    return { success: true };
+    await this.announce(row);
+    return result;
   }
 
-  async get(
+  /** Brings a cancelled reply back (the Undo of a cancel). */
+  async restore(
     workspaceId: string,
     userId: string,
     id: string,
-  ): Promise<ScheduledMessageDto> {
+  ): Promise<ScheduledDto> {
     await this.assertWorkspaceAccess(workspaceId, userId);
+    const existing = await this.loadOrThrow(workspaceId, id);
+    if (existing.status !== 'cancelled') {
+      throw new ConflictException(
+        `Cannot restore a scheduled message in status '${existing.status}'`,
+      );
+    }
+    const delay = existing.scheduledAt.getTime() - Date.now();
+    if (delay < MIN_LEAD_MS) throw this.sendTimePassed();
+
+    const [row] = await db
+      .update(scheduledInboxMessages)
+      .set({
+        status: 'pending',
+        errorMessage: null,
+        queueJobId: this.jobIdFor(id),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(scheduledInboxMessages.id, id),
+          eq(scheduledInboxMessages.status, 'cancelled'),
+        ),
+      )
+      .returning();
+    if (!row) {
+      throw new ConflictException(
+        'Cannot restore — message is no longer cancelled',
+      );
+    }
+
+    await this.armJob(id, delay, true);
+    this.emitter.emit(
+      workspaceId,
+      'scheduled.message.updated',
+      this.toEventBase(row),
+    );
+    this.syncCalendarForMessage(id);
+    return this.finish(row);
+  }
+
+  /** Fires a pending or failed reply right now. */
+  async sendNow(
+    workspaceId: string,
+    userId: string,
+    id: string,
+  ): Promise<ScheduledDto> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+    const existing = await this.loadOrThrow(workspaceId, id);
+    if (existing.status !== 'pending' && existing.status !== 'failed') {
+      throw new ConflictException(
+        `Cannot send a scheduled message in status '${existing.status}'`,
+      );
+    }
+
+    const [row] = await db
+      .update(scheduledInboxMessages)
+      .set({
+        scheduledAt: new Date(),
+        status: 'pending',
+        attempts: 0,
+        errorMessage: null,
+        queueJobId: this.jobIdFor(id),
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(scheduledInboxMessages.id, id),
+          inArray(scheduledInboxMessages.status, ['pending', 'failed']),
+        ),
+      )
+      .returning();
+    if (!row) {
+      throw new ConflictException('Cannot send — message is no longer waiting');
+    }
+
+    await this.armJob(id, 0, true);
+    this.emitter.emit(
+      workspaceId,
+      'scheduled.message.updated',
+      this.toEventBase(row),
+    );
+    this.syncCalendarForMessage(id);
+    return this.finish(row);
+  }
+
+  private async loadOrThrow(
+    workspaceId: string,
+    id: string,
+  ): Promise<ScheduledInboxMessage> {
     const row = await db.query.scheduledInboxMessages.findFirst({
       where: and(
         eq(scheduledInboxMessages.id, id),
@@ -558,18 +966,23 @@ export class ScheduledMessagesService {
       ),
     });
     if (!row) throw new NotFoundException('Scheduled message not found');
-    const channel = await db.query.socialMediaChannels.findFirst({
-      where: eq(socialMediaChannels.id, row.channelId),
-      columns: { platform: true },
-    });
-    return this.toDto(row, channel?.platform as SupportedPlatform | undefined);
+    return row;
+  }
+
+  async get(
+    workspaceId: string,
+    userId: string,
+    id: string,
+  ): Promise<ScheduledDto> {
+    await this.assertWorkspaceAccess(workspaceId, userId);
+    return this.presentOne(await this.loadOrThrow(workspaceId, id));
   }
 
   async list(
     workspaceId: string,
     userId: string,
     options: ListScheduledMessagesDto,
-  ): Promise<ScheduledMessageDto[]> {
+  ): Promise<ScheduledDto[]> {
     await this.assertWorkspaceAccess(workspaceId, userId);
 
     const conditions = [eq(scheduledInboxMessages.workspaceId, workspaceId)];
@@ -606,24 +1019,7 @@ export class ScheduledMessagesService {
       .where(and(...conditions))
       .orderBy(scheduledInboxMessages.scheduledAt);
 
-    if (rows.length === 0) return [];
-
-    const channelIds = Array.from(new Set(rows.map((r) => r.channelId)));
-    const channels = await db
-      .select({
-        id: socialMediaChannels.id,
-        platform: socialMediaChannels.platform,
-      })
-      .from(socialMediaChannels)
-      .where(inArray(socialMediaChannels.id, channelIds));
-    const platformByChannel = new Map(channels.map((c) => [c.id, c.platform]));
-
-    return rows.map((row) =>
-      this.toDto(
-        row,
-        platformByChannel.get(row.channelId) as SupportedPlatform | undefined,
-      ),
-    );
+    return this.presentMany(rows);
   }
 
   async counts(
@@ -692,6 +1088,7 @@ export class ScheduledMessagesService {
     });
     // Sent → no longer a *scheduled* item; its calendar event is removed.
     this.syncCalendarForMessage(id);
+    await this.announce(row);
   }
 
   async markFailed(id: string, error: string): Promise<void> {
@@ -712,6 +1109,7 @@ export class ScheduledMessagesService {
     });
     // Terminally failed → the calendar event would be a lie; remove it.
     this.syncCalendarForMessage(id);
+    await this.announce(row);
   }
 
   /** Between BullMQ retries — keep the row claimable by the next attempt. */
