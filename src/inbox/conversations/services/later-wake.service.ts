@@ -71,6 +71,7 @@ export class LaterWakeService {
     }>(
       sql`SELECT id, later_until FROM inbox_conversations
            WHERE status = 'later' AND later_until <= ${now.toISOString()}::timestamptz
+           ORDER BY later_until ASC, id ASC
            LIMIT ${SWEEP_LIMIT}`,
     );
     let woken = 0;

@@ -153,4 +153,62 @@ describeInboxDb('LaterWakeService', () => {
       expect((await statusOf(client, b.conversationId!)).status).toBe('done');
       expect((await statusOf(client, c.conversationId!)).status).toBe('later');
     }));
+
+  it('sweep takes the longest-overdue first and treats later_until = now as due', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const { sync, wake } = build(db);
+      const snooze = async (convo: string, until: Date) => {
+        const key = (await dm(client, workspaceId, ch, convo)).threadKey!;
+        return (
+          await sync.syncThread(workspaceId, key, {
+            kind: 'manual',
+            userId: ownerId,
+            status: 'later',
+            laterUntil: until,
+          })
+        ).conversationId!;
+      };
+      const exact = await snooze('b1', at(60));
+      const older = await snooze('b2', at(30));
+      const justAfter = await snooze('b3', new Date(at(60).getTime() + 1));
+
+      const order: string[] = [];
+      const spy = jest.spyOn(wake, 'wake').mockImplementation((id) => {
+        order.push(id);
+        return Promise.resolve();
+      });
+      expect(await wake.sweep(at(60))).toBe(2);
+      spy.mockRestore();
+      expect(order).toEqual([older, exact]);
+      expect((await statusOf(client, justAfter)).status).toBe('later');
+    }));
+
+  it('one throwing row does not stop the rest of the sweep', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const { sync, wake } = build(db);
+      const ids: string[] = [];
+      for (const [i, convo] of ['t1', 't2', 't3'].entries()) {
+        const key = (await dm(client, workspaceId, ch, convo)).threadKey!;
+        ids.push(
+          (
+            await sync.syncThread(workspaceId, key, {
+              kind: 'manual',
+              userId: ownerId,
+              status: 'later',
+              laterUntil: at(10 + i),
+            })
+          ).conversationId!,
+        );
+      }
+      // The sweep is ordered by later_until, so the first sync is ids[0]'s.
+      jest.spyOn(sync, 'syncThread').mockRejectedValueOnce(new Error('boom'));
+      expect(await wake.sweep(at(90))).toBe(2);
+      expect((await statusOf(client, ids[0])).status).toBe('later');
+      expect((await statusOf(client, ids[1])).status).toBe('to_reply');
+      expect((await statusOf(client, ids[2])).status).toBe('to_reply');
+    }));
 });
