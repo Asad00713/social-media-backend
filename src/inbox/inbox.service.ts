@@ -45,6 +45,7 @@ import { InboxDispatcher } from './services/inbox-dispatcher.service';
 import { InboxRealtimeService } from './conversations/services/inbox-realtime.service';
 import { ConversationSyncService } from './conversations/services/conversation-sync.service';
 import { ConversationResyncService } from './conversations/services/conversation-resync.service';
+import { InboxNotifyService } from './conversations/services/inbox-notify.service';
 import { messageEntryOf } from './conversations/lib/timeline-entry';
 import type { SyncIntent } from './conversations/lib/lifecycle';
 import { computeLegacyCounts } from './legacy-counts';
@@ -428,6 +429,7 @@ export class InboxService {
     private readonly realtime: InboxRealtimeService,
     private readonly conversationSync: ConversationSyncService,
     private readonly resync: ConversationResyncService,
+    private readonly notify: InboxNotifyService,
   ) {}
 
   /** Resolve our own identity on a channel for `fromMe` row authorship. */
@@ -1867,6 +1869,35 @@ export class InboxService {
           `timeline event failed for item ${row.id}: ${errMsg(err)}`,
         );
       }
+    }
+
+    // R7: a brand-new inbound row is news. Only reached after a successful
+    // sync (no conversationId otherwise; the conversation notifies on its next
+    // item). Merges, our own rows and moderation-hidden rows are not news.
+    // Fire-and-forget, after commit (D1): ingest never waits on or fails for it.
+    if (isInsert && conversationId && !row.fromMe && !row.isHidden) {
+      this.fireNewInbound(row, conversationId);
+    }
+  }
+
+  private fireNewInbound(row: InboxItem, conversationId: string): void {
+    try {
+      void Promise.resolve(
+        this.notify.newInbound({
+          workspaceId: row.workspaceId,
+          conversationId,
+          authorName: row.authorDisplayName || row.authorHandle || 'Someone',
+          platformCreatedAt: row.platformCreatedAt,
+        }),
+      ).catch((err) =>
+        this.logger.error(
+          `new-inbound notification failed for item ${row.id}: ${errMsg(err)}`,
+        ),
+      );
+    } catch (err) {
+      this.logger.error(
+        `new-inbound notification failed for item ${row.id}: ${errMsg(err)}`,
+      );
     }
   }
 

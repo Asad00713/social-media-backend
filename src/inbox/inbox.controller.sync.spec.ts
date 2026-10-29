@@ -114,6 +114,7 @@ describe('InboxService.syncNow', () => {
       {} as never,
       {} as never,
       {} as never,
+      {} as never,
     );
     jest
       .spyOn(service as any, 'assertWorkspaceAccess')
@@ -159,6 +160,7 @@ describe('InboxService.syncNow', () => {
       {} as never,
       {} as never,
       { add } as never,
+      {} as never,
       {} as never,
       {} as never,
       {} as never,

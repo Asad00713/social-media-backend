@@ -45,6 +45,7 @@ function build(db: DbType) {
     rt as never,
     sync,
     resync as never,
+    {} as never,
   );
   return { service, sync, resync, rt };
 }

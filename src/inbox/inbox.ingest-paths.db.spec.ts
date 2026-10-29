@@ -47,6 +47,7 @@ function buildInbox(db: DbType) {
     rt as never,
     sync,
     { enqueue: jest.fn(), syncOrEnqueue: jest.fn() } as never,
+    {} as never,
   );
   return { inbox, rt };
 }
