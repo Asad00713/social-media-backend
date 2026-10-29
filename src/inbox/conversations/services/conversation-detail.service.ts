@@ -20,6 +20,7 @@ import {
 } from '../../../workspace-members/role-capabilities';
 import { WorkspaceRoleService } from '../../../workspace-members/workspace-role.service';
 import type {
+  CommentActions,
   CommentNode,
   ConversationDetail,
   Platform,
@@ -64,6 +65,7 @@ type PostRecord = {
     | {
         channelId?: string | number;
         platformPostUrl?: string;
+        publishedAt?: string;
         contentOverride?: { text?: string };
       }[]
     | null;
@@ -167,7 +169,8 @@ export class ConversationDetailService {
     ]);
     const row = rows[0];
     if (!row) throw new NotFoundException('Conversation not found');
-    const canReply = roleCan(role, 'inbox:reply');
+    const isMember = role !== null;
+    const canReply = role !== null && roleCan(role, 'inbox:reply');
 
     // ONE users query for everything the response names.
     const userIds = new Set<string>();
@@ -188,20 +191,27 @@ export class ConversationDetailService {
     const isThread = conv.kind === 'comment_thread';
     const isDm = conv.kind === 'dm';
 
+    const hiddenRepliesOnPost = items.filter((i) => i.isHidden).length;
+    // A non-member (platform super admin) reads only: nothing is offered and
+    // no guest wording appears.
     const actionsFor = (item: InboxItem) =>
-      commentActions(
-        {
-          platform: conv.platform as Platform,
-          kind: conv.kind,
-          fromMe: item.fromMe,
-          deleted: false,
-          createdAt: item.platformCreatedAt,
-          privateReplySentAt: privateReplySentAt(item),
-          canReply,
-          accountLabel: row.channelLabel,
-        },
-        now,
-      );
+      !isMember
+        ? readOnlyActions()
+        : commentActions(
+            {
+              platform: conv.platform as Platform,
+              kind: conv.kind,
+              fromMe: item.fromMe,
+              deleted: false,
+              isHidden: item.isHidden,
+              hiddenRepliesOnPost,
+              createdAt: item.platformCreatedAt,
+              privateReplySentAt: privateReplySentAt(item),
+              canReply,
+              accountLabel: row.channelLabel,
+            },
+            now,
+          );
 
     let comments: CommentNode[] | null = null;
     if (!isDm) {
@@ -342,11 +352,12 @@ export class ConversationDetailService {
       conversation_id: string | null;
     }>(sql`
       SELECT i.type, i.platform_created_at AS at,
-             i.metadata->'post'->>'caption' AS caption,
+             COALESCE(i.metadata->'post'->>'caption', p.content) AS caption,
              c.id AS conversation_id
         FROM inbox_items i
         LEFT JOIN inbox_conversations c
           ON c.workspace_id = i.workspace_id AND c.thread_key = i.thread_key
+        LEFT JOIN posts p ON p.id = c.post_id
        WHERE ${who}
        ORDER BY i.platform_created_at DESC, i.id DESC
        LIMIT ${RECENT_LIMIT}
@@ -364,16 +375,12 @@ export class ConversationDetailService {
     };
   }
 
+  /** null = not a workspace member (a platform super admin): read-only. */
   private async viewerRole(
     workspaceId: string,
     viewerId: string,
-  ): Promise<WorkspaceRole> {
-    const role = await this.roles.getRole(workspaceId, viewerId);
-    if (role) return role;
-    // Platform super admins are not members; they act with admin rights.
-    return (await this.roles.isPlatformSuperAdmin(viewerId))
-      ? 'ADMIN'
-      : 'GUEST';
+  ): Promise<WorkspaceRole | null> {
+    return await this.roles.getRole(workspaceId, viewerId);
   }
 
   private async userRefs(ids: string[]): Promise<Map<string, UserRef>> {
@@ -391,7 +398,10 @@ export class ConversationDetailService {
     conv: { platform: string; threadKey: string },
     items: InboxItem[],
   ): Promise<PostBlock> {
-    const inbound = items.filter((i) => !i.fromMe && i.type === 'comment');
+    // Hidden comments are moderated away, so they do not keep a post "unanswered".
+    const inbound = items.filter(
+      (i) => !i.fromMe && i.type === 'comment' && !i.isHidden,
+    );
     const answered = {
       answered: inbound.filter((i) => i.repliedAt !== null).length,
       total: inbound.length,
@@ -440,32 +450,27 @@ export class ConversationDetailService {
           media.thumbnailUrl ??
           (mediaType === 'image' ? (media.url ?? null) : null);
       }
-      publishedAt = rec.published_at
-        ? asDate(rec.published_at).toISOString()
-        : null;
+      const when = target?.publishedAt ?? rec.published_at;
+      publishedAt = when ? asDate(when).toISOString() : null;
       platformPostUrl = target?.platformPostUrl ?? null;
-    } else {
-      const snap = items
-        .map(
-          (i) => (i.metadata?.post ?? null) as Record<string, unknown> | null,
-        )
-        .find((p) => p && Object.keys(p).length > 0);
-      if (snap) {
-        caption = typeof snap.caption === 'string' ? snap.caption : null;
-        thumbnailUrl =
-          typeof snap.thumbnailUrl === 'string' ? snap.thumbnailUrl : null;
+    }
+    // The snapshot fills whatever the post row left empty, field by field.
+    const snap = items
+      .map((i) => (i.metadata?.post ?? null) as Record<string, unknown> | null)
+      .find((p) => p && Object.keys(p).length > 0);
+    if (snap) {
+      const str = (k: string) => (typeof snap[k] === 'string' ? snap[k] : null);
+      caption = caption ?? str('caption');
+      thumbnailUrl = thumbnailUrl ?? str('thumbnailUrl');
+      publishedAt = publishedAt ?? str('publishedAt');
+      platformPostUrl = platformPostUrl ?? str('platformPostUrl');
+      if (mediaType === 'none') {
         mediaType =
           snap.mediaType === 'video'
             ? 'video'
             : snap.mediaType === 'image'
               ? 'image'
               : 'none';
-        publishedAt =
-          typeof snap.publishedAt === 'string' ? snap.publishedAt : null;
-        platformPostUrl =
-          typeof snap.platformPostUrl === 'string'
-            ? snap.platformPostUrl
-            : null;
       }
     }
 
@@ -489,6 +494,17 @@ export class ConversationDetailService {
       likes: rec?.likes ?? null,
     };
   }
+}
+
+function readOnlyActions(): CommentActions {
+  const no = { allowed: false };
+  return {
+    reply: { ...no },
+    like: { ...no },
+    hide: { ...no },
+    delete: { ...no },
+    privateReply: { ...no },
+  };
 }
 
 function surfaceLabel(platform: string, mediaType: PostBlock['mediaType']) {

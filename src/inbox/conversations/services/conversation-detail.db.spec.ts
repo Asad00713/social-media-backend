@@ -279,6 +279,148 @@ describeInboxDb('ConversationDetailService', () => {
       expect(m.kind === 'message' && m.canDelete).toBe(false);
     }));
 
+  describe('viewer rights', () => {
+    async function seedDm(client: PoolClient) {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'facebook');
+      const dm = await seedConv(
+        client,
+        workspaceId,
+        ch,
+        'facebook',
+        'dm',
+        `${ch}:v`,
+      );
+      await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'facebook',
+        type: 'dm',
+        conversationId: 'v',
+        fromMe: true,
+        platformCreatedAt: at(1),
+      });
+      const th = await seedConv(
+        client,
+        workspaceId,
+        ch,
+        'facebook',
+        'comment_thread',
+        `${ch}:pv`,
+      );
+      await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'facebook',
+        type: 'comment',
+        platformPostId: 'pv',
+        text: 'c',
+        platformCreatedAt: at(1),
+      });
+      return { workspaceId, ownerId, dm, th };
+    }
+
+    it('a non-member platform SUPER_ADMIN gets a read-only detail with no guest text', () =>
+      withInboxDb(async (db, client) => {
+        const { workspaceId, dm, th } = await seedDm(client);
+        const sa = await client.query<{ id: string }>(
+          `INSERT INTO users (email, name, role) VALUES ($1,'Root','SUPER_ADMIN') RETURNING id`,
+          [`sa-${Math.random().toString(36).slice(2)}@example.test`],
+        );
+        const svc = service(db);
+        const thread = await svc.getDetail(workspaceId, th, sa.rows[0].id, NOW);
+        const actions = thread.comments?.[0].actions;
+        expect(actions).toStrictEqual({
+          reply: { allowed: false },
+          like: { allowed: false },
+          hide: { allowed: false },
+          delete: { allowed: false },
+          privateReply: { allowed: false },
+        });
+        const msg = (await svc.getDetail(workspaceId, dm, sa.rows[0].id, NOW))
+          .timeline[0];
+        expect(msg.kind === 'message' && msg.canDelete).toBe(false);
+      }));
+
+    it('a member ADMIN keeps full rights', () =>
+      withInboxDb(async (db, client) => {
+        const { workspaceId, dm, th } = await seedDm(client);
+        const admin = await seedMember(client, workspaceId, 'ADMIN');
+        const svc = service(db);
+        const thread = await svc.getDetail(workspaceId, th, admin, NOW);
+        expect(thread.comments?.[0].actions.reply.allowed).toBe(true);
+        const msg = (await svc.getDetail(workspaceId, dm, admin, NOW))
+          .timeline[0];
+        expect(msg.kind === 'message' && msg.canDelete).toBe(true);
+      }));
+  });
+
+  it('merges the post snapshot field by field, prefers the target publishedAt, and excludes hidden comments from answered', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'facebook');
+      const post = await client.query<{ id: string }>(
+        `INSERT INTO posts (workspace_id, created_by_id, content, media_items, status, published_at, targets)
+         VALUES ($1,$2,NULL,'[]'::jsonb,'published','2026-10-20T00:00:00Z',$3::jsonb) RETURNING id`,
+        [
+          workspaceId,
+          ownerId,
+          JSON.stringify([
+            {
+              channelId: String(ch),
+              platform: 'facebook',
+              status: 'published',
+              publishedAt: '2026-10-25T09:00:00Z',
+            },
+          ]),
+        ],
+      );
+      const conv = await seedConv(
+        client,
+        workspaceId,
+        ch,
+        'facebook',
+        'comment_thread',
+        `${ch}:pm`,
+        {
+          postId: post.rows[0].id,
+        },
+      );
+      const a = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'facebook',
+        type: 'comment',
+        platformPostId: 'pm',
+        platformItemId: 'a',
+        platformCreatedAt: at(1),
+        metadata: {
+          post: { caption: 'From snapshot', thumbnailUrl: 'https://s/t.jpg' },
+        },
+      });
+      const h = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'facebook',
+        type: 'comment',
+        platformPostId: 'pm',
+        platformItemId: 'h',
+        platformCreatedAt: at(2),
+      });
+      await client.query(
+        `UPDATE inbox_items SET is_hidden = true WHERE id = $1`,
+        [h.id],
+      );
+      expect(a.id).toBeDefined();
+      const d = await service(db).getDetail(workspaceId, conv, ownerId, NOW);
+      expect(d.post).toMatchObject({
+        caption: 'From snapshot',
+        thumbnailUrl: 'https://s/t.jpg',
+        publishedAt: '2026-10-25T09:00:00.000Z',
+        answered: { answered: 0, total: 1 },
+      });
+    }));
+
   it('marks a redacted YouTube comment', () =>
     withInboxDb(async (db, client) => {
       const { workspaceId, ownerId } = await seedWorkspace(client);
@@ -671,6 +813,55 @@ describeInboxDb('ConversationDetailService', () => {
           label: 'Sent a message',
           conversationId: dmA,
         });
+      }));
+
+    it('labels a comment by the post row caption when no snapshot exists; foreign profile is 404', () =>
+      withInboxDb(async (db, client) => {
+        const { workspaceId, ownerId } = await seedWorkspace(client);
+        const other = await seedWorkspace(client);
+        const ch = await seedChannel(client, workspaceId, 'facebook');
+        const post = await client.query<{ id: string }>(
+          `INSERT INTO posts (workspace_id, created_by_id, content, status)
+           VALUES ($1,$2,'Row caption','published') RETURNING id`,
+          [workspaceId, ownerId],
+        );
+        const dm = await seedConv(
+          client,
+          workspaceId,
+          ch,
+          'facebook',
+          'dm',
+          `${ch}:dz`,
+          {
+            participantPlatformId: 'z-1',
+          },
+        );
+        await seedConv(
+          client,
+          workspaceId,
+          ch,
+          'facebook',
+          'comment_thread',
+          `${ch}:pz`,
+          {
+            postId: post.rows[0].id,
+          },
+        );
+        await seedItem(client, {
+          workspaceId,
+          channelId: ch,
+          platform: 'facebook',
+          type: 'comment',
+          platformPostId: 'pz',
+          authorPlatformId: 'z-1',
+          platformCreatedAt: at(1),
+        });
+        const svc = service(db);
+        const p = await svc.getProfile(workspaceId, dm);
+        expect(p.recent[0].label).toBe('Commented on Row caption');
+        await expect(
+          svc.getProfile(other.workspaceId, dm),
+        ).rejects.toBeInstanceOf(NotFoundException);
       }));
 
     it('answers 400 for a comment thread', () =>

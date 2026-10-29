@@ -14,6 +14,10 @@ export interface CommentActionInput {
   kind: ConversationKind;
   fromMe: boolean;
   deleted: boolean;
+  /** This comment is already hidden (it can always be unhidden). */
+  isHidden: boolean;
+  /** Hidden replies the post already holds (Bluesky threadgate cap). */
+  hiddenRepliesOnPost?: number;
   createdAt: Date;
   privateReplySentAt: Date | null;
   /** Viewer has inbox:reply (Guests do not). */
@@ -24,6 +28,7 @@ export interface CommentActionInput {
 /** Body of the `400 { reason }` the action routes send when a flag has no reason. */
 export const DISALLOWED_FALLBACK = "This isn't available for this comment";
 
+const BLUESKY_HIDDEN_CAP = 300;
 const PRIVATE_REPLY_WINDOW_MS = 7 * 24 * 60 * 60 * 1000;
 
 const YES: ActionFlag = { allowed: true };
@@ -37,6 +42,7 @@ const REASONS = {
   instagramLike: "Instagram doesn't let apps like comments",
   threadsLike: "Threads doesn't let apps like replies",
   youtubeLike: "YouTube doesn't let apps like comments",
+  blueskyHideCap: 'Bluesky allows 300 hidden replies per post',
   mastodonHide: "Mastodon doesn't let you hide replies",
 } as const;
 
@@ -82,7 +88,10 @@ function platformHide(input: CommentActionInput): ActionFlag {
     // enforced by the hide adapter (400 { reason }), not here (preflight D17).
     // https://docs.bsky.app/docs/advanced-guides/moderation
     case 'bluesky':
-      return YES;
+      return !input.isHidden &&
+        (input.hiddenRepliesOnPost ?? 0) >= BLUESKY_HIDDEN_CAP
+        ? no(REASONS.blueskyHideCap)
+        : YES;
     case 'mastodon':
       return no(REASONS.mastodonHide);
     default:

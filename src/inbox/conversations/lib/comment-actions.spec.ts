@@ -16,6 +16,7 @@ function input(over: Partial<CommentActionInput> = {}): CommentActionInput {
     kind: 'comment_thread',
     fromMe: false,
     deleted: false,
+    isHidden: false,
     createdAt: new Date(NOW.getTime() - HOUR),
     privateReplySentAt: null,
     canReply: true,
@@ -171,6 +172,26 @@ describe('commentActions: overrides', () => {
       commentActions(input({ privateReplySentAt: new Date(NOW) }), NOW)
         .privateReply,
     ).toStrictEqual(NO);
+  });
+
+  it('Bluesky hide carries the cap reason once the post holds 300 hidden replies', () => {
+    const bsky = { platform: 'bluesky' as const };
+    expect(
+      commentActions(input({ ...bsky, hiddenRepliesOnPost: 299 }), NOW).hide,
+    ).toStrictEqual({ allowed: true });
+    expect(
+      commentActions(input({ ...bsky, hiddenRepliesOnPost: 300 }), NOW).hide,
+    ).toStrictEqual({
+      allowed: false,
+      reason: 'Bluesky allows 300 hidden replies per post',
+    });
+    // an already hidden reply can still be unhidden
+    expect(
+      commentActions(
+        input({ ...bsky, hiddenRepliesOnPost: 300, isHidden: true }),
+        NOW,
+      ).hide,
+    ).toStrictEqual({ allowed: true });
   });
 
   it('exposes the fallback body for reason-less refusals', () => {
