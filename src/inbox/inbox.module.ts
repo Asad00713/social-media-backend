@@ -1,6 +1,7 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { BullModule } from '@nestjs/bullmq';
 import { InboxController } from './inbox.controller';
+import { InboxAdminController } from './inbox-admin.controller';
 import { WebhooksController } from '../channels/webhooks.controller';
 import { InboxService } from './inbox.service';
 import { InboxDispatcher } from './services/inbox-dispatcher.service';
@@ -68,7 +69,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
       { name: QUEUES.MAESTRO_BRIDGE },
     ),
   ],
-  controllers: [InboxController, WebhooksController],
+  controllers: [InboxController, InboxAdminController, WebhooksController],
   providers: [
     InboxService,
     InboxDispatcher,

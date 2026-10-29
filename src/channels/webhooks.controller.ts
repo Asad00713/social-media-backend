@@ -22,6 +22,10 @@ import {
   verifySlackSignature,
   verifyMetaSignature,
 } from '../common/utils/webhook-signature.util';
+import {
+  isValidMetaDelivery,
+  type MetaWebhookSource,
+} from './utils/meta-webhook-secrets';
 import { verifyTelegramWebhookSecret } from './utils/telegram-webhook-secret.util';
 import { secureCompare } from '../common/utils/encryption.util';
 import { parseWhatsAppMessages } from './services/whatsapp-webhook.util';
@@ -39,19 +43,22 @@ import { QUEUES } from '../queue/queue.module';
  *
  * Public (no JWT auth) since events come from external services. Webhook
  * authenticity is verified per-platform:
- *   - Meta (FB/IG/Threads): hub.verify_token on registration; HMAC signature
- *     verification of POST body for production (TODO — Phase 1 skips and
- *     relies on the verify_token + IP allowlist).
+ *   - Meta (FB/IG/Threads): hub.verify_token on registration; POSTs are
+ *     verified with X-Hub-Signature-256 against the endpoint's app secret(s);
+ *     unsigned or mis-signed POSTs get 401.
  *
  * Registered in `InboxModule` (not ChannelsModule) so it can inject
  * InboxService without a circular dep.
  */
+/** Rejected-delivery warnings are logged at most this often per source. */
+const REJECT_WARN_INTERVAL_MS = 60_000;
+
 @Controller('webhooks')
 export class WebhooksController {
   private readonly logger = new Logger(WebhooksController.name);
 
   private readonly META_VERIFY_TOKEN =
-    process.env.META_WEBHOOK_VERIFY_TOKEN || 'webondev_verify_123';
+    process.env.META_WEBHOOK_VERIFY_TOKEN ?? '';
 
   private readonly META_APP_SECRET = process.env.META_APP_SECRET || '';
 
@@ -133,7 +140,11 @@ export class WebhooksController {
     this.logger.log(
       `${source} webhook verification: mode=${mode}, token=${token ? 'present' : 'missing'}`,
     );
-    if (mode === 'subscribe' && token === this.META_VERIFY_TOKEN) {
+    if (
+      this.META_VERIFY_TOKEN &&
+      mode === 'subscribe' &&
+      token === this.META_VERIFY_TOKEN
+    ) {
       this.logger.log(`${source} webhook verified successfully`);
       return res.status(200).send(challenge);
     }
@@ -145,13 +156,43 @@ export class WebhooksController {
   // Meta — event delivery
   // ==========================================================================
 
+  /** Unauthenticated callers can POST at will, so log a reject at most once per source per minute. */
+  private readonly lastRejectWarnAt = new Map<string, number>();
+
+  private warnRejectedDelivery(source: MetaWebhookSource): void {
+    const now = Date.now();
+    const last = this.lastRejectWarnAt.get(source);
+    if (last !== undefined && now - last < REJECT_WARN_INTERVAL_MS) return;
+    this.lastRejectWarnAt.set(source, now);
+    this.logger.warn(`${source} webhook signature verification failed`);
+  }
+
+  private isSignedMetaDelivery(
+    source: MetaWebhookSource,
+    req: ExpressRequest,
+  ): boolean {
+    const ok = isValidMetaDelivery(
+      source,
+      req.headers['x-hub-signature-256'] as string | undefined,
+      (req as ExpressRequest & { rawBody?: Buffer }).rawBody,
+    );
+    if (!ok) this.warnRejectedDelivery(source);
+    return ok;
+  }
+
   @Post('instagram')
   @HttpCode(HttpStatus.OK)
-  async handleInstagramWebhook(@Body() body: any, @Res() res: Response) {
+  async handleInstagramWebhook(
+    @Req() req: ExpressRequest,
+    @Res() res: Response,
+  ) {
+    if (!this.isSignedMetaDelivery('instagram', req)) {
+      return res.status(401).send('invalid signature');
+    }
     // Meta requires a fast 200; everything heavy happens async.
     res.status(200).send('EVENT_RECEIVED');
     try {
-      await this.processMetaWebhook(body, 'instagram');
+      await this.processMetaWebhook(req.body, 'instagram');
     } catch (error) {
       this.logger.error('Error processing Instagram webhook:', error);
     }
@@ -159,10 +200,16 @@ export class WebhooksController {
 
   @Post('facebook')
   @HttpCode(HttpStatus.OK)
-  async handleFacebookWebhook(@Body() body: any, @Res() res: Response) {
+  async handleFacebookWebhook(
+    @Req() req: ExpressRequest,
+    @Res() res: Response,
+  ) {
+    if (!this.isSignedMetaDelivery('facebook', req)) {
+      return res.status(401).send('invalid signature');
+    }
     res.status(200).send('EVENT_RECEIVED');
     try {
-      await this.processMetaWebhook(body, 'facebook');
+      await this.processMetaWebhook(req.body, 'facebook');
     } catch (error) {
       this.logger.error('Error processing Facebook webhook:', error);
     }
@@ -170,12 +217,15 @@ export class WebhooksController {
 
   @Post('threads')
   @HttpCode(HttpStatus.OK)
-  async handleThreadsWebhook(@Body() body: any, @Res() res: Response) {
+  async handleThreadsWebhook(@Req() req: ExpressRequest, @Res() res: Response) {
+    if (!this.isSignedMetaDelivery('threads', req)) {
+      return res.status(401).send('invalid signature');
+    }
     res.status(200).send('EVENT_RECEIVED');
     try {
       // Threads uses its OWN flat payload shape — NOT the FB/IG
       // `{ object, entry[].changes[] }` — so it needs a dedicated parser.
-      await this.processThreadsWebhook(body);
+      await this.processThreadsWebhook(req.body);
     } catch (error) {
       this.logger.error('Error processing Threads webhook:', error);
     }

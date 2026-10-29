@@ -18,8 +18,12 @@ const WS_PARAM = /:(workspaceId|wsId|wid)(\b|\/|$)/;
 // role-guarded. Do not add a route here because it is inconvenient to guard it.
 const SUPER_ADMIN_ONLY =
   'AdminController is behind JwtAuthGuard + SuperAdminGuard: platform staff act on any workspace, so a workspace role does not apply';
+const INBOX_ADMIN_SUPER_ADMIN_ONLY =
+  'InboxAdminController is behind JwtAuthGuard + SuperAdminGuard: platform staff act on any workspace, so a workspace role does not apply';
 const OPEN_ROUTES: Record<string, string> = {
   'GET /admin/workspaces/:workspaceId': SUPER_ADMIN_ONLY,
+  'POST /admin/inbox/workspaces/:workspaceId/cleanup-orphaned-thread-keys':
+    INBOX_ADMIN_SUPER_ADMIN_ONLY,
   'GET /admin/workspaces/:workspaceId/posts': SUPER_ADMIN_ONLY,
   'GET /admin/workspaces/:workspaceId/media': SUPER_ADMIN_ONLY,
   'GET /admin/workspaces/:workspaceId/billing': SUPER_ADMIN_ONLY,

@@ -6,6 +6,7 @@ import { and, eq, inArray } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { QUEUES } from '../../queue/queue.module';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
+import { pollDedupId } from './poll-dedup';
 
 /**
  * Enqueues inbox polling jobs every 30 seconds.
@@ -83,7 +84,13 @@ export class InboxPollScheduler {
       await this.queue.add(
         'poll',
         { channelId: rows[i].id },
-        { delay: i * 200, jobId: `inbox-poll-${rows[i].id}-${Date.now()}` },
+        {
+          delay: i * 200,
+          jobId: `inbox-poll-${rows[i].id}-${Date.now()}`,
+          // One active poll per channel: a second add with this id is
+          // ignored until the first job completes or finally fails.
+          deduplication: { id: pollDedupId(rows[i].id) },
+        },
       );
     }
   }
