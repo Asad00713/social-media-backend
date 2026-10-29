@@ -1,9 +1,14 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger, OnModuleInit } from '@nestjs/common';
-import { Job } from 'bullmq';
+import { Job, UnrecoverableError } from 'bullmq';
 import { QUEUES } from '../../queue/queue.module';
 import { ScheduledMessagesService } from '../services/scheduled-messages.service';
 import { InboxService } from '../inbox.service';
+import { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
+import { roleCan } from '../../workspace-members/role-capabilities';
+
+export const CREATOR_CANNOT_REPLY_MESSAGE =
+  'The person who scheduled this can no longer reply in this workspace';
 
 export interface ScheduledInboxFireJob {
   scheduledId: string;
@@ -31,6 +36,7 @@ export class ScheduledInboxProcessor
   constructor(
     private readonly scheduledService: ScheduledMessagesService,
     private readonly inboxService: InboxService,
+    private readonly roles: WorkspaceRoleService,
   ) {
     super();
   }
@@ -68,7 +74,20 @@ export class ScheduledInboxProcessor
         throw new Error('Scheduled message has no creator — cannot dispatch');
       }
 
+      // Permission is re-checked at fire time: the creator may have been
+      // demoted or removed since they scheduled this.
+      const role = await this.roles.getRole(claimed.workspaceId, userId);
+      if (!role || !roleCan(role, 'inbox:reply')) {
+        throw new UnrecoverableError(CREATOR_CANNOT_REPLY_MESSAGE);
+      }
+
       let inboxItemId: string | null = null;
+
+      const attachments = (claimed.attachments ?? []).map((a) => ({
+        kind: a.kind === 'voice' ? ('audio' as const) : a.kind,
+        url: a.url,
+        contentType: a.contentType ?? 'application/octet-stream',
+      }));
 
       if (claimed.type === 'dm') {
         const result = await this.inboxService.sendDm(
@@ -76,6 +95,7 @@ export class ScheduledInboxProcessor
           userId,
           claimed.threadKey,
           claimed.text,
+          attachments.length > 0 ? attachments : undefined,
         );
         inboxItemId = result.id;
       } else {
@@ -110,7 +130,10 @@ export class ScheduledInboxProcessor
         `Scheduled fire ${scheduledId} failed (attempt ${job.attemptsMade + 1}): ${message}`,
       );
 
-      if (isFinalAttempt) {
+      if (err instanceof UnrecoverableError) {
+        // Retrying cannot help; fail now and tell BullMQ not to retry.
+        await this.scheduledService.markFailed(scheduledId, message);
+      } else if (isFinalAttempt) {
         await this.scheduledService.markFailed(scheduledId, message);
       } else {
         // BullMQ will retry — flip back to pending so the next attempt can claim.

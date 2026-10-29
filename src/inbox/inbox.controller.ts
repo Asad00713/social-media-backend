@@ -381,6 +381,28 @@ export class InboxController {
     return this.scheduledMessagesService.cancel(workspaceId, user.userId, id);
   }
 
+  @Post('scheduled/:id/send-now')
+  @RequireCapability('inbox:reply')
+  @HttpCode(HttpStatus.OK)
+  async sendNow(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.scheduledMessagesService.sendNow(workspaceId, user.userId, id);
+  }
+
+  @Post('scheduled/:id/restore')
+  @RequireCapability('inbox:reply')
+  @HttpCode(HttpStatus.OK)
+  async restoreScheduled(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.scheduledMessagesService.restore(workspaceId, user.userId, id);
+  }
+
   // ==========================================================================
   // Media uploads (Phase 2.3) — presigned PUT URL for inbox DM attachments.
   // Browser uploads directly to Cloudflare R2; backend never touches bytes.
