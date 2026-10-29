@@ -125,7 +125,7 @@ describe('runBackfill', () => {
     expect(connect).toHaveBeenCalledTimes(1);
   });
 
-  it('the real 0052 file takes an EXCLUSIVE lock on inbox_conversations before any write', async () => {
+  it('the real 0052 file bounds its lock wait, then takes an EXCLUSIVE lock on inbox_conversations before any write', async () => {
     const { connect, queries } = fakeConnect();
     await runBackfill({
       databaseUrl: 'postgres://u@localhost/db',
@@ -133,8 +133,9 @@ describe('runBackfill', () => {
       connect,
     });
     const withoutComments = queries[1].replace(/^\s*--.*$/gm, '').trim();
+    // I4: a blocked deploy fails fast instead of queueing every Inbox read.
     expect(withoutComments).toMatch(
-      /^LOCK TABLE inbox_conversations IN EXCLUSIVE MODE;/,
+      /^SET LOCAL lock_timeout = '10s';\s*LOCK TABLE inbox_conversations IN EXCLUSIVE MODE;/,
     );
     expect(queries[0]).toBe('BEGIN');
   });

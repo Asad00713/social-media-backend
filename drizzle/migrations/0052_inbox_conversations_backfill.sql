@@ -37,7 +37,7 @@
 --
 -- SAFETY
 -- Runs in ONE transaction (the runner's, or `npm run inbox:backfill`'s). The
--- first statement takes an EXCLUSIVE lock on inbox_conversations so a live
+-- first lock it takes is EXCLUSIVE on inbox_conversations, so a live
 -- syncThread cannot interleave and be overwritten by this file's older
 -- snapshot (a blocked sync resumes after COMMIT and refreshes from the newest
 -- items). Reads are not blocked. Idempotent: step 1 only fills NULL
@@ -52,6 +52,14 @@
 -- boot migrator holds the deploy until this finishes: run EXPLAIN (ANALYZE,
 -- BUFFERS) on a prod-sized copy as part of the deploy checklist.
 --
+-- LOCK WAIT (I4). `SET LOCAL lock_timeout = '10s'` comes before the LOCK
+-- (scoped to the runner's or `npm run inbox:backfill`'s transaction). Without
+-- it the EXCLUSIVE lock, and step 1's row locks on inbox_items, queue behind
+-- any open transaction on the still-running old instance, and every Inbox
+-- write then queues behind this file. With it a blocked deploy fails fast and
+-- rolls back instead; retry the deploy. It bounds only the wait for a lock,
+-- not the time the file holds its locks.
+--
 -- NEVER edit this file after it has been applied: the migrator's checksum
 -- guard refuses to boot. Write a new migration for any later change.
 --
@@ -60,6 +68,8 @@
 --   fall to NULL via ON DELETE SET NULL). replied_at marks are not reverted.
 --
 -- Never run `db:push` against prod. The boot migrator applies this file.
+
+SET LOCAL lock_timeout = '10s';
 
 LOCK TABLE inbox_conversations IN EXCLUSIVE MODE;
 

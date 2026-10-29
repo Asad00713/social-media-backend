@@ -17,6 +17,19 @@
 -- disagree with the row. No existing column or row is changed or dropped.
 -- No CONCURRENTLY (not allowed in a transaction).
 --
+-- LOCK WAIT (I4). The ALTER needs ACCESS EXCLUSIVE on inbox_items. Without a
+-- bound it queues behind any open transaction on the still-running old
+-- instance (a long poll, an idle-in-transaction connection), and from then on
+-- every SELECT and INSERT on inbox_items queues behind the ALTER: webhooks
+-- time out and Inbox reads hang until the rewrite and the index builds finish.
+-- `SET LOCAL lock_timeout = '10s'` (scoped to the runner's per-file
+-- transaction) makes a blocked deploy fail fast and roll back instead; retry
+-- the deploy. It bounds only the WAIT for the lock, not the rewrite itself.
+-- DEPLOY GATE: the owner must time this file on a prod-sized copy of
+-- inbox_items (row count and size from prod) before deploying. The rewrite
+-- and the four index builds, one a GIN trigram over text, hold the lock for
+-- their whole duration; "seconds at current size" has not been measured.
+--
 -- ROLLBACK
 --   DROP INDEX IF EXISTS inbox_items_search_trgm_idx;
 --   DROP INDEX IF EXISTS inbox_items_ws_authored_idx;
@@ -25,6 +38,8 @@
 --   ALTER TABLE inbox_items DROP COLUMN IF EXISTS thread_key;
 --
 -- Never run `db:push` against prod. The boot migrator applies this file.
+
+SET LOCAL lock_timeout = '10s';
 
 CREATE EXTENSION IF NOT EXISTS pg_trgm;
 
