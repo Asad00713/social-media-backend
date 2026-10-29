@@ -3,6 +3,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { and, eq, inArray } from 'drizzle-orm';
@@ -33,6 +34,8 @@ const toRef = (u: {
  */
 @Injectable()
 export class InboxNotesService {
+  private readonly logger = new Logger(InboxNotesService.name);
+
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
     private readonly roles: WorkspaceRoleService,
@@ -72,12 +75,20 @@ export class InboxNotesService {
 
     // The insert is committed: now tell clients and the mentioned people.
     this.realtime.timelineAppended(workspaceId, conversationId, entry, null);
-    await this.notify.noteMentioned({
-      workspaceId,
-      conversationId,
-      mentionedUserIds: mentionIds,
-      actorUserId: userId,
-    });
+    try {
+      await this.notify.noteMentioned({
+        workspaceId,
+        conversationId,
+        mentionedUserIds: mentionIds,
+        actorUserId: userId,
+      });
+    } catch (err) {
+      // The note is committed; a failed notification must not fail the request
+      // (a retry would create a duplicate note).
+      this.logger.warn(
+        `mention notification failed for note on ${conversationId}: ${(err as Error).message}`,
+      );
+    }
     return entry;
   }
 

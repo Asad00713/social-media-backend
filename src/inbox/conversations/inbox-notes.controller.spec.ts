@@ -86,6 +86,7 @@ describe('InboxNotesController over HTTP', () => {
 
   it.each([
     [{ ...valid, body: '' }],
+    [{ ...valid, body: ' \n\t ' }],
     [{ ...valid, body: 'b'.repeat(5001) }],
     [{ ...valid, mentionUserIds: ['not-a-uuid'] }],
     [{ ...valid, mentionUserIds: Array(21).fill(MENTIONED) }],

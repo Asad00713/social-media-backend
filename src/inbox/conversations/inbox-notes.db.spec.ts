@@ -44,16 +44,25 @@ async function seedConversation(
   db: DbType,
   workspaceId: string,
 ): Promise<string> {
+  return await seedConversationNamed(client, db, workspaceId, 'c-1');
+}
+
+async function seedConversationNamed(
+  client: PoolClient,
+  db: DbType,
+  workspaceId: string,
+  convo: string,
+): Promise<string> {
   const channelId = await seedChannel(client, workspaceId, 'instagram');
   const item = await seedItem(client, {
     workspaceId,
     channelId,
     platform: 'instagram',
     type: 'dm',
-    conversationId: 'c-1',
+    conversationId: convo,
     text: 'hello',
     authorHandle: 'maya',
-    authorPlatformId: 'p-1',
+    authorPlatformId: `p-${convo}`,
     platformCreatedAt: T0,
   });
   const realtime = fake<InboxRealtimeService>({
@@ -221,5 +230,57 @@ describeInboxDb('InboxNotesService', () => {
       await expect(
         svc.remove(workspaceId, conv, note.id, ownerId),
       ).rejects.toBeInstanceOf(NotFoundException);
+    }));
+
+  it('keeps the committed note when the mention notifier throws', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const memberId = await seedMember(client, workspaceId, 'MEMBER');
+      const conv = await seedConversation(client, db, workspaceId);
+      const { svc, noteMentioned } = build(db);
+      noteMentioned.mockRejectedValueOnce(new Error('mail down'));
+      const entry = await svc.create(workspaceId, conv, ownerId, {
+        body: 'hi',
+        mentionUserIds: [memberId],
+      });
+      expect(entry.body).toBe('hi');
+      const rows = await client.query(
+        `SELECT 1 FROM inbox_notes WHERE conversation_id = $1`,
+        [conv],
+      );
+      expect(rows.rowCount).toBe(1);
+    }));
+
+  it('remove 404s across workspaces and across conversations, and keeps the note', () =>
+    withInboxDb(async (db, client) => {
+      const a = await seedWorkspace(client);
+      const b = await seedWorkspace(client);
+      const convA = await seedConversation(client, db, a.workspaceId);
+      const convB = await seedConversation(client, db, b.workspaceId);
+      const convA2 = await seedConversationNamed(
+        client,
+        db,
+        a.workspaceId,
+        'c-2',
+      );
+      const { svc } = build(db);
+      const note = await svc.create(a.workspaceId, convA, a.ownerId, {
+        body: 'mine',
+        mentionUserIds: [],
+      });
+      // Right conversation id, wrong workspace.
+      await expect(
+        svc.remove(b.workspaceId, convA, note.id, a.ownerId),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      // Right workspace, a different conversation of it.
+      await expect(
+        svc.remove(a.workspaceId, convA2, note.id, a.ownerId),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      // Right workspace id, conversation of another workspace.
+      await expect(
+        svc.remove(a.workspaceId, convB, note.id, a.ownerId),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      const rows = await client.query(`SELECT 1 FROM inbox_notes`);
+      expect(rows.rowCount).toBe(1);
     }));
 });
