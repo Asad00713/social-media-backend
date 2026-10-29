@@ -28,12 +28,12 @@ describe('FacebookInboxAdapter comment actions', () => {
     net = mockFetch();
     await adapter.likeComment(
       channel('facebook'),
-      { platformItemId: 'c1', metadata: null },
+      { platformItemId: 'c1' },
       true,
     );
     await adapter.likeComment(
       channel('facebook'),
-      { platformItemId: 'c1', metadata: null },
+      { platformItemId: 'c1' },
       false,
     );
     expect(net.requests.map((r) => [r.method, r.url])).toEqual([
@@ -86,14 +86,28 @@ describe('FacebookInboxAdapter comment actions', () => {
     expect(out.platformCreatedAt).toBeInstanceOf(Date);
   });
 
+  it('a private reply accepted without a message id still succeeds (id null)', async () => {
+    net = mockFetch(() => json({ recipient_id: 'psid-9' }));
+    const out = await adapter.sendPrivateReply(
+      channel('facebook'),
+      'c1',
+      'thanks!',
+    );
+    expect(out.platformItemId).toBeNull();
+    expect(out.recipientPlatformId).toBe('psid-9');
+  });
+
+  it('a private reply accepted without a recipient is delivered: it resolves with a null recipient', async () => {
+    net = mockFetch(() => json({ message_id: 'm-1' }));
+    const out = await adapter.sendPrivateReply(channel('facebook'), 'c1', 'x');
+    expect(out.recipientPlatformId).toBeNull();
+    expect(out.platformItemId).toBe('m-1');
+  });
+
   it('surfaces a platform refusal', async () => {
     net = mockFetch(() => json({ error: { message: '(#10) no' } }, 400));
     await expect(
-      adapter.likeComment(
-        channel('facebook'),
-        { platformItemId: 'c1', metadata: null },
-        true,
-      ),
+      adapter.likeComment(channel('facebook'), { platformItemId: 'c1' }, true),
     ).rejects.toThrow(/Facebook like failed: 400/);
   });
 });
@@ -146,6 +160,6 @@ describe('InstagramInboxAdapter comment actions', () => {
   });
 
   it('has no like: the capability matrix keeps it out of reach', () => {
-    expect(adapter.likeComment).toBeUndefined();
+    expect('likeComment' in adapter).toBe(false);
   });
 });

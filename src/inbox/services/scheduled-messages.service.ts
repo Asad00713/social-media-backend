@@ -83,7 +83,8 @@ export interface ScheduledDto extends ScheduledMessageDto {
 
 export interface CancelResultDto {
   ok: true;
-  undo: { restoreId: string };
+  /** Absent when there is nothing to bring back (a failed row was never cancelled). */
+  undo?: { restoreId: string };
   /** The old body, kept until the old Inbox is removed (Task 25). */
   success: true;
 }
@@ -387,12 +388,15 @@ export class ScheduledMessagesService {
   }
 
   /** Not in the future → 409 SEND_TIME_PASSED; under the 2 minute lead → 400. */
-  private assertSendTime(sendAt: Date): number {
+  private assertSendTime(
+    sendAt: Date,
+    field: 'sendAt' | 'scheduledAt' = 'sendAt',
+  ): number {
     const delay = sendAt.getTime() - Date.now();
     if (delay <= 0) throw this.sendTimePassed();
     if (delay < MIN_LEAD_MS) {
       throw new BadRequestException(
-        'scheduledAt must be at least 2 minutes in the future',
+        `${field} must be at least 2 minutes in the future`,
       );
     }
     return delay;
@@ -430,18 +434,58 @@ export class ScheduledMessagesService {
     id: string,
     delay: number,
     replace: boolean,
-  ): Promise<string> {
+  ): Promise<{ jobId: string | null; stranded: ScheduledInboxMessage | null }> {
     const jobId = this.jobIdFor(id);
-    if (replace) {
-      const prior = await this.queue.getJob(jobId);
-      if (prior) await prior.remove();
+    try {
+      if (replace) {
+        const prior = await this.queue.getJob(jobId);
+        if (prior) await prior.remove();
+      }
+      await this.queue.add(
+        'fire',
+        { scheduledId: id },
+        { jobId, delay: Math.max(0, delay), attempts: 3 },
+      );
+      return { jobId, stranded: null };
+    } catch (error) {
+      // The row is already committed. Leaving it 'pending' with no (or a
+      // stale) job would strand it silently, so it ends 'failed' with a
+      // message: the Scheduled view shows it, and Send now re-arms it.
+      this.logger.error(
+        `Could not arm the job for scheduled message ${id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return { jobId: null, stranded: await this.strand(id) };
     }
-    await this.queue.add(
-      'fire',
-      { scheduledId: id },
-      { jobId, delay: Math.max(0, delay), attempts: 3 },
-    );
-    return jobId;
+  }
+
+  private async strand(id: string): Promise<ScheduledInboxMessage | null> {
+    try {
+      const [row] = await db
+        .update(scheduledInboxMessages)
+        .set({
+          status: 'failed',
+          errorMessage:
+            'Could not queue this message. Use Send now to try again.',
+          updatedAt: new Date(),
+        })
+        .where(
+          and(
+            eq(scheduledInboxMessages.id, id),
+            eq(scheduledInboxMessages.status, 'pending'),
+          ),
+        )
+        .returning();
+      return row ?? null;
+    } catch (error) {
+      this.logger.error(
+        `Could not mark scheduled message ${id} failed after an arm failure: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
   }
 
   private toEventBase(row: ScheduledInboxMessage): ScheduledInboxEventBase {
@@ -583,7 +627,10 @@ export class ScheduledMessagesService {
       throw new BadRequestException('sendAt is required');
     }
     const scheduledAt = new Date(sendAtRaw);
-    const delay = this.assertSendTime(scheduledAt);
+    const delay = this.assertSendTime(
+      scheduledAt,
+      dto.sendAt ? 'sendAt' : 'scheduledAt',
+    );
 
     const trimmedText = dto.text.trim();
     if (!this.stripHtml(trimmedText)) {
@@ -649,18 +696,23 @@ export class ScheduledMessagesService {
       .returning();
 
     // The row is committed; only now does the job and any event go out.
-    const jobId = await this.armJob(row.id, delay, false);
+    const armed = await this.armJob(row.id, delay, false);
+    const jobId = armed.jobId;
 
-    await db
-      .update(scheduledInboxMessages)
-      .set({ queueJobId: jobId, updatedAt: new Date() })
-      .where(eq(scheduledInboxMessages.id, row.id));
+    if (jobId) {
+      await db
+        .update(scheduledInboxMessages)
+        .set({ queueJobId: jobId, updatedAt: new Date() })
+        .where(eq(scheduledInboxMessages.id, row.id));
+    }
 
     this.logger.log(
       `Scheduled ${type} ${row.id} for ${scheduledAt.toISOString()} (delay=${delay}ms, channel=${target.channelId})`,
     );
 
-    const refreshed = { ...row, queueJobId: jobId } as ScheduledInboxMessage;
+    const refreshed =
+      armed.stranded ??
+      ({ ...row, queueJobId: jobId } as ScheduledInboxMessage);
     this.emitter.emit(
       workspaceId,
       'scheduled.message.created',
@@ -737,7 +789,10 @@ export class ScheduledMessagesService {
     const sendAtRaw = dto.sendAt ?? dto.scheduledAt;
     if (sendAtRaw) {
       newScheduledAt = new Date(sendAtRaw);
-      this.assertSendTime(newScheduledAt);
+      this.assertSendTime(
+        newScheduledAt,
+        dto.sendAt ? 'sendAt' : 'scheduledAt',
+      );
       const conversation = existing.inboxConversationId
         ? await this.findConversation(workspaceId, {
             id: existing.inboxConversationId,
@@ -760,14 +815,15 @@ export class ScheduledMessagesService {
       .returning();
 
     // If the time changed, swap the BullMQ job — after the write has committed.
-    if (newScheduledAt) {
-      await this.armJob(id, newScheduledAt.getTime() - Date.now(), true);
-    }
+    const armed = newScheduledAt
+      ? await this.armJob(id, newScheduledAt.getTime() - Date.now(), true)
+      : null;
+    const current = armed?.stranded ?? row;
 
     this.emitter.emit(
       workspaceId,
       'scheduled.message.updated',
-      this.toEventBase(row),
+      this.toEventBase(current),
     );
 
     // Reflect the new time/text on connected calendars. When the update ORIGINATED
@@ -775,7 +831,7 @@ export class ScheduledMessagesService {
     // hash of exactly this body, so this push is a no-op (no ping-pong).
     this.syncCalendarForMessage(id);
 
-    return this.finish(row);
+    return this.finish(current);
   }
 
   async cancel(
@@ -823,7 +879,11 @@ export class ScheduledMessagesService {
           `Cannot cancel — message is ${existing.status}`,
         );
       }
-      return result;
+      // Failed: nothing was cancelled, so there is nothing to undo (restore
+      // only takes a cancelled row). Already cancelled: the earlier undo stands.
+      return existing.status === 'cancelled'
+        ? result
+        : { ok: true, success: true };
     }
 
     // Flip the status first: a fire that races this finds nothing to claim.
@@ -843,8 +903,18 @@ export class ScheduledMessagesService {
       );
     }
 
-    const prior = await this.queue.getJob(this.jobIdFor(id));
-    if (prior) await prior.remove();
+    // The row is cancelled; a job left behind is harmless (the fire's claim
+    // finds nothing to claim), so a removal failure is logged, not thrown.
+    try {
+      const prior = await this.queue.getJob(this.jobIdFor(id));
+      if (prior) await prior.remove();
+    } catch (error) {
+      this.logger.error(
+        `Could not remove the job of cancelled scheduled message ${id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
 
     this.emitter.emit(workspaceId, 'scheduled.message.cancelled', {
       id,
@@ -879,6 +949,17 @@ export class ScheduledMessagesService {
     const delay = existing.scheduledAt.getTime() - Date.now();
     if (delay < MIN_LEAD_MS) throw this.sendTimePassed();
 
+    // The window may have closed since the cancel: refuse like create does,
+    // instead of re-arming a job that would fail at fire time.
+    const conversation = existing.inboxConversationId
+      ? await this.findConversation(workspaceId, {
+          id: existing.inboxConversationId,
+        })
+      : await this.findConversation(workspaceId, {
+          threadKey: existing.threadKey,
+        });
+    this.assertInsideReplyWindow(existing.scheduledAt, conversation);
+
     const [row] = await db
       .update(scheduledInboxMessages)
       .set({
@@ -900,14 +981,15 @@ export class ScheduledMessagesService {
       );
     }
 
-    await this.armJob(id, delay, true);
+    const armed = await this.armJob(id, delay, true);
+    const current = armed.stranded ?? row;
     this.emitter.emit(
       workspaceId,
       'scheduled.message.updated',
-      this.toEventBase(row),
+      this.toEventBase(current),
     );
     this.syncCalendarForMessage(id);
-    return this.finish(row);
+    return this.finish(current);
   }
 
   /** Fires a pending or failed reply right now. */
@@ -945,14 +1027,15 @@ export class ScheduledMessagesService {
       throw new ConflictException('Cannot send — message is no longer waiting');
     }
 
-    await this.armJob(id, 0, true);
+    const armed = await this.armJob(id, 0, true);
+    const current = armed.stranded ?? row;
     this.emitter.emit(
       workspaceId,
       'scheduled.message.updated',
-      this.toEventBase(row),
+      this.toEventBase(current),
     );
     this.syncCalendarForMessage(id);
-    return this.finish(row);
+    return this.finish(current);
   }
 
   private async loadOrThrow(

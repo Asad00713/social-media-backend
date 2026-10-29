@@ -109,8 +109,8 @@ export class InstagramInboxAdapter implements PlatformInboxAdapter {
     platformCommentId: string,
     text: string,
   ): Promise<{
-    recipientPlatformId: string;
-    platformItemId: string;
+    recipientPlatformId: string | null;
+    platformItemId: string | null;
     platformCreatedAt: Date;
   }> {
     const sent = await this.instagram.sendPrivateReply(

@@ -1987,7 +1987,7 @@ export class InstagramService {
     accessToken: string,
     commentId: string,
     text: string,
-  ): Promise<{ recipientId: string; messageId: string }> {
+  ): Promise<{ recipientId: string | null; messageId: string | null }> {
     const url = new URL(`${this.instagramApiUrl}/${igUserId}/messages`);
     url.searchParams.set('access_token', accessToken);
     const res = await fetch(url.toString(), {
@@ -2007,10 +2007,19 @@ export class InstagramService {
       message_id?: string;
       recipient_id?: string;
     };
-    if (!data.message_id || !data.recipient_id) {
-      throw new Error('Instagram private reply: no message_id returned');
+    // The message is delivered. A missing recipient or message id must never
+    // turn that into a failure: the caller degrades (no DM row / no
+    // conversation id yet) and the webhook echo fills the gap.
+    if (!data.recipient_id || !data.message_id) {
+      this.logger.warn(
+        'Instagram private reply accepted without ' +
+          (data.recipient_id ? 'a message_id' : 'a recipient_id'),
+      );
     }
-    return { recipientId: data.recipient_id, messageId: data.message_id };
+    return {
+      recipientId: data.recipient_id ?? null,
+      messageId: data.message_id ?? null,
+    };
   }
 
   async sendDirectMessage(

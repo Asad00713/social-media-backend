@@ -25,11 +25,7 @@ describe('MastodonInboxAdapter.likeComment', () => {
 
   it('favourites with POST /api/v1/statuses/:id/favourite', async () => {
     net = mockFetch();
-    await adapter.likeComment(
-      channel,
-      { platformItemId: 's1', metadata: null },
-      true,
-    );
+    await adapter.likeComment(channel, { platformItemId: 's1' }, true);
     expect(net.requests[0]).toMatchObject({
       method: 'POST',
       url: 'https://mastodon.example/api/v1/statuses/s1/favourite',
@@ -39,11 +35,7 @@ describe('MastodonInboxAdapter.likeComment', () => {
 
   it('unfavourites with POST /api/v1/statuses/:id/unfavourite', async () => {
     net = mockFetch();
-    await adapter.likeComment(
-      channel,
-      { platformItemId: 's1', metadata: null },
-      false,
-    );
+    await adapter.likeComment(channel, { platformItemId: 's1' }, false);
     expect(net.requests[0]).toMatchObject({
       method: 'POST',
       url: 'https://mastodon.example/api/v1/statuses/s1/unfavourite',
@@ -53,11 +45,7 @@ describe('MastodonInboxAdapter.likeComment', () => {
   it('throws on a refusal', async () => {
     net = mockFetch(() => json({ error: 'no' }, 422));
     await expect(
-      adapter.likeComment(
-        channel,
-        { platformItemId: 's1', metadata: null },
-        true,
-      ),
+      adapter.likeComment(channel, { platformItemId: 's1' }, true),
     ).rejects.toThrow(/Mastodon favourite failed: 422/);
   });
 });

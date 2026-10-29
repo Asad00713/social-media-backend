@@ -178,11 +178,17 @@ export function commentActions(
     privateReply = no();
   }
 
+  // A mention is someone else's comment on someone else's post: moderating
+  // it is not ours to do, and the platform would only refuse (YouTube still
+  // charges 50 quota units for the call).
+  let del = platformDelete(input.platform, input.fromMe);
+  if (input.kind === 'mention' && !input.fromMe) del = no();
+
   return {
     reply: YES,
     like: platformLike(input.platform),
     hide,
-    delete: platformDelete(input.platform, input.fromMe),
+    delete: del,
     privateReply,
   };
 }

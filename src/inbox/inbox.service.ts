@@ -1489,16 +1489,25 @@ export class InboxService {
         // collision check reads this row's replied_at, which is the only
         // signal for a YouTube nested reply (its row is stored under the
         // top-level comment, not under the target).
+        // The reply is already delivered here: a failing bookkeeping write
+        // must not turn into a 500 (the retry would post it twice). The
+        // platform-reply rule (R5) marks the target on the next sync anyway.
         const repliedAt = new Date();
-        await db
-          .update(inboxItems)
-          .set({
-            status: 'replied',
-            repliedByUserId: userId,
-            repliedAt,
-            updatedAt: repliedAt,
-          })
-          .where(eq(inboxItems.id, parent.id));
+        try {
+          await db
+            .update(inboxItems)
+            .set({
+              status: 'replied',
+              repliedByUserId: userId,
+              repliedAt,
+              updatedAt: repliedAt,
+            })
+            .where(eq(inboxItems.id, parent.id));
+        } catch (err) {
+          this.logger.error(
+            `could not mark ${parent.id} replied after a delivered reply: ${errMsg(err)}`,
+          );
+        }
         return { created, newRow, repliedAt };
       },
     );

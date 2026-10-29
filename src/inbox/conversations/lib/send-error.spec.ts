@@ -87,6 +87,25 @@ describe('toSendError', () => {
     });
   });
 
+  it.each([
+    'Could not generate a preview',
+    'Failed to moderate the comment',
+    'Integrated with the accelerated pipeline',
+  ])('"%s" is NOT a rate limit: it stays 502 PLATFORM_ERROR', (msg) => {
+    const out = bodyOf(toSendError(new Error(msg)));
+    expect(out.status).toBe(502);
+    expect(out.body).toMatchObject({ code: 'PLATFORM_ERROR' });
+  });
+
+  it.each([
+    'rate limit reached',
+    'Rate-limit exceeded for this app',
+    'Too many requests',
+    'HTTP 429 from platform',
+  ])('"%s" is a rate limit', (msg) => {
+    expect(bodyOf(toSendError(new Error(msg))).status).toBe(429);
+  });
+
   it('maps a thrown non-Error value to PLATFORM_ERROR', () => {
     expect(bodyOf(toSendError('boom')).body).toMatchObject({
       code: 'PLATFORM_ERROR',
@@ -108,5 +127,65 @@ describe('toSendError', () => {
   it('passes an InboxSendError through unchanged', () => {
     const err = toSendError(new Error('HTTP 429'));
     expect(toSendError(err)).toBe(err);
+  });
+});
+
+describe('toSendError({ fromPlatform: true })', () => {
+  const platform = { fromPlatform: true };
+
+  it('reclassifies the expired-token BadRequestException to 409 CHANNEL_DISCONNECTED', () => {
+    const out = bodyOf(
+      toSendError(
+        new BadRequestException(
+          'Access token has expired for this channel. Please reconnect.',
+        ),
+        platform,
+      ),
+    );
+    expect(out.status).toBe(409);
+    expect(out.body).toMatchObject({
+      code: 'CHANNEL_DISCONNECTED',
+      retryable: false,
+    });
+  });
+
+  it('reclassifies a rate message to 429', () => {
+    const out = bodyOf(
+      toSendError(new BadRequestException('Rate limit exceeded'), platform),
+    );
+    expect(out.status).toBe(429);
+    expect(out.body).toMatchObject({ code: 'RATE_LIMITED', retryable: true });
+  });
+
+  it('reclassifies any other HttpException to 502 PLATFORM_ERROR', () => {
+    const out = bodyOf(
+      toSendError(
+        new BadRequestException('Failed to delete post from Bluesky'),
+        platform,
+      ),
+    );
+    expect(out.status).toBe(502);
+    expect(out.body).toMatchObject({
+      code: 'PLATFORM_ERROR',
+      message: 'Failed to delete post from Bluesky',
+      retryable: true,
+    });
+  });
+
+  it('keeps a deliberate 400 { reason }, a 404, a plan-locked 403 and an InboxSendError', () => {
+    const reason = new BadRequestException({ reason: 'Up to 300' });
+    const notFound = new NotFoundException('Channel not found');
+    const locked = new ForbiddenException(
+      'This channel is locked by your plan',
+    );
+    const window = new ReplyWindowClosedError();
+    for (const e of [reason, notFound, locked, window]) {
+      expect(toSendError(e, platform)).toBe(e);
+    }
+  });
+
+  it('without the flag an HttpException still passes through (Task 18 callers)', () => {
+    const e = new BadRequestException('Access token has expired');
+    expect(toSendError(e)).toBe(e);
   });
 });

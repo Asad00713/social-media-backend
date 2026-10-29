@@ -479,6 +479,17 @@ describe('InboxService user actions end in syncThread (R1)', () => {
     expect(ack?.where).not.toContain('"status"');
   });
 
+  it('a failing replied_at UPDATE after a delivered reply is logged, never a failure', async () => {
+    script.item = { ...ROW, fromMe: false };
+    script.onRepliedUpdate = () => Promise.reject(new Error('db blip'));
+    const c = build();
+    await expect(
+      c.service.reply(WS, USER, 'row-1', 'hi'),
+    ).resolves.toBeDefined();
+    // the reply was sent exactly once
+    expect(c.adapter.replyToComment).toHaveBeenCalledTimes(1);
+  });
+
   it('a failed sync never fails the action; it queues a retry with its intent', async () => {
     script.item = { ...ROW, fromMe: false };
     const c = build();
