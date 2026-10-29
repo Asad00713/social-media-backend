@@ -89,6 +89,9 @@ export interface CancelResultDto {
   success: true;
 }
 
+/** `<channelId>:mention:<root>`, the thread key of a mention conversation. */
+const MENTION_THREAD_KEY = /^\d+:mention:/;
+
 interface ConversationRef {
   id: string;
   kind: InboxConversationKind;
@@ -380,6 +383,37 @@ export class ScheduledMessagesService {
     return row ?? null;
   }
 
+  /**
+   * The conversation a stored row belongs to: its link, else its parent item's
+   * thread (D20: a legacy nested reply may store the parent uuid as its key),
+   * else its own thread key.
+   */
+  private async conversationOfRow(
+    workspaceId: string,
+    row: Pick<
+      ScheduledInboxMessage,
+      'inboxConversationId' | 'threadKey' | 'parentItemId'
+    >,
+  ): Promise<ConversationRef | null> {
+    if (row.inboxConversationId) {
+      return this.findConversation(workspaceId, {
+        id: row.inboxConversationId,
+      });
+    }
+    let threadKey = row.threadKey;
+    if (row.parentItemId) {
+      const parent = await db.query.inboxItems.findFirst({
+        where: and(
+          eq(inboxItems.id, row.parentItemId),
+          eq(inboxItems.workspaceId, workspaceId),
+        ),
+        columns: { threadKey: true },
+      });
+      threadKey = parent?.threadKey ?? threadKey;
+    }
+    return this.findConversation(workspaceId, { threadKey });
+  }
+
   private sendTimePassed(): ConflictException {
     return new ConflictException({
       code: 'SEND_TIME_PASSED',
@@ -532,6 +566,8 @@ export class ScheduledMessagesService {
     platformPostId: string | null;
     conversationId: string | null;
     parentItemId: string | null;
+    /** The parent item's thread_key, the conversation a nested reply belongs to (D20). */
+    parentThreadKey: string | null;
   }> {
     if (dto.type === 'dm') {
       const [channelIdStr, ...rest] = dto.threadKey.split(':');
@@ -549,6 +585,7 @@ export class ScheduledMessagesService {
         platformPostId: null,
         conversationId,
         parentItemId: null,
+        parentThreadKey: null,
       };
     }
 
@@ -573,7 +610,17 @@ export class ScheduledMessagesService {
         platformPostId: parent.platformPostId,
         conversationId: null,
         parentItemId: parent.id,
+        parentThreadKey: parent.threadKey,
       };
+    }
+
+    // A mention has no post to comment on: it is answered under the mention
+    // itself, so it needs its parent (D20). Without one the fire would call
+    // commentOnPost on 'mention:<id>' and fail minutes or days later.
+    if (MENTION_THREAD_KEY.test(dto.threadKey)) {
+      throw new BadRequestException(
+        'A reply to a mention needs parentItemId: the mention it answers',
+      );
     }
 
     // top-level comment on a post
@@ -592,6 +639,7 @@ export class ScheduledMessagesService {
       platformPostId,
       conversationId: null,
       parentItemId: null,
+      parentThreadKey: null,
     };
   }
 
@@ -666,13 +714,29 @@ export class ScheduledMessagesService {
         'Attachments can only be scheduled on messages',
       );
     }
-    this.assertInsideReplyWindow(scheduledAt, conversation);
+    if (
+      type === 'comment' &&
+      conversation?.kind === 'mention' &&
+      !dto.parentItemId
+    ) {
+      throw new BadRequestException(
+        'A reply to a mention needs parentItemId: the mention it answers',
+      );
+    }
 
     const target = await this.resolveTarget(workspaceId, {
       type,
       threadKey,
       parentItemId: dto.parentItemId,
     });
+    // D20: a legacy nested reply's threadKey may be the parent item uuid, so
+    // it links through the parent's thread (the same rule as 0052 step 4).
+    if (!dto.inboxConversationId && target.parentThreadKey) {
+      conversation = await this.findConversation(workspaceId, {
+        threadKey: target.parentThreadKey,
+      });
+    }
+    this.assertInsideReplyWindow(scheduledAt, conversation);
 
     const [row] = await db
       .insert(scheduledInboxMessages)
@@ -793,15 +857,13 @@ export class ScheduledMessagesService {
         newScheduledAt,
         dto.sendAt ? 'sendAt' : 'scheduledAt',
       );
-      const conversation = existing.inboxConversationId
-        ? await this.findConversation(workspaceId, {
-            id: existing.inboxConversationId,
-          })
-        : await this.findConversation(workspaceId, {
-            threadKey: existing.threadKey,
-          });
+      const conversation = await this.conversationOfRow(workspaceId, existing);
       this.assertInsideReplyWindow(newScheduledAt, conversation);
       updates.scheduledAt = newScheduledAt;
+      // A row that started unlinked joins its conversation (D20).
+      if (!existing.inboxConversationId && conversation) {
+        updates.inboxConversationId = conversation.id;
+      }
     }
     if (dto.timezone !== undefined) {
       updates.timezone = dto.timezone;
@@ -951,13 +1013,7 @@ export class ScheduledMessagesService {
 
     // The window may have closed since the cancel: refuse like create does,
     // instead of re-arming a job that would fail at fire time.
-    const conversation = existing.inboxConversationId
-      ? await this.findConversation(workspaceId, {
-          id: existing.inboxConversationId,
-        })
-      : await this.findConversation(workspaceId, {
-          threadKey: existing.threadKey,
-        });
+    const conversation = await this.conversationOfRow(workspaceId, existing);
     this.assertInsideReplyWindow(existing.scheduledAt, conversation);
 
     const [row] = await db

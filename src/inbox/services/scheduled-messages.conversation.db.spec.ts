@@ -20,9 +20,12 @@ import type { InboxRealtimeService } from '../conversations/services/inbox-realt
 import {
   describeInboxDb,
   seedChannel,
+  seedItem,
   seedWorkspace,
   withInboxDb,
 } from '../testing/inbox-db';
+import { ConversationSyncService } from '../conversations/services/conversation-sync.service';
+import { ConversationPresenter } from '../conversations/services/conversation-presenter.service';
 import type { CreateScheduledMessageDto } from '../dto/create-scheduled-message.dto';
 import { ScheduledMessagesService } from './scheduled-messages.service';
 
@@ -59,7 +62,7 @@ async function seedConv(
   workspaceId: string,
   channelId: number,
   opts: {
-    kind: 'dm' | 'comment_thread';
+    kind: 'dm' | 'comment_thread' | 'mention';
     threadKey: string;
     windowClosesAt?: Date | null;
   },
@@ -641,3 +644,208 @@ describeInboxDb('ScheduledMessagesService with conversations', () => {
       expect(realtime.countsChanged).toHaveBeenCalledTimes(2);
     }));
 });
+
+// D20 (I2): mention conversations need a parent; a nested reply links through
+// its parent's thread; an unlinked row is linked once its conversation exists.
+describeInboxDb('ScheduledMessagesService D20 linking (I2)', () => {
+  const rtFake = {
+    conversationChanged: jest.fn(),
+    conversationRemoved: jest.fn(),
+    countsChanged: jest.fn(),
+    timelineAppended: jest.fn(),
+  };
+
+  it('rejects a mention conversation scheduled without parentItemId (400), by id and by legacy key', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'threads');
+      const conv = await seedConv(client, workspaceId, ch, {
+        kind: 'mention',
+        threadKey: `${ch}:mention:m1`,
+      });
+      const { service, queue } = build(db);
+
+      await expect(
+        service.create(workspaceId, ownerId, {
+          inboxConversationId: conv,
+          text: 'hi',
+          sendAt: inHours(3),
+        } as CreateScheduledMessageDto),
+      ).rejects.toMatchObject({ status: 400 });
+      // Legacy shape, before any conversation exists for that key.
+      await expect(
+        service.create(workspaceId, ownerId, {
+          type: 'comment',
+          threadKey: `${ch}:mention:m2`,
+          text: 'hi',
+          scheduledAt: inHours(3),
+        } as CreateScheduledMessageDto),
+      ).rejects.toMatchObject({ status: 400 });
+      expect(queue.add).not.toHaveBeenCalled();
+      const n = await client.query(
+        `SELECT 1 FROM scheduled_inbox_messages WHERE workspace_id = $1`,
+        [workspaceId],
+      );
+      expect(n.rows).toHaveLength(0);
+    }));
+
+  it('accepts a mention conversation with parentItemId', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'threads');
+      const m = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'threads',
+        type: 'mention',
+        platformItemId: 'm1',
+        text: 'hey',
+        platformCreatedAt: new Date(),
+      });
+      const conv = await seedConv(client, workspaceId, ch, {
+        kind: 'mention',
+        threadKey: m.threadKey!,
+      });
+      const { service } = build(db);
+      const dto = await service.create(workspaceId, ownerId, {
+        inboxConversationId: conv,
+        parentItemId: m.id,
+        text: 'hi',
+        sendAt: inHours(3),
+      } as CreateScheduledMessageDto);
+      expect((await rowOf(client, dto.id)).inbox_conversation_id).toBe(conv);
+    }));
+
+  it("links a legacy nested reply through the PARENT item's thread, not its stored key", () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'facebook');
+      const parent = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'facebook',
+        type: 'comment',
+        platformPostId: 'post1',
+        text: 'question',
+        platformCreatedAt: new Date(),
+      });
+      const conv = await seedConv(client, workspaceId, ch, {
+        kind: 'comment_thread',
+        threadKey: parent.threadKey!,
+      });
+      const { service } = build(db);
+
+      // create-scheduled-message.dto.ts: a nested reply's threadKey may be
+      // the parent item uuid.
+      const dto = await service.create(workspaceId, ownerId, {
+        type: 'comment',
+        threadKey: parent.id,
+        parentItemId: parent.id,
+        text: 'answer',
+        scheduledAt: inHours(3),
+      } as CreateScheduledMessageDto);
+
+      expect((await rowOf(client, dto.id)).inbox_conversation_id).toBe(conv);
+      expect(dto.inboxConversationId).toBe(conv);
+    }));
+
+  it('a row created before its conversation existed is linked by the first sync, and shows in the Scheduled count', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'facebook');
+      const { service } = build(db);
+
+      // Top-level comment, legacy shape: no conversation yet.
+      const top = await service.create(workspaceId, ownerId, {
+        type: 'comment',
+        threadKey: `${ch}:post9`,
+        text: 'first!',
+        scheduledAt: inHours(3),
+      } as CreateScheduledMessageDto);
+      expect((await rowOf(client, top.id)).inbox_conversation_id).toBeNull();
+
+      // A nested reply whose stored key is the parent uuid, also unlinked.
+      const parent = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'facebook',
+        type: 'comment',
+        platformPostId: 'post9',
+        text: 'question',
+        platformCreatedAt: new Date(),
+      });
+      const nestedId = (
+        await client.query<{ id: string }>(
+          `INSERT INTO scheduled_inbox_messages
+             (workspace_id, channel_id, type, thread_key, parent_item_id, text,
+              scheduled_at, status, created_by_user_id)
+           VALUES ($1,$2,'comment',$3::text,$3::uuid,'answer', now() + interval '3 hours',
+                   'pending', $4) RETURNING id`,
+          [workspaceId, ch, parent.id, ownerId],
+        )
+      ).rows[0].id;
+      // Someone else's thread on the same key in ANOTHER workspace stays out.
+      const other = await seedWorkspace(client);
+      const otherCh = await seedChannel(client, other.workspaceId, 'facebook');
+      const foreign = await client.query<{ id: string }>(
+        `INSERT INTO scheduled_inbox_messages
+           (workspace_id, channel_id, type, thread_key, text, scheduled_at,
+            status, created_by_user_id)
+         VALUES ($1,$2,'comment',$3,'x', now() + interval '3 hours','pending',$4)
+         RETURNING id`,
+        [other.workspaceId, otherCh, parent.threadKey, other.ownerId],
+      );
+
+      const sync = new ConversationSyncService(db, rtFake as never);
+      const res = await sync.syncThread(workspaceId, parent.threadKey!);
+
+      expect((await rowOf(client, top.id)).inbox_conversation_id).toBe(
+        res.conversationId,
+      );
+      expect((await rowOf(client, nestedId)).inbox_conversation_id).toBe(
+        res.conversationId,
+      );
+      expect(
+        (await rowOf(client, foreign.rows[0].id)).inbox_conversation_id,
+      ).toBeNull();
+      const counts = await new ConversationPresenter(db).counts(workspaceId);
+      expect(counts.scheduled).toBe(1);
+    }));
+
+  it('moving an unlinked legacy nested reply links it through its parent', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'facebook');
+      const parent = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'facebook',
+        type: 'comment',
+        platformPostId: 'post3',
+        text: 'question',
+        platformCreatedAt: new Date(),
+      });
+      const conv = await seedConv(client, workspaceId, ch, {
+        kind: 'comment_thread',
+        threadKey: parent.threadKey!,
+      });
+      const id = (
+        await client.query<{ id: string }>(
+          `INSERT INTO scheduled_inbox_messages
+             (workspace_id, channel_id, type, thread_key, parent_item_id, text,
+              scheduled_at, status, created_by_user_id)
+           VALUES ($1,$2,'comment',$3::text,$3::uuid,'answer', now() + interval '3 hours',
+                   'pending', $4) RETURNING id`,
+          [workspaceId, ch, parent.id, ownerId],
+        )
+      ).rows[0].id;
+      const { service } = build(db);
+
+      await service.update(workspaceId, ownerId, id, {
+        sendAt: inHours(5),
+      } as never);
+
+      expect((await rowOf(client, id)).inbox_conversation_id).toBe(conv);
+    }));
+});
+

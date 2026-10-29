@@ -489,6 +489,24 @@ export class ConversationSyncService {
       RETURNING id, (xmax = 0) AS inserted
     `);
     const row = up.rows[0];
+
+    // 6. Self-heal late links (D20): a scheduled reply created before this
+    // conversation existed, or by the Planner's legacy shape (whose nested
+    // replies may store the parent uuid as their key), joins it now, so the
+    // Scheduled tab and its count see it. The same rule as 0052 step 4. Only
+    // live rows: the (inbox_conversation_id, status) index keeps this cheap.
+    await tx.execute(sql`
+      UPDATE scheduled_inbox_messages s
+         SET inbox_conversation_id = ${row.id}::uuid
+       WHERE s.inbox_conversation_id IS NULL
+         AND s.status IN ('pending', 'sending', 'failed')
+         AND s.workspace_id = ${workspaceId}::uuid
+         AND coalesce(
+               (SELECT i.thread_key FROM inbox_items i
+                 WHERE i.id = s.parent_item_id
+                   AND i.workspace_id = s.workspace_id),
+               s.thread_key) = ${threadKey}
+    `);
     return {
       removedId: null,
       result: {
