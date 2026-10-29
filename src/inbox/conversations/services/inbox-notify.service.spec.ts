@@ -1,66 +1,127 @@
+import type { ConfigService } from '@nestjs/config';
+import type { DbType } from '../../../drizzle/db';
+import type { EmailResult, EmailService } from '../../../email/email.service';
+import type { NotificationEmitterService } from '../../../notifications/notification-emitter.service';
 import * as caps from '../../../workspace-members/role-capabilities';
 import { InboxNotifyService } from './inbox-notify.service';
-import { DEFAULT_INBOX_SETTINGS } from './inbox-settings.service';
+import {
+  DEFAULT_INBOX_SETTINGS,
+  type InboxSettings,
+  type InboxSettingsService,
+} from './inbox-settings.service';
 
 const WS = 'w1';
 const CONV = 'c1';
 
 type Notify = 'assigned_and_mentions' | 'everything' | 'nothing';
+type Person = { id: string; email: string; name: string | null };
+type InboxArgs = {
+  workspaceId: string;
+  conversationId: string;
+  assignedByName?: string;
+  authorName?: string;
+};
+type RedisFake = {
+  set: jest.Mock<Promise<'OK' | null>, []>;
+  del: jest.Mock<Promise<number>, [string]>;
+};
+
+/** Boundary cast for a partial test double. */
+function fake<T>(partial: object): T {
+  return partial as unknown as T;
+}
+
+/**
+ * The real service with its two DB reads replaced by in-memory answers, so
+ * the recipient logic runs without a database (the reads themselves are
+ * covered by inbox-notify.db.spec.ts).
+ */
+class StubbedNotify extends InboxNotifyService {
+  members: Person[] = [];
+  loadError: Error | null = null;
+  private useRealLoad = false;
+
+  protected override loadMembers(
+    _workspaceId: string,
+    userIds?: string[],
+  ): Promise<Person[]> {
+    if (this.useRealLoad) return super.loadMembers(_workspaceId, userIds);
+    if (this.loadError) return Promise.reject(this.loadError);
+    return Promise.resolve(
+      this.members.filter((m) => !userIds || userIds.includes(m.id)),
+    );
+  }
+
+  protected override displayName(userId: string): Promise<string> {
+    return Promise.resolve(userId === 'actor' ? 'Hina' : 'X');
+  }
+
+  /** Exposes the real loadMembers for the role-filter test. */
+  realLoadMembers(workspaceId: string): Promise<Person[]> {
+    this.useRealLoad = true;
+    return this.loadMembers(workspaceId);
+  }
+}
 
 function build(opts: {
-  members: Array<{ id: string; email: string; name: string | null }>;
+  members: Person[];
   notify?: Record<string, Notify>;
   redis?: Array<'OK' | null>;
+  db?: object;
 }) {
   const emitter = {
-    inboxAssigned: jest.fn().mockResolvedValue({}),
-    inboxNoteMention: jest.fn().mockResolvedValue({}),
-    inboxNewMessage: jest.fn().mockResolvedValue({}),
+    inboxAssigned: jest
+      .fn<Promise<unknown>, [string, InboxArgs]>()
+      .mockResolvedValue({}),
+    inboxNoteMention: jest
+      .fn<Promise<unknown>, [string, InboxArgs]>()
+      .mockResolvedValue({}),
+    inboxNewMessage: jest
+      .fn<Promise<unknown>, [string, InboxArgs]>()
+      .mockResolvedValue({}),
   };
-  const email = { sendEmail: jest.fn().mockResolvedValue(true) };
+  const email = {
+    sendEmail: jest
+      .fn<
+        Promise<EmailResult>,
+        [{ to: string; subject: string; html: string; text?: string }]
+      >()
+      .mockResolvedValue({ success: true }),
+  };
   const settings = {
-    getMany: jest.fn(async (ids: string[]) => {
-      const m = new Map();
+    getMany: jest.fn((ids: string[]) => {
+      const m = new Map<string, InboxSettings>();
       for (const id of ids) {
         m.set(id, {
           ...DEFAULT_INBOX_SETTINGS,
           notify: opts.notify?.[id] ?? DEFAULT_INBOX_SETTINGS.notify,
         });
       }
-      return m;
+      return Promise.resolve(m);
     }),
   };
   const redisReplies = [...(opts.redis ?? [])];
-  const redis = {
-    del: jest.fn().mockResolvedValue(1),
-    set: jest.fn(async () =>
-      redisReplies.length ? redisReplies.shift()! : 'OK',
+  const redis: RedisFake = {
+    del: jest.fn<Promise<number>, [string]>().mockResolvedValue(1),
+    set: jest.fn<Promise<'OK' | null>, []>(() =>
+      Promise.resolve(redisReplies.length ? redisReplies.shift()! : 'OK'),
     ),
   };
   const config = { get: jest.fn(() => 'https://app.test') };
-  const svc = new InboxNotifyService(
-    emitter as any,
-    email as any,
-    settings as any,
-    {} as any,
-    redis as any,
-    config as any,
+  const svc = new StubbedNotify(
+    fake<NotificationEmitterService>(emitter),
+    fake<EmailService>(email),
+    fake<InboxSettingsService>(settings),
+    fake<DbType>(opts.db ?? {}),
+    redis,
+    fake<ConfigService>(config),
   );
-  // DB access is isolated in these two methods (covered by the DB spec).
-  jest
-    .spyOn(svc as any, 'loadMembers')
-    .mockImplementation(async (...a: any[]) => {
-      const ids: string[] | undefined = a[1];
-      return opts.members.filter((m) => !ids || ids.includes(m.id));
-    });
-  jest
-    .spyOn(svc as any, 'displayName')
-    .mockImplementation(async (id: any) => (id === 'actor' ? 'Hina' : 'X'));
+  svc.members = opts.members;
   return { svc, emitter, email, redis, settings };
 }
 
-const A = { id: 'a', email: 'a@x.test', name: 'Amy' };
-const B = { id: 'b', email: 'b@x.test', name: 'Bob' };
+const A: Person = { id: 'a', email: 'a@x.test', name: 'Amy' };
+const B: Person = { id: 'b', email: 'b@x.test', name: 'Bob' };
 const ASSIGN = {
   workspaceId: WS,
   conversationId: CONV,
@@ -138,34 +199,38 @@ describe('InboxNotifyService', () => {
     it('releases the 10-minute claim when sendEmail reports failure', async () => {
       const t = build({ members: [A] });
       t.email.sendEmail.mockResolvedValue({ success: false, error: 'no key' });
-      (t.redis as any).del = jest.fn().mockResolvedValue(1);
       await t.svc.assigned(ASSIGN);
-      expect((t.redis as any).del).toHaveBeenCalledWith('inbox-mail:a:c1');
+      expect(t.redis.del).toHaveBeenCalledWith('inbox-mail:a:c1');
     });
 
     it('releases the claim when sendEmail throws', async () => {
       const t = build({ members: [A] });
       t.email.sendEmail.mockRejectedValue(new Error('smtp down'));
-      (t.redis as any).del = jest.fn().mockResolvedValue(1);
       await t.svc.assigned(ASSIGN);
-      expect((t.redis as any).del).toHaveBeenCalledWith('inbox-mail:a:c1');
+      expect(t.redis.del).toHaveBeenCalledWith('inbox-mail:a:c1');
     });
 
     it('keeps the claim after a successful send', async () => {
       const t = build({ members: [A] });
       t.email.sendEmail.mockResolvedValue({ success: true });
-      (t.redis as any).del = jest.fn();
       await t.svc.assigned(ASSIGN);
-      expect((t.redis as any).del).not.toHaveBeenCalled();
+      expect(t.redis.del).not.toHaveBeenCalled();
     });
   });
 
   describe('loadMembers role filter', () => {
-    function fakeDb(owner: any[], accepted: any[]) {
-      const results = [owner, accepted];
-      const chain: any = {};
-      for (const k of ['select', 'from', 'innerJoin']) chain[k] = () => chain;
-      chain.where = () => Promise.resolve(results.shift());
+    /** A drizzle-shaped chain that answers the owner query, then the members query. */
+    function fakeDb(
+      owner: Person[],
+      accepted: Array<Person & { role: string }>,
+    ) {
+      const results: unknown[][] = [owner, accepted];
+      const chain = {
+        select: () => chain,
+        from: () => chain,
+        innerJoin: () => chain,
+        where: () => Promise.resolve(results.shift() ?? []),
+      };
       return chain;
     }
 
@@ -174,22 +239,18 @@ describe('InboxNotifyService', () => {
         .spyOn(caps, 'roleCan')
         .mockImplementation((role) => role !== 'GUEST');
       try {
-        const svc = new InboxNotifyService(
-          {} as any,
-          {} as any,
-          {} as any,
-          fakeDb(
+        const t = build({
+          members: [],
+          db: fakeDb(
             [{ id: 'o', email: 'o@x.test', name: 'Owner' }],
             [
               { id: 'm', email: 'm@x.test', name: 'M', role: 'MEMBER' },
               { id: 'g', email: 'g@x.test', name: 'G', role: 'GUEST' },
             ],
-          ) as any,
-          {} as any,
-          {} as any,
-        );
-        const out = await (svc as any).loadMembers(WS);
-        expect(out.map((m: any) => m.id).sort()).toEqual(['m', 'o']);
+          ),
+        });
+        const out = await t.svc.realLoadMembers(WS);
+        expect(out.map((m) => m.id).sort()).toEqual(['m', 'o']);
         expect(spy).toHaveBeenCalledWith('GUEST', 'inbox:view');
       } finally {
         spy.mockRestore();
@@ -284,7 +345,7 @@ describe('InboxNotifyService', () => {
 
     it('does not reject when loading recipients fails', async () => {
       const t = build({ members: [A] });
-      (t.svc as any).loadMembers.mockRejectedValue(new Error('db down'));
+      t.svc.loadError = new Error('db down');
       await expect(
         t.svc.newInbound({
           workspaceId: WS,

@@ -4,7 +4,26 @@ import {
   seedWorkspace,
   withInboxDb,
 } from '../../testing/inbox-db';
+import type { ConfigService } from '@nestjs/config';
+import type { EmailService } from '../../../email/email.service';
+import type { NotificationEmitterService } from '../../../notifications/notification-emitter.service';
 import { InboxNotifyService } from './inbox-notify.service';
+import type { InboxSettingsService } from './inbox-settings.service';
+
+/** Exposes the two protected DB reads so they can be tested directly. */
+class ExposedNotify extends InboxNotifyService {
+  load(workspaceId: string, userIds?: string[]) {
+    return this.loadMembers(workspaceId, userIds);
+  }
+  name(userId: string) {
+    return this.displayName(userId);
+  }
+}
+
+/** Boundary cast for a dependency the queries never touch. */
+function unused<T>(): T {
+  return {} as unknown as T;
+}
 
 describeInboxDb('InboxNotifyService recipient queries', () => {
   it('loads the owner and accepted members only, and names users', async () => {
@@ -36,25 +55,25 @@ describeInboxDb('InboxNotifyService recipient queries', () => {
           ],
         );
       }
-      const svc = new InboxNotifyService(
-        {} as any,
-        {} as any,
-        {} as any,
-        db as any,
-        {} as any,
-        {} as any,
-      ) as any;
+      const svc = new ExposedNotify(
+        unused<NotificationEmitterService>(),
+        unused<EmailService>(),
+        unused<InboxSettingsService>(),
+        db,
+        { set: () => Promise.resolve(null), del: () => Promise.resolve(0) },
+        unused<ConfigService>(),
+      );
 
-      const all = await svc.loadMembers(workspaceId);
-      expect(all.map((m: any) => m.id).sort()).toEqual(
+      const all = await svc.load(workspaceId);
+      expect(all.map((m) => m.id).sort()).toEqual(
         [ownerId, admin, guest].sort(),
       );
       for (const id of notMembers)
-        expect(all.map((m: any) => m.id)).not.toContain(id);
-      const some = await svc.loadMembers(workspaceId, [admin, 'not-a-member']);
-      expect(some.map((m: any) => m.id)).toEqual([admin]);
-      expect(await svc.loadMembers(workspaceId, [])).toEqual([]);
-      expect(await svc.displayName(ownerId)).toBe('Owner');
+        expect(all.map((m) => m.id)).not.toContain(id);
+      const some = await svc.load(workspaceId, [admin, 'not-a-member']);
+      expect(some.map((m) => m.id)).toEqual([admin]);
+      expect(await svc.load(workspaceId, [])).toEqual([]);
+      expect(await svc.name(ownerId)).toBe('Owner');
     });
   });
 });
