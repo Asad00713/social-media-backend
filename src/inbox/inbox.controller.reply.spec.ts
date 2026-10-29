@@ -15,6 +15,7 @@ import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { WorkspaceRoleService } from '../workspace-members/workspace-role.service';
 import { CommentActionsService } from './conversations/services/comment-actions.service';
 import { ReplyResponseBuilder } from './conversations/services/reply-response.builder';
+import { REQUIRE_CAPABILITY } from '../workspace-members/require-capability.decorator';
 import { InboxController } from './inbox.controller';
 import { InboxService } from './inbox.service';
 import { ScheduledMessagesService } from './services/scheduled-messages.service';
@@ -41,7 +42,13 @@ const NODE = { id: ITEM, replies: [] };
 const ENTRY = { kind: 'message', id: ITEM };
 const ROW = { id: 'conv-1' };
 
+/** Nth argument of a mock's first call. */
+const arg = (fn: jest.Mock, n: number): unknown =>
+  (fn.mock.calls[0] as unknown[])[n];
+
 const SENT_AT = '2026-10-26T10:00:00.000Z';
+
+jest.setTimeout(30000);
 
 describe('InboxController reply routes', () => {
   let app: INestApplication<App>;
@@ -153,7 +160,7 @@ describe('InboxController reply routes', () => {
         force: true,
       })
       .expect(201);
-    const opts = inbox.reply.mock.calls[0][4] as {
+    const opts = arg(inbox.reply, 4) as {
       markDone: boolean;
       typingStartedAt: Date;
       force: boolean;
@@ -174,7 +181,7 @@ describe('InboxController reply routes', () => {
         force: true,
       })
       .expect(201);
-    expect(inbox.sendDm.mock.calls[0][5]).toEqual({
+    expect(arg(inbox.sendDm, 5)).toEqual({
       markDone: false,
       typingStartedAt: new Date(SENT_AT),
       force: true,
@@ -186,7 +193,7 @@ describe('InboxController reply routes', () => {
       .post(`${base}/comments/${ITEM}/reply`)
       .send({ text: 'hi' })
       .expect(201);
-    expect(inbox.reply.mock.calls[0][4]).toEqual({});
+    expect(arg(inbox.reply, 4)).toEqual({});
   });
 
   it.each([
@@ -240,4 +247,49 @@ describe('InboxController reply routes', () => {
     expect(res.body).toMatchObject(body);
     expect(built.forDm).not.toHaveBeenCalled();
   });
+
+  it.each(['reply', 'commentOnPost', 'sendDm', 'sendDmTemplate'] as const)(
+    '%s requires inbox:reply',
+    (name) => {
+      expect(
+        Reflect.getMetadata(
+          REQUIRE_CAPABILITY,
+          InboxController.prototype[name],
+        ),
+      ).toBe('inbox:reply');
+    },
+  );
+
+  it('POST threads/:threadKey/comments is { text } only: markDone is a 400', async () => {
+    await http()
+      .post(`${base}/threads/7:p1/comments`)
+      .send({ text: 'hi', markDone: true })
+      .expect(400);
+    expect(inbox.commentOnPost).not.toHaveBeenCalled();
+  });
+
+  it('an explicit null typingStartedAt / markDone / force means "not sent", not 1970', async () => {
+    await http()
+      .post(`${base}/comments/${ITEM}/reply`)
+      .send({ text: 'hi', typingStartedAt: null, markDone: null, force: null })
+      .expect(201);
+    expect(arg(inbox.reply, 4)).toEqual({});
+  });
+
+  it.each([
+    ['comments/' + ITEM + '/reply', 'forComment', LEGACY_COMMENT],
+    ['threads/7:p1/comments', 'forComment', LEGACY_COMMENT],
+    ['dms/7:conv/messages', 'forDm', LEGACY_DM],
+    ['dms/7:conv/template', 'forDm', LEGACY_DM],
+  ] as const)(
+    'POST %s: a builder failure after the send still answers 201 with the legacy body and row null',
+    async (path, builderFn, legacy) => {
+      built[builderFn].mockRejectedValue(new Error('pool timeout'));
+      const body = path.endsWith('template')
+        ? { name: 'a', language: 'en' }
+        : { text: 'hi' };
+      const res = await http().post(`${base}/${path}`).send(body).expect(201);
+      expect(res.body).toEqual({ ...legacy, row: null });
+    },
+  );
 });

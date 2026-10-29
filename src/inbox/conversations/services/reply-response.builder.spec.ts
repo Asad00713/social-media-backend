@@ -46,7 +46,12 @@ function build(opts: { row?: unknown; canDeleteDm?: boolean } = {}) {
       inboxItems: { findFirst: jest.fn(() => Promise.resolve(found.parent)) },
     },
   };
-  const inbox = { loadItemForResponse: jest.fn() };
+  const inbox = {
+    loadItemForResponse: jest.fn(),
+    userRefOf: jest.fn(() =>
+      Promise.resolve({ id: USER, name: 'Sam', avatarUrl: null }),
+    ),
+  };
   const presenter = {
     loadRowByThreadKey: jest.fn(() =>
       Promise.resolve('row' in opts ? opts.row : { id: 'conv-1' }),

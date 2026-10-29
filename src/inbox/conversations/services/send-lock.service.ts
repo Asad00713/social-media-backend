@@ -16,7 +16,11 @@ export interface SendLockRedis {
 }
 
 const KEY_PREFIX = 'inbox-send:';
-/** A crashed send frees the thread by itself after this long. */
+/**
+ * A crashed send frees the thread by itself after this long. There is no
+ * renewal and the platform adapters have no timeout of their own, so a platform
+ * call outliving 30 s loses mutual exclusion (ledger note, Task 18 fix round 1).
+ */
 const LOCK_TTL_MS = 30_000;
 const RETRY_EVERY_MS = 250;
 const GIVE_UP_AFTER_MS = 15_000;
@@ -28,7 +32,30 @@ const GIVE_UP_AFTER_MS = 15_000;
  */
 const RELEASE_SCRIPT = `if redis.call('GET', KEYS[1]) == ARGV[1] then return redis.call('DEL', KEYS[1]) else return 0 end`;
 
+/** A hung Redis (ioredis queues commands offline forever) must not hang a send. */
+const ACQUIRE_TIMEOUT_MS = 2000;
+const RELEASE_TIMEOUT_MS = 1000;
+
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+function withTimeout<T>(p: Promise<T>, ms: number): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(
+      () => reject(new Error(`redis timeout after ${ms} ms`)),
+      ms,
+    );
+    p.then(
+      (v) => {
+        clearTimeout(timer);
+        resolve(v);
+      },
+      (e: unknown) => {
+        clearTimeout(timer);
+        reject(e instanceof Error ? e : new Error(String(e)));
+      },
+    );
+  });
+}
 
 /**
  * One send at a time per conversation. The lock spans the collision check, the
@@ -51,9 +78,8 @@ export class SendLockService {
     const token = `${userId}:${randomUUID()}`;
     const deadline = Date.now() + GIVE_UP_AFTER_MS;
 
-    while (
-      (await this.redis.set(key, token, 'PX', LOCK_TTL_MS, 'NX')) !== 'OK'
-    ) {
+    for (;;) {
+      if (await this.tryAcquire(key, token)) break;
       if (Date.now() >= deadline) {
         throw new InboxSendError(HttpStatus.SERVICE_UNAVAILABLE, {
           code: 'PLATFORM_ERROR',
@@ -68,13 +94,39 @@ export class SendLockService {
       return await fn();
     } finally {
       try {
-        await this.redis.eval(RELEASE_SCRIPT, 1, key, token);
+        await withTimeout(
+          this.redis.eval(RELEASE_SCRIPT, 1, key, token),
+          RELEASE_TIMEOUT_MS,
+        );
       } catch (err) {
         // The send already happened; the 30 s expiry frees the key anyway.
         this.logger.error(
           `send lock release failed for ${key}: ${err instanceof Error ? err.message : String(err)}`,
         );
       }
+    }
+  }
+
+  /**
+   * One bounded SET NX. Redis being down or hung must fail the send BEFORE any
+   * platform call (a retryable 503), never hang the request.
+   */
+  private async tryAcquire(key: string, token: string): Promise<boolean> {
+    try {
+      const ok = await withTimeout(
+        this.redis.set(key, token, 'PX', LOCK_TTL_MS, 'NX'),
+        ACQUIRE_TIMEOUT_MS,
+      );
+      return ok === 'OK';
+    } catch (err) {
+      this.logger.error(
+        `send lock acquire failed for ${key}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      throw new InboxSendError(HttpStatus.SERVICE_UNAVAILABLE, {
+        code: 'PLATFORM_ERROR',
+        message: 'Sending is briefly unavailable. Try again.',
+        retryable: true,
+      });
     }
   }
 }

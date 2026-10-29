@@ -33,7 +33,7 @@ import type {
 } from '../dto/contract';
 import { commentActions, DISALLOWED_FALLBACK } from '../lib/comment-actions';
 import { commentNodeOf } from '../lib/comment-tree';
-import { ChannelNotConnectedError, toSendError } from '../lib/send-error';
+import { ChannelNotConnectedError, withSendError } from '../lib/send-error';
 import { deriveThreadKey, kindOfItem } from '../lib/thread-key';
 import { ConversationResyncService } from './conversation-resync.service';
 import { ConversationSyncService } from './conversation-sync.service';
@@ -346,12 +346,9 @@ export class CommentActionsService {
 
   /** Runs a platform call and maps whatever it throws onto the contract's errors. */
   private async platformCall<T>(fn: () => Promise<T>): Promise<T> {
-    try {
-      return await fn();
-    } catch (err) {
-      this.logger.error(`comment action failed: ${errMsg(err)}`);
-      throw toSendError(err);
-    }
+    return withSendError(fn, (err) =>
+      this.logger.error(`comment action failed: ${errMsg(err)}`),
+    );
   }
 
   private async resolveChannel(

@@ -8,6 +8,7 @@ import type { SQL } from 'drizzle-orm';
 interface UpdateLog {
   kind: 'update';
   setKeys: string[];
+  setValues: Record<string, unknown>;
   where: string;
   params: unknown[];
 }
@@ -30,6 +31,8 @@ interface Script {
   // Result of a select, by its projected column names. The collision query
   // projects `text`; the DM window query projects `at`.
   onSelect: (keys: string[]) => Array<Record<string, unknown>>;
+  // Runs when a reply marks its target replied; may delay it (a slow UPDATE).
+  onRepliedUpdate: ((values: Record<string, unknown>) => Promise<void>) | null;
 }
 const script: Script = {
   item: {},
@@ -38,6 +41,7 @@ const script: Script = {
   updated: [],
   selected: [],
   onSelect: () => script.selected,
+  onRepliedUpdate: null,
 };
 
 function chain(
@@ -85,14 +89,21 @@ jest.mock('../drizzle/db', () => ({
       const entry: UpdateLog = {
         kind: 'update',
         setKeys: [],
+        setValues: {},
         where: '',
         params: [],
       };
       log.push(entry);
       return chain(
-        () => script.updated,
+        () =>
+          entry.setKeys.includes('repliedAt') && script.onRepliedUpdate
+            ? script.onRepliedUpdate(entry.setValues).then(() => script.updated)
+            : script.updated,
         (name, args) => {
-          if (name === 'set') entry.setKeys = Object.keys(args[0] as object);
+          if (name === 'set') {
+            entry.setKeys = Object.keys(args[0] as object);
+            entry.setValues = args[0] as Record<string, unknown>;
+          }
           if (name === 'where') {
             const q = new PgDialect().sqlToQuery(args[0] as SQL);
             entry.where = q.sql;
@@ -210,6 +221,7 @@ function build(opts: { markDoneOnReply?: boolean } = {}) {
       }),
     ),
   };
+  const redis = new FakeSendLockRedis();
   const service = new InboxService(
     { emit: jest.fn() } as never,
     dispatcher as never,
@@ -222,7 +234,7 @@ function build(opts: { markDoneOnReply?: boolean } = {}) {
     resync as never,
     settings as never,
     { newInbound: jest.fn() } as never,
-    new SendLockService(new FakeSendLockRedis()),
+    new SendLockService(redis),
   );
   const i = service as unknown as Internals;
   i.assertWorkspaceAccess = () => Promise.resolve(undefined);
@@ -238,7 +250,7 @@ function build(opts: { markDoneOnReply?: boolean } = {}) {
   i.upsertComment = jest.fn(() => Promise.resolve(NEW_ROW));
   i.upsertDm = jest.fn(() => Promise.resolve(NEW_DM));
   i.upsertInboxItem = jest.fn(() => Promise.resolve(NEW_ROW));
-  return { service, sync, resync, settings, adapter };
+  return { service, sync, resync, settings, adapter, redis };
 }
 type Ctx = ReturnType<typeof build>;
 
@@ -359,6 +371,7 @@ beforeEach(() => {
   selectLog.length = 0;
   script.user = null;
   script.onSelect = () => script.selected;
+  script.onRepliedUpdate = null;
   script.item = ROW;
   script.channel = {
     id: CH,
@@ -907,5 +920,58 @@ describe('loadItemForResponse', () => {
     await expect(c.service.loadItemForResponse(WS, 'nope')).rejects.toThrow(
       /not found/i,
     );
+  });
+});
+
+describe('lock scope and the replied_at write (review fixes)', () => {
+  it('YouTube nested reply: the target is marked replied INSIDE the lock, so the next sender gets 409', async () => {
+    // The first reply's row is stored under the top-level comment, so the
+    // per-comment child query finds nothing; only the target's replied_at can
+    // tell the second sender. Its UPDATE is slow (600 ms): written after the
+    // lock was released, the second sender (retrying every 250 ms) would slip in.
+    script.item = {
+      ...ROW,
+      platform: 'youtube',
+      fromMe: false,
+      platformParentId: 'top',
+      repliedAt: null,
+    };
+    scriptSelects([]);
+    script.user = { id: 'A', name: 'Ann', avatarUrl: null };
+    script.onRepliedUpdate = async (values) => {
+      await new Promise((r) => setTimeout(r, 600));
+      script.item = {
+        ...script.item,
+        repliedAt: values.repliedAt,
+        repliedByUserId: values.repliedByUserId,
+      };
+    };
+    const c = build();
+    const opts = { typingStartedAt: TYPING };
+    const a = c.service.reply(WS, 'A', 'row-1', 'one', opts);
+    const b = c.service.reply(WS, 'B', 'row-1', 'two', opts);
+    const [ra, rb] = await Promise.allSettled([a, b]);
+    expect(ra.status).toBe('fulfilled');
+    expect(rb.status).toBe('rejected');
+    expect(
+      ((rb as PromiseRejectedResult).reason as ConflictException).getResponse(),
+    ).toMatchObject({ code: 'REPLIED_FIRST', reply: { by: { id: 'A' } } });
+    expect(c.adapter.replyToComment).toHaveBeenCalledTimes(1);
+  });
+
+  it('dm lock key is the decoded channel:conversation, so 07:conv and 7:conv share one lock', async () => {
+    script.item = DM_ROW;
+    const c = build();
+    const set = jest.spyOn(c.redis, 'set');
+    await c.service.sendDm(WS, USER, `0${CH}:conv`, 'hi');
+    expect(set.mock.calls[0][0]).toBe(`inbox-send:${CH}:conv`);
+  });
+
+  it('comment lock key is the answered comment, not the post', async () => {
+    script.item = { ...ROW, fromMe: false };
+    const c = build();
+    const set = jest.spyOn(c.redis, 'set');
+    await c.service.reply(WS, USER, 'row-1', 'hi');
+    expect(set.mock.calls[0][0]).toBe(`inbox-send:${CH}:c1`);
   });
 });

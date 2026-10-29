@@ -110,4 +110,49 @@ describe('SendLockService', () => {
       lock.withSendLock('k', 'u1', () => Promise.resolve('sent')),
     ).resolves.toBe('sent');
   });
+
+  describe('a Redis that hangs (ioredis queues commands offline forever)', () => {
+    const never = () => new Promise<never>(() => undefined);
+
+    it('acquire: a set that never resolves rejects with a retryable 503 inside ~2 s, fn never runs', async () => {
+      jest.useFakeTimers();
+      const redis = new FakeSendLockRedis();
+      jest.spyOn(redis, 'set').mockImplementation(never);
+      const lock = new SendLockService(redis);
+      const fn = jest.fn();
+      const settled = lock.withSendLock('k', 'u1', fn).catch((e: unknown) => e);
+      await jest.advanceTimersByTimeAsync(2100);
+      const err = await settled;
+      expect(err).toBeInstanceOf(HttpException);
+      expect((err as HttpException).getStatus()).toBe(503);
+      expect((err as HttpException).getResponse()).toEqual({
+        code: 'PLATFORM_ERROR',
+        message: 'Sending is briefly unavailable. Try again.',
+        retryable: true,
+      });
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    it('acquire: a set that rejects (Redis error) is the same retryable 503', async () => {
+      const redis = new FakeSendLockRedis();
+      jest.spyOn(redis, 'set').mockRejectedValue(new Error('ECONNREFUSED'));
+      const lock = new SendLockService(redis);
+      const fn = jest.fn();
+      const err = await lock
+        .withSendLock('k', 'u1', fn)
+        .catch((e: unknown) => e);
+      expect((err as HttpException).getStatus()).toBe(503);
+      expect(fn).not.toHaveBeenCalled();
+    });
+
+    it('release: an eval that never resolves still returns the send result inside ~1 s', async () => {
+      jest.useFakeTimers();
+      const redis = new FakeSendLockRedis();
+      jest.spyOn(redis, 'eval').mockImplementation(never);
+      const lock = new SendLockService(redis);
+      const done = lock.withSendLock('k', 'u1', () => Promise.resolve('sent'));
+      await jest.advanceTimersByTimeAsync(1100);
+      await expect(done).resolves.toBe('sent');
+    });
+  });
 });

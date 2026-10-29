@@ -7,7 +7,6 @@ import {
   type InboxItem,
 } from '../../../drizzle/schema/inbox.schema';
 import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
-import { users } from '../../../drizzle/schema/users.schema';
 import { InboxDispatcher } from '../../services/inbox-dispatcher.service';
 import { InboxService } from '../../inbox.service';
 import type {
@@ -15,7 +14,6 @@ import type {
   ConversationRow,
   Platform,
   TimelineEntry,
-  UserRef,
 } from '../dto/contract';
 import { commentActions } from '../lib/comment-actions';
 import { commentNodeOf } from '../lib/comment-tree';
@@ -43,10 +41,11 @@ export class ReplyResponseBuilder {
     workspaceId: string,
     userId: string,
     sent: { id: string },
+    now: Date = new Date(),
   ): Promise<{ node: CommentNode; row: ConversationRow | null }> {
     const item = await this.inbox.loadItemForResponse(workspaceId, sent.id);
     const [sentBy, channel, parentId] = await Promise.all([
-      this.userRef(userId),
+      this.inbox.userRefOf(userId),
       this.db.query.socialMediaChannels.findFirst({
         where: and(
           eq(socialMediaChannels.id, item.channelId),
@@ -70,7 +69,7 @@ export class ReplyResponseBuilder {
         canReply: true,
         accountLabel: channel?.username ?? channel?.accountName ?? '',
       },
-      new Date(),
+      now,
     );
     return {
       node: commentNodeOf(item, sentBy, actions, parentId),
@@ -84,7 +83,7 @@ export class ReplyResponseBuilder {
     sent: { id: string },
   ): Promise<{ entry: MessageEntry; row: ConversationRow | null }> {
     const item = await this.inbox.loadItemForResponse(workspaceId, sent.id);
-    const sentBy = await this.userRef(userId);
+    const sentBy = await this.inbox.userRefOf(userId);
     return {
       entry: messageEntryOf(item, sentBy, this.canDeleteDm(item)),
       row: await this.rowOf(workspaceId, item),
@@ -117,13 +116,5 @@ export class ReplyResponseBuilder {
       columns: { id: true },
     });
     return parent?.id ?? null;
-  }
-
-  private async userRef(userId: string): Promise<UserRef | null> {
-    const u = await this.db.query.users.findFirst({
-      where: eq(users.id, userId),
-      columns: { id: true, name: true, avatarUrl: true },
-    });
-    return u ? { id: u.id, name: u.name ?? '', avatarUrl: u.avatarUrl } : null;
   }
 }

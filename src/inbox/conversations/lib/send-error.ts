@@ -75,3 +75,19 @@ export function toSendError(err: unknown): unknown {
     retryable: true,
   });
 }
+
+/**
+ * Runs a send or platform step and rethrows whatever it throws as the
+ * contract's failure shape. `onError` sees the raw error first (logging).
+ */
+export async function withSendError<T>(
+  fn: () => Promise<T>,
+  onError?: (err: unknown) => void,
+): Promise<T> {
+  try {
+    return await fn();
+  } catch (err) {
+    onError?.(err);
+    throw toSendError(err);
+  }
+}

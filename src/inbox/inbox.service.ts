@@ -19,6 +19,7 @@ import {
   ne,
   or,
   sql,
+  type SQL,
 } from 'drizzle-orm';
 import { db, type DbType } from '../drizzle/db';
 import {
@@ -57,7 +58,7 @@ import { SendLockService } from './conversations/services/send-lock.service';
 import {
   ChannelNotConnectedError,
   ReplyWindowClosedError,
-  toSendError,
+  withSendError,
 } from './conversations/lib/send-error';
 import type { UserRef } from './conversations/dto/contract';
 import { messageEntryOf } from './conversations/lib/timeline-entry';
@@ -521,15 +522,11 @@ export class InboxService {
   }
 
   /** Runs a send step and maps whatever it throws onto the contract's failure shape. */
-  private async sendStep<T>(fn: () => Promise<T>): Promise<T> {
-    try {
-      return await fn();
-    } catch (err) {
-      throw toSendError(err);
-    }
+  private sendStep<T>(fn: () => Promise<T>): Promise<T> {
+    return withSendError(fn);
   }
 
-  private async userRefOf(userId: string | null): Promise<UserRef | null> {
+  async userRefOf(userId: string | null): Promise<UserRef | null> {
     if (!userId) return null;
     const u = await db.query.users.findFirst({
       where: eq(users.id, userId),
@@ -555,13 +552,15 @@ export class InboxService {
   }
 
   /**
-   * DM collision: the latest outbound row of the conversation after
-   * `typingStartedAt`, from anyone but the sender. Run INSIDE the send lock.
+   * The latest outbound row matching `scope` (the part that differs between a
+   * DM conversation and one comment) after `since`, from anyone but the
+   * sender; refuses with REPLIED_FIRST when there is one. A NULL author is a
+   * reply made on the platform itself.
    */
-  private async assertNoDmCollision(
+  private async refuseIfOutboundAfter(
     workspaceId: string,
     channelId: number,
-    conversationId: string,
+    scope: SQL,
     userId: string,
     since: Date,
   ): Promise<void> {
@@ -577,8 +576,8 @@ export class InboxService {
         and(
           eq(inboxItems.workspaceId, workspaceId),
           eq(inboxItems.channelId, channelId),
-          eq(inboxItems.conversationId, conversationId),
           eq(inboxItems.fromMe, true),
+          scope,
           gt(inboxItems.platformCreatedAt, since),
           or(
             isNull(inboxItems.authoredByUserId),
@@ -598,6 +597,26 @@ export class InboxService {
   }
 
   /**
+   * DM collision: an outbound row of the conversation after
+   * `typingStartedAt`. Run INSIDE the send lock.
+   */
+  private async assertNoDmCollision(
+    workspaceId: string,
+    channelId: number,
+    conversationId: string,
+    userId: string,
+    since: Date,
+  ): Promise<void> {
+    await this.refuseIfOutboundAfter(
+      workspaceId,
+      channelId,
+      eq(inboxItems.conversationId, conversationId),
+      userId,
+      since,
+    );
+  }
+
+  /**
    * Comment collision, PER COMMENT: an outbound reply under the target comment,
    * or the target itself marked answered, after `typingStartedAt`. Teammates
    * answering different comments on one post never collide. Run INSIDE the
@@ -609,36 +628,13 @@ export class InboxService {
     userId: string,
     since: Date,
   ): Promise<void> {
-    const [found] = await db
-      .select({
-        id: inboxItems.id,
-        text: inboxItems.text,
-        platformCreatedAt: inboxItems.platformCreatedAt,
-        authoredByUserId: inboxItems.authoredByUserId,
-      })
-      .from(inboxItems)
-      .where(
-        and(
-          eq(inboxItems.workspaceId, workspaceId),
-          eq(inboxItems.channelId, target.channelId),
-          eq(inboxItems.fromMe, true),
-          eq(inboxItems.platformParentId, target.platformItemId),
-          gt(inboxItems.platformCreatedAt, since),
-          or(
-            isNull(inboxItems.authoredByUserId),
-            ne(inboxItems.authoredByUserId, userId),
-          ),
-        ),
-      )
-      .orderBy(desc(inboxItems.platformCreatedAt))
-      .limit(1);
-    if (found) {
-      await this.refuseRepliedFirst({
-        text: found.text,
-        at: found.platformCreatedAt,
-        byUserId: found.authoredByUserId,
-      });
-    }
+    await this.refuseIfOutboundAfter(
+      workspaceId,
+      target.channelId,
+      eq(inboxItems.platformParentId, target.platformItemId),
+      userId,
+      since,
+    );
 
     // Answered without a row of ours under it (marked replied, or on the platform).
     const fresh = await db.query.inboxItems.findFirst({
@@ -1415,9 +1411,10 @@ export class InboxService {
     // One send at a time per conversation: the collision check, the platform
     // call and the row write share the lock, so the next sender's check sees
     // this row.
-    const lockKey =
-      parent.threadKey ?? `${parent.channelId}:${parent.platformItemId}`;
-    const { created, newRow } = await this.sendLock.withSendLock(
+    // Keyed by the comment being answered: the collision check is per comment,
+    // so replies to different comments on a busy post never queue.
+    const lockKey = `${parent.channelId}:${parent.platformItemId}`;
+    const { created, newRow, repliedAt } = await this.sendLock.withSendLock(
       lockKey,
       userId,
       async () => {
@@ -1484,20 +1481,24 @@ export class InboxService {
               platformPostId: parent.platformPostId!,
               ourPostId: parent.ourPostId,
             });
-        return { created, newRow };
+
+        // Mark the target as replied INSIDE the lock: the next sender's
+        // collision check reads this row's replied_at, which is the only
+        // signal for a YouTube nested reply (its row is stored under the
+        // top-level comment, not under the target).
+        const repliedAt = new Date();
+        await db
+          .update(inboxItems)
+          .set({
+            status: 'replied',
+            repliedByUserId: userId,
+            repliedAt,
+            updatedAt: repliedAt,
+          })
+          .where(eq(inboxItems.id, parent.id));
+        return { created, newRow, repliedAt };
       },
     );
-
-    // Mark the parent as replied so the thread surfaces "replied" state.
-    await db
-      .update(inboxItems)
-      .set({
-        status: 'replied',
-        repliedByUserId: userId,
-        repliedAt: new Date(),
-        updatedAt: new Date(),
-      })
-      .where(eq(inboxItems.id, parent.id));
 
     this.emitter.emit(workspaceId, 'inbox.item.updated', {
       id: parent.id,
@@ -1505,7 +1506,7 @@ export class InboxService {
       channelId: parent.channelId,
       changes: {
         status: 'replied',
-        repliedAt: new Date().toISOString(),
+        repliedAt: repliedAt.toISOString(),
         repliedByUserId: userId,
       },
     });
@@ -3361,8 +3362,9 @@ export class InboxService {
     }
 
     // One send at a time per conversation (see reply()).
+    // Keyed by the decoded ids: '07:c' and '7:c' are the same conversation.
     const { created, newRow } = await this.sendLock.withSendLock(
-      threadKey,
+      `${channelId}:${conversationId}`,
       userId,
       async () => {
         if (opts.typingStartedAt && !opts.force) {

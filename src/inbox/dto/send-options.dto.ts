@@ -24,10 +24,12 @@ export function toSendOptions(
   dto: Pick<SendOptionsDto, 'markDone' | 'typingStartedAt' | 'force'>,
 ): SendOptions {
   const opts: SendOptions = {};
-  if (dto.markDone !== undefined) opts.markDone = dto.markDone;
-  if (dto.typingStartedAt !== undefined) {
+  // `!= null`: an explicit JSON null passes @IsOptional and must mean "not
+  // sent", never new Date(null) (the epoch, which would collide with everything).
+  if (dto.markDone != null) opts.markDone = dto.markDone;
+  if (dto.typingStartedAt != null) {
     opts.typingStartedAt = new Date(dto.typingStartedAt);
   }
-  if (dto.force !== undefined) opts.force = dto.force;
+  if (dto.force != null) opts.force = dto.force;
   return opts;
 }

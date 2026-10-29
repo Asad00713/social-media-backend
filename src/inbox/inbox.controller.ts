@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   HttpCode,
+  Logger,
   HttpStatus,
   Param,
   ParseUUIDPipe,
@@ -21,6 +22,7 @@ import { ReplyResponseBuilder } from './conversations/services/reply-response.bu
 import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { ListCommentsDto } from './dto/list-comments.dto';
 import { ReplyDto } from './dto/reply.dto';
+import { CommentOnPostDto } from './dto/comment-on-post.dto';
 import { UpdateStatusDto } from './dto/update-status.dto';
 import { HideDto } from './dto/hide.dto';
 import { CreateScheduledMessageDto } from './dto/create-scheduled-message.dto';
@@ -41,6 +43,8 @@ interface AuthUser {
 @Controller('inbox/workspaces/:workspaceId')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class InboxController {
+  private readonly logger = new Logger(InboxController.name);
+
   constructor(
     private readonly inboxService: InboxService,
     private readonly scheduledMessagesService: ScheduledMessagesService,
@@ -48,6 +52,26 @@ export class InboxController {
     private readonly commentActions: CommentActionsService,
     private readonly replyResponse: ReplyResponseBuilder,
   ) {}
+
+  /**
+   * The send already reached the platform and the row is written, so building
+   * the new half of the response must never turn it into an error (the client
+   * would keep a failed bubble and the retry would double-post). On failure
+   * the legacy body is still returned with `row: null`; the realtime
+   * `conversation.upserted` event delivers the row.
+   */
+  private async responseOrFallback<T extends object>(
+    build: () => Promise<T>,
+  ): Promise<T | { row: null }> {
+    try {
+      return await build();
+    } catch (err) {
+      this.logger.error(
+        `reply response build failed after a delivered send: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return { row: null };
+    }
+  }
 
   @Get('comments')
   @RequireCapability('inbox:view')
@@ -114,7 +138,9 @@ export class InboxController {
     );
     return {
       ...sent,
-      ...(await this.replyResponse.forComment(workspaceId, user.userId, sent)),
+      ...(await this.responseOrFallback(() =>
+        this.replyResponse.forComment(workspaceId, user.userId, sent),
+      )),
     };
   }
 
@@ -123,7 +149,7 @@ export class InboxController {
   async commentOnPost(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('threadKey') threadKey: string,
-    @Body() dto: ReplyDto,
+    @Body() dto: CommentOnPostDto,
     @CurrentUser() user: AuthUser,
   ) {
     // markDone does not apply to a new top-level comment.
@@ -135,7 +161,9 @@ export class InboxController {
     );
     return {
       ...sent,
-      ...(await this.replyResponse.forComment(workspaceId, user.userId, sent)),
+      ...(await this.responseOrFallback(() =>
+        this.replyResponse.forComment(workspaceId, user.userId, sent),
+      )),
     };
   }
 
@@ -302,7 +330,9 @@ export class InboxController {
     );
     return {
       ...sent,
-      ...(await this.replyResponse.forDm(workspaceId, user.userId, sent)),
+      ...(await this.responseOrFallback(() =>
+        this.replyResponse.forDm(workspaceId, user.userId, sent),
+      )),
     };
   }
 
@@ -324,7 +354,9 @@ export class InboxController {
     );
     return {
       ...sent,
-      ...(await this.replyResponse.forDm(workspaceId, user.userId, sent)),
+      ...(await this.responseOrFallback(() =>
+        this.replyResponse.forDm(workspaceId, user.userId, sent),
+      )),
     };
   }
 
