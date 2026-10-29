@@ -2,6 +2,7 @@
 // module with a scripted chainable fake. Every `update` is logged in call
 // order (set keys + rendered WHERE), and so is every `syncThread` call, which
 // lets a row assert "the author stamp lands BEFORE the sync".
+import { Logger } from '@nestjs/common';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
 
@@ -20,6 +21,7 @@ const script = {
   channel: {} as Record<string, unknown>,
   updated: [] as Array<Record<string, unknown>>,
   selected: [] as Array<Record<string, unknown>>,
+  failFlip: false,
 };
 
 function chain(
@@ -31,7 +33,16 @@ function chain(
     {
       get(_t, prop: string) {
         if (prop === 'then') {
-          return (res: (v: unknown) => unknown) => res(result());
+          return (
+            res: (v: unknown) => unknown,
+            rej: (e: unknown) => unknown,
+          ) => {
+            try {
+              return res(result());
+            } catch (e) {
+              return rej(e);
+            }
+          };
         }
         return (...args: unknown[]) => {
           onCall?.(prop, args);
@@ -55,7 +66,12 @@ jest.mock('../drizzle/db', () => ({
       };
       log.push(entry);
       return chain(
-        () => script.updated,
+        () => {
+          if (script.failFlip && entry.setKeys.join() === 'status,updatedAt') {
+            throw new Error('flip failed');
+          }
+          return script.updated;
+        },
         (name, args) => {
           if (name === 'set') entry.setKeys = Object.keys(args[0] as object);
           if (name === 'where') {
@@ -328,6 +344,8 @@ beforeEach(() => {
     },
   ];
   script.selected = [{ at: AT }];
+  script.failFlip = false;
+  jest.restoreAllMocks();
 });
 
 describe('InboxService user actions end in syncThread (R1)', () => {
@@ -411,7 +429,7 @@ describe('InboxService user actions end in syncThread (R1)', () => {
     );
   });
 
-  it('a failed settings read falls back to the default instead of failing the reply', async () => {
+  it('a failed settings read falls back to keep-open (markDone false) instead of failing the reply', async () => {
     script.item = { ...ROW, fromMe: false };
     const c = build();
     c.settings.get.mockRejectedValueOnce(new Error('settings down'));
@@ -421,8 +439,31 @@ describe('InboxService user actions end in syncThread (R1)', () => {
     expect(c.sync.syncThread).toHaveBeenCalledWith(
       WS,
       `${CH}:p1`,
-      outbound(true),
+      outbound(false),
     );
+  });
+
+  it('a legacy row with no thread key skips the sync and says so at debug', async () => {
+    const debug = jest
+      .spyOn(Logger.prototype, 'debug')
+      .mockImplementation(() => undefined);
+    script.updated = [{ ...script.updated[0], threadKey: null }];
+    const c = build();
+    await c.service.updateStatus(WS, USER, 'row-1', 'done');
+    expect(c.sync.syncThread).not.toHaveBeenCalled();
+    expect(debug).toHaveBeenCalledWith(
+      expect.stringContaining('no thread key'),
+    );
+  });
+
+  it('sendDm: a failed legacy unread flip never fails a delivered send', async () => {
+    script.item = DM_ROW;
+    script.failFlip = true;
+    const c = build();
+    await expect(
+      c.service.sendDm(WS, USER, `${CH}:conv`, 'hi'),
+    ).resolves.toBeDefined();
+    expect(c.sync.syncThread).toHaveBeenCalledTimes(1);
   });
 
   it('exports SendOptions with the Task 18 fields', () => {

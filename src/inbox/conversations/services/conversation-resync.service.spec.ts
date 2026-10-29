@@ -145,6 +145,21 @@ describe('ConversationResyncService.enqueue', () => {
       expect.anything(),
     );
   });
+
+  it('carries a legacy_status intent in the job payload', async () => {
+    const { service, queue } = build();
+    await service.enqueue(WS, '7:p1', { kind: 'legacy_status', userId: 'u1' });
+    expect(queue.add).toHaveBeenCalledWith(
+      'resync',
+      {
+        type: 'sync',
+        workspaceId: WS,
+        threadKey: '7:p1',
+        intent: { kind: 'legacy_status', userId: 'u1' },
+      },
+      expect.anything(),
+    );
+  });
 });
 
 describe('ConversationResyncService.enqueueRekey', () => {
@@ -255,6 +270,20 @@ describe('ConversationResyncProcessor', () => {
       userId: 'u1',
       markDone: false,
       at: AT,
+    });
+  });
+
+  it('replays a legacy_status intent so an old-route Done is applied on retry', async () => {
+    const { sync, go } = run({
+      type: 'sync',
+      workspaceId: WS,
+      threadKey: '7:p1',
+      intent: { kind: 'legacy_status', userId: 'u1' },
+    });
+    await go();
+    expect(sync.syncThread).toHaveBeenCalledWith(WS, '7:p1', {
+      kind: 'legacy_status',
+      userId: 'u1',
     });
   });
 

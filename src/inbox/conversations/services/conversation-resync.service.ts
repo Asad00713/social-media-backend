@@ -10,11 +10,26 @@ import {
 } from './conversation-sync.service';
 
 /** The authored outbound intent, JSON-safe (a retried first sync needs it, N5). */
-export interface ResyncIntentPayload {
+export interface OutboundIntentPayload {
   userId: string;
   markDone: boolean;
   at: string;
 }
+
+/**
+ * An old-route status change (`updateStatus`/`updateThreadStatus`). The status
+ * itself lives on the item rows, so only the actor travels. Without it the
+ * retry would run a plain refresh and never apply the Done/reopen.
+ */
+export interface LegacyStatusIntentPayload {
+  kind: 'legacy_status';
+  userId: string;
+}
+
+/** The outbound shape has no `kind` so jobs already queued still replay. */
+export type ResyncIntentPayload =
+  | OutboundIntentPayload
+  | LegacyStatusIntentPayload;
 
 export type ConversationResyncJob =
   | {
@@ -59,7 +74,11 @@ const errMsg = (err: unknown): string =>
 export function intentPayloadOf(
   intent: SyncIntent | undefined,
 ): ResyncIntentPayload | undefined {
-  if (!intent || intent.kind !== 'outbound') return undefined;
+  if (!intent) return undefined;
+  if (intent.kind === 'legacy_status') {
+    return { kind: 'legacy_status', userId: intent.userId };
+  }
+  if (intent.kind !== 'outbound') return undefined;
   return {
     userId: intent.userId,
     markDone: intent.markDone,
@@ -178,6 +197,17 @@ export class ConversationResyncService {
   }
 }
 
+function intentOfPayload(p: ResyncIntentPayload | undefined): SyncIntent {
+  if (!p) return { kind: 'refresh' };
+  if ('kind' in p) return { kind: 'legacy_status', userId: p.userId };
+  return {
+    kind: 'outbound',
+    userId: p.userId,
+    markDone: p.markDone,
+    at: new Date(p.at),
+  };
+}
+
 @Processor(QUEUES.INBOX_RESYNC)
 export class ConversationResyncProcessor extends WorkerHost {
   private readonly logger = new Logger(ConversationResyncProcessor.name);
@@ -193,14 +223,7 @@ export class ConversationResyncProcessor extends WorkerHost {
         await this.sync.rekey(d.workspaceId, d.fromKey, d.toKey);
         return;
       }
-      const intent: SyncIntent = d.intent
-        ? {
-            kind: 'outbound',
-            userId: d.intent.userId,
-            markDone: d.intent.markDone,
-            at: new Date(d.intent.at),
-          }
-        : { kind: 'refresh' };
+      const intent = intentOfPayload(d.intent);
       await this.sync.syncThread(d.workspaceId, d.threadKey, intent);
     } catch (err) {
       const what =
