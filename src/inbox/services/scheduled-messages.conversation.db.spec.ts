@@ -848,4 +848,3 @@ describeInboxDb('ScheduledMessagesService D20 linking (I2)', () => {
       expect((await rowOf(client, id)).inbox_conversation_id).toBe(conv);
     }));
 });
-

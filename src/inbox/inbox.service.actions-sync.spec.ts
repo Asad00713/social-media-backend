@@ -137,7 +137,9 @@ jest.mock('../drizzle/db', () => ({
       inboxItems: {
         findFirst: jest.fn(() =>
           Promise.resolve(
-            script.findQueue.length > 0 ? script.findQueue.shift() : script.item,
+            script.findQueue.length > 0
+              ? script.findQueue.shift()
+              : script.item,
           ),
         ),
       },
@@ -373,22 +375,10 @@ const ROWS: Row[] = [
     intent: refresh,
   },
   {
-    name: 'deleteComment',
-    run: (c) => c.service.deleteComment(WS, USER, 'row-1'),
-    key: `${CH}:p1`,
-    intent: refresh,
-  },
-  {
     name: 'deleteDm',
     item: DM_ROW,
     run: (c) => c.service.deleteDm(WS, USER, 'row-1'),
     key: `${CH}:conv`,
-    intent: refresh,
-  },
-  {
-    name: 'hideComment',
-    run: (c) => c.service.hideComment(WS, USER, 'row-1', true),
-    key: `${CH}:p1`,
     intent: refresh,
   },
 ];
@@ -1221,4 +1211,3 @@ describe('a delivered send never fails (I1)', () => {
     );
   });
 });
-

@@ -54,6 +54,7 @@ import {
 } from './conversations/lib/send-error';
 import type { UserRef } from './conversations/dto/contract';
 import { messageEntryOf } from './conversations/lib/timeline-entry';
+import { isContentRedacted } from './conversations/lib/content-redaction';
 import type { SyncIntent } from './conversations/lib/lifecycle';
 import { computeLegacyCounts } from './legacy-counts';
 import { whatsappMessageTemplates } from '../drizzle/schema/whatsapp-templates.schema';
@@ -283,25 +284,12 @@ export type UpsertMentionInput = Omit<
 >;
 
 /**
- * Whether an `inbox_items` row's `text` was destroyed by the YouTube
- * retention job (see `src/inbox/services/youtube-retention.service.ts`,
- * YouTube Developer Policy III.E.4.c) rather than genuinely empty.
- *
- * MUST be computed from the raw DB value BEFORE any `?? ''` / `|| 'unknown'`
- * coalescing — those fallbacks make a wiped row and a legitimately empty row
- * indistinguishable, which is exactly what this flag exists to undo. A naive
- * falsy check (`!item.text`) would also be wrong here: it would flag a
- * genuinely empty string ('') as redacted even though nothing was wiped.
- *
- * Exported as a pure function (rather than inlined per call site) so it's
- * unit-testable without instantiating `InboxService`, which requires several
- * injected collaborators.
+ * Whether a row's `text` was wiped by the YouTube retention job rather than
+ * genuinely empty. Re-exported from its single implementation in
+ * `conversations/lib/content-redaction.ts` (the conversation libs must not
+ * import this service graph).
  */
-export function isContentRedacted(
-  item: Pick<InboxItem, 'platform' | 'text'>,
-): boolean {
-  return item.platform === 'youtube' && item.text === null;
-}
+export { isContentRedacted };
 
 /**
  * The `id` of a send DTO whose message the platform accepted but whose row we
@@ -1548,10 +1536,7 @@ export class InboxService {
     // so replies to different comments on a busy post never queue.
     const lockKey = `${parent.channelId}:${parent.platformItemId}`;
     const { created, newRow, repliedAt, myIdentity } =
-      await this.sendLock.withSendLock(
-      lockKey,
-      userId,
-      async () => {
+      await this.sendLock.withSendLock(lockKey, userId, async () => {
         if (opts.typingStartedAt && !opts.force) {
           await this.assertNoCommentCollision(
             workspaceId,
@@ -1647,8 +1632,7 @@ export class InboxService {
           );
         }
         return { created, newRow, repliedAt, myIdentity };
-      },
-    );
+      });
 
     this.emitter.emit(workspaceId, 'inbox.item.updated', {
       id: parent.id,
@@ -1911,136 +1895,6 @@ export class InboxService {
   // ==========================================================================
   // Delete (Phase 2.3) — for messages/comments authored by us only.
   // ==========================================================================
-
-  async deleteComment(
-    workspaceId: string,
-    userId: string,
-    itemId: string,
-  ): Promise<{ success: true; deletedAt: string }> {
-    await this.assertWorkspaceAccess(workspaceId, userId);
-
-    const row = await db.query.inboxItems.findFirst({
-      where: and(
-        eq(inboxItems.id, itemId),
-        eq(inboxItems.workspaceId, workspaceId),
-      ),
-    });
-    if (!row) throw new NotFoundException('Comment not found');
-    if (row.type !== 'comment') {
-      throw new BadRequestException('Item is not a comment');
-    }
-    if (!row.fromMe) {
-      throw new ForbiddenException('Can only delete your own comments');
-    }
-
-    const channel = await this.resolveChannel(row.channelId, workspaceId);
-    const adapter = this.dispatcher.get(row.platform);
-
-    if (!adapter.deleteComment) {
-      throw new BadRequestException(
-        `Delete is not supported on ${row.platform}`,
-      );
-    }
-
-    try {
-      await adapter.deleteComment(channel, row.platformItemId);
-    } catch (err) {
-      this.logger.error(
-        `Delete comment failed (channel=${row.channelId}, item=${row.platformItemId}): ${(err as Error).message}`,
-      );
-      throw new BadRequestException(
-        `Platform refused delete: ${(err as Error).message}`,
-      );
-    }
-
-    // Soft-delete row: keep audit trail. Status flip + mark in metadata.
-    const now = new Date();
-    await db
-      .update(inboxItems)
-      .set({
-        status: 'done',
-        text: '[deleted]',
-        metadata: {
-          ...(row.metadata ?? {}),
-          deletedAt: now.toISOString(),
-          deletedByUserId: userId,
-        },
-        updatedAt: now,
-      })
-      .where(eq(inboxItems.id, row.id));
-
-    this.emitter.emit(workspaceId, 'inbox.item.updated', {
-      id: row.id,
-      workspaceId,
-      channelId: row.channelId,
-      changes: {
-        status: 'done',
-      },
-    });
-    void this.emitCounts(workspaceId);
-    await this.syncAfterAction(workspaceId, row.threadKey, {
-      kind: 'refresh',
-    });
-
-    return { success: true, deletedAt: now.toISOString() };
-  }
-
-  /**
-   * Hide (or unhide) a reply on one of our posts via platform-side moderation.
-   * Only Threads implements this today (`manage_reply`) — other platforms'
-   * adapters simply don't expose `hideComment`, so we reject with a clear 400.
-   */
-  async hideComment(
-    workspaceId: string,
-    userId: string,
-    itemId: string,
-    hidden: boolean,
-  ): Promise<{ success: true; isHidden: boolean }> {
-    await this.assertWorkspaceAccess(workspaceId, userId);
-
-    const row = await db.query.inboxItems.findFirst({
-      where: and(
-        eq(inboxItems.id, itemId),
-        eq(inboxItems.workspaceId, workspaceId),
-      ),
-    });
-    if (!row) throw new NotFoundException('Comment not found');
-
-    const channel = await this.resolveChannel(row.channelId, workspaceId);
-    const adapter = this.dispatcher.get(row.platform);
-    if (!adapter.hideComment) {
-      throw new BadRequestException(`Hide is not supported on ${row.platform}`);
-    }
-
-    try {
-      await adapter.hideComment(channel, row.platformItemId, hidden);
-    } catch (err) {
-      this.logger.error(
-        `Hide failed (channel=${row.channelId}, item=${row.platformItemId}): ${(err as Error).message}`,
-      );
-      throw new BadRequestException(
-        `Platform refused hide: ${(err as Error).message}`,
-      );
-    }
-
-    await db
-      .update(inboxItems)
-      .set({ isHidden: hidden, updatedAt: new Date() })
-      .where(eq(inboxItems.id, row.id));
-
-    this.emitter.emit(workspaceId, 'inbox.item.updated', {
-      id: row.id,
-      workspaceId,
-      channelId: row.channelId,
-      changes: { isHidden: hidden },
-    });
-    void this.emitCounts(workspaceId);
-    await this.syncAfterAction(workspaceId, row.threadKey, {
-      kind: 'refresh',
-    });
-
-    return { success: true, isHidden: hidden };
-  }
 
   async deleteDm(
     workspaceId: string,

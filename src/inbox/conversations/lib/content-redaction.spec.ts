@@ -22,9 +22,7 @@ describe('isContentRedacted', () => {
     expect(isContentRedacted(input)).toBe(expected);
   });
 
-  it('agrees with the copy in inbox.service until Foundation re-exports it', () => {
-    for (const c of CASES) {
-      expect(isContentRedacted(c)).toBe(inboxServiceCopy(c));
-    }
+  it('inbox.service re-exports this one implementation, not a copy', () => {
+    expect(inboxServiceCopy).toBe(isContentRedacted);
   });
 });

@@ -195,4 +195,3 @@ describe('ScheduledInboxProcessor after delivery (I1)', () => {
     expect(scheduled.markSent).not.toHaveBeenCalled();
   });
 });
-
