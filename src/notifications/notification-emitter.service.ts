@@ -387,6 +387,72 @@ export class NotificationEmitterService {
     );
   }
 
+  // ==================== Inbox ====================
+
+  async inboxAssigned(
+    userId: string,
+    args: {
+      workspaceId: string;
+      conversationId: string;
+      assignedByName: string;
+    },
+  ) {
+    return this.emitInbox(
+      userId,
+      'inbox_assigned',
+      'Assigned to you',
+      `${args.assignedByName} assigned you a conversation`,
+      'medium',
+      args,
+    );
+  }
+
+  async inboxNoteMention(
+    userId: string,
+    args: { workspaceId: string; conversationId: string; authorName: string },
+  ) {
+    return this.emitInbox(
+      userId,
+      'inbox_note_mention',
+      'Mentioned in a note',
+      `${args.authorName} mentioned you in a note`,
+      'medium',
+      args,
+    );
+  }
+
+  async inboxNewMessage(
+    userId: string,
+    args: { workspaceId: string; conversationId: string; authorName: string },
+  ) {
+    return this.emitInbox(
+      userId,
+      'inbox_new_message',
+      'New message',
+      `New message from ${args.authorName}`,
+      'low',
+      args,
+    );
+  }
+
+  private emitInbox(
+    userId: string,
+    type: Notification['type'],
+    title: string,
+    message: string,
+    priority: NotificationPriority,
+    args: { workspaceId: string; conversationId: string },
+  ) {
+    return this.emitNotification(userId, type, title, message, {
+      priority,
+      metadata: {
+        workspaceId: args.workspaceId,
+        conversationId: args.conversationId,
+      },
+      actionUrl: `/w/${args.workspaceId}/inbox?c=${args.conversationId}`,
+    });
+  }
+
   // ==================== System ====================
 
   async systemAnnouncement(
