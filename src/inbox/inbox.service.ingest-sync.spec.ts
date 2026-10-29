@@ -134,6 +134,7 @@ const pre = (
   authorHandle: r.authorHandle,
   authorAvatarUrl: r.authorAvatarUrl,
   authorPlatformId: r.authorPlatformId ?? null,
+  authoredByUserId: r.authoredByUserId ?? null,
   platformParentId: r.platformParentId,
   ourPostId: r.ourPostId ?? null,
   status: r.status,
@@ -158,8 +159,12 @@ function build() {
   };
   const realtime = { timelineAppended: jest.fn(), countsChanged: jest.fn() };
   const resync = {
-    enqueue: jest.fn(async () => undefined),
+    enqueue: jest.fn(async (..._a: unknown[]) => undefined),
+    enqueueRekey: jest.fn(async (..._a: unknown[]) => undefined),
     syncOrEnqueue: jest.fn(async () => undefined),
+  };
+  const notify = {
+    newInbound: jest.fn(async (..._a: unknown[]) => undefined),
   };
   const service = new InboxService(
     emitter as never,
@@ -171,8 +176,10 @@ function build() {
     realtime as never,
     sync as never,
     resync as never,
+    { get: jest.fn() } as never,
+    notify as never,
   );
-  return { service, sync, realtime, emitter, resync };
+  return { service, sync, realtime, emitter, resync, notify };
 }
 
 const commentInput = {
@@ -538,5 +545,139 @@ describe('a failed sync is retried through the resync queue (I3)', () => {
       kind: 'refresh',
     });
     expect(resync.enqueue).not.toHaveBeenCalledWith(WS, `${CH}:mention:m7`);
+  });
+});
+
+describe('authorship gained on a merge (N1) and retried first syncs (N3, N5)', () => {
+  it('an author gained on a merge syncs, as an outbound by that teammate', async () => {
+    const { service, sync } = build();
+    const r = row({ inserted: false, fromMe: true, authoredByUserId: 'u1' });
+    preRead = [pre(r, { authoredByUserId: null })] as never;
+    upserted = [r];
+    await service.upsertComment({ ...commentInput, fromMe: true } as never);
+    expect(sync.syncThread).toHaveBeenCalledWith(WS, `${CH}:p1`, {
+      kind: 'outbound',
+      userId: 'u1',
+      markDone: false,
+      at: NOW,
+    });
+  });
+
+  it('a failed first sync of an authored insert is queued WITH the outbound intent', async () => {
+    const { service, sync, resync } = build();
+    sync.syncThread.mockRejectedValueOnce(new Error('boom'));
+    upserted = [dmRow({ fromMe: true, authoredByUserId: 'u1' })];
+    await service.upsertDm({ ...dmInput, fromMe: true, authoredByUserId: 'u1' });
+    expect(resync.enqueue).toHaveBeenCalledWith(WS, `${CH}:conv`, {
+      kind: 'outbound',
+      userId: 'u1',
+      markDone: false,
+      at: NOW,
+    });
+  });
+
+  it('a failed rekey is queued with both keys, never lost', async () => {
+    const { service, sync, resync } = build();
+    sync.rekey.mockRejectedValueOnce(new Error('rekey failed'));
+    const r = row({
+      inserted: false,
+      platformItemId: 'm7',
+      platformPostId: 'p9',
+      threadKey: `${CH}:p9`,
+    });
+    preRead = [pre(r, { threadKey: `${CH}:mention:m7` })] as never;
+    upserted = [r];
+    await service.upsertComment({
+      ...commentInput,
+      platformItemId: 'm7',
+      platformPostId: 'p9',
+    } as never);
+    expect(resync.enqueueRekey).toHaveBeenCalledWith(
+      WS,
+      `${CH}:mention:m7`,
+      `${CH}:p9`,
+    );
+  });
+});
+
+describe('InboxService ingest -> newInbound notification (13b)', () => {
+  it('a new inbound comment notifies once with the conversation and author', async () => {
+    const { service, notify } = build();
+    upserted = [row()];
+    await service.upsertComment(commentInput as never);
+    expect(notify.newInbound).toHaveBeenCalledTimes(1);
+    expect(notify.newInbound).toHaveBeenCalledWith({
+      workspaceId: WS,
+      conversationId: 'conv-1',
+      authorName: 'Ana',
+      platformCreatedAt: NOW,
+    });
+  });
+
+  it('falls back to the handle, then a generic name', async () => {
+    const { service, notify } = build();
+    upserted = [row({ authorDisplayName: null })];
+    await service.upsertComment(commentInput as never);
+    upserted = [row({ authorDisplayName: null, authorHandle: null })];
+    await service.upsertComment(commentInput as never);
+    expect(notify.newInbound.mock.calls[0][0]).toMatchObject({
+      authorName: 'ana',
+    });
+    expect(notify.newInbound.mock.calls[1][0]).toMatchObject({
+      authorName: 'Someone',
+    });
+  });
+
+  it('a new inbound DM notifies', async () => {
+    const { service, notify } = build();
+    upserted = [dmRow()];
+    await service.upsertDm(dmInput as never);
+    expect(notify.newInbound).toHaveBeenCalledTimes(1);
+  });
+
+  it('a from_me row does not notify', async () => {
+    const { service, notify } = build();
+    upserted = [row({ fromMe: true })];
+    await service.upsertComment(commentInput as never);
+    expect(notify.newInbound).not.toHaveBeenCalled();
+  });
+
+  it('a merge of an existing row does not notify', async () => {
+    const { service, notify } = build();
+    const r = row({ inserted: false, fromMe: false });
+    preRead = [pre(r, { text: 'old' })] as never;
+    upserted = [r];
+    await service.upsertComment(commentInput as never);
+    expect(notify.newInbound).not.toHaveBeenCalled();
+  });
+
+  it('a hidden row does not notify', async () => {
+    const { service, notify } = build();
+    upserted = [row({ isHidden: true })];
+    await service.upsertComment(commentInput as never);
+    expect(notify.newInbound).not.toHaveBeenCalled();
+  });
+
+  it('a rejecting or throwing newInbound does not fail the ingest', async () => {
+    const { service, notify } = build();
+    upserted = [row()];
+    notify.newInbound.mockRejectedValueOnce(new Error('boom'));
+    await expect(
+      service.upsertComment(commentInput as never),
+    ).resolves.toBeDefined();
+    notify.newInbound.mockImplementationOnce(() => {
+      throw new Error('sync boom');
+    });
+    await expect(
+      service.upsertComment(commentInput as never),
+    ).resolves.toBeDefined();
+  });
+
+  it('a failed sync (queued for retry) does not notify', async () => {
+    const { service, sync, notify } = build();
+    sync.syncThread.mockRejectedValueOnce(new Error('db down'));
+    upserted = [row()];
+    await service.upsertComment(commentInput as never);
+    expect(notify.newInbound).not.toHaveBeenCalled();
   });
 });

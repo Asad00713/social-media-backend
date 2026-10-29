@@ -454,6 +454,168 @@ describeInboxDb('ConversationSyncService.syncThread', () => {
       expect(after!.last_inbound_at).toEqual(before!.last_inbound_at);
     }));
 
+  it.each(['a note', 'an assignee', 'a pending scheduled reply'] as const)(
+    'never deletes an emptied conversation that still has %s attached',
+    (what) =>
+      withInboxDb(async (db, client) => {
+        const { workspaceId, ownerId } = await seedWorkspace(client);
+        const mate = await seedMember(client, workspaceId, 'MEMBER');
+        const ch = await seedChannel(client, workspaceId, 'threads');
+        const item = await seedItem(client, {
+          workspaceId,
+          channelId: ch,
+          platform: 'threads',
+          type: 'mention',
+          platformItemId: 'm7',
+          text: 'hey',
+          authorHandle: 'zed',
+          platformCreatedAt: T0,
+        });
+        const key = item.threadKey!;
+        const { service, rt } = build(db);
+        const created = await service.syncThread(workspaceId, key);
+        if (what === 'a note') {
+          await client.query(
+            `INSERT INTO inbox_notes (conversation_id, workspace_id, author_user_id, body)
+             VALUES ($1, $2, $3, 'context')`,
+            [created.conversationId, workspaceId, ownerId],
+          );
+        } else if (what === 'an assignee') {
+          await client.query(
+            `UPDATE inbox_conversations SET assignee_user_id = $2 WHERE id = $1`,
+            [created.conversationId, mate],
+          );
+        } else {
+          await client.query(
+            `INSERT INTO scheduled_inbox_messages
+               (workspace_id, channel_id, type, thread_key, text, scheduled_at,
+                status, inbox_conversation_id, created_by_user_id)
+             VALUES ($1, $2, 'comment', $3, 'later', $4, 'pending', $5, $6)`,
+            [workspaceId, ch, key, at(120), created.conversationId, ownerId],
+          );
+        }
+        await client.query(`DELETE FROM inbox_items WHERE id = $1`, [item.id]);
+        rt.conversationRemoved.mockClear();
+
+        const res = await service.syncThread(workspaceId, key);
+
+        expect(res.removed).toBe(false);
+        expect(await conv(client, workspaceId, key)).toBeDefined();
+        expect(rt.conversationRemoved).not.toHaveBeenCalled();
+      }),
+  );
+
+  it('rekey carries the assignment over, so the emptied old conversation can go', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId } = await seedWorkspace(client);
+      const mate = await seedMember(client, workspaceId, 'MEMBER');
+      const ch = await seedChannel(client, workspaceId, 'threads');
+      const fromKey = `${ch}:mention:m7`;
+      const toKey = `${ch}:p9`;
+      const mention = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'threads',
+        type: 'mention',
+        platformItemId: 'm7',
+        text: 'hey',
+        authorHandle: 'zed',
+        platformCreatedAt: at(10),
+      });
+      await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'threads',
+        type: 'comment',
+        platformPostId: 'p9',
+        text: 'older',
+        authorHandle: 'amy',
+        platformCreatedAt: T0,
+      });
+      const { service } = build(db);
+      const from = await service.syncThread(workspaceId, fromKey);
+      await service.syncThread(workspaceId, toKey);
+      await client.query(
+        `UPDATE inbox_conversations
+            SET assignee_user_id = $2, assigned_by_user_id = $2, assigned_at = $3
+          WHERE id = $1`,
+        [from.conversationId, mate, at(11)],
+      );
+      await client.query(
+        `UPDATE inbox_items SET type = 'comment', platform_post_id = 'p9' WHERE id = $1`,
+        [mention.id],
+      );
+      await service.rekey(workspaceId, fromKey, toKey);
+
+      expect(await conv(client, workspaceId, fromKey)).toBeUndefined();
+      expect(await conv(client, workspaceId, toKey)).toMatchObject({
+        assignee_user_id: mate,
+        assigned_by_user_id: mate,
+      });
+    }));
+
+  it('a hidden inbound DM never becomes the participant, title or snippet while a visible one exists', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const base = {
+        workspaceId,
+        channelId: ch,
+        platform: 'instagram',
+        type: 'dm' as const,
+        conversationId: 'thr-hp',
+      };
+      const real = await seedItem(client, {
+        ...base,
+        text: 'real question',
+        authorHandle: 'maya',
+        authorDisplayName: 'Maya',
+        platformCreatedAt: T0,
+      });
+      const spam = await seedItem(client, {
+        ...base,
+        text: 'buy followers',
+        authorHandle: 'spammer',
+        authorDisplayName: 'Spammer',
+        platformCreatedAt: at(5),
+      });
+      await client.query(
+        `UPDATE inbox_items SET is_hidden = true WHERE id = $1`,
+        [spam.id],
+      );
+      const { service } = build(db);
+      await service.syncThread(workspaceId, real.threadKey!);
+      expect(await conv(client, workspaceId, real.threadKey!)).toMatchObject({
+        participant_handle: 'maya',
+        participant_name: 'Maya',
+        title: 'Maya',
+        last_snippet: 'real question',
+      });
+    }));
+
+  it('a thread whose every row is hidden still syncs (falls back to the hidden rows)', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const spam = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'instagram',
+        type: 'dm',
+        conversationId: 'thr-allhidden',
+        text: 'buy followers',
+        authorHandle: 'spammer',
+        platformCreatedAt: T0,
+      });
+      await client.query(
+        `UPDATE inbox_items SET is_hidden = true WHERE id = $1`,
+        [spam.id],
+      );
+      const { service } = build(db);
+      const res = await service.syncThread(workspaceId, spam.threadKey!);
+      expect(res.conversationId).not.toBeNull();
+    }));
+
   it('sets archived_at when every item is archived and clears it on a new unarchived inbound', () =>
     withInboxDb(async (db, client) => {
       const { workspaceId } = await seedWorkspace(client);

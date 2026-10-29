@@ -45,6 +45,11 @@ import { InboxDispatcher } from './services/inbox-dispatcher.service';
 import { InboxRealtimeService } from './conversations/services/inbox-realtime.service';
 import { ConversationSyncService } from './conversations/services/conversation-sync.service';
 import { ConversationResyncService } from './conversations/services/conversation-resync.service';
+import {
+  DEFAULT_INBOX_SETTINGS,
+  InboxSettingsService,
+} from './conversations/services/inbox-settings.service';
+import { InboxNotifyService } from './conversations/services/inbox-notify.service';
 import { messageEntryOf } from './conversations/lib/timeline-entry';
 import type { SyncIntent } from './conversations/lib/lifecycle';
 import { computeLegacyCounts } from './legacy-counts';
@@ -59,6 +64,13 @@ import { InjectQueue } from '@nestjs/bullmq';
 import { pollDedupId } from './schedulers/poll-dedup';
 import { Queue } from 'bullmq';
 import { QUEUES } from '../queue/queue.module';
+
+/** Per-send options. `typingStartedAt` and `force` are consumed by Task 18. */
+export interface SendOptions {
+  markDone?: boolean;
+  typingStartedAt?: Date;
+  force?: boolean;
+}
 
 export interface CommentThreadSummary {
   /** Synthetic key: `<channelId>:<platformPostId>` */
@@ -362,6 +374,8 @@ interface IngestFingerprint {
   authorHandle: string | null;
   authorAvatarUrl: string | null;
   authorPlatformId: string | null;
+  /** syncThread reads it (last_platform_outbound_at), and a merge can fill it. */
+  authoredByUserId: string | null;
   platformParentId: string | null;
   ourPostId: string | null;
   status: string;
@@ -385,6 +399,7 @@ function fingerprintOf(row: InboxItem): IngestFingerprint {
     authorHandle: row.authorHandle,
     authorAvatarUrl: row.authorAvatarUrl,
     authorPlatformId: row.authorPlatformId,
+    authoredByUserId: row.authoredByUserId,
     platformParentId: row.platformParentId,
     ourPostId: row.ourPostId,
     status: row.status,
@@ -425,7 +440,71 @@ export class InboxService {
     private readonly realtime: InboxRealtimeService,
     private readonly conversationSync: ConversationSyncService,
     private readonly resync: ConversationResyncService,
+    private readonly inboxSettings: InboxSettingsService,
+    private readonly notify: InboxNotifyService,
   ) {}
+
+  /**
+   * R1: a user action that changed what a conversation row aggregates ends
+   * here. The platform action and the item write have already committed, so a
+   * failed sync must not turn them into an error response: it is queued for a
+   * retry (authored intent included) instead. Never throws. Call it AFTER any
+   * transaction has committed (D1: syncThread opens its own).
+   */
+  private async syncAfterAction(
+    workspaceId: string,
+    threadKey: string | null | undefined,
+    intent: SyncIntent,
+  ): Promise<void> {
+    // A legacy row with no thread key has no conversation to keep right.
+    if (!threadKey) return;
+    try {
+      await this.conversationSync.syncThread(workspaceId, threadKey, intent);
+    } catch (err) {
+      this.logger.error(
+        `conversation sync failed for ${threadKey} after a user action, queued for retry: ${errMsg(err)}`,
+      );
+      await this.resync.enqueue(workspaceId, threadKey, intent);
+    }
+  }
+
+  /**
+   * Stamp the sending teammate on our own row. The platform echo may have
+   * landed first without an author, and an upsert never overwrites one.
+   * Never throws (the send already happened).
+   */
+  private async stampAuthor(rowId: string, userId: string): Promise<void> {
+    try {
+      await db
+        .update(inboxItems)
+        .set({ authoredByUserId: userId })
+        .where(
+          and(eq(inboxItems.id, rowId), isNull(inboxItems.authoredByUserId)),
+        );
+    } catch (err) {
+      this.logger.error(
+        `author stamp failed for item ${rowId}: ${errMsg(err)}`,
+      );
+    }
+  }
+
+  /** Per-send override, else the sender's "mark Done on reply" setting. */
+  private async resolveMarkDone(
+    workspaceId: string,
+    userId: string,
+    opts: SendOptions,
+  ): Promise<boolean> {
+    if (opts.markDone !== undefined) return opts.markDone;
+    try {
+      return (await this.inboxSettings.get(userId, workspaceId))
+        .markDoneOnReply;
+    } catch (err) {
+      this.logger.error(
+        `inbox settings read failed for user ${userId}, using the default: ${errMsg(err)}`,
+      );
+      return DEFAULT_INBOX_SETTINGS.markDoneOnReply;
+    }
+  }
 
   /** Resolve our own identity on a channel for `fromMe` row authorship. */
   private async loadMyIdentity(channelId: number): Promise<{
@@ -1111,6 +1190,7 @@ export class InboxService {
     userId: string,
     itemId: string,
     text: string,
+    opts: SendOptions = {},
   ): Promise<CommentNodeDto> {
     await this.assertWorkspaceAccess(workspaceId, userId);
 
@@ -1213,6 +1293,13 @@ export class InboxService {
         ),
       }));
     if (!row) throw new Error('Failed to persist reply');
+    await this.stampAuthor(row.id, userId);
+    await this.syncAfterAction(workspaceId, parent.threadKey, {
+      kind: 'outbound',
+      userId,
+      markDone: await this.resolveMarkDone(workspaceId, userId, opts),
+      at: created.platformCreatedAt,
+    });
     return this.itemToNode(row, await this.loadSelfAuthor(userId));
   }
 
@@ -1278,6 +1365,13 @@ export class InboxService {
         ),
       }));
     if (!row) throw new Error('Failed to persist comment');
+    await this.stampAuthor(row.id, userId);
+    await this.syncAfterAction(workspaceId, row.threadKey ?? threadKey, {
+      kind: 'outbound',
+      userId,
+      markDone: false,
+      at: created.platformCreatedAt,
+    });
     return this.itemToNode(row, await this.loadSelfAuthor(userId));
   }
 
@@ -1330,6 +1424,7 @@ export class InboxService {
       });
     }
     void this.emitCounts(workspaceId);
+    await this.syncAfterAction(workspaceId, threadKey, { kind: 'refresh' });
 
     return { updatedCount: updated.length };
   }
@@ -1372,6 +1467,10 @@ export class InboxService {
     }
 
     void this.emitCounts(workspaceId);
+    await this.syncAfterAction(workspaceId, threadKey, {
+      kind: 'legacy_status',
+      userId,
+    });
 
     return { updatedCount: updated.length };
   }
@@ -1403,6 +1502,10 @@ export class InboxService {
 
     // Counts shifted — emit refreshed counts so the channels pane updates.
     void this.emitCounts(workspaceId);
+    await this.syncAfterAction(workspaceId, updated.threadKey, {
+      kind: 'legacy_status',
+      userId,
+    });
 
     return updated;
   }
@@ -1490,6 +1593,9 @@ export class InboxService {
       },
     });
     void this.emitCounts(workspaceId);
+    await this.syncAfterAction(workspaceId, row.threadKey, {
+      kind: 'refresh',
+    });
 
     return { success: true, deletedAt: now.toISOString() };
   }
@@ -1544,6 +1650,9 @@ export class InboxService {
       changes: { isHidden: hidden },
     });
     void this.emitCounts(workspaceId);
+    await this.syncAfterAction(workspaceId, row.threadKey, {
+      kind: 'refresh',
+    });
 
     return { success: true, isHidden: hidden };
   }
@@ -1619,6 +1728,9 @@ export class InboxService {
       changes: { status: 'done' },
     });
     void this.emitCounts(workspaceId);
+    await this.syncAfterAction(workspaceId, row.threadKey, {
+      kind: 'refresh',
+    });
 
     return { success: true, deletedAt: now.toISOString() };
   }
@@ -1653,6 +1765,7 @@ export class InboxService {
       .returning({ id: inboxItems.id });
 
     void this.emitCounts(workspaceId);
+    await this.syncAfterAction(workspaceId, threadKey, { kind: 'refresh' });
     return { success: true, archivedCount: updated.length };
   }
 
@@ -1686,6 +1799,7 @@ export class InboxService {
       .returning({ id: inboxItems.id });
 
     void this.emitCounts(workspaceId);
+    await this.syncAfterAction(workspaceId, threadKey, { kind: 'refresh' });
     return { success: true, archivedCount: updated.length };
   }
 
@@ -1719,12 +1833,15 @@ export class InboxService {
         authorHandle: inboxItems.authorHandle,
         authorAvatarUrl: inboxItems.authorAvatarUrl,
         authorPlatformId: inboxItems.authorPlatformId,
+        authoredByUserId: inboxItems.authoredByUserId,
         platformParentId: inboxItems.platformParentId,
         ourPostId: inboxItems.ourPostId,
         status: inboxItems.status,
         isHidden: inboxItems.isHidden,
         text: inboxItems.text,
-        postCaption: sql<string | null>`${inboxItems.metadata}->'post'->>'caption'`,
+        postCaption: sql<
+          string | null
+        >`${inboxItems.metadata}->'post'->>'caption'`,
         postThumbnail: sql<
           string | null
         >`${inboxItems.metadata}->'post'->>'thumbnailUrl'`,
@@ -1770,11 +1887,7 @@ export class InboxService {
     const becameOurs = isInsert || !before || !before.fromMe;
     const parentLearned =
       !before || (before.platformParentId == null && !!row.platformParentId);
-    if (
-      row.fromMe &&
-      !row.authoredByUserId &&
-      (becameOurs || parentLearned)
-    ) {
+    if (row.fromMe && !row.authoredByUserId && (becameOurs || parentLearned)) {
       try {
         await this.markRepliedOnPlatform(row);
       } catch (err) {
@@ -1809,29 +1922,34 @@ export class InboxService {
           key,
         );
       } catch (err) {
-        // The old key is left alone: syncing it with no items would delete
-        // the conversation that still holds the notes.
+        // Retried from the queue (idempotent). The old conversation keeps its
+        // notes, assignment and scheduled replies meanwhile: syncThread never
+        // deletes an emptied conversation that still carries them.
         this.logger.error(
-          `rekey ${before.threadKey} -> ${key} failed for item ${row.id}: ${errMsg(err)}`,
+          `rekey ${before.threadKey} -> ${key} failed for item ${row.id}, queued for retry: ${errMsg(err)}`,
         );
+        await this.resync.enqueueRekey(row.workspaceId, before.threadKey, key);
       }
     }
 
     let conversationId: string | null = null;
+    let intent: SyncIntent = { kind: 'refresh' };
     try {
-      // A NEW row a teammate authored (Slack start-DM, Maestro's Discord send)
-      // is an outbound by that teammate, not a reply made on the platform:
-      // a brand-new outbound-only thread is then Done via reply, not via
-      // platform. Anything else is a plain refresh.
-      const intent: SyncIntent =
-        isInsert && row.fromMe && row.authoredByUserId
-          ? {
-              kind: 'outbound',
-              userId: row.authoredByUserId,
-              markDone: false,
-              at: row.platformCreatedAt,
-            }
-          : { kind: 'refresh' };
+      // A row a teammate authored (a NEW Slack start-DM or Maestro send, or an
+      // authored send that just merged onto its own webhook echo) is an
+      // outbound by that teammate, not a reply made on the platform: a thread
+      // with nothing inbound is then Done via reply, not via platform.
+      const gainedAuthor = !isInsert && !!before && !before.authoredByUserId;
+      if (row.fromMe && row.authoredByUserId && (isInsert || gainedAuthor)) {
+        intent = {
+          kind: 'outbound',
+          userId: row.authoredByUserId,
+          // Merged onto an echo that already closed a thread nobody wrote to:
+          // close it as a reply. A thread with inbound keeps the user's choice.
+          markDone: gainedAuthor && !(await this.threadHasInbound(row, key)),
+          at: row.platformCreatedAt,
+        };
+      }
       const result = await this.conversationSync.syncThread(
         row.workspaceId,
         key,
@@ -1842,7 +1960,13 @@ export class InboxService {
       this.logger.error(
         `conversation sync failed for ${key} (item ${row.id}), queued for retry: ${errMsg(err)}`,
       );
-      await this.resync.enqueue(row.workspaceId, key);
+      // The intent travels with the job: a retried first sync of a
+      // teammate-started thread must not land Done via platform.
+      if (intent.kind === 'outbound') {
+        await this.resync.enqueue(row.workspaceId, key, intent);
+      } else {
+        await this.resync.enqueue(row.workspaceId, key);
+      }
       return;
     }
 
@@ -1855,6 +1979,55 @@ export class InboxService {
         );
       }
     }
+
+    // R7: a brand-new inbound row is news. Only reached after a successful
+    // sync (no conversationId otherwise; the conversation notifies on its next
+    // item). Merges, our own rows and moderation-hidden rows are not news.
+    // Fire-and-forget, after commit (D1): ingest never waits on or fails for it.
+    if (isInsert && conversationId && !row.fromMe && !row.isHidden) {
+      this.fireNewInbound(row, conversationId);
+    }
+  }
+
+  private fireNewInbound(row: InboxItem, conversationId: string): void {
+    try {
+      void Promise.resolve(
+        this.notify.newInbound({
+          workspaceId: row.workspaceId,
+          conversationId,
+          authorName: row.authorDisplayName || row.authorHandle || 'Someone',
+          platformCreatedAt: row.platformCreatedAt,
+        }),
+      ).catch((err) =>
+        this.logger.error(
+          `new-inbound notification failed for item ${row.id}: ${errMsg(err)}`,
+        ),
+      );
+    } catch (err) {
+      this.logger.error(
+        `new-inbound notification failed for item ${row.id}: ${errMsg(err)}`,
+      );
+    }
+  }
+
+  /** True when the thread has a visible inbound row (same rule as the sync facts). */
+  private async threadHasInbound(
+    row: InboxItem,
+    key: string,
+  ): Promise<boolean> {
+    const found = await db
+      .select({ id: inboxItems.id })
+      .from(inboxItems)
+      .where(
+        and(
+          eq(inboxItems.workspaceId, row.workspaceId),
+          sql`${inboxItems.threadKey} = ${key}`,
+          eq(inboxItems.fromMe, false),
+          eq(inboxItems.isHidden, false),
+        ),
+      )
+      .limit(1);
+    return found.length > 0;
   }
 
   private async markRepliedOnPlatform(row: InboxItem): Promise<void> {
@@ -2897,6 +3070,7 @@ export class InboxService {
     threadKey: string,
     text: string,
     attachments?: import('./adapters/inbox-adapter.interface').DmAttachmentInput[],
+    opts: SendOptions = {},
   ): Promise<DmMessageDto> {
     await this.assertWorkspaceAccess(workspaceId, userId);
     const { channelId, conversationId } = this.decodeDmThreadKey(threadKey);
@@ -2948,7 +3122,7 @@ export class InboxService {
     // Dispatch with attachments when adapter supports them, otherwise fall
     // back to text-only path. Attachments empty array also falls through.
     const hasAttachments = attachments && attachments.length > 0;
-    let created;
+    let created: Awaited<ReturnType<typeof adapter.sendDm>>;
     if (hasAttachments) {
       if (!adapter.sendDmWithAttachments) {
         throw new BadRequestException(
@@ -2993,14 +3167,29 @@ export class InboxService {
     // — the user just answered, so those incoming messages no longer count as
     // demanding attention. Without this, the conversation list would keep its
     // unread badge after the user already responded.
-    const acknowledged = await db
+    // The conversation's reply facts (R1) need `replied_at` on EVERY inbound
+    // row not yet answered, whatever its status; only `unread` ones flip to
+    // `replied` for the old UI.
+    const answeredAt = new Date();
+    await db
       .update(inboxItems)
       .set({
-        status: 'replied',
         repliedByUserId: userId,
-        repliedAt: new Date(),
-        updatedAt: new Date(),
+        repliedAt: answeredAt,
+        updatedAt: answeredAt,
       })
+      .where(
+        and(
+          eq(inboxItems.workspaceId, workspaceId),
+          eq(inboxItems.channelId, channelId),
+          eq(inboxItems.conversationId, conversationId),
+          eq(inboxItems.fromMe, false),
+          isNull(inboxItems.repliedAt),
+        ),
+      );
+    const acknowledged = await db
+      .update(inboxItems)
+      .set({ status: 'replied', updatedAt: answeredAt })
       .where(
         and(
           eq(inboxItems.workspaceId, workspaceId),
@@ -3036,6 +3225,13 @@ export class InboxService {
         ),
       }));
     if (!row) throw new Error('Failed to persist DM');
+    await this.stampAuthor(row.id, userId);
+    await this.syncAfterAction(workspaceId, row.threadKey ?? threadKey, {
+      kind: 'outbound',
+      userId,
+      markDone: await this.resolveMarkDone(workspaceId, userId, opts),
+      at: created.platformCreatedAt,
+    });
     return this.dmItemToDto(row, await this.loadSelfAuthor(userId));
   }
 
@@ -3133,6 +3329,13 @@ export class InboxService {
         ),
       }));
     if (!row) throw new Error('Failed to persist DM');
+    await this.stampAuthor(row.id, userId);
+    await this.syncAfterAction(workspaceId, row.threadKey ?? threadKey, {
+      kind: 'outbound',
+      userId,
+      markDone: false,
+      at: created.platformCreatedAt,
+    });
     return this.dmItemToDto(row, await this.loadSelfAuthor(userId));
   }
 
@@ -3170,6 +3373,7 @@ export class InboxService {
       });
     }
     void this.emitCounts(workspaceId);
+    await this.syncAfterAction(workspaceId, threadKey, { kind: 'refresh' });
     return { updatedCount: updated.length };
   }
 

@@ -50,6 +50,32 @@ describe('YoutubeDataDeletionService', () => {
     expect(allStatementsSql()).toContain('RETURNING workspace_id, thread_key');
   });
 
+  it('also sweeps leftover YouTube conversations, scoped to workspace and channel, and syncs their keys', async () => {
+    sync.syncOrEnqueue.mockClear();
+    execute.mockImplementation(async () => ({ rowCount: 0, rows: [] }));
+    execute
+      .mockResolvedValueOnce({
+        rowCount: 1,
+        rows: [{ workspace_id: 'ws-abc', thread_key: '42:v-deleted' }],
+      })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rowCount: 0, rows: [] })
+      .mockResolvedValueOnce({ rows: [{ thread_key: '42:v-left-behind' }] });
+    const svc = await build();
+    await svc.deleteAllYoutubeData(42, 'ws-abc');
+
+    const sweep = JSON.stringify(execute.mock.calls[4][0]);
+    expect(sweep).toContain('inbox_conversations');
+    expect(sweep).toContain("platform = 'youtube'");
+    expect(sweep).toContain('ws-abc');
+    expect(sweep).toContain('42');
+    expect(sync.syncOrEnqueue).toHaveBeenCalledWith(
+      'ws-abc',
+      new Set(['42:v-deleted', '42:v-left-behind']),
+    );
+  });
+
   it('reports what it deleted from every table', async () => {
     const svc = await build();
     const summary = await svc.deleteAllYoutubeData(1, 'ws');
@@ -110,9 +136,7 @@ describe('YoutubeDataDeletionService', () => {
       expect(statement).toContain('ws-victim');
     }
 
-    const analyticsStatements = calls.filter(
-      (s) => !s.includes('inbox_items'),
-    );
+    const analyticsStatements = calls.filter((s) => !s.includes('inbox_items'));
     expect(analyticsStatements).toHaveLength(3);
     for (const statement of analyticsStatements) {
       expect(statement).toContain('social_media_channels');
