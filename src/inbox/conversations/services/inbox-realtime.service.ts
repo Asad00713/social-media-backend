@@ -25,6 +25,13 @@ interface InFlight {
   token: number;
   running: number;
 }
+/** Entry-less timeline appends of one conversation awaiting their flush. */
+interface PendingTimeline {
+  workspaceId: string;
+  timer: NodeJS.Timeout;
+  /** The one comment that changed, or null once two or more coalesced. */
+  commentId: string | null;
+}
 interface PendingCounts {
   firstAt: number;
   timer: NodeJS.Timeout;
@@ -39,6 +46,7 @@ export class InboxRealtimeService implements OnModuleDestroy {
   private readonly logger = new Logger(InboxRealtimeService.name);
   private readonly conversations = new Map<string, PendingConversation>();
   private readonly counts = new Map<string, PendingCounts>();
+  private readonly timelines = new Map<string, PendingTimeline>();
   private readonly conversationFlights = new Map<string, InFlight>();
   private readonly countsFlights = new Map<string, InFlight>();
   private generation = 0;
@@ -52,8 +60,10 @@ export class InboxRealtimeService implements OnModuleDestroy {
   onModuleDestroy(): void {
     for (const p of this.conversations.values()) clearTimeout(p.timer);
     for (const p of this.counts.values()) clearTimeout(p.timer);
+    for (const p of this.timelines.values()) clearTimeout(p.timer);
     this.conversations.clear();
     this.counts.clear();
+    this.timelines.clear();
     this.conversationFlights.clear();
     this.countsFlights.clear();
   }
@@ -122,7 +132,44 @@ export class InboxRealtimeService implements OnModuleDestroy {
     this.counts.set(workspaceId, { firstAt, timer });
   }
 
+  /**
+   * An append that carries its entry (a DM, a note, a scheduled reply) goes
+   * out at once: the client appends it without a fetch. An entry-less one only
+   * tells the client to refetch the detail, so it is coalesced per
+   * conversation with the same 300 ms trailing debounce as
+   * conversationChanged (I3): a 400-comment burst on a busy post is one
+   * refetch per viewer, not 400. When several coalesce, commentId is null.
+   */
   timelineAppended(
+    workspaceId: string,
+    conversationId: string,
+    entry: TimelineEntry | null,
+    commentId: string | null,
+  ): void {
+    if (entry !== null) {
+      this.emitTimeline(workspaceId, conversationId, entry, commentId);
+      return;
+    }
+    const pending = this.timelines.get(conversationId);
+    if (pending) clearTimeout(pending.timer);
+    const timer = setTimeout(() => {
+      const flushed = this.timelines.get(conversationId);
+      this.timelines.delete(conversationId);
+      this.emitTimeline(
+        workspaceId,
+        conversationId,
+        null,
+        flushed?.commentId ?? null,
+      );
+    }, CONVERSATION_DEBOUNCE_MS);
+    this.timelines.set(conversationId, {
+      workspaceId,
+      timer,
+      commentId: !pending || pending.commentId === commentId ? commentId : null,
+    });
+  }
+
+  private emitTimeline(
     workspaceId: string,
     conversationId: string,
     entry: TimelineEntry | null,

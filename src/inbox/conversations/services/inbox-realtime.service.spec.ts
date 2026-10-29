@@ -136,14 +136,65 @@ describe('InboxRealtimeService', () => {
   });
 
   describe('timelineAppended', () => {
-    it('emits immediately', () => {
-      service.timelineAppended(WS, 'c1', null, 'cm1');
+    const entry = { kind: 'message', id: 'm1' } as never;
+
+    it('emits an append that carries its entry immediately', () => {
+      service.timelineAppended(WS, 'c1', entry, null);
       expect(emitter.emit).toHaveBeenCalledWith(WS, 'inbox.timeline.appended', {
         workspaceId: WS,
         conversationId: 'c1',
-        entry: null,
-        commentId: 'cm1',
+        entry,
+        commentId: null,
       });
+    });
+
+    it('debounces a lone entry-less append 300 ms and keeps its commentId', async () => {
+      service.timelineAppended(WS, 'c1', null, 'cm1');
+      await tick(299);
+      expect(emitted('inbox.timeline.appended')).toHaveLength(0);
+      await tick(1);
+      expect(emitted('inbox.timeline.appended')).toEqual([
+        [
+          WS,
+          'inbox.timeline.appended',
+          {
+            workspaceId: WS,
+            conversationId: 'c1',
+            entry: null,
+            commentId: 'cm1',
+          },
+        ],
+      ]);
+    });
+
+    it('collapses a 400-comment burst into one refetch signal per conversation (I3)', async () => {
+      for (let i = 0; i < 400; i++) {
+        service.timelineAppended(WS, 'c1', null, `cm${i}`);
+        if (i % 2 === 1) await tick(1); // ~200 ms of webhook burst
+      }
+      service.timelineAppended(WS, 'c2', null, 'other');
+      await tick(300);
+      const out = emitted('inbox.timeline.appended');
+      expect(out).toHaveLength(2);
+      expect(out.find((c) => c[2].conversationId === 'c1')![2]).toEqual({
+        workspaceId: WS,
+        conversationId: 'c1',
+        entry: null,
+        commentId: null,
+      });
+      expect(out.find((c) => c[2].conversationId === 'c2')![2]).toMatchObject({
+        commentId: 'other',
+      });
+      await tick(1000);
+      expect(emitted('inbox.timeline.appended')).toHaveLength(2);
+    });
+
+    it('an entry in the middle of a burst still goes out at once', async () => {
+      service.timelineAppended(WS, 'c1', null, 'cm1');
+      service.timelineAppended(WS, 'c1', entry, null);
+      expect(emitted('inbox.timeline.appended')).toHaveLength(1);
+      await tick(300);
+      expect(emitted('inbox.timeline.appended')).toHaveLength(2);
     });
   });
 
@@ -263,6 +314,7 @@ describe('InboxRealtimeService', () => {
       late.resolve([{ id: 'c1' }]);
       service.conversationChanged(WS, 'c2');
       service.countsChanged(WS);
+      service.timelineAppended(WS, 'c2', null, 'cm1');
       await tick(600);
       const state = service as unknown as Record<string, Map<string, unknown>>;
       for (const m of Object.values(state)) {
