@@ -46,6 +46,7 @@ function build(db: DbType) {
     sync,
     resync as never,
     { get: jest.fn() } as never,
+    { newInbound: jest.fn() } as never,
   );
   return { service, sync, resync, rt };
 }
@@ -465,45 +466,48 @@ describeInboxDb('InboxService ingest: Slack start-DM authorship (I4)', () => {
     }));
 });
 
-describeInboxDb('InboxService ingest: our own DM echo lands before the authored row (N1)', () => {
-  it('the authored merge resyncs and the new thread ends Done via reply, not via platform', () =>
-    withInboxDb(async (db, client) => {
-      const { workspaceId, ownerId } = await seedWorkspace(client);
-      const ch = await seedChannel(client, workspaceId, 'instagram');
-      const { service } = build(db);
-      const send = (authored: string | null) =>
-        service.upsertDm({
-          workspaceId,
-          channelId: ch,
-          platform: 'instagram',
-          conversationId: 'new-contact',
-          platformItemId: 'mid-1',
-          text: 'hello there',
-          fromMe: true,
-          authoredByUserId: authored,
-          platformCreatedAt: at(1),
-        });
-      await send(null); // the webhook echo, author-less
-      const read = async () =>
-        (
-          await client.query<{
-            status: string;
-            done_via: string | null;
-            done_by_user_id: string | null;
-          }>(
-            `SELECT status, done_via, done_by_user_id FROM inbox_conversations
+describeInboxDb(
+  'InboxService ingest: our own DM echo lands before the authored row (N1)',
+  () => {
+    it('the authored merge resyncs and the new thread ends Done via reply, not via platform', () =>
+      withInboxDb(async (db, client) => {
+        const { workspaceId, ownerId } = await seedWorkspace(client);
+        const ch = await seedChannel(client, workspaceId, 'instagram');
+        const { service } = build(db);
+        const send = (authored: string | null) =>
+          service.upsertDm({
+            workspaceId,
+            channelId: ch,
+            platform: 'instagram',
+            conversationId: 'new-contact',
+            platformItemId: 'mid-1',
+            text: 'hello there',
+            fromMe: true,
+            authoredByUserId: authored,
+            platformCreatedAt: at(1),
+          });
+        await send(null); // the webhook echo, author-less
+        const read = async () =>
+          (
+            await client.query<{
+              status: string;
+              done_via: string | null;
+              done_by_user_id: string | null;
+            }>(
+              `SELECT status, done_via, done_by_user_id FROM inbox_conversations
               WHERE workspace_id = $1 AND thread_key = $2`,
-            [workspaceId, `${ch}:new-contact`],
-          )
-        ).rows[0];
-      expect((await read()).done_via).toBe('platform');
+              [workspaceId, `${ch}:new-contact`],
+            )
+          ).rows[0];
+        expect((await read()).done_via).toBe('platform');
 
-      await send(ownerId); // sendDm's upsert merges the author
+        await send(ownerId); // sendDm's upsert merges the author
 
-      expect(await read()).toMatchObject({
-        status: 'done',
-        done_via: 'reply',
-        done_by_user_id: ownerId,
-      });
-    }));
-});
+        expect(await read()).toMatchObject({
+          status: 'done',
+          done_via: 'reply',
+          done_by_user_id: ownerId,
+        });
+      }));
+  },
+);

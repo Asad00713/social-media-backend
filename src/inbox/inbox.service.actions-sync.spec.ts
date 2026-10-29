@@ -177,6 +177,7 @@ function build(opts: { markDoneOnReply?: boolean } = {}) {
     sync as never,
     resync as never,
     settings as never,
+    { newInbound: jest.fn() } as never,
   );
   const i = service as unknown as Internals;
   i.assertWorkspaceAccess = () => Promise.resolve(undefined);

@@ -163,6 +163,9 @@ function build() {
     enqueueRekey: jest.fn(async (..._a: unknown[]) => undefined),
     syncOrEnqueue: jest.fn(async () => undefined),
   };
+  const notify = {
+    newInbound: jest.fn(async (..._a: unknown[]) => undefined),
+  };
   const service = new InboxService(
     emitter as never,
     {} as never,
@@ -174,8 +177,9 @@ function build() {
     sync as never,
     resync as never,
     { get: jest.fn() } as never,
+    notify as never,
   );
-  return { service, sync, realtime, emitter, resync };
+  return { service, sync, realtime, emitter, resync, notify };
 }
 
 const commentInput = {
@@ -593,5 +597,87 @@ describe('authorship gained on a merge (N1) and retried first syncs (N3, N5)', (
       `${CH}:mention:m7`,
       `${CH}:p9`,
     );
+  });
+});
+
+describe('InboxService ingest -> newInbound notification (13b)', () => {
+  it('a new inbound comment notifies once with the conversation and author', async () => {
+    const { service, notify } = build();
+    upserted = [row()];
+    await service.upsertComment(commentInput as never);
+    expect(notify.newInbound).toHaveBeenCalledTimes(1);
+    expect(notify.newInbound).toHaveBeenCalledWith({
+      workspaceId: WS,
+      conversationId: 'conv-1',
+      authorName: 'Ana',
+      platformCreatedAt: NOW,
+    });
+  });
+
+  it('falls back to the handle, then a generic name', async () => {
+    const { service, notify } = build();
+    upserted = [row({ authorDisplayName: null })];
+    await service.upsertComment(commentInput as never);
+    upserted = [row({ authorDisplayName: null, authorHandle: null })];
+    await service.upsertComment(commentInput as never);
+    expect(notify.newInbound.mock.calls[0][0]).toMatchObject({
+      authorName: 'ana',
+    });
+    expect(notify.newInbound.mock.calls[1][0]).toMatchObject({
+      authorName: 'Someone',
+    });
+  });
+
+  it('a new inbound DM notifies', async () => {
+    const { service, notify } = build();
+    upserted = [dmRow()];
+    await service.upsertDm(dmInput as never);
+    expect(notify.newInbound).toHaveBeenCalledTimes(1);
+  });
+
+  it('a from_me row does not notify', async () => {
+    const { service, notify } = build();
+    upserted = [row({ fromMe: true })];
+    await service.upsertComment(commentInput as never);
+    expect(notify.newInbound).not.toHaveBeenCalled();
+  });
+
+  it('a merge of an existing row does not notify', async () => {
+    const { service, notify } = build();
+    const r = row({ inserted: false, fromMe: false });
+    preRead = [pre(r, { text: 'old' })] as never;
+    upserted = [r];
+    await service.upsertComment(commentInput as never);
+    expect(notify.newInbound).not.toHaveBeenCalled();
+  });
+
+  it('a hidden row does not notify', async () => {
+    const { service, notify } = build();
+    upserted = [row({ isHidden: true })];
+    await service.upsertComment(commentInput as never);
+    expect(notify.newInbound).not.toHaveBeenCalled();
+  });
+
+  it('a rejecting or throwing newInbound does not fail the ingest', async () => {
+    const { service, notify } = build();
+    upserted = [row()];
+    notify.newInbound.mockRejectedValueOnce(new Error('boom'));
+    await expect(
+      service.upsertComment(commentInput as never),
+    ).resolves.toBeDefined();
+    notify.newInbound.mockImplementationOnce(() => {
+      throw new Error('sync boom');
+    });
+    await expect(
+      service.upsertComment(commentInput as never),
+    ).resolves.toBeDefined();
+  });
+
+  it('a failed sync (queued for retry) does not notify', async () => {
+    const { service, sync, notify } = build();
+    sync.syncThread.mockRejectedValueOnce(new Error('db down'));
+    upserted = [row()];
+    await service.upsertComment(commentInput as never);
+    expect(notify.newInbound).not.toHaveBeenCalled();
   });
 });
