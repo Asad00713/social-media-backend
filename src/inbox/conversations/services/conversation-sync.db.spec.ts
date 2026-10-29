@@ -548,8 +548,27 @@ describeInboxDb('ConversationSyncService.syncThread', () => {
         const res = await service.syncThread(workspaceId, key);
 
         expect(res.removed).toBe(false);
-        expect(await conv(client, workspaceId, key)).toBeDefined();
+        const kept = await conv(client, workspaceId, key);
+        expect(kept).toBeDefined();
         expect(rt.conversationRemoved).not.toHaveBeenCalled();
+        // C1: nothing derived from the vanished items survives, and the row
+        // leaves the lists (the realtime flush announces an archived row as
+        // removed).
+        expect(kept).toMatchObject({
+          last_snippet: null,
+          last_author_label: null,
+          title: null,
+          participant_handle: null,
+          participant_name: null,
+          search_text: '',
+          unread_count: 0,
+          item_count: 0,
+        });
+        expect(kept!.archived_at).not.toBeNull();
+        expect(rt.conversationChanged).toHaveBeenCalledWith(
+          workspaceId,
+          created.conversationId,
+        );
       }),
   );
 

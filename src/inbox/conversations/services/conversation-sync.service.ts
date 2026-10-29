@@ -297,9 +297,27 @@ export class ConversationSyncService {
     if (!f || Number(f.item_count) === 0) {
       // Notes, an assignment and scheduled replies must never be lost with the
       // last item: a rekey that failed leaves them on the old conversation
-      // until its retry moves them. Keep the row until then.
+      // until its retry moves them. Keep the row until then, but nothing that
+      // was derived from the vanished items may survive on it (C1: a YouTube
+      // data-deletion request must not leave the commenter's words, name or the
+      // post snapshot behind, nor keep them searchable). The row is archived so
+      // it leaves every list and count; a later sync with items recomputes
+      // every column, archived_at included.
       const kept = await tx.execute<{ id: string }>(sql`
-        SELECT c.id FROM inbox_conversations c
+        UPDATE inbox_conversations c
+           SET last_snippet = NULL,
+               last_author_label = NULL,
+               title = NULL,
+               thumbnail_url = NULL,
+               participant_handle = NULL,
+               participant_name = NULL,
+               participant_avatar_url = NULL,
+               participant_platform_id = NULL,
+               search_text = '',
+               unread_count = 0,
+               item_count = 0,
+               archived_at = COALESCE(c.archived_at, now()),
+               updated_at = now()
          WHERE c.workspace_id = ${workspaceId}::uuid
            AND c.thread_key = ${threadKey}
            AND (c.assignee_user_id IS NOT NULL
@@ -308,6 +326,7 @@ export class ConversationSyncService {
                 OR EXISTS (SELECT 1 FROM scheduled_inbox_messages m
                             WHERE m.inbox_conversation_id = c.id
                               AND m.status IN ('pending', 'sending', 'failed')))
+        RETURNING c.id
       `);
       if (kept.rows.length > 0) {
         return {

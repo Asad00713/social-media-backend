@@ -191,4 +191,51 @@ describeInboxDb('YoutubeRetentionService x conversations', () => {
       expect(after.rows[0].last_author_label).toBeNull();
       expect(after.rows[0].search_text).not.toContain('zebrafinch');
     }));
+
+  it('the stale sweep clears an emptied conversation kept for its note (C1)', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, workspaceId, 'youtube');
+      const sync = new ConversationSyncService(db, rt as never);
+      const retention = new YoutubeRetentionService(
+        db,
+        new ConversationResyncService({ add: jest.fn() } as never, sync),
+      );
+      const item = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'youtube',
+        type: 'comment',
+        platformPostId: 'vid-gone',
+        text: 'heronword',
+        authorHandle: 'heronfan',
+        platformCreatedAt: daysAgo(2),
+      });
+      const created = await sync.syncThread(workspaceId, item.threadKey!);
+      await client.query(
+        `INSERT INTO inbox_notes (conversation_id, workspace_id, author_user_id, body)
+         VALUES ($1, $2, $3, 'ours')`,
+        [created.conversationId, workspaceId, ownerId],
+      );
+      // An earlier deletion removed the items but left the copies behind.
+      await client.query(`DELETE FROM inbox_items WHERE id = $1`, [item.id]);
+
+      await retention.wipeExpiredContent(NOW);
+
+      const after = await client.query<{
+        last_snippet: string | null;
+        last_author_label: string | null;
+        search_text: string;
+        archived_at: Date | null;
+      }>(
+        `SELECT last_snippet, last_author_label, search_text, archived_at
+           FROM inbox_conversations WHERE workspace_id = $1 AND thread_key = $2`,
+        [workspaceId, item.threadKey],
+      );
+      expect(after.rows).toHaveLength(1);
+      expect(after.rows[0].last_snippet).toBeNull();
+      expect(after.rows[0].last_author_label).toBeNull();
+      expect(after.rows[0].search_text).toBe('');
+      expect(after.rows[0].archived_at).not.toBeNull();
+    }));
 });
