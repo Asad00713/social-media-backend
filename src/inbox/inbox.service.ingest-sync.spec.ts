@@ -173,6 +173,7 @@ function build() {
     realtime as never,
     sync as never,
     resync as never,
+    { get: jest.fn() } as never,
   );
   return { service, sync, realtime, emitter, resync };
 }
