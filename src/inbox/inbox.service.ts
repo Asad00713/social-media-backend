@@ -45,10 +45,7 @@ import { InboxDispatcher } from './services/inbox-dispatcher.service';
 import { InboxRealtimeService } from './conversations/services/inbox-realtime.service';
 import { ConversationSyncService } from './conversations/services/conversation-sync.service';
 import { ConversationResyncService } from './conversations/services/conversation-resync.service';
-import {
-  DEFAULT_INBOX_SETTINGS,
-  InboxSettingsService,
-} from './conversations/services/inbox-settings.service';
+import { InboxSettingsService } from './conversations/services/inbox-settings.service';
 import { InboxNotifyService } from './conversations/services/inbox-notify.service';
 import { messageEntryOf } from './conversations/lib/timeline-entry';
 import type { SyncIntent } from './conversations/lib/lifecycle';
@@ -457,7 +454,12 @@ export class InboxService {
     intent: SyncIntent,
   ): Promise<void> {
     // A legacy row with no thread key has no conversation to keep right.
-    if (!threadKey) return;
+    if (!threadKey) {
+      this.logger.debug(
+        `skipping conversation sync for a ${intent.kind} action: the item has no thread key`,
+      );
+      return;
+    }
     try {
       await this.conversationSync.syncThread(workspaceId, threadKey, intent);
     } catch (err) {
@@ -500,9 +502,10 @@ export class InboxService {
         .markDoneOnReply;
     } catch (err) {
       this.logger.error(
-        `inbox settings read failed for user ${userId}, using the default: ${errMsg(err)}`,
+        `inbox settings read failed for user ${userId}, keeping the thread open: ${errMsg(err)}`,
       );
-      return DEFAULT_INBOX_SETTINGS.markDoneOnReply;
+      // Fail safe: never silently mark a thread Done on a transient error.
+      return false;
     }
   }
 
@@ -3171,35 +3174,50 @@ export class InboxService {
     // row not yet answered, whatever its status; only `unread` ones flip to
     // `replied` for the old UI.
     const answeredAt = new Date();
-    await db
-      .update(inboxItems)
-      .set({
-        repliedByUserId: userId,
-        repliedAt: answeredAt,
-        updatedAt: answeredAt,
-      })
-      .where(
-        and(
-          eq(inboxItems.workspaceId, workspaceId),
-          eq(inboxItems.channelId, channelId),
-          eq(inboxItems.conversationId, conversationId),
-          eq(inboxItems.fromMe, false),
-          isNull(inboxItems.repliedAt),
-        ),
+    try {
+      await db
+        .update(inboxItems)
+        .set({
+          repliedByUserId: userId,
+          repliedAt: answeredAt,
+          updatedAt: answeredAt,
+        })
+        .where(
+          and(
+            eq(inboxItems.workspaceId, workspaceId),
+            eq(inboxItems.channelId, channelId),
+            eq(inboxItems.conversationId, conversationId),
+            eq(inboxItems.fromMe, false),
+            isNull(inboxItems.repliedAt),
+          ),
+        );
+    } catch (err) {
+      this.logger.error(
+        `replied_at stamp failed after a delivered DM in ${threadKey}: ${errMsg(err)}`,
       );
-    const acknowledged = await db
-      .update(inboxItems)
-      .set({ status: 'replied', updatedAt: answeredAt })
-      .where(
-        and(
-          eq(inboxItems.workspaceId, workspaceId),
-          eq(inboxItems.channelId, channelId),
-          eq(inboxItems.conversationId, conversationId),
-          eq(inboxItems.status, 'unread'),
-          eq(inboxItems.fromMe, false),
-        ),
-      )
-      .returning({ id: inboxItems.id });
+    }
+    // The send has been delivered: a failure of this legacy-UI flip must not
+    // turn it into an error response.
+    let acknowledged: Array<{ id: string }> = [];
+    try {
+      acknowledged = await db
+        .update(inboxItems)
+        .set({ status: 'replied', updatedAt: answeredAt })
+        .where(
+          and(
+            eq(inboxItems.workspaceId, workspaceId),
+            eq(inboxItems.channelId, channelId),
+            eq(inboxItems.conversationId, conversationId),
+            eq(inboxItems.status, 'unread'),
+            eq(inboxItems.fromMe, false),
+          ),
+        )
+        .returning({ id: inboxItems.id });
+    } catch (err) {
+      this.logger.error(
+        `legacy unread flip failed after a delivered DM in ${threadKey}: ${errMsg(err)}`,
+      );
+    }
 
     for (const ack of acknowledged) {
       this.emitter.emit(workspaceId, 'inbox.item.updated', {
