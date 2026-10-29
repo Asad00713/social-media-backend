@@ -134,6 +134,7 @@ const pre = (
   authorHandle: r.authorHandle,
   authorAvatarUrl: r.authorAvatarUrl,
   authorPlatformId: r.authorPlatformId ?? null,
+  authoredByUserId: r.authoredByUserId ?? null,
   platformParentId: r.platformParentId,
   ourPostId: r.ourPostId ?? null,
   status: r.status,
@@ -158,7 +159,8 @@ function build() {
   };
   const realtime = { timelineAppended: jest.fn(), countsChanged: jest.fn() };
   const resync = {
-    enqueue: jest.fn(async () => undefined),
+    enqueue: jest.fn(async (..._a: unknown[]) => undefined),
+    enqueueRekey: jest.fn(async (..._a: unknown[]) => undefined),
     syncOrEnqueue: jest.fn(async () => undefined),
   };
   const service = new InboxService(
@@ -538,5 +540,57 @@ describe('a failed sync is retried through the resync queue (I3)', () => {
       kind: 'refresh',
     });
     expect(resync.enqueue).not.toHaveBeenCalledWith(WS, `${CH}:mention:m7`);
+  });
+});
+
+describe('authorship gained on a merge (N1) and retried first syncs (N3, N5)', () => {
+  it('an author gained on a merge syncs, as an outbound by that teammate', async () => {
+    const { service, sync } = build();
+    const r = row({ inserted: false, fromMe: true, authoredByUserId: 'u1' });
+    preRead = [pre(r, { authoredByUserId: null })] as never;
+    upserted = [r];
+    await service.upsertComment({ ...commentInput, fromMe: true } as never);
+    expect(sync.syncThread).toHaveBeenCalledWith(WS, `${CH}:p1`, {
+      kind: 'outbound',
+      userId: 'u1',
+      markDone: false,
+      at: NOW,
+    });
+  });
+
+  it('a failed first sync of an authored insert is queued WITH the outbound intent', async () => {
+    const { service, sync, resync } = build();
+    sync.syncThread.mockRejectedValueOnce(new Error('boom'));
+    upserted = [dmRow({ fromMe: true, authoredByUserId: 'u1' })];
+    await service.upsertDm({ ...dmInput, fromMe: true, authoredByUserId: 'u1' });
+    expect(resync.enqueue).toHaveBeenCalledWith(WS, `${CH}:conv`, {
+      kind: 'outbound',
+      userId: 'u1',
+      markDone: false,
+      at: NOW,
+    });
+  });
+
+  it('a failed rekey is queued with both keys, never lost', async () => {
+    const { service, sync, resync } = build();
+    sync.rekey.mockRejectedValueOnce(new Error('rekey failed'));
+    const r = row({
+      inserted: false,
+      platformItemId: 'm7',
+      platformPostId: 'p9',
+      threadKey: `${CH}:p9`,
+    });
+    preRead = [pre(r, { threadKey: `${CH}:mention:m7` })] as never;
+    upserted = [r];
+    await service.upsertComment({
+      ...commentInput,
+      platformItemId: 'm7',
+      platformPostId: 'p9',
+    } as never);
+    expect(resync.enqueueRekey).toHaveBeenCalledWith(
+      WS,
+      `${CH}:mention:m7`,
+      `${CH}:p9`,
+    );
   });
 });

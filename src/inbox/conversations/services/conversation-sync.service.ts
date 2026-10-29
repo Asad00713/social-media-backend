@@ -192,6 +192,21 @@ export class ConversationSyncService {
                thread_key = ${toKey}
          WHERE inbox_conversation_id = ${from.id}::uuid
       `);
+      await tx.execute(sql`
+        UPDATE inbox_conversations t
+           SET assignee_user_id = f.assignee_user_id,
+               assigned_by_user_id = f.assigned_by_user_id,
+               assigned_at = f.assigned_at
+          FROM inbox_conversations f
+         WHERE f.id = ${from.id}::uuid AND t.id = ${to.id}::uuid
+           AND t.assignee_user_id IS NULL AND f.assignee_user_id IS NOT NULL
+      `);
+      await tx.execute(sql`
+        UPDATE inbox_conversations
+           SET assignee_user_id = NULL, assigned_by_user_id = NULL,
+               assigned_at = NULL
+         WHERE id = ${from.id}::uuid
+      `);
     });
 
     await this.syncThread(workspaceId, fromKey);
@@ -236,7 +251,7 @@ export class ConversationSyncService {
                type AS latest_type, platform_post_id AS latest_platform_post_id
           FROM inbox_items
          WHERE workspace_id = ${workspaceId}::uuid AND thread_key = ${threadKey}
-         ORDER BY platform_created_at DESC, id DESC
+         ORDER BY is_hidden, platform_created_at DESC, id DESC
          LIMIT 1
       ),
       snap AS (
@@ -257,7 +272,7 @@ export class ConversationSyncService {
           FROM inbox_items
          WHERE workspace_id = ${workspaceId}::uuid AND thread_key = ${threadKey}
            AND NOT from_me
-         ORDER BY platform_created_at DESC, id DESC
+         ORDER BY is_hidden, platform_created_at DESC, id DESC
          LIMIT 1
       )
       SELECT agg.*, latest.*, snap.*, inb.*
@@ -270,6 +285,33 @@ export class ConversationSyncService {
 
     // 3. Nothing left: drop the conversation.
     if (!f || Number(f.item_count) === 0) {
+      // Notes, an assignment and scheduled replies must never be lost with the
+      // last item: a rekey that failed leaves them on the old conversation
+      // until its retry moves them. Keep the row until then.
+      const kept = await tx.execute<{ id: string }>(sql`
+        SELECT c.id FROM inbox_conversations c
+         WHERE c.workspace_id = ${workspaceId}::uuid
+           AND c.thread_key = ${threadKey}
+           AND (c.assignee_user_id IS NOT NULL
+                OR EXISTS (SELECT 1 FROM inbox_notes n
+                            WHERE n.conversation_id = c.id)
+                OR EXISTS (SELECT 1 FROM scheduled_inbox_messages m
+                            WHERE m.inbox_conversation_id = c.id
+                              AND m.status IN ('pending', 'sending', 'failed')))
+      `);
+      if (kept.rows.length > 0) {
+        return {
+          removedId: null,
+          result: {
+            conversationId: kept.rows[0].id,
+            created: false,
+            removed: false,
+            markedDone: false,
+            reopened: false,
+            status: null,
+          },
+        };
+      }
       const del = await tx.execute<{ id: string }>(sql`
         DELETE FROM inbox_conversations
          WHERE workspace_id = ${workspaceId}::uuid AND thread_key = ${threadKey}

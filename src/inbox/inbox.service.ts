@@ -362,6 +362,8 @@ interface IngestFingerprint {
   authorHandle: string | null;
   authorAvatarUrl: string | null;
   authorPlatformId: string | null;
+  /** syncThread reads it (last_platform_outbound_at), and a merge can fill it. */
+  authoredByUserId: string | null;
   platformParentId: string | null;
   ourPostId: string | null;
   status: string;
@@ -385,6 +387,7 @@ function fingerprintOf(row: InboxItem): IngestFingerprint {
     authorHandle: row.authorHandle,
     authorAvatarUrl: row.authorAvatarUrl,
     authorPlatformId: row.authorPlatformId,
+    authoredByUserId: row.authoredByUserId,
     platformParentId: row.platformParentId,
     ourPostId: row.ourPostId,
     status: row.status,
@@ -1719,12 +1722,15 @@ export class InboxService {
         authorHandle: inboxItems.authorHandle,
         authorAvatarUrl: inboxItems.authorAvatarUrl,
         authorPlatformId: inboxItems.authorPlatformId,
+        authoredByUserId: inboxItems.authoredByUserId,
         platformParentId: inboxItems.platformParentId,
         ourPostId: inboxItems.ourPostId,
         status: inboxItems.status,
         isHidden: inboxItems.isHidden,
         text: inboxItems.text,
-        postCaption: sql<string | null>`${inboxItems.metadata}->'post'->>'caption'`,
+        postCaption: sql<
+          string | null
+        >`${inboxItems.metadata}->'post'->>'caption'`,
         postThumbnail: sql<
           string | null
         >`${inboxItems.metadata}->'post'->>'thumbnailUrl'`,
@@ -1770,11 +1776,7 @@ export class InboxService {
     const becameOurs = isInsert || !before || !before.fromMe;
     const parentLearned =
       !before || (before.platformParentId == null && !!row.platformParentId);
-    if (
-      row.fromMe &&
-      !row.authoredByUserId &&
-      (becameOurs || parentLearned)
-    ) {
+    if (row.fromMe && !row.authoredByUserId && (becameOurs || parentLearned)) {
       try {
         await this.markRepliedOnPlatform(row);
       } catch (err) {
@@ -1809,29 +1811,34 @@ export class InboxService {
           key,
         );
       } catch (err) {
-        // The old key is left alone: syncing it with no items would delete
-        // the conversation that still holds the notes.
+        // Retried from the queue (idempotent). The old conversation keeps its
+        // notes, assignment and scheduled replies meanwhile: syncThread never
+        // deletes an emptied conversation that still carries them.
         this.logger.error(
-          `rekey ${before.threadKey} -> ${key} failed for item ${row.id}: ${errMsg(err)}`,
+          `rekey ${before.threadKey} -> ${key} failed for item ${row.id}, queued for retry: ${errMsg(err)}`,
         );
+        await this.resync.enqueueRekey(row.workspaceId, before.threadKey, key);
       }
     }
 
     let conversationId: string | null = null;
+    let intent: SyncIntent = { kind: 'refresh' };
     try {
-      // A NEW row a teammate authored (Slack start-DM, Maestro's Discord send)
-      // is an outbound by that teammate, not a reply made on the platform:
-      // a brand-new outbound-only thread is then Done via reply, not via
-      // platform. Anything else is a plain refresh.
-      const intent: SyncIntent =
-        isInsert && row.fromMe && row.authoredByUserId
-          ? {
-              kind: 'outbound',
-              userId: row.authoredByUserId,
-              markDone: false,
-              at: row.platformCreatedAt,
-            }
-          : { kind: 'refresh' };
+      // A row a teammate authored (a NEW Slack start-DM or Maestro send, or an
+      // authored send that just merged onto its own webhook echo) is an
+      // outbound by that teammate, not a reply made on the platform: a thread
+      // with nothing inbound is then Done via reply, not via platform.
+      const gainedAuthor = !isInsert && !!before && !before.authoredByUserId;
+      if (row.fromMe && row.authoredByUserId && (isInsert || gainedAuthor)) {
+        intent = {
+          kind: 'outbound',
+          userId: row.authoredByUserId,
+          // Merged onto an echo that already closed a thread nobody wrote to:
+          // close it as a reply. A thread with inbound keeps the user's choice.
+          markDone: gainedAuthor && !(await this.threadHasInbound(row, key)),
+          at: row.platformCreatedAt,
+        };
+      }
       const result = await this.conversationSync.syncThread(
         row.workspaceId,
         key,
@@ -1842,7 +1849,13 @@ export class InboxService {
       this.logger.error(
         `conversation sync failed for ${key} (item ${row.id}), queued for retry: ${errMsg(err)}`,
       );
-      await this.resync.enqueue(row.workspaceId, key);
+      // The intent travels with the job: a retried first sync of a
+      // teammate-started thread must not land Done via platform.
+      if (intent.kind === 'outbound') {
+        await this.resync.enqueue(row.workspaceId, key, intent);
+      } else {
+        await this.resync.enqueue(row.workspaceId, key);
+      }
       return;
     }
 
@@ -1855,6 +1868,26 @@ export class InboxService {
         );
       }
     }
+  }
+
+  /** True when the thread has a visible inbound row (same rule as the sync facts). */
+  private async threadHasInbound(
+    row: InboxItem,
+    key: string,
+  ): Promise<boolean> {
+    const found = await db
+      .select({ id: inboxItems.id })
+      .from(inboxItems)
+      .where(
+        and(
+          eq(inboxItems.workspaceId, row.workspaceId),
+          sql`${inboxItems.threadKey} = ${key}`,
+          eq(inboxItems.fromMe, false),
+          eq(inboxItems.isHidden, false),
+        ),
+      )
+      .limit(1);
+    return found.length > 0;
   }
 
   private async markRepliedOnPlatform(row: InboxItem): Promise<void> {
