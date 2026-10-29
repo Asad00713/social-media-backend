@@ -68,6 +68,7 @@ type FactsRow = {
   inbound_name: string | null;
   inbound_avatar: string | null;
   inbound_platform_id: string | null;
+  latest_outbound_author: string | null;
 };
 
 type PrevRow = {
@@ -274,12 +275,21 @@ export class ConversationSyncService {
            AND NOT from_me
          ORDER BY is_hidden, platform_created_at DESC, id DESC
          LIMIT 1
+      ),
+      lo AS (
+        SELECT authored_by_user_id AS latest_outbound_author
+          FROM inbox_items
+         WHERE workspace_id = ${workspaceId}::uuid AND thread_key = ${threadKey}
+           AND from_me
+         ORDER BY platform_created_at DESC, id DESC
+         LIMIT 1
       )
-      SELECT agg.*, latest.*, snap.*, inb.*
+      SELECT agg.*, latest.*, snap.*, inb.*, lo.*
         FROM agg
         LEFT JOIN latest ON true
         LEFT JOIN snap ON true
         LEFT JOIN inb ON true
+        LEFT JOIN lo ON true
     `);
     const f = factsRes.rows[0];
 
@@ -354,6 +364,7 @@ export class ConversationSyncService {
       lastInboundAt,
       lastOutboundAt,
       lastPlatformOutboundAt: toDate(f.last_platform_outbound_at),
+      lastOutboundAuthorId: f.latest_outbound_author,
       unansweredInbound: Number(f.unanswered_inbound),
       openLegacyInbound: Number(f.open_legacy_inbound),
     };

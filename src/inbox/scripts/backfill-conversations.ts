@@ -40,6 +40,14 @@ export async function runBackfill(
   if (!target.allowed) {
     throw new Error(target.reason ?? 'target refused');
   }
+  // A manual data command: unlike the boot migrator, the deploy-internal host
+  // needs the flag too, so a Railway shell cannot hit production by accident.
+  if (target.host.endsWith('.railway.internal') && !opts.confirmedProduction) {
+    throw new Error(
+      `refusing to run against "${target.host}" without --i-know-this-is-production ` +
+        '(npm needs a `--` before it: npm run inbox:backfill -- --i-know-this-is-production).',
+    );
+  }
 
   // Read before connecting: a missing file should not open a connection.
   const sql = stripOuterTransaction(

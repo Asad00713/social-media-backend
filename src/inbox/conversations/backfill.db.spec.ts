@@ -310,6 +310,31 @@ async function seedFixtures(client: PoolClient): Promise<Fixtures> {
   };
 }
 
+async function addInbound(
+  client: PoolClient,
+  f: Fixtures,
+  conversationId: string,
+  minutes: number,
+): Promise<void> {
+  const ch = (
+    await client.query<{ channel_id: number }>(
+      `SELECT channel_id FROM inbox_conversations
+        WHERE workspace_id = $1 AND thread_key LIKE '%:' || $2`,
+      [f.workspaceId, conversationId],
+    )
+  ).rows[0].channel_id;
+  await seedItem(client, {
+    workspaceId: f.workspaceId,
+    channelId: ch,
+    platform: 'instagram',
+    type: 'dm',
+    conversationId,
+    status: 'unread',
+    text: `late ${minutes}`,
+    platformCreatedAt: at(minutes),
+  });
+}
+
 describeInboxDb('0052 inbox conversations backfill', () => {
   it('a dm with an unread inbound lands in to_reply with unread_count 1', () =>
     withInboxDb(async (_db, client) => {
@@ -450,6 +475,166 @@ describeInboxDb('0052 inbox conversations backfill', () => {
       }
       const after = (await allConvs(client, f.workspaceId)).map(stable);
       expect(after).toEqual(before);
+    }));
+
+  describe('re-run lifecycle for newer inbound', () => {
+    it('reopens a done conversation and clears done_*', () =>
+      withInboxDb(async (_db, client) => {
+        const f = await seedFixtures(client);
+        await runBackfill(client);
+        await addInbound(client, f, 'dm-b', 40);
+        await runBackfill(client);
+        const c = await convOf(client, f.workspaceId, f.keys.answeredDm);
+        expect(c).toMatchObject({
+          status: 'to_reply',
+          done_via: null,
+          done_by_user_id: null,
+          done_at: null,
+          unread_count: 1,
+        });
+      }));
+
+    it('keeps a done conversation done when the added inbound is not newer', () =>
+      withInboxDb(async (_db, client) => {
+        const f = await seedFixtures(client);
+        await runBackfill(client);
+        await addInbound(client, f, 'dm-b', -5);
+        await runBackfill(client);
+        const c = await convOf(client, f.workspaceId, f.keys.answeredDm);
+        expect(c).toMatchObject({
+          status: 'done',
+          done_via: 'reply',
+          done_by_user_id: f.author,
+        });
+        expect(c.item_count).toBe(3);
+      }));
+
+    it('reopens when the stored last_inbound_at is NULL and a first inbound arrives', () =>
+      withInboxDb(async (_db, client) => {
+        const f = await seedFixtures(client);
+        await runBackfill(client);
+        await addInbound(client, f, 'dm-f', 50);
+        await runBackfill(client);
+        const c = await convOf(client, f.workspaceId, f.keys.teammateStarted);
+        expect(c).toMatchObject({
+          status: 'to_reply',
+          done_via: null,
+          done_by_user_id: null,
+          done_at: null,
+        });
+      }));
+
+    it('wakes a later conversation that waits for a reply, clearing later_*', () =>
+      withInboxDb(async (_db, client) => {
+        const f = await seedFixtures(client);
+        await runBackfill(client);
+        await client.query(
+          `UPDATE inbox_conversations
+              SET status = 'later', later_until = NULL, later_until_reply = true
+            WHERE workspace_id = $1 AND thread_key = $2`,
+          [f.workspaceId, f.keys.unreadDm],
+        );
+        await addInbound(client, f, 'dm-a', 60);
+        await runBackfill(client);
+        const c = await convOf(client, f.workspaceId, f.keys.unreadDm);
+        expect(c).toMatchObject({
+          status: 'to_reply',
+          later_until: null,
+          later_until_reply: false,
+        });
+      }));
+
+    it('does not apply the platform-reply close rule on conflict', () =>
+      withInboxDb(async (_db, client) => {
+        const f = await seedFixtures(client);
+        await runBackfill(client);
+        const ch = (await convOf(client, f.workspaceId, f.keys.unreadDm))
+          .channel_id as number;
+        // A native reply arrives that answers the unread dm. Only the insert
+        // path applies rule 2; a re-run leaves the thread open.
+        await seedItem(client, {
+          workspaceId: f.workspaceId,
+          channelId: ch,
+          platform: 'instagram',
+          type: 'dm',
+          conversationId: 'dm-a',
+          fromMe: true,
+          status: 'replied',
+          text: 'native answer',
+          platformCreatedAt: at(70),
+        });
+        await runBackfill(client);
+        const c = await convOf(client, f.workspaceId, f.keys.unreadDm);
+        expect(c.status).toBe('to_reply');
+      }));
+  });
+
+  it('a no-op re-run does not rewrite rows or bump updated_at', () =>
+    withInboxDb(async (_db, client) => {
+      const f = await seedFixtures(client);
+      await runBackfill(client);
+      await client.query(
+        `UPDATE inbox_conversations SET updated_at = '2020-01-01T00:00:00Z'
+          WHERE workspace_id = $1`,
+        [f.workspaceId],
+      );
+      await runBackfill(client);
+      const r = await client.query<{ n: string }>(
+        `SELECT count(*) AS n FROM inbox_conversations
+          WHERE workspace_id = $1 AND updated_at <> '2020-01-01T00:00:00Z'`,
+        [f.workspaceId],
+      );
+      expect(Number(r.rows[0].n)).toBe(0);
+      // ...but a changed thread is rewritten.
+      await addInbound(client, f, 'dm-a', 80);
+      await runBackfill(client);
+      const c = await convOf(client, f.workspaceId, f.keys.unreadDm);
+      expect(c.updated_at).not.toEqual(new Date('2020-01-01T00:00:00Z'));
+    }));
+
+  it('archived_at is truncated to milliseconds like every other timestamp', () =>
+    withInboxDb(async (_db, client) => {
+      const f = await seedFixtures(client);
+      await client.query(
+        `UPDATE inbox_items SET archived_at = '2026-10-26T10:09:00.123456Z'
+          WHERE workspace_id = $1 AND conversation_id = 'dm-e'`,
+        [f.workspaceId],
+      );
+      await runBackfill(client);
+      const c = await convOf(client, f.workspaceId, f.keys.archived);
+      expect((c.archived_at as Date).getTime()).toBe(
+        new Date('2026-10-26T10:09:00.123Z').getTime(),
+      );
+      const r = await client.query<{ us: string }>(
+        `SELECT extract(microseconds FROM archived_at)::text AS us
+           FROM inbox_conversations WHERE workspace_id = $1 AND thread_key = $2`,
+        [f.workspaceId, f.keys.archived],
+      );
+      expect(Number(r.rows[0].us) % 1000).toBe(0);
+    }));
+
+  it('parity: a deleted-then-recreated conversation gets the same state from syncThread as from the backfill', () =>
+    withInboxDb(async (db, client) => {
+      const f = await seedFixtures(client);
+      await runBackfill(client);
+      const service = syncOf(db);
+      const bookkeeping = (row: Row): Row =>
+        Object.fromEntries(
+          Object.entries(row).filter(
+            ([k]) => !['updated_at', 'id', 'created_at'].includes(k),
+          ),
+        );
+      for (const name of ['unreadDm', 'nativeComment', 'teammateStarted']) {
+        const key = f.keys[name];
+        const before = bookkeeping(await convOf(client, f.workspaceId, key));
+        await client.query(
+          `DELETE FROM inbox_conversations WHERE workspace_id = $1 AND thread_key = $2`,
+          [f.workspaceId, key],
+        );
+        await service.syncThread(f.workspaceId, key);
+        const after = bookkeeping(await convOf(client, f.workspaceId, key));
+        expect({ name, ...after }).toEqual({ name, ...before });
+      }
     }));
 
   describe('re-run safety', () => {

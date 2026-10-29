@@ -24,6 +24,8 @@ export interface ThreadFacts {
   lastOutboundAt: Date | null;
   /** from_me rows with no authored_by_user_id (R5). */
   lastPlatformOutboundAt: Date | null;
+  /** authored_by_user_id of the latest from_me row; null when unauthored or absent. */
+  lastOutboundAuthorId?: string | null;
   /** Inbound, replied_at IS NULL, not deleted, not hidden. */
   unansweredInbound: number;
   /** Inbound with status IN ('unread', 'needs_reply'). */
@@ -79,6 +81,17 @@ function initialState(facts: ThreadFacts, intent: SyncIntent): LifecycleState {
       doneVia: 'reply',
       doneByUserId: intent.userId,
       doneAt: intent.at,
+    };
+  }
+  // A thread with no visible inbound that a teammate started: Done by that
+  // author via 'reply', the same as the 0052 backfill lands it.
+  if (facts.lastOutboundAuthorId) {
+    return {
+      ...base,
+      status: 'done',
+      doneVia: 'reply',
+      doneByUserId: facts.lastOutboundAuthorId,
+      doneAt: facts.lastOutboundAt,
     };
   }
   return {

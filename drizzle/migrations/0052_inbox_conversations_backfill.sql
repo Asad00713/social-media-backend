@@ -15,29 +15,53 @@
 --      followed by a later from_me row in the thread, gets replied_at.
 --   2. Upsert one conversation per (workspace_id, thread_key). On conflict ONLY
 --      the derived columns are refreshed; status, later_*, assignee_*,
---      assigned_*, done_* are never touched, so a re-run cannot undo triage.
+--      assigned_*, done_* are never touched, with ONE exception: a newer
+--      inbound (EXCLUDED.last_inbound_at is later than the stored one, or the
+--      stored one is NULL) reopens a Done conversation, and a Later one that
+--      waits for a reply, exactly as syncThread's rule 1 does (done_* / later_*
+--      cleared). Rule 2 (a native reply closes the thread) is deliberately NOT
+--      applied on conflict: a stale To reply stays visible and fixable, a wrong
+--      close would hide work. Archiving needs no clause: archived_at is derived.
 --   3. The initial lifecycle (inserted rows only; it lives in the INSERT values)
---      follows syncThread's rules for a NEW key: To reply, unless the thread has
---      no open inbound (legacy status unread/needs_reply) or was answered on the
---      platform with nothing left unanswered (D8). Done by: latest outbound
---      authored -> 'reply' by that author; unauthored -> 'platform'; no
---      outbound -> 'manual' at last_message_at.
+--      is the legacy rule plus syncThread's rule 2 (D8): To reply, unless the
+--      thread has no open inbound (legacy status unread/needs_reply) or was
+--      answered on the platform with nothing left unanswered. Done by: latest
+--      outbound authored -> 'reply' by that author; unauthored -> 'platform';
+--      no outbound -> 'manual' at last_message_at. A fresh syncThread agrees
+--      for unread threads, natively answered threads and outbound-only threads
+--      a teammate started; it differs on purpose for legacy-closed threads
+--      (sync says To reply) and hidden-only threads with no outbound.
 --   4. Link scheduled replies to their conversation. A nested reply (parent
 --      item set) links through the PARENT item's thread_key (D20); the rest by
 --      their own thread_key.
 --
 -- SAFETY
--- Runs in ONE transaction (the runner's, or `npm run inbox:backfill`'s). Reads
--- inbox_items once. Idempotent: step 1 only fills NULL replied_at, step 2 is an
--- upsert that leaves triage state alone, step 4 only fills NULL links. It
--- writes replied_at on inbox_items and rows in inbox_conversations /
--- scheduled_inbox_messages; nothing is deleted. Safe to re-run at cutover.
+-- Runs in ONE transaction (the runner's, or `npm run inbox:backfill`'s). The
+-- first statement takes an EXCLUSIVE lock on inbox_conversations so a live
+-- syncThread cannot interleave and be overwritten by this file's older
+-- snapshot (a blocked sync resumes after COMMIT and refreshes from the newest
+-- items). Reads are not blocked. Idempotent: step 1 only fills NULL
+-- replied_at, step 2 is an upsert that only rewrites rows whose derived
+-- columns changed, step 4 only fills NULL links. It writes replied_at on
+-- inbox_items and rows in inbox_conversations / scheduled_inbox_messages;
+-- nothing is deleted. Safe to re-run at cutover.
+--
+-- COST
+-- inbox_items is scanned several times (steps 1a, 1b and the agg / latest /
+-- snap / inb / lo CTEs, four of them sorts). Fine at current scale, but the
+-- boot migrator holds the deploy until this finishes: run EXPLAIN (ANALYZE,
+-- BUFFERS) on a prod-sized copy as part of the deploy checklist.
+--
+-- NEVER edit this file after it has been applied: the migrator's checksum
+-- guard refuses to boot. Write a new migration for any later change.
 --
 -- ROLLBACK
 --   Rows are derivable, so: DELETE FROM inbox_conversations; (scheduled links
 --   fall to NULL via ON DELETE SET NULL). replied_at marks are not reverted.
 --
 -- Never run `db:push` against prod. The boot migrator applies this file.
+
+LOCK TABLE inbox_conversations IN EXCLUSIVE MODE;
 
 -- 1a. Comments and mentions answered from the platform.
 UPDATE inbox_items i
@@ -61,18 +85,21 @@ UPDATE inbox_items i
 UPDATE inbox_items i
    SET replied_at = a.first_reply
   FROM (
-    SELECT p.id, min(o.platform_created_at) AS first_reply
+    SELECT p.id, o.first_reply
       FROM inbox_items p
-      JOIN inbox_items o
-        ON o.workspace_id = p.workspace_id
-       AND o.thread_key = p.thread_key
-       AND o.from_me
-       AND o.platform_created_at > p.platform_created_at
+      CROSS JOIN LATERAL (
+        SELECT min(x.platform_created_at) AS first_reply
+          FROM inbox_items x
+         WHERE x.workspace_id = p.workspace_id
+           AND x.thread_key = p.thread_key
+           AND x.from_me
+           AND x.platform_created_at > p.platform_created_at
+      ) o
      WHERE NOT p.from_me
        AND p.type = 'dm'
        AND p.replied_at IS NULL
        AND p.thread_key IS NOT NULL
-     GROUP BY p.id
+       AND o.first_reply IS NOT NULL
   ) a
  WHERE i.id = a.id;
 
@@ -91,7 +118,7 @@ WITH agg AS (
          (count(*) FILTER (WHERE NOT from_me AND NOT is_hidden
                              AND status IN ('unread', 'needs_reply')))::int AS open_legacy_inbound,
          bool_and(archived_at IS NOT NULL) AS all_archived,
-         max(archived_at) AS max_archived_at,
+         date_trunc('milliseconds', max(archived_at)) AS max_archived_at,
          max(our_post_id::text)::uuid AS post_id
     FROM inbox_items
    WHERE thread_key IS NOT NULL
@@ -209,6 +236,48 @@ SELECT s.workspace_id, s.latest_channel_id, s.latest_platform, s.kind,
        CASE WHEN s.all_archived THEN s.max_archived_at END
   FROM shaped s
 ON CONFLICT (workspace_id, thread_key) DO UPDATE SET
+  -- Lifecycle: only a newer inbound moves it (syncThread rule 1).
+  status = CASE
+    WHEN (EXCLUDED.last_inbound_at IS NOT NULL
+   AND (inbox_conversations.last_inbound_at IS NULL
+        OR EXCLUDED.last_inbound_at > inbox_conversations.last_inbound_at))
+         AND (inbox_conversations.status = 'done'
+              OR (inbox_conversations.status = 'later'
+                  AND inbox_conversations.later_until_reply))
+    THEN 'to_reply' ELSE inbox_conversations.status END,
+  done_by_user_id = CASE
+    WHEN (EXCLUDED.last_inbound_at IS NOT NULL
+   AND (inbox_conversations.last_inbound_at IS NULL
+        OR EXCLUDED.last_inbound_at > inbox_conversations.last_inbound_at))
+         AND inbox_conversations.status = 'done'
+    THEN NULL ELSE inbox_conversations.done_by_user_id END,
+  done_at = CASE
+    WHEN (EXCLUDED.last_inbound_at IS NOT NULL
+   AND (inbox_conversations.last_inbound_at IS NULL
+        OR EXCLUDED.last_inbound_at > inbox_conversations.last_inbound_at))
+         AND inbox_conversations.status = 'done'
+    THEN NULL ELSE inbox_conversations.done_at END,
+  done_via = CASE
+    WHEN (EXCLUDED.last_inbound_at IS NOT NULL
+   AND (inbox_conversations.last_inbound_at IS NULL
+        OR EXCLUDED.last_inbound_at > inbox_conversations.last_inbound_at))
+         AND inbox_conversations.status = 'done'
+    THEN NULL ELSE inbox_conversations.done_via END,
+  later_until = CASE
+    WHEN (EXCLUDED.last_inbound_at IS NOT NULL
+   AND (inbox_conversations.last_inbound_at IS NULL
+        OR EXCLUDED.last_inbound_at > inbox_conversations.last_inbound_at))
+         AND inbox_conversations.status = 'later'
+         AND inbox_conversations.later_until_reply
+    THEN NULL ELSE inbox_conversations.later_until END,
+  later_until_reply = CASE
+    WHEN (EXCLUDED.last_inbound_at IS NOT NULL
+   AND (inbox_conversations.last_inbound_at IS NULL
+        OR EXCLUDED.last_inbound_at > inbox_conversations.last_inbound_at))
+         AND inbox_conversations.status = 'later'
+         AND inbox_conversations.later_until_reply
+    THEN false ELSE inbox_conversations.later_until_reply END,
+  -- Derived columns.
   channel_id = EXCLUDED.channel_id,
   platform = EXCLUDED.platform,
   kind = EXCLUDED.kind,
@@ -230,7 +299,9 @@ ON CONFLICT (workspace_id, thread_key) DO UPDATE SET
   participant_platform_id = EXCLUDED.participant_platform_id,
   search_text = EXCLUDED.search_text,
   archived_at = EXCLUDED.archived_at,
-  updated_at = now();
+  updated_at = now()
+WHERE (inbox_conversations.channel_id, inbox_conversations.platform, inbox_conversations.kind, inbox_conversations.unread_count, inbox_conversations.item_count, inbox_conversations.last_message_at, inbox_conversations.last_inbound_at, inbox_conversations.last_outbound_at, inbox_conversations.last_snippet, inbox_conversations.last_author_label, inbox_conversations.last_from_me, inbox_conversations.reply_window_closes_at, inbox_conversations.post_id, inbox_conversations.title, inbox_conversations.thumbnail_url, inbox_conversations.participant_handle, inbox_conversations.participant_name, inbox_conversations.participant_avatar_url, inbox_conversations.participant_platform_id, inbox_conversations.search_text, inbox_conversations.archived_at)
+      IS DISTINCT FROM (EXCLUDED.channel_id, EXCLUDED.platform, EXCLUDED.kind, EXCLUDED.unread_count, EXCLUDED.item_count, EXCLUDED.last_message_at, EXCLUDED.last_inbound_at, EXCLUDED.last_outbound_at, EXCLUDED.last_snippet, EXCLUDED.last_author_label, EXCLUDED.last_from_me, EXCLUDED.reply_window_closes_at, EXCLUDED.post_id, EXCLUDED.title, EXCLUDED.thumbnail_url, EXCLUDED.participant_handle, EXCLUDED.participant_name, EXCLUDED.participant_avatar_url, EXCLUDED.participant_platform_id, EXCLUDED.search_text, EXCLUDED.archived_at);
 
 -- 4. Link scheduled replies. A nested reply links through its PARENT item's
 -- thread_key (D20); everything else by its own thread_key.

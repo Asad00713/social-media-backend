@@ -1,4 +1,4 @@
-import { mkdtempSync, writeFileSync } from 'fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
 import type { Client } from 'pg';
@@ -6,8 +6,15 @@ import { runBackfill } from './backfill-conversations';
 
 const SQL = '-- header\nSELECT 1;\n';
 
+const tempDirs: string[] = [];
+
+afterAll(() => {
+  for (const dir of tempDirs) rmSync(dir, { recursive: true, force: true });
+});
+
 function sqlFile(contents: string): string {
   const dir = mkdtempSync(join(tmpdir(), 'backfill-'));
+  tempDirs.push(dir);
   const file = join(dir, '0052.sql');
   writeFileSync(file, contents);
   return file;
@@ -92,6 +99,44 @@ describe('runBackfill', () => {
       connect,
     });
     expect(connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('refuses a deploy-internal host without the production flag too', async () => {
+    const { connect } = fakeConnect();
+    await expect(
+      runBackfill({
+        databaseUrl: 'postgres://u@db.railway.internal/db',
+        confirmedProduction: false,
+        sqlPath: sqlFile(SQL),
+        connect,
+      }),
+    ).rejects.toThrow(/--i-know-this-is-production/);
+    expect(connect).not.toHaveBeenCalled();
+  });
+
+  it('allows a deploy-internal host with the production flag', async () => {
+    const { connect } = fakeConnect();
+    await runBackfill({
+      databaseUrl: 'postgres://u@db.railway.internal/db',
+      confirmedProduction: true,
+      sqlPath: sqlFile(SQL),
+      connect,
+    });
+    expect(connect).toHaveBeenCalledTimes(1);
+  });
+
+  it('the real 0052 file takes an EXCLUSIVE lock on inbox_conversations before any write', async () => {
+    const { connect, queries } = fakeConnect();
+    await runBackfill({
+      databaseUrl: 'postgres://u@localhost/db',
+      confirmedProduction: false,
+      connect,
+    });
+    const withoutComments = queries[1].replace(/^\s*--.*$/gm, '').trim();
+    expect(withoutComments).toMatch(
+      /^LOCK TABLE inbox_conversations IN EXCLUSIVE MODE;/,
+    );
+    expect(queries[0]).toBe('BEGIN');
   });
 
   it('rolls back, closes the connection and rethrows when the SQL fails', async () => {

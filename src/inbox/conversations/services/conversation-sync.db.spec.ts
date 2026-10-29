@@ -352,6 +352,54 @@ describeInboxDb('ConversationSyncService.syncThread', () => {
       });
     }));
 
+  it('a new thread with no visible inbound lands done via reply by the author of the latest outbound, platform when unauthored', () =>
+    withInboxDb(async (db, client) => {
+      const { workspaceId } = await seedWorkspace(client);
+      const teammate = await seedMember(client, workspaceId, 'MEMBER');
+      const ch = await seedChannel(client, workspaceId, 'instagram');
+      const authored = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'instagram',
+        type: 'dm',
+        conversationId: 'thr-started',
+        fromMe: true,
+        authoredByUserId: teammate,
+        status: 'replied',
+        text: 'hi, a question',
+        platformCreatedAt: at(1),
+      });
+      const native = await seedItem(client, {
+        workspaceId,
+        channelId: ch,
+        platform: 'instagram',
+        type: 'dm',
+        conversationId: 'thr-native',
+        fromMe: true,
+        status: 'replied',
+        text: 'sent from the app',
+        platformCreatedAt: at(2),
+      });
+      const { service } = build(db);
+      await service.syncThread(workspaceId, authored.threadKey!);
+      await service.syncThread(workspaceId, native.threadKey!);
+
+      const a = (await conv(client, workspaceId, authored.threadKey!))!;
+      expect(a).toMatchObject({
+        status: 'done',
+        done_via: 'reply',
+        done_by_user_id: teammate,
+      });
+      expect((a.done_at as Date).getTime()).toBe(at(1).getTime());
+      const n = (await conv(client, workspaceId, native.threadKey!))!;
+      expect(n).toMatchObject({
+        status: 'done',
+        done_via: 'platform',
+        done_by_user_id: null,
+      });
+      expect((n.done_at as Date).getTime()).toBe(at(2).getTime());
+    }));
+
   it('a hidden unanswered comment does not keep the thread open after the others are answered', () =>
     withInboxDb(async (db, client) => {
       const { workspaceId } = await seedWorkspace(client);

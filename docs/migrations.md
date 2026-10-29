@@ -143,11 +143,19 @@ nobody can reproduce.
 
 `0052_inbox_conversations_backfill.sql` builds `inbox_conversations` from the
 existing `inbox_items` (and links scheduled replies to them). `npm run
-inbox:backfill` re-runs the same file in one transaction, refusing any host that
-is not localhost or `*.railway.internal` unless `--i-know-this-is-production` is
-passed. It is safe to re-run: only derived columns are refreshed, and status,
-snooze, assignee and done state are never touched. The owner runs it once, at
+inbox:backfill -- --i-know-this-is-production` (the `--` is required, or npm
+swallows the flag) re-runs the same file in one transaction. Unlike the boot
+migrator it needs the flag for every host except localhost, `*.railway.internal`
+included. It is safe to re-run: only derived columns are refreshed, and snooze,
+assignee and done state are left alone, except that a newer inbound reopens a
+Done (or wait-for-reply Later) conversation, as live sync would. It locks
+`inbox_conversations` (EXCLUSIVE) for its duration. The owner runs it once, at
 the frontend switch, to catch anything that drifted since the migration ran.
+
+**Never edit 0052 after it has been applied** (the checksum guard refuses to
+boot); write a new migration for any later change to the backfill logic. Run
+EXPLAIN (ANALYZE, BUFFERS) on a prod-sized copy before deploy: the file scans
+`inbox_items` several times and the deploy waits for it.
 
 ## Production history
 
