@@ -27,16 +27,11 @@ import {
 } from '../drizzle/schema/inbox.schema';
 import {
   socialMediaChannels,
-  SocialMediaChannel,
   SupportedPlatform,
 } from '../drizzle/schema/channels.schema';
 import { workspace } from '../drizzle/schema/workspace.schema';
 import { workspaceInvitation } from '../drizzle/schema/workspace-invitation.schema';
 import { users } from '../drizzle/schema/users.schema';
-import {
-  posts as postsTable,
-  PostTarget,
-} from '../drizzle/schema/posts.schema';
 import { AnalyticsEventEmitter } from '../realtime/analytics-event-emitter.service';
 import { ChannelService } from '../channels/services/channel.service';
 import { FacebookService } from '../channels/services/facebook.service';
@@ -51,11 +46,7 @@ import { messageEntryOf } from './conversations/lib/timeline-entry';
 import type { SyncIntent } from './conversations/lib/lifecycle';
 import { computeLegacyCounts } from './legacy-counts';
 import { whatsappMessageTemplates } from '../drizzle/schema/whatsapp-templates.schema';
-import type {
-  ResolvedChannel,
-  DmConversationSummary as AdapterDmConversationSummary,
-  FetchedDm,
-} from './adapters/inbox-adapter.interface';
+import type { ResolvedChannel } from './adapters/inbox-adapter.interface';
 import { InboxFolder, InboxSort } from './dto/list-comments.dto';
 import { InjectQueue } from '@nestjs/bullmq';
 import { pollDedupId } from './schedulers/poll-dedup';
@@ -833,7 +824,7 @@ export class InboxService {
         text: row.text ?? '',
         contentRedacted: isContentRedacted(row),
         timestamp: row.platformCreatedAt.toISOString(),
-        permalink: row.metadata?.permalink,
+        permalink: (row.metadata as { permalink?: string } | null)?.permalink,
         platformItemId: row.platformItemId,
         isHidden: row.isHidden,
       })),
@@ -2297,7 +2288,9 @@ export class InboxService {
       RETURNING channel_id, workspace_id, thread_key
     `);
 
-    const rows = ((result as any).rows ?? result ?? []) as Array<{
+    const rows = ((result as unknown as { rows?: unknown }).rows ??
+      result ??
+      []) as Array<{
       channel_id: number | string;
       workspace_id: string;
       thread_key: string | null;

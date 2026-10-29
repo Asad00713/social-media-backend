@@ -79,7 +79,7 @@ describe('InboxSettingsController over HTTP', () => {
     });
   });
 
-  it.each([
+  it.each<[Record<string, unknown>, string]>([
     [{ notify: 'loud' }, 'bad enum'],
     [{ defaultLater: 'never' }, 'bad enum'],
     [{ markDoneOnReply: 'yes' }, 'not a boolean'],

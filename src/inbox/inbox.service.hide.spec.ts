@@ -18,6 +18,7 @@ jest.mock('../drizzle/db', () => ({
 
 import { db } from '../drizzle/db';
 import { InboxService } from './inbox.service';
+import type { InboxNotifyService } from './conversations/services/inbox-notify.service';
 
 describe('InboxService.hideComment', () => {
   let service: InboxService;
@@ -85,7 +86,7 @@ describe('InboxService.hideComment', () => {
       {} as any, // ConversationSyncService — unused on this path
       {} as any, // ConversationResyncService — unused on this path
       {} as any, // InboxSettingsService — unused on this path
-      {} as any, // InboxNotifyService — unused on this path
+      { newInbound: jest.fn() } as unknown as InboxNotifyService, // unused on this path
     );
 
     // emitCounts is a fire-and-forget side effect unrelated to hideComment's
