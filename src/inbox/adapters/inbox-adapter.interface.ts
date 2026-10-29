@@ -125,6 +125,39 @@ export interface PlatformInboxAdapter {
   ): Promise<void>;
 
   /**
+   * Like (or unlike) a comment as our account. `likeRef` is whatever the
+   * platform needs to undo it later (Bluesky: the like record's URI).
+   */
+  likeComment?(
+    channel: ResolvedChannel,
+    item: { platformItemId: string; metadata: Record<string, unknown> | null },
+    liked: boolean,
+  ): Promise<{ likeRef?: string | null }>;
+
+  /**
+   * Delete someone else's comment from our post (we are the owner, not the
+   * author). Facebook / Instagram delete it; YouTube rejects it.
+   */
+  moderateDelete?(
+    channel: ResolvedChannel,
+    platformItemId: string,
+  ): Promise<void>;
+
+  /**
+   * Reply to a comment in private (a DM). Returns the recipient's platform id,
+   * which together with the channel account id forms the DM conversation id.
+   */
+  sendPrivateReply?(
+    channel: ResolvedChannel,
+    platformCommentId: string,
+    text: string,
+  ): Promise<{
+    recipientPlatformId: string;
+    platformItemId: string;
+    platformCreatedAt: Date;
+  }>;
+
+  /**
    * Fetch posts that @mention our account. Only implemented by platforms with
    * a mentions API (Threads). Returns one FetchedComment per mention (no post
    * grouping — mentions ingest as inbox items of type 'mention').

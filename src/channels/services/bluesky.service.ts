@@ -67,6 +67,9 @@ function normalizeReply(
   return { root: ref, parent: ref };
 }
 
+/** Bluesky caps a threadgate at 300 hidden replies. */
+const MAX_BLUESKY_HIDDEN_REPLIES = 300;
+
 @Injectable()
 export class BlueskyService {
   private readonly logger = new Logger(BlueskyService.name);
@@ -766,6 +769,194 @@ export class BlueskyService {
       const errorData = await response.text();
       this.logger.error(`Failed to delete Bluesky post: ${errorData}`);
       throw new BadRequestException('Failed to delete post from Bluesky');
+    }
+  }
+
+  // ==========================================================================
+  // Inbox comment actions: like + hide a reply. These throw plain Errors (not
+  // HttpExceptions) so a platform failure reaches the inbox as PLATFORM_ERROR;
+  // only the 300-hidden-replies cap is a deliberate 400 `{ reason }`.
+  // ==========================================================================
+
+  /** Resolve `{ uri, cid }` of one post (needed to like it). */
+  async resolvePostRef(
+    accessJwt: string,
+    uri: string,
+  ): Promise<{ uri: string; cid: string; rootUri: string | null }> {
+    const res = await fetch(
+      `${this.apiBaseUrl}/app.bsky.feed.getPosts?uris=${encodeURIComponent(uri)}`,
+      { headers: { Authorization: `Bearer ${accessJwt}` } },
+    );
+    if (!res.ok) {
+      throw new Error(`Bluesky getPosts failed: ${res.status}`);
+    }
+    const data = (await res.json()) as {
+      posts?: Array<{
+        uri: string;
+        cid: string;
+        record?: { reply?: { root?: { uri?: string } } };
+      }>;
+    };
+    const post = data.posts?.[0];
+    if (!post) throw new Error(`Bluesky post ${uri} not found`);
+    return {
+      uri: post.uri,
+      cid: post.cid,
+      rootUri: post.record?.reply?.root?.uri ?? null,
+    };
+  }
+
+  /** Like a post (creates an `app.bsky.feed.like` record); returns its URI. */
+  async likePost(
+    accessJwt: string,
+    did: string,
+    subject: { uri: string; cid: string },
+  ): Promise<string> {
+    const res = await fetch(
+      `${this.apiBaseUrl}/com.atproto.repo.createRecord`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessJwt}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          repo: did,
+          collection: 'app.bsky.feed.like',
+          record: {
+            $type: 'app.bsky.feed.like',
+            subject,
+            createdAt: new Date().toISOString(),
+          },
+        }),
+      },
+    );
+    if (!res.ok) {
+      throw new Error(`Bluesky like failed: ${res.status} ${await res.text()}`);
+    }
+    const data = (await res.json()) as { uri?: string };
+    if (!data.uri) throw new Error('Bluesky like: no record uri returned');
+    return data.uri;
+  }
+
+  /** Remove a like by deleting the record at `likeUri`. */
+  async unlikePost(
+    accessJwt: string,
+    did: string,
+    likeUri: string,
+  ): Promise<void> {
+    const rkey = likeUri.split('/').pop();
+    const res = await fetch(
+      `${this.apiBaseUrl}/com.atproto.repo.deleteRecord`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessJwt}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          repo: did,
+          collection: 'app.bsky.feed.like',
+          rkey,
+        }),
+      },
+    );
+    if (!res.ok) {
+      throw new Error(
+        `Bluesky unlike failed: ${res.status} ${await res.text()}`,
+      );
+    }
+  }
+
+  /**
+   * Hide or unhide a reply under one of our posts. Bluesky has no hide call:
+   * the root post's `app.bsky.feed.threadgate` record lists `hiddenReplies`.
+   * A missing threadgate is created WITHOUT `allow`, so who may reply stays
+   * exactly as it was. At most 300 replies can be hidden per post.
+   */
+  async setReplyHidden(
+    accessJwt: string,
+    did: string,
+    replyUri: string,
+    hidden: boolean,
+  ): Promise<void> {
+    const reply = await this.resolvePostRef(accessJwt, replyUri);
+    const rootUri = reply.rootUri;
+    const rootParts = rootUri?.match(
+      /^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/,
+    );
+    if (!rootUri || !rootParts) {
+      throw new BadRequestException({
+        reason: 'This reply has no post of yours to hide it on',
+      });
+    }
+    if (rootParts[1] !== did) {
+      throw new BadRequestException({
+        reason: 'You can only hide replies on your own posts',
+      });
+    }
+    const rkey = rootParts[2];
+
+    const getUrl = new URL(`${this.apiBaseUrl}/com.atproto.repo.getRecord`);
+    getUrl.searchParams.set('repo', did);
+    getUrl.searchParams.set('collection', 'app.bsky.feed.threadgate');
+    getUrl.searchParams.set('rkey', rkey);
+    const got = await fetch(getUrl.toString(), {
+      headers: { Authorization: `Bearer ${accessJwt}` },
+    });
+    let existing: Record<string, unknown> | null = null;
+    let swapRecord: string | undefined;
+    if (got.ok) {
+      const body = (await got.json()) as {
+        cid?: string;
+        value?: Record<string, unknown>;
+      };
+      existing = body.value ?? null;
+      swapRecord = body.cid;
+    } else if (got.status !== 400 && got.status !== 404) {
+      throw new Error(`Bluesky threadgate read failed: ${got.status}`);
+    }
+
+    const current = Array.isArray(existing?.hiddenReplies)
+      ? (existing.hiddenReplies as string[])
+      : [];
+    const has = current.includes(replyUri);
+    if (hidden === has) return;
+    if (hidden && current.length >= MAX_BLUESKY_HIDDEN_REPLIES) {
+      throw new BadRequestException({
+        reason: `Bluesky lets you hide up to ${MAX_BLUESKY_HIDDEN_REPLIES} replies per post`,
+      });
+    }
+    const hiddenReplies = hidden
+      ? [...current, replyUri]
+      : current.filter((u) => u !== replyUri);
+
+    const record = existing
+      ? { ...existing, hiddenReplies }
+      : {
+          $type: 'app.bsky.feed.threadgate',
+          post: rootUri,
+          hiddenReplies,
+          createdAt: new Date().toISOString(),
+        };
+    const put = await fetch(`${this.apiBaseUrl}/com.atproto.repo.putRecord`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessJwt}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        repo: did,
+        collection: 'app.bsky.feed.threadgate',
+        rkey,
+        record,
+        ...(swapRecord ? { swapRecord } : {}),
+      }),
+    });
+    if (!put.ok) {
+      throw new Error(
+        `Bluesky threadgate write failed: ${put.status} ${await put.text()}`,
+      );
     }
   }
 

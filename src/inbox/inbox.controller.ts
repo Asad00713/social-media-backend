@@ -16,6 +16,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { InboxService } from './inbox.service';
 import { ScheduledMessagesService } from './services/scheduled-messages.service';
+import { CommentActionsService } from './conversations/services/comment-actions.service';
 import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import { ListCommentsDto } from './dto/list-comments.dto';
 import { ReplyDto } from './dto/reply.dto';
@@ -42,6 +43,7 @@ export class InboxController {
     private readonly inboxService: InboxService,
     private readonly scheduledMessagesService: ScheduledMessagesService,
     private readonly r2Service: CloudflareR2Service,
+    private readonly commentActions: CommentActionsService,
   ) {}
 
   @Get('comments')
@@ -135,8 +137,9 @@ export class InboxController {
   }
 
   /**
-   * Moderate a reply on our own post (Threads `manage_reply` today; other
-   * platforms reject with a 400 via `inboxService.hideComment`).
+   * Legacy route for hiding a reply. It delegates to the same service as
+   * `POST comments/:itemId/hide`, so the platform matrix is enforced the same
+   * way; the body is the old `{ success, isHidden }` plus the new `node`.
    */
   @Patch('comments/:itemId/hide')
   @RequireCapability('inbox:reply')
@@ -146,10 +149,10 @@ export class InboxController {
     @Body() dto: HideDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.inboxService.hideComment(
+    return this.commentActions.hide(
       workspaceId,
-      user.userId,
       itemId,
+      user.userId,
       dto.hidden,
     );
   }
@@ -436,16 +439,7 @@ export class InboxController {
   // AND deletes from the platform side via the per-platform adapter.
   // ==========================================================================
 
-  @Delete('comments/:itemId')
-  @RequireCapability('inbox:reply')
-  @HttpCode(HttpStatus.OK)
-  async deleteComment(
-    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
-    @Param('itemId', ParseUUIDPipe) itemId: string,
-    @CurrentUser() user: AuthUser,
-  ) {
-    return this.inboxService.deleteComment(workspaceId, user.userId, itemId);
-  }
+  // `DELETE comments/:itemId` lives in CommentActionsController now.
 
   @Delete('dms/:itemId')
   @RequireCapability('inbox:reply')

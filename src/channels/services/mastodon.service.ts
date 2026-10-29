@@ -557,6 +557,32 @@ export class MastodonService {
   }
 
   /**
+   * Favourite (or unfavourite) a status.
+   * https://docs.joinmastodon.org/methods/statuses/#favourite
+   */
+  async setFavourite(
+    instanceUrl: string,
+    accessToken: string,
+    statusId: string,
+    favourited: boolean,
+  ): Promise<void> {
+    const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
+    const action = favourited ? 'favourite' : 'unfavourite';
+    const response = await fetch(
+      `${normalizedUrl}/api/v1/statuses/${statusId}/${action}`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${accessToken}` },
+      },
+    );
+    if (!response.ok) {
+      const errorData = await response.text();
+      this.logger.error(`Mastodon ${action} failed: ${errorData}`);
+      throw new Error(`Mastodon ${action} failed: ${response.status}`);
+    }
+  }
+
+  /**
    * Get user's statuses
    */
   async getAccountStatuses(
