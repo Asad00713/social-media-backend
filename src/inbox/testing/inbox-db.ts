@@ -16,6 +16,7 @@ export const INBOX_MIGRATIONS: string[] = [
   '0049_inbox_saved_replies.sql',
   '0050_inbox_user_settings.sql',
   '0051_scheduled_inbox_messages_conversation.sql',
+  '0052_inbox_conversations_backfill.sql',
   '0053_inbox_notification_types.sql',
 ];
 

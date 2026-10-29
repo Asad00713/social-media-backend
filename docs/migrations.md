@@ -139,6 +139,16 @@ Never do this to "get the deploy through". The refusal means the database and
 the file disagree, and skipping past it stacks later migrations on a schema
 nobody can reproduce.
 
+## Inbox conversations backfill (0052)
+
+`0052_inbox_conversations_backfill.sql` builds `inbox_conversations` from the
+existing `inbox_items` (and links scheduled replies to them). `npm run
+inbox:backfill` re-runs the same file in one transaction, refusing any host that
+is not localhost or `*.railway.internal` unless `--i-know-this-is-production` is
+passed. It is safe to re-run: only derived columns are refreshed, and status,
+snooze, assignee and done state are never touched. The owner runs it once, at
+the frontend switch, to catch anything that drifted since the migration ran.
+
 ## Production history
 
 **These migrations do not replay from scratch.** `0002` fails on an empty
