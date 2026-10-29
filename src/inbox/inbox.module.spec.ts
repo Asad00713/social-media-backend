@@ -1,6 +1,7 @@
 import { MODULE_METADATA } from '@nestjs/common/constants';
 import { QUEUES } from '../queue/queue.module';
 import { InboxModule } from './inbox.module';
+import { ConversationSyncService } from './conversations/services/conversation-sync.service';
 import {
   CONVERSATION_API_CONTROLLERS,
   CONVERSATION_API_EXPORTS,
@@ -45,5 +46,9 @@ describe('InboxModule lane seams', () => {
   it('registers the Later queue with a colon-free name', () => {
     expect(QUEUES.INBOX_LATER).toBe('inbox-later');
     expect(QUEUES.INBOX_LATER).not.toContain(':');
+  });
+
+  it('exports ConversationSyncService for the channels module (YouTube data deletion)', () => {
+    expect(meta(MODULE_METADATA.EXPORTS)).toContain(ConversationSyncService);
   });
 });
