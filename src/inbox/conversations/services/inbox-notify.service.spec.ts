@@ -1,3 +1,4 @@
+import * as caps from '../../../workspace-members/role-capabilities';
 import { InboxNotifyService } from './inbox-notify.service';
 import { DEFAULT_INBOX_SETTINGS } from './inbox-settings.service';
 
@@ -31,6 +32,7 @@ function build(opts: {
   };
   const redisReplies = [...(opts.redis ?? [])];
   const redis = {
+    del: jest.fn().mockResolvedValue(1),
     set: jest.fn(async () =>
       redisReplies.length ? redisReplies.shift()! : 'OK',
     ),
@@ -132,6 +134,69 @@ describe('InboxNotifyService', () => {
     });
   });
 
+  describe('email failure', () => {
+    it('releases the 10-minute claim when sendEmail reports failure', async () => {
+      const t = build({ members: [A] });
+      t.email.sendEmail.mockResolvedValue({ success: false, error: 'no key' });
+      (t.redis as any).del = jest.fn().mockResolvedValue(1);
+      await t.svc.assigned(ASSIGN);
+      expect((t.redis as any).del).toHaveBeenCalledWith('inbox-mail:a:c1');
+    });
+
+    it('releases the claim when sendEmail throws', async () => {
+      const t = build({ members: [A] });
+      t.email.sendEmail.mockRejectedValue(new Error('smtp down'));
+      (t.redis as any).del = jest.fn().mockResolvedValue(1);
+      await t.svc.assigned(ASSIGN);
+      expect((t.redis as any).del).toHaveBeenCalledWith('inbox-mail:a:c1');
+    });
+
+    it('keeps the claim after a successful send', async () => {
+      const t = build({ members: [A] });
+      t.email.sendEmail.mockResolvedValue({ success: true });
+      (t.redis as any).del = jest.fn();
+      await t.svc.assigned(ASSIGN);
+      expect((t.redis as any).del).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('loadMembers role filter', () => {
+    function fakeDb(owner: any[], accepted: any[]) {
+      const results = [owner, accepted];
+      const chain: any = {};
+      for (const k of ['select', 'from', 'innerJoin']) chain[k] = () => chain;
+      chain.where = () => Promise.resolve(results.shift());
+      return chain;
+    }
+
+    it('drops an accepted member whose role lacks inbox:view', async () => {
+      const spy = jest
+        .spyOn(caps, 'roleCan')
+        .mockImplementation((role) => role !== 'GUEST');
+      try {
+        const svc = new InboxNotifyService(
+          {} as any,
+          {} as any,
+          {} as any,
+          fakeDb(
+            [{ id: 'o', email: 'o@x.test', name: 'Owner' }],
+            [
+              { id: 'm', email: 'm@x.test', name: 'M', role: 'MEMBER' },
+              { id: 'g', email: 'g@x.test', name: 'G', role: 'GUEST' },
+            ],
+          ) as any,
+          {} as any,
+          {} as any,
+        );
+        const out = await (svc as any).loadMembers(WS);
+        expect(out.map((m: any) => m.id).sort()).toEqual(['m', 'o']);
+        expect(spy).toHaveBeenCalledWith('GUEST', 'inbox:view');
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
   describe('noteMentioned', () => {
     it('notifies the mentioned people but never the actor', async () => {
       const t = build({
@@ -200,6 +265,18 @@ describe('InboxNotifyService', () => {
         conversationId: CONV,
         authorName: 'Sam',
         platformCreatedAt: new Date(Date.now() - 2 * 3600_000),
+      });
+      expect(t.emitter.inboxNewMessage).not.toHaveBeenCalled();
+      expect(t.email.sendEmail).not.toHaveBeenCalled();
+    });
+
+    it('an invalid platformCreatedAt counts as stale and reaches nobody', async () => {
+      const t = build({ members: [A], notify: { a: 'everything' } });
+      await t.svc.newInbound({
+        workspaceId: WS,
+        conversationId: CONV,
+        authorName: 'Sam',
+        platformCreatedAt: new Date(NaN),
       });
       expect(t.emitter.inboxNewMessage).not.toHaveBeenCalled();
       expect(t.email.sendEmail).not.toHaveBeenCalled();

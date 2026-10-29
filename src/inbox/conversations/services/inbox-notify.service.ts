@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { and, eq, inArray } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { DbType } from '../../../drizzle/db';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { users } from '../../../drizzle/schema/users.schema';
@@ -35,6 +35,7 @@ interface RedisLike {
     seconds: number,
     flag: 'NX',
   ): Promise<'OK' | null>;
+  del(key: string): Promise<unknown>;
 }
 
 function escapeHtml(s: string): string {
@@ -126,8 +127,9 @@ export class InboxNotifyService {
     authorName: string;
     platformCreatedAt: Date;
   }): Promise<void> {
-    if (Date.now() - args.platformCreatedAt.getTime() > NEW_INBOUND_MAX_AGE_MS)
-      return;
+    // `!(age <= max)` so an invalid date (NaN) counts as stale, not fresh.
+    const age = Date.now() - args.platformCreatedAt.getTime();
+    if (!(age <= NEW_INBOUND_MAX_AGE_MS)) return;
     await this.safely('newInbound', async () => {
       const recipients = await this.loadMembers(args.workspaceId);
       await this.fanOut(
@@ -179,8 +181,9 @@ export class InboxNotifyService {
     conversationId: string,
     sentence: string,
   ): Promise<void> {
+    const key = `inbox-mail:${to.id}:${conversationId}`;
     const claimed = await this.redis.set(
-      `inbox-mail:${to.id}:${conversationId}`,
+      key,
       '1',
       'EX',
       MAIL_WINDOW_SECONDS,
@@ -190,12 +193,27 @@ export class InboxNotifyService {
     const base = this.config.get<string>('FRONTEND_URL') ?? '';
     const url = `${base}/w/${workspaceId}/inbox?c=${conversationId}`;
     const safe = escapeHtml(sentence);
-    await this.email.sendEmail({
-      to: to.email,
-      subject: sentence,
-      html: `<p>${safe}</p><p><a href="${url}" style="display:inline-block;padding:10px 16px;background:#111;color:#fff;border-radius:6px;text-decoration:none">Open conversation</a></p>`,
-      text: `${sentence}\n\nOpen the conversation: ${url}`,
-    });
+    let sent = false;
+    try {
+      const result = await this.email.sendEmail({
+        to: to.email,
+        subject: sentence,
+        html: `<p>${safe}</p><p><a href="${url}" style="display:inline-block;padding:10px 16px;background:#111;color:#fff;border-radius:6px;text-decoration:none">Open conversation</a></p>`,
+        text: `${sentence}
+
+Open the conversation: ${url}`,
+      });
+      // EmailService reports failure in its result instead of throwing.
+      sent = !(result && result.success === false);
+      if (!sent) {
+        this.logger.warn(
+          `inbox email to ${to.id} not sent: ${result?.error ?? 'unknown'}`,
+        );
+      }
+    } finally {
+      // Nothing went out: free the claim so a later event can retry.
+      if (!sent) await this.redis.del(key).catch(() => undefined);
+    }
   }
 
   /**
