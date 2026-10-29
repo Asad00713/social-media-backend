@@ -5,7 +5,7 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, count, eq, sql } from 'drizzle-orm';
 import type { PgUpdateSetSource } from 'drizzle-orm/pg-core';
 import type { DbType } from '../../../drizzle/db';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
@@ -35,6 +35,7 @@ import type {
 } from '../dto/contract';
 import { commentActions, DISALLOWED_FALLBACK } from '../lib/comment-actions';
 import { commentNodeOf } from '../lib/comment-tree';
+import type { SyncIntent } from '../lib/lifecycle';
 import { ChannelNotConnectedError, withSendError } from '../lib/send-error';
 import { deriveThreadKey, kindOfItem } from '../lib/thread-key';
 import { ConversationResyncService } from './conversation-resync.service';
@@ -275,6 +276,14 @@ export class CommentActionsService {
     }
 
     // The DM is delivered. From here nothing may turn into a failure response.
+    // The sync and its queued retry carry the same outbound intent, so who
+    // sent the reply survives a failed first sync.
+    const intent: SyncIntent = {
+      kind: 'outbound',
+      userId,
+      markDone: false,
+      at: sent.platformCreatedAt ?? now,
+    };
     let conversationId: string | null = null;
     try {
       if (sent.platformItemId && dmConversationId) {
@@ -297,14 +306,14 @@ export class CommentActionsService {
       }
       if (dmKey) {
         conversationId =
-          (await this.sync.syncThread(workspaceId, dmKey)).conversationId ??
-          null;
+          (await this.sync.syncThread(workspaceId, dmKey, intent))
+            .conversationId ?? null;
       }
     } catch (err) {
       this.logger.error(
         `private reply delivered but its DM row or sync failed (${dmKey}): ${errMsg(err)}`,
       );
-      if (dmKey) await this.resync.enqueue(workspaceId, dmKey);
+      if (dmKey) await this.resync.enqueue(workspaceId, dmKey, intent);
       conversationId = await this.findConversationId(workspaceId, dmKey);
     }
 
@@ -384,6 +393,7 @@ export class CommentActionsService {
     row: InboxItem,
     channelRow: SocialMediaChannel,
     now: Date,
+    hiddenRepliesOnPost?: number,
   ): CommentActions {
     return commentActions(
       {
@@ -391,9 +401,11 @@ export class CommentActionsService {
         kind: kindOfItem(row),
         fromMe: row.fromMe,
         deleted: typeof metaOf(row).deletedAt === 'string',
-        // No hiddenRepliesOnPost: the Bluesky 300-per-post cap is enforced by
-        // the hide adapter on this route (400 { reason }).
+        // The guard on this route leaves hiddenRepliesOnPost out: the hide
+        // adapter enforces the Bluesky cap (400 { reason }). The returned node
+        // passes it, so it agrees with the detail view.
         isHidden: row.isHidden,
+        hiddenRepliesOnPost,
         createdAt: row.platformCreatedAt,
         privateReplySentAt: privateReplySentAtOf(row),
         // Every route here demands inbox:reply, so the caller can reply.
@@ -515,6 +527,22 @@ export class CommentActionsService {
     }
   }
 
+  /** Same count the detail view takes: hidden items in the comment's thread. */
+  private async hiddenRepliesIn(row: InboxItem): Promise<number> {
+    if (!row.threadKey) return row.isHidden ? 1 : 0;
+    const [res] = await this.db
+      .select({ n: count() })
+      .from(inboxItems)
+      .where(
+        and(
+          eq(inboxItems.workspaceId, row.workspaceId),
+          eq(inboxItems.threadKey, row.threadKey),
+          eq(inboxItems.isHidden, true),
+        ),
+      );
+    return Number(res?.n ?? 0);
+  }
+
   private async nodeOf(
     row: InboxItem,
     channelRow: SocialMediaChannel,
@@ -527,10 +555,12 @@ export class CommentActionsService {
       });
       if (u) sentBy = { id: u.id, name: u.name ?? '', avatarUrl: u.avatarUrl };
     }
+    const hiddenRepliesOnPost =
+      row.platform === 'bluesky' ? await this.hiddenRepliesIn(row) : undefined;
     return commentNodeOf(
       row,
       sentBy,
-      this.actionsOf(row, channelRow, new Date()),
+      this.actionsOf(row, channelRow, new Date(), hiddenRepliesOnPost),
     );
   }
 }

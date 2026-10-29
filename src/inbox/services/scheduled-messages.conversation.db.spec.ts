@@ -88,6 +88,8 @@ interface ScheduledRowShape {
   inbox_conversation_id: string | null;
   attachments: Array<{ kind: string; url: string; thumbnailUrl: null }>;
   queue_job_id: string | null;
+  error_message: string | null;
+  scheduled_at: Date;
 }
 
 async function rowOf(client: PoolClient, id: string) {
@@ -573,9 +575,7 @@ describeInboxDb('ScheduledMessagesService with conversations', () => {
       expect(row.status).toBe('pending');
       expect(row.attempts).toBe(0);
       expect(row.error_message).toBeNull();
-      expect((row.scheduled_at as Date).getTime()).toBeGreaterThanOrEqual(
-        before - 1000,
-      );
+      expect(row.scheduled_at.getTime()).toBeGreaterThanOrEqual(before - 1000);
       expect(job.remove).toHaveBeenCalled();
       expect(queue.add).toHaveBeenCalledWith(
         'fire',

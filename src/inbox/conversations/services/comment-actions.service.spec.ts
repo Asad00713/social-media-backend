@@ -115,8 +115,15 @@ function setup(row: InboxItem | undefined, channel = channelRow()) {
   const calls: string[] = [];
   const findConversation = jest.fn().mockResolvedValue({ id: 'dm-looked-up' });
   const updates: Array<Record<string, unknown>> = [];
+  // The hidden-reply count behind the returned node: select().from().where().
+  const countHidden = jest.fn<Promise<number>, []>().mockResolvedValue(0);
   // No `transaction` on purpose: the service must never open one (D1).
   const db = {
+    select: jest.fn(() => ({
+      from: () => ({
+        where: () => countHidden().then((n) => [{ n }]),
+      }),
+    })),
     query: {
       inboxItems: { findFirst: jest.fn().mockResolvedValue(row) },
       socialMediaChannels: { findFirst: jest.fn().mockResolvedValue(channel) },
@@ -217,6 +224,7 @@ function setup(row: InboxItem | undefined, channel = channelRow()) {
     getAccessToken,
     db,
     findConversation,
+    countHidden,
   };
 }
 
@@ -321,6 +329,35 @@ describe('CommentActionsService', () => {
       );
       await t2.service.like(WS, 'item-1', USER, false);
       expect(patchOf(t2.updates[0])).toMatchObject({ likeUri: null });
+    });
+  });
+
+  describe('the returned node on Bluesky at the hidden-reply cap', () => {
+    const blueskyRow = () => itemRow({ platform: 'bluesky' });
+    const blueskyChannel = () => channelRow({ platform: 'bluesky' });
+
+    it('carries the cap reason on its hide action at 300 hidden replies', async () => {
+      const t = setup(blueskyRow(), blueskyChannel());
+      t.countHidden.mockResolvedValue(300);
+      const out = await t.service.like(WS, 'item-1', USER, true);
+      expect(out.node.actions.hide).toEqual({
+        allowed: false,
+        reason: 'Bluesky allows 300 hidden replies per post',
+      });
+      expect(t.countHidden).toHaveBeenCalledTimes(1);
+    });
+
+    it('still offers hide below the cap', async () => {
+      const t = setup(blueskyRow(), blueskyChannel());
+      t.countHidden.mockResolvedValue(299);
+      const out = await t.service.like(WS, 'item-1', USER, true);
+      expect(out.node.actions.hide.allowed).toBe(true);
+    });
+
+    it('does not count on other platforms', async () => {
+      const t = setup(itemRow());
+      await t.service.like(WS, 'item-1', USER, true);
+      expect(t.countHidden).not.toHaveBeenCalled();
     });
   });
 
@@ -483,7 +520,11 @@ describe('CommentActionsService', () => {
       );
       const out = await t.service.privateReply(WS, 'item-1', USER, 'hi');
       expect(out).toEqual({ conversationId: 'dm-looked-up' });
-      expect(t.resync.enqueue).toHaveBeenCalledWith(WS, '5:page-1:psid-9');
+      expect(t.resync.enqueue).toHaveBeenCalledWith(
+        WS,
+        '5:page-1:psid-9',
+        expect.objectContaining({ kind: 'outbound', userId: USER }),
+      );
       expect(t.realtime.timelineAppended).toHaveBeenCalledWith(
         WS,
         'comment-conv',
@@ -492,13 +533,41 @@ describe('CommentActionsService', () => {
       );
     });
 
+    it('queues the DM resync WITH the outbound intent and the sending user', async () => {
+      const sentAt = new Date('2026-10-01T10:00:00Z');
+      const t = setup(itemRow());
+      t.adapter.sendPrivateReply.mockResolvedValueOnce({
+        recipientPlatformId: 'psid-9',
+        platformItemId: 'm-1',
+        platformCreatedAt: sentAt,
+      });
+      t.sync.syncThread.mockImplementation((_ws, key) =>
+        key === '5:page-1:psid-9'
+          ? Promise.reject(new Error('db down'))
+          : Promise.resolve({ conversationId: 'comment-conv' } as Awaited<
+              ReturnType<ConversationSyncService['syncThread']>
+            >),
+      );
+      await t.service.privateReply(WS, 'item-1', USER, 'hi');
+      expect(t.resync.enqueue).toHaveBeenCalledWith(WS, '5:page-1:psid-9', {
+        kind: 'outbound',
+        userId: USER,
+        markDone: false,
+        at: sentAt,
+      });
+    });
+
     it('a failing upsertDm after delivery is still 200 and returns null when no conversation exists yet', async () => {
       const t = setup(itemRow());
       t.inbox.upsertDm.mockRejectedValueOnce(new Error('insert failed'));
       t.findConversation.mockResolvedValue(undefined);
       const out = await t.service.privateReply(WS, 'item-1', USER, 'hi');
       expect(out).toEqual({ conversationId: null });
-      expect(t.resync.enqueue).toHaveBeenCalledWith(WS, '5:page-1:psid-9');
+      expect(t.resync.enqueue).toHaveBeenCalledWith(
+        WS,
+        '5:page-1:psid-9',
+        expect.objectContaining({ kind: 'outbound', userId: USER }),
+      );
     });
 
     it('a delivered private reply with no recipient id is 200 null: guard written, resyncs queued, warned, no DM row', async () => {
