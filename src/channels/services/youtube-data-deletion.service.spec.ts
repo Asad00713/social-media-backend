@@ -1,6 +1,9 @@
 import { Test } from '@nestjs/testing';
 import { YoutubeDataDeletionService } from './youtube-data-deletion.service';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
+import { ConversationResyncService } from '../../inbox/conversations/services/conversation-resync.service';
+
+const sync = { syncOrEnqueue: jest.fn().mockResolvedValue(undefined) };
 
 const execute = jest.fn();
 const fakeDb = {
@@ -13,6 +16,7 @@ async function build() {
     providers: [
       YoutubeDataDeletionService,
       { provide: DRIZZLE, useValue: fakeDb },
+      { provide: ConversationResyncService, useValue: sync },
     ],
   }).compile();
   return mod.get(YoutubeDataDeletionService);
@@ -26,6 +30,24 @@ describe('YoutubeDataDeletionService', () => {
   beforeEach(() => {
     execute.mockReset();
     execute.mockResolvedValue({ rowCount: 3, rows: [] });
+  });
+
+  it('re-syncs the deleted items conversations after the transaction commits', async () => {
+    sync.syncOrEnqueue.mockClear();
+    execute.mockResolvedValueOnce({
+      rowCount: 2,
+      rows: [
+        { workspace_id: 'ws', thread_key: '1:v1' },
+        { workspace_id: 'ws', thread_key: '1:v2' },
+      ],
+    });
+    const svc = await build();
+    await svc.deleteAllYoutubeData(1, 'ws');
+    expect(sync.syncOrEnqueue).toHaveBeenCalledWith(
+      'ws',
+      new Set(['1:v1', '1:v2']),
+    );
+    expect(allStatementsSql()).toContain('RETURNING workspace_id, thread_key');
   });
 
   it('reports what it deleted from every table', async () => {
@@ -78,8 +100,11 @@ describe('YoutubeDataDeletionService', () => {
   it('scopes the analytics deletes through social_media_channels so an out-of-workspace channel id deletes nothing', async () => {
     const svc = await build();
     await svc.deleteAllYoutubeData(999, 'ws-victim');
-    const calls = execute.mock.calls.map((c) => JSON.stringify(c[0]));
-
+    // The 4 deletes only: the conversation sweep after the commit is the 5th.
+    const calls = execute.mock.calls
+      .slice(0, 4)
+      .map((c) => JSON.stringify(c[0]));
+    expect(execute.mock.calls).toHaveLength(5);
     expect(calls).toHaveLength(4);
     for (const statement of calls) {
       expect(statement).toContain('ws-victim');

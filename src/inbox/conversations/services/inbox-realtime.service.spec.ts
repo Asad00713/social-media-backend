@@ -198,4 +198,76 @@ describe('InboxRealtimeService', () => {
     await tick(300);
     expect(emitted('inbox.conversation.upserted')).toHaveLength(1);
   });
+
+  describe('stale flushes', () => {
+    const deferred = <T>() => {
+      let resolve!: (v: T) => void;
+      const promise = new Promise<T>((r) => (resolve = r));
+      return { promise, resolve };
+    };
+
+    it('drops an in-flight upsert when the conversation is removed meanwhile', async () => {
+      const late = deferred<{ id: string }[]>();
+      presenter.loadRows.mockReturnValueOnce(late.promise);
+      service.conversationChanged(WS, 'c1');
+      await tick(300); // flush is now awaiting loadRows
+      service.conversationRemoved(WS, 'c1');
+      late.resolve([{ id: 'c1' }]);
+      await tick(0);
+      expect(emitted('inbox.conversation.upserted')).toHaveLength(0);
+      expect(emitted('inbox.conversation.removed')).toHaveLength(1);
+    });
+
+    it('lets only the newer of two overlapping flushes emit', async () => {
+      const slow = deferred<{ id: string; v: string }[]>();
+      presenter.loadRows
+        .mockReturnValueOnce(slow.promise)
+        .mockResolvedValueOnce([{ id: 'c1', v: 'new' }]);
+      service.conversationChanged(WS, 'c1');
+      await tick(300); // flush 1 in flight
+      service.conversationChanged(WS, 'c1');
+      await tick(300); // flush 2 completes
+      slow.resolve([{ id: 'c1', v: 'old' }]);
+      await tick(0);
+      const ups = emitted('inbox.conversation.upserted');
+      expect(ups).toHaveLength(1);
+      expect(ups[0][2]).toEqual({
+        workspaceId: WS,
+        row: { id: 'c1', v: 'new' },
+      });
+    });
+
+    it('lets only the newer of two overlapping counts flushes emit', async () => {
+      const slow = deferred<typeof counts>();
+      presenter.counts
+        .mockReturnValueOnce(slow.promise)
+        .mockResolvedValueOnce({ ...counts, toReply: 99 });
+      service.countsChanged(WS);
+      await tick(500); // flush 1 in flight
+      service.countsChanged(WS);
+      await tick(500); // flush 2 completes
+      slow.resolve(counts);
+      await tick(0);
+      const out = emitted('inbox.conversation.counts.changed');
+      expect(out).toHaveLength(1);
+      expect(out[0][2]).toMatchObject({ counts: { toReply: 99 } });
+      expect(emitted('inbox.counts.changed')).toHaveLength(1);
+    });
+
+    it('keeps no per-conversation or per-workspace state once flushes are done', async () => {
+      const late = deferred<{ id: string }[]>();
+      presenter.loadRows.mockReturnValueOnce(late.promise);
+      service.conversationChanged(WS, 'c1');
+      await tick(300);
+      service.conversationRemoved(WS, 'c1');
+      late.resolve([{ id: 'c1' }]);
+      service.conversationChanged(WS, 'c2');
+      service.countsChanged(WS);
+      await tick(600);
+      const state = service as unknown as Record<string, Map<string, unknown>>;
+      for (const m of Object.values(state)) {
+        if (m instanceof Map) expect(m.size).toBe(0);
+      }
+    });
+  });
 });

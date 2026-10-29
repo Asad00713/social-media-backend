@@ -5,7 +5,18 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { and, asc, desc, eq, gt, inArray, isNull, lt, sql } from 'drizzle-orm';
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  getTableColumns,
+  gt,
+  inArray,
+  isNull,
+  lt,
+  sql,
+} from 'drizzle-orm';
 import { db, type DbType } from '../drizzle/db';
 import {
   inboxItems,
@@ -32,6 +43,10 @@ import { FacebookService } from '../channels/services/facebook.service';
 import { InstagramService } from '../channels/services/instagram.service';
 import { InboxDispatcher } from './services/inbox-dispatcher.service';
 import { InboxRealtimeService } from './conversations/services/inbox-realtime.service';
+import { ConversationSyncService } from './conversations/services/conversation-sync.service';
+import { ConversationResyncService } from './conversations/services/conversation-resync.service';
+import { messageEntryOf } from './conversations/lib/timeline-entry';
+import type { SyncIntent } from './conversations/lib/lifecycle';
 import { computeLegacyCounts } from './legacy-counts';
 import { whatsappMessageTemplates } from '../drizzle/schema/whatsapp-templates.schema';
 import type {
@@ -337,6 +352,65 @@ export async function findOurPostIdRows(
   return res.rows;
 }
 
+const errMsg = (err: unknown): string =>
+  err instanceof Error ? err.message : String(err);
+
+interface IngestFingerprint {
+  threadKey: string | null;
+  fromMe: boolean;
+  authorDisplayName: string | null;
+  authorHandle: string | null;
+  authorAvatarUrl: string | null;
+  authorPlatformId: string | null;
+  platformParentId: string | null;
+  ourPostId: string | null;
+  status: string;
+  isHidden: boolean;
+  text: string | null;
+  postCaption: string | null;
+  postThumbnail: string | null;
+}
+
+/** The same fields, read off a returned (merged) row. */
+function fingerprintOf(row: InboxItem): IngestFingerprint {
+  const post = (
+    row.metadata as {
+      post?: { caption?: unknown; thumbnailUrl?: unknown };
+    } | null
+  )?.post;
+  return {
+    threadKey: row.threadKey,
+    fromMe: row.fromMe,
+    authorDisplayName: row.authorDisplayName,
+    authorHandle: row.authorHandle,
+    authorAvatarUrl: row.authorAvatarUrl,
+    authorPlatformId: row.authorPlatformId,
+    platformParentId: row.platformParentId,
+    ourPostId: row.ourPostId,
+    status: row.status,
+    isHidden: row.isHidden,
+    text: row.text,
+    postCaption: typeof post?.caption === 'string' ? post.caption : null,
+    postThumbnail:
+      typeof post?.thumbnailUrl === 'string' ? post.thumbnailUrl : null,
+  };
+}
+
+function ingestFingerprintDiffers(
+  a: IngestFingerprint,
+  b: IngestFingerprint,
+): boolean {
+  return (Object.keys(a) as Array<keyof IngestFingerprint>).some(
+    (k) => (a[k] ?? null) !== (b[k] ?? null),
+  );
+}
+
+/** `(xmax = 0)` is true only for a freshly inserted row of an upsert. */
+const returningWithInserted = {
+  ...getTableColumns(inboxItems),
+  inserted: sql<boolean>`(xmax = 0)`,
+};
+
 @Injectable()
 export class InboxService {
   private readonly logger = new Logger(InboxService.name);
@@ -349,6 +423,8 @@ export class InboxService {
     private readonly instagramService: InstagramService,
     @InjectQueue(QUEUES.INBOX_POLLING) private readonly pollQueue: Queue,
     private readonly realtime: InboxRealtimeService,
+    private readonly conversationSync: ConversationSyncService,
+    private readonly resync: ConversationResyncService,
   ) {}
 
   /** Resolve our own identity on a channel for `fromMe` row authorship. */
@@ -1626,6 +1702,225 @@ export class InboxService {
   // ==========================================================================
 
   /**
+   * Everything `syncThread` reads from an item (thread key, direction, author
+   * block, post snapshot, status, hidden flag, text), BEFORE an upsert. Compared
+   * against the merged row so a re-poll that fills any of them resyncs, while
+   * one that only refreshed a like counter does not.
+   */
+  private async readExistingIngestKey(
+    channelId: number,
+    platformItemId: string,
+  ): Promise<IngestFingerprint | undefined> {
+    const [existing] = await db
+      .select({
+        threadKey: inboxItems.threadKey,
+        fromMe: inboxItems.fromMe,
+        authorDisplayName: inboxItems.authorDisplayName,
+        authorHandle: inboxItems.authorHandle,
+        authorAvatarUrl: inboxItems.authorAvatarUrl,
+        authorPlatformId: inboxItems.authorPlatformId,
+        platformParentId: inboxItems.platformParentId,
+        ourPostId: inboxItems.ourPostId,
+        status: inboxItems.status,
+        isHidden: inboxItems.isHidden,
+        text: inboxItems.text,
+        postCaption: sql<string | null>`${inboxItems.metadata}->'post'->>'caption'`,
+        postThumbnail: sql<
+          string | null
+        >`${inboxItems.metadata}->'post'->>'thumbnailUrl'`,
+      })
+      .from(inboxItems)
+      .where(
+        and(
+          eq(inboxItems.channelId, channelId),
+          eq(inboxItems.platformItemId, platformItemId),
+        ),
+      )
+      .limit(1);
+    return existing;
+  }
+
+  /**
+   * R1: every ingest ends here. Runs AFTER the upsert committed (D1: the sync
+   * opens its own transaction). A re-poll that changed nothing syncThread reads
+   * needs no sync. Each step has its own try: a failed R5 or rekey must not skip
+   * the sync, and a failed sync is queued for a retry (never left stale).
+   */
+  private async syncAfterIngest(
+    row: InboxItem,
+    isInsert: boolean,
+    before: IngestFingerprint | undefined,
+  ): Promise<void> {
+    const key = row.threadKey;
+    if (!key) return;
+    const keyMoved = !!before?.threadKey && before.threadKey !== key;
+    // `!before && !isInsert`: another writer inserted between our pre-read and
+    // the upsert, so its sync may have run before this merge committed.
+    const changed =
+      isInsert ||
+      !before ||
+      ingestFingerprintDiffers(before, fingerprintOf(row));
+    if (!changed) return;
+
+    // R5: a reply made on the platform itself (no teammate authored it)
+    // answers what it replies to. Runs BEFORE the sync so the lifecycle sees
+    // the inbound as answered. Also fires when a merge flips from_me to true
+    // (the Facebook webhook echo of a Page comment, corrected by the poll) or
+    // when the parent only became known on this merge.
+    const becameOurs = isInsert || !before || !before.fromMe;
+    const parentLearned =
+      !before || (before.platformParentId == null && !!row.platformParentId);
+    if (
+      row.fromMe &&
+      !row.authoredByUserId &&
+      (becameOurs || parentLearned)
+    ) {
+      try {
+        await this.markRepliedOnPlatform(row);
+      } catch (err) {
+        this.logger.error(
+          `R5 reply stamp failed for item ${row.id}: ${errMsg(err)}`,
+        );
+      }
+    }
+
+    if (keyMoved && before?.threadKey) {
+      try {
+        // R3: a mention that turned out to be a comment on a known post. Our
+        // replies to it follow, then the conversation (notes, scheduled) moves.
+        if (
+          before.threadKey.includes(':mention:') &&
+          row.type === 'comment' &&
+          row.platformPostId
+        ) {
+          await db
+            .update(inboxItems)
+            .set({ platformPostId: row.platformPostId })
+            .where(
+              and(
+                eq(inboxItems.channelId, row.channelId),
+                sql`${inboxItems.metadata}->>'mentionRoot' = ${row.platformItemId}`,
+              ),
+            );
+        }
+        await this.conversationSync.rekey(
+          row.workspaceId,
+          before.threadKey,
+          key,
+        );
+      } catch (err) {
+        // The old key is left alone: syncing it with no items would delete
+        // the conversation that still holds the notes.
+        this.logger.error(
+          `rekey ${before.threadKey} -> ${key} failed for item ${row.id}: ${errMsg(err)}`,
+        );
+      }
+    }
+
+    let conversationId: string | null = null;
+    try {
+      // A NEW row a teammate authored (Slack start-DM, Maestro's Discord send)
+      // is an outbound by that teammate, not a reply made on the platform:
+      // a brand-new outbound-only thread is then Done via reply, not via
+      // platform. Anything else is a plain refresh.
+      const intent: SyncIntent =
+        isInsert && row.fromMe && row.authoredByUserId
+          ? {
+              kind: 'outbound',
+              userId: row.authoredByUserId,
+              markDone: false,
+              at: row.platformCreatedAt,
+            }
+          : { kind: 'refresh' };
+      const result = await this.conversationSync.syncThread(
+        row.workspaceId,
+        key,
+        intent,
+      );
+      conversationId = result.conversationId;
+    } catch (err) {
+      this.logger.error(
+        `conversation sync failed for ${key} (item ${row.id}), queued for retry: ${errMsg(err)}`,
+      );
+      await this.resync.enqueue(row.workspaceId, key);
+      return;
+    }
+
+    if (isInsert && conversationId) {
+      try {
+        await this.emitTimelineAppended(row, conversationId);
+      } catch (err) {
+        this.logger.error(
+          `timeline event failed for item ${row.id}: ${errMsg(err)}`,
+        );
+      }
+    }
+  }
+
+  private async markRepliedOnPlatform(row: InboxItem): Promise<void> {
+    if (row.type === 'dm') {
+      if (!row.threadKey) return;
+      await db
+        .update(inboxItems)
+        .set({ repliedAt: row.platformCreatedAt })
+        .where(
+          and(
+            eq(inboxItems.workspaceId, row.workspaceId),
+            sql`${inboxItems.threadKey} = ${row.threadKey}`,
+            eq(inboxItems.fromMe, false),
+            isNull(inboxItems.repliedAt),
+            sql`${inboxItems.platformCreatedAt} <= ${row.platformCreatedAt}`,
+          ),
+        );
+      return;
+    }
+    if (!row.platformParentId) return;
+    await db
+      .update(inboxItems)
+      .set({ repliedAt: row.platformCreatedAt })
+      .where(
+        and(
+          eq(inboxItems.channelId, row.channelId),
+          eq(inboxItems.platformItemId, row.platformParentId),
+          eq(inboxItems.fromMe, false),
+          isNull(inboxItems.repliedAt),
+          sql`${inboxItems.platformCreatedAt} <= ${row.platformCreatedAt}`,
+        ),
+      );
+  }
+
+  private async emitTimelineAppended(
+    row: InboxItem,
+    conversationId: string,
+  ): Promise<void> {
+    if (row.type !== 'dm') {
+      this.realtime.timelineAppended(
+        row.workspaceId,
+        conversationId,
+        null,
+        row.id,
+      );
+      return;
+    }
+    let sentBy: { id: string; name: string; avatarUrl: string | null } | null =
+      null;
+    if (row.authoredByUserId) {
+      const u = await db.query.users.findFirst({
+        where: eq(users.id, row.authoredByUserId),
+        columns: { id: true, name: true, avatarUrl: true },
+      });
+      if (u) sentBy = { id: u.id, name: u.name ?? '', avatarUrl: u.avatarUrl };
+    }
+    // Per-viewer flags come from the detail call, so the broadcast is neutral.
+    this.realtime.timelineAppended(
+      row.workspaceId,
+      conversationId,
+      messageEntryOf(row, sentBy, false),
+      null,
+    );
+  }
+
+  /**
    * Upsert a comment row. Idempotent via the (channelId, platformItemId)
    * unique constraint — webhook redelivery + polling won't dup.
    */
@@ -1707,6 +2002,10 @@ export class InboxService {
     // can re-canonicalize it (e.g. Bluesky remapping a chained-reply URI to the
     // root) while a linkage-less mentions re-poll can't null out a comment's
     // post id. `type` upgrades toward 'comment' — see the set clause below.
+    const before = await this.readExistingIngestKey(
+      input.channelId,
+      input.platformItemId,
+    );
     const inserted = await db
       .insert(inboxItems)
       .values(values)
@@ -1730,6 +2029,9 @@ export class InboxService {
           // fromMe can only upgrade false→true (never downgrade): if a later
           // poll discovers it's actually our reply, mark it as such.
           fromMe: sql`${inboxItems.fromMe} OR EXCLUDED.from_me`,
+          // An existing author is never wiped; an authored send that merges
+          // onto its own webhook echo gains its author.
+          authoredByUserId: sql`COALESCE(${inboxItems.authoredByUserId}, EXCLUDED.authored_by_user_id)`,
           // mention-ness only upgrades false→true: once the mentions poll flags
           // an item as @mentioning us it stays flagged, even when the comment
           // poll re-ingests the same row with is_mention=false.
@@ -1743,10 +2045,14 @@ export class InboxService {
           updatedAt: new Date(),
         },
       })
-      .returning();
+      .returning(returningWithInserted);
 
     if (inserted.length === 0) return null;
-    const row = inserted[0];
+    const { inserted: isInsert, ...row } = inserted[0];
+
+    // R1: the write above is committed (no transaction is open here), so the
+    // conversation sync may open its own.
+    await this.syncAfterIngest(row, isInsert, before);
 
     // Distinguish "truly new" from "merged update" — only emit + count `new`
     // when this was the first time we saw this comment. Cheap proxy: createdAt
@@ -1812,11 +2118,13 @@ export class InboxService {
            AND a.platform_post_id = b.platform_item_id
           WHERE a.workspace_id = ${workspaceId}
         )
-      RETURNING channel_id
+      RETURNING channel_id, workspace_id, thread_key
     `);
 
     const rows = ((result as any).rows ?? result ?? []) as Array<{
       channel_id: number | string;
+      workspace_id: string;
+      thread_key: string | null;
     }>;
     const channels: number[] = Array.from(
       new Set(
@@ -1840,6 +2148,14 @@ export class InboxService {
       this.logger.log(
         `cleanupOrphanedThreadKeys: deleted ${rows.length} misplaced inbox_items rows + reset poll cursor on channels [${channels.join(',')}] in workspace ${workspaceId}`,
       );
+    }
+
+    // The deleted rows' conversations no longer match their items.
+    const keys = rows
+      .map((r) => r.thread_key)
+      .filter((k): k is string => typeof k === 'string');
+    if (keys.length > 0) {
+      await this.resync.syncOrEnqueue(workspaceId, keys);
     }
 
     return { deleted: rows.length, channels };
@@ -2914,6 +3230,10 @@ export class InboxService {
       authoredByUserId: input.fromMe ? (input.authoredByUserId ?? null) : null,
     };
 
+    const before = await this.readExistingIngestKey(
+      input.channelId,
+      input.platformItemId,
+    );
     const inserted = await db
       .insert(inboxItems)
       .values(values)
@@ -2926,14 +3246,17 @@ export class InboxService {
           authorDisplayName: sql`COALESCE(${inboxItems.authorDisplayName}, EXCLUDED.author_display_name)`,
           authorAvatarUrl: sql`COALESCE(${inboxItems.authorAvatarUrl}, EXCLUDED.author_avatar_url)`,
           fromMe: sql`${inboxItems.fromMe} OR EXCLUDED.from_me`,
+          authoredByUserId: sql`COALESCE(${inboxItems.authoredByUserId}, EXCLUDED.authored_by_user_id)`,
           metadata: sql`${inboxItems.metadata} || EXCLUDED.metadata`,
           updatedAt: new Date(),
         },
       })
-      .returning();
+      .returning(returningWithInserted);
 
     if (inserted.length === 0) return null;
-    const row = inserted[0];
+    const { inserted: isInsert, ...row } = inserted[0];
+
+    await this.syncAfterIngest(row, isInsert, before);
 
     const wasNewInsert =
       Math.abs(row.createdAt.getTime() - row.updatedAt.getTime()) < 1000;
@@ -2979,6 +3302,8 @@ export class InboxService {
     platformItemId: string;
     text: string;
     platformCreatedAt?: Date;
+    /** Who sent it; without it the row reads as a platform-side reply (R5). */
+    authoredByUserId?: string | null;
     attachments?: Array<{
       kind: 'image' | 'voice' | 'video' | 'file' | 'audio';
       url: string;
@@ -2999,6 +3324,7 @@ export class InboxService {
       text: input.text,
       fromMe: true,
       platformCreatedAt: input.platformCreatedAt ?? new Date(),
+      authoredByUserId: input.authoredByUserId ?? null,
       attachments: input.attachments,
     });
   }
@@ -3072,6 +3398,10 @@ export class InboxService {
         updatedAt: now,
       })
       .where(eq(inboxItems.id, row.id));
+
+    if (row.threadKey) {
+      await this.resync.syncOrEnqueue(input.workspaceId, [row.threadKey]);
+    }
 
     this.emitter.emit(input.workspaceId, 'inbox.item.updated', {
       id: row.id,

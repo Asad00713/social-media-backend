@@ -82,6 +82,8 @@ describe('InboxService.hideComment', () => {
       {} as any, // InstagramService — unused on this path
       {} as any, // BullMQ pollQueue — unused on this path
       {} as any, // InboxRealtimeService — unused on this path
+      {} as any, // ConversationSyncService — unused on this path
+      {} as any, // ConversationResyncService — unused on this path
     );
 
     // emitCounts is a fire-and-forget side effect unrelated to hideComment's

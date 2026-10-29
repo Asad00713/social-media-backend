@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { sql } from 'drizzle-orm';
 import type { DbType } from '../../../drizzle/db';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
@@ -15,6 +15,21 @@ import { kindOfItem, type ConversationKind } from '../lib/thread-key';
 import { InboxRealtimeService } from './inbox-realtime.service';
 
 type Tx = Parameters<Parameters<DbType['transaction']>[0]>[0];
+
+/** Thrown by syncThreads AFTER every key was tried; lists the ones that failed. */
+export class SyncThreadsError extends Error {
+  constructor(
+    readonly failures: Array<{ threadKey: string; error: unknown }>,
+    readonly results: SyncResult[],
+  ) {
+    super(
+      `conversation sync failed for ${failures.length} thread(s): ${failures
+        .map((f) => f.threadKey)
+        .join(', ')}`,
+    );
+    this.name = 'SyncThreadsError';
+  }
+}
 
 export interface SyncResult {
   conversationId: string | null;
@@ -83,6 +98,8 @@ const lockOf = (workspaceId: string, threadKey: string) =>
  */
 @Injectable()
 export class ConversationSyncService {
+  private readonly logger = new Logger(ConversationSyncService.name);
+
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
     private readonly realtime: InboxRealtimeService,
@@ -110,16 +127,25 @@ export class ConversationSyncService {
     return outcome.result;
   }
 
-  /** De-duplicated, sequential. */
+  /**
+   * De-duplicated, sequential. One failing key does not strand the rest: every
+   * key is tried, then a SyncThreadsError names the ones that failed.
+   */
   async syncThreads(
     workspaceId: string,
     threadKeys: Iterable<string>,
     intent?: SyncIntent,
   ): Promise<SyncResult[]> {
     const results: SyncResult[] = [];
+    const failures: Array<{ threadKey: string; error: unknown }> = [];
     for (const key of new Set(threadKeys)) {
-      results.push(await this.syncThread(workspaceId, key, intent));
+      try {
+        results.push(await this.syncThread(workspaceId, key, intent));
+      } catch (error) {
+        failures.push({ threadKey: key, error });
+      }
     }
+    if (failures.length > 0) throw new SyncThreadsError(failures, results);
     return results;
   }
 
@@ -150,7 +176,12 @@ export class ConversationSyncService {
       `);
       const from = ids.rows.find((r) => r.thread_key === fromKey);
       const to = ids.rows.find((r) => r.thread_key === toKey);
-      if (!from || !to) return;
+      if (!from || !to) {
+        this.logger.warn(
+          `rekey ${fromKey} -> ${toKey} in ws=${workspaceId}: nothing to move (from=${!!from}, to=${!!to}); was the item re-keyed first?`,
+        );
+        return;
+      }
       await tx.execute(sql`
         UPDATE inbox_notes SET conversation_id = ${to.id}::uuid
          WHERE conversation_id = ${from.id}::uuid
@@ -182,14 +213,14 @@ export class ConversationSyncService {
       WITH agg AS (
         SELECT count(*)::int AS item_count,
                date_trunc('milliseconds', max(platform_created_at)) AS last_message_at,
-               date_trunc('milliseconds', max(platform_created_at) FILTER (WHERE NOT from_me)) AS last_inbound_at,
+               date_trunc('milliseconds', max(platform_created_at) FILTER (WHERE NOT from_me AND NOT is_hidden)) AS last_inbound_at,
                date_trunc('milliseconds', max(platform_created_at) FILTER (WHERE from_me)) AS last_outbound_at,
                date_trunc('milliseconds', max(platform_created_at) FILTER (WHERE from_me AND authored_by_user_id IS NULL)) AS last_platform_outbound_at,
-               (count(*) FILTER (WHERE NOT from_me AND status = 'unread'))::int AS unread_count,
+               (count(*) FILTER (WHERE NOT from_me AND NOT is_hidden AND status = 'unread'))::int AS unread_count,
                (count(*) FILTER (WHERE NOT from_me AND replied_at IS NULL
                                    AND metadata->>'deletedAt' IS NULL
                                    AND NOT is_hidden))::int AS unanswered_inbound,
-               (count(*) FILTER (WHERE NOT from_me
+               (count(*) FILTER (WHERE NOT from_me AND NOT is_hidden
                                    AND status IN ('unread', 'needs_reply')))::int AS open_legacy_inbound,
                bool_and(archived_at IS NOT NULL) AS all_archived,
                max(archived_at) AS max_archived_at,
