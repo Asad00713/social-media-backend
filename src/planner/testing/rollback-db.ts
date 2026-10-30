@@ -61,10 +61,23 @@ export function assertLocalDatabase(
   return url;
 }
 
+/** Thrown to unwind the harness transaction while carrying fn's result. */
+class RollbackSignal<T> extends Error {
+  constructor(readonly value: T) {
+    super('rollback');
+  }
+}
+
 /**
  * Runs `fn` inside a transaction that is ALWAYS rolled back. The named
  * migration files are applied first, twice, to prove they are idempotent.
  * The session time zone is Asia/Karachi so UTC-vs-local bugs surface.
+ *
+ * `fn` receives drizzle's transaction object, not the root instance: on a
+ * non-Pool client drizzle's own `db.transaction()` would issue `begin` /
+ * `commit` and COMMIT the harness transaction. On a transaction object a
+ * nested `transaction()` uses savepoints, so the final rollback still wins.
+ * `client` is the very connection the transaction runs on.
  */
 export async function withRollbackDb<T>(
   migrations: string[],
@@ -74,24 +87,26 @@ export async function withRollbackDb<T>(
   const client = new Client({ connectionString: url });
   await client.connect();
   try {
-    await client.query('BEGIN');
-    await client.query(`SET LOCAL TIME ZONE 'Asia/Karachi'`);
-    for (const file of migrations) {
-      const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf8');
-      await client.query(sql);
-      await client.query(sql);
-    }
     const poolClient = client as unknown as PoolClient;
     // The app's db is built on a Pool and carries `$client: Pool`. A single
-    // transactional Client is the narrowest stand-in: it exposes the same
-    // `query` surface drizzle uses, and `$client` is never read by services.
-    const db = drizzle(poolClient as unknown as Pool, { schema });
-    return await fn(db, poolClient);
+    // Client is the narrowest stand-in: it exposes the same `query` surface
+    // drizzle uses, and `$client` is never read by services.
+    const root = drizzle(poolClient as unknown as Pool, { schema });
+    await root.transaction(async (tx) => {
+      await client.query(`SET LOCAL TIME ZONE 'Asia/Karachi'`);
+      for (const file of migrations) {
+        const sql = readFileSync(join(MIGRATIONS_DIR, file), 'utf8');
+        await client.query(sql);
+        await client.query(sql);
+      }
+      const result = await fn(tx as unknown as DbType, poolClient);
+      throw new RollbackSignal(result);
+    });
+    throw new Error('withRollbackDb: transaction ended without a rollback');
+  } catch (err) {
+    if (err instanceof RollbackSignal) return err.value as T;
+    throw err;
   } finally {
-    try {
-      await client.query('ROLLBACK');
-    } finally {
-      await client.end();
-    }
+    await client.end();
   }
 }

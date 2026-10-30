@@ -132,6 +132,14 @@ export class YoutubeInboxAdapter implements PlatformInboxAdapter {
     };
   }
 
+  // Someone else's comment on our video: setModerationStatus=rejected.
+  async moderateDelete(
+    channel: ResolvedChannel,
+    platformItemId: string,
+  ): Promise<void> {
+    await this.youtube.rejectComment(channel.accessToken, platformItemId);
+  }
+
   // Phase 2.3 — YouTube only allows deleting comments authored by the
   // authenticated channel. Requires youtube.force-ssl scope.
   async deleteComment(

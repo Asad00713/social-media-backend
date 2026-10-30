@@ -4,6 +4,16 @@ import { InboxController } from './inbox.controller';
 import { InboxAdminController } from './inbox-admin.controller';
 import { WebhooksController } from '../channels/webhooks.controller';
 import { InboxService } from './inbox.service';
+import { InboxSettingsController } from './conversations/inbox-settings.controller';
+import { InboxSettingsService } from './conversations/services/inbox-settings.service';
+import { ConversationPresenter } from './conversations/services/conversation-presenter.service';
+import { ConversationSyncService } from './conversations/services/conversation-sync.service';
+import {
+  ConversationResyncProcessor,
+  ConversationResyncService,
+} from './conversations/services/conversation-resync.service';
+import { InboxNotifyService } from './conversations/services/inbox-notify.service';
+import { InboxRealtimeService } from './conversations/services/inbox-realtime.service';
 import { InboxDispatcher } from './services/inbox-dispatcher.service';
 import { BlueskyInboxAdapter } from './adapters/bluesky-inbox.adapter';
 import { MastodonInboxAdapter } from './adapters/mastodon-inbox.adapter';
@@ -40,6 +50,17 @@ import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
 import { WhatsAppTemplatesModule } from '../whatsapp-templates/whatsapp-templates.module';
 import { QUEUES } from '../queue/queue.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
+import { NotificationsModule } from '../notifications/notifications.module';
+import { EmailModule } from '../email/email.module';
+import {
+  CONVERSATION_API_CONTROLLERS,
+  CONVERSATION_API_EXPORTS,
+  CONVERSATION_API_PROVIDERS,
+} from './conversations/conversation-api.providers';
+import {
+  MESSAGING_CONTROLLERS,
+  MESSAGING_PROVIDERS,
+} from './conversations/messaging.providers';
 
 @Module({
   // ChannelsModule exposes platform services + ChannelService (token decrypt/refresh).
@@ -47,6 +68,10 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
   // INBOX_POLLING queue token; the queue itself is configured once in QueueModule.
   imports: [
     WorkspaceRoleModule,
+    // Bell + email notifications (InboxNotifyService). NotificationsModule is
+    // global but imports ChannelsModule, which forwardRefs back here.
+    forwardRef(() => NotificationsModule),
+    EmailModule,
     forwardRef(() => ChannelsModule),
     MediaModule,
     // Circular by design: scheduled messages push to calendars
@@ -67,11 +92,27 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
       { name: QUEUES.DISCORD_INGEST },
       { name: QUEUES.WHATSAPP_INGEST },
       { name: QUEUES.MAESTRO_BRIDGE },
+      { name: QUEUES.INBOX_LATER },
+      { name: QUEUES.INBOX_RESYNC },
     ),
   ],
-  controllers: [InboxController, InboxAdminController, WebhooksController],
+  controllers: [
+    InboxController,
+    InboxAdminController,
+    InboxSettingsController,
+    WebhooksController,
+    ...CONVERSATION_API_CONTROLLERS,
+    ...MESSAGING_CONTROLLERS,
+  ],
   providers: [
     InboxService,
+    InboxSettingsService,
+    ConversationPresenter,
+    ConversationSyncService,
+    ConversationResyncService,
+    ConversationResyncProcessor,
+    InboxRealtimeService,
+    InboxNotifyService,
     InboxDispatcher,
     BlueskyInboxAdapter,
     MastodonInboxAdapter,
@@ -102,12 +143,18 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     YoutubeRetentionService,
     YoutubeRetentionScheduler,
     RedisClientProvider,
+    ...CONVERSATION_API_PROVIDERS,
+    ...MESSAGING_PROVIDERS,
   ],
   exports: [
     InboxService,
+    ConversationSyncService,
+    ConversationResyncService,
+    InboxNotifyService,
     InboxDispatcher,
     ScheduledMessagesService,
     SlackBackfillService,
+    ...CONVERSATION_API_EXPORTS,
   ],
 })
 export class InboxModule {}

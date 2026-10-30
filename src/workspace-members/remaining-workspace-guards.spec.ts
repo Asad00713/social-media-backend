@@ -195,7 +195,6 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
       updateScheduled: 'inbox:reply',
       cancelScheduled: 'inbox:reply',
       createUploadUrl: 'inbox:reply',
-      deleteComment: 'inbox:reply',
       deleteDm: 'inbox:reply',
       archiveDmConversation: 'inbox:reply',
       archiveCommentThread: 'inbox:reply',

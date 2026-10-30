@@ -22,6 +22,7 @@
     "db:migrate": "echo \"REFUSING: drizzle-kit's journal knows only 26 of the SQL files and its tracking table is empty, so this would replay migrations against a live DB. Use db:migrate:sql instead.\" && exit 1",
     "db:migrate:sql": "node dist/src/drizzle/migrate/migrate",
     "db:baseline": "node dist/src/drizzle/migrate/baseline",
+    "inbox:backfill": "node dist/src/inbox/scripts/backfill-conversations",
     "db:push": "echo \"REFUSING: db:push rewrites the schema with no migration record. Write a numbered .sql migration and use db:migrate:sql.\" && exit 1",
     "db:studio": "drizzle-kit studio"
   },

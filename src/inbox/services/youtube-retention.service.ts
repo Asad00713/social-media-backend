@@ -1,12 +1,28 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
+import { ConversationResyncService } from '../conversations/services/conversation-resync.service';
 
 /**
  * YouTube Developer Policy III.E.4.c: Authorized Data other than analytics and
  * statistics must be deleted or refreshed within 30 calendar days.
  */
 export const YOUTUBE_RETENTION_DAYS = 30;
+
+/** The one db capability this job uses; results are narrowed at the call. */
+interface Executor {
+  execute(query: SQL): Promise<unknown>;
+}
+
+interface ResultLike {
+  rowCount?: number | null;
+  rows?: WipedRow[];
+}
+
+interface WipedRow {
+  workspace_id: string;
+  thread_key: string | null;
+}
 
 export interface RetentionResult {
   wiped: number;
@@ -53,7 +69,10 @@ export interface RetentionResult {
 export class YoutubeRetentionService {
   private readonly logger = new Logger(YoutubeRetentionService.name);
 
-  constructor(@Inject(DRIZZLE) private readonly db: any) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: Executor,
+    private readonly resync: ConversationResyncService,
+  ) {}
 
   async wipeExpiredContent(now: Date = new Date()): Promise<RetentionResult> {
     const cutoff = new Date(
@@ -61,7 +80,7 @@ export class YoutubeRetentionService {
     );
     const cutoffIso = cutoff.toISOString();
 
-    const result: any = await this.db.execute(sql`
+    const result = (await this.db.execute(sql`
       UPDATE inbox_items
       SET
         text = NULL,
@@ -80,9 +99,49 @@ export class YoutubeRetentionService {
           OR author_platform_id IS NOT NULL
           OR metadata ? 'authorChannelUrl'
         )
-    `);
+      RETURNING workspace_id, thread_key
+    `)) as ResultLike | undefined;
 
     const wiped = Number(result?.rowCount ?? 0);
+
+    // The conversation copies (snippet, author label, participant, search text)
+    // were derived from the words just wiped, so recompute them. The wipe has
+    // committed. A failed sync is queued for a retry (never left holding the
+    // wiped words), and the stale-conversation sweep below picks up threads whose
+    // items were wiped by an earlier run whose sync failed: the wipe guard
+    // (`text IS NOT NULL ...`) never selects those items again.
+    const keysByWorkspace = new Map<string, Set<string>>();
+    const wipedRows = result?.rows;
+    for (const r of wipedRows ?? []) {
+      if (!r.thread_key) continue;
+      const set = keysByWorkspace.get(r.workspace_id) ?? new Set<string>();
+      set.add(r.thread_key);
+      keysByWorkspace.set(r.workspace_id, set);
+    }
+    const stale = (await this.db.execute(sql`
+      SELECT c.workspace_id, c.thread_key
+        FROM inbox_conversations c
+       WHERE c.platform = 'youtube'
+         AND (c.last_snippet IS NOT NULL
+              OR c.last_author_label IS NOT NULL
+              OR c.participant_name IS NOT NULL
+              OR c.participant_handle IS NOT NULL
+              OR c.participant_avatar_url IS NOT NULL)
+         AND NOT EXISTS (
+           SELECT 1 FROM inbox_items i
+            WHERE i.workspace_id = c.workspace_id
+              AND i.thread_key = c.thread_key
+              AND i.text IS NOT NULL)
+    `)) as ResultLike | undefined;
+    for (const r of stale?.rows ?? []) {
+      if (!r.thread_key) continue;
+      const set = keysByWorkspace.get(r.workspace_id) ?? new Set<string>();
+      set.add(r.thread_key);
+      keysByWorkspace.set(r.workspace_id, set);
+    }
+    for (const [workspaceId, keys] of keysByWorkspace) {
+      await this.resync.syncOrEnqueue(workspaceId, keys);
+    }
     if (wiped > 0) {
       this.logger.log(
         `YouTube retention: wiped content on ${wiped} inbox items older than ` +

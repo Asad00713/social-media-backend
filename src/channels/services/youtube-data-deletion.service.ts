@@ -1,6 +1,20 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
+import { ConversationResyncService } from '../../inbox/conversations/services/conversation-resync.service';
+
+interface Executor {
+  execute(query: SQL): Promise<unknown>;
+}
+
+interface DeletedRow {
+  workspace_id: string;
+  thread_key: string | null;
+}
+
+type StatementResult =
+  | { rowCount?: number | null; rows?: DeletedRow[] }
+  | undefined;
 
 export interface YoutubeDeletionSummary {
   inboxItems: number;
@@ -46,24 +60,33 @@ export interface YoutubeDeletionSummary {
 export class YoutubeDataDeletionService {
   private readonly logger = new Logger(YoutubeDataDeletionService.name);
 
-  constructor(@Inject(DRIZZLE) private readonly db: any) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: any,
+    private readonly resync: ConversationResyncService,
+  ) {}
 
   async deleteAllYoutubeData(
     channelId: number,
     workspaceId: string,
   ): Promise<YoutubeDeletionSummary> {
+    const deletedKeys = new Set<string>();
     const summary = await this.db.transaction(async (tx: any) => {
-      const count = async (statement: any): Promise<number> => {
-        const result: any = await tx.execute(statement);
-        return Number(result?.rowCount ?? 0);
-      };
+      const run = async (statement: any): Promise<StatementResult> =>
+        (await tx.execute(statement)) as StatementResult;
+      const count = async (statement: any): Promise<number> =>
+        Number((await run(statement))?.rowCount ?? 0);
 
-      const inboxItems = await count(sql`
+      const deletedItems = await run(sql`
         DELETE FROM inbox_items
         WHERE channel_id = ${channelId}
           AND workspace_id = ${workspaceId}
           AND platform = 'youtube'
+        RETURNING workspace_id, thread_key
       `);
+      const inboxItems = Number(deletedItems?.rowCount ?? 0);
+      for (const r of deletedItems?.rows ?? []) {
+        if (r.thread_key) deletedKeys.add(r.thread_key);
+      }
 
       const postMetricSnapshots = await count(sql`
         DELETE FROM post_metric_snapshots
@@ -96,6 +119,22 @@ export class YoutubeDataDeletionService {
         channelAnalyticsDaily,
       };
     });
+
+    // Their conversations lost their items. The transaction above has
+    // committed, so the sync may open its own (D1). Also sweep this channel's
+    // remaining YouTube conversations: a previous call whose sync failed left
+    // them behind, and the items that named their keys are gone. A failed sync
+    // is queued for a retry.
+    const leftover = (await (this.db as Executor).execute(sql`
+      SELECT thread_key FROM inbox_conversations
+       WHERE workspace_id = ${workspaceId}
+         AND channel_id = ${channelId}
+         AND platform = 'youtube'
+    `)) as { rows?: Array<{ thread_key: string | null }> } | undefined;
+    for (const r of leftover?.rows ?? []) {
+      if (r.thread_key) deletedKeys.add(r.thread_key);
+    }
+    await this.resync.syncOrEnqueue(workspaceId, deletedKeys);
 
     this.logger.log(
       `YouTube data deletion for channel ${channelId} (workspace ${workspaceId}): ` +

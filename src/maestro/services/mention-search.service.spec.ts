@@ -26,7 +26,9 @@ function makeService(
       owner: { id: string; name: string | null; email: string } | null;
       members: unknown[];
     };
-    dms?: Record<string, unknown>[];
+    conversationRows?: Record<string, unknown>[];
+    /** Rows per Inbox view; `conversationRows` is shorthand for to_reply. */
+    rowsByView?: Record<string, Record<string, unknown>[]>;
     failing?: string[];
   } = {},
   calls: Call[] = [],
@@ -57,12 +59,14 @@ function makeService(
       return Promise.resolve(guard('channels', data.channels ?? []));
     },
   };
-  const listed = (source: string, rows: unknown[]) => (
+  const listed =
+    (source: string, rows: unknown[]) =>
     (workspaceId: string, query: unknown) => {
       calls.push({ source, workspaceId, arg: query });
-      return Promise.resolve(guard(source, { items: rows, total: rows.length }));
-    }
-  );
+      return Promise.resolve(
+        guard(source, { items: rows, total: rows.length }),
+      );
+    };
   const templates = { findAll: listed('templates', data.templates ?? []) };
   const snippets = { findAll: listed('snippets', data.snippets ?? []) };
   const mediaItems = { findAll: listed('media', data.media ?? []) };
@@ -78,10 +82,18 @@ function makeService(
     },
   };
   const inbox = {
-    listDmConversations: (workspaceId: string, userId: string) => {
-      calls.push({ source: 'inbox', workspaceId, arg: userId });
+    list: (workspaceId: string, userId: string, q: unknown) => {
+      calls.push({ source: 'inbox', workspaceId, arg: { userId, q } });
       return Promise.resolve(
-        guard('inbox', { threads: data.dms ?? [], nextCursor: null }),
+        guard('inbox', {
+          rows:
+            data.rowsByView?.[(q as { view: string }).view] ??
+            ((q as { view: string }).view === 'to_reply'
+              ? (data.conversationRows ?? [])
+              : []),
+          nextCursor: null,
+          total: 0,
+        }),
       );
     },
   };
@@ -265,15 +277,15 @@ describe('MentionSearchService', () => {
     expect(channel.platform).toBe('instagram');
   });
 
-  it('routes a conversation by its thread key, not the platform id', async () => {
+  it('routes a conversation by its uuid, not the thread key', async () => {
     const service = makeService({
-      dms: [
+      conversationRows: [
         {
-          id: '2:conv-b',
-          conversationId: 'conv-b',
+          id: '11111111-1111-4111-8111-111111111111',
+          threadKey: '2:conv-b',
           platform: 'facebook',
-          status: 'needs_reply',
-          participant: { displayName: 'Omar Hassan', handle: 'omar.h' },
+          status: 'to_reply',
+          title: 'Omar Hassan',
         },
       ],
     });
@@ -285,10 +297,136 @@ describe('MentionSearchService', () => {
     });
 
     const conv = byType(results, 'conversation')[0];
-    // `conversationId` is the platform's own id and opens nothing; `id` is what
-    // the Inbox routes on.
-    expect(conv.id).toBe('2:conv-b');
+    // `id` is the conversation uuid — the Inbox opens it with ?c=<id>, never
+    // the legacy thread key.
+    expect(conv.id).toBe('11111111-1111-4111-8111-111111111111');
+    expect(conv.status).toBe('to_reply');
     expect(conv.label).toBe('Omar Hassan');
+  });
+
+  it('asks the conversation list for DMs matching the query, in the caller workspace', async () => {
+    const calls: Call[] = [];
+    const service = makeService({}, calls);
+    await service.search({
+      workspaceId: WORKSPACE,
+      userId: USER,
+      query: 'omar',
+    });
+    const hit = calls.find((c) => c.source === 'inbox');
+    expect(hit?.workspaceId).toBe(WORKSPACE);
+    expect(hit?.arg).toEqual({
+      userId: USER,
+      q: expect.objectContaining({ type: 'message', q: 'omar' }) as unknown,
+    });
+  });
+
+  describe('conversation search', () => {
+    const conv = (id: string, title: string, at: string, over = {}) => ({
+      id,
+      title,
+      platform: 'facebook',
+      status: 'to_reply',
+      lastMessageAt: at,
+      snippet: { authorLabel: null, text: '', fromMe: false },
+      ...over,
+    });
+    const search = (service: MentionSearchService, query = '') =>
+      service.search({
+        workspaceId: WORKSPACE,
+        userId: USER,
+        query,
+        type: 'conversation',
+      });
+
+    it('finds DMs parked in Later and finished in Done, not only To reply', async () => {
+      const calls: Call[] = [];
+      const service = makeService(
+        {
+          rowsByView: {
+            to_reply: [conv('a', 'Ann', '2026-08-01T00:00:00Z')],
+            later: [
+              conv('b', 'Bea', '2026-08-02T00:00:00Z', { status: 'later' }),
+            ],
+            done: [conv('c', 'Cy', '2026-08-03T00:00:00Z', { status: 'done' })],
+          },
+        },
+        calls,
+      );
+      const { results } = await search(service);
+      expect(results.map((r) => r.id)).toEqual(['c', 'b', 'a']);
+      const views = calls
+        .filter((c) => c.source === 'inbox')
+        .map((c) => (c.arg as { q: { view: string } }).q.view)
+        .sort();
+      expect(views).toEqual(['done', 'later', 'to_reply']);
+      expect(
+        calls
+          .filter((c) => c.source === 'inbox')
+          .every((c) => c.workspaceId === WORKSPACE),
+      ).toBe(true);
+    });
+
+    it('returns a conversation once when two views report it', async () => {
+      const service = makeService({
+        rowsByView: {
+          to_reply: [conv('a', 'Ann', '2026-08-01T00:00:00Z')],
+          later: [conv('a', 'Ann', '2026-08-01T00:00:00Z')],
+        },
+      });
+      const { results } = await search(service);
+      expect(results.map((r) => r.id)).toEqual(['a']);
+    });
+
+    it('caps the merged result at the per-type limit, keeping the newest', async () => {
+      const service = makeService({
+        rowsByView: {
+          to_reply: [
+            conv('a', 'Ann', '2026-08-01T00:00:00Z'),
+            conv('e', 'Eve', '2026-08-05T00:00:00Z'),
+          ],
+          later: [
+            conv('b', 'Bea', '2026-08-02T00:00:00Z'),
+            conv('d', 'Dee', '2026-08-04T00:00:00Z'),
+          ],
+          done: [conv('c', 'Cy', '2026-08-03T00:00:00Z')],
+        },
+      });
+      const { results } = await search(service);
+      expect(results.map((r) => r.id)).toEqual(['e', 'd', 'c', 'b']);
+    });
+
+    it('filters a 1-character query locally, since the list ignores short q', async () => {
+      const calls: Call[] = [];
+      const service = makeService(
+        {
+          conversationRows: [
+            conv('a', 'Zed', '2026-08-01T00:00:00Z'),
+            conv('b', 'Omar', '2026-08-02T00:00:00Z'),
+          ],
+        },
+        calls,
+      );
+      const { results } = await search(service, 'o');
+      expect(results.map((r) => r.id)).toEqual(['b']);
+      for (const c of calls.filter((x) => x.source === 'inbox')) {
+        const q = (c.arg as { q: Record<string, unknown> }).q;
+        expect(q.q).toBeUndefined();
+        expect(q.limit).toBe(50);
+      }
+    });
+
+    it('also matches a short query on the snippet author label', async () => {
+      const service = makeService({
+        conversationRows: [
+          conv('a', 'Chat 1', '2026-08-01T00:00:00Z', {
+            snippet: { authorLabel: 'Quinn', text: '', fromMe: false },
+          }),
+          conv('b', 'Chat 2', '2026-08-02T00:00:00Z'),
+        ],
+      });
+      const { results } = await search(service, 'q');
+      expect(results.map((r) => r.id)).toEqual(['a']);
+    });
   });
 
   it('returns nothing rather than everything when nothing matches', async () => {

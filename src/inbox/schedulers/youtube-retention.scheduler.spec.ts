@@ -6,6 +6,7 @@ import {
   YOUTUBE_RETENTION_DAYS,
 } from '../services/youtube-retention.service';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
+import { ConversationResyncService } from '../conversations/services/conversation-resync.service';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -72,13 +73,17 @@ describe('retention boundary (real service)', () => {
       providers: [
         YoutubeRetentionService,
         { provide: DRIZZLE, useValue: db },
+        {
+          provide: ConversationResyncService,
+          useValue: { syncOrEnqueue: jest.fn() },
+        },
       ],
     }).compile();
     const service = mod.get(YoutubeRetentionService);
 
     const result = await service.wipeExpiredContent(now);
 
-    expect(db.execute).toHaveBeenCalledTimes(1);
+    expect(db.execute).toHaveBeenCalledTimes(2); // the wipe, then the stale-conversation sweep
     const [query] = db.execute.mock.calls[0];
     capturedQuery = dialect.sqlToQuery(query);
 

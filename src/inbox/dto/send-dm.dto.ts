@@ -8,6 +8,7 @@ import {
   MaxLength,
   ValidateNested,
 } from 'class-validator';
+import { SendOptionsDto } from './send-options.dto';
 
 export const DM_ATTACHMENT_KINDS = [
   'image',
@@ -32,7 +33,7 @@ export class DmAttachmentDto {
   contentType: string;
 }
 
-export class SendDmDto {
+export class SendDmDto extends SendOptionsDto {
   @IsString()
   @MaxLength(10000)
   text: string;

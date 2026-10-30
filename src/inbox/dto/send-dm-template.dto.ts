@@ -1,4 +1,4 @@
-import { IsString, MaxLength } from 'class-validator';
+import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
 
 export class SendDmTemplateDto {
   @IsString()
@@ -8,4 +8,9 @@ export class SendDmTemplateDto {
   @IsString()
   @MaxLength(32)
   language: string;
+
+  /** Mark the conversation Done with this send; omitted = the sender's setting. */
+  @IsOptional()
+  @IsBoolean()
+  markDone?: boolean;
 }

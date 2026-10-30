@@ -1442,6 +1442,94 @@ export class FacebookService {
   }
 
   /**
+   * Like (or unlike) a comment as the Page.
+   * Endpoint: POST / DELETE /{comment-id}/likes (Page token, pages_manage_engagement)
+   * https://developers.facebook.com/docs/graph-api/reference/object/likes/
+   */
+  async setCommentLike(
+    pageAccessToken: string,
+    commentId: string,
+    liked: boolean,
+  ): Promise<void> {
+    const url = new URL(`${this.graphApiUrl}/${commentId}/likes`);
+    url.searchParams.set('access_token', pageAccessToken);
+    const res = await fetch(url.toString(), {
+      method: liked ? 'POST' : 'DELETE',
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`FB setCommentLike failed: ${err}`);
+      throw new Error(`Facebook like failed: ${res.status} ${err}`);
+    }
+  }
+
+  /**
+   * Hide (or unhide) a comment on the Page's post.
+   * Endpoint: POST /{comment-id} with is_hidden
+   * https://developers.facebook.com/docs/graph-api/reference/comment/
+   */
+  async setCommentHidden(
+    pageAccessToken: string,
+    commentId: string,
+    hidden: boolean,
+  ): Promise<void> {
+    const url = new URL(`${this.graphApiUrl}/${commentId}`);
+    url.searchParams.set('access_token', pageAccessToken);
+    url.searchParams.set('is_hidden', String(hidden));
+    const res = await fetch(url.toString(), { method: 'POST' });
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`FB setCommentHidden failed: ${err}`);
+      throw new Error(`Facebook hide failed: ${res.status} ${err}`);
+    }
+  }
+
+  /**
+   * Private reply: a Messenger message addressed to a comment, allowed once
+   * per comment within 7 days.
+   * https://developers.facebook.com/docs/messenger-platform/discovery/private-replies/
+   */
+  async sendPrivateReply(
+    pageId: string,
+    pageAccessToken: string,
+    commentId: string,
+    text: string,
+  ): Promise<{ recipientId: string | null; messageId: string | null }> {
+    const url = new URL(`${this.graphApiUrl}/${pageId}/messages`);
+    url.searchParams.set('access_token', pageAccessToken);
+    const res = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        recipient: { comment_id: commentId },
+        message: { text },
+      }),
+    });
+    if (!res.ok) {
+      const err = await res.text();
+      this.logger.error(`FB private reply failed: ${err}`);
+      throw new Error(`Facebook private reply failed: ${res.status} ${err}`);
+    }
+    const data = (await res.json()) as {
+      message_id?: string;
+      recipient_id?: string;
+    };
+    // The message is delivered. A missing recipient or message id must never
+    // turn that into a failure: the caller degrades (no DM row / no
+    // conversation id yet) and the webhook echo fills the gap.
+    if (!data.recipient_id || !data.message_id) {
+      this.logger.warn(
+        'Facebook private reply accepted without ' +
+          (data.recipient_id ? 'a message_id' : 'a recipient_id'),
+      );
+    }
+    return {
+      recipientId: data.recipient_id ?? null,
+      messageId: data.message_id ?? null,
+    };
+  }
+
+  /**
    * Unsend a Facebook Messenger message. Meta's Send API supports unsending
    * via `/me/messages` with `message: { unsend: { mid } }`. The window is
    * platform-enforced (~24h for some accounts, less for others). Phase 2.3.

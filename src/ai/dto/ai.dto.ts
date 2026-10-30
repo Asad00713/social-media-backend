@@ -7,6 +7,7 @@ import {
   IsIn,
   IsBoolean,
   IsNotEmpty,
+  IsUUID,
   ArrayMinSize,
   ArrayMaxSize,
   ValidateNested,
@@ -336,26 +337,56 @@ export class SuggestReplyMessageDto {
   text: string;
 }
 
+export const SUGGEST_REPLY_INSTRUCTIONS = [
+  'suggest',
+  'rephrase',
+  'shorten',
+  'friendly',
+  'translate_en',
+] as const;
+export type SuggestReplyInstruction =
+  (typeof SUGGEST_REPLY_INSTRUCTIONS)[number];
+
 export class SuggestReplyDto {
+  /** The server loads the thread itself; exclusive with `messages`. */
+  @IsOptional()
+  @IsUUID()
+  conversationId?: string;
+
+  @IsOptional()
+  @IsUUID()
+  commentId?: string;
+
+  /** Legacy body: `platform` + `messages`. */
+  @IsOptional()
   @IsString()
   @IsNotEmpty()
-  platform: string;
+  platform?: string;
 
+  @IsOptional()
   @IsArray()
   @ArrayMinSize(1)
   @ArrayMaxSize(20)
   @ValidateNested({ each: true })
   @Type(() => SuggestReplyMessageDto)
-  messages: SuggestReplyMessageDto[];
+  messages?: SuggestReplyMessageDto[];
 
   @IsOptional()
-  @IsIn(['suggest', 'rephrase', 'shorten', 'friendly'])
-  instruction?: 'suggest' | 'rephrase' | 'shorten' | 'friendly';
+  @IsIn(SUGGEST_REPLY_INSTRUCTIONS)
+  instruction?: SuggestReplyInstruction;
 
   @IsOptional()
   @IsString()
   @MaxLength(2000)
   draft?: string;
+}
+
+export class QuickRepliesDto {
+  @IsUUID()
+  conversationId: string;
+
+  @IsUUID()
+  commentId: string;
 }
 
 // =============================================================================

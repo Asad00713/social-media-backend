@@ -139,6 +139,45 @@ Never do this to "get the deploy through". The refusal means the database and
 the file disagree, and skipping past it stacks later migrations on a schema
 nobody can reproduce.
 
+## Inbox conversations backfill (0052)
+
+`0052_inbox_conversations_backfill.sql` builds `inbox_conversations` from the
+existing `inbox_items` (and links scheduled replies to them). `npm run
+inbox:backfill -- --i-know-this-is-production` (the `--` is required, or npm
+swallows the flag) re-runs the same file in one transaction. Unlike the boot
+migrator it needs the flag for every host except localhost, `*.railway.internal`
+included. It is safe to re-run: only derived columns are refreshed, and snooze,
+assignee and done state are left alone, except that a newer inbound reopens a
+Done (or wait-for-reply Later) conversation, as live sync would. It locks
+`inbox_conversations` (EXCLUSIVE) for its duration. The owner runs it once, at
+the frontend switch, to catch anything that drifted since the migration ran.
+
+**Never edit 0052 after it has been applied** (the checksum guard refuses to
+boot); write a new migration for any later change to the backfill logic. Run
+EXPLAIN (ANALYZE, BUFFERS) on a prod-sized copy before deploy: the file scans
+`inbox_items` several times and the deploy waits for it.
+
+## Inbox lock waits (0046, 0052)
+
+`0046_inbox_items_thread_key.sql` adds a stored generated column, which
+rewrites `inbox_items` under ACCESS EXCLUSIVE and builds four indexes (one a
+GIN trigram) in the same transaction; 0052 locks `inbox_conversations`
+EXCLUSIVE and row-locks unanswered inbound `inbox_items`. Both start with
+`SET LOCAL lock_timeout = '10s';`, scoped to the runner's per-file transaction
+(and to `inbox:backfill`'s). Without it a lock request queues behind any open
+transaction on the still-running old instance, and every Inbox read and write
+then queues behind the migration. With it a blocked deploy fails fast and rolls
+back; retry the deploy. The timeout bounds only the wait for a lock, not how
+long the file holds it, so **before deploying, time 0046 on a prod-sized copy
+of `inbox_items`** (take the row count and size from prod), alongside 0052's
+EXPLAIN. If the rewrite plus the trigram build is long, raise it with the owner
+before the deploy: the Inbox is locked for that whole time.
+
+The `lock_timeout` line was added after both files were applied to local
+development databases (never to prod). A local database that applied the older
+text reports drift; repair its record with the `UPDATE applied_migrations`
+statement above, using the checksum of the committed file.
+
 ## Production history
 
 **These migrations do not replay from scratch.** `0002` fails on an empty
