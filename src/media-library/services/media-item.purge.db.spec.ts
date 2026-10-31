@@ -64,6 +64,7 @@ describeLibraryDb('MediaItemService permanent delete', () => {
       const r2Id = await seedMediaItem(client, {
         ...base,
         type: 'video',
+        storageProvider: 'r2',
         fileUrl: `${R2_BASE}/${r2Key(workspaceId)}`,
       });
       const cldId = await seedMediaItem(client, {
@@ -95,6 +96,7 @@ describeLibraryDb('MediaItemService permanent delete', () => {
         type: 'video',
         isDeleted: true,
         deletedAt: new Date(),
+        storageProvider: 'r2',
         fileUrl: `${R2_BASE}/${key}`,
       });
 
@@ -116,6 +118,7 @@ describeLibraryDb('MediaItemService permanent delete', () => {
         type: 'video',
         isDeleted: true,
         deletedAt: new Date(),
+        storageProvider: 'r2',
         fileUrl: `${R2_BASE}/${r2Key(workspaceId)}`,
       });
       r2.deleteObject.mockRejectedValue(new Error('r2 down'));
@@ -323,6 +326,7 @@ describeLibraryDb('MediaItemService permanent delete', () => {
         type: 'video',
         isDeleted: true,
         deletedAt: new Date(),
+        storageProvider: 'r2',
         fileUrl: `${R2_BASE}/${r2Key(b.workspaceId)}`,
       });
 

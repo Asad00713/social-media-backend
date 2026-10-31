@@ -99,6 +99,10 @@ export class MediaItemService {
       duration: dto.duration,
       cloudinaryPublicId: dto.cloudinaryPublicId,
       cloudinaryAssetId: dto.cloudinaryAssetId,
+      storageProvider: this.storageObjects.providerOf(
+        dto.fileUrl,
+        dto.cloudinaryPublicId ?? null,
+      ),
       categoryId: dto.categoryId,
       tags: dto.tags || [],
     };

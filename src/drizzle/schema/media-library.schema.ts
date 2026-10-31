@@ -50,9 +50,9 @@ export const mediaCategories = pgTable(
     // Category details
     name: varchar('name', { length: 100 }).notNull(),
     description: text('description'),
-    // A folder belongs to exactly one asset type — image folders live in the
-    // Images section, video folders in Videos, and so on. Required.
-    type: varchar('type', { length: 50 }).$type<MediaLibraryType>().notNull(),
+    // The folder's kind. Migration 0054 merged the legacy image / gif / video
+    // / document kinds into 'media'; Task 8 narrows this to FolderKind (B11).
+    type: varchar('type', { length: 50 }).$type<string>().notNull(),
     color: varchar('color', { length: 20 }), // Hex color for UI
     icon: varchar('icon', { length: 50 }), // Icon name for UI
 
@@ -118,6 +118,16 @@ export const mediaItems = pgTable(
     cloudinaryPublicId: varchar('cloudinary_public_id', { length: 255 }),
     cloudinaryAssetId: varchar('cloudinary_asset_id', { length: 255 }),
 
+    // Where the bytes live (D3); written at create, backfilled by 0054.
+    storageProvider: varchar('storage_provider', { length: 20 })
+      .$type<StorageProvider>()
+      .notNull()
+      .default('cloudinary'),
+
+    // Accessibility text, and the page count of a PDF.
+    altText: text('alt_text'),
+    pageCount: integer('page_count'),
+
     // Organization
     tags: jsonb('tags').$type<string[]>().default([]),
     isStarred: boolean('is_starred').default(false),
@@ -154,6 +164,10 @@ export const mediaItems = pgTable(
       table.workspaceId,
       table.isDeleted,
     ),
+    // Cross-workspace share lookups on purge (SEC3). Hash: equality only, and
+    // file_url is unbounded text a btree entry could not hold.
+    index('media_items_file_url_idx').using('hash', table.fileUrl),
+    index('media_items_cloudinary_public_id_idx').on(table.cloudinaryPublicId),
   ],
 );
 
@@ -284,7 +298,7 @@ export const TEXT_SNIPPET_TYPES = [
   'caption',
   'hashtags',
   'cta',
-  'bio',
+  'signature',
   'other',
 ] as const;
 
@@ -352,6 +366,14 @@ export const textSnippets = pgTable(
 // Saved Links - URLs with metadata
 // =============================================================================
 
+export interface SavedLinkUtm {
+  source?: string;
+  medium?: string;
+  campaign?: string;
+  term?: string;
+  content?: string;
+}
+
 export const savedLinks = pgTable(
   'saved_links',
   {
@@ -379,6 +401,10 @@ export const savedLinks = pgTable(
     previewDescription: text('preview_description'),
     previewImageUrl: text('preview_image_url'),
     previewSiteName: varchar('preview_site_name', { length: 255 }),
+    previewFaviconUrl: text('preview_favicon_url'),
+
+    // UTM parameters the composer appends when the link is inserted.
+    utm: jsonb('utm').$type<SavedLinkUtm | null>(),
 
     // Organization
     tags: jsonb('tags').$type<string[]>().default([]),

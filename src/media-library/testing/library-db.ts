@@ -39,7 +39,7 @@ const EVERGREEN_TABLES_SQL = join(
  * Migration files every library DB spec replays, in order. Later tasks append
  * their files here.
  */
-export const LIBRARY_MIGRATIONS: string[] = [];
+export const LIBRARY_MIGRATIONS: string[] = ['0054_library_columns.sql'];
 
 export const describeLibraryDb = describeDb;
 
@@ -127,6 +127,8 @@ export interface SeedMediaItemInput extends SoftDeleteFields, UsageFields {
   height?: number | null;
   tags?: string[];
   cloudinaryPublicId?: string | null;
+  storageProvider?: 'cloudinary' | 'r2';
+  altText?: string | null;
   createdAt?: Date;
 }
 
@@ -139,9 +141,10 @@ export async function seedMediaItem(
        (workspace_id, uploaded_by_id, category_id, type, name, file_url,
         thumbnail_url, mime_type, file_size, width, height, cloudinary_public_id,
         tags, is_starred, usage_count, last_used_at, is_deleted, deleted_at,
-        deleted_by_id, created_at)
+        deleted_by_id, created_at, storage_provider, alt_text)
      VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13::jsonb,
-             $14, $15, $16, $17, $18, $19, COALESCE($20, now()))
+             $14, $15, $16, $17, $18, $19, COALESCE($20, now()),
+             COALESCE($21, 'cloudinary'), $22)
      RETURNING id`,
     [
       i.workspaceId,
@@ -164,6 +167,8 @@ export async function seedMediaItem(
       i.deletedAt ?? null,
       i.deletedById ?? null,
       i.createdAt ?? null,
+      i.storageProvider ?? null,
+      i.altText ?? null,
     ],
   );
   return r.rows[0].id;
