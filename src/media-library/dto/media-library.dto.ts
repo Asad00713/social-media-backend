@@ -598,6 +598,33 @@ export class TextSnippetQueryDto {
 // Saved Link DTOs
 // =============================================================================
 
+export class UtmDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  source?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  medium?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  campaign?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  term?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  content?: string;
+}
+
 export class CreateSavedLinkDto {
   @IsString()
   @MaxLength(255)
@@ -618,6 +645,11 @@ export class CreateSavedLinkDto {
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => UtmDto)
+  utm?: UtmDto;
 }
 
 export class UpdateSavedLinkDto {
@@ -646,6 +678,13 @@ export class UpdateSavedLinkDto {
   @IsOptional()
   @IsBoolean()
   isStarred?: boolean;
+
+  /** null clears the UTM tags. */
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @ValidateNested()
+  @Type(() => UtmDto)
+  utm?: UtmDto | null;
 }
 
 export class SavedLinkQueryDto {
@@ -666,6 +705,10 @@ export class SavedLinkQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  @IsOptional()
+  @IsIn(['newest', 'most_used', 'name'])
+  sort?: 'newest' | 'most_used' | 'name';
 
   @IsOptional()
   @IsInt()
