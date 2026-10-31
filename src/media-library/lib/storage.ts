@@ -28,7 +28,8 @@ export function wouldExceed(
   incoming: number,
   limit: number,
 ): boolean {
-  return used + Math.max(incoming, 1) > limit;
+  // A size that is not a finite number is refused, never waved through.
+  return !Number.isFinite(incoming) || used + Math.max(incoming, 1) > limit;
 }
 
 export class StorageFullException extends HttpException {

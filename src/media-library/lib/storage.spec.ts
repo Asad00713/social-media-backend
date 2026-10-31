@@ -32,6 +32,8 @@ describe('storage helpers', () => {
     [0, 11, 10, true],
     [10, 0, 10, true],
     [9, 0, 10, false],
+    [0, NaN, 10, true],
+    [0, Infinity, 10, true],
   ])('wouldExceed(%d, %d, %d) = %s', (used, incoming, limit, expected) => {
     expect(wouldExceed(used, incoming, limit)).toBe(expected);
   });

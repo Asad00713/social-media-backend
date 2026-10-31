@@ -58,6 +58,43 @@ export function itemReferencedSql(item: UsageItemRef): SQL {
   return sql`(EXISTS (SELECT 1 FROM posts p WHERE ${postRefSql(p, item)}) OR EXISTS (SELECT 1 FROM campaign_slot_content s JOIN campaigns c ON c.id = s.campaign_id WHERE ${slotRefSql(s, c, item)}) OR EXISTS (SELECT 1 FROM campaign_evergreen_posts e JOIN campaigns c ON c.id = e.campaign_id WHERE ${evergreenRefSql(e, c, item)}))`;
 }
 
+/**
+ * Set-based twin of `itemReferencedSql` for the stats call: one pass over the
+ * workspace's posts, unmaterialised slots and evergreen entries, returning
+ * every distinct `(item_id, url)` key they reference. Each row carries one key
+ * (the other column is NULL). An item is referenced when its id is in
+ * `item_id` or its `file_url` is in `url`, which is what the three per-source
+ * predicates above test per item (same JSON paths, same workspace scoping,
+ * same `post_id IS NULL` rule for slots). `itemReferencedSql` stays the test
+ * for one item (`/usage`, purge); a DB spec keeps the two in agreement.
+ */
+export function workspaceReferenceKeysSql(workspaceId: string): SQL {
+  const ws = sql`${workspaceId}::uuid`;
+  const str = (v: SQL) =>
+    sql`CASE WHEN jsonb_typeof(${v}) = 'string' THEN ${v} #>> '{}' END`;
+  return sql`
+    SELECT e #>> '{}' AS item_id, NULL::text AS url
+      FROM posts p, jsonb_array_elements(p.library_refs) e
+     WHERE p.workspace_id = ${ws} AND jsonb_typeof(e) = 'string'
+    UNION
+    SELECT NULL::text, e #>> '{}'
+      FROM posts p, jsonb_array_elements(p.media_urls) e
+     WHERE p.workspace_id = ${ws} AND jsonb_typeof(e) = 'string'
+    UNION
+    SELECT ${str(sql`m->'id'`)}, ${str(sql`m->'url'`)}
+      FROM campaign_slot_content s
+      JOIN campaigns c ON c.id = s.campaign_id,
+      jsonb_array_elements(CASE WHEN jsonb_typeof(s.content->'media') = 'array' THEN s.content->'media' ELSE '[]'::jsonb END) m
+     WHERE c.workspace_id = ${ws} AND s.post_id IS NULL
+    UNION
+    SELECT ${str(sql`m->'id'`)}, ${str(sql`m->'url'`)}
+      FROM campaign_evergreen_posts e
+      JOIN campaigns c ON c.id = e.campaign_id,
+      jsonb_path_query(jsonb_build_object('media', e.content->'media', 'variations', e.variations), 'lax $.**.media[*]') m
+     WHERE c.workspace_id = ${ws}
+  `;
+}
+
 /** A post's status as a usage entry shows it. */
 export function usageStatusOfPost(status: string): UsageEntry['status'] {
   switch (status) {

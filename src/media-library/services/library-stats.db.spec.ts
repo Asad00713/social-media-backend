@@ -11,7 +11,10 @@ import {
   seedPost,
   seedUsage,
   seedSubscription,
+  seedCampaignSlot,
+  seedEvergreenPost,
 } from '../testing/library-db';
+import { itemReferencedSql, workspaceReferenceKeysSql } from '../lib/usage-sql';
 import { StorageQuotaService } from './storage-quota.service';
 import { LibraryStatsService } from './library-stats.service';
 
@@ -90,18 +93,39 @@ describeLibraryDb('StorageQuotaService', () => {
     });
   });
 
-  it('runLocked holds a transaction advisory lock inside fn', async () => {
-    await withLibraryDb(async (db) => {
-      const n = await new StorageQuotaService(db).runLocked(
-        '00000000-0000-0000-0000-000000000001',
-        async (tx) => {
-          const r = await tx.execute<{ n: string }>(
-            sql`SELECT count(*) AS n FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid()`,
-          );
-          return Number(r.rows[0].n);
-        },
-      );
-      expect(n).toBeGreaterThanOrEqual(1);
+  it('runLocked takes a different lock per workspace and releases it with its transaction', async () => {
+    await withLibraryDb(async (db, client) => {
+      const wsA = '00000000-0000-0000-0000-00000000000a';
+      const wsB = '00000000-0000-0000-0000-00000000000b';
+      const svc = new StorageQuotaService(db);
+      const held = async () =>
+        (
+          await client.query<{ k: string }>(
+            `SELECT ((classid::bigint << 32) | objid::bigint)::text AS k
+               FROM pg_locks WHERE locktype = 'advisory' AND pid = pg_backend_pid()`,
+          )
+        ).rows.map((r) => r.k);
+
+      // The harness wraps a spec in one outer transaction, so runLocked nests
+      // as a savepoint. A lock taken inside a rolled-back savepoint is
+      // released with it, which is exactly the transaction scope we assert.
+      const keyOf = async (ws: string) => {
+        let key = '';
+        await svc
+          .runLocked(ws, async () => {
+            const locks = await held();
+            expect(locks).toHaveLength(1);
+            key = locks[0];
+            throw new Error('roll back');
+          })
+          .catch(() => undefined);
+        expect(await held()).toEqual([]);
+        return key;
+      };
+      const a = await keyOf(wsA);
+      const b = await keyOf(wsB);
+      expect(a).not.toBe('');
+      expect(a).not.toBe(b);
     });
   });
 });
@@ -180,6 +204,134 @@ describeLibraryDb('LibraryStatsService.getStats', () => {
           folders: { media: 2, template: 0, text_snippet: 0, link: 1 },
         },
       });
+    });
+  });
+});
+
+describeLibraryDb('LibraryStatsService workspace isolation', () => {
+  it('counts nothing from another workspace', async () => {
+    await withLibraryDb(async (db, client) => {
+      const mine = await seedWorkspace(client);
+      const other = await seedWorkspace(client);
+      await seedMediaItem(client, {
+        workspaceId: other.workspaceId,
+        uploadedById: other.ownerId,
+        fileSize: 777,
+      });
+      const o = { workspaceId: other.workspaceId, createdById: other.ownerId };
+      await seedTemplate(client, o);
+      await seedSnippet(client, o);
+      await seedLink(client, o);
+      await seedCategory(client, other.workspaceId, 'media');
+      const stats = await new LibraryStatsService(
+        db,
+        new StorageQuotaService(db),
+      ).getStats(mine.workspaceId);
+      expect(stats.storage.used).toBe(0);
+      expect(stats.storage.byType).toEqual({ images: 0, videos: 0, docs: 0 });
+      expect(stats.unused).toEqual({ count: 0, bytes: 0 });
+      expect(stats.bin).toEqual({ count: 0, bytes: 0 });
+      expect(stats.counts).toEqual({
+        media: { all: 0, images: 0, videos: 0, docs: 0 },
+        templates: { all: 0, post: 0, story: 0, reel: 0, carousel: 0 },
+        snippets: { all: 0, caption: 0, hashtags: 0, cta: 0, signature: 0 },
+        links: 0,
+        folders: { media: 0, template: 0, text_snippet: 0, link: 0 },
+      });
+    });
+  });
+});
+
+describeLibraryDb('workspaceReferenceKeysSql vs itemReferencedSql', () => {
+  // The guard against drift: the set-based form (stats) and the per-item
+  // predicate (/usage, purge) must give the same verdict for every item.
+  it('agree on every item of a mixed fixture', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId: ws, ownerId: u } = await seedWorkspace(client);
+      const other = await seedWorkspace(client);
+      const base = { workspaceId: ws, uploadedById: u };
+      const url = (n: string) => `https://cdn.example.test/${n}.png`;
+      const mk = (n: string, extra: Record<string, unknown> = {}) =>
+        seedMediaItem(client, { ...base, fileUrl: url(n), ...extra });
+
+      const byId = await mk('by-id');
+      await mk('by-url');
+      const nested = await mk('nested');
+      const slotPending = await mk('slot-pending');
+      const slotMaterialised = await mk('slot-materialised');
+      const evergreen = await mk('evergreen');
+      await mk('evergreen-variation');
+      const otherWs = await mk('other-ws');
+      const binned = await mk('binned', { isDeleted: true });
+      await mk('unused');
+
+      const p = { workspaceId: ws, createdById: u };
+      await seedPost(client, { ...p, mediaItems: [{ libraryItemId: byId }] });
+      await seedPost(client, { ...p, mediaItems: [{ url: url('by-url') }] });
+      await seedPost(client, {
+        ...p,
+        platformContent: {
+          x: { deep: { mediaItems: [{ libraryItemId: nested }] } },
+        },
+      });
+      await seedPost(client, { ...p, mediaItems: [{ libraryItemId: binned }] });
+      await seedPost(client, {
+        workspaceId: other.workspaceId,
+        createdById: other.ownerId,
+        mediaItems: [{ libraryItemId: otherWs, url: url('other-ws') }],
+      });
+      await seedCampaignSlot(client, { ...p, media: [{ id: slotPending }] });
+      const materialisedPost = await seedPost(client, p);
+      await seedCampaignSlot(client, {
+        ...p,
+        media: [{ id: slotMaterialised, url: url('slot-materialised') }],
+        postId: materialisedPost,
+        slotStatus: 'published',
+      });
+      await seedEvergreenPost(client, { ...p, media: [{ id: evergreen }] });
+      await seedEvergreenPost(client, {
+        ...p,
+        media: [],
+        variationMedia: [
+          { id: 'not-an-item', url: url('evergreen-variation') },
+        ],
+      });
+
+      const res = await db.execute<{
+        name: string;
+        a: boolean;
+        b: boolean;
+      }>(sql`
+        WITH keys AS MATERIALIZED (${workspaceReferenceKeysSql(ws)})
+        SELECT file_url AS name,
+               ${itemReferencedSql({
+                 id: sql`media_items.id`,
+                 fileUrl: sql`media_items.file_url`,
+                 workspaceId: sql`media_items.workspace_id`,
+               })} AS a,
+               (id::text IN (SELECT item_id FROM keys WHERE item_id IS NOT NULL)
+                OR file_url IN (SELECT url FROM keys WHERE url IS NOT NULL)) AS b
+          FROM media_items WHERE workspace_id = ${ws}::uuid
+      `);
+      expect(res.rows).toHaveLength(10);
+      for (const r of res.rows) {
+        expect({ name: r.name, set: r.b }).toEqual({ name: r.name, set: r.a });
+      }
+      const referenced = res.rows
+        .filter((r) => r.a)
+        .map((r) => r.name.split('/').pop())
+        .sort();
+      expect(referenced).toEqual(
+        [
+          'binned.png',
+          'by-id.png',
+          'by-url.png',
+          'evergreen-variation.png',
+          'evergreen.png',
+          'nested.png',
+          'slot-pending.png',
+        ].sort(),
+      );
     });
   });
 });

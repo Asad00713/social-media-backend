@@ -4,12 +4,11 @@ import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import type { LibraryStats } from '../dto/contract';
 import { storageLevel, storagePercent } from '../lib/storage';
-import { itemReferencedSql } from '../lib/usage-sql';
+import { workspaceReferenceKeysSql } from '../lib/usage-sql';
 import { StorageQuotaService } from './storage-quota.service';
 
-interface Row extends Record<string, unknown> {
-  [key: string]: unknown;
-}
+/** Every column of the stats statements is a count, a byte sum or a bigint. */
+type Row = Record<string, number | string | null>;
 
 /** One call for the chips, the storage popover and the banners. */
 @Injectable()
@@ -20,33 +19,51 @@ export class LibraryStatsService {
   ) {}
 
   async getStats(workspaceId: string): Promise<LibraryStats> {
+    // One read-only REPEATABLE READ snapshot, so used bytes, the counts and
+    // the bin cannot disagree with each other mid-upload. The statements run
+    // one after another on purpose: a transaction is a single connection.
+    return this.db.transaction(
+      async (tx) => this.collect(tx as unknown as DbType, workspaceId),
+      { isolationLevel: 'repeatable read', accessMode: 'read only' },
+    );
+  }
+
+  private async collect(
+    db: DbType,
+    workspaceId: string,
+  ): Promise<LibraryStats> {
     const ws = sql`${workspaceId}::uuid`;
     const live = sql`NOT COALESCE(is_deleted, false)`;
     const binned = sql`COALESCE(is_deleted, false)`;
-    const referenced = itemReferencedSql({
-      id: sql`media_items.id`,
-      fileUrl: sql`media_items.file_url`,
-      workspaceId: sql`media_items.workspace_id`,
-    });
     const size = sql`COALESCE(file_size, 0)`;
     const isImage = sql`type IN ('image', 'gif')`;
 
-    const media = await this.db.execute<Row>(sql`
-          SELECT
-            COUNT(*) FILTER (WHERE ${live})::int AS "all",
-            COUNT(*) FILTER (WHERE ${live} AND ${isImage})::int AS images,
-            COUNT(*) FILTER (WHERE ${live} AND type = 'video')::int AS videos,
-            COUNT(*) FILTER (WHERE ${live} AND type = 'document')::int AS docs,
-            COALESCE(SUM(${size}) FILTER (WHERE ${live} AND ${isImage}), 0)::float8 AS images_bytes,
-            COALESCE(SUM(${size}) FILTER (WHERE ${live} AND type = 'video'), 0)::float8 AS videos_bytes,
-            COALESCE(SUM(${size}) FILTER (WHERE ${live} AND type = 'document'), 0)::float8 AS docs_bytes,
-            COUNT(*) FILTER (WHERE ${live} AND NOT ${referenced})::int AS unused_count,
-            COALESCE(SUM(${size}) FILTER (WHERE ${live} AND NOT ${referenced}), 0)::float8 AS unused_bytes,
-            COUNT(*) FILTER (WHERE ${binned})::int AS bin_count,
-            COALESCE(SUM(${size}) FILTER (WHERE ${binned}), 0)::float8 AS bin_bytes
+    // `ref` (is the item used anywhere) is computed once per item, from one
+    // set-based pass over the workspace's references. MATERIALIZED, or the
+    // planner inlines `m` and repeats the test in every FILTER.
+    const media = await db.execute<Row>(sql`
+      WITH keys AS MATERIALIZED (${workspaceReferenceKeysSql(workspaceId)}),
+      m AS MATERIALIZED (
+        SELECT type, file_size, is_deleted,
+               (id::text IN (SELECT item_id FROM keys WHERE item_id IS NOT NULL)
+                OR file_url IN (SELECT url FROM keys WHERE url IS NOT NULL)) AS ref
           FROM media_items WHERE workspace_id = ${ws}
-        `);
-    const templates = await this.db.execute<Row>(sql`
+      )
+      SELECT
+        COUNT(*) FILTER (WHERE ${live})::int AS "all",
+        COUNT(*) FILTER (WHERE ${live} AND ${isImage})::int AS images,
+        COUNT(*) FILTER (WHERE ${live} AND type = 'video')::int AS videos,
+        COUNT(*) FILTER (WHERE ${live} AND type = 'document')::int AS docs,
+        COALESCE(SUM(${size}) FILTER (WHERE ${live} AND ${isImage}), 0)::float8 AS images_bytes,
+        COALESCE(SUM(${size}) FILTER (WHERE ${live} AND type = 'video'), 0)::float8 AS videos_bytes,
+        COALESCE(SUM(${size}) FILTER (WHERE ${live} AND type = 'document'), 0)::float8 AS docs_bytes,
+        COUNT(*) FILTER (WHERE ${live} AND NOT ref)::int AS unused_count,
+        COALESCE(SUM(${size}) FILTER (WHERE ${live} AND NOT ref), 0)::float8 AS unused_bytes,
+        COUNT(*) FILTER (WHERE ${binned})::int AS bin_count,
+        COALESCE(SUM(${size}) FILTER (WHERE ${binned}), 0)::float8 AS bin_bytes
+      FROM m
+    `);
+    const templates = await db.execute<Row>(sql`
           SELECT
             COUNT(*) FILTER (WHERE ${live})::int AS "all",
             COUNT(*) FILTER (WHERE ${live} AND template_type = 'post')::int AS post,
@@ -56,7 +73,7 @@ export class LibraryStatsService {
             COUNT(*) FILTER (WHERE ${binned})::int AS bin_count
           FROM media_templates WHERE workspace_id = ${ws}
         `);
-    const snippets = await this.db.execute<Row>(sql`
+    const snippets = await db.execute<Row>(sql`
           SELECT
             COUNT(*) FILTER (WHERE ${live})::int AS "all",
             COUNT(*) FILTER (WHERE ${live} AND snippet_type = 'caption')::int AS caption,
@@ -66,13 +83,13 @@ export class LibraryStatsService {
             COUNT(*) FILTER (WHERE ${binned})::int AS bin_count
           FROM text_snippets WHERE workspace_id = ${ws}
         `);
-    const links = await this.db.execute<Row>(sql`
+    const links = await db.execute<Row>(sql`
           SELECT
             COUNT(*) FILTER (WHERE ${live})::int AS "all",
             COUNT(*) FILTER (WHERE ${binned})::int AS bin_count
           FROM saved_links WHERE workspace_id = ${ws}
         `);
-    const folders = await this.db.execute<Row>(sql`
+    const folders = await db.execute<Row>(sql`
           SELECT
             COUNT(*) FILTER (WHERE type = 'media')::int AS media,
             COUNT(*) FILTER (WHERE type = 'template')::int AS template,
@@ -80,7 +97,7 @@ export class LibraryStatsService {
             COUNT(*) FILTER (WHERE type = 'link')::int AS link
           FROM media_categories WHERE workspace_id = ${ws}
         `);
-    const usage = await this.quota.getUsage(workspaceId);
+    const usage = await this.quota.getUsage(workspaceId, db);
 
     const m = media.rows[0];
     const t = templates.rows[0];
