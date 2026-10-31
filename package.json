@@ -23,6 +23,8 @@
     "db:migrate:sql": "node dist/src/drizzle/migrate/migrate",
     "db:baseline": "node dist/src/drizzle/migrate/baseline",
     "inbox:backfill": "node dist/src/inbox/scripts/backfill-conversations",
+    "library:backfill-refs": "node dist/src/media-library/scripts/backfill-library-refs",
+    "library:backfill-sizes": "node dist/src/media-library/scripts/backfill-file-sizes",
     "db:push": "echo \"REFUSING: db:push rewrites the schema with no migration record. Write a numbered .sql migration and use db:migrate:sql.\" && exit 1",
     "db:studio": "drizzle-kit studio"
   },
