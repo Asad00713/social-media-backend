@@ -15,12 +15,25 @@
 --      existing row can fail the rewrite.
 --   2. GIN (jsonb_path_ops) indexes on both columns serve the `@>` lookups,
 --      and one on campaign_slot_content(content->'media') serves the Library's
---      "used in" lookup over campaign slots.
---   3. library_url_in_text(txt, url): a saved link counts only where its URL
---      is followed by end of text, `?`, `#`, `&`, `"` or whitespace (B5), so
---      `https://shop.example/p` matches `.../p?utm_source=ig` but not
---      `.../pricing`. The URL is regex-escaped first.
---   4. library_usage_on_post_change(), fired AFTER INSERT / DELETE and AFTER
+--      "used in" lookup over campaign slots. No migration creates
+--      campaign_slot_content (prod has it by hand), so that index is built
+--      only where the table exists; a database without it still boots.
+--   3. library_post_text(content, platform_content): the text a link or
+--      snippet is searched in. It is `content` plus the UNESCAPED string
+--      values of platform_content, minus the strings inside any `mediaItems`
+--      (urls, media types, alt text). Searching platform_content::text instead
+--      would see JSON escapes (`\n`, `\"`), so a multi-line snippet or a link
+--      followed by a newline inside an override would be missed, and a short
+--      snippet equal to a JSON key or media token (`image`, `url`) would match
+--      every post with media.
+--   4. library_url_in_text(txt, url): a saved link counts only where its URL
+--      (found first with a cheap strpos, then confirmed by a regex) is
+--      followed by end of text, `?`, `#`, `&`, `"` or whitespace (B5),
+--      optionally after trailing sentence punctuation (`.,;:!)`), so
+--      `https://shop.example/p` matches `.../p?utm_source=ig`, `.../p.` and
+--      `(.../p)` but not `.../pricing` or `.../p.html`. The URL is
+--      regex-escaped first.
+--   5. library_usage_on_post_change(), fired AFTER INSERT / DELETE and AFTER
 --      UPDATE of media_items, platform_content or content (only when one of
 --      them really changed), recounts usage_count for the media items, saved
 --      links and snippets (at least 3 characters) the old or new row refers
@@ -30,16 +43,17 @@
 --      a fresh snapshot (READ COMMITTED), so it sees every committed post. A
 --      post deleted by a workspace cascade is skipped: the workspace and its
 --      Library are going too.
---   5. A one-time recount sets every existing usage_count to the same post
+--   6. A one-time recount sets every existing usage_count to the same post
 --      count. Snippets under 3 characters are set to 0 (B5): a two-letter
 --      snippet is contained in nearly every post.
 --
 -- SAFETY
 -- The boot migrator runs this file in ONE transaction; no BEGIN/COMMIT, no
 -- CONCURRENTLY. Idempotent: ADD COLUMN IF NOT EXISTS, CREATE INDEX IF NOT
--- EXISTS, CREATE OR REPLACE FUNCTION, DROP TRIGGER IF EXISTS before each
--- CREATE TRIGGER, and the recount writes only rows whose usage_count differs
--- from the count, so a second run changes nothing.
+-- EXISTS (the slot index inside a to_regclass guard), CREATE OR REPLACE
+-- FUNCTION, DROP TRIGGER IF EXISTS before each CREATE TRIGGER, and the
+-- recount writes only rows whose usage_count differs from the count, so a
+-- second run changes nothing.
 -- The two generated columns REWRITE `posts` under ACCESS EXCLUSIVE, so reads
 -- and writes on posts wait for the rewrite and the two GIN builds. The slot
 -- index locks campaign_slot_content against writes while it builds. Nothing
@@ -53,14 +67,51 @@
 --   - **At or over either number:** first time this file on a restored copy
 --     of prod. If it holds the lock longer than 30 s, deploy in a low-traffic
 --     window.
+--   - The link and snippet recount (section 7) also runs under that lock. The
+--     owner runs these read-only queries too:
+--       `SELECT count(*) FROM saved_links;`
+--       `SELECT count(*) FROM text_snippets;`
+--       and the exact work it does, the (link + snippet) x post pairs summed
+--       per workspace:
+--       `SELECT coalesce(sum(p.n * (coalesce(l.n, 0) + coalesce(s.n, 0))), 0) AS pairs
+--          FROM (SELECT workspace_id, count(*) AS n FROM posts GROUP BY 1) p
+--          LEFT JOIN (SELECT workspace_id, count(*) AS n FROM saved_links GROUP BY 1) l USING (workspace_id)
+--          LEFT JOIN (SELECT workspace_id, count(*) AS n FROM text_snippets GROUP BY 1) s USING (workspace_id);`
+--   - **posts under 100,000 AND pairs under 2,000,000:** deploy without
+--     timing. Measured locally (PG 17, one workspace, posts of ~600
+--     characters with an override, each post's text built once):
+--       2,000 posts x (500 links + 500 snippets)    =  2,000,000 pairs: 1.6 s
+--       5,000 posts x (1,000 links + 1,000 snippets) = 10,000,000 pairs: 30 s
+--     So 2,000,000 pairs leaves roughly a 15x margin for a slower prod host
+--     inside the 30 s budget above; 10,000,000 already spends all of it.
+--     (links + snippets) x posts is an upper bound on pairs, so when that
+--     product is under 2,000,000 the pair query is not needed.
+--   - **At or over:** time this file on a restored copy of prod, as above.
 --
 -- LOCKS AND COST
 -- `SET LOCAL lock_timeout = '10s'` comes first (I4): without it the ALTER on
 -- posts would queue behind any open transaction on the still-running old
 -- instance, and every posts read would queue behind the ALTER. With it a
--- blocked deploy fails fast and rolls back; retry the deploy. After deploy,
--- every write to a post's media or text runs one recount per Library table,
--- each limited to the items that post refers to.
+-- blocked deploy fails fast and rolls back; retry the deploy.
+-- After deploy, every write to a post's media or text runs the trigger. The
+-- media recount uses the GIN indexes. The link and snippet recounts do ONE
+-- workspace-wide scan of posts (building library_post_text per post) for
+-- EACH link or snippet the written post matches, all under the workspace's
+-- advisory lock, so post writes in one workspace serialise behind it.
+-- Measured locally: one post write costs ~0.1 s in a workspace of 2,000
+-- posts and 1,000 links + snippets, ~1.4 s at 5,000 posts and 2,000. That is
+-- accepted pre-launch (workspaces hold hundreds of posts, a post matches a
+-- handful of links/snippets). library_url_in_text checks a plain strpos
+-- before the regex, so the regex only runs where the URL is present. The
+-- later fix is a pg_trgm GIN index on the searched text, so each recount
+-- becomes an index lookup.
+-- Advisory-lock order: a transaction that writes posts in more than one
+-- workspace (a cascaded user delete removes that user's posts in every
+-- workspace they wrote in) takes one advisory lock per workspace, in row
+-- order. Two such transactions over the same workspaces in a different order
+-- can deadlock. It is rare, and Postgres detects it: one transaction aborts
+-- with a deadlock error and can be retried. A workspace delete takes no lock
+-- at all (its posts are skipped, see WHY 5).
 --
 -- NEVER edit this file after it has been applied: the migrator's checksum
 -- guard refuses to boot. Write a new migration for any later change.
@@ -70,6 +121,7 @@
 --   DROP TRIGGER IF EXISTS posts_library_usage_upd ON posts;
 --   DROP FUNCTION IF EXISTS library_usage_on_post_change();
 --   DROP FUNCTION IF EXISTS library_url_in_text(text, text);
+--   DROP FUNCTION IF EXISTS library_post_text(text, jsonb);
 --   DROP INDEX IF EXISTS campaign_slot_content_media_gin;
 --   DROP INDEX IF EXISTS posts_media_urls_gin;
 --   DROP INDEX IF EXISTS posts_library_refs_gin;
@@ -99,20 +151,47 @@ CREATE INDEX IF NOT EXISTS posts_library_refs_gin
   ON posts USING gin (library_refs jsonb_path_ops);
 CREATE INDEX IF NOT EXISTS posts_media_urls_gin
   ON posts USING gin (media_urls jsonb_path_ops);
-CREATE INDEX IF NOT EXISTS campaign_slot_content_media_gin
-  ON campaign_slot_content USING gin ((content->'media') jsonb_path_ops);
 
--- 3. Link boundary helper (B5) -----------------------------------------------
+-- campaign_slot_content exists on prod by hand only (WHY 2).
+DO $$ BEGIN
+  IF to_regclass('public.campaign_slot_content') IS NOT NULL THEN
+    EXECUTE 'CREATE INDEX IF NOT EXISTS campaign_slot_content_media_gin '
+         || 'ON public.campaign_slot_content USING gin ((content->''media'') jsonb_path_ops)';
+  END IF;
+END $$;
+
+-- 3. Searched text (WHY 3) ---------------------------------------------------
+
+CREATE OR REPLACE FUNCTION library_post_text(content text, platform_content jsonb)
+RETURNS text
+LANGUAGE sql
+IMMUTABLE
+AS $$
+  SELECT coalesce(content, '') || ' ' || coalesce((
+    SELECT string_agg(t.s, ' ')
+      FROM (
+        SELECT v #>> '{}' AS s
+          FROM jsonb_path_query(coalesce(platform_content, '{}'::jsonb),
+                                'lax $.** ? (@.type() == "string")') AS v
+        EXCEPT
+        SELECT v #>> '{}'
+          FROM jsonb_path_query(coalesce(platform_content, '{}'::jsonb),
+                                'lax $.**.mediaItems.** ? (@.type() == "string")') AS v
+      ) t
+  ), '')
+$$;
+
+-- 4. Link boundary helper (B5, WHY 4) ----------------------------------------
 
 CREATE OR REPLACE FUNCTION library_url_in_text(txt text, url text)
 RETURNS boolean
 LANGUAGE sql
 IMMUTABLE
 AS $$
-  SELECT url <> '' AND txt ~ (regexp_replace(url, '([.^$*+?(){}\[\]|\\])', '\\\1', 'g') || '($|[?#&"[:space:]])')
+  SELECT url <> '' AND strpos(txt, url) > 0 AND txt ~ (regexp_replace(url, '([.^$*+?(){}\[\]|\\])', '\\\1', 'g') || '[.,;:!)]*($|[?#&"[:space:]])')
 $$;
 
--- 4. Usage-count trigger function --------------------------------------------
+-- 5. Usage-count trigger function --------------------------------------------
 
 CREATE OR REPLACE FUNCTION library_usage_on_post_change()
 RETURNS trigger
@@ -135,18 +214,18 @@ BEGIN
     RETURN NULL;
   END IF;
 
-  -- Serialise recounts per workspace.
+  -- Serialise recounts per workspace (lock order: see LOCKS AND COST).
   PERFORM pg_advisory_xact_lock(hashtextextended('library-usage:' || ws::text, 0));
 
   IF TG_OP <> 'INSERT' THEN
     refs := refs || COALESCE(OLD.library_refs, '[]'::jsonb);
     urls := urls || COALESCE(OLD.media_urls, '[]'::jsonb);
-    txt  := txt || ' ' || coalesce(OLD.content, '') || ' ' || coalesce(OLD.platform_content::text, '');
+    txt  := txt || ' ' || library_post_text(OLD.content, OLD.platform_content);
   END IF;
   IF TG_OP <> 'DELETE' THEN
     refs := refs || COALESCE(NEW.library_refs, '[]'::jsonb);
     urls := urls || COALESCE(NEW.media_urls, '[]'::jsonb);
-    txt  := txt || ' ' || coalesce(NEW.content, '') || ' ' || coalesce(NEW.platform_content::text, '');
+    txt  := txt || ' ' || library_post_text(NEW.content, NEW.platform_content);
   END IF;
 
   UPDATE media_items mi
@@ -159,11 +238,12 @@ BEGIN
      AND (mi.id::text IN (SELECT jsonb_array_elements_text(refs))
           OR mi.file_url IN (SELECT jsonb_array_elements_text(urls)));
 
+  -- One workspace-wide posts scan per matched link / snippet (LOCKS AND COST).
   UPDATE saved_links l
      SET usage_count = (
        SELECT count(*) FROM posts p
         WHERE p.workspace_id = l.workspace_id
-          AND library_url_in_text(coalesce(p.content, '') || ' ' || coalesce(p.platform_content::text, ''), l.url))
+          AND library_url_in_text(library_post_text(p.content, p.platform_content), l.url))
    WHERE l.workspace_id = ws
      AND library_url_in_text(txt, l.url);
 
@@ -171,7 +251,7 @@ BEGIN
      SET usage_count = (
        SELECT count(*) FROM posts p
         WHERE p.workspace_id = s.workspace_id
-          AND strpos(coalesce(p.content, '') || ' ' || coalesce(p.platform_content::text, ''), btrim(s.content)) > 0)
+          AND strpos(library_post_text(p.content, p.platform_content), btrim(s.content)) > 0)
    WHERE s.workspace_id = ws
      AND char_length(btrim(s.content)) >= 3
      AND strpos(txt, btrim(s.content)) > 0;
@@ -180,7 +260,7 @@ BEGIN
 END;
 $$;
 
--- 5. Triggers (two: a WHEN clause cannot reference OLD on INSERT) -----------
+-- 6. Triggers (two: a WHEN clause cannot reference OLD on INSERT) -----------
 
 DROP TRIGGER IF EXISTS posts_library_usage_ins_del ON posts;
 CREATE TRIGGER posts_library_usage_ins_del
@@ -197,7 +277,7 @@ CREATE TRIGGER posts_library_usage_upd
         OR OLD.content IS DISTINCT FROM NEW.content)
   EXECUTE FUNCTION library_usage_on_post_change();
 
--- 6. One-time recount --------------------------------------------------------
+-- 7. One-time recount --------------------------------------------------------
 
 UPDATE media_items mi
    SET usage_count = c.n
@@ -212,28 +292,42 @@ UPDATE media_items mi
  WHERE mi.id = c.id
    AND mi.usage_count IS DISTINCT FROM c.n;
 
+-- Each post's searched text is built once (MATERIALIZED), only for workspaces
+-- that have links, then joined to every link of its workspace.
+WITH post_text AS MATERIALIZED (
+  SELECT p.workspace_id, library_post_text(p.content, p.platform_content) AS txt
+    FROM posts p
+   WHERE p.workspace_id IN (SELECT workspace_id FROM saved_links)
+), counts AS (
+  SELECT sl.id, count(pt.workspace_id) AS n
+    FROM saved_links sl
+    LEFT JOIN post_text pt
+      ON pt.workspace_id = sl.workspace_id
+     AND library_url_in_text(pt.txt, sl.url)
+   GROUP BY sl.id
+)
 UPDATE saved_links l
    SET usage_count = c.n
-  FROM (
-    SELECT sl.id, (
-      SELECT count(*) FROM posts p
-       WHERE p.workspace_id = sl.workspace_id
-         AND library_url_in_text(coalesce(p.content, '') || ' ' || coalesce(p.platform_content::text, ''), sl.url)) AS n
-      FROM saved_links sl
-  ) c
+  FROM counts c
  WHERE l.id = c.id
    AND l.usage_count IS DISTINCT FROM c.n;
 
+-- Same for snippets; under 3 characters (or NULL) joins nothing, so 0 (B5).
+WITH post_text AS MATERIALIZED (
+  SELECT p.workspace_id, library_post_text(p.content, p.platform_content) AS txt
+    FROM posts p
+   WHERE p.workspace_id IN (SELECT workspace_id FROM text_snippets)
+), counts AS (
+  SELECT ts.id, count(pt.workspace_id) AS n
+    FROM text_snippets ts
+    LEFT JOIN post_text pt
+      ON pt.workspace_id = ts.workspace_id
+     AND char_length(btrim(ts.content)) >= 3
+     AND strpos(pt.txt, btrim(ts.content)) > 0
+   GROUP BY ts.id
+)
 UPDATE text_snippets s
    SET usage_count = c.n
-  FROM (
-    SELECT ts.id,
-           CASE WHEN char_length(btrim(ts.content)) < 3 THEN 0 ELSE (
-             SELECT count(*) FROM posts p
-              WHERE p.workspace_id = ts.workspace_id
-                AND strpos(coalesce(p.content, '') || ' ' || coalesce(p.platform_content::text, ''), btrim(ts.content)) > 0)
-           END AS n
-      FROM text_snippets ts
-  ) c
+  FROM counts c
  WHERE s.id = c.id
    AND s.usage_count IS DISTINCT FROM c.n;

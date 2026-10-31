@@ -168,6 +168,11 @@ describeLibraryDb('migration 0055 (post library refs, usage trigger)', () => {
         [p3],
       );
       expect(await usage(client, 'media_items', x)).toBe(99);
+      // A no-op write to a watched column fails the WHEN clause too.
+      await client.query(`UPDATE posts SET content = content WHERE id = $1`, [
+        p3,
+      ]);
+      expect(await usage(client, 'media_items', x)).toBe(99);
     });
   });
 
@@ -208,6 +213,20 @@ describeLibraryDb('migration 0055 (post library refs, usage trigger)', () => {
 
       await post(null, { facebook: { text: 'Go to https://shop.example/p' } });
       expect(await usage(client, 'saved_links', link)).toBe(2);
+
+      // Only in an override, followed by a newline (JSON would escape it).
+      await post(null, {
+        linkedin: { text: 'See https://shop.example/p\nnext' },
+      });
+      expect(await usage(client, 'saved_links', link)).toBe(3);
+
+      // Trailing sentence punctuation before the boundary.
+      await post('Grab it at https://shop.example/p.');
+      expect(await usage(client, 'saved_links', link)).toBe(4);
+      await post('New stock (https://shop.example/p) today');
+      expect(await usage(client, 'saved_links', link)).toBe(5);
+      await post('Old page https://shop.example/p.html');
+      expect(await usage(client, 'saved_links', link)).toBe(5);
     });
   });
 
@@ -216,11 +235,48 @@ describeLibraryDb('migration 0055 (post library refs, usage trigger)', () => {
       const url = 'https://x.io/a.b';
       expect(await urlInText(client, 'a https://x.io/a.b c', url)).toBe(true);
       expect(await urlInText(client, 'https://x.io/aXb', url)).toBe(false);
+      // The literal URL is present (strpos passes) but not on a boundary; an
+      // unescaped `.` would match `aXb ` instead.
+      expect(
+        await urlInText(client, 'https://x.io/aXb then https://x.io/a.bZ', url),
+      ).toBe(false);
       expect(await urlInText(client, 'end https://x.io/a.b', url)).toBe(true);
       expect(await urlInText(client, 'https://x.io/a.b#top', url)).toBe(true);
       expect(await urlInText(client, 'https://x.io/a.b&x=1', url)).toBe(true);
       expect(await urlInText(client, 'https://x.io/a.b/more', url)).toBe(false);
       expect(await urlInText(client, 'anything', '')).toBe(false);
+      expect(await urlInText(client, 'see https://x.io/a.b.', url)).toBe(true);
+      expect(await urlInText(client, '(https://x.io/a.b)', url)).toBe(true);
+      expect(await urlInText(client, '(https://x.io/a.b). Next', url)).toBe(
+        true,
+      );
+      expect(await urlInText(client, 'https://x.io/a.b.html', url)).toBe(false);
+      expect(await urlInText(client, 'https://x.io/a.b:8080', url)).toBe(false);
+    });
+  });
+
+  it('library_post_text is content plus unescaped override strings, minus media', async () => {
+    await withLibraryDb(async (_db, client) => {
+      const r = await client.query<{ txt: string }>(
+        `SELECT library_post_text($1, $2::jsonb) AS txt`,
+        [
+          'Body',
+          JSON.stringify({
+            linkedin: { text: 'Line one\nLine "two"' },
+            instagram: {
+              mediaItems: [
+                { url: 'https://cdn.example.test/m.png', type: 'image' },
+              ],
+            },
+          }),
+        ],
+      );
+      const txt = r.rows[0].txt;
+      expect(txt.startsWith('Body ')).toBe(true);
+      expect(txt).toContain('Line one\nLine "two"');
+      expect(txt).not.toContain('image');
+      expect(txt).not.toContain('cdn.example.test');
+      expect(txt).not.toContain('linkedin');
     });
   });
 
@@ -237,6 +293,16 @@ describeLibraryDb('migration 0055 (post library refs, usage trigger)', () => {
         createdById: ownerId,
         content: 'ab',
       });
+      const multiLine = await seedSnippet(client, {
+        workspaceId,
+        createdById: ownerId,
+        content: 'Free shipping\nall week',
+      });
+      const mediaToken = await seedSnippet(client, {
+        workspaceId,
+        createdById: ownerId,
+        content: 'image',
+      });
       await seedPost(client, {
         workspaceId,
         createdById: ownerId,
@@ -244,6 +310,33 @@ describeLibraryDb('migration 0055 (post library refs, usage trigger)', () => {
       });
       expect(await usage(client, 'text_snippets', tags)).toBe(1);
       expect(await usage(client, 'text_snippets', short)).toBe(0);
+
+      // A multi-line snippet inside an override (JSON would escape the newline).
+      await seedPost(client, {
+        workspaceId,
+        createdById: ownerId,
+        content: null,
+        platformContent: {
+          instagram: { text: 'Big news\nFree shipping\nall week\nGo' },
+        },
+      });
+      expect(await usage(client, 'text_snippets', multiLine)).toBe(1);
+
+      // A media-only post holds `image` only as a media type, not as text.
+      await seedPost(client, {
+        workspaceId,
+        createdById: ownerId,
+        content: '',
+        mediaItems: [{ url: 'https://cdn.example.test/i.png', type: 'image' }],
+        platformContent: {
+          instagram: {
+            mediaItems: [
+              { url: 'https://cdn.example.test/i.png', type: 'image' },
+            ],
+          },
+        },
+      });
+      expect(await usage(client, 'text_snippets', mediaToken)).toBe(0);
     });
   });
 
@@ -288,6 +381,51 @@ describeLibraryDb('migration 0055 (post library refs, usage trigger)', () => {
         content: '',
         usageCount: 3,
       });
+      // Only inside an override, after a newline / spanning lines: the
+      // recount searches unescaped override text, as the trigger does.
+      const overrideLink = await seedLink(client, {
+        workspaceId,
+        createdById: ownerId,
+        url: 'https://shop.example/override',
+        usageCount: 9,
+      });
+      const multiLine = await seedSnippet(client, {
+        workspaceId,
+        createdById: ownerId,
+        content: 'Free shipping\nall week',
+        usageCount: 9,
+      });
+      const mediaToken = await seedSnippet(client, {
+        workspaceId,
+        createdById: ownerId,
+        content: 'image',
+        usageCount: 9,
+      });
+      await client.query(
+        `INSERT INTO posts (workspace_id, created_by_id, content, platform_content)
+         VALUES ($1, $2, NULL, $3::jsonb)`,
+        [
+          workspaceId,
+          ownerId,
+          JSON.stringify({
+            linkedin: {
+              text: 'See https://shop.example/override\nFree shipping\nall week',
+              mediaItems: [
+                { url: 'https://cdn.example.test/o.png', type: 'image' },
+              ],
+            },
+          }),
+        ],
+      );
+      // The trigger already counted them; make them stale again.
+      await client.query(
+        `UPDATE saved_links SET usage_count = 9 WHERE id = $1`,
+        [overrideLink],
+      );
+      await client.query(
+        `UPDATE text_snippets SET usage_count = 9 WHERE id = ANY($1)`,
+        [[multiLine, mediaToken]],
+      );
 
       await applyMigrationAgain(client, MIGRATION);
 
@@ -295,6 +433,30 @@ describeLibraryDb('migration 0055 (post library refs, usage trigger)', () => {
       expect(await usage(client, 'saved_links', link)).toBe(1);
       expect(await usage(client, 'text_snippets', short)).toBe(0);
       expect(await usage(client, 'text_snippets', blank)).toBe(0);
+      expect(await usage(client, 'saved_links', overrideLink)).toBe(1);
+      expect(await usage(client, 'text_snippets', multiLine)).toBe(1);
+      expect(await usage(client, 'text_snippets', mediaToken)).toBe(0);
+    });
+  });
+
+  it('applies on a database without campaign_slot_content, and indexes it where present', async () => {
+    await withLibraryDb(async (_db, client) => {
+      const slotIndex = async () =>
+        (
+          await client.query(
+            `SELECT 1 FROM pg_indexes WHERE indexname = 'campaign_slot_content_media_gin'`,
+          )
+        ).rowCount;
+      expect(await slotIndex()).toBe(1);
+
+      await client.query(`DROP INDEX campaign_slot_content_media_gin`);
+      await client.query(
+        `ALTER TABLE campaign_slot_content RENAME TO campaign_slot_content_away`,
+      );
+      await expect(
+        applyMigrationAgain(client, MIGRATION),
+      ).resolves.toBeUndefined();
+      expect(await slotIndex()).toBe(0);
     });
   });
 
