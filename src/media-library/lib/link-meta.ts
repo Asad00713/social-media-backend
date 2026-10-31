@@ -27,28 +27,59 @@ function asciiLower(text: string): string {
   return text.replace(/[A-Z]/g, (c) => c.toLowerCase());
 }
 
-/**
- * The part of the page worth scanning: cut at the first </head> or 64 KB,
- * whichever comes first. Every extractor sees only this string, and no regex
- * ever runs over it (ReDoS).
- */
-function capHtml(html: string): string {
-  const head = html.slice(0, MAX_SCAN_CHARS);
-  const end = asciiLower(head).indexOf('</head>');
-  return end === -1 ? head : head.slice(0, end);
+interface Capped {
+  doc: string;
+  /** `doc` lower-cased once (ASCII only, same length), shared by every scanner. */
+  lower: string;
 }
 
-/** Every `<name ...>` tag in `doc`, by linear indexOf scan. */
-function tagsNamed(doc: string, lowerDoc: string, name: string): string[] {
+/**
+ * The part of the page worth scanning: cut at the first </head> or 64 KB,
+ * whichever comes first. Every extractor sees only this, and no regex ever
+ * runs over it (ReDoS). Lower-cased once here.
+ */
+function capHtml(html: string): Capped {
+  const head = html.slice(0, MAX_SCAN_CHARS);
+  const lowerHead = asciiLower(head);
+  const end = lowerHead.indexOf('</head>');
+  return end === -1
+    ? { doc: head, lower: lowerHead }
+    : { doc: head.slice(0, end), lower: lowerHead.slice(0, end) };
+}
+
+/**
+ * Index of the `>` that closes the tag opened at `start`, skipping quoted
+ * attribute values. A quote with no closing partner before the cap is treated
+ * as plain text, so the tag ends at the next `>`. Linear: one forward pass,
+ * and `lastQuote` answers "is there any closing quote left" without rescanning.
+ */
+function tagEnd(
+  doc: string,
+  start: number,
+  lastQuote: { '"': number; "'": number },
+): number {
+  for (let i = start + 1; i < doc.length; i++) {
+    const c = doc.charAt(i);
+    if (c === '>') return i;
+    if ((c === '"' || c === "'") && lastQuote[c] > i) {
+      i = doc.indexOf(c, i + 1);
+    }
+  }
+  return -1;
+}
+
+/** Every `<name ...>` tag in the capped doc, by linear scan. */
+function tagsNamed({ doc, lower }: Capped, name: string): string[] {
   const open = `<${name}`;
+  const lastQuote = { '"': doc.lastIndexOf('"'), "'": doc.lastIndexOf("'") };
   const tags: string[] = [];
   let from = 0;
   for (;;) {
-    const start = lowerDoc.indexOf(open, from);
+    const start = lower.indexOf(open, from);
     if (start === -1) break;
-    const close = lowerDoc.indexOf('>', start);
+    const close = tagEnd(doc, start, lastQuote);
     if (close === -1) break;
-    const next = lowerDoc.charAt(start + open.length);
+    const next = lower.charAt(start + open.length);
     if (WS.has(next) || next === '/' || next === '>') {
       tags.push(doc.slice(start, close + 1));
     }
@@ -127,7 +158,7 @@ function parseAttrs(tag: string): Map<string, string> {
 }
 
 /** Text between `<title ...>` and `</title>`, or undefined. */
-function titleText(doc: string, lowerDoc: string): string | undefined {
+function titleText({ doc, lower: lowerDoc }: Capped): string | undefined {
   const open = '<title';
   let from = 0;
   for (;;) {
@@ -155,13 +186,13 @@ export function extractFavicon(html: string, pageUrl: string): string {
   return faviconFrom(capHtml(html), pageUrl);
 }
 
-function faviconFrom(doc: string, pageUrl: string): string {
+function faviconFrom(capped: Capped, pageUrl: string): string {
   const page = new URL(pageUrl);
   const fallback = `${page.origin}/favicon.ico`;
   let icon: string | undefined;
   let apple: string | undefined;
 
-  for (const tag of tagsNamed(doc, asciiLower(doc), 'link')) {
+  for (const tag of tagsNamed(capped, 'link')) {
     const attrs = parseAttrs(tag);
     const rel = attrs.get('rel');
     const href = attrs.get('href')?.trim();
@@ -192,22 +223,21 @@ export interface PageMeta {
 
 /** Open Graph / meta / title / favicon of a page, from the capped head only. */
 export function extractPageMeta(html: string, pageUrl: string): PageMeta {
-  const doc = capHtml(html);
-  const lowerDoc = asciiLower(doc);
+  const capped = capHtml(html);
   const meta = new Map<string, string>();
-  for (const tag of tagsNamed(doc, lowerDoc, 'meta')) {
+  for (const tag of tagsNamed(capped, 'meta')) {
     const attrs = parseAttrs(tag);
     const key = asciiLower(attrs.get('property') ?? attrs.get('name') ?? '');
     const content = attrs.get('content');
     if (key && content !== undefined && !meta.has(key)) meta.set(key, content);
   }
   return {
-    title: meta.get('og:title') || titleText(doc, lowerDoc) || undefined,
+    title: meta.get('og:title') || titleText(capped) || undefined,
     description:
       meta.get('og:description') || meta.get('description') || undefined,
     imageUrl: meta.get('og:image') || undefined,
     siteName: meta.get('og:site_name') || undefined,
-    faviconUrl: faviconFrom(doc, pageUrl),
+    faviconUrl: faviconFrom(capped, pageUrl),
   };
 }
 
@@ -220,12 +250,6 @@ const FETCH_TIMEOUT_MS = 8000;
 const MAX_HTML_BYTES = 1024 * 1024;
 const MAX_REDIRECTS = 3;
 
-/**
- * True unless `address` is a globally routable unicast address. Mapped IPv6 is
- * unwrapped to its IPv4. IPv6 forms that embed an IPv4 address (IPv4-compatible
- * ::/96, NAT64 64:ff9b::/96, 6to4 2002::/16, Teredo) are REJECTED outright
- * rather than unwrapped. Unparseable input counts as private.
- */
 const DENY_CIDRS = [
   '198.18.0.0/15',
   '64:ff9b:1::/48',
@@ -239,6 +263,14 @@ const DENY_CIDRS = [
   '2001:db8::/32',
 ].map((c) => ipaddr.parseCIDR(c));
 
+/**
+ * True unless `address` is a globally routable unicast address. Mapped IPv6 is
+ * unwrapped to its IPv4. IPv6 forms that embed an IPv4 address (IPv4-compatible
+ * ::/96, NAT64 64:ff9b::/96, 6to4 2002::/16, Teredo) are REJECTED outright
+ * rather than unwrapped. Ranges ipaddr.js 1.9.1 mislabels as unicast (TEST-NETs,
+ * 198.18/15, 240/4, fec0::/10, 100::/64, ...) are caught by DENY_CIDRS.
+ * Unparseable input counts as private.
+ */
 export function isPrivateAddress(address: string): boolean {
   if (!ipaddr.isValid(address)) return true;
   let addr: ipaddr.IPv4 | ipaddr.IPv6;

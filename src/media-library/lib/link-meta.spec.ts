@@ -360,6 +360,44 @@ describe('extractPageMeta', () => {
   });
 });
 
+describe('quoted ">" inside attribute values', () => {
+  const U = 'https://a.com/p';
+  it('keeps a ">" in content when property comes first', () => {
+    const m = extractPageMeta(
+      '<meta property="og:description" content="Home > Shop">',
+      U,
+    );
+    expect(m.description).toBe('Home > Shop');
+  });
+  it('keeps a ">" in content when content comes first', () => {
+    const m = extractPageMeta(
+      '<meta content="Home > Shop" property="og:description">',
+      U,
+    );
+    expect(m.description).toBe('Home > Shop');
+  });
+  it('handles a ">" inside a single-quoted value', () => {
+    const m = extractPageMeta("<meta content='a > b' property='og:title'>", U);
+    expect(m.title).toBe('a > b');
+  });
+  it('an unclosed quote ends the tag at the next ">" and never runs past the cap', () => {
+    const m = extractPageMeta(
+      '<meta property="og:title" content="oops>' +
+        "<meta property='og:site_name' content='Site'>",
+      U,
+    );
+    expect(m.siteName).toBe('Site');
+  });
+  it('is linear on 1 MB of unclosed quotes and of quoted ">"', () => {
+    for (const unit of ['<meta content="', '<meta content="a>b" x=']) {
+      const html = unit.repeat(Math.floor((1024 * 1024) / unit.length));
+      const start = Date.now();
+      extractPageMeta(html, U);
+      expect(Date.now() - start).toBeLessThan(200);
+    }
+  });
+});
+
 describe('extractFavicon offsets', () => {
   it('survives a capital I with dot above (lowercase changes length)', () => {
     expect(
