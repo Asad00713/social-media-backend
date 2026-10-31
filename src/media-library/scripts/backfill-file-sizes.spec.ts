@@ -109,6 +109,29 @@ describe('runBackfillFileSizes', () => {
     expect(updates).toEqual([]);
   });
 
+  it('records a row whose provider throws in failed and carries on', async () => {
+    const { connect, updates } = fakeConnect([
+      row(1, 'cloudinary'),
+      row(2, 'r2'),
+    ]);
+    const realSize = jest
+      .fn()
+      .mockRejectedValueOnce(new Error('Cloudinary 500'))
+      .mockResolvedValueOnce(2222);
+    const res = await runBackfillFileSizes({
+      ...base,
+      dryRun: false,
+      storage: { realSize },
+      connect,
+    });
+    expect(res).toEqual({
+      filled: 1,
+      failed: [idOf(1)],
+      skippedForRateLimit: 0,
+    });
+    expect(updates).toEqual([{ id: idOf(2), size: 2222 }]);
+  });
+
   it('issues no UPDATE on a dry run, but still reports what it would fill', async () => {
     const { connect, updates } = fakeConnect([row(1, 'r2')]);
     const res = await runBackfillFileSizes({

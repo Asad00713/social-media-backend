@@ -5,10 +5,7 @@ import { buildPoolConfig } from '../../drizzle/pool-config';
 import { decideTarget } from '../../drizzle/migrate/target-guard';
 import { CloudinaryService } from '../../media/cloudinary.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
-import {
-  StorageObjectService,
-  type StoredFileRef,
-} from '../services/storage-object.service';
+import { StorageObjectService } from '../services/storage-object.service';
 
 /**
  * One-off owner script: fills `media_items.file_size` where it is NULL by
@@ -24,9 +21,7 @@ const DEFAULT_MAX_CLOUDINARY_CALLS = 400;
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 /** The slice of StorageObjectService this script needs. */
-export interface SizeProbe {
-  realSize(ref: StoredFileRef): Promise<number | null>;
-}
+export type SizeProbe = Pick<StorageObjectService, 'realSize'>;
 
 export interface BackfillFileSizesOptions {
   databaseUrl: string;
@@ -107,14 +102,27 @@ export async function runBackfillFileSizes(
           }
           cloudinaryCalls += 1;
         }
-        const size = await opts.storage.realSize({
-          workspaceId: row.workspace_id,
-          storageProvider: provider,
-          cloudinaryPublicId: row.cloudinary_public_id,
-          fileUrl: row.file_url,
-          type: row.type,
-          mimeType: row.mime_type,
-        });
+        let size: number | null;
+        try {
+          size = await opts.storage.realSize({
+            workspaceId: row.workspace_id,
+            storageProvider: provider,
+            cloudinaryPublicId: row.cloudinary_public_id,
+            fileUrl: row.file_url,
+            type: row.type,
+            mimeType: row.mime_type,
+          });
+        } catch (error) {
+          // One provider error must not end the pass: the row is reported
+          // and the next one is tried.
+          result.failed.push(row.id);
+          console.warn(
+            `[library:backfill-sizes] size lookup failed for ${row.id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          continue;
+        }
         if (size === null) {
           result.failed.push(row.id);
           console.warn(`[library:backfill-sizes] no size found for ${row.id}`);
@@ -149,12 +157,11 @@ async function main(): Promise<void> {
   try {
     const configService = new ConfigService();
     // realSize never touches the database, so the service gets no connection.
-    // The cast goes away once realSize lands on StorageObjectService (Task 15).
-    const storage = new StorageObjectService(
+    const storage: SizeProbe = new StorageObjectService(
       new CloudinaryService(configService),
       new CloudflareR2Service(configService),
       undefined as never,
-    ) as unknown as SizeProbe;
+    );
     const res = await runBackfillFileSizes({
       databaseUrl: url,
       confirmedProduction: process.argv.includes('--i-know-this-is-production'),

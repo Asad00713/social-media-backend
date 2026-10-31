@@ -17,6 +17,8 @@ export interface UploadResult {
   height?: number;
   duration?: number;
   thumbnailUrl?: string;
+  /** Pages of a PDF (Cloudinary reports a GIF's frame count here too). */
+  pages?: number;
 }
 
 export interface UploadOptions {
@@ -266,6 +268,33 @@ export class CloudinaryService {
   }
 
   /**
+   * The stored size of a file, from the admin API. `null` when Cloudinary is
+   * not configured, the file is not there, or the call fails for any reason:
+   * the caller decides what an unknown size means.
+   */
+  async getResourceBytes(
+    publicId: string,
+    resourceType: 'image' | 'video' | 'raw',
+  ): Promise<number | null> {
+    if (!this.isConfigured) return null;
+    try {
+      const res = (await cloudinary.api.resource(publicId, {
+        resource_type: resourceType,
+      })) as { bytes?: unknown };
+      return typeof res.bytes === 'number' && Number.isFinite(res.bytes)
+        ? res.bytes
+        : null;
+    } catch (error) {
+      this.logger.warn(
+        `Could not read the size of ${publicId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return null;
+    }
+  }
+
+  /**
    * Generate a signed upload URL for direct client-side uploads
    */
   generateSignedUploadParams(options: UploadOptions = {}): {
@@ -376,6 +405,8 @@ export class CloudinaryService {
     if (result.width) uploadResult.width = result.width;
     if (result.height) uploadResult.height = result.height;
     if (result.duration) uploadResult.duration = result.duration;
+    const pages: unknown = result.pages;
+    if (typeof pages === 'number') uploadResult.pages = pages;
 
     // Generate thumbnail for videos
     if (result.resource_type === 'video') {

@@ -314,6 +314,7 @@ describeLibraryDb('migration 0054 (library columns)', () => {
           url.startsWith(`${R2_BASE}/`) ? url.slice(R2_BASE.length + 1) : null,
         ),
         isOwnUrl: jest.fn().mockReturnValue(false),
+        verifyObject: jest.fn().mockResolvedValue({ exists: false }),
       };
       const storageObjects = new StorageObjectService(
         cloudinary as unknown as CloudinaryService,
@@ -323,7 +324,8 @@ describeLibraryDb('migration 0054 (library columns)', () => {
       const service = makeMediaItemService(db, { storageObjects });
       // Restored by the afterEach above.
       jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
-      const key = `composer/videos/${workspaceId}/u/1-a.mp4`;
+      // An R2-issued key (SEC5 refuses anything else at create).
+      const key = `composer/videos/${workspaceId}/u/1700000000000-${'a'.repeat(24)}.mp4`;
 
       const created = await service.create(workspaceId, ownerId, {
         type: 'video',

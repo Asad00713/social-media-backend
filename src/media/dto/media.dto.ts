@@ -3,12 +3,25 @@ import {
   IsOptional,
   IsArray,
   IsEnum,
+  IsIn,
+  IsInt,
   IsNumber,
   IsUrl,
+  IsUUID,
   MaxLength,
+  Min,
 } from 'class-validator';
 
 export class UploadFromUrlDto {
+  /** The workspace the file is stored for; the caller needs posts:draft. */
+  @IsUUID()
+  workspaceId: string;
+
+  /** The Library folder to put the item in. */
+  @IsOptional()
+  @IsUUID()
+  categoryId?: string;
+
   @IsUrl()
   url: string;
 
@@ -31,6 +44,13 @@ export class UploadFromUrlDto {
 }
 
 export class UploadFromBase64Dto {
+  @IsUUID()
+  workspaceId: string;
+
+  @IsOptional()
+  @IsUUID()
+  categoryId?: string;
+
   @IsString()
   data: string;
 
@@ -83,7 +103,48 @@ export class GetOptimizedUrlDto {
   format?: string;
 }
 
+/** The text fields of a multipart `upload/file`. */
+export class UploadFileBodyDto {
+  @IsUUID()
+  workspaceId: string;
+
+  @IsOptional()
+  @IsUUID()
+  categoryId?: string;
+
+  @IsString()
+  @IsOptional()
+  @MaxLength(100)
+  folder?: string;
+
+  @IsEnum(['image', 'video', 'auto', 'raw'])
+  @IsOptional()
+  resourceType?: 'image' | 'video' | 'auto' | 'raw';
+
+  /** A comma-separated list; split and trimmed by the handler. */
+  @IsString()
+  @IsOptional()
+  tags?: string;
+
+  /** `thumbnail`: a video's poster frame, stored but not a Library item. */
+  @IsOptional()
+  @IsIn(['library', 'thumbnail'])
+  purpose?: 'library' | 'thumbnail';
+}
+
 export class GetSignedUploadParamsDto {
+  @IsUUID()
+  workspaceId: string;
+
+  /** The size of the file about to be uploaded, checked against storage. */
+  @IsInt()
+  @Min(1)
+  bytes: number;
+
+  /**
+   * Accepted for older clients and ignored: the signed folder is always the
+   * workspace's own, so `POST items` can tell its uploads apart (SEC5).
+   */
   @IsString()
   @IsOptional()
   @MaxLength(100)

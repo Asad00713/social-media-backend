@@ -1,4 +1,9 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { and, eq, inArray, notInArray, or } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
@@ -53,6 +58,49 @@ export function isWorkspaceR2Key(key: string, workspaceId: string): boolean {
   ).test(key);
 }
 
+/**
+ * The Cloudinary folder a workspace's direct uploads go to. The signed upload
+ * params pin it, so a public id under it was issued for this workspace (SEC5).
+ */
+export function cloudinaryUploadFolder(workspaceId: string): string {
+  return `library/${workspaceId}`;
+}
+
+/** True only for a public id inside this workspace's upload folder. */
+export function isWorkspaceCloudinaryPublicId(
+  publicId: string,
+  workspaceId: string,
+): boolean {
+  if (FORBIDDEN_KEY_CHARS.test(publicId)) return false;
+  const prefix = `${cloudinaryUploadFolder(workspaceId)}/`;
+  if (!publicId.startsWith(prefix) || publicId.length === prefix.length) {
+    return false;
+  }
+  return !publicId.split('/').some((s) => s === '' || s === '.' || s === '..');
+}
+
+/**
+ * True when a Cloudinary delivery URL shows exactly this public id:
+ * `.../<resource>/upload/[v<version>/]<public id>[.<ext>]`. No transformation
+ * segments: a registered file is the URL its upload returned.
+ */
+function cloudinaryUrlShows(url: string, publicId: string): boolean {
+  let path: string;
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    return false;
+  }
+  const at = path.indexOf('/upload/');
+  if (at < 0) return false;
+  const rest = path.slice(at + '/upload/'.length).replace(/^v\d+\//, '');
+  if (rest === publicId) return true;
+  return (
+    rest.startsWith(`${publicId}.`) &&
+    /^[A-Za-z0-9]+$/.test(rest.slice(publicId.length + 1))
+  );
+}
+
 /** Cloudinary files the destroy API addresses by resource type. */
 export function cloudinaryResourceType(
   ref: Pick<StoredFileRef, 'type' | 'mimeType' | 'fileUrl'>,
@@ -90,6 +138,70 @@ export class StorageObjectService {
 
   isOwnStorageUrl(url: string): boolean {
     return this.r2.isOwnUrl(url) || this.cloudinary.isOwnUrl(url);
+  }
+
+  /**
+   * SEC5: a file the client registers (`POST items` after a direct upload)
+   * must be an object this workspace stored: an R2 key R2 issued for it, or a
+   * public id in its Cloudinary upload folder on our own cloud, shown by the
+   * URL. Anything else (a foreign URL, another workspace's object) is
+   * refused, so a row can never be pointed at bytes it does not own.
+   */
+  assertWorkspaceObject(
+    ref: Pick<StoredFileRef, 'fileUrl' | 'cloudinaryPublicId'>,
+    workspaceId: string,
+  ): void {
+    const r2Key = this.r2.keyFromPublicUrl(ref.fileUrl);
+    const publicId = ref.cloudinaryPublicId;
+    const isOwned =
+      r2Key !== null
+        ? isWorkspaceR2Key(r2Key, workspaceId) &&
+          (!publicId || publicId === r2Key)
+        : !!publicId &&
+          this.cloudinary.isOwnUrl(ref.fileUrl) &&
+          isWorkspaceCloudinaryPublicId(publicId, workspaceId) &&
+          cloudinaryUrlShows(ref.fileUrl, publicId);
+    if (!isOwned) {
+      throw new BadRequestException(
+        'The file must be uploaded to this workspace before it is saved',
+      );
+    }
+  }
+
+  /**
+   * The stored size of a file, asked of the store that holds it. `null` when
+   * the store cannot say (no such object, no public id, a provider error):
+   * the caller decides what an unknown size means.
+   */
+  async realSize(ref: StoredFileRef): Promise<number | null> {
+    const urlKey = this.r2.keyFromPublicUrl(ref.fileUrl);
+    const provider: StorageProvider =
+      urlKey !== null
+        ? 'r2'
+        : (ref.storageProvider ??
+          this.providerOf(ref.fileUrl, ref.cloudinaryPublicId));
+
+    if (provider === 'r2') {
+      const key = urlKey ?? ref.cloudinaryPublicId;
+      if (!key) return null;
+      try {
+        const head = await this.r2.verifyObject(key);
+        return head.contentLength ?? null;
+      } catch (error) {
+        this.logger.warn(
+          `Could not read the size of R2 object ${key}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        return null;
+      }
+    }
+
+    if (!ref.cloudinaryPublicId) return null;
+    return this.cloudinary.getResourceBytes(
+      ref.cloudinaryPublicId,
+      cloudinaryResourceType(ref),
+    );
   }
 
   /**
