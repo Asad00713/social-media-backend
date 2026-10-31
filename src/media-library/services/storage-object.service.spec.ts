@@ -111,6 +111,32 @@ describe('StorageObjectService', () => {
       await expect(service.deleteFile(ref())).rejects.toThrow('boom');
     });
 
+    it('never deletes an R2 object under another workspace prefix', async () => {
+      const { service, r2 } = makeMocks();
+      await service.deleteFile(
+        ref({
+          workspaceId: 'ws-a',
+          fileUrl: `${R2_BASE}/composer/videos/ws-b/u/1-a.mp4`,
+          cloudinaryPublicId: null,
+        }),
+      );
+      expect(r2.deleteObject).not.toHaveBeenCalled();
+    });
+
+    it('deletes an R2 object under the same workspace prefix', async () => {
+      const { service, r2 } = makeMocks();
+      await service.deleteFile(
+        ref({
+          workspaceId: 'ws-a',
+          fileUrl: `${R2_BASE}/composer/videos/ws-a/u/1-a.mp4`,
+          cloudinaryPublicId: null,
+        }),
+      );
+      expect(r2.deleteObject).toHaveBeenCalledWith(
+        'composer/videos/ws-a/u/1-a.mp4',
+      );
+    });
+
     it('rejects when R2 throws', async () => {
       const { service, r2 } = makeMocks();
       r2.deleteObject.mockRejectedValue(new Error('r2 down'));

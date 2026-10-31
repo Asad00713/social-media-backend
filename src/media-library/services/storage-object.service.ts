@@ -15,6 +15,14 @@ export type { StorageProvider };
 
 /** What is needed to locate and delete a library file's bytes. */
 export interface StoredFileRef {
+  /**
+   * The workspace the row belongs to. When present, an R2 object is only
+   * deleted if its key sits under this workspace (keys are
+   * `<prefix>/<workspaceId>/...`). `fileUrl` is client-supplied, so without
+   * this a row could be pointed at another tenant's object and used to
+   * delete it.
+   */
+  workspaceId?: string;
   storageProvider?: StorageProvider;
   cloudinaryPublicId: string | null;
   fileUrl: string;
@@ -94,6 +102,12 @@ export class StorageObjectService {
       const key =
         this.r2.keyFromPublicUrl(ref.fileUrl) ?? ref.cloudinaryPublicId;
       if (!key) return;
+      if (ref.workspaceId && key.split('/')[2] !== ref.workspaceId) {
+        this.logger.warn(
+          `Refusing to delete R2 object outside workspace ${ref.workspaceId}: ${key}`,
+        );
+        return;
+      }
       await this.r2.deleteObject(key);
       return;
     }

@@ -58,7 +58,7 @@ describeLibraryDb('MediaItemService permanent delete', () => {
       const r2Id = await seedMediaItem(client, {
         ...base,
         type: 'video',
-        fileUrl: `${R2_BASE}/composer/videos/a-${Date.now()}.mp4`,
+        fileUrl: `${R2_BASE}/composer/videos/${workspaceId}/u/a-${Date.now()}.mp4`,
       });
       const cldId = await seedMediaItem(client, {
         ...base,
@@ -110,7 +110,7 @@ describeLibraryDb('MediaItemService permanent delete', () => {
         type: 'video',
         isDeleted: true,
         deletedAt: new Date(),
-        fileUrl: `${R2_BASE}/composer/videos/${Date.now()}-b.mp4`,
+        fileUrl: `${R2_BASE}/composer/videos/${workspaceId}/u/${Date.now()}-b.mp4`,
       });
       r2.deleteObject.mockRejectedValue(new Error('r2 down'));
 
@@ -184,6 +184,56 @@ describeLibraryDb('MediaItemService permanent delete', () => {
       expect(left.rows.map((r: { id: string }) => r.id).sort()).toEqual(
         [ids[0].id, ids[249].id].sort(),
       );
+    });
+  });
+
+  it('does not delete a file another workspace references; only the row goes', async () => {
+    await withLibraryDb(async (db, client) => {
+      const a = await seedWorkspace(client);
+      const b = await seedWorkspace(client);
+      const { service, deleteFile } = setup(db);
+      const fileUrl = `https://cdn.example.test/victim-${Date.now()}.png`;
+      const attacker = await seedMediaItem(client, {
+        workspaceId: a.workspaceId,
+        uploadedById: a.ownerId,
+        fileUrl,
+        cloudinaryPublicId: 'social-media/victim',
+        isDeleted: true,
+        deletedAt: new Date(),
+      });
+      const victim = await seedMediaItem(client, {
+        workspaceId: b.workspaceId,
+        uploadedById: b.ownerId,
+        fileUrl,
+        cloudinaryPublicId: 'social-media/victim',
+      });
+
+      await service.permanentDelete(a.workspaceId, attacker);
+
+      expect(deleteFile).not.toHaveBeenCalled();
+      expect(await rowExists(client, attacker)).toBe(false);
+      expect(await rowExists(client, victim)).toBe(true);
+    });
+  });
+
+  it('does not delete an R2 object that sits under another workspace', async () => {
+    await withLibraryDb(async (db, client) => {
+      const a = await seedWorkspace(client);
+      const b = await seedWorkspace(client);
+      const { service, r2 } = setup(db);
+      const id = await seedMediaItem(client, {
+        workspaceId: a.workspaceId,
+        uploadedById: a.ownerId,
+        type: 'video',
+        isDeleted: true,
+        deletedAt: new Date(),
+        fileUrl: `${R2_BASE}/composer/videos/${b.workspaceId}/u/${Date.now()}-v.mp4`,
+      });
+
+      await service.permanentDelete(a.workspaceId, id);
+
+      expect(r2.deleteObject).not.toHaveBeenCalled();
+      expect(await rowExists(client, id)).toBe(false);
     });
   });
 
