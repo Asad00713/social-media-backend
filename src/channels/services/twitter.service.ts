@@ -141,6 +141,29 @@ export class TwitterService {
         options: string[];
         durationMinutes: number;
       };
+      /**
+       * Who may reply — X's `reply_settings`.
+       *
+       * The enum has no `everyone`: an unrestricted post is one that omits
+       * the field entirely. `everyone` is only ever a value X RETURNS. So
+       * the caller passes `undefined` for "anyone may reply", and passing
+       * the literal string would have X reject the request.
+       */
+      replySettings?:
+        | 'following'
+        | 'mentionedUsers'
+        | 'subscribers'
+        | 'verified';
+      /**
+       * The two disclosure flags, `made_with_ai` and `paid_partnership`.
+       *
+       * Both are plain booleans in X's schema, but the request sets
+       * `additionalProperties: false`, so only a `true` is worth sending:
+       * a disclosure nobody asked for is a claim about the post, and the
+       * field is absent on an undisclosed one rather than `false`.
+       */
+      madeWithAi?: boolean;
+      paidPartnership?: boolean;
     },
   ): Promise<Tweet> {
     const body: Record<string, any> = { text };
@@ -162,6 +185,20 @@ export class TwitterService {
         options: options.poll.options,
         duration_minutes: options.poll.durationMinutes,
       };
+    }
+
+    // Omitted, never nulled: see the option's note above.
+    if (options?.replySettings) {
+      body.reply_settings = options.replySettings;
+    }
+
+    // Only ever sent as `true` — see the options' note above.
+    if (options?.madeWithAi) {
+      body.made_with_ai = true;
+    }
+
+    if (options?.paidPartnership) {
+      body.paid_partnership = true;
     }
 
     const response = await fetch(`${this.apiBaseUrl}/tweets`, {
