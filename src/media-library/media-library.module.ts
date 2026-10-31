@@ -13,6 +13,8 @@ import { AltTextService } from './services/alt-text.service';
 import { AiModule } from '../ai/ai.module';
 import { MediaUsageService } from './services/media-usage.service';
 import { CategoryZipService } from './services/category-zip.service';
+import { StorageQuotaService } from './services/storage-quota.service';
+import { LibraryStatsService } from './services/library-stats.service';
 import { MediaModule } from '../media/media.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
@@ -32,6 +34,8 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     AltTextService,
     MediaUsageService,
     CategoryZipService,
+    StorageQuotaService,
+    LibraryStatsService,
   ],
   exports: [
     CategoryService,
@@ -40,6 +44,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     TextSnippetService,
     SavedLinkService,
     StorageObjectService,
+    StorageQuotaService,
   ],
 })
 export class MediaLibraryModule {}

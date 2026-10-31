@@ -204,6 +204,7 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
     'MediaLibraryController',
     MediaLibraryController,
     {
+      getLibraryStats: 'posts:draft',
       createCategory: 'posts:draft',
       getCategories: 'posts:draft',
       getCategoriesGrouped: 'posts:draft',

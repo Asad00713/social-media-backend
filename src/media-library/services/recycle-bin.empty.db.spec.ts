@@ -17,6 +17,7 @@ import { SavedLinkService } from './saved-link.service';
 import { RecycleBinService } from './recycle-bin.service';
 import { AltTextService } from './alt-text.service';
 import { MediaUsageService } from './media-usage.service';
+import { LibraryStatsService } from './library-stats.service';
 import { CategoryZipService } from './category-zip.service';
 import type { StorageObjectService } from './storage-object.service';
 
@@ -42,6 +43,7 @@ function setup(db: DbType) {
     {} as AltTextService,
     new MediaUsageService(db),
     new CategoryZipService(db, storageObjects),
+    {} as LibraryStatsService,
   );
   return { deleteFile, media, recycleBin, controller };
 }
