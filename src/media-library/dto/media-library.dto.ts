@@ -34,6 +34,7 @@ import type { MediaSort, Ratio } from './contract';
 
 const MEDIA_SORTS = [
   'newest',
+  'oldest',
   'most_used',
   'recently_used',
   'name',
@@ -41,7 +42,13 @@ const MEDIA_SORTS = [
 ] as const satisfies readonly MediaSort[];
 
 /** Templates and snippets sort like media, minus `size` (ruling 7). */
-const KIND_SORTS = ['newest', 'most_used', 'recently_used', 'name'] as const;
+const KIND_SORTS = [
+  'newest',
+  'oldest',
+  'most_used',
+  'recently_used',
+  'name',
+] as const;
 export type KindSort = (typeof KIND_SORTS)[number];
 
 /** The actions templates, snippets and links accept in bulk (ruling 6). */
@@ -321,8 +328,10 @@ export class MediaItemQueryDto {
   @IsIn(RATIOS)
   ratio?: Ratio;
 
+  // Strict rejects impossible dates (2026-02-30). ISO forms Date cannot
+  // parse (week or ordinal dates) are refused by the service with a 400.
   @IsOptional()
-  @IsISO8601()
+  @IsISO8601({ strict: true })
   addedSince?: string;
 
   @IsOptional()

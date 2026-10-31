@@ -26,3 +26,11 @@ describe('toUserRef', () => {
     expect(toUserRef(null)).toBeNull();
   });
 });
+
+describe('toUserRef with an empty name', () => {
+  it('falls back to the email local part', () => {
+    expect(
+      toUserRef({ id: 'u3', name: '', email: 'kim@x.io', avatarUrl: null }),
+    ).toEqual({ id: 'u3', name: 'kim', avatarUrl: null });
+  });
+});

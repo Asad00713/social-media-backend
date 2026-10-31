@@ -27,6 +27,7 @@ export type BinKind = (typeof BIN_KINDS)[number];
 export type Ratio = '1:1' | '4:5' | '9:16' | '16:9';
 export type MediaSort =
   | 'newest'
+  | 'oldest' // added 2026-10-31 (owner, Figma 09)
   | 'most_used'
   | 'recently_used'
   | 'name'

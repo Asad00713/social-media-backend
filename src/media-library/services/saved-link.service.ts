@@ -1,11 +1,5 @@
-import {
-  Inject,
-  Injectable,
-  Logger,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
-import { eq, and, desc, ilike, or, sql, inArray, type SQL } from 'drizzle-orm';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { eq, and, desc, ilike, or, sql, type SQL } from 'drizzle-orm';
 import { ilikePattern } from '../lib/search';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
@@ -20,7 +14,17 @@ import {
   SavedLinkQueryDto,
   LinkBulkDto,
 } from '../dto/media-library.dto';
-import { assertIdsXorSelectAll, chunk } from '../lib/bulk';
+import {
+  assertKindFolder,
+  runKindBulk,
+  type KindBulkConfig,
+} from '../lib/bulk';
+
+const LINK_BULK: KindBulkConfig = {
+  table: savedLinks,
+  folderKind: 'link',
+  label: 'Link',
+};
 
 @Injectable()
 export class SavedLinkService {
@@ -89,21 +93,13 @@ export class SavedLinkService {
   async create(workspaceId: string, userId: string, dto: CreateSavedLinkDto) {
     // Validate category if provided
     if (dto.categoryId) {
-      const category = await this.db
-        .select()
-        .from(mediaCategories)
-        .where(
-          and(
-            eq(mediaCategories.id, dto.categoryId),
-            eq(mediaCategories.workspaceId, workspaceId),
-            eq(mediaCategories.type, 'link'),
-          ),
-        )
-        .limit(1);
-
-      if (category.length === 0) {
-        throw new BadRequestException('Link category not found');
-      }
+      await assertKindFolder(
+        this.db,
+        workspaceId,
+        dto.categoryId,
+        'link',
+        'Link',
+      );
     }
 
     // Fetch link preview
@@ -235,21 +231,13 @@ export class SavedLinkService {
 
     // Validate category if changing
     if (dto.categoryId) {
-      const category = await this.db
-        .select()
-        .from(mediaCategories)
-        .where(
-          and(
-            eq(mediaCategories.id, dto.categoryId),
-            eq(mediaCategories.workspaceId, workspaceId),
-            eq(mediaCategories.type, 'link'),
-          ),
-        )
-        .limit(1);
-
-      if (category.length === 0) {
-        throw new BadRequestException('Link category not found');
-      }
+      await assertKindFolder(
+        this.db,
+        workspaceId,
+        dto.categoryId,
+        'link',
+        'Link',
+      );
     }
 
     const updateData: Partial<typeof savedLinks.$inferInsert> = {
@@ -439,113 +427,17 @@ export class SavedLinkService {
 
   /**
    * Bulk delete / star / unstar / move (ruling 6), on `ids` or with
-   * `selectAll` on every link the list's filter matches. Rows are written
-   * 500 at a time.
+   * `selectAll` on every link the list's filter matches. The rules
+   * (live rows only, X1 move, workspace scope) live in `runKindBulk`.
    */
-  async bulkAction(
+  bulkAction(
     workspaceId: string,
     userId: string,
     dto: LinkBulkDto,
   ): Promise<{ affectedCount: number }> {
-    assertIdsXorSelectAll(dto);
-
-    if (dto.action === 'move') {
-      // Omitted is not a move; null is: it unfiles the selection (X1).
-      if (dto.categoryId === undefined) {
-        throw new BadRequestException('categoryId required for move action');
-      }
-      if (dto.categoryId !== null) {
-        await this.assertLinkFolder(workspaceId, dto.categoryId);
-      }
-    }
-
-    const ids = dto.selectAll
-      ? (
-          await this.db
-            .select({ id: savedLinks.id })
-            .from(savedLinks)
-            .where(
-              and(
-                ...this.buildLinkConditions(workspaceId, dto.selectAll.filter),
-              ),
-            )
-        ).map((r) => r.id)
-      : await this.assertLinksInWorkspace(workspaceId, dto.ids ?? []);
-
-    const now = new Date();
-    const set: Partial<typeof savedLinks.$inferInsert> =
-      dto.action === 'delete'
-        ? { isDeleted: true, deletedAt: now, deletedById: userId }
-        : dto.action === 'move'
-          ? { categoryId: dto.categoryId ?? null }
-          : { isStarred: dto.action === 'star' };
-
-    let affectedCount = 0;
-    for (const part of chunk(ids)) {
-      const rows = await this.db
-        .update(savedLinks)
-        .set({ ...set, updatedAt: now })
-        .where(
-          and(
-            inArray(savedLinks.id, part),
-            eq(savedLinks.workspaceId, workspaceId),
-          ),
-        )
-        .returning({ id: savedLinks.id });
-      affectedCount += rows.length;
-    }
-
-    this.logger.log(
-      `Bulk ${dto.action} on ${ids.length} saved links in workspace ${workspaceId}`,
+    return runKindBulk(this.db, LINK_BULK, workspaceId, userId, dto, (ws, q) =>
+      this.buildLinkConditions(ws, q),
     );
-
-    return { affectedCount };
-  }
-
-  /** Explicit bulk ids must all be this workspace's links, else 400. */
-  private async assertLinksInWorkspace(
-    workspaceId: string,
-    ids: string[],
-  ): Promise<string[]> {
-    if (ids.length === 0) return ids;
-    const found = await this.db
-      .select({ id: savedLinks.id })
-      .from(savedLinks)
-      .where(
-        and(
-          inArray(savedLinks.id, ids),
-          eq(savedLinks.workspaceId, workspaceId),
-        ),
-      );
-    if (found.length !== ids.length) {
-      throw new BadRequestException('Some items not found');
-    }
-    return ids;
-  }
-
-  /** A link can be filed only into this workspace's link folders. */
-  private async assertLinkFolder(
-    workspaceId: string,
-    categoryId: string,
-  ): Promise<void> {
-    const [folder] = await this.db
-      .select({ name: mediaCategories.name, type: mediaCategories.type })
-      .from(mediaCategories)
-      .where(
-        and(
-          eq(mediaCategories.id, categoryId),
-          eq(mediaCategories.workspaceId, workspaceId),
-        ),
-      )
-      .limit(1);
-    if (!folder) {
-      throw new BadRequestException('Link category not found');
-    }
-    if (folder.type !== 'link') {
-      throw new BadRequestException(
-        `Folder "${folder.name}" is not a link folder`,
-      );
-    }
   }
 
   /**

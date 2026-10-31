@@ -1,4 +1,11 @@
-import { BadRequestException } from '@nestjs/common';
+import 'reflect-metadata';
+import {
+  BadRequestException,
+  ForbiddenException,
+  Logger,
+  type ExecutionContext,
+} from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { PoolClient } from 'pg';
@@ -20,6 +27,10 @@ import {
 import { TemplateService } from './template.service';
 import { TextSnippetService } from './text-snippet.service';
 import { SavedLinkService } from './saved-link.service';
+import { MediaLibraryController } from '../media-library.controller';
+import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard';
+import { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
+import type { WorkspaceRole } from '../../workspace-members/role-capabilities';
 import {
   BulkActionDto,
   CreateMediaItemDto,
@@ -29,6 +40,17 @@ import {
   TemplateBulkDto,
   UpdateMediaItemDto,
 } from '../dto/media-library.dto';
+
+// The services log every bulk action; keep the test output clean.
+beforeAll(() => {
+  jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+  jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+});
+afterAll(() => jest.restoreAllMocks());
+
+const USE_THE_BIN = new BadRequestException(
+  'Use the Bin to restore or delete permanently',
+);
 
 // B8: bodies and queries go through plainToInstance + validate, as the global
 // ValidationPipe does, and the transformed instance reaches the service.
@@ -359,7 +381,7 @@ describeLibraryDb('library queries: item filters and sorts', () => {
       await validationErrors(MediaItemQueryDto, { ratio: '3:2' }),
     ).toHaveLength(1);
     expect(
-      await validationErrors(MediaItemQueryDto, { sort: 'oldest' }),
+      await validationErrors(MediaItemQueryDto, { sort: 'random' }),
     ).toHaveLength(1);
   });
 });
@@ -662,7 +684,7 @@ interface BulkKindCase {
     client: PoolClient,
     workspaceId: string,
     userId: string,
-    categoryId: string,
+    extra?: { categoryId?: string; isDeleted?: boolean },
   ) => Promise<string>;
   service: (db: DbType) => {
     bulkAction(
@@ -681,8 +703,8 @@ const BULK_KINDS: BulkKindCase[] = [
     table: 'media_items',
     folderType: 'media',
     dto: BulkActionDto,
-    seed: (client, workspaceId, uploadedById, categoryId) =>
-      seedMediaItem(client, { workspaceId, uploadedById, categoryId }),
+    seed: (client, workspaceId, uploadedById, extra) =>
+      seedMediaItem(client, { workspaceId, uploadedById, ...extra }),
     service: (db) => makeMediaItemService(db),
   },
   {
@@ -690,8 +712,8 @@ const BULK_KINDS: BulkKindCase[] = [
     table: 'media_templates',
     folderType: 'template',
     dto: TemplateBulkDto,
-    seed: (client, workspaceId, createdById, categoryId) =>
-      seedTemplate(client, { workspaceId, createdById, categoryId }),
+    seed: (client, workspaceId, createdById, extra) =>
+      seedTemplate(client, { workspaceId, createdById, ...extra }),
     service: (db) => new TemplateService(db),
   },
   {
@@ -699,8 +721,8 @@ const BULK_KINDS: BulkKindCase[] = [
     table: 'text_snippets',
     folderType: 'text_snippet',
     dto: SnippetBulkDto,
-    seed: (client, workspaceId, createdById, categoryId) =>
-      seedSnippet(client, { workspaceId, createdById, categoryId }),
+    seed: (client, workspaceId, createdById, extra) =>
+      seedSnippet(client, { workspaceId, createdById, ...extra }),
     service: (db) => new TextSnippetService(db),
   },
   {
@@ -708,8 +730,8 @@ const BULK_KINDS: BulkKindCase[] = [
     table: 'saved_links',
     folderType: 'link',
     dto: LinkBulkDto,
-    seed: (client, workspaceId, createdById, categoryId) =>
-      seedLink(client, { workspaceId, createdById, categoryId }),
+    seed: (client, workspaceId, createdById, extra) =>
+      seedLink(client, { workspaceId, createdById, ...extra }),
     service: (db) => new SavedLinkService(db),
   },
 ];
@@ -759,8 +781,8 @@ describeLibraryDb('templates, snippets and links: bulk', () => {
         const { workspaceId, ownerId } = await seedWorkspace(client);
         const folder = await seedCategory(client, workspaceId, folderType);
         const ids = [
-          await seed(client, workspaceId, ownerId, folder),
-          await seed(client, workspaceId, ownerId, folder),
+          await seed(client, workspaceId, ownerId, { categoryId: folder }),
+          await seed(client, workspaceId, ownerId, { categoryId: folder }),
         ];
         const svc = service(db);
 
@@ -901,6 +923,340 @@ describeLibraryDb('templates, snippets and links: bulk', () => {
           await toDto(LinkBulkDto, both),
         ),
       ).rejects.toThrow(msg);
+    });
+  });
+});
+
+// Fix round 1: the ACTION decides bin vs live rows, never the client's filter.
+describeLibraryDb('bulk: bin vs live rows are picked by the action', () => {
+  it('items: select-all restore and permanentDelete are refused; live rows untouched', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const live = await seedManyItems(client, workspaceId, ownerId, 3);
+      const svc = makeMediaItemService(db);
+
+      for (const action of ['permanentDelete', 'restore']) {
+        for (const filter of [{}, { isDeleted: true }, { isDeleted: false }]) {
+          const dto = await toDto(BulkActionDto, {
+            action,
+            selectAll: { filter },
+          });
+          await expect(
+            svc.bulkAction(workspaceId, ownerId, dto),
+          ).rejects.toThrow(USE_THE_BIN);
+        }
+      }
+      const { rows } = await client.query<{ n: number }>(
+        `SELECT count(*)::int AS n FROM media_items
+         WHERE id = ANY($1) AND NOT is_deleted`,
+        [live],
+      );
+      expect(rows[0].n).toBe(3);
+    });
+  });
+
+  it('items: ids restore and permanentDelete touch binned rows only', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const base = { workspaceId, uploadedById: ownerId };
+      const live = await seedMediaItem(client, base);
+      const binned = await seedMediaItem(client, {
+        ...base,
+        isDeleted: true,
+        deletedAt: day('2026-10-01'),
+        deletedById: ownerId,
+      });
+      const svc = makeMediaItemService(db);
+
+      const purgeLive = await toDto(BulkActionDto, {
+        ids: [live],
+        action: 'permanentDelete',
+      });
+      expect(await svc.bulkAction(workspaceId, ownerId, purgeLive)).toEqual({
+        affectedCount: 0,
+      });
+      const restoreLive = await toDto(BulkActionDto, {
+        ids: [live],
+        action: 'restore',
+      });
+      expect(await svc.bulkAction(workspaceId, ownerId, restoreLive)).toEqual({
+        affectedCount: 0,
+      });
+
+      const purgeMixed = await toDto(BulkActionDto, {
+        ids: [live, binned],
+        action: 'permanentDelete',
+      });
+      expect(await svc.bulkAction(workspaceId, ownerId, purgeMixed)).toEqual({
+        affectedCount: 1,
+      });
+      const { rows } = await client.query<{ id: string; is_deleted: boolean }>(
+        'SELECT id, is_deleted FROM media_items WHERE id = ANY($1)',
+        [[live, binned]],
+      );
+      expect(rows).toEqual([{ id: live, is_deleted: false }]);
+    });
+  });
+
+  it('items: ids delete and star skip binned rows', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const memberId = await seedMember(client, workspaceId, 'MEMBER');
+      const binned = await seedMediaItem(client, {
+        workspaceId,
+        uploadedById: ownerId,
+        isDeleted: true,
+        deletedAt: day('2026-10-01'),
+        deletedById: ownerId,
+      });
+      const svc = makeMediaItemService(db);
+
+      for (const action of ['delete', 'star']) {
+        const dto = await toDto(BulkActionDto, { ids: [binned], action });
+        expect(await svc.bulkAction(workspaceId, memberId, dto)).toEqual({
+          affectedCount: 0,
+        });
+      }
+      const { rows } = await client.query<{
+        is_starred: boolean;
+        deleted_by_id: string;
+      }>('SELECT is_starred, deleted_by_id FROM media_items WHERE id = $1', [
+        binned,
+      ]);
+      expect(rows[0]).toEqual({ is_starred: false, deleted_by_id: ownerId });
+    });
+  });
+
+  it.each(BULK_KINDS)(
+    '$kind: select-all star with filter.isDeleted true stars live rows only',
+    async ({ table, seed, dto, service }) => {
+      await withLibraryDb(async (db, client) => {
+        const { workspaceId, ownerId } = await seedWorkspace(client);
+        const live = await seed(client, workspaceId, ownerId);
+        const binned = await seed(client, workspaceId, ownerId, {
+          isDeleted: true,
+        });
+        const svc = service(db);
+
+        const all = await toDto(dto, {
+          action: 'star',
+          selectAll: { filter: { isDeleted: true } },
+        });
+        expect(
+          await svc.bulkAction(workspaceId, ownerId, all as never),
+        ).toEqual({ affectedCount: 1 });
+        const byIds = await toDto(dto, { ids: [binned], action: 'star' });
+        expect(
+          await svc.bulkAction(workspaceId, ownerId, byIds as never),
+        ).toEqual({ affectedCount: 0 });
+
+        const { rows } = await client.query<{
+          id: string;
+          is_starred: boolean;
+        }>(`SELECT id, is_starred FROM ${table} WHERE id = ANY($1)`, [
+          [live, binned],
+        ]);
+        const starred = new Map(rows.map((r) => [r.id, r.is_starred]));
+        expect(starred.get(live)).toBe(true);
+        expect(starred.get(binned)).toBe(false);
+      });
+    },
+  );
+
+  it('the kind bulk DTOs do not offer restore or permanentDelete', async () => {
+    for (const cls of [TemplateBulkDto, SnippetBulkDto, LinkBulkDto]) {
+      for (const action of ['restore', 'permanentDelete']) {
+        expect(
+          await validationErrors(cls as new () => object, {
+            ids: [],
+            action,
+          }),
+        ).toHaveLength(1);
+      }
+    }
+  });
+});
+
+/**
+ * Runs the real WorkspaceRoleGuard for `items/bulk` (posts:draft), then the
+ * handler with the role the guard resolved, as Nest does.
+ */
+async function bulkItemsAs(
+  db: DbType,
+  workspaceId: string,
+  userId: string,
+  dto: BulkActionDto,
+) {
+  // The guard reads @RequireCapability metadata off the handler function.
+  const handler = Object.getOwnPropertyDescriptor(
+    MediaLibraryController.prototype,
+    'bulkActionMediaItems',
+  )!.value as object;
+  const req: {
+    user: { userId: string };
+    params: object;
+    workspaceRole?: WorkspaceRole | 'SUPER_ADMIN';
+  } = {
+    user: { userId },
+    params: { workspaceId },
+  };
+  const ctx = {
+    getHandler: () => handler,
+    getClass: () => MediaLibraryController,
+    switchToHttp: () => ({ getRequest: () => req }),
+  } as unknown as ExecutionContext;
+  const guard = new WorkspaceRoleGuard(
+    new Reflector(),
+    new WorkspaceRoleService(db),
+  );
+  await guard.canActivate(ctx);
+  // The handler only reads mediaItemService; the constructor's other
+  // dependencies are not needed for this route.
+  const ctrl = Object.assign(Object.create(MediaLibraryController.prototype), {
+    mediaItemService: makeMediaItemService(db),
+  }) as MediaLibraryController;
+  return ctrl.bulkActionMediaItems(
+    workspaceId,
+    { userId },
+    dto,
+    req.workspaceRole,
+  );
+}
+
+describeLibraryDb('items bulk: permanentDelete needs posts:publish', () => {
+  it('a posts:draft-only member is denied like any capability failure', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const guestId = await seedMember(client, workspaceId, 'GUEST');
+      const memberId = await seedMember(client, workspaceId, 'MEMBER');
+      const binned = await seedMediaItem(client, {
+        workspaceId,
+        uploadedById: ownerId,
+        isDeleted: true,
+        deletedAt: day('2026-10-01'),
+        deletedById: ownerId,
+      });
+      const purge = await toDto(BulkActionDto, {
+        ids: [binned],
+        action: 'permanentDelete',
+      });
+
+      await expect(
+        bulkItemsAs(db, workspaceId, guestId, purge),
+      ).rejects.toThrow(
+        new ForbiddenException(
+          'You do not have permission to perform this action in this workspace',
+        ),
+      );
+      const still = await client.query(
+        'SELECT 1 FROM media_items WHERE id = $1',
+        [binned],
+      );
+      expect(still.rowCount).toBe(1);
+
+      // A guest may still star; a member (posts:publish) may purge.
+      const [live] = await seedManyItems(client, workspaceId, ownerId, 1);
+      const star = await toDto(BulkActionDto, { ids: [live], action: 'star' });
+      expect(await bulkItemsAs(db, workspaceId, guestId, star)).toEqual({
+        affectedCount: 1,
+      });
+      expect(await bulkItemsAs(db, workspaceId, memberId, purge)).toEqual({
+        affectedCount: 1,
+      });
+    });
+  });
+});
+
+describeLibraryDb('sorts: oldest and most_used', () => {
+  it("items sort 'oldest' is created_at ASC, then id ASC", async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const base = { workspaceId, uploadedById: ownerId };
+      const mid = await seedMediaItem(client, {
+        ...base,
+        createdAt: day('2026-03-01'),
+      });
+      const first = await seedMediaItem(client, {
+        ...base,
+        createdAt: day('2026-01-01'),
+      });
+      const last = await seedMediaItem(client, {
+        ...base,
+        createdAt: day('2026-05-01'),
+      });
+      const tieA = await seedMediaItem(client, {
+        ...base,
+        createdAt: day('2026-07-01'),
+      });
+      const tieB = await seedMediaItem(client, {
+        ...base,
+        createdAt: day('2026-07-01'),
+      });
+      const svc = makeMediaItemService(db);
+
+      const r = await svc.findAll(workspaceId, { sort: 'oldest' });
+      expect(r.items.map((i) => i.id)).toEqual([
+        first,
+        mid,
+        last,
+        ...[tieA, tieB].sort(),
+      ]);
+      expect(
+        await validationErrors(MediaItemQueryDto, { sort: 'oldest' }),
+      ).toHaveLength(0);
+    });
+  });
+
+  it.each([
+    ['templates', 'media_templates'],
+    ['snippets', 'text_snippets'],
+  ] as const)("%s sort 'oldest' and 'most_used'", async (kind, table) => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const base = { workspaceId, createdById: ownerId };
+      const seed = kind === 'templates' ? seedTemplate : seedSnippet;
+      const a = await seed(client, { ...base, usageCount: 2 });
+      const b = await seed(client, { ...base, usageCount: 9 });
+      const c = await seed(client, { ...base, usageCount: 0 });
+      const created = [
+        [a, '2026-02-01'],
+        [b, '2026-03-01'],
+        [c, '2026-01-01'],
+      ];
+      for (const [id, iso] of created) {
+        await client.query(
+          `UPDATE ${table} SET created_at = $2 WHERE id = $1`,
+          [id, day(iso)],
+        );
+      }
+      const sorted = async (sort: 'oldest' | 'most_used') =>
+        kind === 'templates'
+          ? (
+              await new TemplateService(db).findAll(workspaceId, { sort })
+            ).items.map((t) => t.id)
+          : (
+              await new TextSnippetService(db).findAll(workspaceId, { sort })
+            ).items.map((t) => t.id);
+
+      expect(await sorted('oldest')).toEqual([c, a, b]);
+      expect(await sorted('most_used')).toEqual([b, a, c]);
+    });
+  });
+});
+
+describeLibraryDb('addedSince rejects what Date cannot parse', () => {
+  it('a week date is a 400, not a 500', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId } = await seedWorkspace(client);
+      const svc = makeMediaItemService(db);
+      for (const addedSince of ['2026-W05', '2026-123']) {
+        await expect(
+          svc.findAll(workspaceId, { addedSince }),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      }
+      expect(
+        await validationErrors(MediaItemQueryDto, { addedSince: '2026-02-30' }),
+      ).toHaveLength(1);
     });
   });
 });

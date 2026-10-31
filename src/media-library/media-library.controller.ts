@@ -44,8 +44,13 @@ import {
   LinkBulkDto,
   RecycleBinQueryDto,
 } from './dto/media-library.dto';
-import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import {
+  WorkspaceRoleGuard,
+  assertRoleCan,
+} from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
+import { CurrentWorkspaceRole } from '../workspace-members/current-workspace-role.decorator';
+import type { WorkspaceRole } from '../workspace-members/role-capabilities';
 
 @Controller('workspaces/:workspaceId/media-library')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
@@ -249,7 +254,13 @@ export class MediaLibraryController {
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string },
     @Body() dto: BulkActionDto,
+    @CurrentWorkspaceRole() role?: WorkspaceRole | 'SUPER_ADMIN',
   ) {
+    // Purging deletes files for good: it needs what `items/:id/permanent` and
+    // `recycle-bin/empty` need (posts:publish), not the route's posts:draft.
+    if (dto.action === 'permanentDelete') {
+      assertRoleCan(role, 'posts:publish');
+    }
     return this.mediaItemService.bulkAction(workspaceId, user.userId, dto);
   }
 

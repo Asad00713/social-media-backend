@@ -34,7 +34,7 @@ import { ilikePattern } from '../lib/search';
 import { itemReferencedSql } from '../lib/usage-sql';
 import { ratioBounds } from '../lib/ratio';
 import { toUserRef } from '../lib/user-ref';
-import { assertIdsXorSelectAll, chunk } from '../lib/bulk';
+import { assertIdsXorSelectAll, bulkTargetsBin, chunk } from '../lib/bulk';
 import type { Page, UserRef } from '../dto/contract';
 import { CloudinaryService } from '../../media/cloudinary.service';
 import { StorageObjectService } from './storage-object.service';
@@ -208,7 +208,15 @@ export class MediaItemService {
     }
 
     if (addedSince) {
-      conditions.push(gte(mediaItems.createdAt, new Date(addedSince)));
+      // ISO 8601 allows forms Date cannot read (2026-W05, 2026-123); those
+      // are a bad request, not an Invalid Date reaching Postgres as a 500.
+      const since = new Date(addedSince);
+      if (Number.isNaN(since.getTime())) {
+        throw new BadRequestException(
+          'addedSince must be a calendar date or date-time',
+        );
+      }
+      conditions.push(gte(mediaItems.createdAt, since));
     }
 
     if (uploadedBy) {
@@ -242,6 +250,8 @@ export class MediaItemService {
     switch (query.sort) {
       case 'newest':
         return byNewest;
+      case 'oldest':
+        return [asc(mediaItems.createdAt), asc(mediaItems.id)];
       case 'most_used':
         return [sql`${mediaItems.usageCount} DESC NULLS LAST`, ...byNewest];
       case 'recently_used':
@@ -633,6 +643,16 @@ export class MediaItemService {
    * Bulk actions on media items: on `ids`, or with `selectAll` on every item
    * the list's filter matches (ignoring `limit`/`offset`). Rows are written
    * 500 at a time.
+   *
+   * The action picks bin or live rows (`bulkTargetsBin`): restore and
+   * permanentDelete touch only binned rows and refuse select-all; the rest
+   * touch only live rows, whatever the filter's `isDeleted` says.
+   * `affectedCount` counts only rows actually changed. The route requires
+   * `posts:publish` for permanentDelete.
+   *
+   * Chunks are separate statements, not one transaction: a failure midway
+   * leaves earlier chunks applied. Every action is idempotent, so retrying
+   * the same request converges.
    */
   async bulkAction(
     workspaceId: string,
@@ -640,6 +660,7 @@ export class MediaItemService {
     dto: BulkActionDto,
   ): Promise<{ affectedCount: number }> {
     assertIdsXorSelectAll(dto);
+    const inBin = bulkTargetsBin(dto);
     const { action, categoryId } = dto;
 
     if (action === 'move') {
@@ -658,7 +679,13 @@ export class MediaItemService {
 
     let affectedCount = 0;
     for (const part of chunk(ids)) {
-      affectedCount += await this.bulkChunk(workspaceId, userId, dto, part);
+      affectedCount += await this.bulkChunk(
+        workspaceId,
+        userId,
+        dto,
+        part,
+        inBin,
+      );
     }
 
     this.logger.log(
@@ -670,19 +697,19 @@ export class MediaItemService {
 
   /**
    * The ids a bulk request names. Explicit ids must all belong to the
-   * workspace (else 400); select-all reads them through the list's filter.
+   * workspace (else 400); select-all reads them through the list's filter,
+   * on live rows only (a select-all bin action never gets this far).
    */
   private async resolveBulkIds(
     workspaceId: string,
     dto: BulkActionDto,
   ): Promise<string[]> {
-    if (dto.selectAll) {
+    if (dto.selectAll != null) {
+      const filter = { ...dto.selectAll.filter, isDeleted: false };
       const rows = await this.db
         .select({ id: mediaItems.id })
         .from(mediaItems)
-        .where(
-          and(...this.buildItemConditions(workspaceId, dto.selectAll.filter)),
-        )
+        .where(and(...this.buildItemConditions(workspaceId, filter)))
         .orderBy(asc(mediaItems.id));
       return rows.map((r) => r.id);
     }
@@ -704,16 +731,21 @@ export class MediaItemService {
     return ids;
   }
 
-  /** Runs one bulk action on one chunk of ids; returns the rows touched. */
+  /**
+   * Runs one bulk action on one chunk of ids; returns the rows touched.
+   * Only rows in the state the action works on (`inBin`) are touched.
+   */
   private async bulkChunk(
     workspaceId: string,
     userId: string,
     dto: BulkActionDto,
     ids: string[],
+    inBin: boolean,
   ): Promise<number> {
     const inScope = and(
       inArray(mediaItems.id, ids),
       eq(mediaItems.workspaceId, workspaceId),
+      eq(mediaItems.isDeleted, inBin),
     );
     const now = new Date();
 
