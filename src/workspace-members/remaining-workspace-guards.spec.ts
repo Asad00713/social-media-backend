@@ -215,6 +215,7 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
       getMediaItems: 'posts:draft',
       getRecentMediaItems: 'posts:draft',
       getMediaItem: 'posts:draft',
+      generateMediaItemAltText: 'posts:draft',
       updateMediaItem: 'posts:draft',
       deleteMediaItem: 'posts:draft',
       restoreMediaItem: 'posts:draft',
