@@ -8,7 +8,7 @@ type MastodonVisibility = 'public' | 'unlisted' | 'private' | 'direct';
 
 /**
  * Mastodon publisher — calls MastodonService against the channel's
- * configured instance URL. Honours metadata.visibility, contentWarning,
+ * configured instance URL. Honours metadata.visibility, language, contentWarning,
  * sensitive flags from composer settings panel.
  *
  * NOTE: shipped but untested with a live account — verify in smoke test.
@@ -66,6 +66,9 @@ export class MastodonPublisher extends BasePublisher {
         sensitive:
           Boolean(metadata?.sensitive) || Boolean(metadata?.contentWarning),
         spoilerText: metadata?.contentWarning as string | undefined,
+        // The composer's Language row. `createStatus` has always set
+        // `body.language` when given it; nothing was passing it.
+        language: metadata?.language as string | undefined,
       });
     }
 
@@ -99,6 +102,7 @@ export class MastodonPublisher extends BasePublisher {
         sensitive,
         spoilerText: contentWarning,
         mediaIds,
+        language: metadata?.language as string | undefined,
       },
     );
 
@@ -119,6 +123,7 @@ export class MastodonPublisher extends BasePublisher {
       visibility: MastodonVisibility;
       sensitive: boolean;
       spoilerText?: string;
+      language?: string;
     },
   ): Promise<PublishResult> {
     let replyToId: string | undefined;
@@ -153,6 +158,10 @@ export class MastodonPublisher extends BasePublisher {
             visibility: baseOptions.visibility,
             sensitive: baseOptions.sensitive,
             spoilerText: baseOptions.spoilerText,
+            // Every post in the thread, not just the first: a reply in
+            // a different language from its parent is how a thread
+            // ends up half-hidden by someone's language filter.
+            language: baseOptions.language,
             mediaIds,
             inReplyToId: replyToId,
           },

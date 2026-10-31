@@ -24,3 +24,17 @@ export interface ComposerCanvaImportResult {
   height?: number;
   sizeBytes: number;
 }
+
+/**
+ * A design just created for this post.
+ *
+ * `editUrl` is the whole point: it is the Canva window the person
+ * finishes the design in. Without it the design exists and is
+ * unreachable, so the route fails rather than returning a row that
+ * cannot be opened.
+ */
+export interface ComposerCanvaCreateResult {
+  id: string;
+  title: string;
+  editUrl: string;
+}
