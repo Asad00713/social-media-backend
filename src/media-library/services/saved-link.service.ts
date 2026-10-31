@@ -378,14 +378,14 @@ export class SavedLinkService {
   }
 
   /**
-   * Increment usage count when link is used
+   * Record that a link was just used: sets `lastUsedAt` only.
+   * `usage_count` is a post count kept by the posts trigger (0055, D13).
    */
-  async incrementUsage(workspaceId: string, linkId: string) {
-    // Workspace-scoped so one workspace can't bump another's counter by id.
+  async markUsed(workspaceId: string, linkId: string) {
+    // Workspace-scoped so one workspace can't touch another's link by id.
     const [updated] = await this.db
       .update(savedLinks)
       .set({
-        usageCount: sql`${savedLinks.usageCount} + 1`,
         lastUsedAt: new Date(),
         updatedAt: new Date(),
       })

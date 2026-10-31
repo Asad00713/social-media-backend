@@ -10,6 +10,7 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  ParseUUIDPipe,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -19,6 +20,7 @@ import { TemplateService } from './services/template.service';
 import { TextSnippetService } from './services/text-snippet.service';
 import { SavedLinkService } from './services/saved-link.service';
 import { RecycleBinService } from './services/recycle-bin.service';
+import { MediaUsageService } from './services/media-usage.service';
 import {
   CreateCategoryDto,
   UpdateCategoryDto,
@@ -52,6 +54,7 @@ export class MediaLibraryController {
     private readonly textSnippetService: TextSnippetService,
     private readonly savedLinkService: SavedLinkService,
     private readonly recycleBin: RecycleBinService,
+    private readonly mediaUsage: MediaUsageService,
   ) {}
 
   // ==========================================================================
@@ -222,7 +225,18 @@ export class MediaLibraryController {
     @Param('workspaceId') workspaceId: string,
     @Param('itemId') itemId: string,
   ) {
-    return this.mediaItemService.incrementUsage(workspaceId, itemId);
+    return this.mediaItemService.markUsed(workspaceId, itemId);
+  }
+
+  /** Where an item is used: posts, campaign slots and evergreen entries. */
+  @Get('items/:itemId/usage')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async getMediaItemUsage(
+    @Param('workspaceId') workspaceId: string,
+    @Param('itemId', ParseUUIDPipe) itemId: string,
+  ) {
+    return this.mediaUsage.getUsage(workspaceId, itemId);
   }
 
   @Post('items/bulk')
@@ -435,7 +449,7 @@ export class MediaLibraryController {
     @Param('workspaceId') workspaceId: string,
     @Param('snippetId') snippetId: string,
   ) {
-    return this.textSnippetService.incrementUsage(workspaceId, snippetId);
+    return this.textSnippetService.markUsed(workspaceId, snippetId);
   }
 
   // ==========================================================================
@@ -533,7 +547,7 @@ export class MediaLibraryController {
     @Param('workspaceId') workspaceId: string,
     @Param('linkId') linkId: string,
   ) {
-    return this.savedLinkService.incrementUsage(workspaceId, linkId);
+    return this.savedLinkService.markUsed(workspaceId, linkId);
   }
 
   // ==========================================================================

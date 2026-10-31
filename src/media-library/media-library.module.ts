@@ -8,6 +8,7 @@ import { SavedLinkService } from './services/saved-link.service';
 import { StorageObjectService } from './services/storage-object.service';
 import { RecycleBinService } from './services/recycle-bin.service';
 import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service';
+import { MediaUsageService } from './services/media-usage.service';
 import { MediaModule } from '../media/media.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
@@ -24,6 +25,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     StorageObjectService,
     RecycleBinService,
     RecycleBinCleanupService,
+    MediaUsageService,
   ],
   exports: [
     CategoryService,

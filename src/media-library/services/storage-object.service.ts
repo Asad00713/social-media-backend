@@ -9,6 +9,7 @@ import {
 } from '../../drizzle/schema/media-library.schema';
 import { CloudinaryService } from '../../media/cloudinary.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
+import { itemReferencedSql } from '../lib/usage-sql';
 
 export { STORAGE_PROVIDERS };
 export type { StorageProvider };
@@ -156,6 +157,32 @@ export class StorageObjectService {
       if (row.publicId) shared.publicIds.add(row.publicId);
     }
     return shared;
+  }
+
+  /**
+   * One query for a whole page: which of these items a post or campaign slot
+   * still uses, by the same reference test as `/usage` (SEC4). Their rows may
+   * go, but their bytes must stay, or a scheduled post loses its media.
+   */
+  async findReferencedItems(
+    itemIds: string[],
+    db: DbType = this.db,
+  ): Promise<Set<string>> {
+    if (itemIds.length === 0) return new Set();
+    const found = await db
+      .select({ id: mediaItems.id })
+      .from(mediaItems)
+      .where(
+        and(
+          inArray(mediaItems.id, itemIds),
+          itemReferencedSql({
+            id: mediaItems.id,
+            fileUrl: mediaItems.fileUrl,
+            workspaceId: mediaItems.workspaceId,
+          }),
+        ),
+      );
+    return new Set(found.map((r) => r.id));
   }
 
   /** Idempotent: a file that is already gone is a success. */

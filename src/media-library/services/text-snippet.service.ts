@@ -300,14 +300,14 @@ export class TextSnippetService {
   }
 
   /**
-   * Increment usage count when snippet is used
+   * Record that a snippet was just used: sets `lastUsedAt` only.
+   * `usage_count` is a post count kept by the posts trigger (0055, D13).
    */
-  async incrementUsage(workspaceId: string, snippetId: string) {
-    // Workspace-scoped so one workspace can't bump another's counter by id.
+  async markUsed(workspaceId: string, snippetId: string) {
+    // Workspace-scoped so one workspace can't touch another's snippet by id.
     const [updated] = await this.db
       .update(textSnippets)
       .set({
-        usageCount: sql`${textSnippets.usageCount} + 1`,
         lastUsedAt: new Date(),
         updatedAt: new Date(),
       })
