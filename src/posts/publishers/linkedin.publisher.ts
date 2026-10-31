@@ -92,6 +92,10 @@ export class LinkedInPublisher extends BasePublisher {
         (metadata?.pollDurationDays as number | undefined) ?? 7,
         content ?? '',
         visibility,
+        // Only the poll path can carry this: it is the one publish here
+        // already on the versioned Posts API. Every other LinkedIn post
+        // goes through `/v2/ugcPosts`, which has no reshare field.
+        metadata?.reshareDisabled === true,
       );
 
       const publishResult: PublishResult = {
