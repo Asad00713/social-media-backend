@@ -486,6 +486,56 @@ describeLibraryDb('MediaItemService permanent delete', () => {
     });
   });
 
+  it('skips a group restored before its file is deleted: row and file both stay', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const { service, storage, cloudinary } = setup(db);
+      const base = {
+        workspaceId,
+        uploadedById: ownerId,
+        isDeleted: true,
+        deletedAt: new Date(),
+      };
+      const restored = await seedMediaItem(client, {
+        ...base,
+        cloudinaryPublicId: 'social-media/late-restore',
+      });
+      const purged = await seedMediaItem(client, {
+        ...base,
+        cloudinaryPublicId: 'social-media/gone',
+      });
+      const rows = await db
+        .select()
+        .from(mediaItems)
+        .where(inArray(mediaItems.id, [restored, purged]));
+      // The restore lands after the candidates were read, before any group's
+      // storage delete runs (the reference check is the last step before;
+      // neither row is referenced anywhere, so it answers an empty set).
+      jest
+        .spyOn(storage, 'findReferencedItems')
+        .mockImplementation(async () => {
+          await client.query(
+            `UPDATE media_items
+                SET is_deleted = false, deleted_at = NULL, deleted_by_id = NULL
+              WHERE id = $1`,
+            [restored],
+          );
+          return new Set<string>();
+        });
+
+      const result = await service.purgeItems(rows);
+
+      expect(result).toEqual({ deletedIds: [purged], failedIds: [] });
+      expect(cloudinary.delete).toHaveBeenCalledTimes(1);
+      expect(cloudinary.delete).toHaveBeenCalledWith(
+        'social-media/gone',
+        'image',
+      );
+      expect(await rowExists(client, restored)).toBe(true);
+      expect(await rowExists(client, purged)).toBe(false);
+    });
+  });
+
   it('permanentDelete refuses a live item and leaves its file alone', async () => {
     await withLibraryDb(async (db, client) => {
       const { workspaceId, ownerId } = await seedWorkspace(client);

@@ -24,6 +24,7 @@ import {
   runKindBulk,
   type KindBulkConfig,
 } from '../lib/bulk';
+import { binPurgeCutoff } from '../lib/bin-retention';
 
 const LINK_BULK: KindBulkConfig = {
   table: savedLinks,
@@ -327,9 +328,20 @@ export class SavedLinkService {
    * Permanently delete a saved link
    */
   async permanentDelete(workspaceId: string, linkId: string) {
-    await this.findOne(workspaceId, linkId);
-
-    await this.db.delete(savedLinks).where(eq(savedLinks.id, linkId));
+    // Only a row in the Bin, in this workspace, can be deleted for good.
+    const [gone] = await this.db
+      .delete(savedLinks)
+      .where(
+        and(
+          eq(savedLinks.id, linkId),
+          eq(savedLinks.workspaceId, workspaceId),
+          eq(savedLinks.isDeleted, true),
+        ),
+      )
+      .returning({ id: savedLinks.id });
+    if (!gone) {
+      throw new NotFoundException('Link not found in recycle bin');
+    }
 
     this.logger.log(`Permanently deleted saved link ${linkId}`);
 
@@ -412,16 +424,16 @@ export class SavedLinkService {
   /**
    * Cleanup links older than 30 days in recycle bin
    */
-  async cleanupRecycleBin() {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  async cleanupRecycleBin(now: Date = new Date()) {
+    const cutoff = binPurgeCutoff(now);
 
     const result = await this.db
       .delete(savedLinks)
       .where(
         and(
           eq(savedLinks.isDeleted, true),
-          sql`${savedLinks.deletedAt} < ${thirtyDaysAgo}`,
+          // Same COALESCE as the Bin's purgeAt (legacy rows lack deleted_at).
+          sql`COALESCE(${savedLinks.deletedAt}, ${savedLinks.updatedAt}) < ${cutoff}`,
         ),
       )
       .returning();

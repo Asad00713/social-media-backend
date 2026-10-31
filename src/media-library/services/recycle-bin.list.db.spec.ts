@@ -1,3 +1,4 @@
+import { Logger, NotFoundException } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import type { PoolClient } from 'pg';
@@ -52,7 +53,7 @@ function setup(db: DbType) {
     new CategoryZipService(db, storageObjects),
     {} as LibraryStatsService,
   );
-  return { deleteFile, recycleBin, controller };
+  return { deleteFile, media, recycleBin, controller };
 }
 
 async function toQuery(raw: Record<string, unknown>) {
@@ -361,7 +362,8 @@ describeLibraryDb('recycle bin: one list across kinds', () => {
         deletedAt: new Date(),
       });
 
-      const { dto } = await toQuery({ type: 'video', limit: '50' });
+      const { dto, errors } = await toQuery({ type: 'video', limit: '50' });
+      expect(errors).toEqual([]);
       const result = await controller.getRecycleBin(workspaceId, dto);
 
       expect(result.items).toHaveLength(3);
@@ -424,6 +426,8 @@ describeLibraryDb('recycle bin: one list across kinds', () => {
 });
 
 describeLibraryDb('recycle bin: bulk restore and delete forever', () => {
+  afterEach(() => jest.restoreAllMocks());
+
   it('restores only binned rows of this workspace', async () => {
     await withLibraryDb(async (db, client) => {
       const { workspaceId, ownerId, ids } = await seedBin(client);
@@ -536,6 +540,9 @@ describeLibraryDb('recycle bin: bulk restore and delete forever', () => {
       const { workspaceId, ids } = await seedBin(client);
       const { recycleBin, deleteFile } = setup(db);
       deleteFile.mockRejectedValue(new Error('storage down'));
+      const warn = jest
+        .spyOn(Logger.prototype, 'warn')
+        .mockImplementation(() => undefined);
 
       const result = await recycleBin.deleteForever(workspaceId, [
         { kind: 'media', id: ids.m10 },
@@ -545,6 +552,143 @@ describeLibraryDb('recycle bin: bulk restore and delete forever', () => {
       expect(result).toEqual({ deleted: 1 });
       expect(await isDeleted(client, 'media_items', ids.m10)).toBe(true);
       expect(await isDeleted(client, 'text_snippets', ids.snip)).toBeNull();
+      expect(warn).toHaveBeenCalledWith(
+        `Failed to delete file for media item ${ids.m10}: storage down`,
+      );
+      expect(warn).toHaveBeenCalledWith(
+        `Deleting from bin of workspace ${workspaceId}: 1 media items kept (file deletion failed)`,
+      );
     });
   });
+});
+
+describeLibraryDb(
+  'recycle bin: the cleanup honours the purgeAt the Bin shows',
+  () => {
+    afterEach(() => jest.restoreAllMocks());
+
+    it('purges a legacy row with no deleted_at by updated_at, all four kinds', async () => {
+      await withLibraryDb(async (db, client) => {
+        const { workspaceId, ownerId } = await seedWorkspace(client);
+        const now = new Date();
+        const old = new Date(now.getTime() - 31 * DAY_MS);
+        const recent = new Date(now.getTime() - 29 * DAY_MS);
+        const legacy = { isDeleted: true, deletedAt: null };
+        const kind = { workspaceId, createdById: ownerId, ...legacy };
+        const media = { workspaceId, uploadedById: ownerId, ...legacy };
+        const rows: Record<string, [string, string]> = {
+          mediaOld: ['media_items', await seedMediaItem(client, media)],
+          mediaRecent: ['media_items', await seedMediaItem(client, media)],
+          templateOld: ['media_templates', await seedTemplate(client, kind)],
+          templateRecent: ['media_templates', await seedTemplate(client, kind)],
+          snippetOld: ['text_snippets', await seedSnippet(client, kind)],
+          snippetRecent: ['text_snippets', await seedSnippet(client, kind)],
+          linkOld: ['saved_links', await seedLink(client, kind)],
+          linkRecent: ['saved_links', await seedLink(client, kind)],
+        };
+        for (const [key, [table, id]] of Object.entries(rows)) {
+          await client.query(
+            `UPDATE ${table} SET updated_at = $2, deleted_at = NULL WHERE id = $1`,
+            [id, key.endsWith('Old') ? old : recent],
+          );
+        }
+        const log = jest
+          .spyOn(Logger.prototype, 'log')
+          .mockImplementation(() => undefined);
+        const { recycleBin, media: mediaService } = setup(db);
+
+        // The Bin shows these rows with purgeAt = updated_at + 30 days.
+        const shown = await recycleBin.list(workspaceId, {});
+        expect(
+          shown.items.find((r) => r.id === rows.mediaOld[1])?.purgeAt,
+        ).toBe(new Date(old.getTime() + 30 * DAY_MS).toISOString());
+
+        // The cleanup is global (every workspace), so a local database's own
+        // binned rows may be purged too: assert on these rows, not on counts.
+        await mediaService.cleanupRecycleBin(now);
+        await new TemplateService(db).cleanupRecycleBin(now);
+        await new TextSnippetService(db).cleanupRecycleBin(now);
+        await new SavedLinkService(db).cleanupRecycleBin(now);
+
+        for (const [key, [table, id]] of Object.entries(rows)) {
+          expect([key, await isDeleted(client, table, id)]).toEqual([
+            key,
+            key.endsWith('Old') ? null : true,
+          ]);
+        }
+        expect(log).toHaveBeenCalledWith(
+          expect.stringMatching(/^Cleaned up \d+ templates from recycle bin/),
+        );
+      });
+    });
+  },
+);
+
+describeLibraryDb('single-item permanent delete: Bin rows only', () => {
+  afterEach(() => jest.restoreAllMocks());
+
+  const KINDS = [
+    {
+      kind: 'template',
+      table: 'media_templates',
+      seed: seedTemplate,
+      remove: (db: DbType, ws: string, id: string) =>
+        new TemplateService(db).permanentDelete(ws, id),
+    },
+    {
+      kind: 'snippet',
+      table: 'text_snippets',
+      seed: seedSnippet,
+      remove: (db: DbType, ws: string, id: string) =>
+        new TextSnippetService(db).permanentDelete(ws, id),
+    },
+    {
+      kind: 'link',
+      table: 'saved_links',
+      seed: seedLink,
+      remove: (db: DbType, ws: string, id: string) =>
+        new SavedLinkService(db).permanentDelete(ws, id),
+    },
+  ] as const;
+
+  it.each(KINDS)(
+    '$kind: a live row is a 404 and stays; a binned row goes',
+    async ({ table, seed, remove }) => {
+      await withLibraryDb(async (db, client) => {
+        const { workspaceId, ownerId } = await seedWorkspace(client);
+        const other = await seedWorkspace(client);
+        const live = await seed(client, { workspaceId, createdById: ownerId });
+        const binned = await seed(client, {
+          workspaceId,
+          createdById: ownerId,
+          isDeleted: true,
+          deletedAt: new Date(),
+        });
+        const foreign = await seed(client, {
+          workspaceId: other.workspaceId,
+          createdById: other.ownerId,
+          isDeleted: true,
+          deletedAt: new Date(),
+        });
+        const log = jest
+          .spyOn(Logger.prototype, 'log')
+          .mockImplementation(() => undefined);
+
+        await expect(remove(db, workspaceId, live)).rejects.toBeInstanceOf(
+          NotFoundException,
+        );
+        expect(await isDeleted(client, table, live)).toBe(false);
+        await expect(remove(db, workspaceId, foreign)).rejects.toBeInstanceOf(
+          NotFoundException,
+        );
+        expect(await isDeleted(client, table, foreign)).toBe(true);
+
+        await remove(db, workspaceId, binned);
+        expect(await isDeleted(client, table, binned)).toBeNull();
+        expect(log).toHaveBeenCalledWith(
+          expect.stringContaining(`Permanently deleted`),
+        );
+      });
+    },
+  );
 });

@@ -16,7 +16,6 @@ import {
   inArray,
   gt,
   gte,
-  lt,
   not,
   type SQL,
 } from 'drizzle-orm';
@@ -573,8 +572,12 @@ export class MediaItemService {
                 shared.publicIds.has(r.cloudinaryPublicId)),
           );
           // TOCTOU: a row created between the share check and this delete can
-          // still lose its file; accepted, the window is a few milliseconds.
+          // still lose its file. A restore is re-checked right before the
+          // storage call: a group with any row restored is skipped whole (no
+          // file, no row, not counted). What remains is a restore landing
+          // between that re-check and deleteFile, one round trip wide.
           if (!isFileInUse) {
+            if (!(await this.isGroupStillBinned(group))) continue;
             const distinctUrls = new Map(
               group.map((r) => [
                 r.cloudinaryPublicId
@@ -624,6 +627,25 @@ export class MediaItemService {
     return { deletedIds: purgedIds, failedIds };
   }
 
+  /** Whether every row of a purge group is still in the Bin. */
+  private async isGroupStillBinned(
+    group: MediaLibraryItem[],
+  ): Promise<boolean> {
+    const ids = group.map((r) => r.id);
+    const workspaceIds = [...new Set(group.map((r) => r.workspaceId))];
+    const binned = await this.db
+      .select({ id: mediaItems.id })
+      .from(mediaItems)
+      .where(
+        and(
+          inArray(mediaItems.id, ids),
+          inArray(mediaItems.workspaceId, workspaceIds),
+          eq(mediaItems.isDeleted, true),
+        ),
+      );
+    return binned.length === ids.length;
+  }
+
   /**
    * Purges every deleted item in scope, a page at a time by id. The cursor
    * always moves past the page, so a row whose file will not delete cannot
@@ -638,7 +660,11 @@ export class MediaItemService {
       base.push(eq(mediaItems.workspaceId, scope.workspaceId));
     }
     if (scope.deletedBefore) {
-      base.push(lt(mediaItems.deletedAt, scope.deletedBefore));
+      // The Bin shows purgeAt from the same COALESCE (legacy rows have no
+      // deleted_at), so what it promises is what the cleanup does.
+      base.push(
+        sql`COALESCE(${mediaItems.deletedAt}, ${mediaItems.updatedAt}) < ${scope.deletedBefore}`,
+      );
     }
 
     let deleted = 0;

@@ -6,6 +6,7 @@ import {
   runKindBulk,
   type KindBulkConfig,
 } from '../lib/bulk';
+import { binPurgeCutoff } from '../lib/bin-retention';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -381,11 +382,20 @@ export class TemplateService {
    * Permanently delete a template
    */
   async permanentDelete(workspaceId: string, templateId: string) {
-    await this.findOne(workspaceId, templateId);
-
-    await this.db
+    // Only a row in the Bin, in this workspace, can be deleted for good.
+    const [gone] = await this.db
       .delete(mediaTemplates)
-      .where(eq(mediaTemplates.id, templateId));
+      .where(
+        and(
+          eq(mediaTemplates.id, templateId),
+          eq(mediaTemplates.workspaceId, workspaceId),
+          eq(mediaTemplates.isDeleted, true),
+        ),
+      )
+      .returning({ id: mediaTemplates.id });
+    if (!gone) {
+      throw new NotFoundException('Template not found in recycle bin');
+    }
 
     this.logger.log(`Permanently deleted template ${templateId}`);
 
@@ -443,16 +453,16 @@ export class TemplateService {
   /**
    * Cleanup templates older than 30 days in recycle bin
    */
-  async cleanupRecycleBin() {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  async cleanupRecycleBin(now: Date = new Date()) {
+    const cutoff = binPurgeCutoff(now);
 
     const result = await this.db
       .delete(mediaTemplates)
       .where(
         and(
           eq(mediaTemplates.isDeleted, true),
-          sql`${mediaTemplates.deletedAt} < ${thirtyDaysAgo}`,
+          // Same COALESCE as the Bin's purgeAt (legacy rows lack deleted_at).
+          sql`COALESCE(${mediaTemplates.deletedAt}, ${mediaTemplates.updatedAt}) < ${cutoff}`,
         ),
       )
       .returning();

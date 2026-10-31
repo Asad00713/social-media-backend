@@ -6,6 +6,7 @@ import {
   runKindBulk,
   type KindBulkConfig,
 } from '../lib/bulk';
+import { binPurgeCutoff } from '../lib/bin-retention';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -308,9 +309,20 @@ export class TextSnippetService {
    * Permanently delete a text snippet
    */
   async permanentDelete(workspaceId: string, snippetId: string) {
-    await this.findOne(workspaceId, snippetId);
-
-    await this.db.delete(textSnippets).where(eq(textSnippets.id, snippetId));
+    // Only a row in the Bin, in this workspace, can be deleted for good.
+    const [gone] = await this.db
+      .delete(textSnippets)
+      .where(
+        and(
+          eq(textSnippets.id, snippetId),
+          eq(textSnippets.workspaceId, workspaceId),
+          eq(textSnippets.isDeleted, true),
+        ),
+      )
+      .returning({ id: textSnippets.id });
+    if (!gone) {
+      throw new NotFoundException('Text snippet not found in recycle bin');
+    }
 
     this.logger.log(`Permanently deleted text snippet ${snippetId}`);
 
@@ -367,16 +379,16 @@ export class TextSnippetService {
   /**
    * Cleanup snippets older than 30 days in recycle bin
    */
-  async cleanupRecycleBin() {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  async cleanupRecycleBin(now: Date = new Date()) {
+    const cutoff = binPurgeCutoff(now);
 
     const result = await this.db
       .delete(textSnippets)
       .where(
         and(
           eq(textSnippets.isDeleted, true),
-          sql`${textSnippets.deletedAt} < ${thirtyDaysAgo}`,
+          // Same COALESCE as the Bin's purgeAt (legacy rows lack deleted_at).
+          sql`COALESCE(${textSnippets.deletedAt}, ${textSnippets.updatedAt}) < ${cutoff}`,
         ),
       )
       .returning();

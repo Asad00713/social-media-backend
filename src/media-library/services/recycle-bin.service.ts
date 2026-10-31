@@ -9,6 +9,7 @@ import {
   textSnippets,
 } from '../../drizzle/schema/media-library.schema';
 import { toUserRef } from '../lib/user-ref';
+import { BIN_RETENTION_MS } from '../lib/bin-retention';
 import type { MediaType } from '../lib/folder-kind';
 import {
   BIN_KINDS,
@@ -22,9 +23,6 @@ import type {
   RecycleBinQueryDto,
 } from '../dto/media-library.dto';
 import { MediaItemService } from './media-item.service';
-
-/** How long a row stays in the Bin; matches `cleanupRecycleBin`. */
-const BIN_RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** The templates, snippets and links tables, by Bin kind. */
 const KIND_TABLES = {
