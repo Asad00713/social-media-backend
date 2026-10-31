@@ -5,7 +5,8 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { eq, and, desc, like, or, sql } from 'drizzle-orm';
+import { eq, and, desc, ilike, or, sql } from 'drizzle-orm';
+import { ilikePattern } from '../lib/search';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -104,8 +105,8 @@ export class TextSnippetService {
     if (search) {
       conditions.push(
         or(
-          like(textSnippets.name, `%${search}%`),
-          like(textSnippets.content, `%${search}%`),
+          ilike(textSnippets.name, ilikePattern(search)),
+          ilike(textSnippets.content, ilikePattern(search)),
         )!,
       );
     }

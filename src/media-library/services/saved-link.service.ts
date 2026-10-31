@@ -5,7 +5,8 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { eq, and, desc, like, or, sql } from 'drizzle-orm';
+import { eq, and, desc, ilike, or, sql } from 'drizzle-orm';
+import { ilikePattern } from '../lib/search';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -161,9 +162,10 @@ export class SavedLinkService {
     if (search) {
       conditions.push(
         or(
-          like(savedLinks.name, `%${search}%`),
-          like(savedLinks.url, `%${search}%`),
-          like(savedLinks.description, `%${search}%`),
+          ilike(savedLinks.name, ilikePattern(search)),
+          ilike(savedLinks.url, ilikePattern(search)),
+          ilike(savedLinks.description, ilikePattern(search)),
+          ilike(savedLinks.previewTitle, ilikePattern(search)),
         )!,
       );
     }

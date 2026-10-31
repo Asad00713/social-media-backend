@@ -5,7 +5,8 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { eq, and, desc, asc, like, or, sql, inArray } from 'drizzle-orm';
+import { eq, and, desc, asc, ilike, or, sql, inArray } from 'drizzle-orm';
+import { ilikePattern } from '../lib/search';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -128,8 +129,8 @@ export class TemplateService {
     if (search) {
       conditions.push(
         or(
-          like(mediaTemplates.name, `%${search}%`),
-          like(mediaTemplates.description, `%${search}%`),
+          ilike(mediaTemplates.name, ilikePattern(search)),
+          ilike(mediaTemplates.description, ilikePattern(search)),
         )!,
       );
     }

@@ -10,8 +10,7 @@ import {
   and,
   desc,
   asc,
-  like,
-  or,
+  ilike,
   isNull,
   sql,
   inArray,
@@ -23,6 +22,7 @@ import {
   mediaCategories,
   NewMediaItem,
 } from '../../drizzle/schema/media-library.schema';
+import { ilikePattern } from '../lib/search';
 import { CloudinaryService } from '../../media/cloudinary.service';
 import {
   CreateMediaItemDto,
@@ -136,11 +136,12 @@ export class MediaItemService {
     }
 
     if (search) {
+      conditions.push(ilike(mediaItems.name, ilikePattern(search)));
+    }
+
+    if (tags && tags.length > 0) {
       conditions.push(
-        or(
-          like(mediaItems.name, `%${search}%`),
-          like(mediaItems.description, `%${search}%`),
-        )!,
+        sql`${mediaItems.tags} @> ${JSON.stringify(tags)}::jsonb`,
       );
     }
 
