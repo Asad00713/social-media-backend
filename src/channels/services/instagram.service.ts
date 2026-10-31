@@ -45,6 +45,128 @@ export interface InstagramInsights {
   websiteClicks: number;
 }
 
+/**
+ * A user tagged on a post, as `user_tags` wants them.
+ *
+ * `x`/`y` are fractions of the image with the origin at the top-left.
+ * Meta requires them for images and treats them as optional for stories,
+ * so they are optional here and defaulted where required.
+ */
+export interface InstagramUserTag {
+  username: string;
+  x?: number;
+  y?: number;
+}
+
+/**
+ * The post-level settings an Instagram container accepts.
+ *
+ * Eligibility is NOT uniform, and these types encode it rather than
+ * leaving it to a comment:
+ * - `collaborators`: feed image, Reels and carousels only — max 3, never
+ *   on a story.
+ * - `shareToFeed` and `coverUrl`: Reels only.
+ * - `locationId`: a PAGE id, not a place name.
+ *
+ * On a carousel the split is asymmetric: `collaborators` and
+ * `location_id` go on the PARENT container, `user_tags` on each item.
+ */
+export interface InstagramPostSettings {
+  userTags?: InstagramUserTag[];
+  locationId?: string;
+}
+
+/** What a feed image, Reel or carousel parent takes on top of the above. */
+export interface InstagramFeedSettings extends InstagramPostSettings {
+  collaborators?: string[];
+}
+
+/** Reels only. */
+export interface InstagramReelSettings extends InstagramFeedSettings {
+  shareToFeed?: boolean;
+  coverUrl?: string;
+}
+
+/** Instagram's own cap on collaborators per post. */
+const MAX_COLLABORATORS = 3;
+
+/** Where a tag sits when nothing placed it — the middle of the image. */
+const DEFAULT_TAG_POSITION = 0.5;
+
+/**
+ * Writes the settings into a form-urlencoded container body under
+ * Instagram's own names.
+ *
+ * These containers post `application/x-www-form-urlencoded`, so every
+ * value is a string. `user_tags` is a JSON array serialised into one
+ * parameter — `URLSearchParams` percent-encodes it, which is the encoding
+ * Meta's reference spells out by hand.
+ *
+ * `requireCoordinates` is true for images, where Meta makes `x` required:
+ * a tag without one is rejected, so an unplaced tag is centred rather
+ * than failing the post.
+ */
+function applyUserTags(
+  params: URLSearchParams,
+  userTags: InstagramUserTag[] | undefined,
+  requireCoordinates: boolean,
+): void {
+  const tags = (userTags ?? []).filter((t) => t?.username?.trim());
+  if (tags.length === 0) return;
+
+  params.set(
+    'user_tags',
+    JSON.stringify(
+      tags.map((tag) => {
+        const entry: Record<string, unknown> = {
+          username: tag.username.trim().replace(/^@/, ''),
+        };
+        if (requireCoordinates) {
+          entry.x = tag.x ?? DEFAULT_TAG_POSITION;
+          entry.y = tag.y ?? DEFAULT_TAG_POSITION;
+        } else {
+          if (tag.x !== undefined) entry.x = tag.x;
+          if (tag.y !== undefined) entry.y = tag.y;
+        }
+        return entry;
+      }),
+    ),
+  );
+}
+
+/** The post-level settings, for whichever container owns them. */
+function applySettings(
+  params: URLSearchParams,
+  settings: InstagramReelSettings | undefined,
+  options: { requireCoordinates: boolean; isReel?: boolean },
+): void {
+  if (!settings) return;
+
+  applyUserTags(params, settings.userTags, options.requireCoordinates);
+
+  if (settings.locationId) params.set('location_id', settings.locationId);
+
+  const collaborators = (settings.collaborators ?? [])
+    .map((c) => c.trim().replace(/^@/, ''))
+    .filter(Boolean)
+    .slice(0, MAX_COLLABORATORS);
+  if (collaborators.length > 0) {
+    params.set('collaborators', JSON.stringify(collaborators));
+  }
+
+  // Reels only — a VIDEO or IMAGE container carrying either is rejected.
+  if (!options.isReel) return;
+
+  if (settings.coverUrl) params.set('cover_url', settings.coverUrl);
+
+  // Sent either way, unlike a disclosure: `false` is a real instruction
+  // that keeps the reel OUT of the feed, so omitting it is not the same
+  // as setting it.
+  if (settings.shareToFeed !== undefined) {
+    params.set('share_to_feed', String(settings.shareToFeed));
+  }
+}
+
 @Injectable()
 export class InstagramService {
   private readonly logger = new Logger(InstagramService.name);
@@ -830,6 +952,7 @@ export class InstagramService {
     accessToken: string,
     imageUrl: string,
     caption?: string,
+    settings?: InstagramFeedSettings,
   ): Promise<{ postId: string }> {
     this.logger.log(`Creating Instagram image post for user ${userId}`);
 
@@ -844,6 +967,9 @@ export class InstagramService {
     if (caption) {
       containerParams.set('caption', caption);
     }
+
+    // An image's tags must carry coordinates; Meta rejects one without.
+    applySettings(containerParams, settings, { requireCoordinates: true });
 
     this.logger.log(`Creating media container at: ${containerUrl.toString()}`);
 
@@ -897,6 +1023,7 @@ export class InstagramService {
     caption?: string,
     isReel: boolean = false,
     mediaType?: 'VIDEO' | 'REELS',
+    settings?: InstagramReelSettings,
   ): Promise<{ postId: string }> {
     const resolvedMediaType = mediaType ?? (isReel ? 'REELS' : 'VIDEO');
     this.logger.log(
@@ -914,6 +1041,14 @@ export class InstagramService {
     if (caption) {
       containerParams.set('caption', caption);
     }
+
+    // `resolvedMediaType`, not `isReel`: an explicit `mediaType` overrides
+    // the flag, and `share_to_feed` / `cover_url` belong to whatever the
+    // container actually IS.
+    applySettings(containerParams, settings, {
+      requireCoordinates: false,
+      isReel: resolvedMediaType === 'REELS',
+    });
 
     const containerResponse = await fetch(containerUrl.toString(), {
       method: 'POST',
@@ -953,8 +1088,14 @@ export class InstagramService {
   async createCarouselPostWithUserToken(
     userId: string,
     accessToken: string,
-    mediaItems: Array<{ type: 'IMAGE' | 'VIDEO'; url: string }>,
+    mediaItems: Array<{
+      type: 'IMAGE' | 'VIDEO';
+      url: string;
+      /** Tags for THIS slide — see the asymmetry note below. */
+      userTags?: InstagramUserTag[];
+    }>,
     caption?: string,
+    settings?: InstagramFeedSettings,
   ): Promise<{ postId: string }> {
     if (mediaItems.length < 2 || mediaItems.length > 10) {
       throw new BadRequestException(
@@ -985,6 +1126,17 @@ export class InstagramService {
         containerParams.set('video_url', item.url);
         containerParams.set('media_type', 'VIDEO');
       }
+
+      // A carousel is asymmetric. `user_tags` belongs to the ITEM — each
+      // slide tags the people in that picture — while the caption,
+      // collaborators and location describe the post and go on the parent
+      // below. Putting the post-level ones here would repeat one post's
+      // settings on every slide.
+      applyUserTags(
+        containerParams,
+        item.userTags,
+        item.type === 'IMAGE',
+      );
 
       const containerResponse = await fetch(containerUrl.toString(), {
         method: 'POST',
@@ -1018,6 +1170,14 @@ export class InstagramService {
     if (caption) {
       carouselParams.set('caption', caption);
     }
+
+    // The post-level half of the split. `userTags` is deliberately not
+    // passed: Meta's carousel parameter list has no `user_tags`.
+    applySettings(
+      carouselParams,
+      { ...settings, userTags: undefined },
+      { requireCoordinates: false },
+    );
 
     const carouselResponse = await fetch(carouselUrl.toString(), {
       method: 'POST',
@@ -1060,6 +1220,7 @@ export class InstagramService {
     accessToken: string,
     mediaUrl: string,
     mediaType: 'IMAGE' | 'VIDEO',
+    userTags?: InstagramUserTag[],
   ): Promise<{ postId: string }> {
     this.logger.log(`Creating Instagram story for user ${userId}`);
 
@@ -1075,6 +1236,13 @@ export class InstagramService {
     } else {
       containerParams.set('video_url', mediaUrl);
     }
+
+    // A story mention IS `user_tags` — Meta added support for image and
+    // video stories in July 2025. It is not the sticker API, which is
+    // what the composer's separate "Stickers" row would need and which
+    // Meta does not expose at all. Coordinates are optional here, unlike
+    // on a feed image.
+    applyUserTags(containerParams, userTags, false);
 
     const containerResponse = await fetch(containerUrl.toString(), {
       method: 'POST',
@@ -1118,12 +1286,14 @@ export class InstagramService {
     accessToken: string,
     mediaUrl: string,
     isVideo: boolean,
+    userTags?: InstagramUserTag[],
   ): Promise<{ postId: string }> {
     return this.createStoryPostWithUserToken(
       userId,
       accessToken,
       mediaUrl,
       isVideo ? 'VIDEO' : 'IMAGE',
+      userTags,
     );
   }
 

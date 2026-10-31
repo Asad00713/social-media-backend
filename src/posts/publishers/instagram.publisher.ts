@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
-import { InstagramService } from '../../channels/services/instagram.service';
+import {
+  InstagramService,
+  InstagramReelSettings,
+  InstagramUserTag,
+} from '../../channels/services/instagram.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
@@ -73,6 +77,67 @@ export class InstagramPublisher extends BasePublisher {
     return mediaItems.every((m) => supportedTypes.includes(m.type));
   }
 
+  /**
+   * The post-level settings, in Instagram's vocabulary.
+   *
+   * Everything here is validated rather than forwarded, because the
+   * container create fails as a whole: a `location_id` that is not a Page
+   * id, a fourth collaborator, or a tag without a username each lose the
+   * post rather than the setting.
+   */
+  private getSettings(
+    metadata: Record<string, any> | undefined,
+  ): InstagramReelSettings {
+    const settings: InstagramReelSettings = {};
+
+    const tags = this.getUserTags(metadata?.userTags);
+    if (tags.length > 0) settings.userTags = tags;
+
+    // A PAGE id, not a place name — Meta resolves locations through the
+    // Pages Search API, so only something id-shaped can be sent.
+    const locationId = metadata?.locationId;
+    if (typeof locationId === 'string' && /^\d+$/.test(locationId.trim())) {
+      settings.locationId = locationId.trim();
+    }
+
+    const collaborators = Array.isArray(metadata?.collaborators)
+      ? metadata.collaborators
+          .filter((c: unknown): c is string => typeof c === 'string')
+          .map((c: string) => c.trim().replace(/^@/, ''))
+          .filter(Boolean)
+      : [];
+    if (collaborators.length > 0) settings.collaborators = collaborators;
+
+    const coverUrl = metadata?.coverUrl;
+    if (typeof coverUrl === 'string' && coverUrl.trim()) {
+      settings.coverUrl = coverUrl.trim();
+    }
+
+    // Only forwarded when the composer actually set it. `false` is a real
+    // instruction — it keeps the reel out of the feed — so it must not be
+    // invented from an absent value.
+    if (typeof metadata?.shareToFeed === 'boolean') {
+      settings.shareToFeed = metadata.shareToFeed;
+    }
+
+    return settings;
+  }
+
+  /** Tags with a usable username, in the order they were given. */
+  private getUserTags(raw: unknown): InstagramUserTag[] {
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter(
+        (t): t is { username: string; x?: number; y?: number } =>
+          !!t && typeof t.username === 'string' && !!t.username.trim(),
+      )
+      .map((t) => ({
+        username: t.username,
+        x: typeof t.x === 'number' ? t.x : undefined,
+        y: typeof t.y === 'number' ? t.y : undefined,
+      }));
+  }
+
   async publish(options: PublishOptions): Promise<PublishResult> {
     const { content, mediaItems, accessToken, platformAccountId, metadata } =
       options;
@@ -90,6 +155,16 @@ export class InstagramPublisher extends BasePublisher {
     // results in "Cannot parse access token" (code 190) from Meta.
     let result: { postId: string };
 
+    // Tags live on the MEDIA ITEM — the photo editor writes them there,
+    // and Instagram agrees: `user_tags` belongs to the container showing
+    // that picture. For a single-media post that is the one item; a
+    // carousel reads each slide's own below.
+    const settings: InstagramReelSettings = {
+      ...this.getSettings(metadata),
+      userTags: this.getUserTags(mediaItems[0]?.tags),
+    };
+    if (settings.userTags?.length === 0) delete settings.userTags;
+
     if (postType === 'reel') {
       // Reels are always single-video. Validation above guarantees mediaItems[0] is a video.
       result = await this.instagramService.createVideoPostWithUserToken(
@@ -99,6 +174,7 @@ export class InstagramPublisher extends BasePublisher {
         content,
         false,
         'REELS',
+        settings,
       );
     } else if (postType === 'story') {
       // Stories can be image OR video, single media only.
@@ -108,6 +184,10 @@ export class InstagramPublisher extends BasePublisher {
         accessToken,
         mediaItems[0].url,
         isVideo,
+        // A story takes mentions and nothing else here: collaborators are
+        // explicitly unsupported on stories, and `share_to_feed` is Reels
+        // only.
+        settings.userTags,
       );
     } else if (postType === 'carousel') {
       result = await this.instagramService.createCarouselPostWithUserToken(
@@ -116,8 +196,11 @@ export class InstagramPublisher extends BasePublisher {
         mediaItems.map((m) => ({
           type: m.type === 'video' ? ('VIDEO' as const) : ('IMAGE' as const),
           url: m.url,
+          // Per-slide tags; the post-level settings ride the parent.
+          userTags: this.getUserTags(m.tags),
         })),
         content,
+        settings,
       );
     } else {
       // Default 'feed' routing: mirror legacy behavior (single image/video or
@@ -130,6 +213,9 @@ export class InstagramPublisher extends BasePublisher {
             accessToken,
             mediaItems[0].url,
             content,
+            false,
+            undefined,
+            settings,
           );
         } else {
           result = await this.instagramService.createImagePostWithUserToken(
@@ -137,6 +223,7 @@ export class InstagramPublisher extends BasePublisher {
             accessToken,
             mediaItems[0].url,
             content,
+            settings,
           );
         }
       } else {
@@ -146,8 +233,10 @@ export class InstagramPublisher extends BasePublisher {
           mediaItems.map((m) => ({
             type: m.type === 'video' ? ('VIDEO' as const) : ('IMAGE' as const),
             url: m.url,
+            userTags: this.getUserTags(m.tags),
           })),
           content,
+          settings,
         );
       }
     }
