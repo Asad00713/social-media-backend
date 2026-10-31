@@ -26,6 +26,7 @@ import { RecycleBinService } from './services/recycle-bin.service';
 import { MediaUsageService } from './services/media-usage.service';
 import { CategoryZipService } from './services/category-zip.service';
 import { readZipTicketSecret, signZipTicket } from './lib/zip-ticket';
+import { LibraryStatsService } from './services/library-stats.service';
 import {
   CreateCategoryDto,
   UpdateCategoryDto,
@@ -64,7 +65,16 @@ export class MediaLibraryController {
     private readonly altText: AltTextService,
     private readonly mediaUsage: MediaUsageService,
     private readonly categoryZip: CategoryZipService,
+    private readonly libraryStats: LibraryStatsService,
   ) {}
+
+  /** Storage, Never used, Bin and tab counts in one call. */
+  @Get('stats')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async getLibraryStats(@Param('workspaceId') workspaceId: string) {
+    return this.libraryStats.getStats(workspaceId);
+  }
 
   // ==========================================================================
   // Categories
