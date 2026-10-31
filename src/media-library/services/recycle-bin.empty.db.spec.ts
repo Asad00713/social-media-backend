@@ -15,6 +15,8 @@ import { TemplateService } from './template.service';
 import { TextSnippetService } from './text-snippet.service';
 import { SavedLinkService } from './saved-link.service';
 import { RecycleBinService } from './recycle-bin.service';
+import { AltTextService } from './alt-text.service';
+import { MediaUsageService } from './media-usage.service';
 import type { StorageObjectService } from './storage-object.service';
 
 function setup(db: DbType) {
@@ -25,6 +27,7 @@ function setup(db: DbType) {
       urls: new Set<string>(),
       publicIds: new Set<string>(),
     }),
+    findReferencedItems: jest.fn().mockResolvedValue(new Set<string>()),
   } as unknown as StorageObjectService;
   const media = makeMediaItemService(db, { storageObjects });
   const recycleBin = new RecycleBinService(db, media);
@@ -35,6 +38,8 @@ function setup(db: DbType) {
     new TextSnippetService(db),
     new SavedLinkService(db),
     recycleBin,
+    {} as AltTextService,
+    new MediaUsageService(db),
   );
   return { deleteFile, media, recycleBin, controller };
 }

@@ -46,10 +46,17 @@ export const LIBRARY_MIGRATIONS: string[] = [
 
 export const describeLibraryDb = describeDb;
 
+/**
+ * Every library DB spec also gets the evergreen tables: the reference test
+ * (`itemReferencedSql`, Task 9) reads them, and purge runs it.
+ */
 export function withLibraryDb<T>(
   fn: (db: DbType, client: PoolClient) => Promise<T>,
 ): Promise<T> {
-  return withRollbackDb(LIBRARY_MIGRATIONS, fn);
+  return withRollbackDb(LIBRARY_MIGRATIONS, async (db, client) => {
+    await ensureEvergreenTables(client);
+    return fn(db, client);
+  });
 }
 
 /**

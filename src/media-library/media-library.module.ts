@@ -10,6 +10,7 @@ import { RecycleBinService } from './services/recycle-bin.service';
 import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service';
 import { AltTextService } from './services/alt-text.service';
 import { AiModule } from '../ai/ai.module';
+import { MediaUsageService } from './services/media-usage.service';
 import { MediaModule } from '../media/media.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
@@ -27,6 +28,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     RecycleBinService,
     RecycleBinCleanupService,
     AltTextService,
+    MediaUsageService,
   ],
   exports: [
     CategoryService,

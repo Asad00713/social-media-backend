@@ -8,6 +8,8 @@ import {
   makeMediaItemService,
   seedWorkspace,
   seedMediaItem,
+  seedPost,
+  seedCampaignSlot,
 } from '../testing/library-db';
 import { StorageObjectService } from './storage-object.service';
 import type { DbType } from '../../drizzle/db';
@@ -373,6 +375,74 @@ describeLibraryDb('MediaItemService permanent delete', () => {
       expect(deleteFile).not.toHaveBeenCalled();
       expect(await rowExists(client, binned)).toBe(false);
       expect(await rowExists(client, live)).toBe(true);
+    });
+  });
+  it('keeps the file of an item a post or campaign slot still uses, but deletes the row (SEC4)', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const { service, deleteFile, cloudinary } = setup(db);
+      const base = {
+        workspaceId,
+        uploadedById: ownerId,
+        isDeleted: true,
+        deletedAt: new Date(),
+      };
+      const inPost = await seedMediaItem(client, {
+        ...base,
+        cloudinaryPublicId: 'social-media/in-post',
+      });
+      const inSlotUrl = `https://cdn.example.test/in-slot-${Date.now()}.png`;
+      const inSlot = await seedMediaItem(client, {
+        ...base,
+        fileUrl: inSlotUrl,
+        cloudinaryPublicId: 'social-media/in-slot',
+      });
+      const unused = await seedMediaItem(client, {
+        ...base,
+        cloudinaryPublicId: 'social-media/unused',
+      });
+      await seedPost(client, {
+        workspaceId,
+        createdById: ownerId,
+        status: 'scheduled',
+        scheduledAt: new Date(Date.now() + DAY_MS),
+        mediaItems: [
+          {
+            url: 'https://cdn.example.test/copy.png',
+            type: 'image',
+            libraryItemId: inPost,
+          },
+        ],
+      });
+      await seedCampaignSlot(client, {
+        workspaceId,
+        createdById: ownerId,
+        media: [{ id: 'm1', url: inSlotUrl }],
+      });
+
+      const rows = await db
+        .select()
+        .from(mediaItems)
+        .where(inArray(mediaItems.id, [inPost, inSlot, unused]));
+      const result = await service.purgeItems(rows);
+
+      expect(result.failedIds).toEqual([]);
+      expect([...result.deletedIds].sort()).toEqual(
+        [inPost, inSlot, unused].sort(),
+      );
+      for (const id of [inPost, inSlot, unused]) {
+        expect(await rowExists(client, id)).toBe(false);
+      }
+      // Only the unreferenced item loses its bytes.
+      expect(deleteFile).toHaveBeenCalledTimes(1);
+      expect(deleteFile).toHaveBeenCalledWith(
+        expect.objectContaining({ id: unused }),
+      );
+      expect(cloudinary.delete).toHaveBeenCalledTimes(1);
+      expect(cloudinary.delete).toHaveBeenCalledWith(
+        'social-media/unused',
+        'image',
+      );
     });
   });
 });

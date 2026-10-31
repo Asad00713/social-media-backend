@@ -383,7 +383,8 @@ export class MediaItemService {
   /**
    * Deletes the files behind `rows` (at most PURGE_CONCURRENCY at a time) and
    * then only the rows whose file is gone. A file another row outside this set
-   * still points at is left in storage; its row is removed all the same.
+   * still points at, or that a post or campaign slot still uses (SEC4), is
+   * left in storage; its row is removed all the same.
    */
   async purgeItems(
     rows: MediaLibraryItem[],
@@ -421,9 +422,13 @@ export class MediaItemService {
       for (const k of keys) groupOf.set(k, group);
     }
 
-    // One query for the whole page, not one per file.
+    // One query each for the whole page, not one per file.
     const shared = await this.storageObjects.findSharedFiles(
       rows,
+      setIds,
+      this.db,
+    );
+    const referenced = await this.storageObjects.findReferencedItems(
       setIds,
       this.db,
     );
@@ -435,15 +440,17 @@ export class MediaItemService {
     const worker = async () => {
       for (let group = queue.shift(); group; group = queue.shift()) {
         try {
-          const isShared = group.some(
+          // Another row shares the file, or a post / campaign slot uses it.
+          const isFileInUse = group.some(
             (r) =>
+              referenced.has(r.id) ||
               shared.urls.has(r.fileUrl) ||
               (!!r.cloudinaryPublicId &&
                 shared.publicIds.has(r.cloudinaryPublicId)),
           );
           // TOCTOU: a row created between the share check and this delete can
           // still lose its file; accepted, the window is a few milliseconds.
-          if (!isShared) {
+          if (!isFileInUse) {
             const distinctUrls = new Map(
               group.map((r) => [
                 r.cloudinaryPublicId
@@ -632,21 +639,18 @@ export class MediaItemService {
   }
 
   /**
-   * Record that an item was used in a post.
+   * Record that an item was just used: sets `lastUsedAt` (the "Recently used"
+   * sort) and nothing else. `usage_count` is a post count kept by the posts
+   * trigger (migration 0055), so a click here must not bump it (D13).
    *
    * Scoped to the workspace like every other write here: the id alone comes
    * from the client, so without the workspace in the WHERE clause any
-   * authenticated user could bump the counters on someone else's asset.
-   *
-   * This is what fills `lastUsedAt`, which the "Recently used" view and the
-   * "Most used" sort both read — until something calls this, both are empty by
-   * construction.
+   * authenticated user could touch someone else's asset.
    */
-  async incrementUsage(workspaceId: string, itemId: string) {
+  async markUsed(workspaceId: string, itemId: string) {
     const [updated] = await this.db
       .update(mediaItems)
       .set({
-        usageCount: sql`${mediaItems.usageCount} + 1`,
         lastUsedAt: new Date(),
         updatedAt: new Date(),
       })
