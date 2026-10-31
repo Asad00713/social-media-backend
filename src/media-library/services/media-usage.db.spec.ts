@@ -322,6 +322,171 @@ describeLibraryDb('MediaUsageService.getUsage and itemReferencedSql', () => {
     });
   });
 
+  it('trims every kind of whitespace from post titles', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId: ws, ownerId } = await seedWorkspace(client);
+      const ut = url();
+      const t = await seedMediaItem(client, {
+        workspaceId: ws,
+        uploadedById: ownerId,
+        fileUrl: ut,
+      });
+      const fromContent = await seedPost(client, {
+        workspaceId: ws,
+        createdById: ownerId,
+        content: '\n\nHello world  \r\nmore',
+        mediaItems: [{ url: ut, type: 'image' }],
+        publishedAt: new Date('2026-10-02T10:00:00Z'),
+      });
+      const fromMetadata = await seedPost(client, {
+        workspaceId: ws,
+        createdById: ownerId,
+        content: 'Body',
+        metadata: { title: '\t Promo \r\n' },
+        mediaItems: [{ url: ut, type: 'image' }],
+        publishedAt: new Date('2026-10-01T10:00:00Z'),
+      });
+      const blankMetadata = await seedPost(client, {
+        workspaceId: ws,
+        createdById: ownerId,
+        content: '\r\n\t\n',
+        metadata: { title: '\n\t ' },
+        mediaItems: [{ url: ut, type: 'image' }],
+        publishedAt: new Date('2026-09-30T10:00:00Z'),
+      });
+
+      const usage = await new MediaUsageService(db).getUsage(ws, t);
+
+      expect(usage.items.map((e) => [e.id, e.title])).toEqual([
+        [fromContent, 'Hello world'],
+        [fromMetadata, 'Promo'],
+        [blankMetadata, 'Untitled post'],
+      ]);
+    });
+  });
+
+  it('shows a retired evergreen entry as draft and still counts it', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId: ws, ownerId } = await seedWorkspace(client);
+      const ur = url();
+      const r = await seedMediaItem(client, {
+        workspaceId: ws,
+        uploadedById: ownerId,
+        fileUrl: ur,
+      });
+      const entries: Record<string, string> = {};
+      for (const [n, status] of ['active', 'paused', 'retired'].entries()) {
+        const ever = await seedEvergreenPost(client, {
+          workspaceId: ws,
+          createdById: ownerId,
+          media: [{ id: `e${n}`, url: ur }],
+        });
+        await client.query(
+          `UPDATE campaign_evergreen_posts SET status = $2 WHERE id = $1`,
+          [ever.postId, status],
+        );
+        entries[status] = ever.postId;
+      }
+
+      const usage = await new MediaUsageService(db).getUsage(ws, r);
+
+      expect(usage.total).toBe(3);
+      const statusOf = new Map(usage.items.map((e) => [e.id, e.status]));
+      expect(statusOf.get(entries.active)).toBe('scheduled');
+      expect(statusOf.get(entries.paused)).toBe('scheduled');
+      expect(statusOf.get(entries.retired)).toBe('draft');
+
+      // A pool with only a retired entry still references the item.
+      const ur2 = url();
+      const r2 = await seedMediaItem(client, {
+        workspaceId: ws,
+        uploadedById: ownerId,
+        fileUrl: ur2,
+      });
+      const retired = await seedEvergreenPost(client, {
+        workspaceId: ws,
+        createdById: ownerId,
+        media: [{ id: 'r2', url: ur2 }],
+      });
+      await client.query(
+        `UPDATE campaign_evergreen_posts SET status = 'retired' WHERE id = $1`,
+        [retired.postId],
+      );
+      expect(
+        await isReferenced(db, { id: r2, fileUrl: ur2, workspaceId: ws }),
+      ).toBe(true);
+    });
+  });
+
+  it("names no platform from another workspace's channel", async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId: ws, ownerId } = await seedWorkspace(client);
+      const other = await seedWorkspace(client);
+      const foreignChannel = await seedChannel(
+        client,
+        other.workspaceId,
+        'tiktok',
+      );
+      const uc = url();
+      const item = await seedMediaItem(client, {
+        workspaceId: ws,
+        uploadedById: ownerId,
+        fileUrl: uc,
+      });
+      const slot = await seedCampaignSlot(client, {
+        workspaceId: ws,
+        createdById: ownerId,
+        channelId: String(foreignChannel),
+        media: [{ id: 'm1', url: uc }],
+        scheduledAt: new Date('2026-10-02T10:00:00Z'),
+      });
+      const ever = await seedEvergreenPost(client, {
+        workspaceId: ws,
+        createdById: ownerId,
+        media: [{ id: 'm2', url: uc }],
+      });
+      const everMeta = await evergreenOf(client, ever.campaignId);
+      await client.query(
+        `UPDATE campaign_evergreen_categories SET channel_ids = $2::jsonb WHERE id = $1`,
+        [everMeta.category_id, JSON.stringify([String(foreignChannel)])],
+      );
+
+      const usage = await new MediaUsageService(db).getUsage(ws, item);
+
+      expect(usage.total).toBe(2);
+      const platformOf = new Map(usage.items.map((e) => [e.id, e.platform]));
+      expect(platformOf.get(slot.slotId)).toBe('');
+      expect(platformOf.get(ever.postId)).toBe('');
+    });
+  });
+
+  it("ignores another workspace's campaign slot with the same URL", async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId: ws, ownerId } = await seedWorkspace(client);
+      const other = await seedWorkspace(client);
+      const us = url();
+      const item = await seedMediaItem(client, {
+        workspaceId: ws,
+        uploadedById: ownerId,
+        fileUrl: us,
+      });
+      await seedCampaignSlot(client, {
+        workspaceId: other.workspaceId,
+        createdById: other.ownerId,
+        media: [{ id: item, url: us }],
+        slotStatus: 'pending',
+      });
+
+      expect(
+        await isReferenced(db, { id: item, fileUrl: us, workspaceId: ws }),
+      ).toBe(false);
+      expect(await new MediaUsageService(db).getUsage(ws, item)).toEqual({
+        items: [],
+        total: 0,
+      });
+    });
+  });
+
   it('404s for an item outside the workspace', async () => {
     await withLibraryDb(async (db, client) => {
       const { workspaceId: ws } = await seedWorkspace(client);

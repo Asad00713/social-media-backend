@@ -28,6 +28,20 @@ interface UsageRow extends Record<string, unknown> {
   total: number;
 }
 
+/** A retired evergreen entry no longer posts; it still counts as a use. */
+function usageStatusOfEvergreen(status: string): UsageEntry['status'] {
+  return status === 'retired' ? 'draft' : 'scheduled';
+}
+
+const STATUS_OF_SOURCE: Record<
+  UsageRow['source'],
+  (status: string) => UsageEntry['status']
+> = {
+  post: usageStatusOfPost,
+  slot: usageStatusOfSlot,
+  evergreen: usageStatusOfEvergreen,
+};
+
 /** "Used in": where a media item appears (`GET items/:id/usage`). */
 @Injectable()
 export class MediaUsageService {
@@ -63,13 +77,15 @@ export class MediaUsageService {
     const c = sql.raw('c');
 
     // Slot created_at is `timestamp` without time zone holding UTC wall time
-    // (B6); the other dates are timestamptz.
+    // (B6); the other dates are timestamptz. Titles trim spaces, tabs, CR and
+    // LF, so a leading blank line or a CRLF ending never leaks into them.
+    // Channel joins are display-only and scoped to the campaign's workspace.
     const res = await this.db.execute<UsageRow>(sql`
       WITH usage AS (
         SELECT 'post' AS kind, 'post' AS source, p.id,
                left(coalesce(
-                 nullif(btrim(p.metadata->>'title'), ''),
-                 nullif(split_part(btrim(coalesce(p.content, '')), E'\n', 1), ''),
+                 nullif(btrim(p.metadata->>'title', E' \t\r\n'), ''),
+                 nullif(btrim(split_part(btrim(coalesce(p.content, ''), E' \t\r\n'), E'\n', 1), E' \t\r\n'), ''),
                  'Untitled post'), ${TITLE_MAX}) AS title,
                coalesce(p.targets->0->>'platform', '') AS platform,
                coalesce(p.published_at, p.scheduled_at, p.updated_at) AS date,
@@ -83,18 +99,21 @@ export class MediaUsageService {
                s.slot_status::text
           FROM campaign_slot_content s
           JOIN campaigns c ON c.id = s.campaign_id
-          LEFT JOIN social_media_channels ch ON ch.id::text = s.channel_id
+          LEFT JOIN social_media_channels ch
+                 ON ch.id::text = s.channel_id
+                AND ch.workspace_id = c.workspace_id
          WHERE ${slotRefSql(s, c, ref)}
         UNION ALL
         SELECT 'campaign_slot', 'evergreen', e.id, c.name,
                coalesce(ch.platform::text, ''),
                coalesce(e.last_published_at, e.created_at),
-               'scheduled'
+               e.status::text
           FROM campaign_evergreen_posts e
           JOIN campaigns c ON c.id = e.campaign_id
           JOIN campaign_evergreen_categories cat ON cat.id = e.category_id
           LEFT JOIN social_media_channels ch
                  ON ch.id::text = cat.channel_ids->>0
+                AND ch.workspace_id = c.workspace_id
          WHERE ${evergreenRefSql(e, c, ref)}
       )
       SELECT kind, source, id::text AS id, title, platform,
@@ -114,10 +133,7 @@ export class MediaUsageService {
         title: r.title,
         platform: r.platform,
         date: r.date,
-        status:
-          r.source === 'post'
-            ? usageStatusOfPost(r.status)
-            : usageStatusOfSlot(r.status),
+        status: STATUS_OF_SOURCE[r.source](r.status),
       })),
       total: rows[0]?.total ?? 0,
     };
