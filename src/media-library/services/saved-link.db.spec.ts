@@ -11,6 +11,7 @@ import { SavedLinkService } from './saved-link.service';
 import {
   CreateSavedLinkDto,
   UpdateSavedLinkDto,
+  SavedLinkQueryDto,
 } from '../dto/media-library.dto';
 
 jest.mock('undici', () => {
@@ -103,6 +104,35 @@ describeLibraryDb('saved links: UTM, favicon, sort', () => {
       expect(used.items.map((l) => l.id)).toEqual([high, mid, low]);
       const named = await svc.findAll(workspaceId, { sort: 'name' });
       expect(named.items.map((l) => l.id)).toEqual([high, low, mid]);
+    });
+  });
+
+  it("sort 'oldest' is created_at ASC, then id ASC", async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const base = { workspaceId, createdById: ownerId };
+      const ids: Record<string, string> = {};
+      for (const [key, iso] of [
+        ['mid', '2026-03-01'],
+        ['first', '2026-01-01'],
+        ['tieA', '2026-05-01'],
+        ['tieB', '2026-05-01'],
+      ]) {
+        ids[key] = await seedLink(client, base);
+        await client.query(
+          'UPDATE saved_links SET created_at = $2 WHERE id = $1',
+          [ids[key], new Date(`${iso}T00:00:00Z`)],
+        );
+      }
+      const query = await toDto(SavedLinkQueryDto, { sort: 'oldest' });
+
+      const r = await new SavedLinkService(db).findAll(workspaceId, query);
+
+      expect(r.items.map((l) => l.id)).toEqual([
+        ids.first,
+        ids.mid,
+        ...[ids.tieA, ids.tieB].sort(),
+      ]);
     });
   });
 

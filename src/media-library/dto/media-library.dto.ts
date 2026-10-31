@@ -888,8 +888,8 @@ export class SavedLinkQueryDto {
   search?: string;
 
   @IsOptional()
-  @IsIn(['newest', 'most_used', 'name'])
-  sort?: 'newest' | 'most_used' | 'name';
+  @IsIn(['newest', 'oldest', 'most_used', 'name'])
+  sort?: 'newest' | 'oldest' | 'most_used' | 'name';
 
   @IsOptional()
   @IsInt()
