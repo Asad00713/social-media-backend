@@ -172,6 +172,7 @@ export class AiTokenService {
           membersLimit: plan.membersPerWorkspace,
           aiTokensUsedThisMonth: 0,
           aiTokensLimit: plan.aiTokensPerMonth,
+          storageBytesLimit: plan.storageBytesPerWorkspace,
           extraAiTokensPurchased: 0,
           aiTokensResetDate: resetDate,
         })

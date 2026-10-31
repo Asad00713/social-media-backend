@@ -1,4 +1,8 @@
-import { buildUsageFanout, pickPrimaryWorkspaceId, WorkspaceRef } from './usage-fanout.util';
+import {
+  buildUsageFanout,
+  pickPrimaryWorkspaceId,
+  WorkspaceRef,
+} from './usage-fanout.util';
 import { PlanLimits, AddonQuantities } from './limit-resolver.util';
 
 const PRO: PlanLimits = {
@@ -34,6 +38,20 @@ describe('pickPrimaryWorkspaceId', () => {
 });
 
 describe('buildUsageFanout', () => {
+  it('carries the plan storage limit on every write', () => {
+    const writes = buildUsageFanout(
+      [
+        { id: 'a', createdAt: d('2026-01-01T00:00:00Z') },
+        { id: 'b', createdAt: d('2026-02-01T00:00:00Z') },
+      ],
+      { ...PRO, storageBytesPerWorkspace: 10737418240 },
+      NO_ADDONS,
+    );
+    expect(writes.map((w) => w.storageBytesLimit)).toEqual([
+      10737418240, 10737418240,
+    ]);
+  });
+
   it('produces one write per owned workspace', () => {
     const workspaces: WorkspaceRef[] = [
       { id: 'a', createdAt: d('2026-01-01T00:00:00Z') },
@@ -80,8 +98,12 @@ describe('buildUsageFanout', () => {
       ...NO_ADDONS,
       extraChannels: 4,
     });
-    expect(writes.find((w) => w.workspaceId === 'primary')!.channelsLimit).toBe(8);
-    expect(writes.find((w) => w.workspaceId === 'second')!.channelsLimit).toBe(0);
+    expect(writes.find((w) => w.workspaceId === 'primary')!.channelsLimit).toBe(
+      8,
+    );
+    expect(writes.find((w) => w.workspaceId === 'second')!.channelsLimit).toBe(
+      0,
+    );
   });
 
   it('returns no writes when the user owns no workspaces', () => {
