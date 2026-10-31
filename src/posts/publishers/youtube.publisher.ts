@@ -149,6 +149,17 @@ export class YouTubePublisher extends BasePublisher {
         playlistId: metadata.playlistId,
         madeForKids: metadata.madeForKids || false,
         thumbnailUrl: isShort ? undefined : metadata.thumbnailUrl,
+        defaultLanguage:
+          typeof metadata.language === 'string' && metadata.language.trim()
+            ? metadata.language.trim()
+            : undefined,
+        containsSyntheticMedia: metadata.alteredContent === true,
+        // YouTube notifies subscribers by DEFAULT, so this is only sent to
+        // turn it off. Forwarding `true` would be a no-op, and forwarding
+        // an unset switch as `false` would silence a notification nobody
+        // asked to silence.
+        notifySubscribers:
+          metadata.notifySubscribers === false ? false : undefined,
       },
     );
 
