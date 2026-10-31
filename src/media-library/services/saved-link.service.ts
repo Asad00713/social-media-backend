@@ -287,7 +287,7 @@ export class SavedLinkService {
       updateData.previewDescription = preview.description;
       updateData.previewImageUrl = preview.imageUrl;
       updateData.previewSiteName = preview.siteName;
-      updateData.previewFaviconUrl = preview.faviconUrl;
+      updateData.previewFaviconUrl = preview.faviconUrl ?? null;
     }
 
     const [updated] = await this.db
@@ -316,7 +316,7 @@ export class SavedLinkService {
         previewDescription: preview.description,
         previewImageUrl: preview.imageUrl,
         previewSiteName: preview.siteName,
-        previewFaviconUrl: preview.faviconUrl,
+        previewFaviconUrl: preview.faviconUrl ?? null,
         updatedAt: new Date(),
       })
       .where(eq(savedLinks.id, linkId))

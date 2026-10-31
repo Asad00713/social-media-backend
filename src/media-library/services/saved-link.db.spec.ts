@@ -1,5 +1,6 @@
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
+import { fetch as undiciFetch } from 'undici';
 import {
   describeLibraryDb,
   withLibraryDb,
@@ -12,11 +13,11 @@ import {
   UpdateSavedLinkDto,
 } from '../dto/media-library.dto';
 
-jest.mock('dns/promises', () => ({
-  lookup: jest
-    .fn()
-    .mockResolvedValue([{ address: '93.184.216.34', family: 4 }]),
-}));
+jest.mock('undici', () => {
+  const actual = jest.requireActual<typeof import('undici')>('undici');
+  return { ...actual, fetch: jest.fn() };
+});
+const mockedFetch = undiciFetch as unknown as jest.Mock;
 
 async function toDto<T extends object>(
   cls: new () => T,
@@ -35,12 +36,9 @@ const PAGE = `<html><head><title>Hi</title>
 <link rel="icon" href="/fav.png"></head></html>`;
 
 describeLibraryDb('saved links: UTM, favicon, sort', () => {
-  const realFetch = global.fetch;
   beforeEach(() => {
-    global.fetch = jest.fn(() => Promise.resolve(new Response(PAGE))) as never;
-  });
-  afterEach(() => {
-    global.fetch = realFetch;
+    mockedFetch.mockReset();
+    mockedFetch.mockImplementation(() => Promise.resolve(new Response(PAGE)));
   });
 
   it('create stores normalised UTM and the favicon', async () => {
@@ -116,8 +114,37 @@ describeLibraryDb('saved links: UTM, favicon, sort', () => {
         name: 'L',
         url: 'http://169.254.169.254/latest/meta-data',
       });
-      expect(global.fetch).not.toHaveBeenCalled();
+      expect(mockedFetch).not.toHaveBeenCalled();
       expect(created.previewFaviconUrl).toBeNull();
+    });
+  });
+
+  it('a failed re-fetch clears the old favicon (refresh and url change)', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const svc = new SavedLinkService(db);
+      const created = await svc.create(workspaceId, ownerId, {
+        name: 'L',
+        url: 'https://example.com/page',
+      });
+      expect(created.previewFaviconUrl).toBe('https://example.com/fav.png');
+      mockedFetch.mockImplementation(() =>
+        Promise.resolve(new Response('x', { status: 500 })),
+      );
+      const refreshed = await svc.refreshPreview(workspaceId, created.id);
+      expect(refreshed.previewFaviconUrl).toBeNull();
+
+      mockedFetch.mockImplementation(() => Promise.resolve(new Response(PAGE)));
+      await svc.refreshPreview(workspaceId, created.id);
+      mockedFetch.mockImplementation(() =>
+        Promise.resolve(new Response('x', { status: 500 })),
+      );
+      const moved = await svc.update(
+        workspaceId,
+        created.id,
+        await toDto(UpdateSavedLinkDto, { url: 'https://other.example.com/' }),
+      );
+      expect(moved.previewFaviconUrl).toBeNull();
     });
   });
 });

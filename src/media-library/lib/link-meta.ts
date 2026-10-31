@@ -1,5 +1,7 @@
-import { lookup } from 'dns/promises';
+import { lookup as dnsLookup } from 'dns';
 import { isIP } from 'net';
+import ipaddr from 'ipaddr.js';
+import { Agent, fetch as undiciFetch } from 'undici';
 import type { SavedLinkUtm } from '../../drizzle/schema/media-library.schema';
 
 const UTM_KEYS = ['source', 'medium', 'campaign', 'term', 'content'] as const;
@@ -17,16 +19,59 @@ export function normalizeUtm(
   return Object.keys(out).length > 0 ? out : null;
 }
 
-const LINK_TAG = /<link\b[^>]*>/gi;
+const MAX_SCAN_CHARS = 64 * 1024;
+const WS = new Set([' ', '\t', '\n', '\r', '\f']);
 
+/**
+ * `<link ...>` tags from the head, found by a linear indexOf scan. No regex
+ * runs over attacker HTML (ReDoS); scanning stops at </head> or 64 KB.
+ */
+function linkTags(html: string): string[] {
+  const lower = html.slice(0, MAX_SCAN_CHARS).toLowerCase();
+  const headEnd = lower.indexOf('</head>');
+  const doc = headEnd === -1 ? lower : lower.slice(0, headEnd);
+  const tags: string[] = [];
+  let from = 0;
+  for (;;) {
+    const start = doc.indexOf('<link', from);
+    if (start === -1) break;
+    const close = doc.indexOf('>', start);
+    if (close === -1) break;
+    const next = doc.charAt(start + 5);
+    if (WS.has(next) || next === '/') {
+      tags.push(html.slice(start, close + 1));
+    }
+    from = close + 1;
+  }
+  return tags;
+}
+
+/** Value of attribute `name` in one tag, by linear scan. */
 function attr(tag: string, name: string): string | undefined {
-  const m = tag.match(
-    new RegExp(
-      String.raw`\b${name}\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'>]+))`,
-      'i',
-    ),
-  );
-  return m ? (m[1] ?? m[2] ?? m[3]) : undefined;
+  const lower = tag.toLowerCase();
+  let from = 0;
+  for (;;) {
+    const at = lower.indexOf(name, from);
+    if (at === -1) return undefined;
+    from = at + name.length;
+    const prev = lower.charAt(at - 1);
+    if (!WS.has(prev) && prev !== '"' && prev !== "'") continue;
+    let k = from;
+    while (WS.has(lower.charAt(k))) k++;
+    if (lower.charAt(k) !== '=') continue;
+    k++;
+    while (WS.has(lower.charAt(k))) k++;
+    const q = tag.charAt(k);
+    if (q === '"' || q === "'") {
+      const e = tag.indexOf(q, k + 1);
+      return e === -1 ? undefined : tag.slice(k + 1, e);
+    }
+    let e = k;
+    while (e < tag.length && !WS.has(tag.charAt(e)) && tag.charAt(e) !== '>') {
+      e++;
+    }
+    return tag.slice(k, e);
+  }
 }
 
 /**
@@ -41,7 +86,7 @@ export function extractFavicon(html: string, pageUrl: string): string {
   let icon: string | undefined;
   let apple: string | undefined;
 
-  for (const tag of html.match(LINK_TAG) ?? []) {
+  for (const tag of linkTags(html)) {
     const rel = attr(tag, 'rel');
     const href = attr(tag, 'href')?.trim();
     if (!rel || !href) continue;
@@ -63,59 +108,85 @@ export function extractFavicon(html: string, pageUrl: string): string {
 
 // ── SSRF guard ──────────────────────────────────────────────────────────────
 // Links are user-supplied URLs fetched server-side, so the target must be a
-// public host. Hostnames are resolved and every address checked.
+// public host. Addresses are classified with ipaddr.js; the connect-time DNS
+// lookup re-checks and pins them, so a rebinding answer cannot slip through.
 
 const FETCH_TIMEOUT_MS = 8000;
 const MAX_HTML_BYTES = 1024 * 1024;
 const MAX_REDIRECTS = 3;
 
+/**
+ * True unless `address` is a globally routable unicast address. Mapped IPv6 is
+ * unwrapped to its IPv4. IPv6 forms that embed an IPv4 address (IPv4-compatible
+ * ::/96, NAT64 64:ff9b::/96, 6to4 2002::/16, Teredo) are REJECTED outright
+ * rather than unwrapped. Unparseable input counts as private.
+ */
 export function isPrivateAddress(address: string): boolean {
-  const v4mapped = address.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/i);
-  if (v4mapped) return isPrivateAddress(v4mapped[1]);
-
-  if (isIP(address) === 4) {
-    const [a, b] = address.split('.').map(Number);
-    return (
-      a === 0 ||
-      a === 10 ||
-      a === 127 ||
-      (a === 100 && b >= 64 && b <= 127) ||
-      (a === 169 && b === 254) ||
-      (a === 172 && b >= 16 && b <= 31) ||
-      (a === 192 && b === 168) ||
-      (a === 192 && b === 0) ||
-      (a === 198 && (b === 18 || b === 19)) ||
-      a >= 224
-    );
+  if (!ipaddr.isValid(address)) return true;
+  let addr: ipaddr.IPv4 | ipaddr.IPv6;
+  try {
+    addr = ipaddr.process(address);
+  } catch {
+    return true;
   }
-  if (isIP(address) === 6) {
-    const a = address.toLowerCase();
-    return (
-      a === '::' ||
-      a === '::1' ||
-      a.startsWith('fc') ||
-      a.startsWith('fd') ||
-      /^fe[89ab]/.test(a) ||
-      a.startsWith('ff')
-    );
+  if (addr.kind() === 'ipv6') {
+    const parts = (addr as ipaddr.IPv6).parts;
+    if (parts.slice(0, 6).every((p) => p === 0)) return true; // ::/96
   }
-  return true; // not an IP we understand: refuse
+  return addr.range() !== 'unicast';
 }
 
-/** Throws unless `url` is http(s) and every address it resolves to is public. */
-export async function assertPublicUrl(url: string): Promise<URL> {
+interface LookupResult {
+  address: string;
+  family: number;
+}
+type LookupCallback = (err: Error | null, addrs: LookupResult[]) => void;
+type Resolver = (
+  host: string,
+  options: { all: true },
+  cb: LookupCallback,
+) => void;
+
+/**
+ * undici connect-time lookup: resolve, fail if ANY address is non-public, and
+ * hand back only the checked addresses, so the socket connects to exactly what
+ * was verified. `resolver` is injectable for tests.
+ */
+export function checkedLookup(
+  host: string,
+  _options: unknown,
+  callback: LookupCallback,
+  resolver: Resolver = dnsLookup as unknown as Resolver,
+): void {
+  resolver(host, { all: true }, (err, addrs) => {
+    if (err) return callback(err, []);
+    if (addrs.length === 0 || addrs.some((a) => isPrivateAddress(a.address))) {
+      return callback(new Error('Link points at a private address'), []);
+    }
+    callback(null, addrs);
+  });
+}
+
+const publicAgent = new Agent({
+  connect: {
+    lookup: ((host: string, options: unknown, cb: LookupCallback) =>
+      checkedLookup(host, options, cb)) as never,
+  },
+});
+
+/** Throws unless `url` is http(s) and, for IP literals, a public address. */
+export function assertPublicUrl(url: string): Promise<URL> {
   const parsed = new URL(url);
   if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
-    throw new Error('Only http(s) links can be fetched');
+    return Promise.reject(new Error('Only http(s) links can be fetched'));
   }
   const host = parsed.hostname.replace(/^\[|\]$/g, '');
-  const addresses = isIP(host)
-    ? [host]
-    : (await lookup(host, { all: true })).map((r) => r.address);
-  if (addresses.length === 0 || addresses.some(isPrivateAddress)) {
-    throw new Error('Link points at a private address');
+  // Literals skip the connect-time lookup, so they are checked here. Hostnames
+  // are checked and pinned at connect time by checkedLookup.
+  if (isIP(host) && isPrivateAddress(host)) {
+    return Promise.reject(new Error('Link points at a private address'));
   }
-  return parsed;
+  return Promise.resolve(parsed);
 }
 
 async function readCapped(response: Response): Promise<string> {
@@ -136,33 +207,40 @@ async function readCapped(response: Response): Promise<string> {
       break;
     }
   }
-  return text;
+  return text + decoder.decode();
 }
 
 /**
  * GET a page's HTML for preview scraping: public hosts only (each redirect hop
- * re-checked), 8s timeout, 1 MB cap. Returns the final URL so relative hrefs
- * resolve against the page actually served. Null when the page is unusable.
+ * re-checked, addresses pinned at connect), ONE 8s deadline for the whole
+ * chain, 1 MB cap. Returns the final URL so relative hrefs resolve against the
+ * page actually served. Null when the page is unusable.
  */
 export async function fetchPublicHtml(
   url: string,
   headers: Record<string, string>,
 ): Promise<{ html: string; finalUrl: string } | null> {
+  const signal = AbortSignal.timeout(FETCH_TIMEOUT_MS);
   let current = url;
   for (let hop = 0; hop <= MAX_REDIRECTS; hop++) {
     await assertPublicUrl(current);
-    const response = await fetch(current, {
+    const response = (await undiciFetch(current, {
       headers,
       redirect: 'manual',
-      signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
-    });
+      signal,
+      dispatcher: publicAgent,
+    })) as unknown as Response;
     if (response.status >= 300 && response.status < 400) {
+      await response.body?.cancel();
       const location = response.headers.get('location');
       if (!location) return null;
       current = new URL(location, current).href;
       continue;
     }
-    if (!response.ok) return null;
+    if (!response.ok) {
+      await response.body?.cancel();
+      return null;
+    }
     return { html: await readCapped(response), finalUrl: current };
   }
   return null;
