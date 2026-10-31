@@ -88,3 +88,96 @@ describe('TwitterPublisher — reply settings', () => {
     expect(createTweet.mock.calls[1][2].replyToTweetId).toBe('root');
   });
 });
+
+/**
+ * The two disclosure booleans. Both are claims about the post that a reader
+ * sees, so the failure that matters is sending one nobody asked for — and,
+ * on a thread, failing to send one that was.
+ */
+describe('TwitterPublisher — disclosures', () => {
+  let publisher: TwitterPublisher;
+  let createTweet: jest.Mock;
+
+  beforeEach(async () => {
+    createTweet = jest.fn().mockResolvedValue({ id: '1', text: 'hi' });
+
+    const moduleRef = await Test.createTestingModule({
+      providers: [
+        TwitterPublisher,
+        {
+          provide: TwitterService,
+          useValue: { createTweet, uploadMedia: jest.fn() },
+        },
+      ],
+    }).compile();
+
+    publisher = moduleRef.get(TwitterPublisher);
+  });
+
+  const options = (metadata: Record<string, any>) => ({
+    content: 'Iced Spanish latte is back',
+    mediaItems: [],
+    accessToken: 'token',
+    platformAccountId: 'acct',
+    channelMetadata: {},
+    channelId: 1,
+    metadata,
+  });
+
+  it('forwards each disclosure that was set', async () => {
+    await publisher.publish(
+      options({ madeWithAi: true, paidPartnership: true }),
+    );
+
+    const [, , opts] = createTweet.mock.calls[0];
+    expect(opts.madeWithAi).toBe(true);
+    expect(opts.paidPartnership).toBe(true);
+  });
+
+  it('forwards one without inventing the other', async () => {
+    await publisher.publish(options({ madeWithAi: true }));
+
+    const [, , opts] = createTweet.mock.calls[0];
+    expect(opts.madeWithAi).toBe(true);
+    expect('paidPartnership' in opts).toBe(false);
+  });
+
+  // A disclosure is a claim about the post. `false` and absent mean the same
+  // thing to X, so an untouched toggle must not put a key in the body at
+  // all — the schema is `additionalProperties: false` and the field is one
+  // we would rather never send than send wrongly.
+  it.each([
+    ['untouched', {}],
+    ['switched off', { madeWithAi: false, paidPartnership: false }],
+    ['a non-boolean', { madeWithAi: 'yes', paidPartnership: 1 }],
+  ])('sends no disclosure when %s', async (_label, metadata) => {
+    await publisher.publish(options(metadata));
+
+    const [, , opts] = createTweet.mock.calls[0];
+    expect('madeWithAi' in opts).toBe(false);
+    expect('paidPartnership' in opts).toBe(false);
+  });
+
+  // The contrast with `reply_settings`, which the root alone carries.
+  // `made_with_ai` describes the media on the post carrying it, and the
+  // composer offers ONE toggle for the thread — so every post needs it, or
+  // posts 2..N publish undisclosed.
+  it('repeats the disclosure on every post in a thread', async () => {
+    createTweet
+      .mockResolvedValueOnce({ id: 'root', text: 'one' })
+      .mockResolvedValueOnce({ id: 'second', text: 'two' })
+      .mockResolvedValueOnce({ id: 'third', text: 'three' });
+
+    await publisher.publish(
+      options({
+        madeWithAi: true,
+        thread: [{ text: 'one' }, { text: 'two' }, { text: 'three' }],
+      }),
+    );
+
+    expect(createTweet).toHaveBeenCalledTimes(3);
+    for (const call of createTweet.mock.calls) {
+      expect(call[2].madeWithAi).toBe(true);
+    }
+  });
+});

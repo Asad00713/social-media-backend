@@ -14,6 +14,12 @@ type TwitterReplySettings =
   | 'subscribers'
   | 'verified';
 
+/** X's two disclosure booleans, as `createTweet` takes them. */
+interface TwitterDisclosures {
+  madeWithAi?: boolean;
+  paidPartnership?: boolean;
+}
+
 const VALID_REPLY_SETTINGS: TwitterReplySettings[] = [
   'following',
   'mentionedUsers',
@@ -125,6 +131,7 @@ export class TwitterPublisher extends BasePublisher {
         thread,
         oauth1Credentials,
         this.getReplySettings(metadata),
+        this.getDisclosures(metadata),
       );
     }
 
@@ -150,6 +157,7 @@ export class TwitterPublisher extends BasePublisher {
       mediaIds,
       poll,
       replySettings: this.getReplySettings(metadata),
+      ...this.getDisclosures(metadata),
     });
 
     this.logger.log(`Published tweet: ${result.id}`);
@@ -172,6 +180,7 @@ export class TwitterPublisher extends BasePublisher {
     tweets: Array<{ text: string; mediaItems?: MediaItem[] }>,
     oauth1Credentials: TwitterOAuth1Credentials | undefined,
     replySettings?: TwitterReplySettings,
+    disclosures?: TwitterDisclosures,
   ): Promise<PublishResult> {
     let replyToId: string | undefined;
     let rootId: string | undefined;
@@ -200,6 +209,13 @@ export class TwitterPublisher extends BasePublisher {
             // reply rules from the post that starts it, and sending it on
             // a reply restricts replies to that reply instead.
             replySettings: i === 0 ? replySettings : undefined,
+            // Unlike the reply rules, a disclosure rides EVERY post in the
+            // thread. `reply_settings` describes the conversation, so the
+            // root owns it; `made_with_ai` describes the media attached to
+            // the post carrying it, and the composer offers one toggle for
+            // the thread rather than one per post. Setting it on the root
+            // alone would leave posts 2..N undisclosed.
+            ...disclosures,
           },
         );
         if (!rootId) rootId = result.id;
@@ -239,6 +255,24 @@ export class TwitterPublisher extends BasePublisher {
     return VALID_REPLY_SETTINGS.includes(value as TwitterReplySettings)
       ? (value as TwitterReplySettings)
       : undefined;
+  }
+
+  /**
+   * The disclosure flags to send, if any.
+   *
+   * Only a `true` is forwarded. The request schema sets
+   * `additionalProperties: false`, and a disclosure is a claim about the
+   * post — an absent field says "not disclosed", so there is nothing for
+   * a `false` to express that omission does not. Both need only
+   * `tweet.write`, which our X channels already hold.
+   */
+  private getDisclosures(
+    metadata: Record<string, any> | undefined,
+  ): TwitterDisclosures {
+    const disclosures: TwitterDisclosures = {};
+    if (metadata?.madeWithAi === true) disclosures.madeWithAi = true;
+    if (metadata?.paidPartnership === true) disclosures.paidPartnership = true;
+    return disclosures;
   }
 
   /**

@@ -29,6 +29,15 @@ export interface TwitterFields {
     | 'verified';
   pollOptions?: string[];
   pollDurationMinutes?: number;
+  /**
+   * X's two disclosures, `made_with_ai` and `paid_partnership`.
+   *
+   * Plain booleans on POST /2/tweets, needing no scope beyond the
+   * `tweet.write` our channels already hold. Only `true` is sent — an
+   * absent field is what X reads as "not disclosed".
+   */
+  madeWithAi?: boolean;
+  paidPartnership?: boolean;
 }
 
 export type InstagramPostType = 'feed' | 'reel' | 'story' | 'carousel';
