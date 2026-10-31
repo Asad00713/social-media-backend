@@ -4,6 +4,7 @@ import { fetch as undiciFetch } from 'undici';
 import {
   checkedLookup,
   extractFavicon,
+  extractPageMeta,
   normalizeUtm,
   isPrivateAddress,
   assertPublicUrl,
@@ -120,6 +121,18 @@ describe('SSRF guard', () => {
     '64:ff9b::7f00:1',
     '2002:7f00:1::1',
     'not-an-ip',
+    '198.18.0.1',
+    '198.19.255.255',
+    '64:ff9b:1::1',
+    'fec0::1',
+    '100::1',
+    '192.0.0.8',
+    '192.0.2.5',
+    '198.51.100.7',
+    '203.0.113.9',
+    '240.0.0.1',
+    '255.255.255.254',
+    '2001:db8::1',
   ])('treats %s as private', (ip) => {
     expect(isPrivateAddress(ip)).toBe(true);
   });
@@ -179,7 +192,7 @@ describe('SSRF guard', () => {
       new Promise<unknown>((res) =>
         checkedLookup(
           'x.test',
-          {},
+          { all: true },
           (err, addrs) => res(err ?? addrs),
           resolver,
         ),
@@ -225,6 +238,18 @@ describe('SSRF guard', () => {
       expect(mockedFetch).toHaveBeenCalledTimes(1);
     },
   );
+
+  it('cancels the body on the redirect path too', async () => {
+    const res = new Response('r', {
+      status: 302,
+      headers: { location: 'http://8.8.4.4/n' },
+    });
+    const cancel = jest.spyOn(res.body!, 'cancel');
+    mockedFetch.mockResolvedValueOnce(res);
+    mockedFetch.mockResolvedValueOnce(new Response('ok'));
+    await fetchPublicHtml('http://8.8.8.8/', {});
+    expect(cancel).toHaveBeenCalled();
+  });
 
   it('cancels the body of a non-ok response and returns null', async () => {
     const res = new Response('nope', { status: 500 });
@@ -277,5 +302,96 @@ describe('SSRF guard', () => {
     mockedFetch.mockResolvedValue(new Response('x'.repeat(3 * 1024 * 1024)));
     const r = await fetchPublicHtml('http://8.8.8.8/', {});
     expect(r!.html.length).toBeLessThan(1.5 * 1024 * 1024);
+  });
+});
+
+describe('extractPageMeta', () => {
+  const U = 'https://a.com/p';
+  it('reads og tags with content before property', () => {
+    const m = extractPageMeta(
+      '<head><meta content="T" property="og:title"><meta content="D" name="description"></head>',
+      U,
+    );
+    expect(m.title).toBe('T');
+    expect(m.description).toBe('D');
+  });
+  it('reads single-quoted and unquoted values, og over fallback', () => {
+    const m = extractPageMeta(
+      "<head><title>Fallback</title><meta property='og:title' content='Q'><meta property=og:site_name content=Site><meta property=og:image content=/i.png></head>",
+      U,
+    );
+    expect(m.title).toBe('Q');
+    expect(m.siteName).toBe('Site');
+    expect(m.imageUrl).toBe('/i.png');
+  });
+  it('reads an upper-case <TITLE> and decodes entities', () => {
+    const m = extractPageMeta(
+      '<HEAD><TITLE>A &amp; B &lt;c&gt; &quot;d&quot; &#39;e&#x27;</TITLE></HEAD>',
+      U,
+    );
+    expect(m.title).toBe('A & B <c> "d" \'e\'');
+  });
+  it('decodes entities in meta content', () => {
+    const m = extractPageMeta(
+      '<meta property="og:description" content="Tom &amp; Jerry">',
+      U,
+    );
+    expect(m.description).toBe('Tom & Jerry');
+  });
+  it('scans a pathological 32 KB og:title input in linear time', () => {
+    const html = '<meta property="og:title"'.repeat(
+      Math.floor((32 * 1024) / 25),
+    );
+    const start = Date.now();
+    extractPageMeta(html, U);
+    expect(Date.now() - start).toBeLessThan(200);
+  });
+  it('scans only the first 64 KB when there is no </head>', () => {
+    const html =
+      'x'.repeat(70 * 1024) + '<meta property="og:title" content="late">';
+    expect(extractPageMeta(html, U).title).toBeUndefined();
+  });
+  it('stops at </head>', () => {
+    const m = extractPageMeta(
+      '<head></head><meta property="og:title" content="late">',
+      U,
+    );
+    expect(m.title).toBeUndefined();
+  });
+});
+
+describe('extractFavicon offsets', () => {
+  it('survives a capital I with dot above (lowercase changes length)', () => {
+    expect(
+      extractFavicon(
+        'İ'.repeat(10) + '<link rel="icon" href="/i.png">',
+        'https://a.com/',
+      ),
+    ).toBe('https://a.com/i.png');
+  });
+});
+
+describe('checkedLookup options.all', () => {
+  const resolver = (
+    _h: string,
+    _o: unknown,
+    cb: (e: Error | null, a: { address: string; family: number }[]) => void,
+  ) =>
+    cb(null, [
+      { address: '8.8.8.8', family: 4 },
+      { address: '2606:4700::1111', family: 6 },
+    ]);
+  it('returns the array when all is true', () => {
+    const cb = jest.fn();
+    checkedLookup('x', { all: true }, cb, resolver as never);
+    expect(cb).toHaveBeenCalledWith(null, [
+      { address: '8.8.8.8', family: 4 },
+      { address: '2606:4700::1111', family: 6 },
+    ]);
+  });
+  it('returns (null, address, family) when all is false', () => {
+    const cb = jest.fn();
+    checkedLookup('x', {}, cb, resolver as never);
+    expect(cb).toHaveBeenCalledWith(null, '8.8.8.8', 4);
   });
 });

@@ -22,55 +22,126 @@ export function normalizeUtm(
 const MAX_SCAN_CHARS = 64 * 1024;
 const WS = new Set([' ', '\t', '\n', '\r', '\f']);
 
+/** ASCII-only lowercase: unlike toLowerCase() it never changes the length. */
+function asciiLower(text: string): string {
+  return text.replace(/[A-Z]/g, (c) => c.toLowerCase());
+}
+
 /**
- * `<link ...>` tags from the head, found by a linear indexOf scan. No regex
- * runs over attacker HTML (ReDoS); scanning stops at </head> or 64 KB.
+ * The part of the page worth scanning: cut at the first </head> or 64 KB,
+ * whichever comes first. Every extractor sees only this string, and no regex
+ * ever runs over it (ReDoS).
  */
-function linkTags(html: string): string[] {
-  const lower = html.slice(0, MAX_SCAN_CHARS).toLowerCase();
-  const headEnd = lower.indexOf('</head>');
-  const doc = headEnd === -1 ? lower : lower.slice(0, headEnd);
+function capHtml(html: string): string {
+  const head = html.slice(0, MAX_SCAN_CHARS);
+  const end = asciiLower(head).indexOf('</head>');
+  return end === -1 ? head : head.slice(0, end);
+}
+
+/** Every `<name ...>` tag in `doc`, by linear indexOf scan. */
+function tagsNamed(doc: string, lowerDoc: string, name: string): string[] {
+  const open = `<${name}`;
   const tags: string[] = [];
   let from = 0;
   for (;;) {
-    const start = doc.indexOf('<link', from);
+    const start = lowerDoc.indexOf(open, from);
     if (start === -1) break;
-    const close = doc.indexOf('>', start);
+    const close = lowerDoc.indexOf('>', start);
     if (close === -1) break;
-    const next = doc.charAt(start + 5);
-    if (WS.has(next) || next === '/') {
-      tags.push(html.slice(start, close + 1));
+    const next = lowerDoc.charAt(start + open.length);
+    if (WS.has(next) || next === '/' || next === '>') {
+      tags.push(doc.slice(start, close + 1));
     }
     from = close + 1;
   }
   return tags;
 }
 
-/** Value of attribute `name` in one tag, by linear scan. */
-function attr(tag: string, name: string): string | undefined {
-  const lower = tag.toLowerCase();
+const ENTITIES: Record<string, string> = {
+  '&amp;': '&',
+  '&lt;': '<',
+  '&gt;': '>',
+  '&quot;': '"',
+  '&#39;': "'",
+  '&#x27;': "'",
+};
+
+/** Decode the five basic entities in an already-extracted value. */
+function decodeEntities(value: string): string {
+  return value.replace(
+    /&(?:amp|lt|gt|quot|#39|#x27);/gi,
+    (m) => ENTITIES[m.toLowerCase()] ?? m,
+  );
+}
+
+function isNameEnd(c: string): boolean {
+  return WS.has(c) || c === '=' || c === '>' || c === '/';
+}
+
+/** Attributes of one tag (lower-cased names), by a single linear pass. */
+function parseAttrs(tag: string): Map<string, string> {
+  const attrs = new Map<string, string>();
+  let i = 1; // past '<'
+  while (i < tag.length && !WS.has(tag.charAt(i)) && tag.charAt(i) !== '>') i++;
+  while (i < tag.length) {
+    while (i < tag.length && (WS.has(tag.charAt(i)) || tag.charAt(i) === '/')) {
+      i++;
+    }
+    if (i >= tag.length || tag.charAt(i) === '>') break;
+    let n = i;
+    while (n < tag.length && !isNameEnd(tag.charAt(n))) n++;
+    if (n === i) {
+      i++; // stray '=': skip it so the scan always advances
+      continue;
+    }
+    const name = asciiLower(tag.slice(i, n));
+    i = n;
+    while (WS.has(tag.charAt(i))) i++;
+    if (tag.charAt(i) !== '=') {
+      if (!attrs.has(name)) attrs.set(name, '');
+      continue;
+    }
+    i++;
+    while (WS.has(tag.charAt(i))) i++;
+    const q = tag.charAt(i);
+    let value: string;
+    if (q === '"' || q === "'") {
+      const e = tag.indexOf(q, i + 1);
+      value = e === -1 ? tag.slice(i + 1) : tag.slice(i + 1, e);
+      i = e === -1 ? tag.length : e + 1;
+    } else {
+      let e = i;
+      while (
+        e < tag.length &&
+        !WS.has(tag.charAt(e)) &&
+        tag.charAt(e) !== '>'
+      ) {
+        e++;
+      }
+      value = tag.slice(i, e);
+      i = e;
+    }
+    if (!attrs.has(name)) attrs.set(name, decodeEntities(value));
+  }
+  return attrs;
+}
+
+/** Text between `<title ...>` and `</title>`, or undefined. */
+function titleText(doc: string, lowerDoc: string): string | undefined {
+  const open = '<title';
   let from = 0;
   for (;;) {
-    const at = lower.indexOf(name, from);
-    if (at === -1) return undefined;
-    from = at + name.length;
-    const prev = lower.charAt(at - 1);
-    if (!WS.has(prev) && prev !== '"' && prev !== "'") continue;
-    let k = from;
-    while (WS.has(lower.charAt(k))) k++;
-    if (lower.charAt(k) !== '=') continue;
-    k++;
-    while (WS.has(lower.charAt(k))) k++;
-    const q = tag.charAt(k);
-    if (q === '"' || q === "'") {
-      const e = tag.indexOf(q, k + 1);
-      return e === -1 ? undefined : tag.slice(k + 1, e);
+    const start = lowerDoc.indexOf(open, from);
+    if (start === -1) return undefined;
+    const gt = lowerDoc.indexOf('>', start);
+    if (gt === -1) return undefined;
+    const next = lowerDoc.charAt(start + open.length);
+    if (WS.has(next) || next === '>') {
+      const end = lowerDoc.indexOf('</title', gt);
+      if (end === -1) return undefined;
+      return decodeEntities(doc.slice(gt + 1, end).trim());
     }
-    let e = k;
-    while (e < tag.length && !WS.has(tag.charAt(e)) && tag.charAt(e) !== '>') {
-      e++;
-    }
-    return tag.slice(k, e);
+    from = gt + 1;
   }
 }
 
@@ -81,14 +152,19 @@ function attr(tag: string, name: string): string | undefined {
  * `<origin>/favicon.ico`.
  */
 export function extractFavicon(html: string, pageUrl: string): string {
+  return faviconFrom(capHtml(html), pageUrl);
+}
+
+function faviconFrom(doc: string, pageUrl: string): string {
   const page = new URL(pageUrl);
   const fallback = `${page.origin}/favicon.ico`;
   let icon: string | undefined;
   let apple: string | undefined;
 
-  for (const tag of linkTags(html)) {
-    const rel = attr(tag, 'rel');
-    const href = attr(tag, 'href')?.trim();
+  for (const tag of tagsNamed(doc, asciiLower(doc), 'link')) {
+    const attrs = parseAttrs(tag);
+    const rel = attrs.get('rel');
+    const href = attrs.get('href')?.trim();
     if (!rel || !href) continue;
     let resolved: URL;
     try {
@@ -99,11 +175,40 @@ export function extractFavicon(html: string, pageUrl: string): string {
     if (resolved.protocol !== 'http:' && resolved.protocol !== 'https:') {
       continue;
     }
-    const tokens = rel.toLowerCase().split(/\s+/);
+    const tokens = asciiLower(rel).split(/\s+/);
     if (tokens.includes('icon')) icon ??= resolved.href;
     else if (tokens.includes('apple-touch-icon')) apple ??= resolved.href;
   }
   return icon ?? apple ?? fallback;
+}
+
+export interface PageMeta {
+  title?: string;
+  description?: string;
+  imageUrl?: string;
+  siteName?: string;
+  faviconUrl: string;
+}
+
+/** Open Graph / meta / title / favicon of a page, from the capped head only. */
+export function extractPageMeta(html: string, pageUrl: string): PageMeta {
+  const doc = capHtml(html);
+  const lowerDoc = asciiLower(doc);
+  const meta = new Map<string, string>();
+  for (const tag of tagsNamed(doc, lowerDoc, 'meta')) {
+    const attrs = parseAttrs(tag);
+    const key = asciiLower(attrs.get('property') ?? attrs.get('name') ?? '');
+    const content = attrs.get('content');
+    if (key && content !== undefined && !meta.has(key)) meta.set(key, content);
+  }
+  return {
+    title: meta.get('og:title') || titleText(doc, lowerDoc) || undefined,
+    description:
+      meta.get('og:description') || meta.get('description') || undefined,
+    imageUrl: meta.get('og:image') || undefined,
+    siteName: meta.get('og:site_name') || undefined,
+    faviconUrl: faviconFrom(doc, pageUrl),
+  };
 }
 
 // ── SSRF guard ──────────────────────────────────────────────────────────────
@@ -121,6 +226,19 @@ const MAX_REDIRECTS = 3;
  * ::/96, NAT64 64:ff9b::/96, 6to4 2002::/16, Teredo) are REJECTED outright
  * rather than unwrapped. Unparseable input counts as private.
  */
+const DENY_CIDRS = [
+  '198.18.0.0/15',
+  '64:ff9b:1::/48',
+  'fec0::/10',
+  '100::/64',
+  '192.0.0.0/24',
+  '192.0.2.0/24',
+  '198.51.100.0/24',
+  '203.0.113.0/24',
+  '240.0.0.0/4',
+  '2001:db8::/32',
+].map((c) => ipaddr.parseCIDR(c));
+
 export function isPrivateAddress(address: string): boolean {
   if (!ipaddr.isValid(address)) return true;
   let addr: ipaddr.IPv4 | ipaddr.IPv6;
@@ -133,18 +251,28 @@ export function isPrivateAddress(address: string): boolean {
     const parts = (addr as ipaddr.IPv6).parts;
     if (parts.slice(0, 6).every((p) => p === 0)) return true; // ::/96
   }
-  return addr.range() !== 'unicast';
+  if (addr.range() !== 'unicast') return true;
+  // ipaddr.js 1.9.1 calls these non-global ranges 'unicast'.
+  return DENY_CIDRS.some(
+    ([net, bits]) =>
+      net.kind() === addr.kind() &&
+      (addr as ipaddr.IPv4).match(net as ipaddr.IPv4, bits),
+  );
 }
 
 interface LookupResult {
   address: string;
   family: number;
 }
-type LookupCallback = (err: Error | null, addrs: LookupResult[]) => void;
+type LookupCallback = (
+  err: Error | null,
+  addrs: LookupResult[] | string,
+  family?: number,
+) => void;
 type Resolver = (
   host: string,
   options: { all: true },
-  cb: LookupCallback,
+  cb: (err: Error | null, addrs: LookupResult[]) => void,
 ) => void;
 
 /**
@@ -154,7 +282,7 @@ type Resolver = (
  */
 export function checkedLookup(
   host: string,
-  _options: unknown,
+  options: unknown,
   callback: LookupCallback,
   resolver: Resolver = dnsLookup as unknown as Resolver,
 ): void {
@@ -163,7 +291,10 @@ export function checkedLookup(
     if (addrs.length === 0 || addrs.some((a) => isPrivateAddress(a.address))) {
       return callback(new Error('Link points at a private address'), []);
     }
-    callback(null, addrs);
+    if ((options as { all?: boolean } | null)?.all) {
+      return callback(null, addrs);
+    }
+    callback(null, addrs[0].address, addrs[0].family);
   });
 }
 

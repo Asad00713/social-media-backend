@@ -8,7 +8,7 @@ import {
 import { eq, and, desc, asc, ilike, or, sql } from 'drizzle-orm';
 import { ilikePattern } from '../lib/search';
 import {
-  extractFavicon,
+  extractPageMeta,
   fetchPublicHtml,
   normalizeUtm,
 } from '../lib/link-meta';
@@ -50,35 +50,7 @@ export class SavedLinkService {
       if (!page) {
         return {};
       }
-      const { html, finalUrl } = page;
-
-      // Extract Open Graph metadata
-      const ogTitle = html.match(
-        /<meta[^>]*property="og:title"[^>]*content="([^"]*)"[^>]*>/i,
-      );
-      const ogDescription = html.match(
-        /<meta[^>]*property="og:description"[^>]*content="([^"]*)"[^>]*>/i,
-      );
-      const ogImage = html.match(
-        /<meta[^>]*property="og:image"[^>]*content="([^"]*)"[^>]*>/i,
-      );
-      const ogSiteName = html.match(
-        /<meta[^>]*property="og:site_name"[^>]*content="([^"]*)"[^>]*>/i,
-      );
-
-      // Fallback to regular meta tags
-      const metaTitle = html.match(/<title[^>]*>([^<]*)<\/title>/i);
-      const metaDescription = html.match(
-        /<meta[^>]*name="description"[^>]*content="([^"]*)"[^>]*>/i,
-      );
-
-      return {
-        title: ogTitle?.[1] || metaTitle?.[1] || undefined,
-        description: ogDescription?.[1] || metaDescription?.[1] || undefined,
-        imageUrl: ogImage?.[1] || undefined,
-        siteName: ogSiteName?.[1] || undefined,
-        faviconUrl: extractFavicon(html, finalUrl),
-      };
+      return extractPageMeta(page.html, page.finalUrl);
     } catch (error) {
       this.logger.warn(`Failed to fetch link preview for ${url}:`, error);
       return {};
