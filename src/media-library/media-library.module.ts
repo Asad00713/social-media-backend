@@ -5,6 +5,7 @@ import { MediaItemService } from './services/media-item.service';
 import { TemplateService } from './services/template.service';
 import { TextSnippetService } from './services/text-snippet.service';
 import { SavedLinkService } from './services/saved-link.service';
+import { StorageObjectService } from './services/storage-object.service';
 import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service';
 import { MediaModule } from '../media/media.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
@@ -19,6 +20,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     TemplateService,
     TextSnippetService,
     SavedLinkService,
+    StorageObjectService,
     RecycleBinCleanupService,
   ],
   exports: [
@@ -27,6 +29,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     TemplateService,
     TextSnippetService,
     SavedLinkService,
+    StorageObjectService,
   ],
 })
 export class MediaLibraryModule {}

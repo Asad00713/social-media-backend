@@ -31,9 +31,11 @@ export interface UploadOptions {
 export class CloudinaryService {
   private readonly logger = new Logger(CloudinaryService.name);
   private readonly isConfigured: boolean;
+  private readonly cloudName: string;
 
   constructor(private readonly configService: ConfigService) {
     const cloudName = this.configService.get<string>('CLOUDINARY_CLOUD_NAME');
+    this.cloudName = cloudName ?? '';
     const apiKey = this.configService.get<string>('CLOUDINARY_API_KEY');
     const apiSecret = this.configService.get<string>('CLOUDINARY_API_SECRET');
 
@@ -59,6 +61,16 @@ export class CloudinaryService {
    */
   isReady(): boolean {
     return this.isConfigured;
+  }
+
+  /**
+   * True when the URL points into this account's Cloudinary delivery path
+   * (`https://res.cloudinary.com/<cloud name>/...`). The trailing slash stops
+   * `res.cloudinary.com.evil.io` and a cloud name that merely starts the same.
+   */
+  isOwnUrl(url: string): boolean {
+    if (!this.cloudName || !url) return false;
+    return url.startsWith(`https://res.cloudinary.com/${this.cloudName}/`);
   }
 
   /**

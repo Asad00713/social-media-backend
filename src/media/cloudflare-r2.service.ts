@@ -398,6 +398,15 @@ export class CloudflareR2Service {
   }
 
   /**
+   * True when the URL is under this bucket's public base. False whenever the
+   * public base is not configured, so an unset env never matches anything.
+   */
+  isOwnUrl(url: string): boolean {
+    if (!this.publicUrlBase || !url) return false;
+    return url.startsWith(this.publicUrlBase + '/');
+  }
+
+  /**
    * Convert a public URL back into its bucket key (for verifyObject /
    * deleteObject). Returns null if the URL isn't from our R2 bucket.
    */

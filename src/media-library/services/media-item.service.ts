@@ -4,6 +4,7 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  BadGatewayException,
 } from '@nestjs/common';
 import {
   eq,
@@ -14,6 +15,9 @@ import {
   isNull,
   sql,
   inArray,
+  gt,
+  lt,
+  type SQL,
 } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
@@ -21,15 +25,25 @@ import {
   mediaItems,
   mediaCategories,
   NewMediaItem,
+  MediaLibraryItem,
 } from '../../drizzle/schema/media-library.schema';
 import { ilikePattern } from '../lib/search';
 import { CloudinaryService } from '../../media/cloudinary.service';
+import { StorageObjectService } from './storage-object.service';
 import {
   CreateMediaItemDto,
   UpdateMediaItemDto,
   MediaItemQueryDto,
   BulkActionDto,
 } from '../dto/media-library.dto';
+
+/** Files deleted from storage at once during a purge. */
+const PURGE_CONCURRENCY = 8;
+/** Rows read per page when purging the bin. */
+const PURGE_BATCH = 200;
+/** Rows deleted per statement, to stay far below the parameter limit. */
+const DELETE_CHUNK = 1000;
+const BIN_RETENTION_DAYS = 30;
 
 @Injectable()
 export class MediaItemService {
@@ -38,6 +52,7 @@ export class MediaItemService {
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
     private readonly cloudinaryService: CloudinaryService,
+    private readonly storageObjects: StorageObjectService,
   ) {}
 
   /**
@@ -356,33 +371,119 @@ export class MediaItemService {
   }
 
   /**
-   * Permanently delete a media item
+   * Permanently delete a media item. The row stays when storage refuses, so
+   * the user can retry instead of leaving an orphaned file behind.
    */
   async permanentDelete(workspaceId: string, itemId: string) {
     const item = await this.findOne(workspaceId, itemId);
 
-    // Delete from Cloudinary if we have the public ID
-    if (item.cloudinaryPublicId) {
-      try {
-        const resourceType = item.type === 'video' ? 'video' : 'image';
-        await this.cloudinaryService.delete(
-          item.cloudinaryPublicId,
-          resourceType,
-        );
-        this.logger.log(`Deleted from Cloudinary: ${item.cloudinaryPublicId}`);
-      } catch (error) {
-        this.logger.warn(
-          `Failed to delete from Cloudinary: ${item.cloudinaryPublicId}`,
-          error,
-        );
-      }
+    const { failedIds } = await this.purgeItems([item]);
+    if (failedIds.length > 0) {
+      throw new BadGatewayException(
+        'Could not delete the file from storage. Try again.',
+      );
     }
-
-    await this.db.delete(mediaItems).where(eq(mediaItems.id, itemId));
 
     this.logger.log(`Permanently deleted media item ${itemId}`);
 
     return { success: true, message: 'Media item permanently deleted' };
+  }
+
+  /**
+   * Deletes the files behind `rows` (at most PURGE_CONCURRENCY at a time) and
+   * then only the rows whose file is gone. A file another row outside this set
+   * still points at is left in storage; its row is removed all the same.
+   */
+  async purgeItems(
+    rows: MediaLibraryItem[],
+  ): Promise<{ deletedIds: string[]; failedIds: string[] }> {
+    const setIds = rows.map((r) => r.id);
+
+    // Rows inside the set that share one file delete it once.
+    const groups = new Map<string, MediaLibraryItem[]>();
+    for (const row of rows) {
+      const group = groups.get(row.fileUrl);
+      if (group) group.push(row);
+      else groups.set(row.fileUrl, [row]);
+    }
+
+    const deletedIds: string[] = [];
+    const failedIds: string[] = [];
+    const queue = [...groups.values()];
+
+    const worker = async () => {
+      for (let group = queue.shift(); group; group = queue.shift()) {
+        const first = group[0];
+        try {
+          const shared = await this.storageObjects.isFileShared(
+            first,
+            setIds,
+            this.db,
+          );
+          if (!shared) await this.storageObjects.deleteFile(first);
+          deletedIds.push(...group.map((r) => r.id));
+        } catch (error) {
+          for (const row of group) {
+            failedIds.push(row.id);
+            this.logger.warn(
+              `Failed to delete file for media item ${row.id}: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            );
+          }
+        }
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(PURGE_CONCURRENCY, queue.length) }, worker),
+    );
+
+    for (let i = 0; i < deletedIds.length; i += DELETE_CHUNK) {
+      await this.db
+        .delete(mediaItems)
+        .where(inArray(mediaItems.id, deletedIds.slice(i, i + DELETE_CHUNK)));
+    }
+
+    return { deletedIds, failedIds };
+  }
+
+  /**
+   * Purges every deleted item in scope, a page at a time by id. The cursor
+   * always moves past the page, so a row whose file will not delete cannot
+   * stall the loop.
+   */
+  async purgeDeleted(scope: {
+    workspaceId?: string;
+    deletedBefore?: Date;
+  }): Promise<{ deleted: number; failed: number }> {
+    const base: SQL[] = [eq(mediaItems.isDeleted, true)];
+    if (scope.workspaceId) {
+      base.push(eq(mediaItems.workspaceId, scope.workspaceId));
+    }
+    if (scope.deletedBefore) {
+      base.push(lt(mediaItems.deletedAt, scope.deletedBefore));
+    }
+
+    let deleted = 0;
+    let failed = 0;
+    let cursor: string | undefined;
+
+    for (;;) {
+      const page = await this.db
+        .select()
+        .from(mediaItems)
+        .where(and(...base, cursor ? gt(mediaItems.id, cursor) : undefined))
+        .orderBy(asc(mediaItems.id))
+        .limit(PURGE_BATCH);
+      if (page.length === 0) break;
+
+      const result = await this.purgeItems(page);
+      deleted += result.deletedIds.length;
+      failed += result.failedIds.length;
+      cursor = page[page.length - 1].id;
+    }
+
+    return { deleted, failed };
   }
 
   /**
@@ -406,29 +507,37 @@ export class MediaItemService {
       throw new BadRequestException('Some items not found');
     }
 
+    let affectedCount = 0;
+
     switch (action) {
       case 'delete':
-        await this.db
-          .update(mediaItems)
-          .set({
-            isDeleted: true,
-            deletedAt: new Date(),
-            deletedById: userId,
-            updatedAt: new Date(),
-          })
-          .where(inArray(mediaItems.id, ids));
+        affectedCount = (
+          await this.db
+            .update(mediaItems)
+            .set({
+              isDeleted: true,
+              deletedAt: new Date(),
+              deletedById: userId,
+              updatedAt: new Date(),
+            })
+            .where(inArray(mediaItems.id, ids))
+            .returning({ id: mediaItems.id })
+        ).length;
         break;
 
       case 'restore':
-        await this.db
-          .update(mediaItems)
-          .set({
-            isDeleted: false,
-            deletedAt: null,
-            deletedById: null,
-            updatedAt: new Date(),
-          })
-          .where(inArray(mediaItems.id, ids));
+        affectedCount = (
+          await this.db
+            .update(mediaItems)
+            .set({
+              isDeleted: false,
+              deletedAt: null,
+              deletedById: null,
+              updatedAt: new Date(),
+            })
+            .where(inArray(mediaItems.id, ids))
+            .returning({ id: mediaItems.id })
+        ).length;
         break;
 
       case 'move': {
@@ -467,57 +576,48 @@ export class MediaItemService {
           }
         }
 
-        await this.db
-          .update(mediaItems)
-          .set({ categoryId, updatedAt: new Date() })
-          .where(inArray(mediaItems.id, ids));
+        affectedCount = (
+          await this.db
+            .update(mediaItems)
+            .set({ categoryId, updatedAt: new Date() })
+            .where(inArray(mediaItems.id, ids))
+            .returning({ id: mediaItems.id })
+        ).length;
         break;
       }
 
       case 'star':
-        await this.db
-          .update(mediaItems)
-          .set({ isStarred: true, updatedAt: new Date() })
-          .where(inArray(mediaItems.id, ids));
+        affectedCount = (
+          await this.db
+            .update(mediaItems)
+            .set({ isStarred: true, updatedAt: new Date() })
+            .where(inArray(mediaItems.id, ids))
+            .returning({ id: mediaItems.id })
+        ).length;
         break;
 
       case 'unstar':
-        await this.db
-          .update(mediaItems)
-          .set({ isStarred: false, updatedAt: new Date() })
-          .where(inArray(mediaItems.id, ids));
+        affectedCount = (
+          await this.db
+            .update(mediaItems)
+            .set({ isStarred: false, updatedAt: new Date() })
+            .where(inArray(mediaItems.id, ids))
+            .returning({ id: mediaItems.id })
+        ).length;
         break;
 
-      case 'permanentDelete':
-        // Delete from Cloudinary
-        for (const item of items) {
-          if (item.cloudinaryPublicId) {
-            try {
-              const resourceType = item.type === 'video' ? 'video' : 'image';
-              await this.cloudinaryService.delete(
-                item.cloudinaryPublicId,
-                resourceType,
-              );
-            } catch (error) {
-              this.logger.warn(
-                `Failed to delete from Cloudinary: ${item.cloudinaryPublicId}`,
-              );
-            }
-          }
-        }
-        await this.db.delete(mediaItems).where(inArray(mediaItems.id, ids));
+      case 'permanentDelete': {
+        const { deletedIds } = await this.purgeItems(items);
+        affectedCount = deletedIds.length;
         break;
+      }
     }
 
     this.logger.log(
       `Bulk ${action} on ${ids.length} media items in workspace ${workspaceId}`,
     );
 
-    return {
-      success: true,
-      message: `${action} completed on ${ids.length} items`,
-      affectedCount: ids.length,
-    };
+    return { affectedCount };
   }
 
   /**
@@ -587,57 +687,19 @@ export class MediaItemService {
   }
 
   /**
-   * Permanently delete items older than 30 days in recycle bin
-   * This should be called by a scheduled job
+   * Permanently delete items that have been in the recycle bin for over 30
+   * days. Called by the scheduled job.
    */
-  async cleanupRecycleBin() {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
-
-    const itemsToDelete = await this.db
-      .select()
-      .from(mediaItems)
-      .where(
-        and(
-          eq(mediaItems.isDeleted, true),
-          sql`${mediaItems.deletedAt} < ${thirtyDaysAgo}`,
-        ),
-      );
-
-    // Delete from Cloudinary
-    for (const item of itemsToDelete) {
-      if (item.cloudinaryPublicId) {
-        try {
-          const resourceType = item.type === 'video' ? 'video' : 'image';
-          await this.cloudinaryService.delete(
-            item.cloudinaryPublicId,
-            resourceType,
-          );
-        } catch (error) {
-          this.logger.warn(
-            `Failed to delete from Cloudinary: ${item.cloudinaryPublicId}`,
-          );
-        }
-      }
-    }
-
-    // Delete from database
-    const result = await this.db
-      .delete(mediaItems)
-      .where(
-        and(
-          eq(mediaItems.isDeleted, true),
-          sql`${mediaItems.deletedAt} < ${thirtyDaysAgo}`,
-        ),
-      )
-      .returning();
+  async cleanupRecycleBin(now: Date = new Date()) {
+    const deletedBefore = new Date(
+      now.getTime() - BIN_RETENTION_DAYS * 24 * 60 * 60 * 1000,
+    );
+    const { deleted } = await this.purgeDeleted({ deletedBefore });
 
     this.logger.log(
-      `Cleaned up ${result.length} items from recycle bin (older than 30 days)`,
+      `Cleaned up ${deleted} items from recycle bin (older than ${BIN_RETENTION_DAYS} days)`,
     );
 
-    return {
-      deletedCount: result.length,
-    };
+    return { deletedCount: deleted };
   }
 }

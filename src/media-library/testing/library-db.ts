@@ -8,6 +8,8 @@ import {
 } from '../../planner/testing/rollback-db';
 import { MediaItemService } from '../services/media-item.service';
 import type { CloudinaryService } from '../../media/cloudinary.service';
+import type { CloudflareR2Service } from '../../media/cloudflare-r2.service';
+import { StorageObjectService } from '../services/storage-object.service';
 
 export {
   seedWorkspace,
@@ -66,6 +68,7 @@ const rand = () => Math.random().toString(36).slice(2, 10);
 
 export interface MediaItemServiceDeps {
   cloudinaryService: CloudinaryService;
+  storageObjects: StorageObjectService;
 }
 
 /**
@@ -76,14 +79,22 @@ export function makeMediaItemService(
   db: DbType,
   overrides: Partial<MediaItemServiceDeps> = {},
 ): MediaItemService {
+  const cloudinaryService = {
+    delete: jest.fn().mockResolvedValue(true),
+    isReady: jest.fn().mockReturnValue(true),
+    isOwnUrl: jest.fn().mockReturnValue(false),
+  } as unknown as CloudinaryService;
+  const r2 = {
+    deleteObject: jest.fn().mockResolvedValue(undefined),
+    keyFromPublicUrl: jest.fn().mockReturnValue(null),
+    isOwnUrl: jest.fn().mockReturnValue(false),
+  } as unknown as CloudflareR2Service;
   const deps: MediaItemServiceDeps = {
-    cloudinaryService: {
-      delete: jest.fn().mockResolvedValue(undefined),
-      isReady: jest.fn().mockReturnValue(true),
-    } as unknown as CloudinaryService,
+    cloudinaryService,
+    storageObjects: new StorageObjectService(cloudinaryService, r2, db),
     ...overrides,
   };
-  return new MediaItemService(db, deps.cloudinaryService);
+  return new MediaItemService(db, deps.cloudinaryService, deps.storageObjects);
 }
 
 // ---------------------------------------------------------------------------

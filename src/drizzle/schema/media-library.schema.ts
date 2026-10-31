@@ -30,6 +30,10 @@ export const MEDIA_LIBRARY_TYPES = [
 
 export type MediaLibraryType = (typeof MEDIA_LIBRARY_TYPES)[number];
 
+/** Where a library file's bytes live. */
+export const STORAGE_PROVIDERS = ['cloudinary', 'r2'] as const;
+export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
+
 // =============================================================================
 // Media Categories - User-created categories per type
 // =============================================================================
