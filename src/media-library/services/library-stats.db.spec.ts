@@ -14,10 +14,15 @@ import {
   seedCampaignSlot,
   seedEvergreenPost,
 } from '../testing/library-db';
-import { itemReferencedSql, workspaceReferenceKeysSql } from '../lib/usage-sql';
+import {
+  itemInReferenceKeysSql,
+  itemReferencedSql,
+  workspaceReferenceKeysSql,
+} from '../lib/usage-sql';
 import { StorageQuotaService } from './storage-quota.service';
 import { LibraryStatsService } from './library-stats.service';
 
+const ROLL_BACK = new Error('roll back');
 const FREE = 524288000;
 const PRO = 10737418240;
 
@@ -73,6 +78,22 @@ describeLibraryDb('StorageQuotaService', () => {
     });
   });
 
+  it('a trialing subscription counts as active for the storage limit', async () => {
+    await withLibraryDb(async (db, client) => {
+      await client.query(
+        `INSERT INTO plans (code, name, base_price_cents, channels_per_workspace, members_per_workspace, max_workspaces, storage_bytes_per_workspace)
+         VALUES ('PRO', 'Pro', 0, 3, 1, 1, $1)
+         ON CONFLICT (code) DO UPDATE SET storage_bytes_per_workspace = $1`,
+        [PRO],
+      );
+      const a = await seedWorkspace(client);
+      await seedSubscription(client, a.ownerId, 'PRO', 'trialing');
+      expect(
+        (await new StorageQuotaService(db).getUsage(a.workspaceId)).limit,
+      ).toBe(PRO);
+    });
+  });
+
   it('assertCanStore throws StorageFullException past the limit', async () => {
     await withLibraryDb(async (db, client) => {
       const { workspaceId: ws, ownerId } = await seedWorkspace(client);
@@ -116,15 +137,18 @@ describeLibraryDb('StorageQuotaService', () => {
             const locks = await held();
             expect(locks).toHaveLength(1);
             key = locks[0];
-            throw new Error('roll back');
+            throw ROLL_BACK;
           })
-          .catch(() => undefined);
+          .catch((e: unknown) => {
+            if (e !== ROLL_BACK) throw e;
+          });
         expect(await held()).toEqual([]);
         return key;
       };
       const a = await keyOf(wsA);
       const b = await keyOf(wsB);
       expect(a).not.toBe('');
+      expect(b).not.toBe('');
       expect(a).not.toBe(b);
     });
   });
@@ -264,6 +288,12 @@ describeLibraryDb('workspaceReferenceKeysSql vs itemReferencedSql', () => {
       const otherWs = await mk('other-ws');
       const binned = await mk('binned', { isDeleted: true });
       await mk('unused');
+      const evergreenRetired = await mk('evergreen-retired');
+      const otherSlot = await mk('other-slot');
+      const otherEvergreen = await mk('other-evergreen');
+      await mk('slot-url');
+      const malformedArrayId = await mk('malformed-array-id');
+      const malformedNested = await mk('malformed-nested');
 
       const p = { workspaceId: ws, createdById: u };
       await seedPost(client, { ...p, mediaItems: [{ libraryItemId: byId }] });
@@ -297,6 +327,43 @@ describeLibraryDb('workspaceReferenceKeysSql vs itemReferencedSql', () => {
         ],
       });
 
+      // A retired entry still counts: neither form looks at its status.
+      const retired = await seedEvergreenPost(client, {
+        ...p,
+        media: [{ id: evergreenRetired }],
+      });
+      await client.query(
+        `UPDATE campaign_evergreen_posts SET status = 'retired' WHERE id = $1`,
+        [retired.postId],
+      );
+      // Another workspace's slot and evergreen entry never reference ours,
+      // even by the same id or url.
+      const o = { workspaceId: other.workspaceId, createdById: other.ownerId };
+      await seedCampaignSlot(client, {
+        ...o,
+        media: [{ id: otherSlot, url: url('other-slot') }],
+      });
+      await seedEvergreenPost(client, {
+        ...o,
+        media: [{ id: otherEvergreen, url: url('other-evergreen') }],
+      });
+      // A slot holding only a url.
+      await seedCampaignSlot(client, {
+        ...p,
+        media: [{ id: 'not-an-item', url: url('slot-url') }],
+      });
+      // Malformed evergreen media shapes the lax jsonpath still matches.
+      const setEvergreenMedia = async (media: unknown) => {
+        const e = await seedEvergreenPost(client, { ...p, media: [] });
+        await client.query(
+          `UPDATE campaign_evergreen_posts
+              SET content = jsonb_set(content, '{media}', $2::jsonb) WHERE id = $1`,
+          [e.postId, JSON.stringify(media)],
+        );
+      };
+      await setEvergreenMedia([{ id: [malformedArrayId] }]);
+      await setEvergreenMedia([[{ id: malformedNested }]]);
+
       const res = await db.execute<{
         name: string;
         a: boolean;
@@ -309,11 +376,10 @@ describeLibraryDb('workspaceReferenceKeysSql vs itemReferencedSql', () => {
                  fileUrl: sql`media_items.file_url`,
                  workspaceId: sql`media_items.workspace_id`,
                })} AS a,
-               (id::text IN (SELECT item_id FROM keys WHERE item_id IS NOT NULL)
-                OR file_url IN (SELECT url FROM keys WHERE url IS NOT NULL)) AS b
+               ${itemInReferenceKeysSql({ id: sql`media_items.id`, fileUrl: sql`media_items.file_url` })} AS b
           FROM media_items WHERE workspace_id = ${ws}::uuid
       `);
-      expect(res.rows).toHaveLength(10);
+      expect(res.rows).toHaveLength(16);
       for (const r of res.rows) {
         expect({ name: r.name, set: r.b }).toEqual({ name: r.name, set: r.a });
       }
@@ -326,10 +392,14 @@ describeLibraryDb('workspaceReferenceKeysSql vs itemReferencedSql', () => {
           'binned.png',
           'by-id.png',
           'by-url.png',
+          'evergreen-retired.png',
           'evergreen-variation.png',
           'evergreen.png',
+          'malformed-array-id.png',
+          'malformed-nested.png',
           'nested.png',
           'slot-pending.png',
+          'slot-url.png',
         ].sort(),
       );
     });

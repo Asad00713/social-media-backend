@@ -61,8 +61,9 @@ export function itemReferencedSql(item: UsageItemRef): SQL {
 /**
  * Set-based twin of `itemReferencedSql` for the stats call: one pass over the
  * workspace's posts, unmaterialised slots and evergreen entries, returning
- * every distinct `(item_id, url)` key they reference. Each row carries one key
- * (the other column is NULL). An item is referenced when its id is in
+ * every distinct `(item_id, url)` key they reference. Post and evergreen rows
+ * carry one key (the other column is NULL); slot rows carry both id and url.
+ * An item is referenced when its id is in
  * `item_id` or its `file_url` is in `url`, which is what the three per-source
  * predicates above test per item (same JSON paths, same workspace scoping,
  * same `post_id IS NULL` rule for slots). `itemReferencedSql` stays the test
@@ -72,6 +73,9 @@ export function workspaceReferenceKeysSql(workspaceId: string): SQL {
   const ws = sql`${workspaceId}::uuid`;
   const str = (v: SQL) =>
     sql`CASE WHEN jsonb_typeof(${v}) = 'string' THEN ${v} #>> '{}' END`;
+  // Same document and lax traversal as evergreenRefSql, so a malformed shape
+  // (an id inside an array, media nested in an array) matches in both forms.
+  const evergreenDoc = sql`jsonb_build_object('media', e.content->'media', 'variations', e.variations)`;
   return sql`
     SELECT e #>> '{}' AS item_id, NULL::text AS url
       FROM posts p, jsonb_array_elements(p.library_refs) e
@@ -87,12 +91,32 @@ export function workspaceReferenceKeysSql(workspaceId: string): SQL {
       jsonb_array_elements(CASE WHEN jsonb_typeof(s.content->'media') = 'array' THEN s.content->'media' ELSE '[]'::jsonb END) m
      WHERE c.workspace_id = ${ws} AND s.post_id IS NULL
     UNION
-    SELECT ${str(sql`m->'id'`)}, ${str(sql`m->'url'`)}
+    SELECT v #>> '{}', NULL::text
       FROM campaign_evergreen_posts e
       JOIN campaigns c ON c.id = e.campaign_id,
-      jsonb_path_query(jsonb_build_object('media', e.content->'media', 'variations', e.variations), 'lax $.**.media[*]') m
+      jsonb_path_query(${evergreenDoc}, 'lax $.**.media[*].id[*] ? (@.type() == "string")') v
+     WHERE c.workspace_id = ${ws}
+    UNION
+    SELECT NULL::text, v #>> '{}'
+      FROM campaign_evergreen_posts e
+      JOIN campaigns c ON c.id = e.campaign_id,
+      jsonb_path_query(${evergreenDoc}, 'lax $.**.media[*].url[*] ? (@.type() == "string")') v
      WHERE c.workspace_id = ${ws}
   `;
+}
+
+/**
+ * "This item is in the reference keys": the stats-side test of
+ * `workspaceReferenceKeysSql` rows, exposed so the service and the agreement
+ * spec run the same expression. `keys` is the alias of a CTE built from the
+ * keys builder.
+ */
+export function itemInReferenceKeysSql(
+  item: Pick<UsageItemRef, 'id' | 'fileUrl'>,
+  keys = 'keys',
+): SQL {
+  const k = sql.raw(keys);
+  return sql`((${item.id})::text IN (SELECT item_id FROM ${k} WHERE item_id IS NOT NULL) OR (${item.fileUrl})::text IN (SELECT url FROM ${k} WHERE url IS NOT NULL))`;
 }
 
 /** A post's status as a usage entry shows it. */
