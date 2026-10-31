@@ -13,6 +13,7 @@ import {
 import { relations } from 'drizzle-orm';
 import { users } from './users.schema';
 import { workspace } from './workspace.schema';
+import type { FolderKind } from '../../media-library/lib/folder-kind';
 
 // =============================================================================
 // Media Types
@@ -51,8 +52,8 @@ export const mediaCategories = pgTable(
     name: varchar('name', { length: 100 }).notNull(),
     description: text('description'),
     // The folder's kind. Migration 0054 merged the legacy image / gif / video
-    // / document kinds into 'media'; Task 8 narrows this to FolderKind (B11).
-    type: varchar('type', { length: 50 }).$type<string>().notNull(),
+    // / document kinds into 'media'.
+    type: varchar('type', { length: 50 }).$type<FolderKind>().notNull(),
     color: varchar('color', { length: 20 }), // Hex color for UI
     icon: varchar('icon', { length: 50 }), // Icon name for UI
 

@@ -3,6 +3,7 @@ import {
   Injectable,
   Logger,
   NotFoundException,
+  BadRequestException,
   ConflictException,
 } from '@nestjs/common';
 import { eq, and, desc, asc } from 'drizzle-orm';
@@ -10,9 +11,9 @@ import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
   mediaCategories,
-  MediaLibraryType,
   NewMediaCategory,
 } from '../../drizzle/schema/media-library.schema';
+import type { FolderKind } from '../lib/folder-kind';
 import {
   CreateCategoryDto,
   UpdateCategoryDto,
@@ -111,12 +112,9 @@ export class CategoryService {
   async findAllGroupedByType(workspaceId: string) {
     const categories = await this.findAll(workspaceId);
 
-    const grouped: Record<MediaLibraryType, typeof categories> = {
-      image: [],
-      video: [],
-      gif: [],
+    const grouped: Record<FolderKind, typeof categories> = {
+      media: [],
       template: [],
-      document: [],
       text_snippet: [],
       link: [],
     };
@@ -162,6 +160,12 @@ export class CategoryService {
     dto: UpdateCategoryDto,
   ) {
     const existing = await this.findOne(workspaceId, categoryId);
+
+    // Items filed in this folder belong to its tab; a new kind would strand
+    // them in the wrong one.
+    if (dto.type !== undefined && dto.type !== existing.type) {
+      throw new BadRequestException("A folder's kind cannot change");
+    }
 
     // Check for duplicate name if name is being changed (unique per
     // workspace + type — the folder's type can't change on update).
@@ -226,11 +230,7 @@ export class CategoryService {
   /**
    * Reorder categories within a type
    */
-  async reorder(
-    workspaceId: string,
-    type: MediaLibraryType,
-    categoryIds: string[],
-  ) {
+  async reorder(workspaceId: string, type: FolderKind, categoryIds: string[]) {
     // Verify all categories exist and belong to this workspace/type
     const categories = await this.db
       .select()

@@ -21,6 +21,12 @@ import {
   TEMPLATE_TYPES,
   TEXT_SNIPPET_TYPES,
 } from '../../drizzle/schema/media-library.schema';
+import {
+  FOLDER_KINDS,
+  normalizeFolderKind,
+  normalizeSnippetType,
+  type FolderKind,
+} from '../lib/folder-kind';
 
 // Re-define types locally to avoid decorator issues
 type MediaLibraryType = (typeof MEDIA_LIBRARY_TYPES)[number];
@@ -40,9 +46,11 @@ export class CreateCategoryDto {
   @IsString()
   description?: string;
 
-  // A folder belongs to exactly one asset type — required at creation.
-  @IsEnum(MEDIA_LIBRARY_TYPES)
-  type: MediaLibraryType;
+  // A folder belongs to exactly one kind — required at creation. Legacy
+  // image|video|gif|document are accepted and stored as 'media'.
+  @Transform(({ value }) => normalizeFolderKind(value))
+  @IsIn(FOLDER_KINDS)
+  type: FolderKind;
 
   @IsOptional()
   @IsString()
@@ -78,12 +86,30 @@ export class UpdateCategoryDto {
   @IsOptional()
   @IsInt()
   displayOrder?: number;
+
+  // Accepted so the contract's PUT body validates, but a folder's kind can't
+  // change: the service rejects a kind different from the current one.
+  @IsOptional()
+  @Transform(({ value }) => normalizeFolderKind(value))
+  @IsIn(FOLDER_KINDS)
+  type?: FolderKind;
 }
 
 export class CategoryQueryDto {
   @IsOptional()
-  @IsEnum(MEDIA_LIBRARY_TYPES)
-  type?: MediaLibraryType;
+  @Transform(({ value }) => normalizeFolderKind(value))
+  @IsIn(FOLDER_KINDS)
+  type?: FolderKind;
+}
+
+export class ReorderCategoriesDto {
+  @Transform(({ value }) => normalizeFolderKind(value))
+  @IsIn(FOLDER_KINDS)
+  type: FolderKind;
+
+  @IsArray()
+  @IsUUID('all', { each: true })
+  categoryIds: string[];
 }
 
 // =============================================================================
@@ -466,7 +492,8 @@ export class CreateTextSnippetDto {
   @MaxLength(255)
   name: string;
 
-  @IsEnum(TEXT_SNIPPET_TYPES)
+  @Transform(({ value }) => normalizeSnippetType(value))
+  @IsIn(TEXT_SNIPPET_TYPES)
   snippetType: TextSnippetType;
 
   @IsString()
@@ -489,7 +516,8 @@ export class UpdateTextSnippetDto {
   name?: string;
 
   @IsOptional()
-  @IsEnum(TEXT_SNIPPET_TYPES)
+  @Transform(({ value }) => normalizeSnippetType(value))
+  @IsIn(TEXT_SNIPPET_TYPES)
   snippetType?: TextSnippetType;
 
   @IsOptional()
@@ -511,8 +539,15 @@ export class UpdateTextSnippetDto {
 }
 
 export class TextSnippetQueryDto {
+  // Contract name. Wins over the legacy `snippetType` when both are sent.
   @IsOptional()
-  @IsEnum(TEXT_SNIPPET_TYPES)
+  @Transform(({ value }) => normalizeSnippetType(value))
+  @IsIn(TEXT_SNIPPET_TYPES)
+  type?: TextSnippetType;
+
+  @IsOptional()
+  @Transform(({ value }) => normalizeSnippetType(value))
+  @IsIn(TEXT_SNIPPET_TYPES)
   snippetType?: TextSnippetType;
 
   @IsOptional()
