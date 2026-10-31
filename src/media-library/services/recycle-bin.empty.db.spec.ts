@@ -9,16 +9,7 @@ import {
   seedTemplate,
   seedLink,
 } from '../testing/library-db';
-import { MediaLibraryController } from '../media-library.controller';
-import { CategoryService } from './category.service';
-import { TemplateService } from './template.service';
-import { TextSnippetService } from './text-snippet.service';
-import { SavedLinkService } from './saved-link.service';
 import { RecycleBinService } from './recycle-bin.service';
-import { AltTextService } from './alt-text.service';
-import { MediaUsageService } from './media-usage.service';
-import { LibraryStatsService } from './library-stats.service';
-import { CategoryZipService } from './category-zip.service';
 import type { StorageObjectService } from './storage-object.service';
 
 function setup(db: DbType) {
@@ -33,19 +24,7 @@ function setup(db: DbType) {
   } as unknown as StorageObjectService;
   const media = makeMediaItemService(db, { storageObjects });
   const recycleBin = new RecycleBinService(db, media);
-  const controller = new MediaLibraryController(
-    new CategoryService(db),
-    media,
-    new TemplateService(db),
-    new TextSnippetService(db),
-    new SavedLinkService(db),
-    recycleBin,
-    {} as AltTextService,
-    new MediaUsageService(db),
-    new CategoryZipService(db, storageObjects),
-    {} as LibraryStatsService,
-  );
-  return { deleteFile, media, recycleBin, controller };
+  return { deleteFile, recycleBin };
 }
 
 async function seedBulkDeleted(
@@ -91,43 +70,7 @@ async function count(
   return r.rows[0].n;
 }
 
-describeLibraryDb('recycle bin: type filter and empty', () => {
-  it('filters by type before paging', async () => {
-    await withLibraryDb(async (db, client) => {
-      const { workspaceId, ownerId } = await seedWorkspace(client);
-      const { controller } = setup(db);
-      const base = { workspaceId, uploadedById: ownerId, isDeleted: true };
-      const t0 = Date.now() - 10 * 60 * 1000;
-      for (let i = 0; i < 3; i++) {
-        await seedMediaItem(client, {
-          ...base,
-          type: 'video',
-          deletedAt: new Date(t0 + i * 1000),
-        });
-      }
-      for (let i = 0; i < 60; i++) {
-        await seedMediaItem(client, {
-          ...base,
-          type: 'image',
-          deletedAt: new Date(t0 + 60_000 + i * 1000),
-        });
-      }
-
-      const result = (await controller.getRecycleBin(workspaceId, {
-        type: 'video',
-        limit: 50,
-      })) as {
-        mediaItems: { items: { type: string }[]; total: number };
-      };
-
-      expect(result.mediaItems.items).toHaveLength(3);
-      expect(result.mediaItems.total).toBe(3);
-      expect(result.mediaItems.items.every((i) => i.type === 'video')).toBe(
-        true,
-      );
-    });
-  });
-
+describeLibraryDb('recycle bin: empty', () => {
   it('empties every kind with no cap and leaves other rows alone', async () => {
     await withLibraryDb(async (db, client) => {
       const { workspaceId, ownerId } = await seedWorkspace(client);

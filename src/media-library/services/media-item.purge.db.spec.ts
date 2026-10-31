@@ -1,4 +1,4 @@
-import { BadGatewayException } from '@nestjs/common';
+import { BadGatewayException, NotFoundException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import type { CloudinaryService } from '../../media/cloudinary.service';
 import type { CloudflareR2Service } from '../../media/cloudflare-r2.service';
@@ -443,6 +443,64 @@ describeLibraryDb('MediaItemService permanent delete', () => {
         'social-media/unused',
         'image',
       );
+    });
+  });
+
+  it('keeps a row restored while its purge was running', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const { service, deleteFile } = setup(db);
+      const base = {
+        workspaceId,
+        uploadedById: ownerId,
+        isDeleted: true,
+        deletedAt: new Date(),
+      };
+      const restored = await seedMediaItem(client, {
+        ...base,
+        cloudinaryPublicId: 'social-media/restored',
+      });
+      const purged = await seedMediaItem(client, {
+        ...base,
+        cloudinaryPublicId: 'social-media/purged',
+      });
+      const rows = await db
+        .select()
+        .from(mediaItems)
+        .where(inArray(mediaItems.id, [restored, purged]));
+      // A restore lands after the rows were read, while files are deleting.
+      deleteFile.mockImplementation(async () => {
+        await client.query(
+          `UPDATE media_items
+              SET is_deleted = false, deleted_at = NULL, deleted_by_id = NULL
+            WHERE id = $1`,
+          [restored],
+        );
+      });
+
+      const result = await service.purgeItems(rows);
+
+      expect(result).toEqual({ deletedIds: [purged], failedIds: [] });
+      expect(await rowExists(client, restored)).toBe(true);
+      expect(await rowExists(client, purged)).toBe(false);
+    });
+  });
+
+  it('permanentDelete refuses a live item and leaves its file alone', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const { service, deleteFile } = setup(db);
+      const id = await seedMediaItem(client, {
+        workspaceId,
+        uploadedById: ownerId,
+        cloudinaryPublicId: 'social-media/live',
+      });
+
+      await expect(service.permanentDelete(workspaceId, id)).rejects.toThrow(
+        NotFoundException,
+      );
+      expect(deleteFile).not.toHaveBeenCalled();
+      expect(await rowExists(client, id)).toBe(true);
     });
   });
 });

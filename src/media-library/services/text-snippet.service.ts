@@ -365,41 +365,6 @@ export class TextSnippetService {
   }
 
   /**
-   * Get snippets in recycle bin
-   */
-  async getRecycleBin(workspaceId: string, limit = 50, offset = 0) {
-    const snippets = await this.db
-      .select()
-      .from(textSnippets)
-      .where(
-        and(
-          eq(textSnippets.workspaceId, workspaceId),
-          eq(textSnippets.isDeleted, true),
-        ),
-      )
-      .orderBy(desc(textSnippets.deletedAt))
-      .limit(limit)
-      .offset(offset);
-
-    const [{ count }] = await this.db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(textSnippets)
-      .where(
-        and(
-          eq(textSnippets.workspaceId, workspaceId),
-          eq(textSnippets.isDeleted, true),
-        ),
-      );
-
-    return {
-      items: snippets,
-      total: count,
-      limit,
-      offset,
-    };
-  }
-
-  /**
    * Cleanup snippets older than 30 days in recycle bin
    */
   async cleanupRecycleBin() {

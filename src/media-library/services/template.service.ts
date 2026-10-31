@@ -441,41 +441,6 @@ export class TemplateService {
   }
 
   /**
-   * Get templates in recycle bin
-   */
-  async getRecycleBin(workspaceId: string, limit = 50, offset = 0) {
-    const templates = await this.db
-      .select()
-      .from(mediaTemplates)
-      .where(
-        and(
-          eq(mediaTemplates.workspaceId, workspaceId),
-          eq(mediaTemplates.isDeleted, true),
-        ),
-      )
-      .orderBy(desc(mediaTemplates.deletedAt))
-      .limit(limit)
-      .offset(offset);
-
-    const [{ count }] = await this.db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(mediaTemplates)
-      .where(
-        and(
-          eq(mediaTemplates.workspaceId, workspaceId),
-          eq(mediaTemplates.isDeleted, true),
-        ),
-      );
-
-    return {
-      items: templates,
-      total: count,
-      limit,
-      offset,
-    };
-  }
-
-  /**
    * Cleanup templates older than 30 days in recycle bin
    */
   async cleanupRecycleBin() {

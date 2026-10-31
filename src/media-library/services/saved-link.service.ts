@@ -1,9 +1,4 @@
-import {
-  Inject,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { eq, and, desc, asc, ilike, or, sql, type SQL } from 'drizzle-orm';
 import { ilikePattern } from '../lib/search';
 import {
@@ -436,41 +431,6 @@ export class SavedLinkService {
     return runKindBulk(this.db, LINK_BULK, workspaceId, userId, dto, (ws, q) =>
       this.buildLinkConditions(ws, q),
     );
-  }
-
-  /**
-   * Get links in recycle bin
-   */
-  async getRecycleBin(workspaceId: string, limit = 50, offset = 0) {
-    const links = await this.db
-      .select()
-      .from(savedLinks)
-      .where(
-        and(
-          eq(savedLinks.workspaceId, workspaceId),
-          eq(savedLinks.isDeleted, true),
-        ),
-      )
-      .orderBy(desc(savedLinks.deletedAt))
-      .limit(limit)
-      .offset(offset);
-
-    const [{ count }] = await this.db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(savedLinks)
-      .where(
-        and(
-          eq(savedLinks.workspaceId, workspaceId),
-          eq(savedLinks.isDeleted, true),
-        ),
-      );
-
-    return {
-      items: links,
-      total: count,
-      limit,
-      offset,
-    };
   }
 
   /**
