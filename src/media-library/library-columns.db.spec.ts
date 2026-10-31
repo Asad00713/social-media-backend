@@ -55,6 +55,8 @@ const shape = (rows: { name: string; type: string; display_order: number }[]) =>
   }));
 
 describeLibraryDb('migration 0054 (library columns)', () => {
+  afterEach(() => jest.restoreAllMocks());
+
   it('writes per-plan storage and backfills each workspace from its owner’s ACTIVE plan', async () => {
     await withLibraryDb(async (_db, client) => {
       for (const code of Object.keys(PLAN_STORAGE_BYTES)) {
@@ -88,6 +90,21 @@ describeLibraryDb('migration 0054 (library columns)', () => {
         extraStoragePurchased: 5,
       });
 
+      // An active subscription on a code with no plans row. The FK forbids it
+      // locally; prod has drifted from this schema before, so the fallback
+      // is tested anyway. The harness rolls the DROP back.
+      await client.query(
+        `ALTER TABLE subscriptions
+           DROP CONSTRAINT IF EXISTS subscriptions_plan_code_plans_code_fk`,
+      );
+      const orphan = await seedWorkspace(client);
+      await client.query(
+        `INSERT INTO subscriptions (user_id, plan_code, status)
+         VALUES ($1, 'GONE_PLAN', 'active')`,
+        [orphan.ownerId],
+      );
+      await seedUsage(client, orphan.workspaceId, { storageBytesLimit: 7 });
+
       await applyMigrationAgain(client, MIGRATION);
 
       const plans = await client.query<{ code: string; bytes: string }>(
@@ -115,6 +132,10 @@ describeLibraryDb('migration 0054 (library columns)', () => {
         limit: 26843545600,
         extra: 5,
       });
+      expect(await storageLimit(client, orphan.workspaceId)).toEqual({
+        limit: 524288000,
+        extra: 0,
+      });
     });
   });
 
@@ -128,6 +149,14 @@ describeLibraryDb('migration 0054 (library columns)', () => {
         cloudinaryPublicId: 'composer/videos/w/u/1-a.mp4',
         fileUrl: `${R2_BASE}/composer/videos/w/u/1-a.mp4`,
       });
+      // Legacy R2 row written with no public id: caught by the URL arm.
+      const r2NoIdId = await seedMediaItem(client, {
+        workspaceId,
+        uploadedById: ownerId,
+        type: 'video',
+        cloudinaryPublicId: null,
+        fileUrl: `${R2_BASE}/composer/videos/w/u/2-b.mp4`,
+      });
       const cldId = await seedMediaItem(client, {
         workspaceId,
         uploadedById: ownerId,
@@ -135,17 +164,39 @@ describeLibraryDb('migration 0054 (library columns)', () => {
         fileUrl:
           'https://res.cloudinary.com/demo/image/upload/v1/composer/canva/abc.png',
       });
+      // A Cloudinary URL with the composer path stays Cloudinary.
+      const cldVideoId = await seedMediaItem(client, {
+        workspaceId,
+        uploadedById: ownerId,
+        type: 'video',
+        cloudinaryPublicId: null,
+        fileUrl:
+          'https://res.cloudinary.com/demo/video/upload/v1/composer/videos/c.mp4',
+      });
+      // An external URL with neither marker stays Cloudinary.
+      const externalId = await seedMediaItem(client, {
+        workspaceId,
+        uploadedById: ownerId,
+        cloudinaryPublicId: null,
+        fileUrl: 'https://cdn.example.test/clip.mp4',
+      });
 
       await applyMigrationAgain(client, MIGRATION);
 
       const r = await client.query<{ id: string; storage_provider: string }>(
         `SELECT id, storage_provider FROM media_items WHERE id = ANY($1)`,
-        [[r2Id, cldId]],
+        [[r2Id, r2NoIdId, cldId, cldVideoId, externalId]],
       );
       const byId = Object.fromEntries(
         r.rows.map((row) => [row.id, row.storage_provider]),
       );
-      expect(byId).toEqual({ [r2Id]: 'r2', [cldId]: 'cloudinary' });
+      expect(byId).toEqual({
+        [r2Id]: 'r2',
+        [r2NoIdId]: 'r2',
+        [cldId]: 'cloudinary',
+        [cldVideoId]: 'cloudinary',
+        [externalId]: 'cloudinary',
+      });
 
       await client.query('SAVEPOINT bad_provider');
       await expect(
@@ -270,6 +321,7 @@ describeLibraryDb('migration 0054 (library columns)', () => {
         db,
       );
       const service = makeMediaItemService(db, { storageObjects });
+      // Restored by the afterEach above.
       jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
       const key = `composer/videos/${workspaceId}/u/1-a.mp4`;
 

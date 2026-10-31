@@ -6,8 +6,15 @@
 --   1. media_items.alt_text, media_items.page_count (PDF pages) and
 --      media_items.storage_provider ('cloudinary' | 'r2'), so deleting a file
 --      no longer guesses its store from the URL (D3). Legacy composer videos
---      whose public id is an R2 key and whose URL is not Cloudinary's are
---      backfilled to 'r2'.
+--      on R2 are backfilled to 'r2': a URL that is not Cloudinary's, plus
+--      either an R2 key as the public id or an R2 key in the URL path.
+--      CloudflareR2Service builds the public URL as `<publicBase>/<key>` with
+--      key `composer/videos/<workspaceId>/...`, and publicBase is a custom
+--      domain or `https://<account>.r2.cloudflarestorage.com/<bucket>`, so
+--      every such URL contains `/composer/videos/`. Rows written with a NULL
+--      public id are caught by the URL arm. Any R2 row this misses is still
+--      deleted from R2: StorageObjectService.deleteFile trusts an R2 URL over
+--      a 'cloudinary' column value.
 --   2. Indexes on media_items(file_url) and media_items(cloudinary_public_id)
 --      (SEC3): the purge's share check (StorageObjectService.findSharedFiles /
 --      isFileShared) looks rows up by these across ALL workspaces, which
@@ -92,12 +99,13 @@ EXCEPTION
   WHEN duplicate_object THEN NULL;
 END $$;
 
--- Legacy composer videos uploaded to R2 (D3).
+-- Legacy composer videos uploaded to R2 (D3; see WHY 1).
 UPDATE "media_items"
    SET "storage_provider" = 'r2'
  WHERE "storage_provider" = 'cloudinary'
-   AND "cloudinary_public_id" LIKE 'composer/videos/%'
-   AND "file_url" NOT LIKE 'https://res.cloudinary.com/%';
+   AND "file_url" NOT LIKE 'https://res.cloudinary.com/%'
+   AND ("cloudinary_public_id" LIKE 'composer/videos/%'
+        OR "file_url" LIKE '%/composer/videos/%');
 
 -- Share lookups across workspaces (SEC3). See WHY 2 for the hash index.
 CREATE INDEX IF NOT EXISTS "media_items_file_url_idx"

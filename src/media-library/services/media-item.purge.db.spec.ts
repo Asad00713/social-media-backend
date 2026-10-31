@@ -64,7 +64,6 @@ describeLibraryDb('MediaItemService permanent delete', () => {
       const r2Id = await seedMediaItem(client, {
         ...base,
         type: 'video',
-        storageProvider: 'r2',
         fileUrl: `${R2_BASE}/${r2Key(workspaceId)}`,
       });
       const cldId = await seedMediaItem(client, {
@@ -96,8 +95,21 @@ describeLibraryDb('MediaItemService permanent delete', () => {
         type: 'video',
         isDeleted: true,
         deletedAt: new Date(),
-        storageProvider: 'r2',
         fileUrl: `${R2_BASE}/${key}`,
+      });
+      // The legacy / deploy-window shape: no public id, and the column left
+      // at its 'cloudinary' default. Only deleteFile's R2-URL fallback finds
+      // the object.
+      const legacy = await client.query<{
+        storage_provider: string;
+        cloudinary_public_id: string | null;
+      }>(
+        'SELECT storage_provider, cloudinary_public_id FROM media_items WHERE id = $1',
+        [id],
+      );
+      expect(legacy.rows[0]).toEqual({
+        storage_provider: 'cloudinary',
+        cloudinary_public_id: null,
       });
 
       await service.permanentDelete(workspaceId, id);
@@ -118,7 +130,6 @@ describeLibraryDb('MediaItemService permanent delete', () => {
         type: 'video',
         isDeleted: true,
         deletedAt: new Date(),
-        storageProvider: 'r2',
         fileUrl: `${R2_BASE}/${r2Key(workspaceId)}`,
       });
       r2.deleteObject.mockRejectedValue(new Error('r2 down'));
@@ -326,7 +337,6 @@ describeLibraryDb('MediaItemService permanent delete', () => {
         type: 'video',
         isDeleted: true,
         deletedAt: new Date(),
-        storageProvider: 'r2',
         fileUrl: `${R2_BASE}/${r2Key(b.workspaceId)}`,
       });
 

@@ -191,16 +191,44 @@ describe('StorageObjectService', () => {
       expect(r2.deleteObject).not.toHaveBeenCalled();
     });
 
-    it('lets a stored provider win over the url', async () => {
+    it('treats an R2 url as R2 even when the column says cloudinary', async () => {
       const { service, cloudinary, r2 } = makeMocks();
       await service.deleteFile(
         ref({
           storageProvider: 'cloudinary',
           fileUrl: `${R2_BASE}/${R2_KEY}`,
+          cloudinaryPublicId: null,
+          type: 'video',
         }),
       );
-      expect(cloudinary.delete).toHaveBeenCalledTimes(1);
+      expect(r2.deleteObject).toHaveBeenCalledWith(R2_KEY);
+      expect(cloudinary.delete).not.toHaveBeenCalled();
+    });
+
+    it('keeps the workspace gate on that fallback', async () => {
+      const { service, cloudinary, r2 } = makeMocks();
+      await service.deleteFile(
+        ref({
+          storageProvider: 'cloudinary',
+          fileUrl: `${R2_BASE}/${keyFor(OTHER_WS)}`,
+          cloudinaryPublicId: null,
+        }),
+      );
       expect(r2.deleteObject).not.toHaveBeenCalled();
+      expect(cloudinary.delete).not.toHaveBeenCalled();
+    });
+
+    it('uses the stored provider when the url is not R2', async () => {
+      const { service, cloudinary, r2 } = makeMocks();
+      await service.deleteFile(
+        ref({
+          storageProvider: 'r2',
+          fileUrl: 'https://cdn.example.test/clip.mp4',
+          cloudinaryPublicId: R2_KEY,
+        }),
+      );
+      expect(r2.deleteObject).toHaveBeenCalledWith(R2_KEY);
+      expect(cloudinary.delete).not.toHaveBeenCalled();
     });
   });
 

@@ -68,8 +68,9 @@ export function cloudinaryResourceType(
 
 /**
  * One place that knows which store holds a library file and how to remove it.
- * Library rows carry no provider column yet, so the provider is derived from
- * the URL (D3) unless the ref states it.
+ * Rows carry `storage_provider` (written at create, backfilled by migration
+ * 0054). A ref without one falls back to the URL (D3), and an R2 URL always
+ * wins over a 'cloudinary' value (see `deleteFile`).
  */
 @Injectable()
 export class StorageObjectService {
@@ -159,13 +160,20 @@ export class StorageObjectService {
 
   /** Idempotent: a file that is already gone is a success. */
   async deleteFile(ref: StoredFileRef): Promise<void> {
-    const provider =
-      ref.storageProvider ??
-      this.providerOf(ref.fileUrl, ref.cloudinaryPublicId);
+    // The column defaults to 'cloudinary', so a row inserted by an instance
+    // that predates it (the deploy window) or missed by 0054's backfill can
+    // say 'cloudinary' for an R2 file. A URL under our R2 public base is proof
+    // of R2; the column decides only when the URL proves nothing. The
+    // workspace / key gates below apply either way.
+    const urlKey = this.r2.keyFromPublicUrl(ref.fileUrl);
+    const provider: StorageProvider =
+      urlKey !== null
+        ? 'r2'
+        : (ref.storageProvider ??
+          this.providerOf(ref.fileUrl, ref.cloudinaryPublicId));
 
     if (provider === 'r2') {
-      const key =
-        this.r2.keyFromPublicUrl(ref.fileUrl) ?? ref.cloudinaryPublicId;
+      const key = urlKey ?? ref.cloudinaryPublicId;
       if (!key) return;
       if (!ref.workspaceId || !isWorkspaceR2Key(key, ref.workspaceId)) {
         this.logger.warn(
