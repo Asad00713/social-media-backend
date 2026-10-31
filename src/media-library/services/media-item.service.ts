@@ -12,7 +12,6 @@ import {
   desc,
   asc,
   ilike,
-  isNull,
   sql,
   inArray,
   gt,
@@ -399,28 +398,72 @@ export class MediaItemService {
   ): Promise<{ deletedIds: string[]; failedIds: string[] }> {
     const setIds = rows.map((r) => r.id);
 
-    // Rows inside the set that share one file delete it once.
-    const groups = new Map<string, MediaLibraryItem[]>();
+    // Rows inside the set that share a file URL or a public id delete it once.
+    const groupOf = new Map<string, MediaLibraryItem[]>();
+    const groups = new Set<MediaLibraryItem[]>();
     for (const row of rows) {
-      const group = groups.get(row.fileUrl);
-      if (group) group.push(row);
-      else groups.set(row.fileUrl, [row]);
+      const keys = [`u:${row.fileUrl}`];
+      if (row.cloudinaryPublicId) keys.push(`p:${row.cloudinaryPublicId}`);
+      const known = keys
+        .map((k) => groupOf.get(k))
+        .filter((g): g is MediaLibraryItem[] => !!g);
+      let group = known[0];
+      if (!group) {
+        group = [];
+        groups.add(group);
+      }
+      // Merge any other group this row bridges into the first one.
+      for (const other of known.slice(1)) {
+        if (other !== group) {
+          group.push(...other);
+          groups.delete(other);
+          for (const moved of other) {
+            groupOf.set(`u:${moved.fileUrl}`, group);
+            if (moved.cloudinaryPublicId) {
+              groupOf.set(`p:${moved.cloudinaryPublicId}`, group);
+            }
+          }
+        }
+      }
+      group.push(row);
+      for (const k of keys) groupOf.set(k, group);
     }
+
+    // One query for the whole page, not one per file.
+    const shared = await this.storageObjects.findSharedFiles(
+      rows,
+      setIds,
+      this.db,
+    );
 
     const deletedIds: string[] = [];
     const failedIds: string[] = [];
-    const queue = [...groups.values()];
+    const queue = [...groups];
 
     const worker = async () => {
       for (let group = queue.shift(); group; group = queue.shift()) {
-        const first = group[0];
         try {
-          const shared = await this.storageObjects.isFileShared(
-            first,
-            setIds,
-            this.db,
+          const isShared = group.some(
+            (r) =>
+              shared.urls.has(r.fileUrl) ||
+              (!!r.cloudinaryPublicId &&
+                shared.publicIds.has(r.cloudinaryPublicId)),
           );
-          if (!shared) await this.storageObjects.deleteFile(first);
+          // TOCTOU: a row created between the share check and this delete can
+          // still lose its file; accepted, the window is a few milliseconds.
+          if (!isShared) {
+            const distinctUrls = new Map(
+              group.map((r) => [
+                r.cloudinaryPublicId
+                  ? `p:${r.cloudinaryPublicId}`
+                  : `u:${r.fileUrl}`,
+                r,
+              ]),
+            );
+            for (const ref of distinctUrls.values()) {
+              await this.storageObjects.deleteFile(ref);
+            }
+          }
           deletedIds.push(...group.map((r) => r.id));
         } catch (error) {
           for (const row of group) {

@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, eq, notInArray, or } from 'drizzle-orm';
+import { and, eq, inArray, notInArray, or } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -34,9 +34,10 @@ const FORBIDDEN_KEY_CHARS = /[%?#\\]/;
 
 /**
  * True only for a key that R2 issued for this workspace. Mirrors the layout
- * `CloudflareR2Service` builds:
- * `<inbox/{images|voice|videos|files} | composer/videos>/<workspaceId>/<user
- * segment>/<timestamp>-<24 hex><ext>`. `fileUrl` is client-supplied, so the
+ * `CloudflareR2Service` builds for composer media:
+ * `composer/videos/<workspaceId>/<user segment>/<timestamp>-<24 hex><ext>`.
+ * Only that prefix is allowed: the Library stores composer media, and the
+ * `inbox/*` objects belong to message rows `isFileShared` cannot see. `fileUrl` is client-supplied, so the
  * whole key is matched, not just one segment: no traversal, no encoded
  * separators, no query or fragment.
  */
@@ -47,7 +48,7 @@ export function isWorkspaceR2Key(key: string, workspaceId: string): boolean {
   }
   const escaped = workspaceId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(
-    `^(?:inbox/(?:images|voice|videos|files)|composer/videos)/${escaped}/[A-Za-z0-9-]+/\\d+-[0-9a-f]{24}(?:\\.[A-Za-z0-9]+)?$`,
+    `^composer/videos/${escaped}/[A-Za-z0-9-]+/\\d+-[0-9a-f]{24}(?:\\.[A-Za-z0-9]+)?$`,
   ).test(key);
 }
 
@@ -111,6 +112,49 @@ export class StorageObjectService {
       .where(and(sameFile, notInArray(mediaItems.id, except)))
       .limit(1);
     return !!other;
+  }
+
+  /**
+   * One query for a whole page: which of these rows' files are also
+   * referenced by a row outside `exceptItemIds` (any workspace, deleted or
+   * not), matched by `file_url` or by `cloudinary_public_id`.
+   */
+  async findSharedFiles(
+    refs: Pick<StoredFileRef, 'fileUrl' | 'cloudinaryPublicId'>[],
+    exceptItemIds: string[],
+    db: DbType = this.db,
+  ): Promise<{ urls: Set<string>; publicIds: Set<string> }> {
+    const urls = [...new Set(refs.map((r) => r.fileUrl))];
+    const publicIds = [
+      ...new Set(
+        refs.map((r) => r.cloudinaryPublicId).filter((p): p is string => !!p),
+      ),
+    ];
+    const shared = { urls: new Set<string>(), publicIds: new Set<string>() };
+    if (urls.length === 0) return shared;
+
+    const sameFile = or(
+      inArray(mediaItems.fileUrl, urls),
+      publicIds.length > 0
+        ? inArray(mediaItems.cloudinaryPublicId, publicIds)
+        : undefined,
+    );
+    const conditions = [sameFile];
+    if (exceptItemIds.length > 0) {
+      conditions.push(notInArray(mediaItems.id, exceptItemIds));
+    }
+    const found = await db
+      .select({
+        fileUrl: mediaItems.fileUrl,
+        publicId: mediaItems.cloudinaryPublicId,
+      })
+      .from(mediaItems)
+      .where(and(...conditions));
+    for (const row of found) {
+      shared.urls.add(row.fileUrl);
+      if (row.publicId) shared.publicIds.add(row.publicId);
+    }
+    return shared;
   }
 
   /** Idempotent: a file that is already gone is a success. */

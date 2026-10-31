@@ -131,14 +131,18 @@ describeLibraryDb('MediaItemService permanent delete', () => {
     await withLibraryDb(async (db, client) => {
       const { workspaceId, ownerId } = await seedWorkspace(client);
       const { service } = setup(db);
-      const now = new Date('2026-06-15T12:00:00Z');
+      // Far in the past, so no other local row can be older than the cutoff.
+      const now = new Date('2001-06-15T12:00:00Z');
       const base = { workspaceId, uploadedById: ownerId, isDeleted: true };
+      const old: string[] = [];
       for (let i = 0; i < 3; i++) {
-        await seedMediaItem(client, {
-          ...base,
-          cloudinaryPublicId: `old-${i}-${Date.now()}`,
-          deletedAt: new Date(now.getTime() - 31 * DAY_MS),
-        });
+        old.push(
+          await seedMediaItem(client, {
+            ...base,
+            cloudinaryPublicId: `old-${i}-${Date.now()}`,
+            deletedAt: new Date(now.getTime() - 31 * DAY_MS),
+          }),
+        );
       }
       const recent = await seedMediaItem(client, {
         ...base,
@@ -148,7 +152,8 @@ describeLibraryDb('MediaItemService permanent delete', () => {
 
       const result = await service.cleanupRecycleBin(now);
 
-      expect(result).toEqual({ deletedCount: 3 });
+      expect(result.deletedCount).toBeGreaterThanOrEqual(3);
+      for (const id of old) expect(await rowExists(client, id)).toBe(false);
       expect(await rowExists(client, recent)).toBe(true);
     });
   });
@@ -219,6 +224,91 @@ describeLibraryDb('MediaItemService permanent delete', () => {
       expect(deleteFile).not.toHaveBeenCalled();
       expect(await rowExists(client, attacker)).toBe(false);
       expect(await rowExists(client, victim)).toBe(true);
+    });
+  });
+
+  it('treats a row with the same public id but another url as sharing the file', async () => {
+    await withLibraryDb(async (db, client) => {
+      const a = await seedWorkspace(client);
+      const b = await seedWorkspace(client);
+      const { service, deleteFile } = setup(db);
+      const publicId = `social-media/pid-${Date.now()}`;
+      const attacker = await seedMediaItem(client, {
+        workspaceId: a.workspaceId,
+        uploadedById: a.ownerId,
+        fileUrl: `https://cdn.example.test/attacker-${Date.now()}.png`,
+        cloudinaryPublicId: publicId,
+        isDeleted: true,
+        deletedAt: new Date(),
+      });
+      const victim = await seedMediaItem(client, {
+        workspaceId: b.workspaceId,
+        uploadedById: b.ownerId,
+        fileUrl: `https://cdn.example.test/victim-${Date.now()}.png`,
+        cloudinaryPublicId: publicId,
+      });
+
+      await service.permanentDelete(a.workspaceId, attacker);
+
+      expect(deleteFile).not.toHaveBeenCalled();
+      expect(await rowExists(client, attacker)).toBe(false);
+      expect(await rowExists(client, victim)).toBe(true);
+    });
+  });
+
+  it('counts a binned row in another workspace as sharing the file', async () => {
+    await withLibraryDb(async (db, client) => {
+      const a = await seedWorkspace(client);
+      const b = await seedWorkspace(client);
+      const { service, deleteFile } = setup(db);
+      const fileUrl = `https://cdn.example.test/both-${Date.now()}.png`;
+      const mine = await seedMediaItem(client, {
+        workspaceId: a.workspaceId,
+        uploadedById: a.ownerId,
+        fileUrl,
+        isDeleted: true,
+        deletedAt: new Date(),
+      });
+      const theirs = await seedMediaItem(client, {
+        workspaceId: b.workspaceId,
+        uploadedById: b.ownerId,
+        fileUrl,
+        isDeleted: true,
+        deletedAt: new Date(),
+      });
+
+      await service.permanentDelete(a.workspaceId, mine);
+
+      expect(deleteFile).not.toHaveBeenCalled();
+      expect(await rowExists(client, theirs)).toBe(true);
+    });
+  });
+
+  it('deletes a file once when two purged rows share only a public id', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const { service, deleteFile } = setup(db);
+      const publicId = `social-media/twin-${Date.now()}`;
+      const base = {
+        workspaceId,
+        uploadedById: ownerId,
+        cloudinaryPublicId: publicId,
+        isDeleted: true,
+        deletedAt: new Date(),
+      };
+      await seedMediaItem(client, {
+        ...base,
+        fileUrl: `https://cdn.example.test/t1-${Date.now()}.png`,
+      });
+      await seedMediaItem(client, {
+        ...base,
+        fileUrl: `https://cdn.example.test/t2-${Date.now()}.png`,
+      });
+
+      const result = await service.purgeDeleted({ workspaceId });
+
+      expect(result).toEqual({ deleted: 2, failed: 0 });
+      expect(deleteFile).toHaveBeenCalledTimes(1);
     });
   });
 

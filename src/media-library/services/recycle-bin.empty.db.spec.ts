@@ -21,7 +21,10 @@ function setup(db: DbType) {
   const deleteFile = jest.fn().mockResolvedValue(undefined);
   const storageObjects = {
     deleteFile,
-    isFileShared: jest.fn().mockResolvedValue(false),
+    findSharedFiles: jest.fn().mockResolvedValue({
+      urls: new Set<string>(),
+      publicIds: new Set<string>(),
+    }),
   } as unknown as StorageObjectService;
   const media = makeMediaItemService(db, { storageObjects });
   const recycleBin = new RecycleBinService(db, media);
