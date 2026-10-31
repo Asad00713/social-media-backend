@@ -8,7 +8,11 @@ import {
 } from './storage-object.service';
 
 const R2_BASE = 'https://pub.r2.dev';
-const R2_KEY = 'composer/videos/w/u/1-a.mp4';
+const WS = '3f2b1c9e-0a4d-4c55-9a77-1d2e3f4a5b6c';
+const OTHER_WS = '9b8a7c6d-1e2f-4a3b-8c4d-5e6f7a8b9c0d';
+const FILE = `1700000000000-${'a'.repeat(24)}.mp4`;
+const keyFor = (ws: string) => `composer/videos/${ws}/user-1/${FILE}`;
+const R2_KEY = keyFor(WS);
 
 function makeMocks() {
   const cloudinary = {
@@ -32,6 +36,7 @@ function makeMocks() {
 
 function ref(over: Partial<StoredFileRef> = {}): StoredFileRef {
   return {
+    workspaceId: WS,
     cloudinaryPublicId: 'social-media/abc',
     fileUrl: 'https://res.cloudinary.com/acme/image/upload/abc.png',
     type: 'image',
@@ -115,8 +120,41 @@ describe('StorageObjectService', () => {
       const { service, r2 } = makeMocks();
       await service.deleteFile(
         ref({
-          workspaceId: 'ws-a',
-          fileUrl: `${R2_BASE}/composer/videos/ws-b/u/1-a.mp4`,
+          fileUrl: `${R2_BASE}/${keyFor(OTHER_WS)}`,
+          cloudinaryPublicId: null,
+        }),
+      );
+      expect(r2.deleteObject).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'dot-dot traversal',
+        `composer/videos/${WS}/../${OTHER_WS}/user-1/${FILE}`,
+      ],
+      [
+        'encoded separator',
+        `composer/videos/${WS}%2F..%2F${OTHER_WS}/user-1/${FILE}`,
+      ],
+      ['trailing query', `${R2_KEY}?x`],
+      ['fragment', `${R2_KEY}#x`],
+      ['backslash', `composer/videos/${WS}/user-1\\${FILE}`],
+      ['empty segment', `composer/videos/${WS}//${FILE}`],
+      ['unknown prefix', `other/videos/${WS}/user-1/${FILE}`],
+    ])('refuses a key with %s', async (_label, key) => {
+      const { service, r2 } = makeMocks();
+      await service.deleteFile(
+        ref({ fileUrl: `${R2_BASE}/${key}`, cloudinaryPublicId: null }),
+      );
+      expect(r2.deleteObject).not.toHaveBeenCalled();
+    });
+
+    it('refuses an R2 delete when the ref names no workspace', async () => {
+      const { service, r2 } = makeMocks();
+      await service.deleteFile(
+        ref({
+          workspaceId: undefined,
+          fileUrl: `${R2_BASE}/${R2_KEY}`,
           cloudinaryPublicId: null,
         }),
       );
@@ -127,14 +165,11 @@ describe('StorageObjectService', () => {
       const { service, r2 } = makeMocks();
       await service.deleteFile(
         ref({
-          workspaceId: 'ws-a',
-          fileUrl: `${R2_BASE}/composer/videos/ws-a/u/1-a.mp4`,
+          fileUrl: `${R2_BASE}/${keyFor(WS)}`,
           cloudinaryPublicId: null,
         }),
       );
-      expect(r2.deleteObject).toHaveBeenCalledWith(
-        'composer/videos/ws-a/u/1-a.mp4',
-      );
+      expect(r2.deleteObject).toHaveBeenCalledWith(keyFor(WS));
     });
 
     it('rejects when R2 throws', async () => {

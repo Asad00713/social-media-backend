@@ -17,6 +17,12 @@ import { mediaItems } from '../../drizzle/schema/media-library.schema';
 const R2_BASE = 'https://pub.r2.dev';
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/** A key shaped like the ones CloudflareR2Service issues. */
+function r2Key(workspaceId: string): string {
+  const hex = Math.random().toString(16).slice(2).padEnd(24, '0').slice(0, 24);
+  return `composer/videos/${workspaceId}/user-1/${Date.now()}-${hex}.mp4`;
+}
+
 function setup(db: DbType) {
   const cloudinary = {
     delete: jest.fn().mockResolvedValue(true),
@@ -58,7 +64,7 @@ describeLibraryDb('MediaItemService permanent delete', () => {
       const r2Id = await seedMediaItem(client, {
         ...base,
         type: 'video',
-        fileUrl: `${R2_BASE}/composer/videos/${workspaceId}/u/a-${Date.now()}.mp4`,
+        fileUrl: `${R2_BASE}/${r2Key(workspaceId)}`,
       });
       const cldId = await seedMediaItem(client, {
         ...base,
@@ -82,7 +88,7 @@ describeLibraryDb('MediaItemService permanent delete', () => {
     await withLibraryDb(async (db, client) => {
       const { workspaceId, ownerId } = await seedWorkspace(client);
       const { service, r2, cloudinary } = setup(db);
-      const key = `composer/videos/${workspaceId}/${Date.now()}-a.mp4`;
+      const key = r2Key(workspaceId);
       const id = await seedMediaItem(client, {
         workspaceId,
         uploadedById: ownerId,
@@ -110,7 +116,7 @@ describeLibraryDb('MediaItemService permanent delete', () => {
         type: 'video',
         isDeleted: true,
         deletedAt: new Date(),
-        fileUrl: `${R2_BASE}/composer/videos/${workspaceId}/u/${Date.now()}-b.mp4`,
+        fileUrl: `${R2_BASE}/${r2Key(workspaceId)}`,
       });
       r2.deleteObject.mockRejectedValue(new Error('r2 down'));
 
@@ -227,7 +233,7 @@ describeLibraryDb('MediaItemService permanent delete', () => {
         type: 'video',
         isDeleted: true,
         deletedAt: new Date(),
-        fileUrl: `${R2_BASE}/composer/videos/${b.workspaceId}/u/${Date.now()}-v.mp4`,
+        fileUrl: `${R2_BASE}/${r2Key(b.workspaceId)}`,
       });
 
       await service.permanentDelete(a.workspaceId, id);

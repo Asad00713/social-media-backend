@@ -16,11 +16,10 @@ export type { StorageProvider };
 /** What is needed to locate and delete a library file's bytes. */
 export interface StoredFileRef {
   /**
-   * The workspace the row belongs to. When present, an R2 object is only
-   * deleted if its key sits under this workspace (keys are
-   * `<prefix>/<workspaceId>/...`). `fileUrl` is client-supplied, so without
-   * this a row could be pointed at another tenant's object and used to
-   * delete it.
+   * The workspace the row belongs to. An R2 object is only deleted if its
+   * whole key matches this workspace's layout (see `isWorkspaceR2Key`).
+   * `fileUrl` is client-supplied, so without this a row could be pointed at
+   * another tenant's object and used to delete it. Required for R2 deletes.
    */
   workspaceId?: string;
   storageProvider?: StorageProvider;
@@ -28,6 +27,28 @@ export interface StoredFileRef {
   fileUrl: string;
   type: string;
   mimeType: string | null;
+}
+
+/** Characters and segments that never appear in a key we generated. */
+const FORBIDDEN_KEY_CHARS = /[%?#\\]/;
+
+/**
+ * True only for a key that R2 issued for this workspace. Mirrors the layout
+ * `CloudflareR2Service` builds:
+ * `<inbox/{images|voice|videos|files} | composer/videos>/<workspaceId>/<user
+ * segment>/<timestamp>-<24 hex><ext>`. `fileUrl` is client-supplied, so the
+ * whole key is matched, not just one segment: no traversal, no encoded
+ * separators, no query or fragment.
+ */
+export function isWorkspaceR2Key(key: string, workspaceId: string): boolean {
+  if (FORBIDDEN_KEY_CHARS.test(key)) return false;
+  if (key.split('/').some((s) => s === '' || s === '.' || s === '..')) {
+    return false;
+  }
+  const escaped = workspaceId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(
+    `^(?:inbox/(?:images|voice|videos|files)|composer/videos)/${escaped}/[A-Za-z0-9-]+/\\d+-[0-9a-f]{24}(?:\\.[A-Za-z0-9]+)?$`,
+  ).test(key);
 }
 
 /** Cloudinary files the destroy API addresses by resource type. */
@@ -102,9 +123,9 @@ export class StorageObjectService {
       const key =
         this.r2.keyFromPublicUrl(ref.fileUrl) ?? ref.cloudinaryPublicId;
       if (!key) return;
-      if (ref.workspaceId && key.split('/')[2] !== ref.workspaceId) {
+      if (!ref.workspaceId || !isWorkspaceR2Key(key, ref.workspaceId)) {
         this.logger.warn(
-          `Refusing to delete R2 object outside workspace ${ref.workspaceId}: ${key}`,
+          `Refusing to delete R2 object not proven to belong to workspace ${ref.workspaceId ?? '(none)'}: ${key}`,
         );
         return;
       }
