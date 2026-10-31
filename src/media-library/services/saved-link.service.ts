@@ -5,8 +5,13 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { eq, and, desc, ilike, or, sql } from 'drizzle-orm';
+import { eq, and, desc, asc, ilike, or, sql } from 'drizzle-orm';
 import { ilikePattern } from '../lib/search';
+import {
+  extractFavicon,
+  fetchPublicHtml,
+  normalizeUtm,
+} from '../lib/link-meta';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -34,20 +39,18 @@ export class SavedLinkService {
     description?: string;
     imageUrl?: string;
     siteName?: string;
+    faviconUrl?: string;
   }> {
     try {
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (compatible; SocialMediaBot/1.0; +https://example.com)',
-        },
+      // Public hosts only, capped and time-boxed (see fetchPublicHtml).
+      const page = await fetchPublicHtml(url, {
+        'User-Agent':
+          'Mozilla/5.0 (compatible; SocialMediaBot/1.0; +https://example.com)',
       });
-
-      if (!response.ok) {
+      if (!page) {
         return {};
       }
-
-      const html = await response.text();
+      const { html, finalUrl } = page;
 
       // Extract Open Graph metadata
       const ogTitle = html.match(
@@ -74,6 +77,7 @@ export class SavedLinkService {
         description: ogDescription?.[1] || metaDescription?.[1] || undefined,
         imageUrl: ogImage?.[1] || undefined,
         siteName: ogSiteName?.[1] || undefined,
+        faviconUrl: extractFavicon(html, finalUrl),
       };
     } catch (error) {
       this.logger.warn(`Failed to fetch link preview for ${url}:`, error);
@@ -117,6 +121,8 @@ export class SavedLinkService {
       previewDescription: preview.description,
       previewImageUrl: preview.imageUrl,
       previewSiteName: preview.siteName,
+      previewFaviconUrl: preview.faviconUrl,
+      utm: normalizeUtm(dto.utm),
       categoryId: dto.categoryId,
       tags: dto.tags || [],
     };
@@ -142,6 +148,7 @@ export class SavedLinkService {
       isStarred,
       isDeleted = false,
       search,
+      sort = 'newest',
       limit = 50,
       offset = 0,
     } = query;
@@ -170,6 +177,17 @@ export class SavedLinkService {
       );
     }
 
+    const orderBy =
+      sort === 'most_used'
+        ? [
+            sql`${savedLinks.usageCount} DESC NULLS LAST`,
+            desc(savedLinks.createdAt),
+            desc(savedLinks.id),
+          ]
+        : sort === 'name'
+          ? [sql`lower(${savedLinks.name}) ASC`, asc(savedLinks.id)]
+          : [desc(savedLinks.createdAt), desc(savedLinks.id)];
+
     const links = await this.db
       .select({
         link: savedLinks,
@@ -178,7 +196,7 @@ export class SavedLinkService {
       .from(savedLinks)
       .leftJoin(mediaCategories, eq(savedLinks.categoryId, mediaCategories.id))
       .where(and(...conditions))
-      .orderBy(desc(savedLinks.createdAt))
+      .orderBy(...orderBy)
       .limit(limit)
       .offset(offset);
 
@@ -259,6 +277,7 @@ export class SavedLinkService {
     if (dto.categoryId !== undefined) updateData.categoryId = dto.categoryId;
     if (dto.tags !== undefined) updateData.tags = dto.tags;
     if (dto.isStarred !== undefined) updateData.isStarred = dto.isStarred;
+    if (dto.utm !== undefined) updateData.utm = normalizeUtm(dto.utm);
 
     // If URL is changing, fetch new preview
     if (dto.url !== undefined && dto.url !== existing.url) {
@@ -268,6 +287,7 @@ export class SavedLinkService {
       updateData.previewDescription = preview.description;
       updateData.previewImageUrl = preview.imageUrl;
       updateData.previewSiteName = preview.siteName;
+      updateData.previewFaviconUrl = preview.faviconUrl;
     }
 
     const [updated] = await this.db
@@ -296,6 +316,7 @@ export class SavedLinkService {
         previewDescription: preview.description,
         previewImageUrl: preview.imageUrl,
         previewSiteName: preview.siteName,
+        previewFaviconUrl: preview.faviconUrl,
         updatedAt: new Date(),
       })
       .where(eq(savedLinks.id, linkId))
