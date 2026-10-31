@@ -39,7 +39,10 @@ const EVERGREEN_TABLES_SQL = join(
  * Migration files every library DB spec replays, in order. Later tasks append
  * their files here.
  */
-export const LIBRARY_MIGRATIONS: string[] = ['0054_library_columns.sql'];
+export const LIBRARY_MIGRATIONS: string[] = [
+  '0054_library_columns.sql',
+  '0055_posts_library_refs.sql',
+];
 
 export const describeLibraryDb = describeDb;
 

@@ -8,12 +8,15 @@ import { readMigrations } from './runner';
  * still-running old instance, and every Inbox read queues behind it. Each must
  * bound its wait as its first executable statement; SET LOCAL is scoped to the
  * runner's per-file transaction. 0054 alters media_items, saved_links, plans
- * and workspace_usage (ACCESS EXCLUSIVE) and builds two indexes.
+ * and workspace_usage (ACCESS EXCLUSIVE) and builds two indexes. 0055 rewrites
+ * posts (two generated columns) under ACCESS EXCLUSIVE and builds three GIN
+ * indexes.
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
   '0052_inbox_conversations_backfill.sql',
   '0054_library_columns.sql',
+  '0055_posts_library_refs.sql',
 ];
 
 const firstStatement = (sql: string): string =>
