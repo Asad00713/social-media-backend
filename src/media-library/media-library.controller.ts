@@ -11,6 +11,8 @@ import {
   UseGuards,
   HttpCode,
   HttpStatus,
+  Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -22,6 +24,8 @@ import { SavedLinkService } from './services/saved-link.service';
 import { AltTextService } from './services/alt-text.service';
 import { RecycleBinService } from './services/recycle-bin.service';
 import { MediaUsageService } from './services/media-usage.service';
+import { CategoryZipService } from './services/category-zip.service';
+import { readZipTicketSecret, signZipTicket } from './lib/zip-ticket';
 import {
   CreateCategoryDto,
   UpdateCategoryDto,
@@ -45,6 +49,8 @@ import {
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
 
+const logger = new Logger('MediaLibraryController');
+
 @Controller('workspaces/:workspaceId/media-library')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class MediaLibraryController {
@@ -57,6 +63,7 @@ export class MediaLibraryController {
     private readonly recycleBin: RecycleBinService,
     private readonly altText: AltTextService,
     private readonly mediaUsage: MediaUsageService,
+    private readonly categoryZip: CategoryZipService,
   ) {}
 
   // ==========================================================================
@@ -129,6 +136,49 @@ export class MediaLibraryController {
     @Body() dto: ReorderCategoriesDto,
   ) {
     return this.categoryService.reorder(workspaceId, dto.type, dto.categoryIds);
+  }
+
+  /**
+   * Step one of a folder zip download: a 5-minute ticket URL the browser can
+   * navigate to without the bearer token (see LibraryZipController).
+   */
+  @Post('categories/:categoryId/zip-ticket')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async createCategoryZipTicket(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('categoryId', ParseUUIDPipe) categoryId: string,
+    @CurrentUser() user: { userId: string },
+  ): Promise<{ url: string; expiresAt: string }> {
+    await this.categoryZip.assertZippable(workspaceId, categoryId);
+
+    // Fail closed: never sign with a missing or short key, never hand out a
+    // relative or `undefined/…` link.
+    const secret = readZipTicketSecret();
+    const apiBase = (process.env.API_PUBLIC_URL ?? '')
+      .trim()
+      .replace(/\/+$/, '');
+    if (!secret || !apiBase) {
+      const missing = [
+        !secret &&
+          'LIBRARY_ZIP_TICKET_SECRET is unset or shorter than 32 characters (generate one with `openssl rand -hex 32`)',
+        !apiBase && 'API_PUBLIC_URL is unset',
+      ].filter(Boolean);
+      logger.error(`Folder zip download is disabled: ${missing.join('; ')}`);
+      throw new ServiceUnavailableException(
+        'Folder download is not configured',
+      );
+    }
+
+    const { ticket, expiresAt } = signZipTicket(
+      { workspaceId, categoryId, userId: user.userId },
+      secret,
+      new Date(),
+    );
+    return {
+      url: `${apiBase}/workspaces/${workspaceId}/media-library/categories/${categoryId}/zip?ticket=${encodeURIComponent(ticket)}`,
+      expiresAt,
+    };
   }
 
   // ==========================================================================

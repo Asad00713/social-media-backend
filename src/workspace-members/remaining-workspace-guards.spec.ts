@@ -211,6 +211,7 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
       updateCategory: 'posts:draft',
       deleteCategory: 'posts:draft',
       reorderCategories: 'posts:draft',
+      createCategoryZipTicket: 'posts:draft',
       createMediaItem: 'posts:draft',
       getMediaItems: 'posts:draft',
       getRecentMediaItems: 'posts:draft',

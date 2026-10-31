@@ -17,6 +17,7 @@ import { SavedLinkService } from './saved-link.service';
 import { RecycleBinService } from './recycle-bin.service';
 import { AltTextService } from './alt-text.service';
 import { MediaUsageService } from './media-usage.service';
+import { CategoryZipService } from './category-zip.service';
 import type { StorageObjectService } from './storage-object.service';
 
 function setup(db: DbType) {
@@ -40,6 +41,7 @@ function setup(db: DbType) {
     recycleBin,
     {} as AltTextService,
     new MediaUsageService(db),
+    new CategoryZipService(db, storageObjects),
   );
   return { deleteFile, media, recycleBin, controller };
 }

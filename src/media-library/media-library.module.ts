@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MediaLibraryController } from './media-library.controller';
+import { LibraryZipController } from './library-zip.controller';
 import { CategoryService } from './services/category.service';
 import { MediaItemService } from './services/media-item.service';
 import { TemplateService } from './services/template.service';
@@ -11,13 +12,14 @@ import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service
 import { AltTextService } from './services/alt-text.service';
 import { AiModule } from '../ai/ai.module';
 import { MediaUsageService } from './services/media-usage.service';
+import { CategoryZipService } from './services/category-zip.service';
 import { MediaModule } from '../media/media.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 
 @Module({
   imports: [WorkspaceRoleModule, DrizzleModule, MediaModule, AiModule],
-  controllers: [MediaLibraryController],
+  controllers: [MediaLibraryController, LibraryZipController],
   providers: [
     CategoryService,
     MediaItemService,
@@ -29,6 +31,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     RecycleBinCleanupService,
     AltTextService,
     MediaUsageService,
+    CategoryZipService,
   ],
   exports: [
     CategoryService,
