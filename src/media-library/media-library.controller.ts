@@ -21,6 +21,7 @@ import { TextSnippetService } from './services/text-snippet.service';
 import { SavedLinkService } from './services/saved-link.service';
 import { RecycleBinService } from './services/recycle-bin.service';
 import { MediaUsageService } from './services/media-usage.service';
+import { LibraryStatsService } from './services/library-stats.service';
 import {
   CreateCategoryDto,
   UpdateCategoryDto,
@@ -55,7 +56,16 @@ export class MediaLibraryController {
     private readonly savedLinkService: SavedLinkService,
     private readonly recycleBin: RecycleBinService,
     private readonly mediaUsage: MediaUsageService,
+    private readonly libraryStats: LibraryStatsService,
   ) {}
+
+  /** Storage, Never used, Bin and tab counts in one call. */
+  @Get('stats')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async getLibraryStats(@Param('workspaceId') workspaceId: string) {
+    return this.libraryStats.getStats(workspaceId);
+  }
 
   // ==========================================================================
   // Categories

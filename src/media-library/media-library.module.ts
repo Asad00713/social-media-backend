@@ -9,6 +9,8 @@ import { StorageObjectService } from './services/storage-object.service';
 import { RecycleBinService } from './services/recycle-bin.service';
 import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service';
 import { MediaUsageService } from './services/media-usage.service';
+import { StorageQuotaService } from './services/storage-quota.service';
+import { LibraryStatsService } from './services/library-stats.service';
 import { MediaModule } from '../media/media.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
@@ -26,6 +28,8 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     RecycleBinService,
     RecycleBinCleanupService,
     MediaUsageService,
+    StorageQuotaService,
+    LibraryStatsService,
   ],
   exports: [
     CategoryService,
@@ -34,6 +38,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     TextSnippetService,
     SavedLinkService,
     StorageObjectService,
+    StorageQuotaService,
   ],
 })
 export class MediaLibraryModule {}
