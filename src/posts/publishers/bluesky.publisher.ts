@@ -10,6 +10,38 @@ interface ThreadPost {
 }
 
 /**
+ * The link card, as the composer stores it.
+ *
+ * Bluesky does not unfurl links — whatever is in
+ * `app.bsky.embed.external` IS the card people see. So the composer
+ * lets you edit the title, description and thumbnail, and this is
+ * what arrives.
+ */
+interface LinkCard {
+  url: string;
+  title: string;
+  description?: string;
+  thumbUrl?: string;
+}
+
+/** A card worth sending: anything else is a card with no link. */
+function usableCard(value: unknown): LinkCard | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const card = value as Partial<LinkCard>;
+  if (typeof card.url !== 'string' || card.url.trim() === '') return undefined;
+  return {
+    url: card.url,
+    // Bluesky renders an empty title as a blank card rather than
+    // falling back to the domain, so the URL is better than nothing.
+    title: typeof card.title === 'string' && card.title.trim() !== ''
+      ? card.title
+      : card.url,
+    description: typeof card.description === 'string' ? card.description : undefined,
+    thumbUrl: typeof card.thumbUrl === 'string' ? card.thumbUrl : undefined,
+  };
+}
+
+/**
  * Bluesky publisher — AT Protocol via BlueskyService.
  * The decrypted "accessToken" passed into publish() is the Bluesky
  * `accessJwt` string. The user's DID lives on the channel metadata.
@@ -98,17 +130,37 @@ export class BlueskyPublisher extends BasePublisher {
       );
     }
 
+    const card = usableCard(metadata?.linkCard);
+
     const thread = metadata?.thread as ThreadPost[] | undefined;
     if (Array.isArray(thread) && thread.length > 1) {
-      return this.publishThread(accessToken, did, thread);
+      return this.publishThread(accessToken, did, thread, card);
     }
 
     // Pick the right service method based on media shape.
+    // - A link card → external embed (no media: one embed per post)
     // - No media → text post
     // - 1 video → video post (uploadBlob with the video binary)
     // - 1-4 images → image post(s)
     let post: { uri: string; cid: string };
-    if (mediaItems.length === 0) {
+    if (card && mediaItems.length === 0) {
+      /*
+       * The card wins only when there is no media, because a post
+       * carries ONE embed. Attaching both would mean choosing which
+       * to drop silently — and the composer shows the card as the
+       * post's own picture, so dropping media instead would publish
+       * something the user never saw.
+       */
+      post = await this.blueskyService.createLinkPost(
+        accessToken,
+        did,
+        content ?? '',
+        card.url,
+        card.title,
+        card.description,
+        card.thumbUrl,
+      );
+    } else if (mediaItems.length === 0) {
       post = await this.blueskyService.createTextPost(
         accessToken,
         did,
@@ -145,6 +197,15 @@ export class BlueskyPublisher extends BasePublisher {
     accessJwt: string,
     did: string,
     posts: ThreadPost[],
+    /**
+     * The link card, which belongs to the FIRST post only.
+     *
+     * One card per post is all `app.bsky.embed.external` allows, and
+     * the composer draws one card against the whole draft rather than
+     * one per row — so repeating it down the thread would publish
+     * something nobody composed.
+     */
+    card?: LinkCard,
   ): Promise<PublishResult> {
     let rootRef: { uri: string; cid: string } | undefined;
     let parentRef: { uri: string; cid: string } | undefined;
@@ -167,7 +228,18 @@ export class BlueskyPublisher extends BasePublisher {
         const media = p.mediaItems ?? [];
         const isVideoItem = media.length === 1 && media[0].type === 'video';
         let created: { uri: string; cid: string };
-        if (media.length === 0) {
+        if (i === 0 && card && media.length === 0) {
+          created = await this.blueskyService.createLinkPost(
+            accessJwt,
+            did,
+            p.text,
+            card.url,
+            card.title,
+            card.description,
+            card.thumbUrl,
+            reply,
+          );
+        } else if (media.length === 0) {
           created = await this.blueskyService.createTextPost(
             accessJwt,
             did,
