@@ -47,6 +47,16 @@ export interface MastodonMediaAttachment {
   previewUrl: string;
 }
 
+/**
+ * Mastodon's poll bounds.
+ *
+ * The API reference states neither, but every mainstream instance ships
+ * the stock `max_options: 4` and refuses a single-answer poll, so these
+ * are enforced here rather than discovered as a rejected post.
+ */
+const MIN_MASTODON_POLL_OPTIONS = 2;
+const MAX_MASTODON_POLL_OPTIONS = 4;
+
 @Injectable()
 export class MastodonService {
   private readonly logger = new Logger(MastodonService.name);
@@ -283,6 +293,17 @@ export class MastodonService {
       language?: string;
       scheduledAt?: string; // ISO 8601 datetime
       mediaIds?: string[];
+      /**
+       * A poll. Mastodon's own rule: a status carries a poll OR media,
+       * never both — supplying a poll means media attachments cannot be
+       * used — so the caller decides which, and this is dropped when
+       * media is present rather than failing the post.
+       */
+      poll?: {
+        options: string[];
+        expiresInSeconds: number;
+        multiple?: boolean;
+      };
     },
   ): Promise<MastodonStatus> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
@@ -299,6 +320,27 @@ export class MastodonService {
     if (options?.scheduledAt) body.scheduled_at = options.scheduledAt;
     if (options?.mediaIds && options.mediaIds.length > 0) {
       body.media_ids = options.mediaIds;
+    }
+
+    // Poll or media, never both. Media wins: the attachments are already
+    // uploaded by this point, so dropping the poll loses a setting while
+    // dropping the media would lose the upload too.
+    const poll = options?.poll;
+    const hasMedia = (options?.mediaIds?.length ?? 0) > 0;
+    if (poll && !hasMedia) {
+      const pollOptions = poll.options
+        .map((o) => o.trim())
+        .filter(Boolean)
+        .slice(0, MAX_MASTODON_POLL_OPTIONS);
+      // `options` and `expires_in` must be provided together, and a poll
+      // with one answer is not a poll.
+      if (pollOptions.length >= MIN_MASTODON_POLL_OPTIONS) {
+        body.poll = {
+          options: pollOptions,
+          expires_in: poll.expiresInSeconds,
+          multiple: poll.multiple === true,
+        };
+      }
     }
 
     const response = await fetch(`${normalizedUrl}/api/v1/statuses`, {

@@ -40,6 +40,51 @@ export class MastodonPublisher extends BasePublisher {
     return mediaItems.every((m) => ['image', 'video', 'gif'].includes(m.type));
   }
 
+  /** `language` on the status — a BCP-47 code, or undefined. */
+  private getLanguage(
+    metadata: Record<string, any> | undefined,
+  ): string | undefined {
+    const language = metadata?.language;
+    return typeof language === 'string' && language.trim()
+      ? language.trim()
+      : undefined;
+  }
+
+  /**
+   * The poll, if the composer built one.
+   *
+   * Validated rather than forwarded: Mastodon rejects the whole status
+   * for a malformed poll, so a poll that cannot be sent is dropped and
+   * the post survives.
+   */
+  private getPoll(metadata: Record<string, any> | undefined):
+    | { options: string[]; expiresInSeconds: number; multiple?: boolean }
+    | undefined {
+    const raw = metadata?.poll;
+    if (!raw || typeof raw !== 'object') return undefined;
+
+    const options = Array.isArray(raw.options)
+      ? raw.options
+          .filter((o: unknown): o is string => typeof o === 'string')
+          .map((o: string) => o.trim())
+          .filter(Boolean)
+      : [];
+    const expiresInSeconds = Number(raw.expiresInSeconds);
+
+    // `options` and `expires_in` must be provided together, and a poll
+    // needs at least two answers to be one.
+    if (options.length < 2) return undefined;
+    if (!Number.isFinite(expiresInSeconds) || expiresInSeconds <= 0) {
+      return undefined;
+    }
+
+    return {
+      options,
+      expiresInSeconds,
+      multiple: raw.multiple === true,
+    };
+  }
+
   async publish(options: PublishOptions): Promise<PublishResult> {
     const { content, mediaItems, accessToken, channelMetadata, metadata } =
       options;
@@ -99,6 +144,10 @@ export class MastodonPublisher extends BasePublisher {
         sensitive,
         spoilerText: contentWarning,
         mediaIds,
+        language: this.getLanguage(metadata),
+        // Dropped by the service when media is present — a status takes a
+        // poll OR attachments, never both.
+        poll: this.getPoll(metadata),
       },
     );
 
