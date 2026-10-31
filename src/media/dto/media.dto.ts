@@ -25,6 +25,7 @@ export class UploadFromUrlDto {
   @IsUrl()
   url: string;
 
+  /** Accepted for older clients and ignored: the server picks the location. */
   @IsString()
   @IsOptional()
   @MaxLength(100)
@@ -38,6 +39,7 @@ export class UploadFromUrlDto {
   @IsOptional()
   tags?: string[];
 
+  /** Accepted for older clients and ignored: the server picks the location. */
   @IsString()
   @IsOptional()
   publicId?: string;
@@ -54,6 +56,7 @@ export class UploadFromBase64Dto {
   @IsString()
   data: string;
 
+  /** Accepted for older clients and ignored: the server picks the location. */
   @IsString()
   @IsOptional()
   @MaxLength(100)
@@ -67,6 +70,7 @@ export class UploadFromBase64Dto {
   @IsOptional()
   tags?: string[];
 
+  /** Accepted for older clients and ignored: the server picks the location. */
   @IsString()
   @IsOptional()
   publicId?: string;
@@ -112,6 +116,7 @@ export class UploadFileBodyDto {
   @IsUUID()
   categoryId?: string;
 
+  /** Accepted for older clients and ignored: the server picks the location. */
   @IsString()
   @IsOptional()
   @MaxLength(100)
@@ -142,8 +147,8 @@ export class GetSignedUploadParamsDto {
   bytes: number;
 
   /**
-   * Accepted for older clients and ignored: the signed folder is always the
-   * workspace's own, so `POST items` can tell its uploads apart (SEC5).
+   * Accepted for older clients and ignored: the signature pins a public id
+   * in the workspace's own folder (SEC5).
    */
   @IsString()
   @IsOptional()

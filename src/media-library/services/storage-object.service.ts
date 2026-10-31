@@ -4,7 +4,7 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
-import { and, eq, inArray, notInArray, or } from 'drizzle-orm';
+import { and, eq, inArray, notInArray, or, sql } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -12,12 +12,15 @@ import {
   STORAGE_PROVIDERS,
   type StorageProvider,
 } from '../../drizzle/schema/media-library.schema';
-import { CloudinaryService } from '../../media/cloudinary.service';
+import {
+  CloudinaryService,
+  type StoredSize,
+} from '../../media/cloudinary.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import { itemReferencedSql } from '../lib/usage-sql';
 
 export { STORAGE_PROVIDERS };
-export type { StorageProvider };
+export type { StorageProvider, StoredSize };
 
 /** What is needed to locate and delete a library file's bytes. */
 export interface StoredFileRef {
@@ -169,11 +172,11 @@ export class StorageObjectService {
   }
 
   /**
-   * The stored size of a file, asked of the store that holds it. `null` when
-   * the store cannot say (no such object, no public id, a provider error):
-   * the caller decides what an unknown size means.
+   * The stored size of a file, asked of the store that holds it: `missing`
+   * when the object is not there (or nothing of ours is named), `error` when
+   * the store cannot be asked or gives no length.
    */
-  async realSize(ref: StoredFileRef): Promise<number | null> {
+  async realSize(ref: StoredFileRef): Promise<StoredSize> {
     const urlKey = this.r2.keyFromPublicUrl(ref.fileUrl);
     const provider: StorageProvider =
       urlKey !== null
@@ -183,25 +186,44 @@ export class StorageObjectService {
 
     if (provider === 'r2') {
       const key = urlKey ?? ref.cloudinaryPublicId;
-      if (!key) return null;
+      if (!key) return { kind: 'missing' };
       try {
         const head = await this.r2.verifyObject(key);
-        return head.contentLength ?? null;
+        if (!head.exists) return { kind: 'missing' };
+        return typeof head.contentLength === 'number'
+          ? { kind: 'size', bytes: head.contentLength }
+          : { kind: 'error' };
       } catch (error) {
         this.logger.warn(
           `Could not read the size of R2 object ${key}: ${
             error instanceof Error ? error.message : String(error)
           }`,
         );
-        return null;
+        return { kind: 'error' };
       }
     }
 
-    if (!ref.cloudinaryPublicId) return null;
+    if (!ref.cloudinaryPublicId) return { kind: 'missing' };
     return this.cloudinary.getResourceBytes(
       ref.cloudinaryPublicId,
       cloudinaryResourceType(ref),
     );
+  }
+
+  /**
+   * True when a post in any workspace carries this file URL, through the
+   * generated `posts.media_urls` column (0055, GIN-indexed). A post that
+   * names a Library item by id also has that item's row, which
+   * `isFileShared` already sees.
+   */
+  async isUrlInAnyPost(
+    fileUrl: string,
+    db: DbType = this.db,
+  ): Promise<boolean> {
+    const res = await db.execute<{ found: number }>(
+      sql`SELECT 1 AS found FROM posts p WHERE p.media_urls @> jsonb_build_array(${fileUrl}::text) LIMIT 1`,
+    );
+    return res.rows.length > 0;
   }
 
   /**

@@ -1,10 +1,13 @@
-import { Injectable } from '@nestjs/common';
+import { randomUUID } from 'crypto';
+import { Injectable, Logger } from '@nestjs/common';
 import {
   CloudinaryService,
   type UploadResult,
 } from '../../media/cloudinary.service';
+import { StorageFullException } from '../lib/storage';
 import { MediaItemService, type MediaItemView } from './media-item.service';
 import { StorageQuotaService } from './storage-quota.service';
+import { cloudinaryUploadFolder } from './storage-object.service';
 
 export interface IngestResult {
   upload: UploadResult;
@@ -13,10 +16,14 @@ export interface IngestResult {
 
 type ResourceType = 'image' | 'video' | 'auto' | 'raw';
 
+/**
+ * No `folder` or `publicId`: the server picks every location itself. With
+ * `overwrite: false`, a caller-chosen public id that is taken makes
+ * Cloudinary return the EXISTING asset, which could be another tenant's.
+ */
 interface IngestBase {
   workspaceId: string;
   userId: string;
-  folder?: string;
   resourceType?: ResourceType;
   tags?: string[];
   /** The Library folder to file the item into; checked before any upload. */
@@ -33,12 +40,10 @@ export interface IngestBufferInput extends IngestBase {
 
 export interface IngestRemoteUrlInput extends IngestBase {
   url: string;
-  publicId?: string;
 }
 
 export interface IngestBase64Input extends IngestBase {
   data: string;
-  publicId?: string;
 }
 
 const UNTITLED = 'Untitled';
@@ -67,13 +72,21 @@ function mimeFromDataUri(data: string): string | undefined {
   return /^data:([^;,]+)[;,]/.exec(data)?.[1];
 }
 
+/** A fresh location in the workspace's folder: `library/<ws>/<uuid>`. */
+function freshPublicId(workspaceId: string): string {
+  return `${cloudinaryUploadFolder(workspaceId)}/${randomUUID()}`;
+}
+
 /**
  * Every server-side upload into the Library: refuse early when storage is
- * already full, store the bytes, then save the Library item (which re-checks
- * under the workspace lock and deletes the upload on 413).
+ * already full, store the bytes at a location the server picks, then save the
+ * Library item (which re-checks under the workspace lock and deletes the
+ * upload on 413).
  */
 @Injectable()
 export class LibraryIngestService {
+  private readonly logger = new Logger(LibraryIngestService.name);
+
   constructor(
     private readonly cloudinary: CloudinaryService,
     private readonly quota: StorageQuotaService,
@@ -84,7 +97,7 @@ export class LibraryIngestService {
     await this.assertFolder(i);
     await this.quota.assertCanStore(i.workspaceId, i.buffer.length);
     const upload = await this.cloudinary.uploadFromBuffer(i.buffer, {
-      folder: i.folder,
+      publicId: freshPublicId(i.workspaceId),
       resourceType: i.resourceType ?? 'auto',
       tags: i.tags ?? [],
     });
@@ -98,10 +111,9 @@ export class LibraryIngestService {
     // workspace that is already full; saving the item checks the real size.
     await this.quota.assertCanStore(i.workspaceId, 1);
     const upload = await this.cloudinary.uploadFromUrl(i.url, {
-      folder: i.folder,
+      publicId: freshPublicId(i.workspaceId),
       resourceType: i.resourceType,
       tags: i.tags,
-      publicId: i.publicId,
     });
     return this.save(i, upload, nameFromUrl(i.url));
   }
@@ -113,10 +125,9 @@ export class LibraryIngestService {
       Math.floor((i.data.length * 3) / 4),
     );
     const upload = await this.cloudinary.uploadFromBase64(i.data, {
-      folder: i.folder,
+      publicId: freshPublicId(i.workspaceId),
       resourceType: i.resourceType,
       tags: i.tags,
-      publicId: i.publicId,
     });
     return this.save(i, upload, UNTITLED, mimeFromDataUri(i.data));
   }
@@ -128,18 +139,43 @@ export class LibraryIngestService {
     }
   }
 
+  /**
+   * Saves the Library item. When that fails for any reason but a 413 (which
+   * `createFromUpload` already cleans up), the fresh upload is deleted
+   * best-effort so no orphan stays behind. An `existing` asset is never ours
+   * to delete.
+   */
   private async save(
     i: IngestBase,
     upload: UploadResult,
     name: string,
     mimeType?: string,
   ): Promise<IngestResult> {
-    const libraryItem = await this.mediaItems.createFromUpload(
-      i.workspaceId,
-      i.userId,
-      upload,
-      { name, mimeType, categoryId: i.categoryId, tags: i.tags },
-    );
-    return { upload, libraryItem };
+    try {
+      const libraryItem = await this.mediaItems.createFromUpload(
+        i.workspaceId,
+        i.userId,
+        upload,
+        { name, mimeType, categoryId: i.categoryId, tags: i.tags },
+      );
+      return { upload, libraryItem };
+    } catch (error) {
+      if (!(error instanceof StorageFullException) && !upload.existing) {
+        await this.deleteOrphan(upload);
+      }
+      throw error;
+    }
+  }
+
+  private async deleteOrphan(upload: UploadResult): Promise<void> {
+    try {
+      await this.cloudinary.delete(upload.publicId, upload.resourceType);
+    } catch (error) {
+      this.logger.warn(
+        `Could not delete orphaned upload ${upload.publicId}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 }

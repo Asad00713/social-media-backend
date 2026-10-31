@@ -314,7 +314,9 @@ describeLibraryDb('migration 0054 (library columns)', () => {
           url.startsWith(`${R2_BASE}/`) ? url.slice(R2_BASE.length + 1) : null,
         ),
         isOwnUrl: jest.fn().mockReturnValue(false),
-        verifyObject: jest.fn().mockResolvedValue({ exists: false }),
+        verifyObject: jest
+          .fn()
+          .mockResolvedValue({ exists: true, contentLength: 1 }),
       };
       const storageObjects = new StorageObjectService(
         cloudinary as unknown as CloudinaryService,

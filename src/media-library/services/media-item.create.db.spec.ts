@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { HttpException, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import type { PoolClient } from 'pg';
 import { mediaItems } from '../../drizzle/schema/media-library.schema';
@@ -16,6 +16,7 @@ import {
   ownR2File,
   seedWorkspace,
   seedMediaItem,
+  seedPost,
   seedUsage,
   TEST_CLOUDINARY_BASE,
 } from '../testing/library-db';
@@ -133,21 +134,128 @@ describeLibraryDb('MediaItemService.create / createFromUpload storage', () => {
     });
   });
 
-  it('falls back to the declared size when the store cannot tell', async () => {
+  // Fix round 1 (overrides the brief's fallback test): the client's fileSize
+  // is never the quota. A size the store cannot give refuses the save.
+  describe('unknown size', () => {
+    async function refused(
+      run: (s: ReturnType<typeof setup>, ws: string, user: string) => unknown,
+    ) {
+      return withLibraryDb(async (db, client) => {
+        const { workspaceId, ownerId } = await workspaceUsing(client, 0);
+        const s = setup(db);
+        const deleteFile = jest.spyOn(s.storageObjects, 'deleteFile');
+        const err = await Promise.resolve(run(s, workspaceId, ownerId)).catch(
+          (e: unknown) => e,
+        );
+        expect(await countRows(client, workspaceId)).toBe(0);
+        expect(deleteFile).not.toHaveBeenCalled();
+        return err as HttpException;
+      });
+    }
+
+    it('an R2 object that is not there yet is 400 Upload not finished', async () => {
+      const err = await refused(({ service, r2 }, ws, user) => {
+        r2.verifyObject.mockResolvedValue({ exists: false });
+        return service.create(ws, user, {
+          type: 'video',
+          name: 'clip',
+          ...ownR2File(ws),
+          fileSize: 1,
+        });
+      });
+      expect(err).toBeInstanceOf(HttpException);
+      expect(err.getStatus()).toBe(400);
+      expect(err.getResponse()).toEqual({
+        code: 'UPLOAD_NOT_FINISHED',
+        message: 'Upload not finished',
+      });
+    });
+
+    it('a Cloudinary id that does not exist is 400 Upload not finished', async () => {
+      const err = await refused(({ service, cloudinary }, ws, user) => {
+        cloudinary.getResourceBytes.mockResolvedValue({ kind: 'missing' });
+        return service.create(ws, user, {
+          type: 'image',
+          name: 'pic',
+          ...ownCloudinaryFile(ws),
+          fileSize: 1,
+        });
+      });
+      expect(err.getStatus()).toBe(400);
+      expect(err.getResponse()).toMatchObject({ code: 'UPLOAD_NOT_FINISHED' });
+    });
+
+    it('a provider error is a retryable 503', async () => {
+      const err = await refused(({ service, cloudinary }, ws, user) => {
+        cloudinary.getResourceBytes.mockResolvedValue({ kind: 'error' });
+        return service.create(ws, user, {
+          type: 'image',
+          name: 'pic',
+          ...ownCloudinaryFile(ws),
+          fileSize: 1,
+        });
+      });
+      expect(err.getStatus()).toBe(503);
+      expect(err.getResponse()).toMatchObject({ code: 'SIZE_UNAVAILABLE' });
+    });
+  });
+
+  it('createFromUpload refuses an existing Cloudinary asset: 409, no row, nothing deleted', async () => {
     await withLibraryDb(async (db, client) => {
       const { workspaceId, ownerId } = await workspaceUsing(client, 0);
-      const { service, cloudinary } = setup(db);
-      cloudinary.getResourceBytes.mockResolvedValue(null);
+      const { service, storageObjects, cloudinary } = setup(db);
+      const deleteFile = jest.spyOn(storageObjects, 'deleteFile');
+      const error = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
 
-      const created = await service.create(workspaceId, ownerId, {
-        type: 'image',
-        name: 'pic',
-        ...ownCloudinaryFile(workspaceId),
-        fileSize: 321,
+      const err = (await service
+        .createFromUpload(
+          workspaceId,
+          ownerId,
+          cloudinaryUpload({
+            publicId: 'library/other/victim',
+            existing: true,
+          }),
+          { name: 'pic' },
+        )
+        .catch((e: unknown) => e)) as HttpException;
+
+      expect(err).toBeInstanceOf(HttpException);
+      expect(err.getStatus()).toBe(409);
+      expect(err.getResponse()).toMatchObject({ code: 'UPLOAD_CONFLICT' });
+      expect(error).toHaveBeenCalled();
+      expect(deleteFile).not.toHaveBeenCalled();
+      expect(cloudinary.delete).not.toHaveBeenCalled();
+      expect(await countRows(client, workspaceId)).toBe(0);
+    });
+  });
+
+  it('a 413 leaves a file alone while a post (any workspace) still uses its URL', async () => {
+    await withLibraryDb(async (db, client) => {
+      const a = await workspaceUsing(client, 0);
+      const b = await workspaceUsing(client, 900);
+      const file = ownR2File(b.workspaceId);
+      // No Library row anywhere, only a post in another workspace.
+      await seedPost(client, {
+        workspaceId: a.workspaceId,
+        createdById: a.ownerId,
+        mediaItems: [{ url: file.fileUrl, type: 'video' }],
       });
+      const { service, storageObjects, r2 } = setup(db);
+      r2.verifyObject.mockResolvedValue({ exists: true, contentLength: 200 });
+      const deleteFile = jest.spyOn(storageObjects, 'deleteFile');
 
-      expect(cloudinary.getResourceBytes).toHaveBeenCalled();
-      expect(created.fileSize).toBe(321);
+      await expect(
+        service.create(b.workspaceId, b.ownerId, {
+          type: 'video',
+          name: 'clip',
+          ...file,
+        }),
+      ).rejects.toBeInstanceOf(StorageFullException);
+
+      expect(deleteFile).not.toHaveBeenCalled();
+      expect(r2.deleteObject).not.toHaveBeenCalled();
     });
   });
 

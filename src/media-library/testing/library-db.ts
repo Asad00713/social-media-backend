@@ -92,7 +92,8 @@ export const TEST_R2_BASE = 'https://r2.example.test';
 
 /**
  * Cloudinary and R2 mocks that recognise the test cloud and bucket the way the
- * real services recognise ours. No file has a known size unless a spec says so.
+ * real services recognise ours. Every stored file exists and holds 1 byte
+ * unless a spec says otherwise.
  */
 export function makeStorageMocks() {
   const cloudinary = {
@@ -101,7 +102,7 @@ export function makeStorageMocks() {
     isOwnUrl: jest.fn((url: string) =>
       url.startsWith(`${TEST_CLOUDINARY_BASE}/`),
     ),
-    getResourceBytes: jest.fn().mockResolvedValue(null),
+    getResourceBytes: jest.fn().mockResolvedValue({ kind: 'size', bytes: 1 }),
   };
   const r2 = {
     deleteObject: jest.fn().mockResolvedValue(undefined),
@@ -111,7 +112,9 @@ export function makeStorageMocks() {
         : null,
     ),
     isOwnUrl: jest.fn((url: string) => url.startsWith(`${TEST_R2_BASE}/`)),
-    verifyObject: jest.fn().mockResolvedValue({ exists: false }),
+    verifyObject: jest
+      .fn()
+      .mockResolvedValue({ exists: true, contentLength: 1 }),
   };
   return { cloudinary, r2 };
 }

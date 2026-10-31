@@ -20,7 +20,7 @@ function makeMocks() {
   const cloudinary = {
     delete: jest.fn().mockResolvedValue(true),
     isOwnUrl: jest.fn().mockReturnValue(false),
-    getResourceBytes: jest.fn().mockResolvedValue(null),
+    getResourceBytes: jest.fn().mockResolvedValue({ kind: 'missing' }),
   };
   const r2 = {
     deleteObject: jest.fn().mockResolvedValue(undefined),
@@ -298,61 +298,73 @@ describe('StorageObjectService', () => {
     });
   });
 
+  // Fix round 1: an unknown size is never a number the caller could replace
+  // with the client's own claim. It is "missing" (not uploaded yet) or
+  // "error" (ask again later).
   describe('realSize', () => {
+    const r2Ref = () =>
+      ref({ fileUrl: `${R2_BASE}/${R2_KEY}`, cloudinaryPublicId: null });
+
     it('asks R2 for an R2 file and returns its content length', async () => {
       const { service, r2, cloudinary } = makeMocks();
       r2.verifyObject.mockResolvedValue({ exists: true, contentLength: 4321 });
-      await expect(
-        service.realSize(
-          ref({ fileUrl: `${R2_BASE}/${R2_KEY}`, cloudinaryPublicId: null }),
-        ),
-      ).resolves.toBe(4321);
+      await expect(service.realSize(r2Ref())).resolves.toEqual({
+        kind: 'size',
+        bytes: 4321,
+      });
       expect(r2.verifyObject).toHaveBeenCalledWith(R2_KEY);
       expect(cloudinary.getResourceBytes).not.toHaveBeenCalled();
     });
 
-    it('is null for an R2 object that is not there', async () => {
+    it('is missing for an R2 object that is not there yet', async () => {
       const { service } = makeMocks();
-      await expect(
-        service.realSize(
-          ref({ fileUrl: `${R2_BASE}/${R2_KEY}`, cloudinaryPublicId: null }),
-        ),
-      ).resolves.toBeNull();
+      await expect(service.realSize(r2Ref())).resolves.toEqual({
+        kind: 'missing',
+      });
     });
 
-    it('turns an R2 error into null instead of throwing', async () => {
+    it('is an error when R2 throws or reports no length', async () => {
       const { service, r2 } = makeMocks();
-      r2.verifyObject.mockRejectedValue(new Error('R2 down'));
       jest
         .spyOn(
           (service as unknown as { logger: { warn: () => void } }).logger,
           'warn',
         )
         .mockImplementation(() => undefined);
-      await expect(
-        service.realSize(
-          ref({ fileUrl: `${R2_BASE}/${R2_KEY}`, cloudinaryPublicId: null }),
-        ),
-      ).resolves.toBeNull();
+      r2.verifyObject.mockRejectedValueOnce(new Error('R2 down'));
+      await expect(service.realSize(r2Ref())).resolves.toEqual({
+        kind: 'error',
+      });
+      r2.verifyObject.mockResolvedValueOnce({ exists: true });
+      await expect(service.realSize(r2Ref())).resolves.toEqual({
+        kind: 'error',
+      });
     });
 
-    it('asks Cloudinary by public id and resource type', async () => {
+    it("passes Cloudinary's answer through, asked by public id and resource type", async () => {
       const { service, cloudinary } = makeMocks();
-      cloudinary.getResourceBytes.mockResolvedValue(777);
+      cloudinary.getResourceBytes.mockResolvedValue({
+        kind: 'size',
+        bytes: 777,
+      });
       await expect(
         service.realSize(ref({ type: 'video', mimeType: 'video/mp4' })),
-      ).resolves.toBe(777);
+      ).resolves.toEqual({ kind: 'size', bytes: 777 });
       expect(cloudinary.getResourceBytes).toHaveBeenCalledWith(
         'social-media/abc',
         'video',
       );
+      cloudinary.getResourceBytes.mockResolvedValue({ kind: 'missing' });
+      await expect(service.realSize(ref())).resolves.toEqual({
+        kind: 'missing',
+      });
     });
 
-    it('is null for a non-R2 file without a public id', async () => {
+    it('is missing for a non-R2 file without a public id', async () => {
       const { service, cloudinary } = makeMocks();
       await expect(
         service.realSize(ref({ cloudinaryPublicId: null })),
-      ).resolves.toBeNull();
+      ).resolves.toEqual({ kind: 'missing' });
       expect(cloudinary.getResourceBytes).not.toHaveBeenCalled();
     });
   });

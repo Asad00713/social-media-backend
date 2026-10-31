@@ -48,12 +48,13 @@ function make(
     ingestBase64: jest.fn().mockResolvedValue({ upload, libraryItem }),
   };
   const cloudinaryService = {
-    generateSignedUploadParams: jest.fn((o: { folder: string }) => ({
+    generateSignedUploadParams: jest.fn((publicId: string) => ({
       signature: 's',
       timestamp: 1,
       cloudName: 'acme',
       apiKey: 'k',
-      folder: o.folder,
+      publicId,
+      overwrite: false as const,
     })),
   };
   const r2Service = {
@@ -132,19 +133,29 @@ describe('LibraryUploadController', () => {
     expect(cloudinaryService.generateSignedUploadParams).not.toHaveBeenCalled();
   });
 
-  it("signed-upload-params signs this workspace's folder, whatever the client asks", async () => {
+  it('signed-upload-params pins a fresh public id under the workspace, overwrite off', async () => {
     const { c, cloudinaryService } = make(okAccess());
     const res = await c.getSignedUploadParams(
       { workspaceId: WS, bytes: 10, folder: 'elsewhere' },
       user,
     );
-    expect(cloudinaryService.generateSignedUploadParams).toHaveBeenCalledWith({
-      folder: cloudinaryUploadFolder(WS),
-    });
+    const again = await c.getSignedUploadParams(
+      { workspaceId: WS, bytes: 10 },
+      user,
+    );
+    const pid = new RegExp(
+      `^${cloudinaryUploadFolder(WS)}/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`,
+    );
+    const signed =
+      cloudinaryService.generateSignedUploadParams.mock.calls[0][0];
+    expect(signed).toMatch(pid);
     expect(res).toMatchObject({
-      folder: cloudinaryUploadFolder(WS),
+      publicId: signed,
+      overwrite: false,
       uploadUrl: 'https://api.cloudinary.com/v1_1/acme/auto/upload',
     });
+    expect(res).not.toHaveProperty('folder');
+    expect(again.publicId).not.toBe(res.publicId);
   });
 
   it('presign over the limit is a 413 and presigns nothing', async () => {
@@ -228,5 +239,28 @@ describe('LibraryUploadController', () => {
       ...upload,
       libraryItem,
     });
+  });
+
+  // Fix round 1 (Critical 1): a client folder or public id never reaches
+  // storage; the server picks the location.
+  it('upload/url, upload/base64 and upload/file never forward a client folder or public id', async () => {
+    const { c, ingest } = make(okAccess());
+    const stray = { folder: 'social-media', publicId: 'library/other/victim' };
+    await c.uploadFromUrl(
+      { workspaceId: WS, url: 'https://i.test/a.png', ...stray },
+      user,
+    );
+    await c.uploadFromBase64({ workspaceId: WS, data: 'aGk=', ...stray }, user);
+    await c.uploadFile(file, { workspaceId: WS, folder: 'social-media' }, user);
+    const firstArg = (fn: jest.Mock) =>
+      (fn.mock.calls as unknown[][])[0][0] as Record<string, unknown>;
+    for (const arg of [
+      firstArg(ingest.ingestRemoteUrl),
+      firstArg(ingest.ingestBase64),
+      firstArg(ingest.ingestBuffer),
+    ]) {
+      expect(arg).not.toHaveProperty('folder');
+      expect(arg).not.toHaveProperty('publicId');
+    }
   });
 });

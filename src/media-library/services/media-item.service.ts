@@ -31,7 +31,13 @@ import {
 import { users } from '../../drizzle/schema/users.schema';
 import { ilikePattern } from '../lib/search';
 import { toUserRef } from '../lib/user-ref';
-import { StorageFullException, wouldExceed } from '../lib/storage';
+import {
+  SizeUnavailableException,
+  StorageFullException,
+  UploadConflictException,
+  UploadNotFinishedException,
+  wouldExceed,
+} from '../lib/storage';
 import { mediaTypeFromUpload } from '../lib/upload-type';
 import type { UserRef } from '../dto/contract';
 import {
@@ -120,8 +126,10 @@ export class MediaItemService {
    * Registers a file the client uploaded directly (R2 presign or a signed
    * Cloudinary upload). Saving the same stored object twice returns the first
    * row (B3). Otherwise the file must belong to this workspace (SEC5), and
-   * its size is asked of the store rather than taken from the client; a file
-   * that would go over the limit is deleted again and refused with 413.
+   * its size is asked of the store: the client's `fileSize` is never used. A
+   * file the store cannot size is refused (400 not uploaded yet, 503 retry);
+   * a file that would go over the limit is deleted again and refused with
+   * 413.
    */
   async create(
     workspaceId: string,
@@ -150,8 +158,10 @@ export class MediaItemService {
     if (existing) return this.viewOf(existing.id);
 
     this.storageObjects.assertWorkspaceObject(ref, workspaceId);
-    const bytes =
-      (await this.storageObjects.realSize(ref)) ?? dto.fileSize ?? 0;
+    const size = await this.storageObjects.realSize(ref);
+    if (size.kind === 'missing') throw new UploadNotFinishedException();
+    if (size.kind === 'error') throw new SizeUnavailableException();
+    const bytes = size.bytes;
 
     const values: NewMediaItem = {
       workspaceId,
@@ -177,7 +187,8 @@ export class MediaItemService {
   /**
    * Saves a file the server just stored in Cloudinary as a Library item. The
    * size is the upload's own; the same lock, idempotency and delete-on-413 as
-   * `create` apply (B2).
+   * `create` apply (B2). An asset Cloudinary already held under that public
+   * id is refused with 409 and left alone: it belongs to someone else.
    */
   async createFromUpload(
     workspaceId: string,
@@ -185,6 +196,12 @@ export class MediaItemService {
     upload: UploadResult,
     meta: UploadItemMeta,
   ): Promise<MediaItemView> {
+    if (upload.existing) {
+      this.logger.error(
+        `Cloudinary returned an existing asset for ${upload.publicId} (workspace ${workspaceId}); refusing to save it`,
+      );
+      throw new UploadConflictException();
+    }
     const type = mediaTypeFromUpload({
       resourceType: upload.resourceType,
       format: upload.format,
@@ -300,10 +317,15 @@ export class MediaItemService {
     return row;
   }
 
-  /** Deletes the bytes of a refused file. A failure is logged, not thrown. */
+  /**
+   * Deletes the bytes of a refused file, unless a Library row (any
+   * workspace) or a post (any workspace) still uses them. A failure is
+   * logged, not thrown.
+   */
   private async discardRefusedFile(ref: StoredFileRef): Promise<void> {
     try {
       if (await this.storageObjects.isFileShared(ref, NO_ROW_ID)) return;
+      if (await this.storageObjects.isUrlInAnyPost(ref.fileUrl)) return;
       await this.storageObjects.deleteFile(ref);
     } catch (error) {
       this.logger.warn(

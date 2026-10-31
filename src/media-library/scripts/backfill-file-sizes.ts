@@ -5,13 +5,16 @@ import { buildPoolConfig } from '../../drizzle/pool-config';
 import { decideTarget } from '../../drizzle/migrate/target-guard';
 import { CloudinaryService } from '../../media/cloudinary.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
-import { StorageObjectService } from '../services/storage-object.service';
+import {
+  StorageObjectService,
+  type StoredSize,
+} from '../services/storage-object.service';
 
 /**
  * One-off owner script: fills `media_items.file_size` where it is NULL by
  * asking the store that holds the bytes (R2 HEAD, Cloudinary admin API). A row
- * whose size cannot be found stays NULL (it counts as 0) and is reported in
- * `failed`. Cloudinary's admin API is rate-limited, so after
+ * whose size cannot be found (missing, or a provider error) stays NULL (it
+ * counts as 0) and is reported in `failed`. Cloudinary's admin API is rate-limited, so after
  * `maxCloudinaryCalls` the remaining Cloudinary rows are skipped; run it again
  * later to pick them up. R2 rows are not capped. Idempotent.
  */
@@ -102,7 +105,7 @@ export async function runBackfillFileSizes(
           }
           cloudinaryCalls += 1;
         }
-        let size: number | null;
+        let size: StoredSize;
         try {
           size = await opts.storage.realSize({
             workspaceId: row.workspace_id,
@@ -123,15 +126,17 @@ export async function runBackfillFileSizes(
           );
           continue;
         }
-        if (size === null) {
+        if (size.kind !== 'size') {
           result.failed.push(row.id);
-          console.warn(`[library:backfill-sizes] no size found for ${row.id}`);
+          console.warn(
+            `[library:backfill-sizes] no size found for ${row.id} (${size.kind})`,
+          );
           continue;
         }
         if (!opts.dryRun) {
           await client.query(
             'UPDATE media_items SET file_size = $1 WHERE id = $2 AND file_size IS NULL',
-            [size, row.id],
+            [size.bytes, row.id],
           );
         }
         result.filled += 1;

@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import {
   BadRequestException,
   Body,
@@ -36,7 +37,9 @@ const UPLOADED = 'Media uploaded successfully';
 /**
  * Every upload entry point under `/media`. Each one needs `posts:draft` on
  * the workspace it names and checks storage before any bytes move; the three
- * `upload/*` calls also create the Library item (contract, "Uploads").
+ * `upload/*` calls also create the Library item (contract, "Uploads"). The
+ * server picks every storage location: a client `folder` or `publicId` is
+ * accepted (old clients send them) but never used.
  * Paths are unchanged from when these lived on `MediaController`.
  */
 @Controller('media')
@@ -61,10 +64,8 @@ export class LibraryUploadController {
       workspaceId: dto.workspaceId,
       userId: user.userId,
       url: dto.url,
-      folder: dto.folder,
       resourceType: dto.resourceType,
       tags: dto.tags,
-      publicId: dto.publicId,
       categoryId: dto.categoryId,
     });
     return { message: UPLOADED, ...upload, libraryItem };
@@ -82,10 +83,8 @@ export class LibraryUploadController {
       workspaceId: dto.workspaceId,
       userId: user.userId,
       data: dto.data,
-      folder: dto.folder,
       resourceType: dto.resourceType,
       tags: dto.tags,
-      publicId: dto.publicId,
       categoryId: dto.categoryId,
     });
     return { message: UPLOADED, ...upload, libraryItem };
@@ -128,7 +127,6 @@ export class LibraryUploadController {
       buffer: file.buffer,
       originalName: file.originalname,
       mimeType: file.mimetype,
-      folder: dto.folder,
       resourceType: dto.resourceType ?? 'auto',
       tags,
       categoryId: isThumbnail ? undefined : dto.categoryId,
@@ -145,9 +143,11 @@ export class LibraryUploadController {
   }
 
   /**
-   * Signed parameters for a direct browser upload to Cloudinary. The folder
-   * is always this workspace's own, so `POST items` can prove the file was
-   * issued for it (SEC5).
+   * Signed parameters for a direct browser upload to Cloudinary. The
+   * signature pins one fresh public id in this workspace's folder with
+   * `overwrite: false`, so the upload lands there in either folder mode and
+   * `POST items` can tell it was issued for this workspace (SEC5). The
+   * client's `folder` is ignored.
    */
   @Post('signed-upload-params')
   @UseGuards(JwtAuthGuard)
@@ -159,9 +159,9 @@ export class LibraryUploadController {
     await this.access.assertCan(dto.workspaceId, user.userId, 'posts:draft');
     await this.quota.assertCanStore(dto.workspaceId, dto.bytes);
 
-    const params = this.cloudinaryService.generateSignedUploadParams({
-      folder: cloudinaryUploadFolder(dto.workspaceId),
-    });
+    const params = this.cloudinaryService.generateSignedUploadParams(
+      `${cloudinaryUploadFolder(dto.workspaceId)}/${randomUUID()}`,
+    );
     return {
       ...params,
       uploadUrl: `https://api.cloudinary.com/v1_1/${params.cloudName}/auto/upload`,

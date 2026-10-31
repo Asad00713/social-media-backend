@@ -24,6 +24,7 @@ const row = (n: number, provider: FakeRow['storage_provider']): FakeRow => ({
 });
 
 const idOf = (n: number) => row(n, null).id;
+const size = (bytes: number) => ({ kind: 'size' as const, bytes });
 
 /** An in-memory stand-in for the two statements the script issues. */
 function fakeConnect(rows: FakeRow[]) {
@@ -81,8 +82,8 @@ describe('runBackfillFileSizes', () => {
     ]);
     const realSize = jest
       .fn()
-      .mockResolvedValueOnce(1111)
-      .mockResolvedValueOnce(2222);
+      .mockResolvedValueOnce(size(1111))
+      .mockResolvedValueOnce(size(2222));
     const res = await runBackfillFileSizes({
       ...base,
       dryRun: false,
@@ -96,15 +97,23 @@ describe('runBackfillFileSizes', () => {
     ]);
   });
 
-  it('lists a row whose size cannot be found in failed and does not write it', async () => {
-    const { connect, updates } = fakeConnect([row(1, 'cloudinary')]);
+  it('lists a row whose size is missing or unavailable in failed and does not write it', async () => {
+    const { connect, updates } = fakeConnect([
+      row(1, 'cloudinary'),
+      row(2, 'r2'),
+    ]);
     const res = await runBackfillFileSizes({
       ...base,
       dryRun: false,
-      storage: { realSize: jest.fn().mockResolvedValue(null) },
+      storage: {
+        realSize: jest
+          .fn()
+          .mockResolvedValueOnce({ kind: 'missing' })
+          .mockResolvedValueOnce({ kind: 'error' }),
+      },
       connect,
     });
-    expect(res.failed).toEqual([idOf(1)]);
+    expect(res.failed).toEqual([idOf(1), idOf(2)]);
     expect(res.filled).toBe(0);
     expect(updates).toEqual([]);
   });
@@ -117,7 +126,7 @@ describe('runBackfillFileSizes', () => {
     const realSize = jest
       .fn()
       .mockRejectedValueOnce(new Error('Cloudinary 500'))
-      .mockResolvedValueOnce(2222);
+      .mockResolvedValueOnce(size(2222));
     const res = await runBackfillFileSizes({
       ...base,
       dryRun: false,
@@ -137,7 +146,7 @@ describe('runBackfillFileSizes', () => {
     const res = await runBackfillFileSizes({
       ...base,
       dryRun: true,
-      storage: { realSize: jest.fn().mockResolvedValue(500) },
+      storage: { realSize: jest.fn().mockResolvedValue(size(500)) },
       connect,
     });
     expect(updates).toEqual([]);
@@ -151,7 +160,7 @@ describe('runBackfillFileSizes', () => {
       row(3, 'cloudinary'),
       row(4, 'r2'),
     ]);
-    const realSize = jest.fn().mockResolvedValue(10);
+    const realSize = jest.fn().mockResolvedValue(size(10));
     const res = await runBackfillFileSizes({
       ...base,
       dryRun: false,
@@ -171,7 +180,7 @@ describe('runBackfillFileSizes', () => {
     const res = await runBackfillFileSizes({
       ...base,
       dryRun: false,
-      storage: { realSize: jest.fn().mockResolvedValue(1) },
+      storage: { realSize: jest.fn().mockResolvedValue(size(1)) },
       connect,
     });
     expect(res.filled).toBe(150);

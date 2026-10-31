@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, ConflictException, Logger } from '@nestjs/common';
 import type {
   CloudinaryService,
   UploadResult,
@@ -23,18 +23,19 @@ const upload: UploadResult = {
 function make() {
   const order: string[] = [];
   const cloudinary = {
-    uploadFromBuffer: jest.fn(() => {
+    uploadFromBuffer: jest.fn<Promise<UploadResult>, unknown[]>(() => {
       order.push('upload');
       return Promise.resolve(upload);
     }),
-    uploadFromUrl: jest.fn(() => {
+    uploadFromUrl: jest.fn<Promise<UploadResult>, unknown[]>(() => {
       order.push('upload');
       return Promise.resolve(upload);
     }),
-    uploadFromBase64: jest.fn(() => {
+    uploadFromBase64: jest.fn<Promise<UploadResult>, unknown[]>(() => {
       order.push('upload');
       return Promise.resolve(upload);
     }),
+    delete: jest.fn().mockResolvedValue(true),
   };
   const quota = {
     assertCanStore: jest.fn(() => {
@@ -48,7 +49,7 @@ function make() {
       order.push('folder');
       return Promise.resolve();
     }),
-    createFromUpload: jest.fn(() => {
+    createFromUpload: jest.fn<Promise<unknown>, unknown[]>(() => {
       order.push('create');
       return Promise.resolve(item);
     }),
@@ -205,5 +206,121 @@ describe('LibraryIngestService', () => {
       upload,
       expect.objectContaining({ name: 'Untitled', mimeType: 'image/png' }),
     );
+  });
+
+  // Fix round 1 (Critical 1): with overwrite:false, Cloudinary hands back an
+  // EXISTING asset for a public id that is taken. The server therefore picks
+  // every location itself and never forwards a client folder or public id.
+  describe('storage location', () => {
+    const PID =
+      /^library\/ws-1\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+    const stray = { folder: 'social-media', publicId: 'library/other/victim' };
+
+    it.each([
+      [
+        'buffer',
+        (s: LibraryIngestService) =>
+          s.ingestBuffer({
+            workspaceId: WS,
+            userId: USER,
+            buffer,
+            ...stray,
+          } as never),
+        'uploadFromBuffer',
+      ],
+      [
+        'remote url',
+        (s: LibraryIngestService) =>
+          s.ingestRemoteUrl({
+            workspaceId: WS,
+            userId: USER,
+            url: 'https://i.test/a.png',
+            ...stray,
+          } as never),
+        'uploadFromUrl',
+      ],
+      [
+        'base64',
+        (s: LibraryIngestService) =>
+          s.ingestBase64({
+            workspaceId: WS,
+            userId: USER,
+            data: 'aGk=',
+            ...stray,
+          } as never),
+        'uploadFromBase64',
+      ],
+    ] as const)(
+      '%s: stored at library/<ws>/<uuid>, caller folder and public id ignored',
+      async (_name, run, method) => {
+        const { service, cloudinary } = make();
+        await run(service);
+        await run(service);
+        const calls = cloudinary[method].mock.calls;
+        const first = calls[0][1] as Record<string, unknown>;
+        const second = calls[1][1] as Record<string, unknown>;
+        expect(first.publicId).toMatch(PID);
+        expect(first.folder).toBeUndefined();
+        expect(second.publicId).toMatch(PID);
+        expect(second.publicId).not.toBe(first.publicId);
+      },
+    );
+  });
+
+  describe('orphans (fix round 1)', () => {
+    beforeEach(() => {
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    });
+    afterEach(() => jest.restoreAllMocks());
+
+    it('a save that fails for another reason deletes the fresh upload, then rethrows', async () => {
+      const { service, mediaItems, cloudinary } = make();
+      const boom = new Error('db down');
+      mediaItems.createFromUpload.mockRejectedValue(boom);
+      await expect(
+        service.ingestBuffer({ workspaceId: WS, userId: USER, buffer }),
+      ).rejects.toBe(boom);
+      expect(cloudinary.delete).toHaveBeenCalledWith(upload.publicId, 'image');
+    });
+
+    it('a failed cleanup does not hide the original error', async () => {
+      const { service, mediaItems, cloudinary } = make();
+      const boom = new Error('db down');
+      mediaItems.createFromUpload.mockRejectedValue(boom);
+      cloudinary.delete.mockRejectedValue(new Error('cloudinary down'));
+      await expect(
+        service.ingestRemoteUrl({
+          workspaceId: WS,
+          userId: USER,
+          url: 'https://i.test/a.png',
+        }),
+      ).rejects.toBe(boom);
+    });
+
+    it('a 413 is left to createFromUpload, which already cleans up', async () => {
+      const { service, mediaItems, cloudinary } = make();
+      mediaItems.createFromUpload.mockRejectedValue(
+        new StorageFullException({ used: 99, limit: 100 }),
+      );
+      await expect(
+        service.ingestBuffer({ workspaceId: WS, userId: USER, buffer }),
+      ).rejects.toBeInstanceOf(StorageFullException);
+      expect(cloudinary.delete).not.toHaveBeenCalled();
+    });
+
+    it('an existing asset is never deleted', async () => {
+      const { service, mediaItems, cloudinary } = make();
+      cloudinary.uploadFromBuffer.mockResolvedValue({
+        ...upload,
+        existing: true,
+      });
+      mediaItems.createFromUpload.mockRejectedValue(
+        new ConflictException({ code: 'UPLOAD_CONFLICT' }),
+      );
+      await expect(
+        service.ingestBuffer({ workspaceId: WS, userId: USER, buffer }),
+      ).rejects.toBeInstanceOf(ConflictException);
+      expect(cloudinary.delete).not.toHaveBeenCalled();
+    });
   });
 });
