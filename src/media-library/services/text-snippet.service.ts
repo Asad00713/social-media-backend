@@ -76,7 +76,7 @@ export class TextSnippetService {
    */
   async findAll(workspaceId: string, query: TextSnippetQueryDto = {}) {
     const {
-      snippetType,
+      type,
       categoryId,
       isStarred,
       isDeleted = false,
@@ -84,6 +84,8 @@ export class TextSnippetService {
       limit = 50,
       offset = 0,
     } = query;
+    // `type` is the contract name and wins over the legacy `snippetType`.
+    const snippetType = type ?? query.snippetType;
 
     const conditions = [
       eq(textSnippets.workspaceId, workspaceId),

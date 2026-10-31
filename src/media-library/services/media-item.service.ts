@@ -55,33 +55,40 @@ export class MediaItemService {
   ) {}
 
   /**
+   * An item may be filed only into a media folder. Template, snippet and link
+   * folders hold other kinds of thing. Also the guard for uploads.
+   */
+  async assertMediaFolder(
+    workspaceId: string,
+    categoryId: string,
+  ): Promise<void> {
+    const [folder] = await this.db
+      .select({ name: mediaCategories.name, type: mediaCategories.type })
+      .from(mediaCategories)
+      .where(
+        and(
+          eq(mediaCategories.id, categoryId),
+          eq(mediaCategories.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
+
+    if (!folder) {
+      throw new NotFoundException('Folder not found');
+    }
+    if (folder.type !== 'media') {
+      throw new BadRequestException(
+        `Folder "${folder.name}" is not a media folder`,
+      );
+    }
+  }
+
+  /**
    * Create a new media item
    */
   async create(workspaceId: string, userId: string, dto: CreateMediaItemDto) {
-    // Validate category if provided
     if (dto.categoryId) {
-      const category = await this.db
-        .select()
-        .from(mediaCategories)
-        .where(
-          and(
-            eq(mediaCategories.id, dto.categoryId),
-            eq(mediaCategories.workspaceId, workspaceId),
-          ),
-        )
-        .limit(1);
-
-      if (category.length === 0) {
-        throw new BadRequestException('Category not found');
-      }
-
-      // A folder belongs to one type — an item can only be filed into a folder
-      // of its own type (an image can't live in a video folder).
-      if (category[0].type !== dto.type) {
-        throw new BadRequestException(
-          `Category type "${category[0].type}" does not match item type "${dto.type}"`,
-        );
-      }
+      await this.assertMediaFolder(workspaceId, dto.categoryId);
     }
 
     const newItem: NewMediaItem = {
@@ -272,26 +279,7 @@ export class MediaItemService {
     // it means "take this out of its folder", and there is no target type to
     // match against. `undefined` (field omitted) leaves the folder untouched.
     if (dto.categoryId && dto.categoryId !== existing.categoryId) {
-      const category = await this.db
-        .select()
-        .from(mediaCategories)
-        .where(
-          and(
-            eq(mediaCategories.id, dto.categoryId),
-            eq(mediaCategories.workspaceId, workspaceId),
-          ),
-        )
-        .limit(1);
-
-      if (category.length === 0) {
-        throw new BadRequestException('Category not found');
-      }
-
-      if (category[0].type !== existing.type) {
-        throw new BadRequestException(
-          `Category type "${category[0].type}" does not match item type "${existing.type}"`,
-        );
-      }
+      await this.assertMediaFolder(workspaceId, dto.categoryId);
     }
 
     const updateData: Partial<typeof mediaItems.$inferInsert> = {
@@ -596,31 +584,7 @@ export class MediaItemService {
         }
 
         if (categoryId !== null) {
-          const [category] = await this.db
-            .select()
-            .from(mediaCategories)
-            .where(
-              and(
-                eq(mediaCategories.id, categoryId),
-                eq(mediaCategories.workspaceId, workspaceId),
-              ),
-            )
-            .limit(1);
-
-          if (!category) {
-            throw new BadRequestException('Category not found');
-          }
-
-          // Folders belong to exactly one type, and single-item moves already
-          // enforce that. Without the same check here, a bulk move could file
-          // a video into an Images folder — where it would then be invisible
-          // to the Videos section that owns it.
-          const mismatched = items.find((item) => item.type !== category.type);
-          if (mismatched) {
-            throw new BadRequestException(
-              `Category type "${category.type}" does not match item type "${mismatched.type}"`,
-            );
-          }
+          await this.assertMediaFolder(workspaceId, categoryId);
         }
 
         affectedCount = (

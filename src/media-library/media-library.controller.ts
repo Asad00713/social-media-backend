@@ -20,13 +20,10 @@ import { TextSnippetService } from './services/text-snippet.service';
 import { SavedLinkService } from './services/saved-link.service';
 import { RecycleBinService } from './services/recycle-bin.service';
 import {
-  MEDIA_LIBRARY_TYPES,
-  type MediaLibraryType,
-} from '../drizzle/schema/media-library.schema';
-import {
   CreateCategoryDto,
   UpdateCategoryDto,
   CategoryQueryDto,
+  ReorderCategoriesDto,
   CreateMediaItemDto,
   UpdateMediaItemDto,
   MediaItemQueryDto,
@@ -124,7 +121,7 @@ export class MediaLibraryController {
   @HttpCode(HttpStatus.OK)
   async reorderCategories(
     @Param('workspaceId') workspaceId: string,
-    @Body() dto: { type: MediaLibraryType; categoryIds: string[] },
+    @Body() dto: ReorderCategoriesDto,
   ) {
     return this.categoryService.reorder(workspaceId, dto.type, dto.categoryIds);
   }
