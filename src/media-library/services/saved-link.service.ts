@@ -5,7 +5,7 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { eq, and, desc, ilike, or, sql } from 'drizzle-orm';
+import { eq, and, desc, ilike, or, sql, inArray, type SQL } from 'drizzle-orm';
 import { ilikePattern } from '../lib/search';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
@@ -18,7 +18,9 @@ import {
   CreateSavedLinkDto,
   UpdateSavedLinkDto,
   SavedLinkQueryDto,
+  LinkBulkDto,
 } from '../dto/media-library.dto';
+import { assertIdsXorSelectAll, chunk } from '../lib/bulk';
 
 @Injectable()
 export class SavedLinkService {
@@ -399,6 +401,151 @@ export class SavedLinkService {
     }
 
     return updated;
+  }
+
+  /**
+   * The WHERE clause of `GET links`, for bulk select-all. It must match the
+   * filters `findAll` applies, so "every match" means what the list shows.
+   */
+  buildLinkConditions(workspaceId: string, query: SavedLinkQueryDto): SQL[] {
+    const { categoryId, isStarred, isDeleted = false, search } = query;
+
+    const conditions: SQL[] = [
+      eq(savedLinks.workspaceId, workspaceId),
+      eq(savedLinks.isDeleted, isDeleted),
+    ];
+
+    if (categoryId) {
+      conditions.push(eq(savedLinks.categoryId, categoryId));
+    }
+
+    if (isStarred !== undefined) {
+      conditions.push(eq(savedLinks.isStarred, isStarred));
+    }
+
+    if (search) {
+      conditions.push(
+        or(
+          ilike(savedLinks.name, ilikePattern(search)),
+          ilike(savedLinks.url, ilikePattern(search)),
+          ilike(savedLinks.description, ilikePattern(search)),
+          ilike(savedLinks.previewTitle, ilikePattern(search)),
+        )!,
+      );
+    }
+
+    return conditions;
+  }
+
+  /**
+   * Bulk delete / star / unstar / move (ruling 6), on `ids` or with
+   * `selectAll` on every link the list's filter matches. Rows are written
+   * 500 at a time.
+   */
+  async bulkAction(
+    workspaceId: string,
+    userId: string,
+    dto: LinkBulkDto,
+  ): Promise<{ affectedCount: number }> {
+    assertIdsXorSelectAll(dto);
+
+    if (dto.action === 'move') {
+      // Omitted is not a move; null is: it unfiles the selection (X1).
+      if (dto.categoryId === undefined) {
+        throw new BadRequestException('categoryId required for move action');
+      }
+      if (dto.categoryId !== null) {
+        await this.assertLinkFolder(workspaceId, dto.categoryId);
+      }
+    }
+
+    const ids = dto.selectAll
+      ? (
+          await this.db
+            .select({ id: savedLinks.id })
+            .from(savedLinks)
+            .where(
+              and(
+                ...this.buildLinkConditions(workspaceId, dto.selectAll.filter),
+              ),
+            )
+        ).map((r) => r.id)
+      : await this.assertLinksInWorkspace(workspaceId, dto.ids ?? []);
+
+    const now = new Date();
+    const set: Partial<typeof savedLinks.$inferInsert> =
+      dto.action === 'delete'
+        ? { isDeleted: true, deletedAt: now, deletedById: userId }
+        : dto.action === 'move'
+          ? { categoryId: dto.categoryId ?? null }
+          : { isStarred: dto.action === 'star' };
+
+    let affectedCount = 0;
+    for (const part of chunk(ids)) {
+      const rows = await this.db
+        .update(savedLinks)
+        .set({ ...set, updatedAt: now })
+        .where(
+          and(
+            inArray(savedLinks.id, part),
+            eq(savedLinks.workspaceId, workspaceId),
+          ),
+        )
+        .returning({ id: savedLinks.id });
+      affectedCount += rows.length;
+    }
+
+    this.logger.log(
+      `Bulk ${dto.action} on ${ids.length} saved links in workspace ${workspaceId}`,
+    );
+
+    return { affectedCount };
+  }
+
+  /** Explicit bulk ids must all be this workspace's links, else 400. */
+  private async assertLinksInWorkspace(
+    workspaceId: string,
+    ids: string[],
+  ): Promise<string[]> {
+    if (ids.length === 0) return ids;
+    const found = await this.db
+      .select({ id: savedLinks.id })
+      .from(savedLinks)
+      .where(
+        and(
+          inArray(savedLinks.id, ids),
+          eq(savedLinks.workspaceId, workspaceId),
+        ),
+      );
+    if (found.length !== ids.length) {
+      throw new BadRequestException('Some items not found');
+    }
+    return ids;
+  }
+
+  /** A link can be filed only into this workspace's link folders. */
+  private async assertLinkFolder(
+    workspaceId: string,
+    categoryId: string,
+  ): Promise<void> {
+    const [folder] = await this.db
+      .select({ name: mediaCategories.name, type: mediaCategories.type })
+      .from(mediaCategories)
+      .where(
+        and(
+          eq(mediaCategories.id, categoryId),
+          eq(mediaCategories.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
+    if (!folder) {
+      throw new BadRequestException('Link category not found');
+    }
+    if (folder.type !== 'link') {
+      throw new BadRequestException(
+        `Folder "${folder.name}" is not a link folder`,
+      );
+    }
   }
 
   /**

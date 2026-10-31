@@ -5,8 +5,9 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { eq, and, desc, asc, ilike, or, sql, inArray } from 'drizzle-orm';
+import { eq, and, desc, ilike, or, sql, inArray, type SQL } from 'drizzle-orm';
 import { ilikePattern } from '../lib/search';
+import { assertIdsXorSelectAll, chunk } from '../lib/bulk';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -20,6 +21,7 @@ import {
   TemplateContentDto,
   UpdateTemplateDto,
   TemplateQueryDto,
+  TemplateBulkDto,
 } from '../dto/media-library.dto';
 
 /**
@@ -38,6 +40,24 @@ function normalizeContent(content: TemplateContentDto): TemplateContent {
     hashtags: content.hashtags ?? [],
     defaultCaption: content.defaultCaption,
   };
+}
+
+/**
+ * ORDER BY for `GET templates` (ruling 7). Every order ends in `id DESC` so
+ * ties keep their place across updates.
+ */
+function templateOrder(sort: TemplateQueryDto['sort']): SQL[] {
+  const byNewest = [desc(mediaTemplates.createdAt), desc(mediaTemplates.id)];
+  switch (sort) {
+    case 'most_used':
+      return [sql`${mediaTemplates.usageCount} DESC NULLS LAST`, ...byNewest];
+    case 'recently_used':
+      return [sql`${mediaTemplates.lastUsedAt} DESC NULLS LAST`, ...byNewest];
+    case 'name':
+      return [sql`lower(${mediaTemplates.name}) ASC`, ...byNewest];
+    default:
+      return byNewest;
+  }
 }
 
 @Injectable()
@@ -95,21 +115,21 @@ export class TemplateService {
   }
 
   /**
-   * Get all templates for a workspace with filtering
+   * The WHERE clause of `GET templates`, shared with bulk select-all so
+   * "every match" means exactly what the list shows.
    */
-  async findAll(workspaceId: string, query: TemplateQueryDto = {}) {
+  buildTemplateConditions(workspaceId: string, query: TemplateQueryDto): SQL[] {
     const {
       templateType,
       categoryId,
       platform,
-      isStarred,
       isDeleted = false,
       search,
-      limit = 50,
-      offset = 0,
     } = query;
+    // `starred` is the contract name and wins over the legacy `isStarred`.
+    const starred = query.starred ?? query.isStarred;
 
-    const conditions = [
+    const conditions: SQL[] = [
       eq(mediaTemplates.workspaceId, workspaceId),
       eq(mediaTemplates.isDeleted, isDeleted),
     ];
@@ -122,8 +142,16 @@ export class TemplateService {
       conditions.push(eq(mediaTemplates.categoryId, categoryId));
     }
 
-    if (isStarred !== undefined) {
-      conditions.push(eq(mediaTemplates.isStarred, isStarred));
+    // In SQL rather than on the fetched page, so the total and a select-all
+    // count the same rows the list shows.
+    if (platform) {
+      conditions.push(
+        sql`${mediaTemplates.platforms} @> ${JSON.stringify([platform])}::jsonb`,
+      );
+    }
+
+    if (starred !== undefined) {
+      conditions.push(eq(mediaTemplates.isStarred, starred));
     }
 
     if (search) {
@@ -135,7 +163,18 @@ export class TemplateService {
       );
     }
 
-    const baseQuery = this.db
+    return conditions;
+  }
+
+  /**
+   * Get all templates for a workspace with filtering. `most_used` ranks by
+   * `usage_count`, which for templates counts picks (D13).
+   */
+  async findAll(workspaceId: string, query: TemplateQueryDto = {}) {
+    const { limit = 50, offset = 0 } = query;
+    const conditions = this.buildTemplateConditions(workspaceId, query);
+
+    const templates = await this.db
       .select({
         template: mediaTemplates,
         category: mediaCategories,
@@ -146,19 +185,9 @@ export class TemplateService {
         eq(mediaTemplates.categoryId, mediaCategories.id),
       )
       .where(and(...conditions))
-      .orderBy(desc(mediaTemplates.createdAt))
+      .orderBy(...templateOrder(query.sort))
       .limit(limit)
       .offset(offset);
-
-    const templates = await baseQuery;
-
-    // Filter by platform if specified (JSON array contains)
-    let filteredTemplates = templates;
-    if (platform) {
-      filteredTemplates = templates.filter((t) =>
-        (t.template.platforms as string[])?.includes(platform),
-      );
-    }
 
     // Get total count
     const [{ count }] = await this.db
@@ -167,7 +196,7 @@ export class TemplateService {
       .where(and(...conditions));
 
     return {
-      items: filteredTemplates.map((row) => ({
+      items: templates.map((row) => ({
         ...row.template,
         category: row.category,
       })),
@@ -399,6 +428,120 @@ export class TemplateService {
     }
 
     return updated;
+  }
+
+  /**
+   * Bulk delete / star / unstar / move (ruling 6), on `ids` or with
+   * `selectAll` on every template the list's filter matches. Rows are
+   * written 500 at a time.
+   */
+  async bulkAction(
+    workspaceId: string,
+    userId: string,
+    dto: TemplateBulkDto,
+  ): Promise<{ affectedCount: number }> {
+    assertIdsXorSelectAll(dto);
+
+    if (dto.action === 'move') {
+      // Omitted is not a move; null is: it unfiles the selection (X1).
+      if (dto.categoryId === undefined) {
+        throw new BadRequestException('categoryId required for move action');
+      }
+      if (dto.categoryId !== null) {
+        await this.assertTemplateFolder(workspaceId, dto.categoryId);
+      }
+    }
+
+    const ids = dto.selectAll
+      ? (
+          await this.db
+            .select({ id: mediaTemplates.id })
+            .from(mediaTemplates)
+            .where(
+              and(
+                ...this.buildTemplateConditions(
+                  workspaceId,
+                  dto.selectAll.filter,
+                ),
+              ),
+            )
+        ).map((r) => r.id)
+      : await this.assertTemplatesInWorkspace(workspaceId, dto.ids ?? []);
+
+    const now = new Date();
+    const set: Partial<typeof mediaTemplates.$inferInsert> =
+      dto.action === 'delete'
+        ? { isDeleted: true, deletedAt: now, deletedById: userId }
+        : dto.action === 'move'
+          ? { categoryId: dto.categoryId ?? null }
+          : { isStarred: dto.action === 'star' };
+
+    let affectedCount = 0;
+    for (const part of chunk(ids)) {
+      const rows = await this.db
+        .update(mediaTemplates)
+        .set({ ...set, updatedAt: now })
+        .where(
+          and(
+            inArray(mediaTemplates.id, part),
+            eq(mediaTemplates.workspaceId, workspaceId),
+          ),
+        )
+        .returning({ id: mediaTemplates.id });
+      affectedCount += rows.length;
+    }
+
+    this.logger.log(
+      `Bulk ${dto.action} on ${ids.length} templates in workspace ${workspaceId}`,
+    );
+
+    return { affectedCount };
+  }
+
+  /** Explicit bulk ids must all be this workspace's templates, else 400. */
+  private async assertTemplatesInWorkspace(
+    workspaceId: string,
+    ids: string[],
+  ): Promise<string[]> {
+    if (ids.length === 0) return ids;
+    const found = await this.db
+      .select({ id: mediaTemplates.id })
+      .from(mediaTemplates)
+      .where(
+        and(
+          inArray(mediaTemplates.id, ids),
+          eq(mediaTemplates.workspaceId, workspaceId),
+        ),
+      );
+    if (found.length !== ids.length) {
+      throw new BadRequestException('Some items not found');
+    }
+    return ids;
+  }
+
+  /** A template can be filed only into this workspace's template folders. */
+  private async assertTemplateFolder(
+    workspaceId: string,
+    categoryId: string,
+  ): Promise<void> {
+    const [folder] = await this.db
+      .select({ name: mediaCategories.name, type: mediaCategories.type })
+      .from(mediaCategories)
+      .where(
+        and(
+          eq(mediaCategories.id, categoryId),
+          eq(mediaCategories.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
+    if (!folder) {
+      throw new BadRequestException('Template category not found');
+    }
+    if (folder.type !== 'template') {
+      throw new BadRequestException(
+        `Folder "${folder.name}" is not a template folder`,
+      );
+    }
   }
 
   /**

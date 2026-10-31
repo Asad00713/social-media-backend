@@ -5,8 +5,9 @@ import {
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
-import { eq, and, desc, ilike, or, sql } from 'drizzle-orm';
+import { eq, and, desc, ilike, or, sql, inArray, type SQL } from 'drizzle-orm';
 import { ilikePattern } from '../lib/search';
+import { assertIdsXorSelectAll, chunk } from '../lib/bulk';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -18,7 +19,26 @@ import {
   CreateTextSnippetDto,
   UpdateTextSnippetDto,
   TextSnippetQueryDto,
+  SnippetBulkDto,
 } from '../dto/media-library.dto';
+
+/**
+ * ORDER BY for `GET snippets` (ruling 7). Every order ends in `id DESC` so
+ * ties keep their place across updates.
+ */
+function snippetOrder(sort: TextSnippetQueryDto['sort']): SQL[] {
+  const byNewest = [desc(textSnippets.createdAt), desc(textSnippets.id)];
+  switch (sort) {
+    case 'most_used':
+      return [sql`${textSnippets.usageCount} DESC NULLS LAST`, ...byNewest];
+    case 'recently_used':
+      return [sql`${textSnippets.lastUsedAt} DESC NULLS LAST`, ...byNewest];
+    case 'name':
+      return [sql`lower(${textSnippets.name}) ASC`, ...byNewest];
+    default:
+      return byNewest;
+  }
+}
 
 @Injectable()
 export class TextSnippetService {
@@ -72,22 +92,20 @@ export class TextSnippetService {
   }
 
   /**
-   * Get all text snippets for a workspace with filtering
+   * The WHERE clause of `GET snippets`, shared with bulk select-all so
+   * "every match" means exactly what the list shows.
    */
-  async findAll(workspaceId: string, query: TextSnippetQueryDto = {}) {
-    const {
-      type,
-      categoryId,
-      isStarred,
-      isDeleted = false,
-      search,
-      limit = 50,
-      offset = 0,
-    } = query;
-    // `type` is the contract name and wins over the legacy `snippetType`.
-    const snippetType = type ?? query.snippetType;
+  buildSnippetConditions(
+    workspaceId: string,
+    query: TextSnippetQueryDto,
+  ): SQL[] {
+    const { categoryId, isDeleted = false, search } = query;
+    // Contract names win over the legacy ones: `type` over `snippetType`,
+    // `starred` over `isStarred`.
+    const snippetType = query.type ?? query.snippetType;
+    const starred = query.starred ?? query.isStarred;
 
-    const conditions = [
+    const conditions: SQL[] = [
       eq(textSnippets.workspaceId, workspaceId),
       eq(textSnippets.isDeleted, isDeleted),
     ];
@@ -100,8 +118,8 @@ export class TextSnippetService {
       conditions.push(eq(textSnippets.categoryId, categoryId));
     }
 
-    if (isStarred !== undefined) {
-      conditions.push(eq(textSnippets.isStarred, isStarred));
+    if (starred !== undefined) {
+      conditions.push(eq(textSnippets.isStarred, starred));
     }
 
     if (search) {
@@ -112,6 +130,16 @@ export class TextSnippetService {
         )!,
       );
     }
+
+    return conditions;
+  }
+
+  /**
+   * Get all text snippets for a workspace with filtering
+   */
+  async findAll(workspaceId: string, query: TextSnippetQueryDto = {}) {
+    const { limit = 50, offset = 0 } = query;
+    const conditions = this.buildSnippetConditions(workspaceId, query);
 
     const snippets = await this.db
       .select({
@@ -124,7 +152,7 @@ export class TextSnippetService {
         eq(textSnippets.categoryId, mediaCategories.id),
       )
       .where(and(...conditions))
-      .orderBy(desc(textSnippets.createdAt))
+      .orderBy(...snippetOrder(query.sort))
       .limit(limit)
       .offset(offset);
 
@@ -324,6 +352,120 @@ export class TextSnippetService {
     }
 
     return updated;
+  }
+
+  /**
+   * Bulk delete / star / unstar / move (ruling 6), on `ids` or with
+   * `selectAll` on every snippet the list's filter matches. Rows are written
+   * 500 at a time.
+   */
+  async bulkAction(
+    workspaceId: string,
+    userId: string,
+    dto: SnippetBulkDto,
+  ): Promise<{ affectedCount: number }> {
+    assertIdsXorSelectAll(dto);
+
+    if (dto.action === 'move') {
+      // Omitted is not a move; null is: it unfiles the selection (X1).
+      if (dto.categoryId === undefined) {
+        throw new BadRequestException('categoryId required for move action');
+      }
+      if (dto.categoryId !== null) {
+        await this.assertSnippetFolder(workspaceId, dto.categoryId);
+      }
+    }
+
+    const ids = dto.selectAll
+      ? (
+          await this.db
+            .select({ id: textSnippets.id })
+            .from(textSnippets)
+            .where(
+              and(
+                ...this.buildSnippetConditions(
+                  workspaceId,
+                  dto.selectAll.filter,
+                ),
+              ),
+            )
+        ).map((r) => r.id)
+      : await this.assertSnippetsInWorkspace(workspaceId, dto.ids ?? []);
+
+    const now = new Date();
+    const set: Partial<typeof textSnippets.$inferInsert> =
+      dto.action === 'delete'
+        ? { isDeleted: true, deletedAt: now, deletedById: userId }
+        : dto.action === 'move'
+          ? { categoryId: dto.categoryId ?? null }
+          : { isStarred: dto.action === 'star' };
+
+    let affectedCount = 0;
+    for (const part of chunk(ids)) {
+      const rows = await this.db
+        .update(textSnippets)
+        .set({ ...set, updatedAt: now })
+        .where(
+          and(
+            inArray(textSnippets.id, part),
+            eq(textSnippets.workspaceId, workspaceId),
+          ),
+        )
+        .returning({ id: textSnippets.id });
+      affectedCount += rows.length;
+    }
+
+    this.logger.log(
+      `Bulk ${dto.action} on ${ids.length} text snippets in workspace ${workspaceId}`,
+    );
+
+    return { affectedCount };
+  }
+
+  /** Explicit bulk ids must all be this workspace's snippets, else 400. */
+  private async assertSnippetsInWorkspace(
+    workspaceId: string,
+    ids: string[],
+  ): Promise<string[]> {
+    if (ids.length === 0) return ids;
+    const found = await this.db
+      .select({ id: textSnippets.id })
+      .from(textSnippets)
+      .where(
+        and(
+          inArray(textSnippets.id, ids),
+          eq(textSnippets.workspaceId, workspaceId),
+        ),
+      );
+    if (found.length !== ids.length) {
+      throw new BadRequestException('Some items not found');
+    }
+    return ids;
+  }
+
+  /** A snippet can be filed only into this workspace's snippet folders. */
+  private async assertSnippetFolder(
+    workspaceId: string,
+    categoryId: string,
+  ): Promise<void> {
+    const [folder] = await this.db
+      .select({ name: mediaCategories.name, type: mediaCategories.type })
+      .from(mediaCategories)
+      .where(
+        and(
+          eq(mediaCategories.id, categoryId),
+          eq(mediaCategories.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
+    if (!folder) {
+      throw new BadRequestException('Text snippet category not found');
+    }
+    if (folder.type !== 'text_snippet') {
+      throw new BadRequestException(
+        `Folder "${folder.name}" is not a snippet folder`,
+      );
+    }
   }
 
   /**
