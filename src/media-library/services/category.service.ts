@@ -1,11 +1,13 @@
 import {
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
   ConflictException,
 } from '@nestjs/common';
 import { eq, and, desc, asc } from 'drizzle-orm';
-import { db } from '../../drizzle/db';
+import type { DbType } from '../../drizzle/db';
+import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
   mediaCategories,
   MediaLibraryType,
@@ -21,13 +23,15 @@ import {
 export class CategoryService {
   private readonly logger = new Logger(CategoryService.name);
 
+  constructor(@Inject(DRIZZLE) private readonly db: DbType) {}
+
   /**
    * Create a new category
    */
   async create(workspaceId: string, dto: CreateCategoryDto) {
     // A folder belongs to one type, so a name is unique per (workspace, type):
     // the same name may exist as an image folder and a video folder.
-    const existing = await db
+    const existing = await this.db
       .select()
       .from(mediaCategories)
       .where(
@@ -46,7 +50,7 @@ export class CategoryService {
     }
 
     // Get max display order within this workspace + type
-    const maxOrder = await db
+    const maxOrder = await this.db
       .select({ maxOrder: mediaCategories.displayOrder })
       .from(mediaCategories)
       .where(
@@ -70,7 +74,7 @@ export class CategoryService {
       displayOrder,
     };
 
-    const [created] = await db
+    const [created] = await this.db
       .insert(mediaCategories)
       .values(newCategory)
       .returning();
@@ -92,7 +96,7 @@ export class CategoryService {
       conditions.push(eq(mediaCategories.type, query.type));
     }
 
-    const categories = await db
+    const categories = await this.db
       .select()
       .from(mediaCategories)
       .where(and(...conditions))
@@ -131,7 +135,7 @@ export class CategoryService {
    * Get a single category by ID
    */
   async findOne(workspaceId: string, categoryId: string) {
-    const [category] = await db
+    const [category] = await this.db
       .select()
       .from(mediaCategories)
       .where(
@@ -162,7 +166,7 @@ export class CategoryService {
     // Check for duplicate name if name is being changed (unique per
     // workspace + type — the folder's type can't change on update).
     if (dto.name && dto.name !== existing.name) {
-      const duplicate = await db
+      const duplicate = await this.db
         .select()
         .from(mediaCategories)
         .where(
@@ -192,7 +196,7 @@ export class CategoryService {
     if (dto.displayOrder !== undefined)
       updateData.displayOrder = dto.displayOrder;
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(mediaCategories)
       .set(updateData)
       .where(eq(mediaCategories.id, categoryId))
@@ -210,7 +214,9 @@ export class CategoryService {
   async delete(workspaceId: string, categoryId: string) {
     await this.findOne(workspaceId, categoryId);
 
-    await db.delete(mediaCategories).where(eq(mediaCategories.id, categoryId));
+    await this.db
+      .delete(mediaCategories)
+      .where(eq(mediaCategories.id, categoryId));
 
     this.logger.log(`Deleted category ${categoryId}`);
 
@@ -226,7 +232,7 @@ export class CategoryService {
     categoryIds: string[],
   ) {
     // Verify all categories exist and belong to this workspace/type
-    const categories = await db
+    const categories = await this.db
       .select()
       .from(mediaCategories)
       .where(
@@ -246,7 +252,7 @@ export class CategoryService {
 
     // Update display orders
     const updates = categoryIds.map((id, index) =>
-      db
+      this.db
         .update(mediaCategories)
         .set({ displayOrder: index, updatedAt: new Date() })
         .where(eq(mediaCategories.id, id)),

@@ -1,11 +1,13 @@
 import {
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
 import { eq, and, desc, like, or, sql } from 'drizzle-orm';
-import { db } from '../../drizzle/db';
+import type { DbType } from '../../drizzle/db';
+import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
   savedLinks,
   mediaCategories,
@@ -20,6 +22,8 @@ import {
 @Injectable()
 export class SavedLinkService {
   private readonly logger = new Logger(SavedLinkService.name);
+
+  constructor(@Inject(DRIZZLE) private readonly db: DbType) {}
 
   /**
    * Fetch link preview metadata from URL
@@ -82,7 +86,7 @@ export class SavedLinkService {
   async create(workspaceId: string, userId: string, dto: CreateSavedLinkDto) {
     // Validate category if provided
     if (dto.categoryId) {
-      const category = await db
+      const category = await this.db
         .select()
         .from(mediaCategories)
         .where(
@@ -116,7 +120,10 @@ export class SavedLinkService {
       tags: dto.tags || [],
     };
 
-    const [created] = await db.insert(savedLinks).values(newLink).returning();
+    const [created] = await this.db
+      .insert(savedLinks)
+      .values(newLink)
+      .returning();
 
     this.logger.log(
       `Created saved link "${dto.name}" for workspace ${workspaceId}`,
@@ -161,7 +168,7 @@ export class SavedLinkService {
       );
     }
 
-    const links = await db
+    const links = await this.db
       .select({
         link: savedLinks,
         category: mediaCategories,
@@ -174,7 +181,7 @@ export class SavedLinkService {
       .offset(offset);
 
     // Get total count
-    const [{ count }] = await db
+    const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(savedLinks)
       .where(and(...conditions));
@@ -194,7 +201,7 @@ export class SavedLinkService {
    * Get a single saved link by ID
    */
   async findOne(workspaceId: string, linkId: string) {
-    const [link] = await db
+    const [link] = await this.db
       .select({
         link: savedLinks,
         category: mediaCategories,
@@ -224,7 +231,7 @@ export class SavedLinkService {
 
     // Validate category if changing
     if (dto.categoryId) {
-      const category = await db
+      const category = await this.db
         .select()
         .from(mediaCategories)
         .where(
@@ -261,7 +268,7 @@ export class SavedLinkService {
       updateData.previewSiteName = preview.siteName;
     }
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(savedLinks)
       .set(updateData)
       .where(eq(savedLinks.id, linkId))
@@ -280,7 +287,7 @@ export class SavedLinkService {
 
     const preview = await this.fetchLinkPreview(existing.url);
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(savedLinks)
       .set({
         previewTitle: preview.title,
@@ -303,7 +310,7 @@ export class SavedLinkService {
   async softDelete(workspaceId: string, linkId: string, userId: string) {
     await this.findOne(workspaceId, linkId);
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(savedLinks)
       .set({
         isDeleted: true,
@@ -323,7 +330,7 @@ export class SavedLinkService {
    * Restore a saved link from recycle bin
    */
   async restore(workspaceId: string, linkId: string) {
-    const [link] = await db
+    const [link] = await this.db
       .select()
       .from(savedLinks)
       .where(
@@ -339,7 +346,7 @@ export class SavedLinkService {
       throw new NotFoundException('Saved link not found in recycle bin');
     }
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(savedLinks)
       .set({
         isDeleted: false,
@@ -361,7 +368,7 @@ export class SavedLinkService {
   async permanentDelete(workspaceId: string, linkId: string) {
     await this.findOne(workspaceId, linkId);
 
-    await db.delete(savedLinks).where(eq(savedLinks.id, linkId));
+    await this.db.delete(savedLinks).where(eq(savedLinks.id, linkId));
 
     this.logger.log(`Permanently deleted saved link ${linkId}`);
 
@@ -373,7 +380,7 @@ export class SavedLinkService {
    */
   async incrementUsage(workspaceId: string, linkId: string) {
     // Workspace-scoped so one workspace can't bump another's counter by id.
-    const [updated] = await db
+    const [updated] = await this.db
       .update(savedLinks)
       .set({
         usageCount: sql`${savedLinks.usageCount} + 1`,
@@ -396,7 +403,7 @@ export class SavedLinkService {
    * Get links in recycle bin
    */
   async getRecycleBin(workspaceId: string, limit = 50, offset = 0) {
-    const links = await db
+    const links = await this.db
       .select()
       .from(savedLinks)
       .where(
@@ -409,7 +416,7 @@ export class SavedLinkService {
       .limit(limit)
       .offset(offset);
 
-    const [{ count }] = await db
+    const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(savedLinks)
       .where(
@@ -434,7 +441,7 @@ export class SavedLinkService {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const result = await db
+    const result = await this.db
       .delete(savedLinks)
       .where(
         and(

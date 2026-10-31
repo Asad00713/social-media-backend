@@ -1,11 +1,13 @@
 import {
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
 import { eq, and, desc, asc, like, or, sql, inArray } from 'drizzle-orm';
-import { db } from '../../drizzle/db';
+import type { DbType } from '../../drizzle/db';
+import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
   mediaTemplates,
   mediaCategories,
@@ -41,13 +43,15 @@ function normalizeContent(content: TemplateContentDto): TemplateContent {
 export class TemplateService {
   private readonly logger = new Logger(TemplateService.name);
 
+  constructor(@Inject(DRIZZLE) private readonly db: DbType) {}
+
   /**
    * Create a new template
    */
   async create(workspaceId: string, userId: string, dto: CreateTemplateDto) {
     // Validate category if provided
     if (dto.categoryId) {
-      const category = await db
+      const category = await this.db
         .select()
         .from(mediaCategories)
         .where(
@@ -77,7 +81,7 @@ export class TemplateService {
       tags: dto.tags || [],
     };
 
-    const [created] = await db
+    const [created] = await this.db
       .insert(mediaTemplates)
       .values(newTemplate)
       .returning();
@@ -130,7 +134,7 @@ export class TemplateService {
       );
     }
 
-    const baseQuery = db
+    const baseQuery = this.db
       .select({
         template: mediaTemplates,
         category: mediaCategories,
@@ -156,7 +160,7 @@ export class TemplateService {
     }
 
     // Get total count
-    const [{ count }] = await db
+    const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(mediaTemplates)
       .where(and(...conditions));
@@ -176,7 +180,7 @@ export class TemplateService {
    * Get a single template by ID
    */
   async findOne(workspaceId: string, templateId: string) {
-    const [template] = await db
+    const [template] = await this.db
       .select({
         template: mediaTemplates,
         category: mediaCategories,
@@ -216,7 +220,7 @@ export class TemplateService {
 
     // Validate category if changing
     if (dto.categoryId) {
-      const category = await db
+      const category = await this.db
         .select()
         .from(mediaCategories)
         .where(
@@ -250,7 +254,7 @@ export class TemplateService {
     if (dto.tags !== undefined) updateData.tags = dto.tags;
     if (dto.isStarred !== undefined) updateData.isStarred = dto.isStarred;
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(mediaTemplates)
       .set(updateData)
       .where(eq(mediaTemplates.id, templateId))
@@ -285,7 +289,7 @@ export class TemplateService {
       tags: original.tags as string[],
     };
 
-    const [created] = await db
+    const [created] = await this.db
       .insert(mediaTemplates)
       .values(cloned)
       .returning();
@@ -301,7 +305,7 @@ export class TemplateService {
   async softDelete(workspaceId: string, templateId: string, userId: string) {
     await this.findOne(workspaceId, templateId);
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(mediaTemplates)
       .set({
         isDeleted: true,
@@ -321,7 +325,7 @@ export class TemplateService {
    * Restore a template from recycle bin
    */
   async restore(workspaceId: string, templateId: string) {
-    const [template] = await db
+    const [template] = await this.db
       .select()
       .from(mediaTemplates)
       .where(
@@ -337,7 +341,7 @@ export class TemplateService {
       throw new NotFoundException('Template not found in recycle bin');
     }
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(mediaTemplates)
       .set({
         isDeleted: false,
@@ -359,7 +363,9 @@ export class TemplateService {
   async permanentDelete(workspaceId: string, templateId: string) {
     await this.findOne(workspaceId, templateId);
 
-    await db.delete(mediaTemplates).where(eq(mediaTemplates.id, templateId));
+    await this.db
+      .delete(mediaTemplates)
+      .where(eq(mediaTemplates.id, templateId));
 
     this.logger.log(`Permanently deleted template ${templateId}`);
 
@@ -372,7 +378,7 @@ export class TemplateService {
   async incrementUsage(workspaceId: string, templateId: string) {
     // Workspace-scoped so one workspace can't bump another's counter by id —
     // the same hole that was closed on media items.
-    const [updated] = await db
+    const [updated] = await this.db
       .update(mediaTemplates)
       .set({
         usageCount: sql`${mediaTemplates.usageCount} + 1`,
@@ -398,7 +404,7 @@ export class TemplateService {
    * Get templates in recycle bin
    */
   async getRecycleBin(workspaceId: string, limit = 50, offset = 0) {
-    const templates = await db
+    const templates = await this.db
       .select()
       .from(mediaTemplates)
       .where(
@@ -411,7 +417,7 @@ export class TemplateService {
       .limit(limit)
       .offset(offset);
 
-    const [{ count }] = await db
+    const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(mediaTemplates)
       .where(
@@ -436,7 +442,7 @@ export class TemplateService {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const result = await db
+    const result = await this.db
       .delete(mediaTemplates)
       .where(
         and(

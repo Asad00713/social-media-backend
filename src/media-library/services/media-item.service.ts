@@ -1,4 +1,5 @@
 import {
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
@@ -15,7 +16,8 @@ import {
   sql,
   inArray,
 } from 'drizzle-orm';
-import { db } from '../../drizzle/db';
+import type { DbType } from '../../drizzle/db';
+import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
   mediaItems,
   mediaCategories,
@@ -33,7 +35,10 @@ import {
 export class MediaItemService {
   private readonly logger = new Logger(MediaItemService.name);
 
-  constructor(private readonly cloudinaryService: CloudinaryService) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: DbType,
+    private readonly cloudinaryService: CloudinaryService,
+  ) {}
 
   /**
    * Create a new media item
@@ -41,7 +46,7 @@ export class MediaItemService {
   async create(workspaceId: string, userId: string, dto: CreateMediaItemDto) {
     // Validate category if provided
     if (dto.categoryId) {
-      const category = await db
+      const category = await this.db
         .select()
         .from(mediaCategories)
         .where(
@@ -84,7 +89,10 @@ export class MediaItemService {
       tags: dto.tags || [],
     };
 
-    const [created] = await db.insert(mediaItems).values(newItem).returning();
+    const [created] = await this.db
+      .insert(mediaItems)
+      .values(newItem)
+      .returning();
 
     this.logger.log(
       `Created media item "${dto.name}" for workspace ${workspaceId}`,
@@ -161,7 +169,7 @@ export class MediaItemService {
     // rows in heap order — and an UPDATE (starring an asset) rewrites the tuple
     // at the end of the heap, so starring an image visibly threw it to the
     // bottom of the grid. Stable secondary keys keep positions still.
-    const items = await db
+    const items = await this.db
       .select({
         item: mediaItems,
         category: mediaCategories,
@@ -174,7 +182,7 @@ export class MediaItemService {
       .offset(offset);
 
     // Get total count
-    const [{ count }] = await db
+    const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(mediaItems)
       .where(and(...conditions));
@@ -194,7 +202,7 @@ export class MediaItemService {
    * Get recently created items
    */
   async findRecent(workspaceId: string, limit = 20) {
-    const items = await db
+    const items = await this.db
       .select()
       .from(mediaItems)
       .where(
@@ -213,7 +221,7 @@ export class MediaItemService {
    * Get a single media item by ID
    */
   async findOne(workspaceId: string, itemId: string) {
-    const [item] = await db
+    const [item] = await this.db
       .select({
         item: mediaItems,
         category: mediaCategories,
@@ -245,7 +253,7 @@ export class MediaItemService {
     // it means "take this out of its folder", and there is no target type to
     // match against. `undefined` (field omitted) leaves the folder untouched.
     if (dto.categoryId && dto.categoryId !== existing.categoryId) {
-      const category = await db
+      const category = await this.db
         .select()
         .from(mediaCategories)
         .where(
@@ -277,7 +285,7 @@ export class MediaItemService {
     if (dto.tags !== undefined) updateData.tags = dto.tags;
     if (dto.isStarred !== undefined) updateData.isStarred = dto.isStarred;
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(mediaItems)
       .set(updateData)
       .where(eq(mediaItems.id, itemId))
@@ -294,7 +302,7 @@ export class MediaItemService {
   async softDelete(workspaceId: string, itemId: string, userId: string) {
     await this.findOne(workspaceId, itemId);
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(mediaItems)
       .set({
         isDeleted: true,
@@ -314,7 +322,7 @@ export class MediaItemService {
    * Restore a media item from recycle bin
    */
   async restore(workspaceId: string, itemId: string) {
-    const [item] = await db
+    const [item] = await this.db
       .select()
       .from(mediaItems)
       .where(
@@ -330,7 +338,7 @@ export class MediaItemService {
       throw new NotFoundException('Item not found in recycle bin');
     }
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(mediaItems)
       .set({
         isDeleted: false,
@@ -369,7 +377,7 @@ export class MediaItemService {
       }
     }
 
-    await db.delete(mediaItems).where(eq(mediaItems.id, itemId));
+    await this.db.delete(mediaItems).where(eq(mediaItems.id, itemId));
 
     this.logger.log(`Permanently deleted media item ${itemId}`);
 
@@ -383,7 +391,7 @@ export class MediaItemService {
     const { ids, action, categoryId } = dto;
 
     // Verify all items belong to this workspace
-    const items = await db
+    const items = await this.db
       .select()
       .from(mediaItems)
       .where(
@@ -399,7 +407,7 @@ export class MediaItemService {
 
     switch (action) {
       case 'delete':
-        await db
+        await this.db
           .update(mediaItems)
           .set({
             isDeleted: true,
@@ -411,7 +419,7 @@ export class MediaItemService {
         break;
 
       case 'restore':
-        await db
+        await this.db
           .update(mediaItems)
           .set({
             isDeleted: false,
@@ -431,7 +439,7 @@ export class MediaItemService {
         }
 
         if (categoryId !== null) {
-          const [category] = await db
+          const [category] = await this.db
             .select()
             .from(mediaCategories)
             .where(
@@ -458,7 +466,7 @@ export class MediaItemService {
           }
         }
 
-        await db
+        await this.db
           .update(mediaItems)
           .set({ categoryId, updatedAt: new Date() })
           .where(inArray(mediaItems.id, ids));
@@ -466,14 +474,14 @@ export class MediaItemService {
       }
 
       case 'star':
-        await db
+        await this.db
           .update(mediaItems)
           .set({ isStarred: true, updatedAt: new Date() })
           .where(inArray(mediaItems.id, ids));
         break;
 
       case 'unstar':
-        await db
+        await this.db
           .update(mediaItems)
           .set({ isStarred: false, updatedAt: new Date() })
           .where(inArray(mediaItems.id, ids));
@@ -496,7 +504,7 @@ export class MediaItemService {
             }
           }
         }
-        await db.delete(mediaItems).where(inArray(mediaItems.id, ids));
+        await this.db.delete(mediaItems).where(inArray(mediaItems.id, ids));
         break;
     }
 
@@ -523,7 +531,7 @@ export class MediaItemService {
    * construction.
    */
   async incrementUsage(workspaceId: string, itemId: string) {
-    const [updated] = await db
+    const [updated] = await this.db
       .update(mediaItems)
       .set({
         usageCount: sql`${mediaItems.usageCount} + 1`,
@@ -531,10 +539,7 @@ export class MediaItemService {
         updatedAt: new Date(),
       })
       .where(
-        and(
-          eq(mediaItems.id, itemId),
-          eq(mediaItems.workspaceId, workspaceId),
-        ),
+        and(eq(mediaItems.id, itemId), eq(mediaItems.workspaceId, workspaceId)),
       )
       .returning();
 
@@ -549,7 +554,7 @@ export class MediaItemService {
    * Get items in recycle bin
    */
   async getRecycleBin(workspaceId: string, limit = 50, offset = 0) {
-    const items = await db
+    const items = await this.db
       .select()
       .from(mediaItems)
       .where(
@@ -562,7 +567,7 @@ export class MediaItemService {
       .limit(limit)
       .offset(offset);
 
-    const [{ count }] = await db
+    const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(mediaItems)
       .where(
@@ -588,7 +593,7 @@ export class MediaItemService {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const itemsToDelete = await db
+    const itemsToDelete = await this.db
       .select()
       .from(mediaItems)
       .where(
@@ -616,7 +621,7 @@ export class MediaItemService {
     }
 
     // Delete from database
-    const result = await db
+    const result = await this.db
       .delete(mediaItems)
       .where(
         and(

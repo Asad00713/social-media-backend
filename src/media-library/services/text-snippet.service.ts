@@ -1,11 +1,13 @@
 import {
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
 import { eq, and, desc, like, or, sql } from 'drizzle-orm';
-import { db } from '../../drizzle/db';
+import type { DbType } from '../../drizzle/db';
+import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
   textSnippets,
   mediaCategories,
@@ -21,13 +23,15 @@ import {
 export class TextSnippetService {
   private readonly logger = new Logger(TextSnippetService.name);
 
+  constructor(@Inject(DRIZZLE) private readonly db: DbType) {}
+
   /**
    * Create a new text snippet
    */
   async create(workspaceId: string, userId: string, dto: CreateTextSnippetDto) {
     // Validate category if provided
     if (dto.categoryId) {
-      const category = await db
+      const category = await this.db
         .select()
         .from(mediaCategories)
         .where(
@@ -54,7 +58,7 @@ export class TextSnippetService {
       tags: dto.tags || [],
     };
 
-    const [created] = await db
+    const [created] = await this.db
       .insert(textSnippets)
       .values(newSnippet)
       .returning();
@@ -106,7 +110,7 @@ export class TextSnippetService {
       );
     }
 
-    const snippets = await db
+    const snippets = await this.db
       .select({
         snippet: textSnippets,
         category: mediaCategories,
@@ -122,7 +126,7 @@ export class TextSnippetService {
       .offset(offset);
 
     // Get total count
-    const [{ count }] = await db
+    const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(textSnippets)
       .where(and(...conditions));
@@ -142,7 +146,7 @@ export class TextSnippetService {
    * Get a single text snippet by ID
    */
   async findOne(workspaceId: string, snippetId: string) {
-    const [snippet] = await db
+    const [snippet] = await this.db
       .select({
         snippet: textSnippets,
         category: mediaCategories,
@@ -182,7 +186,7 @@ export class TextSnippetService {
 
     // Validate category if changing
     if (dto.categoryId) {
-      const category = await db
+      const category = await this.db
         .select()
         .from(mediaCategories)
         .where(
@@ -210,7 +214,7 @@ export class TextSnippetService {
     if (dto.tags !== undefined) updateData.tags = dto.tags;
     if (dto.isStarred !== undefined) updateData.isStarred = dto.isStarred;
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(textSnippets)
       .set(updateData)
       .where(eq(textSnippets.id, snippetId))
@@ -227,7 +231,7 @@ export class TextSnippetService {
   async softDelete(workspaceId: string, snippetId: string, userId: string) {
     await this.findOne(workspaceId, snippetId);
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(textSnippets)
       .set({
         isDeleted: true,
@@ -247,7 +251,7 @@ export class TextSnippetService {
    * Restore a text snippet from recycle bin
    */
   async restore(workspaceId: string, snippetId: string) {
-    const [snippet] = await db
+    const [snippet] = await this.db
       .select()
       .from(textSnippets)
       .where(
@@ -263,7 +267,7 @@ export class TextSnippetService {
       throw new NotFoundException('Text snippet not found in recycle bin');
     }
 
-    const [updated] = await db
+    const [updated] = await this.db
       .update(textSnippets)
       .set({
         isDeleted: false,
@@ -285,7 +289,7 @@ export class TextSnippetService {
   async permanentDelete(workspaceId: string, snippetId: string) {
     await this.findOne(workspaceId, snippetId);
 
-    await db.delete(textSnippets).where(eq(textSnippets.id, snippetId));
+    await this.db.delete(textSnippets).where(eq(textSnippets.id, snippetId));
 
     this.logger.log(`Permanently deleted text snippet ${snippetId}`);
 
@@ -297,7 +301,7 @@ export class TextSnippetService {
    */
   async incrementUsage(workspaceId: string, snippetId: string) {
     // Workspace-scoped so one workspace can't bump another's counter by id.
-    const [updated] = await db
+    const [updated] = await this.db
       .update(textSnippets)
       .set({
         usageCount: sql`${textSnippets.usageCount} + 1`,
@@ -323,7 +327,7 @@ export class TextSnippetService {
    * Get snippets in recycle bin
    */
   async getRecycleBin(workspaceId: string, limit = 50, offset = 0) {
-    const snippets = await db
+    const snippets = await this.db
       .select()
       .from(textSnippets)
       .where(
@@ -336,7 +340,7 @@ export class TextSnippetService {
       .limit(limit)
       .offset(offset);
 
-    const [{ count }] = await db
+    const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(textSnippets)
       .where(
@@ -361,7 +365,7 @@ export class TextSnippetService {
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
 
-    const result = await db
+    const result = await this.db
       .delete(textSnippets)
       .where(
         and(
