@@ -36,6 +36,8 @@ const OPEN_ROUTES: Record<string, string> = {
     SUPER_ADMIN_ONLY,
   'DELETE /workspace-members/:workspaceId/members/:memberId':
     'member-leave: a member or guest must be able to remove their OWN row, which a team:manage gate would block; WorkspaceMembersService.removeMember enforces isSelf || owner || admin || super-admin',
+  'GET /workspaces/:workspaceId/media-library/categories/:categoryId/zip':
+    "folder zip download: a browser navigation cannot carry the in-memory bearer token; access is a 5-minute HMAC ticket minted by the posts:draft-gated zip-ticket route, and the ticket's user is re-checked for posts:draft",
 };
 
 const SRC = path.resolve(__dirname, '..');

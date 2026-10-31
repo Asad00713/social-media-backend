@@ -15,6 +15,7 @@ import { TemplateService } from './template.service';
 import { TextSnippetService } from './text-snippet.service';
 import { SavedLinkService } from './saved-link.service';
 import { RecycleBinService } from './recycle-bin.service';
+import { CategoryZipService } from './category-zip.service';
 import type { StorageObjectService } from './storage-object.service';
 
 function setup(db: DbType) {
@@ -35,6 +36,7 @@ function setup(db: DbType) {
     new TextSnippetService(db),
     new SavedLinkService(db),
     recycleBin,
+    new CategoryZipService(db, storageObjects),
   );
   return { deleteFile, media, recycleBin, controller };
 }

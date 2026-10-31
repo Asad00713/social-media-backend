@@ -100,6 +100,18 @@ export class CategoryQueryDto {
   @Transform(({ value }) => normalizeFolderKind(value))
   @IsIn(FOLDER_KINDS)
   type?: FolderKind;
+
+  // Adds each folder's item count, bytes and up to 4 cover URLs (one query).
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true' || value === true)
+  withStats?: boolean;
+
+  // Case-insensitive match on the folder name.
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  search?: string;
 }
 
 export class ReorderCategoriesDto {

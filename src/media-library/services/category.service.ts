@@ -6,19 +6,79 @@ import {
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
-import { eq, and, desc, asc } from 'drizzle-orm';
+import { eq, and, desc, asc, ilike, sql, getTableColumns } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
   mediaCategories,
   NewMediaCategory,
+  type MediaCategory,
 } from '../../drizzle/schema/media-library.schema';
 import type { FolderKind } from '../lib/folder-kind';
+import { ilikePattern } from '../lib/search';
 import {
   CreateCategoryDto,
   UpdateCategoryDto,
   CategoryQueryDto,
 } from '../dto/media-library.dto';
+
+// TODO(merge): Task 9 creates dto/contract.ts with this exact type; import it
+// from there once both branches are merged.
+export interface FolderStats {
+  itemCount: number;
+  bytes: number;
+  covers: string[];
+}
+
+export type CategoryWithStats = MediaCategory & { stats?: FolderStats };
+
+const c = mediaCategories;
+
+// One LATERAL aggregate per folder kind. Each is guarded by the folder's own
+// kind, so for any folder only its matching aggregate scans rows; the other
+// three return count 0 and NULL covers. Live rows only (not in the bin).
+const MEDIA_COVER = sql.raw(
+  `COALESCE(i.thumbnail_url, CASE WHEN i.type IN ('image', 'gif') THEN i.file_url END)`,
+);
+const MEDIA_STATS = sql`(
+  SELECT count(*)::int AS item_count,
+         COALESCE(sum(i.file_size), 0)::float8 AS bytes,
+         (array_agg(${MEDIA_COVER} ORDER BY i.created_at DESC)
+            FILTER (WHERE ${MEDIA_COVER} IS NOT NULL))[1:4] AS covers
+    FROM media_items i
+   WHERE ${c.type} = 'media'
+     AND i.category_id = ${c.id}
+     AND i.workspace_id = ${c.workspaceId}
+     AND i.is_deleted = false
+) AS media_stats`;
+const TEMPLATE_STATS = sql`(
+  SELECT count(*)::int AS item_count,
+         (array_agg(t.thumbnail_url ORDER BY t.created_at DESC)
+            FILTER (WHERE t.thumbnail_url IS NOT NULL))[1:4] AS covers
+    FROM media_templates t
+   WHERE ${c.type} = 'template'
+     AND t.category_id = ${c.id}
+     AND t.workspace_id = ${c.workspaceId}
+     AND t.is_deleted = false
+) AS template_stats`;
+const LINK_STATS = sql`(
+  SELECT count(*)::int AS item_count,
+         (array_agg(l.preview_image_url ORDER BY l.created_at DESC)
+            FILTER (WHERE l.preview_image_url IS NOT NULL))[1:4] AS covers
+    FROM saved_links l
+   WHERE ${c.type} = 'link'
+     AND l.category_id = ${c.id}
+     AND l.workspace_id = ${c.workspaceId}
+     AND l.is_deleted = false
+) AS link_stats`;
+const SNIPPET_STATS = sql`(
+  SELECT count(*)::int AS item_count
+    FROM text_snippets s
+   WHERE ${c.type} = 'text_snippet'
+     AND s.category_id = ${c.id}
+     AND s.workspace_id = ${c.workspaceId}
+     AND s.is_deleted = false
+) AS snippet_stats`;
 
 @Injectable()
 export class CategoryService {
@@ -88,22 +148,62 @@ export class CategoryService {
   }
 
   /**
-   * Get all categories for a workspace
+   * Get all categories for a workspace. `search` matches the name;
+   * `withStats` adds each folder's live item count, bytes and covers in the
+   * same single statement.
    */
-  async findAll(workspaceId: string, query: CategoryQueryDto = {}) {
+  async findAll(
+    workspaceId: string,
+    query: CategoryQueryDto = {},
+  ): Promise<CategoryWithStats[]> {
     const conditions = [eq(mediaCategories.workspaceId, workspaceId)];
 
     if (query.type) {
       conditions.push(eq(mediaCategories.type, query.type));
     }
+    if (query.search) {
+      conditions.push(ilike(mediaCategories.name, ilikePattern(query.search)));
+    }
+    const order = [
+      asc(mediaCategories.displayOrder),
+      asc(mediaCategories.name),
+    ];
 
-    const categories = await this.db
-      .select()
+    if (!query.withStats) {
+      return this.db
+        .select()
+        .from(mediaCategories)
+        .where(and(...conditions))
+        .orderBy(...order);
+    }
+
+    const rows = await this.db
+      .select({
+        ...getTableColumns(mediaCategories),
+        statsItemCount: sql<number>`(media_stats.item_count + template_stats.item_count + link_stats.item_count + snippet_stats.item_count)`,
+        statsBytes: sql<number>`media_stats.bytes`,
+        statsCovers: sql<
+          string[]
+        >`COALESCE(media_stats.covers, template_stats.covers, link_stats.covers, '{}'::text[])`,
+      })
       .from(mediaCategories)
+      .leftJoinLateral(MEDIA_STATS, sql`true`)
+      .leftJoinLateral(TEMPLATE_STATS, sql`true`)
+      .leftJoinLateral(LINK_STATS, sql`true`)
+      .leftJoinLateral(SNIPPET_STATS, sql`true`)
       .where(and(...conditions))
-      .orderBy(asc(mediaCategories.displayOrder), asc(mediaCategories.name));
+      .orderBy(...order);
 
-    return categories;
+    return rows.map(
+      ({ statsItemCount, statsBytes, statsCovers, ...category }) => ({
+        ...category,
+        stats: {
+          itemCount: statsItemCount,
+          bytes: statsBytes,
+          covers: statsCovers,
+        },
+      }),
+    );
   }
 
   /**
@@ -112,7 +212,7 @@ export class CategoryService {
   async findAllGroupedByType(workspaceId: string) {
     const categories = await this.findAll(workspaceId);
 
-    const grouped: Record<FolderKind, typeof categories> = {
+    const grouped: Record<FolderKind, CategoryWithStats[]> = {
       media: [],
       template: [],
       text_snippet: [],

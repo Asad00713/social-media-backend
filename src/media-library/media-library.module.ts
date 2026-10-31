@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { MediaLibraryController } from './media-library.controller';
+import { LibraryZipController } from './library-zip.controller';
 import { CategoryService } from './services/category.service';
 import { MediaItemService } from './services/media-item.service';
 import { TemplateService } from './services/template.service';
@@ -8,13 +9,14 @@ import { SavedLinkService } from './services/saved-link.service';
 import { StorageObjectService } from './services/storage-object.service';
 import { RecycleBinService } from './services/recycle-bin.service';
 import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service';
+import { CategoryZipService } from './services/category-zip.service';
 import { MediaModule } from '../media/media.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 
 @Module({
   imports: [WorkspaceRoleModule, DrizzleModule, MediaModule],
-  controllers: [MediaLibraryController],
+  controllers: [MediaLibraryController, LibraryZipController],
   providers: [
     CategoryService,
     MediaItemService,
@@ -24,6 +26,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     StorageObjectService,
     RecycleBinService,
     RecycleBinCleanupService,
+    CategoryZipService,
   ],
   exports: [
     CategoryService,
