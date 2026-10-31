@@ -43,7 +43,7 @@ const MEDIA_COVER = sql.raw(
 const MEDIA_STATS = sql`(
   SELECT count(*)::int AS item_count,
          COALESCE(sum(i.file_size), 0)::float8 AS bytes,
-         (array_agg(${MEDIA_COVER} ORDER BY i.created_at DESC)
+         (array_agg(${MEDIA_COVER} ORDER BY i.created_at DESC, i.id DESC)
             FILTER (WHERE ${MEDIA_COVER} IS NOT NULL))[1:4] AS covers
     FROM media_items i
    WHERE ${c.type} = 'media'
@@ -53,7 +53,7 @@ const MEDIA_STATS = sql`(
 ) AS media_stats`;
 const TEMPLATE_STATS = sql`(
   SELECT count(*)::int AS item_count,
-         (array_agg(t.thumbnail_url ORDER BY t.created_at DESC)
+         (array_agg(t.thumbnail_url ORDER BY t.created_at DESC, t.id DESC)
             FILTER (WHERE t.thumbnail_url IS NOT NULL))[1:4] AS covers
     FROM media_templates t
    WHERE ${c.type} = 'template'
@@ -63,7 +63,7 @@ const TEMPLATE_STATS = sql`(
 ) AS template_stats`;
 const LINK_STATS = sql`(
   SELECT count(*)::int AS item_count,
-         (array_agg(l.preview_image_url ORDER BY l.created_at DESC)
+         (array_agg(l.preview_image_url ORDER BY l.created_at DESC, l.id DESC)
             FILTER (WHERE l.preview_image_url IS NOT NULL))[1:4] AS covers
     FROM saved_links l
    WHERE ${c.type} = 'link'

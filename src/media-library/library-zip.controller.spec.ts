@@ -129,6 +129,16 @@ describe('LibraryZipController.downloadCategoryZip', () => {
     expect(c.categoryZip.streamZip).not.toHaveBeenCalled();
   });
 
+  it('rethrows an access failure that is not a NotFoundException', async () => {
+    const outage = new Error('database unavailable');
+    const access = { assertCan: jest.fn().mockRejectedValue(outage) };
+    const c = makeDownload(access);
+    await expect(
+      c.downloadCategoryZip(WS, FOLDER, ticketFor(), res),
+    ).rejects.toBe(outage);
+    expect(c.categoryZip.streamZip).not.toHaveBeenCalled();
+  });
+
   it('401s when the secret is not configured', async () => {
     const c = makeDownload(okAccess());
     const t = ticketFor();

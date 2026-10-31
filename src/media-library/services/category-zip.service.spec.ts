@@ -8,7 +8,10 @@ import {
 } from '@nestjs/common';
 import type { Response } from 'express';
 import type { DbType } from '../../drizzle/db';
-import { CategoryZipService } from './category-zip.service';
+import {
+  CategoryZipService,
+  ZIP_FETCH_HEADERS_TIMEOUT_MS,
+} from './category-zip.service';
 import type { StorageObjectService } from './storage-object.service';
 
 const WS = '11111111-1111-4111-8111-111111111111';
@@ -186,6 +189,101 @@ describe('CategoryZipService', () => {
     await done;
     expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(res.body.includes('second-bytes')).toBe(true);
+  });
+
+  describe('time to first byte', () => {
+    beforeEach(() => {
+      // Only the timers are faked: streams need the real nextTick/setImmediate.
+      jest.useFakeTimers({
+        doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+      });
+    });
+    afterEach(() => {
+      jest.useRealTimers();
+    });
+
+    /** A fetch that never answers; it rejects only when its signal aborts. */
+    function hangUntilAborted(init?: RequestInit): Promise<Response> {
+      return new Promise<Response>((_resolve, reject) => {
+        const signal = init?.signal;
+        signal?.addEventListener('abort', () =>
+          reject(new Error(`aborted: ${String(signal.reason)}`)),
+        );
+      });
+    }
+
+    it('skips a file whose host sends no response within 20 s', async () => {
+      expect(ZIP_FETCH_HEADERS_TIMEOUT_MS).toBe(20_000);
+      fetchMock.mockImplementation((input, init) =>
+        String(input as string).endsWith('slow.png')
+          ? hangUntilAborted(init as RequestInit | undefined)
+          : Promise.resolve(new Response(Buffer.from('fast-bytes'))),
+      );
+      const svc = new CategoryZipService(
+        fakeDb([
+          folderRow(),
+          bytesRow('10'),
+          [
+            { name: 'Slow', mimeType: 'image/png', fileUrl: `${OWN}slow.png` },
+            { name: 'Fast', mimeType: 'image/png', fileUrl: `${OWN}fast.png` },
+          ],
+        ]),
+        storageObjects,
+      );
+      const res = new CollectingResponse();
+      const done = svc.streamZip(WS, FOLDER, res as unknown as Response);
+
+      await jest.advanceTimersByTimeAsync(ZIP_FETCH_HEADERS_TIMEOUT_MS - 1);
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(1);
+      await done;
+
+      expect(fetchMock).toHaveBeenCalledTimes(2);
+      const body = res.body.toString('latin1');
+      expect(body).toContain('fast-bytes');
+      const skippedAt = body.indexOf('_skipped.txt');
+      expect(skippedAt).toBeGreaterThan(-1);
+      expect(body.indexOf('Slow.png', skippedAt)).toBeGreaterThan(skippedAt);
+    });
+
+    it('does not time out a body that streams for longer than 20 s', async () => {
+      let finish: () => void = () => undefined;
+      fetchMock.mockImplementation((_input, init) => {
+        const signal = (init as RequestInit | undefined)?.signal;
+        const body = new ReadableStream<Uint8Array>({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('big-video-bytes'));
+            finish = () => controller.close();
+            // Like real fetch: aborting the signal errors a streaming body.
+            signal?.addEventListener('abort', () =>
+              controller.error(new Error('body aborted')),
+            );
+          },
+        });
+        return Promise.resolve(new Response(body));
+      });
+      const svc = new CategoryZipService(
+        fakeDb([
+          folderRow(),
+          bytesRow('10'),
+          [{ name: 'Big', mimeType: 'video/mp4', fileUrl: `${OWN}big.mp4` }],
+        ]),
+        storageObjects,
+      );
+      const res = new CollectingResponse();
+      const done = svc.streamZip(WS, FOLDER, res as unknown as Response);
+
+      await jest.advanceTimersByTimeAsync(ZIP_FETCH_HEADERS_TIMEOUT_MS * 3);
+      finish();
+      await done;
+
+      const body = res.body.toString('latin1');
+      expect(body).toContain('big-video-bytes');
+      expect(body).not.toContain('_skipped.txt');
+      // The zip finished (end-of-central-directory written), not cut short.
+      expect(res.writableFinished).toBe(true);
+      expect(body).toContain('PK\x05\x06');
+    });
   });
 
   it('413s a folder over 2 GB before writing anything', async () => {

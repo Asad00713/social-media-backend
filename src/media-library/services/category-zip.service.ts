@@ -33,6 +33,12 @@ const ZIP_TOO_LARGE = {
 
 const SKIPPED_ENTRY = '_skipped.txt';
 
+/**
+ * How long one file's host may take to send its response headers. Only the
+ * header stage is timed: a large video may stream for minutes after that.
+ */
+export const ZIP_FETCH_HEADERS_TIMEOUT_MS = 20_000;
+
 interface ZipSourceRow {
   name: string;
   mimeType: string | null;
@@ -163,18 +169,34 @@ export class CategoryZipService {
       return 'not stored in Schedura storage, so it was not downloaded';
     }
 
+    // A host that accepts the connection but never answers would otherwise
+    // hold the whole zip open. The timer is cleared once headers arrive, so
+    // it never cuts a body that is still streaming.
+    const headersTimeout = new AbortController();
+    const timer = setTimeout(
+      () => headersTimeout.abort(),
+      ZIP_FETCH_HEADERS_TIMEOUT_MS,
+    );
     let response: Response;
     try {
       // `redirect: 'error'`: a redirect could point anywhere, and our storage
       // never needs one.
       response = await fetch(item.fileUrl, {
         redirect: 'error',
-        signal: aborter.signal,
+        signal: AbortSignal.any([aborter.signal, headersTimeout.signal]),
       });
     } catch (err) {
       if (aborter.signal.aborted) throw err;
+      if (headersTimeout.signal.aborted) {
+        this.logger.warn(
+          `Zip: ${item.fileUrl} sent no response within ${ZIP_FETCH_HEADERS_TIMEOUT_MS / 1000} s; skipped`,
+        );
+        return `no response from storage within ${ZIP_FETCH_HEADERS_TIMEOUT_MS / 1000} s`;
+      }
       this.logger.warn(`Zip: could not fetch ${item.fileUrl}: ${String(err)}`);
       return 'download failed';
+    } finally {
+      clearTimeout(timer);
     }
     if (!response.ok || !response.body) {
       await response.body?.cancel().catch(() => undefined);

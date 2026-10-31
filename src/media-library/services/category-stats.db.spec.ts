@@ -234,6 +234,88 @@ describeLibraryDb('CategoryService.findAll stats and search', () => {
     });
   });
 
+  it('orders covers that share created_at by id, highest id first', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const media = await seedCategory(client, workspaceId, 'media', 'M');
+      const tpl = await seedCategory(client, workspaceId, 'template', 'T');
+      const lnk = await seedCategory(client, workspaceId, 'link', 'L');
+      const same = at(1);
+      const LOW = '00000000-0000-4000-8000-000000000001';
+      const HIGH = 'ffffffff-ffff-4fff-bfff-ffffffffffff';
+      // The low id is inserted (and re-keyed) first, so scan order is the
+      // opposite of the expected order: only the id tiebreaker puts HIGH first.
+      const setId = (table: string, from: string, to: string) =>
+        client.query(`UPDATE ${table} SET id = $2 WHERE id = $1`, [from, to]);
+
+      const m1 = await seedMediaItem(client, {
+        workspaceId,
+        uploadedById: ownerId,
+        categoryId: media,
+        fileUrl: 'https://cdn.test/low.png',
+        createdAt: same,
+      });
+      const m2 = await seedMediaItem(client, {
+        workspaceId,
+        uploadedById: ownerId,
+        categoryId: media,
+        fileUrl: 'https://cdn.test/high.png',
+        createdAt: same,
+      });
+      await setId('media_items', m1, LOW);
+      await setId('media_items', m2, HIGH);
+
+      const t = { workspaceId, createdById: ownerId };
+      const t1 = await seedTemplate(client, {
+        ...t,
+        categoryId: tpl,
+        thumbnailUrl: 'https://cdn.test/t-low.jpg',
+      });
+      const t2 = await seedTemplate(client, {
+        ...t,
+        categoryId: tpl,
+        thumbnailUrl: 'https://cdn.test/t-high.jpg',
+      });
+      await setCreatedAt(client, 'media_templates', t1, same);
+      await setCreatedAt(client, 'media_templates', t2, same);
+      await setId('media_templates', t1, LOW);
+      await setId('media_templates', t2, HIGH);
+
+      const l1 = await seedLink(client, {
+        ...t,
+        categoryId: lnk,
+        previewImageUrl: 'https://cdn.test/l-low.jpg',
+      });
+      const l2 = await seedLink(client, {
+        ...t,
+        categoryId: lnk,
+        previewImageUrl: 'https://cdn.test/l-high.jpg',
+      });
+      await setCreatedAt(client, 'saved_links', l1, same);
+      await setCreatedAt(client, 'saved_links', l2, same);
+      await setId('saved_links', l1, LOW);
+      await setId('saved_links', l2, HIGH);
+
+      const rows = await new CategoryService(db).findAll(workspaceId, {
+        withStats: true,
+      });
+      const covers = (id: string) =>
+        rows.find((r) => r.id === id)?.stats?.covers;
+      expect(covers(media)).toEqual([
+        'https://cdn.test/high.png',
+        'https://cdn.test/low.png',
+      ]);
+      expect(covers(tpl)).toEqual([
+        'https://cdn.test/t-high.jpg',
+        'https://cdn.test/t-low.jpg',
+      ]);
+      expect(covers(lnk)).toEqual([
+        'https://cdn.test/l-high.jpg',
+        'https://cdn.test/l-low.jpg',
+      ]);
+    });
+  });
+
   it('keeps the type filter and the display order with stats on', async () => {
     await withLibraryDb(async (db, client) => {
       const { workspaceId } = await seedWorkspace(client);

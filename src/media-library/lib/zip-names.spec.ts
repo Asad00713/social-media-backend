@@ -64,6 +64,26 @@ describe('zipEntryNames', () => {
     ).toEqual(['Hero (2).png', 'Hero.png', 'Hero (3).png']);
   });
 
+  it('does not split a duplicate on a dot that is not an extension', () => {
+    expect(
+      zipEntryNames([
+        { name: 'v1.2', mimeType: null, fileUrl: 'https://x/z' },
+        { name: 'v1.2', mimeType: null, fileUrl: 'https://x/z' },
+        { name: 'notes.txt', mimeType: null, fileUrl: 'https://x/z' },
+        { name: 'notes.txt', mimeType: null, fileUrl: 'https://x/z' },
+        { name: 'Q3.2026', mimeType: null, fileUrl: 'https://x/z' },
+        { name: 'Q3.2026', mimeType: null, fileUrl: 'https://x/z' },
+      ]),
+    ).toEqual([
+      'v1.2',
+      'v1.2 (2)',
+      'notes.txt',
+      'notes (2).txt',
+      'Q3.2026',
+      'Q3.2026 (2)',
+    ]);
+  });
+
   it('ignores an unparsable URL', () => {
     expect(
       zipEntryNames([{ name: 'n', mimeType: null, fileUrl: 'not a url' }]),

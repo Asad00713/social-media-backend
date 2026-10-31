@@ -15,6 +15,8 @@ const EXT_BY_MIME: Record<string, string> = {
 };
 
 const PLAUSIBLE_EXT = /^\.[a-z0-9]{1,10}$/;
+/** What counts as an extension inside a name: 1-5 alphanumerics, one a letter. */
+const NAME_EXT = /^\.(?=[a-z0-9]*[a-z])[a-z0-9]{1,5}$/i;
 const FALLBACK_NAME = 'file';
 
 export interface ZipNameSource {
@@ -58,7 +60,9 @@ export function zipEntryNames(items: ZipNameSource[]): string[] {
 
     let name = full;
     if (taken.has(name.toLowerCase())) {
-      const suffix = ext !== '' ? ext : extname(full);
+      // `v1.2` has no extension: only split on a dot that starts one.
+      const own = extname(full);
+      const suffix = ext !== '' ? ext : NAME_EXT.test(own) ? own : '';
       const stem = suffix ? full.slice(0, -suffix.length) : full;
       for (let n = 2; taken.has(name.toLowerCase()); n++) {
         name = `${stem} (${n})${suffix}`;
