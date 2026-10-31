@@ -6,6 +6,7 @@ import {
   Delete,
   Body,
   Param,
+  ParseUUIDPipe,
   Query,
   UseGuards,
   HttpCode,
@@ -18,6 +19,7 @@ import { MediaItemService } from './services/media-item.service';
 import { TemplateService } from './services/template.service';
 import { TextSnippetService } from './services/text-snippet.service';
 import { SavedLinkService } from './services/saved-link.service';
+import { AltTextService } from './services/alt-text.service';
 import { RecycleBinService } from './services/recycle-bin.service';
 import {
   CreateCategoryDto,
@@ -52,6 +54,7 @@ export class MediaLibraryController {
     private readonly textSnippetService: TextSnippetService,
     private readonly savedLinkService: SavedLinkService,
     private readonly recycleBin: RecycleBinService,
+    private readonly altText: AltTextService,
   ) {}
 
   // ==========================================================================
@@ -169,6 +172,17 @@ export class MediaLibraryController {
     @Param('itemId') itemId: string,
   ) {
     return this.mediaItemService.findOne(workspaceId, itemId);
+  }
+
+  @Post('items/:itemId/alt-text')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async generateMediaItemAltText(
+    @Param('workspaceId') workspaceId: string,
+    @Param('itemId', ParseUUIDPipe) itemId: string,
+    @CurrentUser() user: { userId: string },
+  ) {
+    return this.altText.generate(workspaceId, user.userId, itemId);
   }
 
   @Put('items/:itemId')

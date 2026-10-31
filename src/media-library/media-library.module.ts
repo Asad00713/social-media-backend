@@ -8,12 +8,14 @@ import { SavedLinkService } from './services/saved-link.service';
 import { StorageObjectService } from './services/storage-object.service';
 import { RecycleBinService } from './services/recycle-bin.service';
 import { RecycleBinCleanupService } from './services/recycle-bin-cleanup.service';
+import { AltTextService } from './services/alt-text.service';
+import { AiModule } from '../ai/ai.module';
 import { MediaModule } from '../media/media.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 
 @Module({
-  imports: [WorkspaceRoleModule, DrizzleModule, MediaModule],
+  imports: [WorkspaceRoleModule, DrizzleModule, MediaModule, AiModule],
   controllers: [MediaLibraryController],
   providers: [
     CategoryService,
@@ -24,6 +26,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     StorageObjectService,
     RecycleBinService,
     RecycleBinCleanupService,
+    AltTextService,
   ],
   exports: [
     CategoryService,
