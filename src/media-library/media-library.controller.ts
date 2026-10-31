@@ -18,6 +18,7 @@ import { MediaItemService } from './services/media-item.service';
 import { TemplateService } from './services/template.service';
 import { TextSnippetService } from './services/text-snippet.service';
 import { SavedLinkService } from './services/saved-link.service';
+import { RecycleBinService } from './services/recycle-bin.service';
 import {
   MEDIA_LIBRARY_TYPES,
   type MediaLibraryType,
@@ -53,6 +54,7 @@ export class MediaLibraryController {
     private readonly templateService: TemplateService,
     private readonly textSnippetService: TextSnippetService,
     private readonly savedLinkService: SavedLinkService,
+    private readonly recycleBin: RecycleBinService,
   ) {}
 
   // ==========================================================================
@@ -560,20 +562,12 @@ export class MediaLibraryController {
       type === 'gif' ||
       type === 'document'
     ) {
-      const mediaResult = await this.mediaItemService.getRecycleBin(
+      results.mediaItems = await this.mediaItemService.getRecycleBin(
         workspaceId,
         limit,
         offset,
+        type,
       );
-      if (!type) {
-        results.mediaItems = mediaResult;
-      } else {
-        // Filter by specific type
-        results.mediaItems = {
-          ...mediaResult,
-          items: mediaResult.items.filter((item) => item.type === type),
-        };
-      }
     }
 
     if (!type || type === 'template') {
@@ -607,58 +601,6 @@ export class MediaLibraryController {
   @RequireCapability('posts:publish')
   @HttpCode(HttpStatus.OK)
   async emptyRecycleBin(@Param('workspaceId') workspaceId: string) {
-    // Get all items in recycle bin and permanently delete them
-    const mediaItems = await this.mediaItemService.getRecycleBin(
-      workspaceId,
-      1000,
-      0,
-    );
-    const templates = await this.templateService.getRecycleBin(
-      workspaceId,
-      1000,
-      0,
-    );
-    const snippets = await this.textSnippetService.getRecycleBin(
-      workspaceId,
-      1000,
-      0,
-    );
-    const links = await this.savedLinkService.getRecycleBin(
-      workspaceId,
-      1000,
-      0,
-    );
-
-    let deletedCount = 0;
-
-    // Delete all media items
-    for (const item of mediaItems.items) {
-      await this.mediaItemService.permanentDelete(workspaceId, item.id);
-      deletedCount++;
-    }
-
-    // Delete all templates
-    for (const template of templates.items) {
-      await this.templateService.permanentDelete(workspaceId, template.id);
-      deletedCount++;
-    }
-
-    // Delete all snippets
-    for (const snippet of snippets.items) {
-      await this.textSnippetService.permanentDelete(workspaceId, snippet.id);
-      deletedCount++;
-    }
-
-    // Delete all links
-    for (const link of links.items) {
-      await this.savedLinkService.permanentDelete(workspaceId, link.id);
-      deletedCount++;
-    }
-
-    return {
-      success: true,
-      message: `Permanently deleted ${deletedCount} items from recycle bin`,
-      deletedCount,
-    };
+    return this.recycleBin.empty(workspaceId);
   }
 }

@@ -654,29 +654,32 @@ export class MediaItemService {
   /**
    * Get items in recycle bin
    */
-  async getRecycleBin(workspaceId: string, limit = 50, offset = 0) {
+  async getRecycleBin(
+    workspaceId: string,
+    limit = 50,
+    offset = 0,
+    type?: 'image' | 'video' | 'gif' | 'document',
+  ) {
+    // The type filter lives in SQL: filtering a fetched page would return a
+    // short page and a total that ignores the filter.
+    const where = and(
+      eq(mediaItems.workspaceId, workspaceId),
+      eq(mediaItems.isDeleted, true),
+      type ? eq(mediaItems.type, type) : undefined,
+    );
+
     const items = await this.db
       .select()
       .from(mediaItems)
-      .where(
-        and(
-          eq(mediaItems.workspaceId, workspaceId),
-          eq(mediaItems.isDeleted, true),
-        ),
-      )
-      .orderBy(desc(mediaItems.deletedAt))
+      .where(where)
+      .orderBy(desc(mediaItems.deletedAt), desc(mediaItems.id))
       .limit(limit)
       .offset(offset);
 
     const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(mediaItems)
-      .where(
-        and(
-          eq(mediaItems.workspaceId, workspaceId),
-          eq(mediaItems.isDeleted, true),
-        ),
-      );
+      .where(where);
 
     return {
       items,
