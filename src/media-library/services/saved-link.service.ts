@@ -3,9 +3,8 @@ import {
   Injectable,
   Logger,
   NotFoundException,
-  BadRequestException,
 } from '@nestjs/common';
-import { eq, and, desc, asc, ilike, or, sql } from 'drizzle-orm';
+import { eq, and, desc, asc, ilike, or, sql, type SQL } from 'drizzle-orm';
 import { ilikePattern } from '../lib/search';
 import {
   extractPageMeta,
@@ -23,7 +22,19 @@ import {
   CreateSavedLinkDto,
   UpdateSavedLinkDto,
   SavedLinkQueryDto,
+  LinkBulkDto,
 } from '../dto/media-library.dto';
+import {
+  assertKindFolder,
+  runKindBulk,
+  type KindBulkConfig,
+} from '../lib/bulk';
+
+const LINK_BULK: KindBulkConfig = {
+  table: savedLinks,
+  folderKind: 'link',
+  label: 'Link',
+};
 
 @Injectable()
 export class SavedLinkService {
@@ -63,21 +74,13 @@ export class SavedLinkService {
   async create(workspaceId: string, userId: string, dto: CreateSavedLinkDto) {
     // Validate category if provided
     if (dto.categoryId) {
-      const category = await this.db
-        .select()
-        .from(mediaCategories)
-        .where(
-          and(
-            eq(mediaCategories.id, dto.categoryId),
-            eq(mediaCategories.workspaceId, workspaceId),
-            eq(mediaCategories.type, 'link'),
-          ),
-        )
-        .limit(1);
-
-      if (category.length === 0) {
-        throw new BadRequestException('Link category not found');
-      }
+      await assertKindFolder(
+        this.db,
+        workspaceId,
+        dto.categoryId,
+        'link',
+        'Link',
+      );
     }
 
     // Fetch link preview
@@ -223,21 +226,13 @@ export class SavedLinkService {
 
     // Validate category if changing
     if (dto.categoryId) {
-      const category = await this.db
-        .select()
-        .from(mediaCategories)
-        .where(
-          and(
-            eq(mediaCategories.id, dto.categoryId),
-            eq(mediaCategories.workspaceId, workspaceId),
-            eq(mediaCategories.type, 'link'),
-          ),
-        )
-        .limit(1);
-
-      if (category.length === 0) {
-        throw new BadRequestException('Link category not found');
-      }
+      await assertKindFolder(
+        this.db,
+        workspaceId,
+        dto.categoryId,
+        'link',
+        'Link',
+      );
     }
 
     const updateData: Partial<typeof savedLinks.$inferInsert> = {
@@ -392,6 +387,55 @@ export class SavedLinkService {
     }
 
     return updated;
+  }
+
+  /**
+   * The WHERE clause of `GET links`, for bulk select-all. It must match the
+   * filters `findAll` applies, so "every match" means what the list shows.
+   */
+  buildLinkConditions(workspaceId: string, query: SavedLinkQueryDto): SQL[] {
+    const { categoryId, isStarred, isDeleted = false, search } = query;
+
+    const conditions: SQL[] = [
+      eq(savedLinks.workspaceId, workspaceId),
+      eq(savedLinks.isDeleted, isDeleted),
+    ];
+
+    if (categoryId) {
+      conditions.push(eq(savedLinks.categoryId, categoryId));
+    }
+
+    if (isStarred !== undefined) {
+      conditions.push(eq(savedLinks.isStarred, isStarred));
+    }
+
+    if (search) {
+      conditions.push(
+        or(
+          ilike(savedLinks.name, ilikePattern(search)),
+          ilike(savedLinks.url, ilikePattern(search)),
+          ilike(savedLinks.description, ilikePattern(search)),
+          ilike(savedLinks.previewTitle, ilikePattern(search)),
+        )!,
+      );
+    }
+
+    return conditions;
+  }
+
+  /**
+   * Bulk delete / star / unstar / move (ruling 6), on `ids` or with
+   * `selectAll` on every link the list's filter matches. The rules
+   * (live rows only, X1 move, workspace scope) live in `runKindBulk`.
+   */
+  bulkAction(
+    workspaceId: string,
+    userId: string,
+    dto: LinkBulkDto,
+  ): Promise<{ affectedCount: number }> {
+    return runKindBulk(this.db, LINK_BULK, workspaceId, userId, dto, (ws, q) =>
+      this.buildLinkConditions(ws, q),
+    );
   }
 
   /**

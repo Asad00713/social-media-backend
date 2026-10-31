@@ -39,16 +39,24 @@ import {
   CreateTemplateDto,
   UpdateTemplateDto,
   TemplateQueryDto,
+  TemplateBulkDto,
   CreateTextSnippetDto,
   UpdateTextSnippetDto,
   TextSnippetQueryDto,
+  SnippetBulkDto,
   CreateSavedLinkDto,
   UpdateSavedLinkDto,
   SavedLinkQueryDto,
+  LinkBulkDto,
   RecycleBinQueryDto,
 } from './dto/media-library.dto';
-import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import {
+  WorkspaceRoleGuard,
+  assertRoleCan,
+} from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
+import { CurrentWorkspaceRole } from '../workspace-members/current-workspace-role.decorator';
+import type { WorkspaceRole } from '../workspace-members/role-capabilities';
 
 const logger = new Logger('MediaLibraryController');
 
@@ -319,7 +327,13 @@ export class MediaLibraryController {
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string },
     @Body() dto: BulkActionDto,
+    @CurrentWorkspaceRole() role?: WorkspaceRole | 'SUPER_ADMIN',
   ) {
+    // Purging deletes files for good: it needs what `items/:id/permanent` and
+    // `recycle-bin/empty` need (posts:publish), not the route's posts:draft.
+    if (dto.action === 'permanentDelete') {
+      assertRoleCan(role, 'posts:publish');
+    }
     return this.mediaItemService.bulkAction(workspaceId, user.userId, dto);
   }
 
@@ -346,6 +360,17 @@ export class MediaLibraryController {
     @Query() query: TemplateQueryDto,
   ) {
     return this.templateService.findAll(workspaceId, query);
+  }
+
+  @Post('templates/bulk')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async bulkTemplates(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
+    @Body() dto: TemplateBulkDto,
+  ) {
+    return this.templateService.bulkAction(workspaceId, user.userId, dto);
   }
 
   @Get('templates/:templateId')
@@ -458,6 +483,17 @@ export class MediaLibraryController {
     return this.textSnippetService.findAll(workspaceId, query);
   }
 
+  @Post('snippets/bulk')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async bulkTextSnippets(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
+    @Body() dto: SnippetBulkDto,
+  ) {
+    return this.textSnippetService.bulkAction(workspaceId, user.userId, dto);
+  }
+
   @Get('snippets/:snippetId')
   @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
@@ -548,6 +584,17 @@ export class MediaLibraryController {
     @Query() query: SavedLinkQueryDto,
   ) {
     return this.savedLinkService.findAll(workspaceId, query);
+  }
+
+  @Post('links/bulk')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async bulkSavedLinks(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
+    @Body() dto: LinkBulkDto,
+  ) {
+    return this.savedLinkService.bulkAction(workspaceId, user.userId, dto);
   }
 
   @Get('links/:linkId')

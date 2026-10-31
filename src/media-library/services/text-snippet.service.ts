@@ -1,12 +1,11 @@
-import {
-  Inject,
-  Injectable,
-  Logger,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
-import { eq, and, desc, ilike, or, sql } from 'drizzle-orm';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { eq, and, asc, desc, ilike, or, sql, type SQL } from 'drizzle-orm';
 import { ilikePattern } from '../lib/search';
+import {
+  assertKindFolder,
+  runKindBulk,
+  type KindBulkConfig,
+} from '../lib/bulk';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -18,7 +17,34 @@ import {
   CreateTextSnippetDto,
   UpdateTextSnippetDto,
   TextSnippetQueryDto,
+  SnippetBulkDto,
 } from '../dto/media-library.dto';
+
+/**
+ * ORDER BY for `GET snippets` (ruling 7). Every order ends in `id DESC` so
+ * ties keep their place across updates.
+ */
+function snippetOrder(sort: TextSnippetQueryDto['sort']): SQL[] {
+  const byNewest = [desc(textSnippets.createdAt), desc(textSnippets.id)];
+  switch (sort) {
+    case 'oldest':
+      return [asc(textSnippets.createdAt), asc(textSnippets.id)];
+    case 'most_used':
+      return [sql`${textSnippets.usageCount} DESC NULLS LAST`, ...byNewest];
+    case 'recently_used':
+      return [sql`${textSnippets.lastUsedAt} DESC NULLS LAST`, ...byNewest];
+    case 'name':
+      return [sql`lower(${textSnippets.name}) ASC`, ...byNewest];
+    default:
+      return byNewest;
+  }
+}
+
+const SNIPPET_BULK: KindBulkConfig = {
+  table: textSnippets,
+  folderKind: 'text_snippet',
+  label: 'Text snippet',
+};
 
 @Injectable()
 export class TextSnippetService {
@@ -32,21 +58,13 @@ export class TextSnippetService {
   async create(workspaceId: string, userId: string, dto: CreateTextSnippetDto) {
     // Validate category if provided
     if (dto.categoryId) {
-      const category = await this.db
-        .select()
-        .from(mediaCategories)
-        .where(
-          and(
-            eq(mediaCategories.id, dto.categoryId),
-            eq(mediaCategories.workspaceId, workspaceId),
-            eq(mediaCategories.type, 'text_snippet'),
-          ),
-        )
-        .limit(1);
-
-      if (category.length === 0) {
-        throw new BadRequestException('Text snippet category not found');
-      }
+      await assertKindFolder(
+        this.db,
+        workspaceId,
+        dto.categoryId,
+        'text_snippet',
+        'Text snippet',
+      );
     }
 
     const newSnippet: NewTextSnippet = {
@@ -72,22 +90,20 @@ export class TextSnippetService {
   }
 
   /**
-   * Get all text snippets for a workspace with filtering
+   * The WHERE clause of `GET snippets`, shared with bulk select-all so
+   * "every match" means exactly what the list shows.
    */
-  async findAll(workspaceId: string, query: TextSnippetQueryDto = {}) {
-    const {
-      type,
-      categoryId,
-      isStarred,
-      isDeleted = false,
-      search,
-      limit = 50,
-      offset = 0,
-    } = query;
-    // `type` is the contract name and wins over the legacy `snippetType`.
-    const snippetType = type ?? query.snippetType;
+  buildSnippetConditions(
+    workspaceId: string,
+    query: TextSnippetQueryDto,
+  ): SQL[] {
+    const { categoryId, isDeleted = false, search } = query;
+    // Contract names win over the legacy ones: `type` over `snippetType`,
+    // `starred` over `isStarred`.
+    const snippetType = query.type ?? query.snippetType;
+    const starred = query.starred ?? query.isStarred;
 
-    const conditions = [
+    const conditions: SQL[] = [
       eq(textSnippets.workspaceId, workspaceId),
       eq(textSnippets.isDeleted, isDeleted),
     ];
@@ -100,8 +116,8 @@ export class TextSnippetService {
       conditions.push(eq(textSnippets.categoryId, categoryId));
     }
 
-    if (isStarred !== undefined) {
-      conditions.push(eq(textSnippets.isStarred, isStarred));
+    if (starred !== undefined) {
+      conditions.push(eq(textSnippets.isStarred, starred));
     }
 
     if (search) {
@@ -112,6 +128,16 @@ export class TextSnippetService {
         )!,
       );
     }
+
+    return conditions;
+  }
+
+  /**
+   * Get all text snippets for a workspace with filtering
+   */
+  async findAll(workspaceId: string, query: TextSnippetQueryDto = {}) {
+    const { limit = 50, offset = 0 } = query;
+    const conditions = this.buildSnippetConditions(workspaceId, query);
 
     const snippets = await this.db
       .select({
@@ -124,7 +150,7 @@ export class TextSnippetService {
         eq(textSnippets.categoryId, mediaCategories.id),
       )
       .where(and(...conditions))
-      .orderBy(desc(textSnippets.createdAt))
+      .orderBy(...snippetOrder(query.sort))
       .limit(limit)
       .offset(offset);
 
@@ -189,21 +215,13 @@ export class TextSnippetService {
 
     // Validate category if changing
     if (dto.categoryId) {
-      const category = await this.db
-        .select()
-        .from(mediaCategories)
-        .where(
-          and(
-            eq(mediaCategories.id, dto.categoryId),
-            eq(mediaCategories.workspaceId, workspaceId),
-            eq(mediaCategories.type, 'text_snippet'),
-          ),
-        )
-        .limit(1);
-
-      if (category.length === 0) {
-        throw new BadRequestException('Text snippet category not found');
-      }
+      await assertKindFolder(
+        this.db,
+        workspaceId,
+        dto.categoryId,
+        'text_snippet',
+        'Text snippet',
+      );
     }
 
     const updateData: Partial<typeof textSnippets.$inferInsert> = {
@@ -324,6 +342,26 @@ export class TextSnippetService {
     }
 
     return updated;
+  }
+
+  /**
+   * Bulk delete / star / unstar / move (ruling 6), on `ids` or with
+   * `selectAll` on every snippet the list's filter matches. The rules
+   * (live rows only, X1 move, workspace scope) live in `runKindBulk`.
+   */
+  bulkAction(
+    workspaceId: string,
+    userId: string,
+    dto: SnippetBulkDto,
+  ): Promise<{ affectedCount: number }> {
+    return runKindBulk(
+      this.db,
+      SNIPPET_BULK,
+      workspaceId,
+      userId,
+      dto,
+      (ws, q) => this.buildSnippetConditions(ws, q),
+    );
   }
 
   /**

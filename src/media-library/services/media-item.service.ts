@@ -15,7 +15,9 @@ import {
   sql,
   inArray,
   gt,
+  gte,
   lt,
+  not,
   type SQL,
 } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
@@ -25,8 +27,15 @@ import {
   mediaCategories,
   NewMediaItem,
   MediaLibraryItem,
+  MediaCategory,
 } from '../../drizzle/schema/media-library.schema';
+import { users } from '../../drizzle/schema/users.schema';
 import { ilikePattern } from '../lib/search';
+import { itemReferencedSql } from '../lib/usage-sql';
+import { ratioBounds } from '../lib/ratio';
+import { toUserRef } from '../lib/user-ref';
+import { assertIdsXorSelectAll, bulkTargetsBin, chunk } from '../lib/bulk';
+import type { Page, UserRef } from '../dto/contract';
 import { CloudinaryService } from '../../media/cloudinary.service';
 import { StorageObjectService } from './storage-object.service';
 import {
@@ -35,6 +44,12 @@ import {
   MediaItemQueryDto,
   BulkActionDto,
 } from '../dto/media-library.dto';
+
+/** A media item as the list and the Preview read it. */
+export type MediaItemView = MediaLibraryItem & {
+  category: MediaCategory | null;
+  uploadedBy: UserRef | null;
+};
 
 /** Files deleted from storage at once during a purge. */
 const PURGE_CONCURRENCY = 8;
@@ -112,6 +127,8 @@ export class MediaItemService {
       ),
       categoryId: dto.categoryId,
       tags: dto.tags || [],
+      altText: dto.altText,
+      pageCount: dto.pageCount,
     };
 
     const [created] = await this.db
@@ -127,37 +144,47 @@ export class MediaItemService {
   }
 
   /**
-   * Get all media items for a workspace with filtering
+   * The WHERE clause of `GET items`, shared with bulk select-all so "every
+   * match" means exactly what the list shows. Ignores `limit`, `offset` and
+   * the sort.
    */
-  async findAll(workspaceId: string, query: MediaItemQueryDto = {}) {
+  buildItemConditions(workspaceId: string, query: MediaItemQueryDto): SQL[] {
     const {
       type,
       categoryId,
-      isStarred,
       isDeleted = false,
       search,
       tags,
-      limit = 50,
-      offset = 0,
-      sortBy = 'createdAt',
-      sortOrder = 'desc',
+      gifOnly,
+      ratio,
+      addedSince,
+      uploadedBy,
+      neverUsed,
     } = query;
+    // `starred` is the contract name and wins over the legacy `isStarred`.
+    const starred = query.starred ?? query.isStarred;
 
-    const conditions = [
+    const conditions: SQL[] = [
       eq(mediaItems.workspaceId, workspaceId),
       eq(mediaItems.isDeleted, isDeleted),
     ];
 
-    if (type) {
+    if (type === 'images') {
+      conditions.push(inArray(mediaItems.type, ['image', 'gif']));
+    } else if (type) {
       conditions.push(eq(mediaItems.type, type));
+    }
+
+    if (gifOnly) {
+      conditions.push(eq(mediaItems.type, 'gif'));
     }
 
     if (categoryId) {
       conditions.push(eq(mediaItems.categoryId, categoryId));
     }
 
-    if (isStarred !== undefined) {
-      conditions.push(eq(mediaItems.isStarred, isStarred));
+    if (starred !== undefined) {
+      conditions.push(eq(mediaItems.isStarred, starred));
     }
 
     if (search) {
@@ -170,53 +197,137 @@ export class MediaItemService {
       );
     }
 
-    // Get sort column
+    if (ratio) {
+      // Multiplied out (width >= min × height) so no row divides by zero.
+      // The bounds are cast because a bare parameter next to an integer
+      // column would be read as an integer.
+      const { min, max } = ratioBounds(ratio);
+      conditions.push(
+        sql`(${mediaItems.width} > 0 AND ${mediaItems.height} > 0 AND ${mediaItems.width} >= ${min}::float8 * ${mediaItems.height} AND ${mediaItems.width} <= ${max}::float8 * ${mediaItems.height})`,
+      );
+    }
+
+    if (addedSince) {
+      // ISO 8601 allows forms Date cannot read (2026-W05, 2026-123); those
+      // are a bad request, not an Invalid Date reaching Postgres as a 500.
+      const since = new Date(addedSince);
+      if (Number.isNaN(since.getTime())) {
+        throw new BadRequestException(
+          'addedSince must be a calendar date or date-time',
+        );
+      }
+      conditions.push(gte(mediaItems.createdAt, since));
+    }
+
+    if (uploadedBy) {
+      conditions.push(eq(mediaItems.uploadedById, uploadedBy));
+    }
+
+    if (neverUsed) {
+      conditions.push(
+        not(
+          itemReferencedSql({
+            id: mediaItems.id,
+            fileUrl: mediaItems.fileUrl,
+            workspaceId: mediaItems.workspaceId,
+          }),
+        ),
+      );
+    }
+
+    return conditions;
+  }
+
+  /**
+   * ORDER BY for `GET items`. Every order ends in `id DESC`: without a
+   * deterministic tiebreaker Postgres returns ties in heap order, and an
+   * UPDATE (starring an asset) moves the tuple to the end of the heap, so the
+   * starred image jumped to the bottom of the grid.
+   */
+  private itemOrder(query: MediaItemQueryDto): SQL[] {
+    const byNewest = [desc(mediaItems.createdAt), desc(mediaItems.id)];
+
+    switch (query.sort) {
+      case 'newest':
+        return byNewest;
+      case 'oldest':
+        return [asc(mediaItems.createdAt), asc(mediaItems.id)];
+      case 'most_used':
+        return [sql`${mediaItems.usageCount} DESC NULLS LAST`, ...byNewest];
+      case 'recently_used':
+        return [sql`${mediaItems.lastUsedAt} DESC NULLS LAST`, ...byNewest];
+      case 'name':
+        return [sql`lower(${mediaItems.name}) ASC`, ...byNewest];
+      case 'size':
+        return [sql`${mediaItems.fileSize} DESC NULLS LAST`, ...byNewest];
+    }
+
+    // Legacy sortBy/sortOrder, for callers that do not send `sort` yet.
+    const { sortBy = 'createdAt', sortOrder = 'desc' } = query;
     const sortColumn = {
       createdAt: mediaItems.createdAt,
       name: mediaItems.name,
       usageCount: mediaItems.usageCount,
       lastUsedAt: mediaItems.lastUsedAt,
     }[sortBy];
-
     const orderFn = sortOrder === 'asc' ? asc : desc;
 
-    // `lastUsedAt` stays null until an asset is used in a post, so "never used"
-    // belongs after everything that has been used. Postgres puts NULLS FIRST
-    // for DESC by default, which ranked untouched assets above used ones.
+    // `lastUsedAt` stays null until an asset is used, so "never used" belongs
+    // after everything that has been used. Postgres puts NULLS FIRST for DESC
+    // by default, which ranked untouched assets above used ones.
     const primaryOrder =
       sortBy === 'lastUsedAt'
         ? sortOrder === 'asc'
           ? sql`${mediaItems.lastUsedAt} ASC NULLS LAST`
           : sql`${mediaItems.lastUsedAt} DESC NULLS LAST`
         : orderFn(sortColumn);
+    return [primaryOrder, ...byNewest];
+  }
 
-    // Ties need a deterministic tiebreaker. With every row sharing a null
-    // `lastUsedAt`, ordering on that column alone left Postgres free to return
-    // rows in heap order — and an UPDATE (starring an asset) rewrites the tuple
-    // at the end of the heap, so starring an image visibly threw it to the
-    // bottom of the grid. Stable secondary keys keep positions still.
-    const items = await this.db
-      .select({
-        item: mediaItems,
-        category: mediaCategories,
-      })
+  /** The columns a `MediaItemView` is read from; uploader left-joined. */
+  private viewSelection() {
+    return {
+      item: mediaItems,
+      category: mediaCategories,
+      uploader: {
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        avatarUrl: users.avatarUrl,
+      },
+    };
+  }
+
+  /**
+   * Get all media items for a workspace with filtering
+   */
+  async findAll(
+    workspaceId: string,
+    query: MediaItemQueryDto = {},
+  ): Promise<Page<MediaItemView>> {
+    const { limit = 50, offset = 0 } = query;
+    const conditions = this.buildItemConditions(workspaceId, query);
+
+    const rows = await this.db
+      .select(this.viewSelection())
       .from(mediaItems)
       .leftJoin(mediaCategories, eq(mediaItems.categoryId, mediaCategories.id))
+      .leftJoin(users, eq(mediaItems.uploadedById, users.id))
       .where(and(...conditions))
-      .orderBy(primaryOrder, desc(mediaItems.createdAt), desc(mediaItems.id))
+      .orderBy(...this.itemOrder(query))
       .limit(limit)
       .offset(offset);
 
-    // Get total count
     const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(mediaItems)
       .where(and(...conditions));
 
     return {
-      items: items.map((row) => ({
+      items: rows.map((row) => ({
         ...row.item,
         category: row.category,
+        uploadedBy: toUserRef(row.uploader),
       })),
       total: count,
       limit,
@@ -246,26 +357,25 @@ export class MediaItemService {
   /**
    * Get a single media item by ID
    */
-  async findOne(workspaceId: string, itemId: string) {
-    const [item] = await this.db
-      .select({
-        item: mediaItems,
-        category: mediaCategories,
-      })
+  async findOne(workspaceId: string, itemId: string): Promise<MediaItemView> {
+    const [row] = await this.db
+      .select(this.viewSelection())
       .from(mediaItems)
       .leftJoin(mediaCategories, eq(mediaItems.categoryId, mediaCategories.id))
+      .leftJoin(users, eq(mediaItems.uploadedById, users.id))
       .where(
         and(eq(mediaItems.id, itemId), eq(mediaItems.workspaceId, workspaceId)),
       )
       .limit(1);
 
-    if (!item) {
+    if (!row) {
       throw new NotFoundException('Media item not found');
     }
 
     return {
-      ...item.item,
-      category: item.category,
+      ...row.item,
+      category: row.category,
+      uploadedBy: toUserRef(row.uploader),
     };
   }
 
@@ -291,6 +401,7 @@ export class MediaItemService {
     if (dto.categoryId !== undefined) updateData.categoryId = dto.categoryId;
     if (dto.tags !== undefined) updateData.tags = dto.tags;
     if (dto.isStarred !== undefined) updateData.isStarred = dto.isStarred;
+    if (dto.altText !== undefined) updateData.altText = dto.altText;
 
     const [updated] = await this.db
       .update(mediaItems)
@@ -529,106 +640,52 @@ export class MediaItemService {
   }
 
   /**
-   * Bulk actions on media items
+   * Bulk actions on media items: on `ids`, or with `selectAll` on every item
+   * the list's filter matches (ignoring `limit`/`offset`). Rows are written
+   * 500 at a time.
+   *
+   * The action picks bin or live rows (`bulkTargetsBin`): restore and
+   * permanentDelete touch only binned rows and refuse select-all; the rest
+   * touch only live rows, whatever the filter's `isDeleted` says.
+   * `affectedCount` counts only rows actually changed. The route requires
+   * `posts:publish` for permanentDelete.
+   *
+   * Chunks are separate statements, not one transaction: a failure midway
+   * leaves earlier chunks applied. Every action is idempotent, so retrying
+   * the same request converges.
    */
-  async bulkAction(workspaceId: string, userId: string, dto: BulkActionDto) {
-    const { ids, action, categoryId } = dto;
+  async bulkAction(
+    workspaceId: string,
+    userId: string,
+    dto: BulkActionDto,
+  ): Promise<{ affectedCount: number }> {
+    assertIdsXorSelectAll(dto);
+    const inBin = bulkTargetsBin(dto);
+    const { action, categoryId } = dto;
 
-    // Verify all items belong to this workspace
-    const items = await this.db
-      .select()
-      .from(mediaItems)
-      .where(
-        and(
-          inArray(mediaItems.id, ids),
-          eq(mediaItems.workspaceId, workspaceId),
-        ),
-      );
-
-    if (items.length !== ids.length) {
-      throw new BadRequestException('Some items not found');
+    if (action === 'move') {
+      // `undefined` means the caller never said where to move things, which
+      // is not a move at all. `null` is a decision — unfile the selection —
+      // so the two are told apart here rather than lumped as falsy.
+      if (categoryId === undefined) {
+        throw new BadRequestException('categoryId required for move action');
+      }
+      if (categoryId !== null) {
+        await this.assertMediaFolder(workspaceId, categoryId);
+      }
     }
 
+    const ids = await this.resolveBulkIds(workspaceId, dto);
+
     let affectedCount = 0;
-
-    switch (action) {
-      case 'delete':
-        affectedCount = (
-          await this.db
-            .update(mediaItems)
-            .set({
-              isDeleted: true,
-              deletedAt: new Date(),
-              deletedById: userId,
-              updatedAt: new Date(),
-            })
-            .where(inArray(mediaItems.id, ids))
-            .returning({ id: mediaItems.id })
-        ).length;
-        break;
-
-      case 'restore':
-        affectedCount = (
-          await this.db
-            .update(mediaItems)
-            .set({
-              isDeleted: false,
-              deletedAt: null,
-              deletedById: null,
-              updatedAt: new Date(),
-            })
-            .where(inArray(mediaItems.id, ids))
-            .returning({ id: mediaItems.id })
-        ).length;
-        break;
-
-      case 'move': {
-        // `undefined` means the caller never said where to move things, which
-        // is not a move at all. `null` is a decision — unfile the selection —
-        // so the two are told apart here rather than lumped as falsy.
-        if (categoryId === undefined) {
-          throw new BadRequestException('categoryId required for move action');
-        }
-
-        if (categoryId !== null) {
-          await this.assertMediaFolder(workspaceId, categoryId);
-        }
-
-        affectedCount = (
-          await this.db
-            .update(mediaItems)
-            .set({ categoryId, updatedAt: new Date() })
-            .where(inArray(mediaItems.id, ids))
-            .returning({ id: mediaItems.id })
-        ).length;
-        break;
-      }
-
-      case 'star':
-        affectedCount = (
-          await this.db
-            .update(mediaItems)
-            .set({ isStarred: true, updatedAt: new Date() })
-            .where(inArray(mediaItems.id, ids))
-            .returning({ id: mediaItems.id })
-        ).length;
-        break;
-
-      case 'unstar':
-        affectedCount = (
-          await this.db
-            .update(mediaItems)
-            .set({ isStarred: false, updatedAt: new Date() })
-            .where(inArray(mediaItems.id, ids))
-            .returning({ id: mediaItems.id })
-        ).length;
-        break;
-
-      case 'permanentDelete': {
-        const { deletedIds } = await this.purgeItems(items);
-        affectedCount = deletedIds.length;
-        break;
-      }
+    for (const part of chunk(ids)) {
+      affectedCount += await this.bulkChunk(
+        workspaceId,
+        userId,
+        dto,
+        part,
+        inBin,
+      );
     }
 
     this.logger.log(
@@ -636,6 +693,88 @@ export class MediaItemService {
     );
 
     return { affectedCount };
+  }
+
+  /**
+   * The ids a bulk request names. Explicit ids must all belong to the
+   * workspace (else 400); select-all reads them through the list's filter,
+   * on live rows only (a select-all bin action never gets this far).
+   */
+  private async resolveBulkIds(
+    workspaceId: string,
+    dto: BulkActionDto,
+  ): Promise<string[]> {
+    if (dto.selectAll != null) {
+      const filter = { ...dto.selectAll.filter, isDeleted: false };
+      const rows = await this.db
+        .select({ id: mediaItems.id })
+        .from(mediaItems)
+        .where(and(...this.buildItemConditions(workspaceId, filter)))
+        .orderBy(asc(mediaItems.id));
+      return rows.map((r) => r.id);
+    }
+
+    const ids = dto.ids ?? [];
+    if (ids.length === 0) return [];
+    const found = await this.db
+      .select({ id: mediaItems.id })
+      .from(mediaItems)
+      .where(
+        and(
+          inArray(mediaItems.id, ids),
+          eq(mediaItems.workspaceId, workspaceId),
+        ),
+      );
+    if (found.length !== ids.length) {
+      throw new BadRequestException('Some items not found');
+    }
+    return ids;
+  }
+
+  /**
+   * Runs one bulk action on one chunk of ids; returns the rows touched.
+   * Only rows in the state the action works on (`inBin`) are touched.
+   */
+  private async bulkChunk(
+    workspaceId: string,
+    userId: string,
+    dto: BulkActionDto,
+    ids: string[],
+    inBin: boolean,
+  ): Promise<number> {
+    const inScope = and(
+      inArray(mediaItems.id, ids),
+      eq(mediaItems.workspaceId, workspaceId),
+      eq(mediaItems.isDeleted, inBin),
+    );
+    const now = new Date();
+
+    const write = async (set: Partial<typeof mediaItems.$inferInsert>) =>
+      (
+        await this.db
+          .update(mediaItems)
+          .set({ ...set, updatedAt: now })
+          .where(inScope)
+          .returning({ id: mediaItems.id })
+      ).length;
+
+    switch (dto.action) {
+      case 'delete':
+        return write({ isDeleted: true, deletedAt: now, deletedById: userId });
+      case 'restore':
+        return write({ isDeleted: false, deletedAt: null, deletedById: null });
+      case 'move':
+        return write({ categoryId: dto.categoryId ?? null });
+      case 'star':
+        return write({ isStarred: true });
+      case 'unstar':
+        return write({ isStarred: false });
+      case 'permanentDelete': {
+        const rows = await this.db.select().from(mediaItems).where(inScope);
+        const { deletedIds } = await this.purgeItems(rows);
+        return deletedIds.length;
+      }
+    }
   }
 
   /**
