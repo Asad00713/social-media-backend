@@ -161,4 +161,84 @@ describe('AltTextService', () => {
     expect(aiText.describeImage.mock.calls[0][3]).toEqual({ maxTokens: 120 });
     expect(mediaItems.update).not.toHaveBeenCalled();
   });
+
+  it('refuses a redirect (fetch is called with redirect: error)', async () => {
+    const { svc, aiText } = build({});
+    const fetchSpy = jest
+      .spyOn(global, 'fetch')
+      .mockRejectedValue(new TypeError('fetch failed'));
+    await expect(svc.generate(WS, USER, ITEM)).rejects.toThrow();
+    expect(fetchSpy.mock.calls[0][1]).toMatchObject({ redirect: 'error' });
+    expect(aiText.describeImage).not.toHaveBeenCalled();
+  });
+
+  it('returns 404 for a binned item and does not meter', async () => {
+    const { svc, aiTokens } = build({ isDeleted: true });
+    const r = await failure(svc.generate(WS, USER, ITEM));
+    expect(r.status).toBe(404);
+    expect(aiTokens.checkTokens).not.toHaveBeenCalled();
+  });
+
+  it('refuses image/gif with 422 before calling the provider', async () => {
+    const { svc, aiText } = build({});
+    mockFetch(new Uint8Array([1]), { 'content-type': 'image/gif' });
+    const r = await failure(svc.generate(WS, USER, ITEM));
+    expect(r.status).toBe(422);
+    expect(r.body.code).toBe('NOT_AN_IMAGE');
+    expect(aiText.describeImage).not.toHaveBeenCalled();
+  });
+
+  it('throws 502 inside the callback when the reply cleans to empty', async () => {
+    const { svc, aiTokens, aiText } = build({});
+    mockFetch();
+    aiText.describeImage.mockResolvedValue('  "" ');
+    const r = await failure(svc.generate(WS, USER, ITEM));
+    expect(r.status).toBe(502);
+    expect(aiTokens.executeWithTokens).toHaveBeenCalled();
+  });
+
+  it('aborts a chunked body without content-length once it exceeds the cap', async () => {
+    const { svc, aiText } = build({});
+    const abortSpy = jest.spyOn(AbortController.prototype, 'abort');
+    const chunk = new Uint8Array(5 * 1024 * 1024);
+    let pulls = 0;
+    const body = new ReadableStream<Uint8Array>({
+      pull(c) {
+        pulls += 1;
+        c.enqueue(chunk);
+        if (pulls > 20) c.close();
+      },
+    });
+    jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+      }),
+    );
+    const r = await failure(svc.generate(WS, USER, ITEM));
+    expect(r.status).toBe(422);
+    expect(abortSpy).toHaveBeenCalled();
+    expect(pulls).toBeLessThan(5);
+    expect(aiText.describeImage).not.toHaveBeenCalled();
+  });
+
+  it('accepts a streamed body under the cap', async () => {
+    const { svc } = build({});
+    const body = new ReadableStream<Uint8Array>({
+      start(c) {
+        c.enqueue(new Uint8Array([1, 2]));
+        c.enqueue(new Uint8Array([3]));
+        c.close();
+      },
+    });
+    jest.spyOn(global, 'fetch').mockResolvedValue(
+      new Response(body, {
+        status: 200,
+        headers: { 'content-type': 'image/png' },
+      }),
+    );
+    await expect(svc.generate(WS, USER, ITEM)).resolves.toEqual({
+      altText: 'a red bike.',
+    });
+  });
 });
