@@ -19,17 +19,16 @@ import {
   mediaItems,
 } from '../../drizzle/schema/media-library.schema';
 import { sanitizeFileName, zipEntryNames } from '../lib/zip-names';
+import type { ZipTooLargeError } from '../dto/contract';
 import { StorageObjectService } from './storage-object.service';
 
 /** 2 GB: the largest folder a single zip download may hold. */
 export const ZIP_MAX_BYTES = 2147483648;
 
-// TODO(merge): the contract's error body; import its type from
-// dto/contract.ts (Task 9) once both branches are merged.
-const ZIP_TOO_LARGE = {
+const ZIP_TOO_LARGE: ZipTooLargeError = {
   code: 'ZIP_TOO_LARGE',
   message: 'This folder is over 2 GB. Download fewer files at a time.',
-} as const;
+};
 
 const SKIPPED_ENTRY = '_skipped.txt';
 

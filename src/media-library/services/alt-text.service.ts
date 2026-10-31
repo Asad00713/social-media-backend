@@ -15,6 +15,7 @@ import {
   cleanAltText,
   visionImageUrl,
 } from '../lib/vision';
+import type { AiTokensExhaustedError, NotAnImageError } from '../dto/contract';
 import { MediaItemService } from './media-item.service';
 import { StorageObjectService } from './storage-object.service';
 
@@ -31,7 +32,8 @@ const VISION_MIME_TYPES = new Set([
 ]);
 
 function notAnImage(message: string) {
-  return new UnprocessableEntityException({ code: 'NOT_AN_IMAGE', message });
+  const body: NotAnImageError = { code: 'NOT_AN_IMAGE', message };
+  return new UnprocessableEntityException(body);
 }
 
 function tooLarge() {
@@ -39,13 +41,11 @@ function tooLarge() {
 }
 
 function tokensExhausted() {
-  return new HttpException(
-    {
-      code: 'AI_TOKENS_EXHAUSTED',
-      message: 'Your workspace is out of AI tokens.',
-    },
-    402,
-  );
+  const body: AiTokensExhaustedError = {
+    code: 'AI_TOKENS_EXHAUSTED',
+    message: 'Your workspace is out of AI tokens.',
+  };
+  return new HttpException(body, 402);
 }
 
 @Injectable()

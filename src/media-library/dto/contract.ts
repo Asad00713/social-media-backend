@@ -99,6 +99,24 @@ export interface FolderStats {
   covers: string[]; // up to 4 thumbnail URLs, newest first
 }
 
+/** 413 from `GET categories/:id/zip` when the folder is over 2 GB. */
+export interface ZipTooLargeError {
+  code: 'ZIP_TOO_LARGE';
+  message: string;
+}
+
+/** 422 from `POST items/:id/alt-text` for anything that is not an image. */
+export interface NotAnImageError {
+  code: 'NOT_AN_IMAGE';
+  message: string;
+}
+
+/** 402 from `POST items/:id/alt-text` when the workspace is out of AI tokens. */
+export interface AiTokensExhaustedError {
+  code: 'AI_TOKENS_EXHAUSTED';
+  message: string;
+}
+
 export interface BinRow {
   kind: BinKind;
   id: string;
