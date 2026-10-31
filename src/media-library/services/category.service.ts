@@ -21,14 +21,7 @@ import {
   UpdateCategoryDto,
   CategoryQueryDto,
 } from '../dto/media-library.dto';
-
-// TODO(merge): Task 9 creates dto/contract.ts with this exact type; import it
-// from there once both branches are merged.
-export interface FolderStats {
-  itemCount: number;
-  bytes: number;
-  covers: string[];
-}
+import type { FolderStats } from '../dto/contract';
 
 export type CategoryWithStats = MediaCategory & { stats?: FolderStats };
 

@@ -16,6 +16,7 @@ import {
   IsIn,
   IsISO8601,
   ArrayMaxSize,
+  ArrayMinSize,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import {
@@ -30,7 +31,8 @@ import {
   type FolderKind,
 } from '../lib/folder-kind';
 import { RATIOS } from '../lib/ratio';
-import type { MediaSort, Ratio } from './contract';
+import { BIN_KINDS } from './contract';
+import type { BinKind, MediaSort, Ratio } from './contract';
 
 const MEDIA_SORTS = [
   'newest',
@@ -886,8 +888,8 @@ export class SavedLinkQueryDto {
   search?: string;
 
   @IsOptional()
-  @IsIn(['newest', 'most_used', 'name'])
-  sort?: 'newest' | 'most_used' | 'name';
+  @IsIn(['newest', 'oldest', 'most_used', 'name'])
+  sort?: 'newest' | 'oldest' | 'most_used' | 'name';
 
   @IsOptional()
   @IsInt()
@@ -936,7 +938,24 @@ export class LinkBulkDto {
 // Recycle Bin DTOs
 // =============================================================================
 
+/** Bin sorts (contract): newest deletion, name A–Z, largest first. */
+const BIN_SORTS = ['deleted', 'name', 'size'] as const;
+export type BinSort = (typeof BIN_SORTS)[number];
+
 export class RecycleBinQueryDto {
+  @IsOptional()
+  @IsIn(BIN_KINDS)
+  kind?: BinKind;
+
+  @IsOptional()
+  @IsIn(BIN_SORTS)
+  sort?: BinSort;
+
+  /**
+   * Legacy (B12): mapped to a kind (`image|video|gif|document` → media, which
+   * it also narrows to that media type; `text_snippet` → snippet). An
+   * explicit `kind` wins.
+   */
   @IsOptional()
   @IsEnum(MEDIA_LIBRARY_TYPES)
   type?: MediaLibraryType;
@@ -953,4 +972,23 @@ export class RecycleBinQueryDto {
   @Min(0)
   @Transform(({ value }) => parseInt(value, 10))
   offset?: number;
+}
+
+/** One Bin row, named by its kind (the four tables' ids are separate). */
+export class BinItemRefDto {
+  @IsIn(BIN_KINDS)
+  kind: BinKind;
+
+  @IsUUID()
+  id: string;
+}
+
+/** Body of `POST recycle-bin/restore` and `POST recycle-bin/delete`. */
+export class BinItemsDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(500)
+  @ValidateNested({ each: true })
+  @Type(() => BinItemRefDto)
+  items: BinItemRefDto[];
 }

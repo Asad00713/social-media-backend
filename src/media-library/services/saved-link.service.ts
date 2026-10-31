@@ -1,9 +1,4 @@
-import {
-  Inject,
-  Injectable,
-  Logger,
-  NotFoundException,
-} from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { eq, and, desc, asc, ilike, or, sql, type SQL } from 'drizzle-orm';
 import { ilikePattern } from '../lib/search';
 import {
@@ -29,12 +24,31 @@ import {
   runKindBulk,
   type KindBulkConfig,
 } from '../lib/bulk';
+import { binPurgeCutoff } from '../lib/bin-retention';
 
 const LINK_BULK: KindBulkConfig = {
   table: savedLinks,
   folderKind: 'link',
   label: 'Link',
 };
+
+/** ORDER BY for `GET links`. `oldest` = created_at ASC, id ASC (contract). */
+function linkOrder(sort: SavedLinkQueryDto['sort']): SQL[] {
+  switch (sort) {
+    case 'oldest':
+      return [asc(savedLinks.createdAt), asc(savedLinks.id)];
+    case 'most_used':
+      return [
+        sql`${savedLinks.usageCount} DESC NULLS LAST`,
+        desc(savedLinks.createdAt),
+        desc(savedLinks.id),
+      ];
+    case 'name':
+      return [sql`lower(${savedLinks.name}) ASC`, asc(savedLinks.id)];
+    default:
+      return [desc(savedLinks.createdAt), desc(savedLinks.id)];
+  }
+}
 
 @Injectable()
 export class SavedLinkService {
@@ -118,50 +132,8 @@ export class SavedLinkService {
    * Get all saved links for a workspace with filtering
    */
   async findAll(workspaceId: string, query: SavedLinkQueryDto = {}) {
-    const {
-      categoryId,
-      isStarred,
-      isDeleted = false,
-      search,
-      sort = 'newest',
-      limit = 50,
-      offset = 0,
-    } = query;
-
-    const conditions = [
-      eq(savedLinks.workspaceId, workspaceId),
-      eq(savedLinks.isDeleted, isDeleted),
-    ];
-
-    if (categoryId) {
-      conditions.push(eq(savedLinks.categoryId, categoryId));
-    }
-
-    if (isStarred !== undefined) {
-      conditions.push(eq(savedLinks.isStarred, isStarred));
-    }
-
-    if (search) {
-      conditions.push(
-        or(
-          ilike(savedLinks.name, ilikePattern(search)),
-          ilike(savedLinks.url, ilikePattern(search)),
-          ilike(savedLinks.description, ilikePattern(search)),
-          ilike(savedLinks.previewTitle, ilikePattern(search)),
-        )!,
-      );
-    }
-
-    const orderBy =
-      sort === 'most_used'
-        ? [
-            sql`${savedLinks.usageCount} DESC NULLS LAST`,
-            desc(savedLinks.createdAt),
-            desc(savedLinks.id),
-          ]
-        : sort === 'name'
-          ? [sql`lower(${savedLinks.name}) ASC`, asc(savedLinks.id)]
-          : [desc(savedLinks.createdAt), desc(savedLinks.id)];
+    const { sort = 'newest', limit = 50, offset = 0 } = query;
+    const conditions = this.buildLinkConditions(workspaceId, query);
 
     const links = await this.db
       .select({
@@ -171,7 +143,7 @@ export class SavedLinkService {
       .from(savedLinks)
       .leftJoin(mediaCategories, eq(savedLinks.categoryId, mediaCategories.id))
       .where(and(...conditions))
-      .orderBy(...orderBy)
+      .orderBy(...linkOrder(sort))
       .limit(limit)
       .offset(offset);
 
@@ -356,9 +328,20 @@ export class SavedLinkService {
    * Permanently delete a saved link
    */
   async permanentDelete(workspaceId: string, linkId: string) {
-    await this.findOne(workspaceId, linkId);
-
-    await this.db.delete(savedLinks).where(eq(savedLinks.id, linkId));
+    // Only a row in the Bin, in this workspace, can be deleted for good.
+    const [gone] = await this.db
+      .delete(savedLinks)
+      .where(
+        and(
+          eq(savedLinks.id, linkId),
+          eq(savedLinks.workspaceId, workspaceId),
+          eq(savedLinks.isDeleted, true),
+        ),
+      )
+      .returning({ id: savedLinks.id });
+    if (!gone) {
+      throw new NotFoundException('Link not found in recycle bin');
+    }
 
     this.logger.log(`Permanently deleted saved link ${linkId}`);
 
@@ -439,53 +422,18 @@ export class SavedLinkService {
   }
 
   /**
-   * Get links in recycle bin
-   */
-  async getRecycleBin(workspaceId: string, limit = 50, offset = 0) {
-    const links = await this.db
-      .select()
-      .from(savedLinks)
-      .where(
-        and(
-          eq(savedLinks.workspaceId, workspaceId),
-          eq(savedLinks.isDeleted, true),
-        ),
-      )
-      .orderBy(desc(savedLinks.deletedAt))
-      .limit(limit)
-      .offset(offset);
-
-    const [{ count }] = await this.db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(savedLinks)
-      .where(
-        and(
-          eq(savedLinks.workspaceId, workspaceId),
-          eq(savedLinks.isDeleted, true),
-        ),
-      );
-
-    return {
-      items: links,
-      total: count,
-      limit,
-      offset,
-    };
-  }
-
-  /**
    * Cleanup links older than 30 days in recycle bin
    */
-  async cleanupRecycleBin() {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  async cleanupRecycleBin(now: Date = new Date()) {
+    const cutoff = binPurgeCutoff(now);
 
     const result = await this.db
       .delete(savedLinks)
       .where(
         and(
           eq(savedLinks.isDeleted, true),
-          sql`${savedLinks.deletedAt} < ${thirtyDaysAgo}`,
+          // Same COALESCE as the Bin's purgeAt (legacy rows lack deleted_at).
+          sql`COALESCE(${savedLinks.deletedAt}, ${savedLinks.updatedAt}) < ${cutoff}`,
         ),
       )
       .returning();

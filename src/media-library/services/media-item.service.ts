@@ -16,7 +16,6 @@ import {
   inArray,
   gt,
   gte,
-  lt,
   not,
   type SQL,
 } from 'drizzle-orm';
@@ -473,17 +472,25 @@ export class MediaItemService {
   }
 
   /**
-   * Permanently delete a media item. The row stays when storage refuses, so
-   * the user can retry instead of leaving an orphaned file behind.
+   * Permanently delete a media item from the Bin. The row stays when storage
+   * refuses, so the user can retry instead of leaving an orphaned file behind.
+   * A live item, or one restored meanwhile, is a 404: purging only touches
+   * binned rows.
    */
   async permanentDelete(workspaceId: string, itemId: string) {
     const item = await this.findOne(workspaceId, itemId);
+    if (!item.isDeleted) {
+      throw new NotFoundException('Item not found in recycle bin');
+    }
 
-    const { failedIds } = await this.purgeItems([item]);
+    const { deletedIds, failedIds } = await this.purgeItems([item]);
     if (failedIds.length > 0) {
       throw new BadGatewayException(
         'Could not delete the file from storage. Try again.',
       );
+    }
+    if (deletedIds.length === 0) {
+      throw new NotFoundException('Item not found in recycle bin');
     }
 
     this.logger.log(`Permanently deleted media item ${itemId}`);
@@ -496,10 +503,15 @@ export class MediaItemService {
    * then only the rows whose file is gone. A file another row outside this set
    * still points at, or that a post or campaign slot still uses (SEC4), is
    * left in storage; its row is removed all the same.
+   *
+   * Only binned rows are purged: a live row in `candidates` is skipped, and
+   * the DELETE re-checks `is_deleted`, so a row restored while its file was
+   * deleting survives and is not reported in `deletedIds`.
    */
   async purgeItems(
-    rows: MediaLibraryItem[],
+    candidates: MediaLibraryItem[],
   ): Promise<{ deletedIds: string[]; failedIds: string[] }> {
+    const rows = candidates.filter((r) => r.isDeleted === true);
     const setIds = rows.map((r) => r.id);
 
     // Rows inside the set that share a file URL or a public id delete it once.
@@ -560,8 +572,12 @@ export class MediaItemService {
                 shared.publicIds.has(r.cloudinaryPublicId)),
           );
           // TOCTOU: a row created between the share check and this delete can
-          // still lose its file; accepted, the window is a few milliseconds.
+          // still lose its file. A restore is re-checked right before the
+          // storage call: a group with any row restored is skipped whole (no
+          // file, no row, not counted). What remains is a restore landing
+          // between that re-check and deleteFile, one round trip wide.
           if (!isFileInUse) {
+            if (!(await this.isGroupStillBinned(group))) continue;
             const distinctUrls = new Map(
               group.map((r) => [
                 r.cloudinaryPublicId
@@ -591,13 +607,43 @@ export class MediaItemService {
       Array.from({ length: Math.min(PURGE_CONCURRENCY, queue.length) }, worker),
     );
 
+    // Residual race: a restore that lands after its file was deleted keeps
+    // the row but not the bytes (unless shared). Closing it needs a row lock
+    // held across the storage call; accepted, like the TOCTOU above.
+    const purgedIds: string[] = [];
     for (let i = 0; i < deletedIds.length; i += DELETE_CHUNK) {
-      await this.db
+      const gone = await this.db
         .delete(mediaItems)
-        .where(inArray(mediaItems.id, deletedIds.slice(i, i + DELETE_CHUNK)));
+        .where(
+          and(
+            inArray(mediaItems.id, deletedIds.slice(i, i + DELETE_CHUNK)),
+            eq(mediaItems.isDeleted, true),
+          ),
+        )
+        .returning({ id: mediaItems.id });
+      purgedIds.push(...gone.map((r) => r.id));
     }
 
-    return { deletedIds, failedIds };
+    return { deletedIds: purgedIds, failedIds };
+  }
+
+  /** Whether every row of a purge group is still in the Bin. */
+  private async isGroupStillBinned(
+    group: MediaLibraryItem[],
+  ): Promise<boolean> {
+    const ids = group.map((r) => r.id);
+    const workspaceIds = [...new Set(group.map((r) => r.workspaceId))];
+    const binned = await this.db
+      .select({ id: mediaItems.id })
+      .from(mediaItems)
+      .where(
+        and(
+          inArray(mediaItems.id, ids),
+          inArray(mediaItems.workspaceId, workspaceIds),
+          eq(mediaItems.isDeleted, true),
+        ),
+      );
+    return binned.length === ids.length;
   }
 
   /**
@@ -614,7 +660,11 @@ export class MediaItemService {
       base.push(eq(mediaItems.workspaceId, scope.workspaceId));
     }
     if (scope.deletedBefore) {
-      base.push(lt(mediaItems.deletedAt, scope.deletedBefore));
+      // The Bin shows purgeAt from the same COALESCE (legacy rows have no
+      // deleted_at), so what it promises is what the cleanup does.
+      base.push(
+        sql`COALESCE(${mediaItems.deletedAt}, ${mediaItems.updatedAt}) < ${scope.deletedBefore}`,
+      );
     }
 
     let deleted = 0;
@@ -803,44 +853,6 @@ export class MediaItemService {
     }
 
     return updated;
-  }
-
-  /**
-   * Get items in recycle bin
-   */
-  async getRecycleBin(
-    workspaceId: string,
-    limit = 50,
-    offset = 0,
-    type?: 'image' | 'video' | 'gif' | 'document',
-  ) {
-    // The type filter lives in SQL: filtering a fetched page would return a
-    // short page and a total that ignores the filter.
-    const where = and(
-      eq(mediaItems.workspaceId, workspaceId),
-      eq(mediaItems.isDeleted, true),
-      type ? eq(mediaItems.type, type) : undefined,
-    );
-
-    const items = await this.db
-      .select()
-      .from(mediaItems)
-      .where(where)
-      .orderBy(desc(mediaItems.deletedAt), desc(mediaItems.id))
-      .limit(limit)
-      .offset(offset);
-
-    const [{ count }] = await this.db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(mediaItems)
-      .where(where);
-
-    return {
-      items,
-      total: count,
-      limit,
-      offset,
-    };
   }
 
   /**

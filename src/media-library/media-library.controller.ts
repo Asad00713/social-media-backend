@@ -49,6 +49,7 @@ import {
   SavedLinkQueryDto,
   LinkBulkDto,
   RecycleBinQueryDto,
+  BinItemsDto,
 } from './dto/media-library.dto';
 import {
   WorkspaceRoleGuard,
@@ -674,6 +675,7 @@ export class MediaLibraryController {
   // Recycle Bin
   // ==========================================================================
 
+  /** One list across media, templates, snippets and links (contract). */
   @Get('recycle-bin')
   @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
@@ -681,51 +683,27 @@ export class MediaLibraryController {
     @Param('workspaceId') workspaceId: string,
     @Query() query: RecycleBinQueryDto,
   ) {
-    const { type, limit = 50, offset = 0 } = query;
+    return this.recycleBin.list(workspaceId, query);
+  }
 
-    // Get all deleted items based on type filter
-    const results: any = {};
+  @Post('recycle-bin/restore')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async restoreRecycleBinItems(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: BinItemsDto,
+  ) {
+    return this.recycleBin.restore(workspaceId, dto.items);
+  }
 
-    if (
-      !type ||
-      type === 'image' ||
-      type === 'video' ||
-      type === 'gif' ||
-      type === 'document'
-    ) {
-      results.mediaItems = await this.mediaItemService.getRecycleBin(
-        workspaceId,
-        limit,
-        offset,
-        type,
-      );
-    }
-
-    if (!type || type === 'template') {
-      results.templates = await this.templateService.getRecycleBin(
-        workspaceId,
-        limit,
-        offset,
-      );
-    }
-
-    if (!type || type === 'text_snippet') {
-      results.textSnippets = await this.textSnippetService.getRecycleBin(
-        workspaceId,
-        limit,
-        offset,
-      );
-    }
-
-    if (!type || type === 'link') {
-      results.savedLinks = await this.savedLinkService.getRecycleBin(
-        workspaceId,
-        limit,
-        offset,
-      );
-    }
-
-    return results;
+  @Post('recycle-bin/delete')
+  @RequireCapability('posts:publish')
+  @HttpCode(HttpStatus.OK)
+  async deleteRecycleBinItems(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: BinItemsDto,
+  ) {
+    return this.recycleBin.deleteForever(workspaceId, dto.items);
   }
 
   @Post('recycle-bin/empty')

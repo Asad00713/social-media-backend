@@ -251,6 +251,8 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
       restoreSavedLink: 'posts:draft',
       recordSavedLinkUsage: 'posts:draft',
       getRecycleBin: 'posts:draft',
+      restoreRecycleBinItems: 'posts:draft',
+      deleteRecycleBinItems: 'posts:publish',
       permanentDeleteMediaItem: 'posts:publish',
       permanentDeleteTemplate: 'posts:publish',
       permanentDeleteTextSnippet: 'posts:publish',
