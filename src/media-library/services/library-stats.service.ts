@@ -4,7 +4,10 @@ import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import type { LibraryStats } from '../dto/contract';
 import { storageLevel, storagePercent } from '../lib/storage';
-import { workspaceReferenceKeysSql } from '../lib/usage-sql';
+import {
+  itemInReferenceKeysSql,
+  workspaceReferenceKeysSql,
+} from '../lib/usage-sql';
 import { StorageQuotaService } from './storage-quota.service';
 
 /** Every column of the stats statements is a count, a byte sum or a bigint. */
@@ -45,8 +48,7 @@ export class LibraryStatsService {
       WITH keys AS MATERIALIZED (${workspaceReferenceKeysSql(workspaceId)}),
       m AS MATERIALIZED (
         SELECT type, file_size, is_deleted,
-               (id::text IN (SELECT item_id FROM keys WHERE item_id IS NOT NULL)
-                OR file_url IN (SELECT url FROM keys WHERE url IS NOT NULL)) AS ref
+               ${itemInReferenceKeysSql({ id: sql`id`, fileUrl: sql`file_url` })} AS ref
           FROM media_items WHERE workspace_id = ${ws}
       )
       SELECT

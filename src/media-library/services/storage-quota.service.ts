@@ -17,7 +17,7 @@ export class StorageQuotaService {
   /**
    * `used` counts every media item of the workspace, Bin included. `limit` is
    * the workspace's own row (plan bytes plus bought add-on bytes) or, without
-   * one, the owner's plan: only an ACTIVE subscription counts, anything else
+   * one, the owner's plan: only an active or trialing subscription counts, anything else
    * is FREE (D14, B7).
    */
   async getUsage(
@@ -34,7 +34,7 @@ export class StorageQuotaService {
           (SELECT p.storage_bytes_per_workspace
              FROM workspace w
              LEFT JOIN subscriptions s ON s.user_id = w.owner_id
-             JOIN plans p ON p.code = CASE WHEN s.status = 'active' THEN s.plan_code ELSE 'FREE' END
+             JOIN plans p ON p.code = CASE WHEN s.status IN ('active', 'trialing') THEN s.plan_code ELSE 'FREE' END
             WHERE w.id = ${workspaceId}::uuid
             LIMIT 1),
           (SELECT p.storage_bytes_per_workspace FROM plans p WHERE p.code = 'FREE'),
