@@ -54,10 +54,8 @@ describe('StorageObjectService', () => {
   describe('providerOf', () => {
     it('is r2 for an R2 url and cloudinary otherwise', () => {
       const { service } = makeMocks();
-      expect(service.providerOf(`${R2_BASE}/${R2_KEY}`, null)).toBe('r2');
-      expect(service.providerOf('https://x.test/a.png', 'id')).toBe(
-        'cloudinary',
-      );
+      expect(service.providerOf(`${R2_BASE}/${R2_KEY}`)).toBe('r2');
+      expect(service.providerOf('https://x.test/a.png')).toBe('cloudinary');
     });
   });
 

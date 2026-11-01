@@ -19,8 +19,12 @@ import {
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import { itemBytesKeptSql } from '../lib/usage-sql';
 
-/** Stands in for a row id when the file has no row: matches no item id. */
-const NO_ITEM_ID = '00000000-0000-0000-0000-000000000000';
+/**
+ * Stands in for a row id when the file has no row: matches no item id, so
+ * `isFileShared` counts every row as a sharer and the reference test matches
+ * by URL only.
+ */
+export const NO_ITEM_ID = '00000000-0000-0000-0000-000000000000';
 
 export { STORAGE_PROVIDERS };
 export type { StorageProvider, StoredSize };
@@ -146,9 +150,27 @@ export class StorageObjectService {
     @Inject(DRIZZLE) private readonly db: DbType,
   ) {}
 
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars -- part of the agreed signature (D3)
-  providerOf(fileUrl: string, _publicId: string | null): StorageProvider {
+  providerOf(fileUrl: string): StorageProvider {
     return this.r2.keyFromPublicUrl(fileUrl) !== null ? 'r2' : 'cloudinary';
+  }
+
+  /**
+   * Which store holds a ref's bytes, and its R2 key when the URL shows one.
+   * The column defaults to 'cloudinary', so a row inserted by an instance
+   * that predates it (the deploy window) or missed by 0054's backfill can say
+   * 'cloudinary' for an R2 file. A URL under our R2 public base is proof of
+   * R2; the column decides only when the URL proves nothing.
+   */
+  private resolveStore(ref: StoredFileRef): {
+    provider: StorageProvider;
+    urlKey: string | null;
+  } {
+    const urlKey = this.r2.keyFromPublicUrl(ref.fileUrl);
+    const provider: StorageProvider =
+      urlKey !== null
+        ? 'r2'
+        : (ref.storageProvider ?? this.providerOf(ref.fileUrl));
+    return { provider, urlKey };
   }
 
   isOwnStorageUrl(url: string): boolean {
@@ -189,12 +211,7 @@ export class StorageObjectService {
    * the store cannot be asked or gives no length.
    */
   async realSize(ref: StoredFileRef): Promise<StoredSize> {
-    const urlKey = this.r2.keyFromPublicUrl(ref.fileUrl);
-    const provider: StorageProvider =
-      urlKey !== null
-        ? 'r2'
-        : (ref.storageProvider ??
-          this.providerOf(ref.fileUrl, ref.cloudinaryPublicId));
+    const { provider, urlKey } = this.resolveStore(ref);
 
     if (provider === 'r2') {
       const key = urlKey ?? ref.cloudinaryPublicId;
@@ -355,17 +372,9 @@ export class StorageObjectService {
 
   /** Idempotent: a file that is already gone is a success. */
   async deleteFile(ref: StoredFileRef): Promise<void> {
-    // The column defaults to 'cloudinary', so a row inserted by an instance
-    // that predates it (the deploy window) or missed by 0054's backfill can
-    // say 'cloudinary' for an R2 file. A URL under our R2 public base is proof
-    // of R2; the column decides only when the URL proves nothing. The
-    // workspace / key gates below apply either way.
-    const urlKey = this.r2.keyFromPublicUrl(ref.fileUrl);
-    const provider: StorageProvider =
-      urlKey !== null
-        ? 'r2'
-        : (ref.storageProvider ??
-          this.providerOf(ref.fileUrl, ref.cloudinaryPublicId));
+    // `resolveStore`: an R2 URL wins over the column. The workspace / key
+    // gates below apply either way.
+    const { provider, urlKey } = this.resolveStore(ref);
 
     if (provider === 'r2') {
       const key = urlKey ?? ref.cloudinaryPublicId;

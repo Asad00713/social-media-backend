@@ -81,7 +81,6 @@ const rand = () => Math.random().toString(36).slice(2, 10);
 // ---------------------------------------------------------------------------
 
 export interface MediaItemServiceDeps {
-  cloudinaryService: CloudinaryService;
   storageObjects: StorageObjectService;
   quota: StorageQuotaService;
 }
@@ -158,7 +157,6 @@ export function makeMediaItemService(
   const { cloudinary, r2 } = makeStorageMocks();
   const cloudinaryService = cloudinary as unknown as CloudinaryService;
   const deps: MediaItemServiceDeps = {
-    cloudinaryService,
     storageObjects: new StorageObjectService(
       cloudinaryService,
       r2 as unknown as CloudflareR2Service,
@@ -167,12 +165,7 @@ export function makeMediaItemService(
     quota: new StorageQuotaService(db),
     ...overrides,
   };
-  return new MediaItemService(
-    db,
-    deps.cloudinaryService,
-    deps.storageObjects,
-    deps.quota,
-  );
+  return new MediaItemService(db, deps.storageObjects, deps.quota);
 }
 
 // ---------------------------------------------------------------------------

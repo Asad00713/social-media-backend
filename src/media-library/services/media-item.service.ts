@@ -49,11 +49,9 @@ import {
 } from '../lib/storage';
 import { mediaTypeFromUpload } from '../lib/upload-type';
 import type { Page, UserRef } from '../dto/contract';
+import type { UploadResult } from '../../media/cloudinary.service';
 import {
-  CloudinaryService,
-  type UploadResult,
-} from '../../media/cloudinary.service';
-import {
+  NO_ITEM_ID,
   StorageObjectService,
   type StoredFileRef,
 } from './storage-object.service';
@@ -85,8 +83,6 @@ const PURGE_CONCURRENCY = 8;
 const PURGE_BATCH = 200;
 /** Rows deleted per statement, to stay far below the parameter limit. */
 const DELETE_CHUNK = 1000;
-/** `isFileShared` excludes no row: every other row counts as a sharer. */
-const NO_ROW_ID = '00000000-0000-0000-0000-000000000000';
 /** The `name` column's width. */
 const NAME_MAX = 255;
 
@@ -96,7 +92,6 @@ export class MediaItemService {
 
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
-    private readonly cloudinaryService: CloudinaryService,
     private readonly storageObjects: StorageObjectService,
     private readonly quota: StorageQuotaService,
   ) {}
@@ -150,10 +145,7 @@ export class MediaItemService {
 
     const ref: StoredFileRef = {
       workspaceId,
-      storageProvider: this.storageObjects.providerOf(
-        dto.fileUrl,
-        dto.cloudinaryPublicId ?? null,
-      ),
+      storageProvider: this.storageObjects.providerOf(dto.fileUrl),
       cloudinaryPublicId: dto.cloudinaryPublicId ?? null,
       fileUrl: dto.fileUrl,
       type: dto.type,
@@ -394,7 +386,7 @@ export class MediaItemService {
     reason: 'refused' | 'orphaned',
   ): Promise<void> {
     try {
-      if (await this.storageObjects.isFileShared(ref, NO_ROW_ID)) return;
+      if (await this.storageObjects.isFileShared(ref, NO_ITEM_ID)) return;
       if (await this.storageObjects.isFileReferenced(ref)) return;
       await this.storageObjects.deleteFile(ref);
     } catch (error) {
