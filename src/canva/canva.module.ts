@@ -1,5 +1,4 @@
 import { Module } from '@nestjs/common';
-import { MediaModule } from '../media/media.module';
 import { MediaLibraryModule } from '../media-library/media-library.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { CanvaController } from './canva.controller';
@@ -8,7 +7,7 @@ import { CanvaService } from './canva.service';
 import { CanvaConnectionService } from './canva-connection.service';
 
 @Module({
-  imports: [MediaModule, MediaLibraryModule, WorkspaceRoleModule],
+  imports: [MediaLibraryModule, WorkspaceRoleModule],
   controllers: [CanvaController, CanvaComposerController],
   providers: [CanvaService, CanvaConnectionService],
   exports: [CanvaService, CanvaConnectionService],

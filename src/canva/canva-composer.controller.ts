@@ -156,7 +156,6 @@ export class CanvaComposerController {
       buffer,
       mimeType: 'image/png',
       originalName: `canva-${dto.designId}.png`,
-      folder: 'composer/canva',
       resourceType: 'image',
     });
 

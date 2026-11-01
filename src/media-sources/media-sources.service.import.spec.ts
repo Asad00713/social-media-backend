@@ -72,7 +72,7 @@ beforeEach(() => {
   quota.assertCanStore.mockResolvedValue({});
 });
 
-it('import downloads provider buffer and uploads to cloudinary', async () => {
+it('import downloads the provider buffer and ingests it into the Library', async () => {
   channelService.getChannelById.mockResolvedValue({ platform: 'dropbox' });
   dropbox.downloadFile.mockResolvedValue(Buffer.from('x'));
   stored({
@@ -97,7 +97,6 @@ it('import downloads provider buffer and uploads to cloudinary', async () => {
       workspaceId: 'ws',
       userId: 'u1',
       buffer: expect.any(Buffer),
-      folder: 'composer/cloud',
       resourceType: 'auto',
     }),
   );
@@ -112,7 +111,7 @@ it('import downloads provider buffer and uploads to cloudinary', async () => {
   });
 });
 
-it('import derives type from the cloudinary upload result, ignoring a mismatched client-supplied kind', async () => {
+it('import derives type from the ingested upload, ignoring a mismatched client-supplied kind', async () => {
   channelService.getChannelById.mockResolvedValue({ platform: 'dropbox' });
   dropbox.downloadFile.mockResolvedValue(Buffer.from('x'));
   stored({
@@ -137,7 +136,6 @@ it('import derives type from the cloudinary upload result, ignoring a mismatched
       workspaceId: 'ws',
       userId: 'u1',
       buffer: expect.any(Buffer),
-      folder: 'composer/cloud',
       resourceType: 'auto',
     }),
   );
@@ -180,7 +178,6 @@ it('import on google_photos fetches media item then downloads it', async () => {
       workspaceId: 'ws',
       userId: 'u1',
       buffer: expect.any(Buffer),
-      folder: 'composer/cloud',
       resourceType: 'auto',
     }),
   );

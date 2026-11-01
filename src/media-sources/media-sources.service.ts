@@ -119,7 +119,6 @@ export class MediaSourcesService {
       userId,
       buffer,
       originalName: args.fileId.split('/').pop() || undefined,
-      folder: 'composer/cloud',
       resourceType: 'auto',
     });
     const type = up.resourceType === 'video' ? 'video' : 'image';

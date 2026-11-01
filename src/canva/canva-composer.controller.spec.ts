@@ -193,7 +193,6 @@ describe('CanvaComposerController.import', () => {
       buffer: expect.any(Buffer),
       mimeType: 'image/png',
       originalName: 'canva-d1.png',
-      folder: 'composer/canva',
       resourceType: 'image',
     });
     expect(result).toEqual({
