@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { linkDisplayNameSql } from '../lib/link-display-name';
 import { eq, and, desc, asc, ilike, or, sql, type SQL } from 'drizzle-orm';
 import { ilikePattern } from '../lib/search';
 import {
@@ -45,7 +46,10 @@ function linkOrder(sort: SavedLinkQueryDto['sort']): SQL[] {
         desc(savedLinks.id),
       ];
     case 'name':
-      return [sql`lower(${savedLinks.name}) ASC`, asc(savedLinks.id)];
+      return [
+        sql`lower(${linkDisplayNameSql(savedLinks.name, savedLinks.previewTitle, savedLinks.url)}) ASC`,
+        asc(savedLinks.id),
+      ];
     default:
       return [desc(savedLinks.createdAt), desc(savedLinks.id)];
   }

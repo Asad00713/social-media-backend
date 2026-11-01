@@ -107,6 +107,27 @@ describeLibraryDb('saved links: UTM, favicon, sort', () => {
     });
   });
 
+  it('sort name orders a blank-named link by its preview title, not first', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const base = { workspaceId, createdById: ownerId };
+      const apple = await seedLink(client, { ...base, name: 'Apple' });
+      const titled = await seedLink(client, {
+        ...base,
+        name: '',
+        previewTitle: 'Banana page',
+      });
+      const bare = await seedLink(client, {
+        ...base,
+        name: '  ',
+        url: 'https://cherry.example.test/',
+      });
+      const svc = new SavedLinkService(db);
+      const named = await svc.findAll(workspaceId, { sort: 'name' });
+      expect(named.items.map((l) => l.id)).toEqual([apple, titled, bare]);
+    });
+  });
+
   it("sort 'oldest' is created_at ASC, then id ASC", async () => {
     await withLibraryDb(async (db, client) => {
       const { workspaceId, ownerId } = await seedWorkspace(client);

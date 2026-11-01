@@ -427,6 +427,45 @@ describeLibraryDb('recycle bin: one list across kinds', () => {
   });
 });
 
+describeLibraryDb('recycle bin: a link with no name', () => {
+  it('lists it under its preview title, else its URL, and sorts by that', async () => {
+    await withLibraryDb(async (db, client) => {
+      const { workspaceId, ownerId } = await seedWorkspace(client);
+      const base = {
+        workspaceId,
+        createdById: ownerId,
+        isDeleted: true,
+        deletedAt: new Date(),
+        deletedById: ownerId,
+      };
+      const titled = await seedLink(client, {
+        ...base,
+        name: '',
+        previewTitle: 'Beta page',
+      });
+      const spaced = await seedLink(client, {
+        ...base,
+        name: '   ',
+        previewTitle: '  ',
+        url: 'https://zeta.example.test/x',
+      });
+      const named = await seedLink(client, {
+        ...base,
+        name: 'Alpha',
+        previewTitle: 'Ignored',
+      });
+      const { recycleBin } = setup(db);
+
+      const byName = await recycleBin.list(workspaceId, { sort: 'name' });
+      expect(byName.items.map((r) => [r.id, r.name])).toEqual([
+        [named, 'Alpha'],
+        [titled, 'Beta page'],
+        [spaced, 'https://zeta.example.test/x'],
+      ]);
+    });
+  });
+});
+
 describeLibraryDb('recycle bin: bulk restore and delete forever', () => {
   afterEach(() => jest.restoreAllMocks());
 
