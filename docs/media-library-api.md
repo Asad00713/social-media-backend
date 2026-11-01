@@ -865,7 +865,7 @@ Both refuse to run against a non-local database without `--i-know-this-is-produc
 
 ## Deploy notes
 
-1. **Release rule (B12).** The backend and the frontend deploy together. The backend never deploys alone: the new response shapes (bulk `{affectedCount}`, the unified Bin, `categories/grouped` keyed by folder kind, upload `libraryItem`, the 413 bodies) ship with the frontend that reads them.
+1. **Release rule (B12).** The backend and the frontend deploy together. The backend never deploys alone: the new response shapes (bulk `{affectedCount}`, the unified Bin, `categories/grouped` keyed by folder kind, upload `libraryItem`, the 413 bodies) ship with the frontend that reads them. One break is hard, not cosmetic. `POST items` now refuses any `thumbnailUrl` that is not this workspace's `library-thumbs/<ws>/` poster. The current main frontend's upload dialog (`use-upload-queue.ts`) calls `POST items` a second time after `upload/file`, sending the image's own URL or a Cloudinary video thumbnail. Against the new backend, every image, GIF and video upload from that old dialog fails with 400, even though the item was created, and a retry uploads a duplicate. So the frontend must be live first, or at the same moment. A browser tab still running the old bundle hits this until it reloads.
 2. **Pre-deploy check: the hand-applied campaign tables.** No migration creates `campaign_slot_content`, `campaign_evergreen_posts` or `campaign_evergreen_categories`; prod got them by hand. The Library reads all three, so before deploying the owner runs this read-only query in the Railway prod console:
 
    ```sql
