@@ -50,6 +50,7 @@ export interface Page<T> {
 export interface UsageEntry {
   kind: 'post' | 'campaign_slot';
   id: string;
+  campaignId: string | null; // the slot's campaign, so a campaign_slot row can link; null for posts (amended 2026-11-01)
   title: string; // the post's first line, or the campaign name
   platform: string; // e.g. 'instagram'
   date: string; // scheduled or published time
@@ -97,6 +98,35 @@ export interface FolderStats {
   itemCount: number;
   bytes: number;
   covers: string[]; // up to 4 thumbnail URLs, newest first
+}
+
+/**
+ * 413 from every upload entry point and from saving an item, when the file
+ * would take the workspace over its storage limit.
+ */
+export interface StorageFullError {
+  code: 'STORAGE_FULL';
+  message: string;
+  used: number;
+  limit: number;
+}
+
+/** 400 from `POST items`: the directly uploaded object is not there yet. */
+export interface UploadNotFinishedError {
+  code: 'UPLOAD_NOT_FINISHED';
+  message: string;
+}
+
+/** 503 from `POST items`: the store could not report the size; retryable. */
+export interface SizeUnavailableError {
+  code: 'SIZE_UNAVAILABLE';
+  message: string;
+}
+
+/** 409 from the server upload routes: the target already existed. */
+export interface UploadConflictError {
+  code: 'UPLOAD_CONFLICT';
+  message: string;
 }
 
 /** 413 from `GET categories/:id/zip` when the folder is over 2 GB. */

@@ -5,6 +5,7 @@ import {
   PlanLimits,
   AddonQuantities,
 } from './limit-resolver.util';
+import { PLAN_STORAGE_BYTES } from '../plan-storage';
 
 const PRO: PlanLimits = {
   channelsPerWorkspace: 8,
@@ -12,6 +13,7 @@ const PRO: PlanLimits = {
   maxWorkspaces: 3,
   aiTokensPerMonth: 20000,
   queuedPostsPerChannel: -1,
+  storageBytesPerWorkspace: PLAN_STORAGE_BYTES.PRO,
 };
 
 const FREE: PlanLimits = {
@@ -20,6 +22,7 @@ const FREE: PlanLimits = {
   maxWorkspaces: 1,
   aiTokensPerMonth: 0,
   queuedPostsPerChannel: 10,
+  storageBytesPerWorkspace: PLAN_STORAGE_BYTES.FREE,
 };
 
 const NO_ADDONS: AddonQuantities = {
@@ -36,6 +39,7 @@ describe('resolveWorkspaceLimits', () => {
       membersLimit: 5,
       aiTokensLimit: 20000,
       queuedPostsPerChannel: -1,
+      storageBytesLimit: PLAN_STORAGE_BYTES.PRO,
     });
   });
 
@@ -55,6 +59,7 @@ describe('resolveWorkspaceLimits', () => {
       membersLimit: 5,
       aiTokensLimit: 20000,
       queuedPostsPerChannel: -1,
+      storageBytesLimit: PLAN_STORAGE_BYTES.PRO,
     });
   });
 
@@ -70,6 +75,7 @@ describe('resolveWorkspaceLimits', () => {
       membersLimit: 0,
       aiTokensLimit: 20000,
       queuedPostsPerChannel: -1,
+      storageBytesLimit: PLAN_STORAGE_BYTES.PRO,
     });
   });
 

@@ -303,6 +303,39 @@ describeLibraryDb('MediaItemService.create / createFromUpload storage', () => {
           thumbnailUrl: url,
         });
       }));
+
+    // Fails closed: when the guard cannot tell whether the file is in use, the
+    // file is kept and the caller still gets its 413, not the guard's error.
+    it.each(['isFileShared', 'isFileReferenced'] as const)(
+      'a %s failure keeps the file and still surfaces the 413',
+      async (guard) => {
+        await withLibraryDb(async (db, client) => {
+          const b = await workspaceUsing(client, 900);
+          const file = ownR2File(b.workspaceId);
+          const { service, storageObjects, r2 } = setup(db);
+          r2.verifyObject.mockResolvedValue({
+            exists: true,
+            contentLength: 200,
+          });
+          jest
+            .spyOn(storageObjects, guard)
+            .mockRejectedValue(new Error('reference check down'));
+          const deleteFile = jest.spyOn(storageObjects, 'deleteFile');
+
+          await expect(
+            service.create(b.workspaceId, b.ownerId, {
+              type: 'video',
+              name: 'clip',
+              ...file,
+            }),
+          ).rejects.toBeInstanceOf(StorageFullException);
+
+          expect(deleteFile).not.toHaveBeenCalled();
+          expect(r2.deleteObject).not.toHaveBeenCalled();
+          expect(await countRows(client, b.workspaceId)).toBe(1);
+        });
+      },
+    );
   });
 
   // Fix round 2 (Important 1): createFromUpload owns orphan cleanup, and only

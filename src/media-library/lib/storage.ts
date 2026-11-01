@@ -1,4 +1,10 @@
 import { HttpException } from '@nestjs/common';
+import type {
+  SizeUnavailableError,
+  StorageFullError,
+  UploadConflictError,
+  UploadNotFinishedError,
+} from '../dto/contract';
 
 export const STORAGE_ALMOST_FULL_PERCENT = 90;
 
@@ -34,35 +40,35 @@ export function wouldExceed(
 
 export class StorageFullException extends HttpException {
   constructor(usage: StorageUsage) {
-    super(
-      {
-        code: 'STORAGE_FULL',
-        message: 'Storage is full. Free up space or upgrade your plan.',
-        used: usage.used,
-        limit: usage.limit,
-      },
-      413,
-    );
+    const body: StorageFullError = {
+      code: 'STORAGE_FULL',
+      message: 'Storage is full. Free up space or upgrade your plan.',
+      used: usage.used,
+      limit: usage.limit,
+    };
+    super(body, 413);
   }
 }
 
 /** 400: a registered file is not in storage (yet); the size cannot be read. */
 export class UploadNotFinishedException extends HttpException {
   constructor() {
-    super({ code: 'UPLOAD_NOT_FINISHED', message: 'Upload not finished' }, 400);
+    const body: UploadNotFinishedError = {
+      code: 'UPLOAD_NOT_FINISHED',
+      message: 'Upload not finished',
+    };
+    super(body, 400);
   }
 }
 
 /** 503: the store could not report the size; the save can be retried. */
 export class SizeUnavailableException extends HttpException {
   constructor() {
-    super(
-      {
-        code: 'SIZE_UNAVAILABLE',
-        message: 'Could not check the file size. Try again in a moment.',
-      },
-      503,
-    );
+    const body: SizeUnavailableError = {
+      code: 'SIZE_UNAVAILABLE',
+      message: 'Could not check the file size. Try again in a moment.',
+    };
+    super(body, 503);
   }
 }
 
@@ -72,12 +78,10 @@ export class SizeUnavailableException extends HttpException {
  */
 export class UploadConflictException extends HttpException {
   constructor() {
-    super(
-      {
-        code: 'UPLOAD_CONFLICT',
-        message: 'The upload clashed with an existing file. Try again.',
-      },
-      409,
-    );
+    const body: UploadConflictError = {
+      code: 'UPLOAD_CONFLICT',
+      message: 'The upload clashed with an existing file. Try again.',
+    };
+    super(body, 409);
   }
 }

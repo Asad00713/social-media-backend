@@ -4,6 +4,7 @@ import {
   WorkspaceRef,
 } from './usage-fanout.util';
 import { PlanLimits, AddonQuantities } from './limit-resolver.util';
+import { PLAN_STORAGE_BYTES } from '../plan-storage';
 
 const PRO: PlanLimits = {
   channelsPerWorkspace: 8,
@@ -11,6 +12,7 @@ const PRO: PlanLimits = {
   maxWorkspaces: 3,
   aiTokensPerMonth: 20000,
   queuedPostsPerChannel: -1,
+  storageBytesPerWorkspace: PLAN_STORAGE_BYTES.PRO,
 };
 
 const NO_ADDONS: AddonQuantities = {
@@ -78,12 +80,14 @@ describe('buildUsageFanout', () => {
       channelsLimit: 8,
       membersLimit: 5,
       aiTokensLimit: 20000,
+      storageBytesLimit: PLAN_STORAGE_BYTES.PRO,
     });
     expect(second).toEqual({
       workspaceId: 'second',
       channelsLimit: 0,
       membersLimit: 0,
       aiTokensLimit: 20000,
+      storageBytesLimit: PLAN_STORAGE_BYTES.PRO,
     });
   });
 

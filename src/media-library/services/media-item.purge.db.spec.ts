@@ -15,6 +15,7 @@ import { StorageObjectService } from './storage-object.service';
 import type { DbType } from '../../drizzle/db';
 import { inArray } from 'drizzle-orm';
 import { mediaItems } from '../../drizzle/schema/media-library.schema';
+import * as binRetention from '../lib/bin-retention';
 
 const R2_BASE = 'https://pub.r2.dev';
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -174,6 +175,41 @@ describeLibraryDb('MediaItemService permanent delete', () => {
     });
   });
 
+  // One retention source: the Bin's purgeAt and every kind's cleanup read
+  // lib/bin-retention.ts, so media cannot drift to a constant of its own.
+  it('cleanupRecycleBin cuts at the shared binPurgeCutoff', async () => {
+    const now = new Date('2001-06-15T12:00:00Z');
+    const cutoff = new Date(now.getTime() - 10 * DAY_MS);
+    const spy = jest
+      .spyOn(binRetention, 'binPurgeCutoff')
+      .mockReturnValue(cutoff);
+    try {
+      await withLibraryDb(async (db, client) => {
+        const { workspaceId, ownerId } = await seedWorkspace(client);
+        const { service } = setup(db);
+        const base = { workspaceId, uploadedById: ownerId, isDeleted: true };
+        const before = await seedMediaItem(client, {
+          ...base,
+          cloudinaryPublicId: `before-${Date.now()}`,
+          deletedAt: new Date(cutoff.getTime() - 1000),
+        });
+        const after = await seedMediaItem(client, {
+          ...base,
+          cloudinaryPublicId: `after-${Date.now()}`,
+          deletedAt: new Date(cutoff.getTime() + 1000),
+        });
+
+        await service.cleanupRecycleBin(now);
+
+        expect(spy).toHaveBeenCalledWith(now);
+        expect(await rowExists(client, before)).toBe(false);
+        expect(await rowExists(client, after)).toBe(true);
+      });
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
   it('purgeDeleted survives rows that fail and keeps going past them', async () => {
     await withLibraryDb(async (db, client) => {
       const { workspaceId, ownerId } = await seedWorkspace(client);
@@ -240,6 +276,38 @@ describeLibraryDb('MediaItemService permanent delete', () => {
       expect(deleteFile).not.toHaveBeenCalled();
       expect(await rowExists(client, attacker)).toBe(false);
       expect(await rowExists(client, victim)).toBe(true);
+    });
+  });
+
+  // T19 (C3): the batch share check also matches thumbnail_url, now indexed
+  // (0054), the same as isFileShared on the 413 path.
+  it('does not delete a file another row (any workspace) shows as its thumbnail_url', async () => {
+    await withLibraryDb(async (db, client) => {
+      const a = await seedWorkspace(client);
+      const b = await seedWorkspace(client);
+      const { service, deleteFile } = setup(db);
+      const fileUrl = `https://cdn.example.test/poster-${Date.now()}.jpg`;
+      const binned = await seedMediaItem(client, {
+        workspaceId: a.workspaceId,
+        uploadedById: a.ownerId,
+        fileUrl,
+        cloudinaryPublicId: `social-media/poster-${Date.now()}`,
+        isDeleted: true,
+        deletedAt: new Date(),
+      });
+      const video = await seedMediaItem(client, {
+        workspaceId: b.workspaceId,
+        uploadedById: b.ownerId,
+        type: 'video',
+        fileUrl: `https://cdn.example.test/clip-${Date.now()}.mp4`,
+        thumbnailUrl: fileUrl,
+      });
+
+      await service.permanentDelete(a.workspaceId, binned);
+
+      expect(deleteFile).not.toHaveBeenCalled();
+      expect(await rowExists(client, binned)).toBe(false);
+      expect(await rowExists(client, video)).toBe(true);
     });
   });
 

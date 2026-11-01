@@ -57,7 +57,7 @@ const shape = (rows: { name: string; type: string; display_order: number }[]) =>
 describeLibraryDb('migration 0054 (library columns)', () => {
   afterEach(() => jest.restoreAllMocks());
 
-  it('writes per-plan storage and backfills each workspace from its owner’s ACTIVE plan', async () => {
+  it('writes per-plan storage and backfills each workspace from its owner’s active or trialing plan', async () => {
     await withLibraryDb(async (_db, client) => {
       for (const code of Object.keys(PLAN_STORAGE_BYTES)) {
         await client.query(
@@ -75,6 +75,11 @@ describeLibraryDb('migration 0054 (library columns)', () => {
       const active = await seedWorkspace(client);
       await seedSubscription(client, active.ownerId, 'PRO', 'active');
       await seedUsage(client, active.workspaceId);
+
+      // Owner ruling 2026-10-31: a trial counts as active for storage.
+      const trialing = await seedWorkspace(client);
+      await seedSubscription(client, trialing.ownerId, 'BASIC', 'trialing');
+      await seedUsage(client, trialing.workspaceId, { storageBytesLimit: 7 });
 
       const canceled = await seedWorkspace(client);
       await seedSubscription(client, canceled.ownerId, 'PRO', 'canceled');
@@ -118,6 +123,10 @@ describeLibraryDb('migration 0054 (library columns)', () => {
 
       expect(await storageLimit(client, active.workspaceId)).toEqual({
         limit: 10737418240,
+        extra: 0,
+      });
+      expect(await storageLimit(client, trialing.workspaceId)).toEqual({
+        limit: 2147483648,
         extra: 0,
       });
       expect(await storageLimit(client, canceled.workspaceId)).toEqual({
@@ -287,17 +296,24 @@ describeLibraryDb('migration 0054 (library columns)', () => {
 
   it('indexes the columns the cross-workspace share query filters on (SEC3)', async () => {
     await withLibraryDb(async (_db, client) => {
-      const r = await client.query<{ indexname: string }>(
-        `SELECT indexname FROM pg_indexes
+      const r = await client.query<{ indexname: string; indexdef: string }>(
+        `SELECT indexname, indexdef FROM pg_indexes
           WHERE tablename = 'media_items'
             AND indexname IN ('media_items_file_url_idx',
-                              'media_items_cloudinary_public_id_idx')
+                              'media_items_cloudinary_public_id_idx',
+                              'media_items_thumbnail_url_idx')
           ORDER BY indexname`,
       );
       expect(r.rows.map((x) => x.indexname)).toEqual([
         'media_items_cloudinary_public_id_idx',
         'media_items_file_url_idx',
+        'media_items_thumbnail_url_idx',
       ]);
+      // thumbnail_url is unbounded text, like file_url: hash, not btree.
+      expect(
+        r.rows.find((x) => x.indexname === 'media_items_thumbnail_url_idx')
+          ?.indexdef,
+      ).toMatch(/USING hash \(thumbnail_url\)/);
     });
   });
 

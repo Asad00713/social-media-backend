@@ -15,22 +15,27 @@
 --      public id are caught by the URL arm. Any R2 row this misses is still
 --      deleted from R2: StorageObjectService.deleteFile trusts an R2 URL over
 --      a 'cloudinary' column value.
---   2. Indexes on media_items(file_url) and media_items(cloudinary_public_id)
---      (SEC3): the purge's share check (StorageObjectService.findSharedFiles /
---      isFileShared) looks rows up by these across ALL workspaces, which
---      otherwise is a sequential scan per purge page. file_url is a HASH index:
---      the lookups are equality only (= / IN), and file_url is unbounded text,
---      so a btree would refuse (at build time, or later on INSERT) any URL
---      over its ~2.7 kB entry limit. cloudinary_public_id is varchar(255), so
---      a plain btree is safe.
+--   2. Indexes on media_items(file_url), media_items(thumbnail_url) and
+--      media_items(cloudinary_public_id) (SEC3): the share check
+--      (StorageObjectService.findSharedFiles on purge, isFileShared on a 413 or
+--      orphan cleanup) looks rows up by these across ALL workspaces, which
+--      otherwise is a sequential scan per purge page or refused upload.
+--      thumbnail_url is matched because a video's poster is a file another row
+--      may still show. file_url and thumbnail_url are HASH indexes: the
+--      lookups are equality only (= / IN), and both are unbounded text, so a
+--      btree would refuse (at build time, or later on INSERT) any URL over its
+--      ~2.7 kB entry limit. cloudinary_public_id is varchar(255), so a plain
+--      btree is safe.
 --   3. The snippet type 'bio' is renamed 'signature'.
 --   4. saved_links.utm (jsonb) and saved_links.preview_favicon_url.
 --   5. plans.storage_bytes_per_workspace with each plan's value (FREE 500 MB,
 --      BASIC 2 GB, PRO 10 GB, MAX 25 GB). Seeds do not run on deploy, so this
 --      file writes them itself.
 --   6. workspace_usage.storage_bytes_limit (backfilled from the workspace
---      owner's plan, counted only while the subscription is 'active'; anything
---      else is FREE, D14/B7) and workspace_usage.extra_storage_purchased
+--      owner's plan, counted only while the subscription is 'active' or
+--      'trialing' (owner ruling 2026-10-31: a trial counts as active for
+--      storage); anything else is FREE, D14/B7) and
+--      workspace_usage.extra_storage_purchased
 --      (bought add-on bytes; this file never writes it).
 --   7. Folder kinds (D7): the four legacy media folder types image / gif /
 --      video / document become one 'media' kind. Same-named folders in one
@@ -59,7 +64,7 @@
 -- COMMIT; without the timeout they would queue behind any open transaction on
 -- the still-running old instance and every Library / billing read would queue
 -- behind them. With it a blocked deploy fails fast and rolls back; retry the
--- deploy. The two CREATE INDEX statements build inside that lock: one
+-- deploy. The three CREATE INDEX statements build inside that lock: one
 -- sequential scan of media_items each. Fine at current scale; check
 -- media_items' row count before deploying if it has grown by orders of
 -- magnitude.
@@ -69,6 +74,7 @@
 --
 -- ROLLBACK
 --   DROP INDEX IF EXISTS media_items_file_url_idx;
+--   DROP INDEX IF EXISTS media_items_thumbnail_url_idx;
 --   DROP INDEX IF EXISTS media_items_cloudinary_public_id_idx;
 --   ALTER TABLE media_items DROP CONSTRAINT IF EXISTS media_items_storage_provider_chk;
 --   ALTER TABLE media_items DROP COLUMN IF EXISTS alt_text,
@@ -110,6 +116,8 @@ UPDATE "media_items"
 -- Share lookups across workspaces (SEC3). See WHY 2 for the hash index.
 CREATE INDEX IF NOT EXISTS "media_items_file_url_idx"
   ON "media_items" USING hash ("file_url");
+CREATE INDEX IF NOT EXISTS "media_items_thumbnail_url_idx"
+  ON "media_items" USING hash ("thumbnail_url");
 CREATE INDEX IF NOT EXISTS "media_items_cloudinary_public_id_idx"
   ON "media_items" USING btree ("cloudinary_public_id");
 
@@ -140,8 +148,10 @@ UPDATE "plans"
 ALTER TABLE "workspace_usage" ADD COLUMN IF NOT EXISTS "storage_bytes_limit" bigint NOT NULL DEFAULT 524288000;
 ALTER TABLE "workspace_usage" ADD COLUMN IF NOT EXISTS "extra_storage_purchased" bigint NOT NULL DEFAULT 0;
 
--- The owner's plan counts only while the subscription is active (B7); no
--- subscription, any other status, or a plan code with no row -> FREE.
+-- The owner's plan counts only while the subscription is active or trialing
+-- (B7; a trial counts as active, owner ruling 2026-10-31), the same rule as
+-- StorageQuotaService. No subscription, any other status, or a plan code with
+-- no row -> FREE.
 UPDATE "workspace_usage" wu
    SET "storage_bytes_limit" = t.limit_bytes
   FROM (
@@ -155,7 +165,7 @@ UPDATE "workspace_usage" wu
       JOIN workspace w ON w.id = u.workspace_id
       LEFT JOIN subscriptions s ON s.user_id = w.owner_id
       LEFT JOIN plans p
-        ON p.code = COALESCE(CASE WHEN s.status = 'active' THEN s.plan_code END, 'FREE')
+        ON p.code = COALESCE(CASE WHEN s.status IN ('active', 'trialing') THEN s.plan_code END, 'FREE')
   ) t
  WHERE wu.id = t.id
    AND wu.storage_bytes_limit IS DISTINCT FROM t.limit_bytes;
