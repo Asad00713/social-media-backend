@@ -50,6 +50,7 @@ export interface Page<T> {
 export interface UsageEntry {
   kind: 'post' | 'campaign_slot';
   id: string;
+  campaignId: string | null; // the slot's campaign, so a campaign_slot row can link; null for posts (amended 2026-11-01)
   title: string; // the post's first line, or the campaign name
   platform: string; // e.g. 'instagram'
   date: string; // scheduled or published time

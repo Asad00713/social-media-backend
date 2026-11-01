@@ -21,6 +21,7 @@ interface UsageRow extends Record<string, unknown> {
   kind: UsageEntry['kind'];
   source: 'post' | 'slot' | 'evergreen';
   id: string;
+  campaignId: string | null;
   title: string;
   platform: string;
   date: string;
@@ -83,6 +84,7 @@ export class MediaUsageService {
     const res = await this.db.execute<UsageRow>(sql`
       WITH usage AS (
         SELECT 'post' AS kind, 'post' AS source, p.id,
+               NULL::uuid AS campaign_id,
                left(coalesce(
                  nullif(btrim(p.metadata->>'title', E' \t\r\n'), ''),
                  nullif(btrim(split_part(btrim(coalesce(p.content, ''), E' \t\r\n'), E'\n', 1), E' \t\r\n'), ''),
@@ -93,7 +95,7 @@ export class MediaUsageService {
           FROM posts p
          WHERE ${postRefSql(p, ref)}
         UNION ALL
-        SELECT 'campaign_slot', 'slot', s.id, c.name,
+        SELECT 'campaign_slot', 'slot', s.id, c.id, c.name,
                coalesce(ch.platform::text, ''),
                coalesce(s.scheduled_at, s.created_at AT TIME ZONE 'UTC'),
                s.slot_status::text
@@ -104,7 +106,7 @@ export class MediaUsageService {
                 AND ch.workspace_id = c.workspace_id
          WHERE ${slotRefSql(s, c, ref)}
         UNION ALL
-        SELECT 'campaign_slot', 'evergreen', e.id, c.name,
+        SELECT 'campaign_slot', 'evergreen', e.id, c.id, c.name,
                coalesce(ch.platform::text, ''),
                coalesce(e.last_published_at, e.created_at),
                e.status::text
@@ -116,7 +118,8 @@ export class MediaUsageService {
                 AND ch.workspace_id = c.workspace_id
          WHERE ${evergreenRefSql(e, c, ref)}
       )
-      SELECT kind, source, id::text AS id, title, platform,
+      SELECT kind, source, id::text AS id,
+             campaign_id::text AS "campaignId", title, platform,
              to_char(date AT TIME ZONE 'UTC',
                      'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"') AS date,
              status, (count(*) OVER ())::int AS total
@@ -130,6 +133,7 @@ export class MediaUsageService {
       items: rows.map((r) => ({
         kind: r.kind,
         id: r.id,
+        campaignId: r.campaignId,
         title: r.title,
         platform: r.platform,
         date: r.date,

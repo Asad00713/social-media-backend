@@ -139,6 +139,7 @@ describeLibraryDb('MediaUsageService.getUsage and itemReferencedSql', () => {
         {
           kind: 'campaign_slot',
           id: slot.slotId,
+          campaignId: slot.campaignId,
           title: 'Autumn drop',
           platform: 'instagram',
           date: '2026-10-06T10:00:00.000Z',
@@ -147,6 +148,7 @@ describeLibraryDb('MediaUsageService.getUsage and itemReferencedSql', () => {
         {
           kind: 'post',
           id: p1,
+          campaignId: null,
           title: 'Launch day',
           platform: 'instagram',
           date: '2026-10-05T10:00:00.000Z',
@@ -155,6 +157,7 @@ describeLibraryDb('MediaUsageService.getUsage and itemReferencedSql', () => {
         {
           kind: 'post',
           id: p2,
+          campaignId: null,
           title: 'Spring promo',
           platform: '',
           date: '2026-10-04T10:00:00.000Z',
@@ -163,6 +166,7 @@ describeLibraryDb('MediaUsageService.getUsage and itemReferencedSql', () => {
         {
           kind: 'campaign_slot',
           id: ever.postId,
+          campaignId: ever.campaignId,
           title: everMeta.name,
           platform: 'instagram',
           date: '2026-10-03T10:00:00.000Z',
@@ -315,6 +319,7 @@ describeLibraryDb('MediaUsageService.getUsage and itemReferencedSql', () => {
         expect.objectContaining({
           kind: 'campaign_slot',
           id: ever.postId,
+          campaignId: ever.campaignId,
           status: 'scheduled',
           platform: '',
         }),
