@@ -1,10 +1,17 @@
-import { BadRequestException, ConflictException } from '@nestjs/common';
+import {
+  BadRequestException,
+  ConflictException,
+  PayloadTooLargeException,
+} from '@nestjs/common';
 import type {
   CloudinaryService,
   UploadResult,
 } from '../../media/cloudinary.service';
 import { StorageFullException } from '../lib/storage';
-import { LibraryIngestService } from './library-ingest.service';
+import {
+  LibraryIngestService,
+  THUMBNAIL_MAX_BYTES,
+} from './library-ingest.service';
 import type { MediaItemService } from './media-item.service';
 import type { StorageQuotaService } from './storage-quota.service';
 
@@ -305,5 +312,64 @@ describe('LibraryIngestService', () => {
       /^library-thumbs\/ws-1\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
     );
     expect(opts.folder).toBeUndefined();
+  });
+
+  // M5: a poster is an image, and a small one.
+  it("a thumbnail is uploaded as resourceType 'image', whatever the client sent", async () => {
+    const { service, cloudinary } = make();
+    await service.ingestBuffer({
+      workspaceId: WS,
+      userId: USER,
+      buffer,
+      resourceType: 'video',
+      purpose: 'thumbnail',
+    });
+    const opts = cloudinary.uploadFromBuffer.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(opts.resourceType).toBe('image');
+  });
+
+  it('a thumbnail over the cap is refused with 413 before any check or upload', async () => {
+    const { service, cloudinary, quota } = make();
+    const big = Buffer.alloc(THUMBNAIL_MAX_BYTES + 1);
+    await expect(
+      service.ingestBuffer({
+        workspaceId: WS,
+        userId: USER,
+        buffer: big,
+        purpose: 'thumbnail',
+      }),
+    ).rejects.toBeInstanceOf(PayloadTooLargeException);
+    expect(quota.assertCanStore).not.toHaveBeenCalled();
+    expect(cloudinary.uploadFromBuffer).not.toHaveBeenCalled();
+  });
+
+  it('a thumbnail at the cap is stored; the cap is 10 MB', async () => {
+    expect(THUMBNAIL_MAX_BYTES).toBe(10 * 1024 * 1024);
+    const { service, cloudinary } = make();
+    await service.ingestBuffer({
+      workspaceId: WS,
+      userId: USER,
+      buffer: Buffer.alloc(THUMBNAIL_MAX_BYTES),
+      purpose: 'thumbnail',
+    });
+    expect(cloudinary.uploadFromBuffer).toHaveBeenCalledTimes(1);
+  });
+
+  it('the cap does not apply to a Library upload', async () => {
+    const { service, cloudinary } = make();
+    await service.ingestBuffer({
+      workspaceId: WS,
+      userId: USER,
+      buffer: Buffer.alloc(THUMBNAIL_MAX_BYTES + 1),
+      resourceType: 'video',
+    });
+    const opts = cloudinary.uploadFromBuffer.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(opts.resourceType).toBe('video');
   });
 });

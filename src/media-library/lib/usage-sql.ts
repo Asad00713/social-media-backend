@@ -1,4 +1,5 @@
 import { sql, type AnyColumn, type SQL } from 'drizzle-orm';
+import type { DbType } from '../../drizzle/db';
 import type { UsageEntry } from '../dto/contract';
 
 /**
@@ -30,9 +31,11 @@ export interface UsageItemRef {
 // Bound values reach jsonb_build_array/_object as untyped parameters, which
 // Postgres cannot resolve for a VARIADIC "any" function; the casts fix that
 // and are no-ops on columns.
-const idText = (item: UsageItemRef) => sql`(${item.id})::text`;
-const urlText = (item: UsageItemRef) => sql`(${item.fileUrl})::text`;
-const wsUuid = (item: UsageItemRef) => sql`(${item.workspaceId})::uuid`;
+const idText = (item: Pick<UsageItemRef, 'id'>) => sql`(${item.id})::text`;
+const urlText = (item: Pick<UsageItemRef, 'fileUrl'>) =>
+  sql`(${item.fileUrl})::text`;
+const wsUuid = (item: Pick<UsageItemRef, 'workspaceId'>) =>
+  sql`(${item.workspaceId})::uuid`;
 
 /** `p` is the alias of a `posts` row. */
 export function postRefSql(p: SQL, item: UsageItemRef): SQL {
@@ -56,6 +59,90 @@ export function itemReferencedSql(item: UsageItemRef): SQL {
   const c = sql.raw('c');
   const e = sql.raw('e');
   return sql`(EXISTS (SELECT 1 FROM posts p WHERE ${postRefSql(p, item)}) OR EXISTS (SELECT 1 FROM campaign_slot_content s JOIN campaigns c ON c.id = s.campaign_id WHERE ${slotRefSql(s, c, item)}) OR EXISTS (SELECT 1 FROM campaign_evergreen_posts e JOIN campaigns c ON c.id = e.campaign_id WHERE ${evergreenRefSql(e, c, item)}))`;
+}
+
+// ---------------------------------------------------------------------------
+// usage_count recounts (I4)
+//
+// The posts trigger from 0055 (`library_usage_on_post_change`) recounts a
+// Library row when a POST changes. A Library write that changes what the row
+// matches (a new link or snippet, a link's URL, a snippet's text, a media row
+// registered for a URL posts already use) recounts that one row with the
+// trigger's own test, below. The trigger's logic lives in SQL only: links
+// call its `library_url_in_text` / `library_post_text` functions, snippets
+// repeat its `strpos` test and 3-character guard verbatim, and media reuse
+// `postRefSql`, which is the trigger's media test.
+// ---------------------------------------------------------------------------
+
+/** Posts of the item's workspace that use it: the trigger's media count. */
+export function itemPostCountSql(item: UsageItemRef): SQL {
+  const p = sql.raw('p');
+  return sql`(SELECT count(*)::int FROM posts p WHERE ${postRefSql(p, item)})`;
+}
+
+/** Posts of the link's workspace whose text holds its URL (0055, B5). */
+export function linkPostCountSql(link: {
+  url: AnyColumn | SQL;
+  workspaceId: AnyColumn | SQL;
+}): SQL {
+  return sql`(SELECT count(*)::int FROM posts p WHERE p.workspace_id = ${wsUuid(link)} AND library_url_in_text(library_post_text(p.content, p.platform_content), (${link.url})::text))`;
+}
+
+/**
+ * Posts of the snippet's workspace whose text holds its trimmed content; 0
+ * under 3 characters (0055, B5).
+ */
+export function snippetPostCountSql(snippet: {
+  content: AnyColumn | SQL;
+  workspaceId: AnyColumn | SQL;
+}): SQL {
+  const text = sql`btrim((${snippet.content})::text)`;
+  return sql`(SELECT count(*)::int FROM posts p WHERE p.workspace_id = ${wsUuid(snippet)} AND char_length(${text}) >= 3 AND strpos(library_post_text(p.content, p.platform_content), ${text}) > 0)`;
+}
+
+/**
+ * Runs `fn` in a transaction holding the trigger's per-workspace advisory
+ * lock. Call it after the Library row is committed: once the lock is held,
+ * every post write that ran before the row existed has committed, so the
+ * recount's fresh snapshot sees it; every later post write sees the row and
+ * recounts it itself.
+ */
+export function withUsageLock<T>(
+  db: DbType,
+  workspaceId: string,
+  fn: (tx: DbType) => Promise<T>,
+): Promise<T> {
+  return db.transaction(async (tx) => {
+    await tx.execute(
+      sql`SELECT pg_advisory_xact_lock(hashtextextended('library-usage:' || (${workspaceId}::uuid)::text, 0))`,
+    );
+    return fn(tx as unknown as DbType);
+  });
+}
+
+/**
+ * `t` is a `media_templates` row of the item's workspace (binned or not: a
+ * restored template must still find its file) that shows the file URL in
+ * `content.media[]` or as its `thumbnail_url`.
+ */
+export function templateRefSql(
+  t: SQL,
+  item: Pick<UsageItemRef, 'fileUrl' | 'workspaceId'>,
+): SQL {
+  return sql`(${t}.workspace_id = ${wsUuid(item)} AND (${t}.thumbnail_url = ${urlText(item)} OR ${t}.content->'media' @> jsonb_build_array(jsonb_build_object('url', ${urlText(item)}))))`;
+}
+
+/**
+ * The byte-keep test: purge and the discard guard keep a file's bytes while
+ * this is true. It is `itemReferencedSql` plus templates (I1).
+ *
+ * The template arm sits here, outside `itemReferencedSql`, on purpose: that
+ * builder also feeds `/usage`, `neverUsed`, stats and the usage count, and a
+ * template protects the bytes without making the item "used".
+ */
+export function itemBytesKeptSql(item: UsageItemRef): SQL {
+  const t = sql.raw('t');
+  return sql`(${itemReferencedSql(item)} OR EXISTS (SELECT 1 FROM media_templates t WHERE ${templateRefSql(t, item)}))`;
 }
 
 /**

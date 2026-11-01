@@ -299,12 +299,13 @@ Registers a file the client uploaded directly (R2 presign, or a signed Cloudinar
 Fields: `type` (required), `name` (required, max 255), `fileUrl` (required), `description`, `thumbnailUrl`, `mimeType`, `width`, `height`, `duration`, `cloudinaryPublicId`, `cloudinaryAssetId`, `categoryId` (a media folder), `tags`, `altText`, `pageCount`. `fileSize` is still accepted but never used.
 
 - The file must be one this workspace stored: a Cloudinary public id under `library/<ws>/`, or an R2 key under this workspace. Anything else is a `400`.
+- `thumbnailUrl` is `null` (or left out), or a video poster this workspace stored with `upload/file` and `purpose: 'thumbnail'`: the plain Cloudinary URL of a public id under `library-thumbs/<ws>/`. Anything else (another URL, another workspace's poster, a Library upload, an R2 URL, a URL with transformations) is a `400`.
 - The server reads the real size from the store. If it cannot, the save is refused:
   - `400 {code:'UPLOAD_NOT_FINISHED', message}`: the object is not there yet.
   - `503 {code:'SIZE_UNAVAILABLE', message}`: provider error. Retryable.
 
   The client retries either a few times with backoff before failing the row.
-- Over the limit: `413 STORAGE_FULL`. The file is deleted from storage only when no Library row (as its file or its thumbnail) and no post, campaign slot or evergreen entry references it. If that check itself fails, the file is kept.
+- Over the limit: `413 STORAGE_FULL`. The file, and the poster sent as `thumbnailUrl`, are each deleted from storage only when no Library row (as its file or its thumbnail) and no post, campaign slot, evergreen entry or template references it. If that check itself fails, the file is kept.
 - Saving the same stored object twice returns the first row.
 
 **Response:** `201 Created`, the `MediaItem`.
@@ -352,13 +353,15 @@ PUT /workspaces/:workspaceId/media-library/items/:itemId          posts:draft
 
 Any of `name`, `description`, `categoryId` (a media folder, or `null` to unfile), `tags`, `isStarred`, `altText` (`null` clears it). An over-limit workspace can still edit, bin, restore and move items.
 
+**Response:** `200 OK`, the `MediaItem` (with `category` and `uploadedBy`).
+
 ### Record use
 
 ```
 POST /workspaces/:workspaceId/media-library/items/:itemId/use          posts:draft
 ```
 
-Sets `last_used_at` only. It no longer touches `usage_count`, which counts posts.
+Sets `last_used_at` only. It no longer touches `usage_count`, which counts posts. **Response:** the `MediaItem`.
 
 ### Usage ("Used in")
 
@@ -406,7 +409,9 @@ POST   /workspaces/:workspaceId/media-library/items/:itemId/restore        posts
 DELETE /workspaces/:workspaceId/media-library/items/:itemId/permanent      posts:publish
 ```
 
-`permanent` works only on a binned item. A live item is a `404` ("Item not found in recycle bin"). The file is deleted from storage unless another row (any workspace, as its file or its thumbnail) or a post, campaign slot or evergreen entry still uses it; the row goes either way. When storage refuses the delete, the route returns `502` and the row stays, so the user can retry. Response: `{ "success": true, "message": "Media item permanently deleted" }`.
+`DELETE items/:itemId` and `restore` respond with the `MediaItem`.
+
+`permanent` works only on a binned item. A live item is a `404` ("Item not found in recycle bin"). The file is deleted from storage unless another row (any workspace, as its file or its thumbnail) or a post, campaign slot, evergreen entry or template of the workspace still uses it; the row goes either way. A template keeps the bytes only: it does not make the item "used" (`usageCount`, `/usage` and `neverUsed` count posts, campaign slots and evergreen entries). Once the row is gone, a video's poster (under `library-thumbs/<ws>/`) is deleted by the same rule; if that check fails, the poster is kept. When storage refuses the delete, the route returns `502` and the row stays, so the user can retry. Response: `{ "success": true, "message": "Media item permanently deleted" }`.
 
 ### Bulk
 
@@ -467,6 +472,8 @@ POST   /workspaces/:workspaceId/media-library/templates/:templateId/use         
 | thumbnailUrl | string   | No       | |
 | categoryId   | uuid     | No       | a `template` folder |
 | tags         | string[] | No       | |
+
+Each `content.media[]` entry is `{ id, type: 'image' | 'video' | 'gif', url, thumbnailUrl?, width?, height?, durationSec?, sizeBytes?, libraryItemId? }`. `libraryItemId` (a uuid) names the Library item the attachment came from; it is stored as sent and comes back on every read. A media entry's `url`, or the template's `thumbnailUrl`, keeps that file's bytes when its Library item is deleted forever (see [Delete, Restore, Delete forever](#delete-restore-delete-forever)).
 
 `PUT` takes the same fields, all optional, plus `isStarred`. `clone` takes an optional `{ "name": "..." }`.
 
@@ -642,6 +649,7 @@ POST links/bulk       posts:draft
 Rules (every bulk endpoint):
 - Send exactly one of `ids` and `selectAll`. Both, or neither, is a `400`.
 - `ids` holds at most 500 entries per request. A client acting on more splits them into requests of 500 and sums `affectedCount`.
+- A repeated id counts once. An id outside the workspace is a `400` ("Some items not found").
 - `selectAll` runs the action on every row the list's filter matches, the same `WHERE` as the `GET`.
 - `move` with `categoryId: null` takes the rows out of their folder. `move` into a folder of another kind is a `400`.
 - The action decides which rows it touches, never the filter. `restore` and `permanentDelete` (items only) act on binned rows; everything else acts on live rows. A `selectAll` `restore` or `permanentDelete` is a `400`; use the Bin for those.
@@ -713,7 +721,7 @@ POST /workspaces/:workspaceId/media-library/recycle-bin/empty          posts:pub
 
 ### Automatic cleanup
 
-A scheduled job runs daily at 3:00 AM and purges every row (all four kinds) binned more than 30 days ago.
+A scheduled job runs daily at 3:00 AM and purges every row (all four kinds) binned more than 30 days ago. Each kind runs on its own: if one kind's purge fails (storage down for media, say), the job logs it and still purges the other three.
 
 ---
 
@@ -751,7 +759,8 @@ These routes moved from `MediaController` to `LibraryUploadController`; the path
 ```
 
 - `upload/file` accepts `purpose: 'library' | 'thumbnail'` (default `library`). A `thumbnail` (a video's poster frame) still needs `workspaceId`, `posts:draft` and a storage check, but:
-  - it is stored under `library-thumbs/<ws>/<uuid>`;
+  - it is stored under `library-thumbs/<ws>/<uuid>`, always as Cloudinary resource type `image` (a client `resourceType` is ignored);
+  - it may be at most 10 MB; a larger one is refused with a plain `413` (Nest's default body, no `code`) before any storage check or upload;
   - it creates no Library row and returns `libraryItem: null`;
   - it ignores `categoryId` and `tags`;
   - a poster can never be registered as a Library item.
@@ -801,7 +810,7 @@ An item counts as used by a post when:
 - the post's media references it by `libraryItemId`; or
 - the post's media (base or any platform override) uses its URL.
 
-Campaign slots not yet turned into a post and evergreen entries count the same way, within their own workspace. Migration 0055 adds the generated columns, the GIN indexes and the trigger that keeps `usage_count` on items, snippets and links current.
+Campaign slots not yet turned into a post and evergreen entries count the same way, within their own workspace. Migration 0055 adds the generated columns, the GIN indexes and the trigger that keeps `usage_count` on items, snippets and links current. The trigger fires on post writes only, so the Library recounts one row itself, with the trigger's own test, when it saves a new link or snippet, changes a link's URL or a snippet's content, or registers a media item for a URL posts already use. The response carries the recounted `usageCount`.
 
 ---
 
@@ -856,8 +865,21 @@ Both refuse to run against a non-local database without `--i-know-this-is-produc
 
 ## Deploy notes
 
-1. **Release rule (B12).** The backend and the frontend deploy together. The backend never deploys alone: the new response shapes (bulk `{affectedCount}`, the unified Bin, `categories/grouped` keyed by folder kind, upload `libraryItem`, the 413 bodies) ship with the frontend that reads them.
-2. **Migration 0055 deploy gate.** 0055 adds generated columns to `posts`, which rewrites the table under ACCESS EXCLUSIVE; reads and writes on posts wait for the rewrite and the GIN builds. Before deploying, the owner runs these read-only queries in the Railway prod console:
+1. **Release rule (B12).** The backend and the frontend deploy together. The backend never deploys alone: the new response shapes (bulk `{affectedCount}`, the unified Bin, `categories/grouped` keyed by folder kind, upload `libraryItem`, the 413 bodies) ship with the frontend that reads them. One break is hard, not cosmetic. `POST items` now refuses any `thumbnailUrl` that is not this workspace's `library-thumbs/<ws>/` poster. The current main frontend's upload dialog (`use-upload-queue.ts`) calls `POST items` a second time after `upload/file`, sending the image's own URL or a Cloudinary video thumbnail. Against the new backend, every image, GIF and video upload from that old dialog fails with 400, even though the item was created, and a retry uploads a duplicate. So the frontend must be live first, or at the same moment. A browser tab still running the old bundle hits this until it reloads.
+2. **Pre-deploy check: the hand-applied campaign tables.** No migration creates `campaign_slot_content`, `campaign_evergreen_posts` or `campaign_evergreen_categories`; prod got them by hand. The Library reads all three, so before deploying the owner runs this read-only query in the Railway prod console:
+
+   ```sql
+   SELECT to_regclass('public.campaign_slot_content')         AS slot_content,
+          to_regclass('public.campaign_evergreen_posts')      AS evergreen_posts,
+          to_regclass('public.campaign_evergreen_categories') AS evergreen_categories;
+   ```
+
+   Every column must name its table. A `NULL` means the table is missing, and then:
+   - **`campaign_slot_content` or `campaign_evergreen_posts` missing:** every query built on the shared reference test fails with "relation does not exist" (a `500`): `GET items?neverUsed=true`, `GET items/:id/usage`, `GET stats`, delete forever (`items/:id/permanent`, bulk `permanentDelete`, `recycle-bin/delete`, `recycle-bin/empty`) and the daily retention purge for media. The discard guard on a refused `POST items` fails closed, so the file is kept. 0055 still applies; it only skips the slot index.
+   - **`campaign_evergreen_categories` missing:** `GET items/:id/usage` fails with a `500` (it joins the category for the evergreen rows). The rest works.
+
+   Do not deploy until all three exist. Create a missing one from the SQL prod was given by hand (`drizzle/manual/2026-08-18-evergreen-recycling-tables.sql` for the evergreen pair; `campaign_slot_content` has no file in this repo, so copy its definition from prod), never from a guessed schema. No migration adds them on purpose: a guessed `CREATE TABLE IF NOT EXISTS` could drift from the real tables.
+3. **Migration 0055 deploy gate.** 0055 adds generated columns to `posts`, which rewrites the table under ACCESS EXCLUSIVE; reads and writes on posts wait for the rewrite and the GIN builds. Before deploying, the owner runs these read-only queries in the Railway prod console:
 
    ```sql
    SELECT count(*), pg_size_pretty(pg_total_relation_size('posts')) FROM posts;
@@ -882,5 +904,38 @@ Both refuse to run against a non-local database without `--i-know-this-is-produc
    - **At or over:** time 0055 on a restored copy of prod, as above.
 
    0054 builds three indexes on `media_items` (`file_url` hash, `thumbnail_url` hash, `cloudinary_public_id` btree) inside its lock. Check `media_items`' row count first if it has grown by orders of magnitude.
-3. **Set `LIBRARY_ZIP_TICKET_SECRET` on Railway** (at least 32 characters; `openssl rand -hex 32`). `API_PUBLIC_URL` must be set too. Without both, `POST …/zip-ticket` returns `503`.
-4. **After the deploy, run `library:backfill-refs`, then `library:backfill-sizes`** (see [Owner scripts](#owner-scripts)).
+4. **Set `LIBRARY_ZIP_TICKET_SECRET` on Railway** (at least 32 characters; `openssl rand -hex 32`). `API_PUBLIC_URL` must be set too. Without both, `POST …/zip-ticket` returns `503`.
+5. **After the deploy, run `library:backfill-refs`, then `library:backfill-sizes`** (see [Owner scripts](#owner-scripts)).
+6. **Deploy window: legacy folder kinds.** Until the old instance is gone, it can still create `image` / `video` / `gif` / `document` folders (and `bio` snippets) after 0054 merged them. Once the rollout is complete, run this one-off in the Railway prod console. It does what 0054 section 6 did for the stragglers, suffixing a name only where it would collide, and a second run changes nothing:
+
+   ```sql
+   WITH legacy AS (
+     SELECT id, workspace_id, name,
+            CASE type
+              WHEN 'image' THEN ' (Images)'
+              WHEN 'gif' THEN ' (GIFs)'
+              WHEN 'video' THEN ' (Videos)'
+              ELSE ' (Docs)'
+            END AS suffix
+       FROM media_categories
+      WHERE type IN ('image', 'gif', 'video', 'document')
+   )
+   UPDATE media_categories c
+      SET type = 'media',
+          name = CASE
+                   WHEN EXISTS (SELECT 1 FROM media_categories m
+                                 WHERE m.workspace_id = l.workspace_id
+                                   AND m.name = l.name
+                                   AND m.id <> l.id
+                                   AND m.type IN ('media', 'image', 'gif', 'video', 'document'))
+                   THEN left(l.name, 100 - length(l.suffix)) || l.suffix
+                   ELSE l.name
+                 END
+     FROM legacy l
+    WHERE c.id = l.id;
+
+   UPDATE text_snippets SET snippet_type = 'signature' WHERE snippet_type = 'bio';
+   ```
+
+   It is SQL for the owner to run once, not a migration.
+7. **The retention cron runs on every replica.** The daily 3:00 AM purge has no single-runner lock, so each replica runs it. That is harmless: every kind's purge is idempotent, and a second runner finds nothing left to delete. A single-runner lock is the later fix.

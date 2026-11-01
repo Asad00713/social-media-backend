@@ -1,5 +1,5 @@
 import { randomUUID } from 'crypto';
-import { Injectable } from '@nestjs/common';
+import { Injectable, PayloadTooLargeException } from '@nestjs/common';
 import {
   CloudinaryService,
   type UploadResult,
@@ -49,6 +49,9 @@ export interface IngestBase64Input extends IngestBase {
 }
 
 const UNTITLED = 'Untitled';
+
+/** The largest video poster `upload/file` takes with `purpose: 'thumbnail'` (M5). */
+export const THUMBNAIL_MAX_BYTES = 10 * 1024 * 1024;
 
 /** A file name without its extension, or 'Untitled'. */
 function itemName(fileName: string | undefined): string {
@@ -104,14 +107,21 @@ export class LibraryIngestService {
   ) {}
 
   async ingestBuffer(i: IngestBufferInput): Promise<IngestResult> {
+    const isThumbnail = i.purpose === 'thumbnail';
+    // A poster is a small image whatever the client says (M5).
+    if (isThumbnail && i.buffer.length > THUMBNAIL_MAX_BYTES) {
+      throw new PayloadTooLargeException(
+        `A thumbnail must be ${THUMBNAIL_MAX_BYTES / (1024 * 1024)} MB or smaller`,
+      );
+    }
     await this.assertFolder(i);
     await this.quota.assertCanStore(i.workspaceId, i.buffer.length);
     const upload = await this.cloudinary.uploadFromBuffer(i.buffer, {
       publicId: freshPublicId(i.workspaceId, i.purpose),
-      resourceType: i.resourceType ?? 'auto',
+      resourceType: isThumbnail ? 'image' : (i.resourceType ?? 'auto'),
       tags: i.tags ?? [],
     });
-    if (i.purpose === 'thumbnail') return { upload, libraryItem: null };
+    if (isThumbnail) return { upload, libraryItem: null };
     return this.save(i, upload, itemName(i.originalName), i.mimeType);
   }
 

@@ -32,7 +32,11 @@ import {
 import { users } from '../../drizzle/schema/users.schema';
 import { binPurgeCutoff } from '../lib/bin-retention';
 import { ilikePattern } from '../lib/search';
-import { itemReferencedSql } from '../lib/usage-sql';
+import {
+  itemPostCountSql,
+  itemReferencedSql,
+  withUsageLock,
+} from '../lib/usage-sql';
 import { ratioBounds } from '../lib/ratio';
 import { toUserRef } from '../lib/user-ref';
 import { assertIdsXorSelectAll, bulkTargetsBin, chunk } from '../lib/bulk';
@@ -45,11 +49,9 @@ import {
 } from '../lib/storage';
 import { mediaTypeFromUpload } from '../lib/upload-type';
 import type { Page, UserRef } from '../dto/contract';
+import type { UploadResult } from '../../media/cloudinary.service';
 import {
-  CloudinaryService,
-  type UploadResult,
-} from '../../media/cloudinary.service';
-import {
+  NO_ITEM_ID,
   StorageObjectService,
   type StoredFileRef,
 } from './storage-object.service';
@@ -81,8 +83,6 @@ const PURGE_CONCURRENCY = 8;
 const PURGE_BATCH = 200;
 /** Rows deleted per statement, to stay far below the parameter limit. */
 const DELETE_CHUNK = 1000;
-/** `isFileShared` excludes no row: every other row counts as a sharer. */
-const NO_ROW_ID = '00000000-0000-0000-0000-000000000000';
 /** The `name` column's width. */
 const NAME_MAX = 255;
 
@@ -92,7 +92,6 @@ export class MediaItemService {
 
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
-    private readonly cloudinaryService: CloudinaryService,
     private readonly storageObjects: StorageObjectService,
     private readonly quota: StorageQuotaService,
   ) {}
@@ -143,13 +142,15 @@ export class MediaItemService {
     if (dto.categoryId) {
       await this.assertMediaFolder(workspaceId, dto.categoryId);
     }
+    // M6: no thumbnail, or a poster this workspace stored (purpose=thumbnail).
+    const poster =
+      dto.thumbnailUrl != null
+        ? this.storageObjects.posterRef(dto.thumbnailUrl, workspaceId)
+        : null;
 
     const ref: StoredFileRef = {
       workspaceId,
-      storageProvider: this.storageObjects.providerOf(
-        dto.fileUrl,
-        dto.cloudinaryPublicId ?? null,
-      ),
+      storageProvider: this.storageObjects.providerOf(dto.fileUrl),
       cloudinaryPublicId: dto.cloudinaryPublicId ?? null,
       fileUrl: dto.fileUrl,
       type: dto.type,
@@ -187,13 +188,19 @@ export class MediaItemService {
       altText: dto.altText,
       pageCount: dto.pageCount,
     };
-    const id = await this.insertChecked(
-      workspaceId,
-      userId,
-      values,
-      ref,
-      bytes,
-    );
+    let id: string;
+    try {
+      id = await this.insertChecked(workspaceId, userId, values, ref, bytes);
+    } catch (error) {
+      // The poster was uploaded for this save alone; insertChecked already
+      // discarded the file itself (M5).
+      if (error instanceof StorageFullException && poster) {
+        await this.discardUnusedFile(poster, 'refused');
+      }
+      throw error;
+    }
+    // A file URL posts already use (re-registered after a purge, say) (I4).
+    await this.recountUsage(workspaceId, id);
     return this.viewOf(id);
   }
 
@@ -269,8 +276,34 @@ export class MediaItemService {
       throw error;
     }
     // The row is committed from here on: its bytes are never an orphan, so a
-    // failing read must not reach the cleanup above.
+    // failing recount or read must not reach the cleanup above.
+    await this.recountUsage(workspaceId, id);
     return this.viewOf(id);
+  }
+
+  /**
+   * Sets `usage_count` from the posts that use the item, by the 0055
+   * trigger's own test (`postRefSql`). The trigger only fires on post
+   * writes, so a row created for a URL posts already hold needs this (I4).
+   */
+  private async recountUsage(workspaceId: string, itemId: string) {
+    await withUsageLock(this.db, workspaceId, (tx) =>
+      tx
+        .update(mediaItems)
+        .set({
+          usageCount: itemPostCountSql({
+            id: mediaItems.id,
+            fileUrl: mediaItems.fileUrl,
+            workspaceId: mediaItems.workspaceId,
+          }),
+        })
+        .where(
+          and(
+            eq(mediaItems.id, itemId),
+            eq(mediaItems.workspaceId, workspaceId),
+          ),
+        ),
+    );
   }
 
   /**
@@ -354,15 +387,15 @@ export class MediaItemService {
   /**
    * Deletes the bytes of a file that has no row, unless something still uses
    * them: a Library row of any workspace (as its file or its thumbnail), or a
-   * post, campaign slot or evergreen entry (the shared reference builders).
-   * A failure is logged, not thrown.
+   * post, campaign slot, evergreen entry or template (the shared byte-keep
+   * builder). A failure is logged, not thrown.
    */
   private async discardUnusedFile(
     ref: StoredFileRef,
-    reason: 'refused' | 'orphaned',
+    reason: 'refused' | 'orphaned' | 'purged',
   ): Promise<void> {
     try {
-      if (await this.storageObjects.isFileShared(ref, NO_ROW_ID)) return;
+      if (await this.storageObjects.isFileShared(ref, NO_ITEM_ID)) return;
       if (await this.storageObjects.isFileReferenced(ref)) return;
       await this.storageObjects.deleteFile(ref);
     } catch (error) {
@@ -619,7 +652,11 @@ export class MediaItemService {
   /**
    * Update a media item
    */
-  async update(workspaceId: string, itemId: string, dto: UpdateMediaItemDto) {
+  async update(
+    workspaceId: string,
+    itemId: string,
+    dto: UpdateMediaItemDto,
+  ): Promise<MediaItemView> {
     const existing = await this.findOne(workspaceId, itemId);
 
     // Validate category if changing. A null `categoryId` skips this on purpose:
@@ -640,24 +677,30 @@ export class MediaItemService {
     if (dto.isStarred !== undefined) updateData.isStarred = dto.isStarred;
     if (dto.altText !== undefined) updateData.altText = dto.altText;
 
-    const [updated] = await this.db
+    await this.db
       .update(mediaItems)
       .set(updateData)
-      .where(eq(mediaItems.id, itemId))
-      .returning();
+      .where(
+        and(eq(mediaItems.id, itemId), eq(mediaItems.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Updated media item ${itemId}`);
 
-    return updated;
+    // Single-item writes answer with the contract's MediaItem (M9).
+    return this.findOne(workspaceId, itemId);
   }
 
   /**
    * Soft delete a media item (move to recycle bin)
    */
-  async softDelete(workspaceId: string, itemId: string, userId: string) {
+  async softDelete(
+    workspaceId: string,
+    itemId: string,
+    userId: string,
+  ): Promise<MediaItemView> {
     await this.findOne(workspaceId, itemId);
 
-    const [updated] = await this.db
+    await this.db
       .update(mediaItems)
       .set({
         isDeleted: true,
@@ -665,18 +708,19 @@ export class MediaItemService {
         deletedById: userId,
         updatedAt: new Date(),
       })
-      .where(eq(mediaItems.id, itemId))
-      .returning();
+      .where(
+        and(eq(mediaItems.id, itemId), eq(mediaItems.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Soft deleted media item ${itemId}`);
 
-    return updated;
+    return this.findOne(workspaceId, itemId);
   }
 
   /**
    * Restore a media item from recycle bin
    */
-  async restore(workspaceId: string, itemId: string) {
+  async restore(workspaceId: string, itemId: string): Promise<MediaItemView> {
     const [item] = await this.db
       .select()
       .from(mediaItems)
@@ -693,7 +737,7 @@ export class MediaItemService {
       throw new NotFoundException('Item not found in recycle bin');
     }
 
-    const [updated] = await this.db
+    await this.db
       .update(mediaItems)
       .set({
         isDeleted: false,
@@ -701,12 +745,13 @@ export class MediaItemService {
         deletedById: null,
         updatedAt: new Date(),
       })
-      .where(eq(mediaItems.id, itemId))
-      .returning();
+      .where(
+        and(eq(mediaItems.id, itemId), eq(mediaItems.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Restored media item ${itemId}`);
 
-    return updated;
+    return this.findOne(workspaceId, itemId);
   }
 
   /**
@@ -739,8 +784,9 @@ export class MediaItemService {
   /**
    * Deletes the files behind `rows` (at most PURGE_CONCURRENCY at a time) and
    * then only the rows whose file is gone. A file another row outside this set
-   * still points at, or that a post or campaign slot still uses (SEC4), is
-   * left in storage; its row is removed all the same.
+   * still points at, or that a post, campaign slot, evergreen entry or
+   * template still uses (SEC4, I1), is left in storage; its row is removed
+   * all the same.
    *
    * Only binned rows are purged: a live row in `candidates` is skipped, and
    * the DELETE re-checks `is_deleted`, so a row restored while its file was
@@ -801,7 +847,7 @@ export class MediaItemService {
     const worker = async () => {
       for (let group = queue.shift(); group; group = queue.shift()) {
         try {
-          // Another row shares the file, or a post / campaign slot uses it.
+          // Another row shares the file, or a post / slot / template uses it.
           const isFileInUse = group.some(
             (r) =>
               referenced.has(r.id) ||
@@ -862,7 +908,41 @@ export class MediaItemService {
       purgedIds.push(...gone.map((r) => r.id));
     }
 
+    await this.discardPosters(rows, purgedIds);
+
     return { deletedIds: purgedIds, failedIds };
+  }
+
+  /**
+   * Deletes the posters (video thumbnails under `library-thumbs/<ws>/`) of
+   * rows that are now gone, by `discardUnusedFile`: a poster another row,
+   * a post, a campaign entry or a template still shows is kept, and a failed
+   * check keeps it too (M5). Runs after the rows are deleted, so the purged
+   * row no longer counts as a sharer.
+   */
+  private async discardPosters(
+    rows: MediaLibraryItem[],
+    purgedIds: string[],
+  ): Promise<void> {
+    const gone = new Set(purgedIds);
+    const posters = new Map<string, StoredFileRef>();
+    for (const row of rows) {
+      if (!gone.has(row.id)) continue;
+      const poster = this.storageObjects.posterRefOf(
+        row.thumbnailUrl,
+        row.workspaceId,
+      );
+      if (poster) posters.set(poster.fileUrl, poster);
+    }
+    const queue = [...posters.values()];
+    const worker = async () => {
+      for (let p = queue.shift(); p; p = queue.shift()) {
+        await this.discardUnusedFile(p, 'purged');
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(PURGE_CONCURRENCY, queue.length) }, worker),
+    );
   }
 
   /** Whether every row of a purge group is still in the Bin. */
@@ -1002,7 +1082,9 @@ export class MediaItemService {
       return rows.map((r) => r.id);
     }
 
-    const ids = dto.ids ?? [];
+    // A repeated id names one row: de-duplicated before the "not found"
+    // count, as the Bin's idsByKind does (M10).
+    const ids = [...new Set(dto.ids ?? [])];
     if (ids.length === 0) return [];
     const found = await this.db
       .select({ id: mediaItems.id })
@@ -1074,7 +1156,7 @@ export class MediaItemService {
    * from the client, so without the workspace in the WHERE clause any
    * authenticated user could touch someone else's asset.
    */
-  async markUsed(workspaceId: string, itemId: string) {
+  async markUsed(workspaceId: string, itemId: string): Promise<MediaItemView> {
     const [updated] = await this.db
       .update(mediaItems)
       .set({
@@ -1084,13 +1166,13 @@ export class MediaItemService {
       .where(
         and(eq(mediaItems.id, itemId), eq(mediaItems.workspaceId, workspaceId)),
       )
-      .returning();
+      .returning({ id: mediaItems.id });
 
     if (!updated) {
       throw new NotFoundException('Media item not found');
     }
 
-    return updated;
+    return this.findOne(workspaceId, itemId);
   }
 
   /**

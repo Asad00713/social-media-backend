@@ -11,6 +11,7 @@ import type { CloudinaryService } from '../../media/cloudinary.service';
 import type { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import {
   StorageObjectService,
+  cloudinaryThumbFolder,
   cloudinaryUploadFolder,
 } from '../services/storage-object.service';
 import { StorageQuotaService } from '../services/storage-quota.service';
@@ -81,7 +82,6 @@ const rand = () => Math.random().toString(36).slice(2, 10);
 // ---------------------------------------------------------------------------
 
 export interface MediaItemServiceDeps {
-  cloudinaryService: CloudinaryService;
   storageObjects: StorageObjectService;
   quota: StorageQuotaService;
 }
@@ -134,6 +134,21 @@ export function ownCloudinaryFile(
   };
 }
 
+/**
+ * A video poster this workspace stored through `upload/file` with
+ * `purpose: 'thumbnail'`, as `POST items` receives it in `thumbnailUrl`.
+ */
+export function ownPoster(
+  workspaceId: string,
+  name: string = rand(),
+): { url: string; publicId: string } {
+  const publicId = `${cloudinaryThumbFolder(workspaceId)}/${name}`;
+  return {
+    url: `${TEST_CLOUDINARY_BASE}/image/upload/v1/${publicId}.jpg`,
+    publicId,
+  };
+}
+
 /** An R2 composer video this workspace stored, keyed the way R2 issues it. */
 export function ownR2File(workspaceId: string): {
   fileUrl: string;
@@ -158,7 +173,6 @@ export function makeMediaItemService(
   const { cloudinary, r2 } = makeStorageMocks();
   const cloudinaryService = cloudinary as unknown as CloudinaryService;
   const deps: MediaItemServiceDeps = {
-    cloudinaryService,
     storageObjects: new StorageObjectService(
       cloudinaryService,
       r2 as unknown as CloudflareR2Service,
@@ -167,12 +181,7 @@ export function makeMediaItemService(
     quota: new StorageQuotaService(db),
     ...overrides,
   };
-  return new MediaItemService(
-    db,
-    deps.cloudinaryService,
-    deps.storageObjects,
-    deps.quota,
-  );
+  return new MediaItemService(db, deps.storageObjects, deps.quota);
 }
 
 // ---------------------------------------------------------------------------

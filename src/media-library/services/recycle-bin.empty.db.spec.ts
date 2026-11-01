@@ -21,6 +21,8 @@ function setup(db: DbType) {
       publicIds: new Set<string>(),
     }),
     findReferencedItems: jest.fn().mockResolvedValue(new Set<string>()),
+    // No row here has a poster, so purge discards none.
+    posterRefOf: jest.fn().mockReturnValue(null),
   } as unknown as StorageObjectService;
   const media = makeMediaItemService(db, { storageObjects });
   const recycleBin = new RecycleBinService(db, media);

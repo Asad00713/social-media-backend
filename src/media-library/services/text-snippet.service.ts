@@ -7,6 +7,7 @@ import {
   type KindBulkConfig,
 } from '../lib/bulk';
 import { binPurgeCutoff } from '../lib/bin-retention';
+import { snippetPostCountSql, withUsageLock } from '../lib/usage-sql';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -87,7 +88,34 @@ export class TextSnippetService {
       `Created text snippet "${dto.name}" for workspace ${workspaceId}`,
     );
 
-    return created;
+    // Posts written before the snippet existed may already hold its text (I4).
+    return this.recountUsage(workspaceId, created.id);
+  }
+
+  /**
+   * Sets `usage_count` from the posts that hold the snippet's text, by the
+   * 0055 trigger's own test (I4). For writes the trigger cannot see: a new
+   * snippet, or changed content. Returns the updated row.
+   */
+  private recountUsage(workspaceId: string, snippetId: string) {
+    return withUsageLock(this.db, workspaceId, async (tx) => {
+      const [row] = await tx
+        .update(textSnippets)
+        .set({
+          usageCount: snippetPostCountSql({
+            content: textSnippets.content,
+            workspaceId: textSnippets.workspaceId,
+          }),
+        })
+        .where(
+          and(
+            eq(textSnippets.id, snippetId),
+            eq(textSnippets.workspaceId, workspaceId),
+          ),
+        )
+        .returning();
+      return row;
+    });
   }
 
   /**
@@ -212,7 +240,7 @@ export class TextSnippetService {
     snippetId: string,
     dto: UpdateTextSnippetDto,
   ) {
-    await this.findOne(workspaceId, snippetId);
+    const existing = await this.findOne(workspaceId, snippetId);
 
     // Validate category if changing
     if (dto.categoryId) {
@@ -244,7 +272,12 @@ export class TextSnippetService {
 
     this.logger.log(`Updated text snippet ${snippetId}`);
 
-    return updated;
+    // The posts trigger counted the old text; the new text needs a recount.
+    const isContentChanging =
+      dto.content !== undefined && dto.content !== existing.content;
+    return isContentChanging
+      ? this.recountUsage(workspaceId, snippetId)
+      : updated;
   }
 
   /**
