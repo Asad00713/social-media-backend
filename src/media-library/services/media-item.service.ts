@@ -354,8 +354,8 @@ export class MediaItemService {
   /**
    * Deletes the bytes of a file that has no row, unless something still uses
    * them: a Library row of any workspace (as its file or its thumbnail), or a
-   * post, campaign slot or evergreen entry (the shared reference builders).
-   * A failure is logged, not thrown.
+   * post, campaign slot, evergreen entry or template (the shared byte-keep
+   * builder). A failure is logged, not thrown.
    */
   private async discardUnusedFile(
     ref: StoredFileRef,
@@ -739,8 +739,9 @@ export class MediaItemService {
   /**
    * Deletes the files behind `rows` (at most PURGE_CONCURRENCY at a time) and
    * then only the rows whose file is gone. A file another row outside this set
-   * still points at, or that a post or campaign slot still uses (SEC4), is
-   * left in storage; its row is removed all the same.
+   * still points at, or that a post, campaign slot, evergreen entry or
+   * template still uses (SEC4, I1), is left in storage; its row is removed
+   * all the same.
    *
    * Only binned rows are purged: a live row in `candidates` is skipped, and
    * the DELETE re-checks `is_deleted`, so a row restored while its file was
@@ -801,7 +802,7 @@ export class MediaItemService {
     const worker = async () => {
       for (let group = queue.shift(); group; group = queue.shift()) {
         try {
-          // Another row shares the file, or a post / campaign slot uses it.
+          // Another row shares the file, or a post / slot / template uses it.
           const isFileInUse = group.some(
             (r) =>
               referenced.has(r.id) ||

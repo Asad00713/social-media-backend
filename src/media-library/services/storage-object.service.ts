@@ -17,7 +17,7 @@ import {
   type StoredSize,
 } from '../../media/cloudinary.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
-import { itemReferencedSql } from '../lib/usage-sql';
+import { itemBytesKeptSql } from '../lib/usage-sql';
 
 /** Stands in for a row id when the file has no row: matches no item id. */
 const NO_ITEM_ID = '00000000-0000-0000-0000-000000000000';
@@ -223,11 +223,12 @@ export class StorageObjectService {
   }
 
   /**
-   * True when a post, an unmaterialised campaign slot or an evergreen entry
-   * uses this file URL, by the shared reference builders (`usage-sql.ts`,
-   * the single definition) with their own workspace scoping. The file has no
-   * row here, so no item id can match. Without a workspace the answer is
-   * "referenced": a guard must never delete what it cannot check.
+   * True when a post, an unmaterialised campaign slot, an evergreen entry or
+   * a template of the workspace uses this file URL, by the shared byte-keep
+   * builder (`itemBytesKeptSql`, the single definition) with its own
+   * workspace scoping. The file has no row here, so no item id can match.
+   * Without a workspace the answer is "referenced": a guard must never delete
+   * what it cannot check.
    */
   async isFileReferenced(
     ref: Pick<StoredFileRef, 'fileUrl' | 'workspaceId'>,
@@ -235,7 +236,7 @@ export class StorageObjectService {
   ): Promise<boolean> {
     if (!ref.workspaceId) return true;
     const res = await db.execute<{ referenced: boolean }>(
-      sql`SELECT ${itemReferencedSql({
+      sql`SELECT ${itemBytesKeptSql({
         id: sql`${NO_ITEM_ID}`,
         fileUrl: sql`${ref.fileUrl}`,
         workspaceId: sql`${ref.workspaceId}`,
@@ -247,7 +248,9 @@ export class StorageObjectService {
   /**
    * True when a row other than `exceptItemId` (any workspace, deleted or not)
    * points at the same file, as its file or as its thumbnail (a video's
-   * poster), so deleting the bytes would break it.
+   * poster), so deleting the bytes would break it. Rows only: every caller
+   * pairs it with `isFileReferenced`, which holds the post, campaign and
+   * template arms.
    */
   async isFileShared(
     ref: StoredFileRef,
@@ -275,7 +278,9 @@ export class StorageObjectService {
    * referenced by a row outside `exceptItemIds` (any workspace, deleted or
    * not), matched by `file_url`, by `cloudinary_public_id`, or by a row
    * showing the file as its `thumbnail_url` (a video's poster), the same
-   * rule as `isFileShared`. Each arm is indexed (0054).
+   * rule as `isFileShared`. Each arm is indexed (0054). Rows only: purge
+   * pairs it with `findReferencedItems`, which holds the post, campaign and
+   * template arms.
    */
   async findSharedFiles(
     refs: Pick<StoredFileRef, 'fileUrl' | 'cloudinaryPublicId'>[],
@@ -322,9 +327,10 @@ export class StorageObjectService {
   }
 
   /**
-   * One query for a whole page: which of these items a post or campaign slot
-   * still uses, by the same reference test as `/usage` (SEC4). Their rows may
-   * go, but their bytes must stay, or a scheduled post loses its media.
+   * One query for a whole page: which of these items a post, campaign slot,
+   * evergreen entry or template still uses (`itemBytesKeptSql`: the `/usage`
+   * test plus templates, SEC4 and I1). Their rows may go, but their bytes
+   * must stay, or a scheduled post or a template loses its media.
    */
   async findReferencedItems(
     itemIds: string[],
@@ -337,7 +343,7 @@ export class StorageObjectService {
       .where(
         and(
           inArray(mediaItems.id, itemIds),
-          itemReferencedSql({
+          itemBytesKeptSql({
             id: mediaItems.id,
             fileUrl: mediaItems.fileUrl,
             workspaceId: mediaItems.workspaceId,

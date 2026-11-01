@@ -30,9 +30,11 @@ export interface UsageItemRef {
 // Bound values reach jsonb_build_array/_object as untyped parameters, which
 // Postgres cannot resolve for a VARIADIC "any" function; the casts fix that
 // and are no-ops on columns.
-const idText = (item: UsageItemRef) => sql`(${item.id})::text`;
-const urlText = (item: UsageItemRef) => sql`(${item.fileUrl})::text`;
-const wsUuid = (item: UsageItemRef) => sql`(${item.workspaceId})::uuid`;
+const idText = (item: Pick<UsageItemRef, 'id'>) => sql`(${item.id})::text`;
+const urlText = (item: Pick<UsageItemRef, 'fileUrl'>) =>
+  sql`(${item.fileUrl})::text`;
+const wsUuid = (item: Pick<UsageItemRef, 'workspaceId'>) =>
+  sql`(${item.workspaceId})::uuid`;
 
 /** `p` is the alias of a `posts` row. */
 export function postRefSql(p: SQL, item: UsageItemRef): SQL {
@@ -56,6 +58,31 @@ export function itemReferencedSql(item: UsageItemRef): SQL {
   const c = sql.raw('c');
   const e = sql.raw('e');
   return sql`(EXISTS (SELECT 1 FROM posts p WHERE ${postRefSql(p, item)}) OR EXISTS (SELECT 1 FROM campaign_slot_content s JOIN campaigns c ON c.id = s.campaign_id WHERE ${slotRefSql(s, c, item)}) OR EXISTS (SELECT 1 FROM campaign_evergreen_posts e JOIN campaigns c ON c.id = e.campaign_id WHERE ${evergreenRefSql(e, c, item)}))`;
+}
+
+/**
+ * `t` is a `media_templates` row of the item's workspace (binned or not: a
+ * restored template must still find its file) that shows the file URL in
+ * `content.media[]` or as its `thumbnail_url`.
+ */
+export function templateRefSql(
+  t: SQL,
+  item: Pick<UsageItemRef, 'fileUrl' | 'workspaceId'>,
+): SQL {
+  return sql`(${t}.workspace_id = ${wsUuid(item)} AND (${t}.thumbnail_url = ${urlText(item)} OR ${t}.content->'media' @> jsonb_build_array(jsonb_build_object('url', ${urlText(item)}))))`;
+}
+
+/**
+ * The byte-keep test: purge and the discard guard keep a file's bytes while
+ * this is true. It is `itemReferencedSql` plus templates (I1).
+ *
+ * The template arm sits here, outside `itemReferencedSql`, on purpose: that
+ * builder also feeds `/usage`, `neverUsed`, stats and the usage count, and a
+ * template protects the bytes without making the item "used".
+ */
+export function itemBytesKeptSql(item: UsageItemRef): SQL {
+  const t = sql.raw('t');
+  return sql`(${itemReferencedSql(item)} OR EXISTS (SELECT 1 FROM media_templates t WHERE ${templateRefSql(t, item)}))`;
 }
 
 /**
