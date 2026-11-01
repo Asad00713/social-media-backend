@@ -15,14 +15,17 @@
 --      public id are caught by the URL arm. Any R2 row this misses is still
 --      deleted from R2: StorageObjectService.deleteFile trusts an R2 URL over
 --      a 'cloudinary' column value.
---   2. Indexes on media_items(file_url) and media_items(cloudinary_public_id)
---      (SEC3): the purge's share check (StorageObjectService.findSharedFiles /
---      isFileShared) looks rows up by these across ALL workspaces, which
---      otherwise is a sequential scan per purge page. file_url is a HASH index:
---      the lookups are equality only (= / IN), and file_url is unbounded text,
---      so a btree would refuse (at build time, or later on INSERT) any URL
---      over its ~2.7 kB entry limit. cloudinary_public_id is varchar(255), so
---      a plain btree is safe.
+--   2. Indexes on media_items(file_url), media_items(thumbnail_url) and
+--      media_items(cloudinary_public_id) (SEC3): the share check
+--      (StorageObjectService.findSharedFiles on purge, isFileShared on a 413 or
+--      orphan cleanup) looks rows up by these across ALL workspaces, which
+--      otherwise is a sequential scan per purge page or refused upload.
+--      thumbnail_url is matched because a video's poster is a file another row
+--      may still show. file_url and thumbnail_url are HASH indexes: the
+--      lookups are equality only (= / IN), and both are unbounded text, so a
+--      btree would refuse (at build time, or later on INSERT) any URL over its
+--      ~2.7 kB entry limit. cloudinary_public_id is varchar(255), so a plain
+--      btree is safe.
 --   3. The snippet type 'bio' is renamed 'signature'.
 --   4. saved_links.utm (jsonb) and saved_links.preview_favicon_url.
 --   5. plans.storage_bytes_per_workspace with each plan's value (FREE 500 MB,
@@ -59,7 +62,7 @@
 -- COMMIT; without the timeout they would queue behind any open transaction on
 -- the still-running old instance and every Library / billing read would queue
 -- behind them. With it a blocked deploy fails fast and rolls back; retry the
--- deploy. The two CREATE INDEX statements build inside that lock: one
+-- deploy. The three CREATE INDEX statements build inside that lock: one
 -- sequential scan of media_items each. Fine at current scale; check
 -- media_items' row count before deploying if it has grown by orders of
 -- magnitude.
@@ -69,6 +72,7 @@
 --
 -- ROLLBACK
 --   DROP INDEX IF EXISTS media_items_file_url_idx;
+--   DROP INDEX IF EXISTS media_items_thumbnail_url_idx;
 --   DROP INDEX IF EXISTS media_items_cloudinary_public_id_idx;
 --   ALTER TABLE media_items DROP CONSTRAINT IF EXISTS media_items_storage_provider_chk;
 --   ALTER TABLE media_items DROP COLUMN IF EXISTS alt_text,
@@ -110,6 +114,8 @@ UPDATE "media_items"
 -- Share lookups across workspaces (SEC3). See WHY 2 for the hash index.
 CREATE INDEX IF NOT EXISTS "media_items_file_url_idx"
   ON "media_items" USING hash ("file_url");
+CREATE INDEX IF NOT EXISTS "media_items_thumbnail_url_idx"
+  ON "media_items" USING hash ("thumbnail_url");
 CREATE INDEX IF NOT EXISTS "media_items_cloudinary_public_id_idx"
   ON "media_items" USING btree ("cloudinary_public_id");
 

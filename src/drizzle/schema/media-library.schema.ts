@@ -165,9 +165,11 @@ export const mediaItems = pgTable(
       table.workspaceId,
       table.isDeleted,
     ),
-    // Cross-workspace share lookups on purge (SEC3). Hash: equality only, and
-    // file_url is unbounded text a btree entry could not hold.
+    // Cross-workspace share lookups on purge, 413 and orphan cleanup (SEC3).
+    // Hash: equality only, and both URLs are unbounded text a btree entry
+    // could not hold. thumbnail_url: a poster another row still shows.
     index('media_items_file_url_idx').using('hash', table.fileUrl),
+    index('media_items_thumbnail_url_idx').using('hash', table.thumbnailUrl),
     index('media_items_cloudinary_public_id_idx').on(table.cloudinaryPublicId),
   ],
 );

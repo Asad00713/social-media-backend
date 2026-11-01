@@ -30,6 +30,7 @@ import {
   MediaCategory,
 } from '../../drizzle/schema/media-library.schema';
 import { users } from '../../drizzle/schema/users.schema';
+import { binPurgeCutoff } from '../lib/bin-retention';
 import { ilikePattern } from '../lib/search';
 import { itemReferencedSql } from '../lib/usage-sql';
 import { ratioBounds } from '../lib/ratio';
@@ -80,7 +81,6 @@ const PURGE_CONCURRENCY = 8;
 const PURGE_BATCH = 200;
 /** Rows deleted per statement, to stay far below the parameter limit. */
 const DELETE_CHUNK = 1000;
-const BIN_RETENTION_DAYS = 30;
 /** `isFileShared` excludes no row: every other row counts as a sharer. */
 const NO_ROW_ID = '00000000-0000-0000-0000-000000000000';
 /** The `name` column's width. */
@@ -1094,17 +1094,16 @@ export class MediaItemService {
   }
 
   /**
-   * Permanently delete items that have been in the recycle bin for over 30
-   * days. Called by the scheduled job.
+   * Permanently delete items whose Bin retention (lib/bin-retention.ts, the
+   * same window the Bin shows as `purgeAt`) has run out. Called by the
+   * scheduled job.
    */
   async cleanupRecycleBin(now: Date = new Date()) {
-    const deletedBefore = new Date(
-      now.getTime() - BIN_RETENTION_DAYS * 24 * 60 * 60 * 1000,
-    );
+    const deletedBefore = binPurgeCutoff(now);
     const { deleted } = await this.purgeDeleted({ deletedBefore });
 
     this.logger.log(
-      `Cleaned up ${deleted} items from recycle bin (older than ${BIN_RETENTION_DAYS} days)`,
+      `Cleaned up ${deleted} items from recycle bin (binned before ${deletedBefore.toISOString()})`,
     );
 
     return { deletedCount: deleted };

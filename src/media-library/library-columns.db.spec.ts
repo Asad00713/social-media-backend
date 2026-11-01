@@ -287,17 +287,24 @@ describeLibraryDb('migration 0054 (library columns)', () => {
 
   it('indexes the columns the cross-workspace share query filters on (SEC3)', async () => {
     await withLibraryDb(async (_db, client) => {
-      const r = await client.query<{ indexname: string }>(
-        `SELECT indexname FROM pg_indexes
+      const r = await client.query<{ indexname: string; indexdef: string }>(
+        `SELECT indexname, indexdef FROM pg_indexes
           WHERE tablename = 'media_items'
             AND indexname IN ('media_items_file_url_idx',
-                              'media_items_cloudinary_public_id_idx')
+                              'media_items_cloudinary_public_id_idx',
+                              'media_items_thumbnail_url_idx')
           ORDER BY indexname`,
       );
       expect(r.rows.map((x) => x.indexname)).toEqual([
         'media_items_cloudinary_public_id_idx',
         'media_items_file_url_idx',
+        'media_items_thumbnail_url_idx',
       ]);
+      // thumbnail_url is unbounded text, like file_url: hash, not btree.
+      expect(
+        r.rows.find((x) => x.indexname === 'media_items_thumbnail_url_idx')
+          ?.indexdef,
+      ).toMatch(/USING hash \(thumbnail_url\)/);
     });
   });
 

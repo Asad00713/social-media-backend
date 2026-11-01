@@ -273,7 +273,9 @@ export class StorageObjectService {
   /**
    * One query for a whole page: which of these rows' files are also
    * referenced by a row outside `exceptItemIds` (any workspace, deleted or
-   * not), matched by `file_url` or by `cloudinary_public_id`.
+   * not), matched by `file_url`, by `cloudinary_public_id`, or by a row
+   * showing the file as its `thumbnail_url` (a video's poster), the same
+   * rule as `isFileShared`. Each arm is indexed (0054).
    */
   async findSharedFiles(
     refs: Pick<StoredFileRef, 'fileUrl' | 'cloudinaryPublicId'>[],
@@ -291,6 +293,7 @@ export class StorageObjectService {
 
     const sameFile = or(
       inArray(mediaItems.fileUrl, urls),
+      inArray(mediaItems.thumbnailUrl, urls),
       publicIds.length > 0
         ? inArray(mediaItems.cloudinaryPublicId, publicIds)
         : undefined,
@@ -302,12 +305,17 @@ export class StorageObjectService {
     const found = await db
       .select({
         fileUrl: mediaItems.fileUrl,
+        thumbnailUrl: mediaItems.thumbnailUrl,
         publicId: mediaItems.cloudinaryPublicId,
       })
       .from(mediaItems)
       .where(and(...conditions));
+    const asked = new Set(urls);
     for (const row of found) {
       shared.urls.add(row.fileUrl);
+      if (row.thumbnailUrl && asked.has(row.thumbnailUrl)) {
+        shared.urls.add(row.thumbnailUrl);
+      }
       if (row.publicId) shared.publicIds.add(row.publicId);
     }
     return shared;
