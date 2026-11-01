@@ -620,6 +620,7 @@ previewFaviconUrl: string | null
 - `usageCount` counts posts that contain the link's URL, kept by the posts trigger (0055).
 - `POST links/:id/use` only sets `last_used_at`.
 - `permanent` works only on a binned link; a live one is a `404`.
+- A link's display name is its `name`, else its preview title, else its URL (blank or whitespace-only counts as empty). The `name` sort orders by it.
 
 ---
 
@@ -672,6 +673,8 @@ GET /workspaces/:workspaceId/media-library/recycle-bin          posts:draft
 | sort      | `deleted` \| `name` \| `size` | `deleted` | newest deletion, name A-Z, largest first |
 | limit     | 1-100 | 50 | |
 | offset    | int | 0 | |
+
+A binned link's `name` follows the same rule (name, else preview title, else URL), and `sort=name` orders by it.
 
 Legacy `type` (`image|video|gif|document` → media, narrowed to that type; `template`; `text_snippet` → snippet; `link`) is accepted; an explicit `kind` wins.
 

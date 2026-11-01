@@ -1,4 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
+import { SAVED_LINK_DISPLAY_NAME_SQL } from '../lib/link-display-name';
 import { and, eq, inArray, sql, type SQL } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
@@ -150,7 +151,8 @@ export class RecycleBinService {
                'snippet' AS type, NULL::bigint AS size_bytes, ${tail}
           FROM text_snippets WHERE ${binned}`,
       link: sql`
-        SELECT 'link' AS kind, id, name, preview_image_url AS thumbnail_url,
+        SELECT 'link' AS kind, id, ${SAVED_LINK_DISPLAY_NAME_SQL} AS name,
+               preview_image_url AS thumbnail_url,
                'link' AS type, NULL::bigint AS size_bytes, ${tail}
           FROM saved_links WHERE ${binned}`,
     };
