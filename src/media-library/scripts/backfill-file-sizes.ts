@@ -7,14 +7,14 @@ import { CloudinaryService } from '../../media/cloudinary.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import {
   StorageObjectService,
-  type StoredFileRef,
+  type StoredSize,
 } from '../services/storage-object.service';
 
 /**
  * One-off owner script: fills `media_items.file_size` where it is NULL by
  * asking the store that holds the bytes (R2 HEAD, Cloudinary admin API). A row
- * whose size cannot be found stays NULL (it counts as 0) and is reported in
- * `failed`. Cloudinary's admin API is rate-limited, so after
+ * whose size cannot be found (missing, or a provider error) stays NULL (it
+ * counts as 0) and is reported in `failed`. Cloudinary's admin API is rate-limited, so after
  * `maxCloudinaryCalls` the remaining Cloudinary rows are skipped; run it again
  * later to pick them up. R2 rows are not capped. Idempotent.
  */
@@ -24,9 +24,7 @@ const DEFAULT_MAX_CLOUDINARY_CALLS = 400;
 const NIL_UUID = '00000000-0000-0000-0000-000000000000';
 
 /** The slice of StorageObjectService this script needs. */
-export interface SizeProbe {
-  realSize(ref: StoredFileRef): Promise<number | null>;
-}
+export type SizeProbe = Pick<StorageObjectService, 'realSize'>;
 
 export interface BackfillFileSizesOptions {
   databaseUrl: string;
@@ -107,23 +105,38 @@ export async function runBackfillFileSizes(
           }
           cloudinaryCalls += 1;
         }
-        const size = await opts.storage.realSize({
-          workspaceId: row.workspace_id,
-          storageProvider: provider,
-          cloudinaryPublicId: row.cloudinary_public_id,
-          fileUrl: row.file_url,
-          type: row.type,
-          mimeType: row.mime_type,
-        });
-        if (size === null) {
+        let size: StoredSize;
+        try {
+          size = await opts.storage.realSize({
+            workspaceId: row.workspace_id,
+            storageProvider: provider,
+            cloudinaryPublicId: row.cloudinary_public_id,
+            fileUrl: row.file_url,
+            type: row.type,
+            mimeType: row.mime_type,
+          });
+        } catch (error) {
+          // One provider error must not end the pass: the row is reported
+          // and the next one is tried.
           result.failed.push(row.id);
-          console.warn(`[library:backfill-sizes] no size found for ${row.id}`);
+          console.warn(
+            `[library:backfill-sizes] size lookup failed for ${row.id}: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+          continue;
+        }
+        if (size.kind !== 'size') {
+          result.failed.push(row.id);
+          console.warn(
+            `[library:backfill-sizes] no size found for ${row.id} (${size.kind})`,
+          );
           continue;
         }
         if (!opts.dryRun) {
           await client.query(
             'UPDATE media_items SET file_size = $1 WHERE id = $2 AND file_size IS NULL',
-            [size, row.id],
+            [size.bytes, row.id],
           );
         }
         result.filled += 1;
@@ -149,12 +162,11 @@ async function main(): Promise<void> {
   try {
     const configService = new ConfigService();
     // realSize never touches the database, so the service gets no connection.
-    // The cast goes away once realSize lands on StorageObjectService (Task 15).
-    const storage = new StorageObjectService(
+    const storage: SizeProbe = new StorageObjectService(
       new CloudinaryService(configService),
       new CloudflareR2Service(configService),
       undefined as never,
-    ) as unknown as SizeProbe;
+    );
     const res = await runBackfillFileSizes({
       databaseUrl: url,
       confirmedProduction: process.argv.includes('--i-know-this-is-production'),

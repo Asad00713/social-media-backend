@@ -1,5 +1,10 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, eq, inArray, notInArray, or } from 'drizzle-orm';
+import {
+  BadRequestException,
+  Inject,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
+import { and, eq, inArray, notInArray, or, sql } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -7,12 +12,18 @@ import {
   STORAGE_PROVIDERS,
   type StorageProvider,
 } from '../../drizzle/schema/media-library.schema';
-import { CloudinaryService } from '../../media/cloudinary.service';
+import {
+  CloudinaryService,
+  type StoredSize,
+} from '../../media/cloudinary.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import { itemReferencedSql } from '../lib/usage-sql';
 
+/** Stands in for a row id when the file has no row: matches no item id. */
+const NO_ITEM_ID = '00000000-0000-0000-0000-000000000000';
+
 export { STORAGE_PROVIDERS };
-export type { StorageProvider };
+export type { StorageProvider, StoredSize };
 
 /** What is needed to locate and delete a library file's bytes. */
 export interface StoredFileRef {
@@ -51,6 +62,58 @@ export function isWorkspaceR2Key(key: string, workspaceId: string): boolean {
   return new RegExp(
     `^composer/videos/${escaped}/[A-Za-z0-9-]+/\\d+-[0-9a-f]{24}(?:\\.[A-Za-z0-9]+)?$`,
   ).test(key);
+}
+
+/**
+ * The Cloudinary folder a workspace's direct uploads go to. The signed upload
+ * params pin it, so a public id under it was issued for this workspace (SEC5).
+ */
+export function cloudinaryUploadFolder(workspaceId: string): string {
+  return `library/${workspaceId}`;
+}
+
+/**
+ * Where a workspace's posters (video thumbnails) go. It is deliberately not
+ * under `cloudinaryUploadFolder`, so `POST items` can never register a poster
+ * as a Library item.
+ */
+export function cloudinaryThumbFolder(workspaceId: string): string {
+  return `library-thumbs/${workspaceId}`;
+}
+
+/** True only for a public id inside this workspace's upload folder. */
+export function isWorkspaceCloudinaryPublicId(
+  publicId: string,
+  workspaceId: string,
+): boolean {
+  if (FORBIDDEN_KEY_CHARS.test(publicId)) return false;
+  const prefix = `${cloudinaryUploadFolder(workspaceId)}/`;
+  if (!publicId.startsWith(prefix) || publicId.length === prefix.length) {
+    return false;
+  }
+  return !publicId.split('/').some((s) => s === '' || s === '.' || s === '..');
+}
+
+/**
+ * True when a Cloudinary delivery URL shows exactly this public id:
+ * `.../<resource>/upload/[v<version>/]<public id>[.<ext>]`. No transformation
+ * segments: a registered file is the URL its upload returned.
+ */
+function cloudinaryUrlShows(url: string, publicId: string): boolean {
+  let path: string;
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    return false;
+  }
+  const at = path.indexOf('/upload/');
+  if (at < 0) return false;
+  const rest = path.slice(at + '/upload/'.length).replace(/^v\d+\//, '');
+  if (rest === publicId) return true;
+  return (
+    rest.startsWith(`${publicId}.`) &&
+    /^[A-Za-z0-9]+$/.test(rest.slice(publicId.length + 1))
+  );
 }
 
 /** Cloudinary files the destroy API addresses by resource type. */
@@ -93,8 +156,98 @@ export class StorageObjectService {
   }
 
   /**
+   * SEC5: a file the client registers (`POST items` after a direct upload)
+   * must be an object this workspace stored: an R2 key R2 issued for it, or a
+   * public id in its Cloudinary upload folder on our own cloud, shown by the
+   * URL. Anything else (a foreign URL, another workspace's object) is
+   * refused, so a row can never be pointed at bytes it does not own.
+   */
+  assertWorkspaceObject(
+    ref: Pick<StoredFileRef, 'fileUrl' | 'cloudinaryPublicId'>,
+    workspaceId: string,
+  ): void {
+    const r2Key = this.r2.keyFromPublicUrl(ref.fileUrl);
+    const publicId = ref.cloudinaryPublicId;
+    const isOwned =
+      r2Key !== null
+        ? isWorkspaceR2Key(r2Key, workspaceId) &&
+          (!publicId || publicId === r2Key)
+        : !!publicId &&
+          this.cloudinary.isOwnUrl(ref.fileUrl) &&
+          isWorkspaceCloudinaryPublicId(publicId, workspaceId) &&
+          cloudinaryUrlShows(ref.fileUrl, publicId);
+    if (!isOwned) {
+      throw new BadRequestException(
+        'The file must be uploaded to this workspace before it is saved',
+      );
+    }
+  }
+
+  /**
+   * The stored size of a file, asked of the store that holds it: `missing`
+   * when the object is not there (or nothing of ours is named), `error` when
+   * the store cannot be asked or gives no length.
+   */
+  async realSize(ref: StoredFileRef): Promise<StoredSize> {
+    const urlKey = this.r2.keyFromPublicUrl(ref.fileUrl);
+    const provider: StorageProvider =
+      urlKey !== null
+        ? 'r2'
+        : (ref.storageProvider ??
+          this.providerOf(ref.fileUrl, ref.cloudinaryPublicId));
+
+    if (provider === 'r2') {
+      const key = urlKey ?? ref.cloudinaryPublicId;
+      if (!key) return { kind: 'missing' };
+      try {
+        const head = await this.r2.verifyObject(key);
+        if (!head.exists) return { kind: 'missing' };
+        return typeof head.contentLength === 'number'
+          ? { kind: 'size', bytes: head.contentLength }
+          : { kind: 'error' };
+      } catch (error) {
+        this.logger.warn(
+          `Could not read the size of R2 object ${key}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+        return { kind: 'error' };
+      }
+    }
+
+    if (!ref.cloudinaryPublicId) return { kind: 'missing' };
+    return this.cloudinary.getResourceBytes(
+      ref.cloudinaryPublicId,
+      cloudinaryResourceType(ref),
+    );
+  }
+
+  /**
+   * True when a post, an unmaterialised campaign slot or an evergreen entry
+   * uses this file URL, by the shared reference builders (`usage-sql.ts`,
+   * the single definition) with their own workspace scoping. The file has no
+   * row here, so no item id can match. Without a workspace the answer is
+   * "referenced": a guard must never delete what it cannot check.
+   */
+  async isFileReferenced(
+    ref: Pick<StoredFileRef, 'fileUrl' | 'workspaceId'>,
+    db: DbType = this.db,
+  ): Promise<boolean> {
+    if (!ref.workspaceId) return true;
+    const res = await db.execute<{ referenced: boolean }>(
+      sql`SELECT ${itemReferencedSql({
+        id: sql`${NO_ITEM_ID}`,
+        fileUrl: sql`${ref.fileUrl}`,
+        workspaceId: sql`${ref.workspaceId}`,
+      })} AS referenced`,
+    );
+    return res.rows[0]?.referenced === true;
+  }
+
+  /**
    * True when a row other than `exceptItemId` (any workspace, deleted or not)
-   * points at the same file, so deleting the bytes would break it.
+   * points at the same file, as its file or as its thumbnail (a video's
+   * poster), so deleting the bytes would break it.
    */
   async isFileShared(
     ref: StoredFileRef,
@@ -102,12 +255,13 @@ export class StorageObjectService {
     db: DbType = this.db,
   ): Promise<boolean> {
     const except = Array.isArray(exceptItemId) ? exceptItemId : [exceptItemId];
-    const sameFile = ref.cloudinaryPublicId
-      ? or(
-          eq(mediaItems.fileUrl, ref.fileUrl),
-          eq(mediaItems.cloudinaryPublicId, ref.cloudinaryPublicId),
-        )
-      : eq(mediaItems.fileUrl, ref.fileUrl);
+    const sameFile = or(
+      eq(mediaItems.fileUrl, ref.fileUrl),
+      eq(mediaItems.thumbnailUrl, ref.fileUrl),
+      ref.cloudinaryPublicId
+        ? eq(mediaItems.cloudinaryPublicId, ref.cloudinaryPublicId)
+        : undefined,
+    );
     const [other] = await db
       .select({ id: mediaItems.id })
       .from(mediaItems)

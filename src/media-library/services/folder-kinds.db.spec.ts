@@ -4,6 +4,7 @@ import {
   describeLibraryDb,
   withLibraryDb,
   makeMediaItemService,
+  ownCloudinaryFile,
   seedWorkspace,
   seedCategory,
 } from '../testing/library-db';
@@ -34,10 +35,11 @@ async function toDto<T extends object>(
   return instance;
 }
 
-const itemRaw = (type: string, categoryId: string) => ({
+// SEC5: `POST items` only registers a file this workspace stored.
+const itemRaw = (type: string, categoryId: string, workspaceId: string) => ({
   type,
   name: `${type}-file`,
-  fileUrl: `https://cdn.example.test/${type}-file`,
+  ...ownCloudinaryFile(workspaceId, `${type}-file`),
   categoryId,
 });
 
@@ -60,12 +62,12 @@ describeLibraryDb('folder kinds and snippet types', () => {
       const img = await svc.create(
         workspaceId,
         ownerId,
-        await toDto(CreateMediaItemDto, itemRaw('image', folder)),
+        await toDto(CreateMediaItemDto, itemRaw('image', folder, workspaceId)),
       );
       const vid = await svc.create(
         workspaceId,
         ownerId,
-        await toDto(CreateMediaItemDto, itemRaw('video', folder)),
+        await toDto(CreateMediaItemDto, itemRaw('video', folder, workspaceId)),
       );
       expect([img.categoryId, vid.categoryId]).toEqual([folder, folder]);
     });
@@ -80,7 +82,10 @@ describeLibraryDb('folder kinds and snippet types', () => {
         svc.create(
           workspaceId,
           ownerId,
-          await toDto(CreateMediaItemDto, itemRaw('image', folder)),
+          await toDto(
+            CreateMediaItemDto,
+            itemRaw('image', folder, workspaceId),
+          ),
         ),
       ).rejects.toThrow('Folder "Tpl" is not a media folder');
     });
@@ -107,7 +112,7 @@ describeLibraryDb('folder kinds and snippet types', () => {
       const item = await svc.create(
         workspaceId,
         ownerId,
-        await toDto(CreateMediaItemDto, itemRaw('image', media)),
+        await toDto(CreateMediaItemDto, itemRaw('image', media, workspaceId)),
       );
       await expect(
         svc.update(workspaceId, item.id, { categoryId: tpl }),
@@ -129,7 +134,7 @@ describeLibraryDb('folder kinds and snippet types', () => {
             await toDto(CreateMediaItemDto, {
               type,
               name: type,
-              fileUrl: `https://cdn.example.test/${type}`,
+              ...ownCloudinaryFile(workspaceId, type),
             }),
           )
         ).id;

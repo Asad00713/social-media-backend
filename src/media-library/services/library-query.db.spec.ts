@@ -23,6 +23,7 @@ import {
   seedCategory,
   seedPost,
   seedCampaignSlot,
+  ownCloudinaryFile,
 } from '../testing/library-db';
 import { TemplateService } from './template.service';
 import { TextSnippetService } from './text-snippet.service';
@@ -413,7 +414,8 @@ describeLibraryDb('library items: uploader and alt text', () => {
         await toDto(CreateMediaItemDto, {
           type: 'document',
           name: 'deck.pdf',
-          fileUrl: 'https://cdn.example.test/deck.pdf',
+          // Task 15: a saved file must be an object this workspace stored.
+          ...ownCloudinaryFile(workspaceId, 'deck'),
           altText: 'Pitch deck',
           pageCount: 12,
         }),

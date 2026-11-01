@@ -9,7 +9,11 @@ import {
 import { MediaItemService } from '../services/media-item.service';
 import type { CloudinaryService } from '../../media/cloudinary.service';
 import type { CloudflareR2Service } from '../../media/cloudflare-r2.service';
-import { StorageObjectService } from '../services/storage-object.service';
+import {
+  StorageObjectService,
+  cloudinaryUploadFolder,
+} from '../services/storage-object.service';
+import { StorageQuotaService } from '../services/storage-quota.service';
 
 export {
   seedWorkspace,
@@ -79,32 +83,96 @@ const rand = () => Math.random().toString(36).slice(2, 10);
 export interface MediaItemServiceDeps {
   cloudinaryService: CloudinaryService;
   storageObjects: StorageObjectService;
+  quota: StorageQuotaService;
+}
+
+/** The Cloudinary cloud and R2 bucket the provider mocks treat as ours. */
+export const TEST_CLOUDINARY_BASE = 'https://res.cloudinary.com/test-cloud';
+export const TEST_R2_BASE = 'https://r2.example.test';
+
+/**
+ * Cloudinary and R2 mocks that recognise the test cloud and bucket the way the
+ * real services recognise ours. Every stored file exists and holds 1 byte
+ * unless a spec says otherwise.
+ */
+export function makeStorageMocks() {
+  const cloudinary = {
+    delete: jest.fn().mockResolvedValue(true),
+    isReady: jest.fn().mockReturnValue(true),
+    isOwnUrl: jest.fn((url: string) =>
+      url.startsWith(`${TEST_CLOUDINARY_BASE}/`),
+    ),
+    getResourceBytes: jest.fn().mockResolvedValue({ kind: 'size', bytes: 1 }),
+  };
+  const r2 = {
+    deleteObject: jest.fn().mockResolvedValue(undefined),
+    keyFromPublicUrl: jest.fn((url: string) =>
+      url.startsWith(`${TEST_R2_BASE}/`)
+        ? url.slice(TEST_R2_BASE.length + 1)
+        : null,
+    ),
+    isOwnUrl: jest.fn((url: string) => url.startsWith(`${TEST_R2_BASE}/`)),
+    verifyObject: jest
+      .fn()
+      .mockResolvedValue({ exists: true, contentLength: 1 }),
+  };
+  return { cloudinary, r2 };
 }
 
 /**
- * The only way specs construct MediaItemService: every dependency is a
- * jest.fn() mock unless overridden, and a constructor change lands here once.
+ * A Cloudinary file this workspace stored through a signed direct upload, as
+ * `POST items` must reference it (SEC5).
+ */
+export function ownCloudinaryFile(
+  workspaceId: string,
+  name: string = rand(),
+): { fileUrl: string; cloudinaryPublicId: string } {
+  const publicId = `${cloudinaryUploadFolder(workspaceId)}/${name}`;
+  return {
+    fileUrl: `${TEST_CLOUDINARY_BASE}/image/upload/v1/${publicId}.png`,
+    cloudinaryPublicId: publicId,
+  };
+}
+
+/** An R2 composer video this workspace stored, keyed the way R2 issues it. */
+export function ownR2File(workspaceId: string): {
+  fileUrl: string;
+  cloudinaryPublicId: string;
+} {
+  const hex = Array.from({ length: 24 }, () =>
+    Math.floor(Math.random() * 16).toString(16),
+  ).join('');
+  const key = `composer/videos/${workspaceId}/user-1/${Date.now()}-${hex}.mp4`;
+  return { fileUrl: `${TEST_R2_BASE}/${key}`, cloudinaryPublicId: key };
+}
+
+/**
+ * The only way specs construct MediaItemService: provider calls are jest.fn()
+ * mocks and the quota service is real (on the harness db) unless overridden,
+ * and a constructor change lands here once.
  */
 export function makeMediaItemService(
   db: DbType,
   overrides: Partial<MediaItemServiceDeps> = {},
 ): MediaItemService {
-  const cloudinaryService = {
-    delete: jest.fn().mockResolvedValue(true),
-    isReady: jest.fn().mockReturnValue(true),
-    isOwnUrl: jest.fn().mockReturnValue(false),
-  } as unknown as CloudinaryService;
-  const r2 = {
-    deleteObject: jest.fn().mockResolvedValue(undefined),
-    keyFromPublicUrl: jest.fn().mockReturnValue(null),
-    isOwnUrl: jest.fn().mockReturnValue(false),
-  } as unknown as CloudflareR2Service;
+  const { cloudinary, r2 } = makeStorageMocks();
+  const cloudinaryService = cloudinary as unknown as CloudinaryService;
   const deps: MediaItemServiceDeps = {
     cloudinaryService,
-    storageObjects: new StorageObjectService(cloudinaryService, r2, db),
+    storageObjects: new StorageObjectService(
+      cloudinaryService,
+      r2 as unknown as CloudflareR2Service,
+      db,
+    ),
+    quota: new StorageQuotaService(db),
     ...overrides,
   };
-  return new MediaItemService(db, deps.cloudinaryService, deps.storageObjects);
+  return new MediaItemService(
+    db,
+    deps.cloudinaryService,
+    deps.storageObjects,
+    deps.quota,
+  );
 }
 
 // ---------------------------------------------------------------------------

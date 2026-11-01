@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { MediaLibraryController } from './media-library.controller';
 import { LibraryZipController } from './library-zip.controller';
+import { LibraryUploadController } from './library-upload.controller';
 import { CategoryService } from './services/category.service';
 import { MediaItemService } from './services/media-item.service';
 import { TemplateService } from './services/template.service';
@@ -15,13 +16,18 @@ import { MediaUsageService } from './services/media-usage.service';
 import { CategoryZipService } from './services/category-zip.service';
 import { StorageQuotaService } from './services/storage-quota.service';
 import { LibraryStatsService } from './services/library-stats.service';
+import { LibraryIngestService } from './services/library-ingest.service';
 import { MediaModule } from '../media/media.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 
 @Module({
   imports: [WorkspaceRoleModule, DrizzleModule, MediaModule, AiModule],
-  controllers: [MediaLibraryController, LibraryZipController],
+  controllers: [
+    MediaLibraryController,
+    LibraryZipController,
+    LibraryUploadController,
+  ],
   providers: [
     CategoryService,
     MediaItemService,
@@ -36,6 +42,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     CategoryZipService,
     StorageQuotaService,
     LibraryStatsService,
+    LibraryIngestService,
   ],
   exports: [
     CategoryService,
@@ -45,6 +52,8 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     SavedLinkService,
     StorageObjectService,
     StorageQuotaService,
+    // Task 16: Canva and media-source imports save through these (B14).
+    LibraryIngestService,
   ],
 })
 export class MediaLibraryModule {}

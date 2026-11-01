@@ -45,3 +45,39 @@ export class StorageFullException extends HttpException {
     );
   }
 }
+
+/** 400: a registered file is not in storage (yet); the size cannot be read. */
+export class UploadNotFinishedException extends HttpException {
+  constructor() {
+    super({ code: 'UPLOAD_NOT_FINISHED', message: 'Upload not finished' }, 400);
+  }
+}
+
+/** 503: the store could not report the size; the save can be retried. */
+export class SizeUnavailableException extends HttpException {
+  constructor() {
+    super(
+      {
+        code: 'SIZE_UNAVAILABLE',
+        message: 'Could not check the file size. Try again in a moment.',
+      },
+      503,
+    );
+  }
+}
+
+/**
+ * 409: Cloudinary returned an asset that already existed under the chosen
+ * public id. It is not ours to save or delete.
+ */
+export class UploadConflictException extends HttpException {
+  constructor() {
+    super(
+      {
+        code: 'UPLOAD_CONFLICT',
+        message: 'The upload clashed with an existing file. Try again.',
+      },
+      409,
+    );
+  }
+}

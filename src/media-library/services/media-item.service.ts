@@ -17,6 +17,7 @@ import {
   gt,
   gte,
   not,
+  or,
   type SQL,
 } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
@@ -34,9 +35,24 @@ import { itemReferencedSql } from '../lib/usage-sql';
 import { ratioBounds } from '../lib/ratio';
 import { toUserRef } from '../lib/user-ref';
 import { assertIdsXorSelectAll, bulkTargetsBin, chunk } from '../lib/bulk';
+import {
+  SizeUnavailableException,
+  StorageFullException,
+  UploadConflictException,
+  UploadNotFinishedException,
+  wouldExceed,
+} from '../lib/storage';
+import { mediaTypeFromUpload } from '../lib/upload-type';
 import type { Page, UserRef } from '../dto/contract';
-import { CloudinaryService } from '../../media/cloudinary.service';
-import { StorageObjectService } from './storage-object.service';
+import {
+  CloudinaryService,
+  type UploadResult,
+} from '../../media/cloudinary.service';
+import {
+  StorageObjectService,
+  type StoredFileRef,
+} from './storage-object.service';
+import { StorageQuotaService } from './storage-quota.service';
 import {
   CreateMediaItemDto,
   UpdateMediaItemDto,
@@ -50,6 +66,14 @@ export type MediaItemView = MediaLibraryItem & {
   uploadedBy: UserRef | null;
 };
 
+/** What `createFromUpload` needs besides the upload itself. */
+export interface UploadItemMeta {
+  name: string;
+  mimeType?: string;
+  categoryId?: string;
+  tags?: string[];
+}
+
 /** Files deleted from storage at once during a purge. */
 const PURGE_CONCURRENCY = 8;
 /** Rows read per page when purging the bin. */
@@ -57,6 +81,10 @@ const PURGE_BATCH = 200;
 /** Rows deleted per statement, to stay far below the parameter limit. */
 const DELETE_CHUNK = 1000;
 const BIN_RETENTION_DAYS = 30;
+/** `isFileShared` excludes no row: every other row counts as a sharer. */
+const NO_ROW_ID = '00000000-0000-0000-0000-000000000000';
+/** The `name` column's width. */
+const NAME_MAX = 255;
 
 @Injectable()
 export class MediaItemService {
@@ -66,6 +94,7 @@ export class MediaItemService {
     @Inject(DRIZZLE) private readonly db: DbType,
     private readonly cloudinaryService: CloudinaryService,
     private readonly storageObjects: StorageObjectService,
+    private readonly quota: StorageQuotaService,
   ) {}
 
   /**
@@ -98,14 +127,47 @@ export class MediaItemService {
   }
 
   /**
-   * Create a new media item
+   * Registers a file the client uploaded directly (R2 presign or a signed
+   * Cloudinary upload). Saving the same stored object twice returns the first
+   * row (B3). Otherwise the file must belong to this workspace (SEC5), and
+   * its size is asked of the store: the client's `fileSize` is never used. A
+   * file the store cannot size is refused (400 not uploaded yet, 503 retry);
+   * a file that would go over the limit is deleted again and refused with
+   * 413.
    */
-  async create(workspaceId: string, userId: string, dto: CreateMediaItemDto) {
+  async create(
+    workspaceId: string,
+    userId: string,
+    dto: CreateMediaItemDto,
+  ): Promise<MediaItemView> {
     if (dto.categoryId) {
       await this.assertMediaFolder(workspaceId, dto.categoryId);
     }
 
-    const newItem: NewMediaItem = {
+    const ref: StoredFileRef = {
+      workspaceId,
+      storageProvider: this.storageObjects.providerOf(
+        dto.fileUrl,
+        dto.cloudinaryPublicId ?? null,
+      ),
+      cloudinaryPublicId: dto.cloudinaryPublicId ?? null,
+      fileUrl: dto.fileUrl,
+      type: dto.type,
+      mimeType: dto.mimeType ?? null,
+    };
+
+    // Fast path, before any provider call. `insertChecked` repeats the check
+    // under the lock, where it is race-safe.
+    const existing = await this.findLiveCopy(workspaceId, ref, this.db);
+    if (existing) return this.viewOf(existing.id);
+
+    this.storageObjects.assertWorkspaceObject(ref, workspaceId);
+    const size = await this.storageObjects.realSize(ref);
+    if (size.kind === 'missing') throw new UploadNotFinishedException();
+    if (size.kind === 'error') throw new SizeUnavailableException();
+    const bytes = size.bytes;
+
+    const values: NewMediaItem = {
       workspaceId,
       uploadedById: userId,
       type: dto.type,
@@ -114,32 +176,224 @@ export class MediaItemService {
       fileUrl: dto.fileUrl,
       thumbnailUrl: dto.thumbnailUrl,
       mimeType: dto.mimeType,
-      fileSize: dto.fileSize,
       width: dto.width,
       height: dto.height,
       duration: dto.duration,
       cloudinaryPublicId: dto.cloudinaryPublicId,
       cloudinaryAssetId: dto.cloudinaryAssetId,
-      storageProvider: this.storageObjects.providerOf(
-        dto.fileUrl,
-        dto.cloudinaryPublicId ?? null,
-      ),
+      storageProvider: ref.storageProvider,
       categoryId: dto.categoryId,
       tags: dto.tags || [],
       altText: dto.altText,
       pageCount: dto.pageCount,
     };
+    const id = await this.insertChecked(
+      workspaceId,
+      userId,
+      values,
+      ref,
+      bytes,
+    );
+    return this.viewOf(id);
+  }
 
-    const [created] = await this.db
-      .insert(mediaItems)
-      .values(newItem)
-      .returning();
+  /**
+   * Saves a file the server just stored in Cloudinary as a Library item. The
+   * size is the upload's own; the same lock, idempotency and delete-on-413 as
+   * `create` apply (B2). An asset Cloudinary already held under that public
+   * id is refused with 409 and left alone: it belongs to someone else.
+   */
+  async createFromUpload(
+    workspaceId: string,
+    userId: string,
+    upload: UploadResult,
+    meta: UploadItemMeta,
+  ): Promise<MediaItemView> {
+    if (upload.existing) {
+      this.logger.error(
+        `Cloudinary returned an existing asset for ${upload.publicId} (workspace ${workspaceId}); refusing to save it`,
+      );
+      throw new UploadConflictException();
+    }
+    const type = mediaTypeFromUpload({
+      resourceType: upload.resourceType,
+      format: upload.format,
+      mimeType: meta.mimeType,
+    });
+    const ref: StoredFileRef = {
+      workspaceId,
+      storageProvider: 'cloudinary',
+      cloudinaryPublicId: upload.publicId,
+      fileUrl: upload.secureUrl,
+      type,
+      mimeType: meta.mimeType ?? null,
+    };
+    const values: NewMediaItem = {
+      workspaceId,
+      uploadedById: userId,
+      type,
+      name: meta.name.slice(0, NAME_MAX),
+      fileUrl: upload.secureUrl,
+      thumbnailUrl:
+        upload.thumbnailUrl ??
+        (type === 'image' || type === 'gif' ? upload.secureUrl : null),
+      mimeType: meta.mimeType ?? null,
+      width: upload.width ?? null,
+      height: upload.height ?? null,
+      // The column holds whole seconds; Cloudinary reports a float.
+      duration:
+        upload.duration !== undefined ? Math.round(upload.duration) : null,
+      cloudinaryPublicId: upload.publicId,
+      storageProvider: 'cloudinary',
+      // Cloudinary also reports a GIF's frame count as `pages`.
+      pageCount: type === 'document' ? (upload.pages ?? null) : null,
+      categoryId: meta.categoryId ?? null,
+      tags: meta.tags ?? [],
+    };
+    let id: string;
+    try {
+      id = await this.insertChecked(
+        workspaceId,
+        userId,
+        values,
+        ref,
+        upload.bytes,
+      );
+    } catch (error) {
+      // The server stored these bytes a moment ago for this row alone; the
+      // row never committed, so they are an orphan. A 413 is already cleaned
+      // up inside insertChecked.
+      if (!(error instanceof StorageFullException)) {
+        await this.discardUnusedFile(ref, 'orphaned');
+      }
+      throw error;
+    }
+    // The row is committed from here on: its bytes are never an orphan, so a
+    // failing read must not reach the cleanup above.
+    return this.viewOf(id);
+  }
+
+  /**
+   * Inserts under the workspace's storage lock: the duplicate check, the
+   * usage read and the insert all run on the locked transaction, so two
+   * parallel saves cannot both pass the check. A refused file is deleted
+   * from storage unless something still uses it. Returns the row's id; the
+   * caller reads the view after the commit.
+   */
+  private async insertChecked(
+    workspaceId: string,
+    userId: string,
+    values: NewMediaItem,
+    ref: StoredFileRef,
+    bytes: number,
+  ): Promise<string> {
+    let id: string;
+    try {
+      id = await this.quota.runLocked(workspaceId, async (tx) => {
+        const existing = await this.findLiveCopy(workspaceId, ref, tx);
+        if (existing) return existing.id;
+
+        const usage = await this.quota.getUsage(workspaceId, tx);
+        if (wouldExceed(usage.used, bytes, usage.limit)) {
+          throw new StorageFullException(usage);
+        }
+        const [created] = await tx
+          .insert(mediaItems)
+          .values({
+            ...values,
+            workspaceId,
+            uploadedById: userId,
+            fileSize: bytes,
+          })
+          .returning({ id: mediaItems.id });
+        return created.id;
+      });
+    } catch (error) {
+      if (error instanceof StorageFullException) {
+        await this.discardUnusedFile(ref, 'refused');
+      }
+      throw error;
+    }
 
     this.logger.log(
-      `Created media item "${dto.name}" for workspace ${workspaceId}`,
+      `Created media item "${values.name}" for workspace ${workspaceId}`,
     );
+    return id;
+  }
 
-    return created;
+  /**
+   * A live row of this workspace for the same stored object: the same public
+   * id when there is one, else the same file URL (B3, D15).
+   */
+  private async findLiveCopy(
+    workspaceId: string,
+    ref: StoredFileRef,
+    db: DbType,
+  ): Promise<{ id: string } | undefined> {
+    const sameFile = ref.cloudinaryPublicId
+      ? or(
+          eq(mediaItems.cloudinaryPublicId, ref.cloudinaryPublicId),
+          eq(mediaItems.fileUrl, ref.fileUrl),
+        )
+      : eq(mediaItems.fileUrl, ref.fileUrl);
+    const [row] = await db
+      .select({ id: mediaItems.id })
+      .from(mediaItems)
+      .where(
+        and(
+          eq(mediaItems.workspaceId, workspaceId),
+          eq(mediaItems.isDeleted, false),
+          sameFile,
+        ),
+      )
+      .orderBy(asc(mediaItems.createdAt), asc(mediaItems.id))
+      .limit(1);
+    return row;
+  }
+
+  /**
+   * Deletes the bytes of a file that has no row, unless something still uses
+   * them: a Library row of any workspace (as its file or its thumbnail), or a
+   * post, campaign slot or evergreen entry (the shared reference builders).
+   * A failure is logged, not thrown.
+   */
+  private async discardUnusedFile(
+    ref: StoredFileRef,
+    reason: 'refused' | 'orphaned',
+  ): Promise<void> {
+    try {
+      if (await this.storageObjects.isFileShared(ref, NO_ROW_ID)) return;
+      if (await this.storageObjects.isFileReferenced(ref)) return;
+      await this.storageObjects.deleteFile(ref);
+    } catch (error) {
+      this.logger.warn(
+        `Could not delete ${reason} file ${ref.cloudinaryPublicId ?? ref.fileUrl}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  /** One item as a `MediaItemView`, with its folder and uploader. */
+  private async viewOf(itemId: string): Promise<MediaItemView> {
+    return this.readView(eq(mediaItems.id, itemId));
+  }
+
+  /** The one read behind every single-item `MediaItemView` (`findOne`, saves). */
+  private async readView(where: SQL | undefined): Promise<MediaItemView> {
+    const [row] = await this.db
+      .select(this.viewSelection())
+      .from(mediaItems)
+      .leftJoin(mediaCategories, eq(mediaItems.categoryId, mediaCategories.id))
+      .leftJoin(users, eq(mediaItems.uploadedById, users.id))
+      .where(where)
+      .limit(1);
+    if (!row) throw new NotFoundException('Media item not found');
+    return {
+      ...row.item,
+      category: row.category,
+      uploadedBy: toUserRef(row.uploader),
+    };
   }
 
   /**
@@ -357,25 +611,9 @@ export class MediaItemService {
    * Get a single media item by ID
    */
   async findOne(workspaceId: string, itemId: string): Promise<MediaItemView> {
-    const [row] = await this.db
-      .select(this.viewSelection())
-      .from(mediaItems)
-      .leftJoin(mediaCategories, eq(mediaItems.categoryId, mediaCategories.id))
-      .leftJoin(users, eq(mediaItems.uploadedById, users.id))
-      .where(
-        and(eq(mediaItems.id, itemId), eq(mediaItems.workspaceId, workspaceId)),
-      )
-      .limit(1);
-
-    if (!row) {
-      throw new NotFoundException('Media item not found');
-    }
-
-    return {
-      ...row.item,
-      category: row.category,
-      uploadedBy: toUserRef(row.uploader),
-    };
+    return this.readView(
+      and(eq(mediaItems.id, itemId), eq(mediaItems.workspaceId, workspaceId)),
+    );
   }
 
   /**

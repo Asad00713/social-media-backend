@@ -1,9 +1,12 @@
 import type { ConfigService } from '@nestjs/config';
 import { CloudinaryService } from '../../media/cloudinary.service';
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
+import { BadRequestException } from '@nestjs/common';
 import {
   StorageObjectService,
   cloudinaryResourceType,
+  cloudinaryUploadFolder,
+  cloudinaryThumbFolder,
   type StoredFileRef,
 } from './storage-object.service';
 
@@ -18,9 +21,11 @@ function makeMocks() {
   const cloudinary = {
     delete: jest.fn().mockResolvedValue(true),
     isOwnUrl: jest.fn().mockReturnValue(false),
+    getResourceBytes: jest.fn().mockResolvedValue({ kind: 'missing' }),
   };
   const r2 = {
     deleteObject: jest.fn().mockResolvedValue(undefined),
+    verifyObject: jest.fn().mockResolvedValue({ exists: false }),
     keyFromPublicUrl: jest.fn((url: string) =>
       url.startsWith(`${R2_BASE}/`) ? url.slice(R2_BASE.length + 1) : null,
     ),
@@ -291,6 +296,190 @@ describe('StorageObjectService', () => {
     it('rejects every R2 url when the R2 public base is unset', () => {
       const s = realService({ CLOUDINARY_CLOUD_NAME: 'acme' });
       expect(s.isOwnStorageUrl(`${R2_BASE}/composer/videos/a.mp4`)).toBe(false);
+    });
+  });
+
+  // Fix round 1: an unknown size is never a number the caller could replace
+  // with the client's own claim. It is "missing" (not uploaded yet) or
+  // "error" (ask again later).
+  describe('realSize', () => {
+    const r2Ref = () =>
+      ref({ fileUrl: `${R2_BASE}/${R2_KEY}`, cloudinaryPublicId: null });
+
+    it('asks R2 for an R2 file and returns its content length', async () => {
+      const { service, r2, cloudinary } = makeMocks();
+      r2.verifyObject.mockResolvedValue({ exists: true, contentLength: 4321 });
+      await expect(service.realSize(r2Ref())).resolves.toEqual({
+        kind: 'size',
+        bytes: 4321,
+      });
+      expect(r2.verifyObject).toHaveBeenCalledWith(R2_KEY);
+      expect(cloudinary.getResourceBytes).not.toHaveBeenCalled();
+    });
+
+    it('is missing for an R2 object that is not there yet', async () => {
+      const { service } = makeMocks();
+      await expect(service.realSize(r2Ref())).resolves.toEqual({
+        kind: 'missing',
+      });
+    });
+
+    it('is an error when R2 throws or reports no length', async () => {
+      const { service, r2 } = makeMocks();
+      jest
+        .spyOn(
+          (service as unknown as { logger: { warn: () => void } }).logger,
+          'warn',
+        )
+        .mockImplementation(() => undefined);
+      r2.verifyObject.mockRejectedValueOnce(new Error('R2 down'));
+      await expect(service.realSize(r2Ref())).resolves.toEqual({
+        kind: 'error',
+      });
+      r2.verifyObject.mockResolvedValueOnce({ exists: true });
+      await expect(service.realSize(r2Ref())).resolves.toEqual({
+        kind: 'error',
+      });
+    });
+
+    it("passes Cloudinary's answer through, asked by public id and resource type", async () => {
+      const { service, cloudinary } = makeMocks();
+      cloudinary.getResourceBytes.mockResolvedValue({
+        kind: 'size',
+        bytes: 777,
+      });
+      await expect(
+        service.realSize(ref({ type: 'video', mimeType: 'video/mp4' })),
+      ).resolves.toEqual({ kind: 'size', bytes: 777 });
+      expect(cloudinary.getResourceBytes).toHaveBeenCalledWith(
+        'social-media/abc',
+        'video',
+      );
+      cloudinary.getResourceBytes.mockResolvedValue({ kind: 'missing' });
+      await expect(service.realSize(ref())).resolves.toEqual({
+        kind: 'missing',
+      });
+    });
+
+    it('is missing for a non-R2 file without a public id', async () => {
+      const { service, cloudinary } = makeMocks();
+      await expect(
+        service.realSize(ref({ cloudinaryPublicId: null })),
+      ).resolves.toEqual({ kind: 'missing' });
+      expect(cloudinary.getResourceBytes).not.toHaveBeenCalled();
+    });
+  });
+
+  // SEC5: `POST items` registers a file the client says it uploaded. Only an
+  // object this workspace stored may be registered, or a row could be pointed
+  // at another tenant's file (and later delete it, or count it as ours).
+  describe('assertWorkspaceObject', () => {
+    const CLOUD = 'https://res.cloudinary.com/acme';
+    const pid = (ws: string) => `${cloudinaryUploadFolder(ws)}/abc123`;
+    function withOwnCloud() {
+      const mocks = makeMocks();
+      mocks.cloudinary.isOwnUrl.mockImplementation((u: string) =>
+        u.startsWith(`${CLOUD}/`),
+      );
+      return mocks;
+    }
+    const accept = (service: StorageObjectService, r: Partial<StoredFileRef>) =>
+      expect(() =>
+        service.assertWorkspaceObject(
+          { fileUrl: '', cloudinaryPublicId: null, ...r },
+          WS,
+        ),
+      ).not.toThrow();
+    const reject = (service: StorageObjectService, r: Partial<StoredFileRef>) =>
+      expect(() =>
+        service.assertWorkspaceObject(
+          { fileUrl: '', cloudinaryPublicId: null, ...r },
+          WS,
+        ),
+      ).toThrow(BadRequestException);
+
+    it('accepts this workspace R2 key, with or without the key as public id', () => {
+      const { service } = withOwnCloud();
+      accept(service, { fileUrl: `${R2_BASE}/${R2_KEY}` });
+      accept(service, {
+        fileUrl: `${R2_BASE}/${R2_KEY}`,
+        cloudinaryPublicId: R2_KEY,
+      });
+    });
+
+    it("rejects another workspace's R2 key and a mismatched public id", () => {
+      const { service } = withOwnCloud();
+      reject(service, { fileUrl: `${R2_BASE}/${keyFor(OTHER_WS)}` });
+      reject(service, {
+        fileUrl: `${R2_BASE}/${R2_KEY}`,
+        cloudinaryPublicId: keyFor(OTHER_WS),
+      });
+      reject(service, { fileUrl: `${R2_BASE}/inbox/files/${WS}/a.pdf` });
+    });
+
+    it('accepts our Cloudinary file under this workspace folder', () => {
+      const { service } = withOwnCloud();
+      accept(service, {
+        fileUrl: `${CLOUD}/image/upload/v1700000000/${pid(WS)}.png`,
+        cloudinaryPublicId: pid(WS),
+      });
+      // Raw files keep the extension in the public id; no version segment.
+      accept(service, {
+        fileUrl: `${CLOUD}/raw/upload/${pid(WS)}.zip`,
+        cloudinaryPublicId: `${pid(WS)}.zip`,
+      });
+    });
+
+    it('rejects Cloudinary refs outside this workspace or not matching the url', () => {
+      const { service } = withOwnCloud();
+      // Another workspace's folder.
+      reject(service, {
+        fileUrl: `${CLOUD}/image/upload/v1/${pid(OTHER_WS)}.png`,
+        cloudinaryPublicId: pid(OTHER_WS),
+      });
+      // A shared folder carries no workspace.
+      reject(service, {
+        fileUrl: `${CLOUD}/image/upload/v1/social-media/abc.png`,
+        cloudinaryPublicId: 'social-media/abc',
+      });
+      // Our public id, but the url shows a different file.
+      reject(service, {
+        fileUrl: `${CLOUD}/image/upload/v1/social-media/abc.png`,
+        cloudinaryPublicId: pid(WS),
+      });
+      // Traversal out of the folder.
+      reject(service, {
+        fileUrl: `${CLOUD}/image/upload/v1/${cloudinaryUploadFolder(WS)}/../x.png`,
+        cloudinaryPublicId: `${cloudinaryUploadFolder(WS)}/../x`,
+      });
+      // No public id at all.
+      reject(service, {
+        fileUrl: `${CLOUD}/image/upload/v1/${pid(WS)}.png`,
+      });
+    });
+
+    // Fix round 2: a poster lives under library-thumbs/<ws>/, which can never
+    // be registered as a Library item.
+    it("rejects a poster in this workspace's thumbnail folder", () => {
+      const { service } = withOwnCloud();
+      const thumb = `${cloudinaryThumbFolder(WS)}/abc123`;
+      expect(thumb.startsWith(`${cloudinaryUploadFolder(WS)}/`)).toBe(false);
+      reject(service, {
+        fileUrl: `${CLOUD}/image/upload/v1/${thumb}.jpg`,
+        cloudinaryPublicId: thumb,
+      });
+    });
+
+    it('rejects a foreign url or another Cloudinary cloud', () => {
+      const { service } = withOwnCloud();
+      reject(service, {
+        fileUrl: `https://evil.test/${pid(WS)}.png`,
+        cloudinaryPublicId: pid(WS),
+      });
+      reject(service, {
+        fileUrl: `https://res.cloudinary.com/other/image/upload/v1/${pid(WS)}.png`,
+        cloudinaryPublicId: pid(WS),
+      });
     });
   });
 });
