@@ -57,7 +57,7 @@ const shape = (rows: { name: string; type: string; display_order: number }[]) =>
 describeLibraryDb('migration 0054 (library columns)', () => {
   afterEach(() => jest.restoreAllMocks());
 
-  it('writes per-plan storage and backfills each workspace from its owner’s ACTIVE plan', async () => {
+  it('writes per-plan storage and backfills each workspace from its owner’s active or trialing plan', async () => {
     await withLibraryDb(async (_db, client) => {
       for (const code of Object.keys(PLAN_STORAGE_BYTES)) {
         await client.query(
@@ -75,6 +75,11 @@ describeLibraryDb('migration 0054 (library columns)', () => {
       const active = await seedWorkspace(client);
       await seedSubscription(client, active.ownerId, 'PRO', 'active');
       await seedUsage(client, active.workspaceId);
+
+      // Owner ruling 2026-10-31: a trial counts as active for storage.
+      const trialing = await seedWorkspace(client);
+      await seedSubscription(client, trialing.ownerId, 'BASIC', 'trialing');
+      await seedUsage(client, trialing.workspaceId, { storageBytesLimit: 7 });
 
       const canceled = await seedWorkspace(client);
       await seedSubscription(client, canceled.ownerId, 'PRO', 'canceled');
@@ -118,6 +123,10 @@ describeLibraryDb('migration 0054 (library columns)', () => {
 
       expect(await storageLimit(client, active.workspaceId)).toEqual({
         limit: 10737418240,
+        extra: 0,
+      });
+      expect(await storageLimit(client, trialing.workspaceId)).toEqual({
+        limit: 2147483648,
         extra: 0,
       });
       expect(await storageLimit(client, canceled.workspaceId)).toEqual({

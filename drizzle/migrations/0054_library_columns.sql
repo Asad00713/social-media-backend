@@ -32,8 +32,10 @@
 --      BASIC 2 GB, PRO 10 GB, MAX 25 GB). Seeds do not run on deploy, so this
 --      file writes them itself.
 --   6. workspace_usage.storage_bytes_limit (backfilled from the workspace
---      owner's plan, counted only while the subscription is 'active'; anything
---      else is FREE, D14/B7) and workspace_usage.extra_storage_purchased
+--      owner's plan, counted only while the subscription is 'active' or
+--      'trialing' (owner ruling 2026-10-31: a trial counts as active for
+--      storage); anything else is FREE, D14/B7) and
+--      workspace_usage.extra_storage_purchased
 --      (bought add-on bytes; this file never writes it).
 --   7. Folder kinds (D7): the four legacy media folder types image / gif /
 --      video / document become one 'media' kind. Same-named folders in one
@@ -146,8 +148,10 @@ UPDATE "plans"
 ALTER TABLE "workspace_usage" ADD COLUMN IF NOT EXISTS "storage_bytes_limit" bigint NOT NULL DEFAULT 524288000;
 ALTER TABLE "workspace_usage" ADD COLUMN IF NOT EXISTS "extra_storage_purchased" bigint NOT NULL DEFAULT 0;
 
--- The owner's plan counts only while the subscription is active (B7); no
--- subscription, any other status, or a plan code with no row -> FREE.
+-- The owner's plan counts only while the subscription is active or trialing
+-- (B7; a trial counts as active, owner ruling 2026-10-31), the same rule as
+-- StorageQuotaService. No subscription, any other status, or a plan code with
+-- no row -> FREE.
 UPDATE "workspace_usage" wu
    SET "storage_bytes_limit" = t.limit_bytes
   FROM (
@@ -161,7 +165,7 @@ UPDATE "workspace_usage" wu
       JOIN workspace w ON w.id = u.workspace_id
       LEFT JOIN subscriptions s ON s.user_id = w.owner_id
       LEFT JOIN plans p
-        ON p.code = COALESCE(CASE WHEN s.status = 'active' THEN s.plan_code END, 'FREE')
+        ON p.code = COALESCE(CASE WHEN s.status IN ('active', 'trialing') THEN s.plan_code END, 'FREE')
   ) t
  WHERE wu.id = t.id
    AND wu.storage_bytes_limit IS DISTINCT FROM t.limit_bytes;

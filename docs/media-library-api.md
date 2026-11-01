@@ -42,9 +42,11 @@ Every workspace route sits behind `JwtAuthGuard` + `WorkspaceRoleGuard` and decl
 | `posts:publish` | `DELETE items/:itemId/permanent`, `DELETE templates/:templateId/permanent`, `DELETE snippets/:snippetId/permanent`, `DELETE links/:linkId/permanent`, `POST recycle-bin/delete`, `POST recycle-bin/empty`, and `POST items/bulk` with `action: "permanentDelete"` (the route itself is `posts:draft`; the handler checks `posts:publish` for that action) |
 | none (ticket) | `GET categories/:categoryId/zip` |
 
-The `/media` upload routes are behind `JwtAuthGuard` and check `posts:draft` on the body's `workspaceId`.
+The `/media` upload routes are behind `JwtAuthGuard` and check `posts:draft` on the body's `workspaceId` (`WorkspaceAccessService.assertCan`).
 
-A caller who is not a member of the workspace, or whose role lacks the capability, gets `403`.
+Denials differ by route family:
+- **Workspace routes** (`/workspaces/:workspaceId/media-library/…`): a caller who is not a member of the workspace, or whose role lacks the capability, gets `403` from `WorkspaceRoleGuard`.
+- **`/media` upload routes**: the same caller gets `404` (`assertCan` does not reveal whether the workspace exists).
 
 ---
 
@@ -109,7 +111,11 @@ interface LibraryStats {
 }
 ```
 
-Storage per plan (per workspace): FREE 500 MB (`524288000`), BASIC 2 GB (`2147483648`), PRO 10 GB (`10737418240`), MAX 25 GB (`26843545600`). The limit is the workspace's `workspace_usage` row: `storage_bytes_limit` (the plan's bytes, written by billing sync and backfilled by 0054) plus `extra_storage_purchased` (bought add-ons). A workspace without a row falls back to the owner's plan while its subscription is `active` or `trialing`, and to FREE otherwise.
+Storage per plan (per workspace): FREE 500 MB (`524288000`), BASIC 2 GB (`2147483648`), PRO 10 GB (`10737418240`), MAX 25 GB (`26843545600`).
+
+**Which plan counts:** the workspace owner's plan while their subscription is `active` or `trialing`; anything else (no subscription, another status, an unknown plan code) is FREE. Migration 0054's backfill of `workspace_usage.storage_bytes_limit` and `StorageQuotaService`'s fallback both apply this one rule.
+
+The effective limit is the workspace's `workspace_usage` row, `storage_bytes_limit + extra_storage_purchased` (bought add-ons). Billing sync writes the row; a workspace without one falls back to its owner's plan by the rule above.
 
 ---
 
@@ -217,8 +223,12 @@ GET /workspaces/:workspaceId/media-library/categories/:categoryId/zip?ticket=<si
 
 - Streams `application/zip` with `Content-Disposition: attachment`. The frontend sets `window.location` (or a hidden `<a download>`) to the ticket URL.
 - `401 {code:'INVALID_TICKET', message}` for a missing, bad or expired ticket, a ticket for another workspace or folder, or a user who has lost `posts:draft` since the ticket was made.
+- The folder is re-checked when the download starts, so a valid ticket can still get:
+  - `404` if the folder was deleted after the ticket was issued;
+  - `400` if it is no longer a media folder;
+  - `413 ZIP_TOO_LARGE` if it has grown past 2 GB.
 - Files that can't be fetched are listed in a `_skipped.txt` entry inside the zip.
-- This is the only workspace route without `WorkspaceRoleGuard`. It is on `LibraryZipController` and listed in `OPEN_ROUTES` (`every-workspace-route-guarded.spec.ts`) with the reason.
+- This is the only workspace route without `WorkspaceRoleGuard`. It is on `LibraryZipController` and listed in `OPEN_ROUTES` (`src/workspace-members/open-workspace-routes.ts`) with the reason.
 
 ---
 
@@ -593,7 +603,7 @@ previewFaviconUrl: string | null
 | ---------- | ---- | ------- | ----------- |
 | categoryId | uuid | | |
 | isStarred  | boolean | | |
-| search     | string | | `ilike` on url and title (also name and description) |
+| search     | string | | `ilike` on url, title (the fetched preview title), name and description |
 | sort       | `newest` \| `oldest` \| `most_used` \| `name` | `newest` | `oldest` = `created_at ASC, id ASC` |
 | limit      | 1-100 | 50 | |
 | offset     | int | 0 | |
@@ -709,7 +719,7 @@ A scheduled job runs daily at 3:00 AM and purges every row (all four kinds) binn
 
 ## Uploads (`/media`)
 
-These routes moved from `MediaController` to `LibraryUploadController`; the paths are unchanged. Each is behind `JwtAuthGuard` and checks `posts:draft` on `workspaceId`.
+These routes moved from `MediaController` to `LibraryUploadController`; the paths are unchanged. Each is behind `JwtAuthGuard` and checks `posts:draft` on `workspaceId`. A caller who is not a member of that workspace, or lacks `posts:draft`, gets `404` (not `403`).
 
 | Route | Change |
 | --- | --- |
@@ -816,7 +826,7 @@ Everything else uses Nest's default shape:
 { "statusCode": 400, "message": ["name must be a string"], "error": "Bad Request" }
 ```
 
-`401` (no or bad token), `403` (not a member, or missing capability), `404` (not found), `500`.
+`401` (no or bad token); `403` (not a member, or missing capability, on workspace routes); `404` (not found, and on the `/media` upload routes also not a member or missing capability); `500`.
 
 ---
 
