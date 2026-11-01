@@ -85,13 +85,25 @@ export function cloudinaryThumbFolder(workspaceId: string): string {
   return `library-thumbs/${workspaceId}`;
 }
 
-/** True only for a public id inside this workspace's upload folder. */
+/**
+ * Where a workspace's own Cloudinary objects live: `upload` for Library files
+ * (`cloudinaryUploadFolder`), `thumbnail` for video posters
+ * (`cloudinaryThumbFolder`).
+ */
+export type WorkspaceLocation = 'upload' | 'thumbnail';
+
+/** True only for a public id inside this workspace's folder for `location`. */
 export function isWorkspaceCloudinaryPublicId(
   publicId: string,
   workspaceId: string,
+  location: WorkspaceLocation = 'upload',
 ): boolean {
   if (FORBIDDEN_KEY_CHARS.test(publicId)) return false;
-  const prefix = `${cloudinaryUploadFolder(workspaceId)}/`;
+  const folder =
+    location === 'thumbnail'
+      ? cloudinaryThumbFolder(workspaceId)
+      : cloudinaryUploadFolder(workspaceId);
+  const prefix = `${folder}/`;
   if (!publicId.startsWith(prefix) || publicId.length === prefix.length) {
     return false;
   }
@@ -118,6 +130,25 @@ function cloudinaryUrlShows(url: string, publicId: string): boolean {
     rest.startsWith(`${publicId}.`) &&
     /^[A-Za-z0-9]+$/.test(rest.slice(publicId.length + 1))
   );
+}
+
+/**
+ * The public id a plain Cloudinary delivery URL shows (the inverse of
+ * `cloudinaryUrlShows`), or null. A URL with transformation segments yields a
+ * public id `cloudinaryUrlShows` then rejects, so the pair stays exact.
+ */
+export function cloudinaryPublicIdFromUrl(url: string): string | null {
+  let path: string;
+  try {
+    path = new URL(url).pathname;
+  } catch {
+    return null;
+  }
+  const at = path.indexOf('/upload/');
+  if (at < 0) return null;
+  const rest = path.slice(at + '/upload/'.length).replace(/^v\d+\//, '');
+  const publicId = rest.replace(/\.[A-Za-z0-9]+$/, '');
+  return publicId || null;
 }
 
 /** Cloudinary files the destroy API addresses by resource type. */
@@ -183,25 +214,68 @@ export class StorageObjectService {
    * public id in its Cloudinary upload folder on our own cloud, shown by the
    * URL. Anything else (a foreign URL, another workspace's object) is
    * refused, so a row can never be pointed at bytes it does not own.
+   *
+   * `location: 'thumbnail'` asks the same of a video poster (M6): a
+   * Cloudinary public id under `library-thumbs/<ws>/`. Posters never live in
+   * R2, so an R2 URL is refused there.
    */
   assertWorkspaceObject(
     ref: Pick<StoredFileRef, 'fileUrl' | 'cloudinaryPublicId'>,
     workspaceId: string,
+    location: WorkspaceLocation = 'upload',
   ): void {
     const r2Key = this.r2.keyFromPublicUrl(ref.fileUrl);
     const publicId = ref.cloudinaryPublicId;
     const isOwned =
       r2Key !== null
-        ? isWorkspaceR2Key(r2Key, workspaceId) &&
+        ? location === 'upload' &&
+          isWorkspaceR2Key(r2Key, workspaceId) &&
           (!publicId || publicId === r2Key)
         : !!publicId &&
           this.cloudinary.isOwnUrl(ref.fileUrl) &&
-          isWorkspaceCloudinaryPublicId(publicId, workspaceId) &&
+          isWorkspaceCloudinaryPublicId(publicId, workspaceId, location) &&
           cloudinaryUrlShows(ref.fileUrl, publicId);
     if (!isOwned) {
       throw new BadRequestException(
-        'The file must be uploaded to this workspace before it is saved',
+        location === 'thumbnail'
+          ? 'thumbnailUrl must be a poster uploaded to this workspace (purpose=thumbnail)'
+          : 'The file must be uploaded to this workspace before it is saved',
       );
+    }
+  }
+
+  /**
+   * The stored poster behind a `thumbnailUrl` (M6): it must pass
+   * `assertWorkspaceObject` for this workspace's thumbnail location, else
+   * 400. Only a ref from here may have its bytes discarded as a poster.
+   */
+  posterRef(thumbnailUrl: string, workspaceId: string): StoredFileRef {
+    const ref: StoredFileRef = {
+      workspaceId,
+      storageProvider: 'cloudinary',
+      cloudinaryPublicId: cloudinaryPublicIdFromUrl(thumbnailUrl),
+      fileUrl: thumbnailUrl,
+      type: 'image',
+      mimeType: null,
+    };
+    this.assertWorkspaceObject(ref, workspaceId, 'thumbnail');
+    return ref;
+  }
+
+  /**
+   * `posterRef` without the 400: null for no thumbnail, or one that is not a
+   * poster of this workspace (a foreign URL, an image's own URL, another
+   * workspace's poster).
+   */
+  posterRefOf(
+    thumbnailUrl: string | null | undefined,
+    workspaceId: string,
+  ): StoredFileRef | null {
+    if (thumbnailUrl == null) return null;
+    try {
+      return this.posterRef(thumbnailUrl, workspaceId);
+    } catch {
+      return null;
     }
   }
 

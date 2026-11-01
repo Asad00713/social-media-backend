@@ -299,12 +299,13 @@ Registers a file the client uploaded directly (R2 presign, or a signed Cloudinar
 Fields: `type` (required), `name` (required, max 255), `fileUrl` (required), `description`, `thumbnailUrl`, `mimeType`, `width`, `height`, `duration`, `cloudinaryPublicId`, `cloudinaryAssetId`, `categoryId` (a media folder), `tags`, `altText`, `pageCount`. `fileSize` is still accepted but never used.
 
 - The file must be one this workspace stored: a Cloudinary public id under `library/<ws>/`, or an R2 key under this workspace. Anything else is a `400`.
+- `thumbnailUrl` is `null` (or left out), or a video poster this workspace stored with `upload/file` and `purpose: 'thumbnail'`: the plain Cloudinary URL of a public id under `library-thumbs/<ws>/`. Anything else (another URL, another workspace's poster, a Library upload, an R2 URL, a URL with transformations) is a `400`.
 - The server reads the real size from the store. If it cannot, the save is refused:
   - `400 {code:'UPLOAD_NOT_FINISHED', message}`: the object is not there yet.
   - `503 {code:'SIZE_UNAVAILABLE', message}`: provider error. Retryable.
 
   The client retries either a few times with backoff before failing the row.
-- Over the limit: `413 STORAGE_FULL`. The file is deleted from storage only when no Library row (as its file or its thumbnail) and no post, campaign slot or evergreen entry references it. If that check itself fails, the file is kept.
+- Over the limit: `413 STORAGE_FULL`. The file, and the poster sent as `thumbnailUrl`, are each deleted from storage only when no Library row (as its file or its thumbnail) and no post, campaign slot, evergreen entry or template references it. If that check itself fails, the file is kept.
 - Saving the same stored object twice returns the first row.
 
 **Response:** `201 Created`, the `MediaItem`.
@@ -406,7 +407,7 @@ POST   /workspaces/:workspaceId/media-library/items/:itemId/restore        posts
 DELETE /workspaces/:workspaceId/media-library/items/:itemId/permanent      posts:publish
 ```
 
-`permanent` works only on a binned item. A live item is a `404` ("Item not found in recycle bin"). The file is deleted from storage unless another row (any workspace, as its file or its thumbnail) or a post, campaign slot or evergreen entry still uses it; the row goes either way. When storage refuses the delete, the route returns `502` and the row stays, so the user can retry. Response: `{ "success": true, "message": "Media item permanently deleted" }`.
+`permanent` works only on a binned item. A live item is a `404` ("Item not found in recycle bin"). The file is deleted from storage unless another row (any workspace, as its file or its thumbnail) or a post, campaign slot, evergreen entry or template of the workspace still uses it; the row goes either way. A template keeps the bytes only: it does not make the item "used" (`usageCount`, `/usage` and `neverUsed` count posts, campaign slots and evergreen entries). Once the row is gone, a video's poster (under `library-thumbs/<ws>/`) is deleted by the same rule; if that check fails, the poster is kept. When storage refuses the delete, the route returns `502` and the row stays, so the user can retry. Response: `{ "success": true, "message": "Media item permanently deleted" }`.
 
 ### Bulk
 
@@ -751,7 +752,8 @@ These routes moved from `MediaController` to `LibraryUploadController`; the path
 ```
 
 - `upload/file` accepts `purpose: 'library' | 'thumbnail'` (default `library`). A `thumbnail` (a video's poster frame) still needs `workspaceId`, `posts:draft` and a storage check, but:
-  - it is stored under `library-thumbs/<ws>/<uuid>`;
+  - it is stored under `library-thumbs/<ws>/<uuid>`, always as Cloudinary resource type `image` (a client `resourceType` is ignored);
+  - it may be at most 10 MB; a larger one is refused with a plain `413` (Nest's default body, no `code`) before any storage check or upload;
   - it creates no Library row and returns `libraryItem: null`;
   - it ignores `categoryId` and `tags`;
   - a poster can never be registered as a Library item.

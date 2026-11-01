@@ -11,6 +11,7 @@ import type { CloudinaryService } from '../../media/cloudinary.service';
 import type { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import {
   StorageObjectService,
+  cloudinaryThumbFolder,
   cloudinaryUploadFolder,
 } from '../services/storage-object.service';
 import { StorageQuotaService } from '../services/storage-quota.service';
@@ -130,6 +131,21 @@ export function ownCloudinaryFile(
   return {
     fileUrl: `${TEST_CLOUDINARY_BASE}/image/upload/v1/${publicId}.png`,
     cloudinaryPublicId: publicId,
+  };
+}
+
+/**
+ * A video poster this workspace stored through `upload/file` with
+ * `purpose: 'thumbnail'`, as `POST items` receives it in `thumbnailUrl`.
+ */
+export function ownPoster(
+  workspaceId: string,
+  name: string = rand(),
+): { url: string; publicId: string } {
+  const publicId = `${cloudinaryThumbFolder(workspaceId)}/${name}`;
+  return {
+    url: `${TEST_CLOUDINARY_BASE}/image/upload/v1/${publicId}.jpg`,
+    publicId,
   };
 }
 

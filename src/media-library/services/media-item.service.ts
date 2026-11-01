@@ -142,6 +142,11 @@ export class MediaItemService {
     if (dto.categoryId) {
       await this.assertMediaFolder(workspaceId, dto.categoryId);
     }
+    // M6: no thumbnail, or a poster this workspace stored (purpose=thumbnail).
+    const poster =
+      dto.thumbnailUrl != null
+        ? this.storageObjects.posterRef(dto.thumbnailUrl, workspaceId)
+        : null;
 
     const ref: StoredFileRef = {
       workspaceId,
@@ -183,13 +188,17 @@ export class MediaItemService {
       altText: dto.altText,
       pageCount: dto.pageCount,
     };
-    const id = await this.insertChecked(
-      workspaceId,
-      userId,
-      values,
-      ref,
-      bytes,
-    );
+    let id: string;
+    try {
+      id = await this.insertChecked(workspaceId, userId, values, ref, bytes);
+    } catch (error) {
+      // The poster was uploaded for this save alone; insertChecked already
+      // discarded the file itself (M5).
+      if (error instanceof StorageFullException && poster) {
+        await this.discardUnusedFile(poster, 'refused');
+      }
+      throw error;
+    }
     // A file URL posts already use (re-registered after a purge, say) (I4).
     await this.recountUsage(workspaceId, id);
     return this.viewOf(id);
@@ -383,7 +392,7 @@ export class MediaItemService {
    */
   private async discardUnusedFile(
     ref: StoredFileRef,
-    reason: 'refused' | 'orphaned',
+    reason: 'refused' | 'orphaned' | 'purged',
   ): Promise<void> {
     try {
       if (await this.storageObjects.isFileShared(ref, NO_ITEM_ID)) return;
@@ -887,7 +896,41 @@ export class MediaItemService {
       purgedIds.push(...gone.map((r) => r.id));
     }
 
+    await this.discardPosters(rows, purgedIds);
+
     return { deletedIds: purgedIds, failedIds };
+  }
+
+  /**
+   * Deletes the posters (video thumbnails under `library-thumbs/<ws>/`) of
+   * rows that are now gone, by `discardUnusedFile`: a poster another row,
+   * a post, a campaign entry or a template still shows is kept, and a failed
+   * check keeps it too (M5). Runs after the rows are deleted, so the purged
+   * row no longer counts as a sharer.
+   */
+  private async discardPosters(
+    rows: MediaLibraryItem[],
+    purgedIds: string[],
+  ): Promise<void> {
+    const gone = new Set(purgedIds);
+    const posters = new Map<string, StoredFileRef>();
+    for (const row of rows) {
+      if (!gone.has(row.id)) continue;
+      const poster = this.storageObjects.posterRefOf(
+        row.thumbnailUrl,
+        row.workspaceId,
+      );
+      if (poster) posters.set(poster.fileUrl, poster);
+    }
+    const queue = [...posters.values()];
+    const worker = async () => {
+      for (let p = queue.shift(); p; p = queue.shift()) {
+        await this.discardUnusedFile(p, 'purged');
+      }
+    };
+    await Promise.all(
+      Array.from({ length: Math.min(PURGE_CONCURRENCY, queue.length) }, worker),
+    );
   }
 
   /** Whether every row of a purge group is still in the Bin. */
