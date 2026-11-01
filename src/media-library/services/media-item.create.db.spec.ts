@@ -1,3 +1,4 @@
+import { randomUUID } from 'crypto';
 import { HttpException, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import type { PoolClient } from 'pg';
@@ -17,6 +18,8 @@ import {
   seedWorkspace,
   seedMediaItem,
   seedPost,
+  seedCampaignSlot,
+  seedEvergreenPost,
   seedUsage,
   TEST_CLOUDINARY_BASE,
 } from '../testing/library-db';
@@ -231,31 +234,154 @@ describeLibraryDb('MediaItemService.create / createFromUpload storage', () => {
     });
   });
 
-  it('a 413 leaves a file alone while a post (any workspace) still uses its URL', async () => {
-    await withLibraryDb(async (db, client) => {
-      const a = await workspaceUsing(client, 0);
-      const b = await workspaceUsing(client, 900);
-      const file = ownR2File(b.workspaceId);
-      // No Library row anywhere, only a post in another workspace.
-      await seedPost(client, {
-        workspaceId: a.workspaceId,
-        createdById: a.ownerId,
-        mediaItems: [{ url: file.fileUrl, type: 'video' }],
+  // Fix round 2: the 413 guard uses the shared reference builders
+  // (usage-sql.ts), scoped to the file's workspace as they define it; R2 and
+  // Cloudinary keys already carry that workspace.
+  describe('413 spares a file something still references', () => {
+    async function overLimitCreate(
+      seedRef: (
+        client: PoolClient,
+        ws: { workspaceId: string; ownerId: string },
+        fileUrl: string,
+      ) => Promise<unknown>,
+    ) {
+      await withLibraryDb(async (db, client) => {
+        const b = await workspaceUsing(client, 900);
+        const file = ownR2File(b.workspaceId);
+        await seedRef(client, b, file.fileUrl);
+        const { service, storageObjects, r2 } = setup(db);
+        r2.verifyObject.mockResolvedValue({ exists: true, contentLength: 200 });
+        const deleteFile = jest.spyOn(storageObjects, 'deleteFile');
+
+        await expect(
+          service.create(b.workspaceId, b.ownerId, {
+            type: 'video',
+            name: 'clip',
+            ...file,
+          }),
+        ).rejects.toBeInstanceOf(StorageFullException);
+
+        expect(deleteFile).not.toHaveBeenCalled();
+        expect(r2.deleteObject).not.toHaveBeenCalled();
       });
-      const { service, storageObjects, r2 } = setup(db);
-      r2.verifyObject.mockResolvedValue({ exists: true, contentLength: 200 });
-      const deleteFile = jest.spyOn(storageObjects, 'deleteFile');
+    }
 
-      await expect(
-        service.create(b.workspaceId, b.ownerId, {
-          type: 'video',
-          name: 'clip',
-          ...file,
+    it('a post of the workspace uses its URL (no Library row)', () =>
+      overLimitCreate((client, ws, url) =>
+        seedPost(client, {
+          workspaceId: ws.workspaceId,
+          createdById: ws.ownerId,
+          mediaItems: [{ url, type: 'video' }],
         }),
-      ).rejects.toBeInstanceOf(StorageFullException);
+      ));
 
-      expect(deleteFile).not.toHaveBeenCalled();
-      expect(r2.deleteObject).not.toHaveBeenCalled();
+    it('an unmaterialised campaign slot of the workspace uses its URL', () =>
+      overLimitCreate((client, ws, url) =>
+        seedCampaignSlot(client, {
+          workspaceId: ws.workspaceId,
+          createdById: ws.ownerId,
+          media: [{ id: randomUUID(), url }],
+        }),
+      ));
+
+    it('an evergreen entry of the workspace uses its URL', () =>
+      overLimitCreate((client, ws, url) =>
+        seedEvergreenPost(client, {
+          workspaceId: ws.workspaceId,
+          createdById: ws.ownerId,
+          media: [{ id: randomUUID(), url }],
+        }),
+      ));
+
+    it("some row (any workspace) shows it as its thumbnail_url, e.g. a video's poster", () =>
+      overLimitCreate(async (client, _ws, url) => {
+        const other = await seedWorkspace(client);
+        await seedMediaItem(client, {
+          workspaceId: other.workspaceId,
+          uploadedById: other.ownerId,
+          type: 'video',
+          thumbnailUrl: url,
+        });
+      }));
+  });
+
+  // Fix round 2 (Important 1): createFromUpload owns orphan cleanup, and only
+  // for a failure before or inside the locked insert. Once the row has
+  // committed, its bytes are never an orphan.
+  describe('orphan cleanup', () => {
+    it('a failure inside the locked insert deletes the fresh upload, then surfaces', async () => {
+      await withLibraryDb(async (db, client) => {
+        const { workspaceId, ownerId } = await workspaceUsing(client, 0);
+        const { service, storageObjects, quota } = setup(db);
+        const boom = new Error('db down');
+        jest.spyOn(quota, 'runLocked').mockRejectedValueOnce(boom);
+        const deleteFile = jest.spyOn(storageObjects, 'deleteFile');
+        const upload = cloudinaryUpload({ publicId: 'library/ws/orphan' });
+
+        await expect(
+          service.createFromUpload(workspaceId, ownerId, upload, {
+            name: 'pic',
+          }),
+        ).rejects.toBe(boom);
+
+        expect(deleteFile).toHaveBeenCalledWith(
+          expect.objectContaining({ cloudinaryPublicId: 'library/ws/orphan' }),
+        );
+        expect(await countRows(client, workspaceId)).toBe(0);
+      });
+    });
+
+    it('never deletes a fresh upload something already references', async () => {
+      await withLibraryDb(async (db, client) => {
+        const { workspaceId, ownerId } = await workspaceUsing(client, 0);
+        const upload = cloudinaryUpload({ publicId: 'library/ws/shared' });
+        await seedMediaItem(client, {
+          workspaceId,
+          uploadedById: ownerId,
+          type: 'video',
+          thumbnailUrl: upload.secureUrl,
+        });
+        const { service, storageObjects, quota } = setup(db);
+        jest.spyOn(quota, 'runLocked').mockRejectedValueOnce(new Error('x'));
+        const deleteFile = jest.spyOn(storageObjects, 'deleteFile');
+
+        await expect(
+          service.createFromUpload(workspaceId, ownerId, upload, {
+            name: 'pic',
+          }),
+        ).rejects.toThrow('x');
+
+        expect(deleteFile).not.toHaveBeenCalled();
+      });
+    });
+
+    it('a failure after the insert committed deletes nothing; the row stays and the error surfaces', async () => {
+      await withLibraryDb(async (db, client) => {
+        const { workspaceId, ownerId } = await workspaceUsing(client, 0);
+        const { service, storageObjects, cloudinary } = setup(db);
+        const readFailed = new Error('read failed');
+        jest
+          .spyOn(
+            service as unknown as { viewOf: (id: string) => Promise<unknown> },
+            'viewOf',
+          )
+          .mockRejectedValueOnce(readFailed);
+        const deleteFile = jest.spyOn(storageObjects, 'deleteFile');
+        const isFileShared = jest.spyOn(storageObjects, 'isFileShared');
+
+        await expect(
+          service.createFromUpload(workspaceId, ownerId, cloudinaryUpload(), {
+            name: 'pic',
+          }),
+        ).rejects.toBe(readFailed);
+
+        expect(deleteFile).not.toHaveBeenCalled();
+        expect(cloudinary.delete).not.toHaveBeenCalled();
+        expect(await countRows(client, workspaceId)).toBe(1);
+        // Not even attempted: the scoping alone keeps a committed row's bytes
+        // out of the cleanup (the share guard is only the second line).
+        expect(isFileShared).not.toHaveBeenCalled();
+      });
     });
   });
 

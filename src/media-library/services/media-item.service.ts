@@ -181,7 +181,14 @@ export class MediaItemService {
       categoryId: dto.categoryId,
       tags: dto.tags || [],
     };
-    return this.insertChecked(workspaceId, userId, values, ref, bytes);
+    const id = await this.insertChecked(
+      workspaceId,
+      userId,
+      values,
+      ref,
+      bytes,
+    );
+    return this.viewOf(id);
   }
 
   /**
@@ -237,14 +244,35 @@ export class MediaItemService {
       categoryId: meta.categoryId ?? null,
       tags: meta.tags ?? [],
     };
-    return this.insertChecked(workspaceId, userId, values, ref, upload.bytes);
+    let id: string;
+    try {
+      id = await this.insertChecked(
+        workspaceId,
+        userId,
+        values,
+        ref,
+        upload.bytes,
+      );
+    } catch (error) {
+      // The server stored these bytes a moment ago for this row alone; the
+      // row never committed, so they are an orphan. A 413 is already cleaned
+      // up inside insertChecked.
+      if (!(error instanceof StorageFullException)) {
+        await this.discardUnusedFile(ref, 'orphaned');
+      }
+      throw error;
+    }
+    // The row is committed from here on: its bytes are never an orphan, so a
+    // failing read must not reach the cleanup above.
+    return this.viewOf(id);
   }
 
   /**
    * Inserts under the workspace's storage lock: the duplicate check, the
    * usage read and the insert all run on the locked transaction, so two
    * parallel saves cannot both pass the check. A refused file is deleted
-   * from storage unless another row still uses it.
+   * from storage unless something still uses it. Returns the row's id; the
+   * caller reads the view after the commit.
    */
   private async insertChecked(
     workspaceId: string,
@@ -252,7 +280,7 @@ export class MediaItemService {
     values: NewMediaItem,
     ref: StoredFileRef,
     bytes: number,
-  ): Promise<MediaItemView> {
+  ): Promise<string> {
     let id: string;
     try {
       id = await this.quota.runLocked(workspaceId, async (tx) => {
@@ -276,7 +304,7 @@ export class MediaItemService {
       });
     } catch (error) {
       if (error instanceof StorageFullException) {
-        await this.discardRefusedFile(ref);
+        await this.discardUnusedFile(ref, 'refused');
       }
       throw error;
     }
@@ -284,7 +312,7 @@ export class MediaItemService {
     this.logger.log(
       `Created media item "${values.name}" for workspace ${workspaceId}`,
     );
-    return this.viewOf(id);
+    return id;
   }
 
   /**
@@ -318,18 +346,22 @@ export class MediaItemService {
   }
 
   /**
-   * Deletes the bytes of a refused file, unless a Library row (any
-   * workspace) or a post (any workspace) still uses them. A failure is
-   * logged, not thrown.
+   * Deletes the bytes of a file that has no row, unless something still uses
+   * them: a Library row of any workspace (as its file or its thumbnail), or a
+   * post, campaign slot or evergreen entry (the shared reference builders).
+   * A failure is logged, not thrown.
    */
-  private async discardRefusedFile(ref: StoredFileRef): Promise<void> {
+  private async discardUnusedFile(
+    ref: StoredFileRef,
+    reason: 'refused' | 'orphaned',
+  ): Promise<void> {
     try {
       if (await this.storageObjects.isFileShared(ref, NO_ROW_ID)) return;
-      if (await this.storageObjects.isUrlInAnyPost(ref.fileUrl)) return;
+      if (await this.storageObjects.isFileReferenced(ref)) return;
       await this.storageObjects.deleteFile(ref);
     } catch (error) {
       this.logger.warn(
-        `Could not delete refused file ${ref.cloudinaryPublicId ?? ref.fileUrl}: ${
+        `Could not delete ${reason} file ${ref.cloudinaryPublicId ?? ref.fileUrl}: ${
           error instanceof Error ? error.message : String(error)
         }`,
       );

@@ -6,6 +6,7 @@ import {
   StorageObjectService,
   cloudinaryResourceType,
   cloudinaryUploadFolder,
+  cloudinaryThumbFolder,
   type StoredFileRef,
 } from './storage-object.service';
 
@@ -454,6 +455,18 @@ describe('StorageObjectService', () => {
       // No public id at all.
       reject(service, {
         fileUrl: `${CLOUD}/image/upload/v1/${pid(WS)}.png`,
+      });
+    });
+
+    // Fix round 2: a poster lives under library-thumbs/<ws>/, which can never
+    // be registered as a Library item.
+    it("rejects a poster in this workspace's thumbnail folder", () => {
+      const { service } = withOwnCloud();
+      const thumb = `${cloudinaryThumbFolder(WS)}/abc123`;
+      expect(thumb.startsWith(`${cloudinaryUploadFolder(WS)}/`)).toBe(false);
+      reject(service, {
+        fileUrl: `${CLOUD}/image/upload/v1/${thumb}.jpg`,
+        cloudinaryPublicId: thumb,
       });
     });
 

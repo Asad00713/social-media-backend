@@ -1,13 +1,15 @@
 import { randomUUID } from 'crypto';
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable } from '@nestjs/common';
 import {
   CloudinaryService,
   type UploadResult,
 } from '../../media/cloudinary.service';
-import { StorageFullException } from '../lib/storage';
 import { MediaItemService, type MediaItemView } from './media-item.service';
 import { StorageQuotaService } from './storage-quota.service';
-import { cloudinaryUploadFolder } from './storage-object.service';
+import {
+  cloudinaryThumbFolder,
+  cloudinaryUploadFolder,
+} from './storage-object.service';
 
 export interface IngestResult {
   upload: UploadResult;
@@ -72,9 +74,19 @@ function mimeFromDataUri(data: string): string | undefined {
   return /^data:([^;,]+)[;,]/.exec(data)?.[1];
 }
 
-/** A fresh location in the workspace's folder: `library/<ws>/<uuid>`. */
-function freshPublicId(workspaceId: string): string {
-  return `${cloudinaryUploadFolder(workspaceId)}/${randomUUID()}`;
+/**
+ * A fresh location: `library/<ws>/<uuid>`, or `library-thumbs/<ws>/<uuid>`
+ * for a poster, which `POST items` can never register as a Library item.
+ */
+function freshPublicId(
+  workspaceId: string,
+  purpose: 'library' | 'thumbnail' = 'library',
+): string {
+  const folder =
+    purpose === 'thumbnail'
+      ? cloudinaryThumbFolder(workspaceId)
+      : cloudinaryUploadFolder(workspaceId);
+  return `${folder}/${randomUUID()}`;
 }
 
 /**
@@ -85,8 +97,6 @@ function freshPublicId(workspaceId: string): string {
  */
 @Injectable()
 export class LibraryIngestService {
-  private readonly logger = new Logger(LibraryIngestService.name);
-
   constructor(
     private readonly cloudinary: CloudinaryService,
     private readonly quota: StorageQuotaService,
@@ -97,7 +107,7 @@ export class LibraryIngestService {
     await this.assertFolder(i);
     await this.quota.assertCanStore(i.workspaceId, i.buffer.length);
     const upload = await this.cloudinary.uploadFromBuffer(i.buffer, {
-      publicId: freshPublicId(i.workspaceId),
+      publicId: freshPublicId(i.workspaceId, i.purpose),
       resourceType: i.resourceType ?? 'auto',
       tags: i.tags ?? [],
     });
@@ -140,10 +150,10 @@ export class LibraryIngestService {
   }
 
   /**
-   * Saves the Library item. When that fails for any reason but a 413 (which
-   * `createFromUpload` already cleans up), the fresh upload is deleted
-   * best-effort so no orphan stays behind. An `existing` asset is never ours
-   * to delete.
+   * Saves the Library item. Cleanup of a failed save is `createFromUpload`'s
+   * job, scoped to its locked insert: a failure after the row committed (a
+   * read of the view, say) leaves bytes a row owns, and deleting them here
+   * would break that row.
    */
   private async save(
     i: IngestBase,
@@ -151,31 +161,12 @@ export class LibraryIngestService {
     name: string,
     mimeType?: string,
   ): Promise<IngestResult> {
-    try {
-      const libraryItem = await this.mediaItems.createFromUpload(
-        i.workspaceId,
-        i.userId,
-        upload,
-        { name, mimeType, categoryId: i.categoryId, tags: i.tags },
-      );
-      return { upload, libraryItem };
-    } catch (error) {
-      if (!(error instanceof StorageFullException) && !upload.existing) {
-        await this.deleteOrphan(upload);
-      }
-      throw error;
-    }
-  }
-
-  private async deleteOrphan(upload: UploadResult): Promise<void> {
-    try {
-      await this.cloudinary.delete(upload.publicId, upload.resourceType);
-    } catch (error) {
-      this.logger.warn(
-        `Could not delete orphaned upload ${upload.publicId}: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-      );
-    }
+    const libraryItem = await this.mediaItems.createFromUpload(
+      i.workspaceId,
+      i.userId,
+      upload,
+      { name, mimeType, categoryId: i.categoryId, tags: i.tags },
+    );
+    return { upload, libraryItem };
   }
 }

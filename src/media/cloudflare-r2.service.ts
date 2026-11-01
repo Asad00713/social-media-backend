@@ -417,30 +417,49 @@ export class CloudflareR2Service {
   }
 
   private extensionFor(contentType: string, filename?: string): string {
-    if (filename) {
-      const idx = filename.lastIndexOf('.');
-      if (idx > -1 && idx < filename.length - 1) {
-        return filename.slice(idx).toLowerCase();
-      }
-    }
-    const bareType = contentType.split(';')[0].trim().toLowerCase();
-    const map: Record<string, string> = {
-      'image/jpeg': '.jpg',
-      'image/png': '.png',
-      'image/gif': '.gif',
-      'image/webp': '.webp',
-      'image/heic': '.heic',
-      'audio/webm': '.webm',
-      'audio/ogg': '.ogg',
-      'audio/mp4': '.m4a',
-      'audio/x-m4a': '.m4a',
-      'audio/mpeg': '.mp3',
-      'audio/wav': '.wav',
-      'audio/aac': '.aac',
-      'video/mp4': '.mp4',
-      'video/webm': '.webm',
-      'video/quicktime': '.mov',
-    };
-    return map[bareType] ?? '';
+    return safeKeyExtension(contentType, filename);
   }
+}
+
+/** Extensions for content types, used when the filename gives no safe one. */
+const MIME_EXTENSIONS: Record<string, string> = {
+  'image/jpeg': '.jpg',
+  'image/png': '.png',
+  'image/gif': '.gif',
+  'image/webp': '.webp',
+  'image/heic': '.heic',
+  'audio/webm': '.webm',
+  'audio/ogg': '.ogg',
+  'audio/mp4': '.m4a',
+  'audio/x-m4a': '.m4a',
+  'audio/mpeg': '.mp3',
+  'audio/wav': '.wav',
+  'audio/aac': '.aac',
+  'video/mp4': '.mp4',
+  'video/webm': '.webm',
+  'video/quicktime': '.mov',
+};
+
+/** A key extension: a dot and 1-8 lowercase ASCII letters or digits. */
+const SAFE_EXTENSION = /^\.[a-z0-9]{1,8}$/;
+
+/**
+ * The extension for a presigned key. The filename's own extension is used
+ * only when it is plain (a dot and 1-8 lowercase alphanumerics), so a crafted
+ * name can never put `/`, `..`, `%` or any other path character into the key.
+ * Otherwise the content type decides, or there is none.
+ */
+export function safeKeyExtension(
+  contentType: string,
+  filename?: string,
+): string {
+  if (filename) {
+    const idx = filename.lastIndexOf('.');
+    if (idx > -1 && idx < filename.length - 1) {
+      const ext = filename.slice(idx).toLowerCase();
+      if (SAFE_EXTENSION.test(ext)) return ext;
+    }
+  }
+  const bareType = contentType.split(';')[0].trim().toLowerCase();
+  return MIME_EXTENSIONS[bareType] ?? '';
 }

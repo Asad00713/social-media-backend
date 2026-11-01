@@ -19,6 +19,9 @@ import {
 import { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import { itemReferencedSql } from '../lib/usage-sql';
 
+/** Stands in for a row id when the file has no row: matches no item id. */
+const NO_ITEM_ID = '00000000-0000-0000-0000-000000000000';
+
 export { STORAGE_PROVIDERS };
 export type { StorageProvider, StoredSize };
 
@@ -67,6 +70,15 @@ export function isWorkspaceR2Key(key: string, workspaceId: string): boolean {
  */
 export function cloudinaryUploadFolder(workspaceId: string): string {
   return `library/${workspaceId}`;
+}
+
+/**
+ * Where a workspace's posters (video thumbnails) go. It is deliberately not
+ * under `cloudinaryUploadFolder`, so `POST items` can never register a poster
+ * as a Library item.
+ */
+export function cloudinaryThumbFolder(workspaceId: string): string {
+  return `library-thumbs/${workspaceId}`;
 }
 
 /** True only for a public id inside this workspace's upload folder. */
@@ -211,24 +223,31 @@ export class StorageObjectService {
   }
 
   /**
-   * True when a post in any workspace carries this file URL, through the
-   * generated `posts.media_urls` column (0055, GIN-indexed). A post that
-   * names a Library item by id also has that item's row, which
-   * `isFileShared` already sees.
+   * True when a post, an unmaterialised campaign slot or an evergreen entry
+   * uses this file URL, by the shared reference builders (`usage-sql.ts`,
+   * the single definition) with their own workspace scoping. The file has no
+   * row here, so no item id can match. Without a workspace the answer is
+   * "referenced": a guard must never delete what it cannot check.
    */
-  async isUrlInAnyPost(
-    fileUrl: string,
+  async isFileReferenced(
+    ref: Pick<StoredFileRef, 'fileUrl' | 'workspaceId'>,
     db: DbType = this.db,
   ): Promise<boolean> {
-    const res = await db.execute<{ found: number }>(
-      sql`SELECT 1 AS found FROM posts p WHERE p.media_urls @> jsonb_build_array(${fileUrl}::text) LIMIT 1`,
+    if (!ref.workspaceId) return true;
+    const res = await db.execute<{ referenced: boolean }>(
+      sql`SELECT ${itemReferencedSql({
+        id: sql`${NO_ITEM_ID}`,
+        fileUrl: sql`${ref.fileUrl}`,
+        workspaceId: sql`${ref.workspaceId}`,
+      })} AS referenced`,
     );
-    return res.rows.length > 0;
+    return res.rows[0]?.referenced === true;
   }
 
   /**
    * True when a row other than `exceptItemId` (any workspace, deleted or not)
-   * points at the same file, so deleting the bytes would break it.
+   * points at the same file, as its file or as its thumbnail (a video's
+   * poster), so deleting the bytes would break it.
    */
   async isFileShared(
     ref: StoredFileRef,
@@ -236,12 +255,13 @@ export class StorageObjectService {
     db: DbType = this.db,
   ): Promise<boolean> {
     const except = Array.isArray(exceptItemId) ? exceptItemId : [exceptItemId];
-    const sameFile = ref.cloudinaryPublicId
-      ? or(
-          eq(mediaItems.fileUrl, ref.fileUrl),
-          eq(mediaItems.cloudinaryPublicId, ref.cloudinaryPublicId),
-        )
-      : eq(mediaItems.fileUrl, ref.fileUrl);
+    const sameFile = or(
+      eq(mediaItems.fileUrl, ref.fileUrl),
+      eq(mediaItems.thumbnailUrl, ref.fileUrl),
+      ref.cloudinaryPublicId
+        ? eq(mediaItems.cloudinaryPublicId, ref.cloudinaryPublicId)
+        : undefined,
+    );
     const [other] = await db
       .select({ id: mediaItems.id })
       .from(mediaItems)

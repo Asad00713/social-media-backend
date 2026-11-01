@@ -1,4 +1,4 @@
-import { BadRequestException, ConflictException, Logger } from '@nestjs/common';
+import { BadRequestException, ConflictException } from '@nestjs/common';
 import type {
   CloudinaryService,
   UploadResult,
@@ -267,60 +267,43 @@ describe('LibraryIngestService', () => {
     );
   });
 
-  describe('orphans (fix round 1)', () => {
-    beforeEach(() => {
-      jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
-    });
-    afterEach(() => jest.restoreAllMocks());
+  // Fix round 2: orphan cleanup lives in createFromUpload, around the locked
+  // insert only. Ingest never deletes: after a commit the bytes are a row's.
+  describe('cleanup ownership (fix round 2)', () => {
+    it.each([
+      ['a generic failure', new Error('read failed after commit')],
+      ['a 413', new StorageFullException({ used: 99, limit: 100 })],
+      ['a conflict', new ConflictException({ code: 'UPLOAD_CONFLICT' })],
+    ])(
+      '%s from createFromUpload propagates; ingest deletes nothing',
+      async (_n, err) => {
+        const { service, mediaItems, cloudinary } = make();
+        mediaItems.createFromUpload.mockRejectedValue(err);
+        await expect(
+          service.ingestBuffer({ workspaceId: WS, userId: USER, buffer }),
+        ).rejects.toBe(err);
+        expect(cloudinary.delete).not.toHaveBeenCalled();
+      },
+    );
+  });
 
-    it('a save that fails for another reason deletes the fresh upload, then rethrows', async () => {
-      const { service, mediaItems, cloudinary } = make();
-      const boom = new Error('db down');
-      mediaItems.createFromUpload.mockRejectedValue(boom);
-      await expect(
-        service.ingestBuffer({ workspaceId: WS, userId: USER, buffer }),
-      ).rejects.toBe(boom);
-      expect(cloudinary.delete).toHaveBeenCalledWith(upload.publicId, 'image');
+  // Fix round 2: a poster goes to library-thumbs/<ws>/, a prefix POST items
+  // refuses, so it can never be registered as a Library item.
+  it('a thumbnail is stored at library-thumbs/<ws>/<uuid>', async () => {
+    const { service, cloudinary } = make();
+    await service.ingestBuffer({
+      workspaceId: WS,
+      userId: USER,
+      buffer,
+      purpose: 'thumbnail',
     });
-
-    it('a failed cleanup does not hide the original error', async () => {
-      const { service, mediaItems, cloudinary } = make();
-      const boom = new Error('db down');
-      mediaItems.createFromUpload.mockRejectedValue(boom);
-      cloudinary.delete.mockRejectedValue(new Error('cloudinary down'));
-      await expect(
-        service.ingestRemoteUrl({
-          workspaceId: WS,
-          userId: USER,
-          url: 'https://i.test/a.png',
-        }),
-      ).rejects.toBe(boom);
-    });
-
-    it('a 413 is left to createFromUpload, which already cleans up', async () => {
-      const { service, mediaItems, cloudinary } = make();
-      mediaItems.createFromUpload.mockRejectedValue(
-        new StorageFullException({ used: 99, limit: 100 }),
-      );
-      await expect(
-        service.ingestBuffer({ workspaceId: WS, userId: USER, buffer }),
-      ).rejects.toBeInstanceOf(StorageFullException);
-      expect(cloudinary.delete).not.toHaveBeenCalled();
-    });
-
-    it('an existing asset is never deleted', async () => {
-      const { service, mediaItems, cloudinary } = make();
-      cloudinary.uploadFromBuffer.mockResolvedValue({
-        ...upload,
-        existing: true,
-      });
-      mediaItems.createFromUpload.mockRejectedValue(
-        new ConflictException({ code: 'UPLOAD_CONFLICT' }),
-      );
-      await expect(
-        service.ingestBuffer({ workspaceId: WS, userId: USER, buffer }),
-      ).rejects.toBeInstanceOf(ConflictException);
-      expect(cloudinary.delete).not.toHaveBeenCalled();
-    });
+    const opts = cloudinary.uploadFromBuffer.mock.calls[0][1] as Record<
+      string,
+      unknown
+    >;
+    expect(opts.publicId).toMatch(
+      /^library-thumbs\/ws-1\/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    );
+    expect(opts.folder).toBeUndefined();
   });
 });
