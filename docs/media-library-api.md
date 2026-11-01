@@ -906,3 +906,36 @@ Both refuse to run against a non-local database without `--i-know-this-is-produc
    0054 builds three indexes on `media_items` (`file_url` hash, `thumbnail_url` hash, `cloudinary_public_id` btree) inside its lock. Check `media_items`' row count first if it has grown by orders of magnitude.
 4. **Set `LIBRARY_ZIP_TICKET_SECRET` on Railway** (at least 32 characters; `openssl rand -hex 32`). `API_PUBLIC_URL` must be set too. Without both, `POST …/zip-ticket` returns `503`.
 5. **After the deploy, run `library:backfill-refs`, then `library:backfill-sizes`** (see [Owner scripts](#owner-scripts)).
+6. **Deploy window: legacy folder kinds.** Until the old instance is gone, it can still create `image` / `video` / `gif` / `document` folders (and `bio` snippets) after 0054 merged them. Once the rollout is complete, run this one-off in the Railway prod console. It does what 0054 section 6 did for the stragglers, suffixing a name only where it would collide, and a second run changes nothing:
+
+   ```sql
+   WITH legacy AS (
+     SELECT id, workspace_id, name,
+            CASE type
+              WHEN 'image' THEN ' (Images)'
+              WHEN 'gif' THEN ' (GIFs)'
+              WHEN 'video' THEN ' (Videos)'
+              ELSE ' (Docs)'
+            END AS suffix
+       FROM media_categories
+      WHERE type IN ('image', 'gif', 'video', 'document')
+   )
+   UPDATE media_categories c
+      SET type = 'media',
+          name = CASE
+                   WHEN EXISTS (SELECT 1 FROM media_categories m
+                                 WHERE m.workspace_id = l.workspace_id
+                                   AND m.name = l.name
+                                   AND m.id <> l.id
+                                   AND m.type IN ('media', 'image', 'gif', 'video', 'document'))
+                   THEN left(l.name, 100 - length(l.suffix)) || l.suffix
+                   ELSE l.name
+                 END
+     FROM legacy l
+    WHERE c.id = l.id;
+
+   UPDATE text_snippets SET snippet_type = 'signature' WHERE snippet_type = 'bio';
+   ```
+
+   It is SQL for the owner to run once, not a migration.
+7. **The retention cron runs on every replica.** The daily 3:00 AM purge has no single-runner lock, so each replica runs it. That is harmless: every kind's purge is idempotent, and a second runner finds nothing left to delete. A single-runner lock is the later fix.
