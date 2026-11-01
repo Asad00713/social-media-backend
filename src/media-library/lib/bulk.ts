@@ -157,7 +157,9 @@ export async function runKindBulk<F extends { isDeleted?: boolean }>(
       .where(and(...buildConditions(workspaceId, filter)));
     ids = rows.map((r) => r.id);
   } else {
-    ids = dto.ids ?? [];
+    // A repeated id names one row: de-duplicated before the "not found"
+    // count, as the Bin's idsByKind does (M10).
+    ids = [...new Set(dto.ids ?? [])];
     if (ids.length > 0) {
       const found = await db
         .select({ id: table.id })

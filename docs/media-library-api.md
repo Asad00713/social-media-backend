@@ -353,13 +353,15 @@ PUT /workspaces/:workspaceId/media-library/items/:itemId          posts:draft
 
 Any of `name`, `description`, `categoryId` (a media folder, or `null` to unfile), `tags`, `isStarred`, `altText` (`null` clears it). An over-limit workspace can still edit, bin, restore and move items.
 
+**Response:** `200 OK`, the `MediaItem` (with `category` and `uploadedBy`).
+
 ### Record use
 
 ```
 POST /workspaces/:workspaceId/media-library/items/:itemId/use          posts:draft
 ```
 
-Sets `last_used_at` only. It no longer touches `usage_count`, which counts posts.
+Sets `last_used_at` only. It no longer touches `usage_count`, which counts posts. **Response:** the `MediaItem`.
 
 ### Usage ("Used in")
 
@@ -406,6 +408,8 @@ DELETE /workspaces/:workspaceId/media-library/items/:itemId                posts
 POST   /workspaces/:workspaceId/media-library/items/:itemId/restore        posts:draft
 DELETE /workspaces/:workspaceId/media-library/items/:itemId/permanent      posts:publish
 ```
+
+`DELETE items/:itemId` and `restore` respond with the `MediaItem`.
 
 `permanent` works only on a binned item. A live item is a `404` ("Item not found in recycle bin"). The file is deleted from storage unless another row (any workspace, as its file or its thumbnail) or a post, campaign slot, evergreen entry or template of the workspace still uses it; the row goes either way. A template keeps the bytes only: it does not make the item "used" (`usageCount`, `/usage` and `neverUsed` count posts, campaign slots and evergreen entries). Once the row is gone, a video's poster (under `library-thumbs/<ws>/`) is deleted by the same rule; if that check fails, the poster is kept. When storage refuses the delete, the route returns `502` and the row stays, so the user can retry. Response: `{ "success": true, "message": "Media item permanently deleted" }`.
 
@@ -643,6 +647,7 @@ POST links/bulk       posts:draft
 Rules (every bulk endpoint):
 - Send exactly one of `ids` and `selectAll`. Both, or neither, is a `400`.
 - `ids` holds at most 500 entries per request. A client acting on more splits them into requests of 500 and sums `affectedCount`.
+- A repeated id counts once. An id outside the workspace is a `400` ("Some items not found").
 - `selectAll` runs the action on every row the list's filter matches, the same `WHERE` as the `GET`.
 - `move` with `categoryId: null` takes the rows out of their folder. `move` into a folder of another kind is a `400`.
 - The action decides which rows it touches, never the filter. `restore` and `permanentDelete` (items only) act on binned rows; everything else acts on live rows. A `selectAll` `restore` or `permanentDelete` is a `400`; use the Bin for those.

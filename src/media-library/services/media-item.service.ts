@@ -652,7 +652,11 @@ export class MediaItemService {
   /**
    * Update a media item
    */
-  async update(workspaceId: string, itemId: string, dto: UpdateMediaItemDto) {
+  async update(
+    workspaceId: string,
+    itemId: string,
+    dto: UpdateMediaItemDto,
+  ): Promise<MediaItemView> {
     const existing = await this.findOne(workspaceId, itemId);
 
     // Validate category if changing. A null `categoryId` skips this on purpose:
@@ -673,24 +677,30 @@ export class MediaItemService {
     if (dto.isStarred !== undefined) updateData.isStarred = dto.isStarred;
     if (dto.altText !== undefined) updateData.altText = dto.altText;
 
-    const [updated] = await this.db
+    await this.db
       .update(mediaItems)
       .set(updateData)
-      .where(eq(mediaItems.id, itemId))
-      .returning();
+      .where(
+        and(eq(mediaItems.id, itemId), eq(mediaItems.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Updated media item ${itemId}`);
 
-    return updated;
+    // Single-item writes answer with the contract's MediaItem (M9).
+    return this.findOne(workspaceId, itemId);
   }
 
   /**
    * Soft delete a media item (move to recycle bin)
    */
-  async softDelete(workspaceId: string, itemId: string, userId: string) {
+  async softDelete(
+    workspaceId: string,
+    itemId: string,
+    userId: string,
+  ): Promise<MediaItemView> {
     await this.findOne(workspaceId, itemId);
 
-    const [updated] = await this.db
+    await this.db
       .update(mediaItems)
       .set({
         isDeleted: true,
@@ -698,18 +708,19 @@ export class MediaItemService {
         deletedById: userId,
         updatedAt: new Date(),
       })
-      .where(eq(mediaItems.id, itemId))
-      .returning();
+      .where(
+        and(eq(mediaItems.id, itemId), eq(mediaItems.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Soft deleted media item ${itemId}`);
 
-    return updated;
+    return this.findOne(workspaceId, itemId);
   }
 
   /**
    * Restore a media item from recycle bin
    */
-  async restore(workspaceId: string, itemId: string) {
+  async restore(workspaceId: string, itemId: string): Promise<MediaItemView> {
     const [item] = await this.db
       .select()
       .from(mediaItems)
@@ -726,7 +737,7 @@ export class MediaItemService {
       throw new NotFoundException('Item not found in recycle bin');
     }
 
-    const [updated] = await this.db
+    await this.db
       .update(mediaItems)
       .set({
         isDeleted: false,
@@ -734,12 +745,13 @@ export class MediaItemService {
         deletedById: null,
         updatedAt: new Date(),
       })
-      .where(eq(mediaItems.id, itemId))
-      .returning();
+      .where(
+        and(eq(mediaItems.id, itemId), eq(mediaItems.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Restored media item ${itemId}`);
 
-    return updated;
+    return this.findOne(workspaceId, itemId);
   }
 
   /**
@@ -1070,7 +1082,9 @@ export class MediaItemService {
       return rows.map((r) => r.id);
     }
 
-    const ids = dto.ids ?? [];
+    // A repeated id names one row: de-duplicated before the "not found"
+    // count, as the Bin's idsByKind does (M10).
+    const ids = [...new Set(dto.ids ?? [])];
     if (ids.length === 0) return [];
     const found = await this.db
       .select({ id: mediaItems.id })
@@ -1142,7 +1156,7 @@ export class MediaItemService {
    * from the client, so without the workspace in the WHERE clause any
    * authenticated user could touch someone else's asset.
    */
-  async markUsed(workspaceId: string, itemId: string) {
+  async markUsed(workspaceId: string, itemId: string): Promise<MediaItemView> {
     const [updated] = await this.db
       .update(mediaItems)
       .set({
@@ -1152,13 +1166,13 @@ export class MediaItemService {
       .where(
         and(eq(mediaItems.id, itemId), eq(mediaItems.workspaceId, workspaceId)),
       )
-      .returning();
+      .returning({ id: mediaItems.id });
 
     if (!updated) {
       throw new NotFoundException('Media item not found');
     }
 
-    return updated;
+    return this.findOne(workspaceId, itemId);
   }
 
   /**
