@@ -473,6 +473,8 @@ POST   /workspaces/:workspaceId/media-library/templates/:templateId/use         
 | categoryId   | uuid     | No       | a `template` folder |
 | tags         | string[] | No       | |
 
+Each `content.media[]` entry is `{ id, type: 'image' | 'video' | 'gif', url, thumbnailUrl?, width?, height?, durationSec?, sizeBytes?, libraryItemId? }`. `libraryItemId` (a uuid) names the Library item the attachment came from; it is stored as sent and comes back on every read. A media entry's `url`, or the template's `thumbnailUrl`, keeps that file's bytes when its Library item is deleted forever (see [Delete, Restore, Delete forever](#delete-restore-delete-forever)).
+
 `PUT` takes the same fields, all optional, plus `isStarred`. `clone` takes an optional `{ "name": "..." }`.
 
 ### Get All Templates

@@ -448,6 +448,12 @@ export class TemplateMediaDto {
   @IsInt()
   @Min(0)
   sizeBytes?: number;
+
+  // The Library item this attachment came from, like the composer's own
+  // media item; kept in `content.media[]` as sent.
+  @IsOptional()
+  @IsUUID()
+  libraryItemId?: string;
 }
 
 export class TemplateContentDto {

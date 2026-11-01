@@ -206,6 +206,8 @@ export interface TemplateMedia {
   height?: number;
   durationSec?: number;
   sizeBytes?: number;
+  /** The Library item this attachment came from, when it came from one. */
+  libraryItemId?: string;
 }
 
 export interface TemplateContent {
