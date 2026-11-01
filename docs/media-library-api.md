@@ -801,7 +801,7 @@ An item counts as used by a post when:
 - the post's media references it by `libraryItemId`; or
 - the post's media (base or any platform override) uses its URL.
 
-Campaign slots not yet turned into a post and evergreen entries count the same way, within their own workspace. Migration 0055 adds the generated columns, the GIN indexes and the trigger that keeps `usage_count` on items, snippets and links current.
+Campaign slots not yet turned into a post and evergreen entries count the same way, within their own workspace. Migration 0055 adds the generated columns, the GIN indexes and the trigger that keeps `usage_count` on items, snippets and links current. The trigger fires on post writes only, so the Library recounts one row itself, with the trigger's own test, when it saves a new link or snippet, changes a link's URL or a snippet's content, or registers a media item for a URL posts already use. The response carries the recounted `usageCount`.
 
 ---
 

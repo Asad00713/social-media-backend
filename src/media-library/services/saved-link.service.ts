@@ -25,6 +25,7 @@ import {
   type KindBulkConfig,
 } from '../lib/bulk';
 import { binPurgeCutoff } from '../lib/bin-retention';
+import { linkPostCountSql, withUsageLock } from '../lib/usage-sql';
 
 const LINK_BULK: KindBulkConfig = {
   table: savedLinks,
@@ -125,7 +126,34 @@ export class SavedLinkService {
       `Created saved link "${dto.name}" for workspace ${workspaceId}`,
     );
 
-    return created;
+    // Posts written before the link existed already hold its URL (I4).
+    return this.recountUsage(workspaceId, created.id);
+  }
+
+  /**
+   * Sets `usage_count` from the posts that hold the link's URL, by the 0055
+   * trigger's own test (I4). For writes the trigger cannot see: a new link,
+   * or a changed URL. Returns the updated row.
+   */
+  private recountUsage(workspaceId: string, linkId: string) {
+    return withUsageLock(this.db, workspaceId, async (tx) => {
+      const [row] = await tx
+        .update(savedLinks)
+        .set({
+          usageCount: linkPostCountSql({
+            url: savedLinks.url,
+            workspaceId: savedLinks.workspaceId,
+          }),
+        })
+        .where(
+          and(
+            eq(savedLinks.id, linkId),
+            eq(savedLinks.workspaceId, workspaceId),
+          ),
+        )
+        .returning();
+      return row;
+    });
   }
 
   /**
@@ -219,7 +247,8 @@ export class SavedLinkService {
     if (dto.utm !== undefined) updateData.utm = normalizeUtm(dto.utm);
 
     // If URL is changing, fetch new preview
-    if (dto.url !== undefined && dto.url !== existing.url) {
+    const isUrlChanging = dto.url !== undefined && dto.url !== existing.url;
+    if (dto.url !== undefined && isUrlChanging) {
       updateData.url = dto.url;
       const preview = await this.fetchLinkPreview(dto.url);
       updateData.previewTitle = preview.title;
@@ -237,7 +266,8 @@ export class SavedLinkService {
 
     this.logger.log(`Updated saved link ${linkId}`);
 
-    return updated;
+    // The posts trigger counted the old URL; the new one needs a recount.
+    return isUrlChanging ? this.recountUsage(workspaceId, linkId) : updated;
   }
 
   /**

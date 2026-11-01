@@ -32,7 +32,11 @@ import {
 import { users } from '../../drizzle/schema/users.schema';
 import { binPurgeCutoff } from '../lib/bin-retention';
 import { ilikePattern } from '../lib/search';
-import { itemReferencedSql } from '../lib/usage-sql';
+import {
+  itemPostCountSql,
+  itemReferencedSql,
+  withUsageLock,
+} from '../lib/usage-sql';
 import { ratioBounds } from '../lib/ratio';
 import { toUserRef } from '../lib/user-ref';
 import { assertIdsXorSelectAll, bulkTargetsBin, chunk } from '../lib/bulk';
@@ -194,6 +198,8 @@ export class MediaItemService {
       ref,
       bytes,
     );
+    // A file URL posts already use (re-registered after a purge, say) (I4).
+    await this.recountUsage(workspaceId, id);
     return this.viewOf(id);
   }
 
@@ -269,8 +275,34 @@ export class MediaItemService {
       throw error;
     }
     // The row is committed from here on: its bytes are never an orphan, so a
-    // failing read must not reach the cleanup above.
+    // failing recount or read must not reach the cleanup above.
+    await this.recountUsage(workspaceId, id);
     return this.viewOf(id);
+  }
+
+  /**
+   * Sets `usage_count` from the posts that use the item, by the 0055
+   * trigger's own test (`postRefSql`). The trigger only fires on post
+   * writes, so a row created for a URL posts already hold needs this (I4).
+   */
+  private async recountUsage(workspaceId: string, itemId: string) {
+    await withUsageLock(this.db, workspaceId, (tx) =>
+      tx
+        .update(mediaItems)
+        .set({
+          usageCount: itemPostCountSql({
+            id: mediaItems.id,
+            fileUrl: mediaItems.fileUrl,
+            workspaceId: mediaItems.workspaceId,
+          }),
+        })
+        .where(
+          and(
+            eq(mediaItems.id, itemId),
+            eq(mediaItems.workspaceId, workspaceId),
+          ),
+        ),
+    );
   }
 
   /**
