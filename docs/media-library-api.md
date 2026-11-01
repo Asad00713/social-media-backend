@@ -713,7 +713,7 @@ POST /workspaces/:workspaceId/media-library/recycle-bin/empty          posts:pub
 
 ### Automatic cleanup
 
-A scheduled job runs daily at 3:00 AM and purges every row (all four kinds) binned more than 30 days ago.
+A scheduled job runs daily at 3:00 AM and purges every row (all four kinds) binned more than 30 days ago. Each kind runs on its own: if one kind's purge fails (storage down for media, say), the job logs it and still purges the other three.
 
 ---
 
@@ -857,7 +857,20 @@ Both refuse to run against a non-local database without `--i-know-this-is-produc
 ## Deploy notes
 
 1. **Release rule (B12).** The backend and the frontend deploy together. The backend never deploys alone: the new response shapes (bulk `{affectedCount}`, the unified Bin, `categories/grouped` keyed by folder kind, upload `libraryItem`, the 413 bodies) ship with the frontend that reads them.
-2. **Migration 0055 deploy gate.** 0055 adds generated columns to `posts`, which rewrites the table under ACCESS EXCLUSIVE; reads and writes on posts wait for the rewrite and the GIN builds. Before deploying, the owner runs these read-only queries in the Railway prod console:
+2. **Pre-deploy check: the hand-applied campaign tables.** No migration creates `campaign_slot_content`, `campaign_evergreen_posts` or `campaign_evergreen_categories`; prod got them by hand. The Library reads all three, so before deploying the owner runs this read-only query in the Railway prod console:
+
+   ```sql
+   SELECT to_regclass('public.campaign_slot_content')         AS slot_content,
+          to_regclass('public.campaign_evergreen_posts')      AS evergreen_posts,
+          to_regclass('public.campaign_evergreen_categories') AS evergreen_categories;
+   ```
+
+   Every column must name its table. A `NULL` means the table is missing, and then:
+   - **`campaign_slot_content` or `campaign_evergreen_posts` missing:** every query built on the shared reference test fails with "relation does not exist" (a `500`): `GET items?neverUsed=true`, `GET items/:id/usage`, `GET stats`, delete forever (`items/:id/permanent`, bulk `permanentDelete`, `recycle-bin/delete`, `recycle-bin/empty`) and the daily retention purge for media. The discard guard on a refused `POST items` fails closed, so the file is kept. 0055 still applies; it only skips the slot index.
+   - **`campaign_evergreen_categories` missing:** `GET items/:id/usage` fails with a `500` (it joins the category for the evergreen rows). The rest works.
+
+   Do not deploy until all three exist. Create a missing one from the SQL prod was given by hand (`drizzle/manual/2026-08-18-evergreen-recycling-tables.sql` for the evergreen pair; `campaign_slot_content` has no file in this repo, so copy its definition from prod), never from a guessed schema. No migration adds them on purpose: a guessed `CREATE TABLE IF NOT EXISTS` could drift from the real tables.
+3. **Migration 0055 deploy gate.** 0055 adds generated columns to `posts`, which rewrites the table under ACCESS EXCLUSIVE; reads and writes on posts wait for the rewrite and the GIN builds. Before deploying, the owner runs these read-only queries in the Railway prod console:
 
    ```sql
    SELECT count(*), pg_size_pretty(pg_total_relation_size('posts')) FROM posts;
@@ -882,5 +895,5 @@ Both refuse to run against a non-local database without `--i-know-this-is-produc
    - **At or over:** time 0055 on a restored copy of prod, as above.
 
    0054 builds three indexes on `media_items` (`file_url` hash, `thumbnail_url` hash, `cloudinary_public_id` btree) inside its lock. Check `media_items`' row count first if it has grown by orders of magnitude.
-3. **Set `LIBRARY_ZIP_TICKET_SECRET` on Railway** (at least 32 characters; `openssl rand -hex 32`). `API_PUBLIC_URL` must be set too. Without both, `POST …/zip-ticket` returns `503`.
-4. **After the deploy, run `library:backfill-refs`, then `library:backfill-sizes`** (see [Owner scripts](#owner-scripts)).
+4. **Set `LIBRARY_ZIP_TICKET_SECRET` on Railway** (at least 32 characters; `openssl rand -hex 32`). `API_PUBLIC_URL` must be set too. Without both, `POST …/zip-ticket` returns `503`.
+5. **After the deploy, run `library:backfill-refs`, then `library:backfill-sizes`** (see [Owner scripts](#owner-scripts)).
