@@ -18,9 +18,7 @@ const ADDONS = {
   extraAiTokens: 0,
 };
 
-const WORKSPACES = [
-  { id: 'ws-1', createdAt: new Date('2026-01-01T00:00:00Z') },
-];
+const WORKSPACES = [{ id: 'ws-1', createdAt: new Date('2026-01-01T00:00:00Z') }];
 
 function makeStripeSub(overrides: any = {}) {
   return {
@@ -130,27 +128,14 @@ describe('buildSubscriptionSync', () => {
         id: 'sub_test',
         status: 'active',
         cancel_at_period_end: false,
-        items: {
-          data: [
-            {
-              id: 'si_test',
-              price: { id: 'price_test' },
-              current_period_start: 1767225600,
-              current_period_end: 1769904000,
-            },
-          ],
-        },
+        items: { data: [{ id: 'si_test', price: { id: 'price_test' }, current_period_start: 1767225600, current_period_end: 1769904000 }] },
       } as any,
     });
 
     expect(result.usageRows).toHaveLength(2);
-    expect(
-      result.usageRows.find((r) => r.workspaceId === 'ws-a')!.channelsLimit,
-    ).toBe(8);
+    expect(result.usageRows.find((r) => r.workspaceId === 'ws-a')!.channelsLimit).toBe(8);
     // The second workspace arrives empty — the arbitrage guard.
-    expect(
-      result.usageRows.find((r) => r.workspaceId === 'ws-b')!.channelsLimit,
-    ).toBe(0);
+    expect(result.usageRows.find((r) => r.workspaceId === 'ws-b')!.channelsLimit).toBe(0);
     expect(result.subscriptionRow.userId).toBe('user-1');
   });
 });

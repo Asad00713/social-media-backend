@@ -1,82 +1,23 @@
-/* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- Reflect metadata reads */
-import 'reflect-metadata';
-import * as fs from 'fs';
-import * as path from 'path';
-import { RequestMethod } from '@nestjs/common';
-import { GUARDS_METADATA } from '@nestjs/common/constants';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { MediaController } from '../media/media.controller';
-import { REQUIRE_CAPABILITY } from '../workspace-members/require-capability.decorator';
+import { OPEN_ROUTES } from '../workspace-members/open-workspace-routes';
+import {
+  collectControllerRoutes,
+  joinPath,
+  routesOfController,
+} from '../workspace-members/testing/controller-routes';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
-import { LibraryUploadController } from './library-upload.controller';
-import { LibraryZipController } from './library-zip.controller';
-import { MediaLibraryController } from './media-library.controller';
 
 // The Library API contract (frontend repo,
 // docs/superpowers/specs/2026-10-31-library-api-contract.md) as routes: each
-// one exists exactly once, on the controller that owns it, behind exactly the
-// capability below. Metadata is read the way
-// workspace-members/every-workspace-route-guarded.spec.ts reads it.
+// one exists exactly once across EVERY controller under src, on the
+// controller that owns it, behind exactly the guards and capability below.
 
 const BASE = '/workspaces/:workspaceId/media-library';
 
-interface Route {
-  key: string;
-  controller: string;
-  handler: string;
-  guards: unknown[];
-  capability: unknown;
-}
+const { routes: ROUTES } = collectControllerRoutes();
 
-const asArray = (p: unknown): string[] =>
-  (Array.isArray(p) ? p : [p ?? '']).map(String);
-const join = (...parts: string[]) =>
-  '/' +
-  parts
-    .map((s) => s.replace(/^\/+|\/+$/g, ''))
-    .filter(Boolean)
-    .join('/');
-
-function routesOf(ctrl: any): Route[] {
-  const out: Route[] = [];
-  const proto = ctrl.prototype as Record<string, any>;
-  for (const name of Object.getOwnPropertyNames(proto)) {
-    const handler = proto[name];
-    if (name === 'constructor' || typeof handler !== 'function') continue;
-    const sub = Reflect.getMetadata('path', handler);
-    const method = Reflect.getMetadata('method', handler);
-    if (sub === undefined || method === undefined) continue;
-    const guards = [
-      ...((Reflect.getMetadata(GUARDS_METADATA, ctrl) as unknown[]) ?? []),
-      ...((Reflect.getMetadata(GUARDS_METADATA, handler) as unknown[]) ?? []),
-    ];
-    const capability =
-      Reflect.getMetadata(REQUIRE_CAPABILITY, handler) ??
-      Reflect.getMetadata(REQUIRE_CAPABILITY, ctrl);
-    for (const base of asArray(Reflect.getMetadata('path', ctrl))) {
-      for (const s of asArray(sub)) {
-        const verb = RequestMethod[method as number] ?? String(method);
-        out.push({
-          key: `${verb} ${join(base, s)}`,
-          controller: ctrl.name,
-          handler: name,
-          guards,
-          capability,
-        });
-      }
-    }
-  }
-  return out;
-}
-
-const ROUTES: Route[] = [
-  MediaLibraryController,
-  LibraryZipController,
-  LibraryUploadController,
-  MediaController,
-].flatMap(routesOf);
-
-function only(key: string): Route {
+function only(key: string) {
   const found = ROUTES.filter((r) => r.key === key);
   expect({ key, count: found.length }).toEqual({ key, count: 1 });
   return found[0];
@@ -121,17 +62,31 @@ const UPLOAD_ROUTES = [
 ];
 
 describe('Library API contract routes', () => {
+  it('discovers the controllers from disk', () => {
+    const controllers = new Set(ROUTES.map((r) => r.controller));
+    for (const name of [
+      'MediaLibraryController',
+      'LibraryZipController',
+      'LibraryUploadController',
+      'MediaController',
+    ]) {
+      expect(controllers).toContain(name);
+    }
+  });
+
   it.each(CAPABILITIES)(
-    '%s is on MediaLibraryController behind WorkspaceRoleGuard with %s',
+    '%s is on MediaLibraryController behind JwtAuthGuard + WorkspaceRoleGuard with %s',
     (route, capability) => {
       const [verb, sub] = route.split(' ');
-      const r = only(`${verb} ${join(BASE, sub)}`);
+      const r = only(`${verb} ${joinPath(BASE, sub)}`);
       expect({
         controller: r.controller,
+        jwt: r.guards.includes(JwtAuthGuard),
         roleGuard: r.guards.includes(WorkspaceRoleGuard),
         capability: r.capability,
       }).toEqual({
         controller: 'MediaLibraryController',
+        jwt: true,
         roleGuard: true,
         capability,
       });
@@ -149,22 +104,7 @@ describe('Library API contract routes', () => {
       guards: [],
       capability: undefined,
     });
-
-    // OPEN_ROUTES lives in that spec (not exported, so it is read as text).
-    const guardSpec = fs.readFileSync(
-      path.join(
-        __dirname,
-        '..',
-        'workspace-members',
-        'every-workspace-route-guarded.spec.ts',
-      ),
-      'utf8',
-    );
-    const openRoutes = guardSpec.slice(
-      guardSpec.indexOf('const OPEN_ROUTES'),
-      guardSpec.indexOf('};', guardSpec.indexOf('const OPEN_ROUTES')),
-    );
-    expect(openRoutes).toContain(`'${ZIP_DOWNLOAD}':`);
+    expect(OPEN_ROUTES[ZIP_DOWNLOAD]).toEqual(expect.any(String));
   });
 
   it.each(UPLOAD_ROUTES)(
@@ -179,7 +119,7 @@ describe('Library API contract routes', () => {
   );
 
   it('MediaController declares none of the upload routes any more', () => {
-    const left = routesOf(MediaController)
+    const left = routesOfController(MediaController)
       .map((r) => r.key)
       .filter((k) => UPLOAD_ROUTES.includes(k));
     expect(left).toEqual([]);
