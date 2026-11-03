@@ -47,6 +47,7 @@ const EVERGREEN_TABLES_SQL = join(
 export const LIBRARY_MIGRATIONS: string[] = [
   '0054_library_columns.sql',
   '0055_posts_library_refs.sql',
+  '0056_media_categories_created_by.sql',
 ];
 
 export const describeLibraryDb = describeDb;
@@ -382,11 +383,18 @@ export async function seedCategory(
   type: string,
   name?: string,
   createdAt?: Date,
+  createdById?: string,
 ): Promise<string> {
   const r = await client.query<{ id: string }>(
-    `INSERT INTO media_categories (workspace_id, name, type, created_at)
-     VALUES ($1, $2, $3, COALESCE($4, now())) RETURNING id`,
-    [workspaceId, name ?? `category-${rand()}`, type, createdAt ?? null],
+    `INSERT INTO media_categories (workspace_id, name, type, created_at, created_by_id)
+     VALUES ($1, $2, $3, COALESCE($4, now()), $5) RETURNING id`,
+    [
+      workspaceId,
+      name ?? `category-${rand()}`,
+      type,
+      createdAt ?? null,
+      createdById ?? null,
+    ],
   );
   return r.rows[0].id;
 }

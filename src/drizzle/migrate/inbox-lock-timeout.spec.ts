@@ -10,13 +10,15 @@ import { readMigrations } from './runner';
  * runner's per-file transaction. 0054 alters media_items, saved_links, plans
  * and workspace_usage (ACCESS EXCLUSIVE) and builds two indexes. 0055 rewrites
  * posts (two generated columns) under ACCESS EXCLUSIVE and builds three GIN
- * indexes.
+ * indexes. 0056 alters media_categories (ACCESS EXCLUSIVE) and adds a
+ * foreign key to users.
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
   '0052_inbox_conversations_backfill.sql',
   '0054_library_columns.sql',
   '0055_posts_library_refs.sql',
+  '0056_media_categories_created_by.sql',
 ];
 
 const firstStatement = (sql: string): string =>

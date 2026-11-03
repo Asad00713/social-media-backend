@@ -60,6 +60,12 @@ export const mediaCategories = pgTable(
     // Ordering
     displayOrder: integer('display_order').default(0),
 
+    // Who made the folder (migration 0056). Null for folders made before it,
+    // and once that user is deleted: the folder belongs to the team.
+    createdById: uuid('created_by_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
+
     // Timestamps
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
@@ -70,6 +76,7 @@ export const mediaCategories = pgTable(
   },
   (table) => [
     index('media_categories_workspace_id_idx').on(table.workspaceId),
+    index('media_categories_created_by_id_idx').on(table.createdById),
     index('media_categories_type_idx').on(table.type),
     index('media_categories_workspace_type_idx').on(
       table.workspaceId,
@@ -453,6 +460,10 @@ export const mediaCategoriesRelations = relations(
     workspace: one(workspace, {
       fields: [mediaCategories.workspaceId],
       references: [workspace.id],
+    }),
+    createdBy: one(users, {
+      fields: [mediaCategories.createdById],
+      references: [users.id],
     }),
     mediaItems: many(mediaItems),
     templates: many(mediaTemplates),
