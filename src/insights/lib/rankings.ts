@@ -36,7 +36,12 @@ export interface FormatStat {
   avgImpressions: number | null;
 }
 
-/** Each format's rate over its rated posts, highest first; unknowns counted apart. */
+/**
+ * Each format's rate over its rated posts, highest first; unknowns counted apart.
+ *
+ * @deprecated The overview's old field. `/signals` uses `formatBars`
+ * (`what-works.ts`): median engagements, 90 days. Removed in B10.
+ */
 export function formatStats(posts: InsightPost[]): {
   formats: FormatStat[];
   unknownFormatPosts: number;
@@ -128,6 +133,9 @@ export interface BestTimes {
  * When the workspace's posts did best: weekday × 4-hour block in `tz`, by
  * engagement rate over rated posts. Platforms don't say when followers are
  * online, so this measures our own posts instead.
+ *
+ * @deprecated The overview's old field. `/signals` uses `bestTimeGrid`
+ * (`best-time.ts`): 3-hour blocks, median per post, 90 days. Removed in B10.
  */
 export function bestTimes(posts: InsightPost[], tz: string): BestTimes {
   const clock = new Intl.DateTimeFormat('en-US', {
