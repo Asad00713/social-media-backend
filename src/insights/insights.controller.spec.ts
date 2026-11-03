@@ -3,6 +3,7 @@ import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
+import { customWindow, utcToday, windowOf } from '../post-performance/period';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { WorkspaceRoleService } from '../workspace-members/workspace-role.service';
 import { InsightsController } from './insights.controller';
@@ -73,15 +74,37 @@ describe('InsightsController over HTTP', () => {
       .expect(200, { ok: true });
     expect(insights.overview).toHaveBeenCalledWith(
       WS,
-      7,
+      { days: 7, window: windowOf(utcToday(new Date()), 7) },
       '16,15',
       'Asia/Karachi',
+      'usual',
+    );
+  });
+
+  it('passes a custom range and a compare mode to the overview', async () => {
+    await request(app.getHttpServer())
+      .get(
+        `/insights/workspaces/${WS}/overview?from=2026-10-01&to=2026-10-14&compare=year`,
+      )
+      .expect(200);
+    expect(insights.overview).toHaveBeenCalledWith(
+      WS,
+      { days: 14, window: customWindow('2026-10-01', '2026-10-14') },
+      undefined,
+      'UTC',
+      'year',
     );
   });
 
   it.each([
     ['overview?days=14'],
     ['overview?tz=Mars/Olympus'],
+    ['overview?compare=lastyear'],
+    ['overview?days=7&from=2026-10-01&to=2026-10-02'],
+    ['overview?from=2026-02-30&to=2026-03-02'],
+    ['posts?from=2026-10-02&to=2026-10-01'],
+    ['posts?from=2026-01-01&to=2026-06-30'],
+    ['posts/export?from=2026-10-01'],
     ['posts?limit=500'],
     ['posts?sort=saves'],
     ['posts?format=unknown'],
@@ -103,13 +126,62 @@ describe('InsightsController over HTTP', () => {
         `/insights/workspaces/${WS}/posts?format=video&sort=likes&order=asc&limit=20&offset=40`,
       )
       .expect(200);
-    expect(insights.posts).toHaveBeenCalledWith(WS, 30, undefined, {
-      format: 'video',
-      sort: 'likes',
-      order: 'asc',
-      limit: 20,
-      offset: 40,
+    expect(insights.posts).toHaveBeenCalledWith(
+      WS,
+      { days: 30, window: windowOf(utcToday(new Date()), 30) },
+      undefined,
+      {
+        format: 'video',
+        sort: 'likes',
+        order: 'asc',
+        limit: 20,
+        offset: 40,
+      },
+    );
+  });
+
+  it('posts endpoint passes custom range; export uses it too', async () => {
+    const period = {
+      days: 14,
+      window: customWindow('2026-10-01', '2026-10-14'),
+    };
+    await request(app.getHttpServer())
+      .get(
+        `/insights/workspaces/${WS}/posts?from=2026-10-01&to=2026-10-14&sort=usual&format=link&channels=4`,
+      )
+      .expect(200);
+    expect(insights.posts).toHaveBeenCalledWith(WS, period, '4', {
+      format: 'link',
+      sort: 'usual',
+      order: 'desc',
+      limit: 10,
+      offset: 0,
     });
+
+    await request(app.getHttpServer())
+      .get(
+        `/insights/workspaces/${WS}/posts/export?from=2026-10-01&to=2026-10-14&sort=reach&order=asc`,
+      )
+      .expect(200);
+    expect(insights.csv).toHaveBeenCalledWith(WS, period, undefined, {
+      format: 'all',
+      sort: 'reach',
+      order: 'asc',
+    });
+  });
+
+  it.each([
+    ['posts'],
+    ['posts?from=2026-10-01&to=2026-10-14'],
+    ['posts/export'],
+    ['posts/export?days=7'],
+  ])('403 applies to %s, not only overview', async (path) => {
+    roles.getRole.mockResolvedValue(null);
+    await request(app.getHttpServer())
+      .get(`/insights/workspaces/${WS}/${path}`)
+      .expect(403);
+    expect(insights.posts).not.toHaveBeenCalled();
+    expect(insights.csv).not.toHaveBeenCalled();
   });
 
   it('downloads the CSV as an attachment', async () => {

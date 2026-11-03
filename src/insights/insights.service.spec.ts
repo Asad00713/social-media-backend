@@ -1,5 +1,7 @@
 import type { PublishedPost } from '../post-performance/post-performance';
+import { utcToday, windowOf } from '../post-performance/period';
 import { InsightsService } from './insights.service';
+import type { ResolvedPeriod } from './lib/query';
 
 /**
  * A db double whose query chains resolve, in call order, to the arrays given.
@@ -54,6 +56,11 @@ const post = (over: Partial<PublishedPost>): PublishedPost => ({
   ...over,
 });
 const IMG = { url: 'https://x/a.jpg', type: 'image' };
+/** A 7, 30 or 90 day preset as the controller resolves it at NOW. */
+const preset = (days: number): ResolvedPeriod => ({
+  days,
+  window: windowOf(utcToday(NOW), days),
+});
 const repoWith = (posts: PublishedPost[]) => ({
   publishedPosts: jest.fn().mockResolvedValue(posts),
 });
@@ -101,9 +108,10 @@ describe('InsightsService.overview', () => {
 
     const o = await new InsightsService(db as any, repo as any).overview(
       'ws1',
-      30,
+      preset(30),
       undefined,
       'UTC',
+      'usual',
       NOW,
     );
 
@@ -120,7 +128,10 @@ describe('InsightsService.overview', () => {
       to: '2026-09-29',
       previousFrom: '2026-08-01',
       previousTo: '2026-08-30',
+      compareFrom: null,
+      compareTo: null,
     });
+    expect(o.compare).toBe('usual');
     expect(o.stillCollectingFrom).toBe('2026-09-27');
     expect(o.kpis.postsPublished).toEqual({
       value: 2,
@@ -159,9 +170,10 @@ describe('InsightsService.overview', () => {
     const repo = repoWith([]);
     const o = await new InsightsService(db as any, repo as any).overview(
       'ws1',
-      7,
+      preset(7),
       '2,9,404',
       'UTC',
+      'usual',
       NOW,
     );
     expect(o.channelIds).toEqual([2]);
@@ -171,6 +183,41 @@ describe('InsightsService.overview', () => {
       '2026-09-16',
       '2026-09-30',
     );
+  });
+
+  it('a picked range reads up to its own last day and echoes the compare dates', async () => {
+    const { db } = fakeDb([CHANNELS, [], [], []]);
+    const repo = repoWith([]);
+    const o = await new InsightsService(db as any, repo as any).overview(
+      'ws1',
+      {
+        days: 14,
+        window: {
+          from: '2026-09-01',
+          to: '2026-09-14',
+          previousFrom: '2026-08-18',
+          previousTo: '2026-08-31',
+        },
+      },
+      undefined,
+      'UTC',
+      'year',
+      NOW,
+    );
+    // Not up to today: posts after the 14th are not this window's.
+    expect(repo.publishedPosts).toHaveBeenCalledWith(
+      'ws1',
+      [1, 2],
+      '2026-08-18',
+      '2026-09-15',
+    );
+    expect(o.days).toBe(14);
+    expect(o.series).toHaveLength(14);
+    expect(o.compare).toBe('year');
+    expect(o.window).toMatchObject({
+      compareFrom: '2025-09-01',
+      compareTo: '2025-09-14',
+    });
   });
 
   it("carries a channel's last known followers whatever the range", async () => {
@@ -192,7 +239,7 @@ describe('InsightsService.overview', () => {
     const o = await new InsightsService(
       db as any,
       repoWith([]) as any,
-    ).overview('ws1', 7, undefined, 'UTC', NOW);
+    ).overview('ws1', preset(7), undefined, 'UTC', 'usual', NOW);
     expect(o.kpis.followers).toEqual({
       value: 800,
       gained: null,
@@ -208,9 +255,10 @@ describe('InsightsService.overview', () => {
     const repo = repoWith([]);
     const o = await new InsightsService(db as any, repo as any).overview(
       'ws1',
-      7,
+      preset(7),
       '404',
       'UTC',
+      'usual',
       NOW,
     );
     expect(calls).toHaveLength(1);
@@ -258,7 +306,7 @@ describe('InsightsService.posts', () => {
 
     const page = await svc.posts(
       'ws1',
-      7,
+      preset(7),
       undefined,
       {
         format: 'image',
@@ -270,15 +318,103 @@ describe('InsightsService.posts', () => {
       NOW,
     );
 
+    // A preset sits inside the usual's 90-day sample: one read covers both.
+    expect(repo.publishedPosts).toHaveBeenCalledTimes(1);
     expect(repo.publishedPosts).toHaveBeenCalledWith(
       'ws1',
       [1, 2],
-      '2026-09-23',
-      '2026-09-30',
+      '2026-07-02',
+      '2026-10-01',
     );
     expect(page.total).toMatchObject({ posts: 3, likes: 6, impressions: 30 });
     expect(page.rows.map((r) => r.postId)).toEqual(['c', 'b']);
     expect(page.hasMore).toBe(true);
+    expect(page.formatCounts).toEqual({
+      all: 4,
+      image: 3,
+      video: 1,
+      carousel: 0,
+      link: 0,
+      text: 0,
+    });
+  });
+
+  it('rates each row against the 90-day sample, and lists only the window', async () => {
+    const { db } = fakeDb([CHANNELS]);
+    // Channel 1's usual: five measured August posts at 10 engagements each.
+    const august = [1, 2, 3, 4, 5].map((d) =>
+      post({
+        postId: `aug${d}`,
+        publishedOn: `2026-08-0${d}`,
+        publishedAt: `2026-08-0${d}T10:00:00.000Z`,
+        likes: 10,
+      }),
+    );
+    const repo = repoWith([
+      ...august,
+      post({ postId: 'hit', likes: 25 }),
+      post({ postId: 'quiet', channelId: 2, likes: 4 }), // no usual on 2
+      post({
+        postId: 'today',
+        publishedOn: '2026-09-30',
+        publishedAt: '2026-09-30T08:00:00.000Z',
+        likes: 99,
+      }),
+    ]);
+    const page = await new InsightsService(db as any, repo as any).posts(
+      'ws1',
+      preset(7),
+      undefined,
+      { format: 'all', sort: 'usual', order: 'desc', limit: 10, offset: 0 },
+      NOW,
+    );
+    expect(page.rows.map((r) => [r.postId, r.usualMultiplier])).toEqual([
+      ['hit', 2.5],
+      ['quiet', null],
+    ]);
+    expect(page.total.posts).toBe(2);
+  });
+
+  it('reads an older picked range on its own, and the sample still from today', async () => {
+    const { db } = fakeDb([CHANNELS]);
+    const repo = {
+      publishedPosts: jest
+        .fn()
+        .mockResolvedValueOnce([]) // the sample
+        .mockResolvedValueOnce([
+          post({
+            postId: 'march',
+            publishedOn: '2026-03-05',
+            publishedAt: '2026-03-05T10:00:00.000Z',
+          }),
+        ]),
+    };
+    const page = await new InsightsService(db as any, repo as any).posts(
+      'ws1',
+      {
+        days: 14,
+        window: {
+          from: '2026-03-01',
+          to: '2026-03-14',
+          previousFrom: '2026-02-15',
+          previousTo: '2026-02-28',
+        },
+      },
+      undefined,
+      {
+        format: 'all',
+        sort: 'publishedAt',
+        order: 'desc',
+        limit: 10,
+        offset: 0,
+      },
+      NOW,
+    );
+    expect(repo.publishedPosts.mock.calls).toEqual([
+      ['ws1', [1, 2], '2026-07-02', '2026-10-01'],
+      ['ws1', [1, 2], '2026-03-01', '2026-03-15'],
+    ]);
+    expect(page.rows.map((r) => r.postId)).toEqual(['march']);
   });
 
   it('sends the card preview of a long caption, not all of it', async () => {
@@ -288,7 +424,7 @@ describe('InsightsService.posts', () => {
       repoWith([post({ content: 'd'.repeat(1200) })]) as any,
     ).posts(
       'ws1',
-      7,
+      preset(7),
       undefined,
       {
         format: 'all',
@@ -309,7 +445,7 @@ describe('InsightsService.posts', () => {
       repoWith([post({})]) as any,
     ).posts(
       'ws1',
-      7,
+      preset(7),
       undefined,
       {
         format: 'all',
@@ -334,7 +470,7 @@ describe('InsightsService.csv', () => {
       repoWith([post({ content: 'Hi', likes: 3 })]) as any,
     ).csv(
       'ws1',
-      7,
+      preset(7),
       undefined,
       { format: 'all', sort: 'publishedAt', order: 'desc' },
       NOW,
@@ -351,7 +487,7 @@ describe('InsightsService.csv', () => {
       repoWith([post({ content: long })]) as any,
     ).csv(
       'ws1',
-      7,
+      preset(7),
       undefined,
       { format: 'all', sort: 'publishedAt', order: 'desc' },
       NOW,

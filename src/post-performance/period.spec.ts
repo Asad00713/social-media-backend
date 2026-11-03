@@ -1,10 +1,12 @@
 import {
+  customWindow,
   datesBetween,
   deltaPct,
   isPeriodDays,
   metricChange,
   utcToday,
   windowOf,
+  yearBefore,
 } from './period';
 
 const NOW = new Date('2026-09-30T12:00:00Z');
@@ -23,6 +25,42 @@ describe('windowOf', () => {
       previousFrom: '2026-08-01',
       previousTo: '2026-08-30',
     });
+  });
+});
+
+describe('customWindow', () => {
+  it('is the dates given and the same span just before', () => {
+    expect(customWindow('2026-10-01', '2026-10-14')).toEqual({
+      from: '2026-10-01',
+      to: '2026-10-14',
+      previousFrom: '2026-09-17',
+      previousTo: '2026-09-30',
+    });
+  });
+  it('one-day range: previous is the single day before', () => {
+    expect(customWindow('2026-03-01', '2026-03-01')).toEqual({
+      from: '2026-03-01',
+      to: '2026-03-01',
+      previousFrom: '2026-02-28',
+      previousTo: '2026-02-28',
+    });
+  });
+  it('matches windowOf for the presets', () => {
+    expect(customWindow('2026-08-31', '2026-09-29')).toEqual(
+      windowOf(utcToday(NOW), 30),
+    );
+  });
+});
+
+describe('yearBefore', () => {
+  it('is the same date one calendar year back', () => {
+    expect(yearBefore('2026-10-14')).toBe('2025-10-14');
+    expect(yearBefore('2026-01-01')).toBe('2025-01-01');
+  });
+  it('year compare clamps Feb 29 to Feb 28', () => {
+    expect(yearBefore('2028-02-29')).toBe('2027-02-28');
+    expect(yearBefore('2028-02-28')).toBe('2027-02-28');
+    expect(yearBefore('2028-03-01')).toBe('2027-03-01');
   });
 });
 

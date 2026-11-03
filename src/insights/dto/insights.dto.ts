@@ -1,18 +1,24 @@
-import type {
-  MetricChange,
-  PeriodDays,
-  PeriodWindow,
-} from '../../post-performance/period';
+import type { MetricChange, PeriodWindow } from '../../post-performance/period';
 import type { ChannelBreakdown } from '../lib/breakdown';
-import type { TableTotals } from '../lib/content-table';
+import type { FormatCounts, TableTotals } from '../lib/content-table';
 import type { ChannelFreshness } from '../lib/freshness';
 import type { InsightPost } from '../lib/insight-post';
+import type { CompareMode } from '../lib/query';
 import type { BestTimes, FormatStat } from '../lib/rankings';
 import type { FollowerTotals, InsightsDay } from '../lib/series';
 
 export interface InsightsOverviewDto {
-  days: PeriodDays;
-  window: PeriodWindow;
+  /** Days in the window: 7, 30 or 90, or 1 to 90 for a picked range. */
+  days: number;
+  /**
+   * The window, the span just before it, and the dates the comparison reads
+   * (`comparisonRange`): null for `usual` and `none`.
+   */
+  window: PeriodWindow & {
+    compareFrom: string | null;
+    compareTo: string | null;
+  };
+  compare: CompareMode;
   /** The channels counted: the request's, narrowed to active social ones. */
   channelIds: number[];
   /** Posts from this date on are still gaining; drawn dashed. */
@@ -47,6 +53,8 @@ export interface InsightsPostsDto {
   total: TableTotals;
   rows: InsightPost[];
   hasMore: boolean;
+  /** Rows per format pill in the window, whatever `format` filtered. */
+  formatCounts: FormatCounts;
 }
 
 /** One post on one channel: its latest numbers and how they compare to usual. */

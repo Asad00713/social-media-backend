@@ -1,8 +1,14 @@
 import { BadRequestException } from '@nestjs/common';
 import {
+  DAY_MS,
   PERIOD_DAYS,
+  customWindow,
   isPeriodDays,
+  isoDate,
+  windowOf,
+  yearBefore,
   type PeriodDays,
+  type PeriodWindow,
 } from '../../post-performance/period';
 import { POST_FORMATS, type PostFormat } from './insight-post';
 
@@ -15,6 +21,96 @@ export function parseDays(raw?: string): PeriodDays {
     );
   }
   return n;
+}
+
+/**
+ * The longest picked range. It also bounds the usual's lookback (90 days
+ * before the window plus the window) at 179 days.
+ */
+export const MAX_CUSTOM_DAYS = 90;
+
+/** The window asked for: a preset or a picked range, with its length. */
+export interface ResolvedPeriod {
+  /** Days in the window: 7, 30 or 90 for a preset, 1 to 90 when picked. */
+  days: number;
+  window: PeriodWindow;
+}
+
+const absent = (s?: string): boolean => s === undefined || s === '';
+
+/** A real calendar date, `YYYY-MM-DD`; it must survive a trip through Date.UTC. */
+function parseIsoDate(raw: string, name: string): number {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
+  const t = m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : NaN;
+  if (Number.isNaN(t) || isoDate(new Date(t)) !== raw) {
+    throw new BadRequestException(`${name} must be a date, YYYY-MM-DD`);
+  }
+  return t;
+}
+
+/**
+ * `days=7|30|90` or `from=YYYY-MM-DD&to=YYYY-MM-DD`, never both. A picked
+ * range is whole UTC days, ends yesterday at the latest (today is still being
+ * measured) and spans 1 to MAX_CUSTOM_DAYS days. With neither, 30 days.
+ * `today` is midnight UTC (`utcToday`).
+ */
+export function parsePeriod(
+  raw: { days?: string; from?: string; to?: string },
+  today: Date,
+): ResolvedPeriod {
+  if (absent(raw.from) && absent(raw.to)) {
+    const days = parseDays(raw.days);
+    return { days, window: windowOf(today, days) };
+  }
+  if (!absent(raw.days)) {
+    throw new BadRequestException('Send days or from and to, not both');
+  }
+  if (absent(raw.from) || absent(raw.to)) {
+    throw new BadRequestException('from and to go together');
+  }
+  const from = raw.from as string;
+  const to = raw.to as string;
+  const start = parseIsoDate(from, 'from');
+  const end = parseIsoDate(to, 'to');
+  if (start > end) {
+    throw new BadRequestException('from must be on or before to');
+  }
+  if (end > today.getTime() - DAY_MS) {
+    throw new BadRequestException('to must be yesterday or earlier');
+  }
+  const days = (end - start) / DAY_MS + 1;
+  if (days > MAX_CUSTOM_DAYS) {
+    throw new BadRequestException(
+      `A range can be at most ${MAX_CUSTOM_DAYS} days`,
+    );
+  }
+  return { days, window: customWindow(from, to) };
+}
+
+export const COMPARE_MODES = ['usual', 'previous', 'year', 'none'] as const;
+export type CompareMode = (typeof COMPARE_MODES)[number];
+
+/** `compare=`, your usual by default. */
+export function parseCompare(raw?: string): CompareMode {
+  return oneOf(raw, COMPARE_MODES, 'usual', 'compare');
+}
+
+/**
+ * The dates a comparison reads: the span just before, or the same dates a
+ * year back (Feb 29 as Feb 28). Null for `usual`, which is a 90-day median
+ * rather than a date range, and for `none`.
+ */
+export function comparisonRange(
+  window: PeriodWindow,
+  mode: CompareMode,
+): { from: string; to: string } | null {
+  if (mode === 'previous') {
+    return { from: window.previousFrom, to: window.previousTo };
+  }
+  if (mode === 'year') {
+    return { from: yearBefore(window.from), to: yearBefore(window.to) };
+  }
+  return null;
 }
 
 /**
@@ -46,6 +142,7 @@ export function parseTz(raw?: string): string {
   }
 }
 
+/** `usual` sorts by the post's multiplier over its channel's usual. */
 export const SORT_KEYS = [
   'publishedAt',
   'impressions',
@@ -55,6 +152,7 @@ export const SORT_KEYS = [
   'likes',
   'comments',
   'shares',
+  'usual',
 ] as const;
 export type SortKey = (typeof SORT_KEYS)[number];
 

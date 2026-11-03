@@ -16,8 +16,6 @@ import {
   metricChange,
   round1,
   utcToday,
-  windowOf,
-  type PeriodDays,
 } from '../post-performance/period';
 import {
   engagementsOf,
@@ -33,6 +31,7 @@ import type {
 import { channelBreakdown } from './lib/breakdown';
 import {
   filterAndSort,
+  formatCountsOf,
   postsCsv,
   tableTotals,
   type CsvChannel,
@@ -43,7 +42,13 @@ import {
   toInsightPost,
   type InsightPost,
 } from './lib/insight-post';
-import { parseChannels, type TableQuery } from './lib/query';
+import {
+  comparisonRange,
+  parseChannels,
+  type CompareMode,
+  type ResolvedPeriod,
+  type TableQuery,
+} from './lib/query';
 import { bestTimes, formatStats, topPosts } from './lib/rankings';
 import { daySeries, followerTotals } from './lib/series';
 import { multiplierOf, usualByChannel } from './lib/usual-multiplier';
@@ -53,6 +58,19 @@ const STILL_COLLECTING_DAYS = 3;
 
 /** How far back a channel's "usual" engagement looks. */
 const USUAL_WINDOW_DAYS = 90;
+
+/** The UTC date after `iso`: the exclusive end of a range ending on `iso`. */
+const dayAfter = (iso: string): string =>
+  isoDate(new Date(Date.parse(`${iso}T00:00:00Z`) + DAY_MS));
+
+/**
+ * The posts a channel's post-level usual is the median of: the last 90 days,
+ * today included, as the Planner's `/posts/metrics` reads them.
+ */
+const usualSampleRange = (today: Date): { from: string; before: string } => ({
+  from: isoDate(new Date(today.getTime() - USUAL_WINDOW_DAYS * DAY_MS)),
+  before: isoDate(new Date(today.getTime() + DAY_MS)),
+});
 
 interface SocialChannel {
   id: number;
@@ -71,15 +89,20 @@ export class InsightsService {
     private readonly postPerformance: PostPerformanceRepository,
   ) {}
 
+  /**
+   * `compare` is echoed with the dates it reads. For now the KPIs and series
+   * still set the window against the span just before it, whatever the mode;
+   * each mode's own values come with the period-level "your usual".
+   */
   async overview(
     workspaceId: string,
-    days: PeriodDays,
+    { days, window }: ResolvedPeriod,
     channels: string | undefined,
     tz: string,
+    compare: CompareMode = 'usual',
     now = new Date(),
   ): Promise<InsightsOverviewDto> {
     const today = utcToday(now);
-    const window = windowOf(today, days);
     const social = await this.socialChannels(workspaceId);
     const channelIds = parseChannels(
       channels,
@@ -87,17 +110,21 @@ export class InsightsService {
     );
     const platformOf = new Map(social.map((c) => [c.id, c.platform]));
 
+    // Up to the window's last day: a picked range may end before yesterday,
+    // and nothing after it may count as "current".
+    const end = dayAfter(window.to);
     const published = await this.publishedPosts(
       workspaceId,
       channelIds,
       window.previousFrom,
-      today,
+      end,
     );
     const followers = await this.followerRows(
       channelIds,
       window.previousFrom,
-      today,
+      end,
     );
+    const range = comparisonRange(window, compare);
     const syncRows = await this.syncState(channelIds);
 
     const current = published.filter((p) => p.publishedOn >= window.from);
@@ -111,7 +138,12 @@ export class InsightsService {
 
     return {
       days,
-      window,
+      window: {
+        ...window,
+        compareFrom: range?.from ?? null,
+        compareTo: range?.to ?? null,
+      },
+      compare,
       channelIds,
       stillCollectingFrom: isoDate(
         new Date(today.getTime() - STILL_COLLECTING_DAYS * DAY_MS),
@@ -150,16 +182,21 @@ export class InsightsService {
     };
   }
 
+  /**
+   * One page of the Posts table. Pages are offsets into rows sorted on
+   * computed values (the multiplier, the rate), so there is no keyset cursor;
+   * the sort's tie-break is stable, so pages don't overlap.
+   */
   async posts(
     workspaceId: string,
-    days: PeriodDays,
+    period: ResolvedPeriod,
     channels: string | undefined,
     table: TableQuery,
     now = new Date(),
   ): Promise<InsightsPostsDto> {
-    const { rows } = await this.tableRows(
+    const { all, rows } = await this.tableRows(
       workspaceId,
-      days,
+      period,
       channels,
       table,
       now,
@@ -168,6 +205,7 @@ export class InsightsService {
       total: tableTotals(rows),
       rows: rows.slice(table.offset, table.offset + table.limit),
       hasMore: table.offset + table.limit < rows.length,
+      formatCounts: formatCountsOf(all),
     };
   }
 
@@ -188,12 +226,12 @@ export class InsightsService {
     );
     if (!rows.length) return [];
     const channelIds = [...new Set(rows.map((r) => r.channelId))];
-    const today = utcToday(now);
-    const sample = await this.postPerformance.publishedPosts(
+    const { from, before } = usualSampleRange(utcToday(now));
+    const sample = await this.publishedPosts(
       workspaceId,
       channelIds,
-      isoDate(new Date(today.getTime() - USUAL_WINDOW_DAYS * DAY_MS)),
-      isoDate(new Date(today.getTime() + DAY_MS)),
+      from,
+      before,
     );
     const usual = usualByChannel(sample);
     return rows.map((p) => ({
@@ -209,14 +247,14 @@ export class InsightsService {
 
   async csv(
     workspaceId: string,
-    days: PeriodDays,
+    period: ResolvedPeriod,
     channels: string | undefined,
     table: Pick<TableQuery, 'format' | 'sort' | 'order'>,
     now = new Date(),
   ): Promise<{ filename: string; body: string }> {
     const { rows, social, window } = await this.tableRows(
       workspaceId,
-      days,
+      period,
       channels,
       table,
       now,
@@ -232,41 +270,55 @@ export class InsightsService {
   }
 
   /**
-   * The window's posts as table rows, filtered and sorted. Captions are the
-   * card preview unless `captionChars` is null (the CSV wants all of it).
+   * The window's posts as table rows, each with its multiplier over the
+   * channel's usual (the same 90-day sample the Planner uses), then filtered
+   * and sorted. `all` is every row before the format filter. Captions are
+   * the card preview unless `captionChars` is null (the CSV wants all of it).
+   *
+   * A window inside the sample (every preset) is read with the sample, in
+   * one query; an older picked range needs its own.
    */
   private async tableRows(
     workspaceId: string,
-    days: PeriodDays,
+    { window }: ResolvedPeriod,
     channels: string | undefined,
     table: Pick<TableQuery, 'format' | 'sort' | 'order'>,
     now: Date,
     captionChars: number | null = CAPTION_PREVIEW_CHARS,
   ) {
-    const today = utcToday(now);
-    const window = windowOf(today, days);
     const social = await this.socialChannels(workspaceId);
     const channelIds = parseChannels(
       channels,
       social.map((c) => c.id),
     );
     const platformOf = new Map(social.map((c) => [c.id, c.platform]));
-    const published = await this.publishedPosts(
+    const sampleRange = usualSampleRange(utcToday(now));
+    const sample = await this.publishedPosts(
       workspaceId,
       channelIds,
-      window.from,
-      today,
+      sampleRange.from,
+      sampleRange.before,
     );
-    const rows = filterAndSort(
-      published.map((p) =>
+    const read =
+      window.from >= sampleRange.from
+        ? sample
+        : await this.publishedPosts(
+            workspaceId,
+            channelIds,
+            window.from,
+            dayAfter(window.to),
+          );
+    const usual = usualByChannel(sample);
+    const all = read
+      .filter((p) => p.publishedOn >= window.from && p.publishedOn <= window.to)
+      .map((p) =>
         toInsightPost(p, platformOf.get(p.channelId) ?? '', {
           captionChars,
+          usual,
           now,
         }),
-      ),
-      table,
-    );
-    return { rows, social, window };
+      );
+    return { all, rows: filterAndSort(all, table), social, window };
   }
 
   /**
@@ -292,23 +344,24 @@ export class InsightsService {
       .sort((a, b) => a.id - b.id);
   }
 
+  /** Posts published from `fromIso` up to, not including, `beforeIso`. */
   private publishedPosts(
     workspaceId: string,
     channelIds: number[],
     fromIso: string,
-    before: Date,
+    beforeIso: string,
   ): Promise<PublishedPost[]> {
     if (!channelIds.length) return Promise.resolve([]);
     return this.postPerformance.publishedPosts(
       workspaceId,
       channelIds,
       fromIso,
-      isoDate(before),
+      beforeIso,
     );
   }
 
   /**
-   * Follower rollup rows from `fromIso` up to, not including, `before`, plus
+   * Follower rollup rows from `fromIso` up to, not including, `beforeIso`, plus
    * each channel's newest known count before `fromIso` to seed the carry. The
    * seed is found however old it is, so a channel whose rollup stopped long
    * ago shows the same count whichever range is picked. It carries no gain:
@@ -317,7 +370,7 @@ export class InsightsService {
   private async followerRows(
     channelIds: number[],
     fromIso: string,
-    before: Date,
+    beforeIso: string,
   ): Promise<FollowerRow[]> {
     if (!channelIds.length) return [];
     const inRange = await this.db
@@ -332,7 +385,7 @@ export class InsightsService {
         and(
           inArray(channelAnalyticsDaily.channelId, channelIds),
           gte(channelAnalyticsDaily.date, fromIso),
-          lt(channelAnalyticsDaily.date, isoDate(before)),
+          lt(channelAnalyticsDaily.date, beforeIso),
         ),
       );
     const seeds = await this.db
