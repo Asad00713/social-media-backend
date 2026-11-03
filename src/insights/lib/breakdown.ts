@@ -1,15 +1,33 @@
 import type { FollowerRow } from '../../post-performance/followers';
-import type { PeriodWindow } from '../../post-performance/period';
 import {
-  totalsOf,
-  type PublishedPost,
-} from '../../post-performance/post-performance';
-import { daySeries, followerTotals, type InsightsDay } from './series';
+  deltaPct,
+  spanDays,
+  type PeriodWindow,
+} from '../../post-performance/period';
+import type { PublishedPost } from '../../post-performance/post-performance';
+import {
+  daySeries,
+  followerTotals,
+  rangeTotals,
+  type InsightsDay,
+} from './series';
+import { lookbackStartOf, toneOf, usualOf } from './usual';
+
+/** A channel's window against its own usual, whatever Compare says. */
+export interface ChannelVsUsual {
+  /** Views when the channel reports them, else engagements. */
+  metric: 'impressions' | 'engagements';
+  /** % against the channel's usual; null without a usual or a value. */
+  deltaPct: number | null;
+  tone: 'up' | 'flat' | 'down' | null;
+}
 
 export interface ChannelBreakdown {
   channelId: number;
   postsPublished: number;
   impressions: number | null;
+  /** null when no post in the window reported reach. */
+  reach: number | null;
   engagements: number;
   engagementRate: number | null;
   followers: number | null;
@@ -21,30 +39,60 @@ export interface ChannelBreakdown {
     followersGained: number | null;
   };
   series: InsightsDay[];
+  vsUsual: ChannelVsUsual;
+}
+
+export interface BreakdownChannel {
+  channelId: number;
+  /** The platform says it shares views (`PLATFORM_CAPABILITIES`). */
+  reportsViews: boolean;
 }
 
 /**
  * One entry per channel, in the order given. `posts` and `followers` cover
- * both windows.
+ * the usual's lookback through the window's last day; each part reads only
+ * its own dates. "vs. your usual" is on views when the platform shares them
+ * and some arrived (a platform can share them in principle and send none,
+ * e.g. before Meta's App Review), else on engagements.
  */
 export function channelBreakdown(
-  channelIds: number[],
+  channels: BreakdownChannel[],
   posts: PublishedPost[],
   followers: FollowerRow[],
   window: PeriodWindow,
 ): ChannelBreakdown[] {
-  return channelIds.map((channelId) => {
-    const mine = posts.filter((p) => p.channelId === channelId);
+  const n = spanDays(window.from, window.to);
+  const start = lookbackStartOf(window.from, n);
+  return channels.map(({ channelId, reportsViews }) => {
+    const mine = posts.filter(
+      (p) =>
+        p.channelId === channelId &&
+        p.publishedOn >= start &&
+        p.publishedOn <= window.to,
+    );
     const myFollowers = followers.filter((r) => r.channelId === channelId);
-    const current = mine.filter((p) => p.publishedOn >= window.from);
-    const cur = totalsOf(current);
-    const prev = totalsOf(mine.filter((p) => p.publishedOn < window.from));
+    const days = daySeries(mine, myFollowers, start, window.to);
+    const series = days.filter((d) => d.date >= window.from);
+    const cur = rangeTotals(series);
+    const prev = rangeTotals(
+      days.filter(
+        (d) => d.date >= window.previousFrom && d.date <= window.previousTo,
+      ),
+    );
     const f = followerTotals(myFollowers, window);
+
+    const metric =
+      reportsViews && mine.some((p) => p.impressions !== null)
+        ? 'impressions'
+        : 'engagements';
+    const usual = usualOf(days, mine, metric, n, window.from);
+    const delta = deltaPct(cur[metric], usual?.median ?? null);
 
     return {
       channelId,
       postsPublished: cur.postsPublished,
       impressions: cur.impressions,
+      reach: cur.reach,
       engagements: cur.engagements,
       engagementRate: cur.engagementRate,
       followers: f.value,
@@ -55,7 +103,8 @@ export function channelBreakdown(
         engagements: prev.engagements,
         followersGained: f.previousGained,
       },
-      series: daySeries(current, myFollowers, window.from, window.to),
+      series,
+      vsUsual: { metric, deltaPct: delta, tone: toneOf(delta) },
     };
   });
 }

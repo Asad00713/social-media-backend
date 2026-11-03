@@ -57,18 +57,27 @@ export function windowOf(today: Date, days: number): PeriodWindow {
 
 const dayMs = (iso: string): number => Date.parse(`${iso}T00:00:00Z`);
 
+/** The UTC date `n` days after `iso` (before it when `n` is negative). */
+export function addDays(iso: string, n: number): string {
+  return isoDate(new Date(dayMs(iso) + n * DAY_MS));
+}
+
+/** Days from `from` to `to`, both counted: 1 for the same date. */
+export function spanDays(from: string, to: string): number {
+  return Math.round((dayMs(to) - dayMs(from)) / DAY_MS) + 1;
+}
+
 /**
  * A picked range, `from` to `to` inclusive, and the same span just before
  * it. The dates are assumed valid; `parsePeriod` checks them first.
  */
 export function customWindow(from: string, to: string): PeriodWindow {
-  const start = dayMs(from);
-  const span = (dayMs(to) - start) / DAY_MS + 1;
+  const span = spanDays(from, to);
   return {
     from,
     to,
-    previousFrom: isoDate(new Date(start - span * DAY_MS)),
-    previousTo: isoDate(new Date(start - DAY_MS)),
+    previousFrom: addDays(from, -span),
+    previousTo: addDays(from, -1),
   };
 }
 

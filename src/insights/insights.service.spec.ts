@@ -1,11 +1,12 @@
 import type { PublishedPost } from '../post-performance/post-performance';
-import { utcToday, windowOf } from '../post-performance/period';
+import { datesBetween, utcToday, windowOf } from '../post-performance/period';
 import { InsightsService } from './insights.service';
 import type { ResolvedPeriod } from './lib/query';
 
 /**
  * A db double whose query chains resolve, in call order, to the arrays given.
- * The service issues: channels, follower rows, follower seed, sync state.
+ * The overview issues: channels, workspace timezone, follower rows, follower
+ * seed, (a year back: follower rows, follower seed,) sync state.
  */
 interface Chain extends PromiseLike<unknown[]> {
   from: () => Chain;
@@ -30,11 +31,13 @@ function fakeDb(results: unknown[][]) {
 }
 
 const NOW = new Date('2026-09-30T12:00:00Z');
+const live = { isActive: true, connectionStatus: 'connected' };
 const CHANNELS = [
-  { id: 2, platform: 'linkedin', accountName: 'Asad Manzoor' },
-  { id: 1, platform: 'instagram', accountName: 'asad_codm' },
-  { id: 9, platform: 'slack', accountName: 'team' },
+  { id: 2, platform: 'linkedin', accountName: 'Asad Manzoor', ...live },
+  { id: 1, platform: 'instagram', accountName: 'asad_codm', ...live },
+  { id: 9, platform: 'slack', accountName: 'team', ...live },
 ];
+const TZ = [{ timezone: 'Asia/Karachi' }];
 const post = (over: Partial<PublishedPost>): PublishedPost => ({
   postId: 'p1',
   channelId: 1,
@@ -66,9 +69,19 @@ const repoWith = (posts: PublishedPost[]) => ({
 });
 
 describe('InsightsService.overview', () => {
-  it('counts social channels across both windows and shapes every section', async () => {
+  const SYNCED = {
+    channelId: 1,
+    lastProfileSyncAt: new Date('2026-09-30T09:00:00Z'),
+    lastPostsSyncAt: null,
+    consecutiveFailures: 0,
+    pausedUntil: null,
+    initialBackfillStatus: 'completed',
+  };
+
+  it('counts social channels from the lookback on and shapes every section', async () => {
     const { db } = fakeDb([
       CHANNELS,
+      TZ,
       [
         {
           channelId: 1,
@@ -78,15 +91,7 @@ describe('InsightsService.overview', () => {
         },
       ],
       [], // no older follower count to seed
-      [
-        {
-          channelId: 1,
-          lastProfileSyncAt: new Date('2026-09-30T09:00:00Z'),
-          lastPostsSyncAt: null,
-          consecutiveFailures: 0,
-          pausedUntil: null,
-        },
-      ],
+      [SYNCED],
     ]);
     const repo = repoWith([
       post({
@@ -111,32 +116,34 @@ describe('InsightsService.overview', () => {
       preset(30),
       undefined,
       'UTC',
-      'usual',
+      'previous',
       NOW,
     );
 
-    // Social channels only, in id order; both windows; up to (not incl.) today.
-    expect(repo.publishedPosts).toHaveBeenCalledWith(
-      'ws1',
-      [1, 2],
-      '2026-08-01',
-      '2026-09-30',
-    );
+    // Social channels only, in id order; from the usual's lookback (90 + 30
+    // - 1 days before the window) through today, for the post-level sample.
+    // The selection has a post in the sample, so it is the only read.
+    expect(repo.publishedPosts.mock.calls).toEqual([
+      ['ws1', [1, 2], '2026-05-04', '2026-10-01'],
+    ]);
     expect(o.channelIds).toEqual([1, 2]);
+    expect(o.timezone).toBe('Asia/Karachi');
+    expect(o.firstRun).toBe(false);
     expect(o.window).toEqual({
       from: '2026-08-31',
       to: '2026-09-29',
       previousFrom: '2026-08-01',
       previousTo: '2026-08-30',
-      compareFrom: null,
-      compareTo: null,
+      compareFrom: '2026-08-01',
+      compareTo: '2026-08-30',
     });
-    expect(o.compare).toBe('usual');
-    expect(o.stillCollectingFrom).toBe('2026-09-27');
+    expect(o.compare).toBe('previous');
+    expect(o.stillCollectingFrom).toBe('2026-09-28');
     expect(o.kpis.postsPublished).toEqual({
       value: 2,
       previous: 1,
       deltaPct: 100,
+      deltaAbs: 1,
     });
     expect(o.kpis.engagements).toEqual({
       value: 31,
@@ -151,22 +158,41 @@ describe('InsightsService.overview', () => {
     expect(o.kpis.followers).toMatchObject({ value: 500, gained: 10 });
     expect(o.series).toHaveLength(30);
     expect(o.previousSeries).toHaveLength(30);
+    expect(o.comparisonSeries).toHaveLength(30);
+    expect(o.usual).toBeNull();
     expect(o.channels.map((c) => c.channelId)).toEqual([1, 2]);
     // Current window only, never the previous one.
     expect(o.top.engagements.map((p) => p.postId)).toEqual(['a', 'b']);
+    expect(o.lane.map((p) => p.postId)).toEqual(['a', 'b']);
     expect(o.formats[0]).toMatchObject({ format: 'video', posts: 1 });
     expect(o.freshness).toEqual([
       {
         channelId: 1,
         lastSyncedAt: '2026-09-30T09:00:00.000Z',
         failing: false,
+        isActive: true,
+        connectionStatus: 'connected',
+        backfill: 'completed',
+        reportsViews: true,
+        reportsReach: true,
+        reportsFollowers: true,
       },
-      { channelId: 2, lastSyncedAt: null, failing: false },
+      {
+        channelId: 2,
+        lastSyncedAt: null,
+        failing: false,
+        isActive: true,
+        connectionStatus: 'connected',
+        backfill: 'pending',
+        reportsViews: false,
+        reportsReach: false,
+        reportsFollowers: false,
+      },
     ]);
   });
 
   it('narrows to the asked-for channels and drops ones that are not social or not here', async () => {
-    const { db } = fakeDb([CHANNELS, [], [], []]);
+    const { db } = fakeDb([CHANNELS, TZ, [], [], []]);
     const repo = repoWith([]);
     const o = await new InsightsService(db as any, repo as any).overview(
       'ws1',
@@ -177,17 +203,29 @@ describe('InsightsService.overview', () => {
       NOW,
     );
     expect(o.channelIds).toEqual([2]);
-    expect(repo.publishedPosts).toHaveBeenCalledWith(
-      'ws1',
-      [2],
-      '2026-09-16',
-      '2026-09-30',
-    );
+    // Nothing in the selection's sample: the first-run check reads only the
+    // social channels left out of it.
+    expect(repo.publishedPosts.mock.calls).toEqual([
+      ['ws1', [2], '2026-06-19', '2026-10-01'],
+      ['ws1', [1], '2026-07-02', '2026-10-01'],
+    ]);
+    expect(o.firstRun).toBe(true);
   });
 
-  it('a picked range reads up to its own last day and echoes the compare dates', async () => {
-    const { db } = fakeDb([CHANNELS, [], [], []]);
-    const repo = repoWith([]);
+  it('a picked range counts only its own days, and reads a year back on its own', async () => {
+    const { db } = fakeDb([CHANNELS, TZ, [], [], [], [], []]);
+    const repo = {
+      publishedPosts: jest
+        .fn()
+        .mockResolvedValueOnce([
+          post({ postId: 'in', publishedOn: '2026-09-14', likes: 3 }),
+          // After the range: read for the post-level sample, never counted.
+          post({ postId: 'after', publishedOn: '2026-09-20', likes: 90 }),
+        ])
+        .mockResolvedValueOnce([
+          post({ postId: 'lastYear', publishedOn: '2025-09-02', likes: 6 }),
+        ]),
+    };
     const o = await new InsightsService(db as any, repo as any).overview(
       'ws1',
       {
@@ -204,19 +242,172 @@ describe('InsightsService.overview', () => {
       'year',
       NOW,
     );
-    // Not up to today: posts after the 14th are not this window's.
-    expect(repo.publishedPosts).toHaveBeenCalledWith(
-      'ws1',
-      [1, 2],
-      '2026-08-18',
-      '2026-09-15',
-    );
+    expect(repo.publishedPosts.mock.calls).toEqual([
+      ['ws1', [1, 2], '2026-05-21', '2026-10-01'],
+      ['ws1', [1, 2], '2025-09-01', '2025-09-15'],
+    ]);
     expect(o.days).toBe(14);
     expect(o.series).toHaveLength(14);
+    expect(o.kpis.engagements).toEqual({
+      value: 3,
+      previous: 6,
+      deltaPct: -50,
+    });
+    expect(o.lane.map((p) => p.postId)).toEqual(['in']);
     expect(o.compare).toBe('year');
     expect(o.window).toMatchObject({
       compareFrom: '2025-09-01',
       compareTo: '2025-09-14',
+    });
+    expect(o.comparisonSeries?.[1]).toMatchObject({
+      date: '2025-09-02',
+      engagements: 6,
+    });
+  });
+
+  it('an older picked range reads the post-level sample on its own', async () => {
+    const { db } = fakeDb([CHANNELS, TZ, [], [], []]);
+    const repo = {
+      publishedPosts: jest
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([post({ postId: 'recent' })]),
+    };
+    const o = await new InsightsService(db as any, repo as any).overview(
+      'ws1',
+      {
+        days: 14,
+        window: {
+          from: '2026-03-01',
+          to: '2026-03-14',
+          previousFrom: '2026-02-15',
+          previousTo: '2026-02-28',
+        },
+      },
+      undefined,
+      'UTC',
+      'usual',
+      NOW,
+    );
+    expect(repo.publishedPosts.mock.calls).toEqual([
+      ['ws1', [1, 2], '2025-11-18', '2026-03-15'],
+      ['ws1', [1, 2], '2026-07-02', '2026-10-01'],
+    ]);
+    expect(o.firstRun).toBe(false);
+  });
+
+  it('a year back with Feb 29 lines its days up by date, not position', async () => {
+    // 2029-02-15 .. 2029-03-15 is 29 days; a year back, 2028-02-15 ..
+    // 2028-03-15 is 30, with Feb 29 that no day of 2029 maps to.
+    const at = new Date('2029-03-20T12:00:00Z');
+    const { db } = fakeDb([CHANNELS, TZ, [], [], [], [], []]);
+    const repo = {
+      publishedPosts: jest
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          post({ postId: 'leap', publishedOn: '2028-02-29', likes: 50 }),
+          post({ postId: 'mar1', publishedOn: '2028-03-01', likes: 7 }),
+        ]),
+    };
+    const o = await new InsightsService(db as any, repo as any).overview(
+      'ws1',
+      {
+        days: 29,
+        window: {
+          from: '2029-02-15',
+          to: '2029-03-15',
+          previousFrom: '2029-01-17',
+          previousTo: '2029-02-14',
+        },
+      },
+      undefined,
+      'UTC',
+      'year',
+      at,
+    );
+    expect(o.comparisonSeries).toHaveLength(29);
+    const day = (date: string) =>
+      o.comparisonSeries?.[o.series.findIndex((d) => d.date === date)];
+    expect(day('2029-03-01')).toMatchObject({
+      date: '2028-03-01',
+      engagements: 7,
+    });
+    expect(day('2029-02-28')).toMatchObject({ date: '2028-02-28' });
+    // The KPI still compares with the whole year-back range, Feb 29 in it.
+    expect(o.kpis.engagements.previous).toBe(57);
+  });
+
+  it('a window with Feb 29 compares it with Feb 28 a year back', async () => {
+    // 2028-02-01 .. 2028-02-29 is 29 days; a year back it is 28.
+    const { db } = fakeDb([CHANNELS, TZ, [], [], [], [], []]);
+    const repo = {
+      publishedPosts: jest
+        .fn()
+        .mockResolvedValueOnce([])
+        .mockResolvedValueOnce([
+          post({ postId: 'feb28', publishedOn: '2027-02-28', likes: 4 }),
+        ]),
+    };
+    const o = await new InsightsService(db as any, repo as any).overview(
+      'ws1',
+      {
+        days: 29,
+        window: {
+          from: '2028-02-01',
+          to: '2028-02-29',
+          previousFrom: '2028-01-03',
+          previousTo: '2028-01-31',
+        },
+      },
+      undefined,
+      'UTC',
+      'year',
+      new Date('2028-03-05T12:00:00Z'),
+    );
+    expect(repo.publishedPosts.mock.calls[1]).toEqual([
+      'ws1',
+      [1, 2],
+      '2027-02-01',
+      '2027-03-01',
+    ]);
+    expect(o.comparisonSeries).toHaveLength(29);
+    expect(
+      o.comparisonSeries?.slice(-2).map((d) => [d.date, d.engagements]),
+    ).toEqual([
+      ['2027-02-28', 4],
+      ['2027-02-28', 4],
+    ]);
+    // Counted once in the KPI.
+    expect(o.kpis.engagements.previous).toBe(4);
+  });
+
+  it('compare=usual compares with the median, not the edge of the range', async () => {
+    const { db } = fakeDb([CHANNELS, TZ, [], [], []]);
+    // A post a day through the lookback (2026-06-19 .. 2026-09-22) with a
+    // growing like count, so the usual 7 days spread out: p25 < median < p75.
+    const history = datesBetween('2026-06-19', '2026-09-22').map((d, i) =>
+      post({
+        postId: d,
+        publishedOn: d,
+        publishedAt: `${d}T10:00:00.000Z`,
+        likes: i,
+      }),
+    );
+    const o = await new InsightsService(
+      db as any,
+      repoWith([...history, post({ postId: 'w', likes: 400 })]) as any,
+    ).overview('ws1', preset(7), undefined, 'UTC', 'usual', NOW);
+    // A stretch ending on day e (0-based) adds up to 7e - 21; e runs 6..95.
+    expect(o.usual?.engagements).toEqual({
+      median: 332.5,
+      p25: 176.8,
+      p75: 488.3,
+    });
+    expect(o.kpis.engagements).toEqual({
+      value: 400,
+      previous: 332.5,
+      deltaPct: 20.3,
     });
   });
 
@@ -225,6 +416,7 @@ describe('InsightsService.overview', () => {
     // rows, so the count comes from the seed (newest non-null row before it).
     const { db } = fakeDb([
       CHANNELS,
+      TZ,
       [],
       [
         {
@@ -250,8 +442,31 @@ describe('InsightsService.overview', () => {
     expect(o.series.every((d) => d.followers === 800)).toBe(true);
   });
 
+  it('caps the lane at the newest 500 posts', async () => {
+    const { db } = fakeDb([CHANNELS, TZ, [], [], []]);
+    const many = Array.from({ length: 501 }, (_, i) =>
+      post({
+        postId: `p${i}`,
+        publishedAt: new Date(
+          Date.parse('2026-09-20T00:00:00Z') + i * 60_000,
+        ).toISOString(),
+        publishedOn: '2026-09-20',
+      }),
+    );
+    const o = await new InsightsService(
+      db as any,
+      repoWith(many) as any,
+    ).overview('ws1', preset(30), undefined, 'UTC', 'none', NOW);
+    expect(o.lane).toHaveLength(500);
+    expect(o.lane[0]).toMatchObject({
+      postId: 'p500',
+      publishedOn: '2026-09-20',
+    });
+    expect(o.lane.some((p) => p.postId === 'p0')).toBe(false);
+  });
+
   it('skips the queries when no channel is left, and answers with empty sections', async () => {
-    const { db, calls } = fakeDb([CHANNELS]);
+    const { db, calls } = fakeDb([CHANNELS, TZ]);
     const repo = repoWith([]);
     const o = await new InsightsService(db as any, repo as any).overview(
       'ws1',
@@ -261,8 +476,12 @@ describe('InsightsService.overview', () => {
       'usual',
       NOW,
     );
-    expect(calls).toHaveLength(1);
-    expect(repo.publishedPosts).not.toHaveBeenCalled();
+    // Channels and the timezone; no post, follower or sync reads for nothing.
+    expect(calls).toHaveLength(2);
+    // Only the first-run check, over the workspace's social channels.
+    expect(repo.publishedPosts.mock.calls).toEqual([
+      ['ws1', [1, 2], '2026-07-02', '2026-10-01'],
+    ]);
     expect(o.channelIds).toEqual([]);
     expect(o.kpis.postsPublished.value).toBe(0);
     expect(o.series).toHaveLength(7);

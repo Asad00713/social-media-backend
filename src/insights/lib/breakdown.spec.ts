@@ -1,5 +1,7 @@
+import { addDays, datesBetween } from '../../post-performance/period';
 import type { PublishedPost } from '../../post-performance/post-performance';
 import { channelBreakdown } from './breakdown';
+import { lookbackStartOf } from './usual';
 
 const post = (over: Partial<PublishedPost>): PublishedPost => ({
   postId: 'p1',
@@ -27,19 +29,22 @@ const window = {
   previousFrom: '2026-09-16',
   previousTo: '2026-09-22',
 };
+const views = (channelId: number) => ({ channelId, reportsViews: true });
 
 describe('channelBreakdown', () => {
   it('gives each channel its own totals, previous window and series', () => {
     const [ig, li] = channelBreakdown(
-      [1, 2],
+      [views(1), { channelId: 2, reportsViews: false }],
       [
-        post({ postId: 'a', likes: 20, impressions: 400 }),
+        post({ postId: 'a', likes: 20, impressions: 400, reach: 300 }),
         post({
           postId: 'old',
           publishedOn: '2026-09-18',
           likes: 5,
           impressions: 100,
         }),
+        // In the usual's lookback, before the previous window: not "previous".
+        post({ postId: 'older', publishedOn: '2026-08-01', likes: 50 }),
         post({ postId: 'b', channelId: 2, likes: 7 }),
       ],
       [
@@ -56,6 +61,7 @@ describe('channelBreakdown', () => {
       channelId: 1,
       postsPublished: 1,
       impressions: 400,
+      reach: 300,
       engagements: 20,
       engagementRate: 5,
       followers: 500,
@@ -68,18 +74,136 @@ describe('channelBreakdown', () => {
       },
     });
     expect(ig.series).toHaveLength(7);
+    expect(ig.series.map((d) => d.date)).toEqual(
+      datesBetween(window.from, window.to),
+    );
     expect(li).toMatchObject({
       channelId: 2,
       postsPublished: 1,
       impressions: null,
+      reach: null,
       engagementRate: null,
       followers: null,
     });
   });
 
   it('lists a channel with nothing in the window at zero', () => {
-    const [c] = channelBreakdown([3], [], [], window);
+    const [c] = channelBreakdown([views(3)], [], [], window);
     expect(c.postsPublished).toBe(0);
     expect(c.series.every((d) => d.postsPublished === 0)).toBe(true);
+    expect(c.vsUsual).toEqual({
+      metric: 'engagements',
+      deltaPct: null,
+      tone: null,
+    });
+  });
+
+  describe('vsUsual', () => {
+    // One post a day through the whole lookback: 10 likes and 100 views
+    // each, so the usual 7 days are 70 engagements and 700 views.
+    const lookback = datesBetween(
+      lookbackStartOf(window.from, 7),
+      addDays(window.from, -1),
+    );
+    const history = (
+      channelId: number,
+      impressions: number | null,
+    ): PublishedPost[] =>
+      lookback.map((d) =>
+        post({
+          postId: `${channelId}-${d}`,
+          channelId,
+          publishedOn: d,
+          likes: 10,
+          impressions,
+        }),
+      );
+    const inWindow = (
+      channelId: number,
+      likes: number[],
+      impressions: number | null,
+    ): PublishedPost[] =>
+      likes.map((l, i) =>
+        post({
+          postId: `${channelId}-w${i}`,
+          channelId,
+          publishedOn: addDays(window.from, i),
+          likes: l,
+          impressions,
+        }),
+      );
+
+    it('channel vsUsual uses views when reported, else engagements', () => {
+      const [withViews, noViewData, notReported] = channelBreakdown(
+        [views(1), views(2), { channelId: 3, reportsViews: false }],
+        [
+          ...history(1, 100),
+          ...inWindow(1, [10, 10, 10, 10, 10, 10, 10], 110),
+          // The platform says it reports views, but none arrived (e.g. no
+          // App Review yet): engagements, so the badge still means something.
+          ...history(2, null),
+          ...inWindow(2, [20, 20, 20, 20, 20, 20, 20], null),
+          // Views in the data from a platform that says it shares none: the
+          // table shows "Not shared", so the badge must not be on views.
+          ...history(3, 100),
+          ...inWindow(3, [5, 5, 5, 5, 5, 5, 5], 500),
+        ],
+        [],
+        window,
+      );
+      // 770 views against 700.
+      expect(withViews.vsUsual).toEqual({
+        metric: 'impressions',
+        deltaPct: 10,
+        tone: 'up',
+      });
+      // 140 engagements against 70.
+      expect(noViewData.vsUsual).toEqual({
+        metric: 'engagements',
+        deltaPct: 100,
+        tone: 'up',
+      });
+      // 35 engagements against 70.
+      expect(notReported.vsUsual).toEqual({
+        metric: 'engagements',
+        deltaPct: -50,
+        tone: 'down',
+      });
+    });
+
+    it('channel vsUsual tone is flat under 5%', () => {
+      const [c] = channelBreakdown(
+        [views(1)],
+        // 73 engagements against 70: +4.3%.
+        [
+          ...history(1, null),
+          ...inWindow(1, [13, 10, 10, 10, 10, 10, 10], null),
+        ],
+        [],
+        window,
+      );
+      expect(c.vsUsual).toEqual({
+        metric: 'engagements',
+        deltaPct: 4.3,
+        tone: 'flat',
+      });
+    });
+
+    it('is against the usual, never a channel with too little history', () => {
+      const [c] = channelBreakdown(
+        [views(1)],
+        [
+          ...history(1, 100).slice(-9),
+          ...inWindow(1, [10, 10, 10, 10, 10, 10, 10], 110),
+        ],
+        [],
+        window,
+      );
+      expect(c.vsUsual).toEqual({
+        metric: 'impressions',
+        deltaPct: null,
+        tone: null,
+      });
+    });
   });
 });

@@ -9,23 +9,26 @@ import {
   socialMediaChannels,
   type SupportedPlatform,
 } from '../drizzle/schema/channels.schema';
+import { workspace } from '../drizzle/schema/workspace.schema';
+import { safeTimeZone } from '../first-week/lib/first-week-slots';
 import type { FollowerRow } from '../post-performance/followers';
 import {
-  DAY_MS,
+  addDays,
   isoDate,
   metricChange,
   round1,
   utcToday,
+  yearBefore,
 } from '../post-performance/period';
 import {
   engagementsOf,
-  totalsOf,
   type PublishedPost,
 } from '../post-performance/post-performance';
 import { PostPerformanceRepository } from '../post-performance/post-performance.repository';
 import type {
   InsightsOverviewDto,
   InsightsPostsDto,
+  LanePost,
   PostChannelMetricsDto,
 } from './dto/insights.dto';
 import { channelBreakdown } from './lib/breakdown';
@@ -36,9 +39,10 @@ import {
   tableTotals,
   type CsvChannel,
 } from './lib/content-table';
-import { freshnessOf, type SyncStateRow } from './lib/freshness';
+import { freshnessOf, reportsOf, type SyncStateRow } from './lib/freshness';
 import {
   CAPTION_PREVIEW_CHARS,
+  settlingFrom,
   toInsightPost,
   type InsightPost,
 } from './lib/insight-post';
@@ -50,33 +54,85 @@ import {
   type TableQuery,
 } from './lib/query';
 import { bestTimes, formatStats, topPosts } from './lib/rankings';
-import { daySeries, followerTotals } from './lib/series';
+import {
+  daySeries,
+  followerTotals,
+  rangeTotals,
+  type InsightsDay,
+} from './lib/series';
+import { lookbackStartOf, usualsOf, type Usuals } from './lib/usual';
 import { multiplierOf, usualByChannel } from './lib/usual-multiplier';
 
-/** Posts this young are still gaining; the chart draws them dashed. */
-const STILL_COLLECTING_DAYS = 3;
-
-/** How far back a channel's "usual" engagement looks. */
+/** How far back a channel's post-level "usual" engagement looks. */
 const USUAL_WINDOW_DAYS = 90;
 
-/** The UTC date after `iso`: the exclusive end of a range ending on `iso`. */
-const dayAfter = (iso: string): string =>
-  isoDate(new Date(Date.parse(`${iso}T00:00:00Z`) + DAY_MS));
+/** The chart's posts lane shows at most this many, newest first. */
+export const LANE_CAP = 500;
 
 /**
- * The posts a channel's post-level usual is the median of: the last 90 days,
- * today included, as the Planner's `/posts/metrics` reads them.
+ * The posts a channel's post-level usual is the median of, as the Planner's
+ * `/posts/metrics` reads them: today minus 90 through today, which is 91
+ * calendar days. `before` is exclusive.
  */
-const usualSampleRange = (today: Date): { from: string; before: string } => ({
-  from: isoDate(new Date(today.getTime() - USUAL_WINDOW_DAYS * DAY_MS)),
-  before: isoDate(new Date(today.getTime() + DAY_MS)),
-});
+const usualSampleRange = (today: Date): { from: string; before: string } => {
+  const t = isoDate(today);
+  return { from: addDays(t, -USUAL_WINDOW_DAYS), before: addDays(t, 1) };
+};
 
 interface SocialChannel {
   id: number;
   platform: SupportedPlatform;
   accountName: string;
+  isActive: boolean;
+  connectionStatus: string;
 }
+
+/** What a KPI is compared with; null where there is nothing to compare. */
+interface Comparison {
+  postsPublished: number | null;
+  impressions: number | null;
+  reach: number | null;
+  engagements: number | null;
+  engagementRate: number | null;
+}
+
+/** The usual's medians, as a comparison. */
+const fromUsual = (u: Usuals): Comparison => ({
+  postsPublished: u.postsPublished?.median ?? null,
+  impressions: u.impressions?.median ?? null,
+  reach: u.reach?.median ?? null,
+  engagements: u.engagements?.median ?? null,
+  engagementRate: u.engagementRate?.median ?? null,
+});
+
+/**
+ * One comparison day per window day, looked up by the date `toDate` maps it
+ * to, never by position: a year-back range can be a day shorter or longer.
+ */
+function aligned(
+  series: InsightsDay[],
+  comparison: InsightsDay[],
+  toDate: (date: string) => string,
+): InsightsDay[] {
+  const at = new Map(comparison.map((d) => [d.date, d]));
+  return series.map((d) => {
+    const date = toDate(d.date);
+    return at.get(date) ?? daySeries([], [], date, date)[0];
+  });
+}
+
+const lanePost = (p: InsightPost, publishedOn: string): LanePost => ({
+  postId: p.postId,
+  channelId: p.channelId,
+  publishedOn,
+  title: p.title,
+  format: p.format,
+  thumbnailUrl: p.thumbnailUrl,
+  impressions: p.impressions,
+  reach: p.reach,
+  engagements: p.engagements,
+  usualMultiplier: p.usualMultiplier,
+});
 
 /**
  * The workspace Insights page: how the chosen social channels' posts did over
@@ -90,9 +146,14 @@ export class InsightsService {
   ) {}
 
   /**
-   * `compare` is echoed with the dates it reads. For now the KPIs and series
-   * still set the window against the span just before it, whatever the mode;
-   * each mode's own values come with the period-level "your usual".
+   * The window against `compare`: the period-level usual (the default), the
+   * span just before, the same dates a year back, or nothing. Channels are
+   * always against their own usual.
+   *
+   * One read covers the usual's lookback (90 + N − 1 days before the window)
+   * through the window; when the window reaches the post-level usual's
+   * sample (every preset) it runs on to today and serves that too. A year
+   * back is a second read.
    */
   async overview(
     workspaceId: string,
@@ -102,37 +163,85 @@ export class InsightsService {
     compare: CompareMode = 'usual',
     now = new Date(),
   ): Promise<InsightsOverviewDto> {
-    const today = utcToday(now);
     const social = await this.socialChannels(workspaceId);
+    const timezone = await this.workspaceTimezone(workspaceId);
     const channelIds = parseChannels(
       channels,
       social.map((c) => c.id),
     );
+    const selected = social.filter((c) => channelIds.includes(c.id));
     const platformOf = new Map(social.map((c) => [c.id, c.platform]));
 
+    const start = lookbackStartOf(window.from, days);
     // Up to the window's last day: a picked range may end before yesterday,
     // and nothing after it may count as "current".
-    const end = dayAfter(window.to);
-    const published = await this.publishedPosts(
+    const end = addDays(window.to, 1);
+    const sample = usualSampleRange(utcToday(now));
+    const joined = end >= sample.from;
+    const read = await this.publishedPosts(
       workspaceId,
       channelIds,
-      window.previousFrom,
-      end,
+      start,
+      joined ? sample.before : end,
     );
-    const followers = await this.followerRows(
-      channelIds,
-      window.previousFrom,
-      end,
-    );
+    const sampleRows = joined
+      ? read.filter((p) => p.publishedOn >= sample.from)
+      : await this.publishedPosts(
+          workspaceId,
+          channelIds,
+          sample.from,
+          sample.before,
+        );
+    const published = read.filter((p) => p.publishedOn <= window.to);
+    const followers = await this.followerRows(channelIds, start, end);
     const range = comparisonRange(window, compare);
+    const yearBack =
+      compare === 'year' && range
+        ? await this.yearBack(workspaceId, channelIds, range)
+        : null;
     const syncRows = await this.syncState(channelIds);
+    const firstRun = await this.isFirstRun(
+      workspaceId,
+      social,
+      channelIds,
+      sampleRows,
+      sample,
+    );
+
+    // Day totals once, lookback through window; every part reads its dates.
+    const allDays = daySeries(published, followers, start, window.to);
+    const series = allDays.filter((d) => d.date >= window.from);
+    const previousDays = allDays.filter(
+      (d) => d.date >= window.previousFrom && d.date <= window.previousTo,
+    );
+    const cur = rangeTotals(series);
+    const usual =
+      compare === 'usual'
+        ? usualsOf(allDays, published, days, window.from)
+        : null;
+
+    let cmp: Comparison | null = null;
+    let comparisonSeries: InsightsDay[] | null = null;
+    if (compare === 'previous') {
+      cmp = rangeTotals(previousDays);
+      comparisonSeries = aligned(series, previousDays, (d) =>
+        addDays(d, -days),
+      );
+    } else if (yearBack && yearBack.posts.length) {
+      // Nothing out a year back is no data to compare, not a year of zeros.
+      cmp = rangeTotals(yearBack.days);
+      comparisonSeries = aligned(series, yearBack.days, yearBefore);
+    } else if (usual) {
+      cmp = fromUsual(usual);
+    }
 
     const current = published.filter((p) => p.publishedOn >= window.from);
-    const previous = published.filter((p) => p.publishedOn < window.from);
-    const cur = totalsOf(current);
-    const prev = totalsOf(previous);
+    const usualPost = usualByChannel(sampleRows);
     const posts: InsightPost[] = current.map((p) =>
-      toInsightPost(p, platformOf.get(p.channelId) ?? '', { now }),
+      toInsightPost(p, platformOf.get(p.channelId) ?? '', {
+        now,
+        usual: usualPost,
+      }),
     );
     const { formats, unknownFormatPosts } = formatStats(posts);
 
@@ -144,33 +253,46 @@ export class InsightsService {
         compareTo: range?.to ?? null,
       },
       compare,
+      timezone,
       channelIds,
-      stillCollectingFrom: isoDate(
-        new Date(today.getTime() - STILL_COLLECTING_DAYS * DAY_MS),
-      ),
-      freshness: freshnessOf(channelIds, syncRows, now),
+      stillCollectingFrom: settlingFrom(now),
+      firstRun,
+      freshness: freshnessOf(selected, syncRows, now),
       kpis: {
         followers: followerTotals(followers, window),
-        postsPublished: metricChange(cur.postsPublished, prev.postsPublished),
-        impressions: metricChange(cur.impressions, prev.impressions),
-        engagements: metricChange(cur.engagements, prev.engagements),
+        postsPublished: {
+          ...metricChange(cur.postsPublished, cmp?.postsPublished ?? null),
+          deltaAbs:
+            cmp && cmp.postsPublished !== null
+              ? round1(cur.postsPublished - cmp.postsPublished)
+              : null,
+        },
+        impressions: metricChange(cur.impressions, cmp?.impressions ?? null),
+        reach: metricChange(cur.reach, cmp?.reach ?? null),
+        engagements: metricChange(cur.engagements, cmp?.engagements ?? null),
         engagementRate: {
           value: cur.engagementRate,
-          previous: prev.engagementRate,
+          previous: cmp?.engagementRate ?? null,
           deltaPts:
-            cur.engagementRate !== null && prev.engagementRate !== null
-              ? round1(cur.engagementRate - prev.engagementRate)
+            cur.engagementRate !== null && cmp && cmp.engagementRate !== null
+              ? round1(cur.engagementRate - cmp.engagementRate)
               : null,
         },
       },
-      series: daySeries(current, followers, window.from, window.to),
-      previousSeries: daySeries(
-        previous,
+      series,
+      comparisonSeries,
+      usual,
+      previousSeries: previousDays,
+      channels: channelBreakdown(
+        selected.map((c) => ({
+          channelId: c.id,
+          reportsViews: reportsOf(c.platform).reportsViews,
+        })),
+        published,
         followers,
-        window.previousFrom,
-        window.previousTo,
+        window,
       ),
-      channels: channelBreakdown(channelIds, published, followers, window),
+      lane: this.laneOf(current, posts),
       top: {
         impressions: topPosts(posts, 'impressions'),
         engagements: topPosts(posts, 'engagements'),
@@ -180,6 +302,63 @@ export class InsightsService {
       unknownFormatPosts,
       bestTimes: bestTimes(posts, tz),
     };
+  }
+
+  /** The window's posts for the chart lane: newest first, LANE_CAP at most. */
+  private laneOf(current: PublishedPost[], posts: InsightPost[]): LanePost[] {
+    return current
+      .map((p, i) => ({ p, post: posts[i] }))
+      .sort(
+        (a, b) =>
+          Date.parse(b.p.publishedAt) - Date.parse(a.p.publishedAt) ||
+          a.p.postId.localeCompare(b.p.postId) ||
+          a.p.channelId - b.p.channelId,
+      )
+      .slice(0, LANE_CAP)
+      .map(({ p, post }) => lanePost(post, p.publishedOn));
+  }
+
+  /** The same dates a year back: their posts, follower rows and days. */
+  private async yearBack(
+    workspaceId: string,
+    channelIds: number[],
+    range: { from: string; to: string },
+  ): Promise<{ posts: PublishedPost[]; days: InsightsDay[] }> {
+    const before = addDays(range.to, 1);
+    const posts = await this.publishedPosts(
+      workspaceId,
+      channelIds,
+      range.from,
+      before,
+    );
+    const rows = await this.followerRows(channelIds, range.from, before);
+    return { posts, days: daySeries(posts, rows, range.from, range.to) };
+  }
+
+  /**
+   * No post on any social channel in the sample's days (today minus 90
+   * through today). The selection's own posts usually answer it; only when
+   * it has none are the other social channels read.
+   */
+  private async isFirstRun(
+    workspaceId: string,
+    social: SocialChannel[],
+    channelIds: number[],
+    sampleRows: PublishedPost[],
+    sample: { from: string; before: string },
+  ): Promise<boolean> {
+    if (sampleRows.length) return false;
+    const others = social
+      .map((c) => c.id)
+      .filter((id) => !channelIds.includes(id));
+    if (!others.length) return true;
+    const rows = await this.publishedPosts(
+      workspaceId,
+      others,
+      sample.from,
+      sample.before,
+    );
+    return rows.length === 0;
   }
 
   /**
@@ -306,7 +485,7 @@ export class InsightsService {
             workspaceId,
             channelIds,
             window.from,
-            dayAfter(window.to),
+            addDays(window.to, 1),
           );
     const usual = usualByChannel(sample);
     const all = read
@@ -322,8 +501,9 @@ export class InsightsService {
   }
 
   /**
-   * Active social channels, by id. Social is decided by platform: the stored
-   * `category` column may mislabel older rows.
+   * Social channels, by id, paused and plan-locked ones included: their
+   * history is real (spec S3.1, Q4). Social is decided by platform: the
+   * stored `category` column may mislabel older rows.
    */
   private async socialChannels(workspaceId: string): Promise<SocialChannel[]> {
     const rows = (await this.db
@@ -331,17 +511,25 @@ export class InsightsService {
         id: socialMediaChannels.id,
         platform: socialMediaChannels.platform,
         accountName: socialMediaChannels.accountName,
+        isActive: socialMediaChannels.isActive,
+        connectionStatus: socialMediaChannels.connectionStatus,
       })
       .from(socialMediaChannels)
       .where(
-        and(
-          eq(socialMediaChannels.workspaceId, workspaceId),
-          eq(socialMediaChannels.isActive, true),
-        ),
+        eq(socialMediaChannels.workspaceId, workspaceId),
       )) as SocialChannel[];
     return rows
       .filter((c) => CHANNEL_CATEGORY[c.platform] === 'social')
       .sort((a, b) => a.id - b.id);
+  }
+
+  /** The workspace's zone; UTC when the stored text is not a zone. */
+  private async workspaceTimezone(workspaceId: string): Promise<string> {
+    const rows = await this.db
+      .select({ timezone: workspace.timezone })
+      .from(workspace)
+      .where(eq(workspace.id, workspaceId));
+    return safeTimeZone(rows[0]?.timezone);
   }
 
   /** Posts published from `fromIso` up to, not including, `beforeIso`. */
@@ -418,6 +606,7 @@ export class InsightsService {
         lastPostsSyncAt: channelSyncState.lastPostsSyncAt,
         consecutiveFailures: channelSyncState.consecutiveFailures,
         pausedUntil: channelSyncState.pausedUntil,
+        initialBackfillStatus: channelSyncState.initialBackfillStatus,
       })
       .from(channelSyncState)
       .where(inArray(channelSyncState.channelId, channelIds));

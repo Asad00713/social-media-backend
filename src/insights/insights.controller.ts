@@ -24,6 +24,7 @@ import {
   parsePostIds,
   parseTableQuery,
   parseTz,
+  single,
 } from './lib/query';
 
 /** `days=7|30|90` or `from&to`, against today's UTC date. */
@@ -44,13 +45,13 @@ export class InsightsController {
     @Query('from') from?: string,
     @Query('to') to?: string,
     @Query('compare') compare?: string,
-    @Query('channels') channels?: string,
+    @Query('channels') channels?: string | string[],
     @Query('tz') tz?: string,
   ): Promise<InsightsOverviewDto> {
     return this.insights.overview(
       workspaceId,
       periodOf(days, from, to),
-      channels,
+      single(channels, 'channels'),
       parseTz(tz),
       parseCompare(compare),
     );
@@ -63,7 +64,7 @@ export class InsightsController {
     @Query('days') days?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
-    @Query('channels') channels?: string,
+    @Query('channels') channels?: string | string[],
     @Query('format') format?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
@@ -73,7 +74,7 @@ export class InsightsController {
     return this.insights.posts(
       workspaceId,
       periodOf(days, from, to),
-      channels,
+      single(channels, 'channels'),
       parseTableQuery({ format, sort, order, limit, offset }),
     );
   }
@@ -82,12 +83,12 @@ export class InsightsController {
   @Get('posts/metrics')
   async metrics(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
-    @Query('postIds') postIds?: string,
+    @Query('postIds') postIds?: string | string[],
   ): Promise<{ metrics: PostChannelMetricsDto[] }> {
     return {
       metrics: await this.insights.postMetrics(
         workspaceId,
-        parsePostIds(postIds),
+        parsePostIds(single(postIds, 'postIds')),
       ),
     };
   }
@@ -100,7 +101,7 @@ export class InsightsController {
     @Query('days') days?: string,
     @Query('from') from?: string,
     @Query('to') to?: string,
-    @Query('channels') channels?: string,
+    @Query('channels') channels?: string | string[],
     @Query('format') format?: string,
     @Query('sort') sort?: string,
     @Query('order') order?: string,
@@ -113,7 +114,7 @@ export class InsightsController {
     const { filename, body } = await this.insights.csv(
       workspaceId,
       periodOf(days, from, to),
-      channels,
+      single(channels, 'channels'),
       { format: f, sort: s, order: o },
     );
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');

@@ -2,7 +2,12 @@ import {
   engagementsOf,
   type PublishedPost,
 } from '../../post-performance/post-performance';
-import { DAY_MS, round1 } from '../../post-performance/period';
+import {
+  addDays,
+  isoDate,
+  round1,
+  utcToday,
+} from '../../post-performance/period';
 import { multiplierOf } from './usual-multiplier';
 
 export const POST_FORMATS = [
@@ -42,7 +47,7 @@ export interface InsightPost {
    * measured, below the floor, or when no usual was loaded for this list.
    */
   usualMultiplier: number | null;
-  /** Under SETTLING_DAYS old: its numbers can still change. */
+  /** Out on or after `settlingFrom` (whole UTC days): numbers can still change. */
   isSettling: boolean;
 }
 
@@ -52,7 +57,10 @@ export const CAPTION_PREVIEW_CHARS = 280;
 /** A post's title: its caption's first line, cut to this many characters. */
 export const TITLE_CHARS = 120;
 
-/** Posts younger than this are still settling (Meta documents up to 48 h). */
+/**
+ * Whole UTC days before today still settling: a window ending yesterday has
+ * its last 2 days shaded (Meta documents up to 48 h of delay).
+ */
 export const SETTLING_DAYS = 2;
 
 /** A whole http(s) URL somewhere in the caption. */
@@ -117,12 +125,24 @@ export function firstLine(content: string, max = TITLE_CHARS): string {
   return chars.length <= max ? line : `${chars.slice(0, max - 1).join('')}…`;
 }
 
-/** Whether the post is under SETTLING_DAYS old at `now`. */
+/**
+ * The first UTC day still settling at `now`: today minus SETTLING_DAYS. The
+ * chart shades from here (`stillCollectingFrom`).
+ */
+export function settlingFrom(now: Date): string {
+  return addDays(isoDate(utcToday(now)), -SETTLING_DAYS);
+}
+
+/**
+ * Whether the post went out on or after `settlingFrom(now)`. By whole UTC
+ * days, not hours, so a post's Settling badge and the chart's shaded zone
+ * always agree.
+ */
 export function isSettling(
-  p: Pick<PublishedPost, 'publishedAt'>,
+  p: Pick<PublishedPost, 'publishedOn'>,
   now: Date,
 ): boolean {
-  return now.getTime() - Date.parse(p.publishedAt) < SETTLING_DAYS * DAY_MS;
+  return p.publishedOn >= settlingFrom(now);
 }
 
 export interface InsightPostOptions {

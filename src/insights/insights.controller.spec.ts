@@ -108,6 +108,13 @@ describe('InsightsController over HTTP', () => {
     ['posts?limit=500'],
     ['posts?sort=saves'],
     ['posts?format=unknown'],
+    // A repeated param arrives as an array: a bad request, not a 500.
+    ['overview?channels=1&channels=2'],
+    ['posts?channels=1&channels=2'],
+    ['posts/export?channels=1&channels=2'],
+    [
+      'posts/metrics?postIds=22222222-2222-4222-8222-222222222222&postIds=33333333-3333-4333-8333-333333333333',
+    ],
   ])('answers 400 to %s', async (path) => {
     await request(app.getHttpServer())
       .get(`/insights/workspaces/${WS}/${path}`)

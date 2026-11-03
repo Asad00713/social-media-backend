@@ -114,10 +114,26 @@ export function comparisonRange(
 }
 
 /**
- * The asked-for channels narrowed to `allowed`: the workspace's active social
- * channels. Ids outside it are dropped, never queried. A stale id left by a
- * disconnect shouldn't break the page, and dropping says nothing about other
- * workspaces. With no `channels` param, every allowed channel counts.
+ * A query param that must come once. Repeated (`?channels=1&channels=2`)
+ * Express hands over an array, which would otherwise crash the parser as a
+ * 500; it is a bad request.
+ */
+export function single(
+  raw: string | string[] | undefined,
+  name: string,
+): string | undefined {
+  if (Array.isArray(raw)) {
+    throw new BadRequestException(`Send ${name} once`);
+  }
+  return raw;
+}
+
+/**
+ * The asked-for channels narrowed to `allowed`: the workspace's social
+ * channels, paused ones included. Ids outside it are dropped, never queried.
+ * A stale id left by a disconnect shouldn't break the page, and dropping says
+ * nothing about other workspaces. With no `channels` param, every allowed
+ * channel counts.
  */
 export function parseChannels(
   raw: string | undefined,

@@ -2,10 +2,25 @@ import type { MetricChange, PeriodWindow } from '../../post-performance/period';
 import type { ChannelBreakdown } from '../lib/breakdown';
 import type { FormatCounts, TableTotals } from '../lib/content-table';
 import type { ChannelFreshness } from '../lib/freshness';
-import type { InsightPost } from '../lib/insight-post';
+import type { InsightFormat, InsightPost } from '../lib/insight-post';
 import type { CompareMode } from '../lib/query';
 import type { BestTimes, FormatStat } from '../lib/rankings';
 import type { FollowerTotals, InsightsDay } from '../lib/series';
+import type { Usuals } from '../lib/usual';
+
+/** A dot (or a thumbnail) on the chart's posts lane. */
+export interface LanePost {
+  postId: string;
+  channelId: number;
+  publishedOn: string;
+  title: string;
+  format: InsightFormat;
+  thumbnailUrl: string | null;
+  impressions: number | null;
+  reach: number | null;
+  engagements: number;
+  usualMultiplier: number | null;
+}
 
 export interface InsightsOverviewDto {
   /** Days in the window: 7, 30 or 90, or 1 to 90 for a picked range. */
@@ -19,15 +34,29 @@ export interface InsightsOverviewDto {
     compareTo: string | null;
   };
   compare: CompareMode;
-  /** The channels counted: the request's, narrowed to active social ones. */
+  /** The workspace's IANA zone (UTC when the stored one is not a zone). */
+  timezone: string;
+  /** The channels counted: the request's, narrowed to social ones (paused included). */
   channelIds: number[];
-  /** Posts from this date on are still gaining; drawn dashed. */
+  /**
+   * Today minus SETTLING_DAYS, UTC: days from here on are still settling,
+   * and so is every post out on them (`InsightPost.isSettling`).
+   */
   stillCollectingFrom: string;
+  /** No post on any social channel in the last 90 days, today included. */
+  firstRun: boolean;
   freshness: ChannelFreshness[];
+  /**
+   * Each `previous` is what `compare` compares with: the usual's median, the
+   * span just before, the same dates a year back (null when nothing went out
+   * then), or null for `none`.
+   */
   kpis: {
     followers: FollowerTotals;
-    postsPublished: MetricChange;
+    /** `deltaAbs`: the change in posts, a count, one decimal against a usual. */
+    postsPublished: MetricChange & { deltaAbs: number | null };
     impressions: MetricChange;
+    reach: MetricChange;
     engagements: MetricChange;
     /** Change in percentage points, one decimal. */
     engagementRate: {
@@ -37,8 +66,20 @@ export interface InsightsOverviewDto {
     };
   };
   series: InsightsDay[];
+  /**
+   * `previous` and `year`: one entry per `series` day, the comparison's day
+   * for that date (the date N days back, or `yearBefore`), carrying its own
+   * date. Aligned by date, so it is as long as `series` even when a year-back
+   * range is a day shorter or longer (Feb 29). Null for `usual` and `none`.
+   */
+  comparisonSeries: InsightsDay[] | null;
+  /** `usual` only: each metric's usual N-day total; the rate undivided. */
+  usual: Usuals | null;
+  /** The span just before, whatever `compare` says. Goes with B10. */
   previousSeries: InsightsDay[];
   channels: ChannelBreakdown[];
+  /** The window's posts, newest first, at most LANE_CAP. */
+  lane: LanePost[];
   top: {
     impressions: InsightPost[];
     engagements: InsightPost[];

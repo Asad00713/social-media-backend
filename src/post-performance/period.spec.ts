@@ -1,15 +1,33 @@
 import {
+  addDays,
   customWindow,
   datesBetween,
   deltaPct,
   isPeriodDays,
   metricChange,
+  spanDays,
   utcToday,
   windowOf,
   yearBefore,
 } from './period';
 
 const NOW = new Date('2026-09-30T12:00:00Z');
+
+describe('addDays and spanDays', () => {
+  it('moves by whole UTC days across months, years and Feb 29', () => {
+    expect(addDays('2026-09-30', 1)).toBe('2026-10-01');
+    expect(addDays('2026-01-01', -1)).toBe('2025-12-31');
+    expect(addDays('2028-02-28', 1)).toBe('2028-02-29');
+    expect(addDays('2026-10-10', -96)).toBe('2026-07-06');
+    expect(addDays('2026-10-10', 0)).toBe('2026-10-10');
+  });
+
+  it('counts both ends', () => {
+    expect(spanDays('2026-10-10', '2026-10-10')).toBe(1);
+    expect(spanDays('2028-02-01', '2028-02-29')).toBe(29);
+    expect(spanDays('2026-10-01', '2026-10-14')).toBe(14);
+  });
+});
 
 describe('windowOf', () => {
   it('is the last whole days ending yesterday, and the same span before', () => {

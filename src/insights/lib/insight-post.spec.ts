@@ -4,6 +4,7 @@ import {
   firstLine,
   isSettling,
   POST_FORMATS,
+  settlingFrom,
   toInsightPost,
 } from './insight-post';
 
@@ -197,16 +198,25 @@ describe('firstLine', () => {
 });
 
 describe('isSettling', () => {
-  const at = (hoursAgo: number) =>
-    post({
-      publishedAt: new Date(NOW.getTime() - hoursAgo * 3_600_000).toISOString(),
-    });
+  const on = (publishedOn: string) => post({ publishedOn });
 
-  it('is true under 2 days old and false from 2 days on', () => {
-    expect(isSettling(at(1), NOW)).toBe(true);
-    expect(isSettling(at(47.9), NOW)).toBe(true);
-    expect(isSettling(at(48), NOW)).toBe(false);
-    expect(isSettling(at(100), NOW)).toBe(false);
+  // Whole UTC days, the same line as the chart's `stillCollectingFrom`, so a
+  // post's badge and the shaded zone it sits in always agree.
+  it('is true from today minus 2 UTC days on, false before', () => {
+    expect(settlingFrom(NOW)).toBe('2026-09-20');
+    expect(isSettling(on('2026-09-22'), NOW)).toBe(true);
+    expect(isSettling(on('2026-09-20'), NOW)).toBe(true);
+    expect(isSettling(on('2026-09-19'), NOW)).toBe(false);
+  });
+
+  it('goes by the day, not the hour: over 48 hours old on the line still settles', () => {
+    const late = new Date('2026-09-22T23:59:00.000Z');
+    // Published 2026-09-20 at 10:00, about 62 hours before `late`.
+    expect(isSettling(on('2026-09-20'), late)).toBe(true);
+    // The first minute of the next UTC day moves the line.
+    expect(isSettling(on('2026-09-20'), new Date('2026-09-23T00:00:00Z'))).toBe(
+      false,
+    );
   });
 });
 
@@ -285,6 +295,7 @@ describe('toInsightPost', () => {
         content: 'Meet Ali\nOur new designer',
         reach: 640,
         imported: true,
+        publishedOn: '2026-09-22',
         publishedAt: '2026-09-22T00:00:00.000Z',
       }),
       'instagram',
@@ -299,9 +310,14 @@ describe('toInsightPost', () => {
       usualMultiplier: null,
     });
     expect(
-      toInsightPost(post({ publishedAt: '2026-09-10T00:00:00.000Z' }), 'x', {
-        now: NOW,
-      }).isSettling,
+      toInsightPost(
+        post({
+          publishedOn: '2026-09-10',
+          publishedAt: '2026-09-10T00:00:00.000Z',
+        }),
+        'x',
+        { now: NOW },
+      ).isSettling,
     ).toBe(false);
   });
 

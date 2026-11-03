@@ -1,7 +1,9 @@
 import type { PoolClient } from 'pg';
+import { datesBetween, utcToday, windowOf } from '../post-performance/period';
 import { PostPerformanceRepository } from '../post-performance/post-performance.repository';
 import { describeDb, withRollbackDb } from '../planner/testing/rollback-db';
 import { InsightsService } from './insights.service';
+import type { CompareMode, ResolvedPeriod } from './lib/query';
 
 const DAY = 86_400_000;
 const NOW = new Date('2026-10-17T12:00:00Z');
@@ -541,5 +543,352 @@ describeDb('InsightsService.postMetrics after the usual moved', () => {
       expect(of(target, b)?.usualMultiplier).toBeNull();
       expect(of(quiet, a)?.usualMultiplier).toBeNull();
       expect(rows).toHaveLength(3);
+    }));
+});
+
+/** The overview's 7-day preset at NOW: 2026-10-10 .. 2026-10-16. */
+const preset7 = (): ResolvedPeriod => ({
+  days: 7,
+  window: windowOf(utcToday(NOW), 7),
+});
+
+/** One post a day, `fromAge` to `toAge` days ago, each with one snapshot. */
+async function daily(
+  client: PoolClient,
+  w: Ws,
+  channelId: number,
+  fromAge: number,
+  toAge: number,
+  c: Counts,
+) {
+  for (let age = fromAge; age <= toAge; age++) {
+    const p = await publish(client, w, [channelId], age);
+    await snap(client, p, channelId, 1, c);
+  }
+}
+
+describeDb('InsightsService.overview', () => {
+  const run = (
+    fn: (
+      svc: InsightsService,
+      client: PoolClient,
+      repo: PostPerformanceRepository,
+    ) => Promise<void>,
+  ) =>
+    withRollbackDb([], async (db, client) => {
+      await client.query(`SET LOCAL TIME ZONE 'Asia/Karachi'`);
+      const repo = new PostPerformanceRepository(db);
+      await fn(new InsightsService(db, repo), client, repo);
+    });
+
+  const overview = (
+    svc: InsightsService,
+    w: Ws,
+    compare: CompareMode,
+    channels?: string,
+  ) => svc.overview(w.workspaceId, preset7(), channels, 'UTC', compare, NOW);
+
+  /**
+   * A post a day from 2026-07-09 to 2026-10-09 (10 likes, 100 views each),
+   * so every usual 7 days is 7 posts, 70 engagements, 700 views, a 10% rate.
+   * The window has two posts of 50 likes and 100 views.
+   */
+  async function steady(client: PoolClient, tag: string) {
+    const w = await workspace(client, tag);
+    const c = await w.channel('a');
+    await daily(client, w, c, 8, 100, counts(10));
+    for (const age of [2, 3]) {
+      const p = await publish(client, w, [c], age);
+      await snap(client, p, c, 1, counts(50));
+    }
+    return { w, c };
+  }
+
+  it('compare=usual: KPI previous is the median and deltaPct is against it', () =>
+    run(async (svc, client) => {
+      const { w } = await steady(client, 'o1');
+      const o = await overview(svc, w, 'usual');
+      expect(o.kpis.engagements).toEqual({
+        value: 100,
+        previous: 70,
+        deltaPct: 42.9,
+      });
+      expect(o.kpis.impressions).toEqual({
+        value: 200,
+        previous: 700,
+        deltaPct: -71.4,
+      });
+      expect(o.kpis.engagementRate).toEqual({
+        value: 50,
+        previous: 10,
+        deltaPts: 40,
+      });
+      expect(o.kpis.postsPublished).toEqual({
+        value: 2,
+        previous: 7,
+        deltaPct: -71.4,
+        deltaAbs: -5,
+      });
+      // Nothing reports reach: no value, no usual, no delta.
+      expect(o.kpis.reach).toEqual({
+        value: null,
+        previous: null,
+        deltaPct: null,
+      });
+      expect(o.usual).toEqual({
+        impressions: { median: 700, p25: 700, p75: 700 },
+        reach: null,
+        engagements: { median: 70, p25: 70, p75: 70 },
+        engagementRate: { median: 10, p25: 10, p75: 10 },
+        postsPublished: { median: 7, p25: 7, p75: 7 },
+        followersGained: null,
+      });
+      expect(o.comparisonSeries).toBeNull();
+      expect(o.window).toMatchObject({ compareFrom: null, compareTo: null });
+      expect(o.stillCollectingFrom).toBe('2026-10-15');
+      // Against its own usual too, whatever the toolbar says.
+      expect(o.channels[0].vsUsual).toEqual({
+        metric: 'impressions',
+        deltaPct: -71.4,
+        tone: 'down',
+      });
+    }));
+
+  it('compare=previous: comparisonSeries has the same length by position', () =>
+    run(async (svc, client) => {
+      const { w } = await steady(client, 'o2');
+      const o = await overview(svc, w, 'previous');
+      expect(o.kpis.engagements).toEqual({
+        value: 100,
+        previous: 70,
+        deltaPct: 42.9,
+      });
+      expect(o.usual).toBeNull();
+      expect(o.series.map((d) => d.date)).toEqual(
+        datesBetween('2026-10-10', '2026-10-16'),
+      );
+      expect(o.comparisonSeries?.map((d) => d.date)).toEqual(
+        datesBetween('2026-10-03', '2026-10-09'),
+      );
+      expect(o.comparisonSeries?.every((d) => d.engagements === 10)).toBe(true);
+      expect(o.window).toMatchObject({
+        compareFrom: '2026-10-03',
+        compareTo: '2026-10-09',
+      });
+    }));
+
+  it('posts deltaAbs is absolute', () =>
+    run(async (svc, client) => {
+      const { w } = await steady(client, 'o3');
+      const o = await overview(svc, w, 'previous');
+      // 2 posts against 7: a count, not a percentage.
+      expect(o.kpis.postsPublished).toEqual({
+        value: 2,
+        previous: 7,
+        deltaPct: -71.4,
+        deltaAbs: -5,
+      });
+    }));
+
+  it('compare=year: reads posts from a year back; none found gives deltaPct null, value kept', () =>
+    run(async (svc, client, repo) => {
+      const { w, c } = await steady(client, 'o4');
+      const read = jest.spyOn(repo, 'publishedPosts');
+      const none = await overview(svc, w, 'year');
+      expect(read).toHaveBeenCalledWith(
+        w.workspaceId,
+        [c],
+        '2025-10-10',
+        '2025-10-17',
+      );
+      expect(none.kpis.engagements).toEqual({
+        value: 100,
+        previous: null,
+        deltaPct: null,
+      });
+      expect(none.kpis.postsPublished).toMatchObject({
+        value: 2,
+        previous: null,
+        deltaAbs: null,
+      });
+      expect(none.kpis.engagementRate.deltaPts).toBeNull();
+      // No dashed line of zeros for a year with nothing in it.
+      expect(none.comparisonSeries).toBeNull();
+
+      // 2025-10-10, a year before the window's first day.
+      const old = await publish(client, w, [c], 372);
+      await snap(client, old, c, 1, counts(40, 400));
+      const o = await overview(svc, w, 'year');
+      expect(o.kpis.engagements).toEqual({
+        value: 100,
+        previous: 40,
+        deltaPct: 150,
+      });
+      expect(o.kpis.impressions).toEqual({
+        value: 200,
+        previous: 400,
+        deltaPct: -50,
+      });
+      expect(o.comparisonSeries).toHaveLength(7);
+      expect(o.comparisonSeries?.[0]).toMatchObject({
+        date: '2025-10-10',
+        engagements: 40,
+      });
+      expect(o.usual).toBeNull();
+    }));
+
+  it('compare=none: previous null, no usual, no comparisonSeries', () =>
+    run(async (svc, client) => {
+      const { w } = await steady(client, 'o5');
+      const o = await overview(svc, w, 'none');
+      for (const k of ['impressions', 'reach', 'engagements'] as const) {
+        expect(o.kpis[k].previous).toBeNull();
+        expect(o.kpis[k].deltaPct).toBeNull();
+      }
+      expect(o.kpis.engagements.value).toBe(100);
+      expect(o.kpis.postsPublished).toEqual({
+        value: 2,
+        previous: null,
+        deltaPct: null,
+        deltaAbs: null,
+      });
+      expect(o.kpis.engagementRate).toEqual({
+        value: 50,
+        previous: null,
+        deltaPts: null,
+      });
+      expect(o.usual).toBeNull();
+      expect(o.comparisonSeries).toBeNull();
+      // The channel badge is always against usual.
+      expect(o.channels[0].vsUsual.deltaPct).toBe(-71.4);
+    }));
+
+  it('a paused channel counts its posts before the pause and has isActive false', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'o6');
+      const live = await w.channel('a');
+      const paused = await w.channel('b');
+      for (const [c, likes] of [
+        [live, 3],
+        [paused, 7],
+      ] as const) {
+        const p = await publish(client, w, [c], 5);
+        await snap(client, p, c, 1, counts(likes));
+      }
+      await client.query(
+        `UPDATE social_media_channels SET is_active = false WHERE id = $1`,
+        [paused],
+      );
+      const o = await overview(svc, w, 'usual');
+      expect(o.channelIds).toEqual([live, paused]);
+      expect(o.kpis.engagements.value).toBe(10);
+      expect(o.kpis.postsPublished.value).toBe(2);
+      expect(o.channels.find((c) => c.channelId === paused)).toMatchObject({
+        postsPublished: 1,
+        engagements: 7,
+      });
+      expect(
+        o.freshness.map((f) => [f.channelId, f.isActive, f.backfill]),
+      ).toEqual([
+        [live, true, 'pending'],
+        [paused, false, 'pending'],
+      ]);
+      // Asked for by id, it is still allowed.
+      const only = await overview(svc, w, 'usual', String(paused));
+      expect(only.channelIds).toEqual([paused]);
+    }));
+
+  it('LinkedIn-only workspace: impressions, reach, rate null and engagements real', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'o7');
+      const li = await w.channel('li', 'linkedin');
+      for (const [age, likes] of [
+        [2, 5],
+        [4, 3],
+      ]) {
+        const p = await publishTo(
+          client,
+          w,
+          [{ channelId: li, platform: 'linkedin' }],
+          age,
+        );
+        await snap(client, p, li, 1, counts(likes, null));
+      }
+      const o = await overview(svc, w, 'usual');
+      expect(o.kpis.impressions.value).toBeNull();
+      expect(o.kpis.reach.value).toBeNull();
+      expect(o.kpis.engagementRate.value).toBeNull();
+      expect(o.kpis.engagements.value).toBe(8);
+      expect(o.series.every((d) => d.impressions === null)).toBe(true);
+      expect(o.series.every((d) => d.reach === null)).toBe(true);
+      expect(o.channels[0]).toMatchObject({
+        impressions: null,
+        reach: null,
+        engagementRate: null,
+        engagements: 8,
+        vsUsual: { metric: 'engagements' },
+      });
+      expect(o.freshness[0]).toMatchObject({
+        reportsViews: false,
+        reportsReach: false,
+        reportsFollowers: false,
+      });
+    }));
+
+  it('firstRun true with no post in 90 days, false with one imported post', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'o8');
+      const a = await w.channel('a');
+      const b = await w.channel('b');
+      const firstRun = async (channels?: string) =>
+        (await overview(svc, w, 'usual', channels)).firstRun;
+
+      expect(await firstRun()).toBe(true);
+      // Older than the 90 days: still the first run.
+      await publish(client, w, [a], 120);
+      expect(await firstRun()).toBe(true);
+      // One post the platform import brought in is enough.
+      await publishTo(client, w, [{ channelId: a, platform: 'twitter' }], 30, {
+        metadata: { syncedFrom: 'platform' },
+      });
+      expect(await firstRun()).toBe(false);
+      // Any social channel counts, not only the ones selected.
+      expect(await firstRun(String(b))).toBe(false);
+    }));
+
+  it('a google_business channel does not throw and reports nothing', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'o9');
+      const gb = await w.channel('gb', 'google_business');
+      const o = await overview(svc, w, 'usual');
+      expect(o.channelIds).toEqual([gb]);
+      expect(o.freshness).toEqual([
+        {
+          channelId: gb,
+          lastSyncedAt: null,
+          failing: false,
+          isActive: true,
+          connectionStatus: 'connected',
+          backfill: 'pending',
+          reportsViews: false,
+          reportsReach: false,
+          reportsFollowers: false,
+        },
+      ]);
+    }));
+
+  it('reads the workspace timezone, UTC when the stored one is not a zone', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'o10');
+      await w.channel('a');
+      const tz = async (zone: string) => {
+        await client.query(`UPDATE workspace SET timezone = $1 WHERE id = $2`, [
+          zone,
+          w.workspaceId,
+        ]);
+        return (await overview(svc, w, 'usual')).timezone;
+      };
+      expect(await tz('Asia/Karachi')).toBe('Asia/Karachi');
+      expect(await tz('Mars/Olympus')).toBe('UTC');
     }));
 });
