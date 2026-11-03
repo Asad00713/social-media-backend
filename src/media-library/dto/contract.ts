@@ -156,5 +156,6 @@ export interface BinRow {
   sizeBytes: number | null; // media only
   deletedAt: string;
   deletedBy: UserRef | null;
+  createdBy: UserRef | null; // media: the uploader (amended 2026-11-03)
   purgeAt: string; // deletedAt + 30 days
 }

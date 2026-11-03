@@ -12,6 +12,7 @@ import {
   seedTemplate,
   seedSnippet,
   seedLink,
+  seedMember,
 } from '../testing/library-db';
 import { MediaLibraryController } from '../media-library.controller';
 import { BinItemsDto, RecycleBinQueryDto } from '../dto/media-library.dto';
@@ -87,7 +88,8 @@ async function isDeleted(
 /**
  * Seven binned rows across the four kinds (distinct deleted_at, newest
  * first in the order below), one live item and one binned item in another
- * workspace.
+ * workspace. A member made every row and the owner binned them, so
+ * `createdBy` and `deletedBy` cannot be read from the same column.
  */
 async function seedBin(client: PoolClient) {
   const { workspaceId, ownerId } = await seedWorkspace(client);
@@ -96,6 +98,9 @@ async function seedBin(client: PoolClient) {
     ownerId,
     'https://cdn.example.test/owner.png',
   ]);
+  const creatorId = await seedMember(client, workspaceId, 'MEMBER', {
+    name: 'Creator',
+  });
   const t0 = Date.now() - 60 * 60 * 1000;
   const at = (s: number) => new Date(t0 + s * 1000);
   const del = (s: number) => ({
@@ -103,8 +108,8 @@ async function seedBin(client: PoolClient) {
     deletedAt: at(s),
     deletedById: ownerId,
   });
-  const media = { workspaceId, uploadedById: ownerId };
-  const kind = { workspaceId, createdById: ownerId };
+  const media = { workspaceId, uploadedById: creatorId };
+  const kind = { workspaceId, createdById: creatorId };
 
   const m10 = await seedMediaItem(client, {
     ...media,
@@ -158,6 +163,7 @@ async function seedBin(client: PoolClient) {
   return {
     workspaceId,
     ownerId,
+    creatorId,
     other,
     at,
     ids: { m10, m30, mNull, tpl1, tpl2, snip, link, live, foreign },
@@ -222,7 +228,8 @@ describeLibraryDb('recycle bin: one list across kinds', () => {
 
   it('shapes each kind as a BinRow', async () => {
     await withLibraryDb(async (db, client) => {
-      const { workspaceId, ownerId, at, ids } = await seedBin(client);
+      const { workspaceId, ownerId, creatorId, at, ids } =
+        await seedBin(client);
       const { recycleBin } = setup(db);
 
       const { items } = await recycleBin.list(workspaceId, {});
@@ -232,6 +239,8 @@ describeLibraryDb('recycle bin: one list across kinds', () => {
         name: 'Owner',
         avatarUrl: 'https://cdn.example.test/owner.png',
       };
+      // Media's uploader and the other kinds' creator, under one name.
+      const createdBy = { id: creatorId, name: 'Creator', avatarUrl: null };
       const times = (s: number) => ({
         deletedAt: at(s).toISOString(),
         purgeAt: new Date(at(s).getTime() + 30 * DAY_MS).toISOString(),
@@ -246,6 +255,7 @@ describeLibraryDb('recycle bin: one list across kinds', () => {
         type: 'image',
         sizeBytes: 10,
         deletedBy,
+        createdBy,
         ...times(7),
       });
       expect(byId.get(ids.m30)?.thumbnailUrl).toBe(
@@ -265,6 +275,7 @@ describeLibraryDb('recycle bin: one list across kinds', () => {
         type: 'template',
         sizeBytes: null,
         deletedBy,
+        createdBy,
         ...times(4),
       });
       expect(byId.get(ids.snip)).toEqual({
@@ -275,6 +286,7 @@ describeLibraryDb('recycle bin: one list across kinds', () => {
         type: 'snippet',
         sizeBytes: null,
         deletedBy,
+        createdBy,
         ...times(2),
       });
       expect(byId.get(ids.link)).toEqual({
@@ -285,6 +297,7 @@ describeLibraryDb('recycle bin: one list across kinds', () => {
         type: 'link',
         sizeBytes: null,
         deletedBy,
+        createdBy,
         ...times(1),
       });
     });

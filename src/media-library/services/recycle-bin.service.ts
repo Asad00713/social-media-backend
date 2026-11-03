@@ -53,6 +53,10 @@ interface BinRowSql extends Record<string, unknown> {
   user_name: string | null;
   user_email: string | null;
   user_avatar_url: string | null;
+  creator_id: string | null;
+  creator_name: string | null;
+  creator_email: string | null;
+  creator_avatar_url: string | null;
 }
 
 interface BinCountsSql extends Record<string, unknown> {
@@ -131,7 +135,8 @@ export class RecycleBinService {
     const deletedAt = sql`COALESCE(deleted_at, updated_at)`;
 
     // Every branch names its columns: with a kind filter, any of them can be
-    // the first (and so the naming) branch of the union.
+    // the first (and so the naming) branch of the union. The creator is
+    // media's uploader and the other kinds' created_by_id.
     const tail = sql`${deletedAt} AS deleted_at, deleted_by_id`;
     const branches: Record<BinKind, SQL> = {
       media: sql`
@@ -139,21 +144,25 @@ export class RecycleBinService {
                COALESCE(thumbnail_url,
                         CASE WHEN type IN ('image', 'gif') THEN file_url END)
                  AS thumbnail_url,
-               type::text AS type, file_size AS size_bytes, ${tail}
+               type::text AS type, file_size AS size_bytes, ${tail},
+               uploaded_by_id AS created_by_id
           FROM media_items
          WHERE ${binned} ${mediaTypeFilter}`,
       template: sql`
         SELECT 'template' AS kind, id, name, thumbnail_url,
-               'template' AS type, NULL::bigint AS size_bytes, ${tail}
+               'template' AS type, NULL::bigint AS size_bytes, ${tail},
+               created_by_id
           FROM media_templates WHERE ${binned}`,
       snippet: sql`
         SELECT 'snippet' AS kind, id, name, NULL::text AS thumbnail_url,
-               'snippet' AS type, NULL::bigint AS size_bytes, ${tail}
+               'snippet' AS type, NULL::bigint AS size_bytes, ${tail},
+               created_by_id
           FROM text_snippets WHERE ${binned}`,
       link: sql`
         SELECT 'link' AS kind, id, ${SAVED_LINK_DISPLAY_NAME_SQL} AS name,
                preview_image_url AS thumbnail_url,
-               'link' AS type, NULL::bigint AS size_bytes, ${tail}
+               'link' AS type, NULL::bigint AS size_bytes, ${tail},
+               created_by_id
           FROM saved_links WHERE ${binned}`,
     };
     const union = sql.join(
@@ -166,9 +175,12 @@ export class RecycleBinService {
              b.size_bytes::float8 AS size_bytes,
              (extract(epoch FROM b.deleted_at) * 1000)::float8 AS deleted_ms,
              u.id AS user_id, u.name AS user_name, u.email AS user_email,
-             u.avatar_url AS user_avatar_url
+             u.avatar_url AS user_avatar_url,
+             c.id AS creator_id, c.name AS creator_name,
+             c.email AS creator_email, c.avatar_url AS creator_avatar_url
         FROM (${union}) b
         LEFT JOIN users u ON u.id = b.deleted_by_id
+        LEFT JOIN users c ON c.id = b.created_by_id
        ORDER BY ${binOrder(sort)}
        LIMIT ${limit} OFFSET ${offset}
     `);
@@ -354,6 +366,16 @@ function toBinRow(r: BinRowSql): BinRow {
             name: r.user_name,
             email: r.user_email ?? '',
             avatarUrl: r.user_avatar_url,
+          }
+        : null,
+    ),
+    createdBy: toUserRef(
+      r.creator_id
+        ? {
+            id: r.creator_id,
+            name: r.creator_name,
+            email: r.creator_email ?? '',
+            avatarUrl: r.creator_avatar_url,
           }
         : null,
     ),
