@@ -590,6 +590,11 @@ export class TemplateQueryDto {
   @IsString()
   search?: string;
 
+  /** Only rows this user created (the Library's "Created by" filter). */
+  @IsOptional()
+  @IsUUID()
+  createdBy?: string;
+
   @IsOptional()
   @IsInt()
   @Min(1)
@@ -727,6 +732,11 @@ export class TextSnippetQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  /** Only rows this user created (the Library's "Created by" filter). */
+  @IsOptional()
+  @IsUUID()
+  createdBy?: string;
 
   @IsOptional()
   @IsInt()
@@ -892,6 +902,11 @@ export class SavedLinkQueryDto {
   @IsOptional()
   @IsString()
   search?: string;
+
+  /** Only rows this user created (the Library's "Created by" filter). */
+  @IsOptional()
+  @IsUUID()
+  createdBy?: string;
 
   @IsOptional()
   @IsIn(['newest', 'oldest', 'most_used', 'name'])

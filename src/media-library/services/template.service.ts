@@ -13,8 +13,13 @@ import {
   mediaTemplates,
   mediaCategories,
   NewMediaTemplate,
+  MediaTemplate,
+  MediaCategory,
   TemplateContent,
 } from '../../drizzle/schema/media-library.schema';
+import { users } from '../../drizzle/schema/users.schema';
+import { toUserRef, USER_REF_COLUMNS, type UserRefRow } from '../lib/user-ref';
+import type { Page, UserRef } from '../dto/contract';
 import {
   CreateTemplateDto,
   TemplateContentDto,
@@ -61,6 +66,31 @@ function templateOrder(sort: TemplateQueryDto['sort']): SQL[] {
   }
 }
 
+/** A template as the list, the detail and every single-item write return it. */
+export type TemplateView = MediaTemplate & {
+  category: MediaCategory | null;
+  createdBy: UserRef | null;
+};
+
+/** The columns a `TemplateView` is read from; folder and creator left-joined. */
+const VIEW_SELECTION = {
+  template: mediaTemplates,
+  category: mediaCategories,
+  creator: USER_REF_COLUMNS,
+};
+
+function toTemplateView(row: {
+  template: MediaTemplate;
+  category: MediaCategory | null;
+  creator: UserRefRow | null;
+}): TemplateView {
+  return {
+    ...row.template,
+    category: row.category,
+    createdBy: toUserRef(row.creator),
+  };
+}
+
 const TEMPLATE_BULK: KindBulkConfig = {
   table: mediaTemplates,
   folderKind: 'template',
@@ -76,7 +106,11 @@ export class TemplateService {
   /**
    * Create a new template
    */
-  async create(workspaceId: string, userId: string, dto: CreateTemplateDto) {
+  async create(
+    workspaceId: string,
+    userId: string,
+    dto: CreateTemplateDto,
+  ): Promise<TemplateView> {
     // Validate category if provided
     if (dto.categoryId) {
       await assertKindFolder(
@@ -110,7 +144,7 @@ export class TemplateService {
       `Created template "${dto.name}" for workspace ${workspaceId}`,
     );
 
-    return created;
+    return this.findOne(workspaceId, created.id);
   }
 
   /**
@@ -124,6 +158,7 @@ export class TemplateService {
       platform,
       isDeleted = false,
       search,
+      createdBy,
     } = query;
     // `starred` is the contract name and wins over the legacy `isStarred`.
     const starred = query.starred ?? query.isStarred;
@@ -132,6 +167,10 @@ export class TemplateService {
       eq(mediaTemplates.workspaceId, workspaceId),
       eq(mediaTemplates.isDeleted, isDeleted),
     ];
+
+    if (createdBy) {
+      conditions.push(eq(mediaTemplates.createdById, createdBy));
+    }
 
     if (templateType) {
       conditions.push(eq(mediaTemplates.templateType, templateType));
@@ -169,20 +208,23 @@ export class TemplateService {
    * Get all templates for a workspace with filtering. `most_used` ranks by
    * `usage_count`, which for templates counts picks (D13).
    */
-  async findAll(workspaceId: string, query: TemplateQueryDto = {}) {
+  async findAll(
+    workspaceId: string,
+    query: TemplateQueryDto = {},
+  ): Promise<Page<TemplateView>> {
     const { limit = 50, offset = 0 } = query;
     const conditions = this.buildTemplateConditions(workspaceId, query);
 
+    // Both joins are on a primary key, so each template stays one row and
+    // LIMIT/OFFSET and the count still agree.
     const templates = await this.db
-      .select({
-        template: mediaTemplates,
-        category: mediaCategories,
-      })
+      .select(VIEW_SELECTION)
       .from(mediaTemplates)
       .leftJoin(
         mediaCategories,
         eq(mediaTemplates.categoryId, mediaCategories.id),
       )
+      .leftJoin(users, eq(mediaTemplates.createdById, users.id))
       .where(and(...conditions))
       .orderBy(...templateOrder(query.sort))
       .limit(limit)
@@ -195,10 +237,7 @@ export class TemplateService {
       .where(and(...conditions));
 
     return {
-      items: templates.map((row) => ({
-        ...row.template,
-        category: row.category,
-      })),
+      items: templates.map(toTemplateView),
       total: count,
       limit,
       offset,
@@ -208,17 +247,18 @@ export class TemplateService {
   /**
    * Get a single template by ID
    */
-  async findOne(workspaceId: string, templateId: string) {
+  async findOne(
+    workspaceId: string,
+    templateId: string,
+  ): Promise<TemplateView> {
     const [template] = await this.db
-      .select({
-        template: mediaTemplates,
-        category: mediaCategories,
-      })
+      .select(VIEW_SELECTION)
       .from(mediaTemplates)
       .leftJoin(
         mediaCategories,
         eq(mediaTemplates.categoryId, mediaCategories.id),
       )
+      .leftJoin(users, eq(mediaTemplates.createdById, users.id))
       .where(
         and(
           eq(mediaTemplates.id, templateId),
@@ -231,10 +271,7 @@ export class TemplateService {
       throw new NotFoundException('Template not found');
     }
 
-    return {
-      ...template.template,
-      category: template.category,
-    };
+    return toTemplateView(template);
   }
 
   /**
@@ -244,7 +281,7 @@ export class TemplateService {
     workspaceId: string,
     templateId: string,
     dto: UpdateTemplateDto,
-  ) {
+  ): Promise<TemplateView> {
     await this.findOne(workspaceId, templateId);
 
     // Validate category if changing
@@ -275,15 +312,19 @@ export class TemplateService {
     if (dto.tags !== undefined) updateData.tags = dto.tags;
     if (dto.isStarred !== undefined) updateData.isStarred = dto.isStarred;
 
-    const [updated] = await this.db
+    await this.db
       .update(mediaTemplates)
       .set(updateData)
-      .where(eq(mediaTemplates.id, templateId))
-      .returning();
+      .where(
+        and(
+          eq(mediaTemplates.id, templateId),
+          eq(mediaTemplates.workspaceId, workspaceId),
+        ),
+      );
 
     this.logger.log(`Updated template ${templateId}`);
 
-    return updated;
+    return this.findOne(workspaceId, templateId);
   }
 
   /**
@@ -294,7 +335,7 @@ export class TemplateService {
     userId: string,
     templateId: string,
     newName?: string,
-  ) {
+  ): Promise<TemplateView> {
     const original = await this.findOne(workspaceId, templateId);
 
     const cloned: NewMediaTemplate = {
@@ -317,16 +358,20 @@ export class TemplateService {
 
     this.logger.log(`Cloned template ${templateId} to ${created.id}`);
 
-    return created;
+    return this.findOne(workspaceId, created.id);
   }
 
   /**
    * Soft delete a template (move to recycle bin)
    */
-  async softDelete(workspaceId: string, templateId: string, userId: string) {
+  async softDelete(
+    workspaceId: string,
+    templateId: string,
+    userId: string,
+  ): Promise<TemplateView> {
     await this.findOne(workspaceId, templateId);
 
-    const [updated] = await this.db
+    await this.db
       .update(mediaTemplates)
       .set({
         isDeleted: true,
@@ -334,18 +379,25 @@ export class TemplateService {
         deletedById: userId,
         updatedAt: new Date(),
       })
-      .where(eq(mediaTemplates.id, templateId))
-      .returning();
+      .where(
+        and(
+          eq(mediaTemplates.id, templateId),
+          eq(mediaTemplates.workspaceId, workspaceId),
+        ),
+      );
 
     this.logger.log(`Soft deleted template ${templateId}`);
 
-    return updated;
+    return this.findOne(workspaceId, templateId);
   }
 
   /**
    * Restore a template from recycle bin
    */
-  async restore(workspaceId: string, templateId: string) {
+  async restore(
+    workspaceId: string,
+    templateId: string,
+  ): Promise<TemplateView> {
     const [template] = await this.db
       .select()
       .from(mediaTemplates)
@@ -362,7 +414,7 @@ export class TemplateService {
       throw new NotFoundException('Template not found in recycle bin');
     }
 
-    const [updated] = await this.db
+    await this.db
       .update(mediaTemplates)
       .set({
         isDeleted: false,
@@ -370,12 +422,16 @@ export class TemplateService {
         deletedById: null,
         updatedAt: new Date(),
       })
-      .where(eq(mediaTemplates.id, templateId))
-      .returning();
+      .where(
+        and(
+          eq(mediaTemplates.id, templateId),
+          eq(mediaTemplates.workspaceId, workspaceId),
+        ),
+      );
 
     this.logger.log(`Restored template ${templateId}`);
 
-    return updated;
+    return this.findOne(workspaceId, templateId);
   }
 
   /**
@@ -405,7 +461,10 @@ export class TemplateService {
   /**
    * Increment usage count when template is used
    */
-  async incrementUsage(workspaceId: string, templateId: string) {
+  async incrementUsage(
+    workspaceId: string,
+    templateId: string,
+  ): Promise<TemplateView> {
     // Workspace-scoped so one workspace can't bump another's counter by id —
     // the same hole that was closed on media items.
     const [updated] = await this.db
@@ -421,13 +480,13 @@ export class TemplateService {
           eq(mediaTemplates.workspaceId, workspaceId),
         ),
       )
-      .returning();
+      .returning({ id: mediaTemplates.id });
 
     if (!updated) {
       throw new NotFoundException('Template not found');
     }
 
-    return updated;
+    return this.findOne(workspaceId, templateId);
   }
 
   /**

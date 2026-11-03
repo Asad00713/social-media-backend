@@ -13,7 +13,12 @@ import {
   savedLinks,
   mediaCategories,
   NewSavedLink,
+  SavedLink,
+  MediaCategory,
 } from '../../drizzle/schema/media-library.schema';
+import { users } from '../../drizzle/schema/users.schema';
+import { toUserRef, USER_REF_COLUMNS, type UserRefRow } from '../lib/user-ref';
+import type { Page, UserRef } from '../dto/contract';
 import {
   CreateSavedLinkDto,
   UpdateSavedLinkDto,
@@ -27,6 +32,31 @@ import {
 } from '../lib/bulk';
 import { binPurgeCutoff } from '../lib/bin-retention';
 import { linkPostCountSql, withUsageLock } from '../lib/usage-sql';
+
+/** A link as the list, the detail and every single-item write return it. */
+export type LinkView = SavedLink & {
+  category: MediaCategory | null;
+  createdBy: UserRef | null;
+};
+
+/** The columns a `LinkView` is read from; folder and creator left-joined. */
+const VIEW_SELECTION = {
+  link: savedLinks,
+  category: mediaCategories,
+  creator: USER_REF_COLUMNS,
+};
+
+function toLinkView(row: {
+  link: SavedLink;
+  category: MediaCategory | null;
+  creator: UserRefRow | null;
+}): LinkView {
+  return {
+    ...row.link,
+    category: row.category,
+    createdBy: toUserRef(row.creator),
+  };
+}
 
 const LINK_BULK: KindBulkConfig = {
   table: savedLinks,
@@ -90,7 +120,11 @@ export class SavedLinkService {
   /**
    * Create a new saved link
    */
-  async create(workspaceId: string, userId: string, dto: CreateSavedLinkDto) {
+  async create(
+    workspaceId: string,
+    userId: string,
+    dto: CreateSavedLinkDto,
+  ): Promise<LinkView> {
     // Validate category if provided
     if (dto.categoryId) {
       await assertKindFolder(
@@ -131,17 +165,21 @@ export class SavedLinkService {
     );
 
     // Posts written before the link existed already hold its URL (I4).
-    return this.recountUsage(workspaceId, created.id);
+    await this.recountUsage(workspaceId, created.id);
+    return this.findOne(workspaceId, created.id);
   }
 
   /**
    * Sets `usage_count` from the posts that hold the link's URL, by the 0055
    * trigger's own test (I4). For writes the trigger cannot see: a new link,
-   * or a changed URL. Returns the updated row.
+   * or a changed URL.
    */
-  private recountUsage(workspaceId: string, linkId: string) {
-    return withUsageLock(this.db, workspaceId, async (tx) => {
-      const [row] = await tx
+  private async recountUsage(
+    workspaceId: string,
+    linkId: string,
+  ): Promise<void> {
+    await withUsageLock(this.db, workspaceId, (tx) =>
+      tx
         .update(savedLinks)
         .set({
           usageCount: linkPostCountSql({
@@ -154,26 +192,27 @@ export class SavedLinkService {
             eq(savedLinks.id, linkId),
             eq(savedLinks.workspaceId, workspaceId),
           ),
-        )
-        .returning();
-      return row;
-    });
+        ),
+    );
   }
 
   /**
    * Get all saved links for a workspace with filtering
    */
-  async findAll(workspaceId: string, query: SavedLinkQueryDto = {}) {
+  async findAll(
+    workspaceId: string,
+    query: SavedLinkQueryDto = {},
+  ): Promise<Page<LinkView>> {
     const { sort = 'newest', limit = 50, offset = 0 } = query;
     const conditions = this.buildLinkConditions(workspaceId, query);
 
+    // Both joins are on a primary key, so each link stays one row and
+    // LIMIT/OFFSET and the count still agree.
     const links = await this.db
-      .select({
-        link: savedLinks,
-        category: mediaCategories,
-      })
+      .select(VIEW_SELECTION)
       .from(savedLinks)
       .leftJoin(mediaCategories, eq(savedLinks.categoryId, mediaCategories.id))
+      .leftJoin(users, eq(savedLinks.createdById, users.id))
       .where(and(...conditions))
       .orderBy(...linkOrder(sort))
       .limit(limit)
@@ -186,10 +225,7 @@ export class SavedLinkService {
       .where(and(...conditions));
 
     return {
-      items: links.map((row) => ({
-        ...row.link,
-        category: row.category,
-      })),
+      items: links.map(toLinkView),
       total: count,
       limit,
       offset,
@@ -199,14 +235,12 @@ export class SavedLinkService {
   /**
    * Get a single saved link by ID
    */
-  async findOne(workspaceId: string, linkId: string) {
+  async findOne(workspaceId: string, linkId: string): Promise<LinkView> {
     const [link] = await this.db
-      .select({
-        link: savedLinks,
-        category: mediaCategories,
-      })
+      .select(VIEW_SELECTION)
       .from(savedLinks)
       .leftJoin(mediaCategories, eq(savedLinks.categoryId, mediaCategories.id))
+      .leftJoin(users, eq(savedLinks.createdById, users.id))
       .where(
         and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
       )
@@ -216,16 +250,17 @@ export class SavedLinkService {
       throw new NotFoundException('Saved link not found');
     }
 
-    return {
-      ...link.link,
-      category: link.category,
-    };
+    return toLinkView(link);
   }
 
   /**
    * Update a saved link
    */
-  async update(workspaceId: string, linkId: string, dto: UpdateSavedLinkDto) {
+  async update(
+    workspaceId: string,
+    linkId: string,
+    dto: UpdateSavedLinkDto,
+  ): Promise<LinkView> {
     const existing = await this.findOne(workspaceId, linkId);
 
     // Validate category if changing
@@ -262,27 +297,31 @@ export class SavedLinkService {
       updateData.previewFaviconUrl = preview.faviconUrl ?? null;
     }
 
-    const [updated] = await this.db
+    await this.db
       .update(savedLinks)
       .set(updateData)
-      .where(eq(savedLinks.id, linkId))
-      .returning();
+      .where(
+        and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Updated saved link ${linkId}`);
 
     // The posts trigger counted the old URL; the new one needs a recount.
-    return isUrlChanging ? this.recountUsage(workspaceId, linkId) : updated;
+    if (isUrlChanging) {
+      await this.recountUsage(workspaceId, linkId);
+    }
+    return this.findOne(workspaceId, linkId);
   }
 
   /**
    * Refresh link preview metadata
    */
-  async refreshPreview(workspaceId: string, linkId: string) {
+  async refreshPreview(workspaceId: string, linkId: string): Promise<LinkView> {
     const existing = await this.findOne(workspaceId, linkId);
 
     const preview = await this.fetchLinkPreview(existing.url);
 
-    const [updated] = await this.db
+    await this.db
       .update(savedLinks)
       .set({
         previewTitle: preview.title,
@@ -292,21 +331,26 @@ export class SavedLinkService {
         previewFaviconUrl: preview.faviconUrl ?? null,
         updatedAt: new Date(),
       })
-      .where(eq(savedLinks.id, linkId))
-      .returning();
+      .where(
+        and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Refreshed preview for saved link ${linkId}`);
 
-    return updated;
+    return this.findOne(workspaceId, linkId);
   }
 
   /**
    * Soft delete a saved link (move to recycle bin)
    */
-  async softDelete(workspaceId: string, linkId: string, userId: string) {
+  async softDelete(
+    workspaceId: string,
+    linkId: string,
+    userId: string,
+  ): Promise<LinkView> {
     await this.findOne(workspaceId, linkId);
 
-    const [updated] = await this.db
+    await this.db
       .update(savedLinks)
       .set({
         isDeleted: true,
@@ -314,18 +358,19 @@ export class SavedLinkService {
         deletedById: userId,
         updatedAt: new Date(),
       })
-      .where(eq(savedLinks.id, linkId))
-      .returning();
+      .where(
+        and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Soft deleted saved link ${linkId}`);
 
-    return updated;
+    return this.findOne(workspaceId, linkId);
   }
 
   /**
    * Restore a saved link from recycle bin
    */
-  async restore(workspaceId: string, linkId: string) {
+  async restore(workspaceId: string, linkId: string): Promise<LinkView> {
     const [link] = await this.db
       .select()
       .from(savedLinks)
@@ -342,7 +387,7 @@ export class SavedLinkService {
       throw new NotFoundException('Saved link not found in recycle bin');
     }
 
-    const [updated] = await this.db
+    await this.db
       .update(savedLinks)
       .set({
         isDeleted: false,
@@ -350,12 +395,13 @@ export class SavedLinkService {
         deletedById: null,
         updatedAt: new Date(),
       })
-      .where(eq(savedLinks.id, linkId))
-      .returning();
+      .where(
+        and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Restored saved link ${linkId}`);
 
-    return updated;
+    return this.findOne(workspaceId, linkId);
   }
 
   /**
@@ -386,7 +432,7 @@ export class SavedLinkService {
    * Record that a link was just used: sets `lastUsedAt` only.
    * `usage_count` is a post count kept by the posts trigger (0055, D13).
    */
-  async markUsed(workspaceId: string, linkId: string) {
+  async markUsed(workspaceId: string, linkId: string): Promise<LinkView> {
     // Workspace-scoped so one workspace can't touch another's link by id.
     const [updated] = await this.db
       .update(savedLinks)
@@ -397,13 +443,13 @@ export class SavedLinkService {
       .where(
         and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
       )
-      .returning();
+      .returning({ id: savedLinks.id });
 
     if (!updated) {
       throw new NotFoundException('Link not found');
     }
 
-    return updated;
+    return this.findOne(workspaceId, linkId);
   }
 
   /**
@@ -411,12 +457,22 @@ export class SavedLinkService {
    * filters `findAll` applies, so "every match" means what the list shows.
    */
   buildLinkConditions(workspaceId: string, query: SavedLinkQueryDto): SQL[] {
-    const { categoryId, isStarred, isDeleted = false, search } = query;
+    const {
+      categoryId,
+      isStarred,
+      isDeleted = false,
+      search,
+      createdBy,
+    } = query;
 
     const conditions: SQL[] = [
       eq(savedLinks.workspaceId, workspaceId),
       eq(savedLinks.isDeleted, isDeleted),
     ];
+
+    if (createdBy) {
+      conditions.push(eq(savedLinks.createdById, createdBy));
+    }
 
     if (categoryId) {
       conditions.push(eq(savedLinks.categoryId, categoryId));
