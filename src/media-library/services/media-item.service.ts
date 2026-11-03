@@ -38,7 +38,7 @@ import {
   withUsageLock,
 } from '../lib/usage-sql';
 import { ratioBounds } from '../lib/ratio';
-import { toUserRef } from '../lib/user-ref';
+import { toUserRef, USER_REF_COLUMNS } from '../lib/user-ref';
 import { assertIdsXorSelectAll, bulkTargetsBin, chunk } from '../lib/bulk';
 import {
   SizeUnavailableException,
@@ -575,12 +575,7 @@ export class MediaItemService {
     return {
       item: mediaItems,
       category: mediaCategories,
-      uploader: {
-        id: users.id,
-        name: users.name,
-        email: users.email,
-        avatarUrl: users.avatarUrl,
-      },
+      uploader: USER_REF_COLUMNS,
     };
   }
 
