@@ -477,6 +477,13 @@ Each `content.media[]` entry is `{ id, type: 'image' | 'video' | 'gif', url, thu
 
 `PUT` takes the same fields, all optional, plus `isStarred`. `clone` takes an optional `{ "name": "..." }`.
 
+Every template response (list rows, `GET :templateId`, and the single-item writes `POST`, `PUT`, `clone`, `DELETE` to the Bin, `restore` and `use`) is the template with its folder and its creator:
+
+```ts
+category: MediaCategory | null
+createdBy: UserRef | null   // created_by_id, left-joined; a clone is created by whoever cloned it (added 2026-11-03)
+```
+
 ### Get All Templates
 
 | Parameter    | Type | Default | Description |
@@ -486,6 +493,7 @@ Each `content.media[]` entry is `{ id, type: 'image' | 'video' | 'gif', url, thu
 | platform     | string | | |
 | starred      | `true` | | (legacy `isStarred` also accepted) |
 | search       | string | | name, description |
+| createdBy    | uuid | | only templates this user created |
 | sort         | `newest` \| `oldest` \| `most_used` \| `recently_used` \| `name` | `newest` | `oldest` = `created_at ASC, id ASC` |
 | limit        | 1-100 | 50 | |
 | offset       | int | 0 | |
@@ -536,6 +544,8 @@ POST   /workspaces/:workspaceId/media-library/snippets/:snippetId/use          p
 
 `PUT` takes the same fields, all optional, plus `isStarred`.
 
+Every snippet response (list rows, `GET :snippetId`, and the single-item writes `POST`, `PUT`, `DELETE` to the Bin, `restore` and `use`) carries `category: MediaCategory | null` and `createdBy: UserRef | null` (created_by_id, left-joined; added 2026-11-03).
+
 ### Get All Text Snippets
 
 | Parameter  | Type | Default | Description |
@@ -544,6 +554,7 @@ POST   /workspaces/:workspaceId/media-library/snippets/:snippetId/use          p
 | categoryId | uuid | | |
 | starred    | `true` | | (legacy `isStarred` also accepted) |
 | search     | string | | name, content |
+| createdBy  | uuid | | only snippets this user created |
 | sort       | `newest` \| `oldest` \| `most_used` \| `recently_used` \| `name` | `newest` | `oldest` = `created_at ASC, id ASC` |
 | limit      | 1-100 | 50 | |
 | offset     | int | 0 | |
@@ -604,6 +615,8 @@ utm: { source?: string; medium?: string; campaign?: string; term?: string; conte
 previewFaviconUrl: string | null
 ```
 
+Every link response (list rows, `GET :linkId`, and the single-item writes `POST`, `PUT`, `refresh-preview`, `DELETE` to the Bin, `restore` and `use`) carries `category: MediaCategory | null` and `createdBy: UserRef | null` (created_by_id, left-joined; added 2026-11-03).
+
 ### Get All Saved Links
 
 | Parameter  | Type | Default | Description |
@@ -611,6 +624,7 @@ previewFaviconUrl: string | null
 | categoryId | uuid | | |
 | isStarred  | boolean | | |
 | search     | string | | `ilike` on url, title (the fetched preview title), name and description |
+| createdBy  | uuid | | only links this user created |
 | sort       | `newest` \| `oldest` \| `most_used` \| `name` | `newest` | `oldest` = `created_at ASC, id ASC` |
 | limit      | 1-100 | 50 | |
 | offset     | int | 0 | |
@@ -690,11 +704,14 @@ interface BinRow {
   sizeBytes: number | null      // media only
   deletedAt: string
   deletedBy: UserRef | null
+  createdBy: UserRef | null     // who made it: media's uploaded_by_id, the other kinds' created_by_id (added 2026-11-03)
   purgeAt: string               // deletedAt + 30 days
 }
 // response
 Page<BinRow> & { countsByKind: Record<BinKind, number> }
 ```
+
+`createdBy` and `deletedBy` are separate left joins on `users`; both are null when the user row is missing.
 
 A legacy row with no `deleted_at` uses `updated_at`, both for `deletedAt` and for the cleanup.
 
