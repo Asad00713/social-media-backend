@@ -57,6 +57,7 @@ interface BinRowSql extends Record<string, unknown> {
   creator_name: string | null;
   creator_email: string | null;
   creator_avatar_url: string | null;
+  is_sample: boolean;
 }
 
 interface BinCountsSql extends Record<string, unknown> {
@@ -137,7 +138,7 @@ export class RecycleBinService {
     // Every branch names its columns: with a kind filter, any of them can be
     // the first (and so the naming) branch of the union. The creator is
     // media's uploader and the other kinds' created_by_id.
-    const tail = sql`${deletedAt} AS deleted_at, deleted_by_id`;
+    const tail = sql`${deletedAt} AS deleted_at, deleted_by_id, is_sample`;
     const branches: Record<BinKind, SQL> = {
       media: sql`
         SELECT 'media' AS kind, id, name,
@@ -171,7 +172,7 @@ export class RecycleBinService {
     );
 
     const page = await this.db.execute<BinRowSql>(sql`
-      SELECT b.kind, b.id, b.name, b.thumbnail_url, b.type,
+      SELECT b.kind, b.id, b.name, b.thumbnail_url, b.type, b.is_sample,
              b.size_bytes::float8 AS size_bytes,
              (extract(epoch FROM b.deleted_at) * 1000)::float8 AS deleted_ms,
              u.id AS user_id, u.name AS user_name, u.email AS user_email,
@@ -380,5 +381,6 @@ function toBinRow(r: BinRowSql): BinRow {
         : null,
     ),
     purgeAt: new Date(deletedMs + BIN_RETENTION_MS).toISOString(),
+    isSample: r.is_sample === true,
   };
 }

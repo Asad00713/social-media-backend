@@ -170,4 +170,16 @@ export interface BinRow {
   deletedBy: UserRef | null;
   createdBy: UserRef | null; // media: the uploader (amended 2026-11-03)
   purgeAt: string; // deletedAt + 30 days
+  isSample: boolean; // seeded sample content (0057, amended 2026-11-03)
+}
+
+/**
+ * Every media item, template, snippet, link and folder (each `GET`, list
+ * row, single-item write, embedded `category`) carries this, from the
+ * `is_sample` column (migration 0057). True only on the "Getting started"
+ * samples seeded into a new workspace; those also have `createdBy: null`
+ * (media: `uploadedBy: null`). Added 2026-11-03.
+ */
+export interface SampleFlag {
+  isSample: boolean;
 }

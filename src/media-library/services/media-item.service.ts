@@ -48,6 +48,7 @@ import {
   wouldExceed,
 } from '../lib/storage';
 import { mediaTypeFromUpload } from '../lib/upload-type';
+import { isSampleAssetUrl } from '../samples/sample-assets';
 import type { Page, UserRef } from '../dto/contract';
 import type { UploadResult } from '../../media/cloudinary.service';
 import {
@@ -786,11 +787,18 @@ export class MediaItemService {
    * Only binned rows are purged: a live row in `candidates` is skipped, and
    * the DELETE re-checks `is_deleted`, so a row restored while its file was
    * deleting survives and is not reported in `deletedIds`.
+   *
+   * A sample row (0057) loses its row only, never its file: the file is one
+   * bundled copy every workspace's samples point at. This is the one place a
+   * media row's file is deleted (delete forever, bulk, Bin delete, empty Bin
+   * and the retention purge all come here), so the guard is here.
    */
   async purgeItems(
     candidates: MediaLibraryItem[],
   ): Promise<{ deletedIds: string[]; failedIds: string[] }> {
-    const rows = candidates.filter((r) => r.isDeleted === true);
+    const binned = candidates.filter((r) => r.isDeleted === true);
+    const sampleIds = binned.filter(isSampleFileRow).map((r) => r.id);
+    const rows = binned.filter((r) => !isSampleFileRow(r));
     const setIds = rows.map((r) => r.id);
 
     // Rows inside the set that share a file URL or a public id delete it once.
@@ -835,7 +843,7 @@ export class MediaItemService {
       this.db,
     );
 
-    const deletedIds: string[] = [];
+    const deletedIds: string[] = [...sampleIds];
     const failedIds: string[] = [];
     const queue = [...groups];
 
@@ -1185,4 +1193,16 @@ export class MediaItemService {
 
     return { deletedCount: deleted };
   }
+}
+
+/**
+ * A row whose file must never be deleted: a sample (0057), or any row that
+ * points at a bundled sample file. Checked on the flag and the URL both.
+ */
+function isSampleFileRow(row: MediaLibraryItem): boolean {
+  return (
+    row.isSample === true ||
+    isSampleAssetUrl(row.fileUrl) ||
+    isSampleAssetUrl(row.thumbnailUrl)
+  );
 }

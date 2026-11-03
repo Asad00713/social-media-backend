@@ -38,7 +38,10 @@ export class LibraryStatsService {
     const ws = sql`${workspaceId}::uuid`;
     const live = sql`NOT COALESCE(is_deleted, false)`;
     const binned = sql`COALESCE(is_deleted, false)`;
-    const size = sql`COALESCE(file_size, 0)`;
+    // A sample's bytes are not this workspace's storage (0057): every byte
+    // figure (by type, unused, Bin) skips them. The counts include them, as
+    // the rows are real and listed.
+    const size = sql`CASE WHEN is_sample THEN 0 ELSE COALESCE(file_size, 0) END`;
     const isImage = sql`type IN ('image', 'gif')`;
 
     // `ref` (is the item used anywhere) is computed once per item, from one
@@ -47,7 +50,7 @@ export class LibraryStatsService {
     const media = await db.execute<Row>(sql`
       WITH keys AS MATERIALIZED (${workspaceReferenceKeysSql(workspaceId)}),
       m AS MATERIALIZED (
-        SELECT type, file_size, is_deleted,
+        SELECT type, file_size, is_deleted, is_sample,
                ${itemInReferenceKeysSql({ id: sql`id`, fileUrl: sql`file_url` })} AS ref
           FROM media_items WHERE workspace_id = ${ws}
       )
