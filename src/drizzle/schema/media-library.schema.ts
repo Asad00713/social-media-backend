@@ -13,6 +13,7 @@ import {
 import { relations } from 'drizzle-orm';
 import { users } from './users.schema';
 import { workspace } from './workspace.schema';
+import type { FolderKind } from '../../media-library/lib/folder-kind';
 
 // =============================================================================
 // Media Types
@@ -30,6 +31,10 @@ export const MEDIA_LIBRARY_TYPES = [
 
 export type MediaLibraryType = (typeof MEDIA_LIBRARY_TYPES)[number];
 
+/** Where a library file's bytes live. */
+export const STORAGE_PROVIDERS = ['cloudinary', 'r2'] as const;
+export type StorageProvider = (typeof STORAGE_PROVIDERS)[number];
+
 // =============================================================================
 // Media Categories - User-created categories per type
 // =============================================================================
@@ -46,9 +51,9 @@ export const mediaCategories = pgTable(
     // Category details
     name: varchar('name', { length: 100 }).notNull(),
     description: text('description'),
-    // A folder belongs to exactly one asset type — image folders live in the
-    // Images section, video folders in Videos, and so on. Required.
-    type: varchar('type', { length: 50 }).$type<MediaLibraryType>().notNull(),
+    // The folder's kind. Migration 0054 merged the legacy image / gif / video
+    // / document kinds into 'media'.
+    type: varchar('type', { length: 50 }).$type<FolderKind>().notNull(),
     color: varchar('color', { length: 20 }), // Hex color for UI
     icon: varchar('icon', { length: 50 }), // Icon name for UI
 
@@ -114,6 +119,16 @@ export const mediaItems = pgTable(
     cloudinaryPublicId: varchar('cloudinary_public_id', { length: 255 }),
     cloudinaryAssetId: varchar('cloudinary_asset_id', { length: 255 }),
 
+    // Where the bytes live (D3); written at create, backfilled by 0054.
+    storageProvider: varchar('storage_provider', { length: 20 })
+      .$type<StorageProvider>()
+      .notNull()
+      .default('cloudinary'),
+
+    // Accessibility text, and the page count of a PDF.
+    altText: text('alt_text'),
+    pageCount: integer('page_count'),
+
     // Organization
     tags: jsonb('tags').$type<string[]>().default([]),
     isStarred: boolean('is_starred').default(false),
@@ -150,6 +165,12 @@ export const mediaItems = pgTable(
       table.workspaceId,
       table.isDeleted,
     ),
+    // Cross-workspace share lookups on purge, 413 and orphan cleanup (SEC3).
+    // Hash: equality only, and both URLs are unbounded text a btree entry
+    // could not hold. thumbnail_url: a poster another row still shows.
+    index('media_items_file_url_idx').using('hash', table.fileUrl),
+    index('media_items_thumbnail_url_idx').using('hash', table.thumbnailUrl),
+    index('media_items_cloudinary_public_id_idx').on(table.cloudinaryPublicId),
   ],
 );
 
@@ -185,6 +206,8 @@ export interface TemplateMedia {
   height?: number;
   durationSec?: number;
   sizeBytes?: number;
+  /** The Library item this attachment came from, when it came from one. */
+  libraryItemId?: string;
 }
 
 export interface TemplateContent {
@@ -280,7 +303,7 @@ export const TEXT_SNIPPET_TYPES = [
   'caption',
   'hashtags',
   'cta',
-  'bio',
+  'signature',
   'other',
 ] as const;
 
@@ -348,6 +371,14 @@ export const textSnippets = pgTable(
 // Saved Links - URLs with metadata
 // =============================================================================
 
+export interface SavedLinkUtm {
+  source?: string;
+  medium?: string;
+  campaign?: string;
+  term?: string;
+  content?: string;
+}
+
 export const savedLinks = pgTable(
   'saved_links',
   {
@@ -375,6 +406,10 @@ export const savedLinks = pgTable(
     previewDescription: text('preview_description'),
     previewImageUrl: text('preview_image_url'),
     previewSiteName: varchar('preview_site_name', { length: 255 }),
+    previewFaviconUrl: text('preview_favicon_url'),
+
+    // UTM parameters the composer appends when the link is inserted.
+    utm: jsonb('utm').$type<SavedLinkUtm | null>(),
 
     // Organization
     tags: jsonb('tags').$type<string[]>().default([]),

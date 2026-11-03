@@ -178,6 +178,7 @@ export class WorkspaceService {
           channelsLimit: limits.channelsLimit,
           membersLimit: limits.membersLimit,
           aiTokensLimit: limits.aiTokensLimit,
+          storageBytesLimit: limits.storageBytesLimit,
           channelsCount: 0,
           membersCount: 0,
           // The purchased extras belong to the ACCOUNT, and every reader

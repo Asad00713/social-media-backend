@@ -20,6 +20,27 @@ interface RoleRequest {
   workspaceRole?: WorkspaceRole | 'SUPER_ADMIN';
 }
 
+/** The denial every capability check on a workspace route answers with. */
+function capabilityDenied(): ForbiddenException {
+  return new ForbiddenException(
+    'You do not have permission to perform this action in this workspace',
+  );
+}
+
+/**
+ * For a handler whose capability depends on its input (a bulk route that
+ * needs more for one action): checks the role the guard already resolved,
+ * and denies exactly as the guard does.
+ */
+export function assertRoleCan(
+  role: WorkspaceRole | 'SUPER_ADMIN' | undefined,
+  cap: Capability,
+): void {
+  if (role === 'SUPER_ADMIN') return;
+  if (role && roleCan(role, cap)) return;
+  throw capabilityDenied();
+}
+
 @Injectable()
 export class WorkspaceRoleGuard implements CanActivate {
   constructor(
@@ -56,8 +77,6 @@ export class WorkspaceRoleGuard implements CanActivate {
       req.workspaceRole = 'SUPER_ADMIN';
       return true;
     }
-    throw new ForbiddenException(
-      'You do not have permission to perform this action in this workspace',
-    );
+    throw capabilityDenied();
   }
 }

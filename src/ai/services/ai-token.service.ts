@@ -23,6 +23,7 @@ export const AI_OPERATION_COSTS: Record<string, number> = {
   // Tier 1 - Basic (2 tokens)
   generate_hashtags: 2,
   generate_bio: 2,
+  generate_alt_text: 2, // one image description from a vision model
   // Tier 2 - Standard (5 tokens)
   generate_post: 5,
   generate_caption: 5,
@@ -172,6 +173,7 @@ export class AiTokenService {
           membersLimit: plan.membersPerWorkspace,
           aiTokensUsedThisMonth: 0,
           aiTokensLimit: plan.aiTokensPerMonth,
+          storageBytesLimit: plan.storageBytesPerWorkspace,
           extraAiTokensPurchased: 0,
           aiTokensResetDate: resetDate,
         })
