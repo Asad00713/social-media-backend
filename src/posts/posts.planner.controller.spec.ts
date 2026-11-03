@@ -184,9 +184,40 @@ describe('PostsController planner reads over HTTP', () => {
         `/posts/workspaces/${ws}/${id}/duplicate`,
       );
 
+    const optsSent = () =>
+      (drafts.duplicate.mock.calls as unknown[][])[0][3] as Record<
+        string,
+        unknown
+      >;
+
     it('lets a guest copy a post: 201 with the new post', async () => {
       await dup().expect(201, { post: { id: 'new-1' } });
-      expect(drafts.duplicate).toHaveBeenCalledWith(WS, POST, 'user-1');
+      expect(drafts.duplicate).toHaveBeenCalledWith(
+        WS,
+        POST,
+        'user-1',
+        expect.objectContaining({}),
+      );
+      expect(optsSent()).toEqual({});
+    });
+
+    it('passes channelId through, coerced to a number', async () => {
+      await dup().send({ channelId: 7 }).expect(201);
+      expect(optsSent()).toMatchObject({ channelId: 7 });
+    });
+
+    it('passes noTargets through', async () => {
+      await dup().send({ noTargets: true }).expect(201);
+      expect(optsSent()).toMatchObject({
+        noTargets: true,
+      });
+    });
+
+    it('answers 400 to an invalid body and copies nothing', async () => {
+      await dup().send({ channelId: 'abc' }).expect(400);
+      await dup().send({ channelId: 0 }).expect(400);
+      await dup().send({ noTargets: 'yes' }).expect(400);
+      expect(drafts.duplicate).not.toHaveBeenCalled();
     });
 
     it('refuses a non-member', async () => {

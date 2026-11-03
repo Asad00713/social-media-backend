@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- partial-row test doubles */
+import { BadRequestException } from '@nestjs/common';
 import type { PostRow } from './present-post';
 import { buildDuplicate } from './duplicate-post';
 
@@ -122,5 +123,135 @@ describe('buildDuplicate', () => {
     const out = buildDuplicate(src, USER) as Record<string, any>;
     expect(out.mediaItems).not.toBe(src.mediaItems);
     expect(out.platformContent).not.toBe(src.platformContent);
+  });
+
+  describe('options', () => {
+    const two = () =>
+      source({
+        targets: [
+          ...(source().targets as any[]),
+          {
+            channelId: '7',
+            platform: 'facebook',
+            status: 'published',
+            publishStatus: 'published',
+            platformPostId: 'fb-1',
+          },
+        ] as never,
+      });
+
+    it('no options: copies every target, as today', () => {
+      const out = buildDuplicate(two(), USER) as Record<string, any>;
+      expect(
+        (out.targets as Array<{ channelId: string }>).map((t) => t.channelId),
+      ).toEqual(['ch-1', '7']);
+    });
+
+    it('channelId keeps only that target', () => {
+      const out = buildDuplicate(two(), USER, { channelId: 7 }) as Record<
+        string,
+        any
+      >;
+      expect(out.targets).toEqual([
+        {
+          channelId: '7',
+          platform: 'facebook',
+          status: 'draft',
+          publishStatus: 'queued',
+          retryCount: 0,
+        },
+      ]);
+      expect(out.content).toBe('Launch day');
+      expect(out.mediaItems).toHaveLength(1);
+    });
+
+    it('channelId not on the post: 400, nothing built', () => {
+      expect(() => buildDuplicate(two(), USER, { channelId: 99 })).toThrow(
+        BadRequestException,
+      );
+    });
+
+    it('channelId together with noTargets is a 400', () => {
+      expect(() =>
+        buildDuplicate(two(), USER, { channelId: 7, noTargets: true }),
+      ).toThrow(BadRequestException);
+    });
+
+    it('noTargets gives an empty list and keeps media and caption', () => {
+      const out = buildDuplicate(two(), USER, { noTargets: true }) as Record<
+        string,
+        any
+      >;
+      expect(out.targets).toEqual([]);
+      expect(out.content).toBe('Launch day');
+      expect(out.mediaItems).toEqual([
+        { url: 'https://x.test/a.png', type: 'image' },
+      ]);
+    });
+
+    it('imported source: media dropped, caption kept, platformContent media dropped', () => {
+      const out = buildDuplicate(
+        source({
+          metadata: { syncedFrom: 'platform', syncedAt: 'now' } as never,
+          platformContent: {
+            twitter: {
+              text: 'tweet',
+              mediaItems: [{ url: 'https://cdn.test/t.jpg', type: 'image' }],
+            },
+          } as never,
+        }),
+        USER,
+      ) as Record<string, any>;
+      expect(out.mediaItems).toEqual([]);
+      expect(out.content).toBe('Launch day');
+      expect(out.platformContent).toEqual({ twitter: { text: 'tweet' } });
+    });
+
+    it('imported source: a per-channel override loses its media too', () => {
+      const out = buildDuplicate(
+        source({
+          metadata: { syncedFrom: 'platform' } as never,
+          targets: [
+            {
+              channelId: 'ch-1',
+              platform: 'twitter',
+              status: 'published',
+              contentOverride: {
+                text: 'short',
+                mediaItems: [{ url: 'https://cdn.test/t.jpg', type: 'image' }],
+              },
+            },
+          ] as never,
+        }),
+        USER,
+      ) as Record<string, any>;
+      expect(out.targets[0].contentOverride).toEqual({ text: 'short' });
+    });
+
+    it('a non-imported source keeps its platformContent media', () => {
+      const out = buildDuplicate(
+        source({
+          platformContent: {
+            twitter: { text: 't', mediaItems: [{ url: 'u', type: 'image' }] },
+          } as never,
+        }),
+        USER,
+      ) as Record<string, any>;
+      expect(out.platformContent.twitter.mediaItems).toHaveLength(1);
+    });
+
+    it('syncedFrom and syncedAt are stripped from metadata', () => {
+      const out = buildDuplicate(
+        source({
+          metadata: {
+            syncedFrom: 'platform',
+            syncedAt: '2026-01-01',
+            hashtags: ['a'],
+          } as never,
+        }),
+        USER,
+      ) as Record<string, any>;
+      expect(out.metadata).toEqual({ hashtags: ['a'] });
+    });
   });
 });
