@@ -125,6 +125,15 @@ A folder holds one kind of thing. The four kinds are `media`, `template`, `text_
 
 An item can be filed only into a folder of its own kind. Filing into a folder of another kind is a `400`.
 
+Every folder response (`POST`, `GET` list with or without `withStats`, `grouped`, `GET :categoryId`, `PUT`) is the folder's columns plus its creator:
+
+```ts
+createdById: string | null   // media_categories.created_by_id (migration 0056)
+createdBy: UserRef | null    // left-joined on users (added 2026-11-03)
+```
+
+`POST categories` records the signed-in user as the creator; nothing else sets it, and a rename keeps it. Both fields are `null` for a folder made before migration 0056 (no backfill) and for one whose creator's account was deleted (`ON DELETE SET NULL`: the folder stays). `DELETE` and `reorder` keep `{ success, message }`. Folders are deleted outright, never binned, so the Bin has no folder rows. The `category` embedded in an item, template, snippet or link row carries the raw `createdById` column only, not `createdBy`.
+
 ### Create Category
 
 ```
@@ -149,7 +158,7 @@ POST /workspaces/:workspaceId/media-library/categories          posts:draft
 | color       | string | No       | max 20 chars |
 | icon        | string | No       | max 50 chars |
 
-**Response:** `201 Created`, the folder.
+**Response:** `201 Created`, the folder (with `createdBy`, the caller).
 
 ### Get All Categories
 
@@ -958,4 +967,5 @@ Both refuse to run against a non-local database without `--i-know-this-is-produc
    ```
 
    It is SQL for the owner to run once, not a migration.
-7. **The retention cron runs on every replica.** The daily 3:00 AM purge has no single-runner lock, so each replica runs it. That is harmless: every kind's purge is idempotent, and a second runner finds nothing left to delete. A single-runner lock is the later fix.
+7. **Migration 0056 (folder creator)** is additive and safe to apply on start, with either the old or the new backend running. It adds a nullable `media_categories.created_by_id` (foreign key to `users`, `ON DELETE SET NULL`) and its index. It does not backfill: existing folders show no creator. It holds ACCESS EXCLUSIVE on `media_categories`, and the foreign key holds SHARE ROW EXCLUSIVE on `users`, only for the ALTER and a one-scan index build of a small table, bounded by `lock_timeout = '10s'`.
+8. **The retention cron runs on every replica.** The daily 3:00 AM purge has no single-runner lock, so each replica runs it. That is harmless: every kind's purge is idempotent, and a second runner finds nothing left to delete. A single-runner lock is the later fix.

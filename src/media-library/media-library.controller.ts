@@ -94,9 +94,10 @@ export class MediaLibraryController {
   @HttpCode(HttpStatus.CREATED)
   async createCategory(
     @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
     @Body() dto: CreateCategoryDto,
   ) {
-    return this.categoryService.create(workspaceId, dto);
+    return this.categoryService.create(workspaceId, user.userId, dto);
   }
 
   @Get('categories')
