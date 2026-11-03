@@ -25,10 +25,6 @@ import {
   type PublishedPost,
 } from '../post-performance/post-performance';
 import { PostPerformanceRepository } from '../post-performance/post-performance.repository';
-import {
-  isMeasured,
-  usualMultiplier,
-} from '../post-performance/engagement-stats';
 import type {
   InsightsOverviewDto,
   InsightsPostsDto,
@@ -50,6 +46,7 @@ import {
 import { parseChannels, type TableQuery } from './lib/query';
 import { bestTimes, formatStats, topPosts } from './lib/rankings';
 import { daySeries, followerTotals } from './lib/series';
+import { multiplierOf, usualByChannel } from './lib/usual-multiplier';
 
 /** Posts this young are still gaining; the chart draws them dashed. */
 const STILL_COLLECTING_DAYS = 3;
@@ -108,7 +105,7 @@ export class InsightsService {
     const cur = totalsOf(current);
     const prev = totalsOf(previous);
     const posts: InsightPost[] = current.map((p) =>
-      toInsightPost(p, platformOf.get(p.channelId) ?? ''),
+      toInsightPost(p, platformOf.get(p.channelId) ?? '', { now }),
     );
     const { formats, unknownFormatPosts } = formatStats(posts);
 
@@ -198,28 +195,16 @@ export class InsightsService {
       isoDate(new Date(today.getTime() - USUAL_WINDOW_DAYS * DAY_MS)),
       isoDate(new Date(today.getTime() + DAY_MS)),
     );
-    const usual = new Map<number, number[]>();
-    for (const p of sample) {
-      if (!isMeasured(p)) continue;
-      const list = usual.get(p.channelId) ?? [];
-      list.push(engagementsOf(p));
-      usual.set(p.channelId, list);
-    }
-    return rows.map((p) => {
-      const engagements = engagementsOf(p);
-      return {
-        postId: p.postId,
-        channelId: p.channelId,
-        views: p.impressions,
-        likes: p.likes,
-        comments: p.comments,
-        engagements,
-        // No data is not "0x the usual": leave it unanswered.
-        usualMultiplier: isMeasured(p)
-          ? usualMultiplier(engagements, usual.get(p.channelId) ?? [])
-          : null,
-      };
-    });
+    const usual = usualByChannel(sample);
+    return rows.map((p) => ({
+      postId: p.postId,
+      channelId: p.channelId,
+      views: p.impressions,
+      likes: p.likes,
+      comments: p.comments,
+      engagements: engagementsOf(p),
+      usualMultiplier: multiplierOf(p, usual),
+    }));
   }
 
   async csv(
@@ -274,7 +259,10 @@ export class InsightsService {
     );
     const rows = filterAndSort(
       published.map((p) =>
-        toInsightPost(p, platformOf.get(p.channelId) ?? '', captionChars),
+        toInsightPost(p, platformOf.get(p.channelId) ?? '', {
+          captionChars,
+          now,
+        }),
       ),
       table,
     );

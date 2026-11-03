@@ -9,7 +9,7 @@ const NOW = new Date('2026-10-17T12:00:00Z');
 interface Ws {
   userId: string;
   workspaceId: string;
-  channel: (n: string) => Promise<number>;
+  channel: (n: string, platform?: string) => Promise<number>;
 }
 
 async function workspace(client: PoolClient, tag: string): Promise<Ws> {
@@ -23,14 +23,14 @@ async function workspace(client: PoolClient, tag: string): Promise<Ws> {
     [tag, `${tag}-${Math.random().toString(36).slice(2, 8)}`, userId],
   );
   const workspaceId = w.rows[0].id;
-  const channel = async (n: string) =>
+  const channel = async (n: string, platform = 'twitter') =>
     Number(
       (
         await client.query<{ id: number }>(
           `INSERT INTO social_media_channels
              (workspace_id, platform, account_type, platform_account_id, account_name, access_token, connected_by_user_id)
-           VALUES ($1, 'twitter', 'personal', $2, $2, 'x', $3) RETURNING id`,
-          [workspaceId, `${tag}-${n}`, userId],
+           VALUES ($1, $4, 'personal', $2, $2, 'x', $3) RETURNING id`,
+          [workspaceId, `${tag}-${n}`, userId, platform],
         )
       ).rows[0].id,
     );
@@ -215,5 +215,331 @@ describeDb('InsightsService.postMetrics', () => {
       expect(await svc.postMetrics(theirs.workspaceId, [p], NOW)).toHaveLength(
         1,
       );
+    }));
+});
+
+interface Target {
+  channelId: number;
+  platform: string;
+  platformPostUrl?: string;
+}
+
+/** A published post with per-platform overrides and post metadata. */
+async function publishTo(
+  client: PoolClient,
+  w: Ws,
+  targets: Target[],
+  ageDays: number,
+  opts: {
+    platformContent?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  } = {},
+) {
+  const at = new Date(NOW.getTime() - ageDays * DAY).toISOString();
+  const r = await client.query<{ id: string }>(
+    `INSERT INTO posts (workspace_id, created_by_id, status, content, published_at, targets, platform_content, metadata)
+     VALUES ($1, $2, 'published', 'x', $3::timestamptz, $4::jsonb, $5::jsonb, $6::jsonb) RETURNING id`,
+    [
+      w.workspaceId,
+      w.userId,
+      at,
+      JSON.stringify(
+        targets.map((t) => ({
+          ...t,
+          channelId: String(t.channelId),
+          status: 'published',
+        })),
+      ),
+      JSON.stringify(opts.platformContent ?? {}),
+      JSON.stringify(opts.metadata ?? {}),
+    ],
+  );
+  return r.rows[0].id;
+}
+
+/** A snapshot with reach and platform metrics, fetched at the snapshot time. */
+async function snapMetrics(
+  client: PoolClient,
+  postId: string,
+  channelId: number,
+  ageHours: number,
+  c: { likes?: number; reach?: number | null; metrics?: object },
+) {
+  const at = new Date(NOW.getTime() - ageHours * 3_600_000).toISOString();
+  await client.query(
+    `INSERT INTO post_metric_snapshots
+       (post_id, channel_id, snapshot_at, age_bucket, likes_count, reach_count, platform_metrics, fetched_at, sync_status)
+     VALUES ($1, $2, $3::timestamptz, '1d', $4, $5, $6::jsonb, $3::timestamptz, 'ok')`,
+    [
+      postId,
+      channelId,
+      at,
+      c.likes ?? null,
+      c.reach ?? null,
+      JSON.stringify(c.metrics ?? {}),
+    ],
+  );
+}
+
+const story = (platform: string) => ({
+  [platform]: { platformSpecific: { postType: 'story' } },
+});
+
+describeDb('PostPerformanceRepository.publishedPosts', () => {
+  const FROM = '2026-09-01';
+  const BEFORE = '2026-10-18';
+  const run = (
+    fn: (repo: PostPerformanceRepository, client: PoolClient) => Promise<void>,
+  ) =>
+    withRollbackDb([], async (db, client) => {
+      await client.query(`SET LOCAL TIME ZONE 'Asia/Karachi'`);
+      await fn(new PostPerformanceRepository(db), client);
+    });
+
+  it('excludes an Instagram story and a Facebook story', () =>
+    run(async (repo, client) => {
+      const w = await workspace(client, 's1');
+      const ig = await w.channel('ig', 'instagram');
+      const fb = await w.channel('fb', 'facebook');
+      await publishTo(
+        client,
+        w,
+        [{ channelId: ig, platform: 'instagram' }],
+        2,
+        {
+          platformContent: story('instagram'),
+        },
+      );
+      await publishTo(client, w, [{ channelId: fb, platform: 'facebook' }], 2, {
+        platformContent: story('facebook'),
+      });
+      const feed = await publishTo(
+        client,
+        w,
+        [{ channelId: ig, platform: 'instagram' }],
+        2,
+        {
+          platformContent: {
+            instagram: { platformSpecific: { postType: 'feed' } },
+          },
+        },
+      );
+      const plain = await publishTo(
+        client,
+        w,
+        [{ channelId: fb, platform: 'facebook' }],
+        2,
+      );
+
+      const rows = await repo.publishedPosts(
+        w.workspaceId,
+        [ig, fb],
+        FROM,
+        BEFORE,
+      );
+      expect(rows.map((r) => r.postId).sort()).toEqual([feed, plain].sort());
+    }));
+
+  it('keeps a post whose other platform override is story only for that platform row', () =>
+    run(async (repo, client) => {
+      const w = await workspace(client, 's2');
+      const ig = await w.channel('ig', 'instagram');
+      const fb = await w.channel('fb', 'facebook');
+      const p = await publishTo(
+        client,
+        w,
+        [
+          { channelId: ig, platform: 'instagram' },
+          { channelId: fb, platform: 'facebook' },
+        ],
+        2,
+        { platformContent: story('instagram') },
+      );
+
+      const rows = await repo.publishedPosts(
+        w.workspaceId,
+        [ig, fb],
+        FROM,
+        BEFORE,
+      );
+      expect(rows.map((r) => [r.postId, r.channelId])).toEqual([[p, fb]]);
+      expect(
+        (await repo.publishedPostsByIds(w.workspaceId, [p])).map(
+          (r) => r.channelId,
+        ),
+      ).toEqual([fb]);
+    }));
+
+  it('selects reach and saved from the latest snapshot, not an older one', () =>
+    run(async (repo, client) => {
+      const w = await workspace(client, 's3');
+      const ig = await w.channel('ig', 'instagram');
+      const p = await publishTo(
+        client,
+        w,
+        [{ channelId: ig, platform: 'instagram' }],
+        3,
+      );
+      await snapMetrics(client, p, ig, 48, {
+        likes: 90,
+        reach: 9000,
+        metrics: { saved: 900, follows: 90 },
+      });
+      await snapMetrics(client, p, ig, 2, {
+        likes: 10,
+        reach: 640,
+        metrics: { saved: 12, follows: 3 },
+      });
+      await snapMetrics(client, p, ig, 30, {
+        likes: 50,
+        reach: 5000,
+        metrics: { saved: 500, follows: 50 },
+      });
+
+      const [row] = await repo.publishedPosts(
+        w.workspaceId,
+        [ig],
+        FROM,
+        BEFORE,
+      );
+      expect(row).toMatchObject({
+        likes: 10,
+        reach: 640,
+        saved: 12,
+        follows: 3,
+        syncedAt: new Date(NOW.getTime() - 2 * 3_600_000).toISOString(),
+      });
+    }));
+
+  it('leaves reach, saves, follows and the sync time null before any snapshot', () =>
+    run(async (repo, client) => {
+      const w = await workspace(client, 's4');
+      const ig = await w.channel('ig', 'instagram');
+      await publishTo(client, w, [{ channelId: ig, platform: 'instagram' }], 3);
+      const [row] = await repo.publishedPosts(
+        w.workspaceId,
+        [ig],
+        FROM,
+        BEFORE,
+      );
+      expect(row).toMatchObject({
+        reach: null,
+        saved: null,
+        follows: null,
+        syncedAt: null,
+        permalink: null,
+      });
+    }));
+
+  it('imported post permalink falls back to the snapshot', () =>
+    run(async (repo, client) => {
+      const w = await workspace(client, 's5');
+      const ig = await w.channel('ig', 'instagram');
+      const fb = await w.channel('fb', 'facebook');
+      const ma = await w.channel('ma', 'mastodon');
+      const imported = { metadata: { syncedFrom: 'platform' } };
+      const pIg = await publishTo(
+        client,
+        w,
+        [{ channelId: ig, platform: 'instagram' }],
+        3,
+        imported,
+      );
+      // The import snapshot names it; a later metrics-only snapshot does not.
+      await snapMetrics(client, pIg, ig, 40, {
+        metrics: { permalink: 'https://instagram.com/p/abc' },
+      });
+      await snapMetrics(client, pIg, ig, 2, { likes: 4 });
+      const pFb = await publishTo(
+        client,
+        w,
+        [{ channelId: fb, platform: 'facebook' }],
+        3,
+        imported,
+      );
+      await snapMetrics(client, pFb, fb, 2, {
+        metrics: { permalinkUrl: 'https://facebook.com/1_2' },
+      });
+      const pMa = await publishTo(
+        client,
+        w,
+        [{ channelId: ma, platform: 'mastodon' }],
+        3,
+        imported,
+      );
+      await snapMetrics(client, pMa, ma, 2, {
+        metrics: { uri: 'tag:x', url: 'https://mastodon.social/@a/1' },
+      });
+      // A URL the target recorded wins over the snapshot's.
+      const pOwn = await publishTo(
+        client,
+        w,
+        [
+          {
+            channelId: ig,
+            platform: 'instagram',
+            platformPostUrl: 'https://instagram.com/p/own',
+          },
+        ],
+        3,
+      );
+      await snapMetrics(client, pOwn, ig, 2, {
+        metrics: { permalink: 'https://instagram.com/p/other' },
+      });
+
+      const rows = await repo.publishedPosts(
+        w.workspaceId,
+        [ig, fb, ma],
+        FROM,
+        BEFORE,
+      );
+      const link = new Map(rows.map((r) => [r.postId, r.permalink]));
+      expect(link.get(pIg)).toBe('https://instagram.com/p/abc');
+      expect(link.get(pFb)).toBe('https://facebook.com/1_2');
+      expect(link.get(pMa)).toBe('https://mastodon.social/@a/1');
+      expect(link.get(pOwn)).toBe('https://instagram.com/p/own');
+    }));
+});
+
+describeDb('InsightsService.postMetrics after the usual moved', () => {
+  it('Planner multiplier is unchanged after the move', () =>
+    withRollbackDb([], async (db, client) => {
+      await client.query(`SET LOCAL TIME ZONE 'Asia/Karachi'`);
+      const svc = new InsightsService(db, new PostPerformanceRepository(db));
+      const w = await workspace(client, 'mv');
+      const [a, b] = [await w.channel('a'), await w.channel('b')];
+      // Channel a: six measured posts, 3,4,5,5,6,8.
+      for (const [i, e] of [3, 4, 5, 5, 6, 8].entries()) {
+        const q = await publish(client, w, [a], 4 + i);
+        await snap(client, q, a, 1, counts(e));
+      }
+      // Channel b: three measured posts; with the target's own, four.
+      for (const [i, e] of [7, 7, 7].entries()) {
+        const q = await publish(client, w, [b], 4 + i);
+        await snap(client, q, b, 1, counts(e));
+      }
+      // Unmeasured posts in the window never join the sample.
+      await publish(client, w, [a], 3);
+      await publish(client, w, [a], 3);
+
+      const target = await publish(client, w, [a, b], 1);
+      await snap(client, target, a, 1, {
+        likes: 9,
+        comments: 2,
+        shares: 1,
+        impressions: 400,
+      });
+      await snap(client, target, b, 1, counts(14));
+      const quiet = await publish(client, w, [a], 1);
+
+      const rows = await svc.postMetrics(w.workspaceId, [target, quiet], NOW);
+      const of = (postId: string, channelId: number) =>
+        rows.find((r) => r.postId === postId && r.channelId === channelId);
+      // Sample a: 3,4,5,5,6,8 and the target's own 12 -> median 5 -> 2.4.
+      expect(of(target, a)?.usualMultiplier).toBe(2.4);
+      // Sample b: 7,7,7 and the target's 14 -> four, under the floor of five.
+      expect(of(target, b)?.usualMultiplier).toBeNull();
+      expect(of(quiet, a)?.usualMultiplier).toBeNull();
+      expect(rows).toHaveLength(3);
     }));
 });

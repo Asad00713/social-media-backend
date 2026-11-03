@@ -18,11 +18,23 @@ export interface PublishedPostRow {
   comments_count: string | number | null;
   shares_count: string | number | null;
   impressions_count: string | number | null;
+  reach_count: string | number | null;
+  /** `platform_metrics->>'saved'` and `->>'follows'`: JSON read as text. */
+  saved: string | null;
+  follows: string | null;
+  fetched_at: Date | string | null;
   media_type: string | null;
 }
 
 const count = (v: string | number | null): number | null =>
   v === null ? null : Number(v);
+
+/** A count read out of JSON: anything that isn't a number is unreported. */
+const jsonCount = (v: string | null): number | null => {
+  if (v === null || v.trim() === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? n : null;
+};
 
 export function toPublishedPost(r: PublishedPostRow): PublishedPost {
   return {
@@ -38,6 +50,11 @@ export function toPublishedPost(r: PublishedPostRow): PublishedPost {
     comments: count(r.comments_count),
     shares: count(r.shares_count),
     impressions: count(r.impressions_count),
+    reach: count(r.reach_count),
+    saved: jsonCount(r.saved),
+    follows: jsonCount(r.follows),
+    syncedAt:
+      r.fetched_at === null ? null : new Date(r.fetched_at).toISOString(),
     mediaType: r.media_type,
   };
 }
@@ -55,6 +72,10 @@ export class PostPerformanceRepository {
    * half of a partially published post counts and the failed half doesn't.
    * Targets carry `status` (legacy) or `publishStatus` (composer); both are
    * read. Posts imported from the platform are published posts too.
+   *
+   * Stories don't count: a target whose platform override says
+   * `platformSpecific.postType = 'story'` is dropped, on that platform only.
+   * Their numbers vanish after 24 hours, so they can't be compared.
    */
   async publishedPosts(
     workspaceId: string,
@@ -115,11 +136,15 @@ export class PostPerformanceRepository {
         coalesce(p.content, '') AS content,
         coalesce(p.media_items, '[]'::jsonb) AS media_items,
         coalesce(p.metadata->>'syncedFrom', '') = 'platform' AS imported,
-        t.permalink,
+        coalesce(t.permalink, pl.permalink) AS permalink,
         m.likes_count,
         m.comments_count,
         m.shares_count,
         m.impressions_count,
+        m.reach_count,
+        m.saved,
+        m.follows,
+        m.fetched_at,
         mt.media_type
       FROM posts p
       CROSS JOIN LATERAL (
@@ -127,14 +152,19 @@ export class PostPerformanceRepository {
         -- Slack destinations); it is still one publication on that channel.
         SELECT
           e->>'channelId' AS channel_id,
-          max(e->>'platformPostUrl') AS permalink
+          max(nullif(e->>'platformPostUrl', '')) AS permalink
         FROM jsonb_array_elements(p.targets) e
         WHERE (e->>'status' = 'published' OR e->>'publishStatus' = 'published')
+          AND coalesce(p.platform_content #>> ARRAY[e->>'platform', 'platformSpecific', 'postType'], '') <> 'story'
           ${channelFilter}
         GROUP BY e->>'channelId'
       ) t
       LEFT JOIN LATERAL (
-        SELECT s.likes_count, s.comments_count, s.shares_count, s.impressions_count
+        SELECT
+          s.likes_count, s.comments_count, s.shares_count, s.impressions_count,
+          s.reach_count, s.fetched_at,
+          s.platform_metrics->>'saved' AS saved,
+          s.platform_metrics->>'follows' AS follows
         FROM post_metric_snapshots s
         WHERE s.post_id = p.id
           AND s.channel_id::text = t.channel_id
@@ -152,6 +182,27 @@ export class PostPerformanceRepository {
         ORDER BY s.snapshot_at DESC, s.id DESC
         LIMIT 1
       ) mt ON true
+      LEFT JOIN LATERAL (
+        -- Where the post lives, for one whose target recorded no URL (an
+        -- imported post): the newest snapshot that says. Instagram and
+        -- Threads call it permalink, Facebook permalinkUrl, Mastodon url.
+        SELECT coalesce(
+          nullif(s.platform_metrics->>'permalink', ''),
+          nullif(s.platform_metrics->>'permalinkUrl', ''),
+          nullif(s.platform_metrics->>'url', '')
+        ) AS permalink
+        FROM post_metric_snapshots s
+        WHERE t.permalink IS NULL
+          AND s.post_id = p.id
+          AND s.channel_id::text = t.channel_id
+          AND coalesce(
+            nullif(s.platform_metrics->>'permalink', ''),
+            nullif(s.platform_metrics->>'permalinkUrl', ''),
+            nullif(s.platform_metrics->>'url', '')
+          ) IS NOT NULL
+        ORDER BY s.snapshot_at DESC, s.id DESC
+        LIMIT 1
+      ) pl ON true
       WHERE ${postWhere}
     `);
 

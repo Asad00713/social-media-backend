@@ -76,9 +76,16 @@ describe('parseTableQuery', () => {
       offset: 20,
     });
   });
+  it('accepts the link format and sorting by reach', () => {
+    expect(parseTableQuery({ format: 'link', sort: 'reach' })).toMatchObject({
+      format: 'link',
+      sort: 'reach',
+    });
+  });
   it.each([
     [{ format: 'gif' }],
-    [{ sort: 'reach' }],
+    [{ format: 'unknown' }],
+    [{ sort: 'saves' }],
     [{ order: 'up' }],
     [{ limit: '0' }],
     [{ limit: '101' }],

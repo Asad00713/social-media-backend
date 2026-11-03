@@ -83,7 +83,8 @@ describe('InsightsController over HTTP', () => {
     ['overview?days=14'],
     ['overview?tz=Mars/Olympus'],
     ['posts?limit=500'],
-    ['posts?sort=reach'],
+    ['posts?sort=saves'],
+    ['posts?format=unknown'],
   ])('answers 400 to %s', async (path) => {
     await request(app.getHttpServer())
       .get(`/insights/workspaces/${WS}/${path}`)

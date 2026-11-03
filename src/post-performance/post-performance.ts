@@ -32,6 +32,14 @@ export interface PublishedPost {
   comments: number | null;
   shares: number | null;
   impressions: number | null;
+  /** Unique accounts reached, from the same latest snapshot. */
+  reach: number | null;
+  /** `platform_metrics.saved` (Instagram) from the latest snapshot. */
+  saved: number | null;
+  /** `platform_metrics.follows` (Instagram feed posts) from the latest snapshot. */
+  follows: number | null;
+  /** When the latest snapshot was fetched, ISO 8601; null before the first. */
+  syncedAt: string | null;
   /** When it went out, ISO 8601. */
   publishedAt: string;
   /** The whole caption; '' when there is none. Insights trims it for cards. */
@@ -39,7 +47,11 @@ export interface PublishedPost {
   mediaItems: PostMediaItem[];
   /** Imported from the platform rather than composed in Schedura. */
   imported: boolean;
-  /** The post on the platform, when the target recorded it. */
+  /**
+   * The post on the platform: the URL the target recorded, else the newest
+   * snapshot's `platform_metrics` `permalink`, `permalinkUrl` or `url`
+   * (imported posts have no target URL).
+   */
   permalink: string | null;
   /**
    * `platform_metrics.mediaType` from the newest snapshot that has one

@@ -5,6 +5,7 @@ const ip = (over: Partial<InsightPost>): InsightPost => ({
   postId: 'p',
   channelId: 1,
   publishedAt: '2026-09-21T10:00:00.000Z',
+  title: '',
   content: '',
   format: 'image',
   thumbnailUrl: null,
@@ -13,8 +14,12 @@ const ip = (over: Partial<InsightPost>): InsightPost => ({
   comments: null,
   shares: null,
   impressions: null,
+  reach: null,
   engagements: 0,
   engagementRate: null,
+  imported: false,
+  usualMultiplier: null,
+  isSettling: false,
   ...over,
 });
 
@@ -57,6 +62,27 @@ describe('filterAndSort', () => {
         order: 'desc',
       }).map((r) => r.postId),
     ).toEqual(['zero-impr', 'a']);
+  });
+
+  it('sorts by reach with unreported reach last, and filters link posts', () => {
+    const reached = [
+      ip({ postId: 'r1', reach: 50, format: 'link' }),
+      ip({ postId: 'r0', reach: null, format: 'link' }),
+      ip({ postId: 'r2', reach: 900 }),
+    ];
+    const order = (o: 'asc' | 'desc') =>
+      filterAndSort(reached, { format: 'all', sort: 'reach', order: o }).map(
+        (r) => r.postId,
+      );
+    expect(order('desc')).toEqual(['r2', 'r1', 'r0']);
+    expect(order('asc')).toEqual(['r1', 'r2', 'r0']);
+    expect(
+      filterAndSort(reached, {
+        format: 'link',
+        sort: 'reach',
+        order: 'desc',
+      }).map((r) => r.postId),
+    ).toEqual(['r1', 'r0']);
   });
 });
 

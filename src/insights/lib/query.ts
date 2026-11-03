@@ -49,6 +49,7 @@ export function parseTz(raw?: string): string {
 export const SORT_KEYS = [
   'publishedAt',
   'impressions',
+  'reach',
   'engagements',
   'engagementRate',
   'likes',
