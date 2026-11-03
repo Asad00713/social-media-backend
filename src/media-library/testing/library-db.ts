@@ -48,6 +48,7 @@ export const LIBRARY_MIGRATIONS: string[] = [
   '0054_library_columns.sql',
   '0055_posts_library_refs.sql',
   '0056_media_categories_created_by.sql',
+  '0057_library_is_sample.sql',
 ];
 
 export const describeLibraryDb = describeDb;
