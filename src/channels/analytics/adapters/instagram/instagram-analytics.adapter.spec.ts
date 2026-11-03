@@ -91,10 +91,11 @@ describe('InstagramAnalyticsAdapter', () => {
     }
   });
 
-  it('fetchPostMetrics returns success when both media and insights succeed', async () => {
+  it('maps Instagram views to impressionsCount and keeps saved and follows', async () => {
     client.getMedia.mockResolvedValue({
       id: 'media-1',
       media_type: 'IMAGE',
+      media_product_type: 'FEED',
       timestamp: new Date().toISOString(),
       like_count: 200,
       comments_count: 30,
@@ -102,10 +103,11 @@ describe('InstagramAnalyticsAdapter', () => {
     });
     client.getMediaInsights.mockResolvedValue({
       data: [
-        { name: 'impressions', period: 'lifetime', values: [{ value: 5000 }] },
+        { name: 'views', period: 'lifetime', values: [{ value: 5000 }] },
         { name: 'reach', period: 'lifetime', values: [{ value: 3500 }] },
-        { name: 'engagement', period: 'lifetime', values: [{ value: 250 }] },
+        { name: 'shares', period: 'lifetime', values: [{ value: 12 }] },
         { name: 'saved', period: 'lifetime', values: [{ value: 45 }] },
+        { name: 'follows', period: 'lifetime', values: [{ value: 7 }] },
       ],
     });
 
@@ -120,11 +122,53 @@ describe('InstagramAnalyticsAdapter', () => {
       expect(result.data.commentsCount).toBe(30);
       expect(result.data.impressionsCount).toBe(5000);
       expect(result.data.reachCount).toBe(3500);
+      expect(result.data.sharesCount).toBe(12);
       expect(result.data.platformMetrics.saved).toBe(45);
-      expect(result.data.platformMetrics.engagement).toBe(250);
+      expect(result.data.platformMetrics.follows).toBe(7);
+      expect(result.data.platformMetrics.mediaType).toBe('IMAGE');
+      expect(result.data.platformMetrics.mediaProductType).toBe('FEED');
+      expect(client.getMediaInsights).toHaveBeenCalledWith(
+        'media-1',
+        'FEED',
+        'tok',
+      );
       expect(result.data.platformMetrics.permalink).toBe(
         'https://www.instagram.com/p/abc123/',
       );
+    }
+  });
+
+  it('passes media_product_type, not media_type, to getMediaInsights for a reel', async () => {
+    client.getMedia.mockResolvedValue({
+      id: 'media-1',
+      media_type: 'VIDEO',
+      media_product_type: 'REELS',
+      timestamp: new Date().toISOString(),
+    });
+    client.getMediaInsights.mockResolvedValue({
+      data: [
+        { name: 'views', period: 'lifetime', values: [{ value: 900 }] },
+        { name: 'reach', period: 'lifetime', values: [{ value: 600 }] },
+      ],
+    });
+
+    const result = await adapter.fetchPostMetrics({
+      platformPostId: 'media-1',
+      accessToken: 'tok',
+    } as any);
+
+    expect(client.getMediaInsights).toHaveBeenCalledWith(
+      'media-1',
+      'REELS',
+      'tok',
+    );
+    expect(result.status).toBe('success');
+    if (result.status === 'success') {
+      expect(result.data.impressionsCount).toBe(900);
+      expect(result.data.reachCount).toBe(600);
+      expect(result.data.platformMetrics.mediaType).toBe('VIDEO');
+      expect(result.data.platformMetrics.mediaProductType).toBe('REELS');
+      expect(result.data.platformMetrics.follows).toBeNull();
     }
   });
 

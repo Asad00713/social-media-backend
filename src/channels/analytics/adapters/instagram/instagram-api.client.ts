@@ -64,9 +64,12 @@ export class InstagramApiClient {
     mediaId: string,
     accessToken: string,
   ): Promise<InstagramMedia> {
+    // media_product_type (FEED | REELS | STORY | AD) decides which insight
+    // metrics Meta accepts for this media; media_type alone cannot tell a
+    // reel from a video.
     const params = new URLSearchParams({
       fields:
-        'id,caption,media_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count',
+        'id,caption,media_type,media_product_type,media_url,thumbnail_url,permalink,timestamp,like_count,comments_count',
     });
     return this.request<InstagramMedia>(
       `${this.baseUrl}/${mediaId}?${params}`,
@@ -76,20 +79,22 @@ export class InstagramApiClient {
 
   async getMediaInsights(
     mediaId: string,
-    mediaType: string,
+    mediaProductType: string | undefined,
     accessToken: string,
   ): Promise<InstagramMediaInsights> {
-    // Insight metrics differ by media type. We pick a superset; API ignores unsupported
-    // metrics by returning an error — caught and degraded to partial status upstream.
-    const metricsByType: Record<string, string> = {
-      REEL: 'plays,reach,likes,comments,shares,saved',
-      VIDEO: 'plays,reach,impressions,saved',
-      STORY: 'impressions,reach,exits,replies',
-      IMAGE: 'impressions,reach,engagement,saved',
-      CAROUSEL_ALBUM: 'impressions,reach,engagement,saved',
+    // Meta retired impressions, plays and engagement for media created after
+    // 2 July 2024; `views` replaces them. Each product type accepts a different
+    // metric set and one unsupported name fails the whole request, so we ask
+    // only for what the type serves:
+    //   https://developers.facebook.com/docs/instagram-platform/reference/instagram-media/insights/
+    // `follows` and `profile_visits` exist for FEED but not REELS.
+    const metricsByProductType: Record<string, string> = {
+      REELS: 'views,reach,saved,shares',
+      STORY: 'views,reach',
     };
     const metric =
-      metricsByType[mediaType] ?? 'impressions,reach,engagement,saved';
+      (mediaProductType && metricsByProductType[mediaProductType]) ??
+      'views,reach,saved,shares,follows,profile_visits';
     const params = new URLSearchParams({ metric });
     return this.request<InstagramMediaInsights>(
       `${this.baseUrl}/${mediaId}/insights?${params}`,

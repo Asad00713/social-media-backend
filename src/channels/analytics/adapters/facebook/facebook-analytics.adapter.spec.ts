@@ -191,11 +191,12 @@ describe('FacebookAnalyticsAdapter', () => {
     if (result.status === 'partial') {
       expect(result.data.likesCount).toBe(50);
       expect(result.data.impressionsCount).toBeNull();
-      expect(result.missing).toContain('post_impressions');
+      expect(result.missing).toContain('post_media_view');
+      expect(result.missing).toContain('post_total_media_view_unique');
     }
   });
 
-  it('fetchPostMetrics returns success when both post and insights succeed', async () => {
+  it('maps post_media_view to impressionsCount, post_total_media_view_unique to reachCount', async () => {
     client.getPost.mockResolvedValue({
       id: 'post-1',
       created_time: new Date().toISOString(),
@@ -206,19 +207,14 @@ describe('FacebookAnalyticsAdapter', () => {
     client.getPostInsights.mockResolvedValue({
       data: [
         {
-          name: 'post_impressions',
+          name: 'post_media_view',
           period: 'lifetime',
           values: [{ value: 5000 }],
         },
         {
-          name: 'post_impressions_unique',
+          name: 'post_total_media_view_unique',
           period: 'lifetime',
           values: [{ value: 3200 }],
-        },
-        {
-          name: 'post_engaged_users',
-          period: 'lifetime',
-          values: [{ value: 800 }],
         },
       ],
     });
@@ -232,7 +228,7 @@ describe('FacebookAnalyticsAdapter', () => {
     if (result.status === 'success') {
       expect(result.data.impressionsCount).toBe(5000);
       expect(result.data.reachCount).toBe(3200);
-      expect(result.data.platformMetrics.engagedUsers).toBe(800);
+      expect(result.data.platformMetrics).not.toHaveProperty('engagedUsers');
     }
   });
 });

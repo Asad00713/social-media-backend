@@ -74,7 +74,11 @@ export class FacebookApiClient {
     accessToken: string,
   ): Promise<FacebookPostInsights> {
     const params = new URLSearchParams({
-      metric: 'post_impressions,post_impressions_unique,post_engaged_users',
+      // post_impressions, post_impressions_unique and post_engaged_users are
+      // deprecated; Meta names post_media_view and post_total_media_view_unique
+      // as their replacements (not 1:1: a different measurement model).
+      //   https://developers.facebook.com/documentation/pages-api/platforminsights/page/deprecated-metrics
+      metric: 'post_media_view,post_total_media_view_unique',
     });
     return this.request<FacebookPostInsights>(
       `${this.baseUrl}/${postId}/insights?${params}`,

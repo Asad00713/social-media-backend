@@ -108,17 +108,17 @@ export class FacebookAnalyticsAdapter implements PlatformAnalyticsAdapter {
       const p = postData.value;
       let impressions: number | null = null;
       let reach: number | null = null;
-      let engagedUsers: number | null = null;
 
       if (insightsData.status === 'fulfilled') {
         for (const m of insightsData.value.data) {
           const val = m.values[0]?.value;
-          if (m.name === 'post_impressions' && typeof val === 'number')
+          if (m.name === 'post_media_view' && typeof val === 'number')
             impressions = val;
-          if (m.name === 'post_impressions_unique' && typeof val === 'number')
+          if (
+            m.name === 'post_total_media_view_unique' &&
+            typeof val === 'number'
+          )
             reach = val;
-          if (m.name === 'post_engaged_users' && typeof val === 'number')
-            engagedUsers = val;
         }
       } else {
         this.logger.warn(
@@ -136,7 +136,6 @@ export class FacebookAnalyticsAdapter implements PlatformAnalyticsAdapter {
         impressionsCount: impressions,
         reachCount: reach,
         platformMetrics: {
-          engagedUsers,
           permalinkUrl: p.permalink_url ?? null,
         },
       };
@@ -145,11 +144,7 @@ export class FacebookAnalyticsAdapter implements PlatformAnalyticsAdapter {
         return {
           status: 'partial',
           data,
-          missing: [
-            'post_impressions',
-            'post_impressions_unique',
-            'post_engaged_users',
-          ],
+          missing: ['post_media_view', 'post_total_media_view_unique'],
           quotaCostUsed: 0,
         };
       }

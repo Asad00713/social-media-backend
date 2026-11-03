@@ -124,41 +124,60 @@ describe('InstagramApiClient', () => {
     });
   });
 
-  it('getMediaInsights selects REEL metrics for REEL media type', async () => {
-    const insightsData = { data: [] };
-    mockFetch.mockResolvedValue({ ok: true, json: async () => insightsData });
+  describe('asks Instagram only for live metrics', () => {
+    const metricOf = async (mediaProductType: string | undefined) => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [] }),
+      });
+      await client.getMediaInsights('media-id', mediaProductType, 'tok');
+      const [url] = mockFetch.mock.calls[0];
+      expect(url).toContain('media-id/insights');
+      return {
+        url: url as string,
+        metric: new URL(url).searchParams.get('metric'),
+      };
+    };
+    const RETIRED = /impressions|plays|engagement|exits|replies|likes|comments/;
 
-    await client.getMediaInsights('reel-id', 'REEL', 'tok');
+    it('feed post: views, reach, saved, shares, follows, profile_visits', async () => {
+      const { url, metric } = await metricOf('FEED');
+      expect(url).toContain(
+        'metric=views%2Creach%2Csaved%2Cshares%2Cfollows%2Cprofile_visits',
+      );
+      expect(metric).not.toMatch(RETIRED);
+    });
 
-    const [url] = mockFetch.mock.calls[0];
-    expect(url).toContain('reel-id/insights');
-    expect(url).toContain('plays');
-    expect(url).toContain('reach');
+    it('reel: views, reach, saved, shares (no follows or profile_visits)', async () => {
+      const { url, metric } = await metricOf('REELS');
+      expect(url).toContain('metric=views%2Creach%2Csaved%2Cshares');
+      expect(metric).toBe('views,reach,saved,shares');
+      expect(url).not.toMatch(RETIRED);
+    });
+
+    it('story: views and reach only', async () => {
+      const { metric } = await metricOf('STORY');
+      expect(metric).toBe('views,reach');
+    });
+
+    it.each([undefined, 'AD', 'SOMETHING_NEW'])(
+      'falls back to the feed set for product type %s',
+      async (productType) => {
+        const { metric } = await metricOf(productType);
+        expect(metric).toBe('views,reach,saved,shares,follows,profile_visits');
+      },
+    );
   });
 
-  it('getMediaInsights selects IMAGE metrics for IMAGE media type', async () => {
-    const insightsData = { data: [] };
-    mockFetch.mockResolvedValue({ ok: true, json: async () => insightsData });
+  it('getMedia also requests media_product_type', async () => {
+    mockFetch.mockResolvedValue({ ok: true, json: async () => ({ id: 'm' }) });
 
-    await client.getMediaInsights('img-id', 'IMAGE', 'tok');
-
-    const [url] = mockFetch.mock.calls[0];
-    expect(url).toContain('img-id/insights');
-    expect(url).toContain('impressions');
-    expect(url).toContain('engagement');
-  });
-
-  it('getMediaInsights falls back to default metrics for unknown media type', async () => {
-    const insightsData = { data: [] };
-    mockFetch.mockResolvedValue({ ok: true, json: async () => insightsData });
-
-    await client.getMediaInsights('media-id', 'UNKNOWN_TYPE', 'tok');
+    await client.getMedia('media-id', 'tok');
 
     const [url] = mockFetch.mock.calls[0];
-    expect(url).toContain('impressions');
-    expect(url).toContain('reach');
-    expect(url).toContain('engagement');
-    expect(url).toContain('saved');
+    expect(new URL(url).searchParams.get('fields')).toContain(
+      'media_product_type',
+    );
   });
 
   it('InstagramApiError preserves code, status, and message', () => {

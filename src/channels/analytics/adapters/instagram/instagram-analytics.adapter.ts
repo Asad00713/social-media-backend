@@ -93,11 +93,11 @@ export class InstagramAnalyticsAdapter implements PlatformAnalyticsAdapter {
       try {
         insights = await this.client.getMediaInsights(
           mediaId,
-          mediaData.media_type,
+          mediaData.media_product_type,
           accessToken,
         );
       } catch (insightErr) {
-        missing.push('impressions', 'reach', 'engagement', 'saved');
+        missing.push('impressions', 'reach', 'saved');
         this.logger.warn(
           `IG media insights failed for ${mediaId}: ${(insightErr as Error).message}`,
         );
@@ -115,13 +115,15 @@ export class InstagramAnalyticsAdapter implements PlatformAnalyticsAdapter {
         commentsCount:
           mediaData.comments_count ?? insightValue('comments') ?? 0,
         sharesCount: insightValue('shares'),
-        impressionsCount: insightValue('impressions') ?? insightValue('plays'),
+        // `views` is Meta's replacement for impressions and plays.
+        impressionsCount: insightValue('views'),
         reachCount: insightValue('reach'),
         platformMetrics: {
           mediaType: mediaData.media_type,
+          mediaProductType: mediaData.media_product_type ?? null,
           permalink: mediaData.permalink ?? null,
           saved: insightValue('saved'),
-          engagement: insightValue('engagement'),
+          follows: insightValue('follows'),
         },
       };
 
