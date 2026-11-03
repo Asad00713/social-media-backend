@@ -15,7 +15,9 @@ export class StorageQuotaService {
   constructor(@Inject(DRIZZLE) private readonly db: DbType) {}
 
   /**
-   * `used` counts every media item of the workspace, Bin included. `limit` is
+   * `used` counts every media item of the workspace, Bin included, except
+   * samples: their file is one bundled copy shared by every workspace, not
+   * this workspace's storage (0057). `limit` is
    * the workspace's own row (plan bytes plus bought add-on bytes) or, without
    * one, the owner's plan: only an active or trialing subscription counts, anything else
    * is FREE (D14, B7).
@@ -27,7 +29,8 @@ export class StorageQuotaService {
     const res = await db.execute<{ used: string; limit: string }>(sql`
       SELECT
         (SELECT COALESCE(SUM(COALESCE(mi.file_size, 0)), 0)
-           FROM media_items mi WHERE mi.workspace_id = ${workspaceId}::uuid) AS used,
+           FROM media_items mi
+          WHERE mi.workspace_id = ${workspaceId}::uuid AND NOT mi.is_sample) AS used,
         COALESCE(
           (SELECT wu.storage_bytes_limit + wu.extra_storage_purchased
              FROM workspace_usage wu WHERE wu.workspace_id = ${workspaceId}::uuid),

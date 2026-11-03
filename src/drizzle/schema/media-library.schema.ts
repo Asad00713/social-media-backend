@@ -66,6 +66,9 @@ export const mediaCategories = pgTable(
       onDelete: 'set null',
     }),
 
+    // The "Getting started" folder seeded into a new workspace (0057).
+    isSample: boolean('is_sample').notNull().default(false),
+
     // Timestamps
     createdAt: timestamp('created_at', { withTimezone: true })
       .notNull()
@@ -98,9 +101,10 @@ export const mediaItems = pgTable(
       .notNull()
       .references(() => workspace.id, { onDelete: 'cascade' }),
 
-    uploadedById: uuid('uploaded_by_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    // Null only on a sample row (migration 0057, CHECK media_items_creator_chk).
+    uploadedById: uuid('uploaded_by_id').references(() => users.id, {
+      onDelete: 'cascade',
+    }),
 
     categoryId: uuid('category_id').references(() => mediaCategories.id, {
       onDelete: 'set null',
@@ -146,6 +150,11 @@ export const mediaItems = pgTable(
 
     // Soft delete (recycle bin)
     isDeleted: boolean('is_deleted').default(false),
+
+    // Sample content seeded into a new workspace (migration 0057): the UI
+    // badges it, storage never counts its bytes, and its file is never
+    // deleted (it is shared by every workspace).
+    isSample: boolean('is_sample').notNull().default(false),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     deletedById: uuid('deleted_by_id').references(() => users.id, {
       onDelete: 'set null',
@@ -244,9 +253,10 @@ export const mediaTemplates = pgTable(
       .notNull()
       .references(() => workspace.id, { onDelete: 'cascade' }),
 
-    createdById: uuid('created_by_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    // Null only on a sample row (migration 0057, CHECK <table>_creator_chk).
+    createdById: uuid('created_by_id').references(() => users.id, {
+      onDelete: 'cascade',
+    }),
 
     categoryId: uuid('category_id').references(() => mediaCategories.id, {
       onDelete: 'set null',
@@ -279,6 +289,11 @@ export const mediaTemplates = pgTable(
 
     // Soft delete (recycle bin)
     isDeleted: boolean('is_deleted').default(false),
+
+    // Sample content seeded into a new workspace (migration 0057): the UI
+    // badges it, storage never counts its bytes, and its file is never
+    // deleted (it is shared by every workspace).
+    isSample: boolean('is_sample').notNull().default(false),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     deletedById: uuid('deleted_by_id').references(() => users.id, {
       onDelete: 'set null',
@@ -325,9 +340,10 @@ export const textSnippets = pgTable(
       .notNull()
       .references(() => workspace.id, { onDelete: 'cascade' }),
 
-    createdById: uuid('created_by_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    // Null only on a sample row (migration 0057, CHECK <table>_creator_chk).
+    createdById: uuid('created_by_id').references(() => users.id, {
+      onDelete: 'cascade',
+    }),
 
     categoryId: uuid('category_id').references(() => mediaCategories.id, {
       onDelete: 'set null',
@@ -351,6 +367,11 @@ export const textSnippets = pgTable(
 
     // Soft delete (recycle bin)
     isDeleted: boolean('is_deleted').default(false),
+
+    // Sample content seeded into a new workspace (migration 0057): the UI
+    // badges it, storage never counts its bytes, and its file is never
+    // deleted (it is shared by every workspace).
+    isSample: boolean('is_sample').notNull().default(false),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     deletedById: uuid('deleted_by_id').references(() => users.id, {
       onDelete: 'set null',
@@ -395,9 +416,10 @@ export const savedLinks = pgTable(
       .notNull()
       .references(() => workspace.id, { onDelete: 'cascade' }),
 
-    createdById: uuid('created_by_id')
-      .notNull()
-      .references(() => users.id, { onDelete: 'cascade' }),
+    // Null only on a sample row (migration 0057, CHECK <table>_creator_chk).
+    createdById: uuid('created_by_id').references(() => users.id, {
+      onDelete: 'cascade',
+    }),
 
     categoryId: uuid('category_id').references(() => mediaCategories.id, {
       onDelete: 'set null',
@@ -428,6 +450,11 @@ export const savedLinks = pgTable(
 
     // Soft delete (recycle bin)
     isDeleted: boolean('is_deleted').default(false),
+
+    // Sample content seeded into a new workspace (migration 0057): the UI
+    // badges it, storage never counts its bytes, and its file is never
+    // deleted (it is shared by every workspace).
+    isSample: boolean('is_sample').notNull().default(false),
     deletedAt: timestamp('deleted_at', { withTimezone: true }),
     deletedById: uuid('deleted_by_id').references(() => users.id, {
       onDelete: 'set null',

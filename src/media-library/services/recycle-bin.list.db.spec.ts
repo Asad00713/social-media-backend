@@ -256,6 +256,7 @@ describeLibraryDb('recycle bin: one list across kinds', () => {
         sizeBytes: 10,
         deletedBy,
         createdBy,
+        isSample: false,
         ...times(7),
       });
       expect(byId.get(ids.m30)?.thumbnailUrl).toBe(
@@ -276,6 +277,7 @@ describeLibraryDb('recycle bin: one list across kinds', () => {
         sizeBytes: null,
         deletedBy,
         createdBy,
+        isSample: false,
         ...times(4),
       });
       expect(byId.get(ids.snip)).toEqual({
@@ -287,6 +289,7 @@ describeLibraryDb('recycle bin: one list across kinds', () => {
         sizeBytes: null,
         deletedBy,
         createdBy,
+        isSample: false,
         ...times(2),
       });
       expect(byId.get(ids.link)).toEqual({
@@ -298,6 +301,7 @@ describeLibraryDb('recycle bin: one list across kinds', () => {
         sizeBytes: null,
         deletedBy,
         createdBy,
+        isSample: false,
         ...times(1),
       });
     });
