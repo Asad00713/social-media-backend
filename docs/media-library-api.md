@@ -28,7 +28,8 @@ The request and response shapes follow the Library API contract (frontend repo, 
 12. [Posts: `libraryItemId`](#posts-libraryitemid)
 13. [Error responses](#error-responses)
 14. [Owner scripts](#owner-scripts)
-15. [Deploy notes](#deploy-notes)
+15. [Sample content](#sample-content)
+16. [Deploy notes](#deploy-notes)
 
 ---
 
@@ -93,7 +94,7 @@ GET /workspaces/:workspaceId/media-library/stats          posts:draft
 ```ts
 interface LibraryStats {
   storage: {
-    used: number                // all media_items.file_size, Bin included
+    used: number                // all media_items.file_size, Bin included, samples excluded
     limit: number               // effective: storage_bytes_limit + extra_storage_purchased
     percent: number             // 0-100, one decimal
     level: 'ok' | 'almost_full' | 'full'   // almost_full at >= 90%, full at >= 100%
@@ -129,6 +130,7 @@ Every folder response (`POST`, `GET` list with or without `withStats`, `grouped`
 
 ```ts
 createdById: string | null   // media_categories.created_by_id (migration 0056)
+isSample: boolean            // the seeded "Getting started" folder (migration 0057)
 createdBy: UserRef | null    // left-joined on users (added 2026-11-03)
 ```
 
@@ -278,6 +280,7 @@ interface MediaItem {
   pageCount: number | null       // PDFs
   uploadedBy: UserRef | null     // joined
   category: MediaCategory | null // joined
+  isSample: boolean              // seeded sample (migration 0057); uploadedBy is null
 }
 ```
 
@@ -714,6 +717,7 @@ interface BinRow {
   deletedAt: string
   deletedBy: UserRef | null
   createdBy: UserRef | null     // who made it: media's uploaded_by_id, the other kinds' created_by_id (added 2026-11-03)
+  isSample: boolean             // seeded sample content (migration 0057)
   purgeAt: string               // deletedAt + 30 days
 }
 // response
@@ -892,6 +896,17 @@ Both refuse to run against a non-local database without `--i-know-this-is-produc
 
 ---
 
+## Sample content
+
+Every workspace created after this release gets sample content in its Library. Existing workspaces get nothing; there is no backfill.
+
+- **What:** a folder named "Getting started" in each tab that has samples (media, templates, snippets, links). Media gets 6 images, templates 4, snippets 3 (caption, hashtags, CTA), links 1. The copy is in `src/media-library/samples/sample-content.ts`.
+- **Marked:** every sample row and folder has `isSample: true`, on every shape: list rows, detail, every single-item write, the embedded `category`, folders and Bin rows. Samples have no creator, so `createdBy` (media: `uploadedBy`) is `null`. Users edit, move, star, bin and delete them like any item. Edits keep `isSample`; a cloned sample template is a normal template created by whoever cloned it.
+- **Images are shared, never copied:** they are files bundled with the API (`assets/library-samples/v1/`), served at `<API>/static/library-samples/v1/<file>`. The route is public, cached as immutable for a year and readable cross-origin, so platforms can fetch it when a post is published. `<API>` is `API_PUBLIC_URL`, else `APP_URL`. Every workspace's sample rows point at the same URL. Without either variable, sample images are skipped, and templates get no image.
+- **No storage:** sample bytes never count. They are excluded from the quota (`used`, the 413 check), from `stats` `storage.used` and `byType`, from `unused.bytes` and `bin.bytes`, and from the admin storage figures. Counts still include samples.
+- **Never deleted:** delete forever, bulk `permanentDelete`, the Bin's delete and empty, and the daily retention purge all remove a sample's row and never its file. That holds even for the last workspace holding it. Deleting the "Getting started" folder unfiles its items, as for any folder.
+- **When:** `POST workspaces` (the first workspace at signup and every later one) schedules the seed after the workspace row is written and after the response, off the request path. The seed is one transaction under a per-workspace advisory lock, and it skips a workspace that already has any sample, so a re-run adds nothing. A failure is logged and the workspace is unaffected. It makes no network call.
+
 ## Deploy notes
 
 1. **Release rule (B12).** The backend and the frontend deploy together. The backend never deploys alone: the new response shapes (bulk `{affectedCount}`, the unified Bin, `categories/grouped` keyed by folder kind, upload `libraryItem`, the 413 bodies) ship with the frontend that reads them. One break is hard, not cosmetic. `POST items` now refuses any `thumbnailUrl` that is not this workspace's `library-thumbs/<ws>/` poster. The current main frontend's upload dialog (`use-upload-queue.ts`) calls `POST items` a second time after `upload/file`, sending the image's own URL or a Cloudinary video thumbnail. Against the new backend, every image, GIF and video upload from that old dialog fails with 400, even though the item was created, and a retry uploads a duplicate. So the frontend must be live first, or at the same moment. A browser tab still running the old bundle hits this until it reloads.
@@ -968,4 +983,6 @@ Both refuse to run against a non-local database without `--i-know-this-is-produc
 
    It is SQL for the owner to run once, not a migration.
 7. **Migration 0056 (folder creator)** is additive and safe to apply on start, with either the old or the new backend running. It adds a nullable `media_categories.created_by_id` (foreign key to `users`, `ON DELETE SET NULL`) and its index. It does not backfill: existing folders show no creator. It holds ACCESS EXCLUSIVE on `media_categories`, and the foreign key holds SHARE ROW EXCLUSIVE on `users`, only for the ALTER and a one-scan index build of a small table, bounded by `lock_timeout = '10s'`.
-8. **The retention cron runs on every replica.** The daily 3:00 AM purge has no single-runner lock, so each replica runs it. That is harmless: every kind's purge is idempotent, and a second runner finds nothing left to delete. A single-runner lock is the later fix.
+8. **Migration 0057 (sample flag).** It adds `is_sample boolean NOT NULL DEFAULT false` to the five Library tables. It also drops NOT NULL on `media_items.uploaded_by_id` and on `created_by_id` of templates, snippets and links, with a CHECK per table so that only a sample row may have no creator. It is additive and safe to apply on start with the old backend, which always writes a creator. Cost: four CHECK validations, one scan each of media_items, media_templates, text_snippets and saved_links, under ACCESS EXCLUSIVE and bounded by `lock_timeout = '10s'`. Check media_items' row count first if it has grown by orders of magnitude.
+9. **Sample images need `API_PUBLIC_URL` (or `APP_URL`) set to the API's public https origin,** for example `https://api.schedura.com`. The URL is written into each sample row when a workspace is created, so changing the API's domain later leaves older sample rows on the old host. The production image copies `assets/` (Dockerfile). After deploying, open `<API>/static/library-samples/v1/quick-tip.png`: it must return the image with `Cache-Control: public, max-age=31536000, immutable`.
+10. **The retention cron runs on every replica.** The daily 3:00 AM purge has no single-runner lock, so each replica runs it. That is harmless: every kind's purge is idempotent, and a second runner finds nothing left to delete. A single-runner lock is the later fix.
