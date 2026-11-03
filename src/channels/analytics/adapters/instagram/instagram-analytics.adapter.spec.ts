@@ -172,6 +172,126 @@ describe('InstagramAnalyticsAdapter', () => {
     }
   });
 
+  describe('metric-level insights errors', () => {
+    const feedMedia = {
+      id: 'media-1',
+      media_type: 'IMAGE',
+      media_product_type: 'FEED',
+      timestamp: new Date().toISOString(),
+      like_count: 10,
+      comments_count: 2,
+    };
+    const post = { platformPostId: 'media-1', accessToken: 'tok' } as any;
+
+    it('retries once with views,reach when Meta rejects the extended set', async () => {
+      client.getMedia.mockResolvedValue(feedMedia);
+      client.getMediaInsights
+        .mockRejectedValueOnce(
+          new InstagramApiError('permanent', 400, '(#100) follows unsupported'),
+        )
+        .mockResolvedValueOnce({
+          data: [
+            { name: 'views', period: 'lifetime', values: [{ value: 800 }] },
+            { name: 'reach', period: 'lifetime', values: [{ value: 500 }] },
+          ],
+        });
+
+      const result = await adapter.fetchPostMetrics(post);
+
+      expect(client.getMediaInsights).toHaveBeenCalledTimes(2);
+      expect(client.getMediaInsights).toHaveBeenNthCalledWith(
+        1,
+        'media-1',
+        'FEED',
+        'tok',
+      );
+      expect(client.getMediaInsights).toHaveBeenNthCalledWith(
+        2,
+        'media-1',
+        'FEED',
+        'tok',
+        true,
+      );
+      expect(result.status).toBe('partial');
+      if (result.status === 'partial') {
+        expect(result.data.impressionsCount).toBe(800);
+        expect(result.data.reachCount).toBe(500);
+        expect(result.data.platformMetrics?.saved).toBeNull();
+        expect(result.data.platformMetrics?.follows).toBeNull();
+        expect(result.missing).toEqual(
+          expect.arrayContaining([
+            'saved',
+            'shares',
+            'follows',
+            'profile_visits',
+          ]),
+        );
+        expect(result.missing).not.toContain('reach');
+      }
+    });
+
+    it.each(['auth_failed', 'rate_limited', 'transient', 'not_found'] as const)(
+      'does not retry on a %s error',
+      async (code) => {
+        client.getMedia.mockResolvedValue(feedMedia);
+        client.getMediaInsights.mockRejectedValue(
+          new InstagramApiError(code, 400, 'nope'),
+        );
+
+        const result = await adapter.fetchPostMetrics(post);
+
+        expect(client.getMediaInsights).toHaveBeenCalledTimes(1);
+        expect(result.status).toBe('partial');
+        if (result.status === 'partial') {
+          expect(result.data.impressionsCount).toBeNull();
+          expect(result.missing).toEqual(['impressions', 'reach', 'saved']);
+        }
+      },
+    );
+
+    it('does not retry on a plain network error', async () => {
+      client.getMedia.mockResolvedValue(feedMedia);
+      client.getMediaInsights.mockRejectedValue(new TypeError('fetch failed'));
+
+      const result = await adapter.fetchPostMetrics(post);
+
+      expect(client.getMediaInsights).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe('partial');
+    });
+
+    it('keeps the existing partial result when the retry also fails, after exactly one retry', async () => {
+      client.getMedia.mockResolvedValue(feedMedia);
+      client.getMediaInsights.mockRejectedValue(
+        new InstagramApiError('permanent', 400, 'still unsupported'),
+      );
+
+      const result = await adapter.fetchPostMetrics(post);
+
+      expect(client.getMediaInsights).toHaveBeenCalledTimes(2);
+      expect(result.status).toBe('partial');
+      if (result.status === 'partial') {
+        expect(result.data.impressionsCount).toBeNull();
+        expect(result.data.reachCount).toBeNull();
+        expect(result.missing).toEqual(['impressions', 'reach', 'saved']);
+      }
+    });
+
+    it('does not retry a story: its set is already views,reach', async () => {
+      client.getMedia.mockResolvedValue({
+        ...feedMedia,
+        media_product_type: 'STORY',
+      });
+      client.getMediaInsights.mockRejectedValue(
+        new InstagramApiError('permanent', 400, 'expired'),
+      );
+
+      const result = await adapter.fetchPostMetrics(post);
+
+      expect(client.getMediaInsights).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe('partial');
+    });
+  });
+
   it('fetchPostMetrics returns partial when insights fail but media stats succeed', async () => {
     client.getMedia.mockResolvedValue({
       id: 'media-1',

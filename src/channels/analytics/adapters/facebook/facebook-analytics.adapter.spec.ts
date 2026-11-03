@@ -196,6 +196,93 @@ describe('FacebookAnalyticsAdapter', () => {
     }
   });
 
+  describe('metric-level insights errors', () => {
+    const post = { platformPostId: 'post-1', accessToken: 'tok' } as any;
+    const basePost = {
+      id: 'post-1',
+      created_time: new Date().toISOString(),
+      likes: { summary: { total_count: 5 } },
+    };
+    const row = (name: string, value: number) => ({
+      data: [{ name, period: 'lifetime', values: [{ value }] }],
+    });
+
+    it('retries once, one metric per call, and keeps the metric that works', async () => {
+      client.getPost.mockResolvedValue(basePost);
+      client.getPostInsights
+        .mockRejectedValueOnce(
+          new FacebookApiError('permanent', 400, '(#100) metric unsupported'),
+        )
+        .mockResolvedValueOnce(row('post_media_view', 1200))
+        .mockRejectedValueOnce(
+          new FacebookApiError('permanent', 400, '(#100) unique unsupported'),
+        );
+
+      const result = await adapter.fetchPostMetrics(post);
+
+      expect(client.getPostInsights).toHaveBeenCalledTimes(3);
+      expect(client.getPostInsights).toHaveBeenNthCalledWith(
+        2,
+        'post-1',
+        'tok',
+        'post_media_view',
+      );
+      expect(client.getPostInsights).toHaveBeenNthCalledWith(
+        3,
+        'post-1',
+        'tok',
+        'post_total_media_view_unique',
+      );
+      expect(result.status).toBe('partial');
+      if (result.status === 'partial') {
+        expect(result.data.impressionsCount).toBe(1200);
+        expect(result.data.reachCount).toBeNull();
+        expect(result.missing).toEqual(['post_total_media_view_unique']);
+      }
+    });
+
+    it.each([
+      ['auth_failed', new FacebookApiError('auth_failed', 400, 'bad token')],
+      ['rate_limited', new FacebookApiError('rate_limited', 400, 'slow down')],
+      ['transient', new FacebookApiError('transient', 503, 'down')],
+      ['network', new TypeError('fetch failed')],
+    ])('does not retry on a %s error', async (_label, err) => {
+      client.getPost.mockResolvedValue(basePost);
+      client.getPostInsights.mockRejectedValue(err);
+
+      const result = await adapter.fetchPostMetrics(post);
+
+      expect(client.getPostInsights).toHaveBeenCalledTimes(1);
+      expect(result.status).toBe('partial');
+      if (result.status === 'partial') {
+        expect(result.missing).toEqual([
+          'post_media_view',
+          'post_total_media_view_unique',
+        ]);
+      }
+    });
+
+    it('keeps the existing partial result when every retry fails, after exactly one retry round', async () => {
+      client.getPost.mockResolvedValue(basePost);
+      client.getPostInsights.mockRejectedValue(
+        new FacebookApiError('permanent', 400, 'unsupported'),
+      );
+
+      const result = await adapter.fetchPostMetrics(post);
+
+      expect(client.getPostInsights).toHaveBeenCalledTimes(3);
+      expect(result.status).toBe('partial');
+      if (result.status === 'partial') {
+        expect(result.data.impressionsCount).toBeNull();
+        expect(result.data.reachCount).toBeNull();
+        expect(result.missing).toEqual([
+          'post_media_view',
+          'post_total_media_view_unique',
+        ]);
+      }
+    });
+  });
+
   it('maps post_media_view to impressionsCount, post_total_media_view_unique to reachCount', async () => {
     client.getPost.mockResolvedValue({
       id: 'post-1',

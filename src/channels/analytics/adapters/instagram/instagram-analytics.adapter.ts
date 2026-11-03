@@ -14,7 +14,11 @@ import type {
   PollingProfile,
 } from '../../types/platform-capabilities.types';
 import { getCapabilities } from '../../platform-capabilities.registry';
-import { InstagramApiClient, InstagramApiError } from './instagram-api.client';
+import {
+  InstagramApiClient,
+  InstagramApiError,
+  instagramInsightMetrics,
+} from './instagram-api.client';
 import type { InstagramMediaInsights } from './instagram.types';
 
 const POLLING_PROFILE: PollingProfile = {
@@ -90,17 +94,50 @@ export class InstagramAnalyticsAdapter implements PlatformAnalyticsAdapter {
       let insights: InstagramMediaInsights | null = null;
       const missing: string[] = [];
 
+      const productType = mediaData.media_product_type;
       try {
         insights = await this.client.getMediaInsights(
           mediaId,
-          mediaData.media_product_type,
+          productType,
           accessToken,
         );
       } catch (insightErr) {
-        missing.push('impressions', 'reach', 'saved');
-        this.logger.warn(
-          `IG media insights failed for ${mediaId}: ${(insightErr as Error).message}`,
-        );
+        // Meta fails the whole request when one metric is unsupported for this
+        // media. A metric-level error (HTTP 400, mapped to 'permanent') gets
+        // exactly one retry with the core set so views and reach survive.
+        // Auth, rate-limit, not-found and transient errors never retry.
+        const fullSet = instagramInsightMetrics(productType);
+        const coreSet = instagramInsightMetrics(productType, true);
+        const isMetricError =
+          insightErr instanceof InstagramApiError &&
+          insightErr.code === 'permanent';
+        if (isMetricError && fullSet !== coreSet) {
+          this.logger.warn(
+            `IG media insights rejected for ${mediaId} (${(insightErr as Error).message}); retrying with ${coreSet}`,
+          );
+          try {
+            insights = await this.client.getMediaInsights(
+              mediaId,
+              productType,
+              accessToken,
+              true,
+            );
+            const core = coreSet.split(',');
+            missing.push(
+              ...fullSet.split(',').filter((m) => !core.includes(m)),
+            );
+          } catch (retryErr) {
+            missing.push('impressions', 'reach', 'saved');
+            this.logger.warn(
+              `IG media insights retry failed for ${mediaId}: ${(retryErr as Error).message}`,
+            );
+          }
+        } else {
+          missing.push('impressions', 'reach', 'saved');
+          this.logger.warn(
+            `IG media insights failed for ${mediaId}: ${(insightErr as Error).message}`,
+          );
+        }
       }
 
       const insightValue = (name: string): number | null => {

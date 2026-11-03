@@ -21,6 +21,31 @@ export class InstagramApiError extends Error {
   }
 }
 
+const CORE_INSIGHT_METRICS = 'views,reach';
+
+/**
+ * Metric list Meta accepts for a media product type. One unsupported name
+ * fails the whole request, so each type asks only for what it serves.
+ * `coreOnly` returns just views and reach, the fallback when the full set is
+ * rejected.
+ *   https://developers.facebook.com/docs/instagram-platform/reference/instagram-media/insights/
+ * `follows` and `profile_visits` exist for FEED but not REELS.
+ */
+export function instagramInsightMetrics(
+  mediaProductType: string | undefined,
+  coreOnly = false,
+): string {
+  if (coreOnly) return CORE_INSIGHT_METRICS;
+  const metricsByProductType: Record<string, string> = {
+    REELS: 'views,reach,saved,shares',
+    STORY: CORE_INSIGHT_METRICS,
+  };
+  return (
+    (mediaProductType && metricsByProductType[mediaProductType]) ??
+    'views,reach,saved,shares,follows,profile_visits'
+  );
+}
+
 export class InstagramApiClient {
   // Instagram Business Login tokens are issued for graph.instagram.com,
   // NOT graph.facebook.com. Hitting Facebook's graph with an IG token
@@ -81,20 +106,11 @@ export class InstagramApiClient {
     mediaId: string,
     mediaProductType: string | undefined,
     accessToken: string,
+    coreOnly = false,
   ): Promise<InstagramMediaInsights> {
     // Meta retired impressions, plays and engagement for media created after
-    // 2 July 2024; `views` replaces them. Each product type accepts a different
-    // metric set and one unsupported name fails the whole request, so we ask
-    // only for what the type serves:
-    //   https://developers.facebook.com/docs/instagram-platform/reference/instagram-media/insights/
-    // `follows` and `profile_visits` exist for FEED but not REELS.
-    const metricsByProductType: Record<string, string> = {
-      REELS: 'views,reach,saved,shares',
-      STORY: 'views,reach',
-    };
-    const metric =
-      (mediaProductType && metricsByProductType[mediaProductType]) ??
-      'views,reach,saved,shares,follows,profile_visits';
+    // 2 July 2024; `views` replaces them.
+    const metric = instagramInsightMetrics(mediaProductType, coreOnly);
     const params = new URLSearchParams({ metric });
     return this.request<InstagramMediaInsights>(
       `${this.baseUrl}/${mediaId}/insights?${params}`,

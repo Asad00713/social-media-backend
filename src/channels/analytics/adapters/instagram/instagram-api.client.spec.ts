@@ -169,6 +169,19 @@ describe('InstagramApiClient', () => {
     );
   });
 
+  it.each(['FEED', 'REELS', 'STORY', undefined])(
+    'coreOnly asks for views and reach alone (%s)',
+    async (productType) => {
+      mockFetch.mockResolvedValue({
+        ok: true,
+        json: async () => ({ data: [] }),
+      });
+      await client.getMediaInsights('media-id', productType, 'tok', true);
+      const [url] = mockFetch.mock.calls[0];
+      expect(new URL(url).searchParams.get('metric')).toBe('views,reach');
+    },
+  );
+
   it('getMedia also requests media_product_type', async () => {
     mockFetch.mockResolvedValue({ ok: true, json: async () => ({ id: 'm' }) });
 
