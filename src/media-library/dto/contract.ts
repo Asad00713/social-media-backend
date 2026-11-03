@@ -93,6 +93,18 @@ export interface LibraryStats {
   };
 }
 
+/**
+ * Every folder response (`GET categories` with or without `withStats`,
+ * `categories/grouped`, `GET`/`POST`/`PUT categories[/:id]`) carries these
+ * beside the folder's columns. Both are null for a folder made before
+ * migration 0056 (no backfill) or whose creator's account was deleted.
+ * Added 2026-11-03.
+ */
+export interface FolderCreator {
+  createdById: string | null;
+  createdBy: UserRef | null;
+}
+
 /** `GET categories?withStats=true` adds this to each folder. */
 export interface FolderStats {
   itemCount: number;

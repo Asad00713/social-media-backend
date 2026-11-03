@@ -46,10 +46,10 @@ const itemRaw = (type: string, categoryId: string, workspaceId: string) => ({
 describeLibraryDb('folder kinds and snippet types', () => {
   it('stores a legacy image folder as media', async () => {
     await withLibraryDb(async (db, client) => {
-      const { workspaceId } = await seedWorkspace(client);
+      const { workspaceId, ownerId } = await seedWorkspace(client);
       const svc = new CategoryService(db);
       const dto = await toDto(CreateCategoryDto, { name: 'A', type: 'image' });
-      const created = await svc.create(workspaceId, dto);
+      const created = await svc.create(workspaceId, ownerId, dto);
       expect(created.type).toBe('media');
     });
   });
@@ -163,13 +163,14 @@ describeLibraryDb('folder kinds and snippet types', () => {
 
   it('refuses a duplicate name per kind but reads pre-existing duplicates', async () => {
     await withLibraryDb(async (db, client) => {
-      const { workspaceId } = await seedWorkspace(client);
+      const { workspaceId, ownerId } = await seedWorkspace(client);
       await seedCategory(client, workspaceId, 'media', 'Launch');
       await seedCategory(client, workspaceId, 'media', 'Launch');
       const svc = new CategoryService(db);
       await expect(
         svc.create(
           workspaceId,
+          ownerId,
           await toDto(CreateCategoryDto, { name: 'Launch', type: 'video' }),
         ),
       ).rejects.toThrow('already exists');

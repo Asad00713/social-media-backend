@@ -6,7 +6,7 @@ import {
   BadRequestException,
   ConflictException,
 } from '@nestjs/common';
-import { eq, and, desc, asc, ilike, sql, getTableColumns } from 'drizzle-orm';
+import { eq, and, desc, asc, ilike, sql, type SQL } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -14,18 +14,38 @@ import {
   NewMediaCategory,
   type MediaCategory,
 } from '../../drizzle/schema/media-library.schema';
+import { users } from '../../drizzle/schema/users.schema';
 import type { FolderKind } from '../lib/folder-kind';
+import { toUserRef, USER_REF_COLUMNS, type UserRefRow } from '../lib/user-ref';
 import { ilikePattern } from '../lib/search';
 import {
   CreateCategoryDto,
   UpdateCategoryDto,
   CategoryQueryDto,
 } from '../dto/media-library.dto';
-import type { FolderStats } from '../dto/contract';
+import type { FolderCreator, FolderStats } from '../dto/contract';
 
-export type CategoryWithStats = MediaCategory & { stats?: FolderStats };
+/**
+ * A folder as every folder route returns it: its columns, its creator (null
+ * for folders made before migration 0056) and, with `withStats`, its stats.
+ */
+export type CategoryView = MediaCategory & Pick<FolderCreator, 'createdBy'>;
+export type CategoryWithStats = CategoryView & { stats?: FolderStats };
 
 const c = mediaCategories;
+
+/** The columns a `CategoryView` is read from; creator left-joined. */
+const VIEW_SELECTION = {
+  folder: mediaCategories,
+  creator: USER_REF_COLUMNS,
+};
+
+function toCategoryView(row: {
+  folder: MediaCategory;
+  creator: UserRefRow | null;
+}): CategoryView {
+  return { ...row.folder, createdBy: toUserRef(row.creator) };
+}
 
 // One LATERAL aggregate per folder kind. Each is guarded by the folder's own
 // kind, so for any folder only its matching aggregate scans rows; the other
@@ -80,9 +100,13 @@ export class CategoryService {
   constructor(@Inject(DRIZZLE) private readonly db: DbType) {}
 
   /**
-   * Create a new category
+   * Create a new category, recorded as made by `userId`.
    */
-  async create(workspaceId: string, dto: CreateCategoryDto) {
+  async create(
+    workspaceId: string,
+    userId: string,
+    dto: CreateCategoryDto,
+  ): Promise<CategoryView> {
     // A folder belongs to one type, so a name is unique per (workspace, type):
     // the same name may exist as an image folder and a video folder.
     const existing = await this.db
@@ -126,18 +150,19 @@ export class CategoryService {
       color: dto.color,
       icon: dto.icon,
       displayOrder,
+      createdById: userId,
     };
 
     const [created] = await this.db
       .insert(mediaCategories)
       .values(newCategory)
-      .returning();
+      .returning({ id: mediaCategories.id });
 
     this.logger.log(
       `Created category "${dto.name}" for workspace ${workspaceId}`,
     );
 
-    return created;
+    return this.findOne(workspaceId, created.id);
   }
 
   /**
@@ -162,17 +187,20 @@ export class CategoryService {
       asc(mediaCategories.name),
     ];
 
+    // The creator join is on a primary key: one row per folder either way.
     if (!query.withStats) {
-      return this.db
-        .select()
+      const rows = await this.db
+        .select(VIEW_SELECTION)
         .from(mediaCategories)
+        .leftJoin(users, eq(mediaCategories.createdById, users.id))
         .where(and(...conditions))
         .orderBy(...order);
+      return rows.map(toCategoryView);
     }
 
     const rows = await this.db
       .select({
-        ...getTableColumns(mediaCategories),
+        ...VIEW_SELECTION,
         statsItemCount: sql<number>`(media_stats.item_count + template_stats.item_count + link_stats.item_count + snippet_stats.item_count)`,
         statsBytes: sql<number>`media_stats.bytes`,
         statsCovers: sql<
@@ -180,6 +208,7 @@ export class CategoryService {
         >`COALESCE(media_stats.covers, template_stats.covers, link_stats.covers, '{}'::text[])`,
       })
       .from(mediaCategories)
+      .leftJoin(users, eq(mediaCategories.createdById, users.id))
       .leftJoinLateral(MEDIA_STATS, sql`true`)
       .leftJoinLateral(TEMPLATE_STATS, sql`true`)
       .leftJoinLateral(LINK_STATS, sql`true`)
@@ -189,7 +218,7 @@ export class CategoryService {
 
     return rows.map(
       ({ statsItemCount, statsBytes, statsCovers, ...category }) => ({
-        ...category,
+        ...toCategoryView(category),
         stats: {
           itemCount: statsItemCount,
           bytes: statsBytes,
@@ -225,23 +254,32 @@ export class CategoryService {
   /**
    * Get a single category by ID
    */
-  async findOne(workspaceId: string, categoryId: string) {
+  async findOne(
+    workspaceId: string,
+    categoryId: string,
+  ): Promise<CategoryView> {
+    return this.readView(
+      and(
+        eq(mediaCategories.id, categoryId),
+        eq(mediaCategories.workspaceId, workspaceId),
+      ),
+    );
+  }
+
+  /** The one read behind every single-folder `CategoryView`. */
+  private async readView(where: SQL | undefined): Promise<CategoryView> {
     const [category] = await this.db
-      .select()
+      .select(VIEW_SELECTION)
       .from(mediaCategories)
-      .where(
-        and(
-          eq(mediaCategories.id, categoryId),
-          eq(mediaCategories.workspaceId, workspaceId),
-        ),
-      )
+      .leftJoin(users, eq(mediaCategories.createdById, users.id))
+      .where(where)
       .limit(1);
 
     if (!category) {
       throw new NotFoundException('Category not found');
     }
 
-    return category;
+    return toCategoryView(category);
   }
 
   /**
@@ -251,7 +289,7 @@ export class CategoryService {
     workspaceId: string,
     categoryId: string,
     dto: UpdateCategoryDto,
-  ) {
+  ): Promise<CategoryView> {
     const existing = await this.findOne(workspaceId, categoryId);
 
     // Items filed in this folder belong to its tab; a new kind would strand
@@ -293,15 +331,19 @@ export class CategoryService {
     if (dto.displayOrder !== undefined)
       updateData.displayOrder = dto.displayOrder;
 
-    const [updated] = await this.db
+    await this.db
       .update(mediaCategories)
       .set(updateData)
-      .where(eq(mediaCategories.id, categoryId))
-      .returning();
+      .where(
+        and(
+          eq(mediaCategories.id, categoryId),
+          eq(mediaCategories.workspaceId, workspaceId),
+        ),
+      );
 
     this.logger.log(`Updated category ${categoryId}`);
 
-    return updated;
+    return this.findOne(workspaceId, categoryId);
   }
 
   /**
