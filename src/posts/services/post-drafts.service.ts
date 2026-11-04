@@ -26,7 +26,7 @@ import { NotificationEmitterService } from '../../notifications/notification-emi
 import type { DraftsPageDto } from '../dto/draft-ops.dto';
 import type { PlannerPostDto } from '../dto/planner-post.dto';
 import { isViewer, type CallerRole } from '../guest-rules';
-import { buildDuplicate } from '../lib/duplicate-post';
+import { buildDuplicate, type DuplicateOptions } from '../lib/duplicate-post';
 import { decodeDraftCursor, encodeDraftCursor } from '../lib/draft-cursor';
 import { PlannerPostsService } from './planner-posts.service';
 
@@ -127,13 +127,15 @@ export class PostDraftsService {
 
   /**
    * "Copy to a new draft": any member, Guest included, may copy any post in
-   * the workspace. The source is looked up inside the workspace, so another
+   * the workspace (`opts` narrows which channels the copy targets). The
+   * source is looked up inside the workspace, so another
    * tenant's id is a 404 and inserts nothing.
    */
   async duplicate(
     workspaceId: string,
     postId: string,
     userId: string,
+    opts?: DuplicateOptions,
   ): Promise<PlannerPostDto> {
     const [source] = await this.db
       .select()
@@ -142,7 +144,7 @@ export class PostDraftsService {
     if (!source) throw new NotFoundException('Post not found');
     const [created] = await this.db
       .insert(posts)
-      .values(buildDuplicate(source, userId))
+      .values(buildDuplicate(source, userId, opts))
       .returning({ id: posts.id });
     return this.planner.getOne(workspaceId, created.id);
   }
