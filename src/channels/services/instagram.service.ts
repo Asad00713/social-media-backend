@@ -74,6 +74,15 @@ export interface InstagramUserTag {
 export interface InstagramPostSettings {
   userTags?: InstagramUserTag[];
   locationId?: string;
+  /**
+   * Self-disclosure that the media was made with AI (`is_ai_generated`).
+   *
+   * Meta documents it for both Instagram API with Instagram Login and with
+   * Facebook Login. On a carousel only the PARENT takes it - setting it on
+   * a child is an error - and it is only ever sent when true: an absent
+   * parameter already means "not disclosed".
+   */
+  isAiGenerated?: boolean;
 }
 
 /** What a feed image, Reel or carousel parent takes on top of the above. */
@@ -145,6 +154,8 @@ function applySettings(
   applyUserTags(params, settings.userTags, options.requireCoordinates);
 
   if (settings.locationId) params.set('location_id', settings.locationId);
+
+  if (settings.isAiGenerated === true) params.set('is_ai_generated', 'true');
 
   const collaborators = (settings.collaborators ?? [])
     .map((c) => c.trim().replace(/^@/, ''))
@@ -1129,9 +1140,10 @@ export class InstagramService {
 
       // A carousel is asymmetric. `user_tags` belongs to the ITEM — each
       // slide tags the people in that picture — while the caption,
-      // collaborators and location describe the post and go on the parent
-      // below. Putting the post-level ones here would repeat one post's
-      // settings on every slide.
+      // collaborators, location and the AI disclosure describe the post and
+      // go on the parent below. Putting the post-level ones here would
+      // repeat one post's settings on every slide, and Meta rejects
+      // `is_ai_generated` on a child outright.
       applyUserTags(
         containerParams,
         item.userTags,

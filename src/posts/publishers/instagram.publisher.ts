@@ -108,6 +108,11 @@ export class InstagramPublisher extends BasePublisher {
       : [];
     if (collaborators.length > 0) settings.collaborators = collaborators;
 
+    // Only ever `true`: an absent parameter already means "not disclosed",
+    // so an explicit false would be one more key an older API version can
+    // reject. Strictly boolean - the string "false" must not switch it on.
+    if (metadata?.isAiGenerated === true) settings.isAiGenerated = true;
+
     const coverUrl = metadata?.coverUrl;
     if (typeof coverUrl === 'string' && coverUrl.trim()) {
       settings.coverUrl = coverUrl.trim();
