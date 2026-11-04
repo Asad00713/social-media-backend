@@ -39,7 +39,7 @@ export class FacebookPublisher extends BasePublisher {
     this.validate(options);
 
     const postType = (metadata?.postType as string | undefined) ?? 'post';
-    let result: { postId: string };
+    let result: { postId: string; thumbnailWarning?: string };
 
     if (postType === 'reel') {
       // Reels require a vertical video. If no media or first is not a video, fail clearly.
@@ -49,13 +49,24 @@ export class FacebookPublisher extends BasePublisher {
       // `reelTitle` is the draft's own key: `platformSpecific` reaches this
       // publisher as `metadata` verbatim, so the composer writes this name.
       const reelTitle =
-        typeof metadata?.reelTitle === 'string' ? metadata.reelTitle.trim() : '';
+        typeof metadata?.reelTitle === 'string'
+          ? metadata.reelTitle.trim()
+          : '';
+      // `thumbnailUrl` is the key YouTube's cover already uses, so the
+      // editor's cover tool writes the same name for both.
+      const thumbnailUrl =
+        typeof metadata?.thumbnailUrl === 'string'
+          ? metadata.thumbnailUrl.trim()
+          : '';
       result = await this.facebookService.postReelToPage(
         platformAccountId,
         accessToken,
         mediaItems[0].url,
         content,
-        reelTitle ? { title: reelTitle } : {},
+        {
+          ...(reelTitle ? { title: reelTitle } : {}),
+          ...(thumbnailUrl ? { thumbnailUrl } : {}),
+        },
       );
     } else if (postType === 'story') {
       // Stories require exactly one image OR one video.
@@ -92,7 +103,9 @@ export class FacebookPublisher extends BasePublisher {
       // own key) is sent with the link it belongs to; a link is sent only
       // alongside a button, so a post without one is exactly what it was.
       const link = mediaItems.length === 0 ? findFirstLink(content) : undefined;
-      const ctaType = link ? linkCallToActionType(metadata?.linkCta) : undefined;
+      const ctaType = link
+        ? linkCallToActionType(metadata?.linkCta)
+        : undefined;
       result = await this.facebookService.postToPage(
         platformAccountId,
         accessToken,
@@ -108,6 +121,15 @@ export class FacebookPublisher extends BasePublisher {
       platformPostId: result.postId,
       platformPostUrl: `https://facebook.com/${result.postId}`,
     };
+
+    // The Reel is live, so a cover that could not be set is a warning on the
+    // result, as a first comment's failure is - not a failed post.
+    if (result.thumbnailWarning) {
+      publishResult.metadata = {
+        ...(publishResult.metadata ?? {}),
+        coverWarning: result.thumbnailWarning,
+      };
+    }
 
     // Soft action: post first comment if provided. Failure here is logged
     // and surfaced as a warning — the main post stays "published".
