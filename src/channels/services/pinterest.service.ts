@@ -22,8 +22,25 @@ export interface PinterestBoard {
   collaboratorCount: number;
 }
 
+/** A section inside a board (`BoardSection` in Pinterest's OpenAPI spec). */
+export interface PinterestBoardSection {
+  id: string;
+  name: string;
+}
+
 /** Pinterest's own cap on a pin's alt text. */
 const PIN_ALT_TEXT_MAX_CHARS = 500;
+
+/** Pinterest's own cap on a board section's name (`maxLength: 180`). */
+const SECTION_NAME_MAX_CHARS = 180;
+
+/**
+ * `page_size` is capped at 250 by the API. A board with more sections than
+ * `SECTIONS_MAX_PAGES` of that is not a board a picker can usefully show, and
+ * the bound keeps a misbehaving `bookmark` from looping forever.
+ */
+const SECTIONS_PAGE_SIZE = 250;
+const SECTIONS_MAX_PAGES = 10;
 
 @Injectable()
 export class PinterestService {
@@ -148,6 +165,101 @@ export class PinterestService {
         board.media?.pin_thumbnail_urls?.[0] ||
         null,
     }));
+  }
+
+  /**
+   * The sections of one board, for the composer's board picker.
+   *
+   * Pinterest API: `GET /v5/boards/{board_id}/sections` (scope
+   * `boards:read`), a `bookmark`-paginated list of `{ id, name }`. The
+   * default page is 25, so this asks for the maximum and follows the
+   * bookmark — a picker that silently showed the first 25 would make the
+   * 26th section unreachable with no hint that it exists.
+   *
+   * `boardId` is encoded before it joins the path: it arrives from a URL
+   * segment, and an id containing `/` or `..` must not be able to address a
+   * different endpoint with this account's token.
+   */
+  async listBoardSections(
+    accessToken: string,
+    boardId: string,
+  ): Promise<PinterestBoardSection[]> {
+    const sections: PinterestBoardSection[] = [];
+    let bookmark: string | null = null;
+
+    for (let page = 0; page < SECTIONS_MAX_PAGES; page++) {
+      const query = new URLSearchParams({
+        page_size: String(SECTIONS_PAGE_SIZE),
+      });
+      if (bookmark) query.set('bookmark', bookmark);
+
+      const response = await fetch(
+        `${this.apiUrl}/boards/${encodeURIComponent(boardId)}/sections?${query.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        this.logger.error('Failed to list Pinterest board sections:', error);
+        throw new BadRequestException(
+          error.message || 'Failed to list board sections',
+        );
+      }
+
+      const data = await response.json();
+      for (const item of data.items || []) {
+        if (typeof item?.id === 'string' && typeof item?.name === 'string') {
+          sections.push({ id: item.id, name: item.name });
+        }
+      }
+
+      bookmark = typeof data.bookmark === 'string' ? data.bookmark : null;
+      if (!bookmark) break;
+    }
+
+    return sections;
+  }
+
+  /**
+   * Create a section inside a board.
+   *
+   * Pinterest API: `POST /v5/boards/{board_id}/sections` (scopes
+   * `boards:read` + `boards:write`), body `{ name }` with a name of 1 to 180
+   * characters; answers 201 with the new `{ id, name }`.
+   */
+  async createBoardSection(
+    accessToken: string,
+    boardId: string,
+    name: string,
+  ): Promise<PinterestBoardSection> {
+    const response = await fetch(
+      `${this.apiUrl}/boards/${encodeURIComponent(boardId)}/sections`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: name.slice(0, SECTION_NAME_MAX_CHARS) }),
+      },
+    );
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      this.logger.error('Failed to create Pinterest board section:', error);
+      throw new BadRequestException(
+        error.message || 'Failed to create board section',
+      );
+    }
+
+    const section = await response.json();
+    this.logger.log(`Pinterest board section created: ${section.id}`);
+    return { id: section.id, name: section.name };
   }
 
   /**

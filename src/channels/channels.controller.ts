@@ -78,6 +78,7 @@ import {
   FetchPagesDto,
   ConnectFacebookPageDto,
   CreatePinterestBoardDto,
+  CreatePinterestBoardSectionDto,
   UpdatePinterestBoardDto,
   CreatePinterestPinDto,
   UploadYouTubeVideoDto,
@@ -1580,6 +1581,74 @@ export class ChannelsController {
 
     const boards = await this.pinterestService.listBoards(accessToken);
     return { boards };
+  }
+
+  /**
+   * List the sections of one board of a connected Pinterest channel
+   * (composer board picker, second level).
+   */
+  @Get('workspaces/:workspaceId/:channelId/pinterest/boards/:boardId/sections')
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  async listPinterestBoardSectionsForChannel(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+    @Param('boardId') boardId: string,
+  ) {
+    const numericId = parseInt(channelId, 10);
+    const channel = await this.channelService.getChannelById(
+      numericId,
+      workspaceId,
+    );
+    if (channel.platform !== 'pinterest') {
+      throw new BadRequestException(
+        `Channel ${channelId} is a ${channel.platform} channel, not a Pinterest channel`,
+      );
+    }
+    const accessToken = await this.channelService.getAccessToken(
+      numericId,
+      workspaceId,
+    );
+    const sections = await this.pinterestService.listBoardSections(
+      accessToken,
+      boardId,
+    );
+    return { sections };
+  }
+
+  /**
+   * Create a section inside a board of a connected Pinterest channel.
+   */
+  @Post('workspaces/:workspaceId/:channelId/pinterest/boards/:boardId/sections')
+  @RequireCapability('channels:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async createPinterestBoardSection(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+    @Param('boardId') boardId: string,
+    @Body() dto: CreatePinterestBoardSectionDto,
+  ) {
+    const numericId = parseInt(channelId, 10);
+    const channel = await this.channelService.getChannelById(
+      numericId,
+      workspaceId,
+    );
+    if (channel.platform !== 'pinterest') {
+      throw new BadRequestException(
+        `Channel ${channelId} is a ${channel.platform} channel, not a Pinterest channel`,
+      );
+    }
+    const accessToken = await this.channelService.getAccessToken(
+      numericId,
+      workspaceId,
+    );
+    const section = await this.pinterestService.createBoardSection(
+      accessToken,
+      boardId,
+      dto.name,
+    );
+    return { section, message: 'Section created successfully' };
   }
 
   /**
