@@ -733,3 +733,93 @@ describe('InsightsService.csv', () => {
     expect(body).toContain(`,${long},`);
   });
 });
+
+describe('InsightsService.overview: stood out and the brief', () => {
+  const run = async (posts: PublishedPost[]) => {
+    const { db } = fakeDb([CHANNELS, TZ, [], [], []]);
+    return new InsightsService(db as any, repoWith(posts) as any).overview(
+      'ws1',
+      preset(30),
+      undefined,
+      'UTC',
+      'usual',
+      NOW,
+    );
+  };
+  const insta = (n: number, over: Partial<PublishedPost> = {}) =>
+    post({
+      postId: `i${n}`,
+      publishedOn: `2026-09-${String(10 + n).padStart(2, '0')}`,
+      publishedAt: `2026-09-${String(10 + n).padStart(2, '0')}T10:00:00.000Z`,
+      likes: 10,
+      impressions: 1000,
+      mediaType: 'REELS',
+      ...over,
+    });
+  const linkedin = [
+    '2026-07-04',
+    '2026-07-11',
+    '2026-07-18',
+    '2026-07-25',
+    '2026-08-01',
+  ].map((d, i) =>
+    post({
+      postId: `l${i}`,
+      channelId: 2,
+      publishedOn: d,
+      publishedAt: `${d}T10:00:00.000Z`,
+      likes: 4,
+    }),
+  );
+
+  it('puts a post well over its usual in standout.above and names it in the brief', async () => {
+    const posts = [
+      ...Array.from({ length: 10 }, (_, i) => insta(i)),
+      insta(11, {
+        postId: 'big',
+        likes: 200,
+        impressions: 20000,
+        content: 'Meet Ali',
+      }),
+      ...linkedin,
+    ];
+    const o = await run(posts);
+    expect(o.standout.above.map((p) => p.postId)).toEqual(['big']);
+    expect(o.standout.aboveCount).toBe(1);
+    expect(o.standout.below).toEqual([]);
+    expect(o.brief.status).toBe('ready');
+    if (o.brief.status !== 'ready') return;
+    expect(o.brief.postsCount).toBe(11);
+    expect(o.brief.channelsCount).toBe(1);
+    const text = o.brief.segments.map((s) => s.text).join('');
+    expect(text).toContain('Views reached 30K from 11 posts');
+    expect(text).toContain('mostly from one Instagram video: Meet Ali');
+    // LinkedIn last posted Aug 1 and used to post weekly.
+    expect(text).toContain('LinkedIn has had no posts since Aug 1');
+    expect(o.brief.sources.map((s) => s.kind)).toEqual(['post', 'channel']);
+  });
+
+  it('a settling low post is not in below', async () => {
+    const posts = [
+      ...Array.from({ length: 10 }, (_, i) => insta(i, { likes: 100 })),
+      insta(0, {
+        postId: 'fresh',
+        publishedOn: '2026-09-29',
+        publishedAt: '2026-09-29T10:00:00.000Z',
+        likes: 1,
+      }),
+    ];
+    const o = await run(posts);
+    expect(o.standout.below).toEqual([]);
+    expect(o.standout.belowCount).toBe(0);
+  });
+
+  it('too few posts is a not_enough brief', async () => {
+    const o = await run([insta(1), insta(2)]);
+    expect(o.brief).toMatchObject({
+      status: 'not_enough',
+      postsCount: 2,
+      suggestDays: 90,
+    });
+  });
+});
