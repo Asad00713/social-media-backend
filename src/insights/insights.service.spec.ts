@@ -735,6 +735,16 @@ describe('InsightsService.csv', () => {
   });
 });
 
+interface SnapRow {
+  post_id: string;
+  snapshot_at: Date;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  impressions: number | null;
+  reach: number | null;
+}
+
 describe('InsightsService.postDetail', () => {
   const HOUR = 3_600_000;
   const CH = [
@@ -750,7 +760,7 @@ describe('InsightsService.postDetail', () => {
     publishedAt: string,
     h: number,
     reach: number,
-  ) => ({
+  ): SnapRow => ({
     post_id: postId,
     snapshot_at: new Date(new Date(publishedAt).getTime() + h * HOUR),
     likes: 1,
@@ -759,7 +769,7 @@ describe('InsightsService.postDetail', () => {
     impressions: reach * 2,
     reach,
   });
-  type Snaps = Record<string, ReturnType<typeof snapRow>[]>;
+  type Snaps = Record<string, SnapRow[]>;
 
   /** The subject plus the rest of its channel sample, wired to doubles. */
   function setup(

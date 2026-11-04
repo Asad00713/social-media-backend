@@ -142,7 +142,10 @@ export function usualCurve(
 ): (number | null)[] | null {
   if (perPost.length < MIN_POSTS_FOR_USUAL) return null;
   return TIMELINE_HOURS.map((_, i) => {
-    const vs = perPost.flatMap((p) => (p[i] == null ? [] : [p[i] as number]));
+    const vs = perPost.flatMap((p) => {
+      const v = p[i];
+      return v === null || v === undefined ? [] : [v];
+    });
     return vs.length >= MIN_POSTS_FOR_USUAL ? median(vs) : null;
   });
 }
