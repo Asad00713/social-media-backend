@@ -364,12 +364,17 @@ export class FacebookService {
 
   /**
    * Post to a Facebook Page
+   *
+   * @param callToActionType - the button on a link post (`LEARN_MORE`,
+   *   `SIGN_UP`...). Needs `link`: the button's own link must be the post's
+   *   link, so without one there is nothing to attach it to and it is left out.
    */
   async postToPage(
     pageId: string,
     pageAccessToken: string,
     message: string,
     link?: string,
+    callToActionType?: string,
   ): Promise<{ postId: string }> {
     const url = new URL(`${this.graphApiUrl}/${pageId}/feed`);
 
@@ -380,6 +385,16 @@ export class FacebookService {
 
     if (link) {
       body.link = link;
+    }
+
+    // Sent as the JSON text the reference's own example shows
+    // (`call_to_action={"type":"SIGN_UP","value":{"link":"..."}}`), and with
+    // the same link as the `link` parameter above - "should be the same".
+    if (link && callToActionType) {
+      body.call_to_action = JSON.stringify({
+        type: callToActionType,
+        value: { link },
+      });
     }
 
     const response = await fetch(url.toString(), {

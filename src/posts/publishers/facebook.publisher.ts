@@ -3,6 +3,7 @@ import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import { FacebookService } from '../../channels/services/facebook.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import { findFirstLink, linkCallToActionType } from './facebook-link-cta';
 
 @Injectable()
 export class FacebookPublisher extends BasePublisher {
@@ -87,10 +88,17 @@ export class FacebookPublisher extends BasePublisher {
         content,
       );
     } else {
+      // A LINK post is text with no media. Its button (`linkCta`, the draft's
+      // own key) is sent with the link it belongs to; a link is sent only
+      // alongside a button, so a post without one is exactly what it was.
+      const link = mediaItems.length === 0 ? findFirstLink(content) : undefined;
+      const ctaType = link ? linkCallToActionType(metadata?.linkCta) : undefined;
       result = await this.facebookService.postToPage(
         platformAccountId,
         accessToken,
         content,
+        ctaType ? link : undefined,
+        ctaType,
       );
     }
 

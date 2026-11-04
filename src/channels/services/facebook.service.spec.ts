@@ -1,6 +1,73 @@
 import { FacebookService } from './facebook.service';
 
 /**
+ * The button on a link post is `call_to_action` on `POST /{page-id}/feed`, and
+ * its own link has to be the post's link. A wrong shape fails quietly (ignored)
+ * or rejects the whole post, so the request body is what these tests pin.
+ */
+describe('FacebookService.postToPage - the link post button', () => {
+  let service: FacebookService;
+  let fetchMock: jest.Mock;
+
+  const sent = (call = 0) => ({
+    url: String(fetchMock.mock.calls[call][0]),
+    body: JSON.parse(fetchMock.mock.calls[call][1].body as string),
+  });
+
+  beforeEach(() => {
+    service = new FacebookService();
+    fetchMock = jest.fn().mockImplementation(async () => ({
+      ok: true,
+      status: 200,
+      json: async () => ({ id: 'post-1' }),
+    }));
+    global.fetch = fetchMock as unknown as typeof fetch;
+  });
+
+  it('sends call_to_action as the reference’s own JSON text, beside the link', async () => {
+    await service.postToPage(
+      'page-1',
+      'tok',
+      'Read https://lumiere.pk/menu',
+      'https://lumiere.pk/menu',
+      'LEARN_MORE',
+    );
+
+    const { url, body } = sent();
+    expect(url).toMatch(/\/page-1\/feed$/);
+    expect(body.link).toBe('https://lumiere.pk/menu');
+    expect(typeof body.call_to_action).toBe('string');
+    expect(JSON.parse(body.call_to_action)).toEqual({
+      type: 'LEARN_MORE',
+      value: { link: 'https://lumiere.pk/menu' },
+    });
+  });
+
+  it('puts the SAME link in the button as in the post', async () => {
+    await service.postToPage('p', 't', 'm', 'https://a.example/x', 'SIGN_UP');
+    const { body } = sent();
+    expect(JSON.parse(body.call_to_action).value.link).toBe(body.link);
+  });
+
+  it('leaves the button out when none is chosen', async () => {
+    await service.postToPage('p', 't', 'm', 'https://a.example/x');
+    expect('call_to_action' in sent().body).toBe(false);
+    expect(sent().body.link).toBe('https://a.example/x');
+  });
+
+  it('leaves the button out when there is no link to attach it to', async () => {
+    await service.postToPage('p', 't', 'm', undefined, 'LEARN_MORE');
+    expect('call_to_action' in sent().body).toBe(false);
+    expect('link' in sent().body).toBe(false);
+  });
+
+  it('makes the request it always made for a plain text post', async () => {
+    await service.postToPage('p', 'tok', 'hello');
+    expect(sent().body).toEqual({ access_token: 'tok', message: 'hello' });
+  });
+});
+
+/**
  * A Reel is published in three calls, and where a setting goes decides
  * whether it works: Graph either ignores a misplaced key or rejects the whole
  * Reel, and neither shows up until publish. So these tests pin the REQUEST of
