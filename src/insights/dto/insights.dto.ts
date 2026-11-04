@@ -16,6 +16,8 @@ import type {
 } from '../lib/best-time';
 import type { NextFreeSlot } from '../lib/next-free-slot';
 import type { TopicBars, WorkBar } from '../lib/what-works';
+import type { PostTile, PostVerdict } from '../lib/post-detail';
+import type { TimelineMetric, TimelineStatus } from '../lib/timeline';
 
 /** A dot (or a thumbnail) on the chart's posts lane. */
 export interface LanePost {
@@ -192,3 +194,29 @@ export type NextStep = {
       cta: { label: 'Repost' };
     }
 );
+
+/** GET /posts/:postId/channels/:channelId: the post detail dialog. */
+export interface PostDetailDto {
+  /** `content` stays the preview; `fullContent` is the whole caption. */
+  post: InsightPost & {
+    fullContent: string;
+    publishedAt: string;
+    /** When its numbers were last fetched; null before the first. */
+    updatedAt: string | null;
+  };
+  /** By engagements among the workspace's posts of the last 30 days; 1 = best. */
+  rank: number | null;
+  tiles: PostTile[];
+  verdict: PostVerdict;
+  /** Only for an up verdict. */
+  reasons: string[];
+  timeline: {
+    metric: TimelineMetric;
+    status: TimelineStatus;
+    /** 0,1,2,3,4,6,8,12,16,20,24,30,36,42,48 */
+    hours: number[];
+    values: (number | null)[];
+    /** The usual post's curve; null under 5 comparable posts. */
+    usual: (number | null)[] | null;
+  };
+}

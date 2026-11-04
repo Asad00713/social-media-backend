@@ -2,6 +2,7 @@ import {
   Controller,
   Get,
   Param,
+  ParseIntPipe,
   ParseUUIDPipe,
   Query,
   Res,
@@ -15,6 +16,7 @@ import type {
   InsightsOverviewDto,
   InsightsPostsDto,
   PostChannelMetricsDto,
+  PostDetailDto,
 } from './dto/insights.dto';
 import type { InsightsSignalsDto } from './dto/insights.dto';
 import { utcToday } from '../post-performance/period';
@@ -130,5 +132,15 @@ export class InsightsController {
     @Query('channels') channels?: string,
   ): Promise<InsightsSignalsDto> {
     return this.insights.signals(workspaceId, channels);
+  }
+
+  /** One post on one channel: tiles, verdict, reasons and its first 48 hours. */
+  @Get('posts/:postId/channels/:channelId')
+  postDetail(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
+    @Param('channelId', ParseIntPipe) channelId: number,
+  ): Promise<PostDetailDto> {
+    return this.insights.postDetail(workspaceId, postId, channelId);
   }
 }
