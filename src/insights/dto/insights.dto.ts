@@ -7,6 +7,13 @@ import type { CompareMode } from '../lib/query';
 import type { BestTimes, FormatStat } from '../lib/rankings';
 import type { FollowerTotals, InsightsDay } from '../lib/series';
 import type { Usuals } from '../lib/usual';
+import type {
+  BestSlot,
+  BestTimeGrid,
+  MIN_SIGNAL_POSTS,
+} from '../lib/best-time';
+import type { NextFreeSlot } from '../lib/next-free-slot';
+import type { TopicBars, WorkBar } from '../lib/what-works';
 
 /** A dot (or a thumbnail) on the chart's posts lane. */
 export interface LanePost {
@@ -117,3 +124,65 @@ export interface PostChannelMetricsDto {
    */
   usualMultiplier: number | null;
 }
+
+/**
+ * GET /signals: the 90-day panels (Best time, What works, Next steps), always
+ * the last 90 days whatever range the page shows, so a range change does not
+ * refetch them. Times are on the workspace's wall clock.
+ */
+export interface InsightsSignalsDto {
+  /** `workspace.timezone`, UTC when it is not a valid zone. */
+  timezone: string;
+  /** Posts with reported numbers in the 90 days, settling ones left out. */
+  measuredPosts: number;
+  /** Below this the panels show "needs {n} more posts". */
+  minPosts: typeof MIN_SIGNAL_POSTS;
+  bestTimes: {
+    /** 8: 3-hour blocks from midnight. */
+    slots: number;
+    engagement: BestTimeGrid;
+    reach: BestTimeGrid & {
+      /** Whether any post in the sample reports reach. */
+      available: boolean;
+    };
+    /** A post before 06:00 exists, so the two night columns show. */
+    usedNightSlots: boolean;
+    /** The engagement grid's best slot and its next free occurrence. */
+    useSlot: (BestSlot & NextFreeSlot) | null;
+  };
+  whatWorks: {
+    format: WorkBar[];
+    topic: TopicBars;
+  };
+  /** Rule-based next steps; empty until the rules land (B7). */
+  nextSteps: NextStep[];
+}
+
+export type NextStep = {
+  id: string;
+  title: string;
+  body: string;
+  why: string;
+} & (
+  | {
+      rule: 'format_gap';
+      bars: { format: InsightFormat; median: number }[];
+      cta: { label: string };
+    }
+  | {
+      rule: 'quiet_channel';
+      channelId: number;
+      lastPostOn: string;
+      followerLine: { date: string; followers: number }[] | null;
+      cta: { label: string };
+    }
+  | {
+      rule: 'repost_hit';
+      postId: string;
+      channelId: number;
+      thumbnailUrl: string | null;
+      postTitle: string;
+      meta: string;
+      cta: { label: 'Repost' };
+    }
+);

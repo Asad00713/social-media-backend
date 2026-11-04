@@ -62,6 +62,20 @@ import {
 } from './lib/series';
 import { lookbackStartOf, usualsOf, type Usuals } from './lib/usual';
 import { multiplierOf, usualByChannel } from './lib/usual-multiplier';
+import { sql } from 'drizzle-orm';
+import { posts as postsTable } from '../drizzle/schema/posts.schema';
+import { isMeasured } from '../post-performance/engagement-stats';
+import { loadWorkspaceTimezone } from '../planner/lib/workspace-time';
+import type { InsightsSignalsDto } from './dto/insights.dto';
+import { InsightsTopicsRepository } from './insights-topics.repository';
+import {
+  bestTimeGrid,
+  MIN_SIGNAL_POSTS,
+  SLOTS,
+  usedNightSlots,
+} from './lib/best-time';
+import { NEXT_FREE_WEEKS, nextFreeSlot } from './lib/next-free-slot';
+import { formatBars, topicBars } from './lib/what-works';
 
 /** How far back a channel's post-level "usual" engagement looks. */
 const USUAL_WINDOW_DAYS = 90;
@@ -143,6 +157,10 @@ export class InsightsService {
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
     private readonly postPerformance: PostPerformanceRepository,
+    // Nest injects it; the default keeps doubles built with two args working.
+    private readonly topics: InsightsTopicsRepository = new InsightsTopicsRepository(
+      db,
+    ),
   ) {}
 
   /**
@@ -671,5 +689,106 @@ export class InsightsService {
       })
       .from(channelSyncState)
       .where(inArray(channelSyncState.channelId, channelIds));
+  }
+
+  /**
+   * The 90-day panels: Best time (engagement and reach grids on the
+   * workspace's wall clock, and the best slot's next free occurrence) and
+   * What works (format and topic medians), over the measured posts of the
+   * same 90-day sample the post-level usual uses. Settling posts (under
+   * SETTLING_DAYS old) are left out of every median and count, so a post an
+   * hour old with nothing yet cannot drag a cell or a bar down.
+   */
+  async signals(
+    workspaceId: string,
+    channels: string | undefined,
+    now = new Date(),
+  ): Promise<InsightsSignalsDto> {
+    const social = await this.socialChannels(workspaceId);
+    const channelIds = parseChannels(
+      channels,
+      social.map((c) => c.id),
+    );
+    const platformOf = new Map(social.map((c) => [c.id, c.platform]));
+    const tz = await loadWorkspaceTimezone(this.db, workspaceId);
+    const { from, before } = usualSampleRange(utcToday(now));
+    const sample = (
+      await this.publishedPosts(workspaceId, channelIds, from, before)
+    )
+      .map((p) => toInsightPost(p, platformOf.get(p.channelId) ?? '', { now }))
+      .filter((p) => isMeasured(p) && !p.isSettling);
+
+    const engagement = bestTimeGrid(sample, tz, 'engagements');
+    const reach = bestTimeGrid(sample, tz, 'reach');
+    const best = engagement.best;
+    const free = best
+      ? nextFreeSlot(
+          best,
+          await this.scheduledTimes(
+            workspaceId,
+            channelIds,
+            now,
+            new Date(now.getTime() + (NEXT_FREE_WEEKS * 7 + 1) * DAY_MS),
+          ),
+          tz,
+          now,
+        )
+      : null;
+    const tags = await this.topics.tagsByPost(workspaceId, [
+      ...new Set(sample.map((p) => p.postId)),
+    ]);
+
+    return {
+      timezone: tz,
+      measuredPosts: sample.length,
+      minPosts: MIN_SIGNAL_POSTS,
+      bestTimes: {
+        slots: SLOTS,
+        engagement,
+        reach: { ...reach, available: sample.some((p) => p.reach !== null) },
+        usedNightSlots: usedNightSlots(engagement, reach),
+        useSlot: best && free ? { ...best, ...free } : null,
+      },
+      whatWorks: {
+        format: formatBars(sample),
+        topic: topicBars(sample, tags),
+      },
+      // Next steps' rules come with B7.
+      nextSteps: [],
+    };
+  }
+
+  /**
+   * When the scheduled posts on the given channels go out, from `from` up to,
+   * not including, `before`. A post counts when any of its targets is one of
+   * the channels; drafts and published posts don't take a slot.
+   */
+  private async scheduledTimes(
+    workspaceId: string,
+    channelIds: number[],
+    from: Date,
+    before: Date,
+  ): Promise<Date[]> {
+    if (!channelIds.length) return [];
+    const ids = sql.join(
+      channelIds.map((id) => sql`${String(id)}`),
+      sql`, `,
+    );
+    const rows = await this.db
+      .select({ scheduledAt: postsTable.scheduledAt })
+      .from(postsTable)
+      .where(
+        and(
+          eq(postsTable.workspaceId, workspaceId),
+          eq(postsTable.status, 'scheduled'),
+          gte(postsTable.scheduledAt, from),
+          lt(postsTable.scheduledAt, before),
+          sql`EXISTS (
+            SELECT 1 FROM jsonb_array_elements(${postsTable.targets}) e
+            WHERE e->>'channelId' IN (${ids})
+          )`,
+        ),
+      );
+    return rows.flatMap((r) => (r.scheduledAt ? [r.scheduledAt] : []));
   }
 }

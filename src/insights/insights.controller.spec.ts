@@ -241,3 +241,66 @@ describe('InsightsController over HTTP', () => {
     });
   });
 });
+
+describe('InsightsController signals over HTTP', () => {
+  let app: INestApplication<App>;
+  const roles = { getRole: jest.fn(), isPlatformSuperAdmin: jest.fn() };
+  const insights = { signals: jest.fn() };
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [InsightsController],
+      providers: [
+        WorkspaceRoleGuard,
+        { provide: WorkspaceRoleService, useValue: roles },
+        { provide: InsightsService, useValue: insights },
+      ],
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({
+        canActivate: (ctx: {
+          switchToHttp: () => { getRequest: () => { user?: unknown } };
+        }) => {
+          ctx.switchToHttp().getRequest().user = { userId: 'user-1' };
+          return true;
+        },
+      })
+      .compile();
+    app = moduleRef.createNestApplication();
+    await app.init();
+  });
+  afterAll(() => app.close());
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    roles.getRole.mockResolvedValue('GUEST');
+    roles.isPlatformSuperAdmin.mockResolvedValue(false);
+    insights.signals.mockResolvedValue({ ok: true });
+  });
+
+  it('signals answers 403 to a non-member', async () => {
+    roles.getRole.mockResolvedValue(null);
+    await request(app.getHttpServer())
+      .get(`/insights/workspaces/${WS}/signals?channels=4`)
+      .expect(403);
+    expect(insights.signals).not.toHaveBeenCalled();
+  });
+
+  it('lets a guest read signals, passing the channels through', async () => {
+    await request(app.getHttpServer())
+      .get(`/insights/workspaces/${WS}/signals?channels=4,7`)
+      .expect(200, { ok: true });
+    expect(insights.signals).toHaveBeenCalledWith(WS, '4,7');
+    await request(app.getHttpServer())
+      .get(`/insights/workspaces/${WS}/signals`)
+      .expect(200);
+    expect(insights.signals).toHaveBeenLastCalledWith(WS, undefined);
+  });
+
+  it('rejects a workspace id that is not a uuid', async () => {
+    await request(app.getHttpServer())
+      .get('/insights/workspaces/probe/signals')
+      .expect(400);
+    expect(insights.signals).not.toHaveBeenCalled();
+  });
+});

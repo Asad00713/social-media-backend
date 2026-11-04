@@ -16,6 +16,7 @@ import type {
   InsightsPostsDto,
   PostChannelMetricsDto,
 } from './dto/insights.dto';
+import type { InsightsSignalsDto } from './dto/insights.dto';
 import { utcToday } from '../post-performance/period';
 import { InsightsService } from './insights.service';
 import {
@@ -120,5 +121,14 @@ export class InsightsController {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     return body;
+  }
+
+  /** Best time, What works and Next steps over the last 90 days. */
+  @Get('signals')
+  signals(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Query('channels') channels?: string,
+  ): Promise<InsightsSignalsDto> {
+    return this.insights.signals(workspaceId, channels);
   }
 }
