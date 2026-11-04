@@ -1123,8 +1123,21 @@ describe('InsightsService.postDetail', () => {
       impressions: null,
       reach: null,
     }));
-    for (const snaps of [{}, { y: blank }]) {
-      const d = await setup(young, [], snaps).run();
+    // Even with five comparable posts to draw a usual from: no line, no usual.
+    const { others } = sample();
+    const usualSnaps: Snaps = {};
+    for (const o of others) {
+      usualSnaps[o.postId] = [1, 5, 30].map((h) =>
+        snapRow(o.postId, o.publishedAt, h, 50),
+      );
+    }
+    for (const snaps of [
+      {},
+      { y: blank },
+      { ...usualSnaps },
+      { ...usualSnaps, y: blank },
+    ]) {
+      const d = await setup(young, others.slice(0, 6), snaps).run();
       expect(d.timeline.status).toBe('collecting');
       expect(d.timeline.values[0]).toBe(0);
       expect(d.timeline.values.slice(1).every((v) => v === null)).toBe(true);
