@@ -6,6 +6,7 @@ import {
   HttpCode,
   HttpStatus,
   Param,
+  ParseIntPipe,
   ParseUUIDPipe,
   Post,
   Query,
@@ -21,6 +22,7 @@ import type {
   InsightsOverviewDto,
   InsightsPostsDto,
   PostChannelMetricsDto,
+  PostDetailDto,
 } from './dto/insights.dto';
 import type { InsightsSignalsDto } from './dto/insights.dto';
 import { utcToday } from '../post-performance/period';
@@ -158,5 +160,15 @@ export class InsightsController {
       throw new BadRequestException('Not a next step id');
     }
     await this.insights.hideStep(workspaceId, user.userId, id, dto.reason);
+  }
+
+  /** One post on one channel: tiles, verdict, reasons and its first 48 hours. */
+  @Get('posts/:postId/channels/:channelId')
+  postDetail(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('postId', ParseUUIDPipe) postId: string,
+    @Param('channelId', ParseIntPipe) channelId: number,
+  ): Promise<PostDetailDto> {
+    return this.insights.postDetail(workspaceId, postId, channelId);
   }
 }

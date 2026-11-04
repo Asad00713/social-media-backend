@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
@@ -302,6 +303,69 @@ describe('InsightsController signals over HTTP', () => {
       .get('/insights/workspaces/probe/signals')
       .expect(400);
     expect(insights.signals).not.toHaveBeenCalled();
+  });
+});
+
+describe('InsightsController post detail over HTTP', () => {
+  let app: INestApplication<App>;
+  const roles = { getRole: jest.fn(), isPlatformSuperAdmin: jest.fn() };
+  const insights = { postDetail: jest.fn() };
+  const POST = '22222222-2222-4222-8222-222222222222';
+  const url = (post = POST, channel = '7') =>
+    `/insights/workspaces/${WS}/posts/${post}/channels/${channel}`;
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [InsightsController],
+      providers: [
+        WorkspaceRoleGuard,
+        { provide: WorkspaceRoleService, useValue: roles },
+        { provide: InsightsService, useValue: insights },
+      ],
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({
+        canActivate: (ctx: {
+          switchToHttp: () => { getRequest: () => { user?: unknown } };
+        }) => {
+          ctx.switchToHttp().getRequest().user = { userId: 'user-1' };
+          return true;
+        },
+      })
+      .compile();
+    app = moduleRef.createNestApplication();
+    await app.init();
+  });
+  afterAll(() => app.close());
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    roles.getRole.mockResolvedValue('GUEST');
+    roles.isPlatformSuperAdmin.mockResolvedValue(false);
+    insights.postDetail.mockResolvedValue({ ok: true });
+  });
+
+  it('a non-member gets 403', async () => {
+    roles.getRole.mockResolvedValue(null);
+    await request(app.getHttpServer()).get(url()).expect(403);
+    expect(insights.postDetail).not.toHaveBeenCalled();
+  });
+
+  it('lets a guest read it, passing the parsed ids through', async () => {
+    await request(app.getHttpServer()).get(url()).expect(200, { ok: true });
+    expect(insights.postDetail).toHaveBeenCalledWith(WS, POST, 7);
+  });
+
+  it('another workspace post is the service 404, not a leak', async () => {
+    insights.postDetail.mockRejectedValue(new NotFoundException());
+    await request(app.getHttpServer()).get(url()).expect(404);
+  });
+
+  it('rejects a post id that is not a uuid and a channel id that is not an integer', async () => {
+    await request(app.getHttpServer()).get(url('metrics-ish')).expect(400);
+    await request(app.getHttpServer()).get(url(POST, 'abc')).expect(400);
+    await request(app.getHttpServer()).get(url(POST, '1.5')).expect(400);
+    expect(insights.postDetail).not.toHaveBeenCalled();
   });
 });
 
