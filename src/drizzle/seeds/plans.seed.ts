@@ -4,6 +4,7 @@ config({ path: '.env' });
 import { db } from '../db';
 import { plans, addonPricing } from '../schema';
 import { sql, eq } from 'drizzle-orm';
+import { PLAN_STORAGE_BYTES } from '../../billing/plan-storage';
 
 export async function seedPlans() {
   console.log('Seeding plans...');
@@ -13,6 +14,7 @@ export async function seedPlans() {
   const planData = [
     {
       code: 'FREE',
+      storageBytesPerWorkspace: PLAN_STORAGE_BYTES.FREE,
       name: 'Free Plan',
       basePriceCents: 0,
       channelsPerWorkspace: 3,
@@ -32,6 +34,7 @@ export async function seedPlans() {
     },
     {
       code: 'BASIC',
+      storageBytesPerWorkspace: PLAN_STORAGE_BYTES.BASIC,
       name: 'Basic Plan',
       basePriceCents: 500, // $5.00
       channelsPerWorkspace: 5,
@@ -51,6 +54,7 @@ export async function seedPlans() {
     },
     {
       code: 'PRO',
+      storageBytesPerWorkspace: PLAN_STORAGE_BYTES.PRO,
       name: 'Pro Plan',
       basePriceCents: 1000, // $10.00
       channelsPerWorkspace: 8,
@@ -70,6 +74,7 @@ export async function seedPlans() {
     },
     {
       code: 'MAX',
+      storageBytesPerWorkspace: PLAN_STORAGE_BYTES.MAX,
       name: 'Max Plan',
       basePriceCents: 5000, // $50.00
       channelsPerWorkspace: 50,
@@ -101,6 +106,7 @@ export async function seedPlans() {
         membersPerWorkspace: sql`excluded.members_per_workspace`,
         maxWorkspaces: sql`excluded.max_workspaces`,
         aiTokensPerMonth: sql`excluded.ai_tokens_per_month`,
+        storageBytesPerWorkspace: sql`excluded.storage_bytes_per_workspace`,
         features: sql`excluded.features`,
         isActive: sql`excluded.is_active`,
         updatedAt: new Date(),

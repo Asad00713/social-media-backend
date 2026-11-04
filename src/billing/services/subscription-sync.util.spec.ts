@@ -1,4 +1,5 @@
 import { buildSubscriptionSync } from './subscription-sync.util';
+import { PLAN_STORAGE_BYTES } from '../plan-storage';
 
 const PLAN = {
   code: 'PRO',
@@ -114,6 +115,7 @@ describe('buildSubscriptionSync', () => {
         maxWorkspaces: 3,
         aiTokensPerMonth: 20000,
         queuedPostsPerChannel: -1,
+        storageBytesPerWorkspace: PLAN_STORAGE_BYTES.PRO,
       },
       addons: {
         extraChannels: 0,

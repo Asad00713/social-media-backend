@@ -14,6 +14,7 @@ export interface WorkspaceLimitWrite {
   channelsLimit: number;
   membersLimit: number;
   aiTokensLimit: number;
+  storageBytesLimit: number;
 }
 
 /**
@@ -56,6 +57,7 @@ export function buildUsageFanout(
       channelsLimit: limits.channelsLimit,
       membersLimit: limits.membersLimit,
       aiTokensLimit: limits.aiTokensLimit,
+      storageBytesLimit: limits.storageBytesLimit,
     };
   });
 }

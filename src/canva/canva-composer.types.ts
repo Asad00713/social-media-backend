@@ -1,3 +1,5 @@
+import type { MediaItemView } from '../media-library/services/media-item.service';
+
 export interface ComposerCanvaStatus {
   connected: boolean;
   displayName?: string;
@@ -23,6 +25,7 @@ export interface ComposerCanvaImportResult {
   width?: number;
   height?: number;
   sizeBytes: number;
+  libraryItem: MediaItemView | null;
 }
 
 /**
