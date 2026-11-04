@@ -6,6 +6,7 @@ import { round1 } from '../../post-performance/period';
 import type { PublishedPost } from '../../post-performance/post-performance';
 import {
   MIN_CELL_POSTS,
+  MIN_SIGNAL_POSTS,
   slotOf,
   type BestSlot,
   type BestTimeGrid,
@@ -113,8 +114,8 @@ export function tilesOf(
 const count = (n: number): string => Math.round(n).toLocaleString('en-US');
 
 /**
- * The dialog's verdict (spec 7.4). A post under SETTLING_DAYS is settling
- * whatever its multiplier; without a multiplier there is no usual yet.
+ * The dialog's verdict (spec 7.4, 3.5). A post under SETTLING_DAYS that is
+ * not already up is settling; without a multiplier there is no usual yet.
  * `usualMedian` is the channel's median engagements, `rank` the post's place
  * among the last 30 days' posts (1 = best).
  */
@@ -124,14 +125,15 @@ export function verdictOf(
   rank: number | null,
   platformName: string,
 ): PostVerdict {
-  if (post.isSettling) {
+  const x = post.usualMultiplier;
+  // Spec 3.5: a settling post is already above usual, or it is just settling.
+  if (post.isSettling && (x === null || x < MULT_UP)) {
     return {
       kind: 'settling',
       title: 'Still settling',
       body: `This post is under ${SETTLING_DAYS} days old, so its numbers can still change.`,
     };
   }
-  const x = post.usualMultiplier;
   if (x === null || usualMedian === null) {
     return {
       kind: 'none',
@@ -193,7 +195,8 @@ function clockLabel(at: Date, tz: string): string {
 /**
  * Why an up post did well (spec 7.4); the caller shows them for an up verdict
  * only. R1: its format is the best of `formatBars` (best first, each with at
- * least MIN_FORMAT_POSTS posts) and a worse one exists to compare with. R2:
+ * least MIN_FORMAT_POSTS posts), the bars hold at least MIN_SIGNAL_POSTS posts
+ * together, and a worse format exists that it beats by more than 1.0x. R2:
  * it went out in one of the `bestTop3` cells.
  */
 export function reasonsOf(
@@ -206,7 +209,9 @@ export function reasonsOf(
   const eligible = formatBars.filter((b) => b.posts >= MIN_FORMAT_POSTS);
   const best = eligible[0];
   const worst = eligible[eligible.length - 1];
+  const barPosts = eligible.reduce((n, b) => n + b.posts, 0);
   if (
+    barPosts >= MIN_SIGNAL_POSTS &&
     best &&
     worst &&
     best !== worst &&
@@ -215,6 +220,7 @@ export function reasonsOf(
     best.median !== null &&
     worst.median !== null &&
     worst.median > 0 &&
+    round1(best.median / worst.median) > 1 &&
     worst.key in FORMAT_WORDS
   ) {
     const [one, many] = FORMAT_WORDS[post.format];

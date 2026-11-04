@@ -1,5 +1,7 @@
 import {
   TIMELINE_HOURS,
+  hasMetric,
+  pickTimelineMetric,
   timelineMetricOf,
   timelineStatus,
   timelineValues,
@@ -37,6 +39,13 @@ describe('timelineValues', () => {
       0, 10, 10, 10, 10, 40, 40, 40, 40, 40, 40, 90, 90, 90, 90,
     ]);
     expect(v.every((x) => x !== null)).toBe(true);
+  });
+
+  it('is null before the first snapshot that reports the metric, hour 0 aside', () => {
+    const snaps = [snap(2, { reach: null }), snap(5, { reach: 40 })];
+    const v = timelineValues(snaps, PUBLISHED, 'reach', after(60));
+    // hours: 0,1,2,3,4,6 ...: nothing reported by hour 4, 40 from the 5h snapshot
+    expect(v.slice(0, 6)).toEqual([0, null, null, null, null, 40]);
   });
 
   it('starts at 0 on hour 0 even when a snapshot exists at hour 0', () => {
@@ -92,6 +101,18 @@ describe('timelineStatus', () => {
     expect(timelineStatus([], PUBLISHED, after(100))).toBe('no_early_data');
   });
 
+  it('a post under 48h with fewer than 3 snapshots is collecting, an older one is not', () => {
+    expect(timelineStatus([snap(1)], PUBLISHED, after(12))).toBe('collecting');
+    expect(timelineStatus([], PUBLISHED, after(12))).toBe('collecting');
+    expect(timelineStatus([snap(1)], PUBLISHED, after(48))).toBe(
+      'no_early_data',
+    );
+    // A late first snapshot is no_early_data at any age.
+    expect(timelineStatus([snap(9)], PUBLISHED, after(12))).toBe(
+      'no_early_data',
+    );
+  });
+
   it('a 12h old post is collecting; at 48h it is ok', () => {
     expect(timelineStatus(three, PUBLISHED, after(12))).toBe('collecting');
     expect(timelineStatus(three, PUBLISHED, after(47.9))).toBe('collecting');
@@ -127,5 +148,31 @@ describe('timelineMetricOf', () => {
     expect(timelineMetricOf('instagram')).toBe('reach');
     expect(timelineMetricOf('tiktok')).toBe('impressions');
     expect(timelineMetricOf('linkedin')).toBe('engagements');
+  });
+});
+
+describe('pickTimelineMetric', () => {
+  const none = snap(1, { likes: null, comments: null, shares: null });
+
+  it('takes reach, then views, then engagements, from what the snapshots report', () => {
+    const both = snap(1, { reach: 5, impressions: 9 });
+    expect(pickTimelineMetric([both], 'instagram')).toBe('reach');
+    expect(pickTimelineMetric([snap(1, { impressions: 9 })], 'instagram')).toBe(
+      'impressions',
+    );
+    expect(pickTimelineMetric([snap(1)], 'instagram')).toBe('engagements');
+    // TikTok does not share reach, so a reach number is ignored there.
+    expect(pickTimelineMetric([both], 'tiktok')).toBe('impressions');
+    expect(pickTimelineMetric([both], 'linkedin')).toBe('engagements');
+  });
+
+  it('is null when no snapshot reports anything', () => {
+    expect(pickTimelineMetric([none, none], 'instagram')).toBeNull();
+    expect(pickTimelineMetric([], 'instagram')).toBeNull();
+  });
+
+  it('hasMetric looks for any reporting snapshot', () => {
+    expect(hasMetric([none, snap(2, { reach: 0 })], 'reach')).toBe(true);
+    expect(hasMetric([none], 'reach')).toBe(false);
   });
 });

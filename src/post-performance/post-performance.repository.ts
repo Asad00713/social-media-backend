@@ -189,15 +189,11 @@ export class PostPerformanceRepository {
     hours: number,
   ): Promise<SnapshotWithinRow[]> {
     if (!postIds.length) return [];
-    const ids = sql.join(
-      postIds.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    );
     const result = await this.db.execute(sql`
       WITH recent AS (
         SELECT p.id, p.published_at
         FROM posts p
-        WHERE p.id IN (${ids})
+        WHERE p.id = ANY(${sql.param(postIds)}::uuid[])
         ORDER BY p.published_at DESC
         LIMIT ${SNAPSHOT_POST_CAP}
       )

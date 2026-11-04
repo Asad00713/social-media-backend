@@ -41,6 +41,32 @@ export function timelineMetricOf(platform: string): TimelineMetric {
   return 'engagements';
 }
 
+/**
+ * The metric to draw for a post, from what its own snapshots report: reach,
+ * then views, then engagements, each only where the platform shares it
+ * (engagements always). Null when no snapshot reports any of them.
+ */
+export function pickTimelineMetric(
+  snaps: TimelineSnap[],
+  platform: string,
+): TimelineMetric | null {
+  const r = reportsOf(platform);
+  const candidates: TimelineMetric[] = [
+    ...(r.reportsReach ? (['reach'] as const) : []),
+    ...(r.reportsViews ? (['impressions'] as const) : []),
+    'engagements',
+  ];
+  return candidates.find((m) => hasMetric(snaps, m)) ?? null;
+}
+
+/** Whether any snapshot reports the metric. */
+export function hasMetric(
+  snaps: TimelineSnap[],
+  metric: TimelineMetric,
+): boolean {
+  return snaps.some((s) => valueOf(s, metric) !== null);
+}
+
 const at = (s: TimelineSnap): number => new Date(s.snapshotAt).getTime();
 
 function valueOf(s: TimelineSnap, metric: TimelineMetric): number | null {
@@ -55,9 +81,10 @@ function valueOf(s: TimelineSnap, metric: TimelineMetric): number | null {
 /**
  * The metric at each of TIMELINE_HOURS after `publishedAt`: the newest
  * snapshot at or before that hour, carried forward until the next one, so the
- * line never falls back to nothing. Hour 0 is 0 and a snapshot that doesn't
- * report the metric leaves the last value standing. Hours after `now` are
- * null: the line stops where the post's life does.
+ * line never falls back to nothing. Hour 0 is 0; before the first snapshot
+ * that reports the metric the line is null, and a snapshot that does not
+ * report it leaves the last value standing. Hours after `now` are null: the
+ * line stops where the post's life does.
  */
 export function timelineValues(
   snaps: TimelineSnap[],
@@ -68,7 +95,7 @@ export function timelineValues(
   const start = new Date(publishedAt).getTime();
   const sorted = [...snaps].sort((a, b) => at(a) - at(b));
   let i = 0;
-  let last = 0;
+  let last: number | null = null;
   return TIMELINE_HOURS.map((h) => {
     const t = start + h * HOUR_MS;
     if (t > now.getTime()) return null;
@@ -84,8 +111,9 @@ export function timelineValues(
 
 /**
  * `no_early_data`: nothing to draw, because the first snapshot came more than
- * 6 hours after publishing (an imported post) or there are under 3. Otherwise
- * `collecting` until the post is 48 hours old, then `ok`.
+ * 6 hours after publishing (an imported post), or the post is past 48 hours
+ * with under 3 snapshots. A younger post with few snapshots is still
+ * `collecting`, then `ok` once it is 48 hours old.
  */
 export function timelineStatus(
   snaps: TimelineSnap[],
@@ -93,12 +121,15 @@ export function timelineStatus(
   now: Date,
 ): TimelineStatus {
   const start = new Date(publishedAt).getTime();
-  if (snaps.length < MIN_TIMELINE_POINTS) return 'no_early_data';
-  const first = Math.min(...snaps.map(at));
-  if (first - start > EARLY_SNAPSHOT_HOURS * HOUR_MS) return 'no_early_data';
-  return now.getTime() < start + TIMELINE_SPAN_HOURS * HOUR_MS
-    ? 'collecting'
-    : 'ok';
+  const young = now.getTime() < start + TIMELINE_SPAN_HOURS * HOUR_MS;
+  if (snaps.length > 0) {
+    const first = Math.min(...snaps.map(at));
+    if (first - start > EARLY_SNAPSHOT_HOURS * HOUR_MS) return 'no_early_data';
+  }
+  if (snaps.length < MIN_TIMELINE_POINTS) {
+    return young ? 'collecting' : 'no_early_data';
+  }
+  return young ? 'collecting' : 'ok';
 }
 
 /**

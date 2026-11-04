@@ -973,4 +973,87 @@ describe('InsightsService.postDetail', () => {
     const d2 = await setup(subject, others, few).run();
     expect(d2.timeline.usual).toBeNull();
   });
+
+  it('a subject whose snapshots report nothing has no early data', async () => {
+    const { subject, others } = sample();
+    const blank = (id: string, at: string) =>
+      [1, 5, 30].map((h) => ({
+        ...snapRow(id, at, h, 0),
+        likes: null,
+        comments: null,
+        shares: null,
+        impressions: null,
+        reach: null,
+      }));
+    const d = await setup(subject, others, {
+      v0: blank('v0', subject.publishedAt),
+    }).run();
+    expect(d.timeline.status).toBe('no_early_data');
+    expect(d.timeline.values.every((v) => v === null)).toBe(true);
+    expect(d.timeline.usual).toBeNull();
+  });
+
+  it('posts whose snapshots never report the metric stay out of the usual curve', async () => {
+    const { subject, others } = sample();
+    const blank = (id: string, at: string) =>
+      [1, 5, 30].map((h) => ({
+        ...snapRow(id, at, h, 0),
+        likes: null,
+        comments: null,
+        shares: null,
+        impressions: null,
+        reach: null,
+      }));
+    const snaps: Snaps = {
+      v0: [1, 5, 30].map((h) => snapRow('v0', subject.publishedAt, h, 100)),
+    };
+    others.forEach((o, i) => {
+      snaps[o.postId] =
+        i < 4
+          ? [1, 5, 30].map((h) => snapRow(o.postId, o.publishedAt, h, 50))
+          : blank(o.postId, o.publishedAt);
+    });
+    // Four reporters: under five, so no usual. Blank curves must not count.
+    expect(
+      (await setup(subject, others, snaps).run()).timeline.usual,
+    ).toBeNull();
+    snaps[others[4].postId] = [1, 5, 30].map((h) =>
+      snapRow(others[4].postId, others[4].publishedAt, h, 50),
+    );
+    const d = await setup(subject, others, snaps).run();
+    expect(d.timeline.usual![1]).toBe(50);
+  });
+
+  it('imported and unmeasured posts are not sent to snapshotsWithin', async () => {
+    const { subject, others } = sample();
+    const imported = post({
+      postId: 'imp',
+      imported: true,
+      likes: 3,
+      ...day('2026-09-10'),
+    });
+    const unmeasured = post({ postId: 'unm', ...day('2026-09-11') });
+    const { repo, run } = setup(subject, [...others, imported, unmeasured]);
+    await run();
+    const sent = repo.snapshotsWithin.mock.calls.flatMap(
+      (c: string[][]) => c[0],
+    );
+    expect(sent).toContain('v0');
+    expect(sent).not.toContain('imp');
+    expect(sent).not.toContain('unm');
+  });
+
+  it('a settling post already above usual is up', async () => {
+    const { subject, others } = sample();
+    const young = post({
+      postId: 'young',
+      likes: 100,
+      publishedOn: '2026-09-29',
+      publishedAt: '2026-09-29T10:00:00.000Z',
+    });
+    const d = await setup(young, [subject, ...others]).run();
+    expect(d.post.isSettling).toBe(true);
+    expect(d.verdict.kind).toBe('up');
+    expect(d.verdict.body).toBe('Your best post this month.');
+  });
 });

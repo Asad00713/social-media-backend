@@ -1113,6 +1113,20 @@ describeDb('PostPerformanceRepository.snapshotsWithin', () => {
       expect(rows.some((r) => r.post_id === ids[0])).toBe(true);
     }));
 
+  it('takes a very long id list as one array parameter', () =>
+    run(async (repo, _svc, client) => {
+      const w = await workspace(client, 'sw4');
+      const c = await w.channel('a');
+      const p = await publish(client, w, [c], 5);
+      await snapAfter(client, p, c, 5, 1, 10);
+      const filler = Array.from(
+        { length: 70_000 },
+        (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+      );
+      const rows = await repo.snapshotsWithin([...filler, p], c, 48);
+      expect(rows.map((r) => r.post_id)).toEqual([p]);
+    }));
+
   it('postDetail reads a real post end to end; another workspace gets 404', () =>
     run(async (_repo, svc, client) => {
       const w = await workspace(client, 'sw3');

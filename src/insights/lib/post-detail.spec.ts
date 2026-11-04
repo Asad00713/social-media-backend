@@ -147,8 +147,8 @@ describe('verdictOf', () => {
     );
   });
 
-  it('a post under 2 days is settling, whatever its multiplier', () => {
-    for (const m of [3, 1, 0.2, null]) {
+  it('a settling post that would be flat, down or none stays settling', () => {
+    for (const m of [1.19, 1, 0.8, 0.2, null]) {
       expect(
         verdictOf(
           { ...base, isSettling: true, usualMultiplier: m },
@@ -162,6 +162,25 @@ describe('verdictOf', () => {
         body: 'This post is under 2 days old, so its numbers can still change.',
       });
     }
+  });
+
+  it('a settling post already at 1.2 or more is up, with its body', () => {
+    expect(
+      verdictOf(
+        { ...base, isSettling: true, usualMultiplier: 1.2 },
+        10,
+        2,
+        'X',
+      ),
+    ).toEqual({
+      kind: 'up',
+      title: '1.2× your usual engagement',
+      body: '12 engagements against a usual 10.',
+    });
+    expect(
+      verdictOf({ ...base, isSettling: true, usualMultiplier: 3 }, 4, 1, 'X')
+        .body,
+    ).toBe('Your best post this month.');
   });
 
   it('no multiplier says the platform needs about 5 posts', () => {
@@ -192,7 +211,7 @@ describe('reasonsOf', () => {
   const wedSlot = { weekday: 2, slot: 6 };
 
   it('format reason needs best format with 3 posts', () => {
-    const bars = [bar('video', 3, 240), bar('image', 5, 100)];
+    const bars = [bar('video', 4, 240), bar('image', 6, 100)];
     expect(reasonsOf(post('video'), bars, [], TZ)).toEqual([
       'A video. Your videos get 2.4× the engagement of your photos.',
     ]);
@@ -202,7 +221,7 @@ describe('reasonsOf', () => {
     expect(
       reasonsOf(
         post('video'),
-        [bar('video', 2, 240), bar('image', 5, 100)],
+        [bar('video', 2, 240), bar('image', 8, 100)],
         [],
         TZ,
       ),
@@ -212,6 +231,24 @@ describe('reasonsOf', () => {
       [],
     );
     expect(reasonsOf(post('unknown'), bars, [], TZ)).toEqual([]);
+  });
+
+  it('format reason needs the What works floor of 10 posts across the bars', () => {
+    const nine = [bar('video', 4, 240), bar('image', 5, 100)];
+    expect(reasonsOf(post('video'), nine, [], TZ)).toEqual([]);
+    const ten = [bar('video', 4, 240), bar('image', 6, 100)];
+    expect(reasonsOf(post('video'), ten, [], TZ)).toHaveLength(1);
+  });
+
+  it('format reason never says 1.0x: the best must beat the worst', () => {
+    const tie = [bar('video', 5, 100), bar('image', 6, 100)];
+    expect(reasonsOf(post('video'), tie, [], TZ)).toEqual([]);
+    const nearly = [bar('video', 5, 104), bar('image', 6, 100)];
+    expect(reasonsOf(post('video'), nearly, [], TZ)).toEqual([]);
+    const clear = [bar('video', 5, 110), bar('image', 6, 100)];
+    expect(reasonsOf(post('video'), clear, [], TZ)).toEqual([
+      'A video. Your videos get 1.1× the engagement of your photos.',
+    ]);
   });
 
   it('slot reason needs a top-3 cell', () => {
@@ -227,7 +264,7 @@ describe('reasonsOf', () => {
   it('fires both, format first', () => {
     const r = reasonsOf(
       post('link'),
-      [bar('link', 3, 300), bar('text', 4, 100)],
+      [bar('link', 4, 300), bar('text', 6, 100)],
       [wedSlot],
       TZ,
     );

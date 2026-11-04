@@ -87,6 +87,8 @@ import {
 import {
   TIMELINE_HOURS,
   TIMELINE_SPAN_HOURS,
+  hasMetric,
+  pickTimelineMetric,
   timelineMetricOf,
   timelineStatus,
   timelineValues,
@@ -883,8 +885,11 @@ export class InsightsService {
     sample: PublishedPost[],
     now: Date,
   ): Promise<PostDetailDto['timeline']> {
-    const metric = timelineMetricOf(platform);
-    const others = sample.filter((p) => p.postId !== row.postId);
+    // Imported and unmeasured posts have no early curve: keep them out of
+    // the call so they do not take one of its 100 slots.
+    const others = sample.filter(
+      (p) => p.postId !== row.postId && !p.imported && isMeasured(p),
+    );
     const [mine, theirs] = await Promise.all([
       this.postPerformance.snapshotsWithin(
         [row.postId],
@@ -899,7 +904,12 @@ export class InsightsService {
     ]);
     const hours = [...TIMELINE_HOURS];
     const snaps = mine.map(toSnap);
-    const status = timelineStatus(snaps, row.publishedAt, now);
+    const picked = pickTimelineMetric(snaps, platform);
+    const metric = picked ?? timelineMetricOf(platform);
+    const status =
+      picked === null
+        ? 'no_early_data'
+        : timelineStatus(snaps, row.publishedAt, now);
     if (status === 'no_early_data') {
       return {
         metric,
@@ -918,7 +928,11 @@ export class InsightsService {
     }
     const curves = others.flatMap((p) => {
       const s = byPost.get(p.postId);
-      if (!s || timelineStatus(s, p.publishedAt, now) === 'no_early_data') {
+      if (
+        !s ||
+        !hasMetric(s, metric) ||
+        timelineStatus(s, p.publishedAt, now) === 'no_early_data'
+      ) {
         return [];
       }
       return [timelineValues(s, p.publishedAt, metric, now)];
