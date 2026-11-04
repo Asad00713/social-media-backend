@@ -606,6 +606,10 @@ describe('step ids', () => {
     `repost_hit:${POST}:x`,
     `repost_hit:${POST}:7\n`,
     'other:1',
+    'xformat_gap',
+    'xquiet_channel:1',
+    `x${POST}`,
+    `xrepost_hit:${POST}:7`,
     `x${'a'.repeat(200)}`,
   ])('rejects %j', (id) => expect(STEP_ID_PATTERN.test(id)).toBe(false));
 });
