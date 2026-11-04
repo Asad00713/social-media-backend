@@ -45,11 +45,16 @@ export class FacebookPublisher extends BasePublisher {
       if (mediaItems.length === 0 || mediaItems[0].type !== 'video') {
         throw new Error('Facebook Reels require a vertical video file');
       }
+      // `reelTitle` is the draft's own key: `platformSpecific` reaches this
+      // publisher as `metadata` verbatim, so the composer writes this name.
+      const reelTitle =
+        typeof metadata?.reelTitle === 'string' ? metadata.reelTitle.trim() : '';
       result = await this.facebookService.postReelToPage(
         platformAccountId,
         accessToken,
         mediaItems[0].url,
         content,
+        reelTitle ? { title: reelTitle } : {},
       );
     } else if (postType === 'story') {
       // Stories require exactly one image OR one video.

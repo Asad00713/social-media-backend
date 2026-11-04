@@ -37,6 +37,12 @@ export interface FacebookUser {
   pictureUrl: string | null;
 }
 
+/** Optional settings for a Reel, all sent only when set. */
+export interface FacebookReelOptions {
+  /** The Reel's title — `title` on the finish call of `/video_reels`. */
+  title?: string;
+}
+
 @Injectable()
 export class FacebookService {
   private readonly logger = new Logger(FacebookService.name);
@@ -603,6 +609,7 @@ export class FacebookService {
    * @param pageAccessToken — Page Access Token (NOT user token)
    * @param videoUrl — publicly accessible URL of the vertical 9:16 video
    * @param description — caption for the Reel (optional)
+   * @param options — title (optional), sent on the finish call
    * @returns the published Reel's post ID
    */
   async postReelToPage(
@@ -610,6 +617,7 @@ export class FacebookService {
     pageAccessToken: string,
     videoUrl: string,
     description: string = '',
+    options: FacebookReelOptions = {},
   ): Promise<{ postId: string }> {
     // Phase 1: start
     const startUrl = new URL(`${this.graphApiUrl}/${pageId}/video_reels`);
@@ -662,6 +670,9 @@ export class FacebookService {
     finishUrl.searchParams.set('video_id', startData.video_id);
     finishUrl.searchParams.set('video_state', 'PUBLISHED');
     if (description) finishUrl.searchParams.set('description', description);
+    // `title` belongs to the FINISH call (the publish step of the Reels guide),
+    // beside `description` — not to the start call, which takes only the phase.
+    if (options.title) finishUrl.searchParams.set('title', options.title);
     finishUrl.searchParams.set('access_token', pageAccessToken);
     const finishRes = await fetch(finishUrl.toString(), { method: 'POST' });
     if (!finishRes.ok) {
