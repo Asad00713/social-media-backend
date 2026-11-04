@@ -1,3 +1,4 @@
+import { BadRequestException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { datesBetween, utcToday, windowOf } from '../post-performance/period';
 import { PostPerformanceRepository } from '../post-performance/post-performance.repository';
@@ -1034,5 +1035,401 @@ describeDb('InsightsService.overview', () => {
       };
       expect(await tz('Asia/Karachi')).toBe('Asia/Karachi');
       expect(await tz('Mars/Olympus')).toBe('UTC');
+    }));
+});
+
+describeDb('InsightsService next steps and hiding', () => {
+  const MIGRATION = '0058_insight_hidden_steps.sql';
+  const HOUR = 3_600_000;
+
+  interface Ctx {
+    svc: InsightsService;
+    client: PoolClient;
+    w: Ws;
+    /** The workspace's channel with the base posts. */
+    c: number;
+    /** A second member of the workspace. */
+    other: string;
+  }
+
+  interface MediaPost {
+    status?: 'published' | 'scheduled' | 'draft' | 'failed';
+    /** Days before NOW it went out; negative: days after NOW it is scheduled. */
+    ageDays: number;
+    content?: string;
+    media?: { type: 'video' | 'image'; url: string }[];
+  }
+
+  /** A post on `channelId`; published ones also get a snapshot of `likes`. */
+  async function mediaPost(
+    client: PoolClient,
+    w: Ws,
+    channelId: number,
+    o: MediaPost,
+    likes: number | null = null,
+  ): Promise<string> {
+    const status = o.status ?? 'published';
+    const at = new Date(NOW.getTime() - o.ageDays * DAY).toISOString();
+    const published = status === 'published';
+    const scheduled = status === 'scheduled';
+    const r = await client.query<{ id: string }>(
+      `INSERT INTO posts (workspace_id, created_by_id, status, content, media_items, targets, published_at, scheduled_at, created_at)
+       VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::timestamptz, $8::timestamptz, $9::timestamptz) RETURNING id`,
+      [
+        w.workspaceId,
+        w.userId,
+        status,
+        o.content ?? 'x',
+        JSON.stringify(o.media ?? []),
+        JSON.stringify([
+          { channelId: String(channelId), platform: 'twitter', status },
+        ]),
+        published ? at : null,
+        scheduled ? at : null,
+        at,
+      ],
+    );
+    if (published && likes !== null) {
+      await snap(client, r.rows[0].id, channelId, 2, counts(likes, null));
+    }
+    return r.rows[0].id;
+  }
+
+  /**
+   * A workspace whose channel `c` posted 6 videos at 30 engagements (3 to 8
+   * days old) and 6 text posts at 10 (9 to 14 days old): a 3.0x format gap.
+   */
+  const run = (fn: (ctx: Ctx) => Promise<void>) =>
+    withRollbackDb([MIGRATION], async (db, client) => {
+      const svc = new InsightsService(db, new PostPerformanceRepository(db));
+      const w = await workspace(client, 'steps');
+      const c = await w.channel('c');
+      const o = await client.query<{ id: string }>(
+        `INSERT INTO users (email) VALUES ($1) RETURNING id`,
+        [`o-${Math.random().toString(36).slice(2, 8)}@example.test`],
+      );
+      for (let i = 0; i < 6; i++) {
+        await mediaPost(
+          client,
+          w,
+          c,
+          {
+            ageDays: 3 + i,
+            media: [{ type: 'video', url: `https://cdn/v${i}.mp4` }],
+          },
+          30,
+        );
+        await mediaPost(client, w, c, { ageDays: 9 + i }, 10);
+      }
+      await fn({ svc, client, w, c, other: o.rows[0].id });
+    });
+
+  const ids = async (ctx: Ctx, user: string, at = NOW) =>
+    (
+      await ctx.svc.signals(ctx.w.workspaceId, user, undefined, at)
+    ).nextSteps.map((s) => s.id);
+
+  it('a format gap from the composer media, worded from S7.2', () =>
+    run(async (ctx) => {
+      const s = await ctx.svc.signals(
+        ctx.w.workspaceId,
+        ctx.w.userId,
+        undefined,
+        NOW,
+      );
+      expect(s.measuredPosts).toBe(12);
+      expect(s.nextSteps).toEqual([
+        {
+          id: 'format_gap',
+          rule: 'format_gap',
+          title: 'Videos get 3.0× more engagement than text posts',
+          body: expect.stringMatching(
+            /^Median engagement per post on .+\. No video is planned this week\.$/,
+          ),
+          why: 'Your videos get the most engagement on your own posts, and none is scheduled in the next 7 days.',
+          bars: [
+            { format: 'video', median: 30 },
+            { format: 'text', median: 10 },
+          ],
+          cta: { label: 'Plan a video' },
+        },
+      ]);
+    }));
+
+  it('a hidden step is gone until hidden_until, another user still sees it', () =>
+    run(async (ctx) => {
+      const { svc, client, w, other } = ctx;
+      await svc.hideStep(w.workspaceId, w.userId, 'format_gap', 'later', NOW);
+      expect(await ids(ctx, w.userId)).toEqual([]);
+      expect(await ids(ctx, other)).toEqual(['format_gap']);
+
+      const row = await client.query<{ hidden_until: Date; reason: string }>(
+        `SELECT hidden_until, reason FROM insight_hidden_steps WHERE user_id = $1`,
+        [w.userId],
+      );
+      expect(row.rows).toHaveLength(1);
+      expect(row.rows[0].reason).toBe('later');
+      expect(row.rows[0].hidden_until.toISOString()).toBe(
+        new Date(NOW.getTime() + 30 * DAY).toISOString(),
+      );
+
+      // Hidden through the 30th day, back after it. (A month on, the quiet
+      // channel card may have joined it: look at this one card only.)
+      expect(
+        await ids(ctx, w.userId, new Date(NOW.getTime() + 30 * DAY - HOUR)),
+      ).not.toContain('format_gap');
+      expect(
+        await ids(ctx, w.userId, new Date(NOW.getTime() + 30 * DAY + HOUR)),
+      ).toContain('format_gap');
+    }));
+
+  it('not useful hides for 180 days; hiding again replaces the earlier choice', () =>
+    run(async (ctx) => {
+      const { svc, client, w } = ctx;
+      const rows = async () =>
+        (
+          await client.query<{ hidden_until: Date; reason: string }>(
+            `SELECT hidden_until, reason FROM insight_hidden_steps WHERE user_id = $1`,
+            [w.userId],
+          )
+        ).rows;
+      await svc.hideStep(
+        w.workspaceId,
+        w.userId,
+        'format_gap',
+        'not_useful',
+        NOW,
+      );
+      let r = await rows();
+      expect(r[0].hidden_until.toISOString()).toBe(
+        new Date(NOW.getTime() + 180 * DAY).toISOString(),
+      );
+      await svc.hideStep(w.workspaceId, w.userId, 'format_gap', 'later', NOW);
+      r = await rows();
+      expect(r).toHaveLength(1);
+      expect(r[0].reason).toBe('later');
+      expect(r[0].hidden_until.toISOString()).toBe(
+        new Date(NOW.getTime() + 30 * DAY).toISOString(),
+      );
+    }));
+
+  it('another workspace id cannot hide into this workspace', () =>
+    run(async (ctx) => {
+      const { svc, client, w } = ctx;
+      // The same person hides in a second workspace.
+      const w2 = await client.query<{ id: string }>(
+        `INSERT INTO workspace (name, slug, owner_id) VALUES ('second', $1, $2) RETURNING id`,
+        [`second-${Math.random().toString(36).slice(2, 8)}`, w.userId],
+      );
+      await svc.hideStep(
+        w2.rows[0].id,
+        w.userId,
+        'format_gap',
+        'not_useful',
+        NOW,
+      );
+      expect(await ids(ctx, w.userId)).toEqual(['format_gap']);
+      const rows = await client.query(
+        `SELECT workspace_id FROM insight_hidden_steps`,
+      );
+      expect(rows.rows).toEqual([{ workspace_id: w2.rows[0].id }]);
+    }));
+
+  it('hideStep refuses an id the rules cannot emit', () =>
+    run(async ({ svc, client, w }) => {
+      for (const id of ['', 'nonsense', 'quiet_channel:', 'repost_hit:x:1']) {
+        await expect(
+          svc.hideStep(w.workspaceId, w.userId, id, 'later', NOW),
+        ).rejects.toBeInstanceOf(BadRequestException);
+      }
+      const n = await client.query(`SELECT 1 FROM insight_hidden_steps`);
+      expect(n.rowCount).toBe(0);
+    }));
+
+  it('N1 reads the composer media of posts scheduled in the next 7 days', () =>
+    run(async (ctx) => {
+      const { client, w, c } = ctx;
+      const video = [{ type: 'video' as const, url: 'https://cdn/next.mp4' }];
+      const image = [{ type: 'image' as const, url: 'https://cdn/next.jpg' }];
+      // Outside the week, a draft, an image: none is a video this week.
+      await mediaPost(client, w, c, {
+        status: 'scheduled',
+        ageDays: -8,
+        media: video,
+      });
+      await mediaPost(client, w, c, {
+        status: 'draft',
+        ageDays: -2,
+        media: video,
+      });
+      await mediaPost(client, w, c, {
+        status: 'scheduled',
+        ageDays: -2,
+        media: image,
+      });
+      expect(await ids(ctx, w.userId)).toEqual(['format_gap']);
+      // A video scheduled in the week takes the card away.
+      await mediaPost(client, w, c, {
+        status: 'scheduled',
+        ageDays: -6,
+        media: video,
+      });
+      expect(await ids(ctx, w.userId)).toEqual([]);
+    }));
+
+  it('N2 reads health and followers; it names the quiet channel', () =>
+    run(async (ctx) => {
+      const { client, w } = ctx;
+      const q = await w.channel('q');
+      // Weekly, the newest 20 days ago (27 Sep).
+      for (let i = 0; i < 4; i++) {
+        await mediaPost(client, w, q, { ageDays: 20 + i * 7 }, 5);
+      }
+      // +2 a day for the 28 days up to the last post, flat since.
+      const last = '2026-09-27';
+      let count = 400;
+      for (
+        let d = Date.parse('2026-08-30');
+        d <= Date.parse('2026-10-16');
+        d += DAY
+      ) {
+        const date = new Date(d).toISOString().slice(0, 10);
+        const gained = date > last ? 0 : 2;
+        if (date > '2026-08-30') count += gained;
+        await client.query(
+          `INSERT INTO channel_analytics_daily (channel_id, date, followers_at_end_of_day, followers_gained, computed_at)
+           VALUES ($1, $2::date, $3, $4, now())`,
+          [q, date, count, gained],
+        );
+      }
+      const steps = (
+        await ctx.svc.signals(w.workspaceId, w.userId, undefined, NOW)
+      ).nextSteps;
+      const quiet = steps.find((s) => s.rule === 'quiet_channel')!;
+      expect(quiet).toMatchObject({
+        id: `quiet_channel:${q}`,
+        channelId: q,
+        lastPostOn: last,
+        body: 'Followers grew about 2 a day while you posted weekly. Since Sep 27 they have stayed at 456.',
+      });
+      expect(quiet.title).toMatch(/ has been quiet for 20 days$/);
+      // Order: the format gap, then the quiet channel.
+      expect(steps.map((s) => s.rule)).toEqual(['format_gap', 'quiet_channel']);
+
+      // A broken connection is a different problem: no quiet card for it.
+      await client.query(
+        `UPDATE social_media_channels SET connection_status = 'expired' WHERE id = $1`,
+        [q],
+      );
+      expect(await ids(ctx, w.userId)).toEqual(['format_gap']);
+    }));
+
+  describe('N3 repost hit', () => {
+    /** A hit 50 days old at 100 engagements: well over twice the usual. */
+    const withHit = (
+      fn: (ctx: Ctx, hit: string) => Promise<void>,
+      content = 'Our best day yet',
+    ) =>
+      run(async (ctx) => {
+        const hit = await mediaPost(
+          ctx.client,
+          ctx.w,
+          ctx.c,
+          { ageDays: 50, content },
+          100,
+        );
+        await fn(ctx, hit);
+      });
+
+    it('finds it, worded from S7.2', () =>
+      withHit(async (ctx, hit) => {
+        const steps = (
+          await ctx.svc.signals(ctx.w.workspaceId, ctx.w.userId, undefined, NOW)
+        ).nextSteps;
+        expect(steps.map((s) => s.id)).toEqual([
+          'format_gap',
+          `repost_hit:${hit}:${ctx.c}`,
+        ]);
+        expect(steps[1]).toMatchObject({
+          title: 'Your August hit is ready to post again',
+          postTitle: 'Our best day yet',
+          cta: { label: 'Repost' },
+        });
+        expect(steps[1].body).toMatch(
+          /^Our best day yet got 100 engagements, \d+\.\d× your usual\. It is 7 weeks old\.$/,
+        );
+      }));
+
+    it('is gone once a later post repeats the caption, even a draft; not a failed or an earlier one', () =>
+      withHit(async (ctx, hit) => {
+        const { client, w, c } = ctx;
+        const repost = `repost_hit:${hit}:${c}`;
+        // A failed post never went out; an earlier one is not a repost.
+        await mediaPost(client, w, c, {
+          status: 'failed',
+          ageDays: 5,
+          content: 'our BEST day   yet',
+        });
+        await mediaPost(client, w, c, {
+          ageDays: 60,
+          content: 'Our best day yet',
+        });
+        expect(await ids(ctx, w.userId)).toContain(repost);
+        await mediaPost(client, w, c, {
+          status: 'draft',
+          ageDays: 1,
+          content: ' our best DAY yet ',
+        });
+        expect(await ids(ctx, w.userId)).not.toContain(repost);
+      }));
+
+    it('is gone once a later post shares its media', () =>
+      withHit(async (ctx, hit) => {
+        const { client, w, c } = ctx;
+        await client.query(
+          `UPDATE posts SET media_items = $2::jsonb WHERE id = $1`,
+          [
+            hit,
+            JSON.stringify([{ type: 'image', url: 'https://cdn/hit.jpg' }]),
+          ],
+        );
+        expect(await ids(ctx, w.userId)).toContain(`repost_hit:${hit}:${c}`);
+        await mediaPost(client, w, c, {
+          status: 'scheduled',
+          ageDays: -3,
+          content: 'different words',
+          media: [{ type: 'image', url: 'https://cdn/hit.jpg' }],
+        });
+        expect(await ids(ctx, w.userId)).not.toContain(
+          `repost_hit:${hit}:${c}`,
+        );
+      }));
+
+    it('hiding it is per person', () =>
+      withHit(async (ctx, hit) => {
+        const id = `repost_hit:${hit}:${ctx.c}`;
+        await ctx.svc.hideStep(
+          ctx.w.workspaceId,
+          ctx.w.userId,
+          id,
+          'not_useful',
+          NOW,
+        );
+        expect(await ids(ctx, ctx.w.userId)).toEqual(['format_gap']);
+        expect(await ids(ctx, ctx.other)).toContain(id);
+      }));
+  });
+
+  it('a workspace under 10 measured posts gets no next steps', () =>
+    withRollbackDb([MIGRATION], async (db, client) => {
+      const svc = new InsightsService(db, new PostPerformanceRepository(db));
+      const w = await workspace(client, 'few');
+      const c = await w.channel('c');
+      for (let i = 0; i < 9; i++) {
+        await mediaPost(client, w, c, { ageDays: 3 + i }, 10);
+      }
+      const s = await svc.signals(w.workspaceId, w.userId, undefined, NOW);
+      expect(s.measuredPosts).toBe(9);
+      expect(s.nextSteps).toEqual([]);
     }));
 });

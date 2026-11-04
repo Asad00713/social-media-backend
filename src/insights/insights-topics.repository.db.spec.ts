@@ -236,7 +236,8 @@ describeDb('InsightsService.signals', () => {
       ctx: { w: Ws; a: number; b: number },
     ) => Promise<void>,
   ) =>
-    withRollbackDb([], async (db, client) => {
+    // 0058: signals reads the viewer's hidden next steps.
+    withRollbackDb(['0058_insight_hidden_steps.sql'], async (db, client) => {
       const svc = new InsightsService(
         db,
         new PostPerformanceRepository(db),
@@ -260,7 +261,7 @@ describeDb('InsightsService.signals', () => {
 
   it('builds the grid in the workspace timezone and suggests the next Thursday', () =>
     run(async (svc, _client, { w, a }) => {
-      const s = await svc.signals(w.workspaceId, String(a), NOW);
+      const s = await svc.signals(w.workspaceId, w.userId, String(a), NOW);
       expect(s.timezone).toBe('Asia/Karachi');
       expect(s.measuredPosts).toBe(10);
       expect(s.minPosts).toBe(10);
@@ -296,13 +297,13 @@ describeDb('InsightsService.signals', () => {
         channelIds: [b],
       });
       expect(
-        (await svc.signals(w.workspaceId, String(a), NOW)).bestTimes.useSlot
-          ?.nextFreeDate,
+        (await svc.signals(w.workspaceId, w.userId, String(a), NOW)).bestTimes
+          .useSlot?.nextFreeDate,
       ).toBe('2026-10-22');
       // Selecting both channels makes B's post count.
       expect(
-        (await svc.signals(w.workspaceId, `${a},${b}`, NOW)).bestTimes.useSlot
-          ?.nextFreeDate,
+        (await svc.signals(w.workspaceId, w.userId, `${a},${b}`, NOW)).bestTimes
+          .useSlot?.nextFreeDate,
       ).toBe('2026-10-29');
       // A draft in the slot on A does not take it; a scheduled post does.
       await post(client, w, {
@@ -312,8 +313,8 @@ describeDb('InsightsService.signals', () => {
         channelIds: [a],
       });
       expect(
-        (await svc.signals(w.workspaceId, String(a), NOW)).bestTimes.useSlot
-          ?.nextFreeDate,
+        (await svc.signals(w.workspaceId, w.userId, String(a), NOW)).bestTimes
+          .useSlot?.nextFreeDate,
       ).toBe('2026-10-22');
       await post(client, w, {
         status: 'scheduled',
@@ -322,8 +323,8 @@ describeDb('InsightsService.signals', () => {
         channelIds: [a],
       });
       expect(
-        (await svc.signals(w.workspaceId, String(a), NOW)).bestTimes.useSlot
-          ?.nextFreeDate,
+        (await svc.signals(w.workspaceId, w.userId, String(a), NOW)).bestTimes
+          .useSlot?.nextFreeDate,
       ).toBe('2026-10-29');
     }));
 
@@ -339,7 +340,7 @@ describeDb('InsightsService.signals', () => {
         });
         await snap(client, p, a, 100);
       }
-      const s = await svc.signals(w.workspaceId, String(a), NOW);
+      const s = await svc.signals(w.workspaceId, w.userId, String(a), NOW);
       expect(s.measuredPosts).toBe(13);
       expect(s.whatWorks.topic).toEqual({
         bars: [{ key: 'food', posts: 3, median: 100 }],
@@ -361,7 +362,7 @@ describeDb('InsightsService.signals', () => {
         });
         await snap(client, p, a, 0);
       }
-      const s = await svc.signals(w.workspaceId, String(a), NOW);
+      const s = await svc.signals(w.workspaceId, w.userId, String(a), NOW);
       expect(s.measuredPosts).toBe(10);
       const cells = s.bestTimes.engagement.cells;
       expect(cells.reduce((n, c) => n + c.posts, 0)).toBe(10);

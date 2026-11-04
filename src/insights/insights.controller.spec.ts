@@ -1,4 +1,4 @@
-import { INestApplication } from '@nestjs/common';
+import { INestApplication, ValidationPipe } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
@@ -290,11 +290,11 @@ describe('InsightsController signals over HTTP', () => {
     await request(app.getHttpServer())
       .get(`/insights/workspaces/${WS}/signals?channels=4,7`)
       .expect(200, { ok: true });
-    expect(insights.signals).toHaveBeenCalledWith(WS, '4,7');
+    expect(insights.signals).toHaveBeenCalledWith(WS, 'user-1', '4,7');
     await request(app.getHttpServer())
       .get(`/insights/workspaces/${WS}/signals`)
       .expect(200);
-    expect(insights.signals).toHaveBeenLastCalledWith(WS, undefined);
+    expect(insights.signals).toHaveBeenLastCalledWith(WS, 'user-1', undefined);
   });
 
   it('rejects a workspace id that is not a uuid', async () => {
@@ -302,5 +302,118 @@ describe('InsightsController signals over HTTP', () => {
       .get('/insights/workspaces/probe/signals')
       .expect(400);
     expect(insights.signals).not.toHaveBeenCalled();
+  });
+});
+
+describe('InsightsController next-step hiding over HTTP', () => {
+  let app: INestApplication<App>;
+  const OTHER_WS = '22222222-2222-4222-8222-222222222222';
+  const POST = '3f2b8c1e-5d4a-4e6f-9a7b-1c2d3e4f5a6b';
+  const roles = { getRole: jest.fn(), isPlatformSuperAdmin: jest.fn() };
+  const insights = { hideStep: jest.fn() };
+
+  beforeAll(async () => {
+    const moduleRef = await Test.createTestingModule({
+      controllers: [InsightsController],
+      providers: [
+        WorkspaceRoleGuard,
+        { provide: WorkspaceRoleService, useValue: roles },
+        { provide: InsightsService, useValue: insights },
+      ],
+    })
+      .overrideGuard(JwtAuthGuard)
+      .useValue({
+        canActivate: (ctx: {
+          switchToHttp: () => { getRequest: () => { user?: unknown } };
+        }) => {
+          ctx.switchToHttp().getRequest().user = { userId: 'user-1' };
+          return true;
+        },
+      })
+      .compile();
+    app = moduleRef.createNestApplication();
+    app.useGlobalPipes(
+      new ValidationPipe({
+        whitelist: true,
+        forbidNonWhitelisted: true,
+        transform: true,
+      }),
+    );
+    await app.init();
+  });
+  afterAll(() => app.close());
+
+  beforeEach(() => {
+    jest.clearAllMocks();
+    // A guest can see Insights, so a guest can hide a card for themselves.
+    roles.getRole.mockResolvedValue('GUEST');
+    roles.isPlatformSuperAdmin.mockResolvedValue(false);
+    insights.hideStep.mockResolvedValue(undefined);
+  });
+
+  const hide = (id: string, body: unknown, ws = WS) =>
+    request(app.getHttpServer())
+      .post(
+        `/insights/workspaces/${ws}/next-steps/${encodeURIComponent(id)}/hide`,
+      )
+      .send(body as object);
+
+  it.each([
+    ['format_gap', 'not_useful'],
+    ['quiet_channel:12', 'later'],
+    [`repost_hit:${POST}:7`, 'not_useful'],
+  ])(
+    'answers 204 to hiding %s (%s), for the signed-in user',
+    async (id, reason) => {
+      await hide(id, { reason }).expect(204);
+      expect(insights.hideStep).toHaveBeenCalledWith(WS, 'user-1', id, reason);
+    },
+  );
+
+  it.each([
+    ['nonsense'],
+    ['quiet_channel:'],
+    ['quiet_channel:12:3'],
+    ['repost_hit:nope:7'],
+    [`repost_hit:${POST}`],
+  ])('answers 400 to the step id %s', async (id) => {
+    await hide(id, { reason: 'later' }).expect(400);
+    expect(insights.hideStep).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [{}],
+    [{ reason: 'forever' }],
+    [{ reason: 'later', extra: 1 }],
+    [{ reason: 30 }],
+  ])('answers 400 to the body %j', async (body) => {
+    await hide('format_gap', body).expect(400);
+    expect(insights.hideStep).not.toHaveBeenCalled();
+  });
+
+  it('refuses a non-member with 403', async () => {
+    roles.getRole.mockResolvedValue(null);
+    await hide('format_gap', { reason: 'later' }).expect(403);
+    expect(insights.hideStep).not.toHaveBeenCalled();
+  });
+
+  it('another workspace id is another membership: a member of one cannot hide into the other', async () => {
+    roles.getRole.mockImplementation((ws: string) =>
+      Promise.resolve(ws === WS ? 'GUEST' : null),
+    );
+    await hide('format_gap', { reason: 'later' }, OTHER_WS).expect(403);
+    expect(insights.hideStep).not.toHaveBeenCalled();
+    await hide('format_gap', { reason: 'later' }, WS).expect(204);
+    expect(insights.hideStep).toHaveBeenCalledWith(
+      WS,
+      'user-1',
+      'format_gap',
+      'later',
+    );
+  });
+
+  it('rejects a workspace id that is not a uuid', async () => {
+    await hide('format_gap', { reason: 'later' }, 'probe').expect(400);
+    expect(insights.hideStep).not.toHaveBeenCalled();
   });
 });

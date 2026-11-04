@@ -1,9 +1,23 @@
-import { Inject, Injectable } from '@nestjs/common';
-import { and, desc, eq, gte, inArray, isNotNull, lt } from 'drizzle-orm';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
+import {
+  and,
+  desc,
+  eq,
+  gt,
+  gte,
+  inArray,
+  isNotNull,
+  lt,
+  ne,
+} from 'drizzle-orm';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import { channelAnalyticsDaily } from '../drizzle/schema/channel-analytics-daily.schema';
 import { channelSyncState } from '../drizzle/schema/channel-sync-state.schema';
+import {
+  insightHiddenSteps,
+  type HideReason,
+} from '../drizzle/schema/insight-hidden-steps.schema';
 import {
   CHANNEL_CATEGORY,
   PLATFORM_CONFIG,
@@ -34,7 +48,7 @@ import type {
   PostChannelMetricsDto,
 } from './dto/insights.dto';
 import { channelBreakdown } from './lib/breakdown';
-import { periodBrief } from './lib/brief-inputs';
+import { periodBrief, proseName } from './lib/brief-inputs';
 import {
   filterAndSort,
   formatCountsOf,
@@ -45,10 +59,22 @@ import {
 import { freshnessOf, reportsOf, type SyncStateRow } from './lib/freshness';
 import {
   CAPTION_PREVIEW_CHARS,
+  classifyFormat,
   settlingFrom,
   toInsightPost,
+  type InsightFormat,
   type InsightPost,
 } from './lib/insight-post';
+import {
+  FORMAT_LOOKAHEAD_DAYS,
+  HIDE_DAYS,
+  nextSteps,
+  repostCandidates,
+  STEP_ID_PATTERN,
+  type LaterPost,
+  type StepChannel,
+  type StepPost,
+} from './lib/next-steps';
 import {
   comparisonRange,
   parseChannels,
@@ -723,14 +749,16 @@ export class InsightsService {
 
   /**
    * The 90-day panels: Best time (engagement and reach grids on the
-   * workspace's wall clock, and the best slot's next free occurrence) and
-   * What works (format and topic medians), over the measured posts of the
-   * same 90-day sample the post-level usual uses. Settling posts (under
-   * SETTLING_DAYS old) are left out of every median and count, so a post an
-   * hour old with nothing yet cannot drag a cell or a bar down.
+   * workspace's wall clock, and the best slot's next free occurrence), What
+   * works (format and topic medians) and Next steps, over the measured posts
+   * of the same 90-day sample the post-level usual uses. Settling posts
+   * (under SETTLING_DAYS old) are left out of every median and count, so a
+   * post an hour old with nothing yet cannot drag a cell or a bar down.
+   * Next steps are this person's: the ones they hid are not in the list.
    */
   async signals(
     workspaceId: string,
+    userId: string,
     channels: string | undefined,
     now = new Date(),
   ): Promise<InsightsSignalsDto> {
@@ -742,10 +770,22 @@ export class InsightsService {
     const platformOf = new Map(social.map((c) => [c.id, c.platform]));
     const tz = await loadWorkspaceTimezone(this.db, workspaceId);
     const { from, before } = usualSampleRange(utcToday(now));
-    const sample = (
-      await this.publishedPosts(workspaceId, channelIds, from, before)
-    )
-      .map((p) => toInsightPost(p, platformOf.get(p.channelId) ?? '', { now }))
+    const read = await this.publishedPosts(
+      workspaceId,
+      channelIds,
+      from,
+      before,
+    );
+    const usual = usualByChannel(read);
+    const entries: StepPost[] = read.map((raw) => ({
+      raw,
+      post: toInsightPost(raw, platformOf.get(raw.channelId) ?? '', {
+        now,
+        usual,
+      }),
+    }));
+    const sample = entries
+      .map((e) => e.post)
       .filter((p) => isMeasured(p) && !p.isSettling);
 
     const engagement = bestTimeGrid(sample, tz, 'engagements');
@@ -783,9 +823,218 @@ export class InsightsService {
         format: formatBars(sample),
         topic: topicBars(sample, tags),
       },
-      // Next steps' rules come with B7.
-      nextSteps: [],
+      nextSteps:
+        sample.length < MIN_SIGNAL_POSTS
+          ? []
+          : await this.nextStepsOf(
+              workspaceId,
+              userId,
+              social.filter((c) => channelIds.includes(c.id)),
+              entries,
+              from,
+              now,
+            ),
     };
+  }
+
+  /**
+   * The next steps for the selected channels. Only read once the sample is
+   * big enough to say anything; the later posts N3 compares with are read
+   * only when a repost candidate exists.
+   */
+  private async nextStepsOf(
+    workspaceId: string,
+    userId: string,
+    selected: SocialChannel[],
+    posts: StepPost[],
+    sampleFrom: string,
+    now: Date,
+  ) {
+    const channelIds = selected.map((c) => c.id);
+    const [syncRows, followers, hidden, scheduledFormats] = await Promise.all([
+      this.syncState(channelIds),
+      this.followerRows(
+        channelIds,
+        sampleFrom,
+        addDays(isoDate(utcToday(now)), 1),
+      ),
+      this.hiddenSteps(workspaceId, userId, now),
+      this.scheduledFormats(
+        workspaceId,
+        selected,
+        now,
+        new Date(now.getTime() + FORMAT_LOOKAHEAD_DAYS * DAY_MS),
+      ),
+    ]);
+    const healthy = new Map(
+      freshnessOf(selected, syncRows, now).map((f) => [
+        f.channelId,
+        f.connectionStatus === 'connected' && !f.failing,
+      ]),
+    );
+    const channels: StepChannel[] = selected.map((c) => ({
+      id: c.id,
+      platformName: PLATFORM_CONFIG[c.platform]?.name ?? c.platform,
+      isActive: c.isActive,
+      healthy: healthy.get(c.id) ?? false,
+    }));
+
+    const candidates = repostCandidates({ now, posts, channels, hidden });
+    const later = candidates.length
+      ? await this.laterPosts(
+          workspaceId,
+          new Date(
+            Math.min(...candidates.map((c) => Date.parse(c.raw.publishedAt))),
+          ),
+        )
+      : [];
+    return nextSteps({
+      now,
+      posts,
+      channels,
+      hidden,
+      followers,
+      scheduledFormats,
+      later,
+    });
+  }
+
+  /**
+   * Hides one next step for this person in this workspace: `not_useful` for
+   * 180 days, `later` for 30. Hiding it again replaces the earlier choice.
+   * The id must be one the rules can emit.
+   */
+  async hideStep(
+    workspaceId: string,
+    userId: string,
+    stepId: string,
+    reason: HideReason,
+    now = new Date(),
+  ): Promise<void> {
+    if (!STEP_ID_PATTERN.test(stepId)) {
+      throw new BadRequestException('Not a next step id');
+    }
+    const hiddenUntil = new Date(now.getTime() + HIDE_DAYS[reason] * DAY_MS);
+    await this.db
+      .insert(insightHiddenSteps)
+      .values({ userId, workspaceId, stepId, hiddenUntil, reason })
+      .onConflictDoUpdate({
+        target: [
+          insightHiddenSteps.userId,
+          insightHiddenSteps.workspaceId,
+          insightHiddenSteps.stepId,
+        ],
+        set: { hiddenUntil, reason },
+      });
+  }
+
+  /** The step ids this person has hidden and that are still hidden at `now`. */
+  private async hiddenSteps(
+    workspaceId: string,
+    userId: string,
+    now: Date,
+  ): Promise<Set<string>> {
+    const rows = await this.db
+      .select({ stepId: insightHiddenSteps.stepId })
+      .from(insightHiddenSteps)
+      .where(
+        and(
+          eq(insightHiddenSteps.userId, userId),
+          eq(insightHiddenSteps.workspaceId, workspaceId),
+          gt(insightHiddenSteps.hiddenUntil, now),
+        ),
+      );
+    return new Set(rows.map((r) => r.stepId));
+  }
+
+  /**
+   * The formats of the posts scheduled from `from` up to, not including,
+   * `before` on the selected channels, as the composer's media classifies
+   * them. A post counts once per selected channel it targets.
+   */
+  private async scheduledFormats(
+    workspaceId: string,
+    selected: SocialChannel[],
+    from: Date,
+    before: Date,
+  ): Promise<InsightFormat[]> {
+    if (!selected.length) return [];
+    const platformOf = new Map(selected.map((c) => [String(c.id), c.platform]));
+    const ids = sql.join(
+      selected.map((c) => sql`${String(c.id)}`),
+      sql`, `,
+    );
+    const rows = await this.db
+      .select({
+        content: postsTable.content,
+        mediaItems: postsTable.mediaItems,
+        targets: postsTable.targets,
+      })
+      .from(postsTable)
+      .where(
+        and(
+          eq(postsTable.workspaceId, workspaceId),
+          eq(postsTable.status, 'scheduled'),
+          gte(postsTable.scheduledAt, from),
+          lt(postsTable.scheduledAt, before),
+          sql`EXISTS (
+            SELECT 1 FROM jsonb_array_elements(${postsTable.targets}) e
+            WHERE e->>'channelId' IN (${ids})
+          )`,
+        ),
+      );
+    return rows.flatMap((r) =>
+      (r.targets ?? []).flatMap((t) => {
+        const platform = platformOf.get(String(t.channelId));
+        if (!platform) return [];
+        return [
+          classifyFormat(
+            {
+              content: r.content ?? '',
+              mediaItems: r.mediaItems ?? [],
+              mediaType: null,
+              imported: false,
+            },
+            platform,
+          ),
+        ];
+      }),
+    );
+  }
+
+  /**
+   * The workspace's posts made after `after`, for N3's "already posted
+   * again": published, scheduled or in the works (a failed one never went
+   * out). When one goes out is its published time, else its scheduled time,
+   * else when it was created.
+   */
+  private async laterPosts(
+    workspaceId: string,
+    after: Date,
+  ): Promise<LaterPost[]> {
+    const rows = await this.db
+      .select({
+        postId: postsTable.id,
+        publishedAt: postsTable.publishedAt,
+        scheduledAt: postsTable.scheduledAt,
+        createdAt: postsTable.createdAt,
+        content: postsTable.content,
+        mediaUrls: postsTable.mediaUrls,
+      })
+      .from(postsTable)
+      .where(
+        and(
+          eq(postsTable.workspaceId, workspaceId),
+          ne(postsTable.status, 'failed'),
+          sql`COALESCE(${postsTable.publishedAt}, ${postsTable.scheduledAt}, ${postsTable.createdAt}) > ${after.toISOString()}::timestamptz`,
+        ),
+      );
+    return rows.map((r) => ({
+      postId: r.postId,
+      at: (r.publishedAt ?? r.scheduledAt ?? r.createdAt).toISOString(),
+      content: r.content ?? '',
+      mediaUrls: r.mediaUrls ?? [],
+    }));
   }
 
   /**

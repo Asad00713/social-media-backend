@@ -89,7 +89,7 @@ const REPORTED_FORMAT = new Map<string, PostFormat>([
  * the platform hasn't described we say `unknown` rather than guess.
  */
 export function classifyFormat(
-  p: PublishedPost,
+  p: Pick<PublishedPost, 'content' | 'mediaItems' | 'mediaType' | 'imported'>,
   platform: string,
 ): InsightFormat {
   if (VIDEO_PLATFORMS.has(platform)) return 'video';

@@ -160,7 +160,7 @@ export interface InsightsSignalsDto {
     format: WorkBar[];
     topic: TopicBars;
   };
-  /** Rule-based next steps; empty until the rules land (B7). */
+  /** Rule-based next steps (up to 3), minus the ones this person hid. */
   nextSteps: NextStep[];
 }
 
