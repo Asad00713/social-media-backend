@@ -14,6 +14,7 @@ import { safeTimeZone } from '../first-week/lib/first-week-slots';
 import type { FollowerRow } from '../post-performance/followers';
 import {
   addDays,
+  DAY_MS,
   isoDate,
   metricChange,
   round1,
