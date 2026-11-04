@@ -71,3 +71,21 @@ describe('standoutOf', () => {
     expect(r.above.map((p) => p.postId)).toEqual(['new', 'old']);
   });
 });
+
+describe('standoutOf: aboveAll', () => {
+  it('keeps every Above post while above stays capped at 3', () => {
+    const r = standoutOf(
+      [1.5, 1.6, 1.7, 1.8, 1.9].map((m, i) =>
+        post(`u${i}`, { usualMultiplier: m }),
+      ),
+    );
+    expect(r.above).toHaveLength(3);
+    expect(r.aboveAll.map((p) => p.postId)).toEqual([
+      'u4',
+      'u3',
+      'u2',
+      'u1',
+      'u0',
+    ]);
+  });
+});

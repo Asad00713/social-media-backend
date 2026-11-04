@@ -56,7 +56,7 @@ export interface BriefContext {
   followers: FollowerRow[];
   /** The window's posts. */
   posts: InsightPost[];
-  standout: Standout;
+  standout: Standout & { aboveAll: InsightPost[] };
   impressions: MetricChange;
   engagements: MetricChange;
 }
@@ -140,20 +140,23 @@ export function periodBrief(ctx: BriefContext): Brief {
     ]),
   );
 
-  const quiet = quietChannel(
-    ctx.channels.map((c) => ({
-      channelId: c.id,
-      posts: ctx.sample.filter((p) => p.channelId === c.id),
-      isActive: c.isActive,
-      healthy: healthy.get(c.id) ?? false,
-      today: now,
-    })),
-  );
+  // A past picked range can't say who is quiet now (like quietFollowers).
+  const quiet =
+    window.to < yesterday
+      ? null
+      : quietChannel(
+          ctx.channels.map((c) => ({
+            channelId: c.id,
+            posts: ctx.sample.filter((p) => p.channelId === c.id),
+            isActive: c.isActive,
+            healthy: healthy.get(c.id) ?? false,
+            today: now,
+          })),
+        );
 
   return buildBrief({
     days,
-    rangeKind:
-      isPeriodDays(days) && window.to === yesterday ? 'preset' : 'custom',
+    rangeKind: rangeKindOf(days, window.to, yesterday),
     compare: ctx.compare,
     postsCount: ctx.posts.length,
     channelsCount: postingIds.length,
@@ -172,7 +175,7 @@ export function periodBrief(ctx: BriefContext): Brief {
       value: ctx.engagements.value ?? 0,
       deltaPct: ctx.engagements.deltaPct,
     },
-    above: ctx.standout.above,
+    above: ctx.standout.aboveAll,
     channelDeltas: channelEngagementDeltas(postingIds, ctx.published, window),
     quiet: quiet
       ? {
@@ -189,8 +192,22 @@ export function periodBrief(ctx: BriefContext): Brief {
     channels: Object.fromEntries(
       [...byId].map(([id, c]) => [
         id,
-        { platform: c.platformName, name: c.accountName },
+        { platform: proseName(c.platformName), name: c.accountName },
       ]),
     ),
   });
+}
+
+/** `X (Twitter)` reads `X` in a sentence: the label without its parentheses. */
+export function proseName(label: string): string {
+  return label.replace(/\s*\([^)]*\)\s*$/, '');
+}
+
+/** A preset is 7, 30 or 90 days ending yesterday; anything else is picked. */
+export function rangeKindOf(
+  days: number,
+  windowTo: string,
+  yesterday: string,
+): 'preset' | 'custom' {
+  return isPeriodDays(days) && windowTo === yesterday ? 'preset' : 'custom';
 }

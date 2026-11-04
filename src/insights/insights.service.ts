@@ -257,7 +257,7 @@ export class InsightsService {
     const freshness = freshnessOf(selected, syncRows, now);
     const impressions = metricChange(cur.impressions, cmp?.impressions ?? null);
     const engagements = metricChange(cur.engagements, cmp?.engagements ?? null);
-    const standout = standoutOf(posts);
+    const { aboveAll, ...standout } = standoutOf(posts);
 
     return {
       days,
@@ -334,7 +334,7 @@ export class InsightsService {
         sample: sampleRows,
         followers,
         posts,
-        standout,
+        standout: { ...standout, aboveAll },
         impressions,
         engagements,
       }),

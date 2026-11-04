@@ -504,3 +504,106 @@ describe('formatCompact and shortDate', () => {
     expect(shortDate('2026-01-05')).toBe('Jan 5');
   });
 });
+
+describe('buildBrief: format words (spec S3.6)', () => {
+  const one = (format: InsightPost['format']) =>
+    ready(
+      buildBrief(
+        input({
+          above: [post('A', { format, impressions: 30000 })],
+          quiet: null,
+        }),
+      ),
+    );
+  it.each([
+    ['video', 'video', 'Video'],
+    ['image', 'photo', 'Photo'],
+    ['carousel', 'carousel', 'Carousel'],
+    ['link', 'link post', 'Link'],
+    ['text', 'text post', 'Text only'],
+    ['unknown', 'post', 'Post'],
+  ] as const)('%s: sentence %s, meta %s', (format, singular, label) => {
+    const b = one(format);
+    expect(text(b)).toContain(`mostly from one Instagram ${singular}: A.`);
+    expect(b.sources[0]).toMatchObject({
+      meta: `${label} · 402 engagements · 2.4× usual`,
+    });
+  });
+
+  it.each([
+    ['video', 'videos'],
+    ['image', 'photos'],
+    ['carousel', 'carousels'],
+    ['link', 'link posts'],
+    ['text', 'text posts'],
+    ['unknown', 'posts'],
+  ] as const)('two %s posts read %s', (format, plural) => {
+    const t = text(
+      buildBrief(
+        input({
+          above: [
+            post('A', { format, impressions: 15000 }),
+            post('B', { format, impressions: 12000 }),
+          ],
+        }),
+      ),
+    );
+    expect(t).toContain(`mostly from two Instagram ${plural}: A and B.`);
+  });
+
+  it('prints the multiplier to one decimal', () => {
+    const b = ready(
+      buildBrief(
+        input({
+          above: [post('A', { impressions: 30000, usualMultiplier: 2.41 })],
+        }),
+      ),
+    );
+    expect(b.sources[0]).toMatchObject({
+      meta: 'Video · 402 engagements · 2.4× usual',
+    });
+  });
+});
+
+describe('buildBrief: drivers come from the whole Above set', () => {
+  it('names a 1.6x post that carries most of the views over three bigger multipliers', () => {
+    const t = text(
+      buildBrief(
+        input({
+          headline: { label: 'Views', value: 50000, deltaPct: 31 },
+          quiet: null,
+          above: [
+            post('A', { impressions: 1000, usualMultiplier: 3 }),
+            post('B', { impressions: 800, usualMultiplier: 2.5 }),
+            post('C', { impressions: 500, usualMultiplier: 2 }),
+            post('D', { impressions: 40000, usualMultiplier: 1.6 }),
+          ],
+        }),
+      ),
+    );
+    expect(t).toContain('mostly from two Instagram videos: D and A.');
+  });
+});
+
+describe('buildBrief: followers clause', () => {
+  it('is not added to the fallback form', () => {
+    const t = text(
+      buildBrief(
+        input({
+          channelDeltas: [
+            { channelId: 1, posts: 8, deltaPct: 40 },
+            { channelId: 2, posts: 4, deltaPct: -5 },
+          ],
+          quiet: {
+            ...QUIET,
+            followers: { count: 5100, gainedSince: 0, priorPerDay: 3 },
+          },
+        }),
+      ),
+    );
+    expect(t).toMatch(
+      /Engagement held steady\. LinkedIn has had no posts since Sep 30\.$/,
+    );
+    expect(t).not.toContain('followers');
+  });
+});

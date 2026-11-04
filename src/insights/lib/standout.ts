@@ -39,7 +39,10 @@ function newerFirst(a: InsightPost, b: InsightPost): number {
  * coming in; a settling post may be Above, since it is already above). Posts
  * without a multiplier are in neither.
  */
-export function standoutOf(posts: InsightPost[]): Standout {
+export function standoutOf(posts: InsightPost[]): Standout & {
+  /** Every Above post, uncapped: the brief picks its drivers from all of them. */
+  aboveAll: InsightPost[];
+} {
   const above = posts
     .filter((p) => p.usualMultiplier !== null && p.usualMultiplier >= ABOVE_MIN)
     .sort(
@@ -56,6 +59,7 @@ export function standoutOf(posts: InsightPost[]): Standout {
       (a, b) => a.usualMultiplier! - b.usualMultiplier! || newerFirst(a, b),
     );
   return {
+    aboveAll: above,
     above: above.slice(0, STANDOUT_CAP),
     below: below.slice(0, STANDOUT_CAP),
     aboveCount: above.length,

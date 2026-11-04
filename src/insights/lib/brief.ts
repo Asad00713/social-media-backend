@@ -95,7 +95,7 @@ export interface BriefInput {
     deltaPct: number | null;
   };
   engagements: { value: number; deltaPct: number | null };
-  /** The Above list (`standoutOf`). */
+  /** Every Above post (`standoutOf().aboveAll`), not just the 3 shown. */
   above: InsightPost[];
   /** Engagement against each channel's usual, for the channels that posted. */
   channelDeltas: {
@@ -151,7 +151,7 @@ export function formatCompact(n: number): string {
 }
 
 const PLURAL: Record<InsightFormat, string> = {
-  image: 'images',
+  image: 'photos',
   video: 'videos',
   carousel: 'carousels',
   text: 'text posts',
@@ -159,7 +159,7 @@ const PLURAL: Record<InsightFormat, string> = {
   unknown: 'posts',
 };
 const SINGULAR: Record<InsightFormat, string> = {
-  image: 'image',
+  image: 'photo',
   video: 'video',
   carousel: 'carousel',
   text: 'text post',
@@ -167,10 +167,10 @@ const SINGULAR: Record<InsightFormat, string> = {
   unknown: 'post',
 };
 const LABEL: Record<InsightFormat, string> = {
-  image: 'Image',
+  image: 'Photo',
   video: 'Video',
   carousel: 'Carousel',
-  text: 'Text',
+  text: 'Text only',
   link: 'Link',
   unknown: 'Post',
 };
@@ -273,7 +273,8 @@ function sourceOf(p: InsightPost): BriefSource {
     LABEL[p.format],
     `${formatCompact(n)} engagement${n === 1 ? '' : 's'}`,
   ];
-  if (p.usualMultiplier !== null) parts.push(`${p.usualMultiplier}× usual`);
+  if (p.usualMultiplier !== null)
+    parts.push(`${p.usualMultiplier.toFixed(1)}× usual`);
   return {
     kind: 'post',
     postId: p.postId,
@@ -337,12 +338,14 @@ function engagementSentence(
   else if (everywhere) {
     lead = ` ${base} everywhere except ${platform}, which has had `;
   } else lead = ` ${base}. ${platform} has had `;
+  // The fallback form has no followers clause (S7.1).
+  const tail = e !== null && !everywhere ? '' : stayed;
 
   return {
     segments: [
       { kind: 'text', text: lead },
       noPosts,
-      { kind: 'text', text: `${stayed}.` },
+      { kind: 'text', text: `${tail}.` },
     ],
     source: {
       kind: 'channel',
