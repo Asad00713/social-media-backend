@@ -1071,7 +1071,8 @@ describeDb('InsightsService next steps and hiding', () => {
     const status = o.status ?? 'published';
     const at = new Date(NOW.getTime() - o.ageDays * DAY).toISOString();
     const published = status === 'published';
-    const scheduled = status === 'scheduled';
+    // A draft can carry a time too; only a scheduled post takes the slot.
+    const scheduled = o.ageDays < 0;
     const r = await client.query<{ id: string }>(
       `INSERT INTO posts (workspace_id, created_by_id, status, content, media_items, targets, published_at, scheduled_at, created_at)
        VALUES ($1, $2, $3, $4, $5::jsonb, $6::jsonb, $7::timestamptz, $8::timestamptz, $9::timestamptz) RETURNING id`,
