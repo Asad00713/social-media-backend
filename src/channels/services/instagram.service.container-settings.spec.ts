@@ -119,6 +119,90 @@ describe('InstagramService — container settings on the request body', () => {
     });
   });
 
+  describe('Show in feed (share_to_feed)', () => {
+    it('is sent as "false": that keeps the Reel out of the feed', async () => {
+      await publishVideo('REELS', { shareToFeed: false });
+
+      expect(onlyContainer().get('share_to_feed')).toBe('false');
+    });
+
+    it('is sent as "true" when the person turned it back on', async () => {
+      await publishVideo('REELS', { shareToFeed: true });
+
+      expect(onlyContainer().get('share_to_feed')).toBe('true');
+    });
+
+    // Left out when nobody set it: Instagram's default is "both", and
+    // inventing a value here would be telling it something it was not asked.
+    it('is not sent when it was never set', async () => {
+      await publishVideo('REELS', {});
+
+      expect(onlyContainer().has('share_to_feed')).toBe(false);
+    });
+
+    it('is not sent on a feed image', async () => {
+      await publishImage({ shareToFeed: false });
+
+      expect(onlyContainer().has('share_to_feed')).toBe(false);
+    });
+
+    it('is not sent on the carousel parent either', async () => {
+      await publishCarousel({ shareToFeed: false });
+
+      for (const form of containerForms()) {
+        expect(form.has('share_to_feed')).toBe(false);
+      }
+    });
+  });
+
+  describe('collaborators', () => {
+    it('is a JSON array of usernames, without the @', async () => {
+      await publishImage({ collaborators: ['@ada', 'grace'] });
+
+      expect(JSON.parse(onlyContainer().get('collaborators')!)).toEqual([
+        'ada',
+        'grace',
+      ]);
+    });
+
+    it('is sent on a Reel', async () => {
+      await publishVideo('REELS', { collaborators: ['ada'] });
+
+      expect(JSON.parse(onlyContainer().get('collaborators')!)).toEqual(['ada']);
+    });
+
+    it.each([
+      ['an empty list', []],
+      ['only blanks', ['', '  ', '@']],
+      ['absent', undefined],
+    ])('is not sent for %s', async (_label, collaborators) => {
+      await publishImage({ collaborators });
+
+      expect(onlyContainer().has('collaborators')).toBe(false);
+    });
+
+    // The carousel is asymmetric: collaborators describe the POST, so they
+    // ride the parent. On every child they would repeat one post's
+    // collaborators per slide.
+    it('goes on the carousel PARENT and never on a child', async () => {
+      await publishCarousel({ collaborators: ['ada', 'grace'] });
+
+      const forms = containerForms();
+      const children = forms.filter((f) => f.get('is_carousel_item') === 'true');
+      const parent = forms.filter((f) => f.get('media_type') === 'CAROUSEL');
+
+      expect(children).toHaveLength(2);
+      expect(parent).toHaveLength(1);
+      expect(JSON.parse(parent[0].get('collaborators')!)).toEqual([
+        'ada',
+        'grace',
+      ]);
+      for (const child of children) {
+        expect(child.has('collaborators')).toBe(false);
+      }
+    });
+  });
+
   describe('a Reel cover frame (thumb_offset)', () => {
     it('is sent as whole milliseconds', async () => {
       await publishVideo('REELS', { thumbOffset: 2500 });

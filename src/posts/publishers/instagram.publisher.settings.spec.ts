@@ -126,6 +126,88 @@ describe('InstagramPublisher — container settings from metadata', () => {
     });
   });
 
+  describe('Show in feed', () => {
+    const reel = (metadata: Record<string, any>) =>
+      publisher.publish(options({ postType: 'reel', ...metadata }, [video('a')]));
+
+    // `false` is a real instruction - it keeps the Reel out of the feed -
+    // so it must survive, and must not be invented from an absent value.
+    it.each([true, false])('reaches the Reel as %s', async (shareToFeed) => {
+      await reel({ shareToFeed });
+
+      expect(reelSettings().shareToFeed).toBe(shareToFeed);
+    });
+
+    it.each([
+      ['the string "false"', 'false'],
+      ['0', 0],
+      ['absent', undefined],
+    ])('is dropped when it is %s', async (_label, shareToFeed) => {
+      await reel({ shareToFeed });
+
+      expect(reelSettings().shareToFeed).toBeUndefined();
+    });
+  });
+
+  describe('collaborators', () => {
+    it('reach a feed image, stripped of the @', async () => {
+      await publisher.publish(
+        options({ collaborators: [' @ada ', 'grace'] }, [image('a')]),
+      );
+
+      expect(imageSettings().collaborators).toEqual(['ada', 'grace']);
+    });
+
+    it('reach a Reel', async () => {
+      await publisher.publish(
+        options({ postType: 'reel', collaborators: ['ada'] }, [video('a')]),
+      );
+
+      expect(reelSettings().collaborators).toEqual(['ada']);
+    });
+
+    // The carousel parent is the container that takes them; the service
+    // keeps them off the children.
+    it('reach the carousel parent call', async () => {
+      await publisher.publish(
+        options({ postType: 'carousel', collaborators: ['ada'] }, [
+          image('a'),
+          image('b'),
+        ]),
+      );
+
+      expect(carouselSettings().collaborators).toEqual(['ada']);
+    });
+
+    it.each([
+      ['not an array', 'ada'],
+      ['only blanks and non-strings', ['', '  ', '@', 7, null]],
+      ['absent', undefined],
+    ])('are dropped when they are %s', async (_label, collaborators) => {
+      await publisher.publish(options({ collaborators }, [image('a')]));
+
+      expect(imageSettings().collaborators).toBeUndefined();
+    });
+
+    it('keep the strings and drop the rest of a mixed list', async () => {
+      await publisher.publish(
+        options({ collaborators: ['ada', 7, '', 'grace'] }, [image('a')]),
+      );
+
+      expect(imageSettings().collaborators).toEqual(['ada', 'grace']);
+    });
+
+    // Meta: "Not supported for Stories". The story call is built from the
+    // tags alone.
+    it('are not sent on a story', async () => {
+      await publisher.publish(
+        options({ postType: 'story', collaborators: ['ada'] }, [image('a')]),
+      );
+
+      expect(createStoryWithUserToken.mock.calls[0]).toHaveLength(5);
+    });
+  });
+
   describe('the Reel cover frame', () => {
     const reel = (metadata: Record<string, any>) =>
       publisher.publish(options({ postType: 'reel', ...metadata }, [video('a')]));
