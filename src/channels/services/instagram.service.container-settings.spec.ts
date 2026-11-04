@@ -118,4 +118,75 @@ describe('InstagramService — container settings on the request body', () => {
       }
     });
   });
+
+  describe('a Reel cover frame (thumb_offset)', () => {
+    it('is sent as whole milliseconds', async () => {
+      await publishVideo('REELS', { thumbOffset: 2500 });
+
+      expect(onlyContainer().get('thumb_offset')).toBe('2500');
+    });
+
+    it('rounds a fractional offset to a whole millisecond', async () => {
+      await publishVideo('REELS', { thumbOffset: 1500.6 });
+
+      expect(onlyContainer().get('thumb_offset')).toBe('1501');
+    });
+
+    // The first frame is a real choice, not an absent one.
+    it('sends zero', async () => {
+      await publishVideo('REELS', { thumbOffset: 0 });
+
+      expect(onlyContainer().get('thumb_offset')).toBe('0');
+    });
+
+    it.each([
+      ['negative', -1],
+      ['not a number', Number.NaN],
+      ['infinite', Number.POSITIVE_INFINITY],
+      ['absent', undefined],
+    ])('is not sent when it is %s', async (_label, thumbOffset) => {
+      await publishVideo('REELS', { thumbOffset });
+
+      expect(onlyContainer().has('thumb_offset')).toBe(false);
+    });
+
+    // Reels-only here: the composer offers a cover frame on a Reel alone,
+    // and a plain VIDEO container is the legacy shape.
+    it('is not sent on a plain video', async () => {
+      await publishVideo('VIDEO', { thumbOffset: 2500 });
+
+      expect(onlyContainer().has('thumb_offset')).toBe(false);
+    });
+  });
+
+  describe('a Reel audio name (audio_name)', () => {
+    it('is sent as given', async () => {
+      await publishVideo('REELS', { audioName: 'Lumiere — house blend' });
+
+      expect(onlyContainer().get('audio_name')).toBe('Lumiere — house blend');
+    });
+
+    it('is trimmed', async () => {
+      await publishVideo('REELS', { audioName: '  Morning pour  ' });
+
+      expect(onlyContainer().get('audio_name')).toBe('Morning pour');
+    });
+
+    // Meta allows ONE rename; a blank name would spend it on nothing.
+    it.each([
+      ['blank', '   '],
+      ['empty', ''],
+      ['absent', undefined],
+    ])('is not sent when it is %s', async (_label, audioName) => {
+      await publishVideo('REELS', { audioName });
+
+      expect(onlyContainer().has('audio_name')).toBe(false);
+    });
+
+    it('is not sent on a plain video', async () => {
+      await publishVideo('VIDEO', { audioName: 'Morning pour' });
+
+      expect(onlyContainer().has('audio_name')).toBe(false);
+    });
+  });
 });

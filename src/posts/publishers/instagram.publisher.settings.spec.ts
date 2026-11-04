@@ -125,4 +125,54 @@ describe('InstagramPublisher — container settings from metadata', () => {
       expect(createStoryWithUserToken.mock.calls[0]).toHaveLength(5);
     });
   });
+
+  describe('the Reel cover frame', () => {
+    const reel = (metadata: Record<string, any>) =>
+      publisher.publish(options({ postType: 'reel', ...metadata }, [video('a')]));
+
+    it('reaches the Reel as whole milliseconds', async () => {
+      await reel({ thumbOffset: 2500.4 });
+
+      expect(reelSettings().thumbOffset).toBe(2500);
+    });
+
+    it('keeps a zero offset: the first frame is a choice', async () => {
+      await reel({ thumbOffset: 0 });
+
+      expect(reelSettings().thumbOffset).toBe(0);
+    });
+
+    it.each([
+      ['negative', -5],
+      ['a string', '2500'],
+      ['NaN', Number.NaN],
+      ['infinite', Number.POSITIVE_INFINITY],
+      ['absent', undefined],
+    ])('is dropped when it is %s', async (_label, thumbOffset) => {
+      await reel({ thumbOffset });
+
+      expect(reelSettings().thumbOffset).toBeUndefined();
+    });
+  });
+
+  describe('the Reel audio name', () => {
+    const reel = (metadata: Record<string, any>) =>
+      publisher.publish(options({ postType: 'reel', ...metadata }, [video('a')]));
+
+    it('reaches the Reel trimmed', async () => {
+      await reel({ audioName: '  Morning pour ' });
+
+      expect(reelSettings().audioName).toBe('Morning pour');
+    });
+
+    it.each([
+      ['blank', '   '],
+      ['not a string', 42],
+      ['absent', undefined],
+    ])('is dropped when it is %s', async (_label, audioName) => {
+      await reel({ audioName });
+
+      expect(reelSettings().audioName).toBeUndefined();
+    });
+  });
 });

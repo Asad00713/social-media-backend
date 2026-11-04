@@ -118,6 +118,21 @@ export class InstagramPublisher extends BasePublisher {
       settings.coverUrl = coverUrl.trim();
     }
 
+    // The cover frame, in milliseconds - the unit `thumb_offset` takes, and
+    // the unit the composer stores it in (it converts from the editor's
+    // seconds on commit, as it does for TikTok). A negative or non-numeric
+    // value is not a frame and would only fail the container.
+    // `Number.isFinite` does not coerce, so a string never gets through.
+    const thumbOffset = metadata?.thumbOffset;
+    if (Number.isFinite(thumbOffset) && thumbOffset >= 0) {
+      settings.thumbOffset = Math.round(thumbOffset);
+    }
+
+    const audioName = metadata?.audioName;
+    if (typeof audioName === 'string' && audioName.trim()) {
+      settings.audioName = audioName.trim();
+    }
+
     // Only forwarded when the composer actually set it. `false` is a real
     // instruction — it keeps the reel out of the feed — so it must not be
     // invented from an absent value.

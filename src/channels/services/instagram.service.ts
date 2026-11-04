@@ -94,6 +94,18 @@ export interface InstagramFeedSettings extends InstagramPostSettings {
 export interface InstagramReelSettings extends InstagramFeedSettings {
   shareToFeed?: boolean;
   coverUrl?: string;
+  /**
+   * The cover frame as a time into the video, in MILLISECONDS
+   * (`thumb_offset`). Meta: the default is 0, and `cover_url` wins when
+   * both are sent - the composer only ever sends this one.
+   */
+  thumbOffset?: number;
+  /**
+   * What to call the Reel's own audio (`audio_name`). Meta allows one
+   * rename, either at creation or later from the audio page, so setting it
+   * here spends it.
+   */
+  audioName?: string;
 }
 
 /** Instagram's own cap on collaborators per post. */
@@ -169,6 +181,19 @@ function applySettings(
   if (!options.isReel) return;
 
   if (settings.coverUrl) params.set('cover_url', settings.coverUrl);
+
+  // Milliseconds, as a whole number: the form is all strings, and a
+  // fractional or negative offset is not a frame.
+  if (
+    typeof settings.thumbOffset === 'number' &&
+    Number.isFinite(settings.thumbOffset) &&
+    settings.thumbOffset >= 0
+  ) {
+    params.set('thumb_offset', String(Math.round(settings.thumbOffset)));
+  }
+
+  const audioName = settings.audioName?.trim();
+  if (audioName) params.set('audio_name', audioName);
 
   // Sent either way, unlike a disclosure: `false` is a real instruction
   // that keeps the reel OUT of the feed, so omitting it is not the same
