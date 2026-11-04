@@ -6,7 +6,6 @@ import { round1 } from '../../post-performance/period';
 import type { PublishedPost } from '../../post-performance/post-performance';
 import {
   MIN_CELL_POSTS,
-  MIN_SIGNAL_POSTS,
   slotOf,
   type BestSlot,
   type BestTimeGrid,
@@ -195,8 +194,9 @@ function clockLabel(at: Date, tz: string): string {
 /**
  * Why an up post did well (spec 7.4); the caller shows them for an up verdict
  * only. R1: its format is the best of `formatBars` (best first, each with at
- * least MIN_FORMAT_POSTS posts), the bars hold at least MIN_SIGNAL_POSTS posts
- * together, and a worse format exists that it beats by more than 1.0x. R2:
+ * least MIN_FORMAT_POSTS posts) and a worse format exists that it beats by
+ * more than 1.0x. The caller gates on MIN_SIGNAL_POSTS settled posts and
+ * passes no bars below it. R2:
  * it went out in one of the `bestTop3` cells.
  */
 export function reasonsOf(
@@ -209,9 +209,7 @@ export function reasonsOf(
   const eligible = formatBars.filter((b) => b.posts >= MIN_FORMAT_POSTS);
   const best = eligible[0];
   const worst = eligible[eligible.length - 1];
-  const barPosts = eligible.reduce((n, b) => n + b.posts, 0);
   if (
-    barPosts >= MIN_SIGNAL_POSTS &&
     best &&
     worst &&
     best !== worst &&

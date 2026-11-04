@@ -857,7 +857,8 @@ export class InsightsService {
         .filter((p) => isMeasured(p) && !p.isSettling);
       reasons = reasonsOf(
         post,
-        formatBars(settled),
+        // The What works floor: under it no format is called best.
+        settled.length >= MIN_SIGNAL_POSTS ? formatBars(settled) : [],
         topSlots(bestTimeGrid(settled, tz, 'engagements')),
         tz,
       );
@@ -906,10 +907,19 @@ export class InsightsService {
     const snaps = mine.map(toSnap);
     const picked = pickTimelineMetric(snaps, platform);
     const metric = picked ?? timelineMetricOf(platform);
-    const status =
-      picked === null
-        ? 'no_early_data'
-        : timelineStatus(snaps, row.publishedAt, now);
+    // Nothing reports the metric yet: a young post is still collecting (only
+    // the hour-0 point is known); an older one has no early numbers.
+    const raw = timelineStatus(snaps, row.publishedAt, now);
+    const status = picked === null && raw === 'ok' ? 'no_early_data' : raw;
+    if (picked === null && status === 'collecting') {
+      return {
+        metric,
+        status,
+        hours,
+        values: hours.map((_, i) => (i === 0 ? 0 : null)),
+        usual: null,
+      };
+    }
     if (status === 'no_early_data') {
       return {
         metric,

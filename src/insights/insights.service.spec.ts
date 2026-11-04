@@ -1066,4 +1066,84 @@ describe('InsightsService.postDetail', () => {
     expect(d.verdict.kind).toBe('up');
     expect(d.verdict.body).toBe('Your best post this month.');
   });
+
+  it('the format reason needs 10 settled posts, however the formats split', async () => {
+    const { subject, others } = sample();
+    const FORMAT_REASON = /^A video\./;
+    const nine = await setup(subject, others.slice(0, -1)).run();
+    expect(nine.verdict.kind).toBe('up');
+    expect(nine.reasons.some((r) => FORMAT_REASON.test(r))).toBe(false);
+    const ten = await setup(subject, others).run();
+    expect(ten.reasons.some((r) => FORMAT_REASON.test(r))).toBe(true);
+
+    // 12 settled posts split 4/4/2/2: only two formats have a bar, yet the
+    // floor counts posts, not bars.
+    const img = (n: number, date: string) =>
+      post({
+        postId: `i${n}`,
+        likes: 8,
+        mediaItems: [{ url: 'https://x/a.jpg', type: 'image' }],
+        ...day(date),
+      });
+    const car = (n: number, date: string) =>
+      post({
+        postId: `c${n}`,
+        likes: 8,
+        mediaItems: [
+          { url: 'https://x/a.jpg', type: 'image' },
+          { url: 'https://x/b.jpg', type: 'image' },
+        ],
+        ...day(date),
+      });
+    const split = [
+      ...others.slice(0, 3),
+      ...others.slice(3, 7),
+      img(1, '2026-09-02'),
+      img(2, '2026-09-03'),
+      car(1, '2026-09-04'),
+      car(2, '2026-09-05'),
+    ];
+    const twelve = await setup(subject, split).run();
+    expect(twelve.reasons.some((r) => FORMAT_REASON.test(r))).toBe(true);
+  });
+
+  it('a young post with no snapshot yet is still collecting, not without data', async () => {
+    const publishedAt = new Date(NOW.getTime() - 3 * HOUR).toISOString();
+    const young = post({
+      postId: 'y',
+      likes: 1,
+      publishedOn: publishedAt.slice(0, 10),
+      publishedAt,
+    });
+    const blank = [1, 2].map((h) => ({
+      ...snapRow('y', publishedAt, h, 0),
+      likes: null,
+      comments: null,
+      shares: null,
+      impressions: null,
+      reach: null,
+    }));
+    for (const snaps of [{}, { y: blank }]) {
+      const d = await setup(young, [], snaps).run();
+      expect(d.timeline.status).toBe('collecting');
+      expect(d.timeline.values[0]).toBe(0);
+      expect(d.timeline.values.slice(1).every((v) => v === null)).toBe(true);
+      expect(d.timeline.usual).toBeNull();
+    }
+  });
+
+  it('an old post whose snapshots report nothing is no_early_data', async () => {
+    const old = post({ postId: 'o', likes: 1, ...day('2026-09-20') });
+    const blank = [1, 2, 5].map((h) => ({
+      ...snapRow('o', old.publishedAt, h, 0),
+      likes: null,
+      comments: null,
+      shares: null,
+      impressions: null,
+      reach: null,
+    }));
+    const d = await setup(old, [], { o: blank }).run();
+    expect(d.timeline.status).toBe('no_early_data');
+    expect(d.timeline.values.every((v) => v === null)).toBe(true);
+  });
 });

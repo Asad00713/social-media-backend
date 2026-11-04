@@ -233,13 +233,6 @@ describe('reasonsOf', () => {
     expect(reasonsOf(post('unknown'), bars, [], TZ)).toEqual([]);
   });
 
-  it('format reason needs the What works floor of 10 posts across the bars', () => {
-    const nine = [bar('video', 4, 240), bar('image', 5, 100)];
-    expect(reasonsOf(post('video'), nine, [], TZ)).toEqual([]);
-    const ten = [bar('video', 4, 240), bar('image', 6, 100)];
-    expect(reasonsOf(post('video'), ten, [], TZ)).toHaveLength(1);
-  });
-
   it('format reason never says 1.0x: the best must beat the worst', () => {
     const tie = [bar('video', 5, 100), bar('image', 6, 100)];
     expect(reasonsOf(post('video'), tie, [], TZ)).toEqual([]);
