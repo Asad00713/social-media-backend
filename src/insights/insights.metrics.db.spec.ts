@@ -2,6 +2,7 @@ import type { PoolClient } from 'pg';
 import { datesBetween, utcToday, windowOf } from '../post-performance/period';
 import { PostPerformanceRepository } from '../post-performance/post-performance.repository';
 import { describeDb, withRollbackDb } from '../planner/testing/rollback-db';
+import type { InsightsOverviewDto } from './dto/insights.dto';
 import { InsightsService } from './insights.service';
 import type { CompareMode, ResolvedPeriod } from './lib/query';
 
@@ -285,6 +286,52 @@ async function snapMetrics(
 
 const story = (platform: string) => ({
   [platform]: { platformSpecific: { postType: 'story' } },
+});
+
+describeDb('PostPerformanceRepository.hasPublishedBefore', () => {
+  it('finds a published post before the date, on the given channels only, never a Story or a draft', () =>
+    withRollbackDb([], async (db, client) => {
+      await client.query(`SET LOCAL TIME ZONE 'Asia/Karachi'`);
+      const repo = new PostPerformanceRepository(db);
+      const w = await workspace(client, 'hb');
+      const ig = await w.channel('ig', 'instagram');
+      const other = await w.channel('other');
+      // 2026-03-31: an Instagram Story, then a post on the other channel.
+      await publishTo(
+        client,
+        w,
+        [{ channelId: ig, platform: 'instagram' }],
+        200,
+        {
+          platformContent: story('instagram'),
+        },
+      );
+      await publish(client, w, [other], 200);
+      // A failed target never went out.
+      await client.query(
+        `INSERT INTO posts (workspace_id, created_by_id, status, content, published_at, targets)
+         VALUES ($1, $2, 'published', 'x', $3::timestamptz, $4::jsonb)`,
+        [
+          w.workspaceId,
+          w.userId,
+          new Date(NOW.getTime() - 200 * DAY).toISOString(),
+          JSON.stringify([{ channelId: String(ig), status: 'failed' }]),
+        ],
+      );
+      expect(
+        await repo.hasPublishedBefore(w.workspaceId, [ig], '2026-10-01'),
+      ).toBe(false);
+      expect(
+        await repo.hasPublishedBefore(w.workspaceId, [other], '2026-10-01'),
+      ).toBe(true);
+      // The day itself is not "before".
+      expect(
+        await repo.hasPublishedBefore(w.workspaceId, [other], '2026-03-31'),
+      ).toBe(false);
+      expect(
+        await repo.hasPublishedBefore(w.workspaceId, [], '2026-10-01'),
+      ).toBe(false);
+    }));
 });
 
 describeDb('PostPerformanceRepository.publishedPosts', () => {
@@ -735,6 +782,103 @@ describeDb('InsightsService.overview', () => {
         engagements: 40,
       });
       expect(o.usual).toBeNull();
+    }));
+
+  /** Two window posts (50 likes, 100 views each) and older 10-like ones. */
+  async function windowAnd(client: PoolClient, tag: string, ages: number[]) {
+    const w = await workspace(client, tag);
+    const c = await w.channel('a');
+    for (const age of [2, 3, ...ages]) {
+      const p = await publish(client, w, [c], age);
+      await snap(client, p, c, 1, age <= 3 ? counts(50) : counts(10, null));
+    }
+    return w;
+  }
+
+  /** Every comparison value null: "No data to compare yet". */
+  const expectNoComparison = (o: InsightsOverviewDto) => {
+    expect(o.kpis.postsPublished).toEqual({
+      value: 2,
+      previous: null,
+      deltaPct: null,
+      deltaAbs: null,
+    });
+    expect(o.kpis.engagements).toEqual({
+      value: 100,
+      previous: null,
+      deltaPct: null,
+    });
+    expect(o.kpis.impressions.previous).toBeNull();
+    expect(o.kpis.engagementRate).toEqual({
+      value: 50,
+      previous: null,
+      deltaPts: null,
+    });
+    expect(o.comparisonSeries).toBeNull();
+  };
+
+  /** Real zeros: 2 posts against none, and a flat line at 0. */
+  const expectZeros = (o: InsightsOverviewDto) => {
+    expect(o.kpis.postsPublished).toEqual({
+      value: 2,
+      previous: 0,
+      deltaPct: null,
+      deltaAbs: 2,
+    });
+    expect(o.kpis.engagements).toEqual({
+      value: 100,
+      previous: 0,
+      deltaPct: null,
+    });
+    // Nothing in the span reported views: unknown, not 0.
+    expect(o.kpis.impressions.previous).toBeNull();
+    expect(o.comparisonSeries).toHaveLength(7);
+    expect(
+      o.comparisonSeries?.every(
+        (d) => d.postsPublished === 0 && d.engagements === 0,
+      ),
+    ).toBe(true);
+  };
+
+  it('compare=previous: no post on or before the previous span gives no comparison', () =>
+    run(async (svc, client) => {
+      // A new account: its first posts are in the window.
+      const w = await windowAnd(client, 'p1', []);
+      expectNoComparison(await overview(svc, w, 'previous'));
+    }));
+
+  it('compare=previous: older history and a quiet previous span are real zeros', () =>
+    run(async (svc, client, repo) => {
+      // 2026-09-17: in the lookback, before the previous span (10-03..10-09).
+      const w = await windowAnd(client, 'p2', [30]);
+      const exists = jest.spyOn(repo, 'hasPublishedBefore');
+      expectZeros(await overview(svc, w, 'previous'));
+      // Already read: no extra query.
+      expect(exists).not.toHaveBeenCalled();
+    }));
+
+  it('compare=previous: history older than anything read still counts', () =>
+    run(async (svc, client, repo) => {
+      // 2026-03-31: before the lookback (from 07-06); only the existence
+      // check finds it.
+      const w = await windowAnd(client, 'p3', [200]);
+      const exists = jest.spyOn(repo, 'hasPublishedBefore');
+      expectZeros(await overview(svc, w, 'previous'));
+      expect(exists).toHaveBeenCalledTimes(1);
+    }));
+
+  it('compare=year: no post on or before the year-back span gives no comparison', () =>
+    run(async (svc, client) => {
+      // 2025-10-20: a year back, but after the span's last day (10-16).
+      const w = await windowAnd(client, 'y1', [362]);
+      expectNoComparison(await overview(svc, w, 'year'));
+    }));
+
+  it('compare=year: older history and a quiet year-back span are real zeros', () =>
+    run(async (svc, client) => {
+      // 2025-09-12: before the year-back span (2025-10-10 .. 10-16).
+      const w = await windowAnd(client, 'y2', [400]);
+      expectZeros(await overview(svc, w, 'year'));
     }));
 
   it('compare=none: previous null, no usual, no comparisonSeries', () =>

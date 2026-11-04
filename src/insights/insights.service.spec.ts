@@ -1,33 +1,51 @@
+import { getTableName, type Table } from 'drizzle-orm';
 import type { PublishedPost } from '../post-performance/post-performance';
 import { datesBetween, utcToday, windowOf } from '../post-performance/period';
 import { InsightsService } from './insights.service';
 import type { ResolvedPeriod } from './lib/query';
 
 /**
- * A db double whose query chains resolve, in call order, to the arrays given.
- * The overview issues: channels, workspace timezone, follower rows, follower
- * seed, (a year back: follower rows, follower seed,) sync state.
+ * A db double. Results are given in the overview's logical order: channels,
+ * workspace timezone, follower rows, follower seed, (a year back: follower
+ * rows, follower seed,) sync state. Each query is answered by the table it
+ * reads (and `selectDistinctOn` for the seed), not by call order, since the
+ * overview runs its independent reads in parallel.
  */
 interface Chain extends PromiseLike<unknown[]> {
-  from: () => Chain;
+  from: (table: Table) => Chain;
   where: () => Chain;
   orderBy: () => Chain;
 }
 function fakeDb(results: unknown[][]) {
-  let i = 0;
+  const [channels, tz, ...rest] = results;
+  const sync = rest.length % 2 ? rest.pop() : undefined;
+  const queues: Record<string, unknown[][]> = {
+    social_media_channels: channels ? [channels] : [],
+    workspace: tz ? [tz] : [],
+    channel_analytics_daily: rest.filter((_, i) => i % 2 === 0),
+    'channel_analytics_daily:seed': rest.filter((_, i) => i % 2 === 1),
+    channel_sync_state: sync ? [sync] : [],
+  };
   const calls: string[] = [];
-  const chain = (): Chain => {
+  const chain = (seed: boolean): Chain => {
+    let key = '';
     const c: Chain = {
-      from: () => c,
+      from: (table) => {
+        key = getTableName(table) + (seed ? ':seed' : '');
+        calls.push(key);
+        return c;
+      },
       where: () => c,
       orderBy: () => c,
       then: (resolve, reject) =>
-        Promise.resolve(results[i++] ?? []).then(resolve, reject),
+        Promise.resolve(queues[key]?.shift() ?? []).then(resolve, reject),
     };
     return c;
   };
-  const query = () => (calls.push('select'), chain());
-  return { db: { select: query, selectDistinctOn: query }, calls };
+  return {
+    db: { select: () => chain(false), selectDistinctOn: () => chain(true) },
+    calls,
+  };
 }
 
 const NOW = new Date('2026-09-30T12:00:00Z');
@@ -66,6 +84,7 @@ const preset = (days: number): ResolvedPeriod => ({
 });
 const repoWith = (posts: PublishedPost[]) => ({
   publishedPosts: jest.fn().mockResolvedValue(posts),
+  hasPublishedBefore: jest.fn().mockResolvedValue(false),
 });
 
 describe('InsightsService.overview', () => {

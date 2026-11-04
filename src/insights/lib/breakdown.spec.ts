@@ -29,12 +29,20 @@ const window = {
   previousFrom: '2026-09-16',
   previousTo: '2026-09-22',
 };
-const views = (channelId: number) => ({ channelId, reportsViews: true });
+const views = (channelId: number) => ({
+  channelId,
+  reportsViews: true,
+  isActive: true,
+});
+const noViews = (channelId: number) => ({
+  ...views(channelId),
+  reportsViews: false,
+});
 
 describe('channelBreakdown', () => {
   it('gives each channel its own totals, previous window and series', () => {
     const [ig, li] = channelBreakdown(
-      [views(1), { channelId: 2, reportsViews: false }],
+      [views(1), noViews(2)],
       [
         post({ postId: 'a', likes: 20, impressions: 400, reach: 300 }),
         post({
@@ -135,7 +143,7 @@ describe('channelBreakdown', () => {
 
     it('channel vsUsual uses views when reported, else engagements', () => {
       const [withViews, noViewData, notReported] = channelBreakdown(
-        [views(1), views(2), { channelId: 3, reportsViews: false }],
+        [views(1), views(2), noViews(3)],
         [
           ...history(1, 100),
           ...inWindow(1, [10, 10, 10, 10, 10, 10, 10], 110),
@@ -203,6 +211,43 @@ describe('channelBreakdown', () => {
         metric: 'impressions',
         deltaPct: null,
         tone: null,
+      });
+    });
+
+    it('a paused channel with nothing in the window has no delta; an active one is down', () => {
+      // A full usual on engagements, then nothing in the window: 0 against 70.
+      const [paused, active] = channelBreakdown(
+        [{ ...views(1), isActive: false }, views(2)],
+        [...history(1, null), ...history(2, null)],
+        [],
+        window,
+      );
+      // Numbers after a pause are missing, not zero.
+      expect(paused.vsUsual).toEqual({
+        metric: 'engagements',
+        deltaPct: null,
+        tone: null,
+      });
+      // An active channel that posted nothing really is below its usual.
+      expect(active.vsUsual).toEqual({
+        metric: 'engagements',
+        deltaPct: -100,
+        tone: 'down',
+      });
+    });
+
+    it('a paused channel that posted in the window keeps its delta', () => {
+      const [c] = channelBreakdown(
+        [{ ...views(1), isActive: false }],
+        [...history(1, 100), ...inWindow(1, [10, 10, 10], 110)],
+        [],
+        window,
+      );
+      // 330 views against 700.
+      expect(c.vsUsual).toEqual({
+        metric: 'impressions',
+        deltaPct: -52.9,
+        tone: 'down',
       });
     });
   });

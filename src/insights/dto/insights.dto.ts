@@ -48,8 +48,10 @@ export interface InsightsOverviewDto {
   freshness: ChannelFreshness[];
   /**
    * Each `previous` is what `compare` compares with: the usual's median, the
-   * span just before, the same dates a year back (null when nothing went out
-   * then), or null for `none`.
+   * span just before, the same dates a year back, or null for `none`. A date
+   * span is only comparable once the selection had posted on or before its
+   * last day (`compareTo`): before that every `previous` and delta is null
+   * ("No data to compare yet"); after it a quiet span is real zeros.
    */
   kpis: {
     followers: FollowerTotals;
@@ -70,7 +72,8 @@ export interface InsightsOverviewDto {
    * `previous` and `year`: one entry per `series` day, the comparison's day
    * for that date (the date N days back, or `yearBefore`), carrying its own
    * date. Aligned by date, so it is as long as `series` even when a year-back
-   * range is a day shorter or longer (Feb 29). Null for `usual` and `none`.
+   * range is a day shorter or longer (Feb 29). Null for `usual` and `none`,
+   * and when the span is not comparable (see `kpis`).
    */
   comparisonSeries: InsightsDay[] | null;
   /** `usual` only: each metric's usual N-day total; the rate undivided. */

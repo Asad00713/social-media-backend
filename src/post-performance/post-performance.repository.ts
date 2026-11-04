@@ -59,6 +59,16 @@ export function toPublishedPost(r: PublishedPostRow): PublishedPost {
   };
 }
 
+/**
+ * A target `e` of post `p` that counts: published on its channel (`status`
+ * legacy, `publishStatus` composer) and not a Story on its platform.
+ * `channelFilter` is an `AND ...` clause or nothing.
+ */
+const publishedTarget = (channelFilter: SQL): SQL => sql`
+  (e->>'status' = 'published' OR e->>'publishStatus' = 'published')
+  AND coalesce(p.platform_content #>> ARRAY[e->>'platform', 'platformSpecific', 'postType'], '') <> 'story'
+  ${channelFilter}`;
+
 @Injectable()
 export class PostPerformanceRepository {
   constructor(@Inject(DRIZZLE) private readonly db: DbType) {}
@@ -95,6 +105,39 @@ export class PostPerformanceRepository {
         AND p.published_at >= ${new Date(`${from}T00:00:00Z`)}
         AND p.published_at < ${new Date(`${before}T00:00:00Z`)}`,
     );
+  }
+
+  /**
+   * Whether the given channels published anything before `before` (a UTC
+   * date), on the same rule as `publishedPosts`: published targets only,
+   * Stories left out. One indexed existence check, however long the history.
+   */
+  async hasPublishedBefore(
+    workspaceId: string,
+    channelIds: number[],
+    before: string,
+  ): Promise<boolean> {
+    if (!channelIds.length) return false;
+    const ids = sql.join(
+      channelIds.map((id) => sql`${String(id)}`),
+      sql`, `,
+    );
+    const result = await this.db.execute(sql`
+      SELECT EXISTS (
+        SELECT 1
+        FROM posts p
+        WHERE p.workspace_id = ${workspaceId}
+          AND p.status IN ('published', 'partially_published')
+          AND p.published_at < ${new Date(`${before}T00:00:00Z`)}
+          AND EXISTS (
+            SELECT 1
+            FROM jsonb_array_elements(p.targets) e
+            WHERE ${publishedTarget(sql`AND e->>'channelId' IN (${ids})`)}
+          )
+      ) AS found
+    `);
+    const [row] = result.rows as unknown as { found: boolean }[];
+    return row?.found === true;
   }
 
   /**
@@ -154,9 +197,7 @@ export class PostPerformanceRepository {
           e->>'channelId' AS channel_id,
           max(nullif(e->>'platformPostUrl', '')) AS permalink
         FROM jsonb_array_elements(p.targets) e
-        WHERE (e->>'status' = 'published' OR e->>'publishStatus' = 'published')
-          AND coalesce(p.platform_content #>> ARRAY[e->>'platform', 'platformSpecific', 'postType'], '') <> 'story'
-          ${channelFilter}
+        WHERE ${publishedTarget(channelFilter)}
         GROUP BY e->>'channelId'
       ) t
       LEFT JOIN LATERAL (

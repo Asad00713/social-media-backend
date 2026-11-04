@@ -147,13 +147,15 @@ export class InsightsService {
 
   /**
    * The window against `compare`: the period-level usual (the default), the
-   * span just before, the same dates a year back, or nothing. Channels are
-   * always against their own usual.
+   * span just before, the same dates a year back, or nothing. A date span
+   * compares only once the selection had posted by its last day; until then
+   * it is no data, after it a quiet span is real zeros. Channels are always
+   * against their own usual.
    *
    * One read covers the usual's lookback (90 + N − 1 days before the window)
    * through the window; when the window reaches the post-level usual's
    * sample (every preset) it runs on to today and serves that too. A year
-   * back is a second read.
+   * back is a second read. Independent reads run in parallel.
    */
   async overview(
     workspaceId: string,
@@ -163,8 +165,10 @@ export class InsightsService {
     compare: CompareMode = 'usual',
     now = new Date(),
   ): Promise<InsightsOverviewDto> {
-    const social = await this.socialChannels(workspaceId);
-    const timezone = await this.workspaceTimezone(workspaceId);
+    const [social, timezone] = await Promise.all([
+      this.socialChannels(workspaceId),
+      this.workspaceTimezone(workspaceId),
+    ]);
     const channelIds = parseChannels(
       channels,
       social.map((c) => c.id),
@@ -177,36 +181,40 @@ export class InsightsService {
     // and nothing after it may count as "current".
     const end = addDays(window.to, 1);
     const sample = usualSampleRange(utcToday(now));
-    const joined = end >= sample.from;
-    const read = await this.publishedPosts(
-      workspaceId,
-      channelIds,
-      start,
-      joined ? sample.before : end,
-    );
-    const sampleRows = joined
-      ? read.filter((p) => p.publishedOn >= sample.from)
-      : await this.publishedPosts(
-          workspaceId,
-          channelIds,
-          sample.from,
-          sample.before,
-        );
-    const published = read.filter((p) => p.publishedOn <= window.to);
-    const followers = await this.followerRows(channelIds, start, end);
     const range = comparisonRange(window, compare);
-    const yearBack =
-      compare === 'year' && range
-        ? await this.yearBack(workspaceId, channelIds, range)
-        : null;
-    const syncRows = await this.syncState(channelIds);
-    const firstRun = await this.isFirstRun(
-      workspaceId,
-      social,
-      channelIds,
-      sampleRows,
-      sample,
-    );
+    const [{ read, sampleRows }, followers, yearBack, syncRows] =
+      await Promise.all([
+        this.windowPosts(workspaceId, channelIds, start, end, sample),
+        this.followerRows(channelIds, start, end),
+        compare === 'year' && range
+          ? this.yearBack(workspaceId, channelIds, range)
+          : null,
+        this.syncState(channelIds),
+      ]);
+    const published = read.filter((p) => p.publishedOn <= window.to);
+    const [firstRun, comparable] = await Promise.all([
+      this.isFirstRun(workspaceId, social, channelIds, sampleRows, sample),
+      // One rule for both date comparisons: the span is comparable once the
+      // selection had posted by its last day; then a quiet span is real
+      // zeros, before that it is no data.
+      compare === 'previous' && range
+        ? this.historyReaches(
+            workspaceId,
+            channelIds,
+            published,
+            range.to,
+            start,
+          )
+        : yearBack && range
+          ? this.historyReaches(
+              workspaceId,
+              channelIds,
+              yearBack.posts,
+              range.to,
+              range.from,
+            )
+          : false,
+    ]);
 
     // Day totals once, lookback through window; every part reads its dates.
     const allDays = daySeries(published, followers, start, window.to);
@@ -222,13 +230,12 @@ export class InsightsService {
 
     let cmp: Comparison | null = null;
     let comparisonSeries: InsightsDay[] | null = null;
-    if (compare === 'previous') {
+    if (compare === 'previous' && comparable) {
       cmp = rangeTotals(previousDays);
       comparisonSeries = aligned(series, previousDays, (d) =>
         addDays(d, -days),
       );
-    } else if (yearBack && yearBack.posts.length) {
-      // Nothing out a year back is no data to compare, not a year of zeros.
+    } else if (yearBack && comparable) {
       cmp = rangeTotals(yearBack.days);
       comparisonSeries = aligned(series, yearBack.days, yearBefore);
     } else if (usual) {
@@ -287,6 +294,7 @@ export class InsightsService {
         selected.map((c) => ({
           channelId: c.id,
           reportsViews: reportsOf(c.platform).reportsViews,
+          isActive: c.isActive,
         })),
         published,
         followers,
@@ -316,6 +324,59 @@ export class InsightsService {
       )
       .slice(0, LANE_CAP)
       .map(({ p, post }) => lanePost(post, p.publishedOn));
+  }
+
+  /**
+   * The posts from the lookback through the window, and the post-level
+   * usual's sample. A window reaching the sample (every preset) is read with
+   * it, on to today, in one query; an older picked range reads the sample on
+   * its own, alongside.
+   */
+  private async windowPosts(
+    workspaceId: string,
+    channelIds: number[],
+    start: string,
+    end: string,
+    sample: { from: string; before: string },
+  ): Promise<{ read: PublishedPost[]; sampleRows: PublishedPost[] }> {
+    if (end >= sample.from) {
+      const read = await this.publishedPosts(
+        workspaceId,
+        channelIds,
+        start,
+        sample.before,
+      );
+      return {
+        read,
+        sampleRows: read.filter((p) => p.publishedOn >= sample.from),
+      };
+    }
+    const [read, sampleRows] = await Promise.all([
+      this.publishedPosts(workspaceId, channelIds, start, end),
+      this.publishedPosts(workspaceId, channelIds, sample.from, sample.before),
+    ]);
+    return { read, sampleRows };
+  }
+
+  /**
+   * Whether the selection had any post on or before `compareTo`. `known` are
+   * the posts already read from `readFrom` on (`readFrom` ≤ `compareTo`);
+   * only when none of them is early enough is anything older looked for.
+   */
+  private async historyReaches(
+    workspaceId: string,
+    channelIds: number[],
+    known: PublishedPost[],
+    compareTo: string,
+    readFrom: string,
+  ): Promise<boolean> {
+    if (known.some((p) => p.publishedOn <= compareTo)) return true;
+    if (!channelIds.length) return false;
+    return this.postPerformance.hasPublishedBefore(
+      workspaceId,
+      channelIds,
+      readFrom,
+    );
   }
 
   /** The same dates a year back: their posts, follower rows and days. */

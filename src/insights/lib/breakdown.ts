@@ -46,6 +46,8 @@ export interface BreakdownChannel {
   channelId: number;
   /** The platform says it shares views (`PLATFORM_CAPABILITIES`). */
   reportsViews: boolean;
+  /** False when paused by hand or locked by the plan. */
+  isActive: boolean;
 }
 
 /**
@@ -53,7 +55,8 @@ export interface BreakdownChannel {
  * the usual's lookback through the window's last day; each part reads only
  * its own dates. "vs. your usual" is on views when the platform shares them
  * and some arrived (a platform can share them in principle and send none,
- * e.g. before Meta's App Review), else on engagements.
+ * e.g. before Meta's App Review), else on engagements. A paused channel
+ * with no post in the window has no delta.
  */
 export function channelBreakdown(
   channels: BreakdownChannel[],
@@ -63,7 +66,7 @@ export function channelBreakdown(
 ): ChannelBreakdown[] {
   const n = spanDays(window.from, window.to);
   const start = lookbackStartOf(window.from, n);
-  return channels.map(({ channelId, reportsViews }) => {
+  return channels.map(({ channelId, reportsViews, isActive }) => {
     const mine = posts.filter(
       (p) =>
         p.channelId === channelId &&
@@ -85,7 +88,10 @@ export function channelBreakdown(
       reportsViews && mine.some((p) => p.impressions !== null)
         ? 'impressions'
         : 'engagements';
-    const usual = usualOf(days, mine, metric, n, window.from);
+    // A paused channel with nothing in the window stopped counting: its
+    // numbers are missing, not zero, so there is no "-100% vs usual" (Q4).
+    const stopped = !isActive && cur.postsPublished === 0;
+    const usual = stopped ? null : usualOf(days, mine, metric, n, window.from);
     const delta = deltaPct(cur[metric], usual?.median ?? null);
 
     return {
