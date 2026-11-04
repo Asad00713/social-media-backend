@@ -16,9 +16,8 @@ describe('nextFreeSlot', () => {
     });
   });
 
-  it('next free skips a slot with a scheduled post on a selected channel, not on another channel', () => {
-    // The caller passes only the selected channels' scheduled posts; a post
-    // inside the slot takes it, one just outside it does not.
+  it('a scheduled time inside the slot takes it; one just before or after it does not', () => {
+    // Channel filtering is the caller's query (proven in the signals DB spec).
     const inside = new Date('2026-10-22T15:59:00Z'); // 20:59 PKT
     const after = new Date('2026-10-29T16:00:00Z'); // 21:00 PKT, next week
     expect(nextFreeSlot(THU_EVENING, [inside, after], KHI, NOW)).toEqual({

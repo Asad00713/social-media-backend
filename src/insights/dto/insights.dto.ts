@@ -90,7 +90,7 @@ export interface PostChannelMetricsDto {
 export interface InsightsSignalsDto {
   /** `workspace.timezone`, UTC when it is not a valid zone. */
   timezone: string;
-  /** Posts the platform has reported numbers for, in the 90 days. */
+  /** Posts with reported numbers in the 90 days, settling ones left out. */
   measuredPosts: number;
   /** Below this the panels show "needs {n} more posts". */
   minPosts: typeof MIN_SIGNAL_POSTS;

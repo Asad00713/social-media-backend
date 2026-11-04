@@ -199,6 +199,23 @@ describeDb('InsightsTopicsRepository.tagsByPost', () => {
       );
     }));
 
+  it('takes 40,000 post ids in one call, past the 65,535 bind-parameter cap', () =>
+    run(async (repo, client) => {
+      const w = await workspace(client, 't6');
+      const a = await mediaItem(client, w, 'https://cdn/big.jpg', ['big']);
+      const p = await post(client, w, {
+        media: [{ url: 'https://cdn/big.jpg', libraryItemId: a }],
+      });
+      const ids = Array.from(
+        { length: 40_000 },
+        (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`,
+      );
+      ids[20_000] = p;
+      expect(await repo.tagsByPost(w.workspaceId, ids)).toEqual(
+        new Map([[p, ['big']]]),
+      );
+    }));
+
   it('reads nothing for no ids', () =>
     run(async (repo) => {
       expect(
@@ -233,8 +250,8 @@ describeDb('InsightsService.signals', () => {
       const a = await channel(client, w, 'a');
       const b = await channel(client, w, 'b');
       for (let i = 0; i < 10; i++) {
-        // Thu 15 Oct 2026 14:00 UTC, then each week back.
-        const at = new Date(Date.parse('2026-10-15T14:00:00Z') - i * 7 * DAY);
+        // Thu 8 Oct 2026 14:00 UTC, then each week back (all past settling).
+        const at = new Date(Date.parse('2026-10-08T14:00:00Z') - i * 7 * DAY);
         const p = await post(client, w, { publishedAt: at, channelIds: [a] });
         await snap(client, p, a, 10 + i);
       }
@@ -315,7 +332,8 @@ describeDb('InsightsService.signals', () => {
       const item = await mediaItem(client, w, 'https://cdn/f.jpg', ['food']);
       for (let i = 0; i < 3; i++) {
         const p = await post(client, w, {
-          publishedAt: new Date(NOW.getTime() - (i + 1) * DAY),
+          // 3 to 5 days old: past settling.
+          publishedAt: new Date(NOW.getTime() - (i + 3) * DAY),
           channelIds: [a],
           media: [{ url: 'https://cdn/f.jpg', libraryItemId: item }],
         });
@@ -327,6 +345,39 @@ describeDb('InsightsService.signals', () => {
         bars: [{ key: 'food', posts: 3, median: 100 }],
         untaggedPosts: 10,
         hasAnyTag: true,
+      });
+    }));
+
+  it('a settling post counts in no grid, format, topic or post count', () =>
+    run(async (svc, client, { w, a }) => {
+      const item = await mediaItem(client, w, 'https://cdn/s.jpg', ['fresh']);
+      // 1 h and 47 h old (SETTLING_DAYS is 2), 0 engagements each. The 47 h
+      // one is Thu 18:00 PKT, inside the best cell it would drag down.
+      for (const hoursAgo of [1, 47]) {
+        const p = await post(client, w, {
+          publishedAt: new Date(NOW.getTime() - hoursAgo * 3_600_000),
+          channelIds: [a],
+          media: [{ url: 'https://cdn/s.jpg', libraryItemId: item }],
+        });
+        await snap(client, p, a, 0);
+      }
+      const s = await svc.signals(w.workspaceId, String(a), NOW);
+      expect(s.measuredPosts).toBe(10);
+      const cells = s.bestTimes.engagement.cells;
+      expect(cells.reduce((n, c) => n + c.posts, 0)).toBe(10);
+      expect(cells.find((c) => c.weekday === 3 && c.slot === 6)).toEqual({
+        weekday: 3,
+        slot: 6,
+        posts: 10,
+        value: 14.5,
+      });
+      expect(s.whatWorks.format).toEqual([
+        { key: 'text', posts: 10, median: 14.5 },
+      ]);
+      expect(s.whatWorks.topic).toEqual({
+        bars: [],
+        untaggedPosts: 10,
+        hasAnyTag: false,
       });
     }));
 });

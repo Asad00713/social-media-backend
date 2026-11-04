@@ -445,7 +445,9 @@ export class InsightsService {
    * The 90-day panels: Best time (engagement and reach grids on the
    * workspace's wall clock, and the best slot's next free occurrence) and
    * What works (format and topic medians), over the measured posts of the
-   * same 90-day sample the post-level usual uses.
+   * same 90-day sample the post-level usual uses. Settling posts (under
+   * SETTLING_DAYS old) are left out of every median and count, so a post an
+   * hour old with nothing yet cannot drag a cell or a bar down.
    */
   async signals(
     workspaceId: string,
@@ -464,7 +466,7 @@ export class InsightsService {
       await this.publishedPosts(workspaceId, channelIds, from, before)
     )
       .map((p) => toInsightPost(p, platformOf.get(p.channelId) ?? '', { now }))
-      .filter((p) => isMeasured(p));
+      .filter((p) => isMeasured(p) && !p.isSettling);
 
     const engagement = bestTimeGrid(sample, tz, 'engagements');
     const reach = bestTimeGrid(sample, tz, 'reach');

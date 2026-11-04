@@ -40,27 +40,31 @@ export class InsightsTopicsRepository {
   ): Promise<Map<string, string[]>> {
     const byPost = new Map<string, string[]>();
     if (!postIds.length) return byPost;
-    const ids = sql.join(
-      postIds.map((id) => sql`${id}::uuid`),
-      sql`, `,
-    );
-    const posts = sql`p.workspace_id = ${workspaceId} AND p.id IN (${ids})`;
     const tagged = sql`CASE WHEN jsonb_typeof(mi.tags) = 'array'
       THEN jsonb_array_length(mi.tags) ELSE 0 END > 0`;
+    // The ids go as ONE array parameter, read once by the CTE for both
+    // branches. One `$n::uuid` per id per branch would hit Postgres's
+    // 65,535-parameter cap at about 32,000 posts.
     const result = await this.db.execute(sql`
+      WITH p AS (
+        SELECT id, workspace_id, media_urls, library_refs
+        FROM posts
+        WHERE workspace_id = ${workspaceId}
+          AND id = ANY(${sql.param(postIds)}::uuid[])
+      )
       SELECT p.id AS post_id, mi.tags
-      FROM posts p
+      FROM p
       CROSS JOIN LATERAL jsonb_array_elements_text(p.media_urls) AS u(url)
       JOIN media_items mi ON mi.workspace_id = p.workspace_id
         AND mi.file_url = u.url
-      WHERE ${posts} AND ${tagged}
+      WHERE ${tagged}
       UNION ALL
       SELECT p.id, mi.tags
-      FROM posts p
+      FROM p
       CROSS JOIN LATERAL jsonb_array_elements_text(p.library_refs) AS r(ref)
       JOIN media_items mi ON mi.workspace_id = p.workspace_id
         AND mi.id = CASE WHEN r.ref ~* ${UUID_RE} THEN r.ref::uuid END
-      WHERE ${posts} AND ${tagged}
+      WHERE ${tagged}
     `);
 
     for (const row of result.rows as unknown as TagRow[]) {
