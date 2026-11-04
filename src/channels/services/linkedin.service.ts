@@ -1043,9 +1043,10 @@ export class LinkedInService {
   // Versioned APIs: Posts, Images and Documents
   //
   // None of this exists on the legacy `/v2/ugcPosts` path the other formats
-  // use. A PDF is a Documents API asset referenced from a Posts API post, so a
-  // document rides the versioned Posts API — which also carries
-  // `isReshareDisabledByAuthor`.
+  // use. A PDF is a Documents API asset referenced from a Posts API post; a
+  // custom article thumbnail is an Images API asset referenced from
+  // `content.article.thumbnail`. Both therefore ride the versioned Posts API,
+  // which also carries `isReshareDisabledByAuthor`.
   // ==========================================================================
 
   private restHeaders(accessToken: string): Record<string, string> {
@@ -1068,6 +1069,18 @@ export class LinkedInService {
       // not JSON — the raw text above stands
     }
     return `HTTP ${response.status}${reason ? `: ${reason}` : ''}`;
+  }
+
+  /**
+   * The file's address comes from the draft, so before anything is registered
+   * with LinkedIn it has to be a web address: only http(s) is ever fetched.
+   */
+  private assertWebUrl(url: string, noun: 'image' | 'document'): void {
+    if (!/^https?:\/\//i.test(url)) {
+      throw new BadRequestException(
+        `The ${noun} must be a web (http or https) address`,
+      );
+    }
   }
 
   /**
@@ -1243,6 +1256,7 @@ export class LinkedInService {
     visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
     disableReshare: boolean = false,
   ): Promise<{ postId: string }> {
+    this.assertWebUrl(documentUrl, 'document');
     const { uploadUrl, urn } = await this.initializeRestUpload(
       'documents',
       accessToken,
@@ -1268,6 +1282,64 @@ export class LinkedInService {
         content: { media: { title, id: urn } },
       },
       'document post',
+    );
+  }
+
+  /**
+   * A link post whose card carries OUR thumbnail.
+   *
+   * The Posts API does not scrape the URL (stated): `source` and `title`
+   * are required and the card shows only what is sent here. The thumbnail is
+   * an Images API asset, referenced by URN in `content.article.thumbnail`.
+   * `description` is omitted when empty rather than sent blank.
+   */
+  async createArticlePostWithThumbnail(
+    accessToken: string,
+    authorUrn: string,
+    commentary: string,
+    article: {
+      source: string;
+      title: string;
+      description?: string;
+      thumbnailUrl: string;
+    },
+    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    disableReshare: boolean = false,
+  ): Promise<{ postId: string }> {
+    this.assertWebUrl(article.thumbnailUrl, 'image');
+    const { uploadUrl, urn } = await this.initializeRestUpload(
+      'images',
+      accessToken,
+      authorUrn,
+    );
+    await this.uploadToRestAsset(
+      article.thumbnailUrl,
+      uploadUrl,
+      accessToken,
+      'image',
+    );
+
+    return this.createRestPost(
+      accessToken,
+      {
+        ...this.restPostEnvelope(
+          authorUrn,
+          commentary,
+          visibility,
+          disableReshare,
+        ),
+        content: {
+          article: {
+            source: article.source,
+            thumbnail: urn,
+            title: article.title,
+            ...(article.description
+              ? { description: article.description }
+              : {}),
+          },
+        },
+      },
+      'link post',
     );
   }
 }

@@ -227,6 +227,28 @@ describe('LinkedInService.createDocumentPost', () => {
     });
   });
 
+  describe('what it will fetch', () => {
+    it.each([
+      'file:///etc/passwd',
+      'ftp://example.com/a.pdf',
+      '//cdn.example.com/a.pdf',
+      'a.pdf',
+    ])('refuses %s, which is not a web address', async (documentUrl) => {
+      // The URL is part of the draft; only http(s) is ever downloaded, and
+      // nothing is registered with LinkedIn for a file that will not be sent.
+      await expect(
+        service.createDocumentPost(
+          'tok',
+          'urn:li:person:me',
+          'x',
+          documentUrl,
+          'a.pdf',
+        ),
+      ).rejects.toThrow(/web \(http or https\) address/);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
   describe("LinkedIn's 100 MB limit", () => {
     it('refuses on the declared size, before buffering the file', async () => {
       const arrayBuffer = jest.fn();

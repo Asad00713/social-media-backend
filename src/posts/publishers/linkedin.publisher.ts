@@ -34,6 +34,30 @@ function documentTitleOf(item: { url: string; filename?: unknown }): string {
 
 const isDocument = (item: { type: string }) => item.type === 'document';
 
+/**
+ * The first link in a block of text — the one the composer draws the card
+ * for. Mirrors `findLink` in the frontend (`facebook-post-shape.ts`): the
+ * end of the match is deliberately loose, because a trailing full stop or
+ * comma belongs to the sentence, not the link.
+ */
+const URL_PATTERN = /https?:\/\/[^\s<>"')\]]+[^\s<>"')\].,;:!?]/i;
+
+function firstUrlIn(text: string): string | undefined {
+  return text.match(URL_PATTERN)?.[0];
+}
+
+/** `https://www.lumiere.pk/blog` -> `lumiere.pk`, as the card shows it. */
+function domainOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
+const trimmed = (value: unknown): string =>
+  typeof value === 'string' ? value.trim() : '';
+
 @Injectable()
 export class LinkedInPublisher extends BasePublisher {
   readonly platform: SupportedPlatform = 'linkedin';
@@ -116,9 +140,9 @@ export class LinkedInPublisher extends BasePublisher {
       ? `urn:li:organization:${platformAccountId}`
       : `urn:li:person:${platformAccountId}`;
     // `isReshareDisabledByAuthor` exists only on the versioned Posts API, so
-    // it is honoured on exactly the formats that publish through it: polls and
-    // documents. The rest go through the legacy `/v2/ugcPosts`, which has no
-    // such field.
+    // it is honoured on exactly the formats that publish through it: polls,
+    // documents and link cards with the author's own image. The rest go
+    // through the legacy `/v2/ugcPosts`, which has no such field.
     const disableReshare = metadata?.reshareDisabled === true;
 
     // POLL — uses Posts API with content.poll structure
@@ -160,6 +184,17 @@ export class LinkedInPublisher extends BasePublisher {
           : headline;
       }
     }
+
+    // A link whose card carries the author's own image. The Posts API does
+    // no URL scraping (stated), so this is the one link post that is a card
+    // on LinkedIn: without an image the link stays text in the caption, and
+    // `metadata.linkUrl` alone still takes the legacy ARTICLE branch below.
+    // Attached media wins over it simply by being tested first in the chain
+    // below: an image post carries the link as text.
+    const cardThumbnail = trimmed(metadata?.linkThumbnailUrl);
+    const cardSource = cardThumbnail
+      ? trimmed(metadata?.linkUrl) || firstUrlIn(effectiveContent)
+      : undefined;
 
     let result: { postId: string };
 
@@ -224,6 +259,27 @@ export class LinkedInPublisher extends BasePublisher {
       } else {
         throw new Error(`Unsupported media type: ${mediaItem.type}`);
       }
+    } else if (cardSource) {
+      // Images API upload, then a Posts API article carrying it.
+      result = await this.linkedinService.createArticlePostWithThumbnail(
+        accessToken,
+        actorUrn,
+        effectiveContent,
+        {
+          source: cardSource,
+          // Required by the API (stated) and not scraped, so it is what the
+          // card shows: the author's title, else the site's name.
+          title: (trimmed(metadata?.linkTitle) || domainOf(cardSource)).slice(
+            0,
+            399,
+          ),
+          description:
+            trimmed(metadata?.linkDescription).slice(0, 4085) || undefined,
+          thumbnailUrl: cardThumbnail,
+        },
+        visibility,
+        disableReshare,
+      );
     } else if (metadata?.linkUrl) {
       // Link post
       if (isOrganization) {
