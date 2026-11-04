@@ -1265,7 +1265,7 @@ describe('InsightsService hidden steps before migration 0058', () => {
     new InsightsService(
       {
         select: () => ({
-          from: () => ({ where: () => Promise.reject(err) }),
+          from: () => ({ where: () => Promise.reject(err as Error) }),
         }),
       } as never,
       {} as never,
@@ -1283,7 +1283,7 @@ describe('InsightsService hidden steps before migration 0058', () => {
     expect(await hiddenSteps(svc)).toEqual(new Set());
     expect(await hiddenSteps(svc)).toEqual(new Set());
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(warn.mock.calls[0][0]).toContain('0058');
+    expect(String((warn.mock.calls as unknown[][])[0][0])).toContain('0058');
     expect(await hiddenSteps(failingWith(missing))).toEqual(new Set());
   });
 

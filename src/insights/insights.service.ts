@@ -54,7 +54,7 @@ import type {
   PostChannelMetricsDto,
 } from './dto/insights.dto';
 import { channelBreakdown } from './lib/breakdown';
-import { periodBrief, proseName } from './lib/brief-inputs';
+import { periodBrief } from './lib/brief-inputs';
 import {
   filterAndSort,
   formatCountsOf,

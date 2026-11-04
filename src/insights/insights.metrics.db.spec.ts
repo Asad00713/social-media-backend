@@ -1150,7 +1150,7 @@ describeDb('InsightsService next steps and hiding', () => {
           title: 'Videos get 3.0× more engagement than text posts',
           body: expect.stringMatching(
             /^Median engagement per post on .+\. No video is planned this week\.$/,
-          ),
+          ) as string,
           why: 'Your videos get the most engagement on your own posts, and none is scheduled in the next 7 days.',
           bars: [
             { format: 'video', median: 30 },
@@ -1450,7 +1450,7 @@ describeDb('InsightsService next steps and hiding', () => {
                 : target.select(fields as never);
           }
           const v = Reflect.get(target, key, receiver) as unknown;
-          return typeof v === 'function' ? v.bind(target) : v;
+          return typeof v === 'function' ? (v.bind(target) as unknown) : v;
         },
       });
       const svc = new InsightsService(
