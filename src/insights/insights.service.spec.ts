@@ -1,4 +1,4 @@
-import { NotFoundException } from '@nestjs/common';
+import { Logger, NotFoundException } from '@nestjs/common';
 import { getTableName, type Table } from 'drizzle-orm';
 import type { PublishedPost } from '../post-performance/post-performance';
 import { datesBetween, utcToday, windowOf } from '../post-performance/period';
@@ -1248,5 +1248,49 @@ describe('InsightsService.postDetail', () => {
     const d = await setup(old, [], { o: blank }).run();
     expect(d.timeline.status).toBe('no_early_data');
     expect(d.timeline.values.every((v) => v === null)).toBe(true);
+  });
+});
+
+describe('InsightsService hidden steps before migration 0058', () => {
+  const missing = Object.assign(new Error('relation does not exist'), {
+    code: '42P01',
+  });
+  const hiddenSteps = (svc: InsightsService) =>
+    (
+      svc as unknown as {
+        hiddenSteps: (w: string, u: string, n: Date) => Promise<Set<string>>;
+      }
+    ).hiddenSteps('w', 'u', NOW);
+  const failingWith = (err: unknown) =>
+    new InsightsService(
+      {
+        select: () => ({
+          from: () => ({ where: () => Promise.reject(err) }),
+        }),
+      } as never,
+      {} as never,
+    );
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+  });
+  afterEach(() => warn.mockRestore());
+
+  it('a missing table (42P01, however wrapped) is nothing hidden, warned once', async () => {
+    const svc = failingWith(
+      Object.assign(new Error('Failed query'), { cause: missing }),
+    );
+    expect(await hiddenSteps(svc)).toEqual(new Set());
+    expect(await hiddenSteps(svc)).toEqual(new Set());
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn.mock.calls[0][0]).toContain('0058');
+    expect(await hiddenSteps(failingWith(missing))).toEqual(new Set());
+  });
+
+  it('any other error is real and is thrown', async () => {
+    const boom = Object.assign(new Error('connection lost'), { code: '57P01' });
+    await expect(hiddenSteps(failingWith(boom))).rejects.toBe(boom);
+    await expect(hiddenSteps(failingWith(new Error('x')))).rejects.toThrow('x');
+    expect(warn).not.toHaveBeenCalled();
   });
 });

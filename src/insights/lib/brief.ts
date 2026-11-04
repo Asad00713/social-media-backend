@@ -150,7 +150,8 @@ export function formatCompact(n: number): string {
   return String(n);
 }
 
-const PLURAL: Record<InsightFormat, string> = {
+/** How a format reads in a sentence, plural (spec S3.6). */
+export const PLURAL: Record<InsightFormat, string> = {
   image: 'photos',
   video: 'videos',
   carousel: 'carousels',
@@ -158,7 +159,8 @@ const PLURAL: Record<InsightFormat, string> = {
   link: 'link posts',
   unknown: 'posts',
 };
-const SINGULAR: Record<InsightFormat, string> = {
+/** ... and singular. */
+export const SINGULAR: Record<InsightFormat, string> = {
   image: 'photo',
   video: 'video',
   carousel: 'carousel',

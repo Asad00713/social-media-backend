@@ -19,8 +19,12 @@
 -- The boot migrator runs this file in ONE transaction; no BEGIN/COMMIT, no
 -- CONCURRENTLY. New table only: no existing table or row is read, changed or
 -- dropped. Idempotent: CREATE TABLE IF NOT EXISTS and CREATE INDEX IF NOT
--- EXISTS. The running backend never touches the table, so this is safe to
--- apply on start, before or after the code that uses it.
+-- EXISTS. The old code never touches the table, so applying this BEFORE (or
+-- with) the new code is always safe, and the boot migrator does exactly that.
+-- Applying it AFTER the new code is running is tolerated, not clean: GET
+-- /signals treats a missing table (42P01) as "nothing hidden" and logs one
+-- warning, so Best time, What works and the next steps keep working, but
+-- POST next-steps/:id/hide answers 500 until the table exists.
 --
 -- LOCKS AND COST
 -- `SET LOCAL lock_timeout = '10s'` comes first. The two foreign keys take a

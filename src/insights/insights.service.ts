@@ -2,6 +2,7 @@ import {
   BadRequestException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import {
@@ -214,12 +215,24 @@ const lanePost = (p: InsightPost, publishedOn: string): LanePost => ({
   usualMultiplier: p.usualMultiplier,
 });
 
+/** Postgres 42P01 (undefined_table), however deep drizzle wrapped it. */
+export function isMissingTable(err: unknown): boolean {
+  for (let e = err, i = 0; e && typeof e === 'object' && i < 5; i++) {
+    if ((e as { code?: unknown }).code === '42P01') return true;
+    e = (e as { cause?: unknown }).cause;
+  }
+  return false;
+}
+
 /**
  * The workspace Insights page: how the chosen social channels' posts did over
  * the last 7, 30 or 90 days, on the same post rule as Home's Performance.
  */
 @Injectable()
 export class InsightsService {
+  private readonly logger = new Logger(InsightsService.name);
+  private warnedMissingHiddenSteps = false;
+
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
     private readonly postPerformance: PostPerformanceRepository,
@@ -964,23 +977,39 @@ export class InsightsService {
       });
   }
 
-  /** The step ids this person has hidden and that are still hidden at `now`. */
+  /**
+   * The step ids this person has hidden and that are still hidden at `now`.
+   * Until migration 0058 is applied the table is missing (Postgres 42P01):
+   * that is "nothing hidden", with one warning per process, so Best time and
+   * What works keep working. Any other error is real and is thrown.
+   */
   private async hiddenSteps(
     workspaceId: string,
     userId: string,
     now: Date,
   ): Promise<Set<string>> {
-    const rows = await this.db
-      .select({ stepId: insightHiddenSteps.stepId })
-      .from(insightHiddenSteps)
-      .where(
-        and(
-          eq(insightHiddenSteps.userId, userId),
-          eq(insightHiddenSteps.workspaceId, workspaceId),
-          gt(insightHiddenSteps.hiddenUntil, now),
-        ),
-      );
-    return new Set(rows.map((r) => r.stepId));
+    try {
+      const rows = await this.db
+        .select({ stepId: insightHiddenSteps.stepId })
+        .from(insightHiddenSteps)
+        .where(
+          and(
+            eq(insightHiddenSteps.userId, userId),
+            eq(insightHiddenSteps.workspaceId, workspaceId),
+            gt(insightHiddenSteps.hiddenUntil, now),
+          ),
+        );
+      return new Set(rows.map((r) => r.stepId));
+    } catch (err) {
+      if (!isMissingTable(err)) throw err;
+      if (!this.warnedMissingHiddenSteps) {
+        this.warnedMissingHiddenSteps = true;
+        this.logger.warn(
+          'insight_hidden_steps does not exist (migration 0058 not applied): showing next steps without hidden ones',
+        );
+      }
+      return new Set();
+    }
   }
 
   /**

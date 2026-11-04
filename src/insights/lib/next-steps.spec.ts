@@ -24,7 +24,7 @@ interface Spec {
   /** Whole UTC days before TODAY. */
   ago: number;
   eng?: number;
-  format?: 'text' | 'image' | 'video' | 'carousel';
+  format?: 'text' | 'image' | 'video' | 'carousel' | 'link';
   mult?: number | null;
   imported?: boolean;
   content?: string;
@@ -39,7 +39,9 @@ function sp(o: Spec): StepPost {
   const n = ++seq;
   const publishedOn = addDays(TODAY, -o.ago);
   const eng = o.eng ?? 10;
-  const urls = o.media ?? (o.format && o.format !== 'text' ? [`cdn/${n}`] : []);
+  // A link post has no media and a URL in the caption.
+  const noMedia = o.format === 'text' || o.format === 'link';
+  const urls = o.media ?? (o.format && !noMedia ? [`cdn/${n}`] : []);
   const items =
     o.format === 'carousel'
       ? [...urls, `cdn/${n}-b`].map((url) => ({ type: 'image', url }))
@@ -58,7 +60,9 @@ function sp(o: Spec): StepPost {
     follows: null,
     syncedAt: null,
     publishedAt: `${publishedOn}T10:00:00.000Z`,
-    content: o.content ?? '',
+    content:
+      o.content ??
+      (o.format === 'link' ? `read https://example.test/${n}` : ''),
     mediaItems: items,
     imported: o.imported ?? false,
     permalink: null,
@@ -86,7 +90,7 @@ const ch = (
 /** Ten text posts on channel 1, 3 to 12 days old: enough, and no format gap. */
 const quietBase = (): StepPost[] => many(10, 3, { format: 'text' });
 
-/** 5 videos at 30 and 5 images at 10: a 3.0x gap. */
+/** 5 videos at 30 and 5 photos at 10: a 3.0x gap. */
 const gapBase = (): StepPost[] => [
   ...many(5, 3, { format: 'video', eng: 30 }),
   ...many(5, 8, { format: 'image', eng: 10 }),
@@ -125,7 +129,7 @@ describe('N1 format gap', () => {
     expect(step).toEqual({
       id: 'format_gap',
       rule: 'format_gap',
-      title: 'Videos get 3.0× more engagement than images',
+      title: 'Videos get 3.0× more engagement than photos',
       body: 'Median engagement per post on Instagram. No video is planned this week.',
       why: 'Your videos get the most engagement on your own posts, and none is scheduled in the next 7 days.',
       bars: [
@@ -136,7 +140,65 @@ describe('N1 format gap', () => {
     });
   });
 
-  it('says text posts and an image, and shows the top 3 bars', () => {
+  it('uses the S3.6 words for every format, best and worst', () => {
+    // [best, worst, title, button, body sentence]
+    const cases = [
+      [
+        'video',
+        'image',
+        'Videos get 4.0× more engagement than photos',
+        'Plan a video',
+        'No video is planned this week.',
+      ],
+      [
+        'image',
+        'video',
+        'Photos get 4.0× more engagement than videos',
+        'Plan a photo',
+        'No photo is planned this week.',
+      ],
+      [
+        'carousel',
+        'link',
+        'Carousels get 4.0× more engagement than link posts',
+        'Plan a carousel',
+        'No carousel is planned this week.',
+      ],
+      [
+        'link',
+        'text',
+        'Link posts get 4.0× more engagement than text posts',
+        'Plan a link post',
+        'No link post is planned this week.',
+      ],
+      [
+        'text',
+        'carousel',
+        'Text posts get 4.0× more engagement than carousels',
+        'Plan a text post',
+        'No text post is planned this week.',
+      ],
+    ] as const;
+    for (const [best, worst, title, cta, planned] of cases) {
+      const [step] = nextSteps(
+        input({
+          posts: [
+            ...many(3, 3, { format: best, eng: 40 }),
+            ...many(3, 6, { format: worst, eng: 10 }),
+            // Filler to reach 10 measured posts that is no format's bar.
+            ...many(4, 9, { imported: true }),
+          ],
+        }),
+      );
+      expect(step).toMatchObject({ title, cta: { label: cta } });
+      expect(step.body).toContain(planned);
+      expect(step.why).toContain(
+        `Your ${title.split(' get ')[0].toLowerCase()} get the most engagement`,
+      );
+    }
+  });
+
+  it('shows the top 3 bars', () => {
     const [step] = nextSteps(
       input({
         posts: [
@@ -147,8 +209,8 @@ describe('N1 format gap', () => {
         ],
       }),
     );
-    expect(step.title).toBe('Images get 4.0× more engagement than text posts');
-    expect(step.rule === 'format_gap' && step.cta.label).toBe('Plan an image');
+    expect(step.title).toBe('Photos get 4.0× more engagement than text posts');
+    expect(step.rule === 'format_gap' && step.cta.label).toBe('Plan a photo');
     expect(
       step.rule === 'format_gap' && step.bars.map((b) => b.format),
     ).toEqual(['image', 'video', 'carousel']);
@@ -200,7 +262,7 @@ describe('N1 format gap', () => {
     ];
     expect(posts[0].post.format).toBe('unknown');
     const [step] = nextSteps(input({ posts }));
-    expect(step.title).toBe('Videos get 3.0× more engagement than images');
+    expect(step.title).toBe('Videos get 3.0× more engagement than photos');
   });
 
   it('needs two formats and a worst median above 0', () => {
@@ -537,7 +599,7 @@ describe('all rules', () => {
     const settling = many(3, 0, { format: 'carousel', eng: 1000 });
     expect(settling.every((p) => p.post.isSettling)).toBe(true);
     const [step] = nextSteps(input({ posts: [...gapBase(), ...settling] }));
-    expect(step.title).toBe('Videos get 3.0× more engagement than images');
+    expect(step.title).toBe('Videos get 3.0× more engagement than photos');
     // ... and 9 settled posts plus 3 settling make no 10.
     expect(
       nextSteps(input({ posts: [...gapBase().slice(0, 9), ...settling] })),

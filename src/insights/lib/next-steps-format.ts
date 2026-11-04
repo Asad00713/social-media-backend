@@ -4,24 +4,11 @@
  */
 
 import type { FollowerRow } from '../../post-performance/followers';
-import { formatCompact, shortDate } from './brief';
+import { formatCompact, PLURAL, shortDate, SINGULAR } from './brief';
 import type { PostFormat } from './insight-post';
-
-/** How a format reads in a sentence: `a video`, `text posts`. */
-const FORMAT_NAMES: Record<PostFormat, { one: string; many: string }> = {
-  image: { one: 'image', many: 'images' },
-  video: { one: 'video', many: 'videos' },
-  carousel: { one: 'carousel', many: 'carousels' },
-  text: { one: 'text post', many: 'text posts' },
-  link: { one: 'link post', many: 'link posts' },
-};
 
 const capitalise = (s: string): string =>
   s.charAt(0).toUpperCase() + s.slice(1);
-
-/** `a video`, `an image`. */
-const withArticle = (noun: string): string =>
-  `${/^[aeiou]/i.test(noun) ? 'an' : 'a'} ${noun}`;
 
 const MONTHS = [
   'January',
@@ -67,13 +54,13 @@ export function formatGapCopy(input: {
   ratio: number;
   platforms: string;
 }): StepCopy {
-  const best = FORMAT_NAMES[input.best];
-  const worst = FORMAT_NAMES[input.worst];
+  const best = { one: SINGULAR[input.best], many: PLURAL[input.best] };
+  const worst = { many: PLURAL[input.worst] };
   return {
     title: `${capitalise(best.many)} get ${input.ratio.toFixed(1)}× more engagement than ${worst.many}`,
     body: `Median engagement per post on ${input.platforms}. No ${best.one} is planned this week.`,
     why: `Your ${best.many} get the most engagement on your own posts, and none is scheduled in the next 7 days.`,
-    cta: `Plan ${withArticle(best.one)}`,
+    cta: `Plan a ${best.one}`,
   };
 }
 

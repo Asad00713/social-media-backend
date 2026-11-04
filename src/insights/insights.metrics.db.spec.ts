@@ -1,8 +1,12 @@
-import { BadRequestException, NotFoundException } from '@nestjs/common';
+import { BadRequestException, Logger, NotFoundException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { datesBetween, utcToday, windowOf } from '../post-performance/period';
 import { PostPerformanceRepository } from '../post-performance/post-performance.repository';
-import { describeDb, withRollbackDb } from '../planner/testing/rollback-db';
+import {
+  describeDb,
+  withRollbackDb,
+  type DbType,
+} from '../planner/testing/rollback-db';
 import type { InsightsOverviewDto } from './dto/insights.dto';
 import { InsightsService } from './insights.service';
 import type { CompareMode, ResolvedPeriod } from './lib/query';
@@ -1420,6 +1424,56 @@ describeDb('InsightsService next steps and hiding', () => {
         expect(await ids(ctx, ctx.other)).toContain(id);
       }));
   });
+
+  it('without the hidden-steps table signals still answers, with nothing hidden', () =>
+    run(async (ctx) => {
+      // Postgres would abort the harness transaction on a real 42P01, so the
+      // hidden-steps read alone fails the way an unmigrated database does.
+      const real = (ctx.svc as unknown as { db: DbType }).db;
+      const flaky = new Proxy(real, {
+        get(target, key, receiver) {
+          if (key === 'select') {
+            return (fields?: Record<string, unknown>) =>
+              fields && Object.keys(fields).join() === 'stepId'
+                ? {
+                    from: () => ({
+                      where: () =>
+                        Promise.reject(
+                          Object.assign(new Error('Failed query'), {
+                            cause: Object.assign(new Error('missing'), {
+                              code: '42P01',
+                            }),
+                          }),
+                        ),
+                    }),
+                  }
+                : target.select(fields as never);
+          }
+          const v = Reflect.get(target, key, receiver) as unknown;
+          return typeof v === 'function' ? v.bind(target) : v;
+        },
+      });
+      const svc = new InsightsService(
+        flaky,
+        new PostPerformanceRepository(real),
+      );
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      try {
+        const s = await svc.signals(
+          ctx.w.workspaceId,
+          ctx.w.userId,
+          undefined,
+          NOW,
+        );
+        // Best time and What works are intact, and the card is shown.
+        expect(s.measuredPosts).toBe(12);
+        expect(s.whatWorks.format.map((b) => b.key)).toEqual(['video', 'text']);
+        expect(s.nextSteps.map((n) => n.id)).toEqual(['format_gap']);
+        expect(warn).toHaveBeenCalledTimes(1);
+      } finally {
+        warn.mockRestore();
+      }
+    }));
 
   it('a workspace under 10 measured posts gets no next steps', () =>
     withRollbackDb([MIGRATION], async (db, client) => {
