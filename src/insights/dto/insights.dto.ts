@@ -1,5 +1,7 @@
 import type { MetricChange, PeriodWindow } from '../../post-performance/period';
 import type { ChannelBreakdown } from '../lib/breakdown';
+import type { Brief } from '../lib/brief';
+import type { Standout } from '../lib/standout';
 import type { FormatCounts, TableTotals } from '../lib/content-table';
 import type { ChannelFreshness } from '../lib/freshness';
 import type { InsightFormat, InsightPost } from '../lib/insight-post';
@@ -98,6 +100,10 @@ export interface InsightsOverviewDto {
   formats: FormatStat[];
   unknownFormatPosts: number;
   bestTimes: BestTimes;
+  /** Up to 3 posts each way against their channel's usual, and the true counts. */
+  standout: Standout;
+  /** Rule-based sentences about the window; no LLM. */
+  brief: Brief;
 }
 
 export interface InsightsPostsDto {

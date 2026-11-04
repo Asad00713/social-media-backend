@@ -6,6 +6,7 @@ import { channelAnalyticsDaily } from '../drizzle/schema/channel-analytics-daily
 import { channelSyncState } from '../drizzle/schema/channel-sync-state.schema';
 import {
   CHANNEL_CATEGORY,
+  PLATFORM_CONFIG,
   socialMediaChannels,
   type SupportedPlatform,
 } from '../drizzle/schema/channels.schema';
@@ -33,6 +34,7 @@ import type {
   PostChannelMetricsDto,
 } from './dto/insights.dto';
 import { channelBreakdown } from './lib/breakdown';
+import { periodBrief } from './lib/brief-inputs';
 import {
   filterAndSort,
   formatCountsOf,
@@ -55,6 +57,7 @@ import {
   type TableQuery,
 } from './lib/query';
 import { bestTimes, formatStats, topPosts } from './lib/rankings';
+import { standoutOf } from './lib/standout';
 import {
   daySeries,
   followerTotals,
@@ -270,6 +273,10 @@ export class InsightsService {
       }),
     );
     const { formats, unknownFormatPosts } = formatStats(posts);
+    const freshness = freshnessOf(selected, syncRows, now);
+    const impressions = metricChange(cur.impressions, cmp?.impressions ?? null);
+    const engagements = metricChange(cur.engagements, cmp?.engagements ?? null);
+    const { aboveAll, ...standout } = standoutOf(posts);
 
     return {
       days,
@@ -283,7 +290,7 @@ export class InsightsService {
       channelIds,
       stillCollectingFrom: settlingFrom(now),
       firstRun,
-      freshness: freshnessOf(selected, syncRows, now),
+      freshness,
       kpis: {
         followers: followerTotals(followers, window),
         postsPublished: {
@@ -293,9 +300,9 @@ export class InsightsService {
               ? round1(cur.postsPublished - cmp.postsPublished)
               : null,
         },
-        impressions: metricChange(cur.impressions, cmp?.impressions ?? null),
+        impressions,
         reach: metricChange(cur.reach, cmp?.reach ?? null),
-        engagements: metricChange(cur.engagements, cmp?.engagements ?? null),
+        engagements,
         engagementRate: {
           value: cur.engagementRate,
           previous: cmp?.engagementRate ?? null,
@@ -328,6 +335,28 @@ export class InsightsService {
       formats,
       unknownFormatPosts,
       bestTimes: bestTimes(posts, tz),
+      standout,
+      brief: periodBrief({
+        days,
+        window,
+        compare,
+        now,
+        channels: selected.map((c) => ({
+          id: c.id,
+          platformName: PLATFORM_CONFIG[c.platform]?.name ?? c.platform,
+          accountName: c.accountName,
+          isActive: c.isActive,
+          connectionStatus: c.connectionStatus,
+        })),
+        freshness,
+        published,
+        sample: sampleRows,
+        followers,
+        posts,
+        standout: { ...standout, aboveAll },
+        impressions,
+        engagements,
+      }),
     };
   }
 
