@@ -343,6 +343,11 @@ export class MastodonService {
    * "File has contents that are not what they are reported to be". Stripping
    * codec parameters (or accepting an explicit type from the inbox upload
    * record) sidesteps that mismatch.
+   *
+   * `focus` is the focal point in Mastodon's own form, "x,y" with both in
+   * -1..1 (see `toMastodonFocus`). It is sent as a part of the multipart form
+   * and only when given: Mastodon centres the crop without it, and an empty
+   * part would be one more field an older instance could reject.
    */
   async uploadMedia(
     instanceUrl: string,
@@ -350,6 +355,7 @@ export class MastodonService {
     mediaUrl: string,
     description?: string,
     overrideContentType?: string,
+    focus?: string,
   ): Promise<MastodonMediaAttachment> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
 
@@ -390,6 +396,13 @@ export class MastodonService {
       parts.push(`--${boundary}\r\n`);
       parts.push(`Content-Disposition: form-data; name="description"\r\n\r\n`);
       parts.push(`${description}\r\n`);
+    }
+
+    // Add the focal point if provided
+    if (focus) {
+      parts.push(`--${boundary}\r\n`);
+      parts.push(`Content-Disposition: form-data; name="focus"\r\n\r\n`);
+      parts.push(`${focus}\r\n`);
     }
 
     parts.push(`--${boundary}--\r\n`);
