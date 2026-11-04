@@ -1,5 +1,28 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 
+/**
+ * The versioned ("rest") base path — Posts, Images and Documents APIs.
+ *
+ * Everything else in this service still talks to the unversioned `/v2`
+ * paths (`apiBaseUrl`). LinkedIn states that the Posts API replaces
+ * `ugcPosts`, and that the versioned APIs live under `/rest`.
+ */
+const LINKEDIN_REST_URL = 'https://api.linkedin.com/rest';
+
+/**
+ * `Linkedin-Version` (YYYYMM) sent on every versioned call.
+ *
+ * Stated by LinkedIn: the header is mandatory (the latest version is NOT
+ * applied by default) and a version is supported for at least a year before
+ * it is sunset. 202610 was the latest when this was written; bump it before
+ * it is sunset, after reading the changelog for the Posts, Images and
+ * Documents APIs.
+ */
+const LINKEDIN_REST_VERSION = '202610';
+
+/** Documents API: "The file size can't exceed 100MB and 300 pages." */
+const MAX_DOCUMENT_BYTES = 100 * 1024 * 1024;
+
 export interface LinkedInProfile {
   id: string;
   firstName: string;
@@ -1014,5 +1037,237 @@ export class LinkedInService {
       return { postId: data.id };
     }
     return { postId };
+  }
+
+  // ==========================================================================
+  // Versioned APIs: Posts, Images and Documents
+  //
+  // None of this exists on the legacy `/v2/ugcPosts` path the other formats
+  // use. A PDF is a Documents API asset referenced from a Posts API post, so a
+  // document rides the versioned Posts API — which also carries
+  // `isReshareDisabledByAuthor`.
+  // ==========================================================================
+
+  private restHeaders(accessToken: string): Record<string, string> {
+    return {
+      Authorization: `Bearer ${accessToken}`,
+      'Content-Type': 'application/json',
+      'X-Restli-Protocol-Version': '2.0.0',
+      'Linkedin-Version': LINKEDIN_REST_VERSION,
+    };
+  }
+
+  /** LinkedIn's own words for a failed call, so the cause reaches the user. */
+  private async restFailure(response: Response): Promise<string> {
+    const text = await response.text().catch(() => '');
+    let reason = text.slice(0, 200);
+    try {
+      const parsed = JSON.parse(text) as { message?: unknown };
+      if (typeof parsed.message === 'string') reason = parsed.message;
+    } catch {
+      // not JSON — the raw text above stands
+    }
+    return `HTTP ${response.status}${reason ? `: ${reason}` : ''}`;
+  }
+
+  /**
+   * Register an upload with the Images or Documents API.
+   *
+   * `POST /rest/{images|documents}?action=initializeUpload` with
+   * `{ initializeUploadRequest: { owner } }`; the answer is
+   * `{ value: { uploadUrl, image | document } }`.
+   */
+  private async initializeRestUpload(
+    kind: 'images' | 'documents',
+    accessToken: string,
+    ownerUrn: string,
+  ): Promise<{ uploadUrl: string; urn: string }> {
+    const noun = kind === 'images' ? 'image' : 'document';
+    const response = await fetch(
+      `${LINKEDIN_REST_URL}/${kind}?action=initializeUpload`,
+      {
+        method: 'POST',
+        headers: this.restHeaders(accessToken),
+        body: JSON.stringify({ initializeUploadRequest: { owner: ownerUrn } }),
+      },
+    );
+
+    if (!response.ok) {
+      const reason = await this.restFailure(response);
+      this.logger.error(
+        `Failed to initialize LinkedIn ${noun} upload: ${reason}`,
+      );
+      throw new BadRequestException(
+        `Failed to start the LinkedIn ${noun} upload (${reason})`,
+      );
+    }
+
+    const data = (await response.json()) as {
+      value?: { uploadUrl?: string; image?: string; document?: string };
+    };
+    const urn = kind === 'images' ? data.value?.image : data.value?.document;
+    if (!data.value?.uploadUrl || !urn) {
+      throw new BadRequestException(
+        `LinkedIn returned no upload target for the ${noun}`,
+      );
+    }
+    return { uploadUrl: data.value.uploadUrl, urn };
+  }
+
+  /**
+   * Fetch the file from our storage and PUT it to LinkedIn's upload URL.
+   *
+   * LinkedIn states that the image upload call requires the OAuth token in
+   * `Authorization` (unlike the legacy video upload, which refuses one), and
+   * the Documents API's own example sends it too — so it is sent for both.
+   */
+  private async uploadToRestAsset(
+    sourceUrl: string,
+    uploadUrl: string,
+    accessToken: string,
+    noun: 'image' | 'document',
+    maxBytes?: number,
+  ): Promise<void> {
+    let source: Response;
+    try {
+      source = await fetch(sourceUrl);
+    } catch (error) {
+      this.logger.error(`Network error downloading ${noun}: ${error}`);
+      throw new BadRequestException(
+        `Failed to download the ${noun} from ${sourceUrl}: Network error`,
+      );
+    }
+    if (!source.ok) {
+      throw new BadRequestException(
+        `Failed to download the ${noun} from ${sourceUrl} (HTTP ${source.status})`,
+      );
+    }
+
+    const tooLarge = () =>
+      new BadRequestException(
+        `The ${noun} is larger than LinkedIn's ${Math.round((maxBytes ?? 0) / (1024 * 1024))} MB limit`,
+      );
+    // Refuse on the declared size first, so a 400 MB file is never buffered.
+    const declared = Number(source.headers.get('content-length'));
+    if (maxBytes && declared > maxBytes) throw tooLarge();
+
+    const bytes = await source.arrayBuffer();
+    if (maxBytes && bytes.byteLength > maxBytes) throw tooLarge();
+
+    const upload = await fetch(uploadUrl, {
+      method: 'PUT',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/octet-stream',
+      },
+      body: bytes,
+    });
+    if (!upload.ok) {
+      const reason = await this.restFailure(upload);
+      this.logger.error(`Failed to upload ${noun} to LinkedIn: ${reason}`);
+      throw new BadRequestException(
+        `Failed to upload the ${noun} to LinkedIn (${reason})`,
+      );
+    }
+  }
+
+  /** `POST /rest/posts`; the new post's URN is the `x-restli-id` header. */
+  private async createRestPost(
+    accessToken: string,
+    body: Record<string, unknown>,
+    what: string,
+  ): Promise<{ postId: string }> {
+    const response = await fetch(`${LINKEDIN_REST_URL}/posts`, {
+      method: 'POST',
+      headers: this.restHeaders(accessToken),
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const reason = await this.restFailure(response);
+      this.logger.error(`Failed to create LinkedIn ${what}: ${reason}`);
+      throw new BadRequestException(
+        `Failed to create the LinkedIn ${what} (${reason})`,
+      );
+    }
+
+    const fromHeader = response.headers.get('x-restli-id');
+    if (fromHeader) return { postId: fromHeader };
+    const data = (await response.json().catch(() => ({}))) as { id?: string };
+    if (!data.id) {
+      throw new BadRequestException(`LinkedIn returned no ID for the ${what}`);
+    }
+    return { postId: data.id };
+  }
+
+  /** The fields every versioned post carries, whatever its content. */
+  private restPostEnvelope(
+    authorUrn: string,
+    commentary: string,
+    visibility: 'PUBLIC' | 'CONNECTIONS',
+    disableReshare: boolean,
+  ) {
+    return {
+      author: authorUrn,
+      commentary,
+      // `CONNECTIONS` is a member-only audience; a page can only post publicly.
+      visibility: authorUrn.startsWith('urn:li:organization:')
+        ? 'PUBLIC'
+        : visibility,
+      distribution: {
+        feedDistribution: 'MAIN_FEED',
+        targetEntities: [],
+        thirdPartyDistributionChannels: [],
+      },
+      lifecycleState: 'PUBLISHED',
+      isReshareDisabledByAuthor: disableReshare,
+    };
+  }
+
+  /**
+   * A PDF (or PPT/PPTX/DOC/DOCX) post.
+   *
+   * Documents API `initializeUpload` -> PUT the file -> Posts API with
+   * `content.media = { title, id: urn:li:document:… }`. The `title` is
+   * required for documents (stated). The file is not polled for readiness:
+   * the Posts API publishes a post whose media is still processing as
+   * `PUBLISH_REQUESTED` and finishes it asynchronously (stated), and a
+   * token with only `w_member_social` cannot read assets back anyway.
+   */
+  async createDocumentPost(
+    accessToken: string,
+    authorUrn: string,
+    commentary: string,
+    documentUrl: string,
+    title: string,
+    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    disableReshare: boolean = false,
+  ): Promise<{ postId: string }> {
+    const { uploadUrl, urn } = await this.initializeRestUpload(
+      'documents',
+      accessToken,
+      authorUrn,
+    );
+    await this.uploadToRestAsset(
+      documentUrl,
+      uploadUrl,
+      accessToken,
+      'document',
+      MAX_DOCUMENT_BYTES,
+    );
+
+    return this.createRestPost(
+      accessToken,
+      {
+        ...this.restPostEnvelope(
+          authorUrn,
+          commentary,
+          visibility,
+          disableReshare,
+        ),
+        content: { media: { title, id: urn } },
+      },
+      'document post',
+    );
   }
 }
