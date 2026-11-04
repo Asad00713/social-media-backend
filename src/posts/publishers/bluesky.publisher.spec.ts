@@ -22,6 +22,7 @@ describe('BlueskyPublisher link card', () => {
       | 'createVideoPost'
       | 'createLinkPost'
       | 'setPostReplyControl'
+      | 'setPostQuoteControl'
     >
   >;
 
@@ -53,6 +54,7 @@ describe('BlueskyPublisher link card', () => {
       createVideoPost: jest.fn().mockResolvedValue(post('at://video')),
       createLinkPost: jest.fn().mockResolvedValue(post('at://link')),
       setPostReplyControl: jest.fn().mockResolvedValue(undefined),
+      setPostQuoteControl: jest.fn().mockResolvedValue(undefined),
     };
     publisher = new BlueskyPublisher(service as unknown as BlueskyService);
   });
@@ -158,6 +160,27 @@ describe('BlueskyPublisher link card', () => {
       );
       expect(service.createLinkPost.mock.calls[0][8]?.langs).toEqual(['ur']);
       expect(service.createTextPost.mock.calls[0][4]?.langs).toEqual(['ur']);
+    });
+
+    it('labels the card post', async () => {
+      await publisher.publish(
+        options({ metadata: { linkCard: CARD, contentWarning: 'nudity' } }),
+      );
+      expect(service.createLinkPost.mock.calls[0][8]?.labels).toEqual([
+        'nudity',
+      ]);
+    });
+
+    it('writes the postgate for the card post', async () => {
+      await publisher.publish(
+        options({ metadata: { linkCard: CARD, allowQuotes: false } }),
+      );
+      expect(service.setPostQuoteControl).toHaveBeenCalledWith(
+        'jwt',
+        'did:plc:abc',
+        'at://link',
+        [{ $type: 'app.bsky.feed.postgate#disableRule' }],
+      );
     });
 
     it('gates a thread at the card post, once', async () => {

@@ -96,7 +96,44 @@ export interface BlueskyPostSettings {
   langs?: string[];
   replyControl?: BlueskyReplyControl;
   replyRules?: BlueskyReplyRules;
+  /**
+   * Whether other people may quote this post. Only an explicit `false`
+   * does anything: it writes a postgate that disables embedding. `true`
+   * and unset both mean "no record", which is how Bluesky says anyone may.
+   */
+  allowQuotes?: boolean;
+  /** Self-label values for the post, from `BLUESKY_SELF_LABELS`. */
+  labels?: BlueskySelfLabel[];
 }
+
+/**
+ * The self-labels a post may carry — the composer's "content warning".
+ *
+ * `com.atproto.label.defs#selfLabels` takes any string (up to 10 values,
+ * 128 chars each); the lexicon's `labelValue` lists `!hide`, `!warn`,
+ * `!no-unauthenticated`, `porn`, `sexual`, `nudity`, `graphic-media` and
+ * `bot` as the known values. Only the four content ones are accepted
+ * here, because an author's warning has no business setting a moderation
+ * directive like `!hide` on its own post.
+ */
+export const BLUESKY_SELF_LABELS = [
+  'sexual',
+  'nudity',
+  'porn',
+  'graphic-media',
+] as const;
+export type BlueskySelfLabel = (typeof BLUESKY_SELF_LABELS)[number];
+
+/**
+ * The most a link card's thumbnail may weigh. `app.bsky.embed.external`
+ * sets `thumb` to `maxSize: 1000000` (stated in the lexicon); a larger blob
+ * gets the whole record refused, so the post would fail for the sake of a
+ * picture.
+ */
+export const MAX_LINK_THUMB_BYTES = 1_000_000;
+
+/** `embeddingRules` entry that turns quoting off. */
+const POSTGATE_DISABLE_RULE = 'app.bsky.feed.postgate#disableRule';
 
 /** `allow` entries, in the lexicon's own spelling. */
 const THREADGATE_RULES: Record<keyof BlueskyReplyRules, string> = {
@@ -129,6 +166,45 @@ export function threadgateAllow(
   return (Object.keys(THREADGATE_RULES) as (keyof BlueskyReplyRules)[])
     .filter((key) => rules[key])
     .map((key) => THREADGATE_RULES[key]);
+}
+
+/**
+ * The `embeddingRules` for a postgate, or null when none should be written.
+ *
+ * The OPPOSITE default to the threadgate: there an empty `allow` means
+ * nobody may reply, here an empty (or absent) `embeddingRules` means anyone
+ * may quote. So allowing quotes is the absence of a record, and only an
+ * explicit `false` writes one — with the single rule the lexicon defines.
+ */
+export function postgateEmbeddingRules(
+  settings: BlueskyPostSettings | undefined,
+): { $type: string }[] | null {
+  if (settings?.allowQuotes !== false) return null;
+  return [{ $type: POSTGATE_DISABLE_RULE }];
+}
+
+/**
+ * The `labels` field of a post record, or undefined.
+ *
+ * It is a union, so it carries its own `$type` — a bare `{ values }` is
+ * rejected by the PDS's lexicon validation rather than ignored.
+ */
+export function postSelfLabels(
+  settings: BlueskyPostSettings | undefined,
+):
+  | { $type: 'com.atproto.label.defs#selfLabels'; values: { val: string }[] }
+  | undefined {
+  const values = (settings?.labels ?? [])
+    .filter((l): l is BlueskySelfLabel =>
+      (BLUESKY_SELF_LABELS as readonly string[]).includes(l),
+    )
+    // A label listed twice is one label. (With four allowed values this
+    // also keeps the list far under the lexicon's cap of 10.)
+    .filter((l, i, all) => all.indexOf(l) === i)
+    .map((val) => ({ val }));
+  return values.length > 0
+    ? { $type: 'com.atproto.label.defs#selfLabels', values }
+    : undefined;
 }
 
 /** The languages to send, or undefined. */
@@ -288,6 +364,8 @@ export class BlueskyService {
 
     const langs = postLangs(settings);
     if (langs) record.langs = langs;
+    const labels = postSelfLabels(settings);
+    if (labels) record.labels = labels;
 
     return this.createRecord(accessJwt, did, 'app.bsky.feed.post', record);
   }
@@ -351,6 +429,8 @@ export class BlueskyService {
 
     const langs = postLangs(settings);
     if (langs) record.langs = langs;
+    const labels = postSelfLabels(settings);
+    if (labels) record.labels = labels;
 
     return this.createRecord(accessJwt, did, 'app.bsky.feed.post', record);
   }
@@ -424,6 +504,8 @@ export class BlueskyService {
 
     const langs = postLangs(settings);
     if (langs) record.langs = langs;
+    const labels = postSelfLabels(settings);
+    if (labels) record.labels = labels;
 
     return this.createRecord(accessJwt, did, 'app.bsky.feed.post', record);
   }
@@ -720,10 +802,23 @@ export class BlueskyService {
         const thumbResponse = await fetch(linkThumbUrl);
         if (thumbResponse.ok) {
           const thumbBuffer = Buffer.from(await thumbResponse.arrayBuffer());
-          const mimeType =
-            thumbResponse.headers.get('content-type') || 'image/jpeg';
-          const blob = await this.uploadBlob(accessJwt, thumbBuffer, mimeType);
-          external.thumb = blob;
+          if (thumbBuffer.length > MAX_LINK_THUMB_BYTES) {
+            // The composer refuses such a file up front; this is for a
+            // thumbnail that arrived another way. The card goes out without
+            // its picture rather than the post failing.
+            this.logger.warn(
+              `Link thumbnail is ${thumbBuffer.length} bytes, over Bluesky's ${MAX_LINK_THUMB_BYTES} limit — posting the card without it`,
+            );
+          } else {
+            const mimeType =
+              thumbResponse.headers.get('content-type') || 'image/jpeg';
+            const blob = await this.uploadBlob(
+              accessJwt,
+              thumbBuffer,
+              mimeType,
+            );
+            external.thumb = blob;
+          }
         }
       } catch (error) {
         this.logger.warn(`Failed to upload link thumbnail: ${error}`);
@@ -756,6 +851,8 @@ export class BlueskyService {
 
     const langs = postLangs(settings);
     if (langs) record.langs = langs;
+    const labels = postSelfLabels(settings);
+    if (labels) record.labels = labels;
 
     return this.createRecord(accessJwt, did, 'app.bsky.feed.post', record);
   }
@@ -810,6 +907,61 @@ export class BlueskyService {
     if (!put.ok) {
       throw new Error(
         `Bluesky threadgate write failed: ${put.status} ${await put.text()}`,
+      );
+    }
+  }
+
+  /**
+   * Stop other people quoting a post we just created.
+   *
+   * Like the threadgate, this is its own record rather than a field on the
+   * post: `app.bsky.feed.postgate`, stored under the SAME rkey as the post
+   * it governs (the lexicon requires the keys to match and the records to
+   * live in the same repo). Unlike the threadgate it is per POST, not per
+   * conversation — it governs who can embed THIS post — so a thread writes
+   * one for each of its posts.
+   *
+   * Only called when quoting is off: an absent record already means anyone
+   * may quote, and `postgateEmbeddingRules` returns null for that.
+   */
+  async setPostQuoteControl(
+    accessJwt: string,
+    did: string,
+    postUri: string,
+    embeddingRules: { $type: string }[],
+  ): Promise<void> {
+    const parts = postUri.match(
+      /^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/,
+    );
+    if (!parts) {
+      throw new BadRequestException({
+        reason: 'Cannot set quote control: the post URI is not recognisable',
+      });
+    }
+
+    const put = await fetch(`${this.apiBaseUrl}/com.atproto.repo.putRecord`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessJwt}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        repo: did,
+        collection: 'app.bsky.feed.postgate',
+        // Same rkey as the post. A brand-new post, so nothing to merge and
+        // no `swapRecord` to carry.
+        rkey: parts[2],
+        record: {
+          $type: 'app.bsky.feed.postgate',
+          post: postUri,
+          embeddingRules,
+          createdAt: new Date().toISOString(),
+        },
+      }),
+    });
+    if (!put.ok) {
+      throw new Error(
+        `Bluesky postgate write failed: ${put.status} ${await put.text()}`,
       );
     }
   }
