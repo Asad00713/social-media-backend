@@ -242,6 +242,15 @@ export interface TemplateContent {
   media?: TemplateMedia[];
   hashtags: string[];
   defaultCaption?: string;
+  /**
+   * Each channel's own settings (its `platformSpecific`), by platform, minus
+   * the first comment, which has its own key below. Optional for the same
+   * reason as `media`: `content` is jsonb, so a row written before this
+   * existed simply has no such key.
+   */
+  platformSettings?: Record<string, Record<string, unknown>>;
+  /** Each channel's first comment, by platform. */
+  firstComments?: Record<string, string>;
 }
 
 export const mediaTemplates = pgTable(
