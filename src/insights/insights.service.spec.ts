@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import { getTableName, type Table } from 'drizzle-orm';
 import type { PublishedPost } from '../post-performance/post-performance';
 import { datesBetween, utcToday, windowOf } from '../post-performance/period';
@@ -731,5 +732,245 @@ describe('InsightsService.csv', () => {
       NOW,
     );
     expect(body).toContain(`,${long},`);
+  });
+});
+
+describe('InsightsService.postDetail', () => {
+  const HOUR = 3_600_000;
+  const CH = [
+    ...CHANNELS,
+    { id: 3, platform: 'tiktok', accountName: 'tt', ...live },
+  ];
+  const day = (iso: string) => ({
+    publishedOn: iso,
+    publishedAt: `${iso}T10:00:00.000Z`,
+  });
+  const snapRow = (
+    postId: string,
+    publishedAt: string,
+    h: number,
+    reach: number,
+  ) => ({
+    post_id: postId,
+    snapshot_at: new Date(new Date(publishedAt).getTime() + h * HOUR),
+    likes: 1,
+    comments: 0,
+    shares: 0,
+    impressions: reach * 2,
+    reach,
+  });
+  type Snaps = Record<string, ReturnType<typeof snapRow>[]>;
+
+  /** The subject plus the rest of its channel sample, wired to doubles. */
+  function setup(
+    subject: PublishedPost,
+    others: PublishedPost[] = [],
+    snaps: Snaps = {},
+    ws = 'ws1',
+  ) {
+    const { db } = fakeDb([CH, TZ]);
+    const all = [subject, ...others];
+    const repo = {
+      publishedPostsByIds: jest
+        .fn()
+        .mockImplementation((w: string, ids: string[]) =>
+          Promise.resolve(
+            w === 'ws1' ? all.filter((p) => ids.includes(p.postId)) : [],
+          ),
+        ),
+      publishedPosts: jest
+        .fn()
+        .mockImplementation(
+          (_w: string, ch: number[], from: string, before: string) =>
+            Promise.resolve(
+              all.filter(
+                (p) =>
+                  ch.includes(p.channelId) &&
+                  p.publishedOn >= from &&
+                  p.publishedOn < before,
+              ),
+            ),
+        ),
+      snapshotsWithin: jest
+        .fn()
+        .mockImplementation((ids: string[]) =>
+          Promise.resolve(ids.flatMap((id) => snaps[id] ?? [])),
+        ),
+    };
+    const svc = new InsightsService(db as any, repo as any);
+    return {
+      repo,
+      run: (postId = subject.postId, channelId = subject.channelId) =>
+        svc.postDetail(ws, postId, channelId, NOW),
+    };
+  }
+
+  const text = (n: number, eng: number, date: string) =>
+    post({ postId: `t${n}`, likes: eng, ...day(date) });
+  const video = (n: number, eng: number, date: string) =>
+    post({
+      postId: `v${n}`,
+      likes: eng,
+      mediaItems: [{ url: 'https://x/v.mp4', type: 'video' }],
+      ...day(date),
+    });
+
+  /** Sundays carry videos, Mondays text posts, all 10:00Z (15:00 in Karachi). */
+  const sample = () => ({
+    subject: video(0, 30, '2026-09-20'),
+    others: [
+      video(1, 20, '2026-09-13'),
+      video(2, 20, '2026-09-06'),
+      video(3, 20, '2026-08-30'),
+      ...[
+        '2026-09-21',
+        '2026-09-14',
+        '2026-09-07',
+        '2026-08-31',
+        '2026-08-24',
+        '2026-08-17',
+      ].map((d, i) => text(i, 8, d)),
+    ],
+  });
+
+  it('another workspace id gets 404', async () => {
+    const { subject, others } = sample();
+    const { run } = setup(subject, others, {}, 'ws-other');
+    await expect(run()).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('a channel the post did not publish to gets 404', async () => {
+    const { subject, others } = sample();
+    const { run } = setup(subject, others);
+    await expect(run('v0', 2)).rejects.toBeInstanceOf(NotFoundException);
+  });
+
+  it('wires usual, rank, verdict and both reasons from the channel sample', async () => {
+    const { subject, others } = sample();
+    const d = await setup(subject, others).run();
+    expect(d.rank).toBe(1);
+    expect(d.verdict).toEqual({
+      kind: 'up',
+      title: '3.8× your usual engagement',
+      body: 'Your best post this month.',
+    });
+    expect(d.reasons).toEqual([
+      'A video. Your videos get 2.5× the engagement of your text posts.',
+      'Posted Sun 3 PM, one of your best times.',
+    ]);
+    // Ten posts report likes: six 8s, three 20s and the 30 -> median 8.
+    expect(d.tiles.find((t) => t.key === 'likes')).toEqual({
+      key: 'likes',
+      value: 30,
+      usual: 8,
+    });
+  });
+
+  it('rank is among the workspace posts of the last 30 days, null outside them', async () => {
+    const { subject, others } = sample();
+    const better = post({
+      postId: 'big',
+      channelId: 2,
+      likes: 500,
+      ...day('2026-09-25'),
+    });
+    expect((await setup(subject, [...others, better]).run()).rank).toBe(2);
+    const old = { ...subject, ...day('2026-07-01') };
+    expect((await setup(old, others).run()).rank).toBeNull();
+  });
+
+  it('fullContent is the whole caption, post.content stays a preview', async () => {
+    const long = 'Line one\n' + 'x'.repeat(400);
+    const d = await setup(
+      post({ postId: 'long', content: long, likes: 1, ...day('2026-09-20') }),
+    ).run();
+    expect(d.post.fullContent).toBe(long);
+    expect(d.post.content.length).toBeLessThan(long.length);
+    expect(d.post.title).toBe('Line one');
+    expect(d.post.publishedAt).toBe('2026-09-20T10:00:00.000Z');
+  });
+
+  it('updatedAt is the latest snapshot time', async () => {
+    const d = await setup(
+      post({
+        postId: 'u',
+        likes: 1,
+        syncedAt: '2026-09-30T09:00:00.000Z',
+        ...day('2026-09-20'),
+      }),
+    ).run();
+    expect(d.post.updatedAt).toBe('2026-09-30T09:00:00.000Z');
+  });
+
+  it('timeline metric: reach for IG, impressions for TikTok, engagements for LinkedIn', async () => {
+    for (const [channelId, metric] of [
+      [1, 'reach'],
+      [3, 'impressions'],
+      [2, 'engagements'],
+    ] as const) {
+      const d = await setup(
+        post({ postId: 'm', channelId, likes: 1, ...day('2026-09-20') }),
+      ).run();
+      expect(d.timeline.metric).toBe(metric);
+    }
+  });
+
+  it('imported post: no_early_data', async () => {
+    const p = post({
+      postId: 'imp',
+      imported: true,
+      likes: 5,
+      ...day('2026-09-20'),
+    });
+    const d = await setup(p, [], {
+      imp: [30, 40, 50].map((h) => snapRow('imp', p.publishedAt, h, 10)),
+    }).run();
+    expect(d.timeline.status).toBe('no_early_data');
+    expect(d.timeline.values.every((v) => v === null)).toBe(true);
+    expect(d.timeline.usual).toBeNull();
+  });
+
+  it('a 12h old post: collecting, values null after now', async () => {
+    const publishedAt = new Date(NOW.getTime() - 12 * HOUR).toISOString();
+    const p = post({
+      postId: 'new',
+      likes: 5,
+      publishedOn: publishedAt.slice(0, 10),
+      publishedAt,
+    });
+    const d = await setup(p, [], {
+      new: [1, 5, 11].map((h) => snapRow('new', publishedAt, h, h * 10)),
+    }).run();
+    expect(d.timeline.status).toBe('collecting');
+    expect(d.timeline.hours).toEqual([
+      0, 1, 2, 3, 4, 6, 8, 12, 16, 20, 24, 30, 36, 42, 48,
+    ]);
+    expect(d.timeline.values.slice(0, 8)).toEqual([
+      0, 10, 10, 10, 10, 50, 50, 110,
+    ]);
+    expect(d.timeline.values.slice(8).every((v) => v === null)).toBe(true);
+    expect(d.verdict.kind).toBe('settling');
+    expect(d.reasons).toEqual([]);
+  });
+
+  it('the usual curve is the median of five comparable posts, null under five', async () => {
+    const { subject, others } = sample();
+    const snaps: Snaps = {
+      v0: [1, 5, 30].map((h) => snapRow('v0', subject.publishedAt, h, 100)),
+    };
+    for (const o of others) {
+      snaps[o.postId] = [1, 5, 30].map((h) =>
+        snapRow(o.postId, o.publishedAt, h, 50),
+      );
+    }
+    const d = await setup(subject, others, snaps).run();
+    expect(d.timeline.status).toBe('ok');
+    expect(d.timeline.values[1]).toBe(100);
+    expect(d.timeline.usual![1]).toBe(50);
+    expect(d.timeline.usual![11]).toBe(50);
+
+    const few = Object.fromEntries(Object.entries(snaps).slice(0, 5));
+    const d2 = await setup(subject, others, few).run();
+    expect(d2.timeline.usual).toBeNull();
   });
 });

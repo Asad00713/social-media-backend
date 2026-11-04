@@ -26,6 +26,20 @@ export interface PublishedPostRow {
   media_type: string | null;
 }
 
+/** `snapshotsWithin` reads this many of the newest posts, no more. */
+export const SNAPSHOT_POST_CAP = 100;
+
+/** One snapshot taken within the first hours of a post. */
+export interface SnapshotWithinRow {
+  post_id: string;
+  snapshot_at: Date | string;
+  likes: number | null;
+  comments: number | null;
+  shares: number | null;
+  impressions: number | null;
+  reach: number | null;
+}
+
 const count = (v: string | number | null): number | null =>
   v === null ? null : Number(v);
 
@@ -160,6 +174,48 @@ export class PostPerformanceRepository {
         AND p.status IN ('published', 'partially_published')
         AND p.id IN (${ids})`,
     );
+  }
+
+  /**
+   * The given posts' snapshots on one channel taken up to `hours` after each
+   * post went out, oldest first: the raw material of the first-48-hours
+   * curve. Only the 100 most recent of `postIds` are read. The caller passes
+   * ids it already scoped to a workspace (`publishedPosts`); none is checked
+   * here.
+   */
+  async snapshotsWithin(
+    postIds: string[],
+    channelId: number,
+    hours: number,
+  ): Promise<SnapshotWithinRow[]> {
+    if (!postIds.length) return [];
+    const ids = sql.join(
+      postIds.map((id) => sql`${id}::uuid`),
+      sql`, `,
+    );
+    const result = await this.db.execute(sql`
+      WITH recent AS (
+        SELECT p.id, p.published_at
+        FROM posts p
+        WHERE p.id IN (${ids})
+        ORDER BY p.published_at DESC
+        LIMIT ${SNAPSHOT_POST_CAP}
+      )
+      SELECT
+        s.post_id,
+        s.snapshot_at,
+        s.likes_count AS likes,
+        s.comments_count AS comments,
+        s.shares_count AS shares,
+        s.impressions_count AS impressions,
+        s.reach_count AS reach
+      FROM recent r
+      JOIN post_metric_snapshots s ON s.post_id = r.id
+      WHERE s.channel_id = ${channelId}
+        AND s.snapshot_at <= r.published_at + make_interval(hours => ${hours}::int)
+      ORDER BY s.snapshot_at ASC, s.id ASC
+    `);
+    return result.rows as unknown as SnapshotWithinRow[];
   }
 
   /**

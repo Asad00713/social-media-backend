@@ -1,3 +1,4 @@
+import { NotFoundException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { datesBetween, utcToday, windowOf } from '../post-performance/period';
 import { PostPerformanceRepository } from '../post-performance/post-performance.repository';
@@ -1034,5 +1035,105 @@ describeDb('InsightsService.overview', () => {
       };
       expect(await tz('Asia/Karachi')).toBe('Asia/Karachi');
       expect(await tz('Mars/Olympus')).toBe('UTC');
+    }));
+});
+
+describeDb('PostPerformanceRepository.snapshotsWithin', () => {
+  const HOUR = 3_600_000;
+  const run = (
+    fn: (
+      repo: PostPerformanceRepository,
+      svc: InsightsService,
+      client: PoolClient,
+    ) => Promise<void>,
+  ) =>
+    withRollbackDb([], async (db, client) => {
+      const repo = new PostPerformanceRepository(db);
+      await fn(repo, new InsightsService(db, repo), client);
+    });
+
+  const publishedAtOf = (ageDays: number) =>
+    new Date(NOW.getTime() - ageDays * DAY);
+
+  /** A snapshot `h` hours after the post went out. */
+  async function snapAfter(
+    client: PoolClient,
+    postId: string,
+    channelId: number,
+    ageDays: number,
+    h: number,
+    reach: number,
+  ) {
+    const at = new Date(publishedAtOf(ageDays).getTime() + h * HOUR);
+    await client.query(
+      `INSERT INTO post_metric_snapshots
+         (post_id, channel_id, snapshot_at, age_bucket, likes_count, comments_count, shares_count, impressions_count, reach_count, fetched_at, sync_status)
+       VALUES ($1, $2, $3::timestamptz, '1h', 1, 0, 0, $4, $4, $3::timestamptz, 'ok')`,
+      [postId, channelId, at.toISOString(), reach],
+    );
+  }
+
+  it('returns snapshots up to the hour limit after publishing, oldest first, one channel only', () =>
+    run(async (repo, _svc, client) => {
+      const w = await workspace(client, 'sw1');
+      const [c1, c2] = [await w.channel('a'), await w.channel('b')];
+      const p = await publish(client, w, [c1, c2], 5);
+      await snapAfter(client, p, c1, 5, 30, 30);
+      await snapAfter(client, p, c1, 5, 1, 10);
+      await snapAfter(client, p, c1, 5, 48, 48);
+      await snapAfter(client, p, c1, 5, 49, 49); // past the limit
+      await snapAfter(client, p, c2, 5, 2, 99); // other channel
+
+      const rows = await repo.snapshotsWithin([p], c1, 48);
+      expect(rows.map((r) => Number(r.reach))).toEqual([10, 30, 48]);
+      expect(rows[0]).toMatchObject({
+        post_id: p,
+        likes: 1,
+        comments: 0,
+        shares: 0,
+        impressions: 10,
+      });
+      expect(await repo.snapshotsWithin([], c1, 48)).toEqual([]);
+    }));
+
+  it('reads only the 100 most recent posts', () =>
+    run(async (repo, _svc, client) => {
+      const w = await workspace(client, 'sw2');
+      const c = await w.channel('a');
+      const ids: string[] = [];
+      for (let i = 0; i < 101; i++) {
+        // age 1..101 days: the last one is the oldest
+        const p = await publish(client, w, [c], i + 1);
+        await snapAfter(client, p, c, i + 1, 1, 5);
+        ids.push(p);
+      }
+      const rows = await repo.snapshotsWithin(ids, c, 48);
+      expect(rows).toHaveLength(100);
+      expect(rows.some((r) => r.post_id === ids[100])).toBe(false);
+      expect(rows.some((r) => r.post_id === ids[0])).toBe(true);
+    }));
+
+  it('postDetail reads a real post end to end; another workspace gets 404', () =>
+    run(async (_repo, svc, client) => {
+      const w = await workspace(client, 'sw3');
+      const other = await workspace(client, 'sw3b');
+      const c = await w.channel('a');
+      const p = await publish(client, w, [c], 5);
+      for (const h of [1, 5, 30]) await snapAfter(client, p, c, 5, h, h * 10);
+      await snap(client, p, c, 24, counts(7, 140));
+
+      const d = await svc.postDetail(w.workspaceId, p, c, NOW);
+      expect(d.post.postId).toBe(p);
+      expect(d.timeline.status).toBe('ok');
+      expect(d.timeline.metric).toBe('impressions');
+      expect(d.timeline.values.slice(0, 3)).toEqual([0, 10, 10]);
+      expect(d.tiles.map((t) => t.key)).toContain('views');
+
+      await expect(
+        svc.postDetail(other.workspaceId, p, c, NOW),
+      ).rejects.toBeInstanceOf(NotFoundException);
+      await expect(
+        svc.postDetail(w.workspaceId, p, c + 1000, NOW),
+      ).rejects.toBeInstanceOf(NotFoundException);
     }));
 });

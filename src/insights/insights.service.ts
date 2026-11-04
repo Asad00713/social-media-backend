@@ -1,4 +1,4 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { Inject, Injectable, NotFoundException } from '@nestjs/common';
 import { and, desc, eq, gte, inArray, isNotNull, lt } from 'drizzle-orm';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
@@ -65,9 +65,9 @@ import { lookbackStartOf, usualsOf, type Usuals } from './lib/usual';
 import { multiplierOf, usualByChannel } from './lib/usual-multiplier';
 import { sql } from 'drizzle-orm';
 import { posts as postsTable } from '../drizzle/schema/posts.schema';
-import { isMeasured } from '../post-performance/engagement-stats';
+import { isMeasured, median } from '../post-performance/engagement-stats';
 import { loadWorkspaceTimezone } from '../planner/lib/workspace-time';
-import type { InsightsSignalsDto } from './dto/insights.dto';
+import type { InsightsSignalsDto, PostDetailDto } from './dto/insights.dto';
 import { InsightsTopicsRepository } from './insights-topics.repository';
 import {
   bestTimeGrid,
@@ -77,6 +77,35 @@ import {
 } from './lib/best-time';
 import { NEXT_FREE_WEEKS, nextFreeSlot } from './lib/next-free-slot';
 import { formatBars, topicBars } from './lib/what-works';
+import {
+  platformNameOf,
+  reasonsOf,
+  tilesOf,
+  topSlots,
+  verdictOf,
+} from './lib/post-detail';
+import {
+  TIMELINE_HOURS,
+  TIMELINE_SPAN_HOURS,
+  timelineMetricOf,
+  timelineStatus,
+  timelineValues,
+  usualCurve,
+  type TimelineSnap,
+} from './lib/timeline';
+import type { SnapshotWithinRow } from '../post-performance/post-performance.repository';
+
+/** "Your best post this month" looks at this many days of the workspace. */
+const RANK_DAYS = 30;
+
+const toSnap = (r: SnapshotWithinRow): TimelineSnap => ({
+  snapshotAt: r.snapshot_at,
+  likes: r.likes,
+  comments: r.comments,
+  shares: r.shares,
+  impressions: r.impressions,
+  reach: r.reach,
+});
 
 /** How far back a channel's post-level "usual" engagement looks. */
 const USUAL_WINDOW_DAYS = 90;
@@ -756,6 +785,150 @@ export class InsightsService {
       },
       // Next steps' rules come with B7.
       nextSteps: [],
+    };
+  }
+
+  /**
+   * One post on one channel, for the detail dialog: tiles with their usual,
+   * the verdict, why it did well, and the first 48 hours against the usual
+   * post's. A post or channel that isn't this workspace's is a 404, never a
+   * peek: every read here is workspace-scoped.
+   */
+  async postDetail(
+    workspaceId: string,
+    postId: string,
+    channelId: number,
+    now = new Date(),
+  ): Promise<PostDetailDto> {
+    const row = (
+      await this.postPerformance.publishedPostsByIds(workspaceId, [postId])
+    ).find((r) => r.channelId === channelId);
+    const social = await this.socialChannels(workspaceId);
+    const channel = social.find((c) => c.id === channelId);
+    if (!row || !channel) throw new NotFoundException('Post not found');
+
+    const platform = channel.platform;
+    const today = utcToday(now);
+    const sampleRange = usualSampleRange(today);
+    const [tz, sample, recent] = await Promise.all([
+      loadWorkspaceTimezone(this.db, workspaceId),
+      this.publishedPosts(
+        workspaceId,
+        [channelId],
+        sampleRange.from,
+        sampleRange.before,
+      ),
+      this.publishedPosts(
+        workspaceId,
+        social.map((c) => c.id),
+        addDays(isoDate(today), -RANK_DAYS),
+        sampleRange.before,
+      ),
+    ]);
+
+    const usual = usualByChannel(sample);
+    const post = toInsightPost(row, platform, { now, usual });
+    const usualMedian = median(usual.get(channelId) ?? []);
+
+    // Engagements among the workspace's last 30 days; 1 = best.
+    const inMonth = recent.some(
+      (p) => p.postId === postId && p.channelId === channelId,
+    );
+    const rank =
+      inMonth && isMeasured(row)
+        ? 1 +
+          recent.filter(
+            (p) => isMeasured(p) && engagementsOf(p) > post.engagements,
+          ).length
+        : null;
+
+    const verdict = verdictOf(
+      post,
+      usualMedian,
+      rank,
+      platformNameOf(platform),
+    );
+    let reasons: string[] = [];
+    if (verdict.kind === 'up') {
+      const settled = sample
+        .map((p) => toInsightPost(p, platform, { now }))
+        .filter((p) => isMeasured(p) && !p.isSettling);
+      reasons = reasonsOf(
+        post,
+        formatBars(settled),
+        topSlots(bestTimeGrid(settled, tz, 'engagements')),
+        tz,
+      );
+    }
+
+    return {
+      post: {
+        ...post,
+        fullContent: row.content,
+        publishedAt: row.publishedAt,
+        updatedAt: row.syncedAt,
+      },
+      rank,
+      tiles: tilesOf(row, sample),
+      verdict,
+      reasons,
+      timeline: await this.timelineOf(row, platform, sample, now),
+    };
+  }
+
+  /** The first 48 hours of `row` and the usual post's, from the channel's sample. */
+  private async timelineOf(
+    row: PublishedPost,
+    platform: string,
+    sample: PublishedPost[],
+    now: Date,
+  ): Promise<PostDetailDto['timeline']> {
+    const metric = timelineMetricOf(platform);
+    const others = sample.filter((p) => p.postId !== row.postId);
+    const [mine, theirs] = await Promise.all([
+      this.postPerformance.snapshotsWithin(
+        [row.postId],
+        row.channelId,
+        TIMELINE_SPAN_HOURS,
+      ),
+      this.postPerformance.snapshotsWithin(
+        others.map((p) => p.postId),
+        row.channelId,
+        TIMELINE_SPAN_HOURS,
+      ),
+    ]);
+    const hours = [...TIMELINE_HOURS];
+    const snaps = mine.map(toSnap);
+    const status = timelineStatus(snaps, row.publishedAt, now);
+    if (status === 'no_early_data') {
+      return {
+        metric,
+        status,
+        hours,
+        values: hours.map(() => null),
+        usual: null,
+      };
+    }
+
+    const byPost = new Map<string, TimelineSnap[]>();
+    for (const r of theirs) {
+      const list = byPost.get(r.post_id) ?? [];
+      list.push(toSnap(r));
+      byPost.set(r.post_id, list);
+    }
+    const curves = others.flatMap((p) => {
+      const s = byPost.get(p.postId);
+      if (!s || timelineStatus(s, p.publishedAt, now) === 'no_early_data') {
+        return [];
+      }
+      return [timelineValues(s, p.publishedAt, metric, now)];
+    });
+    return {
+      metric,
+      status,
+      hours,
+      values: timelineValues(snaps, row.publishedAt, metric, now),
+      usual: usualCurve(curves),
     };
   }
 
