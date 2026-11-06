@@ -122,6 +122,7 @@ export class PinterestPublisher extends BasePublisher {
             ? metadata.boardSectionId.trim() || undefined
             : undefined,
         extraImageUrls,
+        dominantColor: pickDominantColor(metadata),
       },
     );
 
@@ -156,6 +157,20 @@ function pickAltText(
   return typeof fromMedia === 'string' && fromMedia.trim()
     ? fromMedia.trim()
     : undefined;
+}
+
+/**
+ * The Pin's `dominant_color`, as Pinterest writes one ("#6E7874"), or
+ * undefined. Anything that is not a six-digit hex is not sent: an unknown
+ * shape is one more field the create call could reject the Pin over.
+ */
+export function pickDominantColor(
+  metadata: Record<string, unknown> | undefined,
+): string | undefined {
+  const raw = metadata?.dominantColor;
+  if (typeof raw !== 'string') return undefined;
+  const match = raw.trim().match(/^#?([0-9a-f]{6})$/i);
+  return match ? `#${match[1].toUpperCase()}` : undefined;
 }
 
 /**
