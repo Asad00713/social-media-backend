@@ -1577,7 +1577,7 @@ export class LinkedInService {
   private async downloadVideo(videoUrl: string): Promise<ArrayBuffer> {
     let source: Response;
     try {
-      source = await fetch(videoUrl);
+      source = await fetchPublicMedia(videoUrl);
     } catch (error) {
       this.logger.error(`Network error downloading video: ${error}`);
       throw new BadRequestException(
