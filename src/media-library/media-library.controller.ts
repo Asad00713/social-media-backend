@@ -22,6 +22,7 @@ import { TemplateService } from './services/template.service';
 import { TextSnippetService } from './services/text-snippet.service';
 import { SavedLinkService } from './services/saved-link.service';
 import { AltTextService } from './services/alt-text.service';
+import { AltTextForUrlDto } from './dto/alt-text-url.dto';
 import { RecycleBinService } from './services/recycle-bin.service';
 import { MediaUsageService } from './services/media-usage.service';
 import { CategoryZipService } from './services/category-zip.service';
@@ -244,6 +245,18 @@ export class MediaLibraryController {
     @Param('itemId') itemId: string,
   ) {
     return this.mediaItemService.findOne(workspaceId, itemId);
+  }
+
+  /** Composer: alt text for a draft photo that is not a Library item. */
+  @Post('alt-text')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async generateAltTextForUrl(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
+    @Body() dto: AltTextForUrlDto,
+  ) {
+    return this.altText.generateForUrl(workspaceId, user.userId, dto.url);
   }
 
   @Post('items/:itemId/alt-text')

@@ -33,6 +33,9 @@ export const AI_OPERATION_COSTS: Record<string, number> = {
   speech_to_text: 5, // Voice input transcription
   suggest_reply: 5, // one inbox reply draft
   first_week_draft: 5, // one drafted post of the Home "first week"
+  finish_draft: 5, // composer Maestro: continue a half-written caption
+  link_to_post: 5, // composer Maestro: a post from a page's title/description
+  fill_blanks: 5, // composer Maestro: template {{blanks}} from stated facts
   // Tier 3 - Advanced (8 tokens)
   generate_ideas: 8,
   generate_youtube_metadata: 8,
@@ -40,6 +43,7 @@ export const AI_OPERATION_COSTS: Record<string, number> = {
   generate_caption_variants: 8, // 1–4 captions from one idea, billed as one unit
   analyze_post: 8,
   generate_per_channel: 8,
+  fit_channels: 8, // composer Maestro: one caption adapted per channel, one unit
   brand_learn: 8, // read a brand's posts into a one-line profile (Home first week)
   // Tier 4 - Complex (10 tokens)
   generate_thread: 10,
