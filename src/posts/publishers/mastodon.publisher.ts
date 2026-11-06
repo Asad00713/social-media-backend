@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import {
+  MASTODON_QUOTE_API_VERSION,
   MastodonService,
   type MastodonQuoteApprovalPolicy,
 } from '../../channels/services/mastodon.service';
@@ -30,6 +31,19 @@ function pickQuotePolicy(
   return QUOTE_POLICIES.find((policy) => policy === value);
 }
 
+/** An https link to a post, as `/api/v2/search` will resolve one. */
+const POST_LINK = /^https:\/\/[^/\s]+\.[^/\s]+\/\S*$/i;
+
+/** The pasted link of the post to quote (the publisher's own key), or undefined. */
+function draftQuoteLink(
+  metadata: Record<string, any> | undefined,
+): string | undefined {
+  const link: unknown = metadata?.quotePostUrl;
+  return typeof link === 'string' && link.trim() !== ''
+    ? link.trim()
+    : undefined;
+}
+
 /**
  * Mastodon publisher — calls MastodonService against the channel's
  * configured instance URL. Honours metadata.visibility, language, contentWarning,
@@ -46,7 +60,11 @@ export class MastodonPublisher extends BasePublisher {
   }
 
   validate(options: PublishOptions): void {
-    const { content, mediaItems } = options;
+    const { content, mediaItems, metadata } = options;
+    const quoteLink = draftQuoteLink(metadata);
+    if (quoteLink && !POST_LINK.test(quoteLink)) {
+      throw new Error(`"${quoteLink}" is not a link to a post`);
+    }
     if (!content && mediaItems.length === 0) {
       throw new Error('Mastodon post must have text or media');
     }
@@ -76,6 +94,16 @@ export class MastodonPublisher extends BasePublisher {
       );
     }
 
+    // The quote is settled BEFORE anything is uploaded or posted, so a
+    // server too old to quote, or a link it cannot find, fails the publish
+    // with nothing live. An older server would otherwise drop the unknown
+    // parameter (inferred) and publish text about a post nobody can see.
+    const quotedStatusId = await this.resolveQuote(
+      instanceUrl,
+      accessToken,
+      draftQuoteLink(metadata),
+    );
+
     // Thread mode: if metadata.thread is a non-empty array > 1, publish as a reply chain
     const thread = metadata?.thread as
       | Array<{
@@ -93,6 +121,7 @@ export class MastodonPublisher extends BasePublisher {
         // The composer's Language row. `createStatus` has always set
         // `body.language` when given it; nothing was passing it.
         language: metadata?.language as string | undefined,
+        quotedStatusId,
       });
     }
 
@@ -131,6 +160,7 @@ export class MastodonPublisher extends BasePublisher {
         // forwarding a value left over from before the switch would apply
         // a setting nobody can see.
         quoteApprovalPolicy: pickQuotePolicy(metadata),
+        quotedStatusId,
       },
     );
 
@@ -138,6 +168,32 @@ export class MastodonPublisher extends BasePublisher {
       platformPostId: status.id,
       platformPostUrl: status.url,
     };
+  }
+
+  /**
+   * The local id of the status to quote, or undefined when there is none.
+   *
+   * Throws when the server's API is older than 4.5's (version 7): there is
+   * no way to quote there, and posting without the quote would publish
+   * something other than what was composed.
+   */
+  private async resolveQuote(
+    instanceUrl: string,
+    accessToken: string,
+    link: string | undefined,
+  ): Promise<string | undefined> {
+    if (!link) return undefined;
+    const version = await this.mastodonService.getApiVersion(instanceUrl);
+    if (version < MASTODON_QUOTE_API_VERSION) {
+      throw new Error(
+        'This Mastodon server does not support quote posts (needs Mastodon 4.5 or later) — remove the quote to publish',
+      );
+    }
+    return this.mastodonService.resolveStatusUrl(
+      instanceUrl,
+      accessToken,
+      link,
+    );
   }
 
   private async publishThread(
@@ -152,6 +208,12 @@ export class MastodonPublisher extends BasePublisher {
       sensitive: boolean;
       spoilerText?: string;
       language?: string;
+      /**
+       * Post 1 only. DECISION (reversible here): the design offers "Quote a
+       * post" on a thread too, and the quote belongs with the post that
+       * opens the conversation rather than repeated on every reply.
+       */
+      quotedStatusId?: string;
     },
   ): Promise<PublishResult> {
     let replyToId: string | undefined;
@@ -192,6 +254,7 @@ export class MastodonPublisher extends BasePublisher {
             language: baseOptions.language,
             mediaIds,
             inReplyToId: replyToId,
+            quotedStatusId: i === 0 ? baseOptions.quotedStatusId : undefined,
           },
         );
         if (!rootId) {
