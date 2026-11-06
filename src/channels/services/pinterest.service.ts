@@ -413,6 +413,11 @@ export class PinterestService {
        * carousel is a different source_type, not an extra field.
        */
       extraImageUrls?: string[];
+      /**
+       * `dominant_color` — "Dominant pin color. Hex number, e.g.
+       * #6E7874" (PinCreate, Pinterest's generated API client docs).
+       */
+      dominantColor?: string;
     },
   ): Promise<{ pinId: string; pinUrl?: string }> {
     const isVideo = options?.mediaType === 'video';
@@ -454,6 +459,10 @@ export class PinterestService {
 
     if (options?.boardSectionId) {
       body.board_section_id = options.boardSectionId;
+    }
+
+    if (options?.dominantColor) {
+      body.dominant_color = options.dominantColor;
     }
 
     // Only ever sent as a declaration, never as a denial: the field is a
@@ -512,7 +521,11 @@ export class PinterestService {
     title: string,
     description: string,
     videoUrl: string,
-    options?: { link?: string; videoCoverImageUrl?: string },
+    options?: {
+      link?: string;
+      videoCoverImageUrl?: string;
+      dominantColor?: string;
+    },
   ): Promise<{ pinId: string; pinUrl?: string }> {
     // Step 1: Register media upload
     const registerResponse = await fetch(`${this.apiUrl}/media`, {
@@ -610,6 +623,10 @@ export class PinterestService {
 
     if (options?.link) {
       pinBody.link = options.link;
+    }
+
+    if (options?.dominantColor) {
+      pinBody.dominant_color = options.dominantColor;
     }
 
     const pinResponse = await fetch(`${this.apiUrl}/pins`, {
