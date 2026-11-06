@@ -108,9 +108,29 @@ export class InstagramPublisher extends BasePublisher {
       : [];
     if (collaborators.length > 0) settings.collaborators = collaborators;
 
+    // Only ever `true`: an absent parameter already means "not disclosed",
+    // so an explicit false would be one more key an older API version can
+    // reject. Strictly boolean - the string "false" must not switch it on.
+    if (metadata?.isAiGenerated === true) settings.isAiGenerated = true;
+
     const coverUrl = metadata?.coverUrl;
     if (typeof coverUrl === 'string' && coverUrl.trim()) {
       settings.coverUrl = coverUrl.trim();
+    }
+
+    // The cover frame, in milliseconds - the unit `thumb_offset` takes, and
+    // the unit the composer stores it in (it converts from the editor's
+    // seconds on commit, as it does for TikTok). A negative or non-numeric
+    // value is not a frame and would only fail the container.
+    // `Number.isFinite` does not coerce, so a string never gets through.
+    const thumbOffset = metadata?.thumbOffset;
+    if (Number.isFinite(thumbOffset) && thumbOffset >= 0) {
+      settings.thumbOffset = Math.round(thumbOffset);
+    }
+
+    const audioName = metadata?.audioName;
+    if (typeof audioName === 'string' && audioName.trim()) {
+      settings.audioName = audioName.trim();
     }
 
     // Only forwarded when the composer actually set it. `false` is a real
