@@ -2,6 +2,7 @@ import {
   ArrayMaxSize,
   IsArray,
   IsDateString,
+  IsIn,
   IsObject,
   IsOptional,
   IsString,
@@ -9,6 +10,10 @@ import {
   MaxLength,
 } from 'class-validator';
 import { MAX_LABELS, MAX_LABEL_LENGTH } from '../lib/draft-organise';
+import {
+  SCHEDULE_REQUEST_MODES,
+  type ScheduleRequestMode,
+} from '../lib/per-channel-schedule';
 import type {
   BaseContent,
   ChannelTarget,
@@ -68,4 +73,15 @@ export class ScheduleDraftDto {
   @IsOptional()
   @IsObject()
   recurrence?: RecurrenceRule;
+
+  /**
+   * "Different time for each channel". With `per_channel`, every channel in
+   * `channels` carries its own `scheduleAt` and `scheduledAt` is ignored
+   * (the composer sends the earliest). Channels at different times become
+   * sibling posts — see lib/per-channel-schedule.ts. Absent or
+   * `all_same_time`: one time for every channel, as before.
+   */
+  @IsOptional()
+  @IsIn(SCHEDULE_REQUEST_MODES)
+  scheduleMode?: ScheduleRequestMode;
 }
