@@ -1,5 +1,9 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { QuotaTrackerService } from '../analytics/services/quota-tracker.service';
+import {
+  MAX_IMAGE_BYTES,
+  fetchPublicMedia,
+} from '../../common/net/public-fetch';
 
 export interface YouTubeChannel {
   id: string;
@@ -21,6 +25,15 @@ export interface YouTubeVideoUploadOptions {
   playlistId?: string;
   madeForKids?: boolean;
   thumbnailUrl?: string;
+  /** `snippet.defaultLanguage` — the language the title and description are in. */
+  defaultLanguage?: string;
+  /** `status.containsSyntheticMedia` — YouTube's altered-content declaration. */
+  containsSyntheticMedia?: boolean;
+  /**
+   * `notifySubscribers`. YouTube defaults this to TRUE, so it is only
+   * worth sending to turn notifications off.
+   */
+  notifySubscribers?: boolean;
 }
 
 export interface YouTubeUploadResult {
@@ -328,11 +341,14 @@ export class YouTubeService {
       tags = [],
       categoryId = '22', // Default: People & Blogs
       madeForKids = false,
+      defaultLanguage,
+      containsSyntheticMedia,
+      notifySubscribers,
     } = options;
 
     // Step 1: Download the video from URL
     this.logger.log(`Downloading video from: ${videoUrl}`);
-    const videoResponse = await fetch(videoUrl);
+    const videoResponse = await fetchPublicMedia(videoUrl);
     if (!videoResponse.ok) {
       throw new BadRequestException(
         `Failed to download video from ${videoUrl}`,
@@ -356,13 +372,18 @@ export class YouTubeService {
         description,
         tags,
         categoryId,
+        ...(defaultLanguage ? { defaultLanguage } : {}),
       },
       {
         privacyStatus,
         selfDeclaredMadeForKids: madeForKids,
+        // Only ever declared, never denied: an absent field already means
+        // "not altered", and the flag is a claim shown to viewers.
+        ...(containsSyntheticMedia ? { containsSyntheticMedia: true } : {}),
       },
       contentType,
       videoSize,
+      notifySubscribers,
     );
 
     this.logger.log(`Resumable upload initialized: ${uploadUrl}`);
@@ -410,7 +431,9 @@ export class YouTubeService {
       await this.reserveQuota(50, 'publishing', 'thumbnails.set');
       // Download the thumbnail image
       this.logger.log(`Downloading thumbnail from: ${thumbnailUrl}`);
-      const thumbnailResponse = await fetch(thumbnailUrl);
+      const thumbnailResponse = await fetchPublicMedia(thumbnailUrl, {
+        maxBytes: MAX_IMAGE_BYTES,
+      });
       if (!thumbnailResponse.ok) {
         this.logger.error(`Failed to download thumbnail from ${thumbnailUrl}`);
         return; // Don't fail the whole upload for thumbnail
@@ -463,23 +486,42 @@ export class YouTubeService {
       description: string;
       tags: string[];
       categoryId: string;
+      /** `snippet.defaultLanguage` — BCP-47, the language of the details. */
+      defaultLanguage?: string;
     },
     status: {
       privacyStatus: string;
       selfDeclaredMadeForKids: boolean;
+      /** `status.containsSyntheticMedia` — YouTube's altered-content flag. */
+      containsSyntheticMedia?: boolean;
     },
     contentType: string,
     contentLength: number,
+    /**
+     * `notifySubscribers`, a QUERY parameter rather than a body field.
+     *
+     * YouTube's default is **true**, so this is the one setting here that
+     * must be sent to turn something OFF — leaving it out notifies
+     * everyone, which is the opposite of an unset switch elsewhere.
+     */
+    notifySubscribers?: boolean,
   ): Promise<string> {
-    const url =
-      'https://www.googleapis.com/upload/youtube/v3/videos?uploadType=resumable&part=snippet,status';
+    const url = new URL('https://www.googleapis.com/upload/youtube/v3/videos');
+    url.searchParams.set('uploadType', 'resumable');
+    url.searchParams.set('part', 'snippet,status');
+    // Only `false` is worth sending. YouTube's default is true, so `true`
+    // is a no-op and an absent parameter already notifies — which keeps
+    // the one meaningful case, silence, explicit in the request.
+    if (notifySubscribers === false) {
+      url.searchParams.set('notifySubscribers', 'false');
+    }
 
     const metadata = {
       snippet,
       status,
     };
 
-    const response = await fetch(url, {
+    const response = await fetch(url.toString(), {
       method: 'POST',
       headers: {
         Authorization: `Bearer ${accessToken}`,

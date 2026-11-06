@@ -128,6 +128,36 @@ export class TwitterService {
   }
 
   /**
+   * The ids of up to 100 usernames — GET /2/users/by?usernames= (stated,
+   * docs.x.com/x-api/users/get-users-by-usernames). Keyed by lower-cased
+   * username, since X usernames are case-insensitive; a name X does not
+   * know is simply absent from the map (X reports it under `errors`).
+   */
+  async lookupUserIds(
+    accessToken: string,
+    usernames: string[],
+  ): Promise<Map<string, string>> {
+    const ids = new Map<string, string>();
+    if (usernames.length === 0) return ids;
+    const url = new URL(`${this.apiBaseUrl}/users/by`);
+    url.searchParams.set('usernames', usernames.join(','));
+    const response = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(`X user lookup failed: ${response.status}`);
+    }
+    const data = (await response.json()) as {
+      data?: Array<{ id?: string; username?: string }>;
+    };
+    for (const user of data.data ?? []) {
+      if (user.id && user.username)
+        ids.set(user.username.toLowerCase(), user.id);
+    }
+    return ids;
+  }
+
+  /**
    * Post a tweet with optional media
    */
   async createTweet(
@@ -141,6 +171,35 @@ export class TwitterService {
         options: string[];
         durationMinutes: number;
       };
+      /**
+       * Who may reply — X's `reply_settings`.
+       *
+       * The enum has no `everyone`: an unrestricted post is one that omits
+       * the field entirely. `everyone` is only ever a value X RETURNS. So
+       * the caller passes `undefined` for "anyone may reply", and passing
+       * the literal string would have X reject the request.
+       */
+      replySettings?:
+        | 'following'
+        | 'mentionedUsers'
+        | 'subscribers'
+        | 'verified';
+      /**
+       * The two disclosure flags, `made_with_ai` and `paid_partnership`.
+       *
+       * Both are plain booleans in X's schema, but the request sets
+       * `additionalProperties: false`, so only a `true` is worth sending:
+       * a disclosure nobody asked for is a claim about the post, and the
+       * field is absent on an undisclosed one rather than `false`.
+       */
+      madeWithAi?: boolean;
+      paidPartnership?: boolean;
+      /**
+       * `media.tagged_user_ids` — "User IDs tagged in the media", at most
+       * 10 (stated, docs.x.com/x-api/posts/create-post). It lives INSIDE
+       * `media`, beside `media_ids`, so it is sent only with media.
+       */
+      taggedUserIds?: string[];
     },
   ): Promise<Tweet> {
     const body: Record<string, any> = { text };
@@ -154,7 +213,13 @@ export class TwitterService {
     }
 
     if (options?.mediaIds && options.mediaIds.length > 0) {
-      body.media = { media_ids: options.mediaIds };
+      const media: { media_ids: string[]; tagged_user_ids?: string[] } = {
+        media_ids: options.mediaIds,
+      };
+      if (options.taggedUserIds && options.taggedUserIds.length > 0) {
+        media.tagged_user_ids = options.taggedUserIds;
+      }
+      body.media = media;
     }
 
     if (options?.poll) {
@@ -162,6 +227,20 @@ export class TwitterService {
         options: options.poll.options,
         duration_minutes: options.poll.durationMinutes,
       };
+    }
+
+    // Omitted, never nulled: see the option's note above.
+    if (options?.replySettings) {
+      body.reply_settings = options.replySettings;
+    }
+
+    // Only ever sent as `true` — see the options' note above.
+    if (options?.madeWithAi) {
+      body.made_with_ai = true;
+    }
+
+    if (options?.paidPartnership) {
+      body.paid_partnership = true;
     }
 
     const response = await fetch(`${this.apiBaseUrl}/tweets`, {

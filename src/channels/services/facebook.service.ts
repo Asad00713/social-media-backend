@@ -4,6 +4,10 @@ import type {
   CreatedDm,
   DmConversationSummary,
 } from '../../inbox/adapters/inbox-adapter.interface';
+import {
+  MAX_IMAGE_BYTES,
+  fetchPublicMedia,
+} from '../../common/net/public-fetch';
 
 /**
  * Facebook/Instagram Page and Account data structures
@@ -36,6 +40,62 @@ export interface FacebookUser {
   email: string | null;
   pictureUrl: string | null;
 }
+
+/**
+ * Optional settings for a Page post (`/feed` or `/photos`), all sent only
+ * when set. Both edges document all three (Page feed and Page photos
+ * references, "Publishing"/"Creating" sections).
+ */
+export interface FacebookPostOptions {
+  /** `backdated_time`, in Unix seconds — "a time in the past". */
+  backdatedTime?: number;
+  /** `targeting` — "limits the audience for this content". */
+  targeting?: { age_min: number };
+  /** `place` — "Page ID of a location associated with this post". */
+  place?: string;
+}
+
+/**
+ * One of the workspace's Pages, as the composer's Location and Collaborator
+ * pickers need it. `location` is null when the Page has none (or it could not
+ * be read): only "pages with valid locations" can be a `place`.
+ */
+export interface FacebookPageLocation {
+  id: string;
+  name: string;
+  location: string | null;
+}
+
+/** Optional settings for a Reel, all sent only when set. */
+export interface FacebookReelOptions {
+  /** The Reel's title — `title` on the finish call of `/video_reels`. */
+  title?: string;
+  /** `place` on the finish call — the Page id of a location. */
+  place?: string;
+  /**
+   * A hosted image to use as the Reel's cover, uploaded to the video's
+   * `/thumbnails` edge between the transfer and the publish.
+   */
+  thumbnailUrl?: string;
+  /**
+   * The Reel's captions as SubRip text, uploaded to the video's
+   * `/captions` edge as `captions.<locale>.srt` once the Reel is published.
+   */
+  captions?: { srt: string; locale: string };
+}
+
+/** The largest cover image `/thumbnails` takes, per Meta's reference. */
+const MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024;
+
+/**
+ * The largest caption file `/{video-id}/captions` takes. Meta's reference
+ * says "Caption files are limited to 200K"; read as 200,000 bytes, the
+ * stricter of the two readings.
+ */
+const MAX_CAPTIONS_BYTES = 200_000;
+
+/** A Facebook locale as the caption file name needs it, e.g. `en_US`. */
+const CAPTION_LOCALE = /^[a-z]{2}_[A-Z]{2}$/;
 
 @Injectable()
 export class FacebookService {
@@ -358,22 +418,39 @@ export class FacebookService {
 
   /**
    * Post to a Facebook Page
+   *
+   * @param callToActionType - the button on a link post (`LEARN_MORE`,
+   *   `SIGN_UP`...). Needs `link`: the button's own link must be the post's
+   *   link, so without one there is nothing to attach it to and it is left out.
    */
   async postToPage(
     pageId: string,
     pageAccessToken: string,
     message: string,
     link?: string,
+    callToActionType?: string,
+    options: FacebookPostOptions = {},
   ): Promise<{ postId: string }> {
     const url = new URL(`${this.graphApiUrl}/${pageId}/feed`);
 
     const body: Record<string, string> = {
       access_token: pageAccessToken,
       message,
+      ...this.postOptionsBody(options),
     };
 
     if (link) {
       body.link = link;
+    }
+
+    // Sent as the JSON text the reference's own example shows
+    // (`call_to_action={"type":"SIGN_UP","value":{"link":"..."}}`), and with
+    // the same link as the `link` parameter above - "should be the same".
+    if (link && callToActionType) {
+      body.call_to_action = JSON.stringify({
+        type: callToActionType,
+        value: { link },
+      });
     }
 
     const response = await fetch(url.toString(), {
@@ -402,12 +479,14 @@ export class FacebookService {
     pageAccessToken: string,
     imageUrl: string,
     caption?: string,
+    options: FacebookPostOptions = {},
   ): Promise<{ postId: string }> {
     const url = new URL(`${this.graphApiUrl}/${pageId}/photos`);
 
     const body: Record<string, string> = {
       access_token: pageAccessToken,
       url: imageUrl,
+      ...this.postOptionsBody(options),
     };
 
     if (caption) {
@@ -603,6 +682,10 @@ export class FacebookService {
    * @param pageAccessToken — Page Access Token (NOT user token)
    * @param videoUrl — publicly accessible URL of the vertical 9:16 video
    * @param description — caption for the Reel (optional)
+   * @param options — title (sent on the finish call), cover image (uploaded
+   *   before it) and captions (uploaded after it). A cover or captions that
+   *   cannot be set do NOT fail the Reel: it is published without them and
+   *   the reason comes back as `thumbnailWarning` / `captionsWarning`.
    * @returns the published Reel's post ID
    */
   async postReelToPage(
@@ -610,7 +693,12 @@ export class FacebookService {
     pageAccessToken: string,
     videoUrl: string,
     description: string = '',
-  ): Promise<{ postId: string }> {
+    options: FacebookReelOptions = {},
+  ): Promise<{
+    postId: string;
+    thumbnailWarning?: string;
+    captionsWarning?: string;
+  }> {
     // Phase 1: start
     const startUrl = new URL(`${this.graphApiUrl}/${pageId}/video_reels`);
     startUrl.searchParams.set('upload_phase', 'start');
@@ -656,12 +744,40 @@ export class FacebookService {
       throw new BadRequestException('Facebook Reel transfer reported failure');
     }
 
+    // Cover (soft step): between the transfer and the publish. Meta's Reels
+    // guide only links "Add a custom cover photo" to the Video Thumbnails
+    // reference and gives no order; setting it before the finish call is what
+    // the one open-source Reels publisher we found does (fb_poster, reels.rs),
+    // so that order is INFERRED, not stated. The Reel is not yet live, so a
+    // cover that cannot be set must not stop it publishing - it goes out with
+    // the cover Facebook picks, and the reason is reported.
+    let thumbnailWarning: string | undefined;
+    if (options.thumbnailUrl) {
+      try {
+        await this.setVideoThumbnail(
+          startData.video_id,
+          pageAccessToken,
+          options.thumbnailUrl,
+        );
+      } catch (err) {
+        thumbnailWarning = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `Facebook Reel ${startData.video_id}: cover not set, publishing without it: ${thumbnailWarning}`,
+        );
+      }
+    }
+
     // Phase 3: finish (publish immediately)
     const finishUrl = new URL(`${this.graphApiUrl}/${pageId}/video_reels`);
     finishUrl.searchParams.set('upload_phase', 'finish');
     finishUrl.searchParams.set('video_id', startData.video_id);
     finishUrl.searchParams.set('video_state', 'PUBLISHED');
     if (description) finishUrl.searchParams.set('description', description);
+    // `title` belongs to the FINISH call (the publish step of the Reels guide),
+    // beside `description` — not to the start call, which takes only the phase.
+    if (options.title) finishUrl.searchParams.set('title', options.title);
+    // The Reels guide: "include the parameter `place` ... in the publish call".
+    if (options.place) finishUrl.searchParams.set('place', options.place);
     finishUrl.searchParams.set('access_token', pageAccessToken);
     const finishRes = await fetch(finishUrl.toString(), { method: 'POST' });
     if (!finishRes.ok) {
@@ -681,7 +797,242 @@ export class FacebookService {
 
     // The video_id from phase 1 is the post ID for the published Reel
     this.logger.log(`Published Facebook Reel: ${startData.video_id}`);
-    return { postId: startData.video_id };
+
+    // Captions (soft step): AFTER the publish. The captions reference has no
+    // create - only an UPDATE of an existing video's captions - and the Reels
+    // guide does not mention captions at all, so a Reel's video id being
+    // accepted and this order are both INFERRED. The Reel is already live, so
+    // a refusal is a warning, never a failed post.
+    let captionsWarning: string | undefined;
+    if (options.captions) {
+      try {
+        await this.setVideoCaptions(
+          startData.video_id,
+          pageAccessToken,
+          options.captions.srt,
+          options.captions.locale,
+        );
+      } catch (err) {
+        captionsWarning = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `Facebook Reel ${startData.video_id}: captions not set: ${captionsWarning}`,
+        );
+      }
+    }
+
+    return {
+      postId: startData.video_id,
+      ...(thumbnailWarning ? { thumbnailWarning } : {}),
+      ...(captionsWarning ? { captionsWarning } : {}),
+    };
+  }
+
+  /**
+   * Uploads a video's captions: `POST /{video-id}/captions` with the SubRip
+   * text as the multipart `captions_file`.
+   *
+   * Meta's reference (Video Captions, "Updating"): `captions_file` is "Caption
+   * file in SRT (SubRip Text) format. File name must be in the format
+   * filename.locale.srt" (error 386 gives `filename.en_US.srt`), files are
+   * "limited to 200K", and it returns `{ success }`. `default_locale` is not
+   * sent: it is optional, and an optional flag is sent only when set.
+   */
+  async setVideoCaptions(
+    videoId: string,
+    pageAccessToken: string,
+    srt: string,
+    locale: string,
+  ): Promise<void> {
+    if (!CAPTION_LOCALE.test(locale)) {
+      throw new Error(`"${locale}" is not a caption locale (like en_US)`);
+    }
+    const bytes = Buffer.byteLength(srt, 'utf8');
+    if (bytes === 0) throw new Error('the caption file is empty');
+    if (bytes > MAX_CAPTIONS_BYTES) {
+      throw new Error('the caption file is over the 200K Facebook takes');
+    }
+
+    const form = new FormData();
+    form.append('access_token', pageAccessToken);
+    form.append(
+      'captions_file',
+      new Blob([srt], { type: 'application/x-subrip' }),
+      `captions.${locale}.srt`,
+    );
+
+    // No Content-Type header: fetch writes the multipart boundary itself.
+    const res = await fetch(`${this.graphApiUrl}/${videoId}/captions`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      throw new Error(
+        `Facebook rejected the captions: ${err?.error?.message ?? `HTTP ${res.status}`}`,
+      );
+    }
+    const data = (await res.json().catch(() => ({}))) as { success?: boolean };
+    if (data.success === false) {
+      throw new Error('Facebook reported the captions as not set');
+    }
+  }
+
+  /**
+   * The body keys for a Page post's options — shared by `/feed` and
+   * `/photos`, which both list `backdated_time`, `targeting` and `place`.
+   *
+   * `targeting` goes as JSON text, the way `call_to_action` already does on
+   * this request. `backdated_time` is Unix seconds: the feed reference types
+   * it a float, the photos reference a datetime; that a datetime accepts a
+   * Unix timestamp is INFERRED (Graph's usual datetime handling), not stated.
+   */
+  private postOptionsBody(
+    options: FacebookPostOptions,
+  ): Record<string, string> {
+    const body: Record<string, string> = {};
+    if (options.backdatedTime !== undefined) {
+      body.backdated_time = String(options.backdatedTime);
+    }
+    if (options.targeting) body.targeting = JSON.stringify(options.targeting);
+    if (options.place) body.place = options.place;
+    return body;
+  }
+
+  /**
+   * Invites another Page to collaborate on a published Reel:
+   * `POST /{video-id}/collaborators` with `target_id` (Reels publishing
+   * guide, "Collaborators"). The other Page has to accept it, and Meta caps
+   * it at "10 collaborator invitation per Page per 24 hours".
+   *
+   * Sent once the Reel is published - the guide gives no order; after is
+   * INFERRED from the edge hanging off the video.
+   */
+  async inviteReelCollaborator(
+    videoId: string,
+    pageAccessToken: string,
+    targetPageId: string,
+  ): Promise<void> {
+    const url = new URL(`${this.graphApiUrl}/${videoId}/collaborators`);
+    url.searchParams.set('target_id', targetPageId);
+    url.searchParams.set('access_token', pageAccessToken);
+    const res = await fetch(url.toString(), { method: 'POST' });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      throw new Error(
+        `Facebook did not send the collaborator invite: ${err?.error?.message ?? `HTTP ${res.status}`}`,
+      );
+    }
+    const data = (await res.json().catch(() => ({}))) as { success?: boolean };
+    if (data.success === false) {
+      throw new Error('Facebook reported the collaborator invite as not sent');
+    }
+  }
+
+  /**
+   * A Page's name and location, read with that Page's own token.
+   *
+   * `location` is a Page field (city, country, street, latitude, longitude).
+   * A Page counts as having one when it carries a city or coordinates —
+   * what makes a location "valid" for `place` is not defined by Meta, so
+   * this test is INFERRED.
+   */
+  async getPageLocation(
+    pageId: string,
+    pageAccessToken: string,
+  ): Promise<FacebookPageLocation> {
+    const url = new URL(`${this.graphApiUrl}/${pageId}`);
+    url.searchParams.set('fields', 'id,name,location');
+    url.searchParams.set('access_token', pageAccessToken);
+    const res = await fetch(url.toString());
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      throw new Error(err?.error?.message ?? `HTTP ${res.status}`);
+    }
+    const page = (await res.json()) as {
+      id?: string;
+      name?: string;
+      location?: {
+        city?: string;
+        country?: string;
+        street?: string;
+        latitude?: number;
+        longitude?: number;
+      };
+    };
+    const loc = page.location;
+    const hasCoords =
+      typeof loc?.latitude === 'number' && typeof loc?.longitude === 'number';
+    const label = [loc?.city, loc?.country].filter(Boolean).join(', ');
+    return {
+      id: page.id ?? pageId,
+      name: page.name ?? '',
+      location: label || (hasCoords ? loc?.street || page.name || null : null),
+    };
+  }
+
+  /**
+   * Sets a video's cover: `POST /{video-id}/thumbnails` with the image as the
+   * multipart `source` file and `is_preferred=true`.
+   *
+   * The edge takes a FILE, not a URL (Meta's reference lists `source`, an
+   * image of at most 10 MB, and `is_preferred`), so the image is downloaded
+   * here first. Reels link to this edge from "Add a custom cover photo for
+   * your reel"; the reference itself describes Video objects and never
+   * mentions Reels, so that it accepts a Reel's video id is INFERRED (an open
+   * source Reels publisher does exactly this).
+   */
+  async setVideoThumbnail(
+    videoId: string,
+    pageAccessToken: string,
+    imageUrl: string,
+  ): Promise<void> {
+    const image = await fetchPublicMedia(imageUrl, {
+      maxBytes: MAX_IMAGE_BYTES,
+    });
+    if (!image.ok) {
+      throw new Error(
+        `the cover image could not be downloaded (HTTP ${image.status})`,
+      );
+    }
+    const bytes = await image.arrayBuffer();
+    if (bytes.byteLength > MAX_THUMBNAIL_BYTES) {
+      throw new Error('the cover image is over 10 MB');
+    }
+
+    const form = new FormData();
+    form.append('access_token', pageAccessToken);
+    form.append('is_preferred', 'true');
+    form.append(
+      'source',
+      new Blob([bytes], {
+        type: image.headers.get('content-type') ?? 'image/jpeg',
+      }),
+      'cover.jpg',
+    );
+
+    // No Content-Type header: fetch writes the multipart boundary itself.
+    const res = await fetch(`${this.graphApiUrl}/${videoId}/thumbnails`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      throw new Error(
+        `Facebook rejected the cover: ${err?.error?.message ?? `HTTP ${res.status}`}`,
+      );
+    }
+    const data = (await res.json().catch(() => ({}))) as { success?: boolean };
+    if (data.success === false) {
+      throw new Error('Facebook reported the cover as not set');
+    }
   }
 
   /**

@@ -40,13 +40,19 @@ function build(item: Record<string, unknown>) {
   const aiText = {
     describeImage: jest.fn().mockResolvedValue('"Image of a red bike."'),
   };
+  // The Claude client is mocked: no test here reaches a live model.
+  const claude = {
+    isReady: jest.fn().mockReturnValue(false),
+    describeImage: jest.fn().mockResolvedValue('Image of a blue door.'),
+  };
   const svc = new AltTextService(
     mediaItems as any,
     storageObjects as any,
     aiTokens as any,
     aiText as any,
+    claude as any,
   );
-  return { svc, mediaItems, storageObjects, aiTokens, aiText };
+  return { svc, mediaItems, storageObjects, aiTokens, aiText, claude };
 }
 
 function mockFetch(
@@ -130,6 +136,18 @@ describe('AltTextService', () => {
     aiText.describeImage.mockRejectedValue(new ForbiddenException('inner'));
     const r = await failure(svc.generate(WS, USER, ITEM));
     expect(r.status).toBe(403);
+  });
+
+  it('writes a Library item with Claude too, when Claude is configured', async () => {
+    // One model for alt text everywhere: a photo described in the Library
+    // and the same photo described in the composer read alike.
+    const { svc, aiText, claude } = build({});
+    claude.isReady.mockReturnValue(true);
+    mockFetch(new Uint8Array([4, 5]), { 'content-type': 'image/png' });
+    const out = await svc.generate(WS, USER, ITEM);
+    expect(out).toEqual({ altText: 'a blue door.' });
+    expect(claude.describeImage).toHaveBeenCalledTimes(1);
+    expect(aiText.describeImage).not.toHaveBeenCalled();
   });
 
   it('refuses an image over 8 MB with 422', async () => {
@@ -220,6 +238,88 @@ describe('AltTextService', () => {
     expect(abortSpy).toHaveBeenCalled();
     expect(pulls).toBeLessThan(5);
     expect(aiText.describeImage).not.toHaveBeenCalled();
+  });
+
+  describe('generateForUrl (composer draft photo)', () => {
+    const URL_ = 'https://res.cloudinary.com/demo/image/upload/v1/d.png';
+
+    it('refuses a URL outside our storage with 422, before tokens or fetch', async () => {
+      const { svc, storageObjects, aiTokens, claude } = build({});
+      storageObjects.isOwnStorageUrl.mockReturnValue(false);
+      const fetchSpy = mockFetch();
+      const r = await failure(
+        svc.generateForUrl(WS, USER, 'https://evil.example/x.png'),
+      );
+      expect(r.status).toBe(422);
+      expect(r.body.code).toBe('NOT_AN_IMAGE');
+      expect(storageObjects.isOwnStorageUrl).toHaveBeenCalledWith(
+        'https://evil.example/x.png',
+      );
+      expect(aiTokens.checkTokens).not.toHaveBeenCalled();
+      expect(fetchSpy).not.toHaveBeenCalled();
+      expect(claude.describeImage).not.toHaveBeenCalled();
+    });
+
+    it('uses Claude when it is configured, metered as generate_alt_text', async () => {
+      const { svc, aiTokens, aiText, claude } = build({});
+      claude.isReady.mockReturnValue(true);
+      const fetchSpy = mockFetch(new Uint8Array([9, 8]), {
+        'content-type': 'image/png',
+      });
+      const out = await svc.generateForUrl(WS, USER, URL_);
+      expect(out).toEqual({ altText: 'a blue door.' });
+      expect(aiTokens.executeWithTokens).toHaveBeenCalledWith(
+        WS,
+        USER,
+        'generate_alt_text',
+        undefined,
+        'alt text: draft photo',
+        expect.any(Function),
+      );
+      expect(fetchSpy.mock.calls[0][0]).toContain('f_jpg,w_1024,c_limit/');
+      expect(claude.describeImage.mock.calls[0][2]).toEqual({
+        mimeType: 'image/png',
+        data: Buffer.from([9, 8]).toString('base64'),
+      });
+      expect(aiText.describeImage).not.toHaveBeenCalled();
+    });
+
+    it('accepts a GIF for Claude (it reads GIF; Gemini here does not)', async () => {
+      const { svc, claude } = build({});
+      claude.isReady.mockReturnValue(true);
+      mockFetch(new Uint8Array([1]), { 'content-type': 'image/gif' });
+      await expect(svc.generateForUrl(WS, USER, URL_)).resolves.toEqual({
+        altText: 'a blue door.',
+      });
+    });
+
+    it('refuses HEIC for Claude with 422, without calling it', async () => {
+      const { svc, claude } = build({});
+      claude.isReady.mockReturnValue(true);
+      mockFetch(new Uint8Array([1]), { 'content-type': 'image/heic' });
+      const r = await failure(svc.generateForUrl(WS, USER, URL_));
+      expect(r.status).toBe(422);
+      expect(claude.describeImage).not.toHaveBeenCalled();
+    });
+
+    it('falls back to Gemini when Claude is not configured', async () => {
+      const { svc, aiText, claude } = build({});
+      mockFetch();
+      await expect(svc.generateForUrl(WS, USER, URL_)).resolves.toEqual({
+        altText: 'a red bike.',
+      });
+      expect(claude.describeImage).not.toHaveBeenCalled();
+      expect(aiText.describeImage).toHaveBeenCalled();
+    });
+
+    it('returns 402 when out of tokens, without fetching', async () => {
+      const { svc, aiTokens } = build({});
+      aiTokens.checkTokens.mockResolvedValue({ hasAccess: false });
+      const fetchSpy = mockFetch();
+      const r = await failure(svc.generateForUrl(WS, USER, URL_));
+      expect(r.status).toBe(402);
+      expect(fetchSpy).not.toHaveBeenCalled();
+    });
   });
 
   it('accepts a streamed body under the cap', async () => {

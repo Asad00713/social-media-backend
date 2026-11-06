@@ -6,6 +6,7 @@ import type {
   DmConversationSummary,
   ResolvedChannel,
 } from '../../inbox/adapters/inbox-adapter.interface';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
 
 export interface MastodonApp {
   id: string;
@@ -40,12 +41,39 @@ export interface MastodonStatus {
   repliesCount: number;
 }
 
+/**
+ * Who may quote a status — `quote_approval_policy`. The only three values
+ * the API accepts.
+ */
+export type MastodonQuoteApprovalPolicy = 'public' | 'followers' | 'nobody';
+
+/**
+ * The Mastodon API version that added quote posts.
+ *
+ * Stated in docs.joinmastodon.org/methods/statuses (POST /api/v1/statuses,
+ * version history): "4.5.0 (`mastodon` API version 7) - `quoted_status_id`
+ * and `quote_approval_policy` added". `api_versions.mastodon` itself exists
+ * from 4.3.0 (docs.joinmastodon.org/entities/Instance), so a server older
+ * than 4.3 — or a fork that does not report it — reads as 0 here.
+ */
+export const MASTODON_QUOTE_API_VERSION = 7;
+
 export interface MastodonMediaAttachment {
   id: string;
   type: 'image' | 'video' | 'gifv' | 'audio' | 'unknown';
   url: string;
   previewUrl: string;
 }
+
+/**
+ * Mastodon's poll bounds.
+ *
+ * The API reference states neither, but every mainstream instance ships
+ * the stock `max_options: 4` and refuses a single-answer poll, so these
+ * are enforced here rather than discovered as a rejected post.
+ */
+const MIN_MASTODON_POLL_OPTIONS = 2;
+const MAX_MASTODON_POLL_OPTIONS = 4;
 
 @Injectable()
 export class MastodonService {
@@ -283,6 +311,39 @@ export class MastodonService {
       language?: string;
       scheduledAt?: string; // ISO 8601 datetime
       mediaIds?: string[];
+      /**
+       * A poll. Mastodon's own rule: a status carries a poll OR media,
+       * never both — supplying a poll means media attachments cannot be
+       * used — so the caller decides which, and this is dropped when
+       * media is present rather than failing the post.
+       */
+      poll?: {
+        options: string[];
+        expiresInSeconds: number;
+        multiple?: boolean;
+      };
+      /**
+       * `quote_approval_policy` — who may quote this status.
+       *
+       * Added in Mastodon 4.5.0 (API version 7). Omitted, "the user's
+       * default setting will be used instead" — an ACCOUNT preference, not
+       * `public`, so leaving it out is the only way to respect it. The API
+       * ignores it for `private` and `direct` posts, whose policy is always
+       * `nobody`. On an instance older than 4.5 it is an unknown parameter,
+       * which the API does not document as rejected (INFERRED: ignored).
+       */
+      quoteApprovalPolicy?: MastodonQuoteApprovalPolicy;
+      /**
+       * `quoted_status_id` — the status this one quotes (4.5.0, API
+       * version 7). The API raises an error "if the status does not exist,
+       * the author does not have access to it, or quoting is denied" by the
+       * quoted post's policy; quoting a `private` post narrows this one's
+       * visibility to `private` (all stated, POST /api/v1/statuses). An
+       * OLDER server does not document it as rejected — INFERRED: ignored,
+       * which would publish the text without its quote. The publisher
+       * checks the version first so that never happens.
+       */
+      quotedStatusId?: string;
     },
   ): Promise<MastodonStatus> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
@@ -299,6 +360,33 @@ export class MastodonService {
     if (options?.scheduledAt) body.scheduled_at = options.scheduledAt;
     if (options?.mediaIds && options.mediaIds.length > 0) {
       body.media_ids = options.mediaIds;
+    }
+    if (options?.quoteApprovalPolicy) {
+      body.quote_approval_policy = options.quoteApprovalPolicy;
+    }
+    if (options?.quotedStatusId) {
+      body.quoted_status_id = options.quotedStatusId;
+    }
+
+    // Poll or media, never both. Media wins: the attachments are already
+    // uploaded by this point, so dropping the poll loses a setting while
+    // dropping the media would lose the upload too.
+    const poll = options?.poll;
+    const hasMedia = (options?.mediaIds?.length ?? 0) > 0;
+    if (poll && !hasMedia) {
+      const pollOptions = poll.options
+        .map((o) => o.trim())
+        .filter(Boolean)
+        .slice(0, MAX_MASTODON_POLL_OPTIONS);
+      // `options` and `expires_in` must be provided together, and a poll
+      // with one answer is not a poll.
+      if (pollOptions.length >= MIN_MASTODON_POLL_OPTIONS) {
+        body.poll = {
+          options: pollOptions,
+          expires_in: poll.expiresInSeconds,
+          multiple: poll.multiple === true,
+        };
+      }
     }
 
     const response = await fetch(`${normalizedUrl}/api/v1/statuses`, {
@@ -343,6 +431,11 @@ export class MastodonService {
    * "File has contents that are not what they are reported to be". Stripping
    * codec parameters (or accepting an explicit type from the inbox upload
    * record) sidesteps that mismatch.
+   *
+   * `focus` is the focal point in Mastodon's own form, "x,y" with both in
+   * -1..1 (see `toMastodonFocus`). It is sent as a part of the multipart form
+   * and only when given: Mastodon centres the crop without it, and an empty
+   * part would be one more field an older instance could reject.
    */
   async uploadMedia(
     instanceUrl: string,
@@ -350,11 +443,12 @@ export class MastodonService {
     mediaUrl: string,
     description?: string,
     overrideContentType?: string,
+    focus?: string,
   ): Promise<MastodonMediaAttachment> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
 
     // Download the media from URL
-    const mediaResponse = await fetch(mediaUrl);
+    const mediaResponse = await fetchPublicMedia(mediaUrl);
     if (!mediaResponse.ok) {
       throw new BadRequestException(`Failed to fetch media: ${mediaUrl}`);
     }
@@ -390,6 +484,13 @@ export class MastodonService {
       parts.push(`--${boundary}\r\n`);
       parts.push(`Content-Disposition: form-data; name="description"\r\n\r\n`);
       parts.push(`${description}\r\n`);
+    }
+
+    // Add the focal point if provided
+    if (focus) {
+      parts.push(`--${boundary}\r\n`);
+      parts.push(`Content-Disposition: form-data; name="focus"\r\n\r\n`);
+      parts.push(`${focus}\r\n`);
     }
 
     parts.push(`--${boundary}--\r\n`);
@@ -664,6 +765,69 @@ export class MastodonService {
       this.logger.error(`Failed to revoke Mastodon token: ${errorData}`);
       // Don't throw - revocation is best effort
     }
+  }
+
+  /**
+   * The server's Mastodon API version (`api_versions.mastodon` from
+   * GET /api/v2/instance), or 0 when it does not say — a server before
+   * 4.3.0, a fork, or an instance that could not be read.
+   */
+  async getApiVersion(instanceUrl: string): Promise<number> {
+    const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
+    try {
+      const response = await fetch(`${normalizedUrl}/api/v2/instance`);
+      if (!response.ok) return 0;
+      const data = (await response.json()) as {
+        api_versions?: { mastodon?: unknown };
+      };
+      const version = data.api_versions?.mastodon;
+      return typeof version === 'number' ? version : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * The local id of the status a pasted link points at, on THIS server.
+   *
+   * GET /api/v2/search with `resolve=true` and `type=statuses`: "if `q` is
+   * a HTTPS URL … resolving the URL and returning the matching status …
+   * is attempted" (stated, docs.joinmastodon.org/methods/search). Resolving
+   * needs a user token with `read:search`, which our `read` scope covers.
+   * The id it returns is this server's id for the post, which is what
+   * `quoted_status_id` takes — a remote post's id on its own server would
+   * be meaningless here.
+   */
+  async resolveStatusUrl(
+    instanceUrl: string,
+    accessToken: string,
+    link: string,
+  ): Promise<string> {
+    const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
+    const url = new URL(`${normalizedUrl}/api/v2/search`);
+    url.searchParams.set('q', link);
+    url.searchParams.set('type', 'statuses');
+    url.searchParams.set('resolve', 'true');
+    url.searchParams.set('limit', '1');
+
+    const response = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Mastodon could not look up the post to quote (${response.status})`,
+      );
+    }
+    const data = (await response.json()) as {
+      statuses?: Array<{ id?: unknown }>;
+    };
+    const id = data.statuses?.[0]?.id;
+    if (typeof id !== 'string' || id === '') {
+      throw new Error(
+        'The post to quote could not be found from your server — check the link',
+      );
+    }
+    return id;
   }
 
   /**

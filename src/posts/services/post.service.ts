@@ -8,10 +8,18 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { isViewer, type CallerRole } from '../guest-rules';
-import { eq, and, desc, inArray, sql, gte, lte } from 'drizzle-orm';
+import { eq, and, desc, inArray, ne, sql, gte, lte } from 'drizzle-orm';
+import { VERSION_ACTION } from '../composer/lib/draft-versions';
 import { db } from '../../drizzle/db';
 import { derivePostStatus, publishedTargetState } from '../lib/post-status';
 import { assertNotInPast, refusal } from '../lib/refusal';
+import {
+  assertApprovedFor,
+  carryApproval,
+  readApproval,
+  withoutApproval,
+  type ApprovableContent,
+} from '../lib/draft-approval';
 import { calendarRangeWhere, occurredAtSql } from '../lib/post-status.sql';
 import {
   posts,
@@ -27,6 +35,10 @@ import {
 } from '../../drizzle/schema/channels.schema';
 import { ChannelService } from '../../channels/services/channel.service';
 import { PublisherFactory } from '../publishers/publisher.factory';
+import {
+  PartialPublishError,
+  PublishResult,
+} from '../publishers/base.publisher';
 import { QUEUES } from '../../queue/queue.module';
 import { RateLimiterService } from '../../queue/rate-limiter.service';
 import { AdapterRegistryService } from '../../channels/analytics/services/adapter-registry.service';
@@ -35,6 +47,12 @@ import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.se
 import { CalendarPushSyncService } from '../../calendar-sync/services/calendar-push-sync.service';
 import { CampaignStatusSyncListener } from '../../campaigns/campaign-status-sync.listener';
 import { PostQueueService } from '../../billing/services/post-queue.service';
+import { PostReminderService } from './post-reminder.service';
+import {
+  isReminderTarget,
+  reminderContent,
+  REMINDER_TARGET_STATUS,
+} from '../lib/reminder';
 import type {
   PostStatusChangedPayload,
   PostStatusChangedTarget,
@@ -75,6 +93,7 @@ export class PostService {
     private readonly calendarPushSync: CalendarPushSyncService,
     private readonly campaignStatusSync: CampaignStatusSyncListener,
     private readonly postQueue: PostQueueService,
+    private readonly reminders: PostReminderService,
   ) {}
 
   /**
@@ -198,7 +217,9 @@ export class PostService {
         status,
         scheduledAt: dto.scheduledAt,
         platformContent: dto.platformContent || {},
-        metadata: dto.metadata || {},
+        // An approval is only ever asked for and granted through its own
+        // routes; a client cannot hand one in.
+        metadata: withoutApproval(dto.metadata) ?? {},
       })
       .returning();
 
@@ -265,7 +286,10 @@ export class PostService {
       eq(posts.workspaceId, workspaceId),
       // Exclude campaign-materialized posts from the normal post list —
       // they still appear on the calendar (getCalendarPosts is unaffected).
-      sql`(${posts.metadata} ->> 'campaignId') is null`,
+      // Materialised means "has a slot": the composer can also file a post
+      // under a campaign (metadata.campaignId alone), and that post is still
+      // an ordinary post that Maestro and the chatbot must be able to list.
+      sql`(${posts.metadata} -> 'campaignSlot') is null`,
     ];
 
     if (options?.status) {
@@ -380,6 +404,36 @@ export class PostService {
         platform: channel.platform as SupportedPlatform,
         status: 'draft' as PostStatus,
       }));
+    }
+
+    // "Needs approval" (metadata.approval). A client's metadata never sets or
+    // clears it, a content change withdraws a grant, and a post may only
+    // become or stay scheduled under a grant that covers its content.
+    if (readApproval(existingPost.metadata)) {
+      const nextContent: ApprovableContent = {
+        content:
+          updateData.content !== undefined
+            ? updateData.content
+            : existingPost.content,
+        mediaItems: updateData.mediaItems ?? existingPost.mediaItems,
+        platformContent:
+          updateData.platformContent ?? existingPost.platformContent,
+        targets: updateData.targets ?? existingPost.targets,
+      };
+      const willBeScheduled =
+        dto.scheduledAt !== undefined
+          ? dto.scheduledAt !== null
+          : existingPost.status === 'scheduled';
+      if (willBeScheduled) {
+        assertApprovedFor(existingPost.metadata, nextContent);
+      }
+      updateData.metadata = {
+        ...(withoutApproval(updateData.metadata ?? existingPost.metadata) ??
+          {}),
+        ...carryApproval(existingPost.metadata, nextContent),
+      };
+    } else if (updateData.metadata) {
+      updateData.metadata = withoutApproval(updateData.metadata) ?? {};
     }
 
     // Every check that can refuse runs here, before the first side effect
@@ -571,6 +625,13 @@ export class PostService {
       throw new BadRequestException('Post has no target channels');
     }
 
+    // "Needs approval". Only on a person's click: every way into 'scheduled'
+    // is already guarded, and a refusal at fire time would leave the post
+    // stuck in 'scheduled'.
+    if (triggeredBy === 'user') {
+      assertApprovedFor(post.metadata, post);
+    }
+
     const previousStatus = post.status;
 
     // Update status to publishing
@@ -615,6 +676,52 @@ export class PostService {
       if (target.status === 'published') {
         updatedTargets.push(target);
         anySuccess = true;
+        continue;
+      }
+
+      // "Publish: Remind me" (Instagram / Facebook): the platform is not
+      // called. The person is notified with everything copied and posts it
+      // by hand. No rate limit applies and no metrics trail is enqueued:
+      // there is no platform post to measure.
+      if (isReminderTarget(target.platform, post.platformContent)) {
+        try {
+          await this.reminders.send({
+            userId,
+            workspaceId,
+            postId,
+            channelId: target.channelId,
+            content: reminderContent(target.platform, post),
+          });
+          updatedTargets.push({
+            ...target,
+            status: REMINDER_TARGET_STATUS,
+            reminderSentAt: new Date().toISOString(),
+            errorMessage: undefined,
+          });
+          anySuccess = true;
+          newSuccess = true;
+          await this.recordHistory(
+            postId,
+            'reminder_sent',
+            'publishing',
+            REMINDER_TARGET_STATUS,
+            target.channelId,
+            userId,
+            { platform: target.platform },
+          );
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : 'Unknown error';
+          this.logger.error(
+            `Failed to send the reminder for channel ${target.channelId}: ${errorMessage}`,
+          );
+          updatedTargets.push({
+            ...target,
+            status: 'failed',
+            errorMessage: `Could not send your reminder: ${errorMessage}`,
+          });
+          allSuccess = false;
+        }
         continue;
       }
 
@@ -702,6 +809,9 @@ export class PostService {
           platformPostId: result.platformPostId,
           platformPostUrl: result.platformPostUrl,
           publishedAt: new Date().toISOString(),
+          ...(result.itemResults?.length
+            ? { itemResults: result.itemResults }
+            : {}),
         });
         anySuccess = true;
         newSuccess = true;
@@ -736,6 +846,11 @@ export class PostService {
           ...target,
           status: 'failed',
           errorMessage,
+          // Part of the post is live (one Pin per image): keep what went
+          // out, so the retry resumes after it rather than repeating it.
+          ...(error instanceof PartialPublishError
+            ? { itemResults: error.itemResults }
+            : {}),
         });
         allSuccess = false;
 
@@ -874,7 +989,7 @@ export class PostService {
   private async publishToChannel(
     post: typeof posts.$inferSelect,
     target: PostTarget,
-  ): Promise<{ platformPostId: string; platformPostUrl?: string }> {
+  ): Promise<PublishResult> {
     // Convert channelId from string to number (stored as string in JSONB)
     const channelId = parseInt(target.channelId, 10);
     if (isNaN(channelId)) {
@@ -940,6 +1055,11 @@ export class PostService {
       platformAccountId: channel.platformAccountId,
       channelMetadata: channel.metadata || {},
       channelId,
+      // What an earlier attempt at this target already published, so a
+      // multi-item publisher (one Pin per image) skips it on the retry.
+      ...(target.itemResults?.length
+        ? { previousItemResults: target.itemResults }
+        : {}),
     });
   }
 
@@ -1034,7 +1154,14 @@ export class PostService {
     return await db
       .select()
       .from(postHistory)
-      .where(eq(postHistory.postId, postId))
+      .where(
+        and(
+          eq(postHistory.postId, postId),
+          // Content snapshots belong to version history, which has its own
+          // endpoint; here they would bury the status changes in post bodies.
+          ne(postHistory.action, VERSION_ACTION),
+        ),
+      )
       .orderBy(desc(postHistory.createdAt));
   }
 

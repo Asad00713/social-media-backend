@@ -1,6 +1,7 @@
 import { Controller, Get, Logger, Param, Res } from '@nestjs/common';
 import type { Response } from 'express';
 import { TikTokMediaProxyService } from './tiktok-media-proxy.service';
+import { fetchPublicMedia } from '../common/net/public-fetch';
 
 /**
  * TikTok Media Proxy Controller
@@ -42,7 +43,7 @@ export class TikTokMediaProxyController {
 
     let upstream: globalThis.Response;
     try {
-      upstream = await fetch(originalUrl);
+      upstream = await fetchPublicMedia(originalUrl);
     } catch (err) {
       this.logger.error(
         `Upstream fetch threw for ${originalUrl}: ${

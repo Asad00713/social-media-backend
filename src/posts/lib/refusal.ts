@@ -3,7 +3,9 @@ import { BadRequestException } from '@nestjs/common';
 export type RefusalCode =
   | 'POST_ALREADY_PUBLISHED'
   | 'POST_PARTLY_PUBLISHED'
-  | 'SCHEDULE_IN_PAST';
+  | 'SCHEDULE_IN_PAST'
+  | 'APPROVAL_REQUIRED'
+  | 'APPROVAL_STALE';
 
 /**
  * A 400 whose body keeps the standard Nest shape `{ statusCode, message,

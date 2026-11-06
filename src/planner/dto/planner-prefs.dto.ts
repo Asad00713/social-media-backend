@@ -4,10 +4,15 @@ import {
   IsArray,
   IsBoolean,
   IsIn,
+  IsInt,
   IsOptional,
   IsUUID,
+  Matches,
+  Max,
+  Min,
   ValidateNested,
 } from 'class-validator';
+import { MAX_QUEUE_SLOTS } from '../lib/queue-slots';
 import type { PlannerPrefs, PlannerPrefsPatch } from '../lib/planner-prefs';
 
 export type { PlannerPrefs };
@@ -32,6 +37,16 @@ export class ShowPrefsDto {
   @IsOptional()
   @IsBoolean()
   weekends?: boolean;
+}
+
+export class QueueSlotDto {
+  @IsInt()
+  @Min(0)
+  @Max(6)
+  weekday!: number;
+
+  @Matches(/^([01]\d|2[0-3]):[0-5]\d$/)
+  time!: string;
 }
 
 export class UpdatePlannerPrefsDto implements PlannerPrefsPatch {
@@ -78,4 +93,12 @@ export class UpdatePlannerPrefsDto implements PlannerPrefsPatch {
   @IsOptional()
   @IsBoolean()
   suggestBestTime?: boolean;
+
+  /** Replaces the whole queue. `[]` is a queue with no times. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MAX_QUEUE_SLOTS)
+  @ValidateNested({ each: true })
+  @Type(() => QueueSlotDto)
+  queueSlots?: QueueSlotDto[];
 }

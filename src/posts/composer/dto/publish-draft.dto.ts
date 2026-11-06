@@ -1,10 +1,13 @@
 import {
+  ArrayMaxSize,
   IsArray,
   IsObject,
   IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
 } from 'class-validator';
+import { MAX_LABELS, MAX_LABEL_LENGTH } from '../lib/draft-organise';
 import type {
   BaseContent,
   ChannelTarget,
@@ -42,4 +45,20 @@ export class PublishDraftDto {
   @IsArray()
   @IsString({ each: true })
   retryChannelIds?: string[];
+
+  /**
+   * The campaign this post is filed under (`metadata.campaignId`). `null`
+   * unlinks; leaving the key out keeps whatever is stored.
+   */
+  @IsOptional()
+  @IsUUID()
+  campaignId?: string | null;
+
+  /** Free-form labels (`metadata.labels`). Leaving the key out keeps them. */
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(MAX_LABELS)
+  @IsString({ each: true })
+  @MaxLength(MAX_LABEL_LENGTH, { each: true })
+  labels?: string[];
 }

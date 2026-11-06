@@ -127,6 +127,20 @@ describe('PlannerPreferencesController over HTTP', () => {
     [{ visibleCalendarIds: ['x'] }],
     [{ visibleCalendarIds: 'x' }],
     [{ visibleCalendarIds: Array.from({ length: 51 }, () => CAL) }],
+    [{ queueSlots: 'x' }],
+    [{ queueSlots: [{ weekday: 7, time: '09:00' }] }],
+    [{ queueSlots: [{ weekday: 1, time: '9:00' }] }],
+    [{ queueSlots: [{ weekday: 1, time: '24:00' }] }],
+    [{ queueSlots: [{ weekday: 1 }] }],
+    [{ queueSlots: [{ weekday: 1, time: '09:00', extra: 1 }] }],
+    [
+      {
+        queueSlots: Array.from({ length: 71 }, () => ({
+          weekday: 1,
+          time: '09:00',
+        })),
+      },
+    ],
   ])('answers 400 to %j', async (body) => {
     await put(body).expect(400);
     expect(prefs.update).not.toHaveBeenCalled();
@@ -138,6 +152,8 @@ describe('PlannerPreferencesController over HTTP', () => {
     [{ visibleCalendarIds: null }],
     [{ visibleCalendarIds: [] }],
     [{ visibleCalendarIds: [CAL] }],
+    [{ queueSlots: [] }],
+    [{ queueSlots: [{ weekday: 5, time: '18:00' }] }],
     [{ visibleCalendarIds: Array.from({ length: 50 }, () => CAL) }],
     [{ show: { weekends: false } }],
     [

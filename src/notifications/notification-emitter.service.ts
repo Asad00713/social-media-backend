@@ -280,6 +280,46 @@ export class NotificationEmitterService {
     );
   }
 
+  /**
+   * "Publish: Remind me" — the post's time has come and the platform cannot
+   * take it as designed (music, stickers, link taps), so the person posts
+   * it by hand from what this carries. Reuses the existing
+   * `post_scheduled_reminder` type: no enum change, no migration.
+   */
+  async postReminder(
+    userId: string,
+    args: {
+      workspaceId: string;
+      postId: string;
+      channelId: string;
+      platform: string;
+      title: string;
+      message: string;
+      mediaUrls: string[];
+      note?: string;
+    },
+  ) {
+    return this.emitNotification(
+      userId,
+      'post_scheduled_reminder',
+      args.title,
+      args.message,
+      {
+        priority: 'high',
+        metadata: {
+          kind: 'post_reminder',
+          workspaceId: args.workspaceId,
+          postId: args.postId,
+          channelId: args.channelId,
+          platform: args.platform,
+          mediaUrls: args.mediaUrls,
+          ...(args.note ? { note: args.note } : {}),
+        },
+        actionUrl: `/w/${args.workspaceId}/planner?post=${args.postId}`,
+      },
+    );
+  }
+
   // ==================== Drip Campaigns ====================
 
   async campaignStarted(
@@ -381,6 +421,66 @@ export class NotificationEmitterService {
           workspaceId: args.workspaceId,
           postId: args.postId,
           markedByName: args.markedByName,
+        },
+        actionUrl: `/w/${args.workspaceId}/planner?post=${args.postId}`,
+      },
+    );
+  }
+
+  /**
+   * "Needs approval" was switched on. Sent as `draft_ready`: the type the
+   * Notifications page files under its Approvals tab, and adding an enum
+   * value would need a migration.
+   */
+  async approvalRequested(
+    userId: string,
+    args: {
+      workspaceId: string;
+      postId: string;
+      requestedByName: string;
+      preview: string;
+    },
+  ) {
+    return this.emitNotification(
+      userId,
+      'draft_ready',
+      'Approval requested',
+      `${args.requestedByName} asked you to approve a draft: "${args.preview}"`,
+      {
+        priority: 'medium',
+        metadata: {
+          workspaceId: args.workspaceId,
+          postId: args.postId,
+          requestedByName: args.requestedByName,
+          approval: 'requested',
+        },
+        actionUrl: `/w/${args.workspaceId}/planner?post=${args.postId}`,
+      },
+    );
+  }
+
+  /** The draft someone asked to have approved was approved. */
+  async draftApproved(
+    userId: string,
+    args: {
+      workspaceId: string;
+      postId: string;
+      approvedByName: string;
+      preview: string;
+    },
+  ) {
+    return this.emitNotification(
+      userId,
+      'draft_ready',
+      'Draft approved',
+      `${args.approvedByName} approved your draft: "${args.preview}"`,
+      {
+        priority: 'medium',
+        metadata: {
+          workspaceId: args.workspaceId,
+          postId: args.postId,
+          approvedByName: args.approvedByName,
+          approval: 'approved',
         },
         actionUrl: `/w/${args.workspaceId}/planner?post=${args.postId}`,
       },

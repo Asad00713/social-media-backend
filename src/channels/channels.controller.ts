@@ -36,6 +36,7 @@ import type { Capability } from '../workspace-members/role-capabilities';
 import { ChannelService } from './services/channel.service';
 import { OAuthService } from './services/oauth.service';
 import { FacebookService } from './services/facebook.service';
+import { listFacebookWorkspacePages } from './facebook-workspace-pages';
 import { PinterestService } from './services/pinterest.service';
 import { YouTubeService } from './services/youtube.service';
 import { LinkedInService } from './services/linkedin.service';
@@ -45,6 +46,11 @@ import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
 import { BlueskyService } from './services/bluesky.service';
 import { MastodonService } from './services/mastodon.service';
+import {
+  MENTION_LOOKUP_PLATFORMS,
+  MentionLookupService,
+  type MentionLookupPlatform,
+} from './services/mention-lookup.service';
 import { SlackService } from './services/slack.service';
 import { DiscordService } from './services/discord.service';
 import { GoogleDriveService } from './services/google-drive.service';
@@ -78,6 +84,7 @@ import {
   FetchPagesDto,
   ConnectFacebookPageDto,
   CreatePinterestBoardDto,
+  CreatePinterestBoardSectionDto,
   UpdatePinterestBoardDto,
   CreatePinterestPinDto,
   UploadYouTubeVideoDto,
@@ -151,6 +158,7 @@ export class ChannelsController {
     private readonly youtubeDataDeletion: YoutubeDataDeletionService,
     private readonly googleRevoke: GoogleOauthRevokeService,
     private readonly access: WorkspaceAccessService,
+    private readonly mentionLookup: MentionLookupService,
   ) {}
 
   /**
@@ -1551,6 +1559,46 @@ export class ChannelsController {
   }
 
   /**
+   * Check a handle typed in the composer's `@` menu — an account outside
+   * the workspace — on this channel's network, with its stored token.
+   *
+   * Bluesky and Mastodon only, where one cheap call answers it (see
+   * MentionLookupService). The composer calls it for those two and inserts
+   * the handle unchecked everywhere else, so any other platform is a 400.
+   * Read-only; `posts:draft` like the other composer lookups.
+   */
+  @Get('workspaces/:workspaceId/:channelId/mention-lookup')
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  async lookupMention(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+    @Query('handle') handle: string | undefined,
+  ) {
+    const id = parseInt(channelId, 10);
+    const channel = await this.channelService.getChannelById(id, workspaceId);
+    const platform = channel.platform as MentionLookupPlatform;
+    if (!(MENTION_LOOKUP_PLATFORMS as readonly string[]).includes(platform)) {
+      throw new BadRequestException(
+        `Handles cannot be checked on ${channel.platform}`,
+      );
+    }
+    if (!handle || handle.length > 320) {
+      throw new BadRequestException('A handle to check is required');
+    }
+    const accessToken = await this.channelService.getAccessToken(
+      id,
+      workspaceId,
+    );
+    return this.mentionLookup.lookup(
+      platform,
+      accessToken,
+      channel.metadata,
+      handle,
+    );
+  }
+
+  /**
    * List Pinterest boards for a connected channel (composer board picker).
    * Verifies the channel belongs to the workspace and is a Pinterest channel,
    * then uses the stored OAuth token to fetch boards from Pinterest.
@@ -1580,6 +1628,147 @@ export class ChannelsController {
 
     const boards = await this.pinterestService.listBoards(accessToken);
     return { boards };
+  }
+
+  /**
+   * YouTube — list this channel's playlists.
+   *
+   * A workspace-scoped twin of `POST youtube/playlists`, which takes a
+   * raw `accessToken` in its body. The composer never holds one of
+   * those — tokens are stored server-side — so the composer could not
+   * call it, which is why its Playlist row sat marked while
+   * `youtube.publisher.ts` had been forwarding `playlistId` all along.
+   */
+  @Get('workspaces/:workspaceId/:channelId/youtube/playlists')
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  async listYouTubePlaylistsForChannel(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+  ) {
+    const channel = await this.channelService.getChannelById(
+      parseInt(channelId, 10),
+      workspaceId,
+    );
+
+    if (channel.platform !== 'youtube') {
+      throw new BadRequestException(
+        `Channel ${channelId} is a ${channel.platform} channel, not a YouTube channel`,
+      );
+    }
+
+    const accessToken = await this.channelService.getAccessToken(
+      parseInt(channelId, 10),
+      workspaceId,
+    );
+
+    const playlists = await this.youtubeService.getPlaylists(accessToken);
+    return { playlists };
+  }
+
+  /**
+   * List the sections of one board of a connected Pinterest channel
+   * (composer board picker, second level).
+   */
+  @Get('workspaces/:workspaceId/:channelId/pinterest/boards/:boardId/sections')
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  async listPinterestBoardSectionsForChannel(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+    @Param('boardId') boardId: string,
+  ) {
+    const numericId = parseInt(channelId, 10);
+    const channel = await this.channelService.getChannelById(
+      numericId,
+      workspaceId,
+    );
+    if (channel.platform !== 'pinterest') {
+      throw new BadRequestException(
+        `Channel ${channelId} is a ${channel.platform} channel, not a Pinterest channel`,
+      );
+    }
+    const accessToken = await this.channelService.getAccessToken(
+      numericId,
+      workspaceId,
+    );
+    const sections = await this.pinterestService.listBoardSections(
+      accessToken,
+      boardId,
+    );
+    return { sections };
+  }
+
+  /**
+   * Create a section inside a board of a connected Pinterest channel.
+   */
+  @Post('workspaces/:workspaceId/:channelId/pinterest/boards/:boardId/sections')
+  @RequireCapability('channels:manage')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @HttpCode(HttpStatus.CREATED)
+  async createPinterestBoardSection(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+    @Param('boardId') boardId: string,
+    @Body() dto: CreatePinterestBoardSectionDto,
+  ) {
+    const numericId = parseInt(channelId, 10);
+    const channel = await this.channelService.getChannelById(
+      numericId,
+      workspaceId,
+    );
+    if (channel.platform !== 'pinterest') {
+      throw new BadRequestException(
+        `Channel ${channelId} is a ${channel.platform} channel, not a Pinterest channel`,
+      );
+    }
+    const accessToken = await this.channelService.getAccessToken(
+      numericId,
+      workspaceId,
+    );
+    const section = await this.pinterestService.createBoardSection(
+      accessToken,
+      boardId,
+      dto.name,
+    );
+    return { section, message: 'Section created successfully' };
+  }
+
+  /**
+   * The workspace's Facebook Pages with their locations, for the composer's
+   * Location (`place`) and Reel Collaborator pickers. Each Page is read with
+   * its own token; see `listFacebookWorkspacePages` for why only these.
+   */
+  @Get('workspaces/:workspaceId/:channelId/facebook/pages')
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  async listFacebookPagesForChannel(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+  ) {
+    const numericId = parseInt(channelId, 10);
+    const channel = await this.channelService.getChannelById(
+      numericId,
+      workspaceId,
+    );
+    if (channel.platform !== 'facebook') {
+      throw new BadRequestException(
+        `Channel ${channelId} is a ${channel.platform} channel, not a Facebook channel`,
+      );
+    }
+
+    const pages = await listFacebookWorkspacePages(numericId, {
+      listFacebookChannels: () =>
+        this.channelService.getWorkspaceChannels(workspaceId, {
+          platform: 'facebook',
+          isActive: true,
+        }),
+      getAccessToken: (id) =>
+        this.channelService.getAccessToken(id, workspaceId),
+      getPageLocation: (pageId, token) =>
+        this.facebookService.getPageLocation(pageId, token),
+    });
+    return { pages };
   }
 
   /**

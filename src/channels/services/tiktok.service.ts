@@ -1,4 +1,5 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
 
 export interface TikTokUser {
   id: string;
@@ -25,6 +26,12 @@ export interface TikTokVideoUploadOptions {
   videoCoverTimestampMs?: number;
   brandContentToggle?: boolean;
   brandOrganicToggle?: boolean;
+  /**
+   * Declare the video as AI-generated. Sent only when true: leaving the
+   * field out already means "not AI-generated", and an explicit false would
+   * be one more key for TikTok to reject on an older API version.
+   */
+  isAigc?: boolean;
 }
 
 export interface TikTokCreatorInfo {
@@ -159,6 +166,7 @@ export class TikTokService {
       videoCoverTimestampMs = 1000,
       brandContentToggle = false,
       brandOrganicToggle = false,
+      isAigc = false,
     } = options;
 
     // Validate title length (TikTok max is 2200 characters)
@@ -176,6 +184,9 @@ export class TikTokService {
         video_cover_timestamp_ms: videoCoverTimestampMs,
         brand_content_toggle: brandContentToggle,
         brand_organic_toggle: brandOrganicToggle,
+        // Video: INSIDE post_info. The photo endpoint puts the same flag at
+        // the top level of the body — see postPhotoFromUrl.
+        ...(isAigc ? { is_aigc: true } : {}),
       },
       source_info: {
         source: 'PULL_FROM_URL',
@@ -422,7 +433,7 @@ export class TikTokService {
     // Download the video first
     this.logger.log(`Downloading video from: ${videoUrl}`);
 
-    const videoResponse = await fetch(videoUrl);
+    const videoResponse = await fetchPublicMedia(videoUrl);
     if (!videoResponse.ok) {
       throw new BadRequestException(
         `Failed to download video from ${videoUrl}`,
@@ -537,6 +548,7 @@ export class TikTokService {
       brandContentToggle?: boolean;
       brandOrganicToggle?: boolean;
       autoAddMusic?: boolean;
+      isAigc?: boolean;
     } = {},
   ): Promise<{ publishId: string }> {
     const {
@@ -547,6 +559,7 @@ export class TikTokService {
       brandContentToggle = false,
       brandOrganicToggle = false,
       autoAddMusic = true,
+      isAigc = false,
     } = options;
 
     if (!Array.isArray(imageUrls) || imageUrls.length === 0) {
@@ -577,6 +590,9 @@ export class TikTokService {
       },
       post_mode: 'DIRECT_POST',
       media_type: 'PHOTO',
+      // Photo: TOP LEVEL of the body, beside post_info — not inside it, as it
+      // is for video. TikTok's photo reference lists it in the body table.
+      ...(isAigc ? { is_aigc: true } : {}),
     };
 
     const response = await fetch(

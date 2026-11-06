@@ -8,9 +8,17 @@ import { and, eq } from 'drizzle-orm';
 import { PayloadResolverService } from './payload-resolver.service';
 import { ComposerErrorMapperService } from './composer-error-mapper.service';
 import { PublisherFactory } from '../../publishers/publisher.factory';
+import { PartialPublishError } from '../../publishers/base.publisher';
+import { PostReminderService } from '../../services/post-reminder.service';
+import { isReminderTarget, reminderContent } from '../../lib/reminder';
 import { AnalyticsEventEmitter } from '../../../realtime/analytics-event-emitter.service';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { posts } from '../../../drizzle/schema/posts.schema';
+import {
+  assertApprovedFor,
+  carryApproval,
+  type ApprovableContent,
+} from '../../lib/draft-approval';
 import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import type {
@@ -21,6 +29,7 @@ import type {
   PublishStatus,
   ScheduleConfig,
 } from '../types/draft.types';
+import { resolveOrganise, type OrganiseInput } from '../lib/draft-organise';
 
 export const CHANNEL_CREDENTIALS_LOOKUP = 'CHANNEL_CREDENTIALS_LOOKUP';
 
@@ -42,6 +51,8 @@ export interface InlinePublishInput {
   channels: ChannelTarget[];
   schedule?: ScheduleConfig;
   retryChannelIds?: string[];
+  campaignId?: string | null;
+  labels?: string[];
 }
 
 export interface PublishResultSummary {
@@ -69,16 +80,35 @@ export class PublishOrchestratorService {
     @Inject(CHANNEL_CREDENTIALS_LOOKUP)
     private readonly credentials: ChannelCredentialsLookup,
     @Inject(DRIZZLE) private readonly db: any,
+    private readonly reminders: PostReminderService,
   ) {}
 
   async publishInline(
     workspaceId: string,
     userId: string,
-    input: InlinePublishInput,
+    rawInput: InlinePublishInput,
   ): Promise<PublishResultSummary> {
-    if (!input.channels?.length) {
+    if (!rawInput.channels?.length) {
       throw new BadRequestException('Draft has no channels selected');
     }
+
+    // Items an earlier attempt already published (one Pin per image). The
+    // client's copy of the channels does not carry them, and the upsert
+    // below overwrites the stored targets with that copy - so they are read
+    // FIRST and put back on each channel, or a retry (or a second Publish
+    // after a failure) would post those Pins again.
+    const storedItems = await this.loadStoredItemResults(
+      workspaceId,
+      rawInput.draftId,
+    );
+    const input: InlinePublishInput = {
+      ...rawInput,
+      channels: rawInput.channels.map((c) =>
+        c.itemResults?.length || !storedItems.has(c.channelId)
+          ? c
+          : { ...c, itemResults: storedItems.get(c.channelId) },
+      ),
+    };
 
     const isRetry = Boolean(input.retryChannelIds?.length);
     const targets = isRetry
@@ -109,9 +139,16 @@ export class PublishOrchestratorService {
       updatedAt: now,
     };
 
+    // "Needs approval": refused before the row is touched unless an approval
+    // covers exactly this content.
+    const carried = await this.approvalFor(workspaceId, draft);
+
     // Upsert the posts row. On first publish this inserts; on retry the
     // row already exists with the same id (client UUID) and we update it.
-    await this.upsertPostsRow(workspaceId, userId, draft);
+    await this.upsertPostsRow(workspaceId, userId, draft, carried, {
+      campaignId: input.campaignId,
+      labels: input.labels,
+    });
 
     this.emitter.emit(workspaceId, 'composer.draft.status.changed', {
       workspaceId,
@@ -137,6 +174,33 @@ export class PublishOrchestratorService {
       this.emitState(workspaceId, draft.id, next);
 
       try {
+        // "Publish: Remind me": nothing goes to the platform; the person is
+        // notified now with everything copied. Not a proof the token works,
+        // so the channel is not healed.
+        if (isReminderTarget(target.platform, draft.perPlatform)) {
+          await this.reminders.send({
+            userId,
+            workspaceId,
+            postId: draft.id,
+            channelId: target.channelId,
+            content: reminderContent(target.platform, {
+              content: draft.base.text,
+              mediaItems: draft.base.mediaItems,
+              platformContent: draft.perPlatform as Record<string, any>,
+            }),
+          });
+          const reminded: ChannelTarget = {
+            ...next,
+            publishStatus: 'published',
+            reminderSentAt: new Date().toISOString(),
+            publishedAt: new Date().toISOString(),
+          };
+          updatedMap.set(target.channelId, reminded);
+          await this.persistChannels(workspaceId, draft.id, updatedMap);
+          this.emitState(workspaceId, draft.id, reminded);
+          continue;
+        }
+
         const payload = this.resolver.resolve(
           { ...draft, channels: input.channels },
           target,
@@ -155,6 +219,9 @@ export class PublishOrchestratorService {
           platformAccountId: creds.platformAccountId,
           channelMetadata: creds.channelMetadata,
           channelId: Number(target.channelId),
+          ...(target.itemResults?.length
+            ? { previousItemResults: target.itemResults }
+            : {}),
         });
 
         const ok: ChannelTarget = {
@@ -163,6 +230,9 @@ export class PublishOrchestratorService {
           platformPostId: result.platformPostId,
           platformPostUrl: result.platformPostUrl,
           publishedAt: new Date().toISOString(),
+          ...(result.itemResults?.length
+            ? { itemResults: result.itemResults }
+            : {}),
         };
         updatedMap.set(target.channelId, ok);
         await this.persistChannels(workspaceId, draft.id, updatedMap);
@@ -180,6 +250,11 @@ export class PublishOrchestratorService {
           publishStatus: 'failed',
           errorCode: classified.code,
           errorMessage: err instanceof Error ? err.message : String(err),
+          // Part of the post is live: keep what went out, so the retry
+          // resumes after it rather than publishing it twice.
+          ...(err instanceof PartialPublishError
+            ? { itemResults: err.itemResults }
+            : {}),
         };
         updatedMap.set(target.channelId, failed);
         await this.persistChannels(workspaceId, draft.id, updatedMap);
@@ -216,6 +291,44 @@ export class PublishOrchestratorService {
     return { draftStatus, channels: finalChannels, postId: draft.id };
   }
 
+  /**
+   * The per-item results stored on this draft's targets, by channel id.
+   *
+   * Degrades to "none" if the row cannot be read: a fresh draft has no row,
+   * and a read failure must not block a publish - it only means a resumed
+   * multi-item post could repeat items, which is what happened before.
+   */
+  private async loadStoredItemResults(
+    workspaceId: string,
+    draftId: string,
+  ): Promise<Map<string, NonNullable<ChannelTarget['itemResults']>>> {
+    const stored = new Map<string, NonNullable<ChannelTarget['itemResults']>>();
+    try {
+      const rows = (await this.db
+        .select({ targets: posts.targets })
+        .from(posts)
+        .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)))
+        .limit(1)) as { targets: unknown }[];
+      const targets = Array.isArray(rows?.[0]?.targets)
+        ? (rows[0].targets as ChannelTarget[])
+        : [];
+      for (const t of targets) {
+        if (
+          t?.channelId &&
+          Array.isArray(t.itemResults) &&
+          t.itemResults.length
+        ) {
+          stored.set(t.channelId, t.itemResults);
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Could not read stored item results for draft ${draftId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return stored;
+  }
+
   private emitState(
     workspaceId: string,
     draftId: string,
@@ -236,11 +349,44 @@ export class PublishOrchestratorService {
     });
   }
 
+  /**
+   * Throws unless the stored draft needs no approval or has one for exactly
+   * this content; returns the `approval` key to keep on the row.
+   */
+  private async approvalFor(
+    workspaceId: string,
+    draft: Draft,
+  ): Promise<Record<string, unknown>> {
+    const [existing] = await this.db
+      .select({ metadata: posts.metadata })
+      .from(posts)
+      .where(and(eq(posts.id, draft.id), eq(posts.workspaceId, workspaceId)))
+      .limit(1);
+    const outgoing: ApprovableContent = {
+      content: draft.base.text,
+      mediaItems: draft.base.mediaItems,
+      platformContent: draft.perPlatform,
+      targets: draft.channels,
+    };
+    assertApprovedFor(existing?.metadata, outgoing);
+    return carryApproval(existing?.metadata, outgoing);
+  }
+
   private async upsertPostsRow(
     workspaceId: string,
     userId: string,
     draft: Draft,
+    carried: Record<string, unknown> = {},
+    organise: OrganiseInput = {},
   ): Promise<void> {
+    // The stored filing, so a publish that does not send campaign or labels
+    // keeps them rather than wiping them with the rest of the metadata.
+    const [existing] = await this.db
+      .select({ metadata: posts.metadata })
+      .from(posts)
+      .where(and(eq(posts.id, draft.id), eq(posts.workspaceId, workspaceId)))
+      .limit(1);
+
     // Project to legacy PostTarget shape (with `status` field).
     const legacyTargets = draft.channels.map((c) => ({
       ...c,
@@ -252,6 +398,13 @@ export class PublishOrchestratorService {
       mentions: draft.base.mentions,
       linkPreview: draft.base.linkPreview,
       schedule: draft.schedule,
+      ...(await resolveOrganise(
+        this.db,
+        workspaceId,
+        existing?.metadata,
+        organise,
+      )),
+      ...carried,
     };
 
     // True upsert. Handles three scenarios:

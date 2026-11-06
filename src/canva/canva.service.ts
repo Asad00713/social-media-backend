@@ -364,6 +364,72 @@ export class CanvaService {
   }
 
   /**
+   * Create a design at an exact pixel size.
+   *
+   * Separate from `createDesign` rather than another branch inside it:
+   * that one takes a design-type NAME and maps nine names onto six
+   * hardcoded sizes, which cannot say "1080x1350" — the size an
+   * Instagram feed post in the composer actually wants. The composer
+   * reads its sizes from our own per-platform capabilities, so it has
+   * the numbers and needs no name at all.
+   *
+   * Canva's `custom` design type takes the dimensions directly.
+   */
+  async createDesignAtSize(
+    accessToken: string,
+    options: { width: number; height: number; title?: string },
+  ): Promise<CanvaDesign> {
+    const body: Record<string, any> = {
+      design_type: {
+        type: 'custom',
+        width: options.width,
+        height: options.height,
+      },
+    };
+
+    if (options.title) {
+      body.title = options.title;
+    }
+
+    const response = await fetch(`${this.apiBaseUrl}/designs`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessToken}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify(body),
+    });
+
+    const responseText = await response.text();
+
+    if (!response.ok) {
+      this.logger.error(
+        `Failed to create Canva design at ${options.width}x${options.height}: ${responseText}`,
+      );
+      throw new BadRequestException('Failed to create Canva design');
+    }
+
+    const data = JSON.parse(responseText);
+    const design = data.design || data;
+
+    return {
+      id: design.id,
+      title: design.title || options.title || 'Untitled',
+      url: design.url,
+      editUrl: design.edit_url || design.urls?.edit_url,
+      thumbnail: design.thumbnail
+        ? {
+            url: design.thumbnail.url,
+            width: design.thumbnail.width,
+            height: design.thumbnail.height,
+          }
+        : undefined,
+      createdAt: design.created_at,
+      updatedAt: design.updated_at,
+    };
+  }
+
+  /**
    * Get a design by ID
    */
   async getDesign(accessToken: string, designId: string): Promise<CanvaDesign> {

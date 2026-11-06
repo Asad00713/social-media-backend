@@ -36,6 +36,19 @@ export interface MediaItem {
   type: MediaType;
   thumbnailUrl?: string;
   altText?: string;
+  /**
+   * People tagged ON this item, as fractions of the picture.
+   *
+   * Per-ITEM rather than per-post, because that is what a tag is: a
+   * carousel of three photos tags three different sets of people, and
+   * Instagram's own API agrees — `user_tags` goes on each carousel item
+   * container, while the caption and collaborators go on the parent.
+   *
+   * The composer has written these for a while (the photo editor's
+   * "Tagged on this photo" panel); nothing read them until the Instagram
+   * publisher learned to send `user_tags`.
+   */
+  tags?: Array<{ username: string; name?: string; x: number; y: number }>;
   width?: number;
   height?: number;
   duration?: number; // For videos, in seconds
@@ -51,6 +64,19 @@ export interface PlatformContent {
   metadata?: Record<string, any>;
 }
 
+/**
+ * One item of a post that a publisher sends as SEVERAL platform posts - today
+ * only Pinterest's "one Pin per image". Kept on the channel target (inside the
+ * existing `targets` jsonb, no migration) so a retry can skip what already
+ * went out. Keyed by the media url, not its position, so a reordered draft
+ * does not map a Pin to the wrong image.
+ */
+export interface PublishItemResult {
+  mediaUrl: string;
+  platformPostId: string;
+  platformPostUrl?: string;
+}
+
 // Post target - which channel to publish to and its status
 export interface PostTarget {
   channelId: string;
@@ -60,6 +86,10 @@ export interface PostTarget {
   platformPostUrl?: string;
   publishedAt?: string;
   errorMessage?: string;
+  /** Per-item results when the post went out as several (see above). */
+  itemResults?: PublishItemResult[];
+  /** "Publish: Remind me" — set instead of a platform post id. */
+  reminderSentAt?: string;
   contentOverride?: PlatformContent;
   /**
    * Sub-destination for chat/messaging platforms (Slack/Discord): which

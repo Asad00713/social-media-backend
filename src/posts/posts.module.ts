@@ -38,6 +38,8 @@ import { DiscordPublisher } from './publishers/discord.publisher';
 
 // Processors (BullMQ job handlers)
 import { PostPublishProcessor } from './processors/post-publish.processor';
+import { RepeatPostsService } from './services/repeat-posts.service';
+import { PostReminderService } from './services/post-reminder.service';
 
 @Module({
   imports: [
@@ -73,6 +75,8 @@ import { PostPublishProcessor } from './processors/post-publish.processor';
     SlackPublisher,
     DiscordPublisher,
     PostPublishProcessor,
+    RepeatPostsService,
+    PostReminderService,
     CampaignStatusSyncListener,
   ],
   exports: [
@@ -80,6 +84,7 @@ import { PostPublishProcessor } from './processors/post-publish.processor';
     PlannerPostsService,
     PostDraftsService,
     PublisherFactory,
+    PostReminderService,
   ],
 })
 export class PostsModule {}

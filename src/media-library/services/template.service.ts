@@ -36,13 +36,19 @@ import {
  * is always the complete shape. Readers can then index into `mediaSlots` and
  * `hashtags` without guarding every access.
  */
-function normalizeContent(content: TemplateContentDto): TemplateContent {
+export function normalizeContent(content: TemplateContentDto): TemplateContent {
   return {
     text: content.text,
     mediaSlots: content.mediaSlots ?? [],
     media: content.media ?? [],
     hashtags: content.hashtags ?? [],
     defaultCaption: content.defaultCaption,
+    // Left OUT rather than stored empty: a template that keeps no channel
+    // settings reads the same as one written before they existed.
+    ...(content.platformSettings
+      ? { platformSettings: content.platformSettings }
+      : {}),
+    ...(content.firstComments ? { firstComments: content.firstComments } : {}),
   };
 }
 

@@ -17,6 +17,9 @@ import {
   IsISO8601,
   ArrayMaxSize,
   ArrayMinSize,
+  Validate,
+  ValidatorConstraint,
+  type ValidatorConstraintInterface,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import {
@@ -24,6 +27,7 @@ import {
   TEMPLATE_TYPES,
   TEXT_SNIPPET_TYPES,
 } from '../../drizzle/schema/media-library.schema';
+import { SUPPORTED_PLATFORMS } from '../../drizzle/schema/channels.schema';
 import {
   FOLDER_KINDS,
   normalizeFolderKind,
@@ -456,6 +460,61 @@ export class TemplateMediaDto {
   libraryItemId?: string;
 }
 
+/** The longest first comment any network takes (YouTube's 10,000). */
+export const MAX_TEMPLATE_FIRST_COMMENT_CHARS = 10000;
+
+const isPlainObject = (v: unknown): v is Record<string, unknown> =>
+  typeof v === 'object' && v !== null && !Array.isArray(v);
+
+const isPlatform = (key: string): boolean =>
+  (SUPPORTED_PLATFORMS as readonly string[]).includes(key);
+
+/**
+ * `{ [platform]: { ...that channel's settings } }`.
+ *
+ * The inner object is NOT checked field by field, exactly as a draft's
+ * `perPlatform` is not: it is each network's `platformSpecific`, which
+ * travels to a publisher verbatim, and a template that listed only the keys
+ * known today would reject the next setting the composer adds. What IS
+ * checked is the outer shape - a known platform name for every key (so no
+ * arbitrary key, `__proto__` included, reaches the column) and an object for
+ * every value.
+ */
+@ValidatorConstraint({ name: 'templatePlatformSettings', async: false })
+export class TemplatePlatformSettingsConstraint implements ValidatorConstraintInterface {
+  validate(value: unknown): boolean {
+    return (
+      isPlainObject(value) &&
+      Object.entries(value).every(
+        ([platform, settings]) =>
+          isPlatform(platform) && isPlainObject(settings),
+      )
+    );
+  }
+  defaultMessage(): string {
+    return 'platformSettings must map a platform name to an object of that channel’s settings';
+  }
+}
+
+/** `{ [platform]: first comment }`, each a string a network could take. */
+@ValidatorConstraint({ name: 'templateFirstComments', async: false })
+export class TemplateFirstCommentsConstraint implements ValidatorConstraintInterface {
+  validate(value: unknown): boolean {
+    return (
+      isPlainObject(value) &&
+      Object.entries(value).every(
+        ([platform, comment]) =>
+          isPlatform(platform) &&
+          typeof comment === 'string' &&
+          comment.length <= MAX_TEMPLATE_FIRST_COMMENT_CHARS,
+      )
+    );
+  }
+  defaultMessage(): string {
+    return `firstComments must map a platform name to a string of at most ${MAX_TEMPLATE_FIRST_COMMENT_CHARS} characters`;
+  }
+}
+
 export class TemplateContentDto {
   @IsString()
   text: string;
@@ -482,6 +541,18 @@ export class TemplateContentDto {
   @IsOptional()
   @IsString()
   defaultCaption?: string;
+
+  // What "Save as template" keeps of each channel's tab. Plain objects behind
+  // one constraint rather than `@ValidateNested()`: nested validation under
+  // `forbidNonWhitelisted` 400s any key it was not told about, which is what
+  // kept these two from being saved at all.
+  @IsOptional()
+  @Validate(TemplatePlatformSettingsConstraint)
+  platformSettings?: Record<string, Record<string, unknown>>;
+
+  @IsOptional()
+  @Validate(TemplateFirstCommentsConstraint)
+  firstComments?: Record<string, string>;
 }
 
 export class CreateTemplateDto {

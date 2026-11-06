@@ -9,6 +9,9 @@ import { AiTokenService } from './services/ai-token.service';
 import { ElevenLabsSttService } from './services/elevenlabs-stt.service';
 import { ComposerAiService } from './composer-ai.service';
 import { InboxAiService } from './inbox-ai.service';
+import { ClaudeTextService } from './claude-text.service';
+import { ComposerAssistService } from './composer-assist.service';
+import { ComposerAssistController } from './composer-assist.controller';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { GeminiChatProvider } from '../chatbot/llm/gemini.provider';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
@@ -21,8 +24,10 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
 // AiModule-scoped copy is cheap and side-effect-free.
 @Module({
   imports: [WorkspaceRoleModule, ConfigModule, DrizzleModule],
-  controllers: [AiController],
+  controllers: [AiController, ComposerAssistController],
   providers: [
+    ClaudeTextService,
+    ComposerAssistService,
     GroqService,
     GeminiChatProvider,
     AiTextService,
@@ -34,6 +39,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     InboxAiService,
   ],
   exports: [
+    ClaudeTextService,
     GroqService,
     AiTextService,
     TavilyService,

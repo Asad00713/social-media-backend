@@ -83,6 +83,7 @@ function make() {
     calendar as any,
     { syncFromPost: jest.fn(async () => undefined) } as any,
     { enforceQueueLimit: jest.fn(async () => undefined) } as any,
+    { send: jest.fn() } as any, // PostReminderService
   );
   return { svc, jobs, removed, publishingQueue, publisher, rate };
 }

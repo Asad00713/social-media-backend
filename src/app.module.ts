@@ -7,6 +7,7 @@ import { WorkspaceSuspendedGuard } from './auth/guards/workspace-suspended.guard
 import { SiteVerificationController } from './site-verification/site-verification.controller';
 import { SocialMediaModule } from './social-media/social-media.module';
 import { PostsModule } from './posts/posts.module';
+import { PostCommentsModule } from './post-comments/post-comments.module';
 import { PlannerModule } from './planner/planner.module';
 import { AiModule } from './ai/ai.module';
 import { ConfigModule } from '@nestjs/config';
@@ -47,6 +48,7 @@ import { HomeModule } from './home/home.module';
 import { FirstWeekModule } from './first-week/first-week.module';
 import { InsightsModule } from './insights/insights.module';
 import { WorkspaceHubModule } from './workspace-hub/workspace-hub.module';
+import { BrandKitModule } from './brand-kit/brand-kit.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
@@ -74,6 +76,7 @@ import { QUEUES } from './queue/queue.module';
     ChannelsModule,
     MessagingOverviewModule,
     PostsModule,
+    PostCommentsModule,
     PlannerModule,
     MediaModule,
     MediaLibraryModule,
@@ -103,6 +106,7 @@ import { QUEUES } from './queue/queue.module';
     FirstWeekModule,
     InsightsModule,
     WorkspaceHubModule,
+    BrandKitModule,
     BullBoardModule.forRoot({
       // Moved off '/admin/queues' so it stops swallowing the admin queue API,
       // which lives under that same prefix. Bull Board keeps its full job

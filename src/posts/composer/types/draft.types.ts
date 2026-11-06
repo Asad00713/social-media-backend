@@ -1,4 +1,5 @@
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
+import type { PublishItemResult } from '../../../drizzle/schema/posts.schema';
 import type {
   TwitterFields,
   InstagramFields,
@@ -11,6 +12,7 @@ import type {
   BlueskyFields,
   MastodonFields,
 } from './platform-fields.types';
+import type { RecurrenceRule, StoredRecurrence } from '../../lib/recurrence';
 
 export interface Draft {
   id: string;
@@ -21,6 +23,10 @@ export interface Draft {
   perPlatform: PlatformOverrides;
   channels: ChannelTarget[];
   schedule: ScheduleConfig;
+  /** `metadata.campaignId`: the campaign this post is filed under. */
+  campaignId?: string | null;
+  /** `metadata.labels`. */
+  labels?: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -51,6 +57,12 @@ export interface DraftMediaItem {
   durationSec?: number;
   sizeBytes: number;
   altText?: string;
+  /**
+   * The part of a photo Mastodon must keep when it crops: fractions of the
+   * picture, 0-1 from the top left. Published to Mastodon only, as the `focus`
+   * of the media upload (see `toMastodonFocus`).
+   */
+  focalPoint?: { x: number; y: number };
   variants?: Partial<Record<SupportedPlatform, MediaVariant>>;
   /** The Library item this entry was picked from (posts.library_refs, 0055). */
   libraryItemId?: string;
@@ -76,6 +88,10 @@ export interface ChannelTarget {
   publishedAt?: string;
   retryCount: number;
   nextRetryAt?: string;
+  /** Per-item results of a post sent as several (one Pin per image). */
+  itemResults?: PublishItemResult[];
+  /** "Publish: Remind me" — when the reminder went out instead of a post. */
+  reminderSentAt?: string;
 }
 
 export type PublishStatus =
@@ -96,6 +112,8 @@ export type PublishErrorCode =
 export interface ScheduleConfig {
   mode: 'now' | 'all_same_time' | 'per_channel';
   scheduleAt?: string;
+  /** A repeating post — see src/posts/lib/recurrence.ts. */
+  recurrence?: RecurrenceRule | StoredRecurrence;
 }
 
 export interface PlatformOverrides {

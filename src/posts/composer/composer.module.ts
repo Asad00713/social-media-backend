@@ -10,7 +10,9 @@ import {
 } from './services/publish-orchestrator.service';
 import { ChannelCredentialsAdapter } from './services/channel-credentials.adapter';
 import { DraftStoreService } from './services/draft-store.service';
+import { DraftVersionsService } from './services/draft-versions.service';
 import { ComposerSchedulingService } from './services/composer-scheduling.service';
+import { DraftApprovalService } from './services/draft-approval.service';
 import { QueueModule } from '../../queue/queue.module';
 import { ChannelsModule } from '../../channels/channels.module';
 import { DrizzleModule } from '../../drizzle/drizzle.module';
@@ -41,7 +43,9 @@ import { BillingModule } from '../../billing/billing.module';
     ComposerErrorMapperService,
     PublishOrchestratorService,
     DraftStoreService,
+    DraftVersionsService,
     ComposerSchedulingService,
+    DraftApprovalService,
     ChannelCredentialsAdapter,
     {
       provide: CHANNEL_CREDENTIALS_LOOKUP,

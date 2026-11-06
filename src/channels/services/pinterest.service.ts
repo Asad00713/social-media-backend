@@ -1,4 +1,5 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
 
 export interface PinterestUser {
   id: string;
@@ -21,6 +22,37 @@ export interface PinterestBoard {
   followerCount: number;
   collaboratorCount: number;
 }
+
+/** A section inside a board (`BoardSection` in Pinterest's OpenAPI spec). */
+export interface PinterestBoardSection {
+  id: string;
+  name: string;
+}
+
+/** Pinterest's own cap on a pin's alt text. */
+const PIN_ALT_TEXT_MAX_CHARS = 500;
+
+/**
+ * The key frame second to send, or 0 (the first frame).
+ *
+ * Only a finite, non-negative number is a second. Anything else — a
+ * string from an old draft, a negative from a bad client — falls back to
+ * the first frame rather than reaching Pinterest as a value it rejects.
+ */
+function coverKeyFrame(sec: unknown): number {
+  return typeof sec === 'number' && Number.isFinite(sec) && sec >= 0 ? sec : 0;
+}
+
+/** Pinterest's own cap on a board section's name (`maxLength: 180`). */
+const SECTION_NAME_MAX_CHARS = 180;
+
+/**
+ * `page_size` is capped at 250 by the API. A board with more sections than
+ * `SECTIONS_MAX_PAGES` of that is not a board a picker can usefully show, and
+ * the bound keeps a misbehaving `bookmark` from looping forever.
+ */
+const SECTIONS_PAGE_SIZE = 250;
+const SECTIONS_MAX_PAGES = 10;
 
 @Injectable()
 export class PinterestService {
@@ -145,6 +177,101 @@ export class PinterestService {
         board.media?.pin_thumbnail_urls?.[0] ||
         null,
     }));
+  }
+
+  /**
+   * The sections of one board, for the composer's board picker.
+   *
+   * Pinterest API: `GET /v5/boards/{board_id}/sections` (scope
+   * `boards:read`), a `bookmark`-paginated list of `{ id, name }`. The
+   * default page is 25, so this asks for the maximum and follows the
+   * bookmark — a picker that silently showed the first 25 would make the
+   * 26th section unreachable with no hint that it exists.
+   *
+   * `boardId` is encoded before it joins the path: it arrives from a URL
+   * segment, and an id containing `/` or `..` must not be able to address a
+   * different endpoint with this account's token.
+   */
+  async listBoardSections(
+    accessToken: string,
+    boardId: string,
+  ): Promise<PinterestBoardSection[]> {
+    const sections: PinterestBoardSection[] = [];
+    let bookmark: string | null = null;
+
+    for (let page = 0; page < SECTIONS_MAX_PAGES; page++) {
+      const query = new URLSearchParams({
+        page_size: String(SECTIONS_PAGE_SIZE),
+      });
+      if (bookmark) query.set('bookmark', bookmark);
+
+      const response = await fetch(
+        `${this.apiUrl}/boards/${encodeURIComponent(boardId)}/sections?${query.toString()}`,
+        {
+          headers: {
+            Authorization: `Bearer ${accessToken}`,
+            'Content-Type': 'application/json',
+          },
+        },
+      );
+
+      if (!response.ok) {
+        const error = await response.json().catch(() => ({}));
+        this.logger.error('Failed to list Pinterest board sections:', error);
+        throw new BadRequestException(
+          error.message || 'Failed to list board sections',
+        );
+      }
+
+      const data = await response.json();
+      for (const item of data.items || []) {
+        if (typeof item?.id === 'string' && typeof item?.name === 'string') {
+          sections.push({ id: item.id, name: item.name });
+        }
+      }
+
+      bookmark = typeof data.bookmark === 'string' ? data.bookmark : null;
+      if (!bookmark) break;
+    }
+
+    return sections;
+  }
+
+  /**
+   * Create a section inside a board.
+   *
+   * Pinterest API: `POST /v5/boards/{board_id}/sections` (scopes
+   * `boards:read` + `boards:write`), body `{ name }` with a name of 1 to 180
+   * characters; answers 201 with the new `{ id, name }`.
+   */
+  async createBoardSection(
+    accessToken: string,
+    boardId: string,
+    name: string,
+  ): Promise<PinterestBoardSection> {
+    const response = await fetch(
+      `${this.apiUrl}/boards/${encodeURIComponent(boardId)}/sections`,
+      {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ name: name.slice(0, SECTION_NAME_MAX_CHARS) }),
+      },
+    );
+
+    if (!response.ok) {
+      const error = await response.json().catch(() => ({}));
+      this.logger.error('Failed to create Pinterest board section:', error);
+      throw new BadRequestException(
+        error.message || 'Failed to create board section',
+      );
+    }
+
+    const section = await response.json();
+    this.logger.log(`Pinterest board section created: ${section.id}`);
+    return { id: section.id, name: section.name };
   }
 
   /**
@@ -279,29 +406,87 @@ export class PinterestService {
       link?: string;
       mediaType?: 'image' | 'video';
       videoCoverImageUrl?: string;
+      /**
+       * The second of the video to use as the cover when no image is
+       * given — `cover_image_key_frame_time`, which Pinterest takes in
+       * SECONDS. The composer stores the chosen frame as `coverFrameSec`.
+       */
+      coverKeyFrameSec?: number;
+      /** `alt_text` on PinCreate — capped at 500 characters by the API. */
+      altText?: string;
+      /**
+       * `ai_disclosures`, an OBJECT wrapping a list of UPPERCASE values
+       * (`AI_MODIFIED`, `SYNTHETIC_PERFORMER`) — not the lowercase
+       * `ai_modified` of the catalogs API, which is a different enum on a
+       * different resource.
+       */
+      aiModified?: boolean;
+      /** `board_section_id` — a section within the chosen board. */
+      boardSectionId?: string;
+      /**
+       * Extra image urls, turning the pin into a carousel.
+       *
+       * `media_source` is a discriminated union: `image_url` takes ONE
+       * url, `multiple_image_urls` takes an `items` array of 2 to 5. So a
+       * carousel is a different source_type, not an extra field.
+       */
+      extraImageUrls?: string[];
+      /**
+       * `dominant_color` — "Dominant pin color. Hex number, e.g.
+       * #6E7874" (PinCreate, Pinterest's generated API client docs).
+       */
+      dominantColor?: string;
     },
   ): Promise<{ pinId: string; pinUrl?: string }> {
     const isVideo = options?.mediaType === 'video';
+
+    // 2 to 5 per the spec's minItems/maxItems. The first url is the one
+    // passed as `mediaUrl`, so the extras fill the remaining four slots.
+    const extras = (options?.extraImageUrls ?? []).filter(Boolean).slice(0, 4);
+    const isCarousel = !isVideo && extras.length > 0;
 
     const body: Record<string, any> = {
       board_id: boardId,
       title,
       description,
+      // A video's media_source is built in createVideoPin, once the
+      // upload has a media_id; this branch is never sent. It used to
+      // invent a cover by swapping `.mp4` for `.jpg` on the video URL —
+      // a file that need not exist.
       media_source: isVideo
-        ? {
-            source_type: 'video_id',
-            cover_image_url:
-              options?.videoCoverImageUrl || mediaUrl.replace('.mp4', '.jpg'),
-            media_id: '', // Will be set after video upload
-          }
-        : {
-            source_type: 'image_url',
-            url: mediaUrl,
-          },
+        ? { source_type: 'video_id' }
+        : isCarousel
+          ? {
+              source_type: 'multiple_image_urls',
+              items: [mediaUrl, ...extras].map((url) => ({ url })),
+            }
+          : {
+              source_type: 'image_url',
+              url: mediaUrl,
+            },
     };
 
     if (options?.link) {
       body.link = options.link;
+    }
+
+    if (options?.altText) {
+      body.alt_text = options.altText.slice(0, PIN_ALT_TEXT_MAX_CHARS);
+    }
+
+    if (options?.boardSectionId) {
+      body.board_section_id = options.boardSectionId;
+    }
+
+    if (options?.dominantColor) {
+      body.dominant_color = options.dominantColor;
+    }
+
+    // Only ever sent as a declaration, never as a denial: the field is a
+    // list of disclosures the creator HAS made, so "not AI" is an absent
+    // field rather than an empty list.
+    if (options?.aiModified) {
+      body.ai_disclosures = { values: ['AI_MODIFIED'] };
     }
 
     // For videos, we need to use the video upload flow
@@ -353,7 +538,12 @@ export class PinterestService {
     title: string,
     description: string,
     videoUrl: string,
-    options?: { link?: string; videoCoverImageUrl?: string },
+    options?: {
+      link?: string;
+      videoCoverImageUrl?: string;
+      coverKeyFrameSec?: number;
+      dominantColor?: string;
+    },
   ): Promise<{ pinId: string; pinUrl?: string }> {
     // Step 1: Register media upload
     const registerResponse = await fetch(`${this.apiUrl}/media`, {
@@ -392,7 +582,7 @@ export class PinterestService {
     // Step 2: Download video and upload to Pinterest's S3 bucket.
     // Pinterest requires a multipart/form-data POST containing every
     // upload_parameter as a field, with the video file LAST under `file`.
-    const videoResponse = await fetch(videoUrl);
+    const videoResponse = await fetchPublicMedia(videoUrl);
     if (!videoResponse.ok) {
       throw new BadRequestException(
         `Failed to download video from ${videoUrl}`,
@@ -427,11 +617,13 @@ export class PinterestService {
     await this.waitForMediaProcessing(accessToken, mediaId);
 
     // Step 4: Create pin with video.
-    // Pinterest requires a cover for a video pin: either an explicit
-    // cover_image_url, or cover_image_key_frame_time (a millisecond offset it
-    // grabs a frame from). We prefer the caller-supplied cover image and fall
-    // back to the video's first frame (0ms) so a pin never fails for a missing
-    // cover.
+    // Pinterest wants a cover for a video pin — its guide says a valid
+    // image url must be provided to avoid a 400, so "send nothing and let
+    // Pinterest pick" is not an option. Either an explicit cover_image_url,
+    // or cover_image_key_frame_time: the SECOND of the video to grab (the
+    // v5 spec's own description; past the end, the last frame is used).
+    // The uploaded frame wins; without one, the second the composer
+    // stored, and without that the first frame.
     const mediaSource: Record<string, any> = {
       source_type: 'video_id',
       media_id: mediaId,
@@ -439,7 +631,9 @@ export class PinterestService {
     if (options?.videoCoverImageUrl) {
       mediaSource.cover_image_url = options.videoCoverImageUrl;
     } else {
-      mediaSource.cover_image_key_frame_time = 0;
+      mediaSource.cover_image_key_frame_time = coverKeyFrame(
+        options?.coverKeyFrameSec,
+      );
     }
 
     const pinBody: Record<string, any> = {
@@ -451,6 +645,10 @@ export class PinterestService {
 
     if (options?.link) {
       pinBody.link = options.link;
+    }
+
+    if (options?.dominantColor) {
+      pinBody.dominant_color = options.dominantColor;
     }
 
     const pinResponse = await fetch(`${this.apiUrl}/pins`, {

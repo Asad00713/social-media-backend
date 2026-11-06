@@ -10,6 +10,7 @@ import { PublisherFactory } from '../../publishers/publisher.factory';
 import { AnalyticsEventEmitter } from '../../../realtime/analytics-event-emitter.service';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import type { Draft } from '../types/draft.types';
+import { PostReminderService } from '../../services/post-reminder.service';
 
 const baseInput = (): InlinePublishInput => ({
   draftId: 'd1',
@@ -32,8 +33,17 @@ describe('PublishOrchestratorService.publishInline', () => {
   let factory: { getPublisher: jest.Mock };
   let emitter: { emit: jest.Mock };
   let credentials: { getCredentials: jest.Mock };
+  let reminders: { send: jest.Mock };
 
   const makeDb = () => ({
+    // The stored row's metadata, read so campaign and labels survive.
+    select: jest.fn().mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockReturnValue({
+          limit: jest.fn().mockResolvedValue([]),
+        }),
+      }),
+    }),
     insert: jest.fn().mockReturnValue({
       values: jest.fn().mockReturnValue({
         onConflictDoUpdate: jest.fn().mockResolvedValue(undefined),
@@ -50,6 +60,7 @@ describe('PublishOrchestratorService.publishInline', () => {
     publisher = { publish: jest.fn() };
     factory = { getPublisher: jest.fn().mockReturnValue(publisher) };
     emitter = { emit: jest.fn() };
+    reminders = { send: jest.fn().mockResolvedValue(undefined) };
     credentials = {
       getCredentials: jest.fn().mockResolvedValue({
         accessToken: 'tok',
@@ -83,6 +94,7 @@ describe('PublishOrchestratorService.publishInline', () => {
         { provide: AnalyticsEventEmitter, useValue: emitter },
         { provide: CHANNEL_CREDENTIALS_LOOKUP, useValue: credentials },
         { provide: DRIZZLE, useValue: makeDb() },
+        { provide: PostReminderService, useValue: reminders },
       ],
     }).compile();
 
@@ -110,6 +122,90 @@ describe('PublishOrchestratorService.publishInline', () => {
     expect(stateEvents.length).toBe(2);
     expect(stateEvents[0][2].status).toBe('publishing');
     expect(stateEvents[1][2].status).toBe('published');
+  });
+
+  it('"Remind me" on Instagram sends the reminder now and publishes nothing there', async () => {
+    publisher.publish.mockResolvedValue({ platformPostId: 'tid_1' });
+    const input: InlinePublishInput = {
+      ...baseInput(),
+      base: {
+        text: 'hello world',
+        mediaItems: [
+          { id: 'm1', type: 'image', url: 'https://cdn/a.jpg', sizeBytes: 1 },
+        ],
+        hashtags: [],
+        mentions: [],
+      },
+      perPlatform: {
+        instagram: {
+          inheritsFromBase: true,
+          overrides: {},
+          platformSpecific: { publishMode: 'remind', frameNote: 'Poll' } as any,
+        },
+      },
+      channels: [
+        {
+          channelId: 'c9',
+          platform: 'instagram',
+          publishStatus: 'queued',
+          retryCount: 0,
+        },
+        {
+          channelId: 'c1',
+          platform: 'twitter',
+          publishStatus: 'queued',
+          retryCount: 0,
+        },
+      ],
+    };
+
+    const result = await svc.publishInline('w1', 'u1', input);
+
+    expect(reminders.send).toHaveBeenCalledWith({
+      userId: 'u1',
+      workspaceId: 'w1',
+      postId: 'd1',
+      channelId: 'c9',
+      content: {
+        platform: 'instagram',
+        caption: 'hello world',
+        mediaUrls: ['https://cdn/a.jpg'],
+        note: 'Poll',
+      },
+    });
+    expect(publisher.publish).toHaveBeenCalledTimes(1);
+    expect(credentials.getCredentials).toHaveBeenCalledTimes(1);
+    expect(credentials.getCredentials).toHaveBeenCalledWith('w1', 'c1');
+    expect(result.draftStatus).toBe('published');
+    const ig = result.channels.find((c) => c.channelId === 'c9');
+    expect(ig?.publishStatus).toBe('published');
+    expect(typeof ig?.reminderSentAt).toBe('string');
+    expect(ig?.platformPostId).toBeUndefined();
+  });
+
+  it('a reminder that cannot be sent fails that channel', async () => {
+    reminders.send.mockRejectedValue(new Error('down'));
+    const input: InlinePublishInput = {
+      ...baseInput(),
+      perPlatform: {
+        facebook: {
+          inheritsFromBase: true,
+          overrides: {},
+          platformSpecific: { publishMode: 'remind' } as any,
+        },
+      },
+      channels: [
+        {
+          channelId: 'c5',
+          platform: 'facebook',
+          publishStatus: 'queued',
+          retryCount: 0,
+        },
+      ],
+    };
+    const result = await svc.publishInline('w1', 'u1', input);
+    expect(result.draftStatus).toBe('failed');
+    expect(publisher.publish).not.toHaveBeenCalled();
   });
 
   it('marks channel failed with classified error and overall failed', async () => {

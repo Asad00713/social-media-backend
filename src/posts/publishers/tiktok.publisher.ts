@@ -168,6 +168,7 @@ export class TikTokPublisher extends BasePublisher {
           disableComment: metadata?.disableComment ?? false,
           brandContentToggle: metadata?.brandContentToggle ?? false,
           brandOrganicToggle: metadata?.brandOrganicToggle ?? false,
+          isAigc: metadata?.isAigc === true,
         },
       );
 
@@ -212,6 +213,9 @@ export class TikTokPublisher extends BasePublisher {
       videoCoverTimestampMs: metadata?.videoCoverTimestampMs ?? 1000,
       brandContentToggle: metadata?.brandContentToggle ?? false,
       brandOrganicToggle: metadata?.brandOrganicToggle ?? false,
+      // Honoured on Direct Post only. The inbox upload takes no AI field, and
+      // the user sets the label in TikTok itself on that path.
+      isAigc: metadata?.isAigc === true,
     };
 
     let result: { publishId: string };

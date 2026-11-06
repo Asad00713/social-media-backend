@@ -1,15 +1,26 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 
+/**
+ * One spoken word with where it sits in the audio, in seconds.
+ *
+ * This is also the wire shape of `POST /ai/workspaces/:id/transcribe`'s
+ * `words` field — kept to the three fields captions need, so the speech
+ * service's own bookkeeping (log-probabilities, speaker ids, per-character
+ * timings) never reaches the browser.
+ */
+export interface TranscribedWord {
+  text: string;
+  start: number;
+  end: number;
+}
+
 export interface TranscriptionResult {
   text: string;
   language?: string;
   durationSeconds?: number;
-  words?: Array<{
-    word: string;
-    start: number;
-    end: number;
-  }>;
+  /** Spoken words only, in the order spoken. Empty when none were timed. */
+  words: TranscribedWord[];
 }
 
 export interface TranscriptionOptions {
@@ -171,11 +182,7 @@ export class ElevenLabsSttService {
         text: data.text || '',
         language: data.language_code,
         durationSeconds: data.duration,
-        words: data.words?.map((w: any) => ({
-          word: w.text,
-          start: w.start,
-          end: w.end,
-        })),
+        words: toTranscribedWords(data.words),
       };
     } catch (error) {
       this.logger.error(`Transcription error: ${error}`);
@@ -220,6 +227,39 @@ export class ElevenLabsSttService {
   getMaxDuration(): number {
     return MAX_DURATION_SECONDS;
   }
+}
+
+/**
+ * The timed words out of a Scribe response's `words` array.
+ *
+ * What ElevenLabs documents for each entry (api-reference/speech-to-text/
+ * convert): `type` is `word`, `spacing` or `audio_event`; `start` and `end`
+ * are seconds and both are optional and nullable. Captions need the words
+ * and nothing else, so:
+ *
+ * - the gaps between words (`spacing`) and the non-speech tags such as
+ *   "(laughter)" (`audio_event`) are dropped — they would otherwise be cut
+ *   into a caption line of their own;
+ * - an entry with no usable start and end is dropped, not given invented
+ *   times: a cue is only as good as its timing.
+ *
+ * An entry with no `type` at all is kept, so a response from a model that
+ * omits it still yields captions.
+ */
+export function toTranscribedWords(raw: unknown): TranscribedWord[] {
+  if (!Array.isArray(raw)) return [];
+  const words: TranscribedWord[] = [];
+  for (const entry of raw) {
+    if (!entry || typeof entry !== 'object') continue;
+    const { text, type, start, end } = entry as Record<string, unknown>;
+    if (type !== undefined && type !== null && type !== 'word') continue;
+    if (typeof text !== 'string' || text.trim() === '') continue;
+    if (typeof start !== 'number' || !Number.isFinite(start)) continue;
+    if (typeof end !== 'number' || !Number.isFinite(end)) continue;
+    if (start < 0 || end < start) continue;
+    words.push({ text: text.trim(), start, end });
+  }
+  return words;
 }
 
 /**

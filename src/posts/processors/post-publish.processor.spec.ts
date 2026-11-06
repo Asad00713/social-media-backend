@@ -18,17 +18,34 @@ jest.mock('../../drizzle/db-utils', () => ({
 
 import { PostPublishProcessor } from './post-publish.processor';
 
-function make(existingJobs: string[] = []) {
+const order: string[] = [];
+
+function make(existingJobs: string[] = [], ensureNext?: jest.Mock) {
   const postService = {
-    publishPost: jest.fn(async () => ({ status: 'published', targets: [] })),
+    publishPost: jest.fn(async () => {
+      order.push('publish');
+      return { status: 'published', targets: [] };
+    }),
+  };
+  const repeats = {
+    ensureNext:
+      ensureNext ??
+      jest.fn(async () => {
+        order.push('ensureNext');
+        return null;
+      }),
   };
   const queue = {
     getJob: jest.fn(async (id: string) =>
       existingJobs.includes(id) ? { id } : null,
     ),
   };
-  const processor = new PostPublishProcessor(postService as any, queue as any);
-  return { processor, postService, queue };
+  const processor = new PostPublishProcessor(
+    postService as any,
+    queue as any,
+    repeats as any,
+  );
+  return { processor, postService, queue, repeats };
 }
 
 const job = (id: string) => ({ id, data: { postId: 'p1' } }) as any;
@@ -84,6 +101,38 @@ describe('PostPublishProcessor', () => {
     const { processor, postService } = make();
     await processor.process(job('j1'));
     expect(postService.publishPost).toHaveBeenCalledTimes(1);
+  });
+
+  it('ensures the next post of a series BEFORE publishing this one', async () => {
+    order.length = 0;
+    rows = [row({ jobId: 'j1' })];
+    const { processor, repeats } = make(['j1']);
+    await processor.process(job('j1'));
+    expect(repeats.ensureNext).toHaveBeenCalledWith(rows[0]);
+    expect(order).toEqual(['ensureNext', 'publish']);
+  });
+
+  it('publishes even when the next post cannot be created', async () => {
+    rows = [row({ jobId: 'j1' })];
+    const failing = jest.fn(async () => {
+      throw new Error('db down');
+    });
+    const { processor, postService } = make(['j1'], failing);
+    await expect(processor.process(job('j1'))).resolves.toMatchObject({
+      success: true,
+    });
+    expect(postService.publishPost).toHaveBeenCalledTimes(1);
+  });
+
+  it('creates no next post for a skipped job', async () => {
+    rows = [row({ status: 'published' })];
+    const { processor, repeats } = make();
+    await processor.process(job('j1'));
+    rows = [row({ jobId: 'post-p1-2' })];
+    const superseded = make(['post-p1-2']);
+    await superseded.processor.process(job('composer-publish-p1'));
+    expect(repeats.ensureNext).not.toHaveBeenCalled();
+    expect(superseded.repeats.ensureNext).not.toHaveBeenCalled();
   });
 
   it('still skips a post that is no longer scheduled', async () => {

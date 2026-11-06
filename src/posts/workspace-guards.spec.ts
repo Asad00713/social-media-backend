@@ -8,7 +8,7 @@ import { CampaignsController } from '../campaigns/campaigns.controller';
 import { EvergreenController } from '../campaigns/evergreen.controller';
 import { DripController } from '../drips/drip.controller';
 
-type Cap = 'posts:draft' | 'posts:publish';
+type Cap = 'posts:draft' | 'posts:publish' | 'posts:approve';
 
 // Every workspace route and the capability it must demand. A route missing from
 // this table, or carrying a different capability, fails the spec.
@@ -38,10 +38,16 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
     ComposerController,
     {
       saveDraft: 'posts:draft',
+      listLabels: 'posts:draft',
       listDrafts: 'posts:draft',
       getDraft: 'posts:draft',
+      listVersions: 'posts:draft',
+      restoreVersion: 'posts:draft',
       deleteDraft: 'posts:draft',
       schedule: 'posts:publish',
+      getApproval: 'posts:draft',
+      setApproval: 'posts:draft',
+      approveDraft: 'posts:approve',
       cancelSchedule: 'posts:publish',
       publish: 'posts:publish',
     },
