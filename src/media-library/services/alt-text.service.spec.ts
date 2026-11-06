@@ -138,6 +138,18 @@ describe('AltTextService', () => {
     expect(r.status).toBe(403);
   });
 
+  it('writes a Library item with Claude too, when Claude is configured', async () => {
+    // One model for alt text everywhere: a photo described in the Library
+    // and the same photo described in the composer read alike.
+    const { svc, aiText, claude } = build({});
+    claude.isReady.mockReturnValue(true);
+    mockFetch(new Uint8Array([4, 5]), { 'content-type': 'image/png' });
+    const out = await svc.generate(WS, USER, ITEM);
+    expect(out).toEqual({ altText: 'a blue door.' });
+    expect(claude.describeImage).toHaveBeenCalledTimes(1);
+    expect(aiText.describeImage).not.toHaveBeenCalled();
+  });
+
   it('refuses an image over 8 MB with 422', async () => {
     const { svc } = build({});
     mockFetch(new Uint8Array(8 * 1024 * 1024 + 1));
@@ -308,15 +320,6 @@ describe('AltTextService', () => {
       expect(r.status).toBe(402);
       expect(fetchSpy).not.toHaveBeenCalled();
     });
-  });
-
-  it('the Library path never uses Claude, even when it is configured', async () => {
-    const { svc, claude, aiText } = build({});
-    claude.isReady.mockReturnValue(true);
-    mockFetch();
-    await svc.generate(WS, USER, ITEM);
-    expect(claude.describeImage).not.toHaveBeenCalled();
-    expect(aiText.describeImage).toHaveBeenCalled();
   });
 
   it('accepts a streamed body under the cap', async () => {

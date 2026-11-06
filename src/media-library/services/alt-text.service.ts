@@ -88,7 +88,7 @@ export class AltTextService {
     }
 
     return this.metered(workspaceId, userId, `alt text: ${item.name}`, () =>
-      this.describeWithGemini(item.fileUrl),
+      this.describe(item.fileUrl),
     );
   }
 
@@ -98,8 +98,7 @@ export class AltTextService {
    * takes the URL, and refuses any URL that is not our own storage: we fetch
    * it server-side, and a free-form URL would be a request to any host.
    *
-   * Claude Sonnet when ANTHROPIC_API_KEY is set (vision where quality
-   * matters); Gemini otherwise, the same model the Library uses. Never saves:
+   * The same model as the Library (`describe`). Never saves:
    * the editor puts the text in its field and the person keeps or edits it.
    */
   async generateForUrl(
@@ -113,10 +112,20 @@ export class AltTextService {
       );
     }
     return this.metered(workspaceId, userId, 'alt text: draft photo', () =>
-      this.claude.isReady()
-        ? this.describeWithClaude(url)
-        : this.describeWithGemini(url),
+      this.describe(url),
     );
+  }
+
+  /**
+   * One model for alt text everywhere, so the Library and the composer write
+   * the same kind of description for the same photo: Claude Sonnet when
+   * ANTHROPIC_API_KEY is set (vision, where quality matters), Gemini
+   * otherwise.
+   */
+  private describe(fileUrl: string): Promise<string> {
+    return this.claude.isReady()
+      ? this.describeWithClaude(fileUrl)
+      : this.describeWithGemini(fileUrl);
   }
 
   private async describeWithGemini(fileUrl: string): Promise<string> {
