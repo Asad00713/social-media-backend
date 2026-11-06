@@ -3,6 +3,7 @@ import {
   Inject,
   Injectable,
   Logger,
+  Optional,
 } from '@nestjs/common';
 import { carryFirstWeekMeta } from '../../../first-week/lib/first-week-metadata';
 import { InjectQueue } from '@nestjs/bullmq';
@@ -13,6 +14,8 @@ import { posts } from '../../../drizzle/schema/posts.schema';
 import { QUEUES } from '../../../queue/queue.module';
 import type { ScheduleDraftDto } from '../dto/schedule-draft.dto';
 import type { ChannelTarget } from '../types/draft.types';
+import { snapshotOf } from '../lib/draft-versions';
+import { DraftVersionsService } from './draft-versions.service';
 import { CalendarPushSyncService } from '../../../calendar-sync/services/calendar-push-sync.service';
 import { PostQueueService } from '../../../billing/services/post-queue.service';
 
@@ -38,6 +41,8 @@ export class ComposerSchedulingService {
     private readonly publishingQueue: Queue,
     private readonly calendarPushSync: CalendarPushSyncService,
     private readonly postQueue: PostQueueService,
+    // Optional so a unit test can build the service without it.
+    @Optional() private readonly versions?: DraftVersionsService,
   ) {}
 
   /**
@@ -184,6 +189,10 @@ export class ComposerSchedulingService {
     this.logger.log(
       `Scheduled draft ${dto.draftId} for ${scheduledAt.toISOString()} (delay=${delay}ms)`,
     );
+
+    // In the 2026 composer, scheduling is how a draft reaches the server,
+    // so it is a save for version history too.
+    await this.versions?.record(dto.draftId, userId, snapshotOf(dto));
 
     // Reflect the newly scheduled post on connected calendars immediately —
     // otherwise it only appears on the next 15-min reconcile poll.

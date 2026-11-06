@@ -8,7 +8,8 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { isViewer, type CallerRole } from '../guest-rules';
-import { eq, and, desc, inArray, sql, gte, lte } from 'drizzle-orm';
+import { eq, and, desc, inArray, ne, sql, gte, lte } from 'drizzle-orm';
+import { VERSION_ACTION } from '../composer/lib/draft-versions';
 import { db } from '../../drizzle/db';
 import { derivePostStatus, publishedTargetState } from '../lib/post-status';
 import { assertNotInPast, refusal } from '../lib/refusal';
@@ -1034,7 +1035,14 @@ export class PostService {
     return await db
       .select()
       .from(postHistory)
-      .where(eq(postHistory.postId, postId))
+      .where(
+        and(
+          eq(postHistory.postId, postId),
+          // Content snapshots belong to version history, which has its own
+          // endpoint; here they would bury the status changes in post bodies.
+          ne(postHistory.action, VERSION_ACTION),
+        ),
+      )
       .orderBy(desc(postHistory.createdAt));
   }
 
