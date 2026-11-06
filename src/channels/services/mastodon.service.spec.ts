@@ -1,6 +1,16 @@
 import { ConfigService } from '@nestjs/config';
 import { MastodonService } from './mastodon.service';
 
+// These tests stub the network with `global.fetch`. The media download goes
+// through the SSRF-guarded fetchPublicMedia (undici + a pinned-DNS agent), so
+// route it back to the stub; the guard itself is covered in public-fetch.spec.
+jest.mock('../../common/net/public-fetch', () => ({
+  ...jest.requireActual<typeof import('../../common/net/public-fetch')>(
+    '../../common/net/public-fetch',
+  ),
+  fetchPublicMedia: (url: string) => global.fetch(url),
+}));
+
 /**
  * What `uploadMedia` puts on the wire. The multipart body is assembled by hand,
  * so a field added to it is only right if it is a part of the form — not a URL
