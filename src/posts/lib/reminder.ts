@@ -33,7 +33,8 @@ const PLATFORM_NAMES: Partial<Record<SupportedPlatform, string>> = {
 /** Keep the notification readable; the full caption is in the post itself. */
 export const REMINDER_CAPTION_MAX = 2000;
 
-type Loose = Record<string, unknown> | undefined | null;
+/** posts.platform_content, or a composer draft's perPlatform: read loosely. */
+type Loose = object | undefined | null;
 
 type Media = Array<{ url?: string }>;
 
@@ -54,7 +55,9 @@ function platformEntry(
   platformContent: Loose,
   platform: string,
 ): PlatformEntry | undefined {
-  return (platformContent ?? {})[platform] as PlatformEntry | undefined;
+  return (
+    platformContent as Record<string, PlatformEntry> | null | undefined
+  )?.[platform];
 }
 
 /** Whether this channel of the post is a reminder rather than a publish. */
