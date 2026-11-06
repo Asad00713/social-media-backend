@@ -36,6 +36,7 @@ import type { Capability } from '../workspace-members/role-capabilities';
 import { ChannelService } from './services/channel.service';
 import { OAuthService } from './services/oauth.service';
 import { FacebookService } from './services/facebook.service';
+import { listFacebookWorkspacePages } from './facebook-workspace-pages';
 import { PinterestService } from './services/pinterest.service';
 import { YouTubeService } from './services/youtube.service';
 import { LinkedInService } from './services/linkedin.service';
@@ -1685,6 +1686,43 @@ export class ChannelsController {
       dto.name,
     );
     return { section, message: 'Section created successfully' };
+  }
+
+  /**
+   * The workspace's Facebook Pages with their locations, for the composer's
+   * Location (`place`) and Reel Collaborator pickers. Each Page is read with
+   * its own token; see `listFacebookWorkspacePages` for why only these.
+   */
+  @Get('workspaces/:workspaceId/:channelId/facebook/pages')
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  async listFacebookPagesForChannel(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+  ) {
+    const numericId = parseInt(channelId, 10);
+    const channel = await this.channelService.getChannelById(
+      numericId,
+      workspaceId,
+    );
+    if (channel.platform !== 'facebook') {
+      throw new BadRequestException(
+        `Channel ${channelId} is a ${channel.platform} channel, not a Facebook channel`,
+      );
+    }
+
+    const pages = await listFacebookWorkspacePages(numericId, {
+      listFacebookChannels: () =>
+        this.channelService.getWorkspaceChannels(workspaceId, {
+          platform: 'facebook',
+          isActive: true,
+        }),
+      getAccessToken: (id) =>
+        this.channelService.getAccessToken(id, workspaceId),
+      getPageLocation: (pageId, token) =>
+        this.facebookService.getPageLocation(pageId, token),
+    });
+    return { pages };
   }
 
   /**

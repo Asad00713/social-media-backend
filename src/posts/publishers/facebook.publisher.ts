@@ -4,6 +4,11 @@ import { FacebookService } from '../../channels/services/facebook.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import { findFirstLink, linkCallToActionType } from './facebook-link-cta';
+import {
+  facebookCollaborator,
+  facebookPlace,
+  facebookPostOptions,
+} from './facebook-post-settings';
 
 @Injectable()
 export class FacebookPublisher extends BasePublisher {
@@ -44,6 +49,7 @@ export class FacebookPublisher extends BasePublisher {
       thumbnailWarning?: string;
       captionsWarning?: string;
     };
+    let collaboratorWarning: string | undefined;
 
     if (postType === 'reel') {
       // Reels require a vertical video. If no media or first is not a video, fail clearly.
@@ -63,6 +69,7 @@ export class FacebookPublisher extends BasePublisher {
           ? metadata.thumbnailUrl.trim()
           : '';
       const captions = reelCaptions(metadata);
+      const place = facebookPlace(metadata);
       result = await this.facebookService.postReelToPage(
         platformAccountId,
         accessToken,
@@ -72,8 +79,29 @@ export class FacebookPublisher extends BasePublisher {
           ...(reelTitle ? { title: reelTitle } : {}),
           ...(thumbnailUrl ? { thumbnailUrl } : {}),
           ...(captions ? { captions } : {}),
+          ...(place ? { place } : {}),
         },
       );
+
+      // The Reel is live by now, so an invite that does not go out is a
+      // warning on the result - like the cover - not a failed post. A Page
+      // cannot invite itself; that choice is dropped rather than sent.
+      const collaborator = facebookCollaborator(metadata);
+      if (collaborator && collaborator !== platformAccountId) {
+        try {
+          await this.facebookService.inviteReelCollaborator(
+            result.postId,
+            accessToken,
+            collaborator,
+          );
+        } catch (err) {
+          collaboratorWarning =
+            err instanceof Error ? err.message : String(err);
+          this.logger.warn(
+            `Facebook Reel ${result.postId}: collaborator not invited: ${collaboratorWarning}`,
+          );
+        }
+      }
     } else if (postType === 'story') {
       // Stories require exactly one image OR one video.
       if (mediaItems.length === 0) {
@@ -103,6 +131,7 @@ export class FacebookPublisher extends BasePublisher {
         accessToken,
         mediaItems[0].url,
         content,
+        facebookPostOptions(metadata),
       );
     } else {
       // A LINK post is text with no media. Its button (`linkCta`, the draft's
@@ -118,6 +147,7 @@ export class FacebookPublisher extends BasePublisher {
         content,
         ctaType ? link : undefined,
         ctaType,
+        facebookPostOptions(metadata),
       );
     }
 
@@ -141,6 +171,12 @@ export class FacebookPublisher extends BasePublisher {
       publishResult.metadata = {
         ...(publishResult.metadata ?? {}),
         captionsWarning: result.captionsWarning,
+      };
+    }
+    if (collaboratorWarning) {
+      publishResult.metadata = {
+        ...(publishResult.metadata ?? {}),
+        collaboratorWarning,
       };
     }
 

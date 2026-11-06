@@ -64,6 +64,7 @@ describe('FacebookPublisher', () => {
         caption,
         link,
         'LEARN_MORE',
+        {},
       );
     });
 
@@ -82,6 +83,7 @@ describe('FacebookPublisher', () => {
           caption,
           undefined,
           undefined,
+          {},
         ]);
       }
     });
@@ -106,6 +108,7 @@ describe('FacebookPublisher', () => {
         'just words',
         undefined,
         undefined,
+        {},
       ]);
     });
 
