@@ -1,10 +1,17 @@
 import type { InsightPost } from './insight-post';
-import { csvCell, filterAndSort, postsCsv, tableTotals } from './content-table';
+import {
+  csvCell,
+  filterAndSort,
+  formatCountsOf,
+  postsCsv,
+  tableTotals,
+} from './content-table';
 
 const ip = (over: Partial<InsightPost>): InsightPost => ({
   postId: 'p',
   channelId: 1,
   publishedAt: '2026-09-21T10:00:00.000Z',
+  title: '',
   content: '',
   format: 'image',
   thumbnailUrl: null,
@@ -13,8 +20,12 @@ const ip = (over: Partial<InsightPost>): InsightPost => ({
   comments: null,
   shares: null,
   impressions: null,
+  reach: null,
   engagements: 0,
   engagementRate: null,
+  imported: false,
+  usualMultiplier: null,
+  isSettling: false,
   ...over,
 });
 
@@ -57,6 +68,76 @@ describe('filterAndSort', () => {
         order: 'desc',
       }).map((r) => r.postId),
     ).toEqual(['zero-impr', 'a']);
+  });
+
+  it('sorts by reach with unreported reach last, and filters link posts', () => {
+    const reached = [
+      ip({ postId: 'r1', reach: 50, format: 'link' }),
+      ip({ postId: 'r0', reach: null, format: 'link' }),
+      ip({ postId: 'r2', reach: 900 }),
+    ];
+    const order = (o: 'asc' | 'desc') =>
+      filterAndSort(reached, { format: 'all', sort: 'reach', order: o }).map(
+        (r) => r.postId,
+      );
+    expect(order('desc')).toEqual(['r2', 'r1', 'r0']);
+    expect(order('asc')).toEqual(['r1', 'r2', 'r0']);
+    expect(
+      filterAndSort(reached, {
+        format: 'link',
+        sort: 'reach',
+        order: 'desc',
+      }).map((r) => r.postId),
+    ).toEqual(['r1', 'r0']);
+  });
+
+  it('a null usual sorts last in both directions', () => {
+    const usual = [
+      ip({
+        postId: 'none-new',
+        usualMultiplier: null,
+        publishedAt: '2026-09-28T00:00:00.000Z',
+      }),
+      ip({ postId: 'x2', usualMultiplier: 2.1 }),
+      ip({
+        postId: 'none-old',
+        usualMultiplier: null,
+        publishedAt: '2026-09-20T00:00:00.000Z',
+      }),
+      ip({ postId: 'x05', usualMultiplier: 0.5 }),
+      ip({ postId: 'x1', usualMultiplier: 1 }),
+    ];
+    const order = (o: 'asc' | 'desc') =>
+      filterAndSort(usual, { format: 'all', sort: 'usual', order: o }).map(
+        (r) => r.postId,
+      );
+    // Nulls keep the stable tie-break among themselves: newest first.
+    expect(order('desc')).toEqual(['x2', 'x1', 'x05', 'none-new', 'none-old']);
+    expect(order('asc')).toEqual(['x05', 'x1', 'x2', 'none-new', 'none-old']);
+  });
+});
+
+describe('formatCountsOf', () => {
+  it('counts each pill, every row under all, unknown only there', () => {
+    expect(
+      formatCountsOf([
+        ip({ format: 'image' }),
+        ip({ format: 'image' }),
+        ip({ format: 'video' }),
+        ip({ format: 'link' }),
+        ip({ format: 'unknown' }),
+      ]),
+    ).toEqual({ all: 5, image: 2, video: 1, carousel: 0, link: 1, text: 0 });
+  });
+  it('is all zeros with no rows', () => {
+    expect(formatCountsOf([])).toEqual({
+      all: 0,
+      image: 0,
+      video: 0,
+      carousel: 0,
+      link: 0,
+      text: 0,
+    });
   });
 });
 
@@ -115,11 +196,35 @@ describe('postsCsv', () => {
     expect(csv.startsWith('\uFEFF')).toBe(true);
     const lines = csv.slice(1).split('\r\n');
     expect(lines[0]).toBe(
-      'published_at,channel,platform,format,caption,impressions,engagements,engagement_rate,likes,comments,shares,link',
+      'published_at,channel,platform,format,caption,reach,impressions,engagements,engagement_rate,likes,comments,shares,vs_usual,link',
     );
     expect(lines[1]).toBe(
-      '2026-09-21T10:00:00.000Z,"Asad, Co",instagram,image,"سلام, دنیا 👋",100,5,5,5,,,https://x/p',
+      '2026-09-21T10:00:00.000Z,"Asad, Co",instagram,image,"سلام, دنیا 👋",,100,5,5,5,,,,https://x/p',
     );
     expect(lines[2]).toBe('');
+  });
+
+  it('csv has reach and vs_usual and protects a formula in the caption', () => {
+    const csv = postsCsv(
+      [
+        ip({
+          content: '=HYPERLINK("https://evil")',
+          reach: 80,
+          impressions: 120,
+          engagements: 9,
+          usualMultiplier: 1.35,
+        }),
+      ],
+      new Map([[1, { name: 'shop', platform: 'facebook' }]]),
+    );
+    const [header, row] = csv.slice(1).split('\r\n');
+    const cols = header.split(',');
+    const cells = row.split(',');
+    expect(cells[cols.indexOf('reach')]).toBe('80');
+    expect(cells[cols.indexOf('impressions')]).toBe('120');
+    expect(cells[cols.indexOf('vs_usual')]).toBe('1.35');
+    expect(cells[cols.indexOf('caption')]).toBe(
+      `"'=HYPERLINK(""https://evil"")"`,
+    );
   });
 });

@@ -14,7 +14,12 @@ import type {
   PollingProfile,
 } from '../../types/platform-capabilities.types';
 import { getCapabilities } from '../../platform-capabilities.registry';
-import { FacebookApiClient, FacebookApiError } from './facebook-api.client';
+import {
+  FACEBOOK_POST_INSIGHT_METRICS,
+  FacebookApiClient,
+  FacebookApiError,
+} from './facebook-api.client';
+import type { FacebookPostInsights } from './facebook.types';
 
 const POLLING_PROFILE: PollingProfile = {
   defaultContentType: 'post',
@@ -108,22 +113,48 @@ export class FacebookAnalyticsAdapter implements PlatformAnalyticsAdapter {
       const p = postData.value;
       let impressions: number | null = null;
       let reach: number | null = null;
-      let engagedUsers: number | null = null;
+      let insightRows: FacebookPostInsights['data'] = [];
+      const missingMetrics: string[] = [];
 
       if (insightsData.status === 'fulfilled') {
-        for (const m of insightsData.value.data) {
-          const val = m.values[0]?.value;
-          if (m.name === 'post_impressions' && typeof val === 'number')
-            impressions = val;
-          if (m.name === 'post_impressions_unique' && typeof val === 'number')
-            reach = val;
-          if (m.name === 'post_engaged_users' && typeof val === 'number')
-            engagedUsers = val;
-        }
+        insightRows = insightsData.value.data;
+      } else if (
+        insightsData.reason instanceof FacebookApiError &&
+        insightsData.reason.code === 'permanent'
+      ) {
+        // Meta fails the whole request when one metric is unsupported for this
+        // post. A metric-level error (HTTP 400, mapped to 'permanent') gets
+        // exactly one retry round, one metric per call, so the metric that
+        // still works survives. Auth, rate-limit, not-found and transient
+        // errors never retry.
+        this.logger.warn(
+          `Post insights rejected for post ${postId} (${insightsData.reason.message}); retrying one metric at a time`,
+        );
+        const perMetric = await Promise.allSettled(
+          FACEBOOK_POST_INSIGHT_METRICS.map((metric) =>
+            this.client.getPostInsights(postId, accessToken, metric),
+          ),
+        );
+        perMetric.forEach((r, i) => {
+          if (r.status === 'fulfilled') insightRows.push(...r.value.data);
+          else missingMetrics.push(FACEBOOK_POST_INSIGHT_METRICS[i]);
+        });
       } else {
+        missingMetrics.push(...FACEBOOK_POST_INSIGHT_METRICS);
         this.logger.warn(
           `Post insights unavailable for post ${postId}: ${(insightsData.reason as Error)?.message}`,
         );
+      }
+
+      for (const m of insightRows) {
+        const val = m.values[0]?.value;
+        if (m.name === 'post_media_view' && typeof val === 'number')
+          impressions = val;
+        if (
+          m.name === 'post_total_media_view_unique' &&
+          typeof val === 'number'
+        )
+          reach = val;
       }
 
       const data = {
@@ -136,20 +167,15 @@ export class FacebookAnalyticsAdapter implements PlatformAnalyticsAdapter {
         impressionsCount: impressions,
         reachCount: reach,
         platformMetrics: {
-          engagedUsers,
           permalinkUrl: p.permalink_url ?? null,
         },
       };
 
-      if (insightsData.status === 'rejected') {
+      if (missingMetrics.length > 0) {
         return {
           status: 'partial',
           data,
-          missing: [
-            'post_impressions',
-            'post_impressions_unique',
-            'post_engaged_users',
-          ],
+          missing: missingMetrics,
           quotaCostUsed: 0,
         };
       }

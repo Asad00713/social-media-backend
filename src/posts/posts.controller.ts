@@ -24,6 +24,7 @@ import { PostService } from './services/post.service';
 import { PlannerPostsService } from './services/planner-posts.service';
 import { PostDraftsService } from './services/post-drafts.service';
 import { ListDraftsQueryDto, SetReadyDto } from './dto/draft-ops.dto';
+import { DuplicatePostDto } from './dto/duplicate-post.dto';
 import { CalendarQueryDto } from './dto/calendar-query.dto';
 import { CreatePostDto, UpdatePostDto, PostQueryDto } from './dto/post.dto';
 
@@ -189,8 +190,14 @@ export class PostsController {
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('postId', ParseUUIDPipe) postId: string,
     @CurrentUser() user: { userId: string; email: string },
+    @Body() body?: DuplicatePostDto,
   ) {
-    const post = await this.drafts.duplicate(workspaceId, postId, user.userId);
+    const post = await this.drafts.duplicate(
+      workspaceId,
+      postId,
+      user.userId,
+      body,
+    );
     return { post };
   }
 

@@ -16,6 +16,8 @@ import { readMigrations } from './runner';
  * posts, workspace and users (SHARE ROW EXCLUSIVE on each). 0059 creates
  * workspace_brand_kits with foreign keys to workspace, media_items and
  * users (SHARE ROW EXCLUSIVE on each).
+ * 0060 adds foreign keys to users and workspace (SHARE ROW EXCLUSIVE on
+ * both).
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -26,6 +28,7 @@ const FILES = [
   '0057_library_is_sample.sql',
   '0058_post_comments.sql',
   '0059_brand_kits.sql',
+  '0060_insight_hidden_steps.sql',
 ];
 
 const firstStatement = (sql: string): string =>
