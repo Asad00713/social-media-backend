@@ -69,6 +69,32 @@ export class GeminiChatProvider extends BaseLLMProvider {
     return result.response.text();
   }
 
+  /**
+   * Single-shot vision completion: one image plus a text prompt, default model.
+   * `image.data` is base64.
+   */
+  async generateFromImage(
+    systemPrompt: string,
+    userPrompt: string,
+    image: { mimeType: string; data: string },
+    opts?: { temperature?: number; maxTokens?: number },
+  ): Promise<string> {
+    const genAI = this.ensureGenAI();
+    const model = genAI.getGenerativeModel({
+      model: this.defaultModel,
+      generationConfig: {
+        temperature: opts?.temperature ?? 0.4,
+        maxOutputTokens: opts?.maxTokens ?? 1024,
+      },
+      systemInstruction: systemPrompt,
+    });
+    const result = await model.generateContent([
+      { inlineData: image },
+      userPrompt,
+    ]);
+    return result.response.text();
+  }
+
   private ensureGenAI(): GoogleGenerativeAI {
     if (!this.genAI) {
       throw new Error('Google AI API is not configured');

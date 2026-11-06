@@ -6,6 +6,7 @@ import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
 import { ChatbotController } from '../chatbot/chatbot.controller';
 import { SocialMediaController } from '../social-media/social-media.controller';
 import { MediaController } from '../media/media.controller';
+import { LibraryUploadController } from '../media-library/library-upload.controller';
 import { PostsController } from '../posts/posts.controller';
 import { MaestroController } from '../maestro/maestro.controller';
 import { CanvaController } from '../canva/canva.controller';
@@ -223,8 +224,12 @@ describe('MaestroController', () => {
   });
 });
 
-describe('MediaController.presignComposerVideo', () => {
+// Moved from MediaController with the other upload routes (Library Task 15).
+describe('LibraryUploadController.presignComposerVideo', () => {
   const r2 = { createPresignedUpload: jest.fn().mockResolvedValue({ ok: 1 }) };
+  const quota = {
+    assertCanStore: jest.fn().mockResolvedValue({ used: 0, limit: 10 }),
+  };
   const dto = {
     workspaceId: 'w',
     contentType: 'video/mp4',
@@ -234,7 +239,11 @@ describe('MediaController.presignComposerVideo', () => {
   beforeEach(() => jest.clearAllMocks());
 
   it('non-member gets NotFound and nothing is presigned', async () => {
-    const c = make(MediaController, { r2Service: r2, access: noAccess() });
+    const c = make(LibraryUploadController, {
+      r2Service: r2,
+      quota,
+      access: noAccess(),
+    });
     await expect(c.presignComposerVideo(dto, user)).rejects.toBeInstanceOf(
       NotFoundException,
     );
@@ -243,7 +252,7 @@ describe('MediaController.presignComposerVideo', () => {
 
   it('member can presign (posts:draft)', async () => {
     const access = okAccess();
-    const c = make(MediaController, { r2Service: r2, access });
+    const c = make(LibraryUploadController, { r2Service: r2, quota, access });
     await expect(c.presignComposerVideo(dto, user)).resolves.toEqual({ ok: 1 });
     expect(access.assertCan).toHaveBeenCalledWith('w', 'u1', 'posts:draft');
   });

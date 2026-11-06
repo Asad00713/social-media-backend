@@ -12,6 +12,8 @@ export interface PlanLimits {
   maxWorkspaces: number;
   aiTokensPerMonth: number;
   queuedPostsPerChannel: number;
+  /** Library storage per workspace, in bytes. */
+  storageBytesPerWorkspace: number;
 }
 
 export interface AddonQuantities {
@@ -27,6 +29,7 @@ export interface ResolvedWorkspaceLimits {
   membersLimit: number;
   aiTokensLimit: number;
   queuedPostsPerChannel: number;
+  storageBytesLimit: number;
 }
 
 /**
@@ -63,6 +66,9 @@ export function resolveWorkspaceLimits(
       membersLimit: 0,
       aiTokensLimit: plan.aiTokensPerMonth,
       queuedPostsPerChannel: plan.queuedPostsPerChannel,
+      // Storage is per workspace, so a non-primary workspace gets the full
+      // plan value (unlike channels and seats, which arrive empty).
+      storageBytesLimit: plan.storageBytesPerWorkspace,
     };
   }
 
@@ -71,6 +77,7 @@ export function resolveWorkspaceLimits(
     membersLimit: plan.membersPerWorkspace,
     aiTokensLimit: plan.aiTokensPerMonth,
     queuedPostsPerChannel: plan.queuedPostsPerChannel,
+    storageBytesLimit: plan.storageBytesPerWorkspace,
   };
 }
 

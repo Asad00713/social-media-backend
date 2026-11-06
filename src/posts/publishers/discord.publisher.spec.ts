@@ -41,4 +41,22 @@ describe('DiscordPublisher', () => {
     expect(createMessage).toHaveBeenCalledWith('D999', { content: 'gm', files: undefined });
     expect(res.platformPostId).toBe('msg-1');
   });
+
+  it.each([
+    'http://169.254.169.254/latest/meta-data/',
+    'http://127.0.0.1:6379/',
+    'http://[::1]/',
+    'file:///etc/passwd',
+  ])('refuses to download media from %s (SSRF)', async (url) => {
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    const { publisher, createMessage } = make();
+    await expect(
+      publisher.publish(
+        baseOptions({ mediaItems: [{ url, type: 'image' as const }] }),
+      ),
+    ).rejects.toThrow(/Refusing to fetch media/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(createMessage).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
 });

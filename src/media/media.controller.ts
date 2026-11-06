@@ -18,21 +18,11 @@ import {
 import type { Response } from 'express';
 import { FileInterceptor } from '@nestjs/platform-express';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { SuperAdminGuard } from '../auth/guards/super-admin.guard';
-import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
 import { CloudinaryService } from './cloudinary.service';
 import { TikTokMediaProxyService } from './tiktok-media-proxy.service';
 import { BunnyCDNService } from './bunnycdn.service';
-import { CloudflareR2Service } from './cloudflare-r2.service';
-import {
-  UploadFromUrlDto,
-  UploadFromBase64Dto,
-  DeleteMediaDto,
-  GetOptimizedUrlDto,
-  GetSignedUploadParamsDto,
-  PresignComposerVideoDto,
-} from './dto/media.dto';
+import { DeleteMediaDto, GetOptimizedUrlDto } from './dto/media.dto';
 
 @Controller('media')
 export class MediaController {
@@ -40,8 +30,6 @@ export class MediaController {
     private readonly cloudinaryService: CloudinaryService,
     private readonly tiktokProxyService: TikTokMediaProxyService,
     private readonly bunnyCDNService: BunnyCDNService,
-    private readonly r2Service: CloudflareR2Service,
-    private readonly access: WorkspaceAccessService,
   ) {}
 
   // ==========================================================================
@@ -259,85 +247,6 @@ export class MediaController {
   }
 
   /**
-   * Upload media from a URL
-   */
-  @Post('upload/url')
-  @UseGuards(JwtAuthGuard)
-  @HttpCode(HttpStatus.CREATED)
-  async uploadFromUrl(@Body() dto: UploadFromUrlDto) {
-    const result = await this.cloudinaryService.uploadFromUrl(dto.url, {
-      folder: dto.folder,
-      resourceType: dto.resourceType,
-      tags: dto.tags,
-      publicId: dto.publicId,
-    });
-
-    return {
-      message: 'Media uploaded successfully',
-      ...result,
-    };
-  }
-
-  /**
-   * Upload media from base64 string
-   */
-  @Post('upload/base64')
-  @UseGuards(JwtAuthGuard)
-  @HttpCode(HttpStatus.CREATED)
-  async uploadFromBase64(@Body() dto: UploadFromBase64Dto) {
-    const result = await this.cloudinaryService.uploadFromBase64(dto.data, {
-      folder: dto.folder,
-      resourceType: dto.resourceType,
-      tags: dto.tags,
-      publicId: dto.publicId,
-    });
-
-    return {
-      message: 'Media uploaded successfully',
-      ...result,
-    };
-  }
-
-  /**
-   * Upload media from file (multipart form data)
-   */
-  @Post('upload/file')
-  @UseGuards(JwtAuthGuard)
-  @HttpCode(HttpStatus.CREATED)
-  @UseInterceptors(
-    FileInterceptor('file', {
-      limits: {
-        fileSize: 100 * 1024 * 1024, // 100MB max
-      },
-    }),
-  )
-  async uploadFile(
-    @UploadedFile() file: Express.Multer.File,
-    @Body('folder') folder?: string,
-    @Body('resourceType') resourceType?: 'image' | 'video' | 'auto' | 'raw',
-    @Body('tags') tags?: string,
-  ) {
-    if (!file) {
-      throw new BadRequestException('No file provided');
-    }
-
-    const parsedTags = tags ? tags.split(',').map((t) => t.trim()) : [];
-
-    const result = await this.cloudinaryService.uploadFromBuffer(file.buffer, {
-      folder,
-      resourceType: resourceType || 'auto',
-      tags: parsedTags,
-    });
-
-    return {
-      message: 'Media uploaded successfully',
-      originalName: file.originalname,
-      mimeType: file.mimetype,
-      ...result,
-    };
-  }
-
-  /**
    * Delete media by public ID
    */
   @Delete()
@@ -406,52 +315,7 @@ export class MediaController {
     };
   }
 
-  /**
-   * Cloudflare R2 presigned upload for composer videos.
-   *
-   * Composer videos (TikTok primarily, but routable to any video-capable
-   * platform) are stored in R2 under the `composer/videos/...` prefix so they
-   * can lifecycle separately from inbox media. The browser uploads bytes
-   * directly to R2 via the returned `uploadUrl` — Schedura's API never
-   * touches the video, which is critical for multi-GB TikTok uploads.
-   *
-   * The caller must be able to draft in `dto.workspaceId`; the R2 key path
-   * embeds that workspace, so without the check anyone could write under a
-   * foreign workspace's prefix.
-   */
-  @Post('r2/presign-composer-video')
-  @UseGuards(JwtAuthGuard)
-  @HttpCode(HttpStatus.OK)
-  async presignComposerVideo(
-    @Body() dto: PresignComposerVideoDto,
-    @CurrentUser() user: { userId: string; email: string },
-  ) {
-    await this.access.assertCan(dto.workspaceId, user.userId, 'posts:draft');
-    return this.r2Service.createPresignedUpload({
-      workspaceId: dto.workspaceId,
-      userId: user.userId,
-      kind: 'composer-video',
-      contentType: dto.contentType,
-      sizeBytes: dto.sizeBytes,
-      filename: dto.filename,
-    });
-  }
-
-  /**
-   * Get signed upload parameters for direct client-side uploads
-   * This allows the frontend to upload directly to Cloudinary
-   */
-  @Post('signed-upload-params')
-  @UseGuards(JwtAuthGuard)
-  @HttpCode(HttpStatus.OK)
-  getSignedUploadParams(@Body() dto: GetSignedUploadParamsDto) {
-    const params = this.cloudinaryService.generateSignedUploadParams({
-      folder: dto.folder,
-    });
-
-    return {
-      ...params,
-      uploadUrl: `https://api.cloudinary.com/v1_1/${params.cloudName}/auto/upload`,
-    };
-  }
+  // The upload routes (upload/url, upload/base64, upload/file,
+  // signed-upload-params, r2/presign-composer-video) live on
+  // LibraryUploadController: each checks storage and creates a Library item.
 }
