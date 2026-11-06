@@ -1,6 +1,16 @@
 import { PinterestPublisher, pickDominantColor } from './pinterest.publisher';
 import { PinterestService } from '../../channels/services/pinterest.service';
 
+// These tests stub the network with `global.fetch`. The media download goes
+// through the SSRF-guarded fetchPublicMedia (undici + a pinned-DNS agent), so
+// route it back to the stub; the guard itself is covered in public-fetch.spec.
+jest.mock('../../common/net/public-fetch', () => ({
+  ...jest.requireActual<typeof import('../../common/net/public-fetch')>(
+    '../../common/net/public-fetch',
+  ),
+  fetchPublicMedia: (url: string) => global.fetch(url),
+}));
+
 /**
  * The composer's Pinterest "More settings" sets `dominantColor`, sent as
  * `dominant_color` on the create call. The service tests pin the body key on
