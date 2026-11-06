@@ -14,7 +14,7 @@ describe('TikTokPublisher video publish path', () => {
   let publisher: TikTokPublisher;
   let tiktokService: jest.Mocked<Pick<
     TikTokService,
-    'queryCreatorInfo' | 'postVideoFromUrl' | 'uploadVideoFromUrl'
+    'queryCreatorInfo' | 'postVideoFromUrl' | 'uploadVideoFromUrl' | 'postPhotoFromUrl'
   >>;
   let quotaService: jest.Mocked<Pick<TikTokQuotaService, 'reserveSlot'>>;
   let mediaProxy: jest.Mocked<Pick<TikTokMediaProxyService, 'mintProxyToken'>>;
@@ -40,6 +40,7 @@ describe('TikTokPublisher video publish path', () => {
       queryCreatorInfo: jest.fn().mockResolvedValue({ creatorUsername: 'bob' }),
       postVideoFromUrl: jest.fn().mockResolvedValue({ publishId: 'direct-1' }),
       uploadVideoFromUrl: jest.fn().mockResolvedValue({ publishId: 'draft-1' }),
+      postPhotoFromUrl: jest.fn().mockResolvedValue({ publishId: 'photo-1' }),
     } as any;
     quotaService = { reserveSlot: jest.fn().mockResolvedValue(undefined) } as any;
     mediaProxy = { mintProxyToken: jest.fn().mockReturnValue('signed-token') } as any;
@@ -84,5 +85,33 @@ describe('TikTokPublisher video publish path', () => {
     expect(tiktokService.uploadVideoFromUrl).toHaveBeenCalledTimes(1);
     expect(tiktokService.postVideoFromUrl).not.toHaveBeenCalled();
     expect(result.platformPostId).toBe('draft-1');
+  });
+
+  describe('AI-generated declaration', () => {
+    it('forwards isAigc to a Direct Post video only when it is explicitly true', async () => {
+      await publisher.publish(baseOptions({ privacy: 'public', isAigc: true }));
+      expect(tiktokService.postVideoFromUrl.mock.calls[0][2].isAigc).toBe(true);
+
+      await publisher.publish(baseOptions({ privacy: 'public' }));
+      expect(tiktokService.postVideoFromUrl.mock.calls[1][2].isAigc).toBe(false);
+
+      // A truthy string is not a declaration — the composer sends a boolean.
+      await publisher.publish(baseOptions({ privacy: 'public', isAigc: 'yes' }));
+      expect(tiktokService.postVideoFromUrl.mock.calls[2][2].isAigc).toBe(false);
+    });
+
+    it('forwards isAigc to a photo carousel', async () => {
+      const photo = (metadata: Record<string, any>): PublishOptions =>
+        ({
+          ...baseOptions({ privacy: 'public', postType: 'photo', ...metadata }),
+          mediaItems: [{ type: 'image', url: 'https://x/a.jpg' } as any],
+        }) as PublishOptions;
+
+      await publisher.publish(photo({ isAigc: true }));
+      expect(tiktokService.postPhotoFromUrl.mock.calls[0][2].isAigc).toBe(true);
+
+      await publisher.publish(photo({}));
+      expect(tiktokService.postPhotoFromUrl.mock.calls[1][2].isAigc).toBe(false);
+    });
   });
 });
