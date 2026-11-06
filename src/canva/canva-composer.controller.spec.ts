@@ -1,4 +1,4 @@
-import { BadRequestException } from '@nestjs/common';
+import { BadRequestException, PayloadTooLargeException } from '@nestjs/common';
 import { CanvaComposerController } from './canva-composer.controller';
 
 function makeController(overrides?: {
@@ -7,7 +7,8 @@ function makeController(overrides?: {
   listDesigns?: jest.Mock;
   exportDesign?: jest.Mock;
   waitForExport?: jest.Mock;
-  uploadFromBuffer?: jest.Mock;
+  ingestBuffer?: jest.Mock;
+  assertCanStore?: jest.Mock;
 }) {
   const connectionService = {
     getByWorkspace: overrides?.getByWorkspace ?? jest.fn(),
@@ -26,25 +27,34 @@ function makeController(overrides?: {
       jest.fn().mockResolvedValue(['https://export.canva.com/file.png']),
   } as any;
 
-  const cloudinary = {
-    uploadFromBuffer:
-      overrides?.uploadFromBuffer ??
+  const quota = {
+    assertCanStore:
+      overrides?.assertCanStore ?? jest.fn().mockResolvedValue({}),
+  } as any;
+
+  const ingest = {
+    ingestBuffer:
+      overrides?.ingestBuffer ??
       jest.fn().mockResolvedValue({
-        secureUrl: 'https://res.cloudinary.com/img.png',
-        width: 800,
-        height: 600,
-        bytes: 12345,
-        resourceType: 'image',
+        upload: {
+          secureUrl: 'https://res.cloudinary.com/img.png',
+          width: 800,
+          height: 600,
+          bytes: 12345,
+          resourceType: 'image',
+        },
+        libraryItem: { id: 'item-1' },
       }),
   } as any;
 
   const controller = new CanvaComposerController(
     connectionService,
     canvaService,
-    cloudinary,
+    quota,
+    ingest,
   );
 
-  return { controller, connectionService, canvaService, cloudinary };
+  return { controller, connectionService, canvaService, quota, ingest };
 }
 
 describe('CanvaComposerController.status', () => {
@@ -59,9 +69,7 @@ describe('CanvaComposerController.status', () => {
 
   it('reports connected: true with the stored display name', async () => {
     const { controller } = makeController({
-      getByWorkspace: jest
-        .fn()
-        .mockResolvedValue({ displayName: 'Jane Doe' }),
+      getByWorkspace: jest.fn().mockResolvedValue({ displayName: 'Jane Doe' }),
     });
     await expect(controller.status('ws-1')).resolves.toEqual({
       connected: true,
@@ -142,6 +150,8 @@ describe('CanvaComposerController.designs', () => {
   });
 });
 
+const USER = { userId: 'user-1' };
+
 describe('CanvaComposerController.import', () => {
   const originalFetch = global.fetch;
 
@@ -157,10 +167,10 @@ describe('CanvaComposerController.import', () => {
       arrayBuffer: () => Promise.resolve(arrayBuffer),
     }) as any;
 
-    const { controller, connectionService, canvaService, cloudinary } =
+    const { controller, connectionService, canvaService, quota, ingest } =
       makeController();
 
-    const result = await controller.import('ws-1', { designId: 'd1' });
+    const result = await controller.import('ws-1', { designId: 'd1' }, USER);
 
     expect(connectionService.getValidAccessToken).toHaveBeenCalledWith('ws-1');
     expect(canvaService.exportDesign).toHaveBeenCalledWith(
@@ -176,11 +186,17 @@ describe('CanvaComposerController.import', () => {
     expect(global.fetch).toHaveBeenCalledWith(
       'https://export.canva.com/file.png',
     );
-    expect(cloudinary.uploadFromBuffer).toHaveBeenCalledWith(
-      expect.any(Buffer),
-      { folder: 'composer/canva', resourceType: 'image' },
-    );
+    expect(quota.assertCanStore).toHaveBeenCalledWith('ws-1', 1);
+    expect(ingest.ingestBuffer).toHaveBeenCalledWith({
+      workspaceId: 'ws-1',
+      userId: 'user-1',
+      buffer: expect.any(Buffer),
+      mimeType: 'image/png',
+      originalName: 'canva-d1.png',
+      resourceType: 'image',
+    });
     expect(result).toEqual({
+      libraryItem: { id: 'item-1' },
       url: 'https://res.cloudinary.com/img.png',
       type: 'image',
       width: 800,
@@ -195,7 +211,7 @@ describe('CanvaComposerController.import', () => {
     });
 
     await expect(
-      controller.import('ws-1', { designId: 'd1' }),
+      controller.import('ws-1', { designId: 'd1' }, USER),
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
@@ -204,7 +220,23 @@ describe('CanvaComposerController.import', () => {
     const { controller } = makeController();
 
     await expect(
-      controller.import('ws-1', { designId: 'd1' }),
+      controller.import('ws-1', { designId: 'd1' }, USER),
     ).rejects.toBeInstanceOf(BadRequestException);
+  });
+});
+
+describe('CanvaComposerController.import on a full workspace', () => {
+  it('refuses with 413 before exporting anything', async () => {
+    const { controller, canvaService, ingest } = makeController({
+      assertCanStore: jest
+        .fn()
+        .mockRejectedValue(new PayloadTooLargeException('full')),
+    });
+
+    await expect(
+      controller.import('ws-1', { designId: 'd1' }, USER),
+    ).rejects.toBeInstanceOf(PayloadTooLargeException);
+    expect(canvaService.exportDesign).not.toHaveBeenCalled();
+    expect(ingest.ingestBuffer).not.toHaveBeenCalled();
   });
 });

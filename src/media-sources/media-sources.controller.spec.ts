@@ -43,10 +43,14 @@ describe('MediaSourcesController', () => {
       .useValue({ canActivate: () => true })
       .compile();
     const ctrl = mod.get(MediaSourcesController);
-    await ctrl.import('ws', '9', { fileId: 'abc', kind: 'image' } as any);
-    expect(service.import).toHaveBeenCalledWith('ws', 9, {
-      fileId: 'abc',
-      kind: 'image',
+    await ctrl.import('ws', '9', { fileId: 'abc', kind: 'image' } as any, {
+      userId: 'user-1',
     });
+    expect(service.import).toHaveBeenCalledWith(
+      'ws',
+      9,
+      { fileId: 'abc', kind: 'image' },
+      'user-1',
+    );
   });
 });

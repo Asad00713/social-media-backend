@@ -1,5 +1,9 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { QuotaTrackerService } from '../analytics/services/quota-tracker.service';
+import {
+  MAX_IMAGE_BYTES,
+  fetchPublicMedia,
+} from '../../common/net/public-fetch';
 
 export interface YouTubeChannel {
   id: string;
@@ -332,7 +336,7 @@ export class YouTubeService {
 
     // Step 1: Download the video from URL
     this.logger.log(`Downloading video from: ${videoUrl}`);
-    const videoResponse = await fetch(videoUrl);
+    const videoResponse = await fetchPublicMedia(videoUrl);
     if (!videoResponse.ok) {
       throw new BadRequestException(
         `Failed to download video from ${videoUrl}`,
@@ -410,7 +414,9 @@ export class YouTubeService {
       await this.reserveQuota(50, 'publishing', 'thumbnails.set');
       // Download the thumbnail image
       this.logger.log(`Downloading thumbnail from: ${thumbnailUrl}`);
-      const thumbnailResponse = await fetch(thumbnailUrl);
+      const thumbnailResponse = await fetchPublicMedia(thumbnailUrl, {
+        maxBytes: MAX_IMAGE_BYTES,
+      });
       if (!thumbnailResponse.ok) {
         this.logger.error(`Failed to download thumbnail from ${thumbnailUrl}`);
         return; // Don't fail the whole upload for thumbnail
