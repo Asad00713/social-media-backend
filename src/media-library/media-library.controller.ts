@@ -6,10 +6,13 @@ import {
   Delete,
   Body,
   Param,
+  ParseUUIDPipe,
   Query,
   UseGuards,
   HttpCode,
   HttpStatus,
+  Logger,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -18,14 +21,17 @@ import { MediaItemService } from './services/media-item.service';
 import { TemplateService } from './services/template.service';
 import { TextSnippetService } from './services/text-snippet.service';
 import { SavedLinkService } from './services/saved-link.service';
-import {
-  MEDIA_LIBRARY_TYPES,
-  type MediaLibraryType,
-} from '../drizzle/schema/media-library.schema';
+import { AltTextService } from './services/alt-text.service';
+import { RecycleBinService } from './services/recycle-bin.service';
+import { MediaUsageService } from './services/media-usage.service';
+import { CategoryZipService } from './services/category-zip.service';
+import { readZipTicketSecret, signZipTicket } from './lib/zip-ticket';
+import { LibraryStatsService } from './services/library-stats.service';
 import {
   CreateCategoryDto,
   UpdateCategoryDto,
   CategoryQueryDto,
+  ReorderCategoriesDto,
   CreateMediaItemDto,
   UpdateMediaItemDto,
   MediaItemQueryDto,
@@ -33,16 +39,27 @@ import {
   CreateTemplateDto,
   UpdateTemplateDto,
   TemplateQueryDto,
+  TemplateBulkDto,
   CreateTextSnippetDto,
   UpdateTextSnippetDto,
   TextSnippetQueryDto,
+  SnippetBulkDto,
   CreateSavedLinkDto,
   UpdateSavedLinkDto,
   SavedLinkQueryDto,
+  LinkBulkDto,
   RecycleBinQueryDto,
+  BinItemsDto,
 } from './dto/media-library.dto';
-import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
+import {
+  WorkspaceRoleGuard,
+  assertRoleCan,
+} from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
+import { CurrentWorkspaceRole } from '../workspace-members/current-workspace-role.decorator';
+import type { WorkspaceRole } from '../workspace-members/role-capabilities';
+
+const logger = new Logger('MediaLibraryController');
 
 @Controller('workspaces/:workspaceId/media-library')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
@@ -53,7 +70,20 @@ export class MediaLibraryController {
     private readonly templateService: TemplateService,
     private readonly textSnippetService: TextSnippetService,
     private readonly savedLinkService: SavedLinkService,
+    private readonly recycleBin: RecycleBinService,
+    private readonly altText: AltTextService,
+    private readonly mediaUsage: MediaUsageService,
+    private readonly categoryZip: CategoryZipService,
+    private readonly libraryStats: LibraryStatsService,
   ) {}
+
+  /** Storage, Never used, Bin and tab counts in one call. */
+  @Get('stats')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async getLibraryStats(@Param('workspaceId') workspaceId: string) {
+    return this.libraryStats.getStats(workspaceId);
+  }
 
   // ==========================================================================
   // Categories
@@ -64,9 +94,10 @@ export class MediaLibraryController {
   @HttpCode(HttpStatus.CREATED)
   async createCategory(
     @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
     @Body() dto: CreateCategoryDto,
   ) {
-    return this.categoryService.create(workspaceId, dto);
+    return this.categoryService.create(workspaceId, user.userId, dto);
   }
 
   @Get('categories')
@@ -122,9 +153,52 @@ export class MediaLibraryController {
   @HttpCode(HttpStatus.OK)
   async reorderCategories(
     @Param('workspaceId') workspaceId: string,
-    @Body() dto: { type: MediaLibraryType; categoryIds: string[] },
+    @Body() dto: ReorderCategoriesDto,
   ) {
     return this.categoryService.reorder(workspaceId, dto.type, dto.categoryIds);
+  }
+
+  /**
+   * Step one of a folder zip download: a 5-minute ticket URL the browser can
+   * navigate to without the bearer token (see LibraryZipController).
+   */
+  @Post('categories/:categoryId/zip-ticket')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async createCategoryZipTicket(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('categoryId', ParseUUIDPipe) categoryId: string,
+    @CurrentUser() user: { userId: string },
+  ): Promise<{ url: string; expiresAt: string }> {
+    await this.categoryZip.assertZippable(workspaceId, categoryId);
+
+    // Fail closed: never sign with a missing or short key, never hand out a
+    // relative or `undefined/…` link.
+    const secret = readZipTicketSecret();
+    const apiBase = (process.env.API_PUBLIC_URL ?? '')
+      .trim()
+      .replace(/\/+$/, '');
+    if (!secret || !apiBase) {
+      const missing = [
+        !secret &&
+          'LIBRARY_ZIP_TICKET_SECRET is unset or shorter than 32 characters (generate one with `openssl rand -hex 32`)',
+        !apiBase && 'API_PUBLIC_URL is unset',
+      ].filter(Boolean);
+      logger.error(`Folder zip download is disabled: ${missing.join('; ')}`);
+      throw new ServiceUnavailableException(
+        'Folder download is not configured',
+      );
+    }
+
+    const { ticket, expiresAt } = signZipTicket(
+      { workspaceId, categoryId, userId: user.userId },
+      secret,
+      new Date(),
+    );
+    return {
+      url: `${apiBase}/workspaces/${workspaceId}/media-library/categories/${categoryId}/zip?ticket=${encodeURIComponent(ticket)}`,
+      expiresAt,
+    };
   }
 
   // ==========================================================================
@@ -170,6 +244,17 @@ export class MediaLibraryController {
     @Param('itemId') itemId: string,
   ) {
     return this.mediaItemService.findOne(workspaceId, itemId);
+  }
+
+  @Post('items/:itemId/alt-text')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async generateMediaItemAltText(
+    @Param('workspaceId') workspaceId: string,
+    @Param('itemId', ParseUUIDPipe) itemId: string,
+    @CurrentUser() user: { userId: string },
+  ) {
+    return this.altText.generate(workspaceId, user.userId, itemId);
   }
 
   @Put('items/:itemId')
@@ -223,7 +308,18 @@ export class MediaLibraryController {
     @Param('workspaceId') workspaceId: string,
     @Param('itemId') itemId: string,
   ) {
-    return this.mediaItemService.incrementUsage(workspaceId, itemId);
+    return this.mediaItemService.markUsed(workspaceId, itemId);
+  }
+
+  /** Where an item is used: posts, campaign slots and evergreen entries. */
+  @Get('items/:itemId/usage')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async getMediaItemUsage(
+    @Param('workspaceId') workspaceId: string,
+    @Param('itemId', ParseUUIDPipe) itemId: string,
+  ) {
+    return this.mediaUsage.getUsage(workspaceId, itemId);
   }
 
   @Post('items/bulk')
@@ -233,7 +329,13 @@ export class MediaLibraryController {
     @Param('workspaceId') workspaceId: string,
     @CurrentUser() user: { userId: string },
     @Body() dto: BulkActionDto,
+    @CurrentWorkspaceRole() role?: WorkspaceRole | 'SUPER_ADMIN',
   ) {
+    // Purging deletes files for good: it needs what `items/:id/permanent` and
+    // `recycle-bin/empty` need (posts:publish), not the route's posts:draft.
+    if (dto.action === 'permanentDelete') {
+      assertRoleCan(role, 'posts:publish');
+    }
     return this.mediaItemService.bulkAction(workspaceId, user.userId, dto);
   }
 
@@ -260,6 +362,17 @@ export class MediaLibraryController {
     @Query() query: TemplateQueryDto,
   ) {
     return this.templateService.findAll(workspaceId, query);
+  }
+
+  @Post('templates/bulk')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async bulkTemplates(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
+    @Body() dto: TemplateBulkDto,
+  ) {
+    return this.templateService.bulkAction(workspaceId, user.userId, dto);
   }
 
   @Get('templates/:templateId')
@@ -372,6 +485,17 @@ export class MediaLibraryController {
     return this.textSnippetService.findAll(workspaceId, query);
   }
 
+  @Post('snippets/bulk')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async bulkTextSnippets(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
+    @Body() dto: SnippetBulkDto,
+  ) {
+    return this.textSnippetService.bulkAction(workspaceId, user.userId, dto);
+  }
+
   @Get('snippets/:snippetId')
   @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
@@ -436,7 +560,7 @@ export class MediaLibraryController {
     @Param('workspaceId') workspaceId: string,
     @Param('snippetId') snippetId: string,
   ) {
-    return this.textSnippetService.incrementUsage(workspaceId, snippetId);
+    return this.textSnippetService.markUsed(workspaceId, snippetId);
   }
 
   // ==========================================================================
@@ -462,6 +586,17 @@ export class MediaLibraryController {
     @Query() query: SavedLinkQueryDto,
   ) {
     return this.savedLinkService.findAll(workspaceId, query);
+  }
+
+  @Post('links/bulk')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async bulkSavedLinks(
+    @Param('workspaceId') workspaceId: string,
+    @CurrentUser() user: { userId: string },
+    @Body() dto: LinkBulkDto,
+  ) {
+    return this.savedLinkService.bulkAction(workspaceId, user.userId, dto);
   }
 
   @Get('links/:linkId')
@@ -534,13 +669,14 @@ export class MediaLibraryController {
     @Param('workspaceId') workspaceId: string,
     @Param('linkId') linkId: string,
   ) {
-    return this.savedLinkService.incrementUsage(workspaceId, linkId);
+    return this.savedLinkService.markUsed(workspaceId, linkId);
   }
 
   // ==========================================================================
   // Recycle Bin
   // ==========================================================================
 
+  /** One list across media, templates, snippets and links (contract). */
   @Get('recycle-bin')
   @RequireCapability('posts:draft')
   @HttpCode(HttpStatus.OK)
@@ -548,117 +684,33 @@ export class MediaLibraryController {
     @Param('workspaceId') workspaceId: string,
     @Query() query: RecycleBinQueryDto,
   ) {
-    const { type, limit = 50, offset = 0 } = query;
+    return this.recycleBin.list(workspaceId, query);
+  }
 
-    // Get all deleted items based on type filter
-    const results: any = {};
+  @Post('recycle-bin/restore')
+  @RequireCapability('posts:draft')
+  @HttpCode(HttpStatus.OK)
+  async restoreRecycleBinItems(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: BinItemsDto,
+  ) {
+    return this.recycleBin.restore(workspaceId, dto.items);
+  }
 
-    if (
-      !type ||
-      type === 'image' ||
-      type === 'video' ||
-      type === 'gif' ||
-      type === 'document'
-    ) {
-      const mediaResult = await this.mediaItemService.getRecycleBin(
-        workspaceId,
-        limit,
-        offset,
-      );
-      if (!type) {
-        results.mediaItems = mediaResult;
-      } else {
-        // Filter by specific type
-        results.mediaItems = {
-          ...mediaResult,
-          items: mediaResult.items.filter((item) => item.type === type),
-        };
-      }
-    }
-
-    if (!type || type === 'template') {
-      results.templates = await this.templateService.getRecycleBin(
-        workspaceId,
-        limit,
-        offset,
-      );
-    }
-
-    if (!type || type === 'text_snippet') {
-      results.textSnippets = await this.textSnippetService.getRecycleBin(
-        workspaceId,
-        limit,
-        offset,
-      );
-    }
-
-    if (!type || type === 'link') {
-      results.savedLinks = await this.savedLinkService.getRecycleBin(
-        workspaceId,
-        limit,
-        offset,
-      );
-    }
-
-    return results;
+  @Post('recycle-bin/delete')
+  @RequireCapability('posts:publish')
+  @HttpCode(HttpStatus.OK)
+  async deleteRecycleBinItems(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: BinItemsDto,
+  ) {
+    return this.recycleBin.deleteForever(workspaceId, dto.items);
   }
 
   @Post('recycle-bin/empty')
   @RequireCapability('posts:publish')
   @HttpCode(HttpStatus.OK)
   async emptyRecycleBin(@Param('workspaceId') workspaceId: string) {
-    // Get all items in recycle bin and permanently delete them
-    const mediaItems = await this.mediaItemService.getRecycleBin(
-      workspaceId,
-      1000,
-      0,
-    );
-    const templates = await this.templateService.getRecycleBin(
-      workspaceId,
-      1000,
-      0,
-    );
-    const snippets = await this.textSnippetService.getRecycleBin(
-      workspaceId,
-      1000,
-      0,
-    );
-    const links = await this.savedLinkService.getRecycleBin(
-      workspaceId,
-      1000,
-      0,
-    );
-
-    let deletedCount = 0;
-
-    // Delete all media items
-    for (const item of mediaItems.items) {
-      await this.mediaItemService.permanentDelete(workspaceId, item.id);
-      deletedCount++;
-    }
-
-    // Delete all templates
-    for (const template of templates.items) {
-      await this.templateService.permanentDelete(workspaceId, template.id);
-      deletedCount++;
-    }
-
-    // Delete all snippets
-    for (const snippet of snippets.items) {
-      await this.textSnippetService.permanentDelete(workspaceId, snippet.id);
-      deletedCount++;
-    }
-
-    // Delete all links
-    for (const link of links.items) {
-      await this.savedLinkService.permanentDelete(workspaceId, link.id);
-      deletedCount++;
-    }
-
-    return {
-      success: true,
-      message: `Permanently deleted ${deletedCount} items from recycle bin`,
-      deletedCount,
-    };
+    return this.recycleBin.empty(workspaceId);
   }
 }

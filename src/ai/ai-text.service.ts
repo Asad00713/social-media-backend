@@ -1,4 +1,9 @@
-import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  BadRequestException,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { GeminiChatProvider } from '../chatbot/llm/gemini.provider';
 import { GroqService } from './groq.service';
 
@@ -41,5 +46,21 @@ export class AiTextService {
     }
 
     throw new BadRequestException('AI is not configured');
+  }
+
+  /**
+   * Describe an image (base64) with a vision model. Gemini only: Groq has no
+   * vision model wired here, so there is no fallback.
+   */
+  async describeImage(
+    systemPrompt: string,
+    userPrompt: string,
+    image: { mimeType: string; data: string },
+    opts?: { temperature?: number; maxTokens?: number },
+  ): Promise<string> {
+    if (!this.gemini.isAvailable()) {
+      throw new ServiceUnavailableException('AI is not configured');
+    }
+    return this.gemini.generateFromImage(systemPrompt, userPrompt, image, opts);
   }
 }
