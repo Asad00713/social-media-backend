@@ -1,4 +1,10 @@
-export type CloudStoragePlatform = 'dropbox' | 'google_drive' | 'onedrive' | 'google_photos';
+import type { MediaItemView } from '../media-library/services/media-item.service';
+
+export type CloudStoragePlatform =
+  | 'dropbox'
+  | 'google_drive'
+  | 'onedrive'
+  | 'google_photos';
 
 export type BrowseKind = 'media' | 'images' | 'videos' | 'folders' | 'search';
 
@@ -32,4 +38,5 @@ export interface CloudImportResult {
   height?: number;
   durationSec?: number;
   sizeBytes: number;
+  libraryItem: MediaItemView | null;
 }

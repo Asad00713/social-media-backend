@@ -235,6 +235,7 @@ export class SubscriptionService {
         maxWorkspaces: selectedPlan.maxWorkspaces,
         aiTokensPerMonth: selectedPlan.aiTokensPerMonth,
         queuedPostsPerChannel: selectedPlan.queuedPostsPerChannel,
+        storageBytesPerWorkspace: selectedPlan.storageBytesPerWorkspace,
       },
       {
         extraChannels: 0,
@@ -304,6 +305,7 @@ export class SubscriptionService {
         maxWorkspaces: plan.maxWorkspaces,
         aiTokensPerMonth: plan.aiTokensPerMonth,
         queuedPostsPerChannel: plan.queuedPostsPerChannel,
+        storageBytesPerWorkspace: plan.storageBytesPerWorkspace,
       },
       {
         extraChannels: 0,
@@ -505,6 +507,7 @@ export class SubscriptionService {
       maxWorkspaces: plan.maxWorkspaces,
       aiTokensPerMonth: plan.aiTokensPerMonth,
       queuedPostsPerChannel: plan.queuedPostsPerChannel,
+      storageBytesPerWorkspace: plan.storageBytesPerWorkspace,
     };
 
     const { subscriptionRow, baseItem, usageRows } = buildSubscriptionSync({
@@ -589,6 +592,7 @@ export class SubscriptionService {
             channelsLimit: sql`excluded.channels_limit`,
             membersLimit: sql`excluded.members_limit`,
             aiTokensLimit: sql`excluded.ai_tokens_limit`,
+            storageBytesLimit: sql`excluded.storage_bytes_limit`,
             updatedAt: new Date(),
             // aiTokensResetDate is deliberately NOT updated here. It seeds a
             // brand-new row only; carrying it into the conflict branch would

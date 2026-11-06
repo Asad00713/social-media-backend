@@ -161,6 +161,30 @@ describe('SubscriptionLookupService.applyLimitsToAllWorkspaces', () => {
     expect(writes[0].values.aiTokensLimit).toBe(0);
   });
 
+  it('writes the plan storage limit to every workspace (MAX = 25 GB)', async () => {
+    selectResults = [
+      [
+        { id: 'ws-a', createdAt: d('2026-01-01T00:00:00Z') },
+        { id: 'ws-b', createdAt: d('2026-02-01T00:00:00Z') },
+      ],
+      [{ ...PRO_PLAN_ROW, storageBytesPerWorkspace: 26843545600 }],
+    ];
+
+    await service.applyLimitsToAllWorkspaces('user-1', 'MAX', NO_ADDONS);
+
+    expect(writes.map((w) => w.values.storageBytesLimit)).toEqual([
+      26843545600, 26843545600,
+    ]);
+  });
+
+  it('getPlanLimits of an unknown code returns the FREE storage (500 MB)', async () => {
+    selectResults = [[]];
+
+    const limits = await service.getPlanLimits('MYSTERY');
+
+    expect(limits.storageBytesPerWorkspace).toBe(524288000);
+  });
+
   it('writes nothing when the account owns no workspace', async () => {
     selectResults = [[]];
 

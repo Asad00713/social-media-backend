@@ -52,6 +52,8 @@ export interface DraftMediaItem {
   sizeBytes: number;
   altText?: string;
   variants?: Partial<Record<SupportedPlatform, MediaVariant>>;
+  /** The Library item this entry was picked from (posts.library_refs, 0055). */
+  libraryItemId?: string;
 }
 
 export interface MediaVariant {

@@ -7,6 +7,7 @@ import {
   Post,
   UseGuards,
 } from '@nestjs/common';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { MediaSourcesService } from './media-sources.service';
 import { BrowseSourceDto } from './dto/browse.dto';
@@ -37,7 +38,13 @@ export class MediaSourcesController {
     @Param('workspaceId') workspaceId: string,
     @Param('channelId') channelId: string,
     @Body() dto: ImportSourceDto,
+    @CurrentUser() user: { userId: string },
   ) {
-    return this.service.import(workspaceId, parseInt(channelId, 10), dto);
+    return this.service.import(
+      workspaceId,
+      parseInt(channelId, 10),
+      dto,
+      user.userId,
+    );
   }
 }

@@ -1242,6 +1242,8 @@ export class AdminService {
           eq(mediaItems.isDeleted, false),
         );
 
+    const storedBytes = sql<number>`CASE WHEN ${mediaItems.isSample} THEN 0 ELSE ${mediaItems.fileSize} END`;
+
     const [rows, totalCount, byType, deletedTotals] = await Promise.all([
       this.db
         .select({
@@ -1272,11 +1274,13 @@ export class AdminService {
 
       this.db.select({ count: count() }).from(mediaItems).where(listWhere),
 
+      // Sample rows (0057) are listed and counted, but their bytes are one
+      // bundled file shared by every workspace, not this workspace's storage.
       this.db
         .select({
           type: mediaItems.type,
           count: count(),
-          bytes: sum(mediaItems.fileSize),
+          bytes: sum(storedBytes),
         })
         .from(mediaItems)
         .where(
@@ -1288,7 +1292,7 @@ export class AdminService {
         .groupBy(mediaItems.type),
 
       this.db
-        .select({ count: count(), bytes: sum(mediaItems.fileSize) })
+        .select({ count: count(), bytes: sum(storedBytes) })
         .from(mediaItems)
         .where(
           and(
@@ -3223,6 +3227,8 @@ export class AdminService {
 
     // Per-workspace totals — only files that still exist, so the figure lines
     // up with the customer's own library rather than the raw bucket.
+    // Sample rows (0057) are skipped: their bytes are one bundled file served
+    // by the API, in no bucket and shared by every workspace.
     const perWorkspaceRaw = await this.db
       .select({
         workspaceId: mediaItems.workspaceId,
@@ -3231,7 +3237,9 @@ export class AdminService {
         cloudinaryBytes: sql<number>`COALESCE(SUM(${mediaItems.fileSize}) FILTER (WHERE ${mediaItems.cloudinaryPublicId} IS NOT NULL), 0)`,
       })
       .from(mediaItems)
-      .where(eq(mediaItems.isDeleted, false))
+      .where(
+        and(eq(mediaItems.isDeleted, false), eq(mediaItems.isSample, false)),
+      )
       .groupBy(mediaItems.workspaceId)
       .orderBy(sql`SUM(${mediaItems.fileSize}) DESC NULLS LAST`);
 

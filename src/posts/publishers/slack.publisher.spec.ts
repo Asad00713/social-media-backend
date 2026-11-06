@@ -48,4 +48,22 @@ describe('SlackPublisher', () => {
     expect(uploadFile).not.toHaveBeenCalled();
     expect(res.platformPostId).toBe('1700000000.0001');
   });
+
+  it.each([
+    'http://169.254.169.254/latest/meta-data/',
+    'http://127.0.0.1:6379/',
+    'http://[::1]/',
+    'file:///etc/passwd',
+  ])('refuses to download media from %s (SSRF)', async (url) => {
+    const fetchSpy = jest.spyOn(global, 'fetch');
+    const { publisher, uploadFile } = make();
+    await expect(
+      publisher.publish(
+        baseOptions({ mediaItems: [{ url, type: 'image' as const }] }),
+      ),
+    ).rejects.toThrow(/Refusing to fetch media/);
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(uploadFile).not.toHaveBeenCalled();
+    fetchSpy.mockRestore();
+  });
 });
