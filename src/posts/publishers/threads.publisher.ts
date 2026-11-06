@@ -4,6 +4,7 @@ import {
   ThreadsService,
   ThreadsPostSettings,
   ThreadsPoll,
+  parseThreadsPostLink,
 } from '../../channels/services/threads.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
@@ -32,6 +33,16 @@ const TOPIC_TAG_BANNED = /[.&]/;
 /** Threads' own cap on each poll option. */
 const POLL_OPTION_MAX_CHARS = 25;
 
+/** ISO 3166-1 alpha-2 — what `allowlisted_country_codes` takes. */
+const COUNTRY_CODE = /^[A-Z]{2}$/;
+
+/** What posts 2..N of a thread carry: the country gate alone, if any. */
+function replySettings(
+  countries: string[] | undefined,
+): ThreadsPostSettings | undefined {
+  return countries?.length ? { allowlistedCountryCodes: countries } : undefined;
+}
+
 @Injectable()
 export class ThreadsPublisher extends BasePublisher {
   readonly platform: SupportedPlatform = 'threads';
@@ -42,6 +53,20 @@ export class ThreadsPublisher extends BasePublisher {
 
   validate(options: PublishOptions): void {
     const { content, mediaItems, metadata } = options;
+
+    // More settings, checked before anything else so a thread is covered
+    // too. Refused rather than dropped: a gate with a mistyped country
+    // would publish to the wrong audience.
+    const badCode = this.getCountryCodes(metadata).find(
+      (c) => !COUNTRY_CODE.test(c),
+    );
+    if (badCode) {
+      throw new Error(`"${badCode}" is not a two-letter country code`);
+    }
+    const quoteLink = this.getQuoteLink(metadata);
+    if (quoteLink && !parseThreadsPostLink(quoteLink)) {
+      throw new Error(`"${quoteLink}" is not a link to a Threads post`);
+    }
 
     const thread = metadata?.thread as ThreadTweet[] | undefined;
 
@@ -88,6 +113,31 @@ export class ThreadsPublisher extends BasePublisher {
   }
 
   /**
+   * The country codes to gate the post to (the publisher's own key,
+   * `allowlistedCountryCodes`), upper-cased. Invalid codes are refused by
+   * validate() rather than dropped here: a post meant for two countries
+   * must not go out everywhere because one code was mistyped.
+   */
+  private getCountryCodes(metadata: Record<string, any> | undefined): string[] {
+    const raw: unknown = metadata?.allowlistedCountryCodes;
+    if (!Array.isArray(raw)) return [];
+    return raw
+      .filter((c): c is string => typeof c === 'string')
+      .map((c) => c.trim().toUpperCase())
+      .filter((c) => c !== '');
+  }
+
+  /** The pasted link of the post to quote (the publisher's own key). */
+  private getQuoteLink(
+    metadata: Record<string, any> | undefined,
+  ): string | undefined {
+    const link: unknown = metadata?.quotePostUrl;
+    return typeof link === 'string' && link.trim() !== ''
+      ? link.trim()
+      : undefined;
+  }
+
+  /**
    * The post-level settings the composer chose, translated to Threads'
    * own names and values.
    *
@@ -122,6 +172,9 @@ export class ThreadsPublisher extends BasePublisher {
     if (typeof locationId === 'string' && locationId.trim()) {
       settings.locationId = locationId.trim();
     }
+
+    const countries = this.getCountryCodes(metadata);
+    if (countries.length > 0) settings.allowlistedCountryCodes = countries;
 
     return settings;
   }
@@ -164,6 +217,18 @@ export class ThreadsPublisher extends BasePublisher {
     // when posting a multi-post sequence. We publish the first post, then
     // chain subsequent posts via reply_to_id (same pattern as TwitterPublisher).
     const settings = this.getSettings(metadata);
+
+    // The quote is resolved BEFORE anything is created, so a link that is
+    // not one of the account's own recent posts fails the publish with
+    // nothing live. Not on a poll: Figma offers no quote there.
+    const quoteLink = this.getQuoteLink(metadata);
+    if (quoteLink && !this.getPoll(metadata)) {
+      settings.quotePostId = await this.threadsService.findOwnPostByLink(
+        accessToken,
+        platformAccountId,
+        quoteLink,
+      );
+    }
 
     const thread = metadata?.thread as ThreadTweet[] | undefined;
     if (Array.isArray(thread) && thread.length > 1) {
@@ -258,7 +323,12 @@ export class ThreadsPublisher extends BasePublisher {
         // the conversation — `reply_control` governs who may reply to the
         // thread, and `topic_tag` is one topic for the post, not one per
         // reply. Repeating them would set a reply's own reply rules.
-        const postSettings = i === 0 ? settings : undefined;
+        //
+        // Countries are the exception, and ride EVERY post. DECISION
+        // (reversible here): a reply left ungated would show the thread's
+        // continuation in the very countries the root was hidden from.
+        const postSettings =
+          i === 0 ? settings : replySettings(settings?.allowlistedCountryCodes);
 
         let res: { postId: string };
         if (media.length === 0) {
