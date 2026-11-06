@@ -938,6 +938,15 @@ export class LinkedInService {
     durationDays: number = 7,
     commentary: string = '',
     visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    /**
+     * `isReshareDisabledByAuthor` — stops others resharing the post.
+     *
+     * Only reachable on THIS path. Every other publish here goes through
+     * the legacy `/v2/ugcPosts`, which has no such field; the Posts API
+     * that does is a versioned endpoint, and the poll is the one caller
+     * already on it.
+     */
+    disableReshare: boolean = false,
   ): Promise<{ postId: string }> {
     if (!question || !question.trim())
       throw new Error('Poll question is required');
@@ -975,7 +984,7 @@ export class LinkedInService {
         targetEntities: [],
         thirdPartyDistributionChannels: [],
       },
-      isReshareDisabledByAuthor: false,
+      isReshareDisabledByAuthor: disableReshare,
     };
 
     const response = await fetch(`${this.apiBaseUrl}/posts`, {
