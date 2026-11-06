@@ -265,7 +265,10 @@ export class PostService {
       eq(posts.workspaceId, workspaceId),
       // Exclude campaign-materialized posts from the normal post list —
       // they still appear on the calendar (getCalendarPosts is unaffected).
-      sql`(${posts.metadata} ->> 'campaignId') is null`,
+      // Materialised means "has a slot": the composer can also file a post
+      // under a campaign (metadata.campaignId alone), and that post is still
+      // an ordinary post that Maestro and the chatbot must be able to list.
+      sql`(${posts.metadata} -> 'campaignSlot') is null`,
     ];
 
     if (options?.status) {

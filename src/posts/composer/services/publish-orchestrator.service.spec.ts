@@ -34,6 +34,14 @@ describe('PublishOrchestratorService.publishInline', () => {
   let credentials: { getCredentials: jest.Mock };
 
   const makeDb = () => ({
+    // The stored row's metadata, read so campaign and labels survive.
+    select: jest.fn().mockReturnValue({
+      from: jest.fn().mockReturnValue({
+        where: jest.fn().mockReturnValue({
+          limit: jest.fn().mockResolvedValue([]),
+        }),
+      }),
+    }),
     insert: jest.fn().mockReturnValue({
       values: jest.fn().mockReturnValue({
         onConflictDoUpdate: jest.fn().mockResolvedValue(undefined),

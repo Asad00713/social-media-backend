@@ -6,7 +6,13 @@ import {
 } from '@nestjs/common';
 import { isViewer, type CallerRole } from '../../guest-rules';
 import { carryFirstWeekMeta } from '../../../first-week/lib/first-week-metadata';
-import { and, desc, eq, inArray } from 'drizzle-orm';
+import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import {
+  LABEL_CATALOGUE_LIMIT,
+  normaliseLabels,
+  readOrganise,
+  resolveOrganise,
+} from '../lib/draft-organise';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { posts } from '../../../drizzle/schema/posts.schema';
 import type { SaveDraftDto } from '../dto/save-draft.dto';
@@ -49,6 +55,13 @@ export class DraftStoreService {
       linkPreview: dto.base.linkPreview,
       schedule: dto.schedule,
       title: dto.title,
+      // Campaign and labels: absent keeps the stored value (see draft-organise).
+      ...(await resolveOrganise(
+        this.db,
+        workspaceId,
+        existing[0]?.metadata,
+        dto,
+      )),
       // A first-week draft must stay one after a person edits it in the composer.
       ...carryFirstWeekMeta(existing[0]?.metadata),
     };
@@ -113,6 +126,36 @@ export class DraftStoreService {
     return rows.map((r: any) => this.toDraft(r));
   }
 
+  /**
+   * Every label used on a post in this workspace, A to Z. Derived, not
+   * stored: a label exists while some post carries it, so there is no
+   * catalogue to keep in step and nothing to delete.
+   */
+  async listLabels(workspaceId: string): Promise<string[]> {
+    // The CASE, not a WHERE on jsonb_typeof: Postgres may expand the
+    // lateral call before filtering, and expanding a non-array throws.
+    const result = await this.db.execute(sql`
+      SELECT DISTINCT label
+      FROM ${posts},
+        jsonb_array_elements_text(
+          CASE WHEN jsonb_typeof(${posts.metadata} -> 'labels') = 'array'
+            THEN ${posts.metadata} -> 'labels'
+            ELSE '[]'::jsonb
+          END
+        ) AS label
+      WHERE ${posts.workspaceId} = ${workspaceId}
+      ORDER BY label
+      LIMIT ${LABEL_CATALOGUE_LIMIT}
+    `);
+    const rows = (result?.rows ?? result ?? []) as Array<{ label: unknown }>;
+    // "Launch" and "launch" are one label to a person; the first spelling
+    // in A-to-Z order is the one offered.
+    return normaliseLabels(
+      rows.map((r) => r.label),
+      LABEL_CATALOGUE_LIMIT,
+    );
+  }
+
   /** A viewer may only change drafts they created themselves. */
   private assertViewerOwnsDraft(row: any, userId: string): void {
     if (row.status !== 'draft') {
@@ -165,6 +208,7 @@ export class DraftStoreService {
       perPlatform: (row.platformContent ?? {}) as PlatformOverrides,
       channels: (row.targets ?? []) as ChannelTarget[],
       schedule,
+      ...readOrganise(metadata),
       createdAt: row.createdAt?.toISOString?.() ?? new Date().toISOString(),
       updatedAt: row.updatedAt?.toISOString?.() ?? new Date().toISOString(),
     };

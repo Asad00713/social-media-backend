@@ -13,6 +13,7 @@ import { posts } from '../../../drizzle/schema/posts.schema';
 import { QUEUES } from '../../../queue/queue.module';
 import type { ScheduleDraftDto } from '../dto/schedule-draft.dto';
 import type { ChannelTarget } from '../types/draft.types';
+import { resolveOrganise } from '../lib/draft-organise';
 import { CalendarPushSyncService } from '../../../calendar-sync/services/calendar-push-sync.service';
 import { PostQueueService } from '../../../billing/services/post-queue.service';
 
@@ -115,6 +116,11 @@ export class ComposerSchedulingService {
     // A first-week draft keeps its tag when scheduled from the composer (the
     // composer's own `source: 'composer'` above would otherwise erase it).
     Object.assign(metadata, carryFirstWeekMeta(existing[0]?.metadata));
+    // Campaign and labels: absent keeps the stored value (see draft-organise).
+    Object.assign(
+      metadata,
+      await resolveOrganise(this.db, workspaceId, existing[0]?.metadata, dto),
+    );
 
     // The same per-channel queue ceiling PostService.createPost enforces. This
     // is a second, independent path to `status: 'scheduled'`, so a check on
