@@ -2,6 +2,16 @@ import { Test } from '@nestjs/testing';
 import { TwitterPublisher } from './twitter.publisher';
 import { TwitterService } from '../../channels/services/twitter.service';
 
+// These tests stub the network with `global.fetch`. The media download goes
+// through the SSRF-guarded fetchPublicMedia (undici + a pinned-DNS agent), so
+// route it back to the stub; the guard itself is covered in public-fetch.spec.
+jest.mock('../../common/net/public-fetch', () => ({
+  ...jest.requireActual<typeof import('../../common/net/public-fetch')>(
+    '../../common/net/public-fetch',
+  ),
+  fetchPublicMedia: (url: string) => global.fetch(url),
+}));
+
 /**
  * "Tag people" (`tagPeople`, the publisher's own key) -> usernames looked
  * up, then `media.tagged_user_ids` on the post's photos.
