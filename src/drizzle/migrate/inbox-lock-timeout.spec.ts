@@ -12,7 +12,8 @@ import { readMigrations } from './runner';
  * posts (two generated columns) under ACCESS EXCLUSIVE and builds three GIN
  * indexes. 0056 alters media_categories (ACCESS EXCLUSIVE) and adds a
  * foreign key to users. 0057 alters the five Library tables and validates
- * four CHECK constraints.
+ * four CHECK constraints. 0058 creates post_comments with foreign keys to
+ * posts, workspace and users (SHARE ROW EXCLUSIVE on each).
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -21,6 +22,7 @@ const FILES = [
   '0055_posts_library_refs.sql',
   '0056_media_categories_created_by.sql',
   '0057_library_is_sample.sql',
+  '0058_post_comments.sql',
 ];
 
 const firstStatement = (sql: string): string =>
