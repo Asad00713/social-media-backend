@@ -4,6 +4,7 @@ import {
   Delete,
   Get,
   Param,
+  ParseUUIDPipe,
   Post,
   Put,
   Query,
@@ -17,6 +18,7 @@ import { RequireCapability } from '../../workspace-members/require-capability.de
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
 import { PublishOrchestratorService } from './services/publish-orchestrator.service';
 import { DraftStoreService } from './services/draft-store.service';
+import { DraftVersionsService } from './services/draft-versions.service';
 import { ComposerSchedulingService } from './services/composer-scheduling.service';
 import { PublishDraftDto } from './dto/publish-draft.dto';
 import { SaveDraftDto } from './dto/save-draft.dto';
@@ -37,6 +39,7 @@ export class ComposerController {
     private readonly orchestrator: PublishOrchestratorService,
     private readonly drafts: DraftStoreService,
     private readonly scheduling: ComposerSchedulingService,
+    private readonly versions: DraftVersionsService,
   ) {}
 
   @RequireCapability('posts:draft')
@@ -67,6 +70,35 @@ export class ComposerController {
     @Param('draftId') draftId: string,
   ) {
     return this.drafts.findById(wsId, draftId);
+  }
+
+  /** Saved versions of a post, newest first (at most 50). */
+  @RequireCapability('posts:draft')
+  @Get('drafts/:draftId/versions')
+  async listVersions(
+    @Param('wsId') wsId: string,
+    @Param('draftId', ParseUUIDPipe) draftId: string,
+  ) {
+    return this.versions.list(wsId, draftId);
+  }
+
+  /** Write a saved version back as a new save. Drafts only (409 otherwise). */
+  @RequireCapability('posts:draft')
+  @Post('drafts/:draftId/versions/:versionId/restore')
+  async restoreVersion(
+    @Param('wsId') wsId: string,
+    @Param('draftId', ParseUUIDPipe) draftId: string,
+    @Param('versionId', ParseUUIDPipe) versionId: string,
+    @CurrentUser() user: { userId: string },
+    @CurrentWorkspaceRole() role: CallerRole,
+  ) {
+    return this.drafts.restoreVersion(
+      wsId,
+      draftId,
+      versionId,
+      user.userId,
+      role,
+    );
   }
 
   @RequireCapability('posts:draft')
