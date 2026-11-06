@@ -8,6 +8,7 @@ import { and, eq } from 'drizzle-orm';
 import { PayloadResolverService } from './payload-resolver.service';
 import { ComposerErrorMapperService } from './composer-error-mapper.service';
 import { PublisherFactory } from '../../publishers/publisher.factory';
+import { PartialPublishError } from '../../publishers/base.publisher';
 import { AnalyticsEventEmitter } from '../../../realtime/analytics-event-emitter.service';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { posts } from '../../../drizzle/schema/posts.schema';
@@ -74,11 +75,29 @@ export class PublishOrchestratorService {
   async publishInline(
     workspaceId: string,
     userId: string,
-    input: InlinePublishInput,
+    rawInput: InlinePublishInput,
   ): Promise<PublishResultSummary> {
-    if (!input.channels?.length) {
+    if (!rawInput.channels?.length) {
       throw new BadRequestException('Draft has no channels selected');
     }
+
+    // Items an earlier attempt already published (one Pin per image). The
+    // client's copy of the channels does not carry them, and the upsert
+    // below overwrites the stored targets with that copy - so they are read
+    // FIRST and put back on each channel, or a retry (or a second Publish
+    // after a failure) would post those Pins again.
+    const storedItems = await this.loadStoredItemResults(
+      workspaceId,
+      rawInput.draftId,
+    );
+    const input: InlinePublishInput = {
+      ...rawInput,
+      channels: rawInput.channels.map((c) =>
+        c.itemResults?.length || !storedItems.has(c.channelId)
+          ? c
+          : { ...c, itemResults: storedItems.get(c.channelId) },
+      ),
+    };
 
     const isRetry = Boolean(input.retryChannelIds?.length);
     const targets = isRetry
@@ -155,6 +174,9 @@ export class PublishOrchestratorService {
           platformAccountId: creds.platformAccountId,
           channelMetadata: creds.channelMetadata,
           channelId: Number(target.channelId),
+          ...(target.itemResults?.length
+            ? { previousItemResults: target.itemResults }
+            : {}),
         });
 
         const ok: ChannelTarget = {
@@ -163,6 +185,9 @@ export class PublishOrchestratorService {
           platformPostId: result.platformPostId,
           platformPostUrl: result.platformPostUrl,
           publishedAt: new Date().toISOString(),
+          ...(result.itemResults?.length
+            ? { itemResults: result.itemResults }
+            : {}),
         };
         updatedMap.set(target.channelId, ok);
         await this.persistChannels(workspaceId, draft.id, updatedMap);
@@ -180,6 +205,11 @@ export class PublishOrchestratorService {
           publishStatus: 'failed',
           errorCode: classified.code,
           errorMessage: err instanceof Error ? err.message : String(err),
+          // Part of the post is live: keep what went out, so the retry
+          // resumes after it rather than publishing it twice.
+          ...(err instanceof PartialPublishError
+            ? { itemResults: err.itemResults }
+            : {}),
         };
         updatedMap.set(target.channelId, failed);
         await this.persistChannels(workspaceId, draft.id, updatedMap);
@@ -214,6 +244,44 @@ export class PublishOrchestratorService {
     });
 
     return { draftStatus, channels: finalChannels, postId: draft.id };
+  }
+
+  /**
+   * The per-item results stored on this draft's targets, by channel id.
+   *
+   * Degrades to "none" if the row cannot be read: a fresh draft has no row,
+   * and a read failure must not block a publish - it only means a resumed
+   * multi-item post could repeat items, which is what happened before.
+   */
+  private async loadStoredItemResults(
+    workspaceId: string,
+    draftId: string,
+  ): Promise<Map<string, NonNullable<ChannelTarget['itemResults']>>> {
+    const stored = new Map<string, NonNullable<ChannelTarget['itemResults']>>();
+    try {
+      const rows = (await this.db
+        .select({ targets: posts.targets })
+        .from(posts)
+        .where(and(eq(posts.id, draftId), eq(posts.workspaceId, workspaceId)))
+        .limit(1)) as { targets: unknown }[];
+      const targets = Array.isArray(rows?.[0]?.targets)
+        ? (rows[0].targets as ChannelTarget[])
+        : [];
+      for (const t of targets) {
+        if (
+          t?.channelId &&
+          Array.isArray(t.itemResults) &&
+          t.itemResults.length
+        ) {
+          stored.set(t.channelId, t.itemResults);
+        }
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Could not read stored item results for draft ${draftId}: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+    return stored;
   }
 
   private emitState(

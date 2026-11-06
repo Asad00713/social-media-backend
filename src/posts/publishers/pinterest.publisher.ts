@@ -1,7 +1,15 @@
 import { Injectable } from '@nestjs/common';
-import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
+import {
+  BasePublisher,
+  PartialPublishError,
+  PublishOptions,
+  PublishResult,
+} from './base.publisher';
 import { PinterestService } from '../../channels/services/pinterest.service';
-import { MediaItem } from '../../drizzle/schema/posts.schema';
+import {
+  MediaItem,
+  PublishItemResult,
+} from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
 @Injectable()
@@ -52,7 +60,8 @@ export class PinterestPublisher extends BasePublisher {
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
-    const { content, mediaItems, accessToken, metadata } = options;
+    const { content, mediaItems, accessToken, metadata, previousItemResults } =
+      options;
 
     this.validate(options);
 
@@ -75,12 +84,8 @@ export class PinterestPublisher extends BasePublisher {
     // the union has no mixed-media variant, and a video is its own upload
     // flow entirely.
     //
-    // The composer offers two modes for several images, and only this one
-    // is real. "N separate Pins" would need the orchestrator to publish
-    // once per image, and it publishes once per CHANNEL — so that mode is
-    // still marked in the composer, and anything but an explicit carousel
-    // keeps the old single-image behaviour rather than quietly becoming
-    // one.
+    // The composer offers two modes for several images: an explicit carousel
+    // (this), or - the default - one Pin per image (below).
     const extraImageUrls =
       mediaType === 'image' && metadata?.asCarousel === true
         ? mediaItems
@@ -88,6 +93,37 @@ export class PinterestPublisher extends BasePublisher {
             .filter((m) => m.type === 'image')
             .map((m) => m.url)
         : [];
+
+    // One Pin per image: several images that are NOT an explicit carousel.
+    // Each Pin carries the same title, description, link, board, section and
+    // disclosure, and its own photo's alt text.
+    const images = mediaItems.filter((m) => m.type === 'image');
+    if (
+      mediaType === 'image' &&
+      metadata?.asCarousel !== true &&
+      images.length > 1
+    ) {
+      return this.publishPinPerImage(images, previousItemResults, (image) =>
+        this.pinterestService.createPin(
+          accessToken,
+          boardId,
+          title,
+          description,
+          image.url,
+          {
+            link,
+            mediaType: 'image',
+            altText: pickAltText(metadata, [image]),
+            aiModified: metadata?.aiModified === true,
+            boardSectionId:
+              typeof metadata?.boardSectionId === 'string'
+                ? metadata.boardSectionId.trim() || undefined
+                : undefined,
+            dominantColor: pickDominantColor(metadata),
+          },
+        ),
+      );
+    }
 
     const result = await this.pinterestService.createPin(
       accessToken,
@@ -120,6 +156,63 @@ export class PinterestPublisher extends BasePublisher {
     return {
       platformPostId: result.pinId,
       platformPostUrl: result.pinUrl,
+    };
+  }
+
+  /**
+   * Publishes each image as its own Pin, in order.
+   *
+   * The channel has ONE platformPostId, so it is the first image's Pin; every
+   * Pin is in `itemResults`. An image already published by an earlier
+   * attempt (same url in `previous`) is NOT published again - its Pin is
+   * carried over. A failure part-way throws PartialPublishError carrying the
+   * Pins that did go out, so the caller stores them and the retry resumes.
+   */
+  private async publishPinPerImage(
+    images: MediaItem[],
+    previous: PublishItemResult[] | undefined,
+    createPin: (
+      image: MediaItem,
+    ) => Promise<{ pinId: string; pinUrl?: string }>,
+  ): Promise<PublishResult> {
+    const done = new Map(
+      (previous ?? [])
+        .filter((r) => r && typeof r.platformPostId === 'string')
+        .map((r) => [r.mediaUrl, r]),
+    );
+    const results: PublishItemResult[] = [];
+
+    for (const [i, image] of images.entries()) {
+      const prior = done.get(image.url);
+      if (prior) {
+        results.push(prior);
+        continue;
+      }
+      try {
+        const pin = await createPin(image);
+        results.push({
+          mediaUrl: image.url,
+          platformPostId: pin.pinId,
+          ...(pin.pinUrl ? { platformPostUrl: pin.pinUrl } : {}),
+        });
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `Pinterest Pin ${i + 1} of ${images.length} failed after ${results.length} went out: ${reason}`,
+        );
+        // Nothing went out: the plain error, exactly as a single Pin fails.
+        if (results.length === 0) throw err;
+        throw new PartialPublishError(reason, results);
+      }
+    }
+
+    this.logger.log(
+      `Published ${results.length} Pins to Pinterest: ${results.map((r) => r.platformPostId).join(', ')}`,
+    );
+    return {
+      platformPostId: results[0].platformPostId,
+      platformPostUrl: results[0].platformPostUrl,
+      itemResults: results,
     };
   }
 }
