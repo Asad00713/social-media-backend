@@ -333,6 +333,14 @@ export class CreatePinterestBoardDto {
   privacy?: 'PUBLIC' | 'SECRET';
 }
 
+export class CreatePinterestBoardSectionDto {
+  // Pinterest's own bounds: `BoardSectionCreate.name` is 1 to 180 characters.
+  @IsString()
+  @MinLength(1)
+  @MaxLength(180)
+  name: string;
+}
+
 export class UpdatePinterestBoardDto {
   @IsOptional()
   @IsString()
