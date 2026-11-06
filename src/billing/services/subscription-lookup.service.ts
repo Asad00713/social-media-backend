@@ -18,6 +18,7 @@ import {
   WorkspaceRef,
 } from './usage-fanout.util';
 import { planChannelLocks } from './channel-lock.util';
+import { FREE_STORAGE_BYTES } from '../plan-storage';
 
 /** Limits every account falls back to when it has no subscription row. */
 const FREE_FALLBACK: PlanLimits = {
@@ -26,6 +27,7 @@ const FREE_FALLBACK: PlanLimits = {
   maxWorkspaces: 1,
   aiTokensPerMonth: 0,
   queuedPostsPerChannel: 10,
+  storageBytesPerWorkspace: FREE_STORAGE_BYTES,
 };
 
 interface AddonItemRow {
@@ -95,6 +97,7 @@ export class SubscriptionLookupService {
       maxWorkspaces: plan.maxWorkspaces,
       aiTokensPerMonth: plan.aiTokensPerMonth,
       queuedPostsPerChannel: plan.queuedPostsPerChannel,
+      storageBytesPerWorkspace: plan.storageBytesPerWorkspace,
     };
   }
 
@@ -193,6 +196,7 @@ export class SubscriptionLookupService {
           channelsLimit: write.channelsLimit,
           membersLimit: write.membersLimit,
           aiTokensLimit: write.aiTokensLimit,
+          storageBytesLimit: write.storageBytesLimit,
           updatedAt: new Date(),
         })
         .where(eq(workspaceUsage.workspaceId, write.workspaceId));
