@@ -11,9 +11,33 @@ export interface ThreadPost {
 
 export interface TwitterFields {
   thread?: ThreadPost[];
-  replyControl?: 'everyone' | 'following' | 'mentioned_only';
+  /**
+   * Who may reply, as the composer stores it.
+   *
+   * These are X's own `reply_settings` values plus `everyone`, which X does
+   * NOT accept on write — it is what the API returns for an unrestricted
+   * post, and the publisher turns it into an omitted field.
+   *
+   * This previously read `mentioned_only`, which X rejects outright; the
+   * spelling it wants is `mentionedUsers`.
+   */
+  replyControl?:
+    | 'everyone'
+    | 'following'
+    | 'mentionedUsers'
+    | 'subscribers'
+    | 'verified';
   pollOptions?: string[];
   pollDurationMinutes?: number;
+  /**
+   * X's two disclosures, `made_with_ai` and `paid_partnership`.
+   *
+   * Plain booleans on POST /2/tweets, needing no scope beyond the
+   * `tweet.write` our channels already hold. Only `true` is sent — an
+   * absent field is what X reads as "not disclosed".
+   */
+  madeWithAi?: boolean;
+  paidPartnership?: boolean;
 }
 
 export type InstagramPostType = 'feed' | 'reel' | 'story' | 'carousel';
