@@ -319,6 +319,7 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
       getFacebookPages: null,
       debugFacebookToken: null,
       connectFacebookPage: 'channels:manage',
+      listFacebookPagesForChannel: 'posts:draft',
       getFacebookUser: null,
       connectPinterest: 'channels:manage',
       getPinterestUser: null,
