@@ -181,6 +181,34 @@ export function carryApproval(
   return { approval };
 }
 
+/**
+ * The `approval` key for one part of a post that is being split ("a time
+ * per channel": one row per distinct time).
+ *
+ * An approval covers the content that was approved — the whole draft — so
+ * the whole is checked first and refused exactly as `assertApprovedFor`
+ * refuses it. A grant that covers the whole covers each part of it, so the
+ * part's copy is re-pinned to the part's own fingerprint: re-scheduling that
+ * sibling later, unchanged, is still approved, and any later edit to it
+ * voids its grant the usual way. A request not yet granted never gets here.
+ */
+export function approvalForPart(
+  existingMetadata: unknown,
+  whole: ApprovableContent,
+  part: ApprovableContent,
+): { approval?: DraftApproval } {
+  assertApprovedFor(existingMetadata, whole);
+  const approval = readApproval(existingMetadata);
+  if (!approval) return {};
+  const scoped: DraftApproval = {
+    ...approval,
+    approvedFingerprint: contentFingerprint(part),
+  };
+  // The part's own guard, against the copy it will be stored with.
+  assertApprovedFor({ approval: scoped }, part);
+  return { approval: scoped };
+}
+
 /** A metadata object from a client, with any `approval` it tried to set removed. */
 export function withoutApproval<T extends Record<string, unknown>>(
   metadata: T | null | undefined,

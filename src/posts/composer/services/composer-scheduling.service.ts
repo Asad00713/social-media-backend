@@ -6,7 +6,9 @@ import {
   Optional,
 } from '@nestjs/common';
 import { carryFirstWeekMeta } from '../../../first-week/lib/first-week-metadata';
+import { randomUUID } from 'node:crypto';
 import {
+  approvalForPart,
   assertApprovedFor,
   carryApproval,
   type ApprovableContent,
@@ -18,7 +20,16 @@ import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { posts } from '../../../drizzle/schema/posts.schema';
 import { QUEUES } from '../../../queue/queue.module';
 import type { ScheduleDraftDto } from '../dto/schedule-draft.dto';
-import type { ChannelTarget } from '../types/draft.types';
+import type { ChannelTarget, PlatformOverrides } from '../types/draft.types';
+import {
+  PER_CHANNEL_WITH_REPEAT,
+  SCHEDULE_GROUP_KEY,
+  carryScheduleGroup,
+  groupByInstant,
+  overridesFor,
+  readScheduleGroup,
+  type ScheduleGroup,
+} from '../lib/per-channel-schedule';
 import { resolveOrganise } from '../lib/draft-organise';
 import { snapshotOf } from '../lib/draft-versions';
 import { DraftVersionsService } from './draft-versions.service';
@@ -29,8 +40,70 @@ import { parseRule, startSeries } from '../../lib/recurrence';
 
 export interface ScheduleResult {
   postId: string;
+  /** The earliest time, when the post was split by "a time per channel". */
   scheduledAt: string;
   status: 'scheduled';
+  /**
+   * Only when the draft was split into one post per distinct time: every
+   * sibling, earliest first (the first is `postId`), and their family id.
+   */
+  siblings?: Array<{
+    postId: string;
+    scheduledAt: string;
+    channelIds: string[];
+  }>;
+  scheduleGroupId?: string;
+}
+
+type LegacyTarget = ChannelTarget & { status: string };
+
+/** The columns of the draft's own row the split path reads. */
+interface StoredPost {
+  status: string | null;
+  createdById: string | null;
+  metadata: unknown;
+  targets: unknown;
+  jobId: string | null;
+}
+
+/**
+ * The legacy posts.targets shape (PostTarget) — status='draft' per channel
+ * until the worker fires, when PostService.publishPost flips them to
+ * 'publishing' then 'published' / 'failed'. A channel's own `scheduleAt` is
+ * not kept: the row's `scheduled_at` is its time.
+ */
+function legacyTargetsOf(channels: ChannelTarget[]): LegacyTarget[] {
+  return channels.map<LegacyTarget>((c) => ({
+    channelId: c.channelId,
+    platform: c.platform,
+    publishStatus: 'queued',
+    retryCount: 0,
+    status: 'draft', // legacy PostTarget.status — required by PostService.publishPost
+  }));
+}
+
+/** The metadata every scheduled row starts from. */
+function sharedMetadata(dto: ScheduleDraftDto): Record<string, unknown> {
+  return {
+    hashtags: dto.base.hashtags,
+    mentions: dto.base.mentions,
+    linkPreview: dto.base.linkPreview,
+    title: dto.title,
+    source: 'composer',
+  };
+}
+
+/**
+ * The X thread to lift into `metadata.thread` (TwitterPublisher reads it
+ * there), or null when the post is a single tweet or not on X.
+ */
+function threadOf(
+  perPlatform: PlatformOverrides | undefined,
+): unknown[] | null {
+  const thread = (
+    perPlatform?.twitter?.platformSpecific as { thread?: unknown } | undefined
+  )?.thread;
+  return Array.isArray(thread) && thread.length > 1 ? thread : null;
 }
 
 /**
@@ -73,18 +146,30 @@ export class ComposerSchedulingService {
     userId: string,
     dto: ScheduleDraftDto,
   ): Promise<ScheduleResult> {
-    const scheduledAt = new Date(dto.scheduledAt);
-    const delay = scheduledAt.getTime() - Date.now();
-    if (delay < 5_000) {
-      throw new BadRequestException(
-        'scheduledAt must be at least 5 seconds in the future',
-      );
+    // A series repeats one time; a time per channel is several.
+    if (dto.scheduleMode === 'per_channel' && dto.recurrence != null) {
+      throw new BadRequestException(PER_CHANNEL_WITH_REPEAT);
     }
+    // Checks every time (`scheduledAt`, or each channel's own) is far enough
+    // ahead, then groups the channels by the instant they go out at.
+    const groups = groupByInstant(
+      dto.scheduleMode,
+      dto.scheduledAt,
+      dto.channels ?? [],
+    );
     if (!dto.channels?.length) {
       throw new BadRequestException(
         'Draft must have at least one channel selected',
       );
     }
+    // Several instants: one sibling post per instant. One instant — every
+    // channel at the same time, whichever way it was asked for — is the
+    // schedule as it always was, below.
+    if (groups.length > 1) {
+      return this.scheduleSplit(workspaceId, userId, dto, groups);
+    }
+    const scheduledAt = groups[0].at;
+    const delay = scheduledAt.getTime() - Date.now();
     const rule =
       dto.recurrence === undefined || dto.recurrence === null
         ? null
@@ -96,34 +181,14 @@ export class ComposerSchedulingService {
     // Build the legacy posts.targets shape (PostTarget) — status='draft' per
     // channel until the worker fires, when PostService.publishPost flips
     // them to 'publishing' then 'published' / 'failed'.
-    const legacyTargets = dto.channels.map<ChannelTarget & { status: string }>(
-      (c) => ({
-        channelId: c.channelId,
-        platform: c.platform,
-        publishStatus: 'queued',
-        retryCount: 0,
-        status: 'draft', // legacy PostTarget.status — required by PostService.publishPost
-      }),
-    );
+    const legacyTargets = legacyTargetsOf(dto.channels);
 
     // Pull per-platform metadata (thread, polls) into post.metadata so the
     // existing publisher dispatch picks it up (TwitterPublisher reads
     // metadata.thread for threads, metadata.poll for polls).
-    const twitterOverride = dto.perPlatform?.twitter;
-    const threadFromOverride = (
-      twitterOverride?.platformSpecific as { thread?: unknown } | undefined
-    )?.thread;
-
-    const metadata: Record<string, unknown> = {
-      hashtags: dto.base.hashtags,
-      mentions: dto.base.mentions,
-      linkPreview: dto.base.linkPreview,
-      title: dto.title,
-      source: 'composer',
-    };
-    if (Array.isArray(threadFromOverride) && threadFromOverride.length > 1) {
-      metadata.thread = threadFromOverride;
-    }
+    const metadata: Record<string, unknown> = sharedMetadata(dto);
+    const thread = threadOf(dto.perPlatform);
+    if (thread) metadata.thread = thread;
 
     // Upsert posts row in 'scheduled' state.
     const existing = await this.db
@@ -135,6 +200,8 @@ export class ComposerSchedulingService {
     // A first-week draft keeps its tag when scheduled from the composer (the
     // composer's own `source: 'composer'` above would otherwise erase it).
     Object.assign(metadata, carryFirstWeekMeta(existing[0]?.metadata));
+    // A sibling of a split post stays in its family when re-scheduled.
+    Object.assign(metadata, carryScheduleGroup(existing[0]?.metadata));
     // Campaign and labels: absent keeps the stored value (see draft-organise).
     Object.assign(
       metadata,
@@ -236,7 +303,9 @@ export class ComposerSchedulingService {
     await this.db
       .update(posts)
       .set({ jobId: String(job?.id ?? jobId) })
-      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)));
+      .where(
+        and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)),
+      );
 
     this.logger.log(
       `Scheduled draft ${dto.draftId} for ${scheduledAt.toISOString()} (delay=${delay}ms)`,
@@ -254,6 +323,171 @@ export class ComposerSchedulingService {
       postId: dto.draftId,
       scheduledAt: scheduledAt.toISOString(),
       status: 'scheduled',
+    };
+  }
+
+  /**
+   * "Different time for each channel" with more than one distinct time:
+   * one sibling `posts` row per time, each holding only its own channels
+   * and their per-platform content (captions, settings, first comments,
+   * thread, media), each with its own single publish job, all sharing
+   * `metadata.scheduleGroupId`. The earliest keeps the draft's id.
+   *
+   * Every guard the one-row path runs is run for every sibling, and all of
+   * them before the first write: a refusal leaves nothing half-scheduled.
+   * Afterwards each sibling is an ordinary scheduled post — see
+   * SCHEDULE_GROUP_EDITS in lib/per-channel-schedule.ts.
+   */
+  private async scheduleSplit(
+    workspaceId: string,
+    userId: string,
+    dto: ScheduleDraftDto,
+    groups: ScheduleGroup[],
+  ): Promise<ScheduleResult> {
+    const existing: StoredPost[] = await this.db
+      .select()
+      .from(posts)
+      .where(and(eq(posts.id, dto.draftId), eq(posts.workspaceId, workspaceId)))
+      .limit(1);
+    const stored = existing[0] as StoredPost | undefined;
+
+    const groupId = readScheduleGroup(stored?.metadata) ?? randomUUID();
+    const shared: Record<string, unknown> = {
+      ...sharedMetadata(dto),
+      // First-week tag, campaign and labels go to every sibling.
+      ...carryFirstWeekMeta(stored?.metadata),
+      ...(await resolveOrganise(this.db, workspaceId, stored?.metadata, dto)),
+      [SCHEDULE_GROUP_KEY]: groupId,
+    };
+
+    const whole: ApprovableContent = {
+      content: dto.base.text,
+      mediaItems: dto.base.mediaItems,
+      platformContent: dto.perPlatform ?? {},
+      targets: dto.channels,
+    };
+
+    const siblings = groups.map((group, i) => {
+      const perPlatform = overridesFor(dto.perPlatform, group.channels);
+      const metadata: Record<string, unknown> = {
+        ...shared,
+        // "Needs approval", refused here for the whole and for this part.
+        ...approvalForPart(stored?.metadata, whole, {
+          content: dto.base.text,
+          mediaItems: dto.base.mediaItems,
+          platformContent: perPlatform,
+          targets: group.channels,
+        }),
+      };
+      const thread = threadOf(perPlatform);
+      if (thread) metadata.thread = thread;
+      return {
+        id: i === 0 ? dto.draftId : randomUUID(),
+        at: group.at,
+        channels: group.channels,
+        perPlatform,
+        metadata,
+      };
+    });
+
+    // The per-channel queue ceiling, per sibling. A channel the draft's row
+    // already holds a scheduled slot on is not counted again: the row gives
+    // that slot up in the update below (the one-row path's re-schedule rule,
+    // per channel instead of per row).
+    const held = new Set<string>(
+      stored?.status === 'scheduled'
+        ? ((stored?.targets ?? []) as ChannelTarget[]).map((t) =>
+            String(t.channelId),
+          )
+        : [],
+    );
+    for (const sibling of siblings) {
+      await this.postQueue.enforceQueueLimit(
+        workspaceId,
+        sibling.channels
+          .map((c) => String(c.channelId))
+          .filter((id) => !held.has(id)),
+      );
+    }
+
+    // The rows. New siblings belong to whoever owns the draft, so a Viewer
+    // who wrote it still owns every part of it.
+    for (const sibling of siblings) {
+      const row = {
+        content: dto.base.text,
+        mediaItems: dto.base.mediaItems as any,
+        targets: legacyTargetsOf(sibling.channels) as any,
+        status: 'scheduled',
+        scheduledAt: sibling.at,
+        platformContent: sibling.perPlatform as any,
+        metadata: sibling.metadata as any,
+      };
+      if (sibling.id === dto.draftId && stored) {
+        await this.db
+          .update(posts)
+          .set({ ...row, updatedAt: new Date() })
+          .where(
+            and(eq(posts.id, sibling.id), eq(posts.workspaceId, workspaceId)),
+          );
+      } else {
+        await this.db.insert(posts).values({
+          id: sibling.id,
+          workspaceId,
+          createdById: stored?.createdById ?? userId,
+          ...row,
+        });
+      }
+    }
+
+    // The draft's earlier job (if it was scheduled before) must not fire.
+    await this.removeJobs(`composer-publish-${dto.draftId}`, stored?.jobId);
+
+    for (const sibling of siblings) {
+      const jobId = `composer-publish-${sibling.id}`;
+      const job = await this.publishingQueue.add(
+        'publish',
+        { postId: sibling.id },
+        {
+          jobId,
+          delay: Math.max(0, sibling.at.getTime() - Date.now()),
+          attempts: 3,
+        },
+      );
+      await this.db
+        .update(posts)
+        .set({ jobId: String(job?.id ?? jobId) })
+        .where(
+          and(eq(posts.id, sibling.id), eq(posts.workspaceId, workspaceId)),
+        );
+      // Each sibling is saved content in its own right.
+      await this.versions?.record(
+        sibling.id,
+        userId,
+        snapshotOf({
+          ...dto,
+          perPlatform: sibling.perPlatform,
+          channels: sibling.channels,
+        }),
+      );
+      this.syncCalendarForPost(sibling.id);
+    }
+
+    this.logger.log(
+      `Scheduled draft ${dto.draftId} as ${siblings.length} posts (group ${groupId}) at ${siblings
+        .map((s) => s.at.toISOString())
+        .join(', ')}`,
+    );
+
+    return {
+      postId: dto.draftId,
+      scheduledAt: siblings[0].at.toISOString(),
+      status: 'scheduled',
+      siblings: siblings.map((s) => ({
+        postId: s.id,
+        scheduledAt: s.at.toISOString(),
+        channelIds: s.channels.map((c) => String(c.channelId)),
+      })),
+      scheduleGroupId: groupId,
     };
   }
 

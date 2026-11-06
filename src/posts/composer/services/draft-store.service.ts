@@ -8,6 +8,7 @@ import {
 import { isViewer, type CallerRole } from '../../guest-rules';
 import { carryFirstWeekMeta } from '../../../first-week/lib/first-week-metadata';
 import { carryApproval } from '../../lib/draft-approval';
+import { carryScheduleGroup } from '../lib/per-channel-schedule';
 import { and, desc, eq, inArray, sql } from 'drizzle-orm';
 import {
   LABEL_CATALOGUE_LIMIT,
@@ -74,6 +75,8 @@ export class DraftStoreService {
       )),
       // A first-week draft must stay one after a person edits it in the composer.
       ...carryFirstWeekMeta(existing[0]?.metadata),
+      // A sibling of a post split by "a time per channel" keeps its family.
+      ...carryScheduleGroup(existing[0]?.metadata),
       // "Needs approval" survives a save; a grant that no longer matches the
       // saved content is withdrawn.
       ...carryApproval(existing[0]?.metadata, {
