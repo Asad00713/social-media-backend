@@ -871,8 +871,7 @@ export class FacebookService {
     return {
       id: page.id ?? pageId,
       name: page.name ?? '',
-      location:
-        label || (hasCoords ? loc?.street || page.name || null : null),
+      location: label || (hasCoords ? loc?.street || page.name || null : null),
     };
   }
 
