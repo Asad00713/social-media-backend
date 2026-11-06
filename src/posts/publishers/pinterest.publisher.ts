@@ -70,6 +70,25 @@ export class PinterestPublisher extends BasePublisher {
     // metadata.description.
     const description = pickDescription(metadata, content);
 
+    // Pinterest's `multiple_image_urls` source takes 2 to 5 images, so a
+    // multi-image pin is a carousel rather than several pins. Only images:
+    // the union has no mixed-media variant, and a video is its own upload
+    // flow entirely.
+    //
+    // The composer offers two modes for several images, and only this one
+    // is real. "N separate Pins" would need the orchestrator to publish
+    // once per image, and it publishes once per CHANNEL — so that mode is
+    // still marked in the composer, and anything but an explicit carousel
+    // keeps the old single-image behaviour rather than quietly becoming
+    // one.
+    const extraImageUrls =
+      mediaType === 'image' && metadata?.asCarousel === true
+        ? mediaItems
+            .slice(1)
+            .filter((m) => m.type === 'image')
+            .map((m) => m.url)
+        : [];
+
     const result = await this.pinterestService.createPin(
       accessToken,
       boardId,
@@ -80,6 +99,18 @@ export class PinterestPublisher extends BasePublisher {
         link,
         mediaType,
         videoCoverImageUrl: metadata?.videoCoverImageUrl,
+        // A pin carries ONE alt text, and the composer writes alt text on
+        // each media item rather than into the Pinterest panel — its row
+        // is read-only and says "From each photo". So the pinned image's
+        // own alt text is the real source; `metadata.altText` is only an
+        // override for anything that still sets it that way.
+        altText: pickAltText(metadata, mediaItems),
+        aiModified: metadata?.aiModified === true,
+        boardSectionId:
+          typeof metadata?.boardSectionId === 'string'
+            ? metadata.boardSectionId.trim() || undefined
+            : undefined,
+        extraImageUrls,
       },
     );
 
@@ -90,6 +121,30 @@ export class PinterestPublisher extends BasePublisher {
       platformPostUrl: result.pinUrl,
     };
   }
+}
+
+/**
+ * The alt text for the pin, or undefined.
+ *
+ * The composer stores alt text per media item (`DraftMediaItem.altText`,
+ * set in the photo editor), not in the Pinterest panel — the panel's row
+ * is read-only and reads "From each photo". A pin takes a single
+ * `alt_text`, so the FIRST image's is the one that applies; on a carousel
+ * the others have nowhere to go, since `multiple_image_urls` items carry
+ * only a url.
+ */
+function pickAltText(
+  metadata: Record<string, any> | undefined,
+  mediaItems: MediaItem[],
+): string | undefined {
+  const fromPanel =
+    typeof metadata?.altText === 'string' ? metadata.altText.trim() : '';
+  if (fromPanel) return fromPanel;
+
+  const fromMedia = mediaItems[0]?.altText;
+  return typeof fromMedia === 'string' && fromMedia.trim()
+    ? fromMedia.trim()
+    : undefined;
 }
 
 /**

@@ -22,6 +22,9 @@ export interface PinterestBoard {
   collaboratorCount: number;
 }
 
+/** Pinterest's own cap on a pin's alt text. */
+const PIN_ALT_TEXT_MAX_CHARS = 500;
+
 @Injectable()
 export class PinterestService {
   private readonly logger = new Logger(PinterestService.name);
@@ -279,9 +282,33 @@ export class PinterestService {
       link?: string;
       mediaType?: 'image' | 'video';
       videoCoverImageUrl?: string;
+      /** `alt_text` on PinCreate — capped at 500 characters by the API. */
+      altText?: string;
+      /**
+       * `ai_disclosures`, an OBJECT wrapping a list of UPPERCASE values
+       * (`AI_MODIFIED`, `SYNTHETIC_PERFORMER`) — not the lowercase
+       * `ai_modified` of the catalogs API, which is a different enum on a
+       * different resource.
+       */
+      aiModified?: boolean;
+      /** `board_section_id` — a section within the chosen board. */
+      boardSectionId?: string;
+      /**
+       * Extra image urls, turning the pin into a carousel.
+       *
+       * `media_source` is a discriminated union: `image_url` takes ONE
+       * url, `multiple_image_urls` takes an `items` array of 2 to 5. So a
+       * carousel is a different source_type, not an extra field.
+       */
+      extraImageUrls?: string[];
     },
   ): Promise<{ pinId: string; pinUrl?: string }> {
     const isVideo = options?.mediaType === 'video';
+
+    // 2 to 5 per the spec's minItems/maxItems. The first url is the one
+    // passed as `mediaUrl`, so the extras fill the remaining four slots.
+    const extras = (options?.extraImageUrls ?? []).filter(Boolean).slice(0, 4);
+    const isCarousel = !isVideo && extras.length > 0;
 
     const body: Record<string, any> = {
       board_id: boardId,
@@ -294,14 +321,34 @@ export class PinterestService {
               options?.videoCoverImageUrl || mediaUrl.replace('.mp4', '.jpg'),
             media_id: '', // Will be set after video upload
           }
-        : {
-            source_type: 'image_url',
-            url: mediaUrl,
-          },
+        : isCarousel
+          ? {
+              source_type: 'multiple_image_urls',
+              items: [mediaUrl, ...extras].map((url) => ({ url })),
+            }
+          : {
+              source_type: 'image_url',
+              url: mediaUrl,
+            },
     };
 
     if (options?.link) {
       body.link = options.link;
+    }
+
+    if (options?.altText) {
+      body.alt_text = options.altText.slice(0, PIN_ALT_TEXT_MAX_CHARS);
+    }
+
+    if (options?.boardSectionId) {
+      body.board_section_id = options.boardSectionId;
+    }
+
+    // Only ever sent as a declaration, never as a denial: the field is a
+    // list of disclosures the creator HAS made, so "not AI" is an absent
+    // field rather than an empty list.
+    if (options?.aiModified) {
+      body.ai_disclosures = { values: ['AI_MODIFIED'] };
     }
 
     // For videos, we need to use the video upload flow
