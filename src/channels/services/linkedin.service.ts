@@ -1155,7 +1155,7 @@ export class LinkedInService {
   ): Promise<void> {
     let source: Response;
     try {
-      source = await fetch(sourceUrl);
+      source = await fetchPublicMedia(sourceUrl);
     } catch (error) {
       this.logger.error(`Network error downloading ${noun}: ${error}`);
       throw new BadRequestException(
