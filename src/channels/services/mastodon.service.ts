@@ -6,6 +6,7 @@ import type {
   DmConversationSummary,
   ResolvedChannel,
 } from '../../inbox/adapters/inbox-adapter.interface';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
 
 export interface MastodonApp {
   id: string;
@@ -360,7 +361,7 @@ export class MastodonService {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
 
     // Download the media from URL
-    const mediaResponse = await fetch(mediaUrl);
+    const mediaResponse = await fetchPublicMedia(mediaUrl);
     if (!mediaResponse.ok) {
       throw new BadRequestException(`Failed to fetch media: ${mediaUrl}`);
     }
