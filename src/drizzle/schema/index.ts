@@ -38,3 +38,4 @@ export * from './inbox-conversations.schema';
 export * from './inbox-notes.schema';
 export * from './inbox-saved-replies.schema';
 export * from './inbox-user-settings.schema';
+export * from './brand-kits.schema';
