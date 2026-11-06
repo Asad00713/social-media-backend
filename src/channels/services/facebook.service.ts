@@ -37,10 +37,37 @@ export interface FacebookUser {
   pictureUrl: string | null;
 }
 
+/**
+ * Optional settings for a Page post (`/feed` or `/photos`), all sent only
+ * when set. Both edges document all three (Page feed and Page photos
+ * references, "Publishing"/"Creating" sections).
+ */
+export interface FacebookPostOptions {
+  /** `backdated_time`, in Unix seconds — "a time in the past". */
+  backdatedTime?: number;
+  /** `targeting` — "limits the audience for this content". */
+  targeting?: { age_min: number };
+  /** `place` — "Page ID of a location associated with this post". */
+  place?: string;
+}
+
+/**
+ * One of the workspace's Pages, as the composer's Location and Collaborator
+ * pickers need it. `location` is null when the Page has none (or it could not
+ * be read): only "pages with valid locations" can be a `place`.
+ */
+export interface FacebookPageLocation {
+  id: string;
+  name: string;
+  location: string | null;
+}
+
 /** Optional settings for a Reel, all sent only when set. */
 export interface FacebookReelOptions {
   /** The Reel's title — `title` on the finish call of `/video_reels`. */
   title?: string;
+  /** `place` on the finish call — the Page id of a location. */
+  place?: string;
   /**
    * A hosted image to use as the Reel's cover, uploaded to the video's
    * `/thumbnails` edge between the transfer and the publish.
@@ -383,12 +410,14 @@ export class FacebookService {
     message: string,
     link?: string,
     callToActionType?: string,
+    options: FacebookPostOptions = {},
   ): Promise<{ postId: string }> {
     const url = new URL(`${this.graphApiUrl}/${pageId}/feed`);
 
     const body: Record<string, string> = {
       access_token: pageAccessToken,
       message,
+      ...this.postOptionsBody(options),
     };
 
     if (link) {
@@ -431,12 +460,14 @@ export class FacebookService {
     pageAccessToken: string,
     imageUrl: string,
     caption?: string,
+    options: FacebookPostOptions = {},
   ): Promise<{ postId: string }> {
     const url = new URL(`${this.graphApiUrl}/${pageId}/photos`);
 
     const body: Record<string, string> = {
       access_token: pageAccessToken,
       url: imageUrl,
+      ...this.postOptionsBody(options),
     };
 
     if (caption) {
@@ -721,6 +752,8 @@ export class FacebookService {
     // `title` belongs to the FINISH call (the publish step of the Reels guide),
     // beside `description` — not to the start call, which takes only the phase.
     if (options.title) finishUrl.searchParams.set('title', options.title);
+    // The Reels guide: "include the parameter `place` ... in the publish call".
+    if (options.place) finishUrl.searchParams.set('place', options.place);
     finishUrl.searchParams.set('access_token', pageAccessToken);
     const finishRes = await fetch(finishUrl.toString(), { method: 'POST' });
     if (!finishRes.ok) {
@@ -743,6 +776,104 @@ export class FacebookService {
     return thumbnailWarning
       ? { postId: startData.video_id, thumbnailWarning }
       : { postId: startData.video_id };
+  }
+
+  /**
+   * The body keys for a Page post's options — shared by `/feed` and
+   * `/photos`, which both list `backdated_time`, `targeting` and `place`.
+   *
+   * `targeting` goes as JSON text, the way `call_to_action` already does on
+   * this request. `backdated_time` is Unix seconds: the feed reference types
+   * it a float, the photos reference a datetime; that a datetime accepts a
+   * Unix timestamp is INFERRED (Graph's usual datetime handling), not stated.
+   */
+  private postOptionsBody(
+    options: FacebookPostOptions,
+  ): Record<string, string> {
+    const body: Record<string, string> = {};
+    if (options.backdatedTime !== undefined) {
+      body.backdated_time = String(options.backdatedTime);
+    }
+    if (options.targeting) body.targeting = JSON.stringify(options.targeting);
+    if (options.place) body.place = options.place;
+    return body;
+  }
+
+  /**
+   * Invites another Page to collaborate on a published Reel:
+   * `POST /{video-id}/collaborators` with `target_id` (Reels publishing
+   * guide, "Collaborators"). The other Page has to accept it, and Meta caps
+   * it at "10 collaborator invitation per Page per 24 hours".
+   *
+   * Sent once the Reel is published - the guide gives no order; after is
+   * INFERRED from the edge hanging off the video.
+   */
+  async inviteReelCollaborator(
+    videoId: string,
+    pageAccessToken: string,
+    targetPageId: string,
+  ): Promise<void> {
+    const url = new URL(`${this.graphApiUrl}/${videoId}/collaborators`);
+    url.searchParams.set('target_id', targetPageId);
+    url.searchParams.set('access_token', pageAccessToken);
+    const res = await fetch(url.toString(), { method: 'POST' });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      throw new Error(
+        `Facebook did not send the collaborator invite: ${err?.error?.message ?? `HTTP ${res.status}`}`,
+      );
+    }
+    const data = (await res.json().catch(() => ({}))) as { success?: boolean };
+    if (data.success === false) {
+      throw new Error('Facebook reported the collaborator invite as not sent');
+    }
+  }
+
+  /**
+   * A Page's name and location, read with that Page's own token.
+   *
+   * `location` is a Page field (city, country, street, latitude, longitude).
+   * A Page counts as having one when it carries a city or coordinates —
+   * what makes a location "valid" for `place` is not defined by Meta, so
+   * this test is INFERRED.
+   */
+  async getPageLocation(
+    pageId: string,
+    pageAccessToken: string,
+  ): Promise<FacebookPageLocation> {
+    const url = new URL(`${this.graphApiUrl}/${pageId}`);
+    url.searchParams.set('fields', 'id,name,location');
+    url.searchParams.set('access_token', pageAccessToken);
+    const res = await fetch(url.toString());
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      throw new Error(err?.error?.message ?? `HTTP ${res.status}`);
+    }
+    const page = (await res.json()) as {
+      id?: string;
+      name?: string;
+      location?: {
+        city?: string;
+        country?: string;
+        street?: string;
+        latitude?: number;
+        longitude?: number;
+      };
+    };
+    const loc = page.location;
+    const hasCoords =
+      typeof loc?.latitude === 'number' && typeof loc?.longitude === 'number';
+    const label = [loc?.city, loc?.country].filter(Boolean).join(', ');
+    return {
+      id: page.id ?? pageId,
+      name: page.name ?? '',
+      location:
+        label || (hasCoords ? loc?.street || page.name || null : null),
+    };
   }
 
   /**
