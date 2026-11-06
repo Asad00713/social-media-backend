@@ -1,7 +1,10 @@
 import { Test } from '@nestjs/testing';
 import { ConfigService } from '@nestjs/config';
 import { BadRequestException } from '@nestjs/common';
-import { ElevenLabsSttService } from './elevenlabs-stt.service';
+import {
+  ElevenLabsSttService,
+  toTranscribedWords,
+} from './elevenlabs-stt.service';
 
 /**
  * These tests exist because transcription was broken from the day it was
@@ -121,6 +124,114 @@ describe('ElevenLabsSttService', () => {
       // Never reaches the network: an unconfigured key is our problem to
       // report, not a request worth making.
       expect(fetchMock).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('the words it hands back', () => {
+    it('returns each spoken word with its start and end, as text', async () => {
+      fetchMock.mockResolvedValue(
+        ok({
+          text: 'pour it',
+          language_code: 'eng',
+          duration: 2,
+          words: [
+            { text: 'pour', type: 'word', start: 0.1, end: 0.5, logprob: -0.1 },
+            { text: ' ', type: 'spacing', start: 0.5, end: 0.6, logprob: 0 },
+            { text: 'it', type: 'word', start: 0.6, end: 0.9, logprob: -0.1 },
+          ],
+        }),
+      );
+      const result = await transcribe();
+      expect(result.words).toEqual([
+        { text: 'pour', start: 0.1, end: 0.5 },
+        { text: 'it', start: 0.6, end: 0.9 },
+      ]);
+      expect(result.text).toBe('pour it');
+      expect(result.language).toBe('eng');
+      expect(result.durationSeconds).toBe(2);
+    });
+
+    it('returns an empty list when the response carries no words', async () => {
+      // Always an array, so a caller never has to tell "absent" from "none".
+      fetchMock.mockResolvedValue(ok({ text: '' }));
+      const result = await transcribe();
+      expect(result.words).toEqual([]);
+    });
+  });
+
+  describe('toTranscribedWords', () => {
+    const word = (over: Record<string, unknown> = {}) => ({
+      text: 'hello',
+      type: 'word',
+      start: 1,
+      end: 2,
+      logprob: -0.1,
+      ...over,
+    });
+
+    it('keeps only text, start and end', () => {
+      const [first] = toTranscribedWords([
+        word({ speaker_id: 'speaker_0', characters: [] }),
+      ]);
+      expect(Object.keys(first).sort()).toEqual(['end', 'start', 'text']);
+    });
+
+    it('drops the gaps between words', () => {
+      expect(
+        toTranscribedWords([word({ type: 'spacing', text: ' ' })]),
+      ).toEqual([]);
+    });
+
+    it('drops non-speech tags such as laughter', () => {
+      // "(laughter)" would otherwise be cut into a caption line of its own.
+      expect(
+        toTranscribedWords([word({ type: 'audio_event', text: '(laughter)' })]),
+      ).toEqual([]);
+    });
+
+    it('keeps a word whose type is not stated', () => {
+      expect(toTranscribedWords([word({ type: undefined })])).toHaveLength(1);
+    });
+
+    it('drops a word with no usable timing rather than inventing one', () => {
+      // start and end are optional and nullable in the API's own schema.
+      expect(toTranscribedWords([word({ start: null })])).toEqual([]);
+      expect(toTranscribedWords([word({ end: undefined })])).toEqual([]);
+      expect(toTranscribedWords([word({ start: Number.NaN })])).toEqual([]);
+      expect(toTranscribedWords([word({ end: 'soon' })])).toEqual([]);
+    });
+
+    it('drops a word that ends before it starts or starts below zero', () => {
+      expect(toTranscribedWords([word({ start: 3, end: 2 })])).toEqual([]);
+      expect(toTranscribedWords([word({ start: -1, end: 1 })])).toEqual([]);
+    });
+
+    it('keeps an instantaneous word, whose start equals its end', () => {
+      expect(toTranscribedWords([word({ start: 2, end: 2 })])).toHaveLength(1);
+    });
+
+    it('drops an empty or blank word and trims the rest', () => {
+      expect(
+        toTranscribedWords([word({ text: '' }), word({ text: '   ' })]),
+      ).toEqual([]);
+      expect(toTranscribedWords([word({ text: ' hi ' })])[0].text).toBe('hi');
+    });
+
+    it('keeps the order it was given', () => {
+      const out = toTranscribedWords([
+        word({ text: 'a', start: 0, end: 1 }),
+        word({ text: 'b', start: 1, end: 2 }),
+        word({ text: 'c', start: 2, end: 3 }),
+      ]);
+      expect(out.map((w) => w.text)).toEqual(['a', 'b', 'c']);
+    });
+
+    it('survives anything that is not an array of objects', () => {
+      expect(toTranscribedWords(undefined)).toEqual([]);
+      expect(toTranscribedWords(null)).toEqual([]);
+      expect(toTranscribedWords('words')).toEqual([]);
+      expect(toTranscribedWords({ words: [] })).toEqual([]);
+      expect(toTranscribedWords([null, 7, 'x', undefined])).toEqual([]);
     });
   });
 

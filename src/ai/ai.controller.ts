@@ -19,8 +19,12 @@ import { GroqService } from './groq.service';
 import {
   AiTokenService,
   AI_OPERATION_COSTS,
+  type TokenDeductResult,
 } from './services/ai-token.service';
-import { ElevenLabsSttService } from './services/elevenlabs-stt.service';
+import {
+  ElevenLabsSttService,
+  type TranscribedWord,
+} from './services/elevenlabs-stt.service';
 import { ComposerAiService } from './composer-ai.service';
 import { InboxAiService, assertSuggestReplyInput } from './inbox-ai.service';
 import {
@@ -45,6 +49,19 @@ import {
 } from './dto/ai.dto';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { RequireCapability } from '../workspace-members/require-capability.decorator';
+
+/** What `POST /ai/workspaces/:workspaceId/transcribe` replies with. */
+export interface TranscribeResponse {
+  text: string;
+  language?: string;
+  durationSeconds?: number;
+  /**
+   * The spoken words with their start and end in seconds — what captions are
+   * cut from. Always present; empty when the speech service timed none.
+   */
+  words: TranscribedWord[];
+  usage: TokenDeductResult;
+}
 
 @Controller('ai')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
@@ -611,7 +628,7 @@ export class AiController {
     @UploadedFile() file: Express.Multer.File,
     @Body('durationSeconds') durationSeconds?: string,
     @Body('languageCode') languageCode?: string,
-  ) {
+  ): Promise<TranscribeResponse> {
     if (!file) {
       throw new BadRequestException('No audio file provided');
     }
@@ -646,6 +663,7 @@ export class AiController {
       text: result.text,
       language: result.language,
       durationSeconds: result.durationSeconds,
+      words: result.words,
       usage,
     };
   }
