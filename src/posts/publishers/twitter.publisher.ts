@@ -6,6 +6,7 @@ import {
 } from '../../channels/services/twitter.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
 
 @Injectable()
 export class TwitterPublisher extends BasePublisher {
@@ -226,7 +227,7 @@ export class TwitterPublisher extends BasePublisher {
     for (const item of mediaItems) {
       try {
         // Download the media from URL
-        const response = await fetch(item.url);
+        const response = await fetchPublicMedia(item.url);
         if (!response.ok) {
           throw new Error(`Failed to download media from ${item.url}`);
         }

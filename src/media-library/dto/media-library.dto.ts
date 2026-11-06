@@ -14,6 +14,9 @@ import {
   ValidateNested,
   ValidateIf,
   IsIn,
+  IsISO8601,
+  ArrayMaxSize,
+  ArrayMinSize,
 } from 'class-validator';
 import { Type, Transform } from 'class-transformer';
 import {
@@ -21,6 +24,42 @@ import {
   TEMPLATE_TYPES,
   TEXT_SNIPPET_TYPES,
 } from '../../drizzle/schema/media-library.schema';
+import {
+  FOLDER_KINDS,
+  normalizeFolderKind,
+  normalizeSnippetType,
+  type FolderKind,
+} from '../lib/folder-kind';
+import { RATIOS } from '../lib/ratio';
+import { BIN_KINDS } from './contract';
+import type { BinKind, MediaSort, Ratio } from './contract';
+
+const MEDIA_SORTS = [
+  'newest',
+  'oldest',
+  'most_used',
+  'recently_used',
+  'name',
+  'size',
+] as const satisfies readonly MediaSort[];
+
+/** Templates and snippets sort like media, minus `size` (ruling 7). */
+const KIND_SORTS = [
+  'newest',
+  'oldest',
+  'most_used',
+  'recently_used',
+  'name',
+] as const;
+export type KindSort = (typeof KIND_SORTS)[number];
+
+/** The actions templates, snippets and links accept in bulk (ruling 6). */
+const KIND_BULK_ACTIONS = ['delete', 'star', 'unstar', 'move'] as const;
+export type KindBulkAction = (typeof KIND_BULK_ACTIONS)[number];
+
+/** Query-string booleans: only 'true' (or a JSON true) is true. */
+const toBool = ({ value }: { value: unknown }) =>
+  value === 'true' || value === true;
 
 // Re-define types locally to avoid decorator issues
 type MediaLibraryType = (typeof MEDIA_LIBRARY_TYPES)[number];
@@ -40,9 +79,11 @@ export class CreateCategoryDto {
   @IsString()
   description?: string;
 
-  // A folder belongs to exactly one asset type — required at creation.
-  @IsEnum(MEDIA_LIBRARY_TYPES)
-  type: MediaLibraryType;
+  // A folder belongs to exactly one kind — required at creation. Legacy
+  // image|video|gif|document are accepted and stored as 'media'.
+  @Transform(({ value }) => normalizeFolderKind(value))
+  @IsIn(FOLDER_KINDS)
+  type: FolderKind;
 
   @IsOptional()
   @IsString()
@@ -78,12 +119,42 @@ export class UpdateCategoryDto {
   @IsOptional()
   @IsInt()
   displayOrder?: number;
+
+  // Accepted so the contract's PUT body validates, but a folder's kind can't
+  // change: the service rejects a kind different from the current one.
+  @IsOptional()
+  @Transform(({ value }) => normalizeFolderKind(value))
+  @IsIn(FOLDER_KINDS)
+  type?: FolderKind;
 }
 
 export class CategoryQueryDto {
   @IsOptional()
-  @IsEnum(MEDIA_LIBRARY_TYPES)
-  type?: MediaLibraryType;
+  @Transform(({ value }) => normalizeFolderKind(value))
+  @IsIn(FOLDER_KINDS)
+  type?: FolderKind;
+
+  // Adds each folder's item count, bytes and up to 4 cover URLs (one query).
+  @IsOptional()
+  @IsBoolean()
+  @Transform(({ value }) => value === 'true' || value === true)
+  withStats?: boolean;
+
+  // Case-insensitive match on the folder name.
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  search?: string;
+}
+
+export class ReorderCategoriesDto {
+  @Transform(({ value }) => normalizeFolderKind(value))
+  @IsIn(FOLDER_KINDS)
+  type: FolderKind;
+
+  @IsArray()
+  @IsUUID('all', { each: true })
+  categoryIds: string[];
 }
 
 // =============================================================================
@@ -148,6 +219,17 @@ export class CreateMediaItemDto {
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(1000)
+  altText?: string;
+
+  // PDFs only.
+  @IsOptional()
+  @IsInt()
+  @Min(1)
+  pageCount?: number;
 }
 
 export class UpdateMediaItemDto {
@@ -176,12 +258,20 @@ export class UpdateMediaItemDto {
   @IsOptional()
   @IsBoolean()
   isStarred?: boolean;
+
+  // `null` clears the alt text; omitting it leaves it as it is.
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsString()
+  @MaxLength(1000)
+  altText?: string | null;
 }
 
 export class MediaItemQueryDto {
+  // `images` is image + gif.
   @IsOptional()
-  @IsEnum(['image', 'video', 'gif', 'document'])
-  type?: 'image' | 'video' | 'gif' | 'document';
+  @IsIn(['image', 'video', 'gif', 'document', 'images'])
+  type?: 'image' | 'video' | 'gif' | 'document' | 'images';
 
   @IsOptional()
   @IsUUID()
@@ -229,12 +319,63 @@ export class MediaItemQueryDto {
   @IsOptional()
   @IsEnum(['asc', 'desc'])
   sortOrder?: 'asc' | 'desc';
+
+  // Contract names. `starred` wins over the legacy `isStarred`, and `sort`
+  // wins over `sortBy`/`sortOrder`.
+  @IsOptional()
+  @IsBoolean()
+  @Transform(toBool)
+  starred?: boolean;
+
+  /** The `/usage` reference test, with zero hits. */
+  @IsOptional()
+  @IsBoolean()
+  @Transform(toBool)
+  neverUsed?: boolean;
+
+  @IsOptional()
+  @IsBoolean()
+  @Transform(toBool)
+  gifOnly?: boolean;
+
+  @IsOptional()
+  @IsIn(RATIOS)
+  ratio?: Ratio;
+
+  // Strict rejects impossible dates (2026-02-30). ISO forms Date cannot
+  // parse (week or ordinal dates) are refused by the service with a 400.
+  @IsOptional()
+  @IsISO8601({ strict: true })
+  addedSince?: string;
+
+  @IsOptional()
+  @IsUUID()
+  uploadedBy?: string;
+
+  @IsOptional()
+  @IsIn(MEDIA_SORTS)
+  sort?: MediaSort;
+}
+
+/** Runs a bulk action on every item the list's filter matches. */
+export class BulkSelectAllDto {
+  @ValidateNested()
+  @Type(() => MediaItemQueryDto)
+  filter: MediaItemQueryDto;
 }
 
 export class BulkActionDto {
+  // Exactly one of `ids` and `selectAll` (the service answers 400 otherwise).
+  @IsOptional()
   @IsArray()
+  @ArrayMaxSize(500)
   @IsUUID('all', { each: true })
-  ids: string[];
+  ids?: string[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => BulkSelectAllDto)
+  selectAll?: BulkSelectAllDto;
 
   @IsEnum(['delete', 'restore', 'move', 'star', 'unstar', 'permanentDelete'])
   action: 'delete' | 'restore' | 'move' | 'star' | 'unstar' | 'permanentDelete';
@@ -307,6 +448,12 @@ export class TemplateMediaDto {
   @IsInt()
   @Min(0)
   sizeBytes?: number;
+
+  // The Library item this attachment came from, like the composer's own
+  // media item; kept in `content.media[]` as sent.
+  @IsOptional()
+  @IsUUID()
+  libraryItemId?: string;
 }
 
 export class TemplateContentDto {
@@ -443,6 +590,11 @@ export class TemplateQueryDto {
   @IsString()
   search?: string;
 
+  /** Only rows this user created (the Library's "Created by" filter). */
+  @IsOptional()
+  @IsUUID()
+  createdBy?: string;
+
   @IsOptional()
   @IsInt()
   @Min(1)
@@ -455,6 +607,45 @@ export class TemplateQueryDto {
   @Min(0)
   @Transform(({ value }) => parseInt(value, 10))
   offset?: number;
+
+  // Contract name; wins over the legacy `isStarred`.
+  @IsOptional()
+  @IsBoolean()
+  @Transform(toBool)
+  starred?: boolean;
+
+  @IsOptional()
+  @IsIn(KIND_SORTS)
+  sort?: KindSort;
+}
+
+export class TemplateSelectAllDto {
+  @ValidateNested()
+  @Type(() => TemplateQueryDto)
+  filter: TemplateQueryDto;
+}
+
+export class TemplateBulkDto {
+  // Exactly one of `ids` and `selectAll` (the service answers 400 otherwise).
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(500)
+  @IsUUID('all', { each: true })
+  ids?: string[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => TemplateSelectAllDto)
+  selectAll?: TemplateSelectAllDto;
+
+  @IsIn(KIND_BULK_ACTIONS)
+  action: KindBulkAction;
+
+  // `move` only: null unfiles, an id files, omitted is a 400 (X1).
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsUUID()
+  categoryId?: string | null;
 }
 
 // =============================================================================
@@ -466,7 +657,8 @@ export class CreateTextSnippetDto {
   @MaxLength(255)
   name: string;
 
-  @IsEnum(TEXT_SNIPPET_TYPES)
+  @Transform(({ value }) => normalizeSnippetType(value))
+  @IsIn(TEXT_SNIPPET_TYPES)
   snippetType: TextSnippetType;
 
   @IsString()
@@ -489,7 +681,8 @@ export class UpdateTextSnippetDto {
   name?: string;
 
   @IsOptional()
-  @IsEnum(TEXT_SNIPPET_TYPES)
+  @Transform(({ value }) => normalizeSnippetType(value))
+  @IsIn(TEXT_SNIPPET_TYPES)
   snippetType?: TextSnippetType;
 
   @IsOptional()
@@ -511,8 +704,15 @@ export class UpdateTextSnippetDto {
 }
 
 export class TextSnippetQueryDto {
+  // Contract name. Wins over the legacy `snippetType` when both are sent.
   @IsOptional()
-  @IsEnum(TEXT_SNIPPET_TYPES)
+  @Transform(({ value }) => normalizeSnippetType(value))
+  @IsIn(TEXT_SNIPPET_TYPES)
+  type?: TextSnippetType;
+
+  @IsOptional()
+  @Transform(({ value }) => normalizeSnippetType(value))
+  @IsIn(TEXT_SNIPPET_TYPES)
   snippetType?: TextSnippetType;
 
   @IsOptional()
@@ -533,6 +733,11 @@ export class TextSnippetQueryDto {
   @IsString()
   search?: string;
 
+  /** Only rows this user created (the Library's "Created by" filter). */
+  @IsOptional()
+  @IsUUID()
+  createdBy?: string;
+
   @IsOptional()
   @IsInt()
   @Min(1)
@@ -545,11 +750,77 @@ export class TextSnippetQueryDto {
   @Min(0)
   @Transform(({ value }) => parseInt(value, 10))
   offset?: number;
+
+  // Contract name; wins over the legacy `isStarred`.
+  @IsOptional()
+  @IsBoolean()
+  @Transform(toBool)
+  starred?: boolean;
+
+  @IsOptional()
+  @IsIn(KIND_SORTS)
+  sort?: KindSort;
+}
+
+export class SnippetSelectAllDto {
+  @ValidateNested()
+  @Type(() => TextSnippetQueryDto)
+  filter: TextSnippetQueryDto;
+}
+
+export class SnippetBulkDto {
+  // Exactly one of `ids` and `selectAll` (the service answers 400 otherwise).
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(500)
+  @IsUUID('all', { each: true })
+  ids?: string[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => SnippetSelectAllDto)
+  selectAll?: SnippetSelectAllDto;
+
+  @IsIn(KIND_BULK_ACTIONS)
+  action: KindBulkAction;
+
+  // `move` only: null unfiles, an id files, omitted is a 400 (X1).
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsUUID()
+  categoryId?: string | null;
 }
 
 // =============================================================================
 // Saved Link DTOs
 // =============================================================================
+
+export class UtmDto {
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  source?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  medium?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  campaign?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  term?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  content?: string;
+}
 
 export class CreateSavedLinkDto {
   @IsString()
@@ -571,6 +842,11 @@ export class CreateSavedLinkDto {
   @IsArray()
   @IsString({ each: true })
   tags?: string[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => UtmDto)
+  utm?: UtmDto;
 }
 
 export class UpdateSavedLinkDto {
@@ -599,6 +875,13 @@ export class UpdateSavedLinkDto {
   @IsOptional()
   @IsBoolean()
   isStarred?: boolean;
+
+  /** null clears the UTM tags. */
+  @IsOptional()
+  @ValidateIf((_o, v) => v !== null)
+  @ValidateNested()
+  @Type(() => UtmDto)
+  utm?: UtmDto | null;
 }
 
 export class SavedLinkQueryDto {
@@ -620,6 +903,15 @@ export class SavedLinkQueryDto {
   @IsString()
   search?: string;
 
+  /** Only rows this user created (the Library's "Created by" filter). */
+  @IsOptional()
+  @IsUUID()
+  createdBy?: string;
+
+  @IsOptional()
+  @IsIn(['newest', 'oldest', 'most_used', 'name'])
+  sort?: 'newest' | 'oldest' | 'most_used' | 'name';
+
   @IsOptional()
   @IsInt()
   @Min(1)
@@ -634,11 +926,57 @@ export class SavedLinkQueryDto {
   offset?: number;
 }
 
+export class LinkSelectAllDto {
+  @ValidateNested()
+  @Type(() => SavedLinkQueryDto)
+  filter: SavedLinkQueryDto;
+}
+
+export class LinkBulkDto {
+  // Exactly one of `ids` and `selectAll` (the service answers 400 otherwise).
+  @IsOptional()
+  @IsArray()
+  @ArrayMaxSize(500)
+  @IsUUID('all', { each: true })
+  ids?: string[];
+
+  @IsOptional()
+  @ValidateNested()
+  @Type(() => LinkSelectAllDto)
+  selectAll?: LinkSelectAllDto;
+
+  @IsIn(KIND_BULK_ACTIONS)
+  action: KindBulkAction;
+
+  // `move` only: null unfiles, an id files, omitted is a 400 (X1).
+  @IsOptional()
+  @ValidateIf((_, value) => value !== null)
+  @IsUUID()
+  categoryId?: string | null;
+}
+
 // =============================================================================
 // Recycle Bin DTOs
 // =============================================================================
 
+/** Bin sorts (contract): newest deletion, name A–Z, largest first. */
+const BIN_SORTS = ['deleted', 'name', 'size'] as const;
+export type BinSort = (typeof BIN_SORTS)[number];
+
 export class RecycleBinQueryDto {
+  @IsOptional()
+  @IsIn(BIN_KINDS)
+  kind?: BinKind;
+
+  @IsOptional()
+  @IsIn(BIN_SORTS)
+  sort?: BinSort;
+
+  /**
+   * Legacy (B12): mapped to a kind (`image|video|gif|document` → media, which
+   * it also narrows to that media type; `text_snippet` → snippet). An
+   * explicit `kind` wins.
+   */
   @IsOptional()
   @IsEnum(MEDIA_LIBRARY_TYPES)
   type?: MediaLibraryType;
@@ -655,4 +993,23 @@ export class RecycleBinQueryDto {
   @Min(0)
   @Transform(({ value }) => parseInt(value, 10))
   offset?: number;
+}
+
+/** One Bin row, named by its kind (the four tables' ids are separate). */
+export class BinItemRefDto {
+  @IsIn(BIN_KINDS)
+  kind: BinKind;
+
+  @IsUUID()
+  id: string;
+}
+
+/** Body of `POST recycle-bin/restore` and `POST recycle-bin/delete`. */
+export class BinItemsDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(500)
+  @ValidateNested({ each: true })
+  @Type(() => BinItemRefDto)
+  items: BinItemRefDto[];
 }

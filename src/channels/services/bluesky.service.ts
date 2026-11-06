@@ -5,6 +5,10 @@ import type {
   DmConversationSummary,
   ResolvedChannel,
 } from '../../inbox/adapters/inbox-adapter.interface';
+import {
+  MAX_IMAGE_BYTES,
+  fetchPublicMedia,
+} from '../../common/net/public-fetch';
 
 export interface BlueskySession {
   did: string; // Decentralized Identifier
@@ -390,7 +394,9 @@ export class BlueskyService {
       const altText = altTexts?.[i] || '';
 
       // Download image from URL
-      const imageResponse = await fetch(imageUrl);
+      const imageResponse = await fetchPublicMedia(imageUrl, {
+        maxBytes: MAX_IMAGE_BYTES,
+      });
       if (!imageResponse.ok) {
         throw new BadRequestException(`Failed to fetch image: ${imageUrl}`);
       }
@@ -448,7 +454,7 @@ export class BlueskyService {
     settings?: BlueskyPostSettings,
   ): Promise<BlueskyPost> {
     // 1. Download the source video bytes.
-    const videoResponse = await fetch(videoUrl);
+    const videoResponse = await fetchPublicMedia(videoUrl);
     if (!videoResponse.ok) {
       throw new BadRequestException(`Failed to fetch video: ${videoUrl}`);
     }
@@ -799,7 +805,9 @@ export class BlueskyService {
     // Upload thumbnail if provided
     if (linkThumbUrl) {
       try {
-        const thumbResponse = await fetch(linkThumbUrl);
+        const thumbResponse = await fetchPublicMedia(linkThumbUrl, {
+          maxBytes: MAX_IMAGE_BYTES,
+        });
         if (thumbResponse.ok) {
           const thumbBuffer = Buffer.from(await thumbResponse.arrayBuffer());
           if (thumbBuffer.length > MAX_LINK_THUMB_BYTES) {

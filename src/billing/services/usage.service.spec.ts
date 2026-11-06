@@ -17,6 +17,7 @@ jest.mock('../../drizzle/db', () => ({
 import { UsageService } from './usage.service';
 import type { SubscriptionLookupService } from './subscription-lookup.service';
 import type { PlanLimits, AddonQuantities } from './limit-resolver.util';
+import { PLAN_STORAGE_BYTES } from '../plan-storage';
 import type { Subscription } from '../../drizzle/schema';
 
 const FREE_LIMITS: PlanLimits = {
@@ -25,6 +26,7 @@ const FREE_LIMITS: PlanLimits = {
   maxWorkspaces: 1,
   aiTokensPerMonth: 0,
   queuedPostsPerChannel: 10,
+  storageBytesPerWorkspace: PLAN_STORAGE_BYTES.FREE,
 };
 
 const MAX_LIMITS: PlanLimits = {
@@ -33,6 +35,7 @@ const MAX_LIMITS: PlanLimits = {
   maxWorkspaces: 3,
   aiTokensPerMonth: 100_000,
   queuedPostsPerChannel: -1,
+  storageBytesPerWorkspace: PLAN_STORAGE_BYTES.MAX,
 };
 
 const ZERO_ADDONS: AddonQuantities = {

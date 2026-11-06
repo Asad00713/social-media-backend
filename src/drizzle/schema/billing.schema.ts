@@ -8,6 +8,7 @@ import {
   boolean,
   jsonb,
   bigserial,
+  bigint,
   unique,
   uniqueIndex,
   index,
@@ -46,6 +47,12 @@ export const plans = pgTable('plans', {
     .notNull()
     .default(-1),
   aiTokensPerMonth: integer('ai_tokens_per_month').default(0).notNull(), // 0=no AI, 2000=pro, 5000=max
+  // Library storage per workspace, bytes (PLAN_STORAGE_BYTES; set by 0054).
+  storageBytesPerWorkspace: bigint('storage_bytes_per_workspace', {
+    mode: 'number',
+  })
+    .default(524288000)
+    .notNull(),
   features: jsonb('features'),
   isActive: boolean('is_active').default(true).notNull(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
@@ -328,6 +335,13 @@ export const workspaceUsage = pgTable('workspace_usage', {
     .default(0)
     .notNull(), // From add-on packs
   aiTokensResetDate: timestamp('ai_tokens_reset_date'),
+  // Library storage: the plan's bytes plus bought add-on bytes.
+  storageBytesLimit: bigint('storage_bytes_limit', { mode: 'number' })
+    .default(524288000)
+    .notNull(),
+  extraStoragePurchased: bigint('extra_storage_purchased', { mode: 'number' })
+    .default(0)
+    .notNull(),
   lastCalculatedAt: timestamp('last_calculated_at').defaultNow(),
   createdAt: timestamp('created_at').defaultNow().notNull(),
   updatedAt: timestamp('updated_at').defaultNow().notNull(),
