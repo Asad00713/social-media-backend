@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
-import { BlueskyService } from '../../channels/services/bluesky.service';
+import {
+  BlueskyService,
+  BlueskyPostSettings,
+  threadgateAllow,
+} from '../../channels/services/bluesky.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
@@ -98,9 +102,11 @@ export class BlueskyPublisher extends BasePublisher {
       );
     }
 
+    const settings = this.getSettings(metadata);
+
     const thread = metadata?.thread as ThreadPost[] | undefined;
     if (Array.isArray(thread) && thread.length > 1) {
-      return this.publishThread(accessToken, did, thread);
+      return this.publishThread(accessToken, did, thread, settings);
     }
 
     // Pick the right service method based on media shape.
@@ -113,6 +119,8 @@ export class BlueskyPublisher extends BasePublisher {
         accessToken,
         did,
         content ?? '',
+        undefined,
+        settings,
       );
     } else if (mediaItems.length === 1 && mediaItems[0].type === 'video') {
       const v = mediaItems[0];
@@ -122,6 +130,8 @@ export class BlueskyPublisher extends BasePublisher {
         content ?? '',
         v.url,
         v.altText,
+        undefined,
+        settings,
       );
     } else {
       post = await this.blueskyService.createImagePost(
@@ -130,8 +140,12 @@ export class BlueskyPublisher extends BasePublisher {
         content ?? '',
         mediaItems.map((m) => m.url),
         mediaItems.map((m) => m.altText ?? ''),
+        undefined,
+        settings,
       );
     }
+
+    await this.applyReplyControl(accessToken, did, post.uri, settings);
 
     const rkey = post.uri.split('/').pop() ?? '';
     const handle = (channelMetadata?.handle as string | undefined) ?? did;
@@ -141,10 +155,82 @@ export class BlueskyPublisher extends BasePublisher {
     };
   }
 
+  /**
+   * The post settings, in Bluesky's own vocabulary.
+   *
+   * `langs` is a list because the lexicon says so — the composer picks
+   * one, but the field takes up to three, and sending the list keeps the
+   * shape honest for whatever picks more later.
+   */
+  private getSettings(
+    metadata: Record<string, any> | undefined,
+  ): BlueskyPostSettings {
+    const settings: BlueskyPostSettings = {};
+
+    const language = metadata?.language;
+    if (typeof language === 'string' && language.trim()) {
+      settings.langs = [language.trim()];
+    }
+
+    const replyControl = metadata?.replyControl;
+    if (
+      replyControl === 'everybody' ||
+      replyControl === 'nobody' ||
+      replyControl === 'custom'
+    ) {
+      settings.replyControl = replyControl;
+    }
+
+    const rules = metadata?.replyRules;
+    if (rules && typeof rules === 'object') {
+      settings.replyRules = {
+        followers: rules.followers === true,
+        following: rules.following === true,
+        mentioned: rules.mentioned === true,
+      };
+    }
+
+    return settings;
+  }
+
+  /**
+   * Writes the threadgate, if the author restricted replies.
+   *
+   * Deliberately NOT fatal. The post is already live at this point, and
+   * failing the publish here would report a failure for something that
+   * succeeded — and invite a retry that double-posts. The restriction is
+   * lost and said so in the log; the post is not.
+   */
+  private async applyReplyControl(
+    accessJwt: string,
+    did: string,
+    postUri: string,
+    settings: BlueskyPostSettings,
+  ): Promise<void> {
+    const allow = threadgateAllow(settings);
+    if (allow === null) return;
+
+    try {
+      await this.blueskyService.setPostReplyControl(
+        accessJwt,
+        did,
+        postUri,
+        allow,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Bluesky post ${postUri} published, but its reply restriction did not: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
   private async publishThread(
     accessJwt: string,
     did: string,
     posts: ThreadPost[],
+    settings?: BlueskyPostSettings,
   ): Promise<PublishResult> {
     let rootRef: { uri: string; cid: string } | undefined;
     let parentRef: { uri: string; cid: string } | undefined;
@@ -173,6 +259,7 @@ export class BlueskyPublisher extends BasePublisher {
             did,
             p.text,
             reply,
+            settings,
           );
         } else if (isVideoItem) {
           created = await this.blueskyService.createVideoPost(
@@ -182,6 +269,7 @@ export class BlueskyPublisher extends BasePublisher {
             media[0].url,
             media[0].altText,
             reply,
+            settings,
           );
         } else {
           created = await this.blueskyService.createImagePost(
@@ -191,6 +279,7 @@ export class BlueskyPublisher extends BasePublisher {
             media.map((m) => m.url),
             media.map((m) => m.altText ?? ''),
             reply,
+            settings,
           );
         }
 
@@ -198,6 +287,15 @@ export class BlueskyPublisher extends BasePublisher {
         if (i === 0) {
           rootRef = ref;
           rootUri = created.uri;
+          // The ROOT alone. A threadgate governs a conversation, and the
+          // conversation is the one this post starts; putting one on a
+          // reply would restrict replies to that reply instead.
+          await this.applyReplyControl(
+            accessJwt,
+            did,
+            created.uri,
+            settings ?? {},
+          );
         }
         parentRef = ref;
         postedUris.push(created.uri);

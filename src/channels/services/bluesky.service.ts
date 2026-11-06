@@ -70,6 +70,78 @@ function normalizeReply(
 /** Bluesky caps a threadgate at 300 hidden replies. */
 const MAX_BLUESKY_HIDDEN_REPLIES = 300;
 
+/**
+ * Who may reply, as the composer stores it.
+ *
+ * `everybody` is NOT a value: it means writing no threadgate record at
+ * all, which is the absence of a restriction rather than a permissive
+ * one. `nobody` is a threadgate whose `allow` is an empty array — the
+ * same field, the opposite end.
+ */
+export type BlueskyReplyControl = 'everybody' | 'nobody' | 'custom';
+
+/** The rules that combine under `custom`. The lexicon's `allow` is a LIST. */
+export interface BlueskyReplyRules {
+  followers?: boolean;
+  following?: boolean;
+  mentioned?: boolean;
+}
+
+/** The post-level settings a Bluesky post carries. */
+export interface BlueskyPostSettings {
+  /**
+   * `langs` on the post record — BCP-47 codes, at most 3 per the lexicon.
+   * The composer sets one.
+   */
+  langs?: string[];
+  replyControl?: BlueskyReplyControl;
+  replyRules?: BlueskyReplyRules;
+}
+
+/** `allow` entries, in the lexicon's own spelling. */
+const THREADGATE_RULES: Record<keyof BlueskyReplyRules, string> = {
+  followers: 'app.bsky.feed.threadgate#followerRule',
+  following: 'app.bsky.feed.threadgate#followingRule',
+  mentioned: 'app.bsky.feed.threadgate#mentionRule',
+};
+
+/** The lexicon's cap on `langs`. */
+const MAX_BLUESKY_LANGS = 3;
+
+/**
+ * The `allow` array for a threadgate, or null when none should be written.
+ *
+ * Three outcomes, not two:
+ * - `everybody` (or nothing chosen) → **null**: write no record. An empty
+ *   `allow` would mean "nobody", which is the opposite.
+ * - `nobody` → **[]**: a record with an empty allow list.
+ * - `custom` → the chosen rules, and if none were ticked it collapses to
+ *   `nobody`, which is what an empty custom selection means.
+ */
+export function threadgateAllow(
+  settings: BlueskyPostSettings | undefined,
+): string[] | null {
+  const control = settings?.replyControl;
+  if (!control || control === 'everybody') return null;
+  if (control === 'nobody') return [];
+
+  const rules = settings?.replyRules ?? {};
+  return (Object.keys(THREADGATE_RULES) as (keyof BlueskyReplyRules)[])
+    .filter((key) => rules[key])
+    .map((key) => THREADGATE_RULES[key]);
+}
+
+/** The languages to send, or undefined. */
+export function postLangs(
+  settings: BlueskyPostSettings | undefined,
+): string[] | undefined {
+  const langs = (settings?.langs ?? [])
+    .filter((l): l is string => typeof l === 'string' && !!l.trim())
+    .map((l) => l.trim())
+    .slice(0, MAX_BLUESKY_LANGS);
+  return langs.length > 0 ? langs : undefined;
+}
+
 @Injectable()
 export class BlueskyService {
   private readonly logger = new Logger(BlueskyService.name);
@@ -196,6 +268,7 @@ export class BlueskyService {
     did: string,
     text: string,
     replyTo?: BlueskyReplyRef,
+    settings?: BlueskyPostSettings,
   ): Promise<BlueskyPost> {
     const record: Record<string, any> = {
       $type: 'app.bsky.feed.post',
@@ -213,6 +286,9 @@ export class BlueskyService {
     const reply = normalizeReply(replyTo);
     if (reply) record.reply = reply;
 
+    const langs = postLangs(settings);
+    if (langs) record.langs = langs;
+
     return this.createRecord(accessJwt, did, 'app.bsky.feed.post', record);
   }
 
@@ -226,6 +302,7 @@ export class BlueskyService {
     imageUrls: string[],
     altTexts?: string[],
     replyTo?: BlueskyReplyRef,
+    settings?: BlueskyPostSettings,
   ): Promise<BlueskyPost> {
     // Upload all images first
     const images: Array<{ alt: string; image: BlueskyBlob }> = [];
@@ -272,6 +349,9 @@ export class BlueskyService {
     const reply = normalizeReply(replyTo);
     if (reply) record.reply = reply;
 
+    const langs = postLangs(settings);
+    if (langs) record.langs = langs;
+
     return this.createRecord(accessJwt, did, 'app.bsky.feed.post', record);
   }
 
@@ -285,6 +365,7 @@ export class BlueskyService {
     videoUrl: string,
     altText?: string,
     replyTo?: BlueskyReplyRef,
+    settings?: BlueskyPostSettings,
   ): Promise<BlueskyPost> {
     // 1. Download the source video bytes.
     const videoResponse = await fetch(videoUrl);
@@ -340,6 +421,9 @@ export class BlueskyService {
 
     const reply = normalizeReply(replyTo);
     if (reply) record.reply = reply;
+
+    const langs = postLangs(settings);
+    if (langs) record.langs = langs;
 
     return this.createRecord(accessJwt, did, 'app.bsky.feed.post', record);
   }
@@ -621,6 +705,7 @@ export class BlueskyService {
     linkTitle: string,
     linkDescription?: string,
     linkThumbUrl?: string,
+    settings?: BlueskyPostSettings,
   ): Promise<BlueskyPost> {
     const external: Record<string, any> = {
       uri: linkUrl,
@@ -661,7 +746,64 @@ export class BlueskyService {
       record.facets = facets;
     }
 
+    const langs = postLangs(settings);
+    if (langs) record.langs = langs;
+
     return this.createRecord(accessJwt, did, 'app.bsky.feed.post', record);
+  }
+
+  /**
+   * Restrict who may reply to a post we just created.
+   *
+   * Bluesky has no field on the post for this: the restriction is its own
+   * `app.bsky.feed.threadgate` record, stored under the SAME rkey as the
+   * post it governs. That is why this runs after the post exists rather
+   * than alongside it.
+   *
+   * Writing nothing is a real outcome — an absent record means anyone may
+   * reply, and an empty `allow` means nobody can. The caller decides which
+   * through `threadgateAllow`, and a null answer never reaches here.
+   */
+  async setPostReplyControl(
+    accessJwt: string,
+    did: string,
+    postUri: string,
+    allow: string[],
+  ): Promise<void> {
+    const parts = postUri.match(
+      /^at:\/\/([^/]+)\/app\.bsky\.feed\.post\/(.+)$/,
+    );
+    if (!parts) {
+      throw new BadRequestException({
+        reason: 'Cannot set reply control: the post URI is not recognisable',
+      });
+    }
+
+    const put = await fetch(`${this.apiBaseUrl}/com.atproto.repo.putRecord`, {
+      method: 'POST',
+      headers: {
+        Authorization: `Bearer ${accessJwt}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        repo: did,
+        collection: 'app.bsky.feed.threadgate',
+        // The threadgate shares the post's rkey. This is a brand-new post,
+        // so there is nothing to merge and no `swapRecord` to carry.
+        rkey: parts[2],
+        record: {
+          $type: 'app.bsky.feed.threadgate',
+          post: postUri,
+          allow,
+          createdAt: new Date().toISOString(),
+        },
+      }),
+    });
+    if (!put.ok) {
+      throw new Error(
+        `Bluesky threadgate write failed: ${put.status} ${await put.text()}`,
+      );
+    }
   }
 
   /**
