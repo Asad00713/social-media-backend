@@ -16,8 +16,9 @@ describe('LinkedInPublisher routing', () => {
   let service: jest.Mocked<
     Pick<
       LinkedInService,
-      | 'createPost'
-      | 'createPostWithImage'
+      | 'createRestTextPost'
+      | 'createRestImagePost'
+      | 'createRestVideoPost'
       | 'createPostWithLink'
       | 'createArticlePostWithThumbnail'
       | 'createDocumentPost'
@@ -48,10 +49,15 @@ describe('LinkedInPublisher routing', () => {
 
   beforeEach(() => {
     service = {
-      createPost: jest.fn().mockResolvedValue({ postId: 'urn:li:share:text' }),
-      createPostWithImage: jest
+      createRestTextPost: jest
+        .fn()
+        .mockResolvedValue({ postId: 'urn:li:share:text' }),
+      createRestImagePost: jest
         .fn()
         .mockResolvedValue({ postId: 'urn:li:share:img' }),
+      createRestVideoPost: jest
+        .fn()
+        .mockResolvedValue({ postId: 'urn:li:share:vid' }),
       createPostWithLink: jest
         .fn()
         .mockResolvedValue({ postId: 'urn:li:share:link' }),
@@ -79,8 +85,8 @@ describe('LinkedInPublisher routing', () => {
       const result = await publisher.publish(doc());
 
       expect(service.createDocumentPost).toHaveBeenCalledTimes(1);
-      expect(service.createPost).not.toHaveBeenCalled();
-      expect(service.createPostWithImage).not.toHaveBeenCalled();
+      expect(service.createRestTextPost).not.toHaveBeenCalled();
+      expect(service.createRestImagePost).not.toHaveBeenCalled();
       expect(result.platformPostId).toBe('urn:li:share:doc');
     });
 
@@ -213,7 +219,7 @@ describe('LinkedInPublisher routing', () => {
       const result = await publisher.publish(card());
 
       expect(service.createArticlePostWithThumbnail).toHaveBeenCalledTimes(1);
-      expect(service.createPost).not.toHaveBeenCalled();
+      expect(service.createRestTextPost).not.toHaveBeenCalled();
       expect(service.createPostWithLink).not.toHaveBeenCalled();
       expect(result.platformPostId).toBe('urn:li:share:card');
     });
@@ -323,14 +329,14 @@ describe('LinkedInPublisher routing', () => {
         await publisher.publish(card({}, { content: 'No link here' }));
 
         expect(service.createArticlePostWithThumbnail).not.toHaveBeenCalled();
-        expect(service.createPost).toHaveBeenCalledTimes(1);
+        expect(service.createRestTextPost).toHaveBeenCalledTimes(1);
       });
 
       it('is plain text when the image is blank', async () => {
         await publisher.publish(card({ linkThumbnailUrl: '   ' }));
 
         expect(service.createArticlePostWithThumbnail).not.toHaveBeenCalled();
-        expect(service.createPost).toHaveBeenCalledTimes(1);
+        expect(service.createRestTextPost).toHaveBeenCalledTimes(1);
       });
 
       it('gives way to attached media, which carries the link as text', async () => {
@@ -342,7 +348,7 @@ describe('LinkedInPublisher routing', () => {
         );
 
         expect(service.createArticlePostWithThumbnail).not.toHaveBeenCalled();
-        expect(service.createPostWithImage).toHaveBeenCalledTimes(1);
+        expect(service.createRestImagePost).toHaveBeenCalledTimes(1);
       });
 
       it('does not apply to a document, which has its own route', async () => {
@@ -379,7 +385,7 @@ describe('LinkedInPublisher routing', () => {
         ),
       );
 
-      expect(service.createPost).toHaveBeenCalledTimes(1);
+      expect(service.createRestTextPost).toHaveBeenCalledTimes(1);
       expect(service.createPostWithLink).not.toHaveBeenCalled();
       expect(service.createArticlePostWithThumbnail).not.toHaveBeenCalled();
     });
@@ -398,20 +404,25 @@ describe('LinkedInPublisher routing', () => {
     });
   });
 
-  describe('a post with no document is untouched', () => {
-    it('sends plain text through ugcPosts, as before', async () => {
+  describe('a post with no document', () => {
+    it('sends plain text through the Posts API', async () => {
       await publisher.publish(options({ postType: 'post' }));
 
-      expect(service.createPost).toHaveBeenCalledTimes(1);
+      expect(service.createRestTextPost).toHaveBeenCalledWith(
+        'tok',
+        'urn:li:person:me',
+        'Our Q3 numbers',
+        'PUBLIC',
+        false,
+      );
       expect(service.createDocumentPost).not.toHaveBeenCalled();
     });
 
-    it('does not read reshareDisabled on a path that cannot carry it', async () => {
+    it('forwards reshareDisabled on a text post now', async () => {
       await publisher.publish(
         options({ postType: 'post', reshareDisabled: true }),
       );
-      // createPost(token, id, text, visibility): there is no slot for it.
-      expect(service.createPost.mock.calls[0]).toHaveLength(4);
+      expect(service.createRestTextPost.mock.calls[0][4]).toBe(true);
     });
 
     it('still rejects a document attached to a plain post', async () => {

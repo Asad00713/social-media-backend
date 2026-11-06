@@ -139,10 +139,11 @@ export class LinkedInPublisher extends BasePublisher {
     const actorUrn = isOrganization
       ? `urn:li:organization:${platformAccountId}`
       : `urn:li:person:${platformAccountId}`;
-    // `isReshareDisabledByAuthor` exists only on the versioned Posts API, so
-    // it is honoured on exactly the formats that publish through it: polls,
-    // documents and link cards with the author's own image. The rest go
-    // through the legacy `/v2/ugcPosts`, which has no such field.
+    // `isReshareDisabledByAuthor` exists only on the versioned Posts API.
+    // Every format the composer publishes now goes through it - text, image,
+    // video, poll, document and link card. The one path left on the legacy
+    // `/v2/ugcPosts` is `metadata.linkUrl` without a thumbnail (a scraped
+    // card the Posts API cannot make), which the composer never sends.
     const disableReshare = metadata?.reshareDisabled === true;
 
     // POLL — uses Posts API with content.poll structure
@@ -217,45 +218,28 @@ export class LinkedInPublisher extends BasePublisher {
       const mediaItem = mediaItems[0];
 
       if (mediaItem.type === 'image') {
-        // Image post
-        if (isOrganization) {
-          result = await this.linkedinService.createOrganizationPostWithImage(
-            accessToken,
-            platformAccountId,
-            effectiveContent,
-            mediaItem.url,
-            metadata?.imageTitle,
-          );
-        } else {
-          result = await this.linkedinService.createPostWithImage(
-            accessToken,
-            platformAccountId,
-            effectiveContent,
-            mediaItem.url,
-            metadata?.imageTitle,
-            visibility,
-          );
-        }
+        // Images API upload, then a Posts API post. A page's post is always
+        // PUBLIC: the envelope enforces that for an organization author.
+        result = await this.linkedinService.createRestImagePost(
+          accessToken,
+          actorUrn,
+          effectiveContent,
+          mediaItem.url,
+          trimmed(metadata?.imageTitle) || undefined,
+          visibility,
+          disableReshare,
+        );
       } else if (mediaItem.type === 'video') {
-        // Video post
-        if (isOrganization) {
-          result = await this.linkedinService.createOrganizationPostWithVideo(
-            accessToken,
-            platformAccountId,
-            effectiveContent,
-            mediaItem.url,
-            metadata?.videoTitle,
-          );
-        } else {
-          result = await this.linkedinService.createPostWithVideo(
-            accessToken,
-            platformAccountId,
-            effectiveContent,
-            mediaItem.url,
-            metadata?.videoTitle,
-            visibility,
-          );
-        }
+        // Videos API multipart upload, then a Posts API post.
+        result = await this.linkedinService.createRestVideoPost(
+          accessToken,
+          actorUrn,
+          effectiveContent,
+          mediaItem.url,
+          trimmed(metadata?.videoTitle) || undefined,
+          visibility,
+          disableReshare,
+        );
       } else {
         throw new Error(`Unsupported media type: ${mediaItem.type}`);
       }
@@ -303,21 +287,14 @@ export class LinkedInPublisher extends BasePublisher {
         );
       }
     } else {
-      // Text-only post
-      if (isOrganization) {
-        result = await this.linkedinService.createOrganizationPost(
-          accessToken,
-          platformAccountId,
-          effectiveContent,
-        );
-      } else {
-        result = await this.linkedinService.createPost(
-          accessToken,
-          platformAccountId,
-          effectiveContent,
-          visibility,
-        );
-      }
+      // Text-only post (an article's headline is already merged in).
+      result = await this.linkedinService.createRestTextPost(
+        accessToken,
+        actorUrn,
+        effectiveContent,
+        visibility,
+        disableReshare,
+      );
     }
 
     this.logger.log(`Published to LinkedIn: ${result.postId}`);
