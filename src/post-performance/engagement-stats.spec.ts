@@ -20,6 +20,10 @@ const post = (over: Partial<PublishedPost> = {}): PublishedPost => ({
   imported: false,
   permalink: null,
   mediaType: null,
+  reach: null,
+  saved: null,
+  follows: null,
+  syncedAt: null,
   ...over,
 });
 

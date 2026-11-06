@@ -1,7 +1,8 @@
 /**
  * The periods Home and Insights compare: the last 7, 30 or 90 whole UTC days,
  * ending yesterday, against the same span just before. Shared so the two
- * screens can never draw their windows differently.
+ * screens can never draw their windows differently. Insights also takes a
+ * picked range (`customWindow`) and a year-back comparison (`yearBefore`).
  */
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
@@ -52,6 +53,42 @@ export function windowOf(today: Date, days: number): PeriodWindow {
     previousFrom: isoDate(new Date(today.getTime() - 2 * days * DAY_MS)),
     previousTo: isoDate(new Date(from.getTime() - DAY_MS)),
   };
+}
+
+const dayMs = (iso: string): number => Date.parse(`${iso}T00:00:00Z`);
+
+/** The UTC date `n` days after `iso` (before it when `n` is negative). */
+export function addDays(iso: string, n: number): string {
+  return isoDate(new Date(dayMs(iso) + n * DAY_MS));
+}
+
+/** Days from `from` to `to`, both counted: 1 for the same date. */
+export function spanDays(from: string, to: string): number {
+  return Math.round((dayMs(to) - dayMs(from)) / DAY_MS) + 1;
+}
+
+/**
+ * A picked range, `from` to `to` inclusive, and the same span just before
+ * it. The dates are assumed valid; `parsePeriod` checks them first.
+ */
+export function customWindow(from: string, to: string): PeriodWindow {
+  const span = spanDays(from, to);
+  return {
+    from,
+    to,
+    previousFrom: addDays(from, -span),
+    previousTo: addDays(from, -1),
+  };
+}
+
+/**
+ * The same date one calendar year back. Feb 29 becomes Feb 28: the year
+ * before a leap year never has one.
+ */
+export function yearBefore(iso: string): string {
+  const [y, m, d] = iso.split('-').map(Number);
+  const day = m === 2 && d === 29 ? 28 : d;
+  return isoDate(new Date(Date.UTC(y - 1, m - 1, day)));
 }
 
 /** Percentage change, one decimal. Null when either side is unknown or the base is 0. */

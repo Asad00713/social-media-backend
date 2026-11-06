@@ -17,10 +17,13 @@ export type InstagramMediaType =
   | 'REEL'
   | 'STORY';
 
+export type InstagramMediaProductType = 'FEED' | 'REELS' | 'STORY' | 'AD';
+
 export interface InstagramMedia {
   id: string;
   caption?: string;
   media_type: InstagramMediaType;
+  media_product_type?: InstagramMediaProductType;
   media_url?: string;
   thumbnail_url?: string;
   permalink?: string;

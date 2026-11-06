@@ -110,7 +110,19 @@ describe('FacebookApiClient', () => {
     });
   });
 
-  it('getPostInsights requests correct metrics', async () => {
+  it('can ask for a single metric', async () => {
+    mockFetch.mockResolvedValue({
+      ok: true,
+      json: async () => ({ data: [] }),
+    });
+
+    await client.getPostInsights('post-id', 'tok', 'post_media_view');
+
+    const [url] = mockFetch.mock.calls[0];
+    expect(new URL(url).searchParams.get('metric')).toBe('post_media_view');
+  });
+
+  it('asks Facebook for post_media_view and post_total_media_view_unique only', async () => {
     const insightsData = { data: [] };
     mockFetch.mockResolvedValue({ ok: true, json: async () => insightsData });
 
@@ -118,8 +130,8 @@ describe('FacebookApiClient', () => {
 
     const [url] = mockFetch.mock.calls[0];
     expect(url).toContain('post-id/insights');
-    expect(url).toContain('post_impressions');
-    expect(url).toContain('post_impressions_unique');
-    expect(url).toContain('post_engaged_users');
+    const metric = new URL(url).searchParams.get('metric');
+    expect(metric).toBe('post_media_view,post_total_media_view_unique');
+    expect(url).not.toMatch(/post_impressions|post_engaged_users/);
   });
 });

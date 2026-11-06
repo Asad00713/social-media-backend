@@ -5,6 +5,7 @@ const ip = (over: Partial<InsightPost>): InsightPost => ({
   postId: 'p',
   channelId: 1,
   publishedAt: '2026-09-21T10:00:00.000Z',
+  title: '',
   content: '',
   format: 'image',
   thumbnailUrl: null,
@@ -13,8 +14,12 @@ const ip = (over: Partial<InsightPost>): InsightPost => ({
   comments: null,
   shares: null,
   impressions: null,
+  reach: null,
   engagements: 0,
   engagementRate: null,
+  imported: false,
+  usualMultiplier: null,
+  isSettling: false,
   ...over,
 });
 

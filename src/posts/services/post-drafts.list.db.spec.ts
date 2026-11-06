@@ -1,5 +1,5 @@
 /* eslint-disable @typescript-eslint/no-unsafe-argument, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- DB rows from raw pg queries are untyped */
-import { NotFoundException } from '@nestjs/common';
+import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { PoolClient } from 'pg';
 import { describeDb, withRollbackDb } from '../../planner/testing/rollback-db';
 import { PlannerPostsService } from './planner-posts.service';
@@ -22,11 +22,19 @@ async function workspace(client: PoolClient, tag: string) {
 async function post(
   client: PoolClient,
   w: { userId: string; workspaceId: string },
-  o: { status?: string; ready?: boolean; updatedAt: string; label?: string },
+  o: {
+    status?: string;
+    ready?: boolean;
+    updatedAt: string;
+    label?: string;
+    targets?: unknown[];
+    media?: unknown[];
+    metadata?: Record<string, unknown>;
+  },
 ) {
   const r = await client.query<{ id: string }>(
-    `INSERT INTO posts (workspace_id, created_by_id, status, content, ready_at, updated_at)
-     VALUES ($1, $2, $3, $4, $5, $6::timestamptz) RETURNING id`,
+    `INSERT INTO posts (workspace_id, created_by_id, status, content, ready_at, updated_at, targets, media_items, metadata)
+     VALUES ($1, $2, $3, $4, $5, $6::timestamptz, $7::jsonb, $8::jsonb, $9::jsonb) RETURNING id`,
     [
       w.workspaceId,
       w.userId,
@@ -34,6 +42,9 @@ async function post(
       o.label ?? 'x',
       o.ready ? '2026-01-01T00:00:00Z' : null,
       o.updatedAt,
+      JSON.stringify(o.targets ?? []),
+      JSON.stringify(o.media ?? []),
+      JSON.stringify(o.metadata ?? {}),
     ],
   );
   return r.rows[0].id;
@@ -294,5 +305,67 @@ describeDb('PostDraftsService.duplicate', () => {
         [[a.workspaceId, b.workspaceId]],
       );
       expect(n.rows[0].n).toBe(1);
+    }));
+
+  const target = (channelId: string) => ({
+    channelId,
+    platform: 'twitter',
+    status: 'published',
+  });
+
+  it('with a channelId, keeps only that target; an unknown one is a 400 and inserts nothing', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'opt');
+      const src = await post(client, w, {
+        status: 'published',
+        updatedAt: '2026-03-01T10:00:00Z',
+        targets: [target('5'), target('6')],
+      });
+      const out = await svc.duplicate(w.workspaceId, src, w.userId, {
+        channelId: 6,
+      });
+      const row = await client.query(
+        `SELECT targets FROM posts WHERE id = $1`,
+        [out.id],
+      );
+      expect(
+        (row.rows[0].targets as Array<{ channelId: string }>).map(
+          (t) => t.channelId,
+        ),
+      ).toEqual(['6']);
+
+      await expect(
+        svc.duplicate(w.workspaceId, src, w.userId, { channelId: 99 }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      const n = await client.query(
+        `SELECT count(*)::int AS n FROM posts WHERE workspace_id = $1`,
+        [w.workspaceId],
+      );
+      expect(n.rows[0].n).toBe(2);
+    }));
+
+  it('an imported post copies its caption but no media and no import markers', () =>
+    run(async (svc, client) => {
+      const w = await workspace(client, 'imp');
+      const src = await post(client, w, {
+        status: 'published',
+        updatedAt: '2026-03-01T10:00:00Z',
+        label: 'From the network',
+        media: [{ url: 'https://cdn.test/t.jpg', type: 'image' }],
+        metadata: { syncedFrom: 'platform', syncedAt: '2026-03-01' },
+      });
+      const out = await svc.duplicate(w.workspaceId, src, w.userId, {
+        noTargets: true,
+      });
+      const row = await client.query(
+        `SELECT content, media_items, metadata, targets FROM posts WHERE id = $1`,
+        [out.id],
+      );
+      expect(row.rows[0]).toMatchObject({
+        content: 'From the network',
+        media_items: [],
+        metadata: {},
+        targets: [],
+      });
     }));
 });

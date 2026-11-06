@@ -1,6 +1,6 @@
 import type { FollowerRow } from '../../post-performance/followers';
 import type { PublishedPost } from '../../post-performance/post-performance';
-import { daySeries, followerTotals } from './series';
+import { daySeries, followerTotals, rangeTotals } from './series';
 
 const post = (over: Partial<PublishedPost>): PublishedPost => ({
   postId: 'p1',
@@ -16,6 +16,10 @@ const post = (over: Partial<PublishedPost>): PublishedPost => ({
   imported: false,
   permalink: null,
   mediaType: null,
+  reach: null,
+  saved: null,
+  follows: null,
+  syncedAt: null,
   ...over,
 });
 const row = (over: Partial<FollowerRow>): FollowerRow => ({
@@ -30,10 +34,16 @@ describe('daySeries', () => {
   it('puts each post on its day and keeps the rate numerator to rated posts', () => {
     const series = daySeries(
       [
-        post({ postId: 'a', likes: 10, impressions: 500 }),
+        post({ postId: 'a', likes: 10, impressions: 500, reach: 320 }),
         post({ postId: 'b', channelId: 2, likes: 30 }), // reports no impressions
       ],
-      [row({ date: '2026-09-21', followersAtEndOfDay: 900 })],
+      [
+        row({
+          date: '2026-09-21',
+          followersAtEndOfDay: 900,
+          followersGained: 12,
+        }),
+      ],
       '2026-09-21',
       '2026-09-22',
     );
@@ -42,20 +52,54 @@ describe('daySeries', () => {
         date: '2026-09-21',
         postsPublished: 2,
         impressions: 500,
+        reach: 320,
         engagements: 40,
         ratedEngagements: 10,
         followers: 900,
+        followersGained: 12,
       },
       // Nothing posted: zeros, and followers carried forward.
       {
         date: '2026-09-22',
         postsPublished: 0,
         impressions: null,
+        reach: null,
         engagements: 0,
         ratedEngagements: 0,
         followers: 900,
+        followersGained: null,
       },
     ]);
+  });
+
+  it('a followers series with a null day carries the last value and gained stays null', () => {
+    const series = daySeries(
+      [],
+      [
+        row({
+          date: '2026-09-21',
+          followersAtEndOfDay: 900,
+          followersGained: 5,
+        }),
+        row({ channelId: 2, date: '2026-09-21', followersGained: -2 }),
+        // The rollup wrote a row but no counts.
+        row({ date: '2026-09-22' }),
+        row({
+          date: '2026-09-23',
+          followersAtEndOfDay: 910,
+          followersGained: 10,
+        }),
+      ],
+      '2026-09-21',
+      '2026-09-23',
+    );
+    expect(series.map((d) => [d.date, d.followers, d.followersGained])).toEqual(
+      [
+        ['2026-09-21', 900, 3],
+        ['2026-09-22', 900, null],
+        ['2026-09-23', 910, 10],
+      ],
+    );
   });
 
   it('leaves out posts outside the range', () => {
@@ -67,6 +111,48 @@ describe('daySeries', () => {
     );
     expect(day.postsPublished).toBe(0);
     expect(day.followers).toBeNull();
+  });
+});
+
+describe('rangeTotals', () => {
+  it('adds the days up and recomputes the rate from sums', () => {
+    const days = daySeries(
+      [
+        post({ likes: 10, impressions: 100, reach: 80 }),
+        post({ publishedOn: '2026-09-22', likes: 30, impressions: 900 }),
+        post({ publishedOn: '2026-09-22', channelId: 2, likes: 60 }),
+      ],
+      [
+        row({ date: '2026-09-21', followersGained: 4 }),
+        row({ date: '2026-09-22', followersGained: -1 }),
+      ],
+      '2026-09-21',
+      '2026-09-22',
+    );
+    expect(rangeTotals(days)).toEqual({
+      postsPublished: 3,
+      impressions: 1000,
+      reach: 80,
+      engagements: 100,
+      // 40 rated engagements over 1000 views, not the mean of 10% and 3.3%.
+      engagementRate: 4,
+      followersGained: 3,
+    });
+  });
+
+  it('keeps unreported metrics null, never 0', () => {
+    expect(
+      rangeTotals(
+        daySeries([post({ likes: 3 })], [], '2026-09-21', '2026-09-21'),
+      ),
+    ).toEqual({
+      postsPublished: 1,
+      impressions: null,
+      reach: null,
+      engagements: 3,
+      engagementRate: null,
+      followersGained: null,
+    });
   });
 });
 

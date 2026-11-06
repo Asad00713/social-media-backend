@@ -1,9 +1,16 @@
 import { round1 } from '../../post-performance/period';
-import type { InsightPost } from './insight-post';
+import {
+  POST_FORMATS,
+  type InsightPost,
+  type PostFormat,
+} from './insight-post';
 import type { SortKey, TableQuery } from './query';
 
-const sortValue = (p: InsightPost, key: SortKey): number | null =>
-  key === 'publishedAt' ? Date.parse(p.publishedAt) : p[key];
+const sortValue = (p: InsightPost, key: SortKey): number | null => {
+  if (key === 'publishedAt') return Date.parse(p.publishedAt);
+  if (key === 'usual') return p.usualMultiplier;
+  return p[key];
+};
 
 /** Newest first, then stable by post and channel. */
 const tieBreak = (a: InsightPost, b: InsightPost) =>
@@ -28,6 +35,24 @@ export function filterAndSort(
       }
       return (va - vb) * dir || tieBreak(a, b);
     });
+}
+
+/** The Posts tab's filter pills and how many rows each would show. */
+export type FormatCounts = Record<'all' | PostFormat, number>;
+
+/**
+ * Rows per format pill, counted before the format filter. A post of
+ * `unknown` format counts under `all` only: no pill shows it alone.
+ */
+export function formatCountsOf(rows: InsightPost[]): FormatCounts {
+  const counts = Object.fromEntries(POST_FORMATS.map((f) => [f, 0])) as Record<
+    PostFormat,
+    number
+  >;
+  for (const r of rows) {
+    if (r.format !== 'unknown') counts[r.format] += 1;
+  }
+  return { all: rows.length, ...counts };
 }
 
 export interface TableTotals {
@@ -71,12 +96,14 @@ const CSV_HEADER = [
   'platform',
   'format',
   'caption',
+  'reach',
   'impressions',
   'engagements',
   'engagement_rate',
   'likes',
   'comments',
   'shares',
+  'vs_usual',
   'link',
 ];
 
@@ -96,7 +123,10 @@ export interface CsvChannel {
   platform: string;
 }
 
-/** The CSV body. The BOM is what makes Excel read Urdu and emoji as UTF-8. */
+/**
+ * The CSV body. The BOM is what makes Excel read Urdu and emoji as UTF-8.
+ * `vs_usual` is the multiplier (1.5 for 1.5× usual), empty below the floor.
+ */
 export function postsCsv(
   rows: InsightPost[],
   channels: Map<number, CsvChannel>,
@@ -111,12 +141,14 @@ export function postsCsv(
         ch?.platform ?? '',
         r.format,
         r.content,
+        r.reach,
         r.impressions,
         r.engagements,
         r.engagementRate,
         r.likes,
         r.comments,
         r.shares,
+        r.usualMultiplier,
         r.permalink,
       ]
         .map(csvCell)

@@ -29,6 +29,10 @@ const post = (
   imported: false,
   permalink: null,
   mediaType: null,
+  reach: null,
+  saved: null,
+  follows: null,
+  syncedAt: null,
   ...over,
 });
 
