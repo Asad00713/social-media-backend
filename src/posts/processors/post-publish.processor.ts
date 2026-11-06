@@ -12,6 +12,7 @@ import { withRetry } from '../../drizzle/db-utils';
 import { posts } from '../../drizzle/schema/posts.schema';
 import { QUEUES } from '../../queue/queue.module';
 import { PostService } from '../services/post.service';
+import { RepeatPostsService } from '../services/repeat-posts.service';
 
 interface PublishJobData {
   postId: string;
@@ -27,6 +28,7 @@ export class PostPublishProcessor extends WorkerHost {
     private readonly postService: PostService,
     @InjectQueue(QUEUES.POST_PUBLISHING)
     private readonly publishingQueue: Queue,
+    private readonly repeats: RepeatPostsService,
   ) {
     super();
   }
@@ -73,6 +75,21 @@ export class PostPublishProcessor extends WorkerHost {
             reason: `Superseded by job ${post.jobId}`,
           };
         }
+      }
+
+      // A repeating post: make sure the next one exists BEFORE this one goes
+      // out, so a crash after publishing cannot end the series (a retry
+      // skips a post that is no longer `scheduled`). Idempotent, and never
+      // allowed to stop this post from publishing: a failure here is logged
+      // and the series ends with it.
+      try {
+        await this.repeats.ensureNext(post);
+      } catch (error) {
+        this.logger.error(
+          `Could not schedule the next post after ${postId}; its series ends here: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
       }
 
       // Use the existing publishPost method which handles all the logic

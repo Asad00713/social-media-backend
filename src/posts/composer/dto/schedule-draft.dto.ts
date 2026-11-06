@@ -11,6 +11,7 @@ import type {
   ChannelTarget,
   PlatformOverrides,
 } from '../types/draft.types';
+import type { RecurrenceRule } from '../../lib/recurrence';
 
 /**
  * Body for "Schedule for later" — picks a future time and stores the draft
@@ -39,4 +40,13 @@ export class ScheduleDraftDto {
   @IsOptional()
   @IsString()
   title?: string;
+
+  /**
+   * Repeat this post. Checked by `parseRule` in the service (a bad rule is a
+   * 400); the series state (seriesId, occurrence, anchor, time) is the
+   * server's and anything else sent here is dropped.
+   */
+  @IsOptional()
+  @IsObject()
+  recurrence?: RecurrenceRule;
 }
