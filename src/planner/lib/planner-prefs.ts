@@ -1,3 +1,9 @@
+import {
+  DEFAULT_QUEUE_SLOTS,
+  sanitizeQueueSlots,
+  type QueueSlot,
+} from './queue-slots';
+
 export interface PlannerPrefs {
   postSize: 'comfortable' | 'compact';
   colorBy: 'status' | 'channel' | 'campaign';
@@ -16,6 +22,8 @@ export interface PlannerPrefs {
   bestTimesInWeek: boolean;
   bestTimesSource: 'own' | 'general';
   suggestBestTime: boolean;
+  /** The posting queue's weekly times, read in the workspace zone. */
+  queueSlots: QueueSlot[];
 }
 
 export const PLANNER_PREF_DEFAULTS: PlannerPrefs = {
@@ -35,6 +43,7 @@ export const PLANNER_PREF_DEFAULTS: PlannerPrefs = {
   bestTimesInWeek: false,
   bestTimesSource: 'own',
   suggestBestTime: true,
+  queueSlots: DEFAULT_QUEUE_SLOTS.map((s) => ({ ...s })),
 };
 
 const oneOf =
@@ -82,6 +91,9 @@ function sanitize(stored: unknown): Record<string, unknown> {
     }
     if (Object.keys(show).length > 0) out.show = show;
   }
+  // An empty list is kept: it means "no queue", not "the default queue".
+  const queueSlots = sanitizeQueueSlots(stored.queueSlots);
+  if (queueSlots) out.queueSlots = queueSlots;
   return out;
 }
 
@@ -96,6 +108,9 @@ export function resolvePrefs(stored: unknown): PlannerPrefs {
       ...(s.show as Partial<PlannerPrefs['show']> | undefined),
     },
     visibleCalendarIds: (s.visibleCalendarIds as string[] | undefined) ?? null,
+    queueSlots:
+      (s.queueSlots as QueueSlot[] | undefined) ??
+      DEFAULT_QUEUE_SLOTS.map((slot) => ({ ...slot })),
   };
 }
 
@@ -111,6 +126,7 @@ export interface PlannerPrefsPatch {
   bestTimesInWeek?: boolean;
   bestTimesSource?: PlannerPrefs['bestTimesSource'];
   suggestBestTime?: boolean;
+  queueSlots?: QueueSlot[];
 }
 
 /**
