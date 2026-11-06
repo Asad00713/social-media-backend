@@ -104,6 +104,20 @@ export interface BlueskyPostSettings {
   allowQuotes?: boolean;
   /** Self-label values for the post, from `BLUESKY_SELF_LABELS`. */
   labels?: BlueskySelfLabel[];
+  /**
+   * The post this one quotes, as a strong ref (uri + cid). It becomes
+   * `app.bsky.embed.record` on its own, or the `record` half of
+   * `app.bsky.embed.recordWithMedia` when the post also carries images, a
+   * video or a link card — a post has ONE `embed`, so a quote and media
+   * travel together or one of them is lost.
+   */
+  quote?: BlueskyPostRef;
+  /**
+   * `tags` on the post record: hashtags that are searchable but not shown
+   * in the text ("Additional hashtags, in addition to any included in post
+   * text and facets" — app.bsky.feed.post lexicon).
+   */
+  tags?: string[];
 }
 
 /**
@@ -144,6 +158,127 @@ const THREADGATE_RULES: Record<keyof BlueskyReplyRules, string> = {
 
 /** The lexicon's cap on `langs`. */
 const MAX_BLUESKY_LANGS = 3;
+
+/** The lexicon's cap on `tags`: `maxLength: 8` on the array. */
+export const MAX_BLUESKY_TAGS = 8;
+/** Each tag: `maxGraphemes: 64` … */
+export const MAX_BLUESKY_TAG_GRAPHEMES = 64;
+/** … and `maxLength: 640`, which for a lexicon string counts UTF-8 bytes. */
+export const MAX_BLUESKY_TAG_BYTES = 640;
+
+/**
+ * Graphemes, the unit the lexicon caps a tag in — what a reader counts as
+ * one character, so an emoji with a skin tone is one, not four. The
+ * runtime's own `Intl.Segmenter`, not a package.
+ */
+export function graphemeCount(text: string): number {
+  return [
+    ...new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(text),
+  ].length;
+}
+
+/** A tag as the network stores it: trimmed, without a leading `#`. */
+export function normalizeBlueskyTag(raw: string): string {
+  return raw.trim().replace(/^#+/, '').trim();
+}
+
+/** Whether one (normalised) tag fits the lexicon's two limits. */
+export function isValidBlueskyTag(tag: string): boolean {
+  return (
+    tag !== '' &&
+    graphemeCount(tag) <= MAX_BLUESKY_TAG_GRAPHEMES &&
+    Buffer.byteLength(tag, 'utf8') <= MAX_BLUESKY_TAG_BYTES
+  );
+}
+
+/**
+ * The `tags` field of a post record, or undefined.
+ *
+ * The publisher's `validate()` refuses a draft over the limits before
+ * anything is posted; this is the last line, so a value that slipped past
+ * is dropped rather than getting the whole record refused by the PDS.
+ */
+export function postTags(
+  settings: BlueskyPostSettings | undefined,
+): string[] | undefined {
+  const tags = (settings?.tags ?? [])
+    .filter((t): t is string => typeof t === 'string')
+    .map(normalizeBlueskyTag)
+    .filter(isValidBlueskyTag)
+    .filter((t, i, all) => all.indexOf(t) === i)
+    .slice(0, MAX_BLUESKY_TAGS);
+  return tags.length > 0 ? tags : undefined;
+}
+
+/**
+ * A post's `embed` with the quote folded in.
+ *
+ * - no quote → the media embed unchanged (or none);
+ * - a quote alone → `app.bsky.embed.record`;
+ * - a quote AND images / a video / a link card →
+ *   `app.bsky.embed.recordWithMedia`, whose `media` union takes exactly
+ *   those (lexicon: images, video, gallery, external).
+ *
+ * The inner `record` is a plain `ref`, not a union, so it carries no
+ * `$type` of its own — the data model makes `$type` mandatory only in a
+ * union.
+ */
+export function embedWithQuote(
+  media: Record<string, any> | undefined,
+  quote: BlueskyPostRef | undefined,
+): Record<string, any> | undefined {
+  if (!quote) return media;
+  const strongRef = { uri: quote.uri, cid: quote.cid };
+  if (!media) return { $type: 'app.bsky.embed.record', record: strongRef };
+  return {
+    $type: 'app.bsky.embed.recordWithMedia',
+    record: { record: strongRef },
+    media,
+  };
+}
+
+/** Everything the settings put on a post record, in one place. */
+function applyPostSettings(
+  record: Record<string, any>,
+  settings: BlueskyPostSettings | undefined,
+): void {
+  const langs = postLangs(settings);
+  if (langs) record.langs = langs;
+  const labels = postSelfLabels(settings);
+  if (labels) record.labels = labels;
+  const tags = postTags(settings);
+  if (tags) record.tags = tags;
+  const embed = embedWithQuote(record.embed, settings?.quote);
+  if (embed) record.embed = embed;
+}
+
+/**
+ * A pasted post link, split into the account and the record key.
+ *
+ * Takes the web link Bluesky's Share button copies
+ * (`https://bsky.app/profile/<handle or DID>/post/<rkey>`) and the
+ * protocol's own `at://<handle or DID>/app.bsky.feed.post/<rkey>`.
+ * Anything else is null — a guess at another shape would quote the wrong
+ * post.
+ */
+export function parseBlueskyPostLink(
+  link: string,
+): { actor: string; rkey: string } | null {
+  const text = link.trim();
+  const match =
+    /^https?:\/\/(?:www\.)?bsky\.app\/profile\/([^/?#\s]+)\/post\/([A-Za-z0-9._:~-]+)\/?(?:[?#]\S*)?$/i.exec(
+      text,
+    ) ??
+    /^at:\/\/([^/?#\s]+)\/app\.bsky\.feed\.post\/([A-Za-z0-9._:~-]+)$/.exec(
+      text,
+    );
+  if (!match) return null;
+  try {
+    return { actor: decodeURIComponent(match[1]), rkey: match[2] };
+  } catch {
+    return null; // a malformed %-escape is not a link to anything
+  }
+}
 
 /**
  * The `allow` array for a threadgate, or null when none should be written.
@@ -362,10 +497,7 @@ export class BlueskyService {
     const reply = normalizeReply(replyTo);
     if (reply) record.reply = reply;
 
-    const langs = postLangs(settings);
-    if (langs) record.langs = langs;
-    const labels = postSelfLabels(settings);
-    if (labels) record.labels = labels;
+    applyPostSettings(record, settings);
 
     return this.createRecord(accessJwt, did, 'app.bsky.feed.post', record);
   }
@@ -427,10 +559,7 @@ export class BlueskyService {
     const reply = normalizeReply(replyTo);
     if (reply) record.reply = reply;
 
-    const langs = postLangs(settings);
-    if (langs) record.langs = langs;
-    const labels = postSelfLabels(settings);
-    if (labels) record.labels = labels;
+    applyPostSettings(record, settings);
 
     return this.createRecord(accessJwt, did, 'app.bsky.feed.post', record);
   }
@@ -502,10 +631,7 @@ export class BlueskyService {
     const reply = normalizeReply(replyTo);
     if (reply) record.reply = reply;
 
-    const langs = postLangs(settings);
-    if (langs) record.langs = langs;
-    const labels = postSelfLabels(settings);
-    if (labels) record.labels = labels;
+    applyPostSettings(record, settings);
 
     return this.createRecord(accessJwt, did, 'app.bsky.feed.post', record);
   }
@@ -849,10 +975,7 @@ export class BlueskyService {
     const reply = normalizeReply(replyTo);
     if (reply) record.reply = reply;
 
-    const langs = postLangs(settings);
-    if (langs) record.langs = langs;
-    const labels = postSelfLabels(settings);
-    if (labels) record.labels = labels;
+    applyPostSettings(record, settings);
 
     return this.createRecord(accessJwt, did, 'app.bsky.feed.post', record);
   }
@@ -1079,6 +1202,72 @@ export class BlueskyService {
   // HttpExceptions) so a platform failure reaches the inbox as PLATFORM_ERROR;
   // only the 300-hidden-replies cap is a deliberate 400 `{ reason }`.
   // ==========================================================================
+
+  /**
+   * The post a pasted link points at, as the strong ref a quote embeds.
+   *
+   * Two reads: the handle to a DID (`com.atproto.identity.resolveHandle`;
+   * skipped when the link already names a DID — handles change, DIDs do
+   * not, and the record's URI must use the DID), then the post itself
+   * (`app.bsky.feed.getPosts`) for its CID — a strong ref pins the exact
+   * version quoted, so the URI alone is not enough.
+   *
+   * Every failure throws, and BEFORE anything is posted: quietly posting
+   * without the quote would publish text that refers to a post nobody can
+   * see. A post whose author turned quoting off (`embeddingDisabled`)
+   * is refused here too; the app would detach the quote after the fact.
+   */
+  async resolveQuotedPost(
+    accessJwt: string,
+    link: string,
+  ): Promise<BlueskyPostRef> {
+    const parsed = parseBlueskyPostLink(link);
+    if (!parsed) {
+      throw new Error(`"${link}" is not a link to a Bluesky post`);
+    }
+    const headers = { Authorization: `Bearer ${accessJwt}` };
+
+    let did = parsed.actor;
+    if (!did.startsWith('did:')) {
+      const res = await fetch(
+        `${this.apiBaseUrl}/com.atproto.identity.resolveHandle?handle=${encodeURIComponent(did)}`,
+        { headers },
+      );
+      const data = res.ok ? ((await res.json()) as { did?: unknown }) : {};
+      if (typeof data.did !== 'string' || !data.did.startsWith('did:')) {
+        throw new Error(
+          `The post to quote could not be found: no Bluesky account @${parsed.actor}`,
+        );
+      }
+      did = data.did;
+    }
+
+    const uri = `at://${did}/app.bsky.feed.post/${parsed.rkey}`;
+    const res = await fetch(
+      `${this.apiBaseUrl}/app.bsky.feed.getPosts?uris=${encodeURIComponent(uri)}`,
+      { headers },
+    );
+    if (!res.ok) {
+      throw new Error(`Bluesky getPosts failed: ${res.status}`);
+    }
+    const data = (await res.json()) as {
+      posts?: Array<{
+        uri?: string;
+        cid?: string;
+        viewer?: { embeddingDisabled?: boolean };
+      }>;
+    };
+    const post = data.posts?.[0];
+    if (!post?.uri || !post.cid) {
+      throw new Error(
+        'The post to quote could not be found — it may have been deleted',
+      );
+    }
+    if (post.viewer?.embeddingDisabled) {
+      throw new Error('The author of the post to quote has turned quoting off');
+    }
+    return { uri: post.uri, cid: post.cid };
+  }
 
   /** Resolve `{ uri, cid }` of one post (needed to like it). */
   async resolvePostRef(
