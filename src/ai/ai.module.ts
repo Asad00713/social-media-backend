@@ -9,6 +9,7 @@ import { AiTokenService } from './services/ai-token.service';
 import { ElevenLabsSttService } from './services/elevenlabs-stt.service';
 import { ComposerAiService } from './composer-ai.service';
 import { InboxAiService } from './inbox-ai.service';
+import { ClaudeTextService } from './claude-text.service';
 import { DrizzleModule } from '../drizzle/drizzle.module';
 import { GeminiChatProvider } from '../chatbot/llm/gemini.provider';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
@@ -23,6 +24,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
   imports: [WorkspaceRoleModule, ConfigModule, DrizzleModule],
   controllers: [AiController],
   providers: [
+    ClaudeTextService,
     GroqService,
     GeminiChatProvider,
     AiTextService,
@@ -34,6 +36,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     InboxAiService,
   ],
   exports: [
+    ClaudeTextService,
     GroqService,
     AiTextService,
     TavilyService,

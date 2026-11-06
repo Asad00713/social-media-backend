@@ -10,6 +10,11 @@ import {
 import { AiTextService } from '../../ai/ai-text.service';
 import { AiTokenService } from '../../ai/services/ai-token.service';
 import {
+  CLAUDE_IMAGE_TYPES,
+  ClaudeTextService,
+  isClaudeImageType,
+} from '../../ai/claude-text.service';
+import {
   ALT_TEXT_SYSTEM_PROMPT,
   ALT_TEXT_USER_PROMPT,
   cleanAltText,
@@ -30,6 +35,12 @@ const VISION_MIME_TYPES = new Set([
   'image/heic',
   'image/heif',
 ]);
+const GEMINI_FORMATS = 'PNG, JPEG, WebP or HEIC';
+// Formats the Claude Messages API accepts as an image block.
+const CLAUDE_MIME_TYPES: ReadonlySet<string> = new Set(CLAUDE_IMAGE_TYPES);
+const CLAUDE_FORMATS = 'PNG, JPEG, WebP or GIF';
+
+type Image = { mimeType: string; data: string };
 
 function notAnImage(message: string) {
   const body: NotAnImageError = { code: 'NOT_AN_IMAGE', message };
@@ -55,6 +66,7 @@ export class AltTextService {
     private readonly storageObjects: StorageObjectService,
     private readonly aiTokens: AiTokenService,
     private readonly aiText: AiTextService,
+    private readonly claude: ClaudeTextService,
   ) {}
 
   /** Writes alt text for a stored image. Never saves it; the caller decides. */
@@ -75,6 +87,79 @@ export class AltTextService {
       );
     }
 
+    return this.metered(workspaceId, userId, `alt text: ${item.name}`, () =>
+      this.describeWithGemini(item.fileUrl),
+    );
+  }
+
+  /**
+   * Writes alt text for a photo on a DRAFT, by its URL — the composer's
+   * "Write it for me". A draft photo need not be a Library item, so this
+   * takes the URL, and refuses any URL that is not our own storage: we fetch
+   * it server-side, and a free-form URL would be a request to any host.
+   *
+   * Claude Sonnet when ANTHROPIC_API_KEY is set (vision where quality
+   * matters); Gemini otherwise, the same model the Library uses. Never saves:
+   * the editor puts the text in its field and the person keeps or edits it.
+   */
+  async generateForUrl(
+    workspaceId: string,
+    userId: string,
+    url: string,
+  ): Promise<{ altText: string }> {
+    if (!this.storageObjects.isOwnStorageUrl(url)) {
+      throw notAnImage(
+        'Alt text can only be written for photos uploaded to Schedura.',
+      );
+    }
+    return this.metered(workspaceId, userId, 'alt text: draft photo', () =>
+      this.claude.isReady()
+        ? this.describeWithClaude(url)
+        : this.describeWithGemini(url),
+    );
+  }
+
+  private async describeWithGemini(fileUrl: string): Promise<string> {
+    const image = await this.fetchImage(
+      visionImageUrl(fileUrl),
+      VISION_MIME_TYPES,
+      GEMINI_FORMATS,
+    );
+    return this.aiText.describeImage(
+      ALT_TEXT_SYSTEM_PROMPT,
+      ALT_TEXT_USER_PROMPT,
+      image,
+      { maxTokens: 120 },
+    );
+  }
+
+  private async describeWithClaude(fileUrl: string): Promise<string> {
+    const image = await this.fetchImage(
+      visionImageUrl(fileUrl),
+      CLAUDE_MIME_TYPES,
+      CLAUDE_FORMATS,
+    );
+    if (!isClaudeImageType(image.mimeType)) {
+      throw notAnImage(
+        `Alt text can only be written for ${CLAUDE_FORMATS} images.`,
+      );
+    }
+    // Room for the model's own thinking, which counts against max_tokens.
+    return this.claude.describeImage(
+      ALT_TEXT_SYSTEM_PROMPT,
+      ALT_TEXT_USER_PROMPT,
+      { mimeType: image.mimeType, data: image.data },
+      { maxTokens: 2048 },
+    );
+  }
+
+  /** One metered description: 402 when out of tokens, nothing charged on failure. */
+  private async metered(
+    workspaceId: string,
+    userId: string,
+    summary: string,
+    describe: () => Promise<string>,
+  ): Promise<{ altText: string }> {
     const check = await this.aiTokens.checkTokens(workspaceId, OPERATION);
     if (!check.hasAccess) throw tokensExhausted();
 
@@ -87,16 +172,10 @@ export class AltTextService {
         userId,
         OPERATION,
         undefined,
-        `alt text: ${item.name}`,
+        summary,
         async () => {
           started = true;
-          const image = await this.fetchImage(visionImageUrl(item.fileUrl));
-          const raw = await this.aiText.describeImage(
-            ALT_TEXT_SYSTEM_PROMPT,
-            ALT_TEXT_USER_PROMPT,
-            image,
-            { maxTokens: 120 },
-          );
+          const raw = await describe();
           const altText = cleanAltText(raw);
           if (!altText) {
             throw new BadGatewayException(
@@ -121,7 +200,9 @@ export class AltTextService {
 
   private async fetchImage(
     url: string,
-  ): Promise<{ mimeType: string; data: string }> {
+    allowed: ReadonlySet<string>,
+    formats: string,
+  ): Promise<Image> {
     const controller = new AbortController();
     const res = await fetch(url, {
       signal: AbortSignal.any([
@@ -138,10 +219,8 @@ export class AltTextService {
       .split(';')[0]
       .trim()
       .toLowerCase();
-    if (!VISION_MIME_TYPES.has(mimeType)) {
-      throw notAnImage(
-        'Alt text can only be written for PNG, JPEG, WebP or HEIC images.',
-      );
+    if (!allowed.has(mimeType)) {
+      throw notAnImage(`Alt text can only be written for ${formats} images.`);
     }
     // A missing or invalid content-length is unknown, not 0; the streaming
     // cap below applies either way.
