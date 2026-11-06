@@ -705,6 +705,7 @@ export class BlueskyService {
     linkTitle: string,
     linkDescription?: string,
     linkThumbUrl?: string,
+    replyTo?: BlueskyReplyRef,
     settings?: BlueskyPostSettings,
   ): Promise<BlueskyPost> {
     const external: Record<string, any> = {
@@ -748,6 +749,12 @@ export class BlueskyService {
 
     const langs = postLangs(settings);
     if (langs) record.langs = langs;
+    // Add reply reference if replying to another post. Without this a
+    // link card could only ever be the FIRST post of a thread: every
+    // sibling create method takes it, and the one that did not was the
+    // reason the publisher could not route a thread through here.
+    const reply = normalizeReply(replyTo);
+    if (reply) record.reply = reply;
 
     return this.createRecord(accessJwt, did, 'app.bsky.feed.post', record);
   }
