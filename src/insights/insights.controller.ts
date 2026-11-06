@@ -38,9 +38,38 @@ import {
   single,
 } from './lib/query';
 
+/**
+ * A query param as Express hands it over: a repeated one is an array. Every
+ * param goes through `single` so a repeat is a 400, never a crash.
+ */
+type Raw = string | string[];
+
 /** `days=7|30|90` or `from&to`, against today's UTC date. */
-const periodOf = (days?: string, from?: string, to?: string) =>
-  parsePeriod({ days, from, to }, utcToday(new Date()));
+const periodOf = (days?: Raw, from?: Raw, to?: Raw) =>
+  parsePeriod(
+    {
+      days: single(days, 'days'),
+      from: single(from, 'from'),
+      to: single(to, 'to'),
+    },
+    utcToday(new Date()),
+  );
+
+/** The table's own params, each exactly once. */
+const tableOf = (raw: {
+  format?: Raw;
+  sort?: Raw;
+  order?: Raw;
+  limit?: Raw;
+  offset?: Raw;
+}) =>
+  parseTableQuery({
+    format: single(raw.format, 'format'),
+    sort: single(raw.sort, 'sort'),
+    order: single(raw.order, 'order'),
+    limit: single(raw.limit, 'limit'),
+    offset: single(raw.offset, 'offset'),
+  });
 
 @Controller('insights/workspaces/:workspaceId')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
@@ -52,19 +81,19 @@ export class InsightsController {
   @Get('overview')
   overview(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
-    @Query('days') days?: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('compare') compare?: string,
-    @Query('channels') channels?: string | string[],
-    @Query('tz') tz?: string,
+    @Query('days') days?: Raw,
+    @Query('from') from?: Raw,
+    @Query('to') to?: Raw,
+    @Query('compare') compare?: Raw,
+    @Query('channels') channels?: Raw,
+    @Query('tz') tz?: Raw,
   ): Promise<InsightsOverviewDto> {
     return this.insights.overview(
       workspaceId,
       periodOf(days, from, to),
       single(channels, 'channels'),
-      parseTz(tz),
-      parseCompare(compare),
+      parseTz(single(tz, 'tz')),
+      parseCompare(single(compare, 'compare')),
     );
   }
 
@@ -72,21 +101,21 @@ export class InsightsController {
   @Get('posts')
   posts(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
-    @Query('days') days?: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('channels') channels?: string | string[],
-    @Query('format') format?: string,
-    @Query('sort') sort?: string,
-    @Query('order') order?: string,
-    @Query('limit') limit?: string,
-    @Query('offset') offset?: string,
+    @Query('days') days?: Raw,
+    @Query('from') from?: Raw,
+    @Query('to') to?: Raw,
+    @Query('channels') channels?: Raw,
+    @Query('format') format?: Raw,
+    @Query('sort') sort?: Raw,
+    @Query('order') order?: Raw,
+    @Query('limit') limit?: Raw,
+    @Query('offset') offset?: Raw,
   ): Promise<InsightsPostsDto> {
     return this.insights.posts(
       workspaceId,
       periodOf(days, from, to),
       single(channels, 'channels'),
-      parseTableQuery({ format, sort, order, limit, offset }),
+      tableOf({ format, sort, order, limit, offset }),
     );
   }
 
@@ -94,7 +123,7 @@ export class InsightsController {
   @Get('posts/metrics')
   async metrics(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
-    @Query('postIds') postIds?: string | string[],
+    @Query('postIds') postIds?: Raw,
   ): Promise<{ metrics: PostChannelMetricsDto[] }> {
     return {
       metrics: await this.insights.postMetrics(
@@ -109,19 +138,19 @@ export class InsightsController {
   async export(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Res({ passthrough: true }) res: Response,
-    @Query('days') days?: string,
-    @Query('from') from?: string,
-    @Query('to') to?: string,
-    @Query('channels') channels?: string | string[],
-    @Query('format') format?: string,
-    @Query('sort') sort?: string,
-    @Query('order') order?: string,
+    @Query('days') days?: Raw,
+    @Query('from') from?: Raw,
+    @Query('to') to?: Raw,
+    @Query('channels') channels?: Raw,
+    @Query('format') format?: Raw,
+    @Query('sort') sort?: Raw,
+    @Query('order') order?: Raw,
   ): Promise<string> {
     const {
       format: f,
       sort: s,
       order: o,
-    } = parseTableQuery({ format, sort, order });
+    } = tableOf({ format, sort, order });
     const { filename, body } = await this.insights.csv(
       workspaceId,
       periodOf(days, from, to),
@@ -138,9 +167,13 @@ export class InsightsController {
   signals(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @CurrentUser() user: { userId: string },
-    @Query('channels') channels?: string,
+    @Query('channels') channels?: Raw,
   ): Promise<InsightsSignalsDto> {
-    return this.insights.signals(workspaceId, user.userId, channels);
+    return this.insights.signals(
+      workspaceId,
+      user.userId,
+      single(channels, 'channels'),
+    );
   }
 
   /**

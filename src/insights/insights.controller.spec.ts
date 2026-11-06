@@ -113,6 +113,22 @@ describe('InsightsController over HTTP', () => {
     ['overview?channels=1&channels=2'],
     ['posts?channels=1&channels=2'],
     ['posts/export?channels=1&channels=2'],
+    // Every scalar param repeated too.
+    ['overview?days=7&days=7'],
+    ['overview?from=2026-10-01&from=2026-10-01&to=2026-10-02'],
+    ['overview?from=2026-10-01&to=2026-10-02&to=2026-10-02'],
+    ['overview?compare=year&compare=year'],
+    ['overview?tz=UTC&tz=UTC'],
+    ['posts?days=7&days=7'],
+    ['posts?format=video&format=video'],
+    ['posts?sort=likes&sort=likes'],
+    ['posts?order=asc&order=asc'],
+    ['posts?limit=5&limit=5'],
+    ['posts?offset=0&offset=0'],
+    ['posts/export?days=7&days=7'],
+    ['posts/export?format=video&format=video'],
+    ['posts/export?sort=likes&sort=likes'],
+    ['posts/export?order=asc&order=asc'],
     [
       'posts/metrics?postIds=22222222-2222-4222-8222-222222222222&postIds=33333333-3333-4333-8333-333333333333',
     ],
@@ -296,6 +312,15 @@ describe('InsightsController signals over HTTP', () => {
       .get(`/insights/workspaces/${WS}/signals`)
       .expect(200);
     expect(insights.signals).toHaveBeenLastCalledWith(WS, 'user-1', undefined);
+  });
+
+  it.each([
+    ['signals?channels=1&channels=2'],
+  ])('answers 400 to %s, not a 500', async (path) => {
+    await request(app.getHttpServer())
+      .get(`/insights/workspaces/${WS}/${path}`)
+      .expect(400);
+    expect(insights.signals).not.toHaveBeenCalled();
   });
 
   it('rejects a workspace id that is not a uuid', async () => {
