@@ -1,47 +1,106 @@
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { eq, and, asc, desc, ilike, or, sql, type SQL } from 'drizzle-orm';
+import { ilikePattern } from '../lib/search';
 import {
-  Injectable,
-  Logger,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
-import { eq, and, desc, like, or, sql } from 'drizzle-orm';
-import { db } from '../../drizzle/db';
+  assertKindFolder,
+  runKindBulk,
+  type KindBulkConfig,
+} from '../lib/bulk';
+import { binPurgeCutoff } from '../lib/bin-retention';
+import { snippetPostCountSql, withUsageLock } from '../lib/usage-sql';
+import type { DbType } from '../../drizzle/db';
+import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
   textSnippets,
   mediaCategories,
   NewTextSnippet,
+  TextSnippet,
+  MediaCategory,
 } from '../../drizzle/schema/media-library.schema';
+import { users } from '../../drizzle/schema/users.schema';
+import { toUserRef, USER_REF_COLUMNS, type UserRefRow } from '../lib/user-ref';
+import type { Page, UserRef } from '../dto/contract';
 import {
   CreateTextSnippetDto,
   UpdateTextSnippetDto,
   TextSnippetQueryDto,
+  SnippetBulkDto,
 } from '../dto/media-library.dto';
+
+/**
+ * ORDER BY for `GET snippets` (ruling 7). Every order ends in `id DESC` so
+ * ties keep their place across updates.
+ */
+function snippetOrder(sort: TextSnippetQueryDto['sort']): SQL[] {
+  const byNewest = [desc(textSnippets.createdAt), desc(textSnippets.id)];
+  switch (sort) {
+    case 'oldest':
+      return [asc(textSnippets.createdAt), asc(textSnippets.id)];
+    case 'most_used':
+      return [sql`${textSnippets.usageCount} DESC NULLS LAST`, ...byNewest];
+    case 'recently_used':
+      return [sql`${textSnippets.lastUsedAt} DESC NULLS LAST`, ...byNewest];
+    case 'name':
+      return [sql`lower(${textSnippets.name}) ASC`, ...byNewest];
+    default:
+      return byNewest;
+  }
+}
+
+/** A snippet as the list, the detail and every single-item write return it. */
+export type SnippetView = TextSnippet & {
+  category: MediaCategory | null;
+  createdBy: UserRef | null;
+};
+
+/** The columns a `SnippetView` is read from; folder and creator left-joined. */
+const VIEW_SELECTION = {
+  snippet: textSnippets,
+  category: mediaCategories,
+  creator: USER_REF_COLUMNS,
+};
+
+function toSnippetView(row: {
+  snippet: TextSnippet;
+  category: MediaCategory | null;
+  creator: UserRefRow | null;
+}): SnippetView {
+  return {
+    ...row.snippet,
+    category: row.category,
+    createdBy: toUserRef(row.creator),
+  };
+}
+
+const SNIPPET_BULK: KindBulkConfig = {
+  table: textSnippets,
+  folderKind: 'text_snippet',
+  label: 'Text snippet',
+};
 
 @Injectable()
 export class TextSnippetService {
   private readonly logger = new Logger(TextSnippetService.name);
 
+  constructor(@Inject(DRIZZLE) private readonly db: DbType) {}
+
   /**
    * Create a new text snippet
    */
-  async create(workspaceId: string, userId: string, dto: CreateTextSnippetDto) {
+  async create(
+    workspaceId: string,
+    userId: string,
+    dto: CreateTextSnippetDto,
+  ): Promise<SnippetView> {
     // Validate category if provided
     if (dto.categoryId) {
-      const category = await db
-        .select()
-        .from(mediaCategories)
-        .where(
-          and(
-            eq(mediaCategories.id, dto.categoryId),
-            eq(mediaCategories.workspaceId, workspaceId),
-            eq(mediaCategories.type, 'text_snippet'),
-          ),
-        )
-        .limit(1);
-
-      if (category.length === 0) {
-        throw new BadRequestException('Text snippet category not found');
-      }
+      await assertKindFolder(
+        this.db,
+        workspaceId,
+        dto.categoryId,
+        'text_snippet',
+        'Text snippet',
+      );
     }
 
     const newSnippet: NewTextSnippet = {
@@ -54,7 +113,7 @@ export class TextSnippetService {
       tags: dto.tags || [],
     };
 
-    const [created] = await db
+    const [created] = await this.db
       .insert(textSnippets)
       .values(newSnippet)
       .returning();
@@ -63,27 +122,60 @@ export class TextSnippetService {
       `Created text snippet "${dto.name}" for workspace ${workspaceId}`,
     );
 
-    return created;
+    // Posts written before the snippet existed may already hold its text (I4).
+    await this.recountUsage(workspaceId, created.id);
+    return this.findOne(workspaceId, created.id);
   }
 
   /**
-   * Get all text snippets for a workspace with filtering
+   * Sets `usage_count` from the posts that hold the snippet's text, by the
+   * 0055 trigger's own test (I4). For writes the trigger cannot see: a new
+   * snippet, or changed content.
    */
-  async findAll(workspaceId: string, query: TextSnippetQueryDto = {}) {
-    const {
-      snippetType,
-      categoryId,
-      isStarred,
-      isDeleted = false,
-      search,
-      limit = 50,
-      offset = 0,
-    } = query;
+  private async recountUsage(
+    workspaceId: string,
+    snippetId: string,
+  ): Promise<void> {
+    await withUsageLock(this.db, workspaceId, (tx) =>
+      tx
+        .update(textSnippets)
+        .set({
+          usageCount: snippetPostCountSql({
+            content: textSnippets.content,
+            workspaceId: textSnippets.workspaceId,
+          }),
+        })
+        .where(
+          and(
+            eq(textSnippets.id, snippetId),
+            eq(textSnippets.workspaceId, workspaceId),
+          ),
+        ),
+    );
+  }
 
-    const conditions = [
+  /**
+   * The WHERE clause of `GET snippets`, shared with bulk select-all so
+   * "every match" means exactly what the list shows.
+   */
+  buildSnippetConditions(
+    workspaceId: string,
+    query: TextSnippetQueryDto,
+  ): SQL[] {
+    const { categoryId, isDeleted = false, search, createdBy } = query;
+    // Contract names win over the legacy ones: `type` over `snippetType`,
+    // `starred` over `isStarred`.
+    const snippetType = query.type ?? query.snippetType;
+    const starred = query.starred ?? query.isStarred;
+
+    const conditions: SQL[] = [
       eq(textSnippets.workspaceId, workspaceId),
       eq(textSnippets.isDeleted, isDeleted),
     ];
+
+    if (createdBy) {
+      conditions.push(eq(textSnippets.createdById, createdBy));
+    }
 
     if (snippetType) {
       conditions.push(eq(textSnippets.snippetType, snippetType));
@@ -93,45 +185,55 @@ export class TextSnippetService {
       conditions.push(eq(textSnippets.categoryId, categoryId));
     }
 
-    if (isStarred !== undefined) {
-      conditions.push(eq(textSnippets.isStarred, isStarred));
+    if (starred !== undefined) {
+      conditions.push(eq(textSnippets.isStarred, starred));
     }
 
     if (search) {
       conditions.push(
         or(
-          like(textSnippets.name, `%${search}%`),
-          like(textSnippets.content, `%${search}%`),
+          ilike(textSnippets.name, ilikePattern(search)),
+          ilike(textSnippets.content, ilikePattern(search)),
         )!,
       );
     }
 
-    const snippets = await db
-      .select({
-        snippet: textSnippets,
-        category: mediaCategories,
-      })
+    return conditions;
+  }
+
+  /**
+   * Get all text snippets for a workspace with filtering
+   */
+  async findAll(
+    workspaceId: string,
+    query: TextSnippetQueryDto = {},
+  ): Promise<Page<SnippetView>> {
+    const { limit = 50, offset = 0 } = query;
+    const conditions = this.buildSnippetConditions(workspaceId, query);
+
+    // Both joins are on a primary key, so each snippet stays one row and
+    // LIMIT/OFFSET and the count still agree.
+    const snippets = await this.db
+      .select(VIEW_SELECTION)
       .from(textSnippets)
       .leftJoin(
         mediaCategories,
         eq(textSnippets.categoryId, mediaCategories.id),
       )
+      .leftJoin(users, eq(textSnippets.createdById, users.id))
       .where(and(...conditions))
-      .orderBy(desc(textSnippets.createdAt))
+      .orderBy(...snippetOrder(query.sort))
       .limit(limit)
       .offset(offset);
 
     // Get total count
-    const [{ count }] = await db
+    const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(textSnippets)
       .where(and(...conditions));
 
     return {
-      items: snippets.map((row) => ({
-        ...row.snippet,
-        category: row.category,
-      })),
+      items: snippets.map(toSnippetView),
       total: count,
       limit,
       offset,
@@ -141,17 +243,15 @@ export class TextSnippetService {
   /**
    * Get a single text snippet by ID
    */
-  async findOne(workspaceId: string, snippetId: string) {
-    const [snippet] = await db
-      .select({
-        snippet: textSnippets,
-        category: mediaCategories,
-      })
+  async findOne(workspaceId: string, snippetId: string): Promise<SnippetView> {
+    const [snippet] = await this.db
+      .select(VIEW_SELECTION)
       .from(textSnippets)
       .leftJoin(
         mediaCategories,
         eq(textSnippets.categoryId, mediaCategories.id),
       )
+      .leftJoin(users, eq(textSnippets.createdById, users.id))
       .where(
         and(
           eq(textSnippets.id, snippetId),
@@ -164,10 +264,7 @@ export class TextSnippetService {
       throw new NotFoundException('Text snippet not found');
     }
 
-    return {
-      ...snippet.snippet,
-      category: snippet.category,
-    };
+    return toSnippetView(snippet);
   }
 
   /**
@@ -177,26 +274,18 @@ export class TextSnippetService {
     workspaceId: string,
     snippetId: string,
     dto: UpdateTextSnippetDto,
-  ) {
-    await this.findOne(workspaceId, snippetId);
+  ): Promise<SnippetView> {
+    const existing = await this.findOne(workspaceId, snippetId);
 
     // Validate category if changing
     if (dto.categoryId) {
-      const category = await db
-        .select()
-        .from(mediaCategories)
-        .where(
-          and(
-            eq(mediaCategories.id, dto.categoryId),
-            eq(mediaCategories.workspaceId, workspaceId),
-            eq(mediaCategories.type, 'text_snippet'),
-          ),
-        )
-        .limit(1);
-
-      if (category.length === 0) {
-        throw new BadRequestException('Text snippet category not found');
-      }
+      await assertKindFolder(
+        this.db,
+        workspaceId,
+        dto.categoryId,
+        'text_snippet',
+        'Text snippet',
+      );
     }
 
     const updateData: Partial<typeof textSnippets.$inferInsert> = {
@@ -210,24 +299,38 @@ export class TextSnippetService {
     if (dto.tags !== undefined) updateData.tags = dto.tags;
     if (dto.isStarred !== undefined) updateData.isStarred = dto.isStarred;
 
-    const [updated] = await db
+    await this.db
       .update(textSnippets)
       .set(updateData)
-      .where(eq(textSnippets.id, snippetId))
-      .returning();
+      .where(
+        and(
+          eq(textSnippets.id, snippetId),
+          eq(textSnippets.workspaceId, workspaceId),
+        ),
+      );
 
     this.logger.log(`Updated text snippet ${snippetId}`);
 
-    return updated;
+    // The posts trigger counted the old text; the new text needs a recount.
+    const isContentChanging =
+      dto.content !== undefined && dto.content !== existing.content;
+    if (isContentChanging) {
+      await this.recountUsage(workspaceId, snippetId);
+    }
+    return this.findOne(workspaceId, snippetId);
   }
 
   /**
    * Soft delete a text snippet (move to recycle bin)
    */
-  async softDelete(workspaceId: string, snippetId: string, userId: string) {
+  async softDelete(
+    workspaceId: string,
+    snippetId: string,
+    userId: string,
+  ): Promise<SnippetView> {
     await this.findOne(workspaceId, snippetId);
 
-    const [updated] = await db
+    await this.db
       .update(textSnippets)
       .set({
         isDeleted: true,
@@ -235,19 +338,23 @@ export class TextSnippetService {
         deletedById: userId,
         updatedAt: new Date(),
       })
-      .where(eq(textSnippets.id, snippetId))
-      .returning();
+      .where(
+        and(
+          eq(textSnippets.id, snippetId),
+          eq(textSnippets.workspaceId, workspaceId),
+        ),
+      );
 
     this.logger.log(`Soft deleted text snippet ${snippetId}`);
 
-    return updated;
+    return this.findOne(workspaceId, snippetId);
   }
 
   /**
    * Restore a text snippet from recycle bin
    */
-  async restore(workspaceId: string, snippetId: string) {
-    const [snippet] = await db
+  async restore(workspaceId: string, snippetId: string): Promise<SnippetView> {
+    const [snippet] = await this.db
       .select()
       .from(textSnippets)
       .where(
@@ -263,7 +370,7 @@ export class TextSnippetService {
       throw new NotFoundException('Text snippet not found in recycle bin');
     }
 
-    const [updated] = await db
+    await this.db
       .update(textSnippets)
       .set({
         isDeleted: false,
@@ -271,21 +378,36 @@ export class TextSnippetService {
         deletedById: null,
         updatedAt: new Date(),
       })
-      .where(eq(textSnippets.id, snippetId))
-      .returning();
+      .where(
+        and(
+          eq(textSnippets.id, snippetId),
+          eq(textSnippets.workspaceId, workspaceId),
+        ),
+      );
 
     this.logger.log(`Restored text snippet ${snippetId}`);
 
-    return updated;
+    return this.findOne(workspaceId, snippetId);
   }
 
   /**
    * Permanently delete a text snippet
    */
   async permanentDelete(workspaceId: string, snippetId: string) {
-    await this.findOne(workspaceId, snippetId);
-
-    await db.delete(textSnippets).where(eq(textSnippets.id, snippetId));
+    // Only a row in the Bin, in this workspace, can be deleted for good.
+    const [gone] = await this.db
+      .delete(textSnippets)
+      .where(
+        and(
+          eq(textSnippets.id, snippetId),
+          eq(textSnippets.workspaceId, workspaceId),
+          eq(textSnippets.isDeleted, true),
+        ),
+      )
+      .returning({ id: textSnippets.id });
+    if (!gone) {
+      throw new NotFoundException('Text snippet not found in recycle bin');
+    }
 
     this.logger.log(`Permanently deleted text snippet ${snippetId}`);
 
@@ -293,14 +415,14 @@ export class TextSnippetService {
   }
 
   /**
-   * Increment usage count when snippet is used
+   * Record that a snippet was just used: sets `lastUsedAt` only.
+   * `usage_count` is a post count kept by the posts trigger (0055, D13).
    */
-  async incrementUsage(workspaceId: string, snippetId: string) {
-    // Workspace-scoped so one workspace can't bump another's counter by id.
-    const [updated] = await db
+  async markUsed(workspaceId: string, snippetId: string): Promise<SnippetView> {
+    // Workspace-scoped so one workspace can't touch another's snippet by id.
+    const [updated] = await this.db
       .update(textSnippets)
       .set({
-        usageCount: sql`${textSnippets.usageCount} + 1`,
         lastUsedAt: new Date(),
         updatedAt: new Date(),
       })
@@ -310,63 +432,48 @@ export class TextSnippetService {
           eq(textSnippets.workspaceId, workspaceId),
         ),
       )
-      .returning();
+      .returning({ id: textSnippets.id });
 
     if (!updated) {
       throw new NotFoundException('Snippet not found');
     }
 
-    return updated;
+    return this.findOne(workspaceId, snippetId);
   }
 
   /**
-   * Get snippets in recycle bin
+   * Bulk delete / star / unstar / move (ruling 6), on `ids` or with
+   * `selectAll` on every snippet the list's filter matches. The rules
+   * (live rows only, X1 move, workspace scope) live in `runKindBulk`.
    */
-  async getRecycleBin(workspaceId: string, limit = 50, offset = 0) {
-    const snippets = await db
-      .select()
-      .from(textSnippets)
-      .where(
-        and(
-          eq(textSnippets.workspaceId, workspaceId),
-          eq(textSnippets.isDeleted, true),
-        ),
-      )
-      .orderBy(desc(textSnippets.deletedAt))
-      .limit(limit)
-      .offset(offset);
-
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(textSnippets)
-      .where(
-        and(
-          eq(textSnippets.workspaceId, workspaceId),
-          eq(textSnippets.isDeleted, true),
-        ),
-      );
-
-    return {
-      items: snippets,
-      total: count,
-      limit,
-      offset,
-    };
+  bulkAction(
+    workspaceId: string,
+    userId: string,
+    dto: SnippetBulkDto,
+  ): Promise<{ affectedCount: number }> {
+    return runKindBulk(
+      this.db,
+      SNIPPET_BULK,
+      workspaceId,
+      userId,
+      dto,
+      (ws, q) => this.buildSnippetConditions(ws, q),
+    );
   }
 
   /**
    * Cleanup snippets older than 30 days in recycle bin
    */
-  async cleanupRecycleBin() {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  async cleanupRecycleBin(now: Date = new Date()) {
+    const cutoff = binPurgeCutoff(now);
 
-    const result = await db
+    const result = await this.db
       .delete(textSnippets)
       .where(
         and(
           eq(textSnippets.isDeleted, true),
-          sql`${textSnippets.deletedAt} < ${thirtyDaysAgo}`,
+          // Same COALESCE as the Bin's purgeAt (legacy rows lack deleted_at).
+          sql`COALESCE(${textSnippets.deletedAt}, ${textSnippets.updatedAt}) < ${cutoff}`,
         ),
       )
       .returning();

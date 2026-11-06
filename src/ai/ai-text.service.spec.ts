@@ -1,3 +1,4 @@
+import { ServiceUnavailableException } from '@nestjs/common';
 import { AiTextService } from './ai-text.service';
 
 describe('AiTextService', () => {
@@ -54,6 +55,36 @@ describe('AiTextService', () => {
       const gemini = { isAvailable: () => false } as any;
       const groq = { isReady: () => false } as any;
       expect(new AiTextService(gemini, groq).isReady()).toBe(false);
+    });
+  });
+
+  describe('describeImage', () => {
+    const image = { mimeType: 'image/jpeg', data: 'AAAA' };
+
+    it('uses Gemini vision when available', async () => {
+      const gemini = {
+        isAvailable: () => true,
+        generateFromImage: jest.fn().mockResolvedValue('alt'),
+      } as any;
+      const svc = new AiTextService(gemini, {} as any);
+      await expect(
+        svc.describeImage('s', 'u', image, { maxTokens: 5 }),
+      ).resolves.toBe('alt');
+      expect(gemini.generateFromImage).toHaveBeenCalledWith('s', 'u', image, {
+        maxTokens: 5,
+      });
+    });
+
+    it('throws ServiceUnavailableException when Gemini is unavailable', async () => {
+      const gemini = {
+        isAvailable: () => false,
+        generateFromImage: jest.fn(),
+      } as any;
+      const svc = new AiTextService(gemini, {} as any);
+      await expect(svc.describeImage('s', 'u', image)).rejects.toBeInstanceOf(
+        ServiceUnavailableException,
+      );
+      expect(gemini.generateFromImage).not.toHaveBeenCalled();
     });
   });
 });

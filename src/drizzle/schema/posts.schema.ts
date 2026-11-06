@@ -39,6 +39,9 @@ export interface MediaItem {
   width?: number;
   height?: number;
   duration?: number; // For videos, in seconds
+  // The Library item this entry was picked from (migration 0055 indexes it
+  // through posts.library_refs). Absent on legacy posts and pasted URLs.
+  libraryItemId?: string;
 }
 
 // Platform-specific content overrides
@@ -126,6 +129,21 @@ export const posts = pgTable(
     readyById: uuid('ready_by_id').references(() => users.id, {
       onDelete: 'set null',
     }),
+
+    // Library references (migration 0055). STORED GENERATED, so never
+    // written: every libraryItemId and every media url in media_items and in
+    // any platform override. The posts_library_usage_* triggers keep the
+    // Library's usage_count a post count from them.
+    libraryRefs: jsonb('library_refs')
+      .$type<string[]>()
+      .generatedAlwaysAs(
+        sql`jsonb_path_query_array(COALESCE(media_items, '[]'::jsonb), '$[*].libraryItemId') || jsonb_path_query_array(COALESCE(platform_content, '{}'::jsonb), '$.**.libraryItemId')`,
+      ),
+    mediaUrls: jsonb('media_urls')
+      .$type<string[]>()
+      .generatedAlwaysAs(
+        sql`jsonb_path_query_array(COALESCE(media_items, '[]'::jsonb), '$[*].url') || jsonb_path_query_array(COALESCE(platform_content, '{}'::jsonb), '$.**.mediaItems[*].url')`,
+      ),
 
     // Job tracking (for BullMQ)
     jobId: varchar('job_id', { length: 100 }), // BullMQ job ID for scheduled posts

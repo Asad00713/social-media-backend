@@ -7,7 +7,8 @@ import {
 } from '../channels/services/google-drive.service';
 import { OneDriveService } from '../channels/services/onedrive.service';
 import { GooglePhotosService } from '../channels/services/google-photos.service';
-import { CloudinaryService } from '../media/cloudinary.service';
+import { LibraryIngestService } from '../media-library/services/library-ingest.service';
+import { StorageQuotaService } from '../media-library/services/storage-quota.service';
 import { mapDropboxItem, mapDropboxFolder } from './mappers/dropbox.mapper';
 import { mapOneDriveItem, mapOneDriveFolder } from './mappers/onedrive.mapper';
 import { mapPhotosItem, mapPhotosAlbum } from './mappers/photos.mapper';
@@ -49,7 +50,8 @@ export class MediaSourcesService {
     private readonly drive: GoogleDriveService,
     private readonly onedrive: OneDriveService,
     private readonly photos: GooglePhotosService,
-    private readonly cloudinary: CloudinaryService,
+    private readonly ingest: LibraryIngestService,
+    private readonly quota: StorageQuotaService,
   ) {}
 
   async browse(
@@ -88,6 +90,7 @@ export class MediaSourcesService {
     workspaceId: string,
     channelId: number,
     args: ImportArgs,
+    userId: string,
   ): Promise<CloudImportResult> {
     const channel = await this.channelService.getChannelById(
       channelId,
@@ -102,14 +105,20 @@ export class MediaSourcesService {
       workspaceId,
     );
 
+    // Refuse a full workspace before downloading; ingest checks the real size.
+    await this.quota.assertCanStore(workspaceId, 1);
+
     const buffer = await this.downloadPicked(
       platform,
       channel,
       token,
       args.fileId,
     );
-    const up = await this.cloudinary.uploadFromBuffer(buffer, {
-      folder: 'composer/cloud',
+    const { upload: up, libraryItem } = await this.ingest.ingestBuffer({
+      workspaceId,
+      userId,
+      buffer,
+      originalName: args.fileId.split('/').pop() || undefined,
       resourceType: 'auto',
     });
     const type = up.resourceType === 'video' ? 'video' : 'image';
@@ -121,6 +130,7 @@ export class MediaSourcesService {
       height: up.height,
       durationSec: up.duration,
       sizeBytes: up.bytes,
+      libraryItem,
     };
   }
 

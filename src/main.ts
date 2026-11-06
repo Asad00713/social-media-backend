@@ -6,6 +6,8 @@ import express from 'express';
 import { AppLoggerService } from './logs/app-logger.service';
 import { LogWriterService } from './logs/log-writer.service';
 import { AllExceptionsFilter } from './logs/all-exceptions.filter';
+import { SAMPLE_ASSET_ROUTE } from './media-library/samples/sample-content';
+import { sampleAssetsMiddleware } from './media-library/samples/sample-assets';
 
 async function bootstrap() {
   // `rawBody: true` makes Nest buffer the unparsed request body onto
@@ -37,6 +39,12 @@ async function bootstrap() {
   app.use('/webhooks/slack/events', express.raw({ type: 'application/json' }));
 
   app.use(cookieParser());
+
+  // The Library's bundled sample images (seeded into every new workspace):
+  // public, immutable-cached, readable cross-origin. Plain express static,
+  // ahead of Nest's guarded routes, because platforms fetch a published
+  // post's media without our auth.
+  app.use(SAMPLE_ASSET_ROUTE, sampleAssetsMiddleware());
 
   // Basic-auth gate for the Bull Board dashboard. Scoped to '/admin/bull-board'
   // — NOT '/admin/queues', which is where the JWT-guarded admin queue API lives.
