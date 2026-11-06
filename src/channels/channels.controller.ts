@@ -1583,6 +1583,42 @@ export class ChannelsController {
   }
 
   /**
+   * YouTube — list this channel's playlists.
+   *
+   * A workspace-scoped twin of `POST youtube/playlists`, which takes a
+   * raw `accessToken` in its body. The composer never holds one of
+   * those — tokens are stored server-side — so the composer could not
+   * call it, which is why its Playlist row sat marked while
+   * `youtube.publisher.ts` had been forwarding `playlistId` all along.
+   */
+  @Get('workspaces/:workspaceId/:channelId/youtube/playlists')
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  async listYouTubePlaylistsForChannel(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+  ) {
+    const channel = await this.channelService.getChannelById(
+      parseInt(channelId, 10),
+      workspaceId,
+    );
+
+    if (channel.platform !== 'youtube') {
+      throw new BadRequestException(
+        `Channel ${channelId} is a ${channel.platform} channel, not a YouTube channel`,
+      );
+    }
+
+    const accessToken = await this.channelService.getAccessToken(
+      parseInt(channelId, 10),
+      workspaceId,
+    );
+
+    const playlists = await this.youtubeService.getPlaylists(accessToken);
+    return { playlists };
+  }
+
+  /**
    * Reddit — list the user's subscribed + moderated subreddits.
    */
   @Get('workspaces/:workspaceId/:channelId/reddit/subreddits')
