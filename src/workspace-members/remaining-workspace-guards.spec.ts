@@ -275,6 +275,7 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
     {
       getWorkspaceChannels: 'posts:draft',
       getChannel: 'posts:draft',
+      lookupMention: 'posts:draft',
       getChannelStats: 'analytics:view',
       getExpiringChannels: 'analytics:view',
       listPinterestBoardsForChannel: 'posts:draft',
