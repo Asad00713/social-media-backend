@@ -60,6 +60,8 @@ export interface PostTarget {
   platformPostUrl?: string;
   publishedAt?: string;
   errorMessage?: string;
+  /** "Publish: Remind me" — set instead of a platform post id. */
+  reminderSentAt?: string;
   contentOverride?: PlatformContent;
   /**
    * Sub-destination for chat/messaging platforms (Slack/Discord): which

@@ -8,6 +8,8 @@ import { and, eq } from 'drizzle-orm';
 import { PayloadResolverService } from './payload-resolver.service';
 import { ComposerErrorMapperService } from './composer-error-mapper.service';
 import { PublisherFactory } from '../../publishers/publisher.factory';
+import { PostReminderService } from '../../services/post-reminder.service';
+import { isReminderTarget, reminderContent } from '../../lib/reminder';
 import { AnalyticsEventEmitter } from '../../../realtime/analytics-event-emitter.service';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { posts } from '../../../drizzle/schema/posts.schema';
@@ -69,6 +71,7 @@ export class PublishOrchestratorService {
     @Inject(CHANNEL_CREDENTIALS_LOOKUP)
     private readonly credentials: ChannelCredentialsLookup,
     @Inject(DRIZZLE) private readonly db: any,
+    private readonly reminders: PostReminderService,
   ) {}
 
   async publishInline(
@@ -137,6 +140,33 @@ export class PublishOrchestratorService {
       this.emitState(workspaceId, draft.id, next);
 
       try {
+        // "Publish: Remind me": nothing goes to the platform; the person is
+        // notified now with everything copied. Not a proof the token works,
+        // so the channel is not healed.
+        if (isReminderTarget(target.platform, draft.perPlatform)) {
+          await this.reminders.send({
+            userId,
+            workspaceId,
+            postId: draft.id,
+            channelId: target.channelId,
+            content: reminderContent(target.platform, {
+              content: draft.base.text,
+              mediaItems: draft.base.mediaItems,
+              platformContent: draft.perPlatform as Record<string, any>,
+            }),
+          });
+          const reminded: ChannelTarget = {
+            ...next,
+            publishStatus: 'published',
+            reminderSentAt: new Date().toISOString(),
+            publishedAt: new Date().toISOString(),
+          };
+          updatedMap.set(target.channelId, reminded);
+          await this.persistChannels(workspaceId, draft.id, updatedMap);
+          this.emitState(workspaceId, draft.id, reminded);
+          continue;
+        }
+
         const payload = this.resolver.resolve(
           { ...draft, channels: input.channels },
           target,

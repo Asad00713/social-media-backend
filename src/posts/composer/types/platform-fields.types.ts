@@ -20,6 +20,10 @@ export type InstagramPostType = 'feed' | 'reel' | 'story' | 'carousel';
 
 export interface InstagramFields {
   postType: InstagramPostType;
+  /** "Publish: Remind me" — notify instead of publishing (src/posts/lib/reminder.ts). */
+  publishMode?: 'auto' | 'remind';
+  /** A Story's note to yourself; only ever goes into the reminder. */
+  frameNote?: string;
   firstComment?: string;
   location?: { id: string; name: string };
   userTags?: Array<{ username: string; x?: number; y?: number }>;
@@ -44,6 +48,8 @@ export interface YouTubeFields {
 
 export interface FacebookFields {
   firstComment?: string;
+  /** "Publish: Remind me" — notify instead of publishing (src/posts/lib/reminder.ts). */
+  publishMode?: 'auto' | 'remind';
   audienceTargeting?: {
     countries?: string[];
     ageMin?: number;

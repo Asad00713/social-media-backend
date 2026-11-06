@@ -76,6 +76,8 @@ export interface ChannelTarget {
   publishedAt?: string;
   retryCount: number;
   nextRetryAt?: string;
+  /** "Publish: Remind me" — when the reminder went out instead of a post. */
+  reminderSentAt?: string;
 }
 
 export type PublishStatus =
