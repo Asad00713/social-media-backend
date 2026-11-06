@@ -98,7 +98,18 @@ export class PinterestPublisher extends BasePublisher {
       {
         link,
         mediaType,
-        videoCoverImageUrl: metadata?.videoCoverImageUrl,
+        // The composer uploads the chosen frame and stores its URL here.
+        // `coverFrameSec` is the same choice as a second: the service
+        // sends it as the key frame when no URL arrived (an older draft,
+        // or a frame that could not be uploaded).
+        videoCoverImageUrl:
+          typeof metadata?.videoCoverImageUrl === 'string'
+            ? metadata.videoCoverImageUrl.trim() || undefined
+            : undefined,
+        coverKeyFrameSec:
+          typeof metadata?.coverFrameSec === 'number'
+            ? metadata.coverFrameSec
+            : undefined,
         // A pin carries ONE alt text, and the composer writes alt text on
         // each media item rather than into the Pinterest panel — its row
         // is read-only and says "From each photo". So the pinned image's

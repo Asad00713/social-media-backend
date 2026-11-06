@@ -31,6 +31,17 @@ export interface PinterestBoardSection {
 /** Pinterest's own cap on a pin's alt text. */
 const PIN_ALT_TEXT_MAX_CHARS = 500;
 
+/**
+ * The key frame second to send, or 0 (the first frame).
+ *
+ * Only a finite, non-negative number is a second. Anything else — a
+ * string from an old draft, a negative from a bad client — falls back to
+ * the first frame rather than reaching Pinterest as a value it rejects.
+ */
+function coverKeyFrame(sec: unknown): number {
+  return typeof sec === 'number' && Number.isFinite(sec) && sec >= 0 ? sec : 0;
+}
+
 /** Pinterest's own cap on a board section's name (`maxLength: 180`). */
 const SECTION_NAME_MAX_CHARS = 180;
 
@@ -394,6 +405,12 @@ export class PinterestService {
       link?: string;
       mediaType?: 'image' | 'video';
       videoCoverImageUrl?: string;
+      /**
+       * The second of the video to use as the cover when no image is
+       * given — `cover_image_key_frame_time`, which Pinterest takes in
+       * SECONDS. The composer stores the chosen frame as `coverFrameSec`.
+       */
+      coverKeyFrameSec?: number;
       /** `alt_text` on PinCreate — capped at 500 characters by the API. */
       altText?: string;
       /**
@@ -426,13 +443,12 @@ export class PinterestService {
       board_id: boardId,
       title,
       description,
+      // A video's media_source is built in createVideoPin, once the
+      // upload has a media_id; this branch is never sent. It used to
+      // invent a cover by swapping `.mp4` for `.jpg` on the video URL —
+      // a file that need not exist.
       media_source: isVideo
-        ? {
-            source_type: 'video_id',
-            cover_image_url:
-              options?.videoCoverImageUrl || mediaUrl.replace('.mp4', '.jpg'),
-            media_id: '', // Will be set after video upload
-          }
+        ? { source_type: 'video_id' }
         : isCarousel
           ? {
               source_type: 'multiple_image_urls',
@@ -512,7 +528,11 @@ export class PinterestService {
     title: string,
     description: string,
     videoUrl: string,
-    options?: { link?: string; videoCoverImageUrl?: string },
+    options?: {
+      link?: string;
+      videoCoverImageUrl?: string;
+      coverKeyFrameSec?: number;
+    },
   ): Promise<{ pinId: string; pinUrl?: string }> {
     // Step 1: Register media upload
     const registerResponse = await fetch(`${this.apiUrl}/media`, {
@@ -586,11 +606,13 @@ export class PinterestService {
     await this.waitForMediaProcessing(accessToken, mediaId);
 
     // Step 4: Create pin with video.
-    // Pinterest requires a cover for a video pin: either an explicit
-    // cover_image_url, or cover_image_key_frame_time (a millisecond offset it
-    // grabs a frame from). We prefer the caller-supplied cover image and fall
-    // back to the video's first frame (0ms) so a pin never fails for a missing
-    // cover.
+    // Pinterest wants a cover for a video pin — its guide says a valid
+    // image url must be provided to avoid a 400, so "send nothing and let
+    // Pinterest pick" is not an option. Either an explicit cover_image_url,
+    // or cover_image_key_frame_time: the SECOND of the video to grab (the
+    // v5 spec's own description; past the end, the last frame is used).
+    // The uploaded frame wins; without one, the second the composer
+    // stored, and without that the first frame.
     const mediaSource: Record<string, any> = {
       source_type: 'video_id',
       media_id: mediaId,
@@ -598,7 +620,9 @@ export class PinterestService {
     if (options?.videoCoverImageUrl) {
       mediaSource.cover_image_url = options.videoCoverImageUrl;
     } else {
-      mediaSource.cover_image_key_frame_time = 0;
+      mediaSource.cover_image_key_frame_time = coverKeyFrame(
+        options?.coverKeyFrameSec,
+      );
     }
 
     const pinBody: Record<string, any> = {
