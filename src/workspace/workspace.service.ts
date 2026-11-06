@@ -22,6 +22,7 @@ import { AddonService } from 'src/billing/services/addon.service';
 import { AccountChannelsService } from 'src/billing/services/account-channels.service';
 import { resolveWorkspaceLimits } from 'src/billing/services/limit-resolver.util';
 import { getNextTokenResetDate } from 'src/billing/services/token-reset.util';
+import { LibrarySamplesService } from 'src/media-library/samples/library-samples.service';
 
 type GetAllREsponse = {
   // Omits the Maestro BYOK credential — it must never reach a client.
@@ -48,6 +49,7 @@ export class WorkspaceService {
     @Inject(forwardRef(() => AddonService))
     private addonService: AddonService,
     private accountChannels: AccountChannelsService,
+    private librarySamples: LibrarySamplesService,
   ) {}
 
   async create(
@@ -124,6 +126,20 @@ export class WorkspaceService {
       await this.usersService.setLastAccessedWorkspace(userId, newWorkspace.id);
     }
 
+    // Sample Library content ("Getting started"), seeded off the request path
+    // after the workspace row is committed. It must never fail or slow the
+    // creation: seedInBackground does not block and does not throw, and the
+    // guard covers even a synchronous surprise.
+    try {
+      this.librarySamples.seedInBackground(newWorkspace.id);
+    } catch (error) {
+      this.logger.error(
+        `Could not schedule Library samples for workspace ${newWorkspace.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
     return newWorkspace;
   }
 
@@ -178,6 +194,7 @@ export class WorkspaceService {
           channelsLimit: limits.channelsLimit,
           membersLimit: limits.membersLimit,
           aiTokensLimit: limits.aiTokensLimit,
+          storageBytesLimit: limits.storageBytesLimit,
           channelsCount: 0,
           membersCount: 0,
           // The purchased extras belong to the ACCOUNT, and every reader

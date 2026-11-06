@@ -1,5 +1,10 @@
-import { buildUsageFanout, pickPrimaryWorkspaceId, WorkspaceRef } from './usage-fanout.util';
+import {
+  buildUsageFanout,
+  pickPrimaryWorkspaceId,
+  WorkspaceRef,
+} from './usage-fanout.util';
 import { PlanLimits, AddonQuantities } from './limit-resolver.util';
+import { PLAN_STORAGE_BYTES } from '../plan-storage';
 
 const PRO: PlanLimits = {
   channelsPerWorkspace: 8,
@@ -7,6 +12,7 @@ const PRO: PlanLimits = {
   maxWorkspaces: 3,
   aiTokensPerMonth: 20000,
   queuedPostsPerChannel: -1,
+  storageBytesPerWorkspace: PLAN_STORAGE_BYTES.PRO,
 };
 
 const NO_ADDONS: AddonQuantities = {
@@ -34,6 +40,20 @@ describe('pickPrimaryWorkspaceId', () => {
 });
 
 describe('buildUsageFanout', () => {
+  it('carries the plan storage limit on every write', () => {
+    const writes = buildUsageFanout(
+      [
+        { id: 'a', createdAt: d('2026-01-01T00:00:00Z') },
+        { id: 'b', createdAt: d('2026-02-01T00:00:00Z') },
+      ],
+      { ...PRO, storageBytesPerWorkspace: 10737418240 },
+      NO_ADDONS,
+    );
+    expect(writes.map((w) => w.storageBytesLimit)).toEqual([
+      10737418240, 10737418240,
+    ]);
+  });
+
   it('produces one write per owned workspace', () => {
     const workspaces: WorkspaceRef[] = [
       { id: 'a', createdAt: d('2026-01-01T00:00:00Z') },
@@ -60,12 +80,14 @@ describe('buildUsageFanout', () => {
       channelsLimit: 8,
       membersLimit: 5,
       aiTokensLimit: 20000,
+      storageBytesLimit: PLAN_STORAGE_BYTES.PRO,
     });
     expect(second).toEqual({
       workspaceId: 'second',
       channelsLimit: 0,
       membersLimit: 0,
       aiTokensLimit: 20000,
+      storageBytesLimit: PLAN_STORAGE_BYTES.PRO,
     });
   });
 
@@ -80,8 +102,12 @@ describe('buildUsageFanout', () => {
       ...NO_ADDONS,
       extraChannels: 4,
     });
-    expect(writes.find((w) => w.workspaceId === 'primary')!.channelsLimit).toBe(8);
-    expect(writes.find((w) => w.workspaceId === 'second')!.channelsLimit).toBe(0);
+    expect(writes.find((w) => w.workspaceId === 'primary')!.channelsLimit).toBe(
+      8,
+    );
+    expect(writes.find((w) => w.workspaceId === 'second')!.channelsLimit).toBe(
+      0,
+    );
   });
 
   it('returns no writes when the user owns no workspaces', () => {

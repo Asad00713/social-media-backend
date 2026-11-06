@@ -7,11 +7,20 @@ import { readMigrations } from './runner';
  * Without a lock_timeout either one queues behind any open transaction on the
  * still-running old instance, and every Inbox read queues behind it. Each must
  * bound its wait as its first executable statement; SET LOCAL is scoped to the
- * runner's per-file transaction.
+ * runner's per-file transaction. 0054 alters media_items, saved_links, plans
+ * and workspace_usage (ACCESS EXCLUSIVE) and builds two indexes. 0055 rewrites
+ * posts (two generated columns) under ACCESS EXCLUSIVE and builds three GIN
+ * indexes. 0056 alters media_categories (ACCESS EXCLUSIVE) and adds a
+ * foreign key to users. 0057 alters the five Library tables and validates
+ * four CHECK constraints.
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
   '0052_inbox_conversations_backfill.sql',
+  '0054_library_columns.sql',
+  '0055_posts_library_refs.sql',
+  '0056_media_categories_created_by.sql',
+  '0057_library_is_sample.sql',
 ];
 
 const firstStatement = (sql: string): string =>
@@ -21,7 +30,7 @@ const firstStatement = (sql: string): string =>
     .split(';')[0]
     .trim();
 
-describe('inbox migrations bound their lock wait (I4)', () => {
+describe('migrations bound their lock wait (I4)', () => {
   const files = readMigrations(join(process.cwd(), 'drizzle', 'migrations'));
 
   it.each(FILES)('%s starts with SET LOCAL lock_timeout', (name) => {
