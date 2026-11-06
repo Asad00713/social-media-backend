@@ -17,7 +17,12 @@ describe('BlueskyPublisher link card', () => {
   let service: jest.Mocked<
     Pick<
       BlueskyService,
-      'createTextPost' | 'createImagePost' | 'createVideoPost' | 'createLinkPost'
+      | 'createTextPost'
+      | 'createImagePost'
+      | 'createVideoPost'
+      | 'createLinkPost'
+      | 'setPostReplyControl'
+      | 'setPostQuoteControl'
     >
   >;
 
@@ -48,6 +53,8 @@ describe('BlueskyPublisher link card', () => {
       createImagePost: jest.fn().mockResolvedValue(post('at://image')),
       createVideoPost: jest.fn().mockResolvedValue(post('at://video')),
       createLinkPost: jest.fn().mockResolvedValue(post('at://link')),
+      setPostReplyControl: jest.fn().mockResolvedValue(undefined),
+      setPostQuoteControl: jest.fn().mockResolvedValue(undefined),
     };
     publisher = new BlueskyPublisher(service as unknown as BlueskyService);
   });
@@ -108,6 +115,87 @@ describe('BlueskyPublisher link card', () => {
       options({ metadata: { linkCard: { url: CARD.url, title: '  ' } } }),
     );
     expect(service.createLinkPost.mock.calls[0][4]).toBe(CARD.url);
+  });
+
+  /*
+   * Two PRs met here: the post settings (language, reply control) and
+   * the link card each added a parameter to `createLinkPost`. The
+   * card post must carry BOTH its reply ref and the settings, or a
+   * card silently drops the language and the reply restriction that a
+   * plain post of the same draft would have had.
+   */
+  describe('with post settings', () => {
+    const settings = { language: 'ur', replyControl: 'nobody' };
+
+    it('carries the language onto the card post', async () => {
+      await publisher.publish(
+        options({ metadata: { linkCard: CARD, ...settings } }),
+      );
+      const args = service.createLinkPost.mock.calls[0];
+      expect(args[7]).toBeUndefined();
+      expect(args[8]).toEqual({ langs: ['ur'], replyControl: 'nobody' });
+    });
+
+    it('gates the card post when replies are restricted', async () => {
+      await publisher.publish(
+        options({ metadata: { linkCard: CARD, ...settings } }),
+      );
+      expect(service.setPostReplyControl).toHaveBeenCalledWith(
+        'jwt',
+        'did:plc:abc',
+        'at://link',
+        [],
+      );
+    });
+
+    it('carries the language on a thread, card post included', async () => {
+      await publisher.publish(
+        options({
+          metadata: {
+            linkCard: CARD,
+            language: 'ur',
+            thread: [{ text: 'one' }, { text: 'two' }],
+          },
+        }),
+      );
+      expect(service.createLinkPost.mock.calls[0][8]?.langs).toEqual(['ur']);
+      expect(service.createTextPost.mock.calls[0][4]?.langs).toEqual(['ur']);
+    });
+
+    it('labels the card post', async () => {
+      await publisher.publish(
+        options({ metadata: { linkCard: CARD, contentWarning: 'nudity' } }),
+      );
+      expect(service.createLinkPost.mock.calls[0][8]?.labels).toEqual([
+        'nudity',
+      ]);
+    });
+
+    it('writes the postgate for the card post', async () => {
+      await publisher.publish(
+        options({ metadata: { linkCard: CARD, allowQuotes: false } }),
+      );
+      expect(service.setPostQuoteControl).toHaveBeenCalledWith(
+        'jwt',
+        'did:plc:abc',
+        'at://link',
+        [{ $type: 'app.bsky.feed.postgate#disableRule' }],
+      );
+    });
+
+    it('gates a thread at the card post, once', async () => {
+      await publisher.publish(
+        options({
+          metadata: {
+            linkCard: CARD,
+            replyControl: 'nobody',
+            thread: [{ text: 'one' }, { text: 'two' }],
+          },
+        }),
+      );
+      expect(service.setPostReplyControl).toHaveBeenCalledTimes(1);
+      expect(service.setPostReplyControl.mock.calls[0][2]).toBe('at://link');
+    });
   });
 
   describe('in a thread', () => {

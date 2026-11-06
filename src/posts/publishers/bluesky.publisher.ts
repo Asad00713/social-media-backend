@@ -3,6 +3,9 @@ import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import {
   BlueskyService,
   BlueskyPostSettings,
+  BLUESKY_SELF_LABELS,
+  BlueskySelfLabel,
+  postgateEmbeddingRules,
   threadgateAllow,
 } from '../../channels/services/bluesky.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
@@ -199,6 +202,7 @@ export class BlueskyPublisher extends BasePublisher {
     }
 
     await this.applyReplyControl(accessToken, did, post.uri, settings);
+    await this.applyQuoteControl(accessToken, did, post.uri, settings);
 
     const rkey = post.uri.split('/').pop() ?? '';
     const handle = (channelMetadata?.handle as string | undefined) ?? did;
@@ -243,6 +247,22 @@ export class BlueskyPublisher extends BasePublisher {
       };
     }
 
+    // Only an explicit `false` means anything: quoting is allowed by default
+    // and "allowed" is the absence of a record, so anything else stays unset.
+    if (metadata?.allowQuotes === false) {
+      settings.allowQuotes = false;
+    }
+
+    // The composer calls this a content warning; on the wire it is a
+    // self-label on the post, so the draft carries the label's own value.
+    const warning = metadata?.contentWarning;
+    if (
+      typeof warning === 'string' &&
+      (BLUESKY_SELF_LABELS as readonly string[]).includes(warning)
+    ) {
+      settings.labels = [warning as BlueskySelfLabel];
+    }
+
     return settings;
   }
 
@@ -279,6 +299,38 @@ export class BlueskyPublisher extends BasePublisher {
     }
   }
 
+  /**
+   * Writes the postgate, if the author turned quote posts off.
+   *
+   * Not fatal for the same reason as the threadgate: the post is already
+   * live, and failing the publish would report a failure for something
+   * that succeeded and invite a retry that double-posts.
+   */
+  private async applyQuoteControl(
+    accessJwt: string,
+    did: string,
+    postUri: string,
+    settings: BlueskyPostSettings | undefined,
+  ): Promise<void> {
+    const rules = postgateEmbeddingRules(settings);
+    if (rules === null) return;
+
+    try {
+      await this.blueskyService.setPostQuoteControl(
+        accessJwt,
+        did,
+        postUri,
+        rules,
+      );
+    } catch (err) {
+      this.logger.error(
+        `Bluesky post ${postUri} published, but its quote restriction did not: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+  }
+
   private async publishThread(
     accessJwt: string,
     did: string,
@@ -298,6 +350,16 @@ export class BlueskyPublisher extends BasePublisher {
     let parentRef: { uri: string; cid: string } | undefined;
     let rootUri: string | undefined;
     const postedUris: string[] = [];
+
+    /*
+     * A content warning is not offered on a thread (the design drops the
+     * row), so a label left on the draft from before the author switched
+     * format is not published either — they could neither see nor undo it.
+     */
+    const postSettings: BlueskyPostSettings = {
+      ...settings,
+      labels: undefined,
+    };
 
     for (let i = 0; i < posts.length; i++) {
       const p = posts[i];
@@ -325,7 +387,7 @@ export class BlueskyPublisher extends BasePublisher {
             card.description,
             card.thumbUrl,
             reply,
-            settings,
+            postSettings,
           );
         } else if (media.length === 0) {
           created = await this.blueskyService.createTextPost(
@@ -333,7 +395,7 @@ export class BlueskyPublisher extends BasePublisher {
             did,
             p.text,
             reply,
-            settings,
+            postSettings,
           );
         } else if (isVideoItem) {
           created = await this.blueskyService.createVideoPost(
@@ -343,7 +405,7 @@ export class BlueskyPublisher extends BasePublisher {
             media[0].url,
             media[0].altText,
             reply,
-            settings,
+            postSettings,
           );
         } else {
           created = await this.blueskyService.createImagePost(
@@ -353,7 +415,7 @@ export class BlueskyPublisher extends BasePublisher {
             media.map((m) => m.url),
             media.map((m) => m.altText ?? ''),
             reply,
-            settings,
+            postSettings,
           );
         }
 
@@ -368,9 +430,12 @@ export class BlueskyPublisher extends BasePublisher {
             accessJwt,
             did,
             created.uri,
-            settings ?? {},
+            postSettings,
           );
         }
+        // A postgate governs one POST, so unlike the threadgate every post
+        // of the thread gets its own.
+        await this.applyQuoteControl(accessJwt, did, created.uri, postSettings);
         parentRef = ref;
         postedUris.push(created.uri);
         this.logger.log(
