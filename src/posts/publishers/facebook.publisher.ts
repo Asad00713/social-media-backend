@@ -39,7 +39,11 @@ export class FacebookPublisher extends BasePublisher {
     this.validate(options);
 
     const postType = (metadata?.postType as string | undefined) ?? 'post';
-    let result: { postId: string; thumbnailWarning?: string };
+    let result: {
+      postId: string;
+      thumbnailWarning?: string;
+      captionsWarning?: string;
+    };
 
     if (postType === 'reel') {
       // Reels require a vertical video. If no media or first is not a video, fail clearly.
@@ -58,6 +62,7 @@ export class FacebookPublisher extends BasePublisher {
         typeof metadata?.thumbnailUrl === 'string'
           ? metadata.thumbnailUrl.trim()
           : '';
+      const captions = reelCaptions(metadata);
       result = await this.facebookService.postReelToPage(
         platformAccountId,
         accessToken,
@@ -66,6 +71,7 @@ export class FacebookPublisher extends BasePublisher {
         {
           ...(reelTitle ? { title: reelTitle } : {}),
           ...(thumbnailUrl ? { thumbnailUrl } : {}),
+          ...(captions ? { captions } : {}),
         },
       );
     } else if (postType === 'story') {
@@ -130,6 +136,13 @@ export class FacebookPublisher extends BasePublisher {
         coverWarning: result.thumbnailWarning,
       };
     }
+    // Likewise captions: set after the Reel is live, so a refusal is a warning.
+    if (result.captionsWarning) {
+      publishResult.metadata = {
+        ...(publishResult.metadata ?? {}),
+        captionsWarning: result.captionsWarning,
+      };
+    }
 
     // Soft action: post first comment if provided. Failure here is logged
     // and surfaced as a warning — the main post stays "published".
@@ -166,4 +179,27 @@ export class FacebookPublisher extends BasePublisher {
 
     return publishResult;
   }
+}
+
+/** The locale a caption file goes out under when the draft names none. */
+const DEFAULT_CAPTION_LOCALE = 'en_US';
+
+/**
+ * The Reel's caption file, from the draft's own keys - `captionsSrt` (SubRip
+ * text, written by the composer's Captions tool) and `captionsLocale` (`en_US`
+ * style). Undefined when there is no text, so nothing is sent; a locale that
+ * is missing or not of Facebook's shape falls back to `en_US`.
+ */
+export function reelCaptions(
+  metadata: Record<string, unknown> | undefined,
+): { srt: string; locale: string } | undefined {
+  const srt =
+    typeof metadata?.captionsSrt === 'string' ? metadata.captionsSrt : '';
+  if (srt.trim() === '') return undefined;
+  const locale =
+    typeof metadata?.captionsLocale === 'string' &&
+    /^[a-z]{2}_[A-Z]{2}$/.test(metadata.captionsLocale)
+      ? metadata.captionsLocale
+      : DEFAULT_CAPTION_LOCALE;
+  return { srt, locale };
 }
