@@ -38,6 +38,7 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
     ComposerController,
     {
       saveDraft: 'posts:draft',
+      listLabels: 'posts:draft',
       listDrafts: 'posts:draft',
       getDraft: 'posts:draft',
       deleteDraft: 'posts:draft',
