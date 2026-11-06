@@ -4,6 +4,10 @@ import type {
   CreatedDm,
   DmConversationSummary,
 } from '../../inbox/adapters/inbox-adapter.interface';
+import {
+  MAX_IMAGE_BYTES,
+  fetchPublicMedia,
+} from '../../common/net/public-fetch';
 
 /**
  * Facebook/Instagram Page and Account data structures
@@ -858,7 +862,9 @@ export class FacebookService {
     pageAccessToken: string,
     imageUrl: string,
   ): Promise<void> {
-    const image = await fetch(imageUrl);
+    const image = await fetchPublicMedia(imageUrl, {
+      maxBytes: MAX_IMAGE_BYTES,
+    });
     if (!image.ok) {
       throw new Error(
         `the cover image could not be downloaded (HTTP ${image.status})`,
