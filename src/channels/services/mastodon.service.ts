@@ -40,6 +40,12 @@ export interface MastodonStatus {
   repliesCount: number;
 }
 
+/**
+ * Who may quote a status — `quote_approval_policy`. The only three values
+ * the API accepts.
+ */
+export type MastodonQuoteApprovalPolicy = 'public' | 'followers' | 'nobody';
+
 export interface MastodonMediaAttachment {
   id: string;
   type: 'image' | 'video' | 'gifv' | 'audio' | 'unknown';
@@ -304,6 +310,17 @@ export class MastodonService {
         expiresInSeconds: number;
         multiple?: boolean;
       };
+      /**
+       * `quote_approval_policy` — who may quote this status.
+       *
+       * Added in Mastodon 4.5.0 (API version 7). Omitted, "the user's
+       * default setting will be used instead" — an ACCOUNT preference, not
+       * `public`, so leaving it out is the only way to respect it. The API
+       * ignores it for `private` and `direct` posts, whose policy is always
+       * `nobody`. On an instance older than 4.5 it is an unknown parameter,
+       * which the API does not document as rejected (INFERRED: ignored).
+       */
+      quoteApprovalPolicy?: MastodonQuoteApprovalPolicy;
     },
   ): Promise<MastodonStatus> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
@@ -320,6 +337,9 @@ export class MastodonService {
     if (options?.scheduledAt) body.scheduled_at = options.scheduledAt;
     if (options?.mediaIds && options.mediaIds.length > 0) {
       body.media_ids = options.mediaIds;
+    }
+    if (options?.quoteApprovalPolicy) {
+      body.quote_approval_policy = options.quoteApprovalPolicy;
     }
 
     // Poll or media, never both. Media wins: the attachments are already

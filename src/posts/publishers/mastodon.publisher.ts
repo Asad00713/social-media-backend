@@ -1,10 +1,34 @@
 import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
-import { MastodonService } from '../../channels/services/mastodon.service';
+import {
+  MastodonService,
+  type MastodonQuoteApprovalPolicy,
+} from '../../channels/services/mastodon.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
 type MastodonVisibility = 'public' | 'unlisted' | 'private' | 'direct';
+
+const QUOTE_POLICIES: readonly MastodonQuoteApprovalPolicy[] = [
+  'public',
+  'followers',
+  'nobody',
+];
+
+/**
+ * The composer's "Allow quotes" choice (`metadata.allowQuotes`), or undefined.
+ *
+ * Only one of the API's three values counts. Anything else — a stale draft,
+ * a hand-edited request — is left out rather than forwarded, because
+ * leaving it out means "use the account's own default", which is the safe
+ * reading of a value we do not understand.
+ */
+function pickQuotePolicy(
+  metadata: Record<string, any> | undefined,
+): MastodonQuoteApprovalPolicy | undefined {
+  const value = metadata?.allowQuotes;
+  return QUOTE_POLICIES.find((policy) => policy === value);
+}
 
 /**
  * Mastodon publisher — calls MastodonService against the channel's
@@ -151,6 +175,10 @@ export class MastodonPublisher extends BasePublisher {
         // Dropped by the service when media is present — a status takes a
         // poll OR attachments, never both.
         poll: this.getPoll(metadata),
+        // Single posts only. The composer's row is absent in a thread, so
+        // forwarding a value left over from before the switch would apply
+        // a setting nobody can see.
+        quoteApprovalPolicy: pickQuotePolicy(metadata),
       },
     );
 
