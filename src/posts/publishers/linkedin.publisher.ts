@@ -12,6 +12,52 @@ function normalizeVisibility(value: unknown): LinkedInVisibility {
   return upper === 'CONNECTIONS' ? 'CONNECTIONS' : 'PUBLIC';
 }
 
+/**
+ * The title LinkedIn shows above a document. The Posts API requires one
+ * (stated), and the composer carries the uploaded file's own name when it
+ * has it; otherwise the last path segment of the stored URL, which for our
+ * storage is the file name too.
+ */
+function documentTitleOf(item: { url: string; filename?: unknown }): string {
+  if (typeof item.filename === 'string' && item.filename.trim()) {
+    return item.filename.trim();
+  }
+  try {
+    const segment = new URL(item.url).pathname.split('/').pop() ?? '';
+    const decoded = decodeURIComponent(segment).trim();
+    if (decoded) return decoded;
+  } catch {
+    // not a URL — fall through to the plain name
+  }
+  return 'Document';
+}
+
+const isDocument = (item: { type: string }) => item.type === 'document';
+
+/**
+ * The first link in a block of text — the one the composer draws the card
+ * for. Mirrors `findLink` in the frontend (`facebook-post-shape.ts`): the
+ * end of the match is deliberately loose, because a trailing full stop or
+ * comma belongs to the sentence, not the link.
+ */
+const URL_PATTERN = /https?:\/\/[^\s<>"')\]]+[^\s<>"')\].,;:!?]/i;
+
+function firstUrlIn(text: string): string | undefined {
+  return text.match(URL_PATTERN)?.[0];
+}
+
+/** `https://www.lumiere.pk/blog` -> `lumiere.pk`, as the card shows it. */
+function domainOf(url: string): string {
+  try {
+    return new URL(url).hostname.replace(/^www\./, '');
+  } catch {
+    return url;
+  }
+}
+
+const trimmed = (value: unknown): string =>
+  typeof value === 'string' ? value.trim() : '';
+
 @Injectable()
 export class LinkedInPublisher extends BasePublisher {
   readonly platform: SupportedPlatform = 'linkedin';
@@ -42,6 +88,21 @@ export class LinkedInPublisher extends BasePublisher {
       return;
     }
 
+    // A document post is its file. The composer only offers the format with
+    // one attached, but a stale or hand-built draft should fail here, in words,
+    // rather than as a LinkedIn 400 after an upload.
+    if (metadata?.postType === 'document') {
+      if (!mediaItems.some(isDocument)) {
+        throw new Error('LinkedIn document post requires a document file');
+      }
+      if (content && content.length > 3000) {
+        throw new Error(
+          `LinkedIn content exceeds 3000 character limit (${content.length} chars)`,
+        );
+      }
+      return;
+    }
+
     // LinkedIn allows text-only posts
     if (!content && mediaItems.length === 0) {
       throw new Error('LinkedIn post must have content or media');
@@ -56,7 +117,7 @@ export class LinkedInPublisher extends BasePublisher {
   }
 
   supportsMediaTypes(mediaItems: MediaItem[]): boolean {
-    const supportedTypes = ['image', 'video'];
+    const supportedTypes = ['image', 'video', 'document'];
     return mediaItems.every((m) => supportedTypes.includes(m.type));
   }
 
@@ -75,12 +136,17 @@ export class LinkedInPublisher extends BasePublisher {
     const isOrganization = channelMetadata?.isOrganization || false;
     const visibility = normalizeVisibility(metadata?.visibility);
     const postType = (metadata?.postType as string | undefined) ?? 'post';
+    const actorUrn = isOrganization
+      ? `urn:li:organization:${platformAccountId}`
+      : `urn:li:person:${platformAccountId}`;
+    // `isReshareDisabledByAuthor` exists only on the versioned Posts API, so
+    // it is honoured on exactly the formats that publish through it: polls,
+    // documents and link cards with the author's own image. The rest go
+    // through the legacy `/v2/ugcPosts`, which has no such field.
+    const disableReshare = metadata?.reshareDisabled === true;
 
     // POLL — uses Posts API with content.poll structure
     if (postType === 'poll') {
-      const actorUrn = isOrganization
-        ? `urn:li:organization:${platformAccountId}`
-        : `urn:li:person:${platformAccountId}`;
       const opts = (metadata.pollOptions as string[])
         .map((o) => o.trim())
         .filter((o) => o.length > 0);
@@ -92,10 +158,7 @@ export class LinkedInPublisher extends BasePublisher {
         (metadata?.pollDurationDays as number | undefined) ?? 7,
         content ?? '',
         visibility,
-        // Only the poll path can carry this: it is the one publish here
-        // already on the versioned Posts API. Every other LinkedIn post
-        // goes through `/v2/ugcPosts`, which has no reshare field.
-        metadata?.reshareDisabled === true,
+        disableReshare,
       );
 
       const publishResult: PublishResult = {
@@ -122,9 +185,35 @@ export class LinkedInPublisher extends BasePublisher {
       }
     }
 
+    // A link whose card carries the author's own image. The Posts API does
+    // no URL scraping (stated), so this is the one link post that is a card
+    // on LinkedIn: without an image the link stays text in the caption, and
+    // `metadata.linkUrl` alone still takes the legacy ARTICLE branch below.
+    // Attached media wins over it simply by being tested first in the chain
+    // below: an image post carries the link as text.
+    const cardThumbnail = trimmed(metadata?.linkThumbnailUrl);
+    const cardSource = cardThumbnail
+      ? trimmed(metadata?.linkUrl) || firstUrlIn(effectiveContent)
+      : undefined;
+
     let result: { postId: string };
 
-    if (mediaItems.length > 0) {
+    if (postType === 'document') {
+      // PDF / Office file: Documents API upload, then a Posts API post.
+      const file = mediaItems.find(isDocument);
+      if (!file) {
+        throw new Error('LinkedIn document post requires a document file');
+      }
+      result = await this.linkedinService.createDocumentPost(
+        accessToken,
+        actorUrn,
+        effectiveContent,
+        file.url,
+        documentTitleOf(file as typeof file & { filename?: unknown }),
+        visibility,
+        disableReshare,
+      );
+    } else if (mediaItems.length > 0) {
       const mediaItem = mediaItems[0];
 
       if (mediaItem.type === 'image') {
@@ -170,6 +259,27 @@ export class LinkedInPublisher extends BasePublisher {
       } else {
         throw new Error(`Unsupported media type: ${mediaItem.type}`);
       }
+    } else if (cardSource) {
+      // Images API upload, then a Posts API article carrying it.
+      result = await this.linkedinService.createArticlePostWithThumbnail(
+        accessToken,
+        actorUrn,
+        effectiveContent,
+        {
+          source: cardSource,
+          // Required by the API (stated) and not scraped, so it is what the
+          // card shows: the author's title, else the site's name.
+          title: (trimmed(metadata?.linkTitle) || domainOf(cardSource)).slice(
+            0,
+            399,
+          ),
+          description:
+            trimmed(metadata?.linkDescription).slice(0, 4085) || undefined,
+          thumbnailUrl: cardThumbnail,
+        },
+        visibility,
+        disableReshare,
+      );
     } else if (metadata?.linkUrl) {
       // Link post
       if (isOrganization) {
@@ -223,9 +333,6 @@ export class LinkedInPublisher extends BasePublisher {
         : '';
     if (firstComment.length > 0) {
       try {
-        const actorUrn = isOrganization
-          ? `urn:li:organization:${platformAccountId}`
-          : `urn:li:person:${platformAccountId}`;
         const comment = await this.linkedinService.postComment(
           accessToken,
           actorUrn,
