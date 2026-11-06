@@ -90,6 +90,8 @@ export interface ChannelTarget {
   nextRetryAt?: string;
   /** Per-item results of a post sent as several (one Pin per image). */
   itemResults?: PublishItemResult[];
+  /** "Publish: Remind me" — when the reminder went out instead of a post. */
+  reminderSentAt?: string;
 }
 
 export type PublishStatus =

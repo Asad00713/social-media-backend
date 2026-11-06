@@ -88,6 +88,8 @@ export interface PostTarget {
   errorMessage?: string;
   /** Per-item results when the post went out as several (see above). */
   itemResults?: PublishItemResult[];
+  /** "Publish: Remind me" — set instead of a platform post id. */
+  reminderSentAt?: string;
   contentOverride?: PlatformContent;
   /**
    * Sub-destination for chat/messaging platforms (Slack/Discord): which

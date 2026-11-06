@@ -38,6 +38,7 @@ function makeService(existing: Record<string, unknown>) {
     { syncPost: noop, loadPostLinks: async () => [] } as any,
     {} as any,
     { enforceQueueLimit: noop } as any,
+    { send: jest.fn() } as any, // PostReminderService
   );
   jest.spyOn(svc, 'getPost').mockResolvedValue(existing as any);
   jest.spyOn(svc as any, 'validateChannels').mockResolvedValue([]);

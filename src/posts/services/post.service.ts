@@ -47,6 +47,12 @@ import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.se
 import { CalendarPushSyncService } from '../../calendar-sync/services/calendar-push-sync.service';
 import { CampaignStatusSyncListener } from '../../campaigns/campaign-status-sync.listener';
 import { PostQueueService } from '../../billing/services/post-queue.service';
+import { PostReminderService } from './post-reminder.service';
+import {
+  isReminderTarget,
+  reminderContent,
+  REMINDER_TARGET_STATUS,
+} from '../lib/reminder';
 import type {
   PostStatusChangedPayload,
   PostStatusChangedTarget,
@@ -87,6 +93,7 @@ export class PostService {
     private readonly calendarPushSync: CalendarPushSyncService,
     private readonly campaignStatusSync: CampaignStatusSyncListener,
     private readonly postQueue: PostQueueService,
+    private readonly reminders: PostReminderService,
   ) {}
 
   /**
@@ -669,6 +676,52 @@ export class PostService {
       if (target.status === 'published') {
         updatedTargets.push(target);
         anySuccess = true;
+        continue;
+      }
+
+      // "Publish: Remind me" (Instagram / Facebook): the platform is not
+      // called. The person is notified with everything copied and posts it
+      // by hand. No rate limit applies and no metrics trail is enqueued:
+      // there is no platform post to measure.
+      if (isReminderTarget(target.platform, post.platformContent)) {
+        try {
+          await this.reminders.send({
+            userId,
+            workspaceId,
+            postId,
+            channelId: target.channelId,
+            content: reminderContent(target.platform, post),
+          });
+          updatedTargets.push({
+            ...target,
+            status: REMINDER_TARGET_STATUS,
+            reminderSentAt: new Date().toISOString(),
+            errorMessage: undefined,
+          });
+          anySuccess = true;
+          newSuccess = true;
+          await this.recordHistory(
+            postId,
+            'reminder_sent',
+            'publishing',
+            REMINDER_TARGET_STATUS,
+            target.channelId,
+            userId,
+            { platform: target.platform },
+          );
+        } catch (error) {
+          const errorMessage =
+            error instanceof Error ? error.message : 'Unknown error';
+          this.logger.error(
+            `Failed to send the reminder for channel ${target.channelId}: ${errorMessage}`,
+          );
+          updatedTargets.push({
+            ...target,
+            status: 'failed',
+            errorMessage: `Could not send your reminder: ${errorMessage}`,
+          });
+          allSuccess = false;
+        }
         continue;
       }
 
