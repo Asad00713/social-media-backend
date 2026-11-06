@@ -9,16 +9,18 @@ function build() {
     getAccessToken: jest.fn(),
   };
   const dropbox = { listMedia: jest.fn(), downloadFile: jest.fn() };
-  const cloudinary = { uploadFromBuffer: jest.fn() };
+  const ingest = { ingestBuffer: jest.fn() };
+  const quota = { assertCanStore: jest.fn() };
   const svc = new MediaSourcesService(
     channelService as never,
     dropbox as never,
     {} as never,
     {} as never,
     {} as never,
-    cloudinary as never,
+    ingest as never,
+    quota as never,
   );
-  return { svc, channelService, dropbox, cloudinary };
+  return { svc, channelService, dropbox, ingest, quota };
 }
 
 describe('media sources are scoped to the path workspace', () => {
@@ -36,16 +38,17 @@ describe('media sources are scoped to the path workspace', () => {
   });
 
   it('import: a channel of another workspace is NotFound, nothing downloaded or uploaded', async () => {
-    const { svc, channelService, dropbox, cloudinary } = build();
+    const { svc, channelService, dropbox, ingest, quota } = build();
     channelService.getChannelById.mockRejectedValue(
       new NotFoundException('Channel not found'),
     );
     await expect(
-      svc.import('victim-ws', 5, { fileId: '/a.jpg' } as never),
+      svc.import('victim-ws', 5, { fileId: '/a.jpg' } as never, 'u1'),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(channelService.getChannelById).toHaveBeenCalledWith(5, 'victim-ws');
     expect(channelService.getAccessToken).not.toHaveBeenCalled();
     expect(dropbox.downloadFile).not.toHaveBeenCalled();
-    expect(cloudinary.uploadFromBuffer).not.toHaveBeenCalled();
+    expect(quota.assertCanStore).not.toHaveBeenCalled();
+    expect(ingest.ingestBuffer).not.toHaveBeenCalled();
   });
 });

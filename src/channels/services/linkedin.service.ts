@@ -1,4 +1,8 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import {
+  MAX_IMAGE_BYTES,
+  fetchPublicMedia,
+} from '../../common/net/public-fetch';
 
 /**
  * The versioned ("rest") base path — Posts, Images and Documents APIs.
@@ -493,7 +497,7 @@ export class LinkedInService {
     this.logger.log(`Downloading video from: ${videoUrl}`);
     let videoResponse: Response;
     try {
-      videoResponse = await fetch(videoUrl);
+      videoResponse = await fetchPublicMedia(videoUrl);
     } catch (error) {
       this.logger.error(`Network error downloading video: ${error}`);
       throw new BadRequestException(
@@ -596,7 +600,9 @@ export class LinkedInService {
     this.logger.log(`Downloading image from: ${imageUrl}`);
     let imageResponse: Response;
     try {
-      imageResponse = await fetch(imageUrl);
+      imageResponse = await fetchPublicMedia(imageUrl, {
+        maxBytes: MAX_IMAGE_BYTES,
+      });
     } catch (error) {
       this.logger.error(`Network error downloading image: ${error}`);
       throw new BadRequestException(
@@ -1149,7 +1155,7 @@ export class LinkedInService {
   ): Promise<void> {
     let source: Response;
     try {
-      source = await fetch(sourceUrl);
+      source = await fetchPublicMedia(sourceUrl);
     } catch (error) {
       this.logger.error(`Network error downloading ${noun}: ${error}`);
       throw new BadRequestException(

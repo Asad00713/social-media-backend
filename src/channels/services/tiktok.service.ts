@@ -1,4 +1,5 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
 
 export interface TikTokUser {
   id: string;
@@ -422,7 +423,7 @@ export class TikTokService {
     // Download the video first
     this.logger.log(`Downloading video from: ${videoUrl}`);
 
-    const videoResponse = await fetch(videoUrl);
+    const videoResponse = await fetchPublicMedia(videoUrl);
     if (!videoResponse.ok) {
       throw new BadRequestException(
         `Failed to download video from ${videoUrl}`,
