@@ -113,6 +113,15 @@ export class ComposerController {
       channels: dto.channels,
       schedule: dto.schedule,
       retryChannelIds: dto.retryChannelIds,
+      campaignId: dto.campaignId,
+      labels: dto.labels,
     });
+  }
+
+  /** Every label used in this workspace, for the composer's Labels picker. */
+  @RequireCapability('posts:draft')
+  @Get('labels')
+  async listLabels(@Param('wsId') wsId: string) {
+    return { labels: await this.drafts.listLabels(wsId) };
   }
 }

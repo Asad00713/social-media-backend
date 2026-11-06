@@ -22,6 +22,7 @@ import type {
   PublishStatus,
   ScheduleConfig,
 } from '../types/draft.types';
+import { resolveOrganise, type OrganiseInput } from '../lib/draft-organise';
 
 export const CHANNEL_CREDENTIALS_LOOKUP = 'CHANNEL_CREDENTIALS_LOOKUP';
 
@@ -43,6 +44,8 @@ export interface InlinePublishInput {
   channels: ChannelTarget[];
   schedule?: ScheduleConfig;
   retryChannelIds?: string[];
+  campaignId?: string | null;
+  labels?: string[];
 }
 
 export interface PublishResultSummary {
@@ -130,7 +133,10 @@ export class PublishOrchestratorService {
 
     // Upsert the posts row. On first publish this inserts; on retry the
     // row already exists with the same id (client UUID) and we update it.
-    await this.upsertPostsRow(workspaceId, userId, draft);
+    await this.upsertPostsRow(workspaceId, userId, draft, {
+      campaignId: input.campaignId,
+      labels: input.labels,
+    });
 
     this.emitter.emit(workspaceId, 'composer.draft.status.changed', {
       workspaceId,
@@ -308,7 +314,16 @@ export class PublishOrchestratorService {
     workspaceId: string,
     userId: string,
     draft: Draft,
+    organise: OrganiseInput = {},
   ): Promise<void> {
+    // The stored filing, so a publish that does not send campaign or labels
+    // keeps them rather than wiping them with the rest of the metadata.
+    const [existing] = await this.db
+      .select({ metadata: posts.metadata })
+      .from(posts)
+      .where(and(eq(posts.id, draft.id), eq(posts.workspaceId, workspaceId)))
+      .limit(1);
+
     // Project to legacy PostTarget shape (with `status` field).
     const legacyTargets = draft.channels.map((c) => ({
       ...c,
@@ -320,6 +335,12 @@ export class PublishOrchestratorService {
       mentions: draft.base.mentions,
       linkPreview: draft.base.linkPreview,
       schedule: draft.schedule,
+      ...(await resolveOrganise(
+        this.db,
+        workspaceId,
+        existing?.metadata,
+        organise,
+      )),
     };
 
     // True upsert. Handles three scenarios:

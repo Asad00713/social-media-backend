@@ -22,6 +22,10 @@ export interface Draft {
   perPlatform: PlatformOverrides;
   channels: ChannelTarget[];
   schedule: ScheduleConfig;
+  /** `metadata.campaignId`: the campaign this post is filed under. */
+  campaignId?: string | null;
+  /** `metadata.labels`. */
+  labels?: string[];
   createdAt: string;
   updatedAt: string;
 }
