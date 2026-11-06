@@ -6,6 +6,7 @@ import {
 } from '@nestjs/common';
 import { isViewer, type CallerRole } from '../../guest-rules';
 import { carryFirstWeekMeta } from '../../../first-week/lib/first-week-metadata';
+import { carryApproval } from '../../lib/draft-approval';
 import { and, desc, eq, inArray } from 'drizzle-orm';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { posts } from '../../../drizzle/schema/posts.schema';
@@ -51,6 +52,14 @@ export class DraftStoreService {
       title: dto.title,
       // A first-week draft must stay one after a person edits it in the composer.
       ...carryFirstWeekMeta(existing[0]?.metadata),
+      // "Needs approval" survives a save; a grant that no longer matches the
+      // saved content is withdrawn.
+      ...carryApproval(existing[0]?.metadata, {
+        content: dto.base.text,
+        mediaItems: dto.base.mediaItems,
+        platformContent: dto.perPlatform ?? {},
+        targets: dto.channels ?? [],
+      }),
     };
 
     if (existing.length === 0) {

@@ -1,5 +1,6 @@
 import type { posts } from '../../drizzle/schema/posts.schema';
 import type { PostRow } from './present-post';
+import { newApprovalRequest, readApproval } from './draft-approval';
 
 /** Metadata keys that tie a post to a campaign or a schedule. */
 const STRIPPED_METADATA = [
@@ -24,6 +25,13 @@ export function buildDuplicate(
   };
   for (const key of STRIPPED_METADATA) delete metadata[key];
   if (metadata.source === 'first_week') metadata.source = 'composer';
+  // A copy of a draft that needs approval needs its own: the request is kept
+  // (now in the copier's name), the grant is not — or copying would be a way
+  // round the approval.
+  delete metadata.approval;
+  if (readApproval(source.metadata)) {
+    metadata.approval = newApprovalRequest(userId);
+  }
 
   const targets = (source.targets ?? []).map((t) => ({
     channelId: t.channelId,

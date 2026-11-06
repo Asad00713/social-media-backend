@@ -6,6 +6,8 @@ export type Capability =
   | 'team:manage'
   | 'channels:manage'
   | 'posts:publish'
+  /** Approve a draft someone asked to have approved ("Needs approval"). */
+  | 'posts:approve'
   | 'inbox:reply'
   | 'posts:draft'
   | 'inbox:view'
@@ -34,6 +36,7 @@ export const CAPABILITY_MIN_ROLE: Record<Capability, WorkspaceRole> = {
   'team:manage': 'ADMIN',
   'channels:manage': 'MEMBER',
   'posts:publish': 'MEMBER',
+  'posts:approve': 'ADMIN',
   'inbox:reply': 'MEMBER',
   'posts:draft': 'GUEST',
   'inbox:view': 'GUEST',

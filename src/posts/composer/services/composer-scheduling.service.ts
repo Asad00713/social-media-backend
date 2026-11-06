@@ -5,6 +5,11 @@ import {
   Logger,
 } from '@nestjs/common';
 import { carryFirstWeekMeta } from '../../../first-week/lib/first-week-metadata';
+import {
+  assertApprovedFor,
+  carryApproval,
+  type ApprovableContent,
+} from '../../lib/draft-approval';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { and, eq } from 'drizzle-orm';
@@ -115,6 +120,18 @@ export class ComposerSchedulingService {
     // A first-week draft keeps its tag when scheduled from the composer (the
     // composer's own `source: 'composer'` above would otherwise erase it).
     Object.assign(metadata, carryFirstWeekMeta(existing[0]?.metadata));
+
+    // "Needs approval": refused before any write or job unless an approval
+    // covers exactly what is being scheduled. The approval then rides along
+    // on the scheduled row, so unscheduling keeps it.
+    const outgoing: ApprovableContent = {
+      content: dto.base.text,
+      mediaItems: dto.base.mediaItems,
+      platformContent: dto.perPlatform ?? {},
+      targets: dto.channels,
+    };
+    assertApprovedFor(existing[0]?.metadata, outgoing);
+    Object.assign(metadata, carryApproval(existing[0]?.metadata, outgoing));
 
     // The same per-channel queue ceiling PostService.createPost enforces. This
     // is a second, independent path to `status: 'scheduled'`, so a check on
