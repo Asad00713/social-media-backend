@@ -17,7 +17,26 @@ export interface UploadResult {
   height?: number;
   duration?: number;
   thumbnailUrl?: string;
+  /** Pages of a PDF (Cloudinary reports a GIF's frame count here too). */
+  pages?: number;
+  /**
+   * True when Cloudinary returned an asset that was already stored under this
+   * public id (`overwrite: false`) instead of storing ours. Never ours to
+   * claim or delete.
+   */
+  existing?: boolean;
 }
+
+/**
+ * What a store says about a file's size. `missing`: it is not there (not
+ * uploaded yet, or never was). `error`: the store could not be asked; try
+ * again later. An unknown size is never a number a caller could swap for a
+ * client's claim.
+ */
+export type StoredSize =
+  | { kind: 'size'; bytes: number }
+  | { kind: 'missing' }
+  | { kind: 'error' };
 
 export interface UploadOptions {
   folder?: string;
@@ -27,13 +46,36 @@ export interface UploadOptions {
   publicId?: string;
 }
 
+const DEFAULT_FOLDER = 'social-media';
+
+/**
+ * The folder an upload goes to. An explicit public id is the whole location,
+ * so it gets no default folder in front of it.
+ */
+function targetFolder(options: UploadOptions): string | undefined {
+  if (options.folder) return options.folder;
+  return options.publicId ? undefined : DEFAULT_FOLDER;
+}
+
+/** Cloudinary's HTTP status on a rejected admin API call, if it gave one. */
+function httpCodeOf(error: unknown): number | undefined {
+  const e = error as {
+    http_code?: unknown;
+    error?: { http_code?: unknown };
+  } | null;
+  const code = e?.error?.http_code ?? e?.http_code;
+  return typeof code === 'number' ? code : undefined;
+}
+
 @Injectable()
 export class CloudinaryService {
   private readonly logger = new Logger(CloudinaryService.name);
   private readonly isConfigured: boolean;
+  private readonly cloudName: string;
 
   constructor(private readonly configService: ConfigService) {
     const cloudName = this.configService.get<string>('CLOUDINARY_CLOUD_NAME');
+    this.cloudName = cloudName ?? '';
     const apiKey = this.configService.get<string>('CLOUDINARY_API_KEY');
     const apiSecret = this.configService.get<string>('CLOUDINARY_API_SECRET');
 
@@ -62,6 +104,16 @@ export class CloudinaryService {
   }
 
   /**
+   * True when the URL points into this account's Cloudinary delivery path
+   * (`https://res.cloudinary.com/<cloud name>/...`). The trailing slash stops
+   * `res.cloudinary.com.evil.io` and a cloud name that merely starts the same.
+   */
+  isOwnUrl(url: string): boolean {
+    if (!this.cloudName || !url) return false;
+    return url.startsWith(`https://res.cloudinary.com/${this.cloudName}/`);
+  }
+
+  /**
    * Upload a file from a URL
    */
   async uploadFromUrl(
@@ -73,23 +125,26 @@ export class CloudinaryService {
     }
 
     const {
-      folder = 'social-media',
       resourceType = 'auto',
       transformation,
       tags = [],
       publicId,
     } = options;
+    const folder = targetFolder(options);
 
     try {
       this.logger.log(`Uploading from URL: ${url}`);
 
       const uploadOptions: Record<string, any> = {
-        folder,
         resource_type: resourceType,
         tags,
         unique_filename: true,
         overwrite: false,
       };
+
+      if (folder) {
+        uploadOptions.folder = folder;
+      }
 
       if (publicId) {
         uploadOptions.public_id = publicId;
@@ -122,12 +177,12 @@ export class CloudinaryService {
     }
 
     const {
-      folder = 'social-media',
       resourceType = 'auto',
       transformation,
       tags = [],
       publicId,
     } = options;
+    const folder = targetFolder(options);
 
     try {
       // Ensure base64 has proper data URI prefix
@@ -140,12 +195,15 @@ export class CloudinaryService {
       this.logger.log('Uploading from base64 data');
 
       const uploadOptions: Record<string, any> = {
-        folder,
         resource_type: resourceType,
         tags,
         unique_filename: true,
         overwrite: false,
       };
+
+      if (folder) {
+        uploadOptions.folder = folder;
+      }
 
       if (publicId) {
         uploadOptions.public_id = publicId;
@@ -178,21 +236,24 @@ export class CloudinaryService {
     }
 
     const {
-      folder = 'social-media',
       resourceType = 'auto',
       transformation,
       tags = [],
       publicId,
     } = options;
+    const folder = targetFolder(options);
 
     return new Promise((resolve, reject) => {
       const uploadOptions: Record<string, any> = {
-        folder,
         resource_type: resourceType,
         tags,
         unique_filename: true,
         overwrite: false,
       };
+
+      if (folder) {
+        uploadOptions.folder = folder;
+      }
 
       if (publicId) {
         uploadOptions.public_id = publicId;
@@ -254,29 +315,58 @@ export class CloudinaryService {
   }
 
   /**
-   * Generate a signed upload URL for direct client-side uploads
+   * The stored size of a file, from the admin API: `missing` on a 404,
+   * `error` when Cloudinary is not configured, fails, or reports no size.
    */
-  generateSignedUploadParams(options: UploadOptions = {}): {
+  async getResourceBytes(
+    publicId: string,
+    resourceType: 'image' | 'video' | 'raw',
+  ): Promise<StoredSize> {
+    if (!this.isConfigured) return { kind: 'error' };
+    try {
+      const res = (await cloudinary.api.resource(publicId, {
+        resource_type: resourceType,
+      })) as { bytes?: unknown };
+      return typeof res.bytes === 'number' && Number.isFinite(res.bytes)
+        ? { kind: 'size', bytes: res.bytes }
+        : { kind: 'error' };
+    } catch (error) {
+      if (httpCodeOf(error) === 404) return { kind: 'missing' };
+      const apiMessage = (error as { error?: { message?: unknown } } | null)
+        ?.error?.message;
+      const detail =
+        typeof apiMessage === 'string'
+          ? apiMessage
+          : error instanceof Error
+            ? error.message
+            : 'unknown error';
+      this.logger.warn(`Could not read the size of ${publicId}: ${detail}`);
+      return { kind: 'error' };
+    }
+  }
+
+  /**
+   * Signed parameters for a direct browser upload of exactly one asset: the
+   * signature covers an explicit `public_id` and `overwrite: false`, which
+   * the client sends unchanged. The location is the same in either Cloudinary
+   * folder mode, and an id that is taken yields Cloudinary's existing asset
+   * rather than a replacement.
+   */
+  generateSignedUploadParams(publicId: string): {
     signature: string;
     timestamp: number;
     cloudName: string;
     apiKey: string;
-    folder: string;
+    publicId: string;
+    overwrite: false;
   } {
     if (!this.isConfigured) {
       throw new BadRequestException('Cloudinary is not configured');
     }
 
     const timestamp = Math.round(new Date().getTime() / 1000);
-    const folder = options.folder || 'social-media';
-
-    const paramsToSign = {
-      timestamp,
-      folder,
-    };
-
     const signature = cloudinary.utils.api_sign_request(
-      paramsToSign,
+      { timestamp, public_id: publicId, overwrite: false },
       this.configService.get<string>('CLOUDINARY_API_SECRET')!,
     );
 
@@ -285,7 +375,8 @@ export class CloudinaryService {
       timestamp,
       cloudName: this.configService.get<string>('CLOUDINARY_CLOUD_NAME')!,
       apiKey: this.configService.get<string>('CLOUDINARY_API_KEY')!,
-      folder,
+      publicId,
+      overwrite: false,
     };
   }
 
@@ -359,11 +450,14 @@ export class CloudinaryService {
       format: result.format,
       resourceType: result.resource_type as 'image' | 'video' | 'raw',
       bytes: result.bytes,
+      existing: result.existing === true,
     };
 
     if (result.width) uploadResult.width = result.width;
     if (result.height) uploadResult.height = result.height;
     if (result.duration) uploadResult.duration = result.duration;
+    const pages: unknown = result.pages;
+    if (typeof pages === 'number') uploadResult.pages = pages;
 
     // Generate thumbnail for videos
     if (result.resource_type === 'video') {

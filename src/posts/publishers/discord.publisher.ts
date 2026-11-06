@@ -3,6 +3,7 @@ import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import { DiscordService } from '../../channels/services/discord.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
 
 interface Destination {
   id: string;
@@ -54,7 +55,7 @@ export class DiscordPublisher extends BasePublisher {
     let files: { name: string; data: Buffer; contentType?: string }[] | undefined;
     if (mediaItems.length === 1) {
       const media = mediaItems[0];
-      const resp = await fetch(media.url);
+      const resp = await fetchPublicMedia(media.url);
       if (!resp.ok) {
         throw new Error(`Failed to download Discord media (${resp.status})`);
       }
