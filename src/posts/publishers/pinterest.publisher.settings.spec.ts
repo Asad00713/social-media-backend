@@ -124,19 +124,21 @@ describe('PinterestPublisher — pin settings', () => {
       ]);
     });
 
-    // The composer's other mode, "N separate Pins", needs the
-    // orchestrator to publish once per image — it publishes once per
-    // CHANNEL. Until it does, that choice must not silently become a
-    // carousel: the author picked the opposite of one.
+    // The composer's other mode, "N separate Pins", is one Pin per image
+    // (pinterest.pin-per-image.spec.ts). That choice must never silently
+    // become a carousel: the author picked the opposite of one.
     it.each([
       ['the separate-Pins mode is chosen', { asCarousel: false }],
       ['no mode was chosen', {}],
-    ])('passes no extras when %s', async (_label, metadata) => {
+    ])('builds no carousel when %s', async (_label, metadata) => {
       await publisher.publish(
         options(metadata, [image('a'), image('b'), image('c')]),
       );
 
-      expect(passed().extraImageUrls).toEqual([]);
+      expect(createPin).toHaveBeenCalledTimes(3);
+      for (const call of createPin.mock.calls) {
+        expect(call[5].extraImageUrls ?? []).toEqual([]);
+      }
     });
 
     // The union has no mixed-media carousel variant, so a video among the

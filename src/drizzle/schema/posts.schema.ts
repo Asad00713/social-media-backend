@@ -64,6 +64,19 @@ export interface PlatformContent {
   metadata?: Record<string, any>;
 }
 
+/**
+ * One item of a post that a publisher sends as SEVERAL platform posts - today
+ * only Pinterest's "one Pin per image". Kept on the channel target (inside the
+ * existing `targets` jsonb, no migration) so a retry can skip what already
+ * went out. Keyed by the media url, not its position, so a reordered draft
+ * does not map a Pin to the wrong image.
+ */
+export interface PublishItemResult {
+  mediaUrl: string;
+  platformPostId: string;
+  platformPostUrl?: string;
+}
+
 // Post target - which channel to publish to and its status
 export interface PostTarget {
   channelId: string;
@@ -73,6 +86,8 @@ export interface PostTarget {
   platformPostUrl?: string;
   publishedAt?: string;
   errorMessage?: string;
+  /** Per-item results when the post went out as several (see above). */
+  itemResults?: PublishItemResult[];
   contentOverride?: PlatformContent;
   /**
    * Sub-destination for chat/messaging platforms (Slack/Discord): which

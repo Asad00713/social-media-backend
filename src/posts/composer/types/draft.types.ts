@@ -1,4 +1,5 @@
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
+import type { PublishItemResult } from '../../../drizzle/schema/posts.schema';
 import type {
   TwitterFields,
   InstagramFields,
@@ -82,6 +83,8 @@ export interface ChannelTarget {
   publishedAt?: string;
   retryCount: number;
   nextRetryAt?: string;
+  /** Per-item results of a post sent as several (one Pin per image). */
+  itemResults?: PublishItemResult[];
 }
 
 export type PublishStatus =

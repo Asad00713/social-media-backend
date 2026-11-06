@@ -27,6 +27,10 @@ import {
 } from '../../drizzle/schema/channels.schema';
 import { ChannelService } from '../../channels/services/channel.service';
 import { PublisherFactory } from '../publishers/publisher.factory';
+import {
+  PartialPublishError,
+  PublishResult,
+} from '../publishers/base.publisher';
 import { QUEUES } from '../../queue/queue.module';
 import { RateLimiterService } from '../../queue/rate-limiter.service';
 import { AdapterRegistryService } from '../../channels/analytics/services/adapter-registry.service';
@@ -702,6 +706,9 @@ export class PostService {
           platformPostId: result.platformPostId,
           platformPostUrl: result.platformPostUrl,
           publishedAt: new Date().toISOString(),
+          ...(result.itemResults?.length
+            ? { itemResults: result.itemResults }
+            : {}),
         });
         anySuccess = true;
         newSuccess = true;
@@ -736,6 +743,11 @@ export class PostService {
           ...target,
           status: 'failed',
           errorMessage,
+          // Part of the post is live (one Pin per image): keep what went
+          // out, so the retry resumes after it rather than repeating it.
+          ...(error instanceof PartialPublishError
+            ? { itemResults: error.itemResults }
+            : {}),
         });
         allSuccess = false;
 
@@ -874,7 +886,7 @@ export class PostService {
   private async publishToChannel(
     post: typeof posts.$inferSelect,
     target: PostTarget,
-  ): Promise<{ platformPostId: string; platformPostUrl?: string }> {
+  ): Promise<PublishResult> {
     // Convert channelId from string to number (stored as string in JSONB)
     const channelId = parseInt(target.channelId, 10);
     if (isNaN(channelId)) {
@@ -940,6 +952,11 @@ export class PostService {
       platformAccountId: channel.platformAccountId,
       channelMetadata: channel.metadata || {},
       channelId,
+      // What an earlier attempt at this target already published, so a
+      // multi-item publisher (one Pin per image) skips it on the retry.
+      ...(target.itemResults?.length
+        ? { previousItemResults: target.itemResults }
+        : {}),
     });
   }
 
