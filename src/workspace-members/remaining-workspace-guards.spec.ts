@@ -153,6 +153,7 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
     {
       status: 'posts:draft',
       designs: 'posts:draft',
+      createDesign: 'posts:draft',
       import: 'posts:draft',
       disconnect: 'channels:manage',
     },
@@ -285,6 +286,7 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
       createPinterestPin: 'posts:publish',
       uploadYouTubeVideo: 'posts:publish',
       getYouTubeVideoStatus: 'posts:draft',
+      listYouTubePlaylistsForChannel: 'posts:draft',
       createLinkedInPost: 'posts:publish',
       getTikTokProfile: 'posts:draft',
       getTikTokVideos: 'analytics:view',
