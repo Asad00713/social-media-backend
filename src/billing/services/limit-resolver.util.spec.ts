@@ -5,6 +5,7 @@ import {
   PlanLimits,
   AddonQuantities,
 } from './limit-resolver.util';
+import { PLAN_STORAGE_BYTES } from '../plan-storage';
 
 const PRO: PlanLimits = {
   channelsPerWorkspace: 8,
@@ -12,6 +13,7 @@ const PRO: PlanLimits = {
   maxWorkspaces: 3,
   aiTokensPerMonth: 20000,
   queuedPostsPerChannel: -1,
+  storageBytesPerWorkspace: PLAN_STORAGE_BYTES.PRO,
 };
 
 const FREE: PlanLimits = {
@@ -20,6 +22,7 @@ const FREE: PlanLimits = {
   maxWorkspaces: 1,
   aiTokensPerMonth: 0,
   queuedPostsPerChannel: 10,
+  storageBytesPerWorkspace: PLAN_STORAGE_BYTES.FREE,
 };
 
 const NO_ADDONS: AddonQuantities = {
@@ -36,6 +39,7 @@ describe('resolveWorkspaceLimits', () => {
       membersLimit: 5,
       aiTokensLimit: 20000,
       queuedPostsPerChannel: -1,
+      storageBytesLimit: PLAN_STORAGE_BYTES.PRO,
     });
   });
 
@@ -55,6 +59,7 @@ describe('resolveWorkspaceLimits', () => {
       membersLimit: 5,
       aiTokensLimit: 20000,
       queuedPostsPerChannel: -1,
+      storageBytesLimit: PLAN_STORAGE_BYTES.PRO,
     });
   });
 
@@ -70,6 +75,7 @@ describe('resolveWorkspaceLimits', () => {
       membersLimit: 0,
       aiTokensLimit: 20000,
       queuedPostsPerChannel: -1,
+      storageBytesLimit: PLAN_STORAGE_BYTES.PRO,
     });
   });
 
@@ -91,6 +97,25 @@ describe('resolveWorkspaceLimits', () => {
 // usage.service.ts, dashboard.service.ts, channel.service.ts and
 // admin.service.ts all do: base limit + purchased extras. Keeping it here as a
 // test guards the contract from either side drifting.
+describe('storage limit', () => {
+  const PRO_10GB: PlanLimits = {
+    ...PRO,
+    storageBytesPerWorkspace: 10737418240,
+  };
+
+  it('is the plan value for the primary workspace', () => {
+    expect(
+      resolveWorkspaceLimits(PRO_10GB, NO_ADDONS, true).storageBytesLimit,
+    ).toBe(10737418240);
+  });
+
+  it('is the plan value for a non-primary workspace too (D6)', () => {
+    expect(
+      resolveWorkspaceLimits(PRO_10GB, NO_ADDONS, false).storageBytesLimit,
+    ).toBe(10737418240);
+  });
+});
+
 describe('effective ceiling (base + extraPurchased)', () => {
   it('gives PRO + 3 extra channels exactly 11, not 14', () => {
     const addons: AddonQuantities = { ...NO_ADDONS, extraChannels: 3 };
