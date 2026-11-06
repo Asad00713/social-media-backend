@@ -12,6 +12,11 @@ import { PartialPublishError } from '../../publishers/base.publisher';
 import { AnalyticsEventEmitter } from '../../../realtime/analytics-event-emitter.service';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { posts } from '../../../drizzle/schema/posts.schema';
+import {
+  assertApprovedFor,
+  carryApproval,
+  type ApprovableContent,
+} from '../../lib/draft-approval';
 import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import type {
@@ -131,9 +136,13 @@ export class PublishOrchestratorService {
       updatedAt: now,
     };
 
+    // "Needs approval": refused before the row is touched unless an approval
+    // covers exactly this content.
+    const carried = await this.approvalFor(workspaceId, draft);
+
     // Upsert the posts row. On first publish this inserts; on retry the
     // row already exists with the same id (client UUID) and we update it.
-    await this.upsertPostsRow(workspaceId, userId, draft, {
+    await this.upsertPostsRow(workspaceId, userId, draft, carried, {
       campaignId: input.campaignId,
       labels: input.labels,
     });
@@ -310,10 +319,34 @@ export class PublishOrchestratorService {
     });
   }
 
+  /**
+   * Throws unless the stored draft needs no approval or has one for exactly
+   * this content; returns the `approval` key to keep on the row.
+   */
+  private async approvalFor(
+    workspaceId: string,
+    draft: Draft,
+  ): Promise<Record<string, unknown>> {
+    const [existing] = await this.db
+      .select({ metadata: posts.metadata })
+      .from(posts)
+      .where(and(eq(posts.id, draft.id), eq(posts.workspaceId, workspaceId)))
+      .limit(1);
+    const outgoing: ApprovableContent = {
+      content: draft.base.text,
+      mediaItems: draft.base.mediaItems,
+      platformContent: draft.perPlatform,
+      targets: draft.channels,
+    };
+    assertApprovedFor(existing?.metadata, outgoing);
+    return carryApproval(existing?.metadata, outgoing);
+  }
+
   private async upsertPostsRow(
     workspaceId: string,
     userId: string,
     draft: Draft,
+    carried: Record<string, unknown> = {},
     organise: OrganiseInput = {},
   ): Promise<void> {
     // The stored filing, so a publish that does not send campaign or labels
@@ -341,6 +374,7 @@ export class PublishOrchestratorService {
         existing?.metadata,
         organise,
       )),
+      ...carried,
     };
 
     // True upsert. Handles three scenarios:

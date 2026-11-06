@@ -13,6 +13,13 @@ import { VERSION_ACTION } from '../composer/lib/draft-versions';
 import { db } from '../../drizzle/db';
 import { derivePostStatus, publishedTargetState } from '../lib/post-status';
 import { assertNotInPast, refusal } from '../lib/refusal';
+import {
+  assertApprovedFor,
+  carryApproval,
+  readApproval,
+  withoutApproval,
+  type ApprovableContent,
+} from '../lib/draft-approval';
 import { calendarRangeWhere, occurredAtSql } from '../lib/post-status.sql';
 import {
   posts,
@@ -203,7 +210,9 @@ export class PostService {
         status,
         scheduledAt: dto.scheduledAt,
         platformContent: dto.platformContent || {},
-        metadata: dto.metadata || {},
+        // An approval is only ever asked for and granted through its own
+        // routes; a client cannot hand one in.
+        metadata: withoutApproval(dto.metadata) ?? {},
       })
       .returning();
 
@@ -388,6 +397,36 @@ export class PostService {
         platform: channel.platform as SupportedPlatform,
         status: 'draft' as PostStatus,
       }));
+    }
+
+    // "Needs approval" (metadata.approval). A client's metadata never sets or
+    // clears it, a content change withdraws a grant, and a post may only
+    // become or stay scheduled under a grant that covers its content.
+    if (readApproval(existingPost.metadata)) {
+      const nextContent: ApprovableContent = {
+        content:
+          updateData.content !== undefined
+            ? updateData.content
+            : existingPost.content,
+        mediaItems: updateData.mediaItems ?? existingPost.mediaItems,
+        platformContent:
+          updateData.platformContent ?? existingPost.platformContent,
+        targets: updateData.targets ?? existingPost.targets,
+      };
+      const willBeScheduled =
+        dto.scheduledAt !== undefined
+          ? dto.scheduledAt !== null
+          : existingPost.status === 'scheduled';
+      if (willBeScheduled) {
+        assertApprovedFor(existingPost.metadata, nextContent);
+      }
+      updateData.metadata = {
+        ...(withoutApproval(updateData.metadata ?? existingPost.metadata) ??
+          {}),
+        ...carryApproval(existingPost.metadata, nextContent),
+      };
+    } else if (updateData.metadata) {
+      updateData.metadata = withoutApproval(updateData.metadata) ?? {};
     }
 
     // Every check that can refuse runs here, before the first side effect
@@ -577,6 +616,13 @@ export class PostService {
 
     if (!post.targets || post.targets.length === 0) {
       throw new BadRequestException('Post has no target channels');
+    }
+
+    // "Needs approval". Only on a person's click: every way into 'scheduled'
+    // is already guarded, and a refusal at fire time would leave the post
+    // stuck in 'scheduled'.
+    if (triggeredBy === 'user') {
+      assertApprovedFor(post.metadata, post);
     }
 
     const previousStatus = post.status;

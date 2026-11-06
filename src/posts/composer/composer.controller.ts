@@ -1,6 +1,9 @@
 import {
   Body,
   Controller,
+  HttpCode,
+  HttpStatus,
+  ParseUUIDPipe,
   Delete,
   Get,
   Param,
@@ -23,6 +26,8 @@ import { ComposerSchedulingService } from './services/composer-scheduling.servic
 import { PublishDraftDto } from './dto/publish-draft.dto';
 import { SaveDraftDto } from './dto/save-draft.dto';
 import { ScheduleDraftDto } from './dto/schedule-draft.dto';
+import { SetApprovalDto } from './dto/set-approval.dto';
+import { DraftApprovalService } from './services/draft-approval.service';
 
 /**
  * Composer endpoints. Three explicit user triggers — no autosave:
@@ -40,6 +45,7 @@ export class ComposerController {
     private readonly drafts: DraftStoreService,
     private readonly scheduling: ComposerSchedulingService,
     private readonly versions: DraftVersionsService,
+    private readonly approvals: DraftApprovalService,
   ) {}
 
   @RequireCapability('posts:draft')
@@ -99,6 +105,53 @@ export class ComposerController {
       user.userId,
       role,
     );
+  }
+
+  /** "Needs approval": the draft's approval state, for the caller. */
+  @RequireCapability('posts:draft')
+  @Get('drafts/:draftId/approval')
+  async getApproval(
+    @Param('wsId', ParseUUIDPipe) wsId: string,
+    @Param('draftId', ParseUUIDPipe) draftId: string,
+    @CurrentUser() user: { userId: string },
+    @CurrentWorkspaceRole() role: CallerRole,
+  ) {
+    return this.approvals.get(wsId, draftId, user.userId, role);
+  }
+
+  /**
+   * Switch "Needs approval" on (anyone who may draft; approvers are told) or
+   * off (approvers only). The draft must be saved first.
+   */
+  @RequireCapability('posts:draft')
+  @Put('drafts/:draftId/approval')
+  async setApproval(
+    @Param('wsId', ParseUUIDPipe) wsId: string,
+    @Param('draftId', ParseUUIDPipe) draftId: string,
+    @CurrentUser() user: { userId: string },
+    @CurrentWorkspaceRole() role: CallerRole,
+    @Body() dto: SetApprovalDto,
+  ) {
+    return this.approvals.setRequired(
+      wsId,
+      draftId,
+      user.userId,
+      role,
+      dto.required,
+    );
+  }
+
+  /** Approve the draft as it is stored now. ADMIN and OWNER. */
+  @RequireCapability('posts:approve')
+  @Post('drafts/:draftId/approval/approve')
+  @HttpCode(HttpStatus.OK)
+  async approveDraft(
+    @Param('wsId', ParseUUIDPipe) wsId: string,
+    @Param('draftId', ParseUUIDPipe) draftId: string,
+    @CurrentUser() user: { userId: string },
+    @CurrentWorkspaceRole() role: CallerRole,
+  ) {
+    return this.approvals.approve(wsId, draftId, user.userId, role);
   }
 
   @RequireCapability('posts:draft')
