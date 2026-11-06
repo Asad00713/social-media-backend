@@ -36,6 +36,19 @@ export interface MediaItem {
   type: MediaType;
   thumbnailUrl?: string;
   altText?: string;
+  /**
+   * People tagged ON this item, as fractions of the picture.
+   *
+   * Per-ITEM rather than per-post, because that is what a tag is: a
+   * carousel of three photos tags three different sets of people, and
+   * Instagram's own API agrees — `user_tags` goes on each carousel item
+   * container, while the caption and collaborators go on the parent.
+   *
+   * The composer has written these for a while (the photo editor's
+   * "Tagged on this photo" panel); nothing read them until the Instagram
+   * publisher learned to send `user_tags`.
+   */
+  tags?: Array<{ username: string; name?: string; x: number; y: number }>;
   width?: number;
   height?: number;
   duration?: number; // For videos, in seconds
