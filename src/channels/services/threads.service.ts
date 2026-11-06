@@ -78,6 +78,38 @@ export interface ThreadsPostSettings {
   isSpoilerMedia?: boolean;
   enableReplyApprovals?: boolean;
   locationId?: string;
+  /**
+   * `quote_post_id` — "the ID of the post being quoted" (stated,
+   * developers.facebook.com/documentation/threads/posts/quote-posts).
+   */
+  quotePostId?: string;
+  /**
+   * `allowlisted_country_codes` — "A string list of valid ISO 3166-1
+   * alpha-2 country codes" (stated, .../threads/posts/geo-gating). Sent
+   * comma-joined, the shape of Meta's own example (`US,CA`).
+   */
+  allowlistedCountryCodes?: string[];
+}
+
+/**
+ * How many pages of the account's own posts a quote link is looked up in,
+ * 100 posts a page. DECISION (reversible here): 3 — the last ~300 posts.
+ * The lookup costs one request a page, and a post older than that is
+ * rarely the one being quoted.
+ */
+export const THREADS_QUOTE_LOOKUP_PAGES = 3;
+
+/**
+ * The shortcode in a Threads post link (threads.com or threads.net, with
+ * or without `www.`), or null. Kept identical to the composer's
+ * `isThreadsPostLink` (lib/threads-more-settings.ts).
+ */
+export function parseThreadsPostLink(link: string): string | null {
+  const match =
+    /^https?:\/\/(?:www\.)?threads\.(?:com|net)\/@[^/?#\s]+\/post\/([A-Za-z0-9_-]+)\/?(?:[?#]\S*)?$/i.exec(
+      link.trim(),
+    );
+  return match ? match[1] : null;
 }
 
 /** A poll, which rides a text container only. */
@@ -109,6 +141,10 @@ function applySettings(
   // approvals", and these are claims about the post.
   if (settings.isSpoilerMedia) body.is_spoiler_media = 'true';
   if (settings.enableReplyApprovals) body.enable_reply_approvals = 'true';
+  if (settings.quotePostId) body.quote_post_id = settings.quotePostId;
+  if (settings.allowlistedCountryCodes?.length) {
+    body.allowlisted_country_codes = settings.allowlistedCountryCodes.join(',');
+  }
 }
 
 @Injectable()
@@ -198,6 +234,43 @@ export class ThreadsService {
       })),
       nextCursor: data.paging?.cursors?.after || null,
     };
+  }
+
+  /**
+   * The media id of one of the account's OWN posts, from its link.
+   *
+   * The Threads API has no documented way to turn a post link into the id
+   * `quote_post_id` takes — GET /{media-id} needs the id already, and
+   * keyword search does not take a URL. What it does document is the
+   * account's own posts (GET /{user-id}/threads) with a `shortcode` field,
+   * so the link's shortcode is matched there. Someone else's post cannot
+   * be found this way, and the error says so.
+   */
+  async findOwnPostByLink(
+    accessToken: string,
+    userId: string,
+    link: string,
+  ): Promise<string> {
+    const shortcode = parseThreadsPostLink(link);
+    if (!shortcode) {
+      throw new Error(`"${link}" is not a link to a Threads post`);
+    }
+    let cursor: string | undefined;
+    for (let page = 0; page < THREADS_QUOTE_LOOKUP_PAGES; page++) {
+      const { posts, nextCursor } = await this.getUserThreads(
+        accessToken,
+        userId,
+        100,
+        cursor,
+      );
+      const match = posts.find((p) => p.shortcode === shortcode);
+      if (match) return match.id;
+      if (!nextCursor) break;
+      cursor = nextCursor;
+    }
+    throw new Error(
+      'The post to quote was not found among your recent Threads posts — only your own posts can be quoted by link',
+    );
   }
 
   /**
