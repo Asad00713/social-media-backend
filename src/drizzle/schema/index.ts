@@ -7,6 +7,7 @@ export * from './workspace-invitation.schema';
 export * from './billing.schema';
 export * from './channels.schema';
 export * from './posts.schema';
+export * from './post-comments.schema';
 export * from './drips.schema';
 export * from './feedback.schema';
 export * from './feedback-dismissals.schema';

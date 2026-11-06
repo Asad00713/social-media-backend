@@ -7,6 +7,7 @@ import { WorkspaceSuspendedGuard } from './auth/guards/workspace-suspended.guard
 import { SiteVerificationController } from './site-verification/site-verification.controller';
 import { SocialMediaModule } from './social-media/social-media.module';
 import { PostsModule } from './posts/posts.module';
+import { PostCommentsModule } from './post-comments/post-comments.module';
 import { PlannerModule } from './planner/planner.module';
 import { AiModule } from './ai/ai.module';
 import { ConfigModule } from '@nestjs/config';
@@ -74,6 +75,7 @@ import { QUEUES } from './queue/queue.module';
     ChannelsModule,
     MessagingOverviewModule,
     PostsModule,
+    PostCommentsModule,
     PlannerModule,
     MediaModule,
     MediaLibraryModule,
