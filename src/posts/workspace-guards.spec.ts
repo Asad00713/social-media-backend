@@ -40,6 +40,8 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
       saveDraft: 'posts:draft',
       listDrafts: 'posts:draft',
       getDraft: 'posts:draft',
+      listVersions: 'posts:draft',
+      restoreVersion: 'posts:draft',
       deleteDraft: 'posts:draft',
       schedule: 'posts:publish',
       cancelSchedule: 'posts:publish',
