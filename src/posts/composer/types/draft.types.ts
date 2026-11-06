@@ -51,6 +51,12 @@ export interface DraftMediaItem {
   durationSec?: number;
   sizeBytes: number;
   altText?: string;
+  /**
+   * The part of a photo Mastodon must keep when it crops: fractions of the
+   * picture, 0-1 from the top left. Published to Mastodon only, as the `focus`
+   * of the media upload (see `toMastodonFocus`).
+   */
+  focalPoint?: { x: number; y: number };
   variants?: Partial<Record<SupportedPlatform, MediaVariant>>;
   /** The Library item this entry was picked from (posts.library_refs, 0055). */
   libraryItemId?: string;

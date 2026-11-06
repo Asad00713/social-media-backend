@@ -4,6 +4,7 @@ import {
   MastodonService,
   type MastodonQuoteApprovalPolicy,
 } from '../../channels/services/mastodon.service';
+import { toMastodonFocus } from '../../channels/services/mastodon-focus';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
@@ -29,6 +30,13 @@ function pickQuotePolicy(
   const value = metadata?.allowQuotes;
   return QUOTE_POLICIES.find((policy) => policy === value);
 }
+
+/**
+ * A media item as the composer saves it, with the focal point the photo editor
+ * puts on it (`DraftMediaItem.focalPoint`). The post's media is stored as JSON,
+ * so the field arrives untyped and is validated by `toMastodonFocus`.
+ */
+type MediaWithFocalPoint = MediaItem & { focalPoint?: unknown };
 
 /**
  * Mastodon publisher — calls MastodonService against the channel's
@@ -125,7 +133,11 @@ export class MastodonPublisher extends BasePublisher {
     const thread = metadata?.thread as
       | Array<{
           text: string;
-          mediaItems?: Array<{ url: string; altText?: string }>;
+          mediaItems?: Array<{
+            url: string;
+            altText?: string;
+            focalPoint?: unknown;
+          }>;
         }>
       | undefined;
     if (Array.isArray(thread) && thread.length > 1) {
@@ -146,12 +158,14 @@ export class MastodonPublisher extends BasePublisher {
     let mediaIds: string[] | undefined;
     if (mediaItems.length > 0) {
       mediaIds = [];
-      for (const m of mediaItems) {
+      for (const m of mediaItems as MediaWithFocalPoint[]) {
         const uploaded = await this.mastodonService.uploadMedia(
           instanceUrl,
           accessToken,
           m.url,
           m.altText,
+          undefined,
+          toMastodonFocus(m.focalPoint),
         );
         mediaIds.push(uploaded.id);
       }
@@ -193,7 +207,11 @@ export class MastodonPublisher extends BasePublisher {
     accessToken: string,
     posts: Array<{
       text: string;
-      mediaItems?: Array<{ url: string; altText?: string }>;
+      mediaItems?: Array<{
+        url: string;
+        altText?: string;
+        focalPoint?: unknown;
+      }>;
     }>,
     baseOptions: {
       visibility: MastodonVisibility;
@@ -220,6 +238,8 @@ export class MastodonPublisher extends BasePublisher {
             accessToken,
             m.url,
             m.altText,
+            undefined,
+            toMastodonFocus(m.focalPoint),
           );
           mediaIds.push(uploaded.id);
         }
