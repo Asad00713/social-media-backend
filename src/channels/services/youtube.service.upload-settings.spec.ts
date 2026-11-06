@@ -1,6 +1,16 @@
 import { YouTubeService } from './youtube.service';
 import { QuotaTrackerService } from '../../quota/quota-tracker.service';
 
+// These tests stub the network with `global.fetch`. The media download goes
+// through the SSRF-guarded fetchPublicMedia (undici + a pinned-DNS agent), so
+// route it back to the stub; the guard itself is covered in public-fetch.spec.
+jest.mock('../../common/net/public-fetch', () => ({
+  ...jest.requireActual<typeof import('../../common/net/public-fetch')>(
+    '../../common/net/public-fetch',
+  ),
+  fetchPublicMedia: (url: string) => global.fetch(url),
+}));
+
 /**
  * Three upload settings, and the interesting one is `notifySubscribers`:
  * it is a QUERY parameter, not a body field, and YouTube's default is
@@ -124,9 +134,7 @@ describe('YouTubeService — upload settings', () => {
     ])('sends no parameter when %s', async (_label, options) => {
       await upload(options);
 
-      expect(initCall().url.searchParams.has('notifySubscribers')).toBe(
-        false,
-      );
+      expect(initCall().url.searchParams.has('notifySubscribers')).toBe(false);
     });
 
     it('is a query parameter, not a body field', async () => {
