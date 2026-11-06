@@ -1,6 +1,7 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import * as crypto from 'crypto';
+import { fetchPublicMedia } from '../common/net/public-fetch';
 
 export interface BunnyCDNUploadResult {
   key: string;
@@ -88,7 +89,7 @@ export class BunnyCDNService {
 
     // Download the video
     this.logger.log(`Downloading video from: ${sourceUrl}`);
-    const response = await fetch(sourceUrl);
+    const response = await fetchPublicMedia(sourceUrl);
 
     if (!response.ok) {
       throw new BadRequestException(
