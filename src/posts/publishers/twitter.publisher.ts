@@ -20,6 +20,22 @@ interface TwitterDisclosures {
   paidPartnership?: boolean;
 }
 
+/** `media.tagged_user_ids` takes at most 10 (stated, POST /2/tweets). */
+const MAX_TAGGED_USERS = 10;
+
+/** An X username: letters, digits and underscores, 1-15 characters. */
+const X_USERNAME = /^[A-Za-z0-9_]{1,15}$/;
+
+/** The draft's tagged usernames (the publisher's own key), without `@`. */
+function draftTagPeople(metadata: Record<string, any> | undefined): string[] {
+  const raw: unknown = metadata?.tagPeople;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((n): n is string => typeof n === 'string')
+    .map((n) => n.trim().replace(/^@+/, ''))
+    .filter((n) => n !== '');
+}
+
 const VALID_REPLY_SETTINGS: TwitterReplySettings[] = [
   'following',
   'mentionedUsers',
@@ -59,6 +75,18 @@ export class TwitterPublisher extends BasePublisher {
         }
       });
       return;
+    }
+
+    // Tagged people (single posts): refused before anything is uploaded.
+    const tagged = draftTagPeople(metadata);
+    const badName = tagged.find((n) => !X_USERNAME.test(n));
+    if (badName) {
+      throw new Error(`"@${badName}" is not an X username`);
+    }
+    if (tagged.length > MAX_TAGGED_USERS) {
+      throw new Error(
+        `X allows at most ${MAX_TAGGED_USERS} tagged people (${tagged.length} given)`,
+      );
     }
 
     // Single-tweet validation
@@ -136,6 +164,15 @@ export class TwitterPublisher extends BasePublisher {
     }
 
     // Single-tweet mode (default)
+    // Tagged people ride the photos, so they are looked up only when there
+    // is a photo to carry them — and BEFORE uploading, so an unknown name
+    // fails the publish with nothing live.
+    const taggedUserIds = await this.resolveTaggedUsers(
+      accessToken,
+      draftTagPeople(metadata),
+      mediaItems,
+    );
+
     let mediaIds: string[] | undefined;
     if (mediaItems && mediaItems.length > 0) {
       mediaIds = await this.uploadMediaItems(
@@ -158,6 +195,7 @@ export class TwitterPublisher extends BasePublisher {
       poll,
       replySettings: this.getReplySettings(metadata),
       ...this.getDisclosures(metadata),
+      taggedUserIds,
     });
 
     this.logger.log(`Published tweet: ${result.id}`);
@@ -166,6 +204,27 @@ export class TwitterPublisher extends BasePublisher {
       platformPostId: result.id,
       platformPostUrl: `https://twitter.com/i/web/status/${result.id}`,
     };
+  }
+
+  /**
+   * The user ids for the tagged usernames, or undefined when nothing is to
+   * be tagged. Only with at least one photo: X attaches `tagged_user_ids`
+   * to the media (INFERRED that a video or GIF does not carry tags, from
+   * X's own composer, which offers tagging on photos only).
+   */
+  private async resolveTaggedUsers(
+    accessToken: string,
+    usernames: string[],
+    mediaItems: MediaItem[],
+  ): Promise<string[] | undefined> {
+    if (usernames.length === 0) return undefined;
+    if (!mediaItems.some((m) => m.type === 'image')) return undefined;
+    const ids = await this.twitterService.lookupUserIds(accessToken, usernames);
+    const missing = usernames.filter((n) => !ids.has(n.toLowerCase()));
+    if (missing.length > 0) {
+      throw new Error(`X has no account @${missing.join(', @')} to tag`);
+    }
+    return usernames.map((n) => ids.get(n.toLowerCase())!);
   }
 
   /**
