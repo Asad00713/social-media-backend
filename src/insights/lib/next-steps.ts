@@ -47,6 +47,21 @@ export const QUIET_FOLLOWERS_MIN_PER_DAY = 1;
 
 /** How long each choice hides a step, in days. */
 export const HIDE_DAYS = { not_useful: 180, later: 30 } as const;
+/**
+ * Hidden steps kept per person per workspace. The ids the rules emit are few
+ * (one format card, one per channel, one per hit), so this is far above real
+ * use; it only stops a member from filling the table with made-up ids.
+ */
+export const MAX_HIDDEN_STEPS = 500;
+
+/**
+ * N3 compares captions on their first this many characters (read the same
+ * way from the database and from the candidate), so a huge caption never has
+ * to cross the wire whole.
+ */
+export const REPOST_CAPTION_CHARS = 2000;
+/** N3 reads at most this many later posts, newest first. */
+export const LATER_POSTS_LIMIT = 5000;
 
 const UUID =
   '[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}';
@@ -106,6 +121,10 @@ const ageInDays = (iso: string, todayIso: string): number =>
 export const normalizeCaption = (s: string): string =>
   s.toLowerCase().replace(/\s+/g, ' ').trim();
 
+/** What two captions are compared on: the first REPOST_CAPTION_CHARS. */
+const captionKey = (s: string): string =>
+  normalizeCaption(s.slice(0, REPOST_CAPTION_CHARS));
+
 const repostId = (p: Pick<InsightPost, 'postId' | 'channelId'>): string =>
   `repost_hit:${p.postId}:${p.channelId}`;
 
@@ -148,13 +167,13 @@ export function repostCandidates(input: RepostCandidatesInput): StepPost[] {
 /** Whether a later post repeats the candidate's caption or media. */
 function isReposted(c: PublishedPost, later: LaterPost[]): boolean {
   const at = Date.parse(c.publishedAt);
-  const caption = normalizeCaption(c.content);
+  const caption = captionKey(c.content);
   const media = new Set(c.mediaItems.map((m) => m.url));
   return later.some(
     (l) =>
       l.postId !== c.postId &&
       Date.parse(l.at) > at &&
-      ((caption !== '' && normalizeCaption(l.content) === caption) ||
+      ((caption !== '' && captionKey(l.content) === caption) ||
         l.mediaUrls.some((u) => media.has(u))),
   );
 }

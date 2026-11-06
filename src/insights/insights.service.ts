@@ -14,6 +14,7 @@ import {
   inArray,
   isNotNull,
   lt,
+  lte,
   ne,
 } from 'drizzle-orm';
 import type { DbType } from '../drizzle/db';
@@ -74,7 +75,11 @@ import {
 import {
   FORMAT_LOOKAHEAD_DAYS,
   HIDE_DAYS,
+  LATER_POSTS_LIMIT,
+  MAX_HIDDEN_STEPS,
   nextSteps,
+  REPOST_CAPTION_CHARS,
+  REPOST_MAX_AGE_DAYS,
   repostCandidates,
   STEP_ID_PATTERN,
   type LaterPost,
@@ -935,6 +940,7 @@ export class InsightsService {
           new Date(
             Math.min(...candidates.map((c) => Date.parse(c.raw.publishedAt))),
           ),
+          now,
         )
       : [];
     return nextSteps({
@@ -964,6 +970,34 @@ export class InsightsService {
       throw new BadRequestException('Not a next step id');
     }
     const hiddenUntil = new Date(now.getTime() + HIDE_DAYS[reason] * DAY_MS);
+    // Expired rows are dead weight: drop them, then refuse a new id once the
+    // person holds MAX_HIDDEN_STEPS live ones. Hiding an id already held
+    // just renews it. Two parallel requests can overshoot by a row or two.
+    await this.db
+      .delete(insightHiddenSteps)
+      .where(
+        and(
+          eq(insightHiddenSteps.userId, userId),
+          eq(insightHiddenSteps.workspaceId, workspaceId),
+          lte(insightHiddenSteps.hiddenUntil, now),
+        ),
+      );
+    const held = await this.db
+      .select({ stepId: insightHiddenSteps.stepId })
+      .from(insightHiddenSteps)
+      .where(
+        and(
+          eq(insightHiddenSteps.userId, userId),
+          eq(insightHiddenSteps.workspaceId, workspaceId),
+        ),
+      )
+      .limit(MAX_HIDDEN_STEPS);
+    if (
+      held.length >= MAX_HIDDEN_STEPS &&
+      !held.some((r) => r.stepId === stepId)
+    ) {
+      throw new BadRequestException('Too many hidden next steps');
+    }
     await this.db
       .insert(insightHiddenSteps)
       .values({ userId, workspaceId, stepId, hiddenUntil, reason })
@@ -1072,18 +1106,29 @@ export class InsightsService {
    * again": published, scheduled or in the works (a failed one never went
    * out). When one goes out is its published time, else its scheduled time,
    * else when it was created.
+   *
+   * Bounded: only what the rule compares is read (one time, the first
+   * REPOST_CAPTION_CHARS of the caption, the media urls), from no earlier than
+   * the oldest candidate and never before the rule's own horizon, newest
+   * first, at most LATER_POSTS_LIMIT rows. A workspace with more posts than
+   * that since the candidate loses its oldest ones from the comparison.
    */
   private async laterPosts(
     workspaceId: string,
     after: Date,
+    now: Date,
+    limit = LATER_POSTS_LIMIT,
   ): Promise<LaterPost[]> {
+    const horizon = new Date(now.getTime() - REPOST_MAX_AGE_DAYS * DAY_MS);
+    const from = after > horizon ? after : horizon;
+    const goesOutAt = sql<Date>`COALESCE(${postsTable.publishedAt}, ${postsTable.scheduledAt}, ${postsTable.createdAt})`;
     const rows = await this.db
       .select({
         postId: postsTable.id,
-        publishedAt: postsTable.publishedAt,
-        scheduledAt: postsTable.scheduledAt,
-        createdAt: postsTable.createdAt,
-        content: postsTable.content,
+        at: goesOutAt.mapWith(postsTable.createdAt).as('goes_out_at'),
+        content: sql<
+          string | null
+        >`left(${postsTable.content}, ${REPOST_CAPTION_CHARS})`,
         mediaUrls: postsTable.mediaUrls,
       })
       .from(postsTable)
@@ -1091,12 +1136,14 @@ export class InsightsService {
         and(
           eq(postsTable.workspaceId, workspaceId),
           ne(postsTable.status, 'failed'),
-          sql`COALESCE(${postsTable.publishedAt}, ${postsTable.scheduledAt}, ${postsTable.createdAt}) > ${after.toISOString()}::timestamptz`,
+          sql`${goesOutAt} > ${from.toISOString()}::timestamptz`,
         ),
-      );
+      )
+      .orderBy(desc(goesOutAt))
+      .limit(limit);
     return rows.map((r) => ({
       postId: r.postId,
-      at: (r.publishedAt ?? r.scheduledAt ?? r.createdAt).toISOString(),
+      at: r.at.toISOString(),
       content: r.content ?? '',
       mediaUrls: r.mediaUrls ?? [],
     }));

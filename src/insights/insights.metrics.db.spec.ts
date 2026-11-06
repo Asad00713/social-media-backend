@@ -9,6 +9,11 @@ import {
 } from '../planner/testing/rollback-db';
 import type { InsightsOverviewDto } from './dto/insights.dto';
 import { InsightsService } from './insights.service';
+import {
+  MAX_HIDDEN_STEPS,
+  REPOST_CAPTION_CHARS,
+  REPOST_MAX_AGE_DAYS,
+} from './lib/next-steps';
 import type { CompareMode, ResolvedPeriod } from './lib/query';
 
 const DAY = 86_400_000;
@@ -1240,6 +1245,70 @@ describeDb('InsightsService next steps and hiding', () => {
       expect(rows.rows).toEqual([{ workspace_id: w2.rows[0].id }]);
     }));
 
+  describe('the hidden-steps cap', () => {
+    /** `n` live rows for the person, with made-up but valid ids. */
+    const fill = (client: PoolClient, w: Ws, n: number, until: Date) =>
+      client.query(
+        `INSERT INTO insight_hidden_steps (user_id, workspace_id, step_id, hidden_until, reason)
+         SELECT $1, $2, 'quiet_channel:' || g, $3::timestamptz, 'later'
+         FROM generate_series(1, $4) g`,
+        [w.userId, w.workspaceId, until.toISOString(), n],
+      );
+    const live = new Date(NOW.getTime() + 10 * DAY);
+
+    it('refuses a new id at the cap with a 400, and stores nothing', () =>
+      run(async ({ svc, client, w }) => {
+        await fill(client, w, MAX_HIDDEN_STEPS, live);
+        await expect(
+          svc.hideStep(w.workspaceId, w.userId, 'format_gap', 'later', NOW),
+        ).rejects.toBeInstanceOf(BadRequestException);
+        const n = await client.query(
+          `SELECT 1 FROM insight_hidden_steps WHERE user_id = $1`,
+          [w.userId],
+        );
+        expect(n.rowCount).toBe(MAX_HIDDEN_STEPS);
+      }));
+
+    it('lets a held id be hidden again at the cap, renewing it', () =>
+      run(async ({ svc, client, w }) => {
+        await fill(client, w, MAX_HIDDEN_STEPS, live);
+        await svc.hideStep(
+          w.workspaceId,
+          w.userId,
+          'quiet_channel:7',
+          'not_useful',
+          NOW,
+        );
+        const r = await client.query(
+          `SELECT reason FROM insight_hidden_steps WHERE user_id = $1 AND step_id = 'quiet_channel:7'`,
+          [w.userId],
+        );
+        expect(r.rows).toEqual([{ reason: 'not_useful' }]);
+      }));
+
+    it('drops expired rows first, so they never count against the cap', () =>
+      run(async ({ svc, client, w }) => {
+        await fill(client, w, MAX_HIDDEN_STEPS, new Date(NOW.getTime() - DAY));
+        await svc.hideStep(w.workspaceId, w.userId, 'format_gap', 'later', NOW);
+        const r = await client.query(
+          `SELECT step_id FROM insight_hidden_steps WHERE user_id = $1`,
+          [w.userId],
+        );
+        expect(r.rows).toEqual([{ step_id: 'format_gap' }]);
+      }));
+
+    it('counts per person and per workspace', () =>
+      run(async ({ svc, client, w, other }) => {
+        await fill(client, w, MAX_HIDDEN_STEPS, live);
+        await svc.hideStep(w.workspaceId, other, 'format_gap', 'later', NOW);
+        const r = await client.query(
+          `SELECT 1 FROM insight_hidden_steps WHERE user_id = $1`,
+          [other],
+        );
+        expect(r.rowCount).toBe(1);
+      }));
+  });
+
   it('hideStep refuses an id the rules cannot emit', () =>
     run(async ({ svc, client, w }) => {
       for (const id of ['', 'nonsense', 'quiet_channel:', 'repost_hit:x:1']) {
@@ -1409,6 +1478,93 @@ describeDb('InsightsService next steps and hiding', () => {
           `repost_hit:${hit}:${c}`,
         );
       }));
+
+    it('is gone when a later post repeats a caption longer than the compared prefix', () =>
+      withHit(async (ctx, hit) => {
+        const { client, w, c } = ctx;
+        const long = 'Long caption. '.repeat(400);
+        await client.query(`UPDATE posts SET content = $2 WHERE id = $1`, [
+          hit,
+          long,
+        ]);
+        expect(await ids(ctx, w.userId)).toContain(`repost_hit:${hit}:${c}`);
+        await mediaPost(client, w, c, { ageDays: 2, content: long });
+        expect(await ids(ctx, w.userId)).not.toContain(
+          `repost_hit:${hit}:${c}`,
+        );
+      }));
+
+    describe('the later posts read is bounded', () => {
+      type Later = {
+        laterPosts(
+          ws: string,
+          after: Date,
+          now: Date,
+          limit?: number,
+        ): Promise<{ postId: string; at: string; content: string }[]>;
+      };
+      const later = (ctx: Ctx) => ctx.svc as unknown as Later;
+
+      it('cuts a caption to the compared prefix and reads no other column', () =>
+        run(async (ctx) => {
+          const { client, w, c } = ctx;
+          const id = await mediaPost(client, w, c, {
+            ageDays: 1,
+            content: 'a'.repeat(REPOST_CAPTION_CHARS + 500),
+          });
+          const rows = await later(ctx).laterPosts(
+            w.workspaceId,
+            new Date(NOW.getTime() - 3 * DAY),
+            NOW,
+          );
+          const row = rows.find((r) => r.postId === id)!;
+          expect(row.content).toHaveLength(REPOST_CAPTION_CHARS);
+          expect(Object.keys(row).sort()).toEqual([
+            'at',
+            'content',
+            'mediaUrls',
+            'postId',
+          ]);
+        }));
+
+      it('keeps the newest posts when there are more than the limit', () =>
+        run(async (ctx) => {
+          const { client, w, c } = ctx;
+          const old = await mediaPost(client, w, c, { ageDays: 3 });
+          const mid = await mediaPost(client, w, c, { ageDays: 2 });
+          const fresh = await mediaPost(client, w, c, { ageDays: 1 });
+          const rows = await later(ctx).laterPosts(
+            w.workspaceId,
+            new Date(NOW.getTime() - 4 * DAY),
+            NOW,
+            2,
+          );
+          expect(rows.map((r) => r.postId)).toEqual([fresh, mid]);
+          expect(rows.map((r) => r.postId)).not.toContain(old);
+        }));
+
+      it('never reads earlier than the rule horizon, nor a failed post', () =>
+        run(async (ctx) => {
+          const { client, w, c } = ctx;
+          const ancient = await mediaPost(client, w, c, {
+            ageDays: REPOST_MAX_AGE_DAYS + 5,
+          });
+          const failed = await mediaPost(client, w, c, {
+            ageDays: 1,
+            status: 'failed',
+          });
+          const ok = await mediaPost(client, w, c, { ageDays: 1 });
+          const rows = await later(ctx).laterPosts(
+            w.workspaceId,
+            new Date(NOW.getTime() - 400 * DAY),
+            NOW,
+          );
+          const got = rows.map((r) => r.postId);
+          expect(got).toContain(ok);
+          expect(got).not.toContain(ancient);
+          expect(got).not.toContain(failed);
+        }));
+    });
 
     it('hiding it is per person', () =>
       withHit(async (ctx, hit) => {
