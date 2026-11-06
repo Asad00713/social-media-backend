@@ -17,7 +17,7 @@ import {
   type InsightPost,
 } from './insight-post';
 import { MIN_FORMAT_POSTS, type WorkBar } from './what-works';
-
+import { zoneFormatter } from './zone-format';
 
 export type TileKey =
   | 'reach'
@@ -179,8 +179,7 @@ export function topSlots(grid: BestTimeGrid, n = 3): BestSlot[] {
 
 /** `Wed 7 PM`: the post's own weekday and hour on the workspace's clock. */
 function clockLabel(at: Date, tz: string): string {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz,
+  const parts = zoneFormatter(tz, {
     weekday: 'short',
     hour: 'numeric',
     hour12: true,

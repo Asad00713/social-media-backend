@@ -1,5 +1,6 @@
 import { isMeasured, median } from '../../post-performance/engagement-stats';
 import type { InsightPost } from './insight-post';
+import { zoneFormatter } from './zone-format';
 
 /** Hours in one heatmap column: 8 columns from midnight. */
 export const SLOT_HOURS = 3;
@@ -44,8 +45,7 @@ const WEEKDAY: Record<string, number> = {
 
 /** The weekday and 3-hour block an instant falls in, on the wall clock of `tz`. */
 export function slotOf(at: Date, tz: string): BestSlot {
-  const parts = new Intl.DateTimeFormat('en-US', {
-    timeZone: tz,
+  const parts = zoneFormatter(tz, {
     weekday: 'short',
     hour: 'numeric',
     hourCycle: 'h23',
