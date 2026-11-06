@@ -27,6 +27,36 @@ const VALID_REPLY_SETTINGS: TwitterReplySettings[] = [
   'verified',
 ];
 
+/** The most characters one post may carry — counted the way validate() does. */
+const MAX_TWEET_CHARS = 280;
+
+/**
+ * The texts of a thread as published, numbered when `numberPosts` is on.
+ *
+ * DECISION (owner-approved, #58): ` n/N` after each post's text, counted
+ * INSIDE the 280 — so validate() measures the numbered text, not the typed
+ * one. A media-only post gets the number alone. The composer computes the
+ * same text in `src/features/composer-v2/lib/x-thread-numbering.ts` for its
+ * counter and Checks; the two must change together, or a post the counter
+ * calls fine is refused here.
+ */
+export function numberedThreadTexts(
+  texts: string[],
+  isNumbered: boolean,
+): string[] {
+  if (!isNumbered) return texts;
+  const total = texts.length;
+  return texts.map((text, i) => {
+    const suffix = `${i + 1}/${total}`;
+    return (text ?? '').trim() === '' ? suffix : `${text} ${suffix}`;
+  });
+}
+
+/** Whether the composer's "Number posts" is on (its own key). */
+function isNumbered(metadata: Record<string, any> | undefined): boolean {
+  return metadata?.numberPosts === true;
+}
+
 @Injectable()
 export class TwitterPublisher extends BasePublisher {
   readonly platform: SupportedPlatform = 'twitter';
@@ -43,15 +73,23 @@ export class TwitterPublisher extends BasePublisher {
       | undefined;
 
     if (Array.isArray(thread) && thread.length > 1) {
-      // Thread mode: validate each tweet independently.
+      // Thread mode: validate each tweet independently — as it will be
+      // SENT, so a number added by "Number posts" counts toward the 280.
+      const sent = numberedThreadTexts(
+        thread.map((t) => t.text),
+        isNumbered(metadata),
+      );
       thread.forEach((t, i) => {
         const hasMedia = (t.mediaItems?.length ?? 0) > 0;
         if (!t.text && !hasMedia) {
           throw new Error(`Thread tweet ${i + 1} must have content or media`);
         }
-        if (t.text && t.text.length > 280) {
+        const text = sent[i];
+        if (text && text.length > MAX_TWEET_CHARS) {
           throw new Error(
-            `Thread tweet ${i + 1} exceeds 280 character limit (${t.text.length} chars)`,
+            `Thread tweet ${i + 1} exceeds 280 character limit (${text.length} chars${
+              isNumbered(metadata) ? ', with its number' : ''
+            })`,
           );
         }
         if ((t.mediaItems?.length ?? 0) > 4) {
@@ -126,9 +164,13 @@ export class TwitterPublisher extends BasePublisher {
       | undefined;
 
     if (Array.isArray(thread) && thread.length > 1) {
+      const texts = numberedThreadTexts(
+        thread.map((t) => t.text),
+        isNumbered(metadata),
+      );
       return this.publishThread(
         accessToken,
-        thread,
+        thread.map((t, i) => ({ ...t, text: texts[i] })),
         oauth1Credentials,
         this.getReplySettings(metadata),
         this.getDisclosures(metadata),
