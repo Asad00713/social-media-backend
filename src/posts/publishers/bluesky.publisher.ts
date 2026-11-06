@@ -5,6 +5,11 @@ import {
   BlueskyPostSettings,
   BLUESKY_SELF_LABELS,
   BlueskySelfLabel,
+  MAX_BLUESKY_TAGS,
+  MAX_BLUESKY_TAG_GRAPHEMES,
+  isValidBlueskyTag,
+  normalizeBlueskyTag,
+  parseBlueskyPostLink,
   postgateEmbeddingRules,
   threadgateAllow,
 } from '../../channels/services/bluesky.service';
@@ -29,6 +34,36 @@ interface LinkCard {
   title: string;
   description?: string;
   thumbUrl?: string;
+}
+
+/**
+ * Whether a thread's hidden tags go on every post or on the first only.
+ *
+ * DECISION (wave 3, reversible here): the first only. Tags are a post's
+ * own field, and the thread is found through its first post; eight tags
+ * repeated down a ten-post thread would put ten copies of it in every tag
+ * search. The composer's hint says "Added to post 1".
+ */
+const TAGS_ON_EVERY_THREAD_POST = false;
+
+/** The draft's hidden tags, normalised, or [] — the publisher's own key. */
+function draftTags(metadata: Record<string, any> | undefined): string[] {
+  const raw = metadata?.tags;
+  if (!Array.isArray(raw)) return [];
+  return raw
+    .filter((t): t is string => typeof t === 'string')
+    .map(normalizeBlueskyTag)
+    .filter((t) => t !== '');
+}
+
+/** The pasted link of the post to quote, or undefined. */
+function draftQuoteLink(
+  metadata: Record<string, any> | undefined,
+): string | undefined {
+  const link = metadata?.quotePostUrl;
+  return typeof link === 'string' && link.trim() !== ''
+    ? link.trim()
+    : undefined;
 }
 
 /** A card worth sending: anything else is a card with no link. */
@@ -66,6 +101,21 @@ export class BlueskyPublisher extends BasePublisher {
   validate(options: PublishOptions): void {
     const { content, mediaItems, metadata } = options;
 
+    // Hidden tags: refused here, before anything is posted, rather than
+    // trimmed quietly — the PDS refuses the whole record over the limits.
+    const tags = draftTags(metadata);
+    if (tags.length > MAX_BLUESKY_TAGS) {
+      throw new Error(
+        `Bluesky allows at most ${MAX_BLUESKY_TAGS} hidden tags (${tags.length} given)`,
+      );
+    }
+    const longTag = tags.find((t) => !isValidBlueskyTag(t));
+    if (longTag) {
+      throw new Error(
+        `Bluesky hidden tag "${longTag}" is over ${MAX_BLUESKY_TAG_GRAPHEMES} characters`,
+      );
+    }
+
     const thread = metadata?.thread as ThreadPost[] | undefined;
     if (Array.isArray(thread) && thread.length > 1) {
       thread.forEach((t, i) => {
@@ -95,7 +145,14 @@ export class BlueskyPublisher extends BasePublisher {
       return;
     }
 
-    if (!content && mediaItems.length === 0) {
+    const quoteLink = draftQuoteLink(metadata);
+    if (quoteLink && !parseBlueskyPostLink(quoteLink)) {
+      throw new Error(`"${quoteLink}" is not a link to a Bluesky post`);
+    }
+
+    // A quote is a post's content on its own: Bluesky's app posts a bare
+    // quote with no text.
+    if (!content && mediaItems.length === 0 && !quoteLink) {
       throw new Error('Bluesky post must have text, images, or a video');
     }
     if (content && content.length > 300) {
@@ -143,6 +200,18 @@ export class BlueskyPublisher extends BasePublisher {
     const thread = metadata?.thread as ThreadPost[] | undefined;
     if (Array.isArray(thread) && thread.length > 1) {
       return this.publishThread(accessToken, did, thread, settings, card);
+    }
+
+    // Resolved before posting: a link that leads nowhere fails the publish
+    // with nothing live, instead of posting text about an absent quote.
+    // Not on a thread — the composer offers no quote there, and since only
+    // this line ever sets `settings.quote`, a thread never carries one.
+    const quoteLink = draftQuoteLink(metadata);
+    if (quoteLink) {
+      settings.quote = await this.blueskyService.resolveQuotedPost(
+        accessToken,
+        quoteLink,
+      );
     }
 
     // Pick the right service method based on media shape.
@@ -263,6 +332,9 @@ export class BlueskyPublisher extends BasePublisher {
       settings.labels = [warning as BlueskySelfLabel];
     }
 
+    const tags = draftTags(metadata);
+    if (tags.length > 0) settings.tags = tags;
+
     return settings;
   }
 
@@ -360,6 +432,9 @@ export class BlueskyPublisher extends BasePublisher {
       ...settings,
       labels: undefined,
     };
+    const laterPostSettings: BlueskyPostSettings = TAGS_ON_EVERY_THREAD_POST
+      ? postSettings
+      : { ...postSettings, tags: undefined };
 
     for (let i = 0; i < posts.length; i++) {
       const p = posts[i];
@@ -368,6 +443,7 @@ export class BlueskyPublisher extends BasePublisher {
       // Root = the very first post; parent = the immediately preceding post.
       const reply =
         i === 0 ? undefined : { root: rootRef!, parent: parentRef! };
+      const thisPostSettings = i === 0 ? postSettings : laterPostSettings;
 
       try {
         // Branch on media type — Bluesky uses different embed types for
@@ -387,7 +463,7 @@ export class BlueskyPublisher extends BasePublisher {
             card.description,
             card.thumbUrl,
             reply,
-            postSettings,
+            thisPostSettings,
           );
         } else if (media.length === 0) {
           created = await this.blueskyService.createTextPost(
@@ -395,7 +471,7 @@ export class BlueskyPublisher extends BasePublisher {
             did,
             p.text,
             reply,
-            postSettings,
+            thisPostSettings,
           );
         } else if (isVideoItem) {
           created = await this.blueskyService.createVideoPost(
@@ -405,7 +481,7 @@ export class BlueskyPublisher extends BasePublisher {
             media[0].url,
             media[0].altText,
             reply,
-            postSettings,
+            thisPostSettings,
           );
         } else {
           created = await this.blueskyService.createImagePost(
@@ -415,7 +491,7 @@ export class BlueskyPublisher extends BasePublisher {
             media.map((m) => m.url),
             media.map((m) => m.altText ?? ''),
             reply,
-            postSettings,
+            thisPostSettings,
           );
         }
 
