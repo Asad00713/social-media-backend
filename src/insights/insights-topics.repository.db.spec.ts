@@ -236,8 +236,8 @@ describeDb('InsightsService.signals', () => {
       ctx: { w: Ws; a: number; b: number },
     ) => Promise<void>,
   ) =>
-    // 0058: signals reads the viewer's hidden next steps.
-    withRollbackDb(['0058_insight_hidden_steps.sql'], async (db, client) => {
+    // 0060: signals reads the viewer's hidden next steps.
+    withRollbackDb(['0060_insight_hidden_steps.sql'], async (db, client) => {
       const svc = new InsightsService(
         db,
         new PostPerformanceRepository(db),

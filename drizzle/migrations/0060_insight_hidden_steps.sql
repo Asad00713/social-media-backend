@@ -1,4 +1,4 @@
--- 0058 - Insights next steps a person hid: one row per (user, workspace, step).
+-- 0060 - Insights next steps a person hid: one row per (user, workspace, step).
 --
 -- WHY
 -- The Insights page shows up to three rule-based "Next steps". Each card has

@@ -12,7 +12,7 @@ import { readMigrations } from './runner';
  * posts (two generated columns) under ACCESS EXCLUSIVE and builds three GIN
  * indexes. 0056 alters media_categories (ACCESS EXCLUSIVE) and adds a
  * foreign key to users. 0057 alters the five Library tables and validates
- * four CHECK constraints. 0058 adds foreign keys to users and workspace
+ * four CHECK constraints. 0060 adds foreign keys to users and workspace
  * (SHARE ROW EXCLUSIVE on both).
  */
 const FILES = [
@@ -22,7 +22,7 @@ const FILES = [
   '0055_posts_library_refs.sql',
   '0056_media_categories_created_by.sql',
   '0057_library_is_sample.sql',
-  '0058_insight_hidden_steps.sql',
+  '0060_insight_hidden_steps.sql',
 ];
 
 const firstStatement = (sql: string): string =>

@@ -979,7 +979,7 @@ export class InsightsService {
 
   /**
    * The step ids this person has hidden and that are still hidden at `now`.
-   * Until migration 0058 is applied the table is missing (Postgres 42P01):
+   * Until migration 0060 is applied the table is missing (Postgres 42P01):
    * that is "nothing hidden", with one warning per process, so Best time and
    * What works keep working. Any other error is real and is thrown.
    */
@@ -1005,7 +1005,7 @@ export class InsightsService {
       if (!this.warnedMissingHiddenSteps) {
         this.warnedMissingHiddenSteps = true;
         this.logger.warn(
-          'insight_hidden_steps does not exist (migration 0058 not applied): showing next steps without hidden ones',
+          'insight_hidden_steps does not exist (migration 0060 not applied): showing next steps without hidden ones',
         );
       }
       return new Set();

@@ -1251,7 +1251,7 @@ describe('InsightsService.postDetail', () => {
   });
 });
 
-describe('InsightsService hidden steps before migration 0058', () => {
+describe('InsightsService hidden steps before migration 0060', () => {
   const missing = Object.assign(new Error('relation does not exist'), {
     code: '42P01',
   });
@@ -1283,7 +1283,7 @@ describe('InsightsService hidden steps before migration 0058', () => {
     expect(await hiddenSteps(svc)).toEqual(new Set());
     expect(await hiddenSteps(svc)).toEqual(new Set());
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(String((warn.mock.calls as unknown[][])[0][0])).toContain('0058');
+    expect(String((warn.mock.calls as unknown[][])[0][0])).toContain('0060');
     expect(await hiddenSteps(failingWith(missing))).toEqual(new Set());
   });
 

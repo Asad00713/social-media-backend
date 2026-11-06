@@ -1043,7 +1043,7 @@ describeDb('InsightsService.overview', () => {
 });
 
 describeDb('InsightsService next steps and hiding', () => {
-  const MIGRATION = '0058_insight_hidden_steps.sql';
+  const MIGRATION = '0060_insight_hidden_steps.sql';
   const HOUR = 3_600_000;
 
   interface Ctx {

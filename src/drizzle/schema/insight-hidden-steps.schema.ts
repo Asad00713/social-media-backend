@@ -17,7 +17,7 @@ export type HideReason = (typeof HIDE_REASONS)[number];
 /**
  * A next step one person hid on the Insights page, in one workspace. Hidden
  * while `hiddenUntil` is in the future. Both timestamps are timestamptz.
- * Migration: drizzle/migrations/0058_insight_hidden_steps.sql (hand-written).
+ * Migration: drizzle/migrations/0060_insight_hidden_steps.sql (hand-written).
  */
 export const insightHiddenSteps = pgTable(
   'insight_hidden_steps',
