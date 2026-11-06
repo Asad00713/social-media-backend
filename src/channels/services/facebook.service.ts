@@ -46,10 +46,25 @@ export interface FacebookReelOptions {
    * `/thumbnails` edge between the transfer and the publish.
    */
   thumbnailUrl?: string;
+  /**
+   * The Reel's captions as SubRip text, uploaded to the video's
+   * `/captions` edge as `captions.<locale>.srt` once the Reel is published.
+   */
+  captions?: { srt: string; locale: string };
 }
 
 /** The largest cover image `/thumbnails` takes, per Meta's reference. */
 const MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024;
+
+/**
+ * The largest caption file `/{video-id}/captions` takes. Meta's reference
+ * says "Caption files are limited to 200K"; read as 200,000 bytes, the
+ * stricter of the two readings.
+ */
+const MAX_CAPTIONS_BYTES = 200_000;
+
+/** A Facebook locale as the caption file name needs it, e.g. `en_US`. */
+const CAPTION_LOCALE = /^[a-z]{2}_[A-Z]{2}$/;
 
 @Injectable()
 export class FacebookService {
@@ -632,9 +647,10 @@ export class FacebookService {
    * @param pageAccessToken — Page Access Token (NOT user token)
    * @param videoUrl — publicly accessible URL of the vertical 9:16 video
    * @param description — caption for the Reel (optional)
-   * @param options — title (sent on the finish call) and cover image (uploaded
-   *   before it). A cover that cannot be set does NOT fail the Reel: it is
-   *   published without one and the reason comes back as `thumbnailWarning`.
+   * @param options — title (sent on the finish call), cover image (uploaded
+   *   before it) and captions (uploaded after it). A cover or captions that
+   *   cannot be set do NOT fail the Reel: it is published without them and
+   *   the reason comes back as `thumbnailWarning` / `captionsWarning`.
    * @returns the published Reel's post ID
    */
   async postReelToPage(
@@ -643,7 +659,11 @@ export class FacebookService {
     videoUrl: string,
     description: string = '',
     options: FacebookReelOptions = {},
-  ): Promise<{ postId: string; thumbnailWarning?: string }> {
+  ): Promise<{
+    postId: string;
+    thumbnailWarning?: string;
+    captionsWarning?: string;
+  }> {
     // Phase 1: start
     const startUrl = new URL(`${this.graphApiUrl}/${pageId}/video_reels`);
     startUrl.searchParams.set('upload_phase', 'start');
@@ -740,9 +760,86 @@ export class FacebookService {
 
     // The video_id from phase 1 is the post ID for the published Reel
     this.logger.log(`Published Facebook Reel: ${startData.video_id}`);
-    return thumbnailWarning
-      ? { postId: startData.video_id, thumbnailWarning }
-      : { postId: startData.video_id };
+
+    // Captions (soft step): AFTER the publish. The captions reference has no
+    // create - only an UPDATE of an existing video's captions - and the Reels
+    // guide does not mention captions at all, so a Reel's video id being
+    // accepted and this order are both INFERRED. The Reel is already live, so
+    // a refusal is a warning, never a failed post.
+    let captionsWarning: string | undefined;
+    if (options.captions) {
+      try {
+        await this.setVideoCaptions(
+          startData.video_id,
+          pageAccessToken,
+          options.captions.srt,
+          options.captions.locale,
+        );
+      } catch (err) {
+        captionsWarning = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `Facebook Reel ${startData.video_id}: captions not set: ${captionsWarning}`,
+        );
+      }
+    }
+
+    return {
+      postId: startData.video_id,
+      ...(thumbnailWarning ? { thumbnailWarning } : {}),
+      ...(captionsWarning ? { captionsWarning } : {}),
+    };
+  }
+
+  /**
+   * Uploads a video's captions: `POST /{video-id}/captions` with the SubRip
+   * text as the multipart `captions_file`.
+   *
+   * Meta's reference (Video Captions, "Updating"): `captions_file` is "Caption
+   * file in SRT (SubRip Text) format. File name must be in the format
+   * filename.locale.srt" (error 386 gives `filename.en_US.srt`), files are
+   * "limited to 200K", and it returns `{ success }`. `default_locale` is not
+   * sent: it is optional, and an optional flag is sent only when set.
+   */
+  async setVideoCaptions(
+    videoId: string,
+    pageAccessToken: string,
+    srt: string,
+    locale: string,
+  ): Promise<void> {
+    if (!CAPTION_LOCALE.test(locale)) {
+      throw new Error(`"${locale}" is not a caption locale (like en_US)`);
+    }
+    const bytes = Buffer.byteLength(srt, 'utf8');
+    if (bytes === 0) throw new Error('the caption file is empty');
+    if (bytes > MAX_CAPTIONS_BYTES) {
+      throw new Error('the caption file is over the 200K Facebook takes');
+    }
+
+    const form = new FormData();
+    form.append('access_token', pageAccessToken);
+    form.append(
+      'captions_file',
+      new Blob([srt], { type: 'application/x-subrip' }),
+      `captions.${locale}.srt`,
+    );
+
+    // No Content-Type header: fetch writes the multipart boundary itself.
+    const res = await fetch(`${this.graphApiUrl}/${videoId}/captions`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      throw new Error(
+        `Facebook rejected the captions: ${err?.error?.message ?? `HTTP ${res.status}`}`,
+      );
+    }
+    const data = (await res.json().catch(() => ({}))) as { success?: boolean };
+    if (data.success === false) {
+      throw new Error('Facebook reported the captions as not set');
+    }
   }
 
   /**
