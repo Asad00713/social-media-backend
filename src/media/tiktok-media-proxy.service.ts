@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import * as fs from 'fs';
 import * as path from 'path';
 import * as crypto from 'crypto';
+import { fetchPublicMedia } from '../common/net/public-fetch';
 
 interface CachedMedia {
   filePath: string;
@@ -124,7 +125,7 @@ export class TikTokMediaProxyService {
     this.logger.log(`Caching video from: ${externalUrl}`);
 
     // Download the video
-    const response = await fetch(externalUrl);
+    const response = await fetchPublicMedia(externalUrl);
     if (!response.ok) {
       throw new Error(`Failed to download video: ${response.status}`);
     }

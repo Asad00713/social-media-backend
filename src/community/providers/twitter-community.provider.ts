@@ -17,6 +17,7 @@ import {
   CommunityReplyResponse,
   FullCommentsResponse,
 } from '../dto/community.dto';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
 
 @Injectable()
 export class TwitterCommunityProvider extends BaseCommunityProvider {
@@ -124,7 +125,7 @@ export class TwitterCommunityProvider extends BaseCommunityProvider {
     const mediaIds: string[] = [];
 
     for (const url of mediaUrls) {
-      const response = await fetch(url);
+      const response = await fetchPublicMedia(url);
       if (!response.ok) {
         throw new BadRequestException(`Failed to download media from ${url}`);
       }

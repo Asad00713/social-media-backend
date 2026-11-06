@@ -44,6 +44,12 @@ export class MediaItemDto {
   @IsOptional()
   @IsNumber()
   duration?: number;
+
+  // Without it the global forbidNonWhitelisted pipe rejects every post that
+  // carries a Library-picked media entry.
+  @IsOptional()
+  @IsUUID()
+  libraryItemId?: string;
 }
 
 export class PlatformContentDto {

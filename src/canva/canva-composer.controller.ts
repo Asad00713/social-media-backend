@@ -13,8 +13,13 @@ import {
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { CanvaConnectionService } from './canva-connection.service';
 import { CanvaService } from './canva.service';
-import { CloudinaryService } from '../media/cloudinary.service';
-import { ListComposerDesignsDto, ImportComposerDesignDto } from './dto/composer.dto';
+import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { LibraryIngestService } from '../media-library/services/library-ingest.service';
+import { StorageQuotaService } from '../media-library/services/storage-quota.service';
+import {
+  ListComposerDesignsDto,
+  ImportComposerDesignDto,
+} from './dto/composer.dto';
 import type {
   ComposerCanvaDesignsResult,
   ComposerCanvaImportResult,
@@ -41,7 +46,8 @@ export class CanvaComposerController {
   constructor(
     private readonly connectionService: CanvaConnectionService,
     private readonly canvaService: CanvaService,
-    private readonly cloudinary: CloudinaryService,
+    private readonly quota: StorageQuotaService,
+    private readonly ingest: LibraryIngestService,
   ) {}
 
   @Get('status')
@@ -82,9 +88,8 @@ export class CanvaComposerController {
     @Param('workspaceId') workspaceId: string,
     @Body() dto: ListComposerDesignsDto,
   ): Promise<ComposerCanvaDesignsResult> {
-    const accessToken = await this.connectionService.getValidAccessToken(
-      workspaceId,
-    );
+    const accessToken =
+      await this.connectionService.getValidAccessToken(workspaceId);
     const result = await this.canvaService.listDesigns(
       accessToken,
       dto.limit ?? DEFAULT_DESIGNS_LIMIT,
@@ -112,10 +117,14 @@ export class CanvaComposerController {
   async import(
     @Param('workspaceId') workspaceId: string,
     @Body() dto: ImportComposerDesignDto,
+    @CurrentUser() user: { userId: string },
   ): Promise<ComposerCanvaImportResult> {
-    const accessToken = await this.connectionService.getValidAccessToken(
-      workspaceId,
-    );
+    // Refuse a full workspace before spending a Canva export on it; ingest
+    // checks the real byte count again.
+    await this.quota.assertCanStore(workspaceId, 1);
+
+    const accessToken =
+      await this.connectionService.getValidAccessToken(workspaceId);
 
     const job = await this.canvaService.exportDesign(
       accessToken,
@@ -141,8 +150,12 @@ export class CanvaComposerController {
     }
     const buffer = Buffer.from(await response.arrayBuffer());
 
-    const uploaded = await this.cloudinary.uploadFromBuffer(buffer, {
-      folder: 'composer/canva',
+    const { upload: uploaded, libraryItem } = await this.ingest.ingestBuffer({
+      workspaceId,
+      userId: user.userId,
+      buffer,
+      mimeType: 'image/png',
+      originalName: `canva-${dto.designId}.png`,
       resourceType: 'image',
     });
 
@@ -152,6 +165,7 @@ export class CanvaComposerController {
       width: uploaded.width,
       height: uploaded.height,
       sizeBytes: uploaded.bytes,
+      libraryItem,
     };
   }
 }

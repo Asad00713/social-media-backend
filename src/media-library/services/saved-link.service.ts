@@ -1,25 +1,95 @@
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { linkDisplayNameSql } from '../lib/link-display-name';
+import { eq, and, desc, asc, ilike, or, sql, type SQL } from 'drizzle-orm';
+import { ilikePattern } from '../lib/search';
 import {
-  Injectable,
-  Logger,
-  NotFoundException,
-  BadRequestException,
-} from '@nestjs/common';
-import { eq, and, desc, like, or, sql } from 'drizzle-orm';
-import { db } from '../../drizzle/db';
+  extractPageMeta,
+  fetchPublicHtml,
+  normalizeUtm,
+} from '../lib/link-meta';
+import type { DbType } from '../../drizzle/db';
+import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
   savedLinks,
   mediaCategories,
   NewSavedLink,
+  SavedLink,
+  MediaCategory,
 } from '../../drizzle/schema/media-library.schema';
+import { users } from '../../drizzle/schema/users.schema';
+import { toUserRef, USER_REF_COLUMNS, type UserRefRow } from '../lib/user-ref';
+import type { Page, UserRef } from '../dto/contract';
 import {
   CreateSavedLinkDto,
   UpdateSavedLinkDto,
   SavedLinkQueryDto,
+  LinkBulkDto,
 } from '../dto/media-library.dto';
+import {
+  assertKindFolder,
+  runKindBulk,
+  type KindBulkConfig,
+} from '../lib/bulk';
+import { binPurgeCutoff } from '../lib/bin-retention';
+import { linkPostCountSql, withUsageLock } from '../lib/usage-sql';
+
+/** A link as the list, the detail and every single-item write return it. */
+export type LinkView = SavedLink & {
+  category: MediaCategory | null;
+  createdBy: UserRef | null;
+};
+
+/** The columns a `LinkView` is read from; folder and creator left-joined. */
+const VIEW_SELECTION = {
+  link: savedLinks,
+  category: mediaCategories,
+  creator: USER_REF_COLUMNS,
+};
+
+function toLinkView(row: {
+  link: SavedLink;
+  category: MediaCategory | null;
+  creator: UserRefRow | null;
+}): LinkView {
+  return {
+    ...row.link,
+    category: row.category,
+    createdBy: toUserRef(row.creator),
+  };
+}
+
+const LINK_BULK: KindBulkConfig = {
+  table: savedLinks,
+  folderKind: 'link',
+  label: 'Link',
+};
+
+/** ORDER BY for `GET links`. `oldest` = created_at ASC, id ASC (contract). */
+function linkOrder(sort: SavedLinkQueryDto['sort']): SQL[] {
+  switch (sort) {
+    case 'oldest':
+      return [asc(savedLinks.createdAt), asc(savedLinks.id)];
+    case 'most_used':
+      return [
+        sql`${savedLinks.usageCount} DESC NULLS LAST`,
+        desc(savedLinks.createdAt),
+        desc(savedLinks.id),
+      ];
+    case 'name':
+      return [
+        sql`lower(${linkDisplayNameSql(savedLinks.name, savedLinks.previewTitle, savedLinks.url)}) ASC`,
+        asc(savedLinks.id),
+      ];
+    default:
+      return [desc(savedLinks.createdAt), desc(savedLinks.id)];
+  }
+}
 
 @Injectable()
 export class SavedLinkService {
   private readonly logger = new Logger(SavedLinkService.name);
+
+  constructor(@Inject(DRIZZLE) private readonly db: DbType) {}
 
   /**
    * Fetch link preview metadata from URL
@@ -29,47 +99,18 @@ export class SavedLinkService {
     description?: string;
     imageUrl?: string;
     siteName?: string;
+    faviconUrl?: string;
   }> {
     try {
-      const response = await fetch(url, {
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (compatible; SocialMediaBot/1.0; +https://example.com)',
-        },
+      // Public hosts only, capped and time-boxed (see fetchPublicHtml).
+      const page = await fetchPublicHtml(url, {
+        'User-Agent':
+          'Mozilla/5.0 (compatible; SocialMediaBot/1.0; +https://example.com)',
       });
-
-      if (!response.ok) {
+      if (!page) {
         return {};
       }
-
-      const html = await response.text();
-
-      // Extract Open Graph metadata
-      const ogTitle = html.match(
-        /<meta[^>]*property="og:title"[^>]*content="([^"]*)"[^>]*>/i,
-      );
-      const ogDescription = html.match(
-        /<meta[^>]*property="og:description"[^>]*content="([^"]*)"[^>]*>/i,
-      );
-      const ogImage = html.match(
-        /<meta[^>]*property="og:image"[^>]*content="([^"]*)"[^>]*>/i,
-      );
-      const ogSiteName = html.match(
-        /<meta[^>]*property="og:site_name"[^>]*content="([^"]*)"[^>]*>/i,
-      );
-
-      // Fallback to regular meta tags
-      const metaTitle = html.match(/<title[^>]*>([^<]*)<\/title>/i);
-      const metaDescription = html.match(
-        /<meta[^>]*name="description"[^>]*content="([^"]*)"[^>]*>/i,
-      );
-
-      return {
-        title: ogTitle?.[1] || metaTitle?.[1] || undefined,
-        description: ogDescription?.[1] || metaDescription?.[1] || undefined,
-        imageUrl: ogImage?.[1] || undefined,
-        siteName: ogSiteName?.[1] || undefined,
-      };
+      return extractPageMeta(page.html, page.finalUrl);
     } catch (error) {
       this.logger.warn(`Failed to fetch link preview for ${url}:`, error);
       return {};
@@ -79,24 +120,20 @@ export class SavedLinkService {
   /**
    * Create a new saved link
    */
-  async create(workspaceId: string, userId: string, dto: CreateSavedLinkDto) {
+  async create(
+    workspaceId: string,
+    userId: string,
+    dto: CreateSavedLinkDto,
+  ): Promise<LinkView> {
     // Validate category if provided
     if (dto.categoryId) {
-      const category = await db
-        .select()
-        .from(mediaCategories)
-        .where(
-          and(
-            eq(mediaCategories.id, dto.categoryId),
-            eq(mediaCategories.workspaceId, workspaceId),
-            eq(mediaCategories.type, 'link'),
-          ),
-        )
-        .limit(1);
-
-      if (category.length === 0) {
-        throw new BadRequestException('Link category not found');
-      }
+      await assertKindFolder(
+        this.db,
+        workspaceId,
+        dto.categoryId,
+        'link',
+        'Link',
+      );
     }
 
     // Fetch link preview
@@ -112,78 +149,83 @@ export class SavedLinkService {
       previewDescription: preview.description,
       previewImageUrl: preview.imageUrl,
       previewSiteName: preview.siteName,
+      previewFaviconUrl: preview.faviconUrl,
+      utm: normalizeUtm(dto.utm),
       categoryId: dto.categoryId,
       tags: dto.tags || [],
     };
 
-    const [created] = await db.insert(savedLinks).values(newLink).returning();
+    const [created] = await this.db
+      .insert(savedLinks)
+      .values(newLink)
+      .returning();
 
     this.logger.log(
       `Created saved link "${dto.name}" for workspace ${workspaceId}`,
     );
 
-    return created;
+    // Posts written before the link existed already hold its URL (I4).
+    await this.recountUsage(workspaceId, created.id);
+    return this.findOne(workspaceId, created.id);
+  }
+
+  /**
+   * Sets `usage_count` from the posts that hold the link's URL, by the 0055
+   * trigger's own test (I4). For writes the trigger cannot see: a new link,
+   * or a changed URL.
+   */
+  private async recountUsage(
+    workspaceId: string,
+    linkId: string,
+  ): Promise<void> {
+    await withUsageLock(this.db, workspaceId, (tx) =>
+      tx
+        .update(savedLinks)
+        .set({
+          usageCount: linkPostCountSql({
+            url: savedLinks.url,
+            workspaceId: savedLinks.workspaceId,
+          }),
+        })
+        .where(
+          and(
+            eq(savedLinks.id, linkId),
+            eq(savedLinks.workspaceId, workspaceId),
+          ),
+        ),
+    );
   }
 
   /**
    * Get all saved links for a workspace with filtering
    */
-  async findAll(workspaceId: string, query: SavedLinkQueryDto = {}) {
-    const {
-      categoryId,
-      isStarred,
-      isDeleted = false,
-      search,
-      limit = 50,
-      offset = 0,
-    } = query;
+  async findAll(
+    workspaceId: string,
+    query: SavedLinkQueryDto = {},
+  ): Promise<Page<LinkView>> {
+    const { sort = 'newest', limit = 50, offset = 0 } = query;
+    const conditions = this.buildLinkConditions(workspaceId, query);
 
-    const conditions = [
-      eq(savedLinks.workspaceId, workspaceId),
-      eq(savedLinks.isDeleted, isDeleted),
-    ];
-
-    if (categoryId) {
-      conditions.push(eq(savedLinks.categoryId, categoryId));
-    }
-
-    if (isStarred !== undefined) {
-      conditions.push(eq(savedLinks.isStarred, isStarred));
-    }
-
-    if (search) {
-      conditions.push(
-        or(
-          like(savedLinks.name, `%${search}%`),
-          like(savedLinks.url, `%${search}%`),
-          like(savedLinks.description, `%${search}%`),
-        )!,
-      );
-    }
-
-    const links = await db
-      .select({
-        link: savedLinks,
-        category: mediaCategories,
-      })
+    // Both joins are on a primary key, so each link stays one row and
+    // LIMIT/OFFSET and the count still agree.
+    const links = await this.db
+      .select(VIEW_SELECTION)
       .from(savedLinks)
       .leftJoin(mediaCategories, eq(savedLinks.categoryId, mediaCategories.id))
+      .leftJoin(users, eq(savedLinks.createdById, users.id))
       .where(and(...conditions))
-      .orderBy(desc(savedLinks.createdAt))
+      .orderBy(...linkOrder(sort))
       .limit(limit)
       .offset(offset);
 
     // Get total count
-    const [{ count }] = await db
+    const [{ count }] = await this.db
       .select({ count: sql<number>`count(*)::int` })
       .from(savedLinks)
       .where(and(...conditions));
 
     return {
-      items: links.map((row) => ({
-        ...row.link,
-        category: row.category,
-      })),
+      items: links.map(toLinkView),
       total: count,
       limit,
       offset,
@@ -193,14 +235,12 @@ export class SavedLinkService {
   /**
    * Get a single saved link by ID
    */
-  async findOne(workspaceId: string, linkId: string) {
-    const [link] = await db
-      .select({
-        link: savedLinks,
-        category: mediaCategories,
-      })
+  async findOne(workspaceId: string, linkId: string): Promise<LinkView> {
+    const [link] = await this.db
+      .select(VIEW_SELECTION)
       .from(savedLinks)
       .leftJoin(mediaCategories, eq(savedLinks.categoryId, mediaCategories.id))
+      .leftJoin(users, eq(savedLinks.createdById, users.id))
       .where(
         and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
       )
@@ -210,35 +250,28 @@ export class SavedLinkService {
       throw new NotFoundException('Saved link not found');
     }
 
-    return {
-      ...link.link,
-      category: link.category,
-    };
+    return toLinkView(link);
   }
 
   /**
    * Update a saved link
    */
-  async update(workspaceId: string, linkId: string, dto: UpdateSavedLinkDto) {
+  async update(
+    workspaceId: string,
+    linkId: string,
+    dto: UpdateSavedLinkDto,
+  ): Promise<LinkView> {
     const existing = await this.findOne(workspaceId, linkId);
 
     // Validate category if changing
     if (dto.categoryId) {
-      const category = await db
-        .select()
-        .from(mediaCategories)
-        .where(
-          and(
-            eq(mediaCategories.id, dto.categoryId),
-            eq(mediaCategories.workspaceId, workspaceId),
-            eq(mediaCategories.type, 'link'),
-          ),
-        )
-        .limit(1);
-
-      if (category.length === 0) {
-        throw new BadRequestException('Link category not found');
-      }
+      await assertKindFolder(
+        this.db,
+        workspaceId,
+        dto.categoryId,
+        'link',
+        'Link',
+      );
     }
 
     const updateData: Partial<typeof savedLinks.$inferInsert> = {
@@ -250,60 +283,74 @@ export class SavedLinkService {
     if (dto.categoryId !== undefined) updateData.categoryId = dto.categoryId;
     if (dto.tags !== undefined) updateData.tags = dto.tags;
     if (dto.isStarred !== undefined) updateData.isStarred = dto.isStarred;
+    if (dto.utm !== undefined) updateData.utm = normalizeUtm(dto.utm);
 
     // If URL is changing, fetch new preview
-    if (dto.url !== undefined && dto.url !== existing.url) {
+    const isUrlChanging = dto.url !== undefined && dto.url !== existing.url;
+    if (dto.url !== undefined && isUrlChanging) {
       updateData.url = dto.url;
       const preview = await this.fetchLinkPreview(dto.url);
       updateData.previewTitle = preview.title;
       updateData.previewDescription = preview.description;
       updateData.previewImageUrl = preview.imageUrl;
       updateData.previewSiteName = preview.siteName;
+      updateData.previewFaviconUrl = preview.faviconUrl ?? null;
     }
 
-    const [updated] = await db
+    await this.db
       .update(savedLinks)
       .set(updateData)
-      .where(eq(savedLinks.id, linkId))
-      .returning();
+      .where(
+        and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Updated saved link ${linkId}`);
 
-    return updated;
+    // The posts trigger counted the old URL; the new one needs a recount.
+    if (isUrlChanging) {
+      await this.recountUsage(workspaceId, linkId);
+    }
+    return this.findOne(workspaceId, linkId);
   }
 
   /**
    * Refresh link preview metadata
    */
-  async refreshPreview(workspaceId: string, linkId: string) {
+  async refreshPreview(workspaceId: string, linkId: string): Promise<LinkView> {
     const existing = await this.findOne(workspaceId, linkId);
 
     const preview = await this.fetchLinkPreview(existing.url);
 
-    const [updated] = await db
+    await this.db
       .update(savedLinks)
       .set({
         previewTitle: preview.title,
         previewDescription: preview.description,
         previewImageUrl: preview.imageUrl,
         previewSiteName: preview.siteName,
+        previewFaviconUrl: preview.faviconUrl ?? null,
         updatedAt: new Date(),
       })
-      .where(eq(savedLinks.id, linkId))
-      .returning();
+      .where(
+        and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Refreshed preview for saved link ${linkId}`);
 
-    return updated;
+    return this.findOne(workspaceId, linkId);
   }
 
   /**
    * Soft delete a saved link (move to recycle bin)
    */
-  async softDelete(workspaceId: string, linkId: string, userId: string) {
+  async softDelete(
+    workspaceId: string,
+    linkId: string,
+    userId: string,
+  ): Promise<LinkView> {
     await this.findOne(workspaceId, linkId);
 
-    const [updated] = await db
+    await this.db
       .update(savedLinks)
       .set({
         isDeleted: true,
@@ -311,19 +358,20 @@ export class SavedLinkService {
         deletedById: userId,
         updatedAt: new Date(),
       })
-      .where(eq(savedLinks.id, linkId))
-      .returning();
+      .where(
+        and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Soft deleted saved link ${linkId}`);
 
-    return updated;
+    return this.findOne(workspaceId, linkId);
   }
 
   /**
    * Restore a saved link from recycle bin
    */
-  async restore(workspaceId: string, linkId: string) {
-    const [link] = await db
+  async restore(workspaceId: string, linkId: string): Promise<LinkView> {
+    const [link] = await this.db
       .select()
       .from(savedLinks)
       .where(
@@ -339,7 +387,7 @@ export class SavedLinkService {
       throw new NotFoundException('Saved link not found in recycle bin');
     }
 
-    const [updated] = await db
+    await this.db
       .update(savedLinks)
       .set({
         isDeleted: false,
@@ -347,21 +395,33 @@ export class SavedLinkService {
         deletedById: null,
         updatedAt: new Date(),
       })
-      .where(eq(savedLinks.id, linkId))
-      .returning();
+      .where(
+        and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
+      );
 
     this.logger.log(`Restored saved link ${linkId}`);
 
-    return updated;
+    return this.findOne(workspaceId, linkId);
   }
 
   /**
    * Permanently delete a saved link
    */
   async permanentDelete(workspaceId: string, linkId: string) {
-    await this.findOne(workspaceId, linkId);
-
-    await db.delete(savedLinks).where(eq(savedLinks.id, linkId));
+    // Only a row in the Bin, in this workspace, can be deleted for good.
+    const [gone] = await this.db
+      .delete(savedLinks)
+      .where(
+        and(
+          eq(savedLinks.id, linkId),
+          eq(savedLinks.workspaceId, workspaceId),
+          eq(savedLinks.isDeleted, true),
+        ),
+      )
+      .returning({ id: savedLinks.id });
+    if (!gone) {
+      throw new NotFoundException('Link not found in recycle bin');
+    }
 
     this.logger.log(`Permanently deleted saved link ${linkId}`);
 
@@ -369,77 +429,101 @@ export class SavedLinkService {
   }
 
   /**
-   * Increment usage count when link is used
+   * Record that a link was just used: sets `lastUsedAt` only.
+   * `usage_count` is a post count kept by the posts trigger (0055, D13).
    */
-  async incrementUsage(workspaceId: string, linkId: string) {
-    // Workspace-scoped so one workspace can't bump another's counter by id.
-    const [updated] = await db
+  async markUsed(workspaceId: string, linkId: string): Promise<LinkView> {
+    // Workspace-scoped so one workspace can't touch another's link by id.
+    const [updated] = await this.db
       .update(savedLinks)
       .set({
-        usageCount: sql`${savedLinks.usageCount} + 1`,
         lastUsedAt: new Date(),
         updatedAt: new Date(),
       })
       .where(
         and(eq(savedLinks.id, linkId), eq(savedLinks.workspaceId, workspaceId)),
       )
-      .returning();
+      .returning({ id: savedLinks.id });
 
     if (!updated) {
       throw new NotFoundException('Link not found');
     }
 
-    return updated;
+    return this.findOne(workspaceId, linkId);
   }
 
   /**
-   * Get links in recycle bin
+   * The WHERE clause of `GET links`, for bulk select-all. It must match the
+   * filters `findAll` applies, so "every match" means what the list shows.
    */
-  async getRecycleBin(workspaceId: string, limit = 50, offset = 0) {
-    const links = await db
-      .select()
-      .from(savedLinks)
-      .where(
-        and(
-          eq(savedLinks.workspaceId, workspaceId),
-          eq(savedLinks.isDeleted, true),
-        ),
-      )
-      .orderBy(desc(savedLinks.deletedAt))
-      .limit(limit)
-      .offset(offset);
+  buildLinkConditions(workspaceId: string, query: SavedLinkQueryDto): SQL[] {
+    const {
+      categoryId,
+      isStarred,
+      isDeleted = false,
+      search,
+      createdBy,
+    } = query;
 
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(savedLinks)
-      .where(
-        and(
-          eq(savedLinks.workspaceId, workspaceId),
-          eq(savedLinks.isDeleted, true),
-        ),
+    const conditions: SQL[] = [
+      eq(savedLinks.workspaceId, workspaceId),
+      eq(savedLinks.isDeleted, isDeleted),
+    ];
+
+    if (createdBy) {
+      conditions.push(eq(savedLinks.createdById, createdBy));
+    }
+
+    if (categoryId) {
+      conditions.push(eq(savedLinks.categoryId, categoryId));
+    }
+
+    if (isStarred !== undefined) {
+      conditions.push(eq(savedLinks.isStarred, isStarred));
+    }
+
+    if (search) {
+      conditions.push(
+        or(
+          ilike(savedLinks.name, ilikePattern(search)),
+          ilike(savedLinks.url, ilikePattern(search)),
+          ilike(savedLinks.description, ilikePattern(search)),
+          ilike(savedLinks.previewTitle, ilikePattern(search)),
+        )!,
       );
+    }
 
-    return {
-      items: links,
-      total: count,
-      limit,
-      offset,
-    };
+    return conditions;
+  }
+
+  /**
+   * Bulk delete / star / unstar / move (ruling 6), on `ids` or with
+   * `selectAll` on every link the list's filter matches. The rules
+   * (live rows only, X1 move, workspace scope) live in `runKindBulk`.
+   */
+  bulkAction(
+    workspaceId: string,
+    userId: string,
+    dto: LinkBulkDto,
+  ): Promise<{ affectedCount: number }> {
+    return runKindBulk(this.db, LINK_BULK, workspaceId, userId, dto, (ws, q) =>
+      this.buildLinkConditions(ws, q),
+    );
   }
 
   /**
    * Cleanup links older than 30 days in recycle bin
    */
-  async cleanupRecycleBin() {
-    const thirtyDaysAgo = new Date();
-    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+  async cleanupRecycleBin(now: Date = new Date()) {
+    const cutoff = binPurgeCutoff(now);
 
-    const result = await db
+    const result = await this.db
       .delete(savedLinks)
       .where(
         and(
           eq(savedLinks.isDeleted, true),
-          sql`${savedLinks.deletedAt} < ${thirtyDaysAgo}`,
+          // Same COALESCE as the Bin's purgeAt (legacy rows lack deleted_at).
+          sql`COALESCE(${savedLinks.deletedAt}, ${savedLinks.updatedAt}) < ${cutoff}`,
         ),
       )
       .returning();
