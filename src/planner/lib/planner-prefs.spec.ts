@@ -31,7 +31,26 @@ describe('resolvePrefs', () => {
       bestTimesInWeek: false,
       bestTimesSource: 'own',
       suggestBestTime: true,
+      queueSlots: [1, 2, 3, 4, 5].flatMap((weekday) => [
+        { weekday, time: '09:00' },
+        { weekday, time: '18:00' },
+      ]),
     });
+  });
+
+  it('keeps a stored queue, including an empty one, and defaults a missing one', () => {
+    expect(
+      resolvePrefs({ queueSlots: [{ weekday: 5, time: '18:00' }] }).queueSlots,
+    ).toEqual([{ weekday: 5, time: '18:00' }]);
+    expect(resolvePrefs({ queueSlots: [] }).queueSlots).toEqual([]);
+    expect(resolvePrefs({ queueSlots: 'x' }).queueSlots).toEqual(
+      PLANNER_PREF_DEFAULTS.queueSlots,
+    );
+  });
+
+  it('a caller cannot corrupt the default queue', () => {
+    resolvePrefs(undefined).queueSlots[0].time = '00:00';
+    expect(PLANNER_PREF_DEFAULTS.queueSlots[0].time).toBe('09:00');
   });
 
   it('drops a wrongly typed key and keeps the valid ones', () => {
@@ -141,6 +160,18 @@ describe('mergePrefs', () => {
     for (const v of [null, undefined, 'x', [], 3]) {
       expect(mergePrefs(v, { weekStartsOn: 1 })).toEqual({ weekStartsOn: 1 });
     }
+  });
+
+  it('a queue patch replaces the stored queue and other writes keep it', () => {
+    const stored = mergePrefs(undefined, {
+      queueSlots: [{ weekday: 2, time: '10:00' }],
+    });
+    expect(stored).toEqual({ queueSlots: [{ weekday: 2, time: '10:00' }] });
+    expect(mergePrefs(stored, { colorBy: 'channel' })).toEqual({
+      colorBy: 'channel',
+      queueSlots: [{ weekday: 2, time: '10:00' }],
+    });
+    expect(mergePrefs(stored, { queueSlots: [] })).toEqual({ queueSlots: [] });
   });
 
   it('does not mutate its inputs', () => {

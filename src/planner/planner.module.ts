@@ -7,11 +7,13 @@ import { PlannerBestTimesController } from './planner-best-times.controller';
 import { PlannerController } from './planner.controller';
 import { PlannerNotesController } from './planner-notes.controller';
 import { PlannerPreferencesController } from './planner-preferences.controller';
+import { PlannerQueueController } from './planner-queue.controller';
 import { BestTimesService } from './services/best-times.service';
 import { PlannerListService } from './services/planner-list.service';
 import { PlannerLookupService } from './services/planner-lookup.service';
 import { PlannerNotesService } from './services/planner-notes.service';
 import { PlannerPreferencesService } from './services/planner-preferences.service';
+import { QueueSlotsService } from './services/queue-slots.service';
 
 @Module({
   imports: [
@@ -25,6 +27,7 @@ import { PlannerPreferencesService } from './services/planner-preferences.servic
     PlannerBestTimesController,
     PlannerNotesController,
     PlannerPreferencesController,
+    PlannerQueueController,
   ],
   providers: [
     BestTimesService,
@@ -32,6 +35,7 @@ import { PlannerPreferencesService } from './services/planner-preferences.servic
     PlannerLookupService,
     PlannerNotesService,
     PlannerPreferencesService,
+    QueueSlotsService,
   ],
 })
 export class PlannerModule {}
