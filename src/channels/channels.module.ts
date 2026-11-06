@@ -15,6 +15,7 @@ import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
 import { BlueskyService } from './services/bluesky.service';
 import { MastodonService } from './services/mastodon.service';
+import { MentionLookupService } from './services/mention-lookup.service';
 import { GoogleOauthRevokeService } from './services/google-oauth-revoke.service';
 import { YoutubeDataDeletionService } from './services/youtube-data-deletion.service';
 import { GoogleDriveService } from './services/google-drive.service';
@@ -93,6 +94,7 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
     ThreadsService,
     BlueskyService,
     MastodonService,
+    MentionLookupService,
     GoogleOauthRevokeService,
     YoutubeDataDeletionService,
     GoogleDriveService,
