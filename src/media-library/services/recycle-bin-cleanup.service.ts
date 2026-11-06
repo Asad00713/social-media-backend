@@ -1,13 +1,24 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
+import type { BinKind } from '../dto/contract';
 import { MediaItemService } from './media-item.service';
 import { TemplateService } from './template.service';
 import { TextSnippetService } from './text-snippet.service';
 import { SavedLinkService } from './saved-link.service';
 
+/** What one run of the cleanup did. */
+export interface CleanupRunResult {
+  deleted: number;
+  /** Kinds whose purge threw; the others still ran. */
+  failedKinds: BinKind[];
+}
+
 /**
- * Scheduled service to clean up items in recycle bin older than 30 days
- * Runs daily at 3:00 AM
+ * Purges every Bin row whose retention ran out, daily at 3:00 AM.
+ *
+ * Runs on every replica: harmless, because each kind's purge is idempotent
+ * (a second runner finds nothing left to delete). A single-runner lock is the
+ * later fix.
  */
 @Injectable()
 export class RecycleBinCleanupService {
@@ -20,50 +31,44 @@ export class RecycleBinCleanupService {
     private readonly savedLinkService: SavedLinkService,
   ) {}
 
-  /**
-   * Run cleanup every day at 3:00 AM
-   */
   @Cron(CronExpression.EVERY_DAY_AT_3AM)
-  async handleRecycleBinCleanup() {
-    this.logger.log(
-      'Starting recycle bin cleanup (items older than 30 days)...',
-    );
+  async handleRecycleBinCleanup(): Promise<CleanupRunResult> {
+    this.logger.log('Starting recycle bin cleanup...');
 
-    try {
-      // Clean up media items
-      const mediaResult = await this.mediaItemService.cleanupRecycleBin();
-      this.logger.log(`Cleaned up ${mediaResult.deletedCount} media items`);
+    // Each kind in its own try/catch: one failing purge (storage down for
+    // media, say) must not skip the others.
+    const kinds: [BinKind, () => Promise<{ deletedCount: number }>][] = [
+      ['media', () => this.mediaItemService.cleanupRecycleBin()],
+      ['template', () => this.templateService.cleanupRecycleBin()],
+      ['snippet', () => this.textSnippetService.cleanupRecycleBin()],
+      ['link', () => this.savedLinkService.cleanupRecycleBin()],
+    ];
 
-      // Clean up templates
-      const templateResult = await this.templateService.cleanupRecycleBin();
-      this.logger.log(`Cleaned up ${templateResult.deletedCount} templates`);
-
-      // Clean up text snippets
-      const snippetResult = await this.textSnippetService.cleanupRecycleBin();
-      this.logger.log(`Cleaned up ${snippetResult.deletedCount} text snippets`);
-
-      // Clean up saved links
-      const linkResult = await this.savedLinkService.cleanupRecycleBin();
-      this.logger.log(`Cleaned up ${linkResult.deletedCount} saved links`);
-
-      const totalDeleted =
-        mediaResult.deletedCount +
-        templateResult.deletedCount +
-        snippetResult.deletedCount +
-        linkResult.deletedCount;
-
-      this.logger.log(
-        `Recycle bin cleanup completed. Total items deleted: ${totalDeleted}`,
-      );
-    } catch (error) {
-      this.logger.error('Recycle bin cleanup failed:', error);
+    let deleted = 0;
+    const failedKinds: BinKind[] = [];
+    for (const [kind, purge] of kinds) {
+      try {
+        const { deletedCount } = await purge();
+        deleted += deletedCount;
+        this.logger.log(`Cleaned up ${deletedCount} ${kind} rows`);
+      } catch (error) {
+        failedKinds.push(kind);
+        this.logger.error(`Recycle bin cleanup failed for ${kind}:`, error);
+      }
     }
+
+    this.logger.log(
+      `Recycle bin cleanup completed. Total items deleted: ${deleted}${
+        failedKinds.length ? `; failed: ${failedKinds.join(', ')}` : ''
+      }`,
+    );
+    return { deleted, failedKinds };
   }
 
   /**
    * Manual trigger for cleanup (can be called via API if needed)
    */
-  async runCleanupManually() {
+  async runCleanupManually(): Promise<CleanupRunResult> {
     return this.handleRecycleBinCleanup();
   }
 }

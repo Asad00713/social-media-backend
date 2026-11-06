@@ -23,6 +23,8 @@
     "db:migrate:sql": "node dist/src/drizzle/migrate/migrate",
     "db:baseline": "node dist/src/drizzle/migrate/baseline",
     "inbox:backfill": "node dist/src/inbox/scripts/backfill-conversations",
+    "library:backfill-refs": "node dist/src/media-library/scripts/backfill-library-refs",
+    "library:backfill-sizes": "node dist/src/media-library/scripts/backfill-file-sizes",
     "db:push": "echo \"REFUSING: db:push rewrites the schema with no migration record. Write a numbered .sql migration and use db:migrate:sql.\" && exit 1",
     "db:studio": "drizzle-kit studio"
   },
@@ -61,6 +63,7 @@
     "drizzle-orm": "^0.45.0",
     "groq-sdk": "^0.37.0",
     "ioredis": "^5.10.1",
+    "ipaddr.js": "1.9.1",
     "oauth-1.0a": "^2.2.6",
     "openai": "^6.25.0",
     "passport": "^0.7.0",
@@ -72,7 +75,9 @@
     "rxjs": "^7.8.1",
     "socket.io": "^4.8.3",
     "stripe": "^20.1.0",
-    "uuid": "^13.0.0"
+    "undici": "6.24.1",
+    "uuid": "^13.0.0",
+    "yazl": "^3.3.1"
   },
   "devDependencies": {
     "@eslint/eslintrc": "^3.2.0",
@@ -94,6 +99,7 @@
     "@types/pg": "^8.20.0",
     "@types/supertest": "^6.0.2",
     "@types/uuid": "^10.0.0",
+    "@types/yazl": "^3.3.1",
     "drizzle-kit": "^0.31.8",
     "eslint": "^9.18.0",
     "eslint-config-prettier": "^10.0.1",

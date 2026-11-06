@@ -3,6 +3,7 @@ import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import { SlackService } from '../../channels/services/slack.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
 
 interface Destination {
   id: string;
@@ -61,7 +62,7 @@ export class SlackPublisher extends BasePublisher {
     }
 
     const media = mediaItems[0];
-    const resp = await fetch(media.url);
+    const resp = await fetchPublicMedia(media.url);
     if (!resp.ok) {
       throw new Error(`Failed to download Slack media (${resp.status})`);
     }

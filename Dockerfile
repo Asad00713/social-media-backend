@@ -36,6 +36,10 @@ COPY --from=builder /app/dist ./dist
 # in the production image, not only in the builder stage.
 COPY --from=builder /app/drizzle ./drizzle
 
+# The Library's sample images are served by the API itself
+# (/static/library-samples/...), read from assets/ at runtime.
+COPY --from=builder /app/assets ./assets
+
 # Verify dist was copied
 RUN ls -la dist/
 

@@ -1,4 +1,5 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
+import { fetchPublicMedia } from '../../common/net/public-fetch';
 
 export interface PinterestUser {
   id: string;
@@ -551,7 +552,7 @@ export class PinterestService {
     // Step 2: Download video and upload to Pinterest's S3 bucket.
     // Pinterest requires a multipart/form-data POST containing every
     // upload_parameter as a field, with the video file LAST under `file`.
-    const videoResponse = await fetch(videoUrl);
+    const videoResponse = await fetchPublicMedia(videoUrl);
     if (!videoResponse.ok) {
       throw new BadRequestException(
         `Failed to download video from ${videoUrl}`,
