@@ -51,6 +51,66 @@ export interface ThreadsMention {
   mediaType: string | null;
 }
 
+/**
+ * The post-level settings Threads takes on the container-create call.
+ *
+ * Field names and values are from Meta's own publishing reference, not
+ * from our composer's vocabulary:
+ * - `reply_control`: everyone | accounts_you_follow | mentioned_only |
+ *   parent_post_author_only | followers_only
+ * - `topic_tag`: one per post; periods and ampersands are rejected
+ * - `is_spoiler_media`: blurs the media until tapped
+ * - `enable_reply_approvals`: replies stay hidden until the author approves
+ * - `poll_attachment`: 2-4 options, each 1-25 characters
+ *
+ * `poll_attachment` is **text-only**. Meta: "Polls can only be attached to
+ * text-only posts." So only `createTextThread` accepts it, and the other
+ * three take this type without the poll.
+ */
+export interface ThreadsPostSettings {
+  replyControl?:
+    | 'everyone'
+    | 'accounts_you_follow'
+    | 'mentioned_only'
+    | 'parent_post_author_only'
+    | 'followers_only';
+  topicTag?: string;
+  isSpoilerMedia?: boolean;
+  enableReplyApprovals?: boolean;
+  locationId?: string;
+}
+
+/** A poll, which rides a text container only. */
+export interface ThreadsPoll {
+  optionA: string;
+  optionB: string;
+  optionC?: string;
+  optionD?: string;
+}
+
+/**
+ * Writes the settings into a container body, under the names Threads uses.
+ *
+ * Only values that were set are written. The container-create call is a
+ * form POST, so every value has to reach it as a string — a raw boolean
+ * would arrive as the text "undefined" for an unset field rather than
+ * being left out, and `poll_attachment` has to be JSON-encoded because it
+ * is the one structured parameter here.
+ */
+function applySettings(
+  body: Record<string, string>,
+  settings?: ThreadsPostSettings,
+): void {
+  if (!settings) return;
+  if (settings.replyControl) body.reply_control = settings.replyControl;
+  if (settings.topicTag) body.topic_tag = settings.topicTag;
+  if (settings.locationId) body.location_id = settings.locationId;
+  // Sent only when true: absent already means "not a spoiler" / "no
+  // approvals", and these are claims about the post.
+  if (settings.isSpoilerMedia) body.is_spoiler_media = 'true';
+  if (settings.enableReplyApprovals) body.enable_reply_approvals = 'true';
+}
+
 @Injectable()
 export class ThreadsService {
   private readonly logger = new Logger(ThreadsService.name);
@@ -148,6 +208,7 @@ export class ThreadsService {
     userId: string,
     text: string,
     replyToId?: string,
+    settings?: ThreadsPostSettings & { poll?: ThreadsPoll },
   ): Promise<{ postId: string }> {
     // Step 1: Create media container
     const containerUrl = new URL(`${this.graphApiUrl}/${userId}/threads`);
@@ -160,6 +221,20 @@ export class ThreadsService {
 
     if (replyToId) {
       containerBody.reply_to_id = replyToId;
+    }
+
+    applySettings(containerBody, settings);
+
+    // The one structured parameter: a JSON object, and text-only by Meta's
+    // own rule, which is why no other container type accepts it.
+    if (settings?.poll) {
+      const poll: Record<string, string> = {
+        option_a: settings.poll.optionA,
+        option_b: settings.poll.optionB,
+      };
+      if (settings.poll.optionC) poll.option_c = settings.poll.optionC;
+      if (settings.poll.optionD) poll.option_d = settings.poll.optionD;
+      containerBody.poll_attachment = JSON.stringify(poll);
     }
 
     const containerResponse = await fetch(containerUrl.toString(), {
@@ -192,6 +267,7 @@ export class ThreadsService {
     imageUrl: string,
     text?: string,
     replyToId?: string,
+    settings?: ThreadsPostSettings,
   ): Promise<{ postId: string }> {
     // Step 1: Create media container
     const containerUrl = new URL(`${this.graphApiUrl}/${userId}/threads`);
@@ -209,6 +285,8 @@ export class ThreadsService {
     if (replyToId) {
       containerBody.reply_to_id = replyToId;
     }
+
+    applySettings(containerBody, settings);
 
     const containerResponse = await fetch(containerUrl.toString(), {
       method: 'POST',
@@ -240,6 +318,7 @@ export class ThreadsService {
     videoUrl: string,
     text?: string,
     replyToId?: string,
+    settings?: ThreadsPostSettings,
   ): Promise<{ postId: string }> {
     // Step 1: Create media container
     const containerUrl = new URL(`${this.graphApiUrl}/${userId}/threads`);
@@ -257,6 +336,8 @@ export class ThreadsService {
     if (replyToId) {
       containerBody.reply_to_id = replyToId;
     }
+
+    applySettings(containerBody, settings);
 
     const containerResponse = await fetch(containerUrl.toString(), {
       method: 'POST',
@@ -291,6 +372,7 @@ export class ThreadsService {
     mediaItems: Array<{ type: 'IMAGE' | 'VIDEO'; url: string }>,
     text?: string,
     replyToId?: string,
+    settings?: ThreadsPostSettings,
   ): Promise<{ postId: string }> {
     if (mediaItems.length < 2 || mediaItems.length > 10) {
       throw new BadRequestException(
@@ -356,6 +438,12 @@ export class ThreadsService {
     if (replyToId) {
       carouselBody.reply_to_id = replyToId;
     }
+
+    // The PARENT container only. An item container carries just its own
+    // media; post-level settings belong to the post, and `is_spoiler_media`
+    // on the parent blurs every slide — which is what the composer's one
+    // toggle means.
+    applySettings(carouselBody, settings);
 
     const carouselResponse = await fetch(carouselUrl.toString(), {
       method: 'POST',
