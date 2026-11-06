@@ -23,6 +23,9 @@ const LINKEDIN_REST_VERSION = '202610';
 /** Documents API: "The file size can't exceed 100MB and 300 pages." */
 const MAX_DOCUMENT_BYTES = 100 * 1024 * 1024;
 
+/** Videos API: "File size: Between 75kb and 500MB." */
+const MAX_VIDEO_BYTES = 500 * 1024 * 1024;
+
 export interface LinkedInProfile {
   id: string;
   firstName: string;
@@ -1075,7 +1078,10 @@ export class LinkedInService {
    * The file's address comes from the draft, so before anything is registered
    * with LinkedIn it has to be a web address: only http(s) is ever fetched.
    */
-  private assertWebUrl(url: string, noun: 'image' | 'document'): void {
+  private assertWebUrl(
+    url: string,
+    noun: 'image' | 'document' | 'video',
+  ): void {
     if (!/^https?:\/\//i.test(url)) {
       throw new BadRequestException(
         `The ${noun} must be a web (http or https) address`,
@@ -1341,5 +1347,250 @@ export class LinkedInService {
       },
       'link post',
     );
+  }
+
+  // --------------------------------------------------------------------------
+  // Text, image and video on the Posts API
+  //
+  // These replace the legacy `/v2/ugcPosts` paths for the formats the
+  // composer publishes, so `isReshareDisabledByAuthor` ("Allow reposts")
+  // reaches LinkedIn on every one of them. The request shapes are the Posts
+  // API guide's own samples: a text post is the envelope alone, an image or
+  // video post adds `content.media = { id, title? }` with an Images / Videos
+  // API URN. The legacy methods above stay for any other caller.
+  // --------------------------------------------------------------------------
+
+  /** A text-only post (`POST /rest/posts`, no `content`). */
+  async createRestTextPost(
+    accessToken: string,
+    authorUrn: string,
+    commentary: string,
+    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    disableReshare: boolean = false,
+  ): Promise<{ postId: string }> {
+    return this.createRestPost(
+      accessToken,
+      this.restPostEnvelope(authorUrn, commentary, visibility, disableReshare),
+      'post',
+    );
+  }
+
+  /**
+   * A single-image post: Images API `initializeUpload` -> PUT the file ->
+   * Posts API with `content.media.id = urn:li:image:…`. `title` is sent only
+   * when there is one (it is optional for media; required only for
+   * documents).
+   */
+  async createRestImagePost(
+    accessToken: string,
+    authorUrn: string,
+    commentary: string,
+    imageUrl: string,
+    title?: string,
+    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    disableReshare: boolean = false,
+  ): Promise<{ postId: string }> {
+    this.assertWebUrl(imageUrl, 'image');
+    const { uploadUrl, urn } = await this.initializeRestUpload(
+      'images',
+      accessToken,
+      authorUrn,
+    );
+    await this.uploadToRestAsset(imageUrl, uploadUrl, accessToken, 'image');
+
+    return this.createRestPost(
+      accessToken,
+      {
+        ...this.restPostEnvelope(
+          authorUrn,
+          commentary,
+          visibility,
+          disableReshare,
+        ),
+        content: { media: { id: urn, ...(title ? { title } : {}) } },
+      },
+      'image post',
+    );
+  }
+
+  /**
+   * A video post through the Videos API.
+   *
+   * 1. `POST /rest/videos?action=initializeUpload` with
+   *    `{ owner, fileSizeBytes, uploadCaptions: false, uploadThumbnail: false }`
+   *    -> `{ video, uploadToken, uploadInstructions: [{ firstByte, lastByte,
+   *    uploadUrl }] }` (stated).
+   * 2. PUT each byte range (inclusive `firstByte`..`lastByte`) to its url and
+   *    keep the `etag` response header of each (stated: "save eTag").
+   * 3. `POST /rest/videos?action=finalizeUpload` with
+   *    `{ video, uploadToken, uploadedPartIds }`, ids in instruction order
+   *    (stated).
+   * 4. Posts API with `content.media = { id: urn:li:video:…, title? }`.
+   *
+   * The part PUTs carry no Authorization header: the guide's own upload
+   * sample sends none, and the legacy video upload refused one (INFERRED to
+   * hold here). The video is not polled for AVAILABLE before posting: the
+   * Posts API publishes a post whose media is still processing as
+   * PUBLISH_REQUESTED (stated in the Post schema) - the legacy path did not
+   * wait either.
+   */
+  async createRestVideoPost(
+    accessToken: string,
+    authorUrn: string,
+    commentary: string,
+    videoUrl: string,
+    title?: string,
+    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    disableReshare: boolean = false,
+  ): Promise<{ postId: string }> {
+    this.assertWebUrl(videoUrl, 'video');
+    const bytes = await this.downloadVideo(videoUrl);
+
+    const init = await fetch(
+      `${LINKEDIN_REST_URL}/videos?action=initializeUpload`,
+      {
+        method: 'POST',
+        headers: this.restHeaders(accessToken),
+        body: JSON.stringify({
+          initializeUploadRequest: {
+            owner: authorUrn,
+            fileSizeBytes: bytes.byteLength,
+            uploadCaptions: false,
+            uploadThumbnail: false,
+          },
+        }),
+      },
+    );
+    if (!init.ok) {
+      const reason = await this.restFailure(init);
+      this.logger.error(
+        `Failed to initialize LinkedIn video upload: ${reason}`,
+      );
+      throw new BadRequestException(
+        `Failed to start the LinkedIn video upload (${reason})`,
+      );
+    }
+    const initData = (await init.json()) as {
+      value?: {
+        video?: string;
+        uploadToken?: string;
+        uploadInstructions?: {
+          uploadUrl?: string;
+          firstByte?: number;
+          lastByte?: number;
+        }[];
+      };
+    };
+    const video = initData.value?.video;
+    const instructions = initData.value?.uploadInstructions ?? [];
+    if (!video || instructions.length === 0) {
+      throw new BadRequestException(
+        'LinkedIn returned no upload target for the video',
+      );
+    }
+
+    const uploadedPartIds: string[] = [];
+    for (const [i, part] of instructions.entries()) {
+      const first = part.firstByte;
+      const last = part.lastByte;
+      if (
+        !part.uploadUrl ||
+        typeof first !== 'number' ||
+        typeof last !== 'number' ||
+        first < 0 ||
+        last < first ||
+        last >= bytes.byteLength
+      ) {
+        throw new BadRequestException(
+          `LinkedIn returned an unusable upload part (${i + 1} of ${instructions.length})`,
+        );
+      }
+      const res = await fetch(part.uploadUrl, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: bytes.slice(first, last + 1),
+      });
+      if (!res.ok) {
+        const reason = await this.restFailure(res);
+        this.logger.error(
+          `Failed to upload LinkedIn video part ${i + 1}: ${reason}`,
+        );
+        throw new BadRequestException(
+          `Failed to upload the video to LinkedIn (${reason})`,
+        );
+      }
+      // The guide's ETag sample is unquoted; strip quotes in case a proxy
+      // adds the standard ones.
+      const etag = res.headers.get('etag')?.replace(/^"|"$/g, '');
+      if (!etag) {
+        throw new BadRequestException(
+          `LinkedIn returned no ETag for video part ${i + 1}`,
+        );
+      }
+      uploadedPartIds.push(etag);
+    }
+
+    const finalize = await fetch(
+      `${LINKEDIN_REST_URL}/videos?action=finalizeUpload`,
+      {
+        method: 'POST',
+        headers: this.restHeaders(accessToken),
+        body: JSON.stringify({
+          finalizeUploadRequest: {
+            video,
+            uploadToken: initData.value?.uploadToken ?? '',
+            uploadedPartIds,
+          },
+        }),
+      },
+    );
+    if (!finalize.ok) {
+      const reason = await this.restFailure(finalize);
+      this.logger.error(`Failed to finalize LinkedIn video upload: ${reason}`);
+      throw new BadRequestException(
+        `Failed to finish the LinkedIn video upload (${reason})`,
+      );
+    }
+
+    return this.createRestPost(
+      accessToken,
+      {
+        ...this.restPostEnvelope(
+          authorUrn,
+          commentary,
+          visibility,
+          disableReshare,
+        ),
+        content: { media: { id: video, ...(title ? { title } : {}) } },
+      },
+      'video post',
+    );
+  }
+
+  /** The whole video, refusing one over the Videos API's 500 MB. */
+  private async downloadVideo(videoUrl: string): Promise<ArrayBuffer> {
+    let source: Response;
+    try {
+      source = await fetch(videoUrl);
+    } catch (error) {
+      this.logger.error(`Network error downloading video: ${error}`);
+      throw new BadRequestException(
+        `Failed to download the video from ${videoUrl}: Network error`,
+      );
+    }
+    if (!source.ok) {
+      throw new BadRequestException(
+        `Failed to download the video from ${videoUrl} (HTTP ${source.status})`,
+      );
+    }
+    const tooLarge = () =>
+      new BadRequestException(
+        "The video is larger than LinkedIn's 500 MB limit",
+      );
+    const declared = Number(source.headers.get('content-length'));
+    if (declared > MAX_VIDEO_BYTES) throw tooLarge();
+    const bytes = await source.arrayBuffer();
+    if (bytes.byteLength > MAX_VIDEO_BYTES) throw tooLarge();
+    return bytes;
   }
 }
