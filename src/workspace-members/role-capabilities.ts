@@ -18,7 +18,9 @@ export type Capability =
    * reason `team:manage` is: it is the level where someone is accountable for
    * the workspace rather than just working in it.
    */
-  | 'maestro:view-all';
+  | 'maestro:view-all'
+  /** Change the workspace brand kit: colours, default logo, presets. */
+  | 'brand:manage';
 
 export const ROLE_RANK: Record<WorkspaceRole, number> = {
   OWNER: 4,
@@ -39,6 +41,7 @@ export const CAPABILITY_MIN_ROLE: Record<Capability, WorkspaceRole> = {
   'inbox:view': 'GUEST',
   'analytics:view': 'GUEST',
   'maestro:view-all': 'ADMIN',
+  'brand:manage': 'ADMIN',
 };
 
 export function roleCan(role: WorkspaceRole, capability: Capability): boolean {
