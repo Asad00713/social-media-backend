@@ -4,6 +4,10 @@ import type {
   CreatedDm,
   DmConversationSummary,
 } from '../../inbox/adapters/inbox-adapter.interface';
+import {
+  MAX_IMAGE_BYTES,
+  fetchPublicMedia,
+} from '../../common/net/public-fetch';
 
 export interface InstagramUser {
   id: string;
@@ -224,7 +228,9 @@ export class InstagramService {
   ): Promise<{ width: number; height: number }> {
     try {
       // Fetch the image to get dimensions
-      const response = await fetch(imageUrl);
+      const response = await fetchPublicMedia(imageUrl, {
+        maxBytes: MAX_IMAGE_BYTES,
+      });
       if (!response.ok) {
         throw new Error(`Failed to fetch image: ${response.status}`);
       }
