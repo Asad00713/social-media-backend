@@ -24,6 +24,8 @@ import { snapshotOf } from '../lib/draft-versions';
 import { DraftVersionsService } from './draft-versions.service';
 import { CalendarPushSyncService } from '../../../calendar-sync/services/calendar-push-sync.service';
 import { PostQueueService } from '../../../billing/services/post-queue.service';
+import { loadWorkspaceTimezone } from '../../../planner/lib/workspace-time';
+import { parseRule, startSeries } from '../../lib/recurrence';
 
 export interface ScheduleResult {
   postId: string;
@@ -82,6 +84,13 @@ export class ComposerSchedulingService {
       throw new BadRequestException(
         'Draft must have at least one channel selected',
       );
+    }
+    const rule =
+      dto.recurrence === undefined || dto.recurrence === null
+        ? null
+        : parseRule(dto.recurrence);
+    if (dto.recurrence != null && !rule) {
+      throw new BadRequestException('recurrence is not a valid repeat rule');
     }
 
     // Build the legacy posts.targets shape (PostTarget) — status='draft' per
@@ -143,6 +152,26 @@ export class ComposerSchedulingService {
     };
     assertApprovedFor(existing[0]?.metadata, outgoing);
     Object.assign(metadata, carryApproval(existing[0]?.metadata, outgoing));
+
+    // A repeating post keeps its rule with the series state the server owns.
+    // A post already in a series stays in it (same seriesId and place), so
+    // re-scheduling it does not restart an "after N posts" count. Without a
+    // rule, no `schedule` key is written — exactly as before.
+    if (rule) {
+      const timezone = await loadWorkspaceTimezone(this.db, workspaceId);
+      metadata.schedule = {
+        mode: 'all_same_time',
+        scheduleAt: scheduledAt.toISOString(),
+        recurrence: startSeries(
+          rule,
+          dto.draftId,
+          scheduledAt,
+          timezone,
+          (existing[0]?.metadata as Record<string, any> | undefined)?.schedule
+            ?.recurrence,
+        ),
+      };
+    }
 
     // The same per-channel queue ceiling PostService.createPost enforces. This
     // is a second, independent path to `status: 'scheduled'`, so a check on

@@ -12,6 +12,7 @@ import type {
   BlueskyFields,
   MastodonFields,
 } from './platform-fields.types';
+import type { RecurrenceRule, StoredRecurrence } from '../../lib/recurrence';
 
 export interface Draft {
   id: string;
@@ -109,6 +110,8 @@ export type PublishErrorCode =
 export interface ScheduleConfig {
   mode: 'now' | 'all_same_time' | 'per_channel';
   scheduleAt?: string;
+  /** A repeating post — see src/posts/lib/recurrence.ts. */
+  recurrence?: RecurrenceRule | StoredRecurrence;
 }
 
 export interface PlatformOverrides {
