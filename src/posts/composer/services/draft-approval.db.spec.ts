@@ -48,6 +48,7 @@ function harness(db: DbType) {
     {} as any,
     {} as any,
     db,
+    { send: jest.fn() } as any, // PostReminderService
   );
   return { notifications, queue, approvals, store, scheduling, orchestrator };
 }

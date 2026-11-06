@@ -67,6 +67,7 @@ function make() {
     } as any,
     { syncFromPost: jest.fn(async () => undefined) } as any,
     { enforceQueueLimit: jest.fn(async () => undefined) } as any,
+    { send: jest.fn() } as any, // PostReminderService
   );
   return { svc, publisher };
 }

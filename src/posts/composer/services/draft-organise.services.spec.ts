@@ -197,6 +197,7 @@ describe('Publish files the post', () => {
         })),
       } as any,
       db as any,
+      { send: jest.fn() } as any, // PostReminderService
     );
     return { svc, writes };
   }

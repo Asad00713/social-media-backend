@@ -3,7 +3,6 @@ import {
   Controller,
   HttpCode,
   HttpStatus,
-  ParseUUIDPipe,
   Delete,
   Get,
   Param,
