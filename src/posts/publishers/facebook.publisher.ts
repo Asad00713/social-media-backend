@@ -3,6 +3,7 @@ import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import { FacebookService } from '../../channels/services/facebook.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import { findFirstLink, linkCallToActionType } from './facebook-link-cta';
 
 @Injectable()
 export class FacebookPublisher extends BasePublisher {
@@ -38,18 +39,34 @@ export class FacebookPublisher extends BasePublisher {
     this.validate(options);
 
     const postType = (metadata?.postType as string | undefined) ?? 'post';
-    let result: { postId: string };
+    let result: { postId: string; thumbnailWarning?: string };
 
     if (postType === 'reel') {
       // Reels require a vertical video. If no media or first is not a video, fail clearly.
       if (mediaItems.length === 0 || mediaItems[0].type !== 'video') {
         throw new Error('Facebook Reels require a vertical video file');
       }
+      // `reelTitle` is the draft's own key: `platformSpecific` reaches this
+      // publisher as `metadata` verbatim, so the composer writes this name.
+      const reelTitle =
+        typeof metadata?.reelTitle === 'string'
+          ? metadata.reelTitle.trim()
+          : '';
+      // `thumbnailUrl` is the key YouTube's cover already uses, so the
+      // editor's cover tool writes the same name for both.
+      const thumbnailUrl =
+        typeof metadata?.thumbnailUrl === 'string'
+          ? metadata.thumbnailUrl.trim()
+          : '';
       result = await this.facebookService.postReelToPage(
         platformAccountId,
         accessToken,
         mediaItems[0].url,
         content,
+        {
+          ...(reelTitle ? { title: reelTitle } : {}),
+          ...(thumbnailUrl ? { thumbnailUrl } : {}),
+        },
       );
     } else if (postType === 'story') {
       // Stories require exactly one image OR one video.
@@ -82,10 +99,19 @@ export class FacebookPublisher extends BasePublisher {
         content,
       );
     } else {
+      // A LINK post is text with no media. Its button (`linkCta`, the draft's
+      // own key) is sent with the link it belongs to; a link is sent only
+      // alongside a button, so a post without one is exactly what it was.
+      const link = mediaItems.length === 0 ? findFirstLink(content) : undefined;
+      const ctaType = link
+        ? linkCallToActionType(metadata?.linkCta)
+        : undefined;
       result = await this.facebookService.postToPage(
         platformAccountId,
         accessToken,
         content,
+        ctaType ? link : undefined,
+        ctaType,
       );
     }
 
@@ -95,6 +121,15 @@ export class FacebookPublisher extends BasePublisher {
       platformPostId: result.postId,
       platformPostUrl: `https://facebook.com/${result.postId}`,
     };
+
+    // The Reel is live, so a cover that could not be set is a warning on the
+    // result, as a first comment's failure is - not a failed post.
+    if (result.thumbnailWarning) {
+      publishResult.metadata = {
+        ...(publishResult.metadata ?? {}),
+        coverWarning: result.thumbnailWarning,
+      };
+    }
 
     // Soft action: post first comment if provided. Failure here is logged
     // and surfaced as a warning — the main post stays "published".

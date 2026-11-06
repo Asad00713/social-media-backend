@@ -37,6 +37,20 @@ export interface FacebookUser {
   pictureUrl: string | null;
 }
 
+/** Optional settings for a Reel, all sent only when set. */
+export interface FacebookReelOptions {
+  /** The Reel's title — `title` on the finish call of `/video_reels`. */
+  title?: string;
+  /**
+   * A hosted image to use as the Reel's cover, uploaded to the video's
+   * `/thumbnails` edge between the transfer and the publish.
+   */
+  thumbnailUrl?: string;
+}
+
+/** The largest cover image `/thumbnails` takes, per Meta's reference. */
+const MAX_THUMBNAIL_BYTES = 10 * 1024 * 1024;
+
 @Injectable()
 export class FacebookService {
   private readonly logger = new Logger(FacebookService.name);
@@ -358,12 +372,17 @@ export class FacebookService {
 
   /**
    * Post to a Facebook Page
+   *
+   * @param callToActionType - the button on a link post (`LEARN_MORE`,
+   *   `SIGN_UP`...). Needs `link`: the button's own link must be the post's
+   *   link, so without one there is nothing to attach it to and it is left out.
    */
   async postToPage(
     pageId: string,
     pageAccessToken: string,
     message: string,
     link?: string,
+    callToActionType?: string,
   ): Promise<{ postId: string }> {
     const url = new URL(`${this.graphApiUrl}/${pageId}/feed`);
 
@@ -374,6 +393,16 @@ export class FacebookService {
 
     if (link) {
       body.link = link;
+    }
+
+    // Sent as the JSON text the reference's own example shows
+    // (`call_to_action={"type":"SIGN_UP","value":{"link":"..."}}`), and with
+    // the same link as the `link` parameter above - "should be the same".
+    if (link && callToActionType) {
+      body.call_to_action = JSON.stringify({
+        type: callToActionType,
+        value: { link },
+      });
     }
 
     const response = await fetch(url.toString(), {
@@ -603,6 +632,9 @@ export class FacebookService {
    * @param pageAccessToken — Page Access Token (NOT user token)
    * @param videoUrl — publicly accessible URL of the vertical 9:16 video
    * @param description — caption for the Reel (optional)
+   * @param options — title (sent on the finish call) and cover image (uploaded
+   *   before it). A cover that cannot be set does NOT fail the Reel: it is
+   *   published without one and the reason comes back as `thumbnailWarning`.
    * @returns the published Reel's post ID
    */
   async postReelToPage(
@@ -610,7 +642,8 @@ export class FacebookService {
     pageAccessToken: string,
     videoUrl: string,
     description: string = '',
-  ): Promise<{ postId: string }> {
+    options: FacebookReelOptions = {},
+  ): Promise<{ postId: string; thumbnailWarning?: string }> {
     // Phase 1: start
     const startUrl = new URL(`${this.graphApiUrl}/${pageId}/video_reels`);
     startUrl.searchParams.set('upload_phase', 'start');
@@ -656,12 +689,38 @@ export class FacebookService {
       throw new BadRequestException('Facebook Reel transfer reported failure');
     }
 
+    // Cover (soft step): between the transfer and the publish. Meta's Reels
+    // guide only links "Add a custom cover photo" to the Video Thumbnails
+    // reference and gives no order; setting it before the finish call is what
+    // the one open-source Reels publisher we found does (fb_poster, reels.rs),
+    // so that order is INFERRED, not stated. The Reel is not yet live, so a
+    // cover that cannot be set must not stop it publishing - it goes out with
+    // the cover Facebook picks, and the reason is reported.
+    let thumbnailWarning: string | undefined;
+    if (options.thumbnailUrl) {
+      try {
+        await this.setVideoThumbnail(
+          startData.video_id,
+          pageAccessToken,
+          options.thumbnailUrl,
+        );
+      } catch (err) {
+        thumbnailWarning = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `Facebook Reel ${startData.video_id}: cover not set, publishing without it: ${thumbnailWarning}`,
+        );
+      }
+    }
+
     // Phase 3: finish (publish immediately)
     const finishUrl = new URL(`${this.graphApiUrl}/${pageId}/video_reels`);
     finishUrl.searchParams.set('upload_phase', 'finish');
     finishUrl.searchParams.set('video_id', startData.video_id);
     finishUrl.searchParams.set('video_state', 'PUBLISHED');
     if (description) finishUrl.searchParams.set('description', description);
+    // `title` belongs to the FINISH call (the publish step of the Reels guide),
+    // beside `description` — not to the start call, which takes only the phase.
+    if (options.title) finishUrl.searchParams.set('title', options.title);
     finishUrl.searchParams.set('access_token', pageAccessToken);
     const finishRes = await fetch(finishUrl.toString(), { method: 'POST' });
     if (!finishRes.ok) {
@@ -681,7 +740,66 @@ export class FacebookService {
 
     // The video_id from phase 1 is the post ID for the published Reel
     this.logger.log(`Published Facebook Reel: ${startData.video_id}`);
-    return { postId: startData.video_id };
+    return thumbnailWarning
+      ? { postId: startData.video_id, thumbnailWarning }
+      : { postId: startData.video_id };
+  }
+
+  /**
+   * Sets a video's cover: `POST /{video-id}/thumbnails` with the image as the
+   * multipart `source` file and `is_preferred=true`.
+   *
+   * The edge takes a FILE, not a URL (Meta's reference lists `source`, an
+   * image of at most 10 MB, and `is_preferred`), so the image is downloaded
+   * here first. Reels link to this edge from "Add a custom cover photo for
+   * your reel"; the reference itself describes Video objects and never
+   * mentions Reels, so that it accepts a Reel's video id is INFERRED (an open
+   * source Reels publisher does exactly this).
+   */
+  async setVideoThumbnail(
+    videoId: string,
+    pageAccessToken: string,
+    imageUrl: string,
+  ): Promise<void> {
+    const image = await fetch(imageUrl);
+    if (!image.ok) {
+      throw new Error(
+        `the cover image could not be downloaded (HTTP ${image.status})`,
+      );
+    }
+    const bytes = await image.arrayBuffer();
+    if (bytes.byteLength > MAX_THUMBNAIL_BYTES) {
+      throw new Error('the cover image is over 10 MB');
+    }
+
+    const form = new FormData();
+    form.append('access_token', pageAccessToken);
+    form.append('is_preferred', 'true');
+    form.append(
+      'source',
+      new Blob([bytes], {
+        type: image.headers.get('content-type') ?? 'image/jpeg',
+      }),
+      'cover.jpg',
+    );
+
+    // No Content-Type header: fetch writes the multipart boundary itself.
+    const res = await fetch(`${this.graphApiUrl}/${videoId}/thumbnails`, {
+      method: 'POST',
+      body: form,
+    });
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      throw new Error(
+        `Facebook rejected the cover: ${err?.error?.message ?? `HTTP ${res.status}`}`,
+      );
+    }
+    const data = (await res.json().catch(() => ({}))) as { success?: boolean };
+    if (data.success === false) {
+      throw new Error('Facebook reported the cover as not set');
+    }
   }
 
   /**
