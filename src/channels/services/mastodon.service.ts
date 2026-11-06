@@ -46,6 +46,17 @@ export interface MastodonStatus {
  */
 export type MastodonQuoteApprovalPolicy = 'public' | 'followers' | 'nobody';
 
+/**
+ * The Mastodon API version that added quote posts.
+ *
+ * Stated in docs.joinmastodon.org/methods/statuses (POST /api/v1/statuses,
+ * version history): "4.5.0 (`mastodon` API version 7) - `quoted_status_id`
+ * and `quote_approval_policy` added". `api_versions.mastodon` itself exists
+ * from 4.3.0 (docs.joinmastodon.org/entities/Instance), so a server older
+ * than 4.3 — or a fork that does not report it — reads as 0 here.
+ */
+export const MASTODON_QUOTE_API_VERSION = 7;
+
 export interface MastodonMediaAttachment {
   id: string;
   type: 'image' | 'video' | 'gifv' | 'audio' | 'unknown';
@@ -321,6 +332,17 @@ export class MastodonService {
        * which the API does not document as rejected (INFERRED: ignored).
        */
       quoteApprovalPolicy?: MastodonQuoteApprovalPolicy;
+      /**
+       * `quoted_status_id` — the status this one quotes (4.5.0, API
+       * version 7). The API raises an error "if the status does not exist,
+       * the author does not have access to it, or quoting is denied" by the
+       * quoted post's policy; quoting a `private` post narrows this one's
+       * visibility to `private` (all stated, POST /api/v1/statuses). An
+       * OLDER server does not document it as rejected — INFERRED: ignored,
+       * which would publish the text without its quote. The publisher
+       * checks the version first so that never happens.
+       */
+      quotedStatusId?: string;
     },
   ): Promise<MastodonStatus> {
     const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
@@ -340,6 +362,9 @@ export class MastodonService {
     }
     if (options?.quoteApprovalPolicy) {
       body.quote_approval_policy = options.quoteApprovalPolicy;
+    }
+    if (options?.quotedStatusId) {
+      body.quoted_status_id = options.quotedStatusId;
     }
 
     // Poll or media, never both. Media wins: the attachments are already
@@ -739,6 +764,69 @@ export class MastodonService {
       this.logger.error(`Failed to revoke Mastodon token: ${errorData}`);
       // Don't throw - revocation is best effort
     }
+  }
+
+  /**
+   * The server's Mastodon API version (`api_versions.mastodon` from
+   * GET /api/v2/instance), or 0 when it does not say — a server before
+   * 4.3.0, a fork, or an instance that could not be read.
+   */
+  async getApiVersion(instanceUrl: string): Promise<number> {
+    const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
+    try {
+      const response = await fetch(`${normalizedUrl}/api/v2/instance`);
+      if (!response.ok) return 0;
+      const data = (await response.json()) as {
+        api_versions?: { mastodon?: unknown };
+      };
+      const version = data.api_versions?.mastodon;
+      return typeof version === 'number' ? version : 0;
+    } catch {
+      return 0;
+    }
+  }
+
+  /**
+   * The local id of the status a pasted link points at, on THIS server.
+   *
+   * GET /api/v2/search with `resolve=true` and `type=statuses`: "if `q` is
+   * a HTTPS URL … resolving the URL and returning the matching status …
+   * is attempted" (stated, docs.joinmastodon.org/methods/search). Resolving
+   * needs a user token with `read:search`, which our `read` scope covers.
+   * The id it returns is this server's id for the post, which is what
+   * `quoted_status_id` takes — a remote post's id on its own server would
+   * be meaningless here.
+   */
+  async resolveStatusUrl(
+    instanceUrl: string,
+    accessToken: string,
+    link: string,
+  ): Promise<string> {
+    const normalizedUrl = this.normalizeInstanceUrl(instanceUrl);
+    const url = new URL(`${normalizedUrl}/api/v2/search`);
+    url.searchParams.set('q', link);
+    url.searchParams.set('type', 'statuses');
+    url.searchParams.set('resolve', 'true');
+    url.searchParams.set('limit', '1');
+
+    const response = await fetch(url.toString(), {
+      headers: { Authorization: `Bearer ${accessToken}` },
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Mastodon could not look up the post to quote (${response.status})`,
+      );
+    }
+    const data = (await response.json()) as {
+      statuses?: Array<{ id?: unknown }>;
+    };
+    const id = data.statuses?.[0]?.id;
+    if (typeof id !== 'string' || id === '') {
+      throw new Error(
+        'The post to quote could not be found from your server — check the link',
+      );
+    }
+    return id;
   }
 
   /**
