@@ -146,11 +146,7 @@ export class InsightsController {
     @Query('sort') sort?: Raw,
     @Query('order') order?: Raw,
   ): Promise<string> {
-    const {
-      format: f,
-      sort: s,
-      order: o,
-    } = tableOf({ format, sort, order });
+    const { format: f, sort: s, order: o } = tableOf({ format, sort, order });
     const { filename, body } = await this.insights.csv(
       workspaceId,
       periodOf(days, from, to),

@@ -314,14 +314,15 @@ describe('InsightsController signals over HTTP', () => {
     expect(insights.signals).toHaveBeenLastCalledWith(WS, 'user-1', undefined);
   });
 
-  it.each([
-    ['signals?channels=1&channels=2'],
-  ])('answers 400 to %s, not a 500', async (path) => {
-    await request(app.getHttpServer())
-      .get(`/insights/workspaces/${WS}/${path}`)
-      .expect(400);
-    expect(insights.signals).not.toHaveBeenCalled();
-  });
+  it.each([['signals?channels=1&channels=2']])(
+    'answers 400 to %s, not a 500',
+    async (path) => {
+      await request(app.getHttpServer())
+        .get(`/insights/workspaces/${WS}/${path}`)
+        .expect(400);
+      expect(insights.signals).not.toHaveBeenCalled();
+    },
+  );
 
   it('rejects a workspace id that is not a uuid', async () => {
     await request(app.getHttpServer())
