@@ -45,6 +45,11 @@ import { InstagramService } from './services/instagram.service';
 import { ThreadsService } from './services/threads.service';
 import { BlueskyService } from './services/bluesky.service';
 import { MastodonService } from './services/mastodon.service';
+import {
+  MENTION_LOOKUP_PLATFORMS,
+  MentionLookupService,
+  type MentionLookupPlatform,
+} from './services/mention-lookup.service';
 import { SlackService } from './services/slack.service';
 import { DiscordService } from './services/discord.service';
 import { GoogleDriveService } from './services/google-drive.service';
@@ -151,6 +156,7 @@ export class ChannelsController {
     private readonly youtubeDataDeletion: YoutubeDataDeletionService,
     private readonly googleRevoke: GoogleOauthRevokeService,
     private readonly access: WorkspaceAccessService,
+    private readonly mentionLookup: MentionLookupService,
   ) {}
 
   /**
@@ -1548,6 +1554,46 @@ export class ChannelsController {
   @HttpCode(HttpStatus.OK)
   async getPinterestBoards(@Body() dto: FetchPagesDto) {
     return await this.pinterestService.getUserBoards(dto.accessToken);
+  }
+
+  /**
+   * Check a handle typed in the composer's `@` menu — an account outside
+   * the workspace — on this channel's network, with its stored token.
+   *
+   * Bluesky and Mastodon only, where one cheap call answers it (see
+   * MentionLookupService). The composer calls it for those two and inserts
+   * the handle unchecked everywhere else, so any other platform is a 400.
+   * Read-only; `posts:draft` like the other composer lookups.
+   */
+  @Get('workspaces/:workspaceId/:channelId/mention-lookup')
+  @RequireCapability('posts:draft')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  async lookupMention(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+    @Query('handle') handle: string | undefined,
+  ) {
+    const id = parseInt(channelId, 10);
+    const channel = await this.channelService.getChannelById(id, workspaceId);
+    const platform = channel.platform as MentionLookupPlatform;
+    if (!(MENTION_LOOKUP_PLATFORMS as readonly string[]).includes(platform)) {
+      throw new BadRequestException(
+        `Handles cannot be checked on ${channel.platform}`,
+      );
+    }
+    if (!handle || handle.length > 320) {
+      throw new BadRequestException('A handle to check is required');
+    }
+    const accessToken = await this.channelService.getAccessToken(
+      id,
+      workspaceId,
+    );
+    return this.mentionLookup.lookup(
+      platform,
+      accessToken,
+      channel.metadata,
+      handle,
+    );
   }
 
   /**
