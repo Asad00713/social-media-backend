@@ -40,3 +40,4 @@ export * from './inbox-saved-replies.schema';
 export * from './inbox-user-settings.schema';
 export * from './brand-kits.schema';
 export * from './insight-hidden-steps.schema';
+export * from './short-links.schema';
