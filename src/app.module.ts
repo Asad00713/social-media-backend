@@ -49,6 +49,7 @@ import { FirstWeekModule } from './first-week/first-week.module';
 import { InsightsModule } from './insights/insights.module';
 import { WorkspaceHubModule } from './workspace-hub/workspace-hub.module';
 import { BrandKitModule } from './brand-kit/brand-kit.module';
+import { ShortLinksModule } from './short-links/short-links.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
@@ -107,6 +108,7 @@ import { QUEUES } from './queue/queue.module';
     InsightsModule,
     WorkspaceHubModule,
     BrandKitModule,
+    ShortLinksModule,
     BullBoardModule.forRoot({
       // Moved off '/admin/queues' so it stops swallowing the admin queue API,
       // which lives under that same prefix. Bull Board keeps its full job

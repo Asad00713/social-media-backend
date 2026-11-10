@@ -18,6 +18,8 @@ import { readMigrations } from './runner';
  * users (SHARE ROW EXCLUSIVE on each).
  * 0060 adds foreign keys to users and workspace (SHARE ROW EXCLUSIVE on
  * both).
+ * 0061 creates short_links with foreign keys to workspace, posts and
+ * users (SHARE ROW EXCLUSIVE on each).
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -29,6 +31,7 @@ const FILES = [
   '0058_post_comments.sql',
   '0059_brand_kits.sql',
   '0060_insight_hidden_steps.sql',
+  '0061_short_links.sql',
 ];
 
 const firstStatement = (sql: string): string =>
