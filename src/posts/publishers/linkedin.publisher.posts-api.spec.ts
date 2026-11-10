@@ -104,6 +104,7 @@ describe('LinkedInPublisher - text, image and video on the Posts API', () => {
       'Behind the bar',
       'PUBLIC',
       true,
+      {},
     );
     legacyUntouched();
   });

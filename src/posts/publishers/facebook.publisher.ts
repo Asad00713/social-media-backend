@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import { FacebookService } from '../../channels/services/facebook.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
+import { readSharedThumbnail } from '../lib/shared-thumbnail';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import { findFirstLink, linkCallToActionType } from './facebook-link-cta';
 import {
@@ -125,6 +126,19 @@ export class FacebookPublisher extends BasePublisher {
           `Facebook Stories don't support media type: ${item.type}`,
         );
       }
+    } else if (mediaItems.length > 0 && mediaItems[0].type === 'video') {
+      // A feed VIDEO: `/{page-id}/videos`. It carries YouTube's designed
+      // thumbnail when the post has one (`sharedThumbnailUrl`), sent as
+      // `thumb`; a picture that cannot be sent is a warning, not a failure.
+      // A Reel keeps its own cover frame and never reads this key.
+      const thumbnailUrl = readSharedThumbnail(metadata);
+      result = await this.facebookService.postVideoToPage(
+        platformAccountId,
+        accessToken,
+        mediaItems[0].url,
+        content,
+        thumbnailUrl ? { thumbnailUrl } : {},
+      );
     } else if (mediaItems.length > 0 && mediaItems[0].type === 'image') {
       result = await this.facebookService.postPhotoToPage(
         platformAccountId,
@@ -158,8 +172,9 @@ export class FacebookPublisher extends BasePublisher {
       platformPostUrl: `https://facebook.com/${result.postId}`,
     };
 
-    // The Reel is live, so a cover that could not be set is a warning on the
-    // result, as a first comment's failure is - not a failed post.
+    // The Reel (or feed video) is live, so a cover or thumbnail that could
+    // not be set is a warning on the result, as a first comment's failure is
+    // - not a failed post.
     if (result.thumbnailWarning) {
       publishResult.metadata = {
         ...(publishResult.metadata ?? {}),

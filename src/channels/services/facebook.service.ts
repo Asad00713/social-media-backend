@@ -8,6 +8,7 @@ import {
   MAX_IMAGE_BYTES,
   fetchPublicMedia,
 } from '../../common/net/public-fetch';
+import { type VideoThumbnail, downloadVideoThumbnail } from './video-thumbnail';
 
 /**
  * Facebook/Instagram Page and Account data structures
@@ -1033,6 +1034,91 @@ export class FacebookService {
     if (data.success === false) {
       throw new Error('Facebook reported the cover as not set');
     }
+  }
+
+  /**
+   * A video on a Page's feed: `POST /{page-id}/videos`, multipart, with the
+   * video as `file_url` (Facebook pulls it) and the caption as `description`.
+   *
+   * Meta's Page Videos reference (stated): `file_url` is "Accessible URL of a
+   * video file"; `thumb` is "The video thumbnail raw data to be uploaded and
+   * associated with a video" - a FILE, not a URL, so the picture is
+   * downloaded here first (through the SSRF guard) and sent in the same
+   * request. Publishing needs `pages_manage_posts`, which every Page channel
+   * already holds - no new scope.
+   *
+   * The thumbnail never costs the post:
+   * - a picture that cannot be downloaded or is not an image is left out
+   *   before anything is sent;
+   * - if Facebook refuses the request WITH a picture (a 4xx: the request was
+   *   rejected, nothing was created), it is sent once more WITHOUT it.
+   * Either way the reason comes back as `thumbnailWarning`. That a refused
+   * `thumb` is reported as a 4xx rather than silently dropped is INFERRED.
+   */
+  async postVideoToPage(
+    pageId: string,
+    pageAccessToken: string,
+    videoUrl: string,
+    description: string = '',
+    options: { thumbnailUrl?: string } = {},
+  ): Promise<{ postId: string; thumbnailWarning?: string }> {
+    let thumbnail: VideoThumbnail | undefined;
+    let thumbnailWarning: string | undefined;
+    if (options.thumbnailUrl) {
+      try {
+        thumbnail = await downloadVideoThumbnail(options.thumbnailUrl);
+      } catch (err) {
+        thumbnailWarning = `Posted without the thumbnail: ${err instanceof Error ? err.message : String(err)}`;
+        this.logger.warn(`Facebook video on ${pageId}: ${thumbnailWarning}`);
+      }
+    }
+
+    const send = (thumb: VideoThumbnail | undefined) => {
+      const form = new FormData();
+      form.append('access_token', pageAccessToken);
+      form.append('file_url', videoUrl);
+      if (description) form.append('description', description);
+      if (thumb) {
+        form.append(
+          'thumb',
+          new Blob([thumb.bytes], { type: thumb.contentType }),
+          thumb.contentType === 'image/png' ? 'thumbnail.png' : 'thumbnail.jpg',
+        );
+      }
+      // No Content-Type header: fetch writes the multipart boundary itself.
+      return fetch(`${this.graphApiUrl}/${pageId}/videos`, {
+        method: 'POST',
+        body: form,
+      });
+    };
+
+    let res = await send(thumbnail);
+    if (!res.ok && thumbnail && res.status >= 400 && res.status < 500) {
+      const err = (await res.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      thumbnailWarning = `Facebook refused the thumbnail, so the video was posted without it: ${err?.error?.message ?? `HTTP ${res.status}`}`;
+      this.logger.warn(`Facebook video on ${pageId}: ${thumbnailWarning}`);
+      res = await send(undefined);
+    }
+    if (!res.ok) {
+      const err = (await res.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      this.logger.error(`Failed to post video to page ${pageId}:`, err);
+      throw new BadRequestException(
+        `Facebook video post failed: ${err?.error?.message ?? `HTTP ${res.status}`}`,
+      );
+    }
+
+    const data = (await res.json().catch(() => ({}))) as { id?: string };
+    if (!data.id) {
+      throw new BadRequestException('Facebook returned no id for the video');
+    }
+    return {
+      postId: data.id,
+      ...(thumbnailWarning ? { thumbnailWarning } : {}),
+    };
   }
 
   /**

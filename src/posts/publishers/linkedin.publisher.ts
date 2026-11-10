@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import { LinkedInService } from '../../channels/services/linkedin.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
+import { readSharedThumbnail } from '../lib/shared-thumbnail';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
 type LinkedInVisibility = 'PUBLIC' | 'CONNECTIONS';
@@ -197,7 +198,7 @@ export class LinkedInPublisher extends BasePublisher {
       ? trimmed(metadata?.linkUrl) || firstUrlIn(effectiveContent)
       : undefined;
 
-    let result: { postId: string };
+    let result: { postId: string; thumbnailWarning?: string };
 
     if (postType === 'document') {
       // PDF / Office file: Documents API upload, then a Posts API post.
@@ -230,7 +231,10 @@ export class LinkedInPublisher extends BasePublisher {
           disableReshare,
         );
       } else if (mediaItem.type === 'video') {
-        // Videos API multipart upload, then a Posts API post.
+        // Videos API multipart upload, then a Posts API post. It carries
+        // YouTube's designed thumbnail when the post has one
+        // (`sharedThumbnailUrl`); one that cannot be sent is a warning.
+        const thumbnailUrl = readSharedThumbnail(metadata);
         result = await this.linkedinService.createRestVideoPost(
           accessToken,
           actorUrn,
@@ -239,6 +243,7 @@ export class LinkedInPublisher extends BasePublisher {
           trimmed(metadata?.videoTitle) || undefined,
           visibility,
           disableReshare,
+          thumbnailUrl ? { thumbnailUrl } : {},
         );
       } else {
         throw new Error(`Unsupported media type: ${mediaItem.type}`);
@@ -303,6 +308,15 @@ export class LinkedInPublisher extends BasePublisher {
       platformPostId: result.postId,
       platformPostUrl: `https://www.linkedin.com/feed/update/${result.postId}`,
     };
+
+    // The video is live, so a thumbnail that could not be sent is a warning
+    // on the result, like a first comment's failure - not a failed post.
+    if (result.thumbnailWarning) {
+      publishResult.metadata = {
+        ...(publishResult.metadata ?? {}),
+        thumbnailWarning: result.thumbnailWarning,
+      };
+    }
 
     const firstComment =
       typeof metadata?.firstComment === 'string'

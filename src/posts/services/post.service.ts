@@ -48,6 +48,7 @@ import { CalendarPushSyncService } from '../../calendar-sync/services/calendar-p
 import { CampaignStatusSyncListener } from '../../campaigns/campaign-status-sync.listener';
 import { PostQueueService } from '../../billing/services/post-queue.service';
 import { PostReminderService } from './post-reminder.service';
+import { withSharedThumbnail } from '../lib/shared-thumbnail';
 import {
   isReminderTarget,
   reminderContent,
@@ -1029,13 +1030,21 @@ export class PostService {
         | Record<string, any>
         | undefined) ?? {};
     const postMetadata = (post.metadata as Record<string, any>) || {};
-    const mergedMetadata: Record<string, any> = {
-      ...postMetadata,
-      ...platformSpecific,
-      // Messaging platforms (Slack/Discord) read their sub-destination
-      // (which channel to post to) from here; absent for social platforms.
-      ...(target.destination ? { destination: target.destination } : {}),
-    };
+    // Facebook and LinkedIn also read YouTube's designed thumbnail from
+    // here (`sharedThumbnailUrl`), the picture the composer shows them as
+    // "Same as YouTube".
+    const mergedMetadata: Record<string, any> = withSharedThumbnail(
+      {
+        ...postMetadata,
+        ...platformSpecific,
+        // Messaging platforms (Slack/Discord) read their sub-destination
+        // (which channel to post to) from here; absent for social platforms.
+        ...(target.destination ? { destination: target.destination } : {}),
+      },
+      target.platform,
+      (post.targets ?? []).map((t) => t.platform),
+      post.platformContent,
+    );
 
     // Decrypt access token
     const accessToken = await this.channelService.getAccessToken(
