@@ -12,6 +12,7 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
+import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { CurrentWorkspaceRole } from '../../workspace-members/current-workspace-role.decorator';
 import type { CallerRole } from '../guest-rules';
@@ -27,6 +28,8 @@ import { SaveDraftDto } from './dto/save-draft.dto';
 import { ScheduleDraftDto } from './dto/schedule-draft.dto';
 import { SetApprovalDto } from './dto/set-approval.dto';
 import { DraftApprovalService } from './services/draft-approval.service';
+import { LinkPreviewService } from './services/link-preview.service';
+import { LinkPreviewQueryDto } from './dto/link-preview.dto';
 
 /**
  * Composer endpoints. Three explicit user triggers — no autosave:
@@ -45,6 +48,7 @@ export class ComposerController {
     private readonly scheduling: ComposerSchedulingService,
     private readonly versions: DraftVersionsService,
     private readonly approvals: DraftApprovalService,
+    private readonly linkPreviews: LinkPreviewService,
   ) {}
 
   @RequireCapability('posts:draft')
@@ -207,5 +211,20 @@ export class ComposerController {
   @Get('labels')
   async listLabels(@Param('wsId') wsId: string) {
     return { labels: await this.drafts.listLabels(wsId) };
+  }
+
+  /**
+   * A page's title, description and image, for prefilling a Facebook
+   * carousel card. Public https pages only (SSRF-safe reader); 200 with
+   * `isReadable: false` when the page cannot be read. Throttled: each call
+   * makes this server fetch a page, so it is capped at 60 a minute - an
+   * editor reads at most five cards.
+   */
+  @RequireCapability('posts:draft')
+  @Get('link-preview')
+  @UseGuards(ThrottlerGuard)
+  @Throttle({ default: { limit: 60, ttl: 60_000 } })
+  async linkPreview(@Query() query: LinkPreviewQueryDto) {
+    return this.linkPreviews.preview(query.url);
   }
 }
