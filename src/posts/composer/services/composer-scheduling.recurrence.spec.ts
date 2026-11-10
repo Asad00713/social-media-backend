@@ -226,6 +226,18 @@ describe('ComposerSchedulingService with "Use your variations"', () => {
     );
   });
 
+  it('does not read the captions at all without a rotating repeat — not even to refuse them', async () => {
+    for (const recurrence of [RULE, undefined]) {
+      const { svc, inserts } = make([]);
+      await svc.schedule(
+        'w1',
+        'u1',
+        dto({ recurrence, variationSources: { facebook: 'malformed' } }),
+      );
+      expect(inserts).toHaveLength(1);
+    }
+  });
+
   it('refuses malformed captions before writing or enqueueing anything', async () => {
     const { svc, inserts, updates, queue } = make([]);
     await expect(
