@@ -126,4 +126,54 @@ describe('PayloadResolverService', () => {
     const payload = service.resolve(baseDraft, channel);
     expect(payload.scheduleAt).toBe('2026-05-18T09:00:00Z');
   });
+
+  describe('YouTube’s designed thumbnail, shared', () => {
+    const PICTURE = 'https://cdn.example/thumb.jpg';
+    const channel = (platform: ChannelTarget['platform']): ChannelTarget => ({
+      channelId: platform,
+      platform,
+      publishStatus: 'queued',
+      retryCount: 0,
+    });
+    const draft = (channels: ChannelTarget[]): Draft => ({
+      ...baseDraft,
+      channels,
+      perPlatform: {
+        youtube: {
+          inheritsFromBase: true,
+          overrides: {},
+          platformSpecific: { thumbnailUrl: PICTURE } as any,
+        },
+        facebook: {
+          inheritsFromBase: true,
+          overrides: {},
+          platformSpecific: { postType: 'post' } as any,
+        },
+      },
+    });
+
+    it('reaches Facebook and LinkedIn as `sharedThumbnailUrl`', () => {
+      const all = [channel('youtube'), channel('facebook'), channel('linkedin')];
+      expect(
+        service.resolve(draft(all), channel('facebook')).platformSpecific,
+      ).toEqual({ postType: 'post', sharedThumbnailUrl: PICTURE });
+      expect(
+        service.resolve(draft(all), channel('linkedin')).platformSpecific,
+      ).toEqual({ sharedThumbnailUrl: PICTURE });
+    });
+
+    it('leaves YouTube’s own fields as they are', () => {
+      const all = [channel('youtube'), channel('facebook')];
+      expect(
+        service.resolve(draft(all), channel('youtube')).platformSpecific,
+      ).toEqual({ thumbnailUrl: PICTURE });
+    });
+
+    it('is not sent when YouTube is not one of the post’s channels', () => {
+      expect(
+        service.resolve(draft([channel('facebook')]), channel('facebook'))
+          .platformSpecific,
+      ).toEqual({ postType: 'post' });
+    });
+  });
 });

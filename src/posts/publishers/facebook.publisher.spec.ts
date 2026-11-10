@@ -13,7 +13,11 @@ describe('FacebookPublisher', () => {
   let service: jest.Mocked<
     Pick<
       FacebookService,
-      'postReelToPage' | 'postToPage' | 'postComment' | 'postPhotoStoryToPage'
+      | 'postReelToPage'
+      | 'postToPage'
+      | 'postComment'
+      | 'postPhotoStoryToPage'
+      | 'postVideoToPage'
     >
   >;
 
@@ -38,6 +42,7 @@ describe('FacebookPublisher', () => {
       postToPage: jest.fn().mockResolvedValue({ postId: 'post-1' }),
       postComment: jest.fn().mockResolvedValue({ commentId: 'c-1' }),
       postPhotoStoryToPage: jest.fn().mockResolvedValue({ postId: 'story-1' }),
+      postVideoToPage: jest.fn().mockResolvedValue({ postId: 'video-1' }),
     } as any;
     publisher = new FacebookPublisher(service as unknown as FacebookService);
   });
@@ -133,9 +138,10 @@ describe('FacebookPublisher', () => {
           ],
         },
       );
-      expect(service.postToPage).toHaveBeenCalledTimes(1);
-      expect(service.postToPage.mock.calls[0][3]).toBeUndefined();
-      expect(service.postToPage.mock.calls[0][4]).toBeUndefined();
+      // A feed video is a VIDEO post now (`/videos`), not a text post that
+      // dropped its video - so no link and no button go anywhere.
+      expect(service.postVideoToPage).toHaveBeenCalledTimes(1);
+      expect(service.postToPage).not.toHaveBeenCalled();
     });
   });
 

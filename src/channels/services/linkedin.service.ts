@@ -3,6 +3,7 @@ import {
   MAX_IMAGE_BYTES,
   fetchPublicMedia,
 } from '../../common/net/public-fetch';
+import { type VideoThumbnail, downloadVideoThumbnail } from './video-thumbnail';
 
 /**
  * The versioned ("rest") base path — Posts, Images and Documents APIs.
@@ -1423,11 +1424,16 @@ export class LinkedInService {
    * A video post through the Videos API.
    *
    * 1. `POST /rest/videos?action=initializeUpload` with
-   *    `{ owner, fileSizeBytes, uploadCaptions: false, uploadThumbnail: false }`
+   *    `{ owner, fileSizeBytes, uploadCaptions: false, uploadThumbnail }`
    *    -> `{ video, uploadToken, uploadInstructions: [{ firstByte, lastByte,
-   *    uploadUrl }] }` (stated).
+   *    uploadUrl }], thumbnailUploadUrl? }` (stated).
    * 2. PUT each byte range (inclusive `firstByte`..`lastByte`) to its url and
    *    keep the `etag` response header of each (stated: "save eTag").
+   * 2b. With a thumbnail: PUT the image to `thumbnailUploadUrl` with
+   *    `media-type-family: STILLIMAGE` and `Content-Type:
+   *    application/octet-stream` (the guide's "Upload Thumbnail" sample,
+   *    stated). Done before finalizing, the order the guide lists its steps
+   *    in; that the order is required is INFERRED.
    * 3. `POST /rest/videos?action=finalizeUpload` with
    *    `{ video, uploadToken, uploadedPartIds }`, ids in instruction order
    *    (stated).
@@ -1439,6 +1445,18 @@ export class LinkedInService {
    * Posts API publishes a post whose media is still processing as
    * PUBLISH_REQUESTED (stated in the Post schema) - the legacy path did not
    * wait either.
+   *
+   * The thumbnail (`options.thumbnailUrl`, YouTube's designed picture) never
+   * costs the post. It is downloaded FIRST, through the SSRF guard, and
+   * `uploadThumbnail` is asked for only once the picture is in hand - so a
+   * video is never registered as waiting for a thumbnail that cannot come.
+   * A picture that cannot be downloaded, or an upload LinkedIn refuses, is
+   * returned as `thumbnailWarning` and the video posts with the frame
+   * LinkedIn picks. The guide says "a feed video can serve" when its
+   * captions fail (stated) and calls the thumbnail optional for every video;
+   * that a feed video likewise serves after a FAILED thumbnail upload is
+   * INFERRED. Same scopes as any video post (`w_member_social` /
+   * `w_organization_social`) - nothing to reconnect.
    */
   async createRestVideoPost(
     accessToken: string,
@@ -1448,9 +1466,21 @@ export class LinkedInService {
     title?: string,
     visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
     disableReshare: boolean = false,
-  ): Promise<{ postId: string }> {
+    options: { thumbnailUrl?: string } = {},
+  ): Promise<{ postId: string; thumbnailWarning?: string }> {
     this.assertWebUrl(videoUrl, 'video');
     const bytes = await this.downloadVideo(videoUrl);
+
+    let thumbnail: VideoThumbnail | undefined;
+    let thumbnailWarning: string | undefined;
+    if (options.thumbnailUrl) {
+      try {
+        thumbnail = await downloadVideoThumbnail(options.thumbnailUrl);
+      } catch (err) {
+        thumbnailWarning = `Posted without the thumbnail: ${err instanceof Error ? err.message : String(err)}`;
+        this.logger.warn(`LinkedIn video: ${thumbnailWarning}`);
+      }
+    }
 
     const init = await fetch(
       `${LINKEDIN_REST_URL}/videos?action=initializeUpload`,
@@ -1462,7 +1492,7 @@ export class LinkedInService {
             owner: authorUrn,
             fileSizeBytes: bytes.byteLength,
             uploadCaptions: false,
-            uploadThumbnail: false,
+            uploadThumbnail: thumbnail !== undefined,
           },
         }),
       },
@@ -1485,6 +1515,7 @@ export class LinkedInService {
           firstByte?: number;
           lastByte?: number;
         }[];
+        thumbnailUploadUrl?: string;
       };
     };
     const video = initData.value?.video;
@@ -1536,6 +1567,17 @@ export class LinkedInService {
       uploadedPartIds.push(etag);
     }
 
+    if (thumbnail) {
+      const warning = await this.uploadVideoThumbnail(
+        initData.value?.thumbnailUploadUrl,
+        thumbnail,
+      );
+      if (warning) {
+        thumbnailWarning = warning;
+        this.logger.warn(`LinkedIn video ${video}: ${warning}`);
+      }
+    }
+
     const finalize = await fetch(
       `${LINKEDIN_REST_URL}/videos?action=finalizeUpload`,
       {
@@ -1558,7 +1600,7 @@ export class LinkedInService {
       );
     }
 
-    return this.createRestPost(
+    const posted = await this.createRestPost(
       accessToken,
       {
         ...this.restPostEnvelope(
@@ -1571,6 +1613,40 @@ export class LinkedInService {
       },
       'video post',
     );
+    return thumbnailWarning ? { ...posted, thumbnailWarning } : posted;
+  }
+
+  /**
+   * PUTs a video's thumbnail to the `thumbnailUploadUrl` initializeUpload
+   * returned. Resolves to a warning instead of throwing: the video is
+   * uploaded by now, and a thumbnail is not worth losing it over.
+   */
+  private async uploadVideoThumbnail(
+    uploadUrl: string | undefined,
+    thumbnail: VideoThumbnail,
+  ): Promise<string | undefined> {
+    if (!uploadUrl) {
+      return 'Posted without the thumbnail: LinkedIn returned no thumbnail upload address';
+    }
+    try {
+      // The guide's sample sends no Authorization header on this upload,
+      // as on the video parts.
+      const res = await fetch(uploadUrl, {
+        method: 'PUT',
+        headers: {
+          'media-type-family': 'STILLIMAGE',
+          'Content-Type': 'application/octet-stream',
+        },
+        body: thumbnail.bytes,
+      });
+      if (!res.ok) {
+        const reason = await this.restFailure(res);
+        return `Posted without the thumbnail: LinkedIn refused it (${reason})`;
+      }
+      return undefined;
+    } catch (err) {
+      return `Posted without the thumbnail: ${err instanceof Error ? err.message : String(err)}`;
+    }
   }
 
   /** The whole video, refusing one over the Videos API's 500 MB. */

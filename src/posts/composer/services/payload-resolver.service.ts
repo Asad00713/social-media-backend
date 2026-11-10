@@ -5,6 +5,7 @@ import type {
   PlatformOverride,
 } from '../types/draft.types';
 import type { PublicationPayload } from '../types/publication-payload.types';
+import { withSharedThumbnail } from '../../lib/shared-thumbnail';
 
 /**
  * Resolves a Draft + ChannelTarget into the concrete payload that will
@@ -27,10 +28,14 @@ export class PayloadResolverService {
       hashtags: ov.hashtags ?? draft.base.hashtags,
       mentions: ov.mentions ?? draft.base.mentions,
       linkPreview: ov.linkPreview ?? draft.base.linkPreview,
-      platformSpecific: (override?.platformSpecific ?? {}) as Record<
-        string,
-        unknown
-      >,
+      // Facebook and LinkedIn also receive YouTube's designed thumbnail
+      // (`sharedThumbnailUrl`), read from YouTube's own fields.
+      platformSpecific: withSharedThumbnail(
+        (override?.platformSpecific ?? {}) as Record<string, unknown>,
+        channel.platform,
+        (draft.channels ?? []).map((c) => c.platform),
+        draft.perPlatform,
+      ),
       scheduleAt: channel.scheduleAt ?? draft.schedule.scheduleAt,
     };
   }
