@@ -53,6 +53,7 @@ import {
   reminderContent,
   REMINDER_TARGET_STATUS,
 } from '../lib/reminder';
+import { channelContent } from '../lib/channel-content';
 import type {
   PostStatusChangedPayload,
   PostStatusChangedTarget,
@@ -1012,10 +1013,10 @@ export class PostService {
       );
     }
 
-    // Get platform-specific content or use default
+    // This channel's own caption and media: the composer's
+    // `overrides`, else the legacy flat keys, else the shared post.
     const platformContent = post.platformContent?.[target.platform];
-    const content = platformContent?.text || post.content || '';
-    const mediaItems = platformContent?.mediaItems || post.mediaItems || [];
+    const { text: content, mediaItems } = channelContent(post, target.platform);
 
     // Merge per-platform settings into the publisher's metadata.
     // The composer stores Pinterest boardId, YouTube title, Reddit subreddit,
