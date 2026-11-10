@@ -4,7 +4,6 @@ import {
   HttpStatus,
   Inject,
   Injectable,
-  NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { and, desc, eq, gt, inArray, sql, type SQL } from 'drizzle-orm';
@@ -79,10 +78,16 @@ export class ShortLinksService {
       throw new BadRequestException(TARGET_URL_MESSAGES[checked.problem]);
     }
     const targetUrl = checked.url;
-    const postId = dto.postId ?? null;
 
     try {
-      if (postId) await this.assertPost(workspaceId, postId);
+      // A post id that is not a post of this workspace is dropped, not
+      // refused: the composer's new draft lives only in the browser until
+      // it is saved, so its id is not on the server yet - refusing it made
+      // "Shorten" fail with "Post not found" on every unsaved post. The
+      // link is made unowned, and is claimed once the saved post sends it.
+      const postId = dto.postId
+        ? await this.postOfWorkspace(workspaceId, dto.postId)
+        : null;
 
       const existing = await this.findByUrl(workspaceId, targetUrl);
       if (existing) {
@@ -211,13 +216,17 @@ export class ShortLinksService {
     return claimed ?? row;
   }
 
-  private async assertPost(workspaceId: string, postId: string) {
+  /** The id if it is a post of this workspace, else null. */
+  private async postOfWorkspace(
+    workspaceId: string,
+    postId: string,
+  ): Promise<string | null> {
     const [post] = await this.db
       .select({ id: posts.id })
       .from(posts)
       .where(and(eq(posts.id, postId), eq(posts.workspaceId, workspaceId)))
       .limit(1);
-    if (!post) throw new NotFoundException('Post not found');
+    return post ? post.id : null;
   }
 
   /** At most CREATE_LIMIT_PER_HOUR new links per workspace per hour. */
