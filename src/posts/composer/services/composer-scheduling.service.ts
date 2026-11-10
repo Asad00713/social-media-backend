@@ -37,6 +37,7 @@ import { CalendarPushSyncService } from '../../../calendar-sync/services/calenda
 import { PostQueueService } from '../../../billing/services/post-queue.service';
 import { loadWorkspaceTimezone } from '../../../planner/lib/workspace-time';
 import { parseRule, startSeries } from '../../lib/recurrence';
+import { parseVariationSources } from '../../lib/rotating-variations';
 
 export interface ScheduleResult {
   postId: string;
@@ -177,6 +178,18 @@ export class ComposerSchedulingService {
     if (dto.recurrence != null && !rule) {
       throw new BadRequestException('recurrence is not a valid repeat rule');
     }
+    // Only a rotating repeat reads them; a picked channel and a platform the
+    // post is not on are dropped, a malformed value is refused.
+    const variations =
+      rule?.rotateVariations && dto.variationSources !== undefined
+        ? parseVariationSources(dto.variationSources, {
+            platforms: dto.channels.map((c) => c.platform),
+            perPlatform: dto.perPlatform,
+          })
+        : undefined;
+    if (variations === null) {
+      throw new BadRequestException('variationSources is not valid');
+    }
 
     // Build the legacy posts.targets shape (PostTarget) — status='draft' per
     // channel until the worker fires, when PostService.publishPost flips
@@ -236,6 +249,7 @@ export class ComposerSchedulingService {
           timezone,
           (existing[0]?.metadata as Record<string, any> | undefined)?.schedule
             ?.recurrence,
+          variations,
         ),
       };
     }

@@ -20,6 +20,7 @@ import type {
   PlatformOverrides,
 } from '../types/draft.types';
 import type { RecurrenceRule } from '../../lib/recurrence';
+import type { VariationSources } from '../../lib/rotating-variations';
 
 /**
  * Body for "Schedule for later" — picks a future time and stores the draft
@@ -73,6 +74,18 @@ export class ScheduleDraftDto {
   @IsOptional()
   @IsObject()
   recurrence?: RecurrenceRule;
+
+  /**
+   * "Use your variations" (`recurrence.rotateVariations`): each rotating
+   * channel's caption WITH its `{a|b}` groups, and the wording this post
+   * publishes — `{ [platform]: { text, thread?, index } }`. `perPlatform`
+   * carries the resolved first wording as always; the series uses these to
+   * give every next post the next one. Checked by `parseVariationSources` (a
+   * malformed value is a 400); ignored without a rotating repeat.
+   */
+  @IsOptional()
+  @IsObject()
+  variationSources?: VariationSources;
 
   /**
    * "Different time for each channel". With `per_channel`, every channel in

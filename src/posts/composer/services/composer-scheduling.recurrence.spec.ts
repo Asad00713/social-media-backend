@@ -149,3 +149,97 @@ describe('ComposerSchedulingService with a repeat rule', () => {
     expect(inserts[0].metadata).not.toHaveProperty('schedule');
   });
 });
+
+describe('ComposerSchedulingService with "Use your variations"', () => {
+  const CAPTION = 'Iced latte is {back|here again}';
+  const ROTATING = { ...RULE, rotateVariations: true };
+  const twoChannels = {
+    channels: [
+      { channelId: '7', platform: 'facebook' },
+      { channelId: '8', platform: 'linkedin' },
+    ],
+  };
+
+  it('stores the rotating channels’ captions with the series', async () => {
+    const { svc, inserts } = make([]);
+    await svc.schedule(
+      'w1',
+      'u1',
+      dto({
+        ...twoChannels,
+        recurrence: ROTATING,
+        variationSources: {
+          facebook: { text: CAPTION, index: 0 },
+          linkedin: { text: CAPTION, index: 1 },
+        },
+      }),
+    );
+    expect(inserts[0].metadata.schedule.recurrence).toEqual({
+      ...ROTATING,
+      seriesId: 'd1',
+      occurrence: 1,
+      anchorDate: '2026-10-15',
+      time: '09:30',
+      variations: {
+        facebook: { text: CAPTION, index: 0 },
+        linkedin: { text: CAPTION, index: 1 },
+      },
+    });
+  });
+
+  it('drops a picked channel and a platform the post is not on', async () => {
+    const { svc, inserts } = make([]);
+    await svc.schedule(
+      'w1',
+      'u1',
+      dto({
+        ...twoChannels,
+        perPlatform: { linkedin: { variationPick: 1 } },
+        recurrence: ROTATING,
+        variationSources: {
+          facebook: { text: CAPTION, index: 0 },
+          linkedin: { text: CAPTION, index: 1 },
+          tiktok: { text: CAPTION, index: 2 },
+        },
+      }),
+    );
+    expect(inserts[0].metadata.schedule.recurrence.variations).toEqual({
+      facebook: { text: CAPTION, index: 0 },
+    });
+  });
+
+  it('ignores the captions without the switch', async () => {
+    const { svc, inserts } = make([]);
+    await svc.schedule(
+      'w1',
+      'u1',
+      dto({
+        recurrence: RULE,
+        variationSources: { facebook: { text: CAPTION, index: 0 } },
+      }),
+    );
+    expect(inserts[0].metadata.schedule.recurrence).not.toHaveProperty(
+      'variations',
+    );
+    expect(inserts[0].metadata.schedule.recurrence).not.toHaveProperty(
+      'rotateVariations',
+    );
+  });
+
+  it('refuses malformed captions before writing or enqueueing anything', async () => {
+    const { svc, inserts, updates, queue } = make([]);
+    await expect(
+      svc.schedule(
+        'w1',
+        'u1',
+        dto({
+          recurrence: ROTATING,
+          variationSources: { facebook: { text: CAPTION } },
+        }),
+      ),
+    ).rejects.toBeInstanceOf(BadRequestException);
+    expect(inserts).toHaveLength(0);
+    expect(updates).toHaveLength(0);
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+});

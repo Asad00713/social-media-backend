@@ -196,3 +196,131 @@ describe('RepeatPostsService.ensureNext', () => {
     expect(db.insert).not.toHaveBeenCalled();
   });
 });
+
+describe('RepeatPostsService.ensureNext with "Use your variations"', () => {
+  const CAPTION = 'Iced latte is {back|here again|on the bar}';
+  const thread = [
+    { text: 'one {a|b}', mediaItems: [] },
+    { text: 'two {c|d}', mediaItems: [] },
+  ];
+  // As the composer schedules it: post 1's wordings resolved into each
+  // channel's overrides, the captions with their groups kept by the series.
+  const rotating = (over: any = {}) =>
+    post({
+      content: CAPTION,
+      platformContent: {
+        instagram: {
+          inheritsFromBase: true,
+          overrides: { text: 'Iced latte is back' },
+          platformSpecific: { frameNote: 'n' },
+        },
+        facebook: {
+          inheritsFromBase: true,
+          overrides: { text: 'Iced latte is here again' },
+          platformSpecific: {},
+        },
+        // Picked: never a source, so it keeps its wording.
+        linkedin: {
+          inheritsFromBase: true,
+          overrides: { text: 'Iced latte is on the bar' },
+          platformSpecific: {},
+          variationPick: 2,
+        },
+        twitter: {
+          inheritsFromBase: false,
+          overrides: { text: 'one a' },
+          platformSpecific: {
+            thread: [
+              { text: 'one a', mediaItems: [] },
+              { text: 'two c', mediaItems: [] },
+            ],
+          },
+        },
+      },
+      metadata: {
+        source: 'composer',
+        thread: [
+          { text: 'one a', mediaItems: [] },
+          { text: 'two c', mediaItems: [] },
+        ],
+        schedule: {
+          mode: 'all_same_time',
+          scheduleAt: AT.toISOString(),
+          recurrence: recurrence({
+            rotateVariations: true,
+            variations: {
+              instagram: { text: CAPTION, index: 0 },
+              facebook: { text: CAPTION, index: 1 },
+              twitter: {
+                text: 'one {a|b}',
+                thread: thread.map((t) => t.text),
+                index: 0,
+              },
+            },
+          }),
+        },
+      },
+      ...over,
+    });
+
+  it('the next post publishes each rotating channel’s next wording', async () => {
+    const { svc, inserts } = make();
+    await svc.ensureNext(rotating(), NOW);
+    const pc = inserts[0].platformContent;
+    expect(pc.instagram.overrides.text).toBe('Iced latte is here again');
+    expect(pc.instagram.platformSpecific).toEqual({ frameNote: 'n' });
+    expect(pc.facebook.overrides.text).toBe('Iced latte is on the bar');
+    // A pick wins: the same wording on every post.
+    expect(pc.linkedin.overrides.text).toBe('Iced latte is on the bar');
+    // A thread turns with its caption, and X's metadata copy with it.
+    expect(pc.twitter.overrides.text).toBe('one b');
+    expect(pc.twitter.platformSpecific.thread).toEqual([
+      { text: 'one b', mediaItems: [] },
+      { text: 'two d', mediaItems: [] },
+    ]);
+    expect(inserts[0].metadata.thread).toEqual(pc.twitter.platformSpecific.thread);
+    // The base keeps its groups.
+    expect(inserts[0].content).toBe(CAPTION);
+  });
+
+  it('stores the series one wording on, so the post after continues from there', async () => {
+    const { svc, inserts } = make();
+    await svc.ensureNext(rotating(), NOW);
+    expect(inserts[0].metadata.schedule.recurrence).toMatchObject({
+      occurrence: 2,
+      rotateVariations: true,
+      variations: {
+        instagram: { index: 1 },
+        facebook: { index: 2 },
+        twitter: { index: 1 },
+      },
+    });
+  });
+
+  it('wraps: post 4 of a three-wording caption is wording 1 again', async () => {
+    const { svc, inserts } = make();
+    const third = rotating();
+    third.metadata.schedule.recurrence.occurrence = 3;
+    third.metadata.schedule.recurrence.variations.instagram.index = 2;
+    await svc.ensureNext(third, NOW);
+    expect(inserts[0].platformContent.instagram.overrides.text).toBe(
+      'Iced latte is back',
+    );
+  });
+
+  it('with the switch off, the next post repeats this one’s wording', async () => {
+    const { svc, inserts } = make();
+    const off = rotating();
+    delete off.metadata.schedule.recurrence.rotateVariations;
+    await svc.ensureNext(off, NOW);
+    expect(inserts[0].platformContent.instagram.overrides.text).toBe(
+      'Iced latte is back',
+    );
+    expect(inserts[0].platformContent.facebook.overrides.text).toBe(
+      'Iced latte is here again',
+    );
+    expect(inserts[0].metadata.schedule.recurrence).not.toHaveProperty(
+      'variations',
+    );
+  });
+});
