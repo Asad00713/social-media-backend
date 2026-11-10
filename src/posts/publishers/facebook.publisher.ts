@@ -9,6 +9,12 @@ import {
   facebookPlace,
   facebookPostOptions,
 } from './facebook-post-settings';
+import {
+  carouselErrors,
+  carouselLinks,
+  resolveCarouselCards,
+  wantsCarousel,
+} from './facebook-carousel';
 
 @Injectable()
 export class FacebookPublisher extends BasePublisher {
@@ -29,6 +35,14 @@ export class FacebookPublisher extends BasePublisher {
     // Check character limit (Facebook allows up to 63,206 chars)
     if (content && content.length > 63206) {
       throw new Error('Facebook content exceeds character limit');
+    }
+
+    // A carousel is checked only where it would be sent (a Post with no
+    // media): one saved before a photo was attached is left unsent, not
+    // refused.
+    if (wantsCarousel(options.metadata, mediaItems.length)) {
+      const errors = carouselErrors(options.metadata);
+      if (errors.length > 0) throw new Error(errors.join('; '));
     }
   }
 
@@ -131,6 +145,20 @@ export class FacebookPublisher extends BasePublisher {
         accessToken,
         mediaItems[0].url,
         content,
+        facebookPostOptions(metadata),
+      );
+    } else if (wantsCarousel(metadata, mediaItems.length)) {
+      // A link CAROUSEL (`carouselLinks`, validated above). The post's own
+      // link is the caption's, which the composer's card is built from; a
+      // caption without one falls back to the first card.
+      const links = carouselLinks(metadata);
+      const cards = await resolveCarouselCards(links);
+      result = await this.facebookService.postCarouselToPage(
+        platformAccountId,
+        accessToken,
+        content,
+        findFirstLink(content) ?? links[0].url,
+        cards,
         facebookPostOptions(metadata),
       );
     } else {

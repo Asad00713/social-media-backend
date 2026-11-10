@@ -472,6 +472,63 @@ export class FacebookService {
   }
 
   /**
+   * A link carousel on a Page - `POST /{page-id}/feed` with `child_attachments`
+   * (2-5 objects, each `link` plus `picture`, optional `name`/`description`).
+   *
+   * Sent as JSON text, the form this service already uses for
+   * `call_to_action` and `targeting`. `link` is the post's own link, which
+   * Facebook shows on the end card ("See more at ..."): either `link` or
+   * `message` must be supplied (stated); using the caption's link for it is
+   * INFERRED from the composer's link card, which is built from that link.
+   * `multi_share_optimized` is sent false so the cards keep the order chosen;
+   * the reference says the reordering applies only to ads, so this is a
+   * belt-and-braces default, not a behaviour change for an organic post.
+   * No `call_to_action`: the reference documents it on link posts, not on a
+   * carousel's cards, and a misplaced key can reject the whole post.
+   */
+  async postCarouselToPage(
+    pageId: string,
+    pageAccessToken: string,
+    message: string,
+    link: string,
+    cards: Array<{
+      link: string;
+      picture: string;
+      name?: string;
+      description?: string;
+    }>,
+    options: FacebookPostOptions = {},
+  ): Promise<{ postId: string }> {
+    const url = new URL(`${this.graphApiUrl}/${pageId}/feed`);
+
+    const body: Record<string, string> = {
+      access_token: pageAccessToken,
+      message,
+      link,
+      child_attachments: JSON.stringify(cards),
+      multi_share_optimized: 'false',
+      ...this.postOptionsBody(options),
+    };
+
+    const response = await fetch(url.toString(), {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+
+    if (!response.ok) {
+      const error = await response.json();
+      this.logger.error(`Failed to post carousel to page ${pageId}:`, error);
+      throw new BadRequestException(
+        error.error?.message || 'Failed to post carousel to page',
+      );
+    }
+
+    const data = await response.json();
+    return { postId: data.id };
+  }
+
+  /**
    * Post photo to a Facebook Page
    */
   async postPhotoToPage(

@@ -50,6 +50,7 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
       approveDraft: 'posts:approve',
       cancelSchedule: 'posts:publish',
       publish: 'posts:publish',
+      linkPreview: 'posts:draft',
     },
   ],
   [
