@@ -1,7 +1,6 @@
 import {
   BadRequestException,
   HttpException,
-  NotFoundException,
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { randomUUID } from 'node:crypto';
@@ -171,23 +170,24 @@ describeDb('ShortLinksService (database)', () => {
       const foreign = await seedPost(client, other.workspaceId, other.ownerId);
       const svc = new ShortLinksService(db);
 
-      await expect(
-        svc.create(
-          ws,
-          ownerId,
-          { url: 'https://x.test/', postId: foreign },
-          ENV,
-        ),
-      ).rejects.toBeInstanceOf(NotFoundException);
-      await expect(
-        svc.create(
-          ws,
-          ownerId,
-          { url: 'https://x.test/', postId: randomUUID() },
-          ENV,
-        ),
-      ).rejects.toBeInstanceOf(NotFoundException);
-      expect(await count(client)).toBe(0);
+      // Another workspace's post, and an id the server has never seen (the
+      // composer's unsaved draft), are dropped: the link is made, unowned.
+      const fromForeign = await svc.create(
+        ws,
+        ownerId,
+        { url: 'https://x.test/', postId: foreign },
+        ENV,
+      );
+      expect(fromForeign.postId).toBeNull();
+      const fromUnsaved = await svc.create(
+        ws,
+        ownerId,
+        { url: 'https://x.test/', postId: randomUUID() },
+        ENV,
+      );
+      expect(fromUnsaved.id).toBe(fromForeign.id);
+      expect(fromUnsaved.postId).toBeNull();
+      expect(await count(client)).toBe(1);
 
       const loose = await svc.create(
         ws,
