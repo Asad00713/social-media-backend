@@ -11,6 +11,11 @@ import {
   safeTimeZone,
   wallClockToUtc,
 } from '../../first-week/lib/first-week-slots';
+import {
+  advanceSources,
+  parseVariationSources,
+  type VariationSources,
+} from './rotating-variations';
 
 /** What the composer sends — `ScheduleConfig.recurrence`. */
 export interface RecurrenceRule {
@@ -23,6 +28,11 @@ export interface RecurrenceRule {
     | { type: 'never' }
     | { type: 'after'; count: number }
     | { type: 'on'; date: string };
+  /**
+   * "Use your variations": each post of the series publishes the next
+   * `{a|b}` wording instead of the same caption. Only `true` is kept.
+   */
+  rotateVariations?: true;
 }
 
 /**
@@ -38,6 +48,12 @@ export interface StoredRecurrence extends RecurrenceRule {
   anchorDate: string;
   /** HH:mm in the workspace zone — every post goes out at it. */
   time: string;
+  /**
+   * With `rotateVariations`: each rotating channel's caption with its groups,
+   * and the wording THIS post publishes — see lib/rotating-variations.ts.
+   * Server-written; a client's copy is never read from here.
+   */
+  variations?: VariationSources;
 }
 
 export const RECURRENCE_LIMITS = {
@@ -114,6 +130,7 @@ export function parseRule(v: unknown): RecurrenceRule | null {
     interval: r.interval,
     ...(r.freq === 'weekly' && byWeekday?.length ? { byWeekday } : {}),
     ends,
+    ...(r.rotateVariations === true ? { rotateVariations: true as const } : {}),
   };
 }
 
@@ -128,12 +145,17 @@ export function parseStored(v: unknown): StoredRecurrence | null {
     return null;
   }
   if (typeof r.time !== 'string' || !TIME_RE.test(r.time)) return null;
+  // Rotation state that no longer parses ends the rotation, not the series.
+  const variations = rule.rotateVariations
+    ? parseVariationSources(r.variations)
+    : null;
   return {
     ...rule,
     seriesId: r.seriesId,
     occurrence: r.occurrence,
     anchorDate: r.anchorDate,
     time: r.time,
+    ...(variations && Object.keys(variations).length ? { variations } : {}),
   };
 }
 
@@ -207,6 +229,11 @@ export function localTimeOf(at: Date, timeZone: string): string {
 /**
  * The series state for a post being scheduled now: a new series (the post is
  * its first), or the one it already belongs to, re-anchored on its new time.
+ *
+ * `variations` are the rotating channels' captions the request sent. Without
+ * any, a post already in a rotating series keeps the series' own: a post
+ * reopened from the server holds its resolved wording, not the braces, so a
+ * re-schedule of it has none to send. Rotation off drops them.
  */
 export function startSeries(
   rule: RecurrenceRule,
@@ -214,14 +241,21 @@ export function startSeries(
   scheduledAt: Date,
   timeZone: string,
   existing: unknown,
+  variations?: VariationSources | null,
 ): StoredRecurrence {
   const prior = parseStored(existing);
+  const kept = rule.rotateVariations
+    ? variations && Object.keys(variations).length
+      ? variations
+      : prior?.variations
+    : undefined;
   return {
     ...rule,
     seriesId: prior?.seriesId ?? postId,
     occurrence: prior?.occurrence ?? 1,
     anchorDate: localDateOf(scheduledAt, timeZone),
     time: localTimeOf(scheduledAt, timeZone),
+    ...(kept ? { variations: kept } : {}),
   };
 }
 
@@ -249,7 +283,17 @@ export function nextPost(
     if (!next || !withinEnd(current, index, next)) return null;
     const at = wallClockToUtc(next, current.time, tz);
     if (at.getTime() >= now.getTime() + NEXT_POST_MIN_LEAD_MS) {
-      return { at, recurrence: { ...current, occurrence: index } };
+      return {
+        at,
+        recurrence: {
+          ...current,
+          occurrence: index,
+          // One post on, one wording on — also across a skipped day.
+          ...(current.variations
+            ? { variations: advanceSources(current.variations) }
+            : {}),
+        },
+      };
     }
     date = next;
   }

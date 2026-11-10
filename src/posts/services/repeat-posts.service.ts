@@ -11,6 +11,7 @@ import { loadWorkspaceTimezone } from '../../planner/lib/workspace-time';
 import { buildDuplicate } from '../lib/duplicate-post';
 import type { PostRow } from '../lib/present-post';
 import { nextPost, parseStored, seriesPostId } from '../lib/recurrence';
+import { applyVariationSources } from '../lib/rotating-variations';
 
 /** Job options the composer's own schedule endpoint uses. */
 const JOB_ATTEMPTS = 3;
@@ -61,7 +62,12 @@ export class RepeatPostsService {
 
     const id = seriesPostId(current.seriesId, next.recurrence.occurrence);
     const jobId = composerJobId(id);
-    const base = buildDuplicate(post, post.createdById);
+    // "Use your variations": the copy publishes each rotating channel's next
+    // wording (nextPost already moved every source one place on).
+    const copy = buildDuplicate(post, post.createdById);
+    const base = next.recurrence.variations
+      ? applyVariationSources(copy, next.recurrence.variations)
+      : copy;
     const inserted = await this.db
       .insert(posts)
       .values({

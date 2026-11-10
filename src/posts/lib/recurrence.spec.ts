@@ -260,3 +260,118 @@ describe('seriesPostId', () => {
     expect(seriesPostId('s2', 2)).not.toBe(a);
   });
 });
+
+describe('"Use your variations" on a series', () => {
+  const AT = new Date('2026-10-15T04:30:00Z'); // Thu 9:30 AM Karachi
+  const NOW = new Date('2026-10-15T04:30:05Z');
+  const SOURCES = {
+    facebook: { text: '{a|b|c}', index: 0 },
+    linkedin: { text: '{a|b|c}', index: 1 },
+  };
+
+  it('parseRule keeps the switch only when it is exactly true', () => {
+    expect(parseRule({ ...rule(), rotateVariations: true })).toEqual({
+      ...rule(),
+      rotateVariations: true,
+    });
+    for (const v of [false, 'true', 1, null]) {
+      expect(parseRule({ ...rule(), rotateVariations: v })).toEqual(rule());
+    }
+  });
+
+  it('parseRule never takes the server’s rotation state from a client', () => {
+    expect(
+      parseRule({ ...rule(), rotateVariations: true, variations: SOURCES }),
+    ).not.toHaveProperty('variations');
+  });
+
+  it('parseStored keeps the sources only while the switch is on', () => {
+    const on = stored({ rotateVariations: true, variations: SOURCES });
+    expect(parseStored(on)).toEqual(on);
+    expect(parseStored({ ...on, rotateVariations: undefined })).toEqual(
+      stored(),
+    );
+    // Sources that no longer parse end the rotation, not the series.
+    expect(parseStored({ ...on, variations: { facebook: 'x' } })).toEqual(
+      stored({ rotateVariations: true }),
+    );
+  });
+
+  it('startSeries stores the sources the request sent', () => {
+    expect(
+      startSeries(
+        rule({ rotateVariations: true }),
+        'd1',
+        AT,
+        'Asia/Karachi',
+        undefined,
+        SOURCES,
+      ),
+    ).toEqual(
+      stored({ seriesId: 'd1', rotateVariations: true, variations: SOURCES }),
+    );
+  });
+
+  it('startSeries keeps the series’ sources when a re-schedule sends none', () => {
+    const prior = stored({
+      seriesId: 's1',
+      occurrence: 3,
+      rotateVariations: true,
+      variations: SOURCES,
+    });
+    for (const sent of [undefined, null, {}]) {
+      expect(
+        startSeries(
+          rule({ rotateVariations: true }),
+          'd3',
+          AT,
+          'Asia/Karachi',
+          prior,
+          sent,
+        ).variations,
+      ).toEqual(SOURCES);
+    }
+    // New sources replace the old ones.
+    const fresh = { facebook: { text: '{x|y}', index: 2 } };
+    expect(
+      startSeries(
+        rule({ rotateVariations: true }),
+        'd3',
+        AT,
+        'Asia/Karachi',
+        prior,
+        fresh,
+      ).variations,
+    ).toEqual(fresh);
+  });
+
+  it('startSeries drops the sources when the switch is off', () => {
+    const prior = stored({ rotateVariations: true, variations: SOURCES });
+    const out = startSeries(rule(), 'd1', AT, 'Asia/Karachi', prior, SOURCES);
+    expect(out).not.toHaveProperty('variations');
+    expect(out).not.toHaveProperty('rotateVariations');
+  });
+
+  it('the next post moves every channel one wording on', () => {
+    const on = stored({ rotateVariations: true, variations: SOURCES });
+    expect(nextPost(on, AT, 'Asia/Karachi', NOW)?.recurrence).toEqual(
+      stored({
+        occurrence: 2,
+        rotateVariations: true,
+        variations: {
+          facebook: { text: '{a|b|c}', index: 1 },
+          linkedin: { text: '{a|b|c}', index: 2 },
+        },
+      }),
+    );
+  });
+
+  it('one place on even when late days were skipped', () => {
+    const on = stored({ rotateVariations: true, variations: SOURCES });
+    const late = new Date('2026-10-25T00:00:00Z');
+    expect(
+      nextPost(on, AT, 'Asia/Karachi', late)?.recurrence.variations?.facebook
+        .index,
+    ).toBe(1);
+  });
+});
