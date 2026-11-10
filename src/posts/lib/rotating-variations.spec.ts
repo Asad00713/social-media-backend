@@ -70,10 +70,7 @@ describe('parseVariationSources', () => {
 
   it('keeps a well-formed source', () => {
     expect(
-      parseVariationSources(
-        { facebook: { text: CAPTION, index: 1 } },
-        opts,
-      ),
+      parseVariationSources({ facebook: { text: CAPTION, index: 1 } }, opts),
     ).toEqual({ facebook: { text: CAPTION, index: 1 } });
   });
 
@@ -212,7 +209,10 @@ describe('applyVariationSources', () => {
     const out = applyVariationSources(
       {
         platformContent: {
-          twitter: { overrides: { text: 'one a' }, platformSpecific: { thread } },
+          twitter: {
+            overrides: { text: 'one a' },
+            platformSpecific: { thread },
+          },
         },
         metadata: { thread },
       },
@@ -232,6 +232,6 @@ describe('applyVariationSources', () => {
       expected,
     );
     expect(out.platformContent.twitter.overrides.text).toBe('one b');
-    expect((out.metadata as any).thread).toEqual(expected);
+    expect(out.metadata.thread).toEqual(expected);
   });
 });

@@ -278,7 +278,9 @@ describe('RepeatPostsService.ensureNext with "Use your variations"', () => {
       { text: 'one b', mediaItems: [] },
       { text: 'two d', mediaItems: [] },
     ]);
-    expect(inserts[0].metadata.thread).toEqual(pc.twitter.platformSpecific.thread);
+    expect(inserts[0].metadata.thread).toEqual(
+      pc.twitter.platformSpecific.thread,
+    );
     // The base keeps its groups.
     expect(inserts[0].content).toBe(CAPTION);
   });

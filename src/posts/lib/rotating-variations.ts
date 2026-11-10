@@ -34,7 +34,6 @@
  *   publish the same wording.
  */
 
-
 /** One channel's caption with its groups, as the composer sent it. */
 export interface VariationSource {
   /** The caption with its `{a|b}` groups. */
@@ -47,7 +46,6 @@ export interface VariationSource {
 
 /** Keyed by platform, like `perPlatform`. */
 export type VariationSources = Record<string, VariationSource>;
-
 
 /**
  * The same grammar as the composer: one level, no `}` inside a choice, and
@@ -63,7 +61,6 @@ export const VARIATION_SOURCE_LIMITS = {
   /** Far past any series: 100 posts × 12 channels. */
   index: 1_000_000,
 } as const;
-
 
 function groupsOf(caption: string): string[][] {
   return [...caption.matchAll(GROUP_RE)].map((m) => m[1].split('|'));
@@ -169,6 +166,14 @@ interface RotatableRow {
   metadata?: unknown;
 }
 
+/** The parts of a stored `platformContent[platform]` this reads and writes. */
+interface ChannelEntry {
+  inheritsFromBase?: boolean;
+  overrides?: Record<string, unknown>;
+  platformSpecific?: Record<string, unknown> & { thread?: unknown };
+  [key: string]: unknown;
+}
+
 /**
  * The row's per-channel content with each source's wording at its `index`
  * written in: `overrides.text` (which the publish paths prefer over the base),
@@ -179,19 +184,19 @@ export function applyVariationSources<T extends RotatableRow>(
   row: T,
   sources: VariationSources,
 ): T {
-  const platformContent: Record<string, any> = {
-    ...((row.platformContent ?? {}) as Record<string, any>),
+  const platformContent: Record<string, ChannelEntry> = {
+    ...((row.platformContent ?? {}) as Record<string, ChannelEntry>),
   };
-  const metadata: Record<string, any> = {
-    ...((row.metadata ?? {}) as Record<string, any>),
+  const metadata: Record<string, unknown> = {
+    ...((row.metadata ?? {}) as Record<string, unknown>),
   };
   for (const [platform, source] of Object.entries(sources)) {
-    const entry = platformContent[platform] ?? {
+    const entry: ChannelEntry = platformContent[platform] ?? {
       inheritsFromBase: true,
       overrides: {},
       platformSpecific: {},
     };
-    const next = {
+    const next: ChannelEntry = {
       ...entry,
       overrides: {
         ...(entry.overrides ?? {}),
@@ -199,10 +204,11 @@ export function applyVariationSources<T extends RotatableRow>(
       },
     };
     const stored = entry.platformSpecific?.thread;
-    if (source.thread && Array.isArray(stored)) {
-      const thread = stored.map((post: Record<string, unknown>, i: number) =>
-        i < source.thread!.length
-          ? { ...post, text: resolveVariationAt(source.thread![i], source.index) }
+    const texts = source.thread;
+    if (texts && Array.isArray(stored)) {
+      const thread = (stored as Record<string, unknown>[]).map((post, i) =>
+        i < texts.length
+          ? { ...post, text: resolveVariationAt(texts[i], source.index) }
           : post,
       );
       next.platformSpecific = { ...entry.platformSpecific, thread };
