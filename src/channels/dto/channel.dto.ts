@@ -446,8 +446,10 @@ export class CreateLinkedInPostDto {
 
   @IsString()
   @IsOptional()
-  @IsEnum(['PUBLIC', 'CONNECTIONS'])
-  visibility?: 'PUBLIC' | 'CONNECTIONS';
+  // `LOGGED_IN` is LinkedIn's "signed-in members only" - the composer's
+  // "Members only" (see `linkedin.publisher.ts` normalizeVisibility).
+  @IsEnum(['PUBLIC', 'CONNECTIONS', 'LOGGED_IN'])
+  visibility?: 'PUBLIC' | 'CONNECTIONS' | 'LOGGED_IN';
 
   @IsString()
   @IsOptional()

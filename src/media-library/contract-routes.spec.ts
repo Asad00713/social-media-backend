@@ -59,6 +59,7 @@ const UPLOAD_ROUTES = [
   'POST /media/upload/base64',
   'POST /media/signed-upload-params',
   'POST /media/r2/presign-composer-video',
+  'POST /media/r2/presign-composer-document',
 ];
 
 describe('Library API contract routes', () => {

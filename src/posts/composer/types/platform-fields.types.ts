@@ -83,13 +83,25 @@ export interface FacebookFields {
 }
 
 export interface LinkedInFields {
-  visibility: 'public' | 'connections';
+  /** `logged_in` is "Members only" (LinkedIn `LOGGED_IN`); `connections` is 1st-degree. */
+  visibility: 'public' | 'connections' | 'logged_in';
   isArticle: boolean;
   firstComment?: string;
 }
 
 export interface TikTokFields {
-  privacyLevel: 'public' | 'friends' | 'private';
+  /**
+   * TikTok's own `privacy_level`. The short slugs are what drafts stored
+   * before; `tiktok.publisher.ts` still reads them.
+   */
+  privacyLevel:
+    | 'PUBLIC_TO_EVERYONE'
+    | 'MUTUAL_FOLLOW_FRIENDS'
+    | 'FOLLOWER_OF_CREATOR'
+    | 'SELF_ONLY'
+    | 'public'
+    | 'friends'
+    | 'private';
   allowComments: boolean;
   allowDuet: boolean;
   allowStitch: boolean;

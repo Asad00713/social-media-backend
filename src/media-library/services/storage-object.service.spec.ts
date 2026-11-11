@@ -405,6 +405,22 @@ describe('StorageObjectService', () => {
       });
     });
 
+    // A LinkedIn Document post's file is stored under composer/documents.
+    it('accepts this workspace R2 document key and refuses another workspace', () => {
+      const { service } = withOwnCloud();
+      const doc = (ws: string) =>
+        `composer/documents/${ws}/user-1/1700000000000-${'b'.repeat(24)}.pdf`;
+      accept(service, {
+        fileUrl: `${R2_BASE}/${doc(WS)}`,
+        cloudinaryPublicId: doc(WS),
+      });
+      reject(service, { fileUrl: `${R2_BASE}/${doc(OTHER_WS)}` });
+      // Only the two composer prefixes: not any `composer/*` folder.
+      reject(service, {
+        fileUrl: `${R2_BASE}/composer/other/${WS}/user-1/1700000000000-${'b'.repeat(24)}.pdf`,
+      });
+    });
+
     it("rejects another workspace's R2 key and a mismatched public id", () => {
       const { service } = withOwnCloud();
       reject(service, { fileUrl: `${R2_BASE}/${keyFor(OTHER_WS)}` });

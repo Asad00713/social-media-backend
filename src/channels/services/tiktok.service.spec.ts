@@ -69,4 +69,33 @@ describe('TikTokService AI-generated flag', () => {
       expect('is_aigc' in sentBody()).toBe(false);
     });
   });
+
+  // K1. TikTok's photo reference: MEDIA_UPLOAD sends the photos to the
+  // creator's inbox; privacy_level, disable_comment, auto_add_music and the
+  // brand toggles are DIRECT_POST-only.
+  describe('photo post mode', () => {
+    it('posts directly by default, with the Direct Post fields', async () => {
+      await service.postPhotoFromUrl('tok', ['https://x/a.jpg'], {
+        privacyLevel: 'FOLLOWER_OF_CREATOR',
+      });
+      const body = sentBody();
+      expect(body.post_mode).toBe('DIRECT_POST');
+      expect(body.post_info.privacy_level).toBe('FOLLOWER_OF_CREATOR');
+    });
+
+    it('MEDIA_UPLOAD goes to the inbox and sends only what that mode reads', async () => {
+      await service.postPhotoFromUrl('tok', ['https://x/a.jpg'], {
+        postMode: 'MEDIA_UPLOAD',
+        title: 'T',
+        description: 'D',
+        privacyLevel: 'PUBLIC_TO_EVERYONE',
+        brandContentToggle: true,
+        isAigc: true,
+      });
+      const body = sentBody();
+      expect(body.post_mode).toBe('MEDIA_UPLOAD');
+      expect(body.post_info).toEqual({ title: 'T', description: 'D' });
+      expect('is_aigc' in body).toBe(false);
+    });
+  });
 });

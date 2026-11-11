@@ -35,6 +35,9 @@ describe('PinterestPublisher - one Pin per image', () => {
       metadata: {
         boardId: 'board-1',
         title: 'Iced latte',
+        // The Pin's own Description field: the shared caption (`content`)
+        // is never a Pin's description (pinterest.description.spec.ts).
+        description: 'Pin body',
         destinationLink: 'https://lumiere.pk',
         boardSectionId: 'sec-1',
         aiModified: true,
@@ -77,7 +80,7 @@ describe('PinterestPublisher - one Pin per image', () => {
         'tok',
         'board-1',
         'Iced latte',
-        'body',
+        'Pin body',
       ]);
       expect(optionsOf(i)).toMatchObject({
         link: 'https://lumiere.pk',

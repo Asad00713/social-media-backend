@@ -52,6 +52,15 @@ export class PinterestPublisher extends BasePublisher {
     if (metadata.title.length > 100) {
       throw new Error('Pinterest pin title cannot exceed 100 characters');
     }
+
+    // Pinterest's own cap on `description`. Refused rather than cut: the
+    // composer stops typing at 800, so a longer one came from somewhere
+    // else, and a quietly shortened Pin is not what anyone wrote.
+    if (pickDescription(metadata).length > PINTEREST_MAX_DESCRIPTION) {
+      throw new Error(
+        `Pinterest pin description cannot exceed ${PINTEREST_MAX_DESCRIPTION} characters`,
+      );
+    }
   }
 
   supportsMediaTypes(mediaItems: MediaItem[]): boolean {
@@ -72,12 +81,9 @@ export class PinterestPublisher extends BasePublisher {
     const link = metadata?.destinationLink ?? metadata?.link;
     const mediaType = mediaItems[0].type as 'image' | 'video';
 
-    // Description priority: the Pinterest panel's Description field
-    // (metadata.description) wins over any body text propagated from the
-    // All-channels editor (content). Pinterest doesn't have a body editor —
-    // its "caption" IS the description field, so user intent is in
-    // metadata.description.
-    const description = pickDescription(metadata, content);
+    // The Pin card's own Description field, and nothing else: see
+    // `pickDescription`.
+    const description = pickDescription(metadata);
 
     // Pinterest's `multiple_image_urls` source takes 2 to 5 images, so a
     // multi-image pin is a carousel rather than several pins. Only images:
@@ -266,25 +272,23 @@ export function pickDominantColor(
   return match ? `#${match[1].toUpperCase()}` : undefined;
 }
 
+/** Pinterest's limit on a Pin's `description`. */
+export const PINTEREST_MAX_DESCRIPTION = 800;
+
 /**
- * Pick the pin description: prefer the dedicated Pinterest panel description
- * field (`metadata.description`) over the cross-platform body text
- * (`content`). Pinterest's "caption" is the description — body text from
- * other platforms shouldn't silently override what the user typed in the
- * Pinterest tab.
+ * The Pin's description: the Pin card's own Description field.
+ *
+ * Never the shared caption (`content`). The Pin card has no caption - it
+ * draws a title and a description - so an empty description used to fall
+ * back to the shared caption: text the Pin card never showed, and never
+ * measured against Pinterest's 800. What is sent is what the card shows,
+ * which for an empty field is no description.
  */
-function pickDescription(
+export function pickDescription(
   metadata: Record<string, unknown> | undefined,
-  content: string | undefined,
 ): string {
   const fromPanel = metadata?.description;
-  if (typeof fromPanel === 'string' && fromPanel.trim().length > 0) {
-    return fromPanel;
-  }
-  if (typeof content === 'string' && content.trim().length > 0) {
-    return content;
-  }
-  return '';
+  return typeof fromPanel === 'string' ? fromPanel : '';
 }
 
 /**
