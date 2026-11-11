@@ -20,6 +20,8 @@ import { readMigrations } from './runner';
  * both).
  * 0061 creates short_links with foreign keys to workspace, posts and
  * users (SHARE ROW EXCLUSIVE on each).
+ * 0062 creates channel_audience with a foreign key to social_media_channels
+ * (SHARE ROW EXCLUSIVE).
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -32,6 +34,7 @@ const FILES = [
   '0059_brand_kits.sql',
   '0060_insight_hidden_steps.sql',
   '0061_short_links.sql',
+  '0062_channel_audience.sql',
 ];
 
 const firstStatement = (sql: string): string =>
