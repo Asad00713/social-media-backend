@@ -4,6 +4,35 @@ import {
   fetchPublicMedia,
 } from '../../common/net/public-fetch';
 import { type VideoThumbnail, downloadVideoThumbnail } from './video-thumbnail';
+import { toLittleText } from './linkedin-little-text';
+
+/**
+ * A post's audience - the Post schema's `MemberNetworkVisibility`:
+ * "CONNECTIONS - Represents 1st degree network of owner. PUBLIC - Anyone can
+ * view this. LOGGED_IN - Viewable by logged in members only." (`CONTAINER`
+ * is for group posts, which we never make.)
+ */
+export type LinkedInVisibility = 'PUBLIC' | 'CONNECTIONS' | 'LOGGED_IN';
+
+/**
+ * MultiImage: "minimum of 2 images and maximum of 20 images" (stated).
+ * https://learn.microsoft.com/en-us/linkedin/marketing/community-management/shares/multiimage-post-api
+ */
+export const LINKEDIN_MULTI_IMAGE_MIN = 2;
+export const LINKEDIN_MULTI_IMAGE_MAX = 20;
+
+/**
+ * `altText` - "Maximum length is 4,086 characters" (stated for MultiImage;
+ * the single-media `altText` states no limit, so the same cap is used).
+ */
+const MAX_ALT_TEXT_CHARS = 4086;
+
+/** An alt text worth sending: trimmed, capped, absent when blank. */
+function altTextOf(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const text = value.trim();
+  return text ? text.slice(0, MAX_ALT_TEXT_CHARS) : undefined;
+}
 
 /**
  * The versioned ("rest") base path — Posts, Images and Documents APIs.
@@ -140,7 +169,7 @@ export class LinkedInService {
     accessToken: string,
     authorId: string,
     text: string,
-    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    visibility: LinkedInVisibility = 'PUBLIC',
   ): Promise<{ postId: string }> {
     const postData = {
       author: `urn:li:person:${authorId}`,
@@ -190,7 +219,7 @@ export class LinkedInService {
     text: string,
     imageUrl: string,
     imageTitle?: string,
-    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    visibility: LinkedInVisibility = 'PUBLIC',
   ): Promise<{ postId: string }> {
     // Step 1: Register the image upload
     const registerResponse = await this.registerImageUpload(
@@ -264,7 +293,7 @@ export class LinkedInService {
     linkUrl: string,
     linkTitle?: string,
     linkDescription?: string,
-    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    visibility: LinkedInVisibility = 'PUBLIC',
   ): Promise<{ postId: string }> {
     const postData = {
       author: `urn:li:person:${authorId}`,
@@ -373,7 +402,7 @@ export class LinkedInService {
     text: string,
     videoUrl: string,
     videoTitle?: string,
-    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    visibility: LinkedInVisibility = 'PUBLIC',
   ): Promise<{ postId: string }> {
     // Step 1: Register the video upload
     const registerResponse = await this.registerVideoUpload(
@@ -951,17 +980,23 @@ export class LinkedInService {
   }
 
   /**
-   * Create a LinkedIn poll post via the Posts API (`/v2/posts`).
+   * Create a LinkedIn poll post via the versioned Posts API
+   * (`POST /rest/posts` with `content.poll`, the Poll API guide's own
+   * sample).
    *
-   * Uses the newer versioned Posts API since /ugcPosts deprecated poll support.
+   * It used to call `/v2/posts` with a hard-coded `LinkedIn-Version: 202404`
+   * while every other format sent `LINKEDIN_REST_VERSION`. It now goes
+   * through the same envelope and request as the rest, so the version, the
+   * little-text commentary and the page-is-always-PUBLIC rule are shared.
    *
    * @param accessToken — Member access token
    * @param actorUrn — Full URN of the author (e.g. "urn:li:person:{id}" or "urn:li:organization:{id}")
-   * @param question — The poll question (max 140 chars)
-   * @param options — 2–4 poll option strings
+   * @param question — The poll question (max 140 chars). A plain String in
+   *   the Poll schema, not little text, so it is sent as typed.
+   * @param options — 2–4 poll option strings (plain Strings, max 30 chars)
    * @param durationDays — 1 | 3 | 7 | 14 (LinkedIn-supported durations)
    * @param commentary — Optional commentary that appears as the post body above the poll card
-   * @param visibility — PUBLIC | CONNECTIONS (CONNECTIONS only valid for person authors)
+   * @param visibility — PUBLIC | CONNECTIONS | LOGGED_IN (member audiences only valid for person authors)
    */
   async createPollPost(
     accessToken: string,
@@ -970,15 +1005,8 @@ export class LinkedInService {
     options: string[],
     durationDays: number = 7,
     commentary: string = '',
-    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
-    /**
-     * `isReshareDisabledByAuthor` — stops others resharing the post.
-     *
-     * Only reachable on THIS path. Every other publish here goes through
-     * the legacy `/v2/ugcPosts`, which has no such field; the Posts API
-     * that does is a versioned endpoint, and the poll is the one caller
-     * already on it.
-     */
+    visibility: LinkedInVisibility = 'PUBLIC',
+    /** `isReshareDisabledByAuthor` — stops others resharing the post. */
     disableReshare: boolean = false,
   ): Promise<{ postId: string }> {
     if (!question || !question.trim())
@@ -997,56 +1025,28 @@ export class LinkedInService {
     };
     const duration = durationMap[durationDays] ?? 'SEVEN_DAYS';
 
-    const body = {
-      author: actorUrn,
-      commentary: commentary || '',
-      visibility,
-      lifecycleState: 'PUBLISHED',
-      content: {
-        poll: {
-          question: question.trim(),
-          options: options.map((o) => ({ text: o.trim() })),
-          settings: {
-            duration,
-            // voteSelectionType:'SINGLE_VOTE' is the default; not setting it.
+    return this.createRestPost(
+      accessToken,
+      {
+        ...this.restPostEnvelope(
+          actorUrn,
+          commentary || '',
+          visibility,
+          disableReshare,
+        ),
+        content: {
+          poll: {
+            question: question.trim(),
+            options: options.map((o) => ({ text: o.trim() })),
+            settings: {
+              duration,
+              // voteSelectionType:'SINGLE_VOTE' is the default; not setting it.
+            },
           },
         },
       },
-      distribution: {
-        feedDistribution: 'MAIN_FEED',
-        targetEntities: [],
-        thirdPartyDistributionChannels: [],
-      },
-      isReshareDisabledByAuthor: disableReshare,
-    };
-
-    const response = await fetch(`${this.apiBaseUrl}/posts`, {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        'Content-Type': 'application/json',
-        'X-Restli-Protocol-Version': '2.0.0',
-        'LinkedIn-Version': '202404',
-      },
-      body: JSON.stringify(body),
-    });
-
-    if (!response.ok) {
-      const errorData = await response.text();
-      this.logger.error(`Failed to create LinkedIn poll: ${errorData}`);
-      throw new BadRequestException('Failed to create LinkedIn poll post');
-    }
-
-    // The /v2/posts endpoint returns the new post URN in the x-restli-id header.
-    const postId = response.headers.get('x-restli-id') ?? '';
-    if (!postId) {
-      // Some response shapes return it in the body
-      const data = (await response.json().catch(() => ({}))) as { id?: string };
-      if (!data.id)
-        throw new BadRequestException('LinkedIn returned no poll post ID');
-      return { postId: data.id };
-    }
-    return { postId };
+      'poll post',
+    );
   }
 
   // ==========================================================================
@@ -1230,13 +1230,18 @@ export class LinkedInService {
   private restPostEnvelope(
     authorUrn: string,
     commentary: string,
-    visibility: 'PUBLIC' | 'CONNECTIONS',
+    visibility: LinkedInVisibility,
     disableReshare: boolean,
   ) {
     return {
       author: authorUrn,
-      commentary,
-      // `CONNECTIONS` is a member-only audience; a page can only post publicly.
+      // `commentary` is little text: reserved characters escaped, hashtags
+      // as templates (see linkedin-little-text.ts). Every Posts API post -
+      // text, image, multi-image, video, document, link card, poll - is
+      // built here, so this is the one place it happens.
+      commentary: toLittleText(commentary),
+      // `CONNECTIONS` / `LOGGED_IN` are member audiences; a page can only
+      // post publicly.
       visibility: authorUrn.startsWith('urn:li:organization:')
         ? 'PUBLIC'
         : visibility,
@@ -1266,7 +1271,7 @@ export class LinkedInService {
     commentary: string,
     documentUrl: string,
     title: string,
-    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    visibility: LinkedInVisibility = 'PUBLIC',
     disableReshare: boolean = false,
   ): Promise<{ postId: string }> {
     this.assertWebUrl(documentUrl, 'document');
@@ -1316,7 +1321,7 @@ export class LinkedInService {
       description?: string;
       thumbnailUrl: string;
     },
-    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    visibility: LinkedInVisibility = 'PUBLIC',
     disableReshare: boolean = false,
   ): Promise<{ postId: string }> {
     this.assertWebUrl(article.thumbnailUrl, 'image');
@@ -1372,7 +1377,7 @@ export class LinkedInService {
     accessToken: string,
     authorUrn: string,
     commentary: string,
-    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    visibility: LinkedInVisibility = 'PUBLIC',
     disableReshare: boolean = false,
   ): Promise<{ postId: string }> {
     return this.createRestPost(
@@ -1386,7 +1391,8 @@ export class LinkedInService {
    * A single-image post: Images API `initializeUpload` -> PUT the file ->
    * Posts API with `content.media.id = urn:li:image:…`. `title` is sent only
    * when there is one (it is optional for media; required only for
-   * documents).
+   * documents). `altText` likewise - the Media schema's "The alternate text
+   * for the media. None if empty. Optional."
    */
   async createRestImagePost(
     accessToken: string,
@@ -1394,16 +1400,13 @@ export class LinkedInService {
     commentary: string,
     imageUrl: string,
     title?: string,
-    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    visibility: LinkedInVisibility = 'PUBLIC',
     disableReshare: boolean = false,
+    options: { altText?: string } = {},
   ): Promise<{ postId: string }> {
     this.assertWebUrl(imageUrl, 'image');
-    const { uploadUrl, urn } = await this.initializeRestUpload(
-      'images',
-      accessToken,
-      authorUrn,
-    );
-    await this.uploadToRestAsset(imageUrl, uploadUrl, accessToken, 'image');
+    const urn = await this.uploadRestImage(accessToken, authorUrn, imageUrl);
+    const altText = altTextOf(options.altText);
 
     return this.createRestPost(
       accessToken,
@@ -1414,10 +1417,82 @@ export class LinkedInService {
           visibility,
           disableReshare,
         ),
-        content: { media: { id: urn, ...(title ? { title } : {}) } },
+        content: {
+          media: {
+            id: urn,
+            ...(title ? { title } : {}),
+            ...(altText ? { altText } : {}),
+          },
+        },
       },
       'image post',
     );
+  }
+
+  /**
+   * A post of 2–20 images: the MultiImage content of the Posts API.
+   *
+   * Each image is its own Images API upload (initializeUpload -> PUT), in
+   * the order given - the order LinkedIn shows them in - and the post is
+   * `content.multiImage.images = [{ id, altText? }, …]`, the MultiImage
+   * guide's own sample. Every address is checked before anything is
+   * registered, so a bad third image does not leave two orphan uploads.
+   * Uploads run one after another rather than in parallel: 20 concurrent
+   * downloads + PUTs would be the burst the rate limits punish.
+   */
+  async createRestMultiImagePost(
+    accessToken: string,
+    authorUrn: string,
+    commentary: string,
+    images: { url: string; altText?: string }[],
+    visibility: LinkedInVisibility = 'PUBLIC',
+    disableReshare: boolean = false,
+  ): Promise<{ postId: string }> {
+    if (
+      images.length < LINKEDIN_MULTI_IMAGE_MIN ||
+      images.length > LINKEDIN_MULTI_IMAGE_MAX
+    ) {
+      throw new BadRequestException(
+        `A LinkedIn multi-image post takes ${LINKEDIN_MULTI_IMAGE_MIN} to ${LINKEDIN_MULTI_IMAGE_MAX} images (got ${images.length})`,
+      );
+    }
+    for (const image of images) this.assertWebUrl(image.url, 'image');
+
+    const entries: { id: string; altText?: string }[] = [];
+    for (const image of images) {
+      const id = await this.uploadRestImage(accessToken, authorUrn, image.url);
+      const altText = altTextOf(image.altText);
+      entries.push(altText ? { id, altText } : { id });
+    }
+
+    return this.createRestPost(
+      accessToken,
+      {
+        ...this.restPostEnvelope(
+          authorUrn,
+          commentary,
+          visibility,
+          disableReshare,
+        ),
+        content: { multiImage: { images: entries } },
+      },
+      'multi-image post',
+    );
+  }
+
+  /** Images API upload of one picture; resolves to its `urn:li:image:…`. */
+  private async uploadRestImage(
+    accessToken: string,
+    authorUrn: string,
+    imageUrl: string,
+  ): Promise<string> {
+    const { uploadUrl, urn } = await this.initializeRestUpload(
+      'images',
+      accessToken,
+      authorUrn,
+    );
+    await this.uploadToRestAsset(imageUrl, uploadUrl, accessToken, 'image');
+    return urn;
   }
 
   /**
@@ -1464,9 +1539,9 @@ export class LinkedInService {
     commentary: string,
     videoUrl: string,
     title?: string,
-    visibility: 'PUBLIC' | 'CONNECTIONS' = 'PUBLIC',
+    visibility: LinkedInVisibility = 'PUBLIC',
     disableReshare: boolean = false,
-    options: { thumbnailUrl?: string } = {},
+    options: { thumbnailUrl?: string; altText?: string } = {},
   ): Promise<{ postId: string; thumbnailWarning?: string }> {
     this.assertWebUrl(videoUrl, 'video');
     const bytes = await this.downloadVideo(videoUrl);
@@ -1600,6 +1675,7 @@ export class LinkedInService {
       );
     }
 
+    const videoAltText = altTextOf(options.altText);
     const posted = await this.createRestPost(
       accessToken,
       {
@@ -1609,7 +1685,13 @@ export class LinkedInService {
           visibility,
           disableReshare,
         ),
-        content: { media: { id: video, ...(title ? { title } : {}) } },
+        content: {
+          media: {
+            id: video,
+            ...(title ? { title } : {}),
+            ...(videoAltText ? { altText: videoAltText } : {}),
+          },
+        },
       },
       'video post',
     );

@@ -1,16 +1,42 @@
 import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
-import { LinkedInService } from '../../channels/services/linkedin.service';
+import {
+  LINKEDIN_MULTI_IMAGE_MAX,
+  LinkedInService,
+  type LinkedInVisibility,
+} from '../../channels/services/linkedin.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { readSharedThumbnail } from '../lib/shared-thumbnail';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
-type LinkedInVisibility = 'PUBLIC' | 'CONNECTIONS';
+/**
+ * Words that mean "signed-in LinkedIn members" - LinkedIn's `LOGGED_IN`
+ * ("Viewable by logged in members only"). The composer labels an option
+ * "Members only · Signed-in members", so any spelling of that maps here.
+ */
+const LOGGED_IN_ALIASES = new Set([
+  'LOGGED_IN',
+  'LOGGEDIN',
+  'SIGNED_IN',
+  'SIGNEDIN',
+  'MEMBERS',
+  'MEMBERS_ONLY',
+]);
 
-function normalizeVisibility(value: unknown): LinkedInVisibility {
+/**
+ * The draft's audience as LinkedIn's `visibility`. `CONNECTIONS` is the
+ * 1st-degree network only - a narrower audience than "members" - so the two
+ * are kept apart; anything unrecognised is PUBLIC, as before.
+ */
+export function normalizeVisibility(value: unknown): LinkedInVisibility {
   if (typeof value !== 'string') return 'PUBLIC';
-  const upper = value.toUpperCase();
-  return upper === 'CONNECTIONS' ? 'CONNECTIONS' : 'PUBLIC';
+  const key = value
+    .trim()
+    .toUpperCase()
+    .replace(/[\s-]+/g, '_');
+  if (key === 'CONNECTIONS') return 'CONNECTIONS';
+  if (LOGGED_IN_ALIASES.has(key)) return 'LOGGED_IN';
+  return 'PUBLIC';
 }
 
 /**
@@ -199,6 +225,10 @@ export class LinkedInPublisher extends BasePublisher {
       : undefined;
 
     let result: { postId: string; thumbnailWarning?: string };
+    // Media the post could not carry - LinkedIn has no mixed photo+video
+    // post, and a multi-image post stops at 20 - said on the result rather
+    // than dropped silently.
+    let mediaWarning: string | undefined;
 
     if (postType === 'document') {
       // PDF / Office file: Documents API upload, then a Posts API post.
@@ -219,18 +249,50 @@ export class LinkedInPublisher extends BasePublisher {
       const mediaItem = mediaItems[0];
 
       if (mediaItem.type === 'image') {
-        // Images API upload, then a Posts API post. A page's post is always
-        // PUBLIC: the envelope enforces that for an organization author.
-        result = await this.linkedinService.createRestImagePost(
-          accessToken,
-          actorUrn,
-          effectiveContent,
-          mediaItem.url,
-          trimmed(metadata?.imageTitle) || undefined,
-          visibility,
-          disableReshare,
-        );
+        // Every image goes, in order: one is a single-media post, 2–20 are
+        // a MultiImage post. LinkedIn cannot mix a video into either, so a
+        // video after the first image is left out, and said so.
+        const images = mediaItems.filter((m) => m.type === 'image');
+        const sent = images.slice(0, LINKEDIN_MULTI_IMAGE_MAX);
+        const leftOut = mediaItems.length - sent.length;
+        if (leftOut > 0) {
+          mediaWarning = `LinkedIn posts up to ${LINKEDIN_MULTI_IMAGE_MAX} images and cannot mix photos with a video: published ${sent.length} image${sent.length === 1 ? '' : 's'}, left out ${leftOut} other item${leftOut === 1 ? '' : 's'}`;
+        }
+
+        if (sent.length >= 2) {
+          // Images API upload of each, then a Posts API multiImage post.
+          // The image title has no place in multiImage (its entries are
+          // `{ id, altText }`), so it is not sent.
+          result = await this.linkedinService.createRestMultiImagePost(
+            accessToken,
+            actorUrn,
+            effectiveContent,
+            sent.map((m) => ({ url: m.url, altText: m.altText })),
+            visibility,
+            disableReshare,
+          );
+        } else {
+          // Images API upload, then a Posts API post. A page's post is
+          // always PUBLIC: the envelope enforces that for an organization
+          // author.
+          result = await this.linkedinService.createRestImagePost(
+            accessToken,
+            actorUrn,
+            effectiveContent,
+            mediaItem.url,
+            trimmed(metadata?.imageTitle) || undefined,
+            visibility,
+            disableReshare,
+            mediaItem.altText ? { altText: mediaItem.altText } : {},
+          );
+        }
       } else if (mediaItem.type === 'video') {
+        // One video per post - the behaviour it always had. Anything after
+        // it (more videos, photos) cannot ride along on LinkedIn.
+        if (mediaItems.length > 1) {
+          const leftOut = mediaItems.length - 1;
+          mediaWarning = `LinkedIn posts one video on its own: published the video, left out ${leftOut} other item${leftOut === 1 ? '' : 's'}`;
+        }
         // Videos API multipart upload, then a Posts API post. It carries
         // YouTube's designed thumbnail when the post has one
         // (`sharedThumbnailUrl`); one that cannot be sent is a warning.
@@ -243,7 +305,10 @@ export class LinkedInPublisher extends BasePublisher {
           trimmed(metadata?.videoTitle) || undefined,
           visibility,
           disableReshare,
-          thumbnailUrl ? { thumbnailUrl } : {},
+          {
+            ...(thumbnailUrl ? { thumbnailUrl } : {}),
+            ...(mediaItem.altText ? { altText: mediaItem.altText } : {}),
+          },
         );
       } else {
         throw new Error(`Unsupported media type: ${mediaItem.type}`);
@@ -315,6 +380,13 @@ export class LinkedInPublisher extends BasePublisher {
       publishResult.metadata = {
         ...(publishResult.metadata ?? {}),
         thumbnailWarning: result.thumbnailWarning,
+      };
+    }
+    if (mediaWarning) {
+      this.logger.warn(`LinkedIn post ${result.postId}: ${mediaWarning}`);
+      publishResult.metadata = {
+        ...(publishResult.metadata ?? {}),
+        mediaWarning,
       };
     }
 
