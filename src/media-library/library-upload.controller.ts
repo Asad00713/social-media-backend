@@ -91,7 +91,12 @@ export class LibraryUploadController {
     return { message: UPLOADED, ...upload, libraryItem };
   }
 
-  /** Multipart upload. A `thumbnail` ignores `categoryId` and `tags`. */
+  /**
+   * Multipart upload to Cloudinary. A `thumbnail` ignores `categoryId` and
+   * `tags`. A document (PDF, PPT, PPTX, DOC, DOCX, or any other non-media
+   * file) is refused with 400 `DOCUMENT_NEEDS_R2`: documents are stored on R2
+   * through `r2/presign-composer-document`.
+   */
   @Post('upload/file')
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.CREATED)
@@ -148,7 +153,8 @@ export class LibraryUploadController {
    * signature pins one fresh public id in this workspace's folder with
    * `overwrite: false`, so the upload lands there in either folder mode and
    * `POST items` can tell it was issued for this workspace (SEC5). The
-   * client's `folder` is ignored.
+   * client's `folder` is ignored. Pictures and videos only: `POST items`
+   * refuses a document stored this way and deletes it again.
    */
   @Post('signed-upload-params')
   @UseGuards(JwtAuthGuard)
@@ -202,7 +208,9 @@ export class LibraryUploadController {
   }
 
   /**
-   * Cloudflare R2 presigned upload for a LinkedIn Document post's file.
+   * Cloudflare R2 presigned upload for a document: a LinkedIn Document
+   * post's file, and every document the Library stores (the one route that
+   * takes a document; the Cloudinary routes refuse them).
    *
    * R2 rather than `upload/file`: that path stores on Cloudinary, which
    * answers 401 to anyone fetching a PDF while the account's "Allow delivery

@@ -40,7 +40,9 @@ import {
 import { ratioBounds } from '../lib/ratio';
 import { toUserRef, USER_REF_COLUMNS } from '../lib/user-ref';
 import { assertIdsXorSelectAll, bulkTargetsBin, chunk } from '../lib/bulk';
+import { isCloudinaryDocumentUrl } from '../lib/document-file';
 import {
+  DocumentNeedsR2Exception,
   SizeUnavailableException,
   StorageFullException,
   UploadConflictException,
@@ -164,6 +166,15 @@ export class MediaItemService {
     if (existing) return this.viewOf(existing.id);
 
     this.storageObjects.assertWorkspaceObject(ref, workspaceId);
+    // Documents live on R2 only. One uploaded to Cloudinary directly (signed
+    // params) is deleted again, unless a row or a post already uses it.
+    if (
+      ref.storageProvider === 'cloudinary' &&
+      (dto.type === 'document' || isCloudinaryDocumentUrl(dto.fileUrl))
+    ) {
+      await this.discardUnusedFile({ ...ref, type: 'document' }, 'refused');
+      throw new DocumentNeedsR2Exception();
+    }
     const size = await this.storageObjects.realSize(ref);
     if (size.kind === 'missing') throw new UploadNotFinishedException();
     if (size.kind === 'error') throw new SizeUnavailableException();

@@ -1,9 +1,11 @@
 import { randomUUID } from 'crypto';
-import { Injectable, PayloadTooLargeException } from '@nestjs/common';
+import { Injectable, Logger, PayloadTooLargeException } from '@nestjs/common';
 import {
   CloudinaryService,
   type UploadResult,
 } from '../../media/cloudinary.service';
+import { isStoredDocument, looksLikeDocument } from '../lib/document-file';
+import { DocumentNeedsR2Exception } from '../lib/storage';
 import { MediaItemService, type MediaItemView } from './media-item.service';
 import { StorageQuotaService } from './storage-quota.service';
 import {
@@ -72,6 +74,22 @@ function nameFromUrl(url: string): string {
   }
 }
 
+/** The first bytes of a base64 payload (with or without a data URI). */
+function base64Head(data: string): Buffer {
+  const comma = data.startsWith('data:') ? data.indexOf(',') + 1 : 0;
+  // 16 base64 characters are 12 bytes, enough for every magic number checked.
+  return Buffer.from(data.slice(comma, comma + 16), 'base64');
+}
+
+/** The path of a URL, or the string itself when it does not parse. */
+function urlPath(url: string): string {
+  try {
+    return new URL(url).pathname;
+  } catch {
+    return url;
+  }
+}
+
 /** The mime type a data URI declares, if any. */
 function mimeFromDataUri(data: string): string | undefined {
   return /^data:([^;,]+)[;,]/.exec(data)?.[1];
@@ -97,9 +115,16 @@ function freshPublicId(
  * already full, store the bytes at a location the server picks, then save the
  * Library item (which re-checks under the workspace lock and deletes the
  * upload on 413).
+ *
+ * Every route here stores on Cloudinary, so every one refuses a document
+ * (`DocumentNeedsR2Exception`): before the upload when the name, type or
+ * bytes show one, and after it when only Cloudinary could tell (a URL), in
+ * which case the stored copy is deleted again first.
  */
 @Injectable()
 export class LibraryIngestService {
+  private readonly logger = new Logger(LibraryIngestService.name);
+
   constructor(
     private readonly cloudinary: CloudinaryService,
     private readonly quota: StorageQuotaService,
@@ -114,6 +139,11 @@ export class LibraryIngestService {
         `A thumbnail must be ${THUMBNAIL_MAX_BYTES / (1024 * 1024)} MB or smaller`,
       );
     }
+    this.refuseDocument(i.resourceType, {
+      mimeType: i.mimeType,
+      name: i.originalName,
+      head: i.buffer.subarray(0, 16),
+    });
     await this.assertFolder(i);
     await this.quota.assertCanStore(i.workspaceId, i.buffer.length);
     const upload = await this.cloudinary.uploadFromBuffer(i.buffer, {
@@ -121,11 +151,13 @@ export class LibraryIngestService {
       resourceType: isThumbnail ? 'image' : (i.resourceType ?? 'auto'),
       tags: i.tags ?? [],
     });
+    await this.refuseStoredDocument(upload);
     if (isThumbnail) return { upload, libraryItem: null };
     return this.save(i, upload, itemName(i.originalName), i.mimeType);
   }
 
   async ingestRemoteUrl(i: IngestRemoteUrlInput): Promise<IngestResult> {
+    this.refuseDocument(i.resourceType, { name: urlPath(i.url) });
     await this.assertFolder(i);
     // The size is unknown until Cloudinary has fetched it: refuse only a
     // workspace that is already full; saving the item checks the real size.
@@ -135,10 +167,15 @@ export class LibraryIngestService {
       resourceType: i.resourceType,
       tags: i.tags,
     });
+    await this.refuseStoredDocument(upload);
     return this.save(i, upload, nameFromUrl(i.url));
   }
 
   async ingestBase64(i: IngestBase64Input): Promise<IngestResult> {
+    this.refuseDocument(i.resourceType, {
+      mimeType: mimeFromDataUri(i.data),
+      head: base64Head(i.data),
+    });
     await this.assertFolder(i);
     await this.quota.assertCanStore(
       i.workspaceId,
@@ -149,7 +186,43 @@ export class LibraryIngestService {
       resourceType: i.resourceType,
       tags: i.tags,
     });
+    await this.refuseStoredDocument(upload);
     return this.save(i, upload, UNTITLED, mimeFromDataUri(i.data));
+  }
+
+  /**
+   * Refuses a document before any bytes move. `raw` is Cloudinary's type for
+   * a file that is neither a picture nor a video, which is always one.
+   */
+  private refuseDocument(
+    resourceType: ResourceType | undefined,
+    hints: Parameters<typeof looksLikeDocument>[0],
+  ): void {
+    if (resourceType === 'raw' || looksLikeDocument(hints)) {
+      throw new DocumentNeedsR2Exception();
+    }
+  }
+
+  /**
+   * Refuses a document Cloudinary has already stored (a URL whose bytes the
+   * server never saw, or a file nothing gave away): its copy is deleted, so
+   * no document is left on Cloudinary. An `existing` asset is someone else's
+   * and is left alone.
+   */
+  private async refuseStoredDocument(upload: UploadResult): Promise<void> {
+    if (!isStoredDocument(upload)) return;
+    if (!upload.existing) {
+      try {
+        await this.cloudinary.delete(upload.publicId, upload.resourceType);
+      } catch (error) {
+        this.logger.warn(
+          `Could not delete refused document ${upload.publicId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+    throw new DocumentNeedsR2Exception();
   }
 
   /** A bad folder fails before any bytes are stored. */

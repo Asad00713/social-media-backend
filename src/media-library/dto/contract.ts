@@ -141,6 +141,18 @@ export interface UploadConflictError {
   message: string;
 }
 
+/**
+ * 400 from every Cloudinary upload route (`upload/file`, `upload/url`,
+ * `upload/base64`, cloud and Canva imports) and from `POST items` with a
+ * Cloudinary URL, when the file is a document. Documents are stored on R2:
+ * `route` names the upload to use instead.
+ */
+export interface DocumentNeedsR2Error {
+  code: 'DOCUMENT_NEEDS_R2';
+  message: string;
+  route: string;
+}
+
 /** 413 from `GET categories/:id/zip` when the folder is over 2 GB. */
 export interface ZipTooLargeError {
   code: 'ZIP_TOO_LARGE';

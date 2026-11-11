@@ -7,7 +7,7 @@ import type { DbType } from '../../drizzle/db';
 import type { CloudinaryService } from '../../media/cloudinary.service';
 import type { CloudflareR2Service } from '../../media/cloudflare-r2.service';
 import type { UploadResult } from '../../media/cloudinary.service';
-import { StorageFullException } from '../lib/storage';
+import { DocumentNeedsR2Exception, StorageFullException } from '../lib/storage';
 import {
   describeLibraryDb,
   withLibraryDb,
@@ -719,6 +719,77 @@ describeLibraryDb('MediaItemService.create / createFromUpload storage', () => {
       }
       expect(deleteFile).not.toHaveBeenCalled();
       expect(await countRows(client, b.workspaceId)).toBe(0);
+    });
+  });
+
+  describe('documents live on R2 only', () => {
+    it('refuses a Cloudinary document, deletes the stray upload, inserts nothing', async () => {
+      await withLibraryDb(async (db, client) => {
+        const { workspaceId, ownerId } = await workspaceUsing(client, 0);
+        const { service, cloudinary } = setup(db);
+        const own = ownCloudinaryFile(workspaceId);
+        const fileUrl = own.fileUrl.replace(/\.png$/, '.pdf');
+
+        const err = await service
+          .create(workspaceId, ownerId, {
+            type: 'document',
+            name: 'deck',
+            fileUrl,
+            cloudinaryPublicId: own.cloudinaryPublicId,
+            mimeType: 'application/pdf',
+          })
+          .catch((e: unknown) => e);
+
+        expect(err).toBeInstanceOf(DocumentNeedsR2Exception);
+        expect((err as HttpException).getStatus()).toBe(400);
+        expect((err as HttpException).getResponse()).toMatchObject({
+          code: 'DOCUMENT_NEEDS_R2',
+        });
+        // A PDF is an `image` resource on Cloudinary.
+        expect(cloudinary.delete).toHaveBeenCalledWith(
+          own.cloudinaryPublicId,
+          'image',
+        );
+        expect(cloudinary.getResourceBytes).not.toHaveBeenCalled();
+        expect(await countRows(client, workspaceId)).toBe(0);
+      });
+    });
+
+    it('a PDF URL registered as an image is still a document', async () => {
+      await withLibraryDb(async (db, client) => {
+        const { workspaceId, ownerId } = await workspaceUsing(client, 0);
+        const { service } = setup(db);
+        const own = ownCloudinaryFile(workspaceId);
+        await expect(
+          service.create(workspaceId, ownerId, {
+            type: 'image',
+            name: 'deck',
+            fileUrl: own.fileUrl.replace(/\.png$/, '.pdf'),
+            cloudinaryPublicId: own.cloudinaryPublicId,
+          }),
+        ).rejects.toBeInstanceOf(DocumentNeedsR2Exception);
+        expect(await countRows(client, workspaceId)).toBe(0);
+      });
+    });
+
+    it('an R2 document is saved', async () => {
+      await withLibraryDb(async (db, client) => {
+        const { workspaceId, ownerId } = await workspaceUsing(client, 0);
+        const { service } = setup(db);
+        const hex = 'c'.repeat(24);
+        const key = `composer/documents/${workspaceId}/user-1/1700000000000-${hex}.pdf`;
+        const created = await service.create(workspaceId, ownerId, {
+          type: 'document',
+          name: 'deck',
+          fileUrl: `https://r2.example.test/${key}`,
+          cloudinaryPublicId: key,
+          mimeType: 'application/pdf',
+        });
+        expect(created).toMatchObject({
+          type: 'document',
+          storageProvider: 'r2',
+        });
+      });
     });
   });
 });
