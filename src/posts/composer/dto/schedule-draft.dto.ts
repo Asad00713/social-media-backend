@@ -10,6 +10,7 @@ import {
   MaxLength,
 } from 'class-validator';
 import { MAX_LABELS, MAX_LABEL_LENGTH } from '../lib/draft-organise';
+import { HasRealChannelIds } from './real-channel-ids.validator';
 import {
   SCHEDULE_REQUEST_MODES,
   type ScheduleRequestMode,
@@ -44,6 +45,7 @@ export class ScheduleDraftDto {
   perPlatform?: PlatformOverrides;
 
   @IsArray()
+  @HasRealChannelIds()
   channels!: ChannelTarget[];
 
   @IsOptional()
