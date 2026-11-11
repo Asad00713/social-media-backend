@@ -2,6 +2,7 @@ import { Module } from '@nestjs/common';
 import { PostPerformanceModule } from '../post-performance/post-performance.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
 import { InsightsController } from './insights.controller';
+import { InsightsChannelsRepository } from './insights-channels.repository';
 import { InsightsService } from './insights.service';
 import { InsightsTopicsRepository } from './insights-topics.repository';
 
@@ -10,6 +11,10 @@ import { InsightsTopicsRepository } from './insights-topics.repository';
 @Module({
   imports: [WorkspaceRoleModule, PostPerformanceModule],
   controllers: [InsightsController],
-  providers: [InsightsService, InsightsTopicsRepository],
+  providers: [
+    InsightsService,
+    InsightsTopicsRepository,
+    InsightsChannelsRepository,
+  ],
 })
 export class InsightsModule {}
