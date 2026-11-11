@@ -250,7 +250,7 @@ export class CloudflareR2Service {
     // Absolute-minimum signed command: Bucket + Key only. No ContentType, no
     // ContentLength, no Metadata, no ACL. The signature only commits the URL
     // path + expiry + credential — the browser is free to PUT any body of
-    // any size/type within the 5-min window. We already validated size + MIME
+    // any size/type within the expiry window. We already validated size + MIME
     // above before issuing the URL, so server-side enforcement isn't lost.
     //
     // Why bare-minimum? Every signed attribute becomes a "required match"
@@ -264,7 +264,10 @@ export class CloudflareR2Service {
       Key: key,
     });
 
-    const expiresIn = 5 * 60; // 5 min — generous for slow voice uploads
+    // Long enough for the PUT to START on a slow uplink. Five flat minutes
+    // was fine for a voice note and not for a 42 MB video on a ~1 Mbps
+    // connection, which needs most of that window just to send the bytes.
+    const expiresIn = presignExpirySeconds(sizeBytes);
     const uploadUrl = await getSignedUrl(client, command, {
       expiresIn,
       // Drop ALL the headers the AWS SDK would otherwise auto-sign. Anything
@@ -463,6 +466,37 @@ const MIME_EXTENSIONS: Record<string, string> = {
 };
 
 /** A key extension: a dot and 1-8 lowercase ASCII letters or digits. */
+/** The shortest life a presigned URL gets: what every upload had before. */
+export const PRESIGN_MIN_SECONDS = 5 * 60;
+
+/** The longest: 12 hours, far inside SigV4's 7-day ceiling. */
+export const PRESIGN_MAX_SECONDS = 12 * 60 * 60;
+
+/**
+ * The slowest uplink planned for, in bytes per second: 128 KiB/s, about
+ * 1 Mbps, which is a busy hotel or mobile connection rather than an outlier.
+ */
+const SLOWEST_UPLINK_BYTES_PER_SECOND = 128 * 1024;
+
+/**
+ * How long a presigned PUT stays valid: the time the file would take at the
+ * slowest uplink planned for, plus the old five minutes of headroom for the
+ * browser's own work before it starts sending (presign, probe, a retry).
+ *
+ * A URL lets its holder write one object at one key, so a longer life widens
+ * nothing but the window to finish that one upload. Small files keep the
+ * five minutes they always had.
+ */
+export function presignExpirySeconds(sizeBytes: number): number {
+  const sending = Math.ceil(
+    Math.max(0, sizeBytes) / SLOWEST_UPLINK_BYTES_PER_SECOND,
+  );
+  return Math.min(
+    PRESIGN_MAX_SECONDS,
+    Math.max(PRESIGN_MIN_SECONDS, sending + PRESIGN_MIN_SECONDS),
+  );
+}
+
 const SAFE_EXTENSION = /^\.[a-z0-9]{1,8}$/;
 
 /**
