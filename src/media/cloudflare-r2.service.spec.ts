@@ -1,6 +1,12 @@
 import { BadRequestException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
-import { CloudflareR2Service, safeKeyExtension } from './cloudflare-r2.service';
+import {
+  CloudflareR2Service,
+  PRESIGN_MAX_SECONDS,
+  PRESIGN_MIN_SECONDS,
+  presignExpirySeconds,
+  safeKeyExtension,
+} from './cloudflare-r2.service';
 
 // Fix round 2: the presigned key is built from the client's filename, so its
 // extension must never carry a path character into the key.
@@ -117,5 +123,56 @@ describe('CloudflareR2Service composer-document presign', () => {
       BadRequestException,
     );
     await expect(presign('application/pdf', limit)).resolves.toBeDefined();
+  });
+});
+
+// A 42 MB video on a ~1 Mbps uplink needs ~5.5 minutes just to send: the URL
+// must outlive that, scaled to the file, while small files keep five minutes.
+describe('presignExpirySeconds', () => {
+  const MB = 1024 * 1024;
+
+  it('keeps five minutes for small files', () => {
+    expect(presignExpirySeconds(0)).toBe(PRESIGN_MIN_SECONDS);
+    expect(presignExpirySeconds(1)).toBe(PRESIGN_MIN_SECONDS + 1);
+    expect(presignExpirySeconds(-5)).toBe(PRESIGN_MIN_SECONDS);
+  });
+
+  it('gives a 42 MB file the time to send it at 128 KiB/s plus five minutes', () => {
+    // 42 MB / 128 KiB/s = 336 s of sending.
+    expect(presignExpirySeconds(42 * MB)).toBe(336 + 300);
+    expect(presignExpirySeconds(42 * MB)).toBeGreaterThan(5 * 60);
+  });
+
+  it('grows with the file and caps at 12 hours', () => {
+    expect(presignExpirySeconds(100 * MB)).toBeGreaterThan(
+      presignExpirySeconds(42 * MB),
+    );
+    // 4 GB (the composer-video cap) is ~9 hours at 1 Mbps, still under it.
+    expect(presignExpirySeconds(4 * 1024 * MB)).toBe(32768 + 300);
+    expect(presignExpirySeconds(10 * 1024 * MB)).toBe(PRESIGN_MAX_SECONDS);
+  });
+
+  it('is what a composer-video presign reports', async () => {
+    const service = new CloudflareR2Service({
+      get: (name: string, fallback?: string) =>
+        ({
+          CLOUDFLARE_R2_ACCOUNT_ID: 'acct',
+          CLOUDFLARE_R2_ACCESS_KEY_ID: 'key',
+          CLOUDFLARE_R2_SECRET_ACCESS_KEY: 'secret',
+          CLOUDFLARE_R2_BUCKET: 'bucket',
+        })[name] ?? fallback,
+    } as unknown as ConfigService);
+    const res = await service.createPresignedUpload({
+      workspaceId: 'ws-1',
+      userId: 'user-1',
+      kind: 'composer-video',
+      contentType: 'video/mp4',
+      sizeBytes: 42 * MB,
+      filename: 'clip.mp4',
+    });
+    expect(res.expiresIn).toBe(636);
+    expect(new URL(res.uploadUrl).searchParams.get('X-Amz-Expires')).toBe(
+      '636',
+    );
   });
 });
