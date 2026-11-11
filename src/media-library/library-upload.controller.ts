@@ -18,6 +18,7 @@ import { CloudinaryService } from '../media/cloudinary.service';
 import { CloudflareR2Service } from '../media/cloudflare-r2.service';
 import {
   GetSignedUploadParamsDto,
+  PresignComposerDocumentDto,
   PresignComposerVideoDto,
   UploadFileBodyDto,
   UploadFromBase64Dto,
@@ -194,6 +195,35 @@ export class LibraryUploadController {
       workspaceId: dto.workspaceId,
       userId: user.userId,
       kind: 'composer-video',
+      contentType: dto.contentType,
+      sizeBytes: dto.sizeBytes,
+      filename: dto.filename,
+    });
+  }
+
+  /**
+   * Cloudflare R2 presigned upload for a LinkedIn Document post's file.
+   *
+   * R2 rather than `upload/file`: that path stores on Cloudinary, which
+   * answers 401 to anyone fetching a PDF while the account's "Allow delivery
+   * of PDF and ZIP files" setting is off, and the LinkedIn publisher must
+   * fetch the file to upload it to the Documents API. The browser registers
+   * the stored file with `POST items` (type `document`) afterwards, exactly
+   * as it does a composer video.
+   */
+  @Post('r2/presign-composer-document')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async presignComposerDocument(
+    @Body() dto: PresignComposerDocumentDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    await this.access.assertCan(dto.workspaceId, user.userId, 'posts:draft');
+    await this.quota.assertCanStore(dto.workspaceId, dto.sizeBytes);
+    return this.r2Service.createPresignedUpload({
+      workspaceId: dto.workspaceId,
+      userId: user.userId,
+      kind: 'composer-document',
       contentType: dto.contentType,
       sizeBytes: dto.sizeBytes,
       filename: dto.filename,

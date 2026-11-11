@@ -51,8 +51,9 @@ const FORBIDDEN_KEY_CHARS = /[%?#\\]/;
 /**
  * True only for a key that R2 issued for this workspace. Mirrors the layout
  * `CloudflareR2Service` builds for composer media:
- * `composer/videos/<workspaceId>/<user segment>/<timestamp>-<24 hex><ext>`.
- * Only that prefix is allowed: the Library stores composer media, and the
+ * `composer/videos/<workspaceId>/<user segment>/<timestamp>-<24 hex><ext>`,
+ * and the same under `composer/documents/` for a LinkedIn Document post's
+ * file. Only those prefixes are allowed: the Library stores composer media, and the
  * `inbox/*` objects belong to message rows `isFileShared` cannot see. `fileUrl` is client-supplied, so the
  * whole key is matched, not just one segment: no traversal, no encoded
  * separators, no query or fragment.
@@ -64,7 +65,7 @@ export function isWorkspaceR2Key(key: string, workspaceId: string): boolean {
   }
   const escaped = workspaceId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
   return new RegExp(
-    `^composer/videos/${escaped}/[A-Za-z0-9-]+/\\d+-[0-9a-f]{24}(?:\\.[A-Za-z0-9]+)?$`,
+    `^composer/(?:videos|documents)/${escaped}/[A-Za-z0-9-]+/\\d+-[0-9a-f]{24}(?:\\.[A-Za-z0-9]+)?$`,
   ).test(key);
 }
 

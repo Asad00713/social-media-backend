@@ -1,5 +1,6 @@
 import { Type } from 'class-transformer';
 import {
+  IsIn,
   IsInt,
   IsOptional,
   IsString,
@@ -31,6 +32,15 @@ export class ImportComposerDesignDto {
   @IsString()
   @MinLength(1)
   designId: string;
+
+  /**
+   * The file type to export. PNG unless the post's format takes no PNG:
+   * Instagram (Post and Story) and TikTok Photo publish JPEG, so the
+   * composer asks for `jpg` there rather than import a file it must refuse.
+   */
+  @IsOptional()
+  @IsIn(['png', 'jpg'])
+  format?: 'png' | 'jpg';
 }
 
 /**
