@@ -30,6 +30,7 @@ import type {
   ScheduleConfig,
 } from '../types/draft.types';
 import { resolveOrganise, type OrganiseInput } from '../lib/draft-organise';
+import { assertNoOpenBlanks } from '../lib/template-blanks';
 
 export const CHANNEL_CREDENTIALS_LOOKUP = 'CHANNEL_CREDENTIALS_LOOKUP';
 
@@ -122,6 +123,15 @@ export class PublishOrchestratorService {
         'None of the specified channelIds match draft channels',
       );
     }
+
+    // A template's {{blank}} never goes out: refused before the row is
+    // touched or anything is sent. Only what these targets would publish is
+    // read, so a leftover in another platform's fields never blocks this.
+    assertNoOpenBlanks({
+      base: input.base,
+      perPlatform: input.perPlatform as Record<string, unknown> | undefined,
+      platforms: targets.map((c) => c.platform),
+    });
 
     // Build the in-memory Draft object used by the resolver. We don't
     // need a DB row for resolution — just the structure.

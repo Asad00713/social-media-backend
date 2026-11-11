@@ -7,6 +7,7 @@ import {
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import { fetchPublicMedia } from '../../common/net/public-fetch';
+import { isPollAllowed, isPollFormat, threadToPublish } from './post-format';
 
 /** X's `reply_settings` write enum — note it has no `everyone`. */
 type TwitterReplySettings =
@@ -69,6 +70,88 @@ export function numberedThreadTexts(
   });
 }
 
+/** X's poll limits (POST /2/tweets `poll`). */
+const POLL_MIN_OPTIONS = 2;
+const POLL_MAX_OPTIONS = 4;
+const POLL_OPTION_MAX_CHARS = 25;
+const POLL_MIN_MINUTES = 5;
+const POLL_MAX_MINUTES = 10080;
+
+/** A poll as `createTweet` sends it. */
+export interface XPoll {
+  options: string[];
+  durationMinutes: number;
+}
+
+/**
+ * The poll to send with a single post, or undefined when there is none.
+ * Throws when the post IS a poll that X would refuse, so the failure says
+ * why instead of the poll quietly becoming a text post.
+ *
+ * - Only when the format is Poll, or (legacy rows) no format was stored and
+ *   a poll is: a poll left in the draft after switching to Post is not sent.
+ * - Blank options are dropped first. The composer starts a poll with empty
+ *   option rows, and an empty one is not an answer — X would refuse the
+ *   whole post over it ("1-25 characters").
+ * - Poll format with fewer than two filled options fails: publishing the
+ *   text alone would post something other than what was composed.
+ * - X refuses a poll together with media, so that fails too.
+ */
+export function xPollToSend(
+  metadata: Record<string, any> | undefined,
+  mediaCount: number,
+): XPoll | undefined {
+  if (!isPollAllowed(metadata)) return undefined;
+  const raw: unknown = metadata?.poll;
+  const isPoll = isPollFormat(metadata);
+  if (!isPoll && (raw === undefined || raw === null)) return undefined;
+
+  const poll = (raw && typeof raw === 'object' ? raw : {}) as {
+    options?: unknown;
+    durationMinutes?: unknown;
+  };
+  const options = Array.isArray(poll.options)
+    ? poll.options
+        .filter((o): o is string => typeof o === 'string')
+        .map((o) => o.trim())
+        .filter((o) => o !== '')
+    : [];
+
+  if (mediaCount > 0) {
+    throw new Error(
+      'X does not allow a poll and media in the same post — remove the media or switch this post to Post',
+    );
+  }
+  if (options.length < POLL_MIN_OPTIONS) {
+    throw new Error(
+      `An X poll needs at least ${POLL_MIN_OPTIONS} filled-in options (${options.length} given) — add options or switch this post to Post`,
+    );
+  }
+  if (options.length > POLL_MAX_OPTIONS) {
+    throw new Error(
+      `X polls allow at most ${POLL_MAX_OPTIONS} options (${options.length} given)`,
+    );
+  }
+  const long = options.find((o) => o.length > POLL_OPTION_MAX_CHARS);
+  if (long !== undefined) {
+    throw new Error(
+      `Poll option "${long}" is over X's ${POLL_OPTION_MAX_CHARS}-character limit (${long.length} chars)`,
+    );
+  }
+  const duration = poll.durationMinutes;
+  if (
+    typeof duration !== 'number' ||
+    !Number.isFinite(duration) ||
+    duration < POLL_MIN_MINUTES ||
+    duration > POLL_MAX_MINUTES
+  ) {
+    throw new Error(
+      'Poll duration must be between 5 and 10080 minutes (7 days)',
+    );
+  }
+  return { options, durationMinutes: duration };
+}
+
 /** Whether the composer's "Number posts" is on (its own key). */
 function isNumbered(metadata: Record<string, any> | undefined): boolean {
   return metadata?.numberPosts === true;
@@ -85,11 +168,12 @@ export class TwitterPublisher extends BasePublisher {
   validate(options: PublishOptions): void {
     const { content, mediaItems, metadata } = options;
 
-    const thread = metadata?.thread as
-      | Array<{ text: string; mediaItems?: MediaItem[] }>
-      | undefined;
+    // The format decides: a thread left in the draft after switching to
+    // Post or Poll is not published (see post-format.ts).
+    const thread =
+      threadToPublish<{ text: string; mediaItems?: MediaItem[] }>(metadata);
 
-    if (Array.isArray(thread) && thread.length > 1) {
+    if (thread) {
       // Thread mode: validate each tweet independently — as it will be
       // SENT, so a number added by "Number posts" counts toward the 280.
       const sent = numberedThreadTexts(
@@ -141,35 +225,9 @@ export class TwitterPublisher extends BasePublisher {
       throw new Error('Twitter allows maximum 4 media items per post');
     }
 
-    // Poll validation
-    const poll = metadata?.poll;
-    if (poll) {
-      if (mediaItems.length > 0) {
-        throw new Error('Twitter polls cannot be combined with media');
-      }
-      if (
-        !Array.isArray(poll.options) ||
-        poll.options.length < 2 ||
-        poll.options.length > 4
-      ) {
-        throw new Error('Twitter polls must have 2-4 options');
-      }
-      for (const option of poll.options) {
-        if (
-          typeof option !== 'string' ||
-          option.length < 1 ||
-          option.length > 25
-        ) {
-          throw new Error('Each poll option must be 1-25 characters');
-        }
-      }
-      const duration = poll.durationMinutes;
-      if (typeof duration !== 'number' || duration < 5 || duration > 10080) {
-        throw new Error(
-          'Poll duration must be between 5 and 10080 minutes (7 days)',
-        );
-      }
-    }
+    // Poll: blank options dropped, a Poll with too few refused, a poll
+    // beside media refused (X does not take both).
+    xPollToSend(metadata, mediaItems.length);
   }
 
   supportsMediaTypes(mediaItems: MediaItem[]): boolean {
@@ -188,11 +246,10 @@ export class TwitterPublisher extends BasePublisher {
     // Thread mode — composer sets `metadata.thread = [{ text, mediaItems? }, ...]`
     // when posting a multi-tweet sequence. We publish the first tweet, then
     // chain subsequent tweets via in_reply_to_tweet_id.
-    const thread = metadata?.thread as
-      | Array<{ text: string; mediaItems?: MediaItem[] }>
-      | undefined;
+    const thread =
+      threadToPublish<{ text: string; mediaItems?: MediaItem[] }>(metadata);
 
-    if (Array.isArray(thread) && thread.length > 1) {
+    if (thread) {
       const texts = numberedThreadTexts(
         thread.map((t) => t.text),
         isNumbered(metadata),
@@ -225,13 +282,7 @@ export class TwitterPublisher extends BasePublisher {
       );
     }
 
-    const pollData = metadata?.poll;
-    const poll = pollData
-      ? {
-          options: pollData.options as string[],
-          durationMinutes: pollData.durationMinutes as number,
-        }
-      : undefined;
+    const poll = xPollToSend(metadata, mediaItems.length);
 
     const result = await this.twitterService.createTweet(accessToken, content, {
       mediaIds,

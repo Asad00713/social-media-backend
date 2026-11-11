@@ -8,6 +8,7 @@ import {
 } from '../../channels/services/threads.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import { isPollAllowed, threadToPublish } from './post-format';
 
 interface ThreadTweet {
   text: string;
@@ -68,9 +69,11 @@ export class ThreadsPublisher extends BasePublisher {
       throw new Error(`"${quoteLink}" is not a link to a Threads post`);
     }
 
-    const thread = metadata?.thread as ThreadTweet[] | undefined;
+    // The format decides: a thread left in the draft after switching to
+    // Post or Poll is not published (see post-format.ts).
+    const thread = threadToPublish<ThreadTweet>(metadata);
 
-    if (Array.isArray(thread) && thread.length > 1) {
+    if (thread) {
       // Thread mode: validate each post independently.
       thread.forEach((t, i) => {
         const hasMedia = (t.mediaItems?.length ?? 0) > 0;
@@ -189,6 +192,9 @@ export class ThreadsPublisher extends BasePublisher {
   private getPoll(
     metadata: Record<string, any> | undefined,
   ): ThreadsPoll | undefined {
+    // A poll left in the draft after switching to Post or Thread is not
+    // sent (see post-format.ts).
+    if (!isPollAllowed(metadata)) return undefined;
     const raw = metadata?.poll;
     const options = Array.isArray(raw?.options)
       ? raw.options
@@ -230,8 +236,8 @@ export class ThreadsPublisher extends BasePublisher {
       );
     }
 
-    const thread = metadata?.thread as ThreadTweet[] | undefined;
-    if (Array.isArray(thread) && thread.length > 1) {
+    const thread = threadToPublish<ThreadTweet>(metadata);
+    if (thread) {
       return this.publishThread(
         accessToken,
         platformAccountId,
