@@ -7,7 +7,7 @@ import type {
   CloudinaryService,
   UploadResult,
 } from '../../media/cloudinary.service';
-import { StorageFullException } from '../lib/storage';
+import { DocumentNeedsR2Exception, StorageFullException } from '../lib/storage';
 import {
   LibraryIngestService,
   THUMBNAIL_MAX_BYTES,
@@ -371,5 +371,176 @@ describe('LibraryIngestService', () => {
       unknown
     >;
     expect(opts.resourceType).toBe('video');
+  });
+
+  describe('documents are never stored on Cloudinary', () => {
+    const pdfBytes = Buffer.from('%PDF-1.7 ...');
+    const docxBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0x14, 0x00]);
+    const docBytes = Buffer.from([
+      0xd0, 0xcf, 0x11, 0xe0, 0xa1, 0xb1, 0x1a, 0xe1, 0x00,
+    ]);
+
+    it.each([
+      ['a PDF mime type', { mimeType: 'application/pdf', buffer }],
+      [
+        'a DOCX mime type',
+        {
+          mimeType:
+            'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+          buffer,
+        },
+      ],
+      ['a .pptx name', { originalName: 'deck.PPTX', buffer }],
+      ['a .doc name', { originalName: 'brief.doc', buffer }],
+      [
+        'PDF bytes under an image name',
+        { originalName: 'a.png', buffer: pdfBytes },
+      ],
+      ['ZIP (DOCX/PPTX) bytes', { buffer: docxBytes }],
+      ['OLE (DOC/PPT) bytes', { buffer: docBytes }],
+      ['a raw resource type', { buffer, resourceType: 'raw' as const }],
+    ])('upload/file refuses %s before uploading', async (_label, input) => {
+      const { service, cloudinary, quota, mediaItems } = make();
+      await expect(
+        service.ingestBuffer({ workspaceId: WS, userId: USER, ...input }),
+      ).rejects.toBeInstanceOf(DocumentNeedsR2Exception);
+      expect(cloudinary.uploadFromBuffer).not.toHaveBeenCalled();
+      expect(quota.assertCanStore).not.toHaveBeenCalled();
+      expect(mediaItems.createFromUpload).not.toHaveBeenCalled();
+    });
+
+    it('the 400 names the R2 route', async () => {
+      const { service } = make();
+      const err = await service
+        .ingestBuffer({
+          workspaceId: WS,
+          userId: USER,
+          buffer: pdfBytes,
+          originalName: 'a.pdf',
+        })
+        .catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(DocumentNeedsR2Exception);
+      const ex = err as DocumentNeedsR2Exception;
+      expect(ex.getStatus()).toBe(400);
+      expect(ex.getResponse()).toMatchObject({
+        code: 'DOCUMENT_NEEDS_R2',
+        route: 'POST /media/r2/presign-composer-document',
+      });
+    });
+
+    it('a picture still goes to Cloudinary', async () => {
+      const { service, cloudinary } = make();
+      await service.ingestBuffer({
+        workspaceId: WS,
+        userId: USER,
+        buffer: Buffer.from([0x89, 0x50, 0x4e, 0x47]),
+        originalName: 'a.png',
+        mimeType: 'image/png',
+      });
+      expect(cloudinary.uploadFromBuffer).toHaveBeenCalledTimes(1);
+    });
+
+    it('a thumbnail with PDF bytes is refused too', async () => {
+      const { service, cloudinary } = make();
+      await expect(
+        service.ingestBuffer({
+          workspaceId: WS,
+          userId: USER,
+          buffer: pdfBytes,
+          purpose: 'thumbnail',
+        }),
+      ).rejects.toBeInstanceOf(DocumentNeedsR2Exception);
+      expect(cloudinary.uploadFromBuffer).not.toHaveBeenCalled();
+    });
+
+    it('upload/url refuses a URL ending in a document extension', async () => {
+      const { service, cloudinary } = make();
+      await expect(
+        service.ingestRemoteUrl({
+          workspaceId: WS,
+          userId: USER,
+          url: 'https://example.com/files/Report.pdf?dl=1',
+        }),
+      ).rejects.toBeInstanceOf(DocumentNeedsR2Exception);
+      expect(cloudinary.uploadFromUrl).not.toHaveBeenCalled();
+    });
+
+    it.each([
+      [
+        'a PDF stored as an image',
+        { format: 'pdf', resourceType: 'image' as const },
+      ],
+      ['a raw file', { format: '', resourceType: 'raw' as const }],
+    ])(
+      'upload/url deletes %s Cloudinary fetched, and refuses it',
+      async (_label, stored) => {
+        const { service, cloudinary, mediaItems } = make();
+        cloudinary.uploadFromUrl.mockResolvedValue({
+          ...upload,
+          publicId: 'library/ws-1/u1',
+          ...stored,
+        });
+        await expect(
+          service.ingestRemoteUrl({
+            workspaceId: WS,
+            userId: USER,
+            url: 'https://example.com/download?id=7',
+          }),
+        ).rejects.toBeInstanceOf(DocumentNeedsR2Exception);
+        expect(cloudinary.delete).toHaveBeenCalledWith(
+          'library/ws-1/u1',
+          stored.resourceType,
+        );
+        expect(mediaItems.createFromUpload).not.toHaveBeenCalled();
+      },
+    );
+
+    it('an existing asset Cloudinary returned is refused but not deleted', async () => {
+      const { service, cloudinary } = make();
+      cloudinary.uploadFromUrl.mockResolvedValue({
+        ...upload,
+        format: 'pdf',
+        existing: true,
+      });
+      await expect(
+        service.ingestRemoteUrl({
+          workspaceId: WS,
+          userId: USER,
+          url: 'https://example.com/x',
+        }),
+      ).rejects.toBeInstanceOf(DocumentNeedsR2Exception);
+      expect(cloudinary.delete).not.toHaveBeenCalled();
+    });
+
+    it('a failed delete still refuses', async () => {
+      const { service, cloudinary } = make();
+      cloudinary.uploadFromBuffer.mockResolvedValue({
+        ...upload,
+        format: 'pdf',
+      });
+      cloudinary.delete.mockRejectedValue(new Error('down'));
+      await expect(
+        service.ingestBuffer({ workspaceId: WS, userId: USER, buffer }),
+      ).rejects.toBeInstanceOf(DocumentNeedsR2Exception);
+    });
+
+    it('upload/base64 refuses a PDF data URI and bare PDF base64', async () => {
+      const { service, cloudinary } = make();
+      await expect(
+        service.ingestBase64({
+          workspaceId: WS,
+          userId: USER,
+          data: 'data:application/pdf;base64,AAAA',
+        }),
+      ).rejects.toBeInstanceOf(DocumentNeedsR2Exception);
+      await expect(
+        service.ingestBase64({
+          workspaceId: WS,
+          userId: USER,
+          data: pdfBytes.toString('base64'),
+        }),
+      ).rejects.toBeInstanceOf(DocumentNeedsR2Exception);
+      expect(cloudinary.uploadFromBase64).not.toHaveBeenCalled();
+    });
   });
 });

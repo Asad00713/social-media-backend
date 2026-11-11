@@ -1,10 +1,12 @@
 import { HttpException } from '@nestjs/common';
 import type {
+  DocumentNeedsR2Error,
   SizeUnavailableError,
   StorageFullError,
   UploadConflictError,
   UploadNotFinishedError,
 } from '../dto/contract';
+import { DOCUMENT_UPLOAD_ROUTE } from './document-file';
 
 export const STORAGE_ALMOST_FULL_PERCENT = 90;
 
@@ -83,5 +85,25 @@ export class UploadConflictException extends HttpException {
       message: 'The upload clashed with an existing file. Try again.',
     };
     super(body, 409);
+  }
+}
+
+/**
+ * 400: a document reached a Cloudinary route. Documents are stored on R2
+ * (owner decision; Cloudinary refuses to deliver a PDF), so the body names
+ * the route that takes one.
+ */
+export class DocumentNeedsR2Exception extends HttpException {
+  constructor() {
+    const body: DocumentNeedsR2Error = {
+      code: 'DOCUMENT_NEEDS_R2',
+      message:
+        'Documents (PDF, PPT, PPTX, DOC, DOCX) are not accepted here. ' +
+        `Upload them with ${DOCUMENT_UPLOAD_ROUTE}, then save the file with ` +
+        'POST /workspaces/:workspaceId/media-library/items (type "document"). ' +
+        'Other document formats are not supported.',
+      route: DOCUMENT_UPLOAD_ROUTE,
+    };
+    super(body, 400);
   }
 }
