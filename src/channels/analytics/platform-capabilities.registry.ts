@@ -59,7 +59,7 @@ const INSTAGRAM_COMPOSER: ComposerCapabilities = {
   maxCharsBody: 2200,
   maxCharsFirstComment: 2200,
   mediaConstraints: {
-    imageMaxCount: 10,
+    imageMaxCount: 20, // a carousel: up to 20 (Content Publishing guide)
     imageMaxSizeMB: 8,
     imageAllowedTypes: ['image/jpeg', 'image/png'],
     imageAspectRatios: ['1:1', '4:5', '16:9'],
@@ -68,7 +68,7 @@ const INSTAGRAM_COMPOSER: ComposerCapabilities = {
     videoMaxDurationSec: 90,
     videoAllowedTypes: ['video/mp4'],
     videoAspectRatios: ['9:16', '1:1'],
-    carouselMaxCount: 10,
+    carouselMaxCount: 20,
     requiresMediaOfType: 'image',
   },
   requiredFields: ['body'],

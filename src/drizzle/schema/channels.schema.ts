@@ -491,7 +491,7 @@ export const PLATFORM_CONFIG: Record<
     supportsRefreshToken: false, // Instagram Business Login uses long-lived tokens (60 days)
     tokenExpirationDays: 60,
     refreshTokenTtlDays: 60, // Long-lived token must be refreshed within 60 days
-    maxMediaPerPost: 10,
+    maxMediaPerPost: 20, // carousel cap (Content Publishing guide)
     maxTextLength: 2200,
     supportedMediaTypes: ['image', 'video', 'carousel'],
     oauthScopes: [
