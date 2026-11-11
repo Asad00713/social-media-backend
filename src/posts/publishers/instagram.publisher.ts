@@ -228,6 +228,9 @@ export class InstagramPublisher extends BasePublisher {
       // explicit postType from the composer).
       if (mediaItems.length === 1) {
         if (mediaItems[0].type === 'video') {
+          // A feed video: the service sends it as a reel shared to the feed
+          // (`media_type=REELS`, `share_to_feed=true`), since Meta no longer
+          // accepts `media_type=VIDEO`.
           result = await this.instagramService.createVideoPostWithUserToken(
             platformAccountId,
             accessToken,

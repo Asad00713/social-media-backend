@@ -141,9 +141,11 @@ describe('InstagramService — user_tags on the container body', () => {
     });
   });
 
-  // Both are Reels-only. A plain VIDEO container carrying either is
-  // rejected, so they must be dropped rather than forwarded.
-  it('sends neither reel-only field on a plain video', async () => {
+  // A feed video goes out as a reel shared to the feed (Meta retired
+  // `media_type=VIDEO` on 2023-11-09). It is always in the feed — a stale
+  // "Show in feed: off" from a Reel cannot hide a feed Post — and the
+  // Reel-only cover is not forwarded, since a feed Post never offered it.
+  it('sends a feed video as a reel shared to the feed, without the reel cover', async () => {
     await service.createVideoPostWithUserToken(
       'user',
       'token',
@@ -151,11 +153,12 @@ describe('InstagramService — user_tags on the container body', () => {
       'caption',
       false,
       'VIDEO',
-      { shareToFeed: true, coverUrl: 'https://example.test/cover.jpg' },
+      { shareToFeed: false, coverUrl: 'https://example.test/cover.jpg' },
     );
 
     const form = formOf(0);
-    expect(form.has('share_to_feed')).toBe(false);
+    expect(form.get('media_type')).toBe('REELS');
+    expect(form.get('share_to_feed')).toBe('true');
     expect(form.has('cover_url')).toBe(false);
   });
 });

@@ -20,7 +20,7 @@ import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { posts } from '../../../drizzle/schema/posts.schema';
 import { QUEUES } from '../../../queue/queue.module';
 import type { ScheduleDraftDto } from '../dto/schedule-draft.dto';
-import type { ChannelTarget, PlatformOverrides } from '../types/draft.types';
+import type { ChannelTarget } from '../types/draft.types';
 import {
   PER_CHANNEL_WITH_REPEAT,
   SCHEDULE_GROUP_KEY,
@@ -31,6 +31,7 @@ import {
   type ScheduleGroup,
 } from '../lib/per-channel-schedule';
 import { resolveOrganise } from '../lib/draft-organise';
+import { assertNoOpenBlanks } from '../lib/template-blanks';
 import { snapshotOf } from '../lib/draft-versions';
 import { DraftVersionsService } from './draft-versions.service';
 import { CalendarPushSyncService } from '../../../calendar-sync/services/calendar-push-sync.service';
@@ -95,19 +96,6 @@ function sharedMetadata(dto: ScheduleDraftDto): Record<string, unknown> {
 }
 
 /**
- * The X thread to lift into `metadata.thread` (TwitterPublisher reads it
- * there), or null when the post is a single tweet or not on X.
- */
-function threadOf(
-  perPlatform: PlatformOverrides | undefined,
-): unknown[] | null {
-  const thread = (
-    perPlatform?.twitter?.platformSpecific as { thread?: unknown } | undefined
-  )?.thread;
-  return Array.isArray(thread) && thread.length > 1 ? thread : null;
-}
-
-/**
  * Stores a draft as scheduled and enqueues a BullMQ delayed job that fires
  * at scheduledAt. The processor (PostPublishProcessor) then drives the
  * legacy PostService.publishPost flow — which delegates per-platform work
@@ -163,6 +151,12 @@ export class ComposerSchedulingService {
         'Draft must have at least one channel selected',
       );
     }
+    // A template's {{blank}} never goes out, whichever path schedules it.
+    assertNoOpenBlanks({
+      base: dto.base,
+      perPlatform: dto.perPlatform as Record<string, unknown> | undefined,
+      platforms: dto.channels.map((c) => c.platform),
+    });
     // Several instants: one sibling post per instant. One instant — every
     // channel at the same time, whichever way it was asked for — is the
     // schedule as it always was, below.
@@ -196,12 +190,12 @@ export class ComposerSchedulingService {
     // them to 'publishing' then 'published' / 'failed'.
     const legacyTargets = legacyTargetsOf(dto.channels);
 
-    // Pull per-platform metadata (thread, polls) into post.metadata so the
-    // existing publisher dispatch picks it up (TwitterPublisher reads
-    // metadata.thread for threads, metadata.poll for polls).
+    // Shared keys only. Per-platform fields (X's thread and poll, every
+    // other channel's settings) stay in `platformContent[platform]
+    // .platformSpecific`, which the scheduled publish hands to that
+    // platform's publisher alone. Copying X's thread up here gave it to
+    // every channel on the post.
     const metadata: Record<string, unknown> = sharedMetadata(dto);
-    const thread = threadOf(dto.perPlatform);
-    if (thread) metadata.thread = thread;
 
     // Upsert posts row in 'scheduled' state.
     const existing = await this.db
@@ -393,8 +387,6 @@ export class ComposerSchedulingService {
           targets: group.channels,
         }),
       };
-      const thread = threadOf(perPlatform);
-      if (thread) metadata.thread = thread;
       return {
         id: i === 0 ? dto.draftId : randomUUID(),
         at: group.at,

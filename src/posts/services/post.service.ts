@@ -49,6 +49,7 @@ import { CampaignStatusSyncListener } from '../../campaigns/campaign-status-sync
 import { PostQueueService } from '../../billing/services/post-queue.service';
 import { PostReminderService } from './post-reminder.service';
 import { withSharedThumbnail } from '../lib/shared-thumbnail';
+import { sharedMetadataFor } from '../lib/publish-metadata';
 import {
   isReminderTarget,
   reminderContent,
@@ -1026,11 +1027,17 @@ export class PostService {
     // composer fields like hashtags, title, source) and fail on platform-
     // specific requirements. Per-platform fields take precedence over the
     // legacy top-level metadata when keys collide.
-    const platformSpecific =
-      ((platformContent as Record<string, any>)?.platformSpecific as
-        | Record<string, any>
-        | undefined) ?? {};
-    const postMetadata = (post.metadata as Record<string, any>) || {};
+    const ownFields = (platformContent as Record<string, any>)
+      ?.platformSpecific as Record<string, any> | undefined;
+    const platformSpecific = ownFields ?? {};
+    // Never another platform's thread or poll: a row scheduled before the
+    // composer stopped copying X's thread into the shared metadata still
+    // holds that copy (see lib/publish-metadata.ts).
+    const postMetadata = sharedMetadataFor(
+      post.metadata as Record<string, any> | null,
+      target.platform,
+      ownFields,
+    );
     // Facebook and LinkedIn also read YouTube's designed thumbnail from
     // here (`sharedThumbnailUrl`), the picture the composer shows them as
     // "Same as YouTube".

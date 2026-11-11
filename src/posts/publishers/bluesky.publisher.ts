@@ -15,6 +15,7 @@ import {
 } from '../../channels/services/bluesky.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import { threadToPublish } from './post-format';
 
 interface ThreadPost {
   text: string;
@@ -116,8 +117,10 @@ export class BlueskyPublisher extends BasePublisher {
       );
     }
 
-    const thread = metadata?.thread as ThreadPost[] | undefined;
-    if (Array.isArray(thread) && thread.length > 1) {
+    // The format decides: a thread left in the draft after switching to
+    // Post is not published (see post-format.ts).
+    const thread = threadToPublish<ThreadPost>(metadata);
+    if (thread) {
       thread.forEach((t, i) => {
         const media = t.mediaItems ?? [];
         if (!t.text && media.length === 0) {
@@ -197,8 +200,8 @@ export class BlueskyPublisher extends BasePublisher {
     const settings = this.getSettings(metadata);
     const card = usableCard(metadata?.linkCard);
 
-    const thread = metadata?.thread as ThreadPost[] | undefined;
-    if (Array.isArray(thread) && thread.length > 1) {
+    const thread = threadToPublish<ThreadPost>(metadata);
+    if (thread) {
       return this.publishThread(accessToken, did, thread, settings, card);
     }
 

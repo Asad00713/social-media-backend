@@ -8,6 +8,7 @@ import {
 import { toMastodonFocus } from '../../channels/services/mastodon-focus';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import { isPollAllowed, threadToPublish } from './post-format';
 
 type MastodonVisibility = 'public' | 'unlisted' | 'private' | 'direct';
 
@@ -110,6 +111,9 @@ export class MastodonPublisher extends BasePublisher {
   private getPoll(metadata: Record<string, any> | undefined):
     | { options: string[]; expiresInSeconds: number; multiple?: boolean }
     | undefined {
+    // A poll left in the draft after switching to Post or Thread is not
+    // sent (see post-format.ts).
+    if (!isPollAllowed(metadata)) return undefined;
     const raw = metadata?.poll;
     if (!raw || typeof raw !== 'object') return undefined;
 
@@ -157,18 +161,18 @@ export class MastodonPublisher extends BasePublisher {
       draftQuoteLink(metadata),
     );
 
-    // Thread mode: if metadata.thread is a non-empty array > 1, publish as a reply chain
-    const thread = metadata?.thread as
-      | Array<{
-          text: string;
-          mediaItems?: Array<{
-            url: string;
-            altText?: string;
-            focalPoint?: unknown;
-          }>;
-        }>
-      | undefined;
-    if (Array.isArray(thread) && thread.length > 1) {
+    // Thread mode: a reply chain when the format is Thread (or no format was
+    // stored) and there is more than one post. A thread left in the draft
+    // after switching to Post or Poll is not published (see post-format.ts).
+    const thread = threadToPublish<{
+      text: string;
+      mediaItems?: Array<{
+        url: string;
+        altText?: string;
+        focalPoint?: unknown;
+      }>;
+    }>(metadata);
+    if (thread) {
       return this.publishThread(instanceUrl, accessToken, thread, {
         visibility:
           (metadata?.visibility as MastodonVisibility | undefined) ?? 'public',
