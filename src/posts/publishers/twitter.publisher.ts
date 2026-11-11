@@ -84,6 +84,21 @@ export interface XPoll {
 }
 
 /**
+ * The `altTextWarning` for a result, when any alt text could not be set:
+ * the first reason, with a count when several media items failed.
+ */
+function altTextWarningOf(failures: string[]): {
+  metadata?: { altTextWarning: string };
+} {
+  if (failures.length === 0) return {};
+  const more =
+    failures.length > 1
+      ? ` (and ${failures.length - 1} more media item${failures.length > 2 ? 's' : ''})`
+      : '';
+  return { metadata: { altTextWarning: `${failures[0]}${more}` } };
+}
+
+/**
  * The poll to send with a single post, or undefined when there is none.
  * Throws when the post IS a poll that X would refuse, so the failure says
  * why instead of the poll quietly becoming a text post.
@@ -170,8 +185,9 @@ export class TwitterPublisher extends BasePublisher {
 
     // The format decides: a thread left in the draft after switching to
     // Post or Poll is not published (see post-format.ts).
-    const thread =
-      threadToPublish<{ text: string; mediaItems?: MediaItem[] }>(metadata);
+    const thread = threadToPublish<{ text: string; mediaItems?: MediaItem[] }>(
+      metadata,
+    );
 
     if (thread) {
       // Thread mode: validate each tweet independently — as it will be
@@ -246,8 +262,9 @@ export class TwitterPublisher extends BasePublisher {
     // Thread mode — composer sets `metadata.thread = [{ text, mediaItems? }, ...]`
     // when posting a multi-tweet sequence. We publish the first tweet, then
     // chain subsequent tweets via in_reply_to_tweet_id.
-    const thread =
-      threadToPublish<{ text: string; mediaItems?: MediaItem[] }>(metadata);
+    const thread = threadToPublish<{ text: string; mediaItems?: MediaItem[] }>(
+      metadata,
+    );
 
     if (thread) {
       const texts = numberedThreadTexts(
@@ -274,11 +291,13 @@ export class TwitterPublisher extends BasePublisher {
     );
 
     let mediaIds: string[] | undefined;
+    const altTextFailures: string[] = [];
     if (mediaItems && mediaItems.length > 0) {
       mediaIds = await this.uploadMediaItems(
         accessToken,
         mediaItems,
         oauth1Credentials,
+        altTextFailures,
       );
     }
 
@@ -297,6 +316,7 @@ export class TwitterPublisher extends BasePublisher {
     return {
       platformPostId: result.id,
       platformPostUrl: `https://twitter.com/i/web/status/${result.id}`,
+      ...altTextWarningOf(altTextFailures),
     };
   }
 
@@ -338,6 +358,7 @@ export class TwitterPublisher extends BasePublisher {
     let replyToId: string | undefined;
     let rootId: string | undefined;
     const postedIds: string[] = [];
+    const altTextFailures: string[] = [];
 
     for (let i = 0; i < tweets.length; i++) {
       const tweet = tweets[i];
@@ -348,6 +369,7 @@ export class TwitterPublisher extends BasePublisher {
           accessToken,
           tweet.mediaItems,
           oauth1Credentials,
+          altTextFailures,
         );
       }
 
@@ -385,10 +407,11 @@ export class TwitterPublisher extends BasePublisher {
       }
     }
 
+    const warning = altTextWarningOf(altTextFailures).metadata;
     return {
       platformPostId: rootId!,
       platformPostUrl: `https://twitter.com/i/web/status/${rootId}`,
-      metadata: { threadIds: postedIds },
+      metadata: { threadIds: postedIds, ...warning },
     };
   }
 
@@ -444,12 +467,19 @@ export class TwitterPublisher extends BasePublisher {
   }
 
   /**
-   * Download and upload media items to Twitter
+   * Download and upload media items to Twitter.
+   *
+   * Each item's alt text (`MediaItem.altText`) is set on the uploaded media
+   * before the post that attaches it. It is a soft step: the media is
+   * already uploaded, and a description X will not take must not cost the
+   * post, so a failure is pushed onto `altTextFailures` and the post goes
+   * out (reported back as `altTextWarning`).
    */
   private async uploadMediaItems(
     accessToken: string,
     mediaItems: MediaItem[],
     oauth1Credentials?: TwitterOAuth1Credentials,
+    altTextFailures: string[] = [],
   ): Promise<string[]> {
     const mediaIds: string[] = [];
 
@@ -480,6 +510,24 @@ export class TwitterPublisher extends BasePublisher {
       } catch (error) {
         this.logger.error(`Failed to upload media: ${error}`);
         throw new Error(`Failed to upload media: ${item.url}`);
+      }
+
+      const altText =
+        typeof item.altText === 'string' ? item.altText.trim() : '';
+      if (altText) {
+        const mediaId = mediaIds[mediaIds.length - 1];
+        try {
+          await this.twitterService.setMediaAltText(
+            accessToken,
+            mediaId,
+            altText,
+            oauth1Credentials,
+          );
+        } catch (error) {
+          const reason = error instanceof Error ? error.message : String(error);
+          this.logger.warn(`Alt text not set on X media ${mediaId}: ${reason}`);
+          altTextFailures.push(reason);
+        }
       }
     }
 

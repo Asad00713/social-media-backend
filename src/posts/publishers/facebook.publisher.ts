@@ -65,6 +65,10 @@ export class FacebookPublisher extends BasePublisher {
       captionsWarning?: string;
     };
     let collaboratorWarning: string | undefined;
+    // Settings this kind of post cannot carry, said on the result rather
+    // than dropped silently (see posts/lib/publish-warnings.ts).
+    let mediaWarning: string | undefined;
+    let locationWarning: string | undefined;
 
     if (postType === 'reel') {
       // Reels require a vertical video. If no media or first is not a video, fail clearly.
@@ -145,22 +149,59 @@ export class FacebookPublisher extends BasePublisher {
       // thumbnail when the post has one (`sharedThumbnailUrl`), sent as
       // `thumb`; a picture that cannot be sent is a warning, not a failure.
       // A Reel keeps its own cover frame and never reads this key.
+      //
+      // Backdate and minimum age are sent (`backdated_post`, `targeting` on
+      // the Page Videos reference). Location is not: that edge documents no
+      // `place`, so a chosen location is reported as not added.
       const thumbnailUrl = readSharedThumbnail(metadata);
+      const { backdatedTime, targeting, place } = facebookPostOptions(metadata);
       result = await this.facebookService.postVideoToPage(
         platformAccountId,
         accessToken,
         mediaItems[0].url,
         content,
-        thumbnailUrl ? { thumbnailUrl } : {},
+        {
+          ...(thumbnailUrl ? { thumbnailUrl } : {}),
+          ...(backdatedTime !== undefined ? { backdatedTime } : {}),
+          ...(targeting ? { targeting } : {}),
+        },
       );
+      if (place) {
+        locationWarning =
+          'Facebook does not take a location on a feed video, so it was posted without one';
+      }
+      const leftOut = mediaItems.length - 1;
+      if (leftOut > 0) {
+        mediaWarning = `Facebook posts a video on its own: published the video, left out ${leftOut} other item${leftOut === 1 ? '' : 's'}`;
+      }
     } else if (mediaItems.length > 0 && mediaItems[0].type === 'image') {
-      result = await this.facebookService.postPhotoToPage(
-        platformAccountId,
-        accessToken,
-        mediaItems[0].url,
-        content,
-        facebookPostOptions(metadata),
-      );
+      // Every photo, not just the first: one photo is a `/photos` post, two
+      // or more a feed post with `attached_media` (postPhotosToPage). A
+      // video cannot join them, so one beside the photos is reported.
+      const photos = mediaItems
+        .filter((m) => m.type === 'image')
+        .map((m) => ({ url: m.url, ...altTextField(m) }));
+      if (photos.length === 1) {
+        result = await this.facebookService.postPhotoToPage(
+          platformAccountId,
+          accessToken,
+          photos[0].url,
+          content,
+          { ...facebookPostOptions(metadata), ...altTextField(mediaItems[0]) },
+        );
+      } else {
+        result = await this.facebookService.postPhotosToPage(
+          platformAccountId,
+          accessToken,
+          photos,
+          content,
+          facebookPostOptions(metadata),
+        );
+      }
+      const leftOut = mediaItems.length - photos.length;
+      if (leftOut > 0) {
+        mediaWarning = `Facebook cannot mix photos and a video in one post: published ${photos.length} photo${photos.length === 1 ? '' : 's'}, left out ${leftOut} other item${leftOut === 1 ? '' : 's'}`;
+      }
     } else if (wantsCarousel(metadata, mediaItems.length)) {
       // A link CAROUSEL (`carouselLinks`, validated above). The post's own
       // link is the caption's, which the composer's card is built from; a
@@ -222,6 +263,19 @@ export class FacebookPublisher extends BasePublisher {
         collaboratorWarning,
       };
     }
+    if (mediaWarning) {
+      this.logger.warn(`Facebook post ${result.postId}: ${mediaWarning}`);
+      publishResult.metadata = {
+        ...(publishResult.metadata ?? {}),
+        mediaWarning,
+      };
+    }
+    if (locationWarning) {
+      publishResult.metadata = {
+        ...(publishResult.metadata ?? {}),
+        locationWarning,
+      };
+    }
 
     // Soft action: post first comment if provided. Failure here is logged
     // and surfaced as a warning — the main post stays "published".
@@ -258,6 +312,16 @@ export class FacebookPublisher extends BasePublisher {
 
     return publishResult;
   }
+}
+
+/**
+ * `{ altText }` for a photo that has a description, else nothing - sent as
+ * `alt_text_custom` ("Accessible alternative description for an image",
+ * Page Photos reference).
+ */
+function altTextField(item: MediaItem): { altText?: string } {
+  const text = typeof item.altText === 'string' ? item.altText.trim() : '';
+  return text ? { altText: text } : {};
 }
 
 /** The locale a caption file goes out under when the draft names none. */

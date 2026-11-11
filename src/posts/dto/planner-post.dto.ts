@@ -24,6 +24,13 @@ export interface PlannerPostTargetDto {
   errorCode?: PublishErrorCode;
   destination?: { id: string; name?: string };
   contentOverride?: PlatformContent;
+  /**
+   * "Published with issues": what the live post left out - a first comment,
+   * cover, captions, alt text, media the platform could not carry - one
+   * readable sentence each ("First comment was not posted: <reason>").
+   * Present only on a published target that has at least one.
+   */
+  warnings?: string[];
   /** Non-null only when status === 'failed'. */
   failure: PostFailure | null;
 }

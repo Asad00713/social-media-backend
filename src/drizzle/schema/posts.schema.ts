@@ -88,6 +88,12 @@ export interface PostTarget {
   errorMessage?: string;
   /** Per-item results when the post went out as several (see above). */
   itemResults?: PublishItemResult[];
+  /**
+   * What a publish that went live left out - a first comment, cover,
+   * alt text... (see posts/lib/publish-warnings.ts). Absent when nothing
+   * was. Kept in the existing `targets` jsonb, no migration.
+   */
+  warnings?: string[];
   /** "Publish: Remind me" — set instead of a platform post id. */
   reminderSentAt?: string;
   contentOverride?: PlatformContent;
