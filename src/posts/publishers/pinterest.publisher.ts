@@ -56,6 +56,21 @@ export class PinterestPublisher extends BasePublisher {
     // Pinterest's own cap on `description`. Refused rather than cut: the
     // composer stops typing at 800, so a longer one came from somewhere
     // else, and a quietly shortened Pin is not what anyone wrote.
+    // The destination link: a web address of at most 2048 characters
+    // (`PinCreate.link`, v5 OpenAPI). Refused here with the reason rather
+    // than as Pinterest's 400 after the media is uploaded.
+    const link: unknown = metadata?.destinationLink ?? metadata?.link;
+    if (typeof link === 'string' && link.trim()) {
+      if (!/^https?:\/\/[^\s/$.?#].[^\s]*$/i.test(link.trim())) {
+        throw new Error(
+          'Pinterest pin link must be a full web address starting with http(s)://',
+        );
+      }
+      if (link.trim().length > 2048) {
+        throw new Error('Pinterest pin link cannot exceed 2048 characters');
+      }
+    }
+
     if (pickDescription(metadata).length > PINTEREST_MAX_DESCRIPTION) {
       throw new Error(
         `Pinterest pin description cannot exceed ${PINTEREST_MAX_DESCRIPTION} characters`,

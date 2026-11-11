@@ -10,6 +10,19 @@ import {
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
+const INSTAGRAM_MAX_HASHTAGS = 30;
+const INSTAGRAM_MAX_MENTIONS = 20;
+/** A `#tag` in any script - the composer's `hashtag-limits.ts` pattern. */
+const INSTAGRAM_HASHTAG = /(?<![\p{L}\p{N}_#])#[\p{L}\p{N}_]+/gu;
+/** An `@handle` - the composer's `platform-validation.ts` pattern. */
+const INSTAGRAM_MENTION = /(?<![\p{L}\p{N}_@.])@[A-Za-z0-9._]{1,30}/gu;
+
+/** How many DIFFERENT matches, case-insensitively. */
+function distinctMatches(text: string, pattern: RegExp): number {
+  return new Set([...text.matchAll(pattern)].map((m) => m[0].toLowerCase()))
+    .size;
+}
+
 type InstagramPostType = 'feed' | 'reel' | 'story' | 'carousel';
 
 /**
@@ -42,6 +55,23 @@ export class InstagramPublisher extends BasePublisher {
     if (content && content.length > 2200) {
       throw new Error(
         `Instagram caption exceeds 2200 character limit (${content.length} chars)`,
+      );
+    }
+
+    // "Maximum 2200 characters, 30 hashtags, and 20 @ tags" (IG User Media
+    // reference, `caption`) - Meta refuses the container above them.
+    // Counted as the composer counts them: distinct tags, any script.
+    const caption = content ?? '';
+    const hashtags = distinctMatches(caption, INSTAGRAM_HASHTAG);
+    if (hashtags > INSTAGRAM_MAX_HASHTAGS) {
+      throw new Error(
+        `Instagram allows at most ${INSTAGRAM_MAX_HASHTAGS} hashtags (${hashtags} given)`,
+      );
+    }
+    const mentions = distinctMatches(caption, INSTAGRAM_MENTION);
+    if (mentions > INSTAGRAM_MAX_MENTIONS) {
+      throw new Error(
+        `Instagram allows at most ${INSTAGRAM_MAX_MENTIONS} @mentions (${mentions} given)`,
       );
     }
 

@@ -1,6 +1,11 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { fetchPublicMedia } from '../../common/net/public-fetch';
 
+/** A Photo post's `description`: 4000 UTF-16 units (photo post reference). */
+export const TIKTOK_PHOTO_MAX_DESCRIPTION = 4000;
+/** A Video post's caption (`title`): 2200 UTF-16 units (direct post reference). */
+export const TIKTOK_VIDEO_MAX_CAPTION = 2200;
+
 export interface TikTokUser {
   id: string;
   username: string;
@@ -589,7 +594,10 @@ export class TikTokService {
     const body = {
       post_info: {
         title: (title || '').slice(0, 90),
-        description: (description || '').slice(0, 2200),
+        // "The maximum length for photo posts is 4000 in UTF-16 runes"
+        // (photo post reference) - not the Video caption's 2200. Over it,
+        // validate() refuses rather than this cutting silently.
+        description: (description || '').slice(0, TIKTOK_PHOTO_MAX_DESCRIPTION),
         ...(isInbox
           ? {}
           : {

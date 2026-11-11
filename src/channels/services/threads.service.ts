@@ -479,9 +479,10 @@ export class ThreadsService {
     replyToId?: string,
     settings?: ThreadsPostSettings,
   ): Promise<{ postId: string }> {
-    if (mediaItems.length < 2 || mediaItems.length > 10) {
+    // "up to 20 images, videos, or a mix" (Threads API, Posts).
+    if (mediaItems.length < 2 || mediaItems.length > 20) {
       throw new BadRequestException(
-        'Carousel threads require between 2 and 10 media items',
+        'Carousel threads require between 2 and 20 media items',
       );
     }
 
