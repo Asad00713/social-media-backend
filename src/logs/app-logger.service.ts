@@ -30,11 +30,7 @@ export class AppLoggerService extends ConsoleLogger {
    * which replaced the real platform error the user should have seen.
    */
   error(message: unknown, stackOrContext?: unknown, context?: string): void {
-    super.error(
-      message as string,
-      stackOrContext as string,
-      context as string,
-    );
+    super.error(message as string, stackOrContext as string, context as string);
     const asString =
       typeof stackOrContext === 'string' ? stackOrContext : undefined;
     const detail =
