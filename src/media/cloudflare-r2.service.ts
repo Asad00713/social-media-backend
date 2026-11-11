@@ -33,6 +33,7 @@ export type R2MediaKind =
   | 'video'
   | 'file'
   | 'composer-video'
+  | 'composer-document'
   | 'avatar';
 
 const KIND_TO_PREFIX: Record<R2MediaKind, string> = {
@@ -45,6 +46,11 @@ const KIND_TO_PREFIX: Record<R2MediaKind, string> = {
   // a single bucket avoids a bucket-rename migration; prefixes give us the
   // same isolation logically.
   'composer-video': 'composer/videos',
+  // A LinkedIn Document post's file. Not on Cloudinary like the Library's
+  // other non-video uploads: Cloudinary refuses to DELIVER a PDF on accounts
+  // with "Allow delivery of PDF and ZIP files" off (HTTP 401), and the
+  // publisher has to fetch the file to hand it to LinkedIn.
+  'composer-document': 'composer/documents',
   // Profile pictures are the one kind that belongs to a PERSON rather than a
   // workspace: the same face follows a user into every workspace they join.
   // Its own prefix keeps it out of any lifecycle rule that expires workspace
@@ -63,11 +69,18 @@ const MAX_BYTES: Record<R2MediaKind, number> = {
   // PUTs without chunking on our side — the AWS SDK's signature scheme is
   // size-agnostic when ContentLength is unsignableHeader (see below).
   'composer-video': 4 * 1024 * 1024 * 1024,
+  // LinkedIn's Documents API: "The file size can't exceed 100MB and 300
+  // pages." Nothing else publishes a document.
+  'composer-document': 100 * 1024 * 1024,
   // 2 MB. An avatar is never drawn larger than a thumbnail, so a bigger file
   // buys nothing visible and is paid for on every screen that lists people.
   // The DTO enforces the same number before a URL is ever signed.
   avatar: 2 * 1024 * 1024,
 };
+
+/** The five types LinkedIn's Documents API takes, without parameters. */
+const DOCUMENT_MIME =
+  /^application\/(pdf|msword|vnd\.ms-powerpoint|vnd\.openxmlformats-officedocument\.(presentationml\.presentation|wordprocessingml\.document))$/i;
 
 // Allow optional `;param=value` suffixes (e.g. `audio/webm;codecs=opus`,
 // `audio/mp4;codecs=mp4a.40.2`). MediaRecorder always emits the full type
@@ -80,6 +93,8 @@ const ALLOWED_MIME: Record<R2MediaKind, RegExp> = {
   video: /^video\/(mp4|webm|quicktime)(;.*)?$/i,
   file: /.*/,
   'composer-video': /^video\/(mp4|webm|quicktime)(;.*)?$/i,
+  // PDF, PPT, PPTX, DOC, DOCX — the Documents API's own list.
+  'composer-document': DOCUMENT_MIME,
   // No GIF and no HEIC, unlike `image`: an avatar sits at 24-40px in a dozen
   // places at once, where an animated GIF is a dozen loops running behind a
   // list, and HEIC does not decode in Chrome or Firefox at all.
@@ -438,6 +453,13 @@ const MIME_EXTENSIONS: Record<string, string> = {
   'video/mp4': '.mp4',
   'video/webm': '.webm',
   'video/quicktime': '.mov',
+  'application/pdf': '.pdf',
+  'application/msword': '.doc',
+  'application/vnd.ms-powerpoint': '.ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+    '.pptx',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+    '.docx',
 };
 
 /** A key extension: a dot and 1-8 lowercase ASCII letters or digits. */

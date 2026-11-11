@@ -163,10 +163,11 @@ export class CanvaComposerController {
     const accessToken =
       await this.connectionService.getValidAccessToken(workspaceId);
 
+    const format = dto.format ?? 'png';
     const job = await this.canvaService.exportDesign(
       accessToken,
       dto.designId,
-      { format: 'png', quality: 'high' },
+      format === 'jpg' ? { format, quality: 90 } : { format, quality: 'high' },
     );
     const urls = await this.canvaService.waitForExport(
       accessToken,
@@ -191,8 +192,8 @@ export class CanvaComposerController {
       workspaceId,
       userId: user.userId,
       buffer,
-      mimeType: 'image/png',
-      originalName: `canva-${dto.designId}.png`,
+      mimeType: format === 'jpg' ? 'image/jpeg' : 'image/png',
+      originalName: `canva-${dto.designId}.${format}`,
       resourceType: 'image',
     });
 
