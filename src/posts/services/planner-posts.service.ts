@@ -11,7 +11,7 @@ import type {
   PlannerUserRef,
 } from '../dto/planner-post.dto';
 import { bucketByDate, presentPost, type PostRow } from '../lib/present-post';
-import { calendarRangeWhere, occurredAtSql } from '../lib/post-status.sql';
+import { calendarRangeWhere, plannerAtSql } from '../lib/post-status.sql';
 
 @Injectable()
 export class PlannerPostsService {
@@ -58,7 +58,7 @@ export class PlannerPostsService {
       .select()
       .from(posts)
       .where(calendarRangeWhere(workspaceId, from, to))
-      .orderBy(occurredAtSql);
+      .orderBy(plannerAtSql);
     const list = await this.present(rows);
     return {
       posts: list,

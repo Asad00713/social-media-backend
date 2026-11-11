@@ -27,6 +27,7 @@ interface PostOpts {
   scheduledAt?: string | null;
   publishedAt?: string | null;
   createdAt?: string;
+  updatedAt?: string;
   channelIds?: string[];
 }
 
@@ -36,8 +37,8 @@ async function post(
   o: PostOpts,
 ) {
   const r = await client.query<{ id: string }>(
-    `INSERT INTO posts (workspace_id, created_by_id, status, content, scheduled_at, published_at, created_at, targets)
-     VALUES ($1, $2, $3, 'x', $4::timestamptz, $5::timestamptz, COALESCE($6::timestamptz, now()), $7::jsonb) RETURNING id`,
+    `INSERT INTO posts (workspace_id, created_by_id, status, content, scheduled_at, published_at, created_at, targets, updated_at)
+     VALUES ($1, $2, $3, 'x', $4::timestamptz, $5::timestamptz, COALESCE($6::timestamptz, now()), $7::jsonb, COALESCE($8::timestamptz, now())) RETURNING id`,
     [
       w.workspaceId,
       w.userId,
@@ -52,6 +53,7 @@ async function post(
           status: 'scheduled',
         })),
       ),
+      o.updatedAt ?? null,
     ],
   );
   return r.rows[0].id;
@@ -138,11 +140,21 @@ describeDb('PlannerLookupService', () => {
           status: 'published',
           publishedAt: '2026-03-11T10:00:00Z',
         });
-        // No time at all: nothing to place on a month.
-        await post(client, w, { status: 'publishing' });
+        // A failed "Publish now" has no time of its own: it counts in the
+        // month of its attempt (updated_at), as the calendar shows it.
+        await post(client, w, {
+          status: 'failed',
+          createdAt: '2026-01-20T10:00:00Z',
+          updatedAt: '2026-03-12T10:00:00Z',
+        });
+        // A timeless draft never counts.
+        await post(client, w, {
+          status: 'draft',
+          updatedAt: '2026-03-12T10:00:00Z',
+        });
         const c = counts(await svc.monthCounts(w.workspaceId, 2026));
-        expect(c[2]).toBe(2);
-        expect(c.reduce((x, y) => x + y, 0)).toBe(2);
+        expect(c[2]).toBe(3);
+        expect(c.reduce((x, y) => x + y, 0)).toBe(3);
       }));
   });
 

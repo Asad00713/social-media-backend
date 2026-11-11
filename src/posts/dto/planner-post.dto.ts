@@ -41,7 +41,11 @@ export interface PlannerPostDto {
   displayStatus: PostStatus;
   scheduledAt: string | null;
   publishedAt: string | null;
-  /** publishedAt ?? scheduledAt: the instant the post sits on the calendar. */
+  /**
+   * publishedAt ?? scheduledAt: the instant the post sits on the calendar. A
+   * non-draft post with neither (a failed "Publish now") falls back to its
+   * last attempt, updatedAt, so it is never null outside drafts.
+   */
   occurredAt: string | null;
   platformContent: Record<string, PlatformContent>;
   metadata: Record<string, unknown> & {

@@ -7,6 +7,21 @@ import { posts } from '../../drizzle/schema/posts.schema';
  */
 export const occurredAtSql: SQL = sql`COALESCE(${posts.publishedAt}, ${posts.scheduledAt})`;
 
+/**
+ * The instant a NON-DRAFT post sits at in the Planner (calendar, month counts,
+ * List): `occurredAtSql`, then `updated_at`.
+ *
+ * A "Publish now" that failed (or is still publishing) was never scheduled and
+ * never went out, so it has neither time. Its last write is its publish
+ * attempt, which is where it belongs; without a fallback every Planner surface
+ * dropped it, and a failed post could not be found to read its error or retry.
+ * `updated_at` is NOT NULL, so this is never NULL either.
+ *
+ * Only meaningful next to a non-draft filter: a draft's `updated_at` is just
+ * its last edit. Twin of `plannerAt` in present-post.ts.
+ */
+export const plannerAtSql: SQL = sql`COALESCE(${posts.publishedAt}, ${posts.scheduledAt}, ${posts.updatedAt})`;
+
 /** Everything except `draft`: a draft has no date to place on a grid. */
 export const NON_DRAFT_STATUSES = [
   'scheduled',
@@ -50,7 +65,7 @@ export function calendarRangeWhere(
   return and(
     eq(posts.workspaceId, workspaceId),
     inArray(posts.status, [...NON_DRAFT_STATUSES]),
-    gte(occurredAtSql, from),
-    lte(occurredAtSql, to),
+    gte(plannerAtSql, from),
+    lte(plannerAtSql, to),
   ) as SQL;
 }
