@@ -9,6 +9,7 @@ import { toMastodonFocus } from '../../channels/services/mastodon-focus';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import { isPollAllowed, isPollFormat, threadToPublish } from './post-format';
+import { countMastodonChars } from './text-length';
 
 type MastodonVisibility = 'public' | 'unlisted' | 'private' | 'direct';
 
@@ -167,9 +168,26 @@ export class MastodonPublisher extends BasePublisher {
     if (!content && mediaItems.length === 0) {
       throw new Error('Mastodon post must have text or media');
     }
-    if (content && content.length > 500) {
+    // Counted as Mastodon counts (`status_length_validator.rb`): graphemes,
+    // each link 23, and the content warning shares the budget — on every
+    // post of a thread too, since each one carries the warning.
+    const warning =
+      typeof metadata?.contentWarning === 'string'
+        ? metadata.contentWarning
+        : undefined;
+    const thread = threadToPublish<{ text?: string }>(metadata);
+    thread?.forEach((t, i) => {
+      const counted = countMastodonChars(t.text ?? '', warning);
+      if (counted > 500) {
+        throw new Error(
+          `Mastodon thread post ${i + 1} exceeds 500 character limit (${counted} chars)`,
+        );
+      }
+    });
+    const counted = countMastodonChars(content ?? '', warning);
+    if (!thread && counted > 500) {
       throw new Error(
-        `Mastodon toot exceeds 500 character limit (${content.length} chars)`,
+        `Mastodon toot exceeds 500 character limit (${counted} chars)`,
       );
     }
     if (mediaItems.length > 4) {

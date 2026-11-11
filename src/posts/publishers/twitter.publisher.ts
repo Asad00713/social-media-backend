@@ -8,6 +8,7 @@ import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import { fetchPublicMedia } from '../../common/net/public-fetch';
 import { isPollAllowed, isPollFormat, threadToPublish } from './post-format';
+import { countXChars } from './text-length';
 
 /** X's `reply_settings` write enum — note it has no `everyone`. */
 type TwitterReplySettings =
@@ -202,9 +203,10 @@ export class TwitterPublisher extends BasePublisher {
           throw new Error(`Thread tweet ${i + 1} must have content or media`);
         }
         const text = sent[i];
-        if (text && text.length > MAX_TWEET_CHARS) {
+        const weighted = countXChars(text ?? '');
+        if (weighted > MAX_TWEET_CHARS) {
           throw new Error(
-            `Thread tweet ${i + 1} exceeds 280 character limit (${text.length} chars${
+            `Thread tweet ${i + 1} exceeds 280 character limit (${weighted} chars${
               isNumbered(metadata) ? ', with its number' : ''
             })`,
           );
@@ -232,9 +234,11 @@ export class TwitterPublisher extends BasePublisher {
     if (!content && mediaItems.length === 0) {
       throw new Error('Twitter post must have content or media');
     }
-    if (content && content.length > 280) {
+    // Weighted, as X counts: a link is 23 and an emoji 2.
+    const weighted = countXChars(content ?? '');
+    if (weighted > MAX_TWEET_CHARS) {
       throw new Error(
-        `Twitter content exceeds 280 character limit (${content.length} chars)`,
+        `Twitter content exceeds 280 character limit (${weighted} chars as X counts them)`,
       );
     }
     if (mediaItems.length > 4) {

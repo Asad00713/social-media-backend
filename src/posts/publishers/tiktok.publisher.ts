@@ -1,6 +1,10 @@
 import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
-import { TikTokService } from '../../channels/services/tiktok.service';
+import {
+  TIKTOK_PHOTO_MAX_DESCRIPTION,
+  TIKTOK_VIDEO_MAX_CAPTION,
+  TikTokService,
+} from '../../channels/services/tiktok.service';
 import { TikTokQuotaService } from '../../channels/services/tiktok-quota.service';
 import { TikTokMediaProxyService } from '../../media/tiktok-media-proxy.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
@@ -126,6 +130,19 @@ export class TikTokPublisher extends BasePublisher {
     // TikTok requires media (video or images)
     if (mediaItems.length === 0) {
       throw new Error('TikTok posts require media');
+    }
+
+    // The caption, in TikTok's UTF-16 units: a Photo post's description
+    // takes 4000, a Video's caption 2200. Refused here, not cut on send.
+    const caption = options.content ?? '';
+    const captionMax =
+      postType === 'photo'
+        ? TIKTOK_PHOTO_MAX_DESCRIPTION
+        : TIKTOK_VIDEO_MAX_CAPTION;
+    if (caption.length > captionMax) {
+      throw new Error(
+        `TikTok ${postType === 'photo' ? 'photo description' : 'caption'} cannot exceed ${captionMax} characters (${caption.length} given)`,
+      );
     }
 
     if (postType === 'photo') {

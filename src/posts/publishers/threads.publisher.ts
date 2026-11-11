@@ -11,6 +11,13 @@ import {
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import { isPollAllowed, isPollFormat, threadToPublish } from './post-format';
+import { countThreadsChars } from './text-length';
+
+/**
+ * A carousel's items: "up to 20 images, videos, or a mix of the two"
+ * (Threads API, Posts). The composer counts against the same 20.
+ */
+const THREADS_MAX_MEDIA = 20;
 
 interface ThreadTweet {
   text: string;
@@ -216,13 +223,16 @@ export class ThreadsPublisher extends BasePublisher {
         if (!t.text && !hasMedia) {
           throw new Error(`Thread post ${i + 1} must have content or media`);
         }
-        if (t.text && t.text.length > 500) {
+        const counted = countThreadsChars(t.text ?? '');
+        if (counted > 500) {
           throw new Error(
-            `Thread post ${i + 1} exceeds 500 character limit (${t.text.length} chars)`,
+            `Thread post ${i + 1} exceeds 500 character limit (${counted} chars)`,
           );
         }
-        if ((t.mediaItems?.length ?? 0) > 10) {
-          throw new Error(`Thread post ${i + 1} has more than 10 media items`);
+        if ((t.mediaItems?.length ?? 0) > THREADS_MAX_MEDIA) {
+          throw new Error(
+            `Thread post ${i + 1} has more than ${THREADS_MAX_MEDIA} media items`,
+          );
         }
         assertAltTextFits(t.mediaItems, `thread post ${i + 1}, `);
       });
@@ -239,15 +249,19 @@ export class ThreadsPublisher extends BasePublisher {
     }
 
     // Check character limit
-    if (content && content.length > 500) {
+    // Threads counts an emoji as its UTF-8 bytes (Threads API, Posts).
+    const counted = countThreadsChars(content ?? '');
+    if (counted > 500) {
       throw new Error(
-        `Threads content exceeds 500 character limit (${content.length} chars)`,
+        `Threads content exceeds 500 character limit (${counted} chars)`,
       );
     }
 
     // Check media limit
-    if (mediaItems.length > 10) {
-      throw new Error('Threads allows maximum 10 media items per carousel');
+    if (mediaItems.length > THREADS_MAX_MEDIA) {
+      throw new Error(
+        `Threads allows maximum ${THREADS_MAX_MEDIA} media items per carousel`,
+      );
     }
   }
 
