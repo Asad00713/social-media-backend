@@ -1,15 +1,11 @@
 import { LinkedInService } from './linkedin.service';
 
 /**
- * `isReshareDisabledByAuthor` on the poll path.
- *
- * It was hard-coded `false`, and the composer's "Allow reposts" switch
- * had no writer. Only this path can carry it: every other LinkedIn
- * publish here goes through the legacy `/v2/ugcPosts`, which has no
- * reshare field at all. Moving the rest means migrating six call sites
- * to the versioned Posts API — its own effort, not this one.
+ * The poll request: `isReshareDisabledByAuthor`, and since the poll moved
+ * off `/v2/posts` + a hard-coded `LinkedIn-Version: 202404`, the same
+ * `/rest/posts` request, version and envelope as every other format.
  */
-describe('LinkedInService.createPollPost — reshare control', () => {
+describe('LinkedInService.createPollPost — request', () => {
   let service: LinkedInService;
   let fetchMock: jest.Mock;
 
@@ -53,11 +49,58 @@ describe('LinkedInService.createPollPost — reshare control', () => {
     expect((await bodyFor(value)).isReshareDisabledByAuthor).toBe(false);
   });
 
-  it('still posts to the versioned Posts API', async () => {
+  it('posts to the versioned /rest/posts with the same version as every other call', async () => {
     await bodyFor(true);
-
     const [url, init] = fetchMock.mock.calls[0];
-    expect(String(url)).toContain('/posts');
-    expect(init.headers['LinkedIn-Version']).toBeTruthy();
+    expect(String(url)).toBe('https://api.linkedin.com/rest/posts');
+    expect(String(url)).not.toContain('/v2/');
+
+    // The poll used a hard-coded 202404 while the rest sent the shared
+    // constant. Pin the invariant, not the number: whatever a text post
+    // sends, the poll sends.
+    fetchMock.mockClear();
+    await service.createRestTextPost('token', 'urn:li:person:me', 'x');
+    const textVersion = fetchMock.mock.calls[0][1].headers['Linkedin-Version'];
+    expect(textVersion).toMatch(/^\d{6}$/);
+    expect(init.headers['Linkedin-Version']).toBe(textVersion);
+    expect(init.headers['LinkedIn-Version']).toBeUndefined();
+    expect(init.headers['X-Restli-Protocol-Version']).toBe('2.0.0');
+  });
+
+  it('sends the commentary as little text, the question and options as typed', async () => {
+    await service.createPollPost(
+      'token',
+      'urn:li:person:me',
+      'Light (or dark)?',
+      ['Light #1', 'Dark_roast'],
+      7,
+      'Vote (please) #coffee',
+    );
+    const body = JSON.parse(fetchMock.mock.calls[0][1].body as string);
+    expect(body.commentary).toBe('Vote \\(please\\) {hashtag|\\#|coffee}');
+    // Poll schema: `question` and option `text` are plain Strings.
+    expect(body.content.poll.question).toBe('Light (or dark)?');
+    expect(body.content.poll.options).toEqual([
+      { text: 'Light #1' },
+      { text: 'Dark_roast' },
+    ]);
+  });
+
+  it('carries a signed-in-members audience, and a page posts PUBLIC', async () => {
+    const audience = async (author: string) => {
+      fetchMock.mockClear();
+      await service.createPollPost(
+        'token',
+        author,
+        'Q?',
+        ['A', 'B'],
+        7,
+        '',
+        'LOGGED_IN',
+      );
+      return JSON.parse(fetchMock.mock.calls[0][1].body as string).visibility;
+    };
+    expect(await audience('urn:li:person:me')).toBe('LOGGED_IN');
+    expect(await audience('urn:li:organization:42')).toBe('PUBLIC');
   });
 });
