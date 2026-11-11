@@ -617,7 +617,7 @@ export class ChannelsController {
                 canReply: true,
                 canDelete: false, // Instagram API doesn't support delete
                 supportedMediaTypes: ['image', 'video', 'carousel'],
-                maxMediaPerPost: 10,
+                maxMediaPerPost: 20, // Instagram carousel cap
                 maxTextLength: 2200,
               },
               metadata: {
@@ -1378,7 +1378,7 @@ export class ChannelsController {
             canReply: true,
             canDelete: false, // Instagram doesn't allow delete via API
             supportedMediaTypes: ['image', 'video', 'carousel'],
-            maxMediaPerPost: 10,
+            maxMediaPerPost: 20, // Instagram carousel cap
             maxTextLength: 2200,
           },
           metadata: {
@@ -2901,7 +2901,7 @@ export class ChannelsController {
           canReply: false,
           canDelete: true,
           supportedMediaTypes: ['image', 'video', 'carousel'],
-          maxMediaPerPost: 10,
+          maxMediaPerPost: 20, // Instagram carousel cap
           maxTextLength: 2200,
         },
         metadata: {
@@ -2994,7 +2994,7 @@ export class ChannelsController {
           canReply: false,
           canDelete: false,
           supportedMediaTypes: ['image', 'video', 'carousel'],
-          maxMediaPerPost: 10,
+          maxMediaPerPost: 20, // Instagram carousel cap
           maxTextLength: 2200,
         },
         metadata: {

@@ -2,6 +2,7 @@ import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import {
   INSTAGRAM_ALT_TEXT_MAX_CHARS,
+  INSTAGRAM_CAROUSEL_MAX_ITEMS,
   InstagramService,
   InstagramReelSettings,
   InstagramUserTag,
@@ -74,9 +75,12 @@ export class InstagramPublisher extends BasePublisher {
         break;
       }
       case 'carousel': {
-        if (mediaItems.length < 2 || mediaItems.length > 10) {
+        if (
+          mediaItems.length < 2 ||
+          mediaItems.length > INSTAGRAM_CAROUSEL_MAX_ITEMS
+        ) {
           throw new Error(
-            'Instagram carousels require between 2 and 10 media items',
+            `Instagram carousels require between 2 and ${INSTAGRAM_CAROUSEL_MAX_ITEMS} media items`,
           );
         }
         break;
@@ -88,9 +92,9 @@ export class InstagramPublisher extends BasePublisher {
             'Instagram posts require at least one image or video',
           );
         }
-        if (mediaItems.length > 10) {
+        if (mediaItems.length > INSTAGRAM_CAROUSEL_MAX_ITEMS) {
           throw new Error(
-            'Instagram allows maximum 10 media items per carousel',
+            `Instagram allows maximum ${INSTAGRAM_CAROUSEL_MAX_ITEMS} media items per carousel`,
           );
         }
         break;

@@ -104,6 +104,17 @@ export interface InstagramFeedSettings extends InstagramPostSettings {
 /** Instagram's cap on `alt_text` (IG User Media reference: 1000). */
 export const INSTAGRAM_ALT_TEXT_MAX_CHARS = 1000;
 
+/**
+ * The most items one carousel takes: 20.
+ *
+ * Content Publishing guide, Limitations: "Carousels are limited to 20
+ * images, videos, or a mix of the two." The IG User Media reference says
+ * the same of `children`: "An array of up to 20 container IDs". This was
+ * 10, Meta's old limit, so items 11 to 20 were refused here although
+ * Instagram would have published them.
+ */
+export const INSTAGRAM_CAROUSEL_MAX_ITEMS = 20;
+
 /** Reels only. */
 export interface InstagramReelSettings extends InstagramFeedSettings {
   shareToFeed?: boolean;
@@ -704,9 +715,12 @@ export class InstagramService {
     mediaItems: Array<{ type: 'IMAGE' | 'VIDEO'; url: string }>,
     caption?: string,
   ): Promise<{ postId: string }> {
-    if (mediaItems.length < 2 || mediaItems.length > 10) {
+    if (
+      mediaItems.length < 2 ||
+      mediaItems.length > INSTAGRAM_CAROUSEL_MAX_ITEMS
+    ) {
       throw new BadRequestException(
-        'Carousel posts require between 2 and 10 media items',
+        `Carousel posts require between 2 and ${INSTAGRAM_CAROUSEL_MAX_ITEMS} media items`,
       );
     }
 
@@ -1167,9 +1181,12 @@ export class InstagramService {
     caption?: string,
     settings?: InstagramFeedSettings,
   ): Promise<{ postId: string }> {
-    if (mediaItems.length < 2 || mediaItems.length > 10) {
+    if (
+      mediaItems.length < 2 ||
+      mediaItems.length > INSTAGRAM_CAROUSEL_MAX_ITEMS
+    ) {
       throw new BadRequestException(
-        'Carousel posts require between 2 and 10 media items',
+        `Carousel posts require between 2 and ${INSTAGRAM_CAROUSEL_MAX_ITEMS} media items`,
       );
     }
 
