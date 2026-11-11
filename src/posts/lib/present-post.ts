@@ -25,6 +25,16 @@ interface StoredTarget {
   errorCode?: PublishErrorCode;
   destination?: { id: string; name?: string };
   contentOverride?: PlannerPostTargetDto['contentOverride'];
+  warnings?: unknown;
+}
+
+/** Stored warnings, if the row holds a usable list (see publish-warnings). */
+function storedWarnings(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const list = raw.filter(
+    (w): w is string => typeof w === 'string' && w.trim() !== '',
+  );
+  return list.length > 0 ? list : undefined;
 }
 
 function presentTarget(
@@ -42,6 +52,9 @@ function presentTarget(
     errorCode: target.errorCode,
     destination: target.destination,
     contentOverride: target.contentOverride,
+    // Only on a target that went out: a stale list never rides a failure.
+    warnings:
+      status === 'published' ? storedWarnings(target.warnings) : undefined,
   };
   for (const key of Object.keys(optional) as (keyof typeof optional)[]) {
     if (optional[key] === undefined) delete optional[key];

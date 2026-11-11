@@ -117,6 +117,46 @@ describe('presentPost', () => {
     expect(dto.targets[0].channelId).toBe('7');
   });
 
+  // D4: the "published with issues" note reaches the Planner API.
+  it("returns a published target's warnings", () => {
+    const dto = presentPost(
+      row({
+        status: 'published',
+        targets: [
+          {
+            channelId: '1',
+            platform: 'facebook',
+            publishStatus: 'published',
+            warnings: ['First comment was not posted: comments off', 7, ''],
+          },
+        ] as never,
+      }),
+      { users },
+    );
+    expect(dto.targets[0].warnings).toEqual([
+      'First comment was not posted: comments off',
+    ]);
+    expect(dto.targets[0].status).toBe('published');
+  });
+
+  it('never returns warnings on a target that is not published', () => {
+    const dto = presentPost(
+      row({
+        status: 'failed',
+        targets: [
+          {
+            channelId: '1',
+            platform: 'facebook',
+            status: 'failed',
+            warnings: ['Cover was not set: old'],
+          },
+        ] as never,
+      }),
+      { users },
+    );
+    expect('warnings' in dto.targets[0]).toBe(false);
+  });
+
   it('gives a published target no failure', () => {
     const dto = presentPost(
       row({

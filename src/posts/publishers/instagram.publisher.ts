@@ -1,6 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import {
+  INSTAGRAM_ALT_TEXT_MAX_CHARS,
   InstagramService,
   InstagramReelSettings,
   InstagramUserTag,
@@ -9,6 +10,18 @@ import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
 type InstagramPostType = 'feed' | 'reel' | 'story' | 'carousel';
+
+/**
+ * An IMAGE's alt text, trimmed, or undefined. Instagram takes `alt_text`
+ * "on a single image or image media in a carousel" only - "Reels and
+ * stories are not supported" (IG User Media reference) - so a video's is
+ * never read.
+ */
+function imageAltText(item: MediaItem | undefined): string | undefined {
+  if (!item || item.type !== 'image') return undefined;
+  const text = typeof item.altText === 'string' ? item.altText.trim() : '';
+  return text === '' ? undefined : text;
+}
 
 @Injectable()
 export class InstagramPublisher extends BasePublisher {
@@ -29,6 +42,19 @@ export class InstagramPublisher extends BasePublisher {
       throw new Error(
         `Instagram caption exceeds 2200 character limit (${content.length} chars)`,
       );
+    }
+
+    // `alt_text` rides the container create, so one over Instagram's limit
+    // would fail the whole post: refused here with the reason instead.
+    if (postType === 'feed' || postType === 'carousel') {
+      mediaItems.forEach((item, i) => {
+        const alt = imageAltText(item);
+        if (alt && alt.length > INSTAGRAM_ALT_TEXT_MAX_CHARS) {
+          throw new Error(
+            `Alt text on image ${i + 1} is over Instagram's ${INSTAGRAM_ALT_TEXT_MAX_CHARS}-character limit (${alt.length} chars)`,
+          );
+        }
+      });
     }
 
     switch (postType) {
@@ -218,6 +244,8 @@ export class InstagramPublisher extends BasePublisher {
           url: m.url,
           // Per-slide tags; the post-level settings ride the parent.
           userTags: this.getUserTags(m.tags),
+          // Per-slide alt text, images only.
+          ...(imageAltText(m) ? { altText: imageAltText(m) } : {}),
         })),
         content,
         settings,
@@ -241,12 +269,13 @@ export class InstagramPublisher extends BasePublisher {
             settings,
           );
         } else {
+          const altText = imageAltText(mediaItems[0]);
           result = await this.instagramService.createImagePostWithUserToken(
             platformAccountId,
             accessToken,
             mediaItems[0].url,
             content,
-            settings,
+            altText ? { ...settings, altText } : settings,
           );
         }
       } else {
@@ -257,6 +286,7 @@ export class InstagramPublisher extends BasePublisher {
             type: m.type === 'video' ? ('VIDEO' as const) : ('IMAGE' as const),
             url: m.url,
             userTags: this.getUserTags(m.tags),
+            ...(imageAltText(m) ? { altText: imageAltText(m) } : {}),
           })),
           content,
           settings,

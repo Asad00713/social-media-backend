@@ -92,7 +92,17 @@ export interface InstagramPostSettings {
 /** What a feed image, Reel or carousel parent takes on top of the above. */
 export interface InstagramFeedSettings extends InstagramPostSettings {
   collaborators?: string[];
+  /**
+   * `alt_text` - "Alternative text, up to 1000 character, for an image.
+   * Only supported on a single image or image media in a carousel. Reels and
+   * stories are not supported." (IG User Media reference). Read ONLY by the
+   * single-image create; a carousel takes it per item, never on the parent.
+   */
+  altText?: string;
 }
+
+/** Instagram's cap on `alt_text` (IG User Media reference: 1000). */
+export const INSTAGRAM_ALT_TEXT_MAX_CHARS = 1000;
 
 /** Reels only. */
 export interface InstagramReelSettings extends InstagramFeedSettings {
@@ -1017,6 +1027,8 @@ export class InstagramService {
 
     // An image's tags must carry coordinates; Meta rejects one without.
     applySettings(containerParams, settings, { requireCoordinates: true });
+    const altText = settings?.altText?.trim();
+    if (altText) containerParams.set('alt_text', altText);
 
     this.logger.log(`Creating media container at: ${containerUrl.toString()}`);
 
@@ -1149,6 +1161,8 @@ export class InstagramService {
       url: string;
       /** Tags for THIS slide — see the asymmetry note below. */
       userTags?: InstagramUserTag[];
+      /** This slide's alt text; images only (see InstagramFeedSettings). */
+      altText?: string;
     }>,
     caption?: string,
     settings?: InstagramFeedSettings,
@@ -1178,6 +1192,8 @@ export class InstagramService {
 
       if (item.type === 'IMAGE') {
         containerParams.set('image_url', item.url);
+        const altText = item.altText?.trim();
+        if (altText) containerParams.set('alt_text', altText);
       } else {
         containerParams.set('video_url', item.url);
         containerParams.set('media_type', 'VIDEO');
@@ -1189,11 +1205,7 @@ export class InstagramService {
       // go on the parent below. Putting the post-level ones here would
       // repeat one post's settings on every slide, and Meta rejects
       // `is_ai_generated` on a child outright.
-      applyUserTags(
-        containerParams,
-        item.userTags,
-        item.type === 'IMAGE',
-      );
+      applyUserTags(containerParams, item.userTags, item.type === 'IMAGE');
 
       const containerResponse = await fetch(containerUrl.toString(), {
         method: 'POST',

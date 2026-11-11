@@ -45,3 +45,51 @@ describe('sharedMetadataFor', () => {
     expect(sharedMetadataFor(null, 'bluesky', undefined)).toEqual({});
   });
 });
+
+/**
+ * The draft title. The composer stores the DRAFT's name as the shared
+ * `metadata.title`; Pinterest, YouTube, Reddit and TikTok read
+ * `metadata.title` as the post title. "Publish now" hands a publisher only
+ * the channel's own fields, so a scheduled post must not get the draft's
+ * name where publish-now gets none.
+ */
+describe('sharedMetadataFor - draft title', () => {
+  const PLATFORMS = ['pinterest', 'youtube', 'reddit', 'tiktok', 'twitter'];
+
+  it.each(PLATFORMS)(
+    'never hands %s the draft title from a scheduled composer row',
+    (platform) => {
+      const stored = { title: 'My draft', source: 'composer', hashtags: [] };
+      for (const own of [undefined, {}, { postType: 'post' }]) {
+        expect(sharedMetadataFor(stored, platform, own).title).toBeUndefined();
+      }
+    },
+  );
+
+  it('drops it from a draft-store / publish-now row (no source, has schedule)', () => {
+    const stored = { title: 'My draft', schedule: { mode: 'now' } };
+    expect(
+      sharedMetadataFor(stored, 'pinterest', undefined).title,
+    ).toBeUndefined();
+  });
+
+  it('drops it whenever the channel has fields of its own', () => {
+    const stored = { title: 'Legacy title' };
+    expect(
+      sharedMetadataFor(stored, 'youtube', { privacyStatus: 'public' }).title,
+    ).toBeUndefined();
+  });
+
+  it('keeps it on a pre-composer API row with no per-platform fields', () => {
+    const stored = { title: 'Legacy YouTube title', hashtags: ['a'] };
+    expect(sharedMetadataFor(stored, 'youtube', undefined).title).toBe(
+      'Legacy YouTube title',
+    );
+  });
+
+  it('never mutates the stored metadata', () => {
+    const stored = { title: 'My draft', source: 'composer' };
+    sharedMetadataFor(stored, 'pinterest', undefined);
+    expect(stored.title).toBe('My draft');
+  });
+});

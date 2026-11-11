@@ -774,6 +774,54 @@ export class TwitterService {
   }
 
   /**
+   * Sets an uploaded media item's alt text: `POST /2/media/metadata` with
+   * `{ id, metadata: { alt_text: { text } } }` (docs.x.com/x-api/media/
+   * create-media-metadata; `text` at most 1,000 characters). Must run after
+   * the upload and before the post that attaches the media.
+   *
+   * Auth: OAuth 1.0a user context when the channel has it (the reference
+   * lists `UserToken`), else the OAuth 2.0 user token - which needs the
+   * `media.write` scope our X channels do not request, so that path is
+   * expected to be refused; the caller treats any failure as a warning.
+   * A JSON body is not part of the OAuth 1.0a signature base string, so
+   * only the URL and method are signed.
+   */
+  async setMediaAltText(
+    accessToken: string,
+    mediaId: string,
+    altText: string,
+    oauth1Credentials?: TwitterOAuth1Credentials,
+  ): Promise<void> {
+    const url = `${this.apiBaseUrl}/media/metadata`;
+    const authorization: Record<string, string> = oauth1Credentials
+      ? (this.oauth.toHeader(
+          this.oauth.authorize(
+            { url, method: 'POST' },
+            {
+              key: oauth1Credentials.oauthToken,
+              secret: oauth1Credentials.oauthTokenSecret,
+            },
+          ),
+        ) as unknown as Record<string, string>)
+      : { Authorization: `Bearer ${accessToken}` };
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { ...authorization, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        id: mediaId,
+        metadata: { alt_text: { text: altText } },
+      }),
+    });
+    if (!response.ok) {
+      const detail = await response.text().catch(() => '');
+      throw new Error(
+        `X refused the alt text (HTTP ${response.status})${detail ? `: ${detail.slice(0, 300)}` : ''}`,
+      );
+    }
+  }
+
+  /**
    * Upload large media files using Twitter's chunked upload API
    * Supports files up to 512MB for videos
    * Flow: INIT -> APPEND (chunks) -> FINALIZE -> STATUS (poll until complete)

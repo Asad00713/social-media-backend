@@ -56,6 +56,32 @@ export interface FacebookPostOptions {
   place?: string;
 }
 
+/** A photo on a Page post, with its alt text when it has one. */
+export interface FacebookPhoto {
+  url: string;
+  /**
+   * `alt_text_custom` - "Accessible alternative description for an image"
+   * (Page Photos reference, "Creating").
+   */
+  altText?: string;
+}
+
+/**
+ * What a feed VIDEO (`POST /{page-id}/videos`) takes besides the file.
+ *
+ * The Page Videos reference lists `backdated_post` ("Settings to allow
+ * backdated video post", with `backdated_time`) and `targeting` (`age_min`
+ * 13/15/18/21/25). It lists NO `place`, so a feed video cannot carry a
+ * location - the publisher reports that as a warning instead of sending a
+ * key the edge does not document.
+ */
+export interface FacebookVideoOptions {
+  thumbnailUrl?: string;
+  /** `backdated_post.backdated_time`, in Unix seconds — a time in the past. */
+  backdatedTime?: number;
+  targeting?: { age_min: number };
+}
+
 /**
  * One of the workspace's Pages, as the composer's Location and Collaborator
  * pickers need it. `location` is null when the Page has none (or it could not
@@ -537,7 +563,7 @@ export class FacebookService {
     pageAccessToken: string,
     imageUrl: string,
     caption?: string,
-    options: FacebookPostOptions = {},
+    options: FacebookPostOptions & { altText?: string } = {},
   ): Promise<{ postId: string }> {
     const url = new URL(`${this.graphApiUrl}/${pageId}/photos`);
 
@@ -546,6 +572,8 @@ export class FacebookService {
       url: imageUrl,
       ...this.postOptionsBody(options),
     };
+    const altText = options.altText?.trim();
+    if (altText) body.alt_text_custom = altText;
 
     if (caption) {
       body.caption = caption;
@@ -567,6 +595,93 @@ export class FacebookService {
 
     const data = await response.json();
     return { postId: data.post_id || data.id };
+  }
+
+  /**
+   * A feed post with SEVERAL photos - the multi-photo flow shown in Meta's
+   * Page Photos reference (developers.facebook.com/docs/graph-api/reference/
+   * page/photos, "Creating" examples): each photo is uploaded to
+   * `POST /{page-id}/photos` with `published=false` ("Set to false if you
+   * don't want the photo to be published immediately"), then ONE
+   * `POST /{page-id}/feed` attaches them all as `attached_media` - one
+   * `{"media_fbid": "<photo id>"}` per photo, in order. The feed reference's
+   * parameter table does not list `attached_media`; the photos reference's
+   * examples are the source.
+   *
+   * Each photo carries its own `alt_text_custom`. The post-level options
+   * (backdate, minimum age, location) go on the feed post, which is what is
+   * published. An unpublished photo is not live, so a failure anywhere
+   * leaves nothing on the Page.
+   */
+  async postPhotosToPage(
+    pageId: string,
+    pageAccessToken: string,
+    photos: FacebookPhoto[],
+    message?: string,
+    options: FacebookPostOptions = {},
+  ): Promise<{ postId: string }> {
+    const mediaFbids: string[] = [];
+    for (const [i, photo] of photos.entries()) {
+      const body: Record<string, string> = {
+        access_token: pageAccessToken,
+        url: photo.url,
+        published: 'false',
+      };
+      const altText = photo.altText?.trim();
+      if (altText) body.alt_text_custom = altText;
+
+      const response = await fetch(`${this.graphApiUrl}/${pageId}/photos`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!response.ok) {
+        const error = (await response.json().catch(() => ({}))) as {
+          error?: { message?: string };
+        };
+        this.logger.error(
+          `Failed to upload photo ${i + 1} of ${photos.length} to page ${pageId}:`,
+          error,
+        );
+        throw new BadRequestException(
+          `Facebook refused photo ${i + 1} of ${photos.length}: ${error?.error?.message ?? `HTTP ${response.status}`}`,
+        );
+      }
+      const data = (await response.json()) as { id?: string };
+      if (!data.id) {
+        throw new BadRequestException(
+          `Facebook returned no id for photo ${i + 1} of ${photos.length}`,
+        );
+      }
+      mediaFbids.push(data.id);
+    }
+
+    const feedBody: Record<string, unknown> = {
+      access_token: pageAccessToken,
+      attached_media: mediaFbids.map((id) => ({ media_fbid: id })),
+      ...this.postOptionsBody(options),
+    };
+    if (message) feedBody.message = message;
+
+    const response = await fetch(`${this.graphApiUrl}/${pageId}/feed`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(feedBody),
+    });
+    if (!response.ok) {
+      const error = (await response.json().catch(() => ({}))) as {
+        error?: { message?: string };
+      };
+      this.logger.error(`Failed to post photos to page ${pageId}:`, error);
+      throw new BadRequestException(
+        error?.error?.message || 'Failed to post photos',
+      );
+    }
+    const data = (await response.json()) as { id?: string };
+    if (!data.id) {
+      throw new BadRequestException('Facebook returned no id for the post');
+    }
+    return { postId: data.id };
   }
 
   /**
@@ -1117,7 +1232,7 @@ export class FacebookService {
     pageAccessToken: string,
     videoUrl: string,
     description: string = '',
-    options: { thumbnailUrl?: string } = {},
+    options: FacebookVideoOptions = {},
   ): Promise<{ postId: string; thumbnailWarning?: string }> {
     let thumbnail: VideoThumbnail | undefined;
     let thumbnailWarning: string | undefined;
@@ -1135,6 +1250,17 @@ export class FacebookService {
       form.append('access_token', pageAccessToken);
       form.append('file_url', videoUrl);
       if (description) form.append('description', description);
+      // Page Videos reference: `backdated_post` { backdated_time } and
+      // `targeting` { age_min }, each JSON text on this multipart form.
+      if (options.backdatedTime !== undefined) {
+        form.append(
+          'backdated_post',
+          JSON.stringify({ backdated_time: options.backdatedTime }),
+        );
+      }
+      if (options.targeting) {
+        form.append('targeting', JSON.stringify(options.targeting));
+      }
       if (thumb) {
         form.append(
           'thumb',

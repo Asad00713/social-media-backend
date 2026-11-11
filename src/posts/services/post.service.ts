@@ -50,6 +50,7 @@ import { PostQueueService } from '../../billing/services/post-queue.service';
 import { PostReminderService } from './post-reminder.service';
 import { withSharedThumbnail } from '../lib/shared-thumbnail';
 import { sharedMetadataFor } from '../lib/publish-metadata';
+import { warningsField } from '../lib/publish-warnings';
 import {
   isReminderTarget,
   reminderContent,
@@ -815,6 +816,11 @@ export class PostService {
           ...(result.itemResults?.length
             ? { itemResults: result.itemResults }
             : {}),
+          // Soft steps that failed after the post went live (first comment,
+          // cover, alt text...): kept, so the post reads "published with
+          // issues" instead of silently missing a setting. Only this run's.
+          warnings: undefined,
+          ...warningsField(result.metadata),
         });
         anySuccess = true;
         newSuccess = true;
@@ -849,6 +855,7 @@ export class PostService {
           ...target,
           status: 'failed',
           errorMessage,
+          warnings: undefined,
           // Part of the post is live (one Pin per image): keep what went
           // out, so the retry resumes after it rather than repeating it.
           ...(error instanceof PartialPublishError
