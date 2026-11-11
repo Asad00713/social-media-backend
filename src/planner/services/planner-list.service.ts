@@ -17,19 +17,21 @@ import { posts } from '../../drizzle/schema/posts.schema';
 import {
   isPartlyPublishedSql,
   NON_DRAFT_STATUSES,
+  plannerAtSql,
 } from '../../posts/lib/post-status.sql';
 import { PlannerPostsService } from '../../posts/services/planner-posts.service';
 import type { ListTab, PlannerListDto } from '../dto/planner-list.dto';
 import { decodeListCursor, encodeListCursor } from '../lib/list-cursor';
 
 /**
- * The calendar instant: `COALESCE(published_at, scheduled_at)`. An immediate
- * publish can carry neither, so `created_at` closes the chain; a NULL sort key
- * would drop the row out of every keyset comparison. This chain differs from
- * `occurredAtSql` (post-status.sql.ts) on purpose: the list key includes
- * `created_at` so rows with no time are not dropped from keyset paging.
+ * The list's sort key is the Planner instant, `plannerAtSql`:
+ * `COALESCE(published_at, scheduled_at, updated_at)`. An immediate publish
+ * that failed carries neither time, so its last attempt (`updated_at`, NOT
+ * NULL) closes the chain - a NULL key would drop the row out of every keyset
+ * comparison. It is the same instant `presentPost` returns as `occurredAt`,
+ * so a row is grouped under the day it is sorted by.
  */
-const occurredSql = sql`COALESCE(${posts.publishedAt}, ${posts.scheduledAt}, ${posts.createdAt})`;
+const occurredSql = plannerAtSql;
 /** Millisecond sort key: one precision, one column type, both sides. */
 const keyMsSql = sql<string>`floor(extract(epoch from ${occurredSql}) * 1000)::bigint`;
 

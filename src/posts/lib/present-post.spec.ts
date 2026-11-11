@@ -1,4 +1,9 @@
-import { bucketByDate, presentPost, type PostRow } from './present-post';
+import {
+  bucketByDate,
+  plannerAt,
+  presentPost,
+  type PostRow,
+} from './present-post';
 
 const NOW = new Date('2026-06-15T10:00:00Z');
 const users = new Map([
@@ -153,7 +158,40 @@ describe('presentPost', () => {
     const dto = presentPost(row({ publishedAt: published }), { users });
     expect(dto.occurredAt).toBe(published.toISOString());
     expect(
-      presentPost(row({ scheduledAt: null }), { users }).occurredAt,
+      presentPost(row({ status: 'draft', scheduledAt: null }), { users })
+        .occurredAt,
+    ).toBeNull();
+  });
+
+  it('places a failed "Publish now" (no scheduledAt, no publishedAt) at its attempt', () => {
+    // The live bug: such a post had occurredAt null and every Planner
+    // surface (List groups, calendar buckets) skipped it.
+    const attempt = new Date('2026-06-15T12:34:56.789Z');
+    for (const status of ['failed', 'publishing'] as const) {
+      const dto = presentPost(
+        row({
+          status,
+          scheduledAt: null,
+          publishedAt: null,
+          createdAt: new Date('2026-06-01T00:00:00Z'),
+          updatedAt: attempt,
+        }),
+        { users },
+      );
+      expect(dto.occurredAt).toBe(attempt.toISOString());
+      expect(dto.scheduledAt).toBeNull();
+      expect(Object.keys(bucketByDate([dto], 'UTC'))).toEqual(['2026-06-15']);
+    }
+  });
+
+  it('a draft never gets an instant from updatedAt', () => {
+    expect(
+      plannerAt({
+        status: 'draft',
+        scheduledAt: null,
+        publishedAt: null,
+        updatedAt: NOW,
+      }),
     ).toBeNull();
   });
 

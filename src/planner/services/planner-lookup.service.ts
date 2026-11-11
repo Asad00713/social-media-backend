@@ -15,6 +15,7 @@ import { posts } from '../../drizzle/schema/posts.schema';
 import {
   NON_DRAFT_STATUSES,
   occurredAtSql,
+  plannerAtSql,
 } from '../../posts/lib/post-status.sql';
 import type {
   LastPostTimeDto,
@@ -24,10 +25,13 @@ import type {
 import { loadWorkspaceTimezone, wallClockToUtc } from '../lib/workspace-time';
 
 /**
- * "Occurred" here is `occurredAtSql` (COALESCE(published_at, scheduled_at)),
- * NOT the list's chain that ends in `created_at`. A post with no time at all
- * has no instant to return: handing back `created_at` as a schedule
- * suggestion, or counting it in a month, would be wrong. Such rows drop out.
+ * Next post and last post time read `occurredAtSql` (COALESCE(published_at,
+ * scheduled_at)), NOT the Planner chain that ends in `updated_at`. A post with
+ * no time at all has no instant to suggest or jump to: handing back its
+ * attempt time as a schedule suggestion would be wrong. Such rows drop out.
+ *
+ * Month counts read `plannerAtSql`: they count what the calendar shows, and a
+ * failed "Publish now" sits on the calendar at its attempt.
  */
 @Injectable()
 export class PlannerLookupService {
@@ -59,7 +63,7 @@ export class PlannerLookupService {
     const columns = Array.from(
       { length: 12 },
       (_, i) =>
-        sql`count(*) FILTER (WHERE ${occurredAtSql} >= ${bounds[i].toISOString()}::timestamptz AND ${occurredAtSql} < ${bounds[i + 1].toISOString()}::timestamptz)::int`,
+        sql`count(*) FILTER (WHERE ${plannerAtSql} >= ${bounds[i].toISOString()}::timestamptz AND ${plannerAtSql} < ${bounds[i + 1].toISOString()}::timestamptz)::int`,
     );
     const result = await this.db.execute(
       sql`SELECT ${sql.join(

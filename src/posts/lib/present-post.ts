@@ -64,6 +64,22 @@ function presentTarget(
 
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 
+/**
+ * Where the post sits in the Planner. Twin of `plannerAtSql`
+ * (post-status.sql.ts): publishedAt, then scheduledAt, then - for a non-draft
+ * post with neither, a "Publish now" that failed or is still publishing - its
+ * last attempt, `updatedAt`. A draft has no place on a timeline: null.
+ */
+export function plannerAt(
+  row: Pick<PostRow, 'status' | 'publishedAt' | 'scheduledAt' | 'updatedAt'>,
+): Date | null {
+  return (
+    row.publishedAt ??
+    row.scheduledAt ??
+    (row.status === 'draft' ? null : row.updatedAt)
+  );
+}
+
 export function presentPost(
   row: PostRow,
   ctx: { users: Map<string, PlannerUserRef> },
@@ -84,7 +100,7 @@ export function presentPost(
     displayStatus: derivePostStatus(row.status, stored),
     scheduledAt: iso(row.scheduledAt),
     publishedAt: iso(row.publishedAt),
-    occurredAt: iso(row.publishedAt ?? row.scheduledAt),
+    occurredAt: iso(plannerAt(row)),
     platformContent: (row.platformContent ??
       {}) as PlannerPostDto['platformContent'],
     metadata,
