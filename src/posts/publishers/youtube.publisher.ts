@@ -50,8 +50,8 @@ export class YouTubePublisher extends BasePublisher {
       );
     }
 
-    // Description (combined body + metadata.description)
-    const description = options.content || metadata.description || '';
+    // The description the YouTube card shows - never the shared caption.
+    const description = youtubeDescription(metadata);
     if (description.length > MAX_DESCRIPTION_LENGTH) {
       throw new Error(
         `YouTube description cannot exceed ${MAX_DESCRIPTION_LENGTH} characters`,
@@ -109,7 +109,7 @@ export class YouTubePublisher extends BasePublisher {
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
-    const { content, mediaItems, accessToken, metadata, channelId } = options;
+    const { mediaItems, accessToken, metadata, channelId } = options;
 
     this.validate(options);
 
@@ -125,7 +125,7 @@ export class YouTubePublisher extends BasePublisher {
     // auto-classifies vertical videos < 60s as Shorts, but having the hashtag
     // in the description boosts discoverability and is what the official
     // guidance recommends.
-    let description = content || metadata.description || '';
+    let description = youtubeDescription(metadata);
     if (isShort) {
       description = ensureShortsHashtag(description);
     }
@@ -143,7 +143,7 @@ export class YouTubePublisher extends BasePublisher {
       {
         title: metadata.title,
         description,
-        privacyStatus: metadata.privacyStatus || 'private',
+        privacyStatus: youtubePrivacyStatus(metadata.privacyStatus),
         tags,
         categoryId: metadata.categoryId || '22',
         playlistId: metadata.playlistId,
@@ -211,6 +211,44 @@ export class YouTubePublisher extends BasePublisher {
 
     return publishResult;
   }
+}
+
+/**
+ * The visibility a video is uploaded with when the draft names none.
+ *
+ * `public`, because that is what the composer's Visibility row shows before
+ * anyone touches it (`youtube-inspector.tsx`). The composer now stores the
+ * value explicitly; this default only decides drafts saved before it did,
+ * and those were shown as Public too. One default on both sides, so the
+ * row never reads Public over a video that uploads Private.
+ */
+export const YOUTUBE_DEFAULT_PRIVACY = 'public';
+
+const YOUTUBE_PRIVACY_VALUES = new Set(['public', 'unlisted', 'private']);
+
+/** The draft's visibility, or the shared default when it is missing or unknown. */
+export function youtubePrivacyStatus(
+  value: unknown,
+): 'public' | 'unlisted' | 'private' {
+  return typeof value === 'string' && YOUTUBE_PRIVACY_VALUES.has(value)
+    ? (value as 'public' | 'unlisted' | 'private')
+    : YOUTUBE_DEFAULT_PRIVACY;
+}
+
+/**
+ * The video's description: the YouTube card's own Description field.
+ *
+ * Never the shared caption (`content`). The YouTube card has no caption -
+ * it draws a title and a description, and its counter measures the
+ * description - so the shared caption is text the person never saw on this
+ * channel. Sending it as the description put words on the video that the
+ * composer showed nowhere, and ignored the description that was typed.
+ */
+export function youtubeDescription(
+  metadata: Record<string, unknown> | undefined,
+): string {
+  const value = metadata?.description;
+  return typeof value === 'string' ? value : '';
 }
 
 /**
