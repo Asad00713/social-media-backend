@@ -10,6 +10,9 @@ import type { LogWriterService } from './log-writer.service';
  * The writer is set after construction because the logger is installed during
  * bootstrap (app.useLogger) before we resolve providers from the container.
  */
+/** A logged error object can be a whole HTTP response; keep rows bounded. */
+const MAX_MESSAGE_LENGTH = 4000;
+
 @Injectable()
 export class AppLoggerService extends ConsoleLogger {
   private writer?: LogWriterService;
@@ -18,26 +21,39 @@ export class AppLoggerService extends ConsoleLogger {
     this.writer = writer;
   }
 
-  error(message: unknown, stackOrContext?: string, context?: string): void {
-    super.error(
-      message as string,
-      stackOrContext as string,
-      context as string,
-    );
-    // Nest calls error(message, stack, context). With no stack the second arg
-    // is the context instead — normalise both shapes.
+  /**
+   * Nest calls error(message, stack, context), but code across the app also
+   * calls `logger.error('Failed to …:', error)` with the caught error OBJECT
+   * as the second argument. Only a string can be a stack or a context; any
+   * other value is detail that belongs with the message. Treating it as a
+   * string threw "value.includes is not a function" inside the catch block,
+   * which replaced the real platform error the user should have seen.
+   */
+  error(message: unknown, stackOrContext?: unknown, context?: string): void {
+    super.error(message as string, stackOrContext as string, context as string);
+    const asString =
+      typeof stackOrContext === 'string' ? stackOrContext : undefined;
+    const detail =
+      stackOrContext === undefined || asString !== undefined
+        ? undefined
+        : stackOrContext;
+    // With no stack the second string is the context instead — normalise both.
     const ctx =
       context ??
-      (stackOrContext && !this.looksLikeStack(stackOrContext)
-        ? stackOrContext
-        : undefined);
+      (asString && !this.looksLikeStack(asString) ? asString : undefined);
     const stack =
-      stackOrContext && this.looksLikeStack(stackOrContext)
-        ? stackOrContext
-        : undefined;
+      asString && this.looksLikeStack(asString)
+        ? asString
+        : detail instanceof Error
+          ? detail.stack
+          : undefined;
+    const text =
+      detail === undefined || detail === null
+        ? this.asMessage(message)
+        : `${this.asMessage(message)} ${this.asMessage(detail)}`;
     this.writer?.write({
       level: 'error',
-      message: this.asMessage(message),
+      message: text.slice(0, MAX_MESSAGE_LENGTH),
       context: ctx ?? this.context ?? null,
       stack: stack ?? null,
     });
