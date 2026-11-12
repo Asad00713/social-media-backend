@@ -1,5 +1,6 @@
 import { Injectable, Inject, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
+import type { DbType } from '../../../drizzle/db';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import {
   socialMediaChannels,
@@ -9,6 +10,7 @@ import { channelAudience } from '../../../drizzle/schema/channel-audience.schema
 import { decrypt } from '../../../common/utils/encryption.util';
 import { latestFollowerCounts } from '../../../insights/audience/latest-followers';
 import { refreshAudience } from '../../../insights/audience/refresh';
+import { isAudienceRefreshable } from '../../../insights/audience/refreshable';
 import { FacebookApiClient } from '../adapters/facebook/facebook-api.client';
 import { InstagramApiClient } from '../adapters/instagram/instagram-api.client';
 import { ThreadsApiClient } from '../adapters/threads/threads-api.client';
@@ -18,9 +20,10 @@ export interface ChannelAudienceRefreshJob {
 }
 
 /**
- * Daily audience refresh for one channel. A platform error never throws:
- * `refreshAudience` folds it into the row's status. Only a DB error throws,
- * so BullMQ retries it.
+ * Daily audience refresh for one channel. A permanent platform error is
+ * folded into the row's status by `refreshAudience`; a transient or
+ * rate-limit one, like a DB error, throws so BullMQ retries it and the
+ * previous row stays untouched (nothing is upserted).
  */
 @Injectable()
 export class ChannelAudienceRefreshHandler {
@@ -30,7 +33,7 @@ export class ChannelAudienceRefreshHandler {
     private readonly instagram: InstagramApiClient,
     private readonly threads: ThreadsApiClient,
     private readonly facebook: FacebookApiClient,
-    @Inject(DRIZZLE) private readonly db: any,
+    @Inject(DRIZZLE) private readonly db: DbType,
   ) {}
 
   async handle(
@@ -44,9 +47,9 @@ export class ChannelAudienceRefreshHandler {
       .where(eq(socialMediaChannels.id, channelId))
       .limit(1);
     const channel = rows[0];
-    if (!channel || !channel.isActive) {
+    if (!channel || !isAudienceRefreshable(channel)) {
       this.logger.log(
-        `Audience refresh: channel ${channelId} gone or inactive, skipping`,
+        `Audience refresh: channel ${channelId} gone, paused or not connected, skipping`,
       );
       return { ok: true, skipped: true };
     }

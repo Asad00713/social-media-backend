@@ -1,3 +1,4 @@
+import type { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import { refreshAudience, type RefreshDeps } from './refresh';
 
 const igBody = (dim: string, value: number) => ({
@@ -14,20 +15,22 @@ const fbBody = (map: Record<string, number>) => ({
   data: [{ values: [{ end_time: '2026-11-10T08:00:00+0000', value: map }] }],
 });
 
-function deps(overrides: Partial<Record<keyof RefreshDeps, any>> = {}) {
-  const ig = jest.fn(async (_id: string, _t: string, b: string) => {
-    if (b === 'country') return igBody('PK', 300);
-    if (b === 'city') return igBody('Karachi, Sindh', 120);
-    if (b === 'age') return igBody('25-34', 200);
-    return igBody('F', 250);
+function deps(overrides: Partial<Record<keyof RefreshDeps, unknown>> = {}) {
+  const ig = jest.fn((_id: string, _t: string, b: string) => {
+    if (b === 'country') return Promise.resolve(igBody('PK', 300));
+    if (b === 'city') return Promise.resolve(igBody('Karachi, Sindh', 120));
+    if (b === 'age') return Promise.resolve(igBody('25-34', 200));
+    return Promise.resolve(igBody('F', 250));
   });
-  const th = jest.fn(async (_t: string, b: string) =>
-    b === 'country' ? igBody('US', 10) : igBody('x', 1),
+  const th = jest.fn((_t: string, b: string) =>
+    Promise.resolve(b === 'country' ? igBody('US', 10) : igBody('x', 1)),
   );
-  const fb = jest.fn(async (_p: string, _t: string, m: string) =>
-    m === 'page_follows_country'
-      ? fbBody({ PK: 40 })
-      : fbBody({ 'Lahore, Punjab': 9 }),
+  const fb = jest.fn((_p: string, _t: string, m: string) =>
+    Promise.resolve(
+      m === 'page_follows_country'
+        ? fbBody({ PK: 40 })
+        : fbBody({ 'Lahore, Punjab': 9 }),
+    ),
   );
   const d = {
     instagram: { getFollowerDemographics: ig },
@@ -38,7 +41,10 @@ function deps(overrides: Partial<Record<keyof RefreshDeps, any>> = {}) {
   return { d, ig, th, fb };
 }
 
-const channel = (platform: any, followersCount: number | null) => ({
+const channel = (
+  platform: SupportedPlatform,
+  followersCount: number | null,
+) => ({
   platform,
   platformAccountId: 'acct-1',
   accessToken: 'tok',
@@ -146,11 +152,13 @@ describe('refreshAudience', () => {
     const { d } = deps({
       instagram: {
         getFollowerDemographics: jest.fn(
-          async (_i: string, _t: string, b: string) => {
+          (_i: string, _t: string, b: string) => {
             if (b === 'city') {
-              throw Object.assign(new Error('perm'), { metaCode: 10 });
+              return Promise.reject(
+                Object.assign(new Error('perm'), { metaCode: 10 }),
+              );
             }
-            return igBody('PK', 5);
+            return Promise.resolve(igBody('PK', 5));
           },
         ),
       },
@@ -166,23 +174,58 @@ describe('refreshAudience', () => {
     });
   });
 
-  it('any other thrown error is failed and never rethrown', async () => {
+  it.each(['permanent', 'auth_failed', 'not_found'])(
+    'a %s error is failed and not rethrown',
+    async (code) => {
+      const { d } = deps({
+        facebook: {
+          getPageFollowsLocation: jest
+            .fn()
+            .mockRejectedValue(Object.assign(new Error('nope'), { code })),
+        },
+      });
+      const row = await refreshAudience(channel('facebook', 900), d);
+      expect(row.status).toBe('failed');
+      expect(row.countries).toEqual([]);
+    },
+  );
+
+  it('an error with no code is failed and not rethrown', async () => {
     const { d } = deps({
       facebook: {
-        getPageFollowsLocation: jest.fn(async () => {
-          throw new Error('network down');
-        }),
+        getPageFollowsLocation: jest
+          .fn()
+          .mockRejectedValue(new Error('network down')),
       },
     });
     const row = await refreshAudience(channel('facebook', 900), d);
     expect(row.status).toBe('failed');
-    expect(row.countries).toEqual([]);
   });
+
+  it.each(['transient', 'rate_limited'])(
+    'a %s error is rethrown, so a good stored row is never overwritten',
+    async (code) => {
+      const err = Object.assign(new Error('try later'), { code });
+      const { d } = deps({
+        instagram: {
+          getFollowerDemographics: jest.fn(
+            (_i: string, _t: string, b: string) =>
+              b === 'age'
+                ? Promise.reject(err)
+                : Promise.resolve(igBody('PK', 5)),
+          ),
+        },
+      });
+      await expect(refreshAudience(channel('instagram', 500), d)).rejects.toBe(
+        err,
+      );
+    },
+  );
 
   it('a 200 with an empty data array is ok with empty arrays', async () => {
     const { d } = deps({
       instagram: {
-        getFollowerDemographics: jest.fn(async () => ({ data: [] })),
+        getFollowerDemographics: jest.fn(() => Promise.resolve({ data: [] })),
       },
     });
     const row = await refreshAudience(channel('instagram', 500), d);

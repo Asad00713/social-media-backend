@@ -44,6 +44,15 @@ const META_BREAKDOWNS: readonly MetaBreakdown[] = [
   'gender',
 ];
 
+/**
+ * The Meta clients (Instagram, Threads, Facebook) tag their errors with a
+ * `code`; these two are worth a retry, the rest are verdicts on the channel.
+ */
+function isRetryable(err: unknown): boolean {
+  const code = (err as { code?: unknown } | null | undefined)?.code;
+  return code === 'transient' || code === 'rate_limited';
+}
+
 function emptyRow(
   status: StoredAudienceStatus,
   followerCount: number | null,
@@ -59,9 +68,11 @@ function emptyRow(
 }
 
 /**
- * Fetches one channel's audience breakdown and folds it into a row. Never
- * throws: a platform error becomes the row's status with every array empty
- * (all-or-nothing, so a half-filled row never looks complete).
+ * Fetches one channel's audience breakdown and folds it into a row. A
+ * permanent platform error becomes the row's status with every array empty
+ * (all-or-nothing, so a half-filled row never looks complete). A transient or
+ * rate-limited error is rethrown instead: it says nothing about the channel,
+ * so the caller retries and the previous good row is not overwritten.
  */
 export async function refreshAudience(
   channel: RefreshChannel,
@@ -125,6 +136,7 @@ export async function refreshAudience(
 
     return emptyRow('unsupported', followersCount);
   } catch (err) {
+    if (isRetryable(err)) throw err;
     return emptyRow(statusOfError(err), followersCount);
   }
 }

@@ -21,6 +21,7 @@ const CHANNEL = {
   platformAccountId: 'ig-1',
   accessToken: 'enc-tok',
   isActive: true,
+  connectionStatus: 'connected',
 };
 
 const ROW = {
@@ -34,20 +35,22 @@ const ROW = {
 
 function make(channelRows: unknown[]) {
   const values = jest.fn();
-  const onConflictDoUpdate = jest.fn(async () => undefined);
+  const onConflictDoUpdate = jest.fn(() => Promise.resolve(undefined));
   values.mockReturnValue({ onConflictDoUpdate });
   const db = {
     select: jest.fn(() => ({
-      from: () => ({ where: () => ({ limit: async () => channelRows }) }),
+      from: () => ({
+        where: () => ({ limit: () => Promise.resolve(channelRows) }),
+      }),
     })),
     insert: jest.fn(() => ({ values })),
   };
   const clients = { ig: {}, th: {}, fb: {} };
   const handler = new ChannelAudienceRefreshHandler(
-    clients.ig as any,
-    clients.th as any,
-    clients.fb as any,
-    db,
+    clients.ig as never,
+    clients.th as never,
+    clients.fb as never,
+    db as never,
   );
   return { handler, db, values, onConflictDoUpdate, clients };
 }
@@ -62,6 +65,8 @@ describe('ChannelAudienceRefreshHandler', () => {
   it.each([
     ['missing', []],
     ['inactive', [{ ...CHANNEL, isActive: false }]],
+    ['expired', [{ ...CHANNEL, connectionStatus: 'expired' }]],
+    ['revoked', [{ ...CHANNEL, connectionStatus: 'revoked' }]],
   ])('skips a %s channel without refreshing or writing', async (_l, rows) => {
     const { handler, db } = make(rows);
     await expect(handler.handle({ channelId: 7 })).resolves.toEqual({
@@ -90,10 +95,16 @@ describe('ChannelAudienceRefreshHandler', () => {
       },
       { instagram: clients.ig, threads: clients.th, facebook: clients.fb },
     );
-    const inserted = values.mock.calls[0][0];
+    const [inserted] = (values.mock.calls as unknown[][])[0] as [
+      Record<string, unknown>,
+    ];
     expect(inserted).toMatchObject({ channelId: 7, ...ROW });
     expect(inserted.fetchedAt).toBeInstanceOf(Date);
-    const upsert = (onConflictDoUpdate.mock.calls as any[][])[0][0];
+    const [upsert] = (
+      onConflictDoUpdate.mock.calls as unknown as Array<
+        [{ set: Record<string, unknown> }]
+      >
+    )[0];
     expect(upsert.set).toMatchObject(ROW);
     expect(upsert.set.fetchedAt).toBeInstanceOf(Date);
   });
@@ -102,20 +113,34 @@ describe('ChannelAudienceRefreshHandler', () => {
     followersMock.mockResolvedValue(new Map([[7, null]]));
     const { handler } = make([CHANNEL]);
     await handler.handle({ channelId: 7 });
-    expect(refreshMock.mock.calls[0][0].followersCount).toBeNull();
+    const [arg] = refreshMock.mock.calls[0] as [
+      { followersCount: number | null },
+    ];
+    expect(arg.followersCount).toBeNull();
   });
 
-  it('still upserts a platform-error row and does not throw', async () => {
+  it('still upserts a permanent-error row and does not throw', async () => {
     const failed = { ...ROW, status: 'failed', countries: [] };
     refreshMock.mockResolvedValue(failed);
     const { handler, values } = make([CHANNEL]);
     await expect(handler.handle({ channelId: 7 })).resolves.toEqual({
       ok: true,
     });
-    expect(values.mock.calls[0][0]).toMatchObject({
+    expect((values.mock.calls as unknown[][])[0][0]).toMatchObject({
       channelId: 7,
       status: 'failed',
       countries: [],
     });
   });
+
+  it.each(['transient', 'rate_limited'])(
+    'rejects on a %s platform error and writes nothing, so BullMQ retries',
+    async (code) => {
+      const err = Object.assign(new Error('try later'), { code });
+      refreshMock.mockRejectedValue(err);
+      const { handler, db } = make([CHANNEL]);
+      await expect(handler.handle({ channelId: 7 })).rejects.toBe(err);
+      expect(db.insert).not.toHaveBeenCalled();
+    },
+  );
 });

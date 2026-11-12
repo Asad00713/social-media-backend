@@ -29,6 +29,7 @@ import type {
 import { audienceCsv } from './audience-csv';
 import { audienceGrowth } from './growth';
 import { latestFollowerCounts } from './latest-followers';
+import { isAudienceRefreshable } from './refreshable';
 import { toShares, youtubeAges, youtubeGenders } from './normalize';
 
 /** Platforms whose breakdown comes from the stored `channel_audience` row. */
@@ -150,9 +151,23 @@ export class AudienceService {
       .map((c) => c.id);
     const youtubeChannels = kept.filter((c) => c.platform === 'youtube');
 
+    // A DB failure in either read degrades those fields instead of 500ing
+    // the whole response; the live YouTube read has its own guards.
     const [followers, stored, live] = await Promise.all([
-      latestFollowerCounts(this.db, ids),
-      this.storedRows(storedIds),
+      latestFollowerCounts(this.db, ids).catch(
+        (err: unknown): Map<number, number | null> => {
+          this.logger.warn(
+            `Audience follower counts could not be read: ${(err as Error).message}`,
+          );
+          return new Map();
+        },
+      ),
+      this.storedRows(storedIds).catch((err: unknown): null => {
+        this.logger.warn(
+          `Stored audience rows could not be read: ${(err as Error).message}`,
+        );
+        return null;
+      }),
       this.youtubeAudiences(youtubeChannels, window, now),
     ]);
 
@@ -165,7 +180,10 @@ export class AudienceService {
       };
 
       if (STORED_PLATFORMS.includes(c.platform)) {
-        return this.storedChannel(c, base, stored.get(c.id), now);
+        // `stored === null`: the read failed, so every stored channel is failed.
+        return stored
+          ? this.storedChannel(c, base, stored.get(c.id), now)
+          : this.failedChannel(base);
       }
 
       if (c.platform === 'youtube') {
@@ -208,18 +226,12 @@ export class AudienceService {
     row: ChannelAudienceRow | undefined,
     now: Date,
   ): AudienceChannelDto {
-    const failed: AudienceChannelDto = {
-      ...base,
-      status: 'failed',
-      reconnectable: false,
-      fetchedAt: null,
-      measure: 'followers',
-      ...EMPTY,
-    };
+    const failed = this.failedChannel(base);
     try {
-      // The refresh job skips inactive channels without writing a row, so
-      // re-enqueueing one would never end and "pending" would be a lie.
-      if (!c.isActive) {
+      // The refresh job skips paused and not-connected channels without
+      // writing a row, so re-enqueueing one would never end and "pending"
+      // would be a lie. Their stored row, if any, is shown as stored.
+      if (!isAudienceRefreshable(c)) {
         return row ? this.fromRow(c, base, row) : failed;
       }
       const isStale =
@@ -236,6 +248,22 @@ export class AudienceService {
       );
       return failed;
     }
+  }
+
+  private failedChannel(
+    base: Pick<
+      AudienceChannelDto,
+      'channelId' | 'platform' | 'name' | 'followerCount'
+    >,
+  ): AudienceChannelDto {
+    return {
+      ...base,
+      status: 'failed',
+      reconnectable: false,
+      fetchedAt: null,
+      measure: 'followers',
+      ...EMPTY,
+    };
   }
 
   private fromRow(
@@ -309,11 +337,13 @@ export class AudienceService {
     now: Date,
   ): Promise<Map<number, YoutubeAudience>> {
     const out = new Map<number, YoutubeAudience>();
-    if (channels.length === 0) return out;
+    // A paused or not-connected channel has no usable token: failed, no call.
+    const usable = channels.filter(isAudienceRefreshable);
+    if (usable.length === 0) return out;
 
     const misses: SocialChannel[] = [];
     await Promise.all(
-      channels.map(async (c) => {
+      usable.map(async (c) => {
         const hit = await this.cacheRead(cacheKey(c.id, window));
         if (hit) out.set(c.id, hit);
         else misses.push(c);

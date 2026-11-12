@@ -8,6 +8,7 @@ import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
+import { isAudienceRefreshable } from '../../../insights/audience/refreshable';
 import { YouTubePubSubHubbubService } from '../services/youtube-pubsubhubbub.service';
 
 const SOCIAL_PLATFORMS: readonly SupportedPlatform[] = [
@@ -146,8 +147,7 @@ export class ChannelSnapshotsScheduler {
 
     const eligible = rows.filter(
       (r: { isActive: boolean; platform: string; connectionStatus: string }) =>
-        r.isActive &&
-        r.connectionStatus === 'connected' &&
+        isAudienceRefreshable(r) &&
         (AUDIENCE_PLATFORMS as readonly string[]).includes(r.platform),
     );
 
