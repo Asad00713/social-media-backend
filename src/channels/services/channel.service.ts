@@ -127,13 +127,15 @@ export class ChannelService {
       }
 
       // Reconnect path: channel exists but is in a broken/inactive state
-      // Update tokens, status, and profile metadata without touching identity fields
+      // Update tokens, status, and profile metadata without touching identity fields.
+      // Never `is_active`: false is the plan lock, and a reconnect that set it
+      // true walked a locked channel straight past the channel limit. Billing
+      // decides that (see releaseLockIfBillingAllows below).
       const reconnectData: Record<string, any> = {
         accessToken: encrypt(dto.accessToken),
         accountName: dto.accountName,
         connectionStatus: 'connected' as ConnectionStatus,
         lastError: null,
-        isActive: true,
         updatedAt: new Date(),
       };
 
@@ -179,7 +181,15 @@ export class ChannelService {
         `Reconnected ${dto.platform} channel ${existingChannel.id} for workspace ${workspaceId}`,
       );
 
-      return this.presentOne(updated[0]);
+      const row =
+        existingChannel.isActive === false
+          ? await this.releaseLockIfBillingAllows(
+              updated[0],
+              workspaceId,
+              dto.platform,
+            )
+          : updated[0];
+      return this.presentOne(row);
     }
 
     // No existing row — enforce the ACCOUNT channel ceiling before creating a
@@ -286,6 +296,41 @@ export class ChannelService {
     );
 
     return this.presentOne(inserted[0]);
+  }
+
+  /**
+   * A reconnected channel that was `is_active = false`: let BILLING decide
+   * whether it comes back, by running its own lock pass
+   * (AccountChannelsService.reconcileLocks, the oldest-first rule of
+   * channel-lock.util.ts). Under the account's ceiling it is released - the
+   * same release an upgrade gives, and how a channel deactivated for another
+   * reason (YouTube data deletion) comes back on reconnect; over it, it stays
+   * locked. Integrations never hold a slot, so billing never unlocks them
+   * either: their flag is left as it is. Any failure leaves the lock on.
+   */
+  private async releaseLockIfBillingAllows(
+    row: typeof socialMediaChannels.$inferSelect,
+    workspaceId: string,
+    platform: SupportedPlatform,
+  ): Promise<typeof socialMediaChannels.$inferSelect> {
+    if (!isBillablePlatform(platform)) return row;
+    try {
+      const ownerId = await this.accountChannels.ownerOf(workspaceId);
+      await this.accountChannels.reconcileLocks(ownerId);
+      const [fresh] = await db
+        .select()
+        .from(socialMediaChannels)
+        .where(eq(socialMediaChannels.id, row.id))
+        .limit(1);
+      return fresh ?? row;
+    } catch (error) {
+      this.logger.warn(
+        `Lock check after reconnecting channel ${row.id} failed; it stays locked: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+      return row;
+    }
   }
 
   /**
@@ -587,7 +632,6 @@ export class ChannelService {
     if (dto.username !== undefined) updateData.username = dto.username;
     if (dto.profilePictureUrl !== undefined)
       updateData.profilePictureUrl = dto.profilePictureUrl;
-    if (dto.isActive !== undefined) updateData.isActive = dto.isActive;
     if (dto.displayOrder !== undefined)
       updateData.displayOrder = dto.displayOrder;
     if (dto.timezone !== undefined) updateData.timezone = dto.timezone;

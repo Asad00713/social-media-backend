@@ -151,9 +151,9 @@ export class UpdateChannelDto {
   @IsOptional()
   profilePictureUrl?: string;
 
-  @IsBoolean()
-  @IsOptional()
-  isActive?: boolean;
+  // No `isActive`: false is the plan lock, written only by billing. A body
+  // carrying it is refused (400, the global ValidationPipe forbids unknown
+  // properties). Pausing is POST .../:channelId/pause and .../resume.
 
   @IsNumber()
   @IsOptional()

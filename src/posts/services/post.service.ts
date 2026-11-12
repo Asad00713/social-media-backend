@@ -73,6 +73,7 @@ import {
   isHeld,
   releaseTarget,
 } from '../lib/held-targets';
+import { syncHeldDripPost } from '../../drips/lib/held-drip-sync';
 import type {
   PostStatusChangedPayload,
   PostStatusChangedTarget,
@@ -636,10 +637,19 @@ export class PostService {
        * retrying it as a side effect of someone resuming another channel.
        */
       heldOnly?: boolean;
+      /**
+       * What a target on a channel the user paused does. 'hold' waits for
+       * the resume; 'refuse' (400 CHANNEL_PAUSED) is for a person pressing
+       * Publish now. Defaults to hold for the scheduler, refuse otherwise;
+       * an automated "publish now" (a drip occurrence) passes 'hold'.
+       */
+      onPaused?: 'hold' | 'refuse';
     },
   ): Promise<typeof posts.$inferSelect> {
     const triggeredBy = options?.triggeredBy ?? 'user';
     const heldOnly = options?.heldOnly === true;
+    const onPaused =
+      options?.onPaused ?? (triggeredBy === 'scheduler' ? 'hold' : 'refuse');
     const post = await this.getPost(postId, workspaceId);
 
     if (post.status === 'published') {
@@ -662,9 +672,10 @@ export class PostService {
     }
 
     // Channels the user paused. A person publishing now is told so; a
-    // scheduled job holds those targets instead of failing them.
+    // scheduled job (or a drip occurrence) holds those targets instead of
+    // failing them.
     const paused = await this.pausedChannelsOf(post);
-    if (paused.size > 0 && triggeredBy !== 'scheduler') {
+    if (paused.size > 0 && onPaused === 'refuse') {
       const names = [...paused.values()].join(', ');
       throw refusal(
         `Paused: ${names}. Resume ${paused.size === 1 ? 'it' : 'them'} to publish now - scheduled posts wait until you do.`,
@@ -674,8 +685,8 @@ export class PostService {
     const isPausedTarget = (t: PostTarget): boolean =>
       t.status !== 'published' && paused.has(String(t.channelId));
 
-    // Every target still to go is on a paused channel: hold them all and
-    // leave the post exactly where it is - still `scheduled`, never
+    // Every target still to go is on a paused channel: hold them all. The
+    // post stays (or, for a drip occurrence, becomes) `scheduled` - never
     // `publishing`, no retry burned.
     const pending = post.targets.filter((t) => t.status !== 'published');
     if (pending.length > 0 && pending.every(isPausedTarget)) {
@@ -979,6 +990,10 @@ export class PostService {
       status: finalStatus,
       targets: updatedTargets,
       updatedAt: new Date(),
+      // A held post that never had a time (a drip occurrence published now)
+      // takes this moment, so resume sends it at once and the Planner can
+      // place it.
+      ...(anyHeld && !post.scheduledAt ? { scheduledAt: now } : {}),
     };
     // The post's publishedAt is when it FIRST went out: a retry that lands
     // later must not restamp it, or the post jumps to the retry's day on
@@ -1017,6 +1032,19 @@ export class PostService {
     // is absent. Never let a sync failure fail (or duplicate, via BullMQ
     // retry) an otherwise-successful publish — same fire-and-forget
     // error boundary as `syncCalendarForPost` above.
+    // A drip occurrence that was held for a paused channel and has now gone
+    // out (or failed) on resume: its drip post learns the outcome. No-op for
+    // every other post, and for the drip processor's own first attempt.
+    if (!anyHeld) {
+      void syncHeldDripPost(db, updatedPost).catch((error) => {
+        this.logger.warn(
+          `Drip post sync failed for post ${postId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    }
+
     void this.campaignStatusSync.syncFromPost(updatedPost).catch((error) => {
       this.logger.warn(
         `Campaign slot sync failed for post ${postId}: ${
@@ -1086,8 +1114,12 @@ export class PostService {
 
   /**
    * Hold every remaining target of a post whose channels are all paused.
-   * Only `targets` is written: the post stays `scheduled` and nothing is
-   * emitted, because nothing about the post changed for anyone looking at it.
+   *
+   * A scheduled post only has `targets` written: it stays `scheduled` and
+   * nothing is emitted, because nothing about it changed for anyone looking
+   * at it. A post that was not scheduled yet (a drip occurrence published
+   * now) becomes `scheduled` at this moment, so resume finds it and the
+   * processor sends it; that change is emitted like any other.
    */
   private async holdPausedTargets(
     post: typeof posts.$inferSelect,
@@ -1099,10 +1131,17 @@ export class PostService {
     const targets = post.targets.map((t) =>
       isPausedTarget(t) ? holdTarget(t, now) : t,
     );
+    const becomesScheduled = post.status !== 'scheduled';
     const [updated] = await db
       .update(posts)
-      .set({ targets, updatedAt: now })
-      .where(and(eq(posts.id, post.id), eq(posts.status, 'scheduled')))
+      .set({
+        targets,
+        status: 'scheduled',
+        ...(post.scheduledAt ? {} : { scheduledAt: now }),
+        updatedAt: now,
+      })
+      // Only from the status read above: never over a concurrent change.
+      .where(and(eq(posts.id, post.id), eq(posts.status, post.status)))
       .returning();
 
     for (const t of held) {
@@ -1110,13 +1149,28 @@ export class PostService {
         post.id,
         'held',
         post.status,
-        post.status,
+        'scheduled',
         t.channelId,
         userId,
         { platform: t.platform, reason: 'channel_paused' },
       );
     }
     this.logger.log(`Post ${post.id} held: every remaining channel is paused`);
+
+    if (becomesScheduled && updated) {
+      this.emitPostStatusChanged({
+        workspaceId: post.workspaceId,
+        postId: post.id,
+        previousStatus: post.status,
+        status: 'scheduled',
+        targets,
+        publishedAt: post.publishedAt ?? null,
+        lastError: post.lastError ?? null,
+        triggeredBy: 'scheduler',
+        triggeredByUserId: userId,
+      });
+      this.syncCalendarForPost(post.id);
+    }
 
     const result = updated ?? { ...post, targets };
     await this.requeueIfResumedMeanwhile(

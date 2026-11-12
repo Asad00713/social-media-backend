@@ -469,7 +469,39 @@ export class DripProcessor extends WorkerHost {
         newPost.id,
         campaign.workspaceId,
         campaign.createdById,
+        // A channel the user paused holds this occurrence until it is
+        // resumed, as a scheduled post would - it is not a failure.
+        { onPaused: 'hold' },
       );
+
+      // Held for a paused channel: the post is now `scheduled` and resume
+      // sends it (syncHeldDripPost then records the outcome here). Not a
+      // success yet, not a failure: no counter moves.
+      if (publishedPost.status === 'scheduled') {
+        await db
+          .update(dripPosts)
+          .set({ status: 'scheduled', updatedAt: new Date() })
+          .where(eq(dripPosts.id, dripPostId));
+        await this.recordHistory(
+          campaignId,
+          dripPostId,
+          'held',
+          'publishing',
+          'scheduled',
+          undefined,
+          { postId: newPost.id, reason: 'channel_paused' },
+        );
+        this.logger.log(
+          `Drip post ${dripPostId} held: its channel is paused (post ${newPost.id})`,
+        );
+        return {
+          success: true,
+          held: true,
+          postId: newPost.id,
+          status: 'scheduled',
+          targets: publishedPost.targets,
+        };
+      }
 
       // Update drip post status based on publish result
       const finalStatus =
