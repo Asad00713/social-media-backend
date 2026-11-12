@@ -44,10 +44,19 @@ const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
 /** YouTube's live breakdown is cached for 12 hours per channel and window. */
 export const YOUTUBE_CACHE_TTL_SECONDS = 43_200;
 
+/**
+ * How long a cache read may take. REDIS_CLIENT queues commands while Redis is
+ * down (maxRetriesPerRequest: null), so an unbounded `get` would hang the
+ * request; past this we go live instead.
+ */
+export const CACHE_READ_TIMEOUT_MS = 300;
+
 export const AUDIENCE_REFRESH_JOB = 'channel-audience-refresh';
 
 /** The slice of ioredis this service uses; a fake satisfies it in specs. */
 export interface AudienceCache {
+  /** ioredis connection state; only `ready` is worth sending a command to. */
+  status: string;
   get(key: string): Promise<string | null>;
   set(
     key: string,
@@ -156,35 +165,7 @@ export class AudienceService {
       };
 
       if (STORED_PLATFORMS.includes(c.platform)) {
-        const row = stored.get(c.id);
-        const isStale =
-          !row || now.getTime() - row.fetchedAt.getTime() > STALE_AFTER_MS;
-        if (isStale) this.enqueueRefresh(c.id, now);
-        if (!row) {
-          // Connected recently, not fetched yet: "couldn't load" would be false.
-          return {
-            ...base,
-            status: 'pending',
-            reconnectable: false,
-            fetchedAt: null,
-            measure: 'followers',
-            ...EMPTY,
-          };
-        }
-        return {
-          ...base,
-          status: row.status,
-          reconnectable:
-            c.platform === 'facebook' &&
-            row.status === 'no_permission' &&
-            process.env.FACEBOOK_REQUEST_READ_INSIGHTS === 'true',
-          fetchedAt: row.fetchedAt.toISOString(),
-          measure: 'followers',
-          countries: toShares(row.countries, 'countries'),
-          cities: toShares(row.cities, 'cities'),
-          ages: toShares(row.ages, 'ages'),
-          genders: toShares(row.genders, 'genders'),
-        };
+        return this.storedChannel(c, base, stored.get(c.id), now);
       }
 
       if (c.platform === 'youtube') {
@@ -212,6 +193,73 @@ export class AudienceService {
       };
     });
     return { channels: out };
+  }
+
+  /**
+   * One stored-platform channel. A row that cannot be mapped (malformed
+   * jsonb) fails that channel only, never the whole response.
+   */
+  private storedChannel(
+    c: SocialChannel,
+    base: Pick<
+      AudienceChannelDto,
+      'channelId' | 'platform' | 'name' | 'followerCount'
+    >,
+    row: ChannelAudienceRow | undefined,
+    now: Date,
+  ): AudienceChannelDto {
+    const failed: AudienceChannelDto = {
+      ...base,
+      status: 'failed',
+      reconnectable: false,
+      fetchedAt: null,
+      measure: 'followers',
+      ...EMPTY,
+    };
+    try {
+      // The refresh job skips inactive channels without writing a row, so
+      // re-enqueueing one would never end and "pending" would be a lie.
+      if (!c.isActive) {
+        return row ? this.fromRow(c, base, row) : failed;
+      }
+      const isStale =
+        !row || now.getTime() - row.fetchedAt.getTime() > STALE_AFTER_MS;
+      if (isStale) this.enqueueRefresh(c.id, now);
+      if (!row) {
+        // Connected recently, not fetched yet: "couldn't load" would be false.
+        return { ...failed, status: 'pending' };
+      }
+      return this.fromRow(c, base, row);
+    } catch (err) {
+      this.logger.warn(
+        `Audience row for channel ${c.id} could not be read: ${(err as Error).message}`,
+      );
+      return failed;
+    }
+  }
+
+  private fromRow(
+    c: SocialChannel,
+    base: Pick<
+      AudienceChannelDto,
+      'channelId' | 'platform' | 'name' | 'followerCount'
+    >,
+    row: ChannelAudienceRow,
+  ): AudienceChannelDto {
+    return {
+      ...base,
+      status: row.status,
+      reconnectable:
+        c.platform === 'facebook' &&
+        row.status === 'no_permission' &&
+        process.env.FACEBOOK_REQUEST_READ_INSIGHTS === 'true',
+      fetchedAt: row.fetchedAt.toISOString(),
+      measure: 'followers',
+      countries: toShares(row.countries, 'countries'),
+      cities: toShares(row.cities, 'cities'),
+      ages: toShares(row.ages, 'ages'),
+      genders: toShares(row.genders, 'genders'),
+    };
   }
 
   private async storedRows(
@@ -316,7 +364,7 @@ export class AudienceService {
             fetchedAt: now.toISOString(),
           };
           out.set(c.id, audience);
-          await this.cacheWrite(cacheKey(c.id, window), audience);
+          this.cacheWrite(cacheKey(c.id, window), audience);
         } catch (err) {
           this.logger.warn(
             `YouTube audience failed for channel ${c.id}: ${(err as Error).message}`,
@@ -328,30 +376,35 @@ export class AudienceService {
   }
 
   private async cacheRead(key: string): Promise<YoutubeAudience | null> {
+    if (this.redis.status !== 'ready') return null;
+    let timer: NodeJS.Timeout | undefined;
     try {
-      const raw = await this.redis.get(key);
+      const timeout = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), CACHE_READ_TIMEOUT_MS);
+      });
+      const raw = await Promise.race([this.redis.get(key), timeout]);
       return raw ? (JSON.parse(raw) as YoutubeAudience) : null;
     } catch (err) {
       this.logger.warn(`Audience cache read failed: ${(err as Error).message}`);
       return null;
+    } finally {
+      clearTimeout(timer);
     }
   }
 
-  private async cacheWrite(
-    key: string,
-    audience: YoutubeAudience,
-  ): Promise<void> {
-    try {
-      await this.redis.set(
-        key,
-        JSON.stringify(audience),
-        'EX',
-        YOUTUBE_CACHE_TTL_SECONDS,
-      );
-    } catch (err) {
+  /** Fire-and-forget: the response never waits on Redis, and a failure is only logged. */
+  private cacheWrite(key: string, audience: YoutubeAudience): void {
+    if (this.redis.status !== 'ready') return;
+    const log = (err: unknown) =>
       this.logger.warn(
         `Audience cache write failed: ${(err as Error).message}`,
       );
+    try {
+      void this.redis
+        .set(key, JSON.stringify(audience), 'EX', YOUTUBE_CACHE_TTL_SECONDS)
+        .catch(log);
+    } catch (err) {
+      log(err);
     }
   }
 }

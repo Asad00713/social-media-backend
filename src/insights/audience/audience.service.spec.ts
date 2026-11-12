@@ -5,7 +5,7 @@ import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import type { SocialChannel } from '../insights-channels.repository';
 import type { ResolvedPeriod } from '../lib/query';
 import { customWindow } from '../../post-performance/period';
-import { AudienceService } from './audience.service';
+import { AudienceService, CACHE_READ_TIMEOUT_MS } from './audience.service';
 import { latestFollowerCounts } from './latest-followers';
 
 jest.mock('./latest-followers', () => ({ latestFollowerCounts: jest.fn() }));
@@ -27,11 +27,15 @@ const period = (from: string, to: string): ResolvedPeriod => ({
 const WEEK = period('2026-10-13', '2026-10-19');
 const LONG = period('2026-07-22', '2026-10-19');
 
-const channel = (id: number, platform: SupportedPlatform): SocialChannel => ({
+const channel = (
+  id: number,
+  platform: SupportedPlatform,
+  isActive = true,
+): SocialChannel => ({
   id,
   platform,
   accountName: `${platform}-${id}`,
-  isActive: true,
+  isActive,
   connectionStatus: 'connected',
 });
 
@@ -43,14 +47,24 @@ interface StoredRow {
   channelId: number;
   status: string;
   followerCount: number | null;
-  countries: Raw[];
+  countries: Raw[] | Record<string, never>;
   cities: Raw[];
   ages: Raw[];
   genders: Raw[];
   fetchedAt: Date;
 }
 
-function setup(channels: SocialChannel[], rows: StoredRow[] = []) {
+interface SetupOptions {
+  /** Channels whose token select returns no row. */
+  noTokenFor?: number[];
+  redisStatus?: string;
+}
+
+function setup(
+  channels: SocialChannel[],
+  rows: StoredRow[] = [],
+  { noTokenFor = [], redisStatus = 'ready' }: SetupOptions = {},
+) {
   const repo = {
     socialChannels: jest.fn().mockResolvedValue(channels),
     followerRows: jest.fn().mockResolvedValue([]),
@@ -63,7 +77,9 @@ function setup(channels: SocialChannel[], rows: StoredRow[] = []) {
           if (table === channelAudience) return Promise.resolve(rows);
           if (table === socialMediaChannels) {
             return Promise.resolve(
-              channels.map((c) => ({ id: c.id, accessToken: `tok-${c.id}` })),
+              channels
+                .filter((c) => !noTokenFor.includes(c.id))
+                .map((c) => ({ id: c.id, accessToken: `tok-${c.id}` })),
             );
           }
           return Promise.resolve([]);
@@ -84,6 +100,7 @@ function setup(channels: SocialChannel[], rows: StoredRow[] = []) {
   };
   const store = new Map<string, string>();
   const redis = {
+    status: redisStatus,
     get: jest.fn((k: string) => Promise.resolve(store.get(k) ?? null)),
     set: jest.fn((k: string, v: string) => {
       store.set(k, v);
@@ -293,6 +310,64 @@ describe('AudienceService.channels', () => {
     expect(flags(unset)).toEqual([false, false, false]);
   });
 
+  it('treats exactly 24h as fresh and 24h + 1ms as stale', async () => {
+    const day = 24 * HOUR;
+    const fresh = setup([channel(1, 'instagram')], [stored(1, day)]);
+    await fresh.service.channels('ws', WEEK, undefined, NOW);
+    expect(fresh.queue.add).not.toHaveBeenCalled();
+
+    const stale = setup([channel(1, 'instagram')], [stored(1, day + 1)]);
+    await stale.service.channels('ws', WEEK, undefined, NOW);
+    expect(stale.queue.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('fails only the channel whose stored row cannot be mapped', async () => {
+    const { service } = setup(
+      [channel(1, 'instagram'), channel(2, 'threads'), channel(3, 'facebook')],
+      [stored(1, HOUR, { countries: {} }), stored(2, HOUR), stored(3, HOUR)],
+    );
+    const { channels } = await service.channels('ws', WEEK, undefined, NOW);
+    expect(channels[0]).toMatchObject({
+      channelId: 1,
+      status: 'failed',
+      fetchedAt: null,
+      countries: [],
+      cities: [],
+      ages: [],
+      genders: [],
+      reconnectable: false,
+    });
+    expect(channels.map((c) => c.status)).toEqual(['failed', 'ok', 'ok']);
+    expect(channels[1].countries.length).toBeGreaterThan(0);
+  });
+
+  describe('an inactive channel', () => {
+    it('is never enqueued; its stored row is returned as stored, even when stale', async () => {
+      const { service, queue } = setup(
+        [channel(1, 'instagram', false)],
+        [stored(1, 48 * HOUR)],
+      );
+      const [c] = (await service.channels('ws', WEEK, undefined, NOW)).channels;
+      expect(c.status).toBe('ok');
+      expect(c.countries).toEqual([
+        { key: 'US', percent: 75 },
+        { key: 'PK', percent: 25 },
+      ]);
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+
+    it('with no row is failed, never pending, and is not enqueued', async () => {
+      const { service, queue } = setup([channel(1, 'threads', false)]);
+      const [c] = (await service.channels('ws', WEEK, undefined, NOW)).channels;
+      expect(c).toMatchObject({
+        status: 'failed',
+        fetchedAt: null,
+        countries: [],
+      });
+      expect(queue.add).not.toHaveBeenCalled();
+    });
+  });
+
   it('marks everything else unsupported', async () => {
     const { service, queue } = setup([
       channel(1, 'twitter'),
@@ -401,6 +476,50 @@ describe('AudienceService.channels', () => {
       const [c] = (await service.channels('ws', WEEK, undefined, NOW)).channels;
       expect(c.status).toBe('ok');
       expect(youtube.getDemographics).toHaveBeenCalledTimes(1);
+    });
+
+    it('is failed, and not cached, when the channel has no token row', async () => {
+      const { service, youtube, redis } = setup(
+        [channel(9, 'youtube'), channel(10, 'youtube')],
+        [],
+        { noTokenFor: [9] },
+      );
+      const { channels } = await service.channels('ws', WEEK, undefined, NOW);
+      expect(channels.map((c) => c.status)).toEqual(['failed', 'ok']);
+      expect(youtube.getDemographics).toHaveBeenCalledTimes(1);
+      expect(redis.set).toHaveBeenCalledTimes(1);
+      expect(redis.set.mock.calls[0][0]).toBe(
+        'audience:yt:10:2026-10-13:2026-10-19',
+      );
+    });
+
+    it('goes live within the timeout when the cache read never resolves', async () => {
+      const { service, youtube, redis } = setup([channel(9, 'youtube')]);
+      redis.get.mockReturnValue(new Promise(() => undefined));
+      const started = Date.now();
+      const [c] = (await service.channels('ws', WEEK, undefined, NOW)).channels;
+      expect(c.status).toBe('ok');
+      expect(youtube.getDemographics).toHaveBeenCalledTimes(1);
+      expect(Date.now() - started).toBeLessThan(CACHE_READ_TIMEOUT_MS + 700);
+    });
+
+    it('does not touch Redis when the client is not ready', async () => {
+      const { service, youtube, redis } = setup([channel(9, 'youtube')], [], {
+        redisStatus: 'reconnecting',
+      });
+      const [c] = (await service.channels('ws', WEEK, undefined, NOW)).channels;
+      expect(c.status).toBe('ok');
+      expect(youtube.getDemographics).toHaveBeenCalledTimes(1);
+      expect(redis.get).not.toHaveBeenCalled();
+      expect(redis.set).not.toHaveBeenCalled();
+    });
+
+    it('does not wait for a cache write that hangs', async () => {
+      const { service, redis } = setup([channel(9, 'youtube')]);
+      redis.set.mockReturnValue(new Promise(() => undefined));
+      const [c] = (await service.channels('ws', WEEK, undefined, NOW)).channels;
+      expect(c.status).toBe('ok');
+      expect(redis.set).toHaveBeenCalledTimes(1);
     });
 
     it('does not enqueue a refresh for YouTube', async () => {

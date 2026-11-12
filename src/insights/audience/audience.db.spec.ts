@@ -63,7 +63,7 @@ describeDb('AudienceService against Postgres', () => {
         new InsightsChannelsRepository(db),
         db,
         {} as never,
-        { get: jest.fn(), set: jest.fn() },
+        { status: 'ready', get: jest.fn(), set: jest.fn() },
         queue as never,
       );
       await fn(svc, client, queue);
