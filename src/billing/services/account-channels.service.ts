@@ -1,7 +1,6 @@
 import {
   Injectable,
   Logger,
-  ForbiddenException,
   InternalServerErrorException,
 } from '@nestjs/common';
 import { eq, sql, count, inArray, and, notInArray } from 'drizzle-orm';
@@ -13,6 +12,7 @@ import {
 } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
 import { UNLIMITED } from './limit-resolver.util';
+import { channelLimitReached } from './channel-limit.error';
 
 /**
  * Channels are pooled at the ACCOUNT level, not per workspace.
@@ -127,10 +127,7 @@ export class AccountChannelsService {
     if (limit === UNLIMITED) return;
 
     if (used >= limit) {
-      throw new ForbiddenException(
-        `Channel limit reached (${used}/${limit}). ` +
-          'Upgrade your plan or purchase additional channels.',
-      );
+      throw channelLimitReached(used, limit);
     }
   }
 

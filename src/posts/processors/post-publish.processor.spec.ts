@@ -135,6 +135,24 @@ describe('PostPublishProcessor', () => {
     expect(superseded.repeats.ensureNext).not.toHaveBeenCalled();
   });
 
+  it('passes a resume job on as heldOnly, a normal job without it', async () => {
+    rows = [row({ jobId: 'post-p1-resume-1' })];
+    const { processor, postService } = make(['post-p1-resume-1']);
+    await processor.process({
+      id: 'post-p1-resume-1',
+      data: { postId: 'p1', heldOnly: true },
+    } as any);
+    expect(postService.publishPost).toHaveBeenLastCalledWith('p1', 'w1', 'u1', {
+      triggeredBy: 'scheduler',
+      heldOnly: true,
+    });
+
+    rows = [row()];
+    await processor.process(job('j2'));
+    const last = postService.publishPost.mock.calls.at(-1) as unknown[];
+    expect(last[3]).toStrictEqual({ triggeredBy: 'scheduler' });
+  });
+
   it('still skips a post that is no longer scheduled', async () => {
     rows = [row({ status: 'draft' })];
     const { processor, postService } = make();

@@ -23,6 +23,13 @@ export class ChannelCredentialsAdapter implements ChannelCredentialsLookup {
       numericId,
       workspaceId,
     );
+    // Publish now is refused on a channel the user paused (a scheduled post
+    // waits for it instead - see PostService.publishPost).
+    if (channel.pausedAt) {
+      throw new BadRequestException(
+        `"${channel.accountName}" is paused. Resume it to publish now - scheduled posts wait until you do.`,
+      );
+    }
     const accessToken = await this.channelService.getAccessToken(
       numericId,
       workspaceId,

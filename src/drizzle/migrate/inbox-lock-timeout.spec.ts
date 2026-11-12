@@ -20,6 +20,8 @@ import { readMigrations } from './runner';
  * both).
  * 0061 creates short_links with foreign keys to workspace, posts and
  * users (SHARE ROW EXCLUSIVE on each).
+ * 0063 adds the pause columns to social_media_channels (ACCESS EXCLUSIVE)
+ * and creates network_requests with foreign keys to workspace and users.
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -32,6 +34,7 @@ const FILES = [
   '0059_brand_kits.sql',
   '0060_insight_hidden_steps.sql',
   '0061_short_links.sql',
+  '0063_channel_pause_and_network_requests.sql',
 ];
 
 const firstStatement = (sql: string): string =>

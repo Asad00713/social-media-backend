@@ -187,7 +187,16 @@ export const socialMediaChannels = pgTable(
     }>(),
 
     // Status and health
+    // false = LOCKED BY A PLAN DOWNGRADE (billing/services/channel-lock.util.ts),
+    // recomputed by the billing reconciler. Never a user pause: see paused_at.
     isActive: boolean('is_active').default(true).notNull(),
+    // A pause the user chose (migration 0063). NULL = not paused. While paused,
+    // posts can still be scheduled; a publish job that fires holds the target
+    // (PostTarget.heldAt) instead of failing it, and resume re-enqueues it.
+    pausedAt: timestamp('paused_at', { withTimezone: true }),
+    pausedByUserId: uuid('paused_by_user_id').references(() => users.id, {
+      onDelete: 'set null',
+    }),
     connectionStatus: varchar('connection_status', { length: 20 })
       .default('connected')
       .notNull(),

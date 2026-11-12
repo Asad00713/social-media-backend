@@ -1,5 +1,9 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { ChannelsController } from './channels.controller';
+import { ChannelHubController } from './channel-hub.controller';
+import { ChannelPauseService } from './services/channel-pause.service';
+import { ChannelSummaryService } from './services/channel-summary.service';
+import { NetworkRequestsService } from './services/network-requests.service';
 import { ChannelService } from './services/channel.service';
 import { OAuthService } from './services/oauth.service';
 import { FacebookService } from './services/facebook.service';
@@ -77,9 +81,15 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
     // forwardRef or the app fails to boot.
     forwardRef(() => BillingModule),
   ],
-  controllers: [ChannelsController],
+  // ChannelHubController FIRST: Nest registers routes in this order, and
+  // ChannelsController's `GET workspaces/:workspaceId/:channelId` would
+  // otherwise swallow `GET workspaces/:workspaceId/summary`.
+  controllers: [ChannelHubController, ChannelsController],
   providers: [
     ChannelService,
+    ChannelPauseService,
+    ChannelSummaryService,
+    NetworkRequestsService,
     OAuthService,
     FacebookService,
     PinterestService,

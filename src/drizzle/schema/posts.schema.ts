@@ -96,6 +96,16 @@ export interface PostTarget {
   warnings?: string[];
   /** "Publish: Remind me" — set instead of a platform post id. */
   reminderSentAt?: string;
+  /**
+   * The publish job fired while the channel was PAUSED by the user, so this
+   * target was held instead of published or failed. `status` (and the
+   * composer's `publishStatus`) are left exactly as they were - the target
+   * is still waiting - and resuming the channel re-enqueues the post
+   * (channels/services/channel-pause.service.ts). Cleared when the target
+   * is next attempted. Kept in the existing `targets` jsonb, no migration.
+   */
+  heldAt?: string;
+  heldReason?: 'channel_paused';
   contentOverride?: PlatformContent;
   /**
    * Sub-destination for chat/messaging platforms (Slack/Discord): which
