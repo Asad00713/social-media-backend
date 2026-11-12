@@ -5,12 +5,22 @@ import { YoutubeAuditGateService } from '../../channels/services/youtube-audit-g
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
-// YouTube platform limits — sourced from official Data API v3 docs (May 2026).
+import { utf8Bytes, youtubeTagsLength } from './text-length';
+
+// YouTube platform limits — Data API v3 `videos` resource.
 const MAX_TITLE_LENGTH = 100;
-const MAX_DESCRIPTION_LENGTH = 5000;
+/** "a maximum length of 5000 bytes" - bytes, not characters. */
+const MAX_DESCRIPTION_BYTES = 5000;
+/** All tags together, counted YouTube's way. */
+const MAX_TAGS_LENGTH = 500;
 const MIN_VIDEO_DURATION_SEC = 1; // YT rejects sub-second clips
 const MAX_VIDEO_DURATION_SEC = 12 * 60 * 60; // 12 hours — standard cap (verified channels can go higher)
-const MAX_SHORT_DURATION_SEC = 60; // YouTube Shorts hard cap
+/**
+ * Three minutes: "square or vertical aspect ratio up to three minutes in
+ * length will be categorized as Shorts" (support.google.com/youtube/answer/
+ * 15424877). The composer's `SHORT_MAX_DURATION_SEC` is the same 180.
+ */
+const MAX_SHORT_DURATION_SEC = 180;
 const MAX_VIDEO_SIZE_BYTES = 256 * 1024 * 1024 * 1024; // 256 GB standard
 
 @Injectable()
@@ -44,26 +54,54 @@ export class YouTubePublisher extends BasePublisher {
     if (!metadata?.title?.trim()) {
       throw new Error('YouTube videos require a title');
     }
-    if (metadata.title.length > MAX_TITLE_LENGTH) {
+    if (Array.from(metadata.title as string).length > MAX_TITLE_LENGTH) {
       throw new Error(
         `YouTube title cannot exceed ${MAX_TITLE_LENGTH} characters`,
       );
     }
 
-    // Description (combined body + metadata.description)
-    const description = options.content || metadata.description || '';
-    if (description.length > MAX_DESCRIPTION_LENGTH) {
+    const isShort = metadata?.isShort === true;
+
+    // The description the YouTube card shows - never the shared caption -
+    // as it will be SENT (a Short gains `#Shorts`). Its limit is "5000
+    // bytes", not characters (Data API `videos`): an emoji spends 4.
+    const description = isShort
+      ? ensureShortsHashtag(youtubeDescription(metadata))
+      : youtubeDescription(metadata);
+    const descriptionBytes = utf8Bytes(description);
+    if (descriptionBytes > MAX_DESCRIPTION_BYTES) {
       throw new Error(
-        `YouTube description cannot exceed ${MAX_DESCRIPTION_LENGTH} characters`,
+        `YouTube description cannot exceed ${MAX_DESCRIPTION_BYTES} bytes (${descriptionBytes} given)`,
+      );
+    }
+    // "may contain all valid UTF-8 characters except < and >" - both fields.
+    if (/[<>]/.test(metadata.title) || /[<>]/.test(description)) {
+      throw new Error(
+        'YouTube does not allow < or > in the title or description',
+      );
+    }
+    // Tags: 500 characters in all, counted YouTube's way (commas count; a
+    // tag with a space counts its quotes).
+    const tags = Array.isArray(metadata.tags)
+      ? (metadata.tags as unknown[]).filter(
+          (t): t is string => typeof t === 'string',
+        )
+      : [];
+    const tagsLength = youtubeTagsLength(tags);
+    if (tagsLength > MAX_TAGS_LENGTH) {
+      throw new Error(
+        `YouTube tags cannot exceed ${MAX_TAGS_LENGTH} characters (${tagsLength} given)`,
       );
     }
 
     // Duration / size guards — only enforced when the media metadata is known.
-    // Cloudinary uploads supply `duration` and the orchestrator may pass size
-    // through; if a publisher upstream stripped them, we skip the check rather
-    // than blocking the publish.
-    const isShort = metadata?.isShort === true;
-    const duration = media.duration;
+    // The composer stores the probed length as `durationSec`; older rows and
+    // Cloudinary uploads carry `duration`. Reading only `duration` meant the
+    // Shorts limit below never ran on a composer post.
+    const duration =
+      typeof media.duration === 'number'
+        ? media.duration
+        : (media as MediaItem & { durationSec?: number }).durationSec;
 
     if (typeof duration === 'number') {
       if (duration < MIN_VIDEO_DURATION_SEC) {
@@ -109,7 +147,7 @@ export class YouTubePublisher extends BasePublisher {
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
-    const { content, mediaItems, accessToken, metadata, channelId } = options;
+    const { mediaItems, accessToken, metadata, channelId } = options;
 
     this.validate(options);
 
@@ -125,7 +163,7 @@ export class YouTubePublisher extends BasePublisher {
     // auto-classifies vertical videos < 60s as Shorts, but having the hashtag
     // in the description boosts discoverability and is what the official
     // guidance recommends.
-    let description = content || metadata.description || '';
+    let description = youtubeDescription(metadata);
     if (isShort) {
       description = ensureShortsHashtag(description);
     }
@@ -143,7 +181,7 @@ export class YouTubePublisher extends BasePublisher {
       {
         title: metadata.title,
         description,
-        privacyStatus: metadata.privacyStatus || 'private',
+        privacyStatus: youtubePrivacyStatus(metadata.privacyStatus),
         tags,
         categoryId: metadata.categoryId || '22',
         playlistId: metadata.playlistId,
@@ -211,6 +249,44 @@ export class YouTubePublisher extends BasePublisher {
 
     return publishResult;
   }
+}
+
+/**
+ * The visibility a video is uploaded with when the draft names none.
+ *
+ * `public`, because that is what the composer's Visibility row shows before
+ * anyone touches it (`youtube-inspector.tsx`). The composer now stores the
+ * value explicitly; this default only decides drafts saved before it did,
+ * and those were shown as Public too. One default on both sides, so the
+ * row never reads Public over a video that uploads Private.
+ */
+export const YOUTUBE_DEFAULT_PRIVACY = 'public';
+
+const YOUTUBE_PRIVACY_VALUES = new Set(['public', 'unlisted', 'private']);
+
+/** The draft's visibility, or the shared default when it is missing or unknown. */
+export function youtubePrivacyStatus(
+  value: unknown,
+): 'public' | 'unlisted' | 'private' {
+  return typeof value === 'string' && YOUTUBE_PRIVACY_VALUES.has(value)
+    ? (value as 'public' | 'unlisted' | 'private')
+    : YOUTUBE_DEFAULT_PRIVACY;
+}
+
+/**
+ * The video's description: the YouTube card's own Description field.
+ *
+ * Never the shared caption (`content`). The YouTube card has no caption -
+ * it draws a title and a description, and its counter measures the
+ * description - so the shared caption is text the person never saw on this
+ * channel. Sending it as the description put words on the video that the
+ * composer showed nowhere, and ignored the description that was typed.
+ */
+export function youtubeDescription(
+  metadata: Record<string, unknown> | undefined,
+): string {
+  const value = metadata?.description;
+  return typeof value === 'string' ? value : '';
 }
 
 /**

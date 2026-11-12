@@ -1,6 +1,11 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { fetchPublicMedia } from '../../common/net/public-fetch';
 
+/** A Photo post's `description`: 4000 UTF-16 units (photo post reference). */
+export const TIKTOK_PHOTO_MAX_DESCRIPTION = 4000;
+/** A Video post's caption (`title`): 2200 UTF-16 units (direct post reference). */
+export const TIKTOK_VIDEO_MAX_CAPTION = 2200;
+
 export interface TikTokUser {
   id: string;
   username: string;
@@ -537,6 +542,11 @@ export class TikTokService {
     accessToken: string,
     imageUrls: string[],
     options: {
+      /**
+       * `DIRECT_POST` publishes; `MEDIA_UPLOAD` sends the photos to the
+       * creator's TikTok inbox to finish there (scope `video.upload`).
+       */
+      postMode?: 'DIRECT_POST' | 'MEDIA_UPLOAD';
       description?: string;
       title?: string;
       privacyLevel?:
@@ -552,6 +562,7 @@ export class TikTokService {
     } = {},
   ): Promise<{ publishId: string }> {
     const {
+      postMode = 'DIRECT_POST',
       description = '',
       title = '',
       privacyLevel = 'SELF_ONLY',
@@ -573,26 +584,41 @@ export class TikTokService {
       );
     }
 
+    const isInbox = postMode === 'MEDIA_UPLOAD';
+    // TikTok's photo reference
+    // (developers.tiktok.com/doc/content-posting-api-reference-photo-post):
+    // with MEDIA_UPLOAD the title and description are carried into TikTok's
+    // editing flow, while privacy_level, disable_comment, auto_add_music and
+    // the brand toggles are DIRECT_POST-only - the creator sets them in the
+    // app. So the inbox body carries only what that mode reads.
     const body = {
       post_info: {
         title: (title || '').slice(0, 90),
-        description: (description || '').slice(0, 2200),
-        disable_comment: disableComment,
-        privacy_level: privacyLevel,
-        auto_add_music: autoAddMusic,
-        brand_content_toggle: brandContentToggle,
-        brand_organic_toggle: brandOrganicToggle,
+        // "The maximum length for photo posts is 4000 in UTF-16 runes"
+        // (photo post reference) - not the Video caption's 2200. Over it,
+        // validate() refuses rather than this cutting silently.
+        description: (description || '').slice(0, TIKTOK_PHOTO_MAX_DESCRIPTION),
+        ...(isInbox
+          ? {}
+          : {
+              disable_comment: disableComment,
+              privacy_level: privacyLevel,
+              auto_add_music: autoAddMusic,
+              brand_content_toggle: brandContentToggle,
+              brand_organic_toggle: brandOrganicToggle,
+            }),
       },
       source_info: {
         source: 'PULL_FROM_URL',
         photo_cover_index: 0,
         photo_images: imageUrls,
       },
-      post_mode: 'DIRECT_POST',
+      post_mode: postMode,
       media_type: 'PHOTO',
       // Photo: TOP LEVEL of the body, beside post_info — not inside it, as it
       // is for video. TikTok's photo reference lists it in the body table.
-      ...(isAigc ? { is_aigc: true } : {}),
+      // Direct Post only, like the video inbox path, which takes no AI field.
+      ...(isAigc && !isInbox ? { is_aigc: true } : {}),
     };
 
     const response = await fetch(

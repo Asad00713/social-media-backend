@@ -30,6 +30,8 @@ import type {
   ScheduleConfig,
 } from '../types/draft.types';
 import { resolveOrganise, type OrganiseInput } from '../lib/draft-organise';
+import { assertNoOpenBlanks } from '../lib/template-blanks';
+import { warningsField } from '../../lib/publish-warnings';
 
 export const CHANNEL_CREDENTIALS_LOOKUP = 'CHANNEL_CREDENTIALS_LOOKUP';
 
@@ -97,17 +99,29 @@ export class PublishOrchestratorService {
     // below overwrites the stored targets with that copy - so they are read
     // FIRST and put back on each channel, or a retry (or a second Publish
     // after a failure) would post those Pins again.
-    const storedItems = await this.loadStoredItemResults(
+    //
+    // The same goes for a published channel's warnings: a retry of ANOTHER
+    // channel must not wipe the "published with issues" note off this one.
+    // A channel that is published again starts clean (`next` below).
+    const stored = await this.loadStoredTargetState(
       workspaceId,
       rawInput.draftId,
     );
     const input: InlinePublishInput = {
       ...rawInput,
-      channels: rawInput.channels.map((c) =>
-        c.itemResults?.length || !storedItems.has(c.channelId)
-          ? c
-          : { ...c, itemResults: storedItems.get(c.channelId) },
-      ),
+      channels: rawInput.channels.map((c) => {
+        const kept = stored.get(c.channelId);
+        if (!kept) return c;
+        return {
+          ...c,
+          ...(!c.itemResults?.length && kept.itemResults
+            ? { itemResults: kept.itemResults }
+            : {}),
+          ...(!c.warnings?.length && kept.warnings
+            ? { warnings: kept.warnings }
+            : {}),
+        };
+      }),
     };
 
     const isRetry = Boolean(input.retryChannelIds?.length);
@@ -122,6 +136,15 @@ export class PublishOrchestratorService {
         'None of the specified channelIds match draft channels',
       );
     }
+
+    // A template's {{blank}} never goes out: refused before the row is
+    // touched or anything is sent. Only what these targets would publish is
+    // read, so a leftover in another platform's fields never blocks this.
+    assertNoOpenBlanks({
+      base: input.base,
+      perPlatform: input.perPlatform as Record<string, unknown> | undefined,
+      platforms: targets.map((c) => c.platform),
+    });
 
     // Build the in-memory Draft object used by the resolver. We don't
     // need a DB row for resolution — just the structure.
@@ -168,6 +191,8 @@ export class PublishOrchestratorService {
         retryCount: isRetry ? target.retryCount + 1 : target.retryCount,
         errorCode: undefined,
         errorMessage: undefined,
+        // A re-publish reports its own warnings, never the last attempt's.
+        warnings: undefined,
       };
       updatedMap.set(target.channelId, next);
       await this.persistChannels(workspaceId, draft.id, updatedMap);
@@ -233,6 +258,10 @@ export class PublishOrchestratorService {
           ...(result.itemResults?.length
             ? { itemResults: result.itemResults }
             : {}),
+          // Soft steps that failed after the post went live (first comment,
+          // cover, alt text...): kept, so the post reads "published with
+          // issues" instead of silently missing a setting.
+          ...warningsField(result.metadata),
         };
         updatedMap.set(target.channelId, ok);
         await this.persistChannels(workspaceId, draft.id, updatedMap);
@@ -292,17 +321,21 @@ export class PublishOrchestratorService {
   }
 
   /**
-   * The per-item results stored on this draft's targets, by channel id.
+   * The per-item results and warnings stored on this draft's targets, by
+   * channel id.
    *
    * Degrades to "none" if the row cannot be read: a fresh draft has no row,
    * and a read failure must not block a publish - it only means a resumed
    * multi-item post could repeat items, which is what happened before.
    */
-  private async loadStoredItemResults(
+  private async loadStoredTargetState(
     workspaceId: string,
     draftId: string,
-  ): Promise<Map<string, NonNullable<ChannelTarget['itemResults']>>> {
-    const stored = new Map<string, NonNullable<ChannelTarget['itemResults']>>();
+  ): Promise<Map<string, Pick<ChannelTarget, 'itemResults' | 'warnings'>>> {
+    const stored = new Map<
+      string,
+      Pick<ChannelTarget, 'itemResults' | 'warnings'>
+    >();
     try {
       const rows = (await this.db
         .select({ targets: posts.targets })
@@ -313,17 +346,25 @@ export class PublishOrchestratorService {
         ? (rows[0].targets as ChannelTarget[])
         : [];
       for (const t of targets) {
-        if (
-          t?.channelId &&
-          Array.isArray(t.itemResults) &&
-          t.itemResults.length
-        ) {
-          stored.set(t.channelId, t.itemResults);
+        if (!t?.channelId) continue;
+        const items =
+          Array.isArray(t.itemResults) && t.itemResults.length
+            ? t.itemResults
+            : undefined;
+        const warnings =
+          Array.isArray(t.warnings) && t.warnings.length
+            ? t.warnings
+            : undefined;
+        if (items || warnings) {
+          stored.set(t.channelId, {
+            ...(items ? { itemResults: items } : {}),
+            ...(warnings ? { warnings } : {}),
+          });
         }
       }
     } catch (err) {
       this.logger.warn(
-        `Could not read stored item results for draft ${draftId}: ${err instanceof Error ? err.message : String(err)}`,
+        `Could not read stored target state for draft ${draftId}: ${err instanceof Error ? err.message : String(err)}`,
       );
     }
     return stored;
@@ -344,6 +385,7 @@ export class PublishOrchestratorService {
       platformPostUrl: target.platformPostUrl,
       errorCode: target.errorCode,
       errorMessage: target.errorMessage,
+      ...(target.warnings?.length ? { warnings: target.warnings } : {}),
       attemptedAt: target.attemptedAt ?? new Date().toISOString(),
       retryCount: target.retryCount,
     });

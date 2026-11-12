@@ -175,8 +175,12 @@ describe('ComposerSchedulingService — a time per channel', () => {
       'fb first',
     );
     expect(Object.keys(second.platformContent)).toEqual(['twitter']);
+    // X's thread stays X's: in its own fields, never the shared metadata.
     expect(first.metadata.thread).toBeUndefined();
-    expect(second.metadata.thread).toEqual(THREAD);
+    expect(second.metadata.thread).toBeUndefined();
+    expect(second.platformContent.twitter.platformSpecific.thread).toEqual(
+      THREAD,
+    );
     // Shared content goes to both.
     expect(first.mediaItems).toEqual(BASE.mediaItems);
     expect(second.mediaItems).toEqual(BASE.mediaItems);

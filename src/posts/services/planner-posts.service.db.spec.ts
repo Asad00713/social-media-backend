@@ -59,6 +59,46 @@ describeDb('PlannerPostsService (database)', () => {
     });
   });
 
+  it('range keeps a failed "Publish now" at its attempt (updated_at)', async () => {
+    await withRollbackDb([READY_MIGRATION], async (db) => {
+      const { user, a } = await seed(db);
+      const now = Date.now();
+      const base = { workspaceId: a.id, createdById: user.id, content: 'x' };
+      const attempt = new Date(now - 2 * HOUR);
+      const [failed] = await db
+        .insert(posts)
+        .values({
+          ...base,
+          status: 'failed',
+          // The draft existed long before it was published.
+          createdAt: new Date(now - 30 * 24 * HOUR),
+          updatedAt: attempt,
+        } as never)
+        .returning();
+      // A timeless draft stays off the calendar.
+      await db
+        .insert(posts)
+        .values({ ...base, status: 'draft', updatedAt: attempt } as never);
+      const svc = new PlannerPostsService(db as never);
+      const res = await svc.getCalendar(
+        a.id,
+        new Date(now - 24 * HOUR),
+        new Date(now + 24 * HOUR),
+      );
+      expect(res.posts.map((p) => p.id)).toEqual([failed.id]);
+      expect(res.posts[0].occurredAt).toBe(attempt.toISOString());
+      expect(Object.values(res.byDate).flat()).toHaveLength(1);
+
+      // Outside the window of its attempt it is not returned.
+      const before = await svc.getCalendar(
+        a.id,
+        new Date(now - 72 * HOUR),
+        new Date(now - 48 * HOUR),
+      );
+      expect(before.total).toBe(0);
+    });
+  });
+
   it('getOne rejects a post that belongs to another workspace', async () => {
     await withRollbackDb([READY_MIGRATION], async (db) => {
       const { user, a, b } = await seed(db);

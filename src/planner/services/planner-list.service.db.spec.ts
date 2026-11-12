@@ -32,6 +32,9 @@ interface PostOpts {
   scheduledAt?: string | null;
   publishedAt?: string | null;
   targets?: unknown[];
+  /** Defaults to now(), as the column does. */
+  createdAt?: string;
+  updatedAt?: string;
 }
 
 async function post(
@@ -40,8 +43,9 @@ async function post(
   o: PostOpts,
 ) {
   const r = await client.query<{ id: string }>(
-    `INSERT INTO posts (workspace_id, created_by_id, status, content, scheduled_at, published_at, targets)
-     VALUES ($1, $2, $3, 'x', $4::timestamptz, $5::timestamptz, $6::jsonb) RETURNING id`,
+    `INSERT INTO posts (workspace_id, created_by_id, status, content, scheduled_at, published_at, targets, created_at, updated_at)
+     VALUES ($1, $2, $3, 'x', $4::timestamptz, $5::timestamptz, $6::jsonb,
+             COALESCE($7::timestamptz, now()), COALESCE($8::timestamptz, now())) RETURNING id`,
     [
       w.workspaceId,
       w.userId,
@@ -54,6 +58,8 @@ async function post(
           ...(t as object),
         })),
       ),
+      o.createdAt ?? null,
+      o.updatedAt ?? null,
     ],
   );
   return r.rows[0].id;
@@ -213,6 +219,65 @@ describeDb('PlannerListService.list', () => {
         const p = await svc.list(w.workspaceId, { tab, limit: 1 }, now);
         expect(p.counts).toEqual(counts);
       }
+    }));
+
+  it('a failed "Publish now" (no scheduled_at, no published_at) is in Failed and All at its attempt, with its error', () =>
+    run(async (svc, client, now) => {
+      const t = now.getTime();
+      const w = await workspace(client, 'a');
+      // Older rows on either side, so the attempt time decides the order.
+      const older = await post(client, w, {
+        status: 'failed',
+        scheduledAt: iso(t - 3 * HOUR),
+        targets: [{ channelId: '1', status: 'failed' }],
+      });
+      const newer = await post(client, w, {
+        status: 'published',
+        publishedAt: iso(t - HOUR),
+        targets: [{ channelId: '1', status: 'published' }],
+      });
+      // The live shape: the composer upserts the row (created_at), publishes,
+      // and writes status=failed + updated_at at the end of the attempt. The
+      // draft was created well before the attempt.
+      const attempt = t - 2 * HOUR;
+      const failedNow = await post(client, w, {
+        status: 'failed',
+        createdAt: iso(t - 48 * HOUR),
+        updatedAt: iso(attempt),
+        targets: [
+          {
+            channelId: '101',
+            platform: 'instagram',
+            status: 'failed',
+            publishStatus: 'failed',
+            errorMessage: 'Media upload failed',
+          },
+        ],
+      });
+
+      const fail = await svc.list(
+        w.workspaceId,
+        { tab: 'failed', limit: 30 },
+        now,
+      );
+      expect(ids(fail)).toEqual([failedNow, older]);
+      expect(fail.total).toBe(2);
+      expect(fail.counts.failed).toBe(2);
+      const row = fail.rows[0];
+      expect(row.scheduledAt).toBeNull();
+      expect(row.publishedAt).toBeNull();
+      // The frontend groups and times a row by occurredAt; null hid it.
+      expect(row.occurredAt).toBe(iso(attempt));
+      expect(row.displayStatus).toBe('failed');
+      expect(row.targets[0].errorMessage).toBe('Media upload failed');
+
+      const all = await svc.list(w.workspaceId, { tab: 'all', limit: 30 }, now);
+      expect(ids(all)).toEqual([newer, failedNow, older]);
+      expect(all.rows.every((r) => r.occurredAt !== null)).toBe(true);
+
+      // Keyset paging on the fallback key: one row per page, no gap, no repeat.
+      const { seen } = await walk(svc, w.workspaceId, 'all', 1, now);
+      expect(seen).toEqual([newer, failedNow, older]);
     }));
 
   it('"partly published" in SQL equals derivePostStatus on a status x targets matrix', () =>

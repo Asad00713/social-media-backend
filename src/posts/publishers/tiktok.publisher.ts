@@ -1,11 +1,56 @@
 import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
-import { TikTokService } from '../../channels/services/tiktok.service';
+import {
+  TIKTOK_PHOTO_MAX_DESCRIPTION,
+  TIKTOK_VIDEO_MAX_CAPTION,
+  TikTokService,
+} from '../../channels/services/tiktok.service';
 import { TikTokQuotaService } from '../../channels/services/tiktok-quota.service';
 import { TikTokMediaProxyService } from '../../media/tiktok-media-proxy.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 import { assertTikTokCompliance } from './tiktok-compliance';
+
+/** TikTok's own `privacy_level` values (`creator_info.privacy_level_options`). */
+export const TIKTOK_PRIVACY_LEVELS = [
+  'PUBLIC_TO_EVERYONE',
+  'MUTUAL_FOLLOW_FRIENDS',
+  'FOLLOWER_OF_CREATOR',
+  'SELF_ONLY',
+] as const;
+
+export type TikTokPrivacyLevel = (typeof TIKTOK_PRIVACY_LEVELS)[number];
+
+/**
+ * The draft's `privacy` as TikTok's `privacy_level`.
+ *
+ * The composer stores TikTok's own value. "Followers" and "Friends" are two
+ * different audiences, and the short slugs it used to store folded both
+ * into `friends` - which was then always sent as `MUTUAL_FOLLOW_FRIENDS`,
+ * so a post set to Followers went to Friends (or failed, on an account that
+ * does not offer Friends).
+ *
+ * The old slugs are still read, for drafts and scheduled posts stored
+ * before: `friends` keeps the value it always published as.
+ */
+export function tiktokPrivacyLevel(
+  value: unknown,
+): TikTokPrivacyLevel | undefined {
+  if (typeof value !== 'string') return undefined;
+  if ((TIKTOK_PRIVACY_LEVELS as readonly string[]).includes(value)) {
+    return value as TikTokPrivacyLevel;
+  }
+  switch (value) {
+    case 'public':
+      return 'PUBLIC_TO_EVERYONE';
+    case 'friends':
+      return 'MUTUAL_FOLLOW_FRIENDS';
+    case 'private':
+      return 'SELF_ONLY';
+    default:
+      return undefined;
+  }
+}
 
 @Injectable()
 export class TikTokPublisher extends BasePublisher {
@@ -39,24 +84,10 @@ export class TikTokPublisher extends BasePublisher {
     if (!raw) return {};
     const m = raw;
 
-    const mapPrivacy = (p: unknown): string | undefined => {
-      if (typeof p !== 'string') return undefined;
-      switch (p) {
-        case 'public':
-          return 'PUBLIC_TO_EVERYONE';
-        case 'friends':
-          return 'MUTUAL_FOLLOW_FRIENDS';
-        case 'private':
-          return 'SELF_ONLY';
-        default:
-          return undefined;
-      }
-    };
-
     const privacyLevel =
       typeof m.privacyLevel === 'string'
         ? m.privacyLevel
-        : mapPrivacy(m.privacy);
+        : tiktokPrivacyLevel(m.privacy);
 
     // allowX (positive) → disableX (negative). When neither is set, default
     // to "allowed" (matches TikTok's permissive default for missing fields).
@@ -99,6 +130,19 @@ export class TikTokPublisher extends BasePublisher {
     // TikTok requires media (video or images)
     if (mediaItems.length === 0) {
       throw new Error('TikTok posts require media');
+    }
+
+    // The caption, in TikTok's UTF-16 units: a Photo post's description
+    // takes 4000, a Video's caption 2200. Refused here, not cut on send.
+    const caption = options.content ?? '';
+    const captionMax =
+      postType === 'photo'
+        ? TIKTOK_PHOTO_MAX_DESCRIPTION
+        : TIKTOK_VIDEO_MAX_CAPTION;
+    if (caption.length > captionMax) {
+      throw new Error(
+        `TikTok ${postType === 'photo' ? 'photo description' : 'caption'} cannot exceed ${captionMax} characters (${caption.length} given)`,
+      );
     }
 
     if (postType === 'photo') {
@@ -158,10 +202,17 @@ export class TikTokPublisher extends BasePublisher {
         `Publishing TikTok photo carousel: ${imageUrls.length} image(s) via verified-domain proxy`,
       );
 
+      // "Send: To inbox" is honoured on photos too. TikTok's photo endpoint
+      // takes `post_mode: MEDIA_UPLOAD` for it: the photos land in the
+      // creator's inbox to be finished in TikTok, rather than going live.
+      const postMode =
+        metadata?.useDraftUpload === true ? 'MEDIA_UPLOAD' : 'DIRECT_POST';
+
       const photoResult = await this.tiktokService.postPhotoFromUrl(
         accessToken,
         proxiedImageUrls,
         {
+          postMode,
           description: content || '',
           title: metadata?.title || '',
           privacyLevel,

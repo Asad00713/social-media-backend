@@ -13,10 +13,7 @@ import { posts } from '../../drizzle/schema/posts.schema';
 import { QUEUES } from '../../queue/queue.module';
 import { PostService } from '../services/post.service';
 import { RepeatPostsService } from '../services/repeat-posts.service';
-
-interface PublishJobData {
-  postId: string;
-}
+import type { PublishJobData } from '../lib/held-targets';
 
 @Processor(QUEUES.POST_PUBLISHING, {
   concurrency: 5, // Process up to 5 jobs simultaneously
@@ -34,7 +31,7 @@ export class PostPublishProcessor extends WorkerHost {
   }
 
   async process(job: Job<PublishJobData>): Promise<any> {
-    const { postId } = job.data;
+    const { postId, heldOnly } = job.data;
 
     this.logger.log(`Processing scheduled publish job for post: ${postId}`);
 
@@ -97,7 +94,10 @@ export class PostPublishProcessor extends WorkerHost {
         postId,
         post.workspaceId,
         post.createdById, // Use the original creator as the performer
-        { triggeredBy: 'scheduler' },
+        // A resume of a paused channel publishes only what it held.
+        heldOnly
+          ? { triggeredBy: 'scheduler', heldOnly: true }
+          : { triggeredBy: 'scheduler' },
       );
 
       this.logger.log(`Post ${postId} published with status: ${result.status}`);

@@ -25,6 +25,17 @@ interface StoredTarget {
   errorCode?: PublishErrorCode;
   destination?: { id: string; name?: string };
   contentOverride?: PlannerPostTargetDto['contentOverride'];
+  warnings?: unknown;
+  heldAt?: unknown;
+}
+
+/** Stored warnings, if the row holds a usable list (see publish-warnings). */
+function storedWarnings(raw: unknown): string[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+  const list = raw.filter(
+    (w): w is string => typeof w === 'string' && w.trim() !== '',
+  );
+  return list.length > 0 ? list : undefined;
 }
 
 function presentTarget(
@@ -42,6 +53,15 @@ function presentTarget(
     errorCode: target.errorCode,
     destination: target.destination,
     contentOverride: target.contentOverride,
+    // Only on a target that went out: a stale list never rides a failure.
+    warnings:
+      status === 'published' ? storedWarnings(target.warnings) : undefined,
+    // Only while the target still waits: a held marker never rides a
+    // target that has since gone out or failed.
+    heldAt:
+      status === 'scheduled' && typeof target.heldAt === 'string'
+        ? target.heldAt
+        : undefined,
   };
   for (const key of Object.keys(optional) as (keyof typeof optional)[]) {
     if (optional[key] === undefined) delete optional[key];
@@ -64,6 +84,22 @@ function presentTarget(
 
 const iso = (d: Date | null): string | null => (d ? d.toISOString() : null);
 
+/**
+ * Where the post sits in the Planner. Twin of `plannerAtSql`
+ * (post-status.sql.ts): publishedAt, then scheduledAt, then - for a non-draft
+ * post with neither, a "Publish now" that failed or is still publishing - its
+ * last attempt, `updatedAt`. A draft has no place on a timeline: null.
+ */
+export function plannerAt(
+  row: Pick<PostRow, 'status' | 'publishedAt' | 'scheduledAt' | 'updatedAt'>,
+): Date | null {
+  return (
+    row.publishedAt ??
+    row.scheduledAt ??
+    (row.status === 'draft' ? null : row.updatedAt)
+  );
+}
+
 export function presentPost(
   row: PostRow,
   ctx: { users: Map<string, PlannerUserRef> },
@@ -84,7 +120,7 @@ export function presentPost(
     displayStatus: derivePostStatus(row.status, stored),
     scheduledAt: iso(row.scheduledAt),
     publishedAt: iso(row.publishedAt),
-    occurredAt: iso(row.publishedAt ?? row.scheduledAt),
+    occurredAt: iso(plannerAt(row)),
     platformContent: (row.platformContent ??
       {}) as PlannerPostDto['platformContent'],
     metadata,

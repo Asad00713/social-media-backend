@@ -1,6 +1,8 @@
 import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import {
+  INSTAGRAM_ALT_TEXT_MAX_CHARS,
+  INSTAGRAM_CAROUSEL_MAX_ITEMS,
   InstagramService,
   InstagramReelSettings,
   InstagramUserTag,
@@ -8,7 +10,32 @@ import {
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
+const INSTAGRAM_MAX_HASHTAGS = 30;
+const INSTAGRAM_MAX_MENTIONS = 20;
+/** A `#tag` in any script - the composer's `hashtag-limits.ts` pattern. */
+const INSTAGRAM_HASHTAG = /(?<![\p{L}\p{N}_#])#[\p{L}\p{N}_]+/gu;
+/** An `@handle` - the composer's `platform-validation.ts` pattern. */
+const INSTAGRAM_MENTION = /(?<![\p{L}\p{N}_@.])@[A-Za-z0-9._]{1,30}/gu;
+
+/** How many DIFFERENT matches, case-insensitively. */
+function distinctMatches(text: string, pattern: RegExp): number {
+  return new Set([...text.matchAll(pattern)].map((m) => m[0].toLowerCase()))
+    .size;
+}
+
 type InstagramPostType = 'feed' | 'reel' | 'story' | 'carousel';
+
+/**
+ * An IMAGE's alt text, trimmed, or undefined. Instagram takes `alt_text`
+ * "on a single image or image media in a carousel" only - "Reels and
+ * stories are not supported" (IG User Media reference) - so a video's is
+ * never read.
+ */
+function imageAltText(item: MediaItem | undefined): string | undefined {
+  if (!item || item.type !== 'image') return undefined;
+  const text = typeof item.altText === 'string' ? item.altText.trim() : '';
+  return text === '' ? undefined : text;
+}
 
 @Injectable()
 export class InstagramPublisher extends BasePublisher {
@@ -31,6 +58,36 @@ export class InstagramPublisher extends BasePublisher {
       );
     }
 
+    // "Maximum 2200 characters, 30 hashtags, and 20 @ tags" (IG User Media
+    // reference, `caption`) - Meta refuses the container above them.
+    // Counted as the composer counts them: distinct tags, any script.
+    const caption = content ?? '';
+    const hashtags = distinctMatches(caption, INSTAGRAM_HASHTAG);
+    if (hashtags > INSTAGRAM_MAX_HASHTAGS) {
+      throw new Error(
+        `Instagram allows at most ${INSTAGRAM_MAX_HASHTAGS} hashtags (${hashtags} given)`,
+      );
+    }
+    const mentions = distinctMatches(caption, INSTAGRAM_MENTION);
+    if (mentions > INSTAGRAM_MAX_MENTIONS) {
+      throw new Error(
+        `Instagram allows at most ${INSTAGRAM_MAX_MENTIONS} @mentions (${mentions} given)`,
+      );
+    }
+
+    // `alt_text` rides the container create, so one over Instagram's limit
+    // would fail the whole post: refused here with the reason instead.
+    if (postType === 'feed' || postType === 'carousel') {
+      mediaItems.forEach((item, i) => {
+        const alt = imageAltText(item);
+        if (alt && alt.length > INSTAGRAM_ALT_TEXT_MAX_CHARS) {
+          throw new Error(
+            `Alt text on image ${i + 1} is over Instagram's ${INSTAGRAM_ALT_TEXT_MAX_CHARS}-character limit (${alt.length} chars)`,
+          );
+        }
+      });
+    }
+
     switch (postType) {
       case 'reel': {
         if (mediaItems.length === 0) {
@@ -48,9 +105,12 @@ export class InstagramPublisher extends BasePublisher {
         break;
       }
       case 'carousel': {
-        if (mediaItems.length < 2 || mediaItems.length > 10) {
+        if (
+          mediaItems.length < 2 ||
+          mediaItems.length > INSTAGRAM_CAROUSEL_MAX_ITEMS
+        ) {
           throw new Error(
-            'Instagram carousels require between 2 and 10 media items',
+            `Instagram carousels require between 2 and ${INSTAGRAM_CAROUSEL_MAX_ITEMS} media items`,
           );
         }
         break;
@@ -62,9 +122,9 @@ export class InstagramPublisher extends BasePublisher {
             'Instagram posts require at least one image or video',
           );
         }
-        if (mediaItems.length > 10) {
+        if (mediaItems.length > INSTAGRAM_CAROUSEL_MAX_ITEMS) {
           throw new Error(
-            'Instagram allows maximum 10 media items per carousel',
+            `Instagram allows maximum ${INSTAGRAM_CAROUSEL_MAX_ITEMS} media items per carousel`,
           );
         }
         break;
@@ -218,6 +278,8 @@ export class InstagramPublisher extends BasePublisher {
           url: m.url,
           // Per-slide tags; the post-level settings ride the parent.
           userTags: this.getUserTags(m.tags),
+          // Per-slide alt text, images only.
+          ...(imageAltText(m) ? { altText: imageAltText(m) } : {}),
         })),
         content,
         settings,
@@ -228,6 +290,9 @@ export class InstagramPublisher extends BasePublisher {
       // explicit postType from the composer).
       if (mediaItems.length === 1) {
         if (mediaItems[0].type === 'video') {
+          // A feed video: the service sends it as a reel shared to the feed
+          // (`media_type=REELS`, `share_to_feed=true`), since Meta no longer
+          // accepts `media_type=VIDEO`.
           result = await this.instagramService.createVideoPostWithUserToken(
             platformAccountId,
             accessToken,
@@ -238,12 +303,13 @@ export class InstagramPublisher extends BasePublisher {
             settings,
           );
         } else {
+          const altText = imageAltText(mediaItems[0]);
           result = await this.instagramService.createImagePostWithUserToken(
             platformAccountId,
             accessToken,
             mediaItems[0].url,
             content,
-            settings,
+            altText ? { ...settings, altText } : settings,
           );
         }
       } else {
@@ -254,6 +320,7 @@ export class InstagramPublisher extends BasePublisher {
             type: m.type === 'video' ? ('VIDEO' as const) : ('IMAGE' as const),
             url: m.url,
             userTags: this.getUserTags(m.tags),
+            ...(imageAltText(m) ? { altText: imageAltText(m) } : {}),
           })),
           content,
           settings,

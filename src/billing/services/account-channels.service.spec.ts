@@ -148,6 +148,26 @@ describe('AccountChannelsService.enforceWithinTransaction', () => {
     ).rejects.toBeInstanceOf(ForbiddenException);
   });
 
+  it('refuses with a machine-readable CHANNEL_LIMIT_REACHED body', async () => {
+    const { service } = makeService();
+    jest.spyOn(service, 'countForUser').mockResolvedValue(8);
+    const { tx } = makeTx();
+
+    const err: unknown = await service
+      .enforceWithinTransaction(tx, 'user-1')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(ForbiddenException);
+    expect((err as ForbiddenException).getResponse()).toEqual({
+      statusCode: 403,
+      error: 'Forbidden',
+      code: 'CHANNEL_LIMIT_REACHED',
+      used: 8,
+      limit: 8,
+      message:
+        'Channel limit reached (8/8). Upgrade your plan or purchase additional channels.',
+    });
+  });
+
   it('never refuses on an unlimited plan', async () => {
     const { service } = makeService({
       getPlanLimits: jest

@@ -90,6 +90,11 @@ export interface ChannelTarget {
   nextRetryAt?: string;
   /** Per-item results of a post sent as several (one Pin per image). */
   itemResults?: PublishItemResult[];
+  /**
+   * What the live post left out (first comment, cover, alt text...), one
+   * readable sentence each. Absent when nothing was; cleared on a re-publish.
+   */
+  warnings?: string[];
   /** "Publish: Remind me" — when the reminder went out instead of a post. */
   reminderSentAt?: string;
 }

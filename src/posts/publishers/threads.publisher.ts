@@ -2,12 +2,22 @@ import { Injectable } from '@nestjs/common';
 import { BasePublisher, PublishOptions, PublishResult } from './base.publisher';
 import {
   ThreadsService,
+  ThreadsMediaSettings,
   ThreadsPostSettings,
   ThreadsPoll,
+  THREADS_ALT_TEXT_MAX_CHARS,
   parseThreadsPostLink,
 } from '../../channels/services/threads.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import { isPollAllowed, isPollFormat, threadToPublish } from './post-format';
+import { countThreadsChars } from './text-length';
+
+/**
+ * A carousel's items: "up to 20 images, videos, or a mix of the two"
+ * (Threads API, Posts). The composer counts against the same 20.
+ */
+const THREADS_MAX_MEDIA = 20;
 
 interface ThreadTweet {
   text: string;
@@ -32,6 +42,140 @@ const TOPIC_TAG_BANNED = /[.&]/;
 
 /** Threads' own cap on each poll option. */
 const POLL_OPTION_MAX_CHARS = 25;
+
+/** `poll_attachment` takes options A-D, and A and B are required. */
+const POLL_MIN_OPTIONS = 2;
+const POLL_MAX_OPTIONS = 4;
+
+/** A media item's alt text, trimmed, or undefined when it has none. */
+function altTextOf(
+  item: { altText?: unknown } | undefined,
+): string | undefined {
+  const raw = item?.altText;
+  if (typeof raw !== 'string') return undefined;
+  const text = raw.trim();
+  return text === '' ? undefined : text;
+}
+
+/**
+ * The settings for an image or video container: the post's own plus that
+ * item's alt text. Never used for a text container.
+ */
+function withAltText(
+  settings: ThreadsPostSettings | undefined,
+  item: MediaItem,
+): ThreadsMediaSettings | undefined {
+  const altText = altTextOf(item);
+  if (!altText) return settings;
+  return { ...(settings ?? {}), altText };
+}
+
+/** A carousel item for the service, with its alt text when it has one. */
+function carouselItem(m: MediaItem): {
+  type: 'IMAGE' | 'VIDEO';
+  url: string;
+  altText?: string;
+} {
+  const altText = altTextOf(m);
+  return {
+    type: m.type === 'video' ? 'VIDEO' : 'IMAGE',
+    url: m.url,
+    ...(altText ? { altText } : {}),
+  };
+}
+
+/**
+ * The poll to attach, or undefined for none - the Threads twin of X's
+ * `xPollToSend`.
+ *
+ * When the composer picked the Poll format, a poll that cannot be sent
+ * FAILS the publish with the reason: Threads only takes a poll on a
+ * text-only post ("Polls can only be attached to text-only posts"), with
+ * two to four options of at most 25 characters each. It used to be dropped,
+ * so the post went out as plain text and showed "Published".
+ *
+ * A row with no format stored (written before the format existed) keeps
+ * the old lenient reading: options are trimmed and capped, and a poll that
+ * does not make two options, or rides media, is left out.
+ */
+export function threadsPollToSend(
+  metadata: Record<string, any> | undefined,
+  mediaCount: number,
+): ThreadsPoll | undefined {
+  // A poll left in the draft after switching to Post or Thread is not
+  // sent (see post-format.ts).
+  if (!isPollAllowed(metadata)) return undefined;
+  const raw: unknown = metadata?.poll;
+  const rawOptions: unknown =
+    raw && typeof raw === 'object'
+      ? (raw as { options?: unknown }).options
+      : undefined;
+  const trimmed: string[] = Array.isArray(rawOptions)
+    ? rawOptions
+        .filter((o: unknown): o is string => typeof o === 'string')
+        .map((o) => o.trim())
+        .filter((o) => o.length > 0)
+    : [];
+
+  if (!isPollFormat(metadata)) {
+    if (mediaCount > 0) return undefined;
+    const options = trimmed.map((o) => o.slice(0, POLL_OPTION_MAX_CHARS));
+    if (options.length < POLL_MIN_OPTIONS) return undefined;
+    return {
+      optionA: options[0],
+      optionB: options[1],
+      optionC: options[2],
+      optionD: options[3],
+    };
+  }
+
+  if (mediaCount > 0) {
+    throw new Error(
+      'Threads only allows a poll on a text-only post — remove the media or switch this post to Post',
+    );
+  }
+  if (trimmed.length < POLL_MIN_OPTIONS) {
+    throw new Error(
+      `A Threads poll needs at least ${POLL_MIN_OPTIONS} filled-in options (${trimmed.length} given) — add options or switch this post to Post`,
+    );
+  }
+  if (trimmed.length > POLL_MAX_OPTIONS) {
+    throw new Error(
+      `Threads polls allow at most ${POLL_MAX_OPTIONS} options (${trimmed.length} given)`,
+    );
+  }
+  const long = trimmed.find((o) => o.length > POLL_OPTION_MAX_CHARS);
+  if (long !== undefined) {
+    throw new Error(
+      `Poll option "${long}" is over Threads' ${POLL_OPTION_MAX_CHARS}-character limit (${long.length} chars)`,
+    );
+  }
+  return {
+    optionA: trimmed[0],
+    optionB: trimmed[1],
+    optionC: trimmed[2],
+    optionD: trimmed[3],
+  };
+}
+
+/**
+ * Refuses alt text over Threads' 1,000 characters before anything is sent:
+ * `alt_text` rides the container create, so a long one would fail the post
+ * (or a thread half-way, with earlier posts already live).
+ */
+function assertAltTextFits(
+  items: MediaItem[] | undefined,
+  where: string,
+): void {
+  (items ?? []).forEach((item, i) => {
+    const alt = altTextOf(item);
+    if (alt && alt.length > THREADS_ALT_TEXT_MAX_CHARS) {
+      throw new Error(
+        `Alt text on ${where}media item ${i + 1} is over Threads' ${THREADS_ALT_TEXT_MAX_CHARS}-character limit (${alt.length} chars)`,
+      );
+    }
+  });
+}
 
 /** ISO 3166-1 alpha-2 — what `allowlisted_country_codes` takes. */
 const COUNTRY_CODE = /^[A-Z]{2}$/;
@@ -68,26 +212,36 @@ export class ThreadsPublisher extends BasePublisher {
       throw new Error(`"${quoteLink}" is not a link to a Threads post`);
     }
 
-    const thread = metadata?.thread as ThreadTweet[] | undefined;
+    // The format decides: a thread left in the draft after switching to
+    // Post or Poll is not published (see post-format.ts).
+    const thread = threadToPublish<ThreadTweet>(metadata);
 
-    if (Array.isArray(thread) && thread.length > 1) {
+    if (thread) {
       // Thread mode: validate each post independently.
       thread.forEach((t, i) => {
         const hasMedia = (t.mediaItems?.length ?? 0) > 0;
         if (!t.text && !hasMedia) {
           throw new Error(`Thread post ${i + 1} must have content or media`);
         }
-        if (t.text && t.text.length > 500) {
+        const counted = countThreadsChars(t.text ?? '');
+        if (counted > 500) {
           throw new Error(
-            `Thread post ${i + 1} exceeds 500 character limit (${t.text.length} chars)`,
+            `Thread post ${i + 1} exceeds 500 character limit (${counted} chars)`,
           );
         }
-        if ((t.mediaItems?.length ?? 0) > 10) {
-          throw new Error(`Thread post ${i + 1} has more than 10 media items`);
+        if ((t.mediaItems?.length ?? 0) > THREADS_MAX_MEDIA) {
+          throw new Error(
+            `Thread post ${i + 1} has more than ${THREADS_MAX_MEDIA} media items`,
+          );
         }
+        assertAltTextFits(t.mediaItems, `thread post ${i + 1}, `);
       });
       return;
     }
+
+    // A poll that cannot be sent fails here, before anything is created.
+    threadsPollToSend(metadata, mediaItems.length);
+    assertAltTextFits(mediaItems, '');
 
     // Single-post validation
     if (!content && mediaItems.length === 0) {
@@ -95,15 +249,19 @@ export class ThreadsPublisher extends BasePublisher {
     }
 
     // Check character limit
-    if (content && content.length > 500) {
+    // Threads counts an emoji as its UTF-8 bytes (Threads API, Posts).
+    const counted = countThreadsChars(content ?? '');
+    if (counted > 500) {
       throw new Error(
-        `Threads content exceeds 500 character limit (${content.length} chars)`,
+        `Threads content exceeds 500 character limit (${counted} chars)`,
       );
     }
 
     // Check media limit
-    if (mediaItems.length > 10) {
-      throw new Error('Threads allows maximum 10 media items per carousel');
+    if (mediaItems.length > THREADS_MAX_MEDIA) {
+      throw new Error(
+        `Threads allows maximum ${THREADS_MAX_MEDIA} media items per carousel`,
+      );
     }
   }
 
@@ -179,32 +337,12 @@ export class ThreadsPublisher extends BasePublisher {
     return settings;
   }
 
-  /**
-   * The poll, if there is one, in the shape `poll_attachment` wants.
-   *
-   * Dropped unless it has at least two non-empty options: Threads requires
-   * two, and sending one fails the post. Each option is capped at the
-   * API's 25 characters.
-   */
+  /** The poll to attach to a text post (see `threadsPollToSend`). */
   private getPoll(
     metadata: Record<string, any> | undefined,
+    mediaCount: number,
   ): ThreadsPoll | undefined {
-    const raw = metadata?.poll;
-    const options = Array.isArray(raw?.options)
-      ? raw.options
-          .filter((o: unknown): o is string => typeof o === 'string')
-          .map((o: string) => o.trim().slice(0, POLL_OPTION_MAX_CHARS))
-          .filter((o: string) => o.length > 0)
-      : [];
-
-    if (options.length < 2) return undefined;
-
-    return {
-      optionA: options[0],
-      optionB: options[1],
-      optionC: options[2],
-      optionD: options[3],
-    };
+    return threadsPollToSend(metadata, mediaCount);
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
@@ -222,7 +360,7 @@ export class ThreadsPublisher extends BasePublisher {
     // not one of the account's own recent posts fails the publish with
     // nothing live. Not on a poll: Figma offers no quote there.
     const quoteLink = this.getQuoteLink(metadata);
-    if (quoteLink && !this.getPoll(metadata)) {
+    if (quoteLink && !this.getPoll(metadata, mediaItems.length)) {
       settings.quotePostId = await this.threadsService.findOwnPostByLink(
         accessToken,
         platformAccountId,
@@ -230,8 +368,8 @@ export class ThreadsPublisher extends BasePublisher {
       );
     }
 
-    const thread = metadata?.thread as ThreadTweet[] | undefined;
-    if (Array.isArray(thread) && thread.length > 1) {
+    const thread = threadToPublish<ThreadTweet>(metadata);
+    if (thread) {
       return this.publishThread(
         accessToken,
         platformAccountId,
@@ -251,7 +389,7 @@ export class ThreadsPublisher extends BasePublisher {
         platformAccountId,
         content,
         replyToId,
-        { ...settings, poll: this.getPoll(metadata) },
+        { ...settings, poll: this.getPoll(metadata, 0) },
       );
     } else if (mediaItems.length === 1) {
       if (mediaItems[0].type === 'video') {
@@ -261,7 +399,7 @@ export class ThreadsPublisher extends BasePublisher {
           mediaItems[0].url,
           content,
           replyToId,
-          settings,
+          withAltText(settings, mediaItems[0]),
         );
       } else {
         result = await this.threadsService.createImageThread(
@@ -270,7 +408,7 @@ export class ThreadsPublisher extends BasePublisher {
           mediaItems[0].url,
           content,
           replyToId,
-          settings,
+          withAltText(settings, mediaItems[0]),
         );
       }
     } else {
@@ -278,10 +416,7 @@ export class ThreadsPublisher extends BasePublisher {
       result = await this.threadsService.createCarouselThread(
         accessToken,
         platformAccountId,
-        mediaItems.map((m) => ({
-          type: m.type === 'video' ? ('VIDEO' as const) : ('IMAGE' as const),
-          url: m.url,
-        })),
+        mediaItems.map(carouselItem),
         content,
         replyToId,
         settings,
@@ -347,7 +482,7 @@ export class ThreadsPublisher extends BasePublisher {
               media[0].url,
               post.text,
               replyToId,
-              postSettings,
+              withAltText(postSettings, media[0]),
             );
           } else {
             res = await this.threadsService.createImageThread(
@@ -356,18 +491,14 @@ export class ThreadsPublisher extends BasePublisher {
               media[0].url,
               post.text,
               replyToId,
-              postSettings,
+              withAltText(postSettings, media[0]),
             );
           }
         } else {
           res = await this.threadsService.createCarouselThread(
             accessToken,
             platformAccountId,
-            media.map((m) => ({
-              type:
-                m.type === 'video' ? ('VIDEO' as const) : ('IMAGE' as const),
-              url: m.url,
-            })),
+            media.map(carouselItem),
             post.text,
             replyToId,
             postSettings,

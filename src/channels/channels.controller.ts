@@ -111,6 +111,7 @@ import {
   type EmbeddedSignupConfig,
 } from './services/embedded-signup-config';
 import { YoutubeDataDeletionService } from './services/youtube-data-deletion.service';
+import { errorCodeOf } from '../billing/services/channel-limit.error';
 import { GoogleOauthRevokeService } from './services/google-oauth-revoke.service';
 
 @Controller('channels')
@@ -617,7 +618,7 @@ export class ChannelsController {
                 canReply: true,
                 canDelete: false, // Instagram API doesn't support delete
                 supportedMediaTypes: ['image', 'video', 'carousel'],
-                maxMediaPerPost: 10,
+                maxMediaPerPost: 20, // Instagram carousel cap
                 maxTextLength: 2200,
               },
               metadata: {
@@ -889,7 +890,11 @@ export class ChannelsController {
     } catch (err) {
       console.log(`[OAuth Callback] ERROR: ${err.message || 'Unknown error'}`);
       console.log(`[OAuth Callback] Full error:`, err);
-      const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent(err.message || 'Unknown error')}&description=${encodeURIComponent('State token: ' + (state ? state.substring(0, 10) + '...' : 'missing'))}`;
+      // A coded refusal (CHANNEL_LIMIT_REACHED) keeps its code through the
+      // redirect, so the page can offer the upgrade instead of an error.
+      const code = errorCodeOf(err);
+      const codeParam = code ? `&code=${encodeURIComponent(code)}` : '';
+      const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent(err.message || 'Unknown error')}&description=${encodeURIComponent('State token: ' + (state ? state.substring(0, 10) + '...' : 'missing'))}${codeParam}`;
       return res.redirect(errorUrl);
     }
   }
@@ -930,6 +935,40 @@ export class ChannelsController {
     return await this.channelService.getWorkspaceChannels(workspaceId, query);
   }
 
+  // ==========================================================================
+  // Statistics Endpoints
+  // ==========================================================================
+  // Declared BEFORE `GET workspaces/:workspaceId/:channelId`: Express matches
+  // routes in registration order, and Nest registers them in declaration
+  // order, so below it `/stats` and `/expiring` were read as a channel id.
+
+  /**
+   * Get channel statistics for a workspace
+   */
+  @Get('workspaces/:workspaceId/stats')
+  @RequireCapability('analytics:view')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  async getChannelStats(@Param('workspaceId') workspaceId: string) {
+    return await this.channelService.getChannelStats(workspaceId);
+  }
+
+  /**
+   * Channels whose access token or refresh token runs out within `days`
+   * (default 7).
+   */
+  @Get('workspaces/:workspaceId/expiring')
+  @RequireCapability('analytics:view')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  async getExpiringChannels(
+    @Param('workspaceId') workspaceId: string,
+    @Query('days') days?: string,
+  ) {
+    return this.channelService.getExpiringChannels(
+      workspaceId,
+      days ? parseInt(days, 10) : 7,
+    );
+  }
+
   /**
    * Get a single channel
    */
@@ -944,6 +983,22 @@ export class ChannelsController {
       parseInt(channelId, 10),
       workspaceId,
     );
+  }
+
+  /**
+   * Reorder channels. Declared before `PUT workspaces/:workspaceId/:channelId`,
+   * which would otherwise take `reorder` for a channel id.
+   */
+  @Put('workspaces/:workspaceId/reorder')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('channels:manage')
+  @HttpCode(HttpStatus.OK)
+  async reorderChannels(
+    @Param('workspaceId') workspaceId: string,
+    @Body() dto: ReorderChannelsDto,
+  ) {
+    await this.channelService.reorderChannels(workspaceId, dto.channelIds);
+    return { message: 'Channels reordered successfully' };
   }
 
   /**
@@ -1069,21 +1124,6 @@ export class ChannelsController {
     };
   }
 
-  /**
-   * Reorder channels
-   */
-  @Put('workspaces/:workspaceId/reorder')
-  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
-  @RequireCapability('channels:manage')
-  @HttpCode(HttpStatus.OK)
-  async reorderChannels(
-    @Param('workspaceId') workspaceId: string,
-    @Body() dto: ReorderChannelsDto,
-  ) {
-    await this.channelService.reorderChannels(workspaceId, dto.channelIds);
-    return { message: 'Channels reordered successfully' };
-  }
-
   // ==========================================================================
   // Token Management Endpoints
   // ==========================================================================
@@ -1180,38 +1220,6 @@ export class ChannelsController {
       parseInt(channelId, 10),
       workspaceId,
     );
-  }
-
-  // ==========================================================================
-  // Statistics Endpoints
-  // ==========================================================================
-
-  /**
-   * Get channel statistics for a workspace
-   */
-  @Get('workspaces/:workspaceId/stats')
-  @RequireCapability('analytics:view')
-  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
-  async getChannelStats(@Param('workspaceId') workspaceId: string) {
-    return await this.channelService.getChannelStats(workspaceId);
-  }
-
-  /**
-   * Get channels with expiring tokens
-   */
-  @Get('workspaces/:workspaceId/expiring')
-  @RequireCapability('analytics:view')
-  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
-  async getExpiringChannels(
-    @Param('workspaceId') workspaceId: string,
-    @Query('days') days?: string,
-  ) {
-    const allExpiring = await this.channelService.getExpiringChannels(
-      days ? parseInt(days, 10) : 7,
-    );
-
-    // Filter to only this workspace
-    return allExpiring.filter((ch) => ch.workspaceId === workspaceId);
   }
 
   // ==========================================================================
@@ -1378,7 +1386,7 @@ export class ChannelsController {
             canReply: true,
             canDelete: false, // Instagram doesn't allow delete via API
             supportedMediaTypes: ['image', 'video', 'carousel'],
-            maxMediaPerPost: 10,
+            maxMediaPerPost: 20, // Instagram carousel cap
             maxTextLength: 2200,
           },
           metadata: {
@@ -2901,7 +2909,7 @@ export class ChannelsController {
           canReply: false,
           canDelete: true,
           supportedMediaTypes: ['image', 'video', 'carousel'],
-          maxMediaPerPost: 10,
+          maxMediaPerPost: 20, // Instagram carousel cap
           maxTextLength: 2200,
         },
         metadata: {
@@ -2994,7 +3002,7 @@ export class ChannelsController {
           canReply: false,
           canDelete: false,
           supportedMediaTypes: ['image', 'video', 'carousel'],
-          maxMediaPerPost: 10,
+          maxMediaPerPost: 20, // Instagram carousel cap
           maxTextLength: 2200,
         },
         metadata: {

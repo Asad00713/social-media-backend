@@ -65,7 +65,8 @@ const PRESET_TYPES = ['Presentation', 'Document', 'Whiteboard'];
 
 export interface ExportDesignOptions {
   format: 'png' | 'jpg' | 'pdf' | 'mp4' | 'gif';
-  quality?: 'low' | 'medium' | 'high';
+  /** A JPG takes a compression quality of 1-100 instead (Canva requires it). */
+  quality?: 'low' | 'medium' | 'high' | number;
   pages?: number[]; // Specific pages to export
 }
 
@@ -542,7 +543,11 @@ export class CanvaService {
 
     // Only add `quality` for formats that accept it (PNG's format object does
     // not — an unknown field is rejected by the strict `/exports` endpoint).
-    if (quality && format !== 'pdf' && format !== 'png') {
+    // JPG's `quality` is REQUIRED and is an integer 1-100 ("Compression
+    // quality must be provided"), not a word: a named level becomes 90.
+    if (format === 'jpg') {
+      body.format.quality = typeof quality === 'number' ? quality : 90;
+    } else if (quality && format !== 'pdf' && format !== 'png') {
       body.format.quality = quality;
     }
 

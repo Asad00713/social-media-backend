@@ -25,6 +25,7 @@
     "inbox:backfill": "node dist/src/inbox/scripts/backfill-conversations",
     "library:backfill-refs": "node dist/src/media-library/scripts/backfill-library-refs",
     "library:backfill-sizes": "node dist/src/media-library/scripts/backfill-file-sizes",
+    "library:migrate-documents-to-r2": "node dist/src/media-library/scripts/migrate-documents-to-r2",
     "db:push": "echo \"REFUSING: db:push rewrites the schema with no migration record. Write a numbered .sql migration and use db:migrate:sql.\" && exit 1",
     "db:studio": "drizzle-kit studio"
   },
@@ -75,6 +76,7 @@
     "rxjs": "^7.8.1",
     "socket.io": "^4.8.3",
     "stripe": "^20.1.0",
+    "twitter-text": "3.1.0",
     "undici": "6.24.1",
     "uuid": "^13.0.0",
     "yazl": "^3.3.1"

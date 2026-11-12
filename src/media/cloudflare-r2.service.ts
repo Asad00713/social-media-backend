@@ -33,6 +33,7 @@ export type R2MediaKind =
   | 'video'
   | 'file'
   | 'composer-video'
+  | 'composer-document'
   | 'avatar';
 
 const KIND_TO_PREFIX: Record<R2MediaKind, string> = {
@@ -45,6 +46,11 @@ const KIND_TO_PREFIX: Record<R2MediaKind, string> = {
   // a single bucket avoids a bucket-rename migration; prefixes give us the
   // same isolation logically.
   'composer-video': 'composer/videos',
+  // A LinkedIn Document post's file. Not on Cloudinary like the Library's
+  // other non-video uploads: Cloudinary refuses to DELIVER a PDF on accounts
+  // with "Allow delivery of PDF and ZIP files" off (HTTP 401), and the
+  // publisher has to fetch the file to hand it to LinkedIn.
+  'composer-document': 'composer/documents',
   // Profile pictures are the one kind that belongs to a PERSON rather than a
   // workspace: the same face follows a user into every workspace they join.
   // Its own prefix keeps it out of any lifecycle rule that expires workspace
@@ -63,11 +69,18 @@ const MAX_BYTES: Record<R2MediaKind, number> = {
   // PUTs without chunking on our side — the AWS SDK's signature scheme is
   // size-agnostic when ContentLength is unsignableHeader (see below).
   'composer-video': 4 * 1024 * 1024 * 1024,
+  // LinkedIn's Documents API: "The file size can't exceed 100MB and 300
+  // pages." Nothing else publishes a document.
+  'composer-document': 100 * 1024 * 1024,
   // 2 MB. An avatar is never drawn larger than a thumbnail, so a bigger file
   // buys nothing visible and is paid for on every screen that lists people.
   // The DTO enforces the same number before a URL is ever signed.
   avatar: 2 * 1024 * 1024,
 };
+
+/** The five types LinkedIn's Documents API takes, without parameters. */
+const DOCUMENT_MIME =
+  /^application\/(pdf|msword|vnd\.ms-powerpoint|vnd\.openxmlformats-officedocument\.(presentationml\.presentation|wordprocessingml\.document))$/i;
 
 // Allow optional `;param=value` suffixes (e.g. `audio/webm;codecs=opus`,
 // `audio/mp4;codecs=mp4a.40.2`). MediaRecorder always emits the full type
@@ -80,6 +93,8 @@ const ALLOWED_MIME: Record<R2MediaKind, RegExp> = {
   video: /^video\/(mp4|webm|quicktime)(;.*)?$/i,
   file: /.*/,
   'composer-video': /^video\/(mp4|webm|quicktime)(;.*)?$/i,
+  // PDF, PPT, PPTX, DOC, DOCX — the Documents API's own list.
+  'composer-document': DOCUMENT_MIME,
   // No GIF and no HEIC, unlike `image`: an avatar sits at 24-40px in a dozen
   // places at once, where an animated GIF is a dozen loops running behind a
   // list, and HEIC does not decode in Chrome or Firefox at all.
@@ -235,7 +250,7 @@ export class CloudflareR2Service {
     // Absolute-minimum signed command: Bucket + Key only. No ContentType, no
     // ContentLength, no Metadata, no ACL. The signature only commits the URL
     // path + expiry + credential — the browser is free to PUT any body of
-    // any size/type within the 5-min window. We already validated size + MIME
+    // any size/type within the expiry window. We already validated size + MIME
     // above before issuing the URL, so server-side enforcement isn't lost.
     //
     // Why bare-minimum? Every signed attribute becomes a "required match"
@@ -249,7 +264,10 @@ export class CloudflareR2Service {
       Key: key,
     });
 
-    const expiresIn = 5 * 60; // 5 min — generous for slow voice uploads
+    // Long enough for the PUT to START on a slow uplink. Five flat minutes
+    // was fine for a voice note and not for a 42 MB video on a ~1 Mbps
+    // connection, which needs most of that window just to send the bytes.
+    const expiresIn = presignExpirySeconds(sizeBytes);
     const uploadUrl = await getSignedUrl(client, command, {
       expiresIn,
       // Drop ALL the headers the AWS SDK would otherwise auto-sign. Anything
@@ -438,9 +456,47 @@ const MIME_EXTENSIONS: Record<string, string> = {
   'video/mp4': '.mp4',
   'video/webm': '.webm',
   'video/quicktime': '.mov',
+  'application/pdf': '.pdf',
+  'application/msword': '.doc',
+  'application/vnd.ms-powerpoint': '.ppt',
+  'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+    '.pptx',
+  'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
+    '.docx',
 };
 
 /** A key extension: a dot and 1-8 lowercase ASCII letters or digits. */
+/** The shortest life a presigned URL gets: what every upload had before. */
+export const PRESIGN_MIN_SECONDS = 5 * 60;
+
+/** The longest: 12 hours, far inside SigV4's 7-day ceiling. */
+export const PRESIGN_MAX_SECONDS = 12 * 60 * 60;
+
+/**
+ * The slowest uplink planned for, in bytes per second: 128 KiB/s, about
+ * 1 Mbps, which is a busy hotel or mobile connection rather than an outlier.
+ */
+const SLOWEST_UPLINK_BYTES_PER_SECOND = 128 * 1024;
+
+/**
+ * How long a presigned PUT stays valid: the time the file would take at the
+ * slowest uplink planned for, plus the old five minutes of headroom for the
+ * browser's own work before it starts sending (presign, probe, a retry).
+ *
+ * A URL lets its holder write one object at one key, so a longer life widens
+ * nothing but the window to finish that one upload. Small files keep the
+ * five minutes they always had.
+ */
+export function presignExpirySeconds(sizeBytes: number): number {
+  const sending = Math.ceil(
+    Math.max(0, sizeBytes) / SLOWEST_UPLINK_BYTES_PER_SECOND,
+  );
+  return Math.min(
+    PRESIGN_MAX_SECONDS,
+    Math.max(PRESIGN_MIN_SECONDS, sending + PRESIGN_MIN_SECONDS),
+  );
+}
+
 const SAFE_EXTENSION = /^\.[a-z0-9]{1,8}$/;
 
 /**

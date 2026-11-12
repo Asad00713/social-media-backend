@@ -205,6 +205,31 @@ describe('CanvaComposerController.import', () => {
     });
   });
 
+  // Instagram Post/Story and TikTok Photo publish JPEG only: the composer
+  // asks for a JPG, which Canva exports with a numeric quality.
+  it('exports and stores a JPG when asked for one', async () => {
+    const arrayBuffer = new TextEncoder().encode('fake-jpg-bytes').buffer;
+    global.fetch = jest.fn().mockResolvedValue({
+      ok: true,
+      arrayBuffer: () => Promise.resolve(arrayBuffer),
+    }) as any;
+    const { controller, canvaService, ingest } = makeController();
+
+    await controller.import('ws-1', { designId: 'd1', format: 'jpg' }, USER);
+
+    expect(canvaService.exportDesign).toHaveBeenCalledWith(
+      'access-token',
+      'd1',
+      { format: 'jpg', quality: 90 },
+    );
+    expect(ingest.ingestBuffer).toHaveBeenCalledWith(
+      expect.objectContaining({
+        mimeType: 'image/jpeg',
+        originalName: 'canva-d1.jpg',
+      }),
+    );
+  });
+
   it('throws BadRequestException when the export has no download URLs', async () => {
     const { controller } = makeController({
       waitForExport: jest.fn().mockResolvedValue([]),

@@ -197,3 +197,23 @@ export class PresignComposerVideoDto {
   @IsNumber()
   sizeBytes: number;
 }
+
+/**
+ * A LinkedIn Document post's file (PDF, PPT, PPTX, DOC or DOCX). The same
+ * fields as a composer video; the type and the 100 MB cap are checked by
+ * `CloudflareR2Service` for the `composer-document` kind.
+ */
+export class PresignComposerDocumentDto {
+  @IsString()
+  workspaceId: string;
+
+  @IsString()
+  contentType: string;
+
+  @IsString()
+  @IsOptional()
+  filename?: string;
+
+  @IsNumber()
+  sizeBytes: number;
+}

@@ -112,6 +112,32 @@ export function parseThreadsPostLink(link: string): string | null {
   return match ? match[1] : null;
 }
 
+/**
+ * What an image or video container takes on top of the post's settings.
+ *
+ * `alt_text` - "(For images and videos only.) The accessibility text label
+ * or description for an image or video" (Threads posts reference and
+ * developers.facebook.com/docs/threads/posts/accessibility; max 1,000
+ * characters). Never on a text container: "This feature isn't available
+ * for text-only posts", so only the image, video and carousel-item creates
+ * read it.
+ */
+export interface ThreadsMediaSettings extends ThreadsPostSettings {
+  altText?: string;
+}
+
+/** Threads' cap on `alt_text` (posts reference: "maximum length ... 1,000"). */
+export const THREADS_ALT_TEXT_MAX_CHARS = 1000;
+
+/** Writes `alt_text` when there is some. */
+function applyAltText(
+  body: Record<string, string>,
+  altText: string | undefined,
+): void {
+  const text = altText?.trim();
+  if (text) body.alt_text = text;
+}
+
 /** A poll, which rides a text container only. */
 export interface ThreadsPoll {
   optionA: string;
@@ -340,7 +366,7 @@ export class ThreadsService {
     imageUrl: string,
     text?: string,
     replyToId?: string,
-    settings?: ThreadsPostSettings,
+    settings?: ThreadsMediaSettings,
   ): Promise<{ postId: string }> {
     // Step 1: Create media container
     const containerUrl = new URL(`${this.graphApiUrl}/${userId}/threads`);
@@ -360,6 +386,7 @@ export class ThreadsService {
     }
 
     applySettings(containerBody, settings);
+    applyAltText(containerBody, settings?.altText);
 
     const containerResponse = await fetch(containerUrl.toString(), {
       method: 'POST',
@@ -391,7 +418,7 @@ export class ThreadsService {
     videoUrl: string,
     text?: string,
     replyToId?: string,
-    settings?: ThreadsPostSettings,
+    settings?: ThreadsMediaSettings,
   ): Promise<{ postId: string }> {
     // Step 1: Create media container
     const containerUrl = new URL(`${this.graphApiUrl}/${userId}/threads`);
@@ -411,6 +438,7 @@ export class ThreadsService {
     }
 
     applySettings(containerBody, settings);
+    applyAltText(containerBody, settings?.altText);
 
     const containerResponse = await fetch(containerUrl.toString(), {
       method: 'POST',
@@ -442,14 +470,19 @@ export class ThreadsService {
   async createCarouselThread(
     accessToken: string,
     userId: string,
-    mediaItems: Array<{ type: 'IMAGE' | 'VIDEO'; url: string }>,
+    mediaItems: Array<{
+      type: 'IMAGE' | 'VIDEO';
+      url: string;
+      altText?: string;
+    }>,
     text?: string,
     replyToId?: string,
     settings?: ThreadsPostSettings,
   ): Promise<{ postId: string }> {
-    if (mediaItems.length < 2 || mediaItems.length > 10) {
+    // "up to 20 images, videos, or a mix" (Threads API, Posts).
+    if (mediaItems.length < 2 || mediaItems.length > 20) {
       throw new BadRequestException(
-        'Carousel threads require between 2 and 10 media items',
+        'Carousel threads require between 2 and 20 media items',
       );
     }
 
@@ -471,6 +504,9 @@ export class ThreadsService {
         containerBody.media_type = 'VIDEO';
         containerBody.video_url = item.url;
       }
+      // Each slide's own description (the accessibility page: alt text works
+      // "on image, video, and carousel posts").
+      applyAltText(containerBody, item.altText);
 
       const containerResponse = await fetch(containerUrl.toString(), {
         method: 'POST',

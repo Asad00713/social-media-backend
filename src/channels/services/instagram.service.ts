@@ -92,7 +92,28 @@ export interface InstagramPostSettings {
 /** What a feed image, Reel or carousel parent takes on top of the above. */
 export interface InstagramFeedSettings extends InstagramPostSettings {
   collaborators?: string[];
+  /**
+   * `alt_text` - "Alternative text, up to 1000 character, for an image.
+   * Only supported on a single image or image media in a carousel. Reels and
+   * stories are not supported." (IG User Media reference). Read ONLY by the
+   * single-image create; a carousel takes it per item, never on the parent.
+   */
+  altText?: string;
 }
+
+/** Instagram's cap on `alt_text` (IG User Media reference: 1000). */
+export const INSTAGRAM_ALT_TEXT_MAX_CHARS = 1000;
+
+/**
+ * The most items one carousel takes: 20.
+ *
+ * Content Publishing guide, Limitations: "Carousels are limited to 20
+ * images, videos, or a mix of the two." The IG User Media reference says
+ * the same of `children`: "An array of up to 20 container IDs". This was
+ * 10, Meta's old limit, so items 11 to 20 were refused here although
+ * Instagram would have published them.
+ */
+export const INSTAGRAM_CAROUSEL_MAX_ITEMS = 20;
 
 /** Reels only. */
 export interface InstagramReelSettings extends InstagramFeedSettings {
@@ -389,7 +410,8 @@ export class InstagramService {
   }
 
   /**
-   * Validate all carousel images have compatible aspect ratios
+   * Validate each carousel image's own aspect ratio is one Instagram
+   * accepts (4:5 to 1.91:1). Ratios that differ from each other are fine.
    */
   private async validateCarouselAspectRatios(
     mediaItems: Array<{ type: 'IMAGE' | 'VIDEO'; url: string }>,
@@ -421,17 +443,17 @@ export class InstagramService {
       }
     }
 
-    // Check that all images have similar aspect ratios (Instagram requirement for carousels)
+    // Mixed ratios are NOT refused. Meta crops them itself: "Carousel images
+    // are all cropped based on the first image in the carousel, with the
+    // default being a 1:1 aspect ratio" (Content Publishing guide,
+    // Limitations). Refusing here failed carousels Instagram would have
+    // published. Logged so a crop someone did not expect can be traced.
     if (dimensions.length > 1) {
       const firstRatio = dimensions[0].ratio;
       for (let i = 1; i < dimensions.length; i++) {
-        const ratioDiff = Math.abs(dimensions[i].ratio - firstRatio);
-        // Allow 10% tolerance for aspect ratio matching
-        if (ratioDiff > 0.1) {
-          throw new BadRequestException(
-            `Carousel images must have similar aspect ratios. ` +
-              `Image 1 has ratio ${firstRatio.toFixed(2)}, but image ${i + 1} has ratio ${dimensions[i].ratio.toFixed(2)}. ` +
-              `Please ensure all images are cropped to the same aspect ratio (e.g., all 1:1 square or all 4:5 portrait).`,
+        if (Math.abs(dimensions[i].ratio - firstRatio) > 0.1) {
+          this.logger.log(
+            `Carousel image ${i + 1} (ratio ${dimensions[i].ratio.toFixed(2)}) differs from image 1 (${firstRatio.toFixed(2)}); Instagram crops it to image 1's ratio`,
           );
         }
       }
@@ -642,10 +664,14 @@ export class InstagramService {
       `${this.graphApiUrl}/${instagramAccountId}/media`,
     );
 
+    // Always REELS: Meta stopped accepting `media_type=VIDEO` on
+    // 2023-11-09 ("Use the REELS media type to publish a video to your
+    // feed"). A feed video is a reel shared to the feed.
     const containerBody: Record<string, string> = {
       access_token: pageAccessToken,
       video_url: videoUrl,
-      media_type: isReel ? 'REELS' : 'VIDEO',
+      media_type: 'REELS',
+      ...(isReel ? {} : { share_to_feed: 'true' }),
     };
 
     if (caption) {
@@ -689,9 +715,12 @@ export class InstagramService {
     mediaItems: Array<{ type: 'IMAGE' | 'VIDEO'; url: string }>,
     caption?: string,
   ): Promise<{ postId: string }> {
-    if (mediaItems.length < 2 || mediaItems.length > 10) {
+    if (
+      mediaItems.length < 2 ||
+      mediaItems.length > INSTAGRAM_CAROUSEL_MAX_ITEMS
+    ) {
       throw new BadRequestException(
-        'Carousel posts require between 2 and 10 media items',
+        `Carousel posts require between 2 and ${INSTAGRAM_CAROUSEL_MAX_ITEMS} media items`,
       );
     }
 
@@ -1012,6 +1041,8 @@ export class InstagramService {
 
     // An image's tags must carry coordinates; Meta rejects one without.
     applySettings(containerParams, settings, { requireCoordinates: true });
+    const altText = settings?.altText?.trim();
+    if (altText) containerParams.set('alt_text', altText);
 
     this.logger.log(`Creating media container at: ${containerUrl.toString()}`);
 
@@ -1050,11 +1081,19 @@ export class InstagramService {
    * Create a video/reel post using Instagram Business Login token
    * Uses graph.instagram.com API
    *
-   * `mediaType` controls the IG container `media_type` field:
-   *   - 'VIDEO' (default for legacy callers) → standard feed video
-   *   - 'REELS'                              → Reel
+   * `mediaType` says what the caller is making:
+   *   - 'VIDEO' (default for legacy callers) → a feed video
+   *   - 'REELS'                              → a Reel
    * The boolean `isReel` form is kept for backwards compatibility but
    * `mediaType` takes precedence when both are passed.
+   *
+   * Either way the container is sent as `media_type=REELS`: Meta stopped
+   * accepting `VIDEO` on 2023-11-09 and says to "use the REELS media type to
+   * publish a video to your feed" (Graph API changelog, June 28, 2022
+   * out-of-cycle changes). A feed video is therefore a reel with
+   * `share_to_feed=true`, so it still appears in the feed; the Reel-only
+   * settings (cover, cover frame, audio name, the person's own Show in feed)
+   * are not sent for it, because a feed Post never offered them.
    *
    * Shipped but untested with a live account — verify in smoke test.
    */
@@ -1067,9 +1106,9 @@ export class InstagramService {
     mediaType?: 'VIDEO' | 'REELS',
     settings?: InstagramReelSettings,
   ): Promise<{ postId: string }> {
-    const resolvedMediaType = mediaType ?? (isReel ? 'REELS' : 'VIDEO');
+    const isFeedVideo = (mediaType ?? (isReel ? 'REELS' : 'VIDEO')) === 'VIDEO';
     this.logger.log(
-      `Creating Instagram ${resolvedMediaType === 'REELS' ? 'reel' : 'video'} post for user ${userId}`,
+      `Creating Instagram ${isFeedVideo ? 'feed video (reel shared to feed)' : 'reel'} post for user ${userId}`,
     );
 
     // Step 1: Create media container for video
@@ -1078,19 +1117,20 @@ export class InstagramService {
     const containerParams = new URLSearchParams();
     containerParams.set('access_token', accessToken);
     containerParams.set('video_url', videoUrl);
-    containerParams.set('media_type', resolvedMediaType);
+    containerParams.set('media_type', 'REELS');
 
     if (caption) {
       containerParams.set('caption', caption);
     }
 
-    // `resolvedMediaType`, not `isReel`: an explicit `mediaType` overrides
-    // the flag, and `share_to_feed` / `cover_url` belong to whatever the
-    // container actually IS.
+    // What the caller asked for decides which settings go: a feed video
+    // carries the feed settings only, and is always shared to the feed —
+    // that is what makes it a feed post rather than a Reels-tab-only reel.
     applySettings(containerParams, settings, {
       requireCoordinates: false,
-      isReel: resolvedMediaType === 'REELS',
+      isReel: !isFeedVideo,
     });
+    if (isFeedVideo) containerParams.set('share_to_feed', 'true');
 
     const containerResponse = await fetch(containerUrl.toString(), {
       method: 'POST',
@@ -1135,13 +1175,18 @@ export class InstagramService {
       url: string;
       /** Tags for THIS slide — see the asymmetry note below. */
       userTags?: InstagramUserTag[];
+      /** This slide's alt text; images only (see InstagramFeedSettings). */
+      altText?: string;
     }>,
     caption?: string,
     settings?: InstagramFeedSettings,
   ): Promise<{ postId: string }> {
-    if (mediaItems.length < 2 || mediaItems.length > 10) {
+    if (
+      mediaItems.length < 2 ||
+      mediaItems.length > INSTAGRAM_CAROUSEL_MAX_ITEMS
+    ) {
       throw new BadRequestException(
-        'Carousel posts require between 2 and 10 media items',
+        `Carousel posts require between 2 and ${INSTAGRAM_CAROUSEL_MAX_ITEMS} media items`,
       );
     }
 
@@ -1164,6 +1209,8 @@ export class InstagramService {
 
       if (item.type === 'IMAGE') {
         containerParams.set('image_url', item.url);
+        const altText = item.altText?.trim();
+        if (altText) containerParams.set('alt_text', altText);
       } else {
         containerParams.set('video_url', item.url);
         containerParams.set('media_type', 'VIDEO');
@@ -1175,11 +1222,7 @@ export class InstagramService {
       // go on the parent below. Putting the post-level ones here would
       // repeat one post's settings on every slide, and Meta rejects
       // `is_ai_generated` on a child outright.
-      applyUserTags(
-        containerParams,
-        item.userTags,
-        item.type === 'IMAGE',
-      );
+      applyUserTags(containerParams, item.userTags, item.type === 'IMAGE');
 
       const containerResponse = await fetch(containerUrl.toString(), {
         method: 'POST',

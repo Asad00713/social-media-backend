@@ -1,4 +1,9 @@
-import { bucketByDate, presentPost, type PostRow } from './present-post';
+import {
+  bucketByDate,
+  plannerAt,
+  presentPost,
+  type PostRow,
+} from './present-post';
 
 const NOW = new Date('2026-06-15T10:00:00Z');
 const users = new Map([
@@ -112,6 +117,85 @@ describe('presentPost', () => {
     expect(dto.targets[0].channelId).toBe('7');
   });
 
+  it('shows heldAt on a target waiting for its paused channel, never on one that went out', () => {
+    const at = '2026-06-15T09:00:00.000Z';
+    const waiting = presentPost(
+      row({
+        targets: [
+          {
+            channelId: '7',
+            platform: 'bluesky',
+            status: 'draft',
+            heldAt: at,
+            heldReason: 'channel_paused',
+          },
+        ] as never,
+      }),
+      { users },
+    );
+    expect(waiting.targets[0]).toMatchObject({
+      status: 'scheduled',
+      heldAt: at,
+    });
+    expect('heldReason' in waiting.targets[0]).toBe(false);
+
+    const sent = presentPost(
+      row({
+        status: 'published',
+        targets: [
+          {
+            channelId: '7',
+            platform: 'bluesky',
+            status: 'published',
+            heldAt: at,
+          },
+        ] as never,
+      }),
+      { users },
+    );
+    expect('heldAt' in sent.targets[0]).toBe(false);
+  });
+
+  // D4: the "published with issues" note reaches the Planner API.
+  it("returns a published target's warnings", () => {
+    const dto = presentPost(
+      row({
+        status: 'published',
+        targets: [
+          {
+            channelId: '1',
+            platform: 'facebook',
+            publishStatus: 'published',
+            warnings: ['First comment was not posted: comments off', 7, ''],
+          },
+        ] as never,
+      }),
+      { users },
+    );
+    expect(dto.targets[0].warnings).toEqual([
+      'First comment was not posted: comments off',
+    ]);
+    expect(dto.targets[0].status).toBe('published');
+  });
+
+  it('never returns warnings on a target that is not published', () => {
+    const dto = presentPost(
+      row({
+        status: 'failed',
+        targets: [
+          {
+            channelId: '1',
+            platform: 'facebook',
+            status: 'failed',
+            warnings: ['Cover was not set: old'],
+          },
+        ] as never,
+      }),
+      { users },
+    );
+    expect('warnings' in dto.targets[0]).toBe(false);
+  });
+
   it('gives a published target no failure', () => {
     const dto = presentPost(
       row({
@@ -153,7 +237,40 @@ describe('presentPost', () => {
     const dto = presentPost(row({ publishedAt: published }), { users });
     expect(dto.occurredAt).toBe(published.toISOString());
     expect(
-      presentPost(row({ scheduledAt: null }), { users }).occurredAt,
+      presentPost(row({ status: 'draft', scheduledAt: null }), { users })
+        .occurredAt,
+    ).toBeNull();
+  });
+
+  it('places a failed "Publish now" (no scheduledAt, no publishedAt) at its attempt', () => {
+    // The live bug: such a post had occurredAt null and every Planner
+    // surface (List groups, calendar buckets) skipped it.
+    const attempt = new Date('2026-06-15T12:34:56.789Z');
+    for (const status of ['failed', 'publishing'] as const) {
+      const dto = presentPost(
+        row({
+          status,
+          scheduledAt: null,
+          publishedAt: null,
+          createdAt: new Date('2026-06-01T00:00:00Z'),
+          updatedAt: attempt,
+        }),
+        { users },
+      );
+      expect(dto.occurredAt).toBe(attempt.toISOString());
+      expect(dto.scheduledAt).toBeNull();
+      expect(Object.keys(bucketByDate([dto], 'UTC'))).toEqual(['2026-06-15']);
+    }
+  });
+
+  it('a draft never gets an instant from updatedAt', () => {
+    expect(
+      plannerAt({
+        status: 'draft',
+        scheduledAt: null,
+        publishedAt: null,
+        updatedAt: NOW,
+      }),
     ).toBeNull();
   });
 

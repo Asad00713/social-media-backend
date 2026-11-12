@@ -24,6 +24,19 @@ export interface PlannerPostTargetDto {
   errorCode?: PublishErrorCode;
   destination?: { id: string; name?: string };
   contentOverride?: PlatformContent;
+  /**
+   * "Published with issues": what the live post left out - a first comment,
+   * cover, captions, alt text, media the platform could not carry - one
+   * readable sentence each ("First comment was not posted: <reason>").
+   * Present only on a published target that has at least one.
+   */
+  warnings?: string[];
+  /**
+   * Its channel is paused: the publish time came and the target is waiting
+   * for the channel to be resumed. Present only while held (status stays
+   * 'scheduled').
+   */
+  heldAt?: string;
   /** Non-null only when status === 'failed'. */
   failure: PostFailure | null;
 }
@@ -41,7 +54,11 @@ export interface PlannerPostDto {
   displayStatus: PostStatus;
   scheduledAt: string | null;
   publishedAt: string | null;
-  /** publishedAt ?? scheduledAt: the instant the post sits on the calendar. */
+  /**
+   * publishedAt ?? scheduledAt: the instant the post sits on the calendar. A
+   * non-draft post with neither (a failed "Publish now") falls back to its
+   * last attempt, updatedAt, so it is never null outside drafts.
+   */
   occurredAt: string | null;
   platformContent: Record<string, PlatformContent>;
   metadata: Record<string, unknown> & {

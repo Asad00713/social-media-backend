@@ -299,4 +299,32 @@ describe('PublishOrchestratorService.publishInline', () => {
       svc.publishInline('w1', 'u1', { ...baseInput(), channels: [] }),
     ).rejects.toThrow(/no channels/i);
   });
+
+  // D5/S2: a template's {{blank}} never goes out, and nothing is written.
+  it('refuses a caption with an unfilled template blank before touching the row', async () => {
+    const db = (svc as any).db;
+    await expect(
+      svc.publishInline('w1', 'u1', {
+        ...baseInput(),
+        base: { ...baseInput().base, text: 'Meet our {{product_name}}' },
+      }),
+    ).rejects.toThrow(/\{\{product_name\}\}/);
+    expect(db.insert).not.toHaveBeenCalled();
+    expect(publisher.publish).not.toHaveBeenCalled();
+  });
+
+  it('does not block on a blank left in a platform this publish does not send to', async () => {
+    publisher.publish.mockResolvedValue({ platformPostId: 'tid_1' });
+    const result = await svc.publishInline('w1', 'u1', {
+      ...baseInput(),
+      perPlatform: {
+        bluesky: {
+          inheritsFromBase: false,
+          overrides: { text: 'Out {{date}}' },
+          platformSpecific: {},
+        },
+      },
+    });
+    expect(result.draftStatus).toBe('published');
+  });
 });

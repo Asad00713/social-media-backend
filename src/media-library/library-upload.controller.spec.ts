@@ -91,6 +91,14 @@ const calls: Array<[string, (c: LibraryUploadController) => Promise<unknown>]> =
           user,
         ),
     ],
+    [
+      'presignComposerDocument',
+      (c) =>
+        c.presignComposerDocument(
+          { workspaceId: WS, contentType: 'application/pdf', sizeBytes: 10 },
+          user,
+        ),
+    ],
   ];
 
 describe('LibraryUploadController', () => {
@@ -167,6 +175,38 @@ describe('LibraryUploadController', () => {
       ),
     ).rejects.toBeInstanceOf(StorageFullException);
     expect(r2Service.createPresignedUpload).not.toHaveBeenCalled();
+  });
+
+  it('document presign over the limit is a 413 and presigns nothing', async () => {
+    const { c, r2Service } = make(okAccess(), quotaUsing(900));
+    await expect(
+      c.presignComposerDocument(
+        { workspaceId: WS, contentType: 'application/pdf', sizeBytes: 200 },
+        user,
+      ),
+    ).rejects.toBeInstanceOf(StorageFullException);
+    expect(r2Service.createPresignedUpload).not.toHaveBeenCalled();
+  });
+
+  it('a document presign asks R2 for the composer-document kind', async () => {
+    const { c, r2Service } = make(okAccess());
+    await c.presignComposerDocument(
+      {
+        workspaceId: WS,
+        contentType: 'application/pdf',
+        sizeBytes: 10,
+        filename: 'deck.pdf',
+      },
+      user,
+    );
+    expect(r2Service.createPresignedUpload).toHaveBeenCalledWith({
+      workspaceId: WS,
+      userId: 'u1',
+      kind: 'composer-document',
+      contentType: 'application/pdf',
+      sizeBytes: 10,
+      filename: 'deck.pdf',
+    });
   });
 
   it('upload/file returns the Library item; comma tags arrive split and trimmed', async () => {

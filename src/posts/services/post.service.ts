@@ -8,7 +8,17 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { isViewer, type CallerRole } from '../guest-rules';
-import { eq, and, desc, inArray, ne, sql, gte, lte } from 'drizzle-orm';
+import {
+  eq,
+  and,
+  desc,
+  inArray,
+  isNotNull,
+  ne,
+  sql,
+  gte,
+  lte,
+} from 'drizzle-orm';
 import { VERSION_ACTION } from '../composer/lib/draft-versions';
 import { db } from '../../drizzle/db';
 import { derivePostStatus, publishedTargetState } from '../lib/post-status';
@@ -49,12 +59,21 @@ import { CampaignStatusSyncListener } from '../../campaigns/campaign-status-sync
 import { PostQueueService } from '../../billing/services/post-queue.service';
 import { PostReminderService } from './post-reminder.service';
 import { withSharedThumbnail } from '../lib/shared-thumbnail';
+import { sharedMetadataFor } from '../lib/publish-metadata';
+import { warningsField } from '../lib/publish-warnings';
 import {
   isReminderTarget,
   reminderContent,
   REMINDER_TARGET_STATUS,
 } from '../lib/reminder';
 import { channelContent } from '../lib/channel-content';
+import {
+  enqueueHeldPost,
+  holdTarget,
+  isHeld,
+  releaseTarget,
+} from '../lib/held-targets';
+import { syncHeldDripPost } from '../../drips/lib/held-drip-sync';
 import type {
   PostStatusChangedPayload,
   PostStatusChangedTarget,
@@ -610,9 +629,27 @@ export class PostService {
     postId: string,
     workspaceId: string,
     userId: string,
-    options?: { triggeredBy?: 'user' | 'scheduler' },
+    options?: {
+      triggeredBy?: 'user' | 'scheduler';
+      /**
+       * A resume of a paused channel (job data `heldOnly`): publish the held
+       * targets, and leave a target that already failed as it is rather than
+       * retrying it as a side effect of someone resuming another channel.
+       */
+      heldOnly?: boolean;
+      /**
+       * What a target on a channel the user paused does. 'hold' waits for
+       * the resume; 'refuse' (400 CHANNEL_PAUSED) is for a person pressing
+       * Publish now. Defaults to hold for the scheduler, refuse otherwise;
+       * an automated "publish now" (a drip occurrence) passes 'hold'.
+       */
+      onPaused?: 'hold' | 'refuse';
+    },
   ): Promise<typeof posts.$inferSelect> {
     const triggeredBy = options?.triggeredBy ?? 'user';
+    const heldOnly = options?.heldOnly === true;
+    const onPaused =
+      options?.onPaused ?? (triggeredBy === 'scheduler' ? 'hold' : 'refuse');
     const post = await this.getPost(postId, workspaceId);
 
     if (post.status === 'published') {
@@ -632,6 +669,28 @@ export class PostService {
     // stuck in 'scheduled'.
     if (triggeredBy === 'user') {
       assertApprovedFor(post.metadata, post);
+    }
+
+    // Channels the user paused. A person publishing now is told so; a
+    // scheduled job (or a drip occurrence) holds those targets instead of
+    // failing them.
+    const paused = await this.pausedChannelsOf(post);
+    if (paused.size > 0 && onPaused === 'refuse') {
+      const names = [...paused.values()].join(', ');
+      throw refusal(
+        `Paused: ${names}. Resume ${paused.size === 1 ? 'it' : 'them'} to publish now - scheduled posts wait until you do.`,
+        'CHANNEL_PAUSED',
+      );
+    }
+    const isPausedTarget = (t: PostTarget): boolean =>
+      t.status !== 'published' && paused.has(String(t.channelId));
+
+    // Every target still to go is on a paused channel: hold them all. The
+    // post stays (or, for a drip occurrence, becomes) `scheduled` - never
+    // `publishing`, no retry burned.
+    const pending = post.targets.filter((t) => t.status !== 'published');
+    if (pending.length > 0 && pending.every(isPausedTarget)) {
+      return this.holdPausedTargets(post, isPausedTarget, userId);
     }
 
     const previousStatus = post.status;
@@ -670,16 +729,50 @@ export class PostService {
     // A success from THIS run (not a carried-over one) — only that restamps
     // the post's publishedAt.
     let newSuccess = false;
+    // Targets held for a paused channel; any keeps the post `scheduled`.
+    const heldChannels = new Map<string, string>();
+    const now = new Date();
 
-    for (const target of post.targets) {
+    for (const storedTarget of post.targets) {
       // A retry must not re-post to a channel that already went out — that
       // would duplicate the live post. Carry it over untouched; it still
       // counts as a success for the post's final status.
-      if (target.status === 'published') {
-        updatedTargets.push(target);
+      if (storedTarget.status === 'published') {
+        updatedTargets.push(storedTarget);
         anySuccess = true;
         continue;
       }
+
+      // Paused by the user: hold it, neither published nor failed.
+      if (isPausedTarget(storedTarget)) {
+        updatedTargets.push(holdTarget(storedTarget, now));
+        heldChannels.set(String(storedTarget.channelId), '');
+        await this.recordHistory(
+          postId,
+          'held',
+          'publishing',
+          post.status,
+          storedTarget.channelId,
+          userId,
+          { platform: storedTarget.platform, reason: 'channel_paused' },
+        );
+        continue;
+      }
+
+      // A resume publishes what was held; a target that had already failed
+      // stays failed until someone retries it.
+      if (
+        heldOnly &&
+        !isHeld(storedTarget) &&
+        storedTarget.status === 'failed'
+      ) {
+        updatedTargets.push(storedTarget);
+        allSuccess = false;
+        continue;
+      }
+
+      // Attempted now, so no longer held.
+      const target = releaseTarget(storedTarget);
 
       // "Publish: Remind me" (Instagram / Facebook): the platform is not
       // called. The person is notified with everything copied and posts it
@@ -814,6 +907,11 @@ export class PostService {
           ...(result.itemResults?.length
             ? { itemResults: result.itemResults }
             : {}),
+          // Soft steps that failed after the post went live (first comment,
+          // cover, alt text...): kept, so the post reads "published with
+          // issues" instead of silently missing a setting. Only this run's.
+          warnings: undefined,
+          ...warningsField(result.metadata),
         });
         anySuccess = true;
         newSuccess = true;
@@ -848,6 +946,7 @@ export class PostService {
           ...target,
           status: 'failed',
           errorMessage,
+          warnings: undefined,
           // Part of the post is live (one Pin per image): keep what went
           // out, so the retry resumes after it rather than repeating it.
           ...(error instanceof PartialPublishError
@@ -873,7 +972,12 @@ export class PostService {
 
     // Determine final status
     let finalStatus: PostStatus;
-    if (allSuccess) {
+    const anyHeld = heldChannels.size > 0;
+    if (anyHeld) {
+      // Part of the post still waits for a paused channel: it stays
+      // scheduled, and resuming that channel sends the rest.
+      finalStatus = 'scheduled';
+    } else if (allSuccess) {
       finalStatus = 'published';
     } else if (anySuccess) {
       finalStatus = 'partially_published';
@@ -886,6 +990,10 @@ export class PostService {
       status: finalStatus,
       targets: updatedTargets,
       updatedAt: new Date(),
+      // A held post that never had a time (a drip occurrence published now)
+      // takes this moment, so resume sends it at once and the Planner can
+      // place it.
+      ...(anyHeld && !post.scheduledAt ? { scheduledAt: now } : {}),
     };
     // The post's publishedAt is when it FIRST went out: a retry that lands
     // later must not restamp it, or the post jumps to the retry's day on
@@ -901,6 +1009,10 @@ export class PostService {
       .set(postUpdateData)
       .where(eq(posts.id, postId))
       .returning();
+
+    if (updatedPost && anyHeld) {
+      await this.requeueIfResumedMeanwhile(updatedPost, heldChannels);
+    }
 
     if (!updatedPost) {
       // The post row is gone (e.g. campaign `pause` deleted it) even though
@@ -920,6 +1032,19 @@ export class PostService {
     // is absent. Never let a sync failure fail (or duplicate, via BullMQ
     // retry) an otherwise-successful publish — same fire-and-forget
     // error boundary as `syncCalendarForPost` above.
+    // A drip occurrence that was held for a paused channel and has now gone
+    // out (or failed) on resume: its drip post learns the outcome. No-op for
+    // every other post, and for the drip processor's own first attempt.
+    if (!anyHeld) {
+      void syncHeldDripPost(db, updatedPost).catch((error) => {
+        this.logger.warn(
+          `Drip post sync failed for post ${postId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
+    }
+
     void this.campaignStatusSync.syncFromPost(updatedPost).catch((error) => {
       this.logger.warn(
         `Campaign slot sync failed for post ${postId}: ${
@@ -948,6 +1073,141 @@ export class PostService {
       `Post ${postId} publishing completed with status: ${finalStatus}`,
     );
     return updatedPost;
+  }
+
+  /**
+   * The post's target channels that the user has paused, id -> name. Not the
+   * plan lock (`is_active = false`): that one fails at `getAccessToken`, as
+   * it always has.
+   */
+  private async pausedChannelsOf(
+    post: Pick<typeof posts.$inferSelect, 'workspaceId' | 'targets'>,
+  ): Promise<Map<string, string>> {
+    const ids = [
+      ...new Set(
+        (post.targets ?? [])
+          .map((t) => parseInt(String(t.channelId), 10))
+          .filter((id) => Number.isFinite(id)),
+      ),
+    ];
+    if (ids.length === 0) return new Map();
+    const rows = await db
+      .select({
+        id: socialMediaChannels.id,
+        accountName: socialMediaChannels.accountName,
+        pausedAt: socialMediaChannels.pausedAt,
+      })
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.workspaceId, post.workspaceId),
+          inArray(socialMediaChannels.id, ids),
+          isNotNull(socialMediaChannels.pausedAt),
+        ),
+      );
+    return new Map(
+      (rows ?? [])
+        .filter((r) => r && r.pausedAt)
+        .map((r) => [String(r.id), r.accountName]),
+    );
+  }
+
+  /**
+   * Hold every remaining target of a post whose channels are all paused.
+   *
+   * A scheduled post only has `targets` written: it stays `scheduled` and
+   * nothing is emitted, because nothing about it changed for anyone looking
+   * at it. A post that was not scheduled yet (a drip occurrence published
+   * now) becomes `scheduled` at this moment, so resume finds it and the
+   * processor sends it; that change is emitted like any other.
+   */
+  private async holdPausedTargets(
+    post: typeof posts.$inferSelect,
+    isPausedTarget: (t: PostTarget) => boolean,
+    userId: string,
+  ): Promise<typeof posts.$inferSelect> {
+    const now = new Date();
+    const held = post.targets.filter(isPausedTarget);
+    const targets = post.targets.map((t) =>
+      isPausedTarget(t) ? holdTarget(t, now) : t,
+    );
+    const becomesScheduled = post.status !== 'scheduled';
+    const [updated] = await db
+      .update(posts)
+      .set({
+        targets,
+        status: 'scheduled',
+        ...(post.scheduledAt ? {} : { scheduledAt: now }),
+        updatedAt: now,
+      })
+      // Only from the status read above: never over a concurrent change.
+      .where(and(eq(posts.id, post.id), eq(posts.status, post.status)))
+      .returning();
+
+    for (const t of held) {
+      await this.recordHistory(
+        post.id,
+        'held',
+        post.status,
+        'scheduled',
+        t.channelId,
+        userId,
+        { platform: t.platform, reason: 'channel_paused' },
+      );
+    }
+    this.logger.log(`Post ${post.id} held: every remaining channel is paused`);
+
+    if (becomesScheduled && updated) {
+      this.emitPostStatusChanged({
+        workspaceId: post.workspaceId,
+        postId: post.id,
+        previousStatus: post.status,
+        status: 'scheduled',
+        targets,
+        publishedAt: post.publishedAt ?? null,
+        lastError: post.lastError ?? null,
+        triggeredBy: 'scheduler',
+        triggeredByUserId: userId,
+      });
+      this.syncCalendarForPost(post.id);
+    }
+
+    const result = updated ?? { ...post, targets };
+    await this.requeueIfResumedMeanwhile(
+      result,
+      new Map(held.map((t) => [String(t.channelId), ''])),
+    );
+    return result;
+  }
+
+  /**
+   * Close the race with a resume. The resume clears `paused_at` and then
+   * looks for held targets; this job read `paused_at` and then wrote them.
+   * If the resume ran between the two, it found nothing to re-enqueue, so
+   * re-read the pause here: a channel that is no longer paused gets its post
+   * enqueued now. Both sides doing it is harmless - the processor runs only
+   * the job `posts.job_id` names.
+   */
+  private async requeueIfResumedMeanwhile(
+    post: typeof posts.$inferSelect,
+    heldChannels: Map<string, string>,
+  ): Promise<void> {
+    try {
+      const stillPaused = await this.pausedChannelsOf(post);
+      const resumed = [...heldChannels.keys()].some(
+        (id) => !stillPaused.has(id),
+      );
+      if (resumed) {
+        await enqueueHeldPost(this.publishingQueue, db, post);
+      }
+    } catch (error) {
+      // The resume is idempotent: pressing it again re-enqueues the post.
+      this.logger.warn(
+        `Could not re-check the pause for held post ${post.id}: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   /**
@@ -1026,11 +1286,17 @@ export class PostService {
     // composer fields like hashtags, title, source) and fail on platform-
     // specific requirements. Per-platform fields take precedence over the
     // legacy top-level metadata when keys collide.
-    const platformSpecific =
-      ((platformContent as Record<string, any>)?.platformSpecific as
-        | Record<string, any>
-        | undefined) ?? {};
-    const postMetadata = (post.metadata as Record<string, any>) || {};
+    const ownFields = (platformContent as Record<string, any>)
+      ?.platformSpecific as Record<string, any> | undefined;
+    const platformSpecific = ownFields ?? {};
+    // Never another platform's thread or poll: a row scheduled before the
+    // composer stopped copying X's thread into the shared metadata still
+    // holds that copy (see lib/publish-metadata.ts).
+    const postMetadata = sharedMetadataFor(
+      post.metadata as Record<string, any> | null,
+      target.platform,
+      ownFields,
+    );
     // Facebook and LinkedIn also read YouTube's designed thumbnail from
     // here (`sharedThumbnailUrl`), the picture the composer shows them as
     // "Same as YouTube".

@@ -8,6 +8,8 @@ import {
 import { toMastodonFocus } from '../../channels/services/mastodon-focus';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import { isPollAllowed, isPollFormat, threadToPublish } from './post-format';
+import { countMastodonChars } from './text-length';
 
 type MastodonVisibility = 'public' | 'unlisted' | 'private' | 'direct';
 
@@ -30,6 +32,96 @@ function pickQuotePolicy(
 ): MastodonQuoteApprovalPolicy | undefined {
   const value = metadata?.allowQuotes;
   return QUOTE_POLICIES.find((policy) => policy === value);
+}
+
+/**
+ * Mastodon's stock poll bounds (`configuration.polls.max_options` is 4 on a
+ * stock server; a poll needs two answers to be one). The service keeps only
+ * the first four, so a fifth is refused here rather than dropped there.
+ */
+const POLL_MIN_OPTIONS = 2;
+const POLL_MAX_OPTIONS = 4;
+
+export interface MastodonPoll {
+  options: string[];
+  expiresInSeconds: number;
+  multiple?: boolean;
+}
+
+/**
+ * The poll to send, or undefined for none - the Mastodon twin of X's
+ * `xPollToSend`.
+ *
+ * When the composer picked the Poll format, a poll that cannot be sent
+ * FAILS the publish with the reason: a status carries a poll OR media,
+ * never both (`poll` and `media_ids` are mutually exclusive on
+ * POST /api/v1/statuses), and `poll[options]` needs at least two answers
+ * with a positive `poll[expires_in]`. It used to be dropped, so the post went
+ * out as plain text and showed "Published".
+ *
+ * A row with no format stored (written before the format existed) keeps
+ * the old reading: a poll that cannot be sent is left out.
+ */
+export function mastodonPollToSend(
+  metadata: Record<string, any> | undefined,
+  mediaCount: number,
+): MastodonPoll | undefined {
+  // A poll left in the draft after switching to Post or Thread is not
+  // sent (see post-format.ts).
+  if (!isPollAllowed(metadata)) return undefined;
+  const raw: unknown = metadata?.poll;
+  const strict = isPollFormat(metadata);
+  if (!strict && (!raw || typeof raw !== 'object')) return undefined;
+
+  const poll = (raw && typeof raw === 'object' ? raw : {}) as {
+    options?: unknown;
+    expiresInSeconds?: unknown;
+    multiple?: unknown;
+  };
+  const options: string[] = Array.isArray(poll.options)
+    ? poll.options
+        .filter((o: unknown): o is string => typeof o === 'string')
+        .map((o) => o.trim())
+        .filter(Boolean)
+    : [];
+  const expiresInSeconds = Number(poll.expiresInSeconds);
+  const hasDuration = Number.isFinite(expiresInSeconds) && expiresInSeconds > 0;
+
+  if (!strict) {
+    // `options` and `expires_in` must be provided together, and a poll
+    // needs at least two answers to be one.
+    if (options.length < POLL_MIN_OPTIONS || !hasDuration) return undefined;
+    return { options, expiresInSeconds, multiple: poll.multiple === true };
+  }
+
+  if (mediaCount > 0) {
+    throw new Error(
+      'Mastodon does not allow a poll and media in the same post — remove the media or switch this post to Post',
+    );
+  }
+  if (options.length < POLL_MIN_OPTIONS) {
+    throw new Error(
+      `A Mastodon poll needs at least ${POLL_MIN_OPTIONS} filled-in options (${options.length} given) — add options or switch this post to Post`,
+    );
+  }
+  if (options.length > POLL_MAX_OPTIONS) {
+    throw new Error(
+      `Mastodon polls allow at most ${POLL_MAX_OPTIONS} options (${options.length} given)`,
+    );
+  }
+  if (!hasDuration) {
+    throw new Error(
+      'The Mastodon poll has no duration — pick how long it runs',
+    );
+  }
+  return { options, expiresInSeconds, multiple: poll.multiple === true };
+}
+
+/** The composer's First comment for Mastodon, trimmed, or ''. */
+function firstCommentOf(metadata: Record<string, any> | undefined): string {
+  return typeof metadata?.firstComment === 'string'
+    ? metadata.firstComment.trim()
+    : '';
 }
 
 /** An https link to a post, as `/api/v2/search` will resolve one. */
@@ -76,13 +168,34 @@ export class MastodonPublisher extends BasePublisher {
     if (!content && mediaItems.length === 0) {
       throw new Error('Mastodon post must have text or media');
     }
-    if (content && content.length > 500) {
+    // Counted as Mastodon counts (`status_length_validator.rb`): graphemes,
+    // each link 23, and the content warning shares the budget — on every
+    // post of a thread too, since each one carries the warning.
+    const warning =
+      typeof metadata?.contentWarning === 'string'
+        ? metadata.contentWarning
+        : undefined;
+    const thread = threadToPublish<{ text?: string }>(metadata);
+    thread?.forEach((t, i) => {
+      const counted = countMastodonChars(t.text ?? '', warning);
+      if (counted > 500) {
+        throw new Error(
+          `Mastodon thread post ${i + 1} exceeds 500 character limit (${counted} chars)`,
+        );
+      }
+    });
+    const counted = countMastodonChars(content ?? '', warning);
+    if (!thread && counted > 500) {
       throw new Error(
-        `Mastodon toot exceeds 500 character limit (${content.length} chars)`,
+        `Mastodon toot exceeds 500 character limit (${counted} chars)`,
       );
     }
     if (mediaItems.length > 4) {
       throw new Error('Mastodon allows maximum 4 media items per post');
+    }
+    // A poll that cannot be sent fails here, before anything is uploaded.
+    if (!threadToPublish(metadata)) {
+      mastodonPollToSend(metadata, mediaItems.length);
     }
   }
 
@@ -98,41 +211,6 @@ export class MastodonPublisher extends BasePublisher {
     return typeof language === 'string' && language.trim()
       ? language.trim()
       : undefined;
-  }
-
-  /**
-   * The poll, if the composer built one.
-   *
-   * Validated rather than forwarded: Mastodon rejects the whole status
-   * for a malformed poll, so a poll that cannot be sent is dropped and
-   * the post survives.
-   */
-  private getPoll(metadata: Record<string, any> | undefined):
-    | { options: string[]; expiresInSeconds: number; multiple?: boolean }
-    | undefined {
-    const raw = metadata?.poll;
-    if (!raw || typeof raw !== 'object') return undefined;
-
-    const options = Array.isArray(raw.options)
-      ? raw.options
-          .filter((o: unknown): o is string => typeof o === 'string')
-          .map((o: string) => o.trim())
-          .filter(Boolean)
-      : [];
-    const expiresInSeconds = Number(raw.expiresInSeconds);
-
-    // `options` and `expires_in` must be provided together, and a poll
-    // needs at least two answers to be one.
-    if (options.length < 2) return undefined;
-    if (!Number.isFinite(expiresInSeconds) || expiresInSeconds <= 0) {
-      return undefined;
-    }
-
-    return {
-      options,
-      expiresInSeconds,
-      multiple: raw.multiple === true,
-    };
   }
 
   async publish(options: PublishOptions): Promise<PublishResult> {
@@ -157,18 +235,18 @@ export class MastodonPublisher extends BasePublisher {
       draftQuoteLink(metadata),
     );
 
-    // Thread mode: if metadata.thread is a non-empty array > 1, publish as a reply chain
-    const thread = metadata?.thread as
-      | Array<{
-          text: string;
-          mediaItems?: Array<{
-            url: string;
-            altText?: string;
-            focalPoint?: unknown;
-          }>;
-        }>
-      | undefined;
-    if (Array.isArray(thread) && thread.length > 1) {
+    // Thread mode: a reply chain when the format is Thread (or no format was
+    // stored) and there is more than one post. A thread left in the draft
+    // after switching to Post or Poll is not published (see post-format.ts).
+    const thread = threadToPublish<{
+      text: string;
+      mediaItems?: Array<{
+        url: string;
+        altText?: string;
+        focalPoint?: unknown;
+      }>;
+    }>(metadata);
+    if (thread) {
       return this.publishThread(instanceUrl, accessToken, thread, {
         visibility:
           (metadata?.visibility as MastodonVisibility | undefined) ?? 'public',
@@ -215,9 +293,9 @@ export class MastodonPublisher extends BasePublisher {
         spoilerText: contentWarning,
         mediaIds,
         language: this.getLanguage(metadata),
-        // Dropped by the service when media is present — a status takes a
-        // poll OR attachments, never both.
-        poll: this.getPoll(metadata),
+        // A status takes a poll OR attachments, never both; in the Poll
+        // format validate() has already refused media beside a poll.
+        poll: mastodonPollToSend(metadata, mediaItems.length),
         // Single posts only. The composer's row is absent in a thread, so
         // forwarding a value left over from before the switch would apply
         // a setting nobody can see.
@@ -226,10 +304,48 @@ export class MastodonPublisher extends BasePublisher {
       },
     );
 
-    return {
+    const result: PublishResult = {
       platformPostId: status.id,
       platformPostUrl: status.url,
     };
+
+    // First comment: a reply to the status just posted (`in_reply_to_id`),
+    // the way Mastodon threads a conversation. The post is live by now, so a
+    // reply that fails is a warning on the result, not a failed post - the
+    // same soft step Facebook, Instagram, LinkedIn and YouTube take. It
+    // follows the post's visibility, language and content warning, as
+    // Mastodon's own reply composer does. Single posts only: the composer
+    // has no First comment on a Thread, so one left from before a switch to
+    // Thread is not sent (the thread returned above).
+    const firstComment = firstCommentOf(metadata);
+    if (firstComment.length > 0) {
+      try {
+        const reply = await this.mastodonService.createStatus(
+          instanceUrl,
+          accessToken,
+          firstComment,
+          {
+            visibility,
+            sensitive,
+            spoilerText: contentWarning,
+            language: this.getLanguage(metadata),
+            inReplyToId: status.id,
+          },
+        );
+        this.logger.log(
+          `First comment posted on Mastodon status ${status.id}: ${reply.id}`,
+        );
+        result.metadata = { firstCommentId: reply.id };
+      } catch (err) {
+        const reason = err instanceof Error ? err.message : String(err);
+        this.logger.warn(
+          `First comment failed on Mastodon status ${status.id}: ${reason}`,
+        );
+        result.metadata = { firstCommentWarning: reason };
+      }
+    }
+
+    return result;
   }
 
   /**

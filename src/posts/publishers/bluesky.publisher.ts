@@ -15,6 +15,8 @@ import {
 } from '../../channels/services/bluesky.service';
 import { MediaItem } from '../../drizzle/schema/posts.schema';
 import { SupportedPlatform } from '../../drizzle/schema/channels.schema';
+import { threadToPublish } from './post-format';
+import { countGraphemes } from './text-length';
 
 interface ThreadPost {
   text: string;
@@ -116,8 +118,10 @@ export class BlueskyPublisher extends BasePublisher {
       );
     }
 
-    const thread = metadata?.thread as ThreadPost[] | undefined;
-    if (Array.isArray(thread) && thread.length > 1) {
+    // The format decides: a thread left in the draft after switching to
+    // Post is not published (see post-format.ts).
+    const thread = threadToPublish<ThreadPost>(metadata);
+    if (thread) {
       thread.forEach((t, i) => {
         const media = t.mediaItems ?? [];
         if (!t.text && media.length === 0) {
@@ -125,9 +129,11 @@ export class BlueskyPublisher extends BasePublisher {
             `Bluesky thread post ${i + 1} must have content or media`,
           );
         }
-        if (t.text && t.text.length > 300) {
+        // Graphemes: the post lexicon's `maxGraphemes: 300`.
+        const graphemeCount = countGraphemes(t.text ?? '');
+        if (graphemeCount > 300) {
           throw new Error(
-            `Bluesky thread post ${i + 1} exceeds 300 character limit (${t.text.length} chars)`,
+            `Bluesky thread post ${i + 1} exceeds 300 character limit (${graphemeCount} chars)`,
           );
         }
         const hasVideo = media.some((m) => m.type === 'video');
@@ -155,9 +161,11 @@ export class BlueskyPublisher extends BasePublisher {
     if (!content && mediaItems.length === 0 && !quoteLink) {
       throw new Error('Bluesky post must have text, images, or a video');
     }
-    if (content && content.length > 300) {
+    // Graphemes, not code units: an emoji is one (`maxGraphemes: 300`).
+    const graphemeCount = countGraphemes(content ?? '');
+    if (graphemeCount > 300) {
       throw new Error(
-        `Bluesky post exceeds 300 character limit (${content.length} chars)`,
+        `Bluesky post exceeds 300 character limit (${graphemeCount} chars)`,
       );
     }
     const hasVideo = mediaItems.some((m) => m.type === 'video');
@@ -197,8 +205,8 @@ export class BlueskyPublisher extends BasePublisher {
     const settings = this.getSettings(metadata);
     const card = usableCard(metadata?.linkCard);
 
-    const thread = metadata?.thread as ThreadPost[] | undefined;
-    if (Array.isArray(thread) && thread.length > 1) {
+    const thread = threadToPublish<ThreadPost>(metadata);
+    if (thread) {
       return this.publishThread(accessToken, did, thread, settings, card);
     }
 
