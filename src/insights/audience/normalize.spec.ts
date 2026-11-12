@@ -90,6 +90,44 @@ describe('metaBreakdown', () => {
     ]);
   });
 
+  const cityBody = (value: Record<string, number>) => ({
+    data: [{ values: [{ value, end_time: '2026-11-10T08:00:00+0000' }] }],
+  });
+
+  it('strips the region from city keys', () => {
+    expect(facebookLocation(cityBody({ 'Lahore, Punjab': 9 }), 'city')).toEqual(
+      [{ key: 'Lahore', value: 9 }],
+    );
+  });
+
+  it('sums same-named cities of different regions', () => {
+    expect(
+      facebookLocation(
+        cityBody({
+          'Springfield, IL': 4,
+          'Springfield, MO': 3,
+          'Boston, MA': 1,
+        }),
+        'city',
+      ),
+    ).toEqual([
+      { key: 'Springfield', value: 7 },
+      { key: 'Boston', value: 1 },
+    ]);
+  });
+
+  it('skips a city whose name is empty before the comma', () => {
+    expect(
+      facebookLocation(cityBody({ ', Sindh': 5, 'Karachi, Sindh': 2 }), 'city'),
+    ).toEqual([{ key: 'Karachi', value: 2 }]);
+  });
+
+  it('leaves country keys untouched', () => {
+    expect(facebookLocation(cityBody({ 'XK, odd': 1 }), 'country')).toEqual([
+      { key: 'XK, odd', value: 1 },
+    ]);
+  });
+
   it.each([
     ['empty data', { data: [] }],
     ['no data key', {}],
@@ -141,7 +179,7 @@ describe('facebookLocation', () => {
         },
       ],
     };
-    expect(facebookLocation(body)).toEqual([
+    expect(facebookLocation(body, 'country')).toEqual([
       { key: 'PK', value: 9 },
       { key: 'US', value: 3 },
     ]);
@@ -153,7 +191,7 @@ describe('facebookLocation', () => {
     ['null', null],
     ['value not an object', { data: [{ values: [{ value: 5 }] }] }],
   ])('returns [] for %s', (_label, body) => {
-    expect(facebookLocation(body)).toEqual([]);
+    expect(facebookLocation(body, 'country')).toEqual([]);
   });
 });
 

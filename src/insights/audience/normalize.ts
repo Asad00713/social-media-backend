@@ -61,6 +61,11 @@ function sumByKey(entries: Array<[string, number]>): RawSlice[] {
   return [...sums].map(([key, value]) => ({ key, value }));
 }
 
+/** City key: the text before the first comma ("Karachi, Sindh" is "Karachi"). */
+function cityKey(raw: string): string | null {
+  return raw.split(',')[0].trim() || null;
+}
+
 function isRecord(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);
 }
@@ -96,7 +101,7 @@ export function metaBreakdown(
       continue;
     }
     let key: string | null;
-    if (breakdown === 'city') key = dim.split(',')[0].trim() || null;
+    if (breakdown === 'city') key = cityKey(dim);
     else if (breakdown === 'age') key = ageBucket(dim);
     else if (breakdown === 'gender') key = genderKey(dim);
     else key = dim;
@@ -108,9 +113,13 @@ export function metaBreakdown(
 /**
  * Facebook Page `page_follows_country` / `page_follows_city`: the newest
  * `values[]` entry holds a `{ key: count }` map. "Newest" is the greatest
- * `end_time`, falling back to the last entry when no entry has one.
+ * `end_time`, falling back to the last entry when no entry has one. City keys
+ * lose their region and collisions are summed, like Meta's own city breakdown.
  */
-export function facebookLocation(body: unknown): RawSlice[] {
+export function facebookLocation(
+  body: unknown,
+  kind: 'country' | 'city',
+): RawSlice[] {
   if (!isRecord(body) || !Array.isArray(body.data)) return [];
   const metric: unknown = body.data[0];
   if (!isRecord(metric) || !Array.isArray(metric.values)) return [];
@@ -133,7 +142,9 @@ export function facebookLocation(body: unknown): RawSlice[] {
 
   const entries: Array<[string, number]> = [];
   for (const [key, count] of Object.entries(newest.value)) {
-    if (isCount(count)) entries.push([key, count]);
+    if (!isCount(count)) continue;
+    const k = kind === 'city' ? cityKey(key) : key;
+    if (k !== null) entries.push([k, count]);
   }
   return sumByKey(entries);
 }

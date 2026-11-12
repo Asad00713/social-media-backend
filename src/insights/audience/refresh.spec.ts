@@ -121,7 +121,7 @@ describe('refreshAudience', () => {
     expect(row.status).toBe('ok');
     expect(row.followerCount).toBe(3);
     expect(row.countries).toEqual([{ key: 'PK', value: 40 }]);
-    expect(row.cities).toEqual([{ key: 'Lahore, Punjab', value: 9 }]);
+    expect(row.cities).toEqual([{ key: 'Lahore', value: 9 }]);
     expect(row.ages).toEqual([]);
     expect(row.genders).toEqual([]);
   });

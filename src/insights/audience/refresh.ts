@@ -116,8 +116,8 @@ export async function refreshAudience(
       return {
         status: 'ok',
         followerCount: followersCount,
-        countries: facebookLocation(countryBody),
-        cities: facebookLocation(cityBody),
+        countries: facebookLocation(countryBody, 'country'),
+        cities: facebookLocation(cityBody, 'city'),
         ages: [],
         genders: [],
       };
