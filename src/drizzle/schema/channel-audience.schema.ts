@@ -16,7 +16,7 @@ export const AUDIENCE_STATUSES = [
   'unsupported',
   'failed',
 ] as const;
-export type AudienceStatus = (typeof AUDIENCE_STATUSES)[number];
+export type StoredAudienceStatus = (typeof AUDIENCE_STATUSES)[number];
 
 /** One raw platform count: a country code, city, age bucket or gender key. */
 export interface RawSlice {
@@ -36,7 +36,7 @@ export const channelAudience = pgTable(
     channelId: integer('channel_id')
       .primaryKey()
       .references(() => socialMediaChannels.id, { onDelete: 'cascade' }),
-    status: text('status').$type<AudienceStatus>().notNull(),
+    status: text('status').$type<StoredAudienceStatus>().notNull(),
     /** The count the 100-follower rule was decided on; null when unknown. */
     followerCount: integer('follower_count'),
     countries: jsonb('countries').$type<RawSlice[]>().notNull().default([]),

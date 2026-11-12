@@ -1,3 +1,4 @@
+import type { StoredAudienceStatus } from '../../drizzle/schema/channel-audience.schema';
 import type { SupportedPlatform } from '../../drizzle/schema/channels.schema';
 
 export interface GrowthPoint {
@@ -26,13 +27,7 @@ export interface AudienceGrowthDto {
 }
 
 /** `pending` exists only in responses: no row yet. The table's CHECK lists the other five. */
-export type AudienceStatus =
-  | 'ok'
-  | 'below_threshold'
-  | 'no_permission'
-  | 'unsupported'
-  | 'failed'
-  | 'pending';
+export type AudienceStatus = StoredAudienceStatus | 'pending';
 
 export interface AudienceSlice {
   key: string;
