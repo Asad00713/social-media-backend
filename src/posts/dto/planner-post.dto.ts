@@ -31,6 +31,12 @@ export interface PlannerPostTargetDto {
    * Present only on a published target that has at least one.
    */
   warnings?: string[];
+  /**
+   * Its channel is paused: the publish time came and the target is waiting
+   * for the channel to be resumed. Present only while held (status stays
+   * 'scheduled').
+   */
+  heldAt?: string;
   /** Non-null only when status === 'failed'. */
   failure: PostFailure | null;
 }

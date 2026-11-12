@@ -5,7 +5,9 @@ export type RefusalCode =
   | 'POST_PARTLY_PUBLISHED'
   | 'SCHEDULE_IN_PAST'
   | 'APPROVAL_REQUIRED'
-  | 'APPROVAL_STALE';
+  | 'APPROVAL_STALE'
+  /** Publishing now to a channel the user paused (scheduling is fine). */
+  | 'CHANNEL_PAUSED';
 
 /**
  * A 400 whose body keeps the standard Nest shape `{ statusCode, message,

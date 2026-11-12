@@ -14,6 +14,7 @@ import {
   SUPPORTED_PLATFORMS,
   ACCOUNT_TYPES,
   CONNECTION_STATUSES,
+  type ChannelCategory,
 } from '../../drizzle/schema/channels.schema';
 
 // Use string literal types inline to avoid decorator metadata issues
@@ -250,6 +251,23 @@ export class ChannelResponseDto {
   refreshTokenExpiresInDays: number | null;
   createdAt: Date;
   updatedAt: Date;
+  /** 'social' | 'messaging' | 'integration', from the platform (never the
+   * stored column, which defaults to 'social' on rows it was not backfilled
+   * for). Integrations do not count against the channel limit. */
+  category: ChannelCategory;
+  /** When the user paused it; null when not paused. Not the plan lock:
+   * that is `isActive === false`. */
+  pausedAt: Date | null;
+  /** Who paused it; null when not paused or when that user is gone. */
+  pausedBy: ChannelPersonRef | null;
+  /** Who connected it; null when that user is gone. */
+  connectedBy: ChannelPersonRef | null;
+}
+
+/** A person as the Channels page shows them. */
+export interface ChannelPersonRef {
+  id: string;
+  name: string;
 }
 
 export class OAuthUrlResponseDto {

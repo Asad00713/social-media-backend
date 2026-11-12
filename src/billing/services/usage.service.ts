@@ -17,6 +17,7 @@ import {
 import { SubscriptionLookupService } from './subscription-lookup.service';
 import { AccountChannelsService } from './account-channels.service';
 import { resolveMaxWorkspaces } from './limit-resolver.util';
+import { channelLimitReached } from './channel-limit.error';
 
 export type ResourceType = 'CHANNEL' | 'MEMBER' | 'WORKSPACE' | 'POST';
 export type EventType =
@@ -182,10 +183,7 @@ export class UsageService {
     const canAdd = await this.canAddChannel(workspaceId);
     if (!canAdd) {
       const usage = await this.getWorkspaceUsage(workspaceId);
-      throw new ForbiddenException(
-        `Channel limit reached. You have ${usage.channelsCount}/${usage.channelsLimit} channels. ` +
-          'Please upgrade your plan or purchase additional channels.',
-      );
+      throw channelLimitReached(usage.channelsCount, usage.channelsLimit);
     }
   }
 

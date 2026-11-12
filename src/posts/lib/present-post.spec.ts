@@ -117,6 +117,45 @@ describe('presentPost', () => {
     expect(dto.targets[0].channelId).toBe('7');
   });
 
+  it('shows heldAt on a target waiting for its paused channel, never on one that went out', () => {
+    const at = '2026-06-15T09:00:00.000Z';
+    const waiting = presentPost(
+      row({
+        targets: [
+          {
+            channelId: '7',
+            platform: 'bluesky',
+            status: 'draft',
+            heldAt: at,
+            heldReason: 'channel_paused',
+          },
+        ] as never,
+      }),
+      { users },
+    );
+    expect(waiting.targets[0]).toMatchObject({
+      status: 'scheduled',
+      heldAt: at,
+    });
+    expect('heldReason' in waiting.targets[0]).toBe(false);
+
+    const sent = presentPost(
+      row({
+        status: 'published',
+        targets: [
+          {
+            channelId: '7',
+            platform: 'bluesky',
+            status: 'published',
+            heldAt: at,
+          },
+        ] as never,
+      }),
+      { users },
+    );
+    expect('heldAt' in sent.targets[0]).toBe(false);
+  });
+
   // D4: the "published with issues" note reaches the Planner API.
   it("returns a published target's warnings", () => {
     const dto = presentPost(

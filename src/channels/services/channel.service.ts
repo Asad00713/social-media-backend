@@ -48,6 +48,9 @@ import {
   ChannelQueryDto,
   ChannelStatsResponseDto,
 } from '../dto/channel.dto';
+import type { PersonRef } from '../lib/channel-health';
+import { isExpiringWithin } from '../lib/channel-health';
+import { loadPeople, personOf } from '../lib/people';
 
 /**
  * Shared "is this channel usable right now" predicate. A channel counts as
@@ -176,7 +179,7 @@ export class ChannelService {
         `Reconnected ${dto.platform} channel ${existingChannel.id} for workspace ${workspaceId}`,
       );
 
-      return this.toResponseDto(updated[0]);
+      return this.presentOne(updated[0]);
     }
 
     // No existing row — enforce the ACCOUNT channel ceiling before creating a
@@ -282,7 +285,7 @@ export class ChannelService {
       `Created ${dto.platform} channel for workspace ${workspaceId}: ${dto.accountName}`,
     );
 
-    return this.toResponseDto(inserted[0]);
+    return this.presentOne(inserted[0]);
   }
 
   /**
@@ -460,7 +463,7 @@ export class ChannelService {
       .where(and(...conditions))
       .orderBy(asc(socialMediaChannels.displayOrder));
 
-    return channels.map((ch) => this.toResponseDto(ch));
+    return this.presentAll(channels);
   }
 
   /**
@@ -485,7 +488,7 @@ export class ChannelService {
       throw new NotFoundException('Channel not found');
     }
 
-    return this.toResponseDto(channel[0]);
+    return this.presentOne(channel[0]);
   }
 
   /**
@@ -601,7 +604,7 @@ export class ChannelService {
 
     this.logger.log(`Updated channel ${channelId}`);
 
-    return this.toResponseDto(updated[0]);
+    return this.presentOne(updated[0]);
   }
 
   /**
@@ -843,6 +846,13 @@ export class ChannelService {
         const newRefreshToken = refreshedTokens.refreshToken
           ? encrypt(refreshedTokens.refreshToken)
           : channelData.refreshToken;
+        // A refresh that hands back a refresh token restarts its TTL, the
+        // same as TokenRefreshProcessor does. Without this the Channels page
+        // and /expiring count the TTL from the original connect and warn
+        // about a grant that was renewed long ago.
+        const issuedAtSql = refreshedTokens.refreshToken
+          ? sql`now()`
+          : sql`refresh_token_issued_at`;
 
         if (newExpiresAt) {
           await db.execute(sql`
@@ -850,6 +860,7 @@ export class ChannelService {
             SET
               access_token = ${encrypt(refreshedTokens.accessToken)},
               refresh_token = ${newRefreshToken},
+              refresh_token_issued_at = ${issuedAtSql},
               token_expires_at = ${newExpiresAt},
               connection_status = 'connected',
               last_error = NULL,
@@ -864,6 +875,7 @@ export class ChannelService {
             SET
               access_token = ${encrypt(refreshedTokens.accessToken)},
               refresh_token = ${newRefreshToken},
+              refresh_token_issued_at = ${issuedAtSql},
               token_expires_at = NULL,
               connection_status = 'connected',
               last_error = NULL,
@@ -1264,7 +1276,7 @@ export class ChannelService {
       .from(socialMediaChannels)
       .where(sql`${socialMediaChannels.id} IN ${childIds}`);
 
-    return children.map((ch) => this.toResponseDto(ch));
+    return this.presentAll(children);
   }
 
   // ==========================================================================
@@ -1304,27 +1316,43 @@ export class ChannelService {
   }
 
   /**
-   * Get channels with expiring tokens
+   * A workspace's channels whose access token OR refresh token runs out
+   * within `daysUntilExpiry` days (see `isExpiringWithin`). The refresh-token
+   * half needs the platform's TTL, which lives in code (env-overridable), so
+   * SQL narrows to candidates and the rule itself runs here. Plan-locked
+   * channels are left out, as before.
    */
   async getExpiringChannels(
+    workspaceId: string,
     daysUntilExpiry: number = 7,
   ): Promise<ChannelResponseDto[]> {
-    const expiryDate = new Date();
-    expiryDate.setDate(expiryDate.getDate() + daysUntilExpiry);
+    const days =
+      Number.isFinite(daysUntilExpiry) && daysUntilExpiry > 0
+        ? daysUntilExpiry
+        : 7;
+    const now = new Date();
+    const windowEnd = new Date(now.getTime() + days * 24 * 60 * 60 * 1000);
 
-    const channels = await db
+    const candidates = await db
       .select()
       .from(socialMediaChannels)
       .where(
         and(
+          eq(socialMediaChannels.workspaceId, workspaceId),
           eq(socialMediaChannels.isActive, true),
-          sql`${socialMediaChannels.tokenExpiresAt} IS NOT NULL`,
-          sql`${socialMediaChannels.tokenExpiresAt} < ${expiryDate}`,
-          sql`${socialMediaChannels.tokenExpiresAt} > NOW()`,
+          sql`(
+            (${socialMediaChannels.tokenExpiresAt} > ${now}
+              AND ${socialMediaChannels.tokenExpiresAt} <= ${windowEnd})
+            OR (${socialMediaChannels.refreshToken} IS NOT NULL
+              AND ${socialMediaChannels.refreshTokenIssuedAt} IS NOT NULL)
+          )`,
         ),
-      );
+      )
+      .orderBy(asc(socialMediaChannels.displayOrder));
 
-    return channels.map((ch) => this.toResponseDto(ch));
+    return this.presentAll(
+      candidates.filter((ch) => isExpiringWithin(ch, days, now)),
+    );
   }
 
   // ==========================================================================
@@ -1364,8 +1392,27 @@ export class ChannelService {
   /**
    * Convert database model to response DTO (strips sensitive data)
    */
+  /** Rows to DTOs, with one `users` query for every connectedBy/pausedBy. */
+  private async presentAll(
+    rows: (typeof socialMediaChannels.$inferSelect)[],
+  ): Promise<ChannelResponseDto[]> {
+    const people = await loadPeople(
+      db,
+      rows.flatMap((r) => [r.connectedByUserId, r.pausedByUserId]),
+    );
+    return rows.map((r) => this.toResponseDto(r, people));
+  }
+
+  private async presentOne(
+    row: typeof socialMediaChannels.$inferSelect,
+  ): Promise<ChannelResponseDto> {
+    const [dto] = await this.presentAll([row]);
+    return dto;
+  }
+
   private toResponseDto(
     channel: typeof socialMediaChannels.$inferSelect,
+    people: Map<string, PersonRef>,
   ): ChannelResponseDto {
     const isTokenExpired = channel.tokenExpiresAt
       ? channel.tokenExpiresAt < new Date()
@@ -1411,6 +1458,14 @@ export class ChannelService {
       refreshTokenExpiresInDays,
       createdAt: channel.createdAt,
       updatedAt: channel.updatedAt,
+      category:
+        CHANNEL_CATEGORY[channel.platform as SupportedPlatform] ??
+        channel.category,
+      pausedAt: channel.pausedAt ?? null,
+      pausedBy: channel.pausedAt
+        ? personOf(people, channel.pausedByUserId)
+        : null,
+      connectedBy: personOf(people, channel.connectedByUserId),
     };
   }
 

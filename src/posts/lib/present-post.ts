@@ -26,6 +26,7 @@ interface StoredTarget {
   destination?: { id: string; name?: string };
   contentOverride?: PlannerPostTargetDto['contentOverride'];
   warnings?: unknown;
+  heldAt?: unknown;
 }
 
 /** Stored warnings, if the row holds a usable list (see publish-warnings). */
@@ -55,6 +56,12 @@ function presentTarget(
     // Only on a target that went out: a stale list never rides a failure.
     warnings:
       status === 'published' ? storedWarnings(target.warnings) : undefined,
+    // Only while the target still waits: a held marker never rides a
+    // target that has since gone out or failed.
+    heldAt:
+      status === 'scheduled' && typeof target.heldAt === 'string'
+        ? target.heldAt
+        : undefined,
   };
   for (const key of Object.keys(optional) as (keyof typeof optional)[]) {
     if (optional[key] === undefined) delete optional[key];
