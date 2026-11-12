@@ -15,6 +15,8 @@ export class ThreadsApiError extends Error {
       | 'permanent',
     public status: number,
     message: string,
+    /** Numeric `error.code` from the Graph error body, when present. */
+    public metaCode?: number,
   ) {
     super(message);
     this.name = 'ThreadsApiError';
@@ -90,6 +92,25 @@ export class ThreadsApiClient {
     );
   }
 
+  /**
+   * Follower demographics for one breakdown. The profile needs at least 100
+   * followers; `since`/`until` are not supported for this metric.
+   *   https://developers.facebook.com/documentation/threads/insights
+   */
+  async getFollowerDemographics(
+    accessToken: string,
+    breakdown: 'country' | 'city' | 'age' | 'gender',
+  ): Promise<unknown> {
+    const params = new URLSearchParams({
+      metric: 'follower_demographics',
+      breakdown,
+    });
+    return this.request<unknown>(
+      `${this.baseUrl}/me/threads_insights?${params}`,
+      accessToken,
+    );
+  }
+
   private async request<T>(url: string, accessToken: string): Promise<T> {
     const res = await this.fetchImpl(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -101,6 +122,7 @@ export class ThreadsApiClient {
         this.mapCode(res.status, err),
         res.status,
         err.message ?? `HTTP ${res.status}`,
+        typeof err.code === 'number' ? err.code : undefined,
       );
     }
     return res.json() as Promise<T>;

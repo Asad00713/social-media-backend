@@ -136,4 +136,70 @@ describe('ThreadsApiClient', () => {
     expect(url).toContain('followers_count');
     expect(url).toContain('since=');
   });
+
+  describe('getFollowerDemographics', () => {
+    it.each(['country', 'city', 'age', 'gender'] as const)(
+      'requests follower_demographics broken down by %s',
+      async (breakdown) => {
+        mockFetch.mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [] }),
+        });
+
+        const result = await client.getFollowerDemographics('tok', breakdown);
+
+        const [url, init] = mockFetch.mock.calls[0];
+        const parsed = new URL(url);
+        expect(parsed.origin + parsed.pathname).toBe(
+          'https://graph.threads.net/v1.0/me/threads_insights',
+        );
+        expect(parsed.searchParams.get('metric')).toBe('follower_demographics');
+        expect(parsed.searchParams.get('breakdown')).toBe(breakdown);
+        expect(parsed.searchParams.has('since')).toBe(false);
+        expect((init as RequestInit).headers).toEqual({
+          Authorization: 'Bearer tok',
+        });
+        expect(result).toEqual({ data: [] });
+      },
+    );
+
+    it('carries the Graph error code as metaCode without changing the mapped code', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        json: async () => ({
+          error: {
+            code: 10,
+            message: 'Permission denied',
+            type: 'OAuthException',
+          },
+        }),
+      });
+
+      const err = await client
+        .getFollowerDemographics('tok', 'country')
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(ThreadsApiError);
+      expect((err as ThreadsApiError).metaCode).toBe(10);
+      expect((err as ThreadsApiError).code).toBe('permanent');
+    });
+
+    it('leaves metaCode undefined when the error body is not JSON', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => {
+          throw new Error('not json');
+        },
+      });
+
+      const err = await client
+        .getFollowerDemographics('tok', 'country')
+        .catch((e: unknown) => e);
+
+      expect((err as ThreadsApiError).metaCode).toBeUndefined();
+      expect((err as ThreadsApiError).code).toBe('transient');
+    });
+  });
 });

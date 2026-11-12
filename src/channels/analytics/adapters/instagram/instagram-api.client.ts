@@ -15,6 +15,8 @@ export class InstagramApiError extends Error {
       | 'permanent',
     public status: number,
     message: string,
+    /** Numeric `error.code` from the Graph error body, when present. */
+    public metaCode?: number,
   ) {
     super(message);
     this.name = 'InstagramApiError';
@@ -118,6 +120,32 @@ export class InstagramApiClient {
     );
   }
 
+  /**
+   * Follower demographics for one breakdown. Meta returns nothing for an
+   * account under 100 followers. `timeframe` is required for demographic
+   * metrics; the 30-day window is the freshest that is not month-boundary
+   * sensitive.
+   *   https://developers.facebook.com/docs/instagram-platform/api-reference/instagram-user/insights
+   * The value formats for city, age and gender are not in Meta's docs.
+   */
+  async getFollowerDemographics(
+    igUserId: string,
+    accessToken: string,
+    breakdown: 'country' | 'city' | 'age' | 'gender',
+  ): Promise<unknown> {
+    const params = new URLSearchParams({
+      metric: 'follower_demographics',
+      metric_type: 'total_value',
+      period: 'lifetime',
+      timeframe: 'last_30_days',
+      breakdown,
+    });
+    return this.request<unknown>(
+      `${this.baseUrl}/${igUserId}/insights?${params}`,
+      accessToken,
+    );
+  }
+
   private async request<T>(url: string, accessToken: string): Promise<T> {
     const res = await this.fetchImpl(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -130,6 +158,7 @@ export class InstagramApiClient {
         this.mapCode(res.status, igError),
         res.status,
         message,
+        typeof igError.code === 'number' ? igError.code : undefined,
       );
     }
     return res.json() as Promise<T>;

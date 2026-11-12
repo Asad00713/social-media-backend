@@ -15,6 +15,8 @@ export class FacebookApiError extends Error {
       | 'permanent',
     public status: number,
     message: string,
+    /** Numeric `error.code` from the Graph error body, when present. */
+    public metaCode?: number,
   ) {
     super(message);
     this.name = 'FacebookApiError';
@@ -93,6 +95,24 @@ export class FacebookApiClient {
     );
   }
 
+  /**
+   * Where a Page's followers are, by country or city. These replace the
+   * deprecated page_fans_country and page_fans_city (15 Nov 2025). Meta lists
+   * page_follows* with period `day`.
+   *   https://developers.facebook.com/documentation/pages-api/platforminsights/page/deprecated-metrics
+   */
+  async getPageFollowsLocation(
+    pageId: string,
+    accessToken: string,
+    metric: 'page_follows_country' | 'page_follows_city',
+  ): Promise<unknown> {
+    const params = new URLSearchParams({ metric, period: 'day' });
+    return this.request<unknown>(
+      `${this.baseUrl}/${pageId}/insights?${params}`,
+      accessToken,
+    );
+  }
+
   private async request<T>(url: string, accessToken: string): Promise<T> {
     const res = await this.fetchImpl(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -105,6 +125,7 @@ export class FacebookApiClient {
         this.mapCode(res.status, fbError),
         res.status,
         message,
+        typeof fbError.code === 'number' ? fbError.code : undefined,
       );
     }
     return res.json() as Promise<T>;
