@@ -97,8 +97,10 @@ export class FacebookApiClient {
 
   /**
    * Where a Page's followers are, by country or city. These replace the
-   * deprecated page_fans_country and page_fans_city (15 Nov 2025). Meta lists
-   * page_follows* with period `day`.
+   * deprecated page_fans_country and page_fans_city (15 Nov 2025). Meta does
+   * NOT document `period` or the response shape for page_follows_country and
+   * page_follows_city. `period=day` and the `values[].value` map are inferred
+   * from the page_fans_* sibling and must be confirmed in a live smoke test.
    *   https://developers.facebook.com/documentation/pages-api/platforminsights/page/deprecated-metrics
    */
   async getPageFollowsLocation(

@@ -224,7 +224,7 @@ describe('InstagramApiClient', () => {
         expect(parsed.searchParams.get('metric')).toBe('follower_demographics');
         expect(parsed.searchParams.get('metric_type')).toBe('total_value');
         expect(parsed.searchParams.get('period')).toBe('lifetime');
-        expect(parsed.searchParams.get('timeframe')).toBe('last_30_days');
+        expect(parsed.searchParams.get('timeframe')).toBe('this_month');
         expect(parsed.searchParams.get('breakdown')).toBe(breakdown);
         expect((init as RequestInit).headers).toEqual({
           Authorization: 'Bearer tok',

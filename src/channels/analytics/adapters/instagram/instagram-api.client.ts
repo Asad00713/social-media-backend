@@ -123,8 +123,10 @@ export class InstagramApiClient {
   /**
    * Follower demographics for one breakdown. Meta returns nothing for an
    * account under 100 followers. `timeframe` is required for demographic
-   * metrics; the 30-day window is the freshest that is not month-boundary
-   * sensitive.
+   * metrics. Meta deprecated last_14_days, last_30_days, last_90_days and
+   * prev_month on the neighbouring demographics metrics from v20, so we send
+   * `this_month`, which Meta defines as "the data in the last 30 days": the
+   * same window without the deprecation risk.
    *   https://developers.facebook.com/docs/instagram-platform/api-reference/instagram-user/insights
    * The value formats for city, age and gender are not in Meta's docs.
    */
@@ -137,7 +139,7 @@ export class InstagramApiClient {
       metric: 'follower_demographics',
       metric_type: 'total_value',
       period: 'lifetime',
-      timeframe: 'last_30_days',
+      timeframe: 'this_month',
       breakdown,
     });
     return this.request<unknown>(
