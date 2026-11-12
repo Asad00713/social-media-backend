@@ -1,4 +1,5 @@
 import type { YouTubeAnalyticsQueryResponse } from './youtube.types';
+import type { RawSlice } from '../../../../drizzle/schema/channel-audience.schema';
 import { YouTubeApiError } from './youtube-data-api.client';
 
 export interface VideoMetricsRow {
@@ -141,6 +142,41 @@ export class YouTubeAnalyticsApiClient {
     return (data.rows ?? []).map((r) => ({
       sourceType: String(r[0] ?? ''),
       views: Number(r[1] ?? 0),
+    }));
+  }
+
+  /** Views per viewer country (ISO 3166-1 alpha-2), most-viewed first. */
+  async getViewsByCountry(opts: {
+    accessToken: string;
+    startDate: string;
+    endDate: string;
+  }): Promise<RawSlice[]> {
+    const params = new URLSearchParams({
+      ids: 'channel==MINE',
+      startDate: opts.startDate,
+      endDate: opts.endDate,
+      metrics: 'views',
+      dimensions: 'country',
+      sort: '-views',
+    });
+    const res = await this.fetchImpl(`${this.baseUrl}/reports?${params}`, {
+      headers: { Authorization: `Bearer ${opts.accessToken}` },
+    });
+    if (!res.ok) {
+      const body = await res.json().catch(() => ({}));
+      const message =
+        (body as { error?: { message?: string } }).error?.message ??
+        `HTTP ${res.status}`;
+      throw new YouTubeApiError(
+        this.mapCode(res.status, message),
+        res.status,
+        message,
+      );
+    }
+    const data = (await res.json()) as YouTubeAnalyticsQueryResponse;
+    return (data.rows ?? []).map((r) => ({
+      key: String(r[0] ?? ''),
+      value: Number(r[1] ?? 0),
     }));
   }
 

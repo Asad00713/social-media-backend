@@ -8,6 +8,7 @@ import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
+import { isAudienceRefreshable } from '../../../insights/audience/refreshable';
 import { YouTubePubSubHubbubService } from '../services/youtube-pubsubhubbub.service';
 
 const SOCIAL_PLATFORMS: readonly SupportedPlatform[] = [
@@ -23,6 +24,13 @@ const SOCIAL_PLATFORMS: readonly SupportedPlatform[] = [
   'mastodon',
 ];
 
+/** Platforms that expose an audience breakdown we fetch. */
+const AUDIENCE_PLATFORMS: readonly SupportedPlatform[] = [
+  'instagram',
+  'threads',
+  'facebook',
+];
+
 /**
  * Daily cron jobs for recent-posts discovery and metric rollups.
  *
@@ -34,6 +42,7 @@ const SOCIAL_PLATFORMS: readonly SupportedPlatform[] = [
  * Remaining methods:
  *   - enqueueRecentPostsSync (02:30 daily) — discovers externally-uploaded posts
  *   - enqueueDailyRollups   (03:00 daily) — daily by nature, kept as-is
+ *   - enqueueAudienceRefresh (03:30 daily) — audience demographics
  *
  * Cloud-storage channels (google_drive etc.) are excluded — analytics only
  * applies to social platforms.
@@ -116,6 +125,42 @@ export class ChannelSnapshotsScheduler {
         'channel-daily-rollup',
         { channelId: eligible[i].id, date },
         { delay: i * 100 },
+      );
+    }
+  }
+
+  /**
+   * Daily cron at 03:30 UTC. Enqueues an audience refresh for every active,
+   * connected Instagram / Threads / Facebook channel. The jobId carries the
+   * UTC date (no ':' - BullMQ forbids it) so a re-run the same day dedupes.
+   */
+  @Cron('30 3 * * *', { timeZone: 'UTC', name: 'enqueueAudienceRefresh' })
+  async enqueueAudienceRefresh(): Promise<void> {
+    const rows = await this.db
+      .select({
+        id: socialMediaChannels.id,
+        platform: socialMediaChannels.platform,
+        isActive: socialMediaChannels.isActive,
+        connectionStatus: socialMediaChannels.connectionStatus,
+      })
+      .from(socialMediaChannels);
+
+    const eligible = rows.filter(
+      (r: { isActive: boolean; platform: string; connectionStatus: string }) =>
+        isAudienceRefreshable(r) &&
+        (AUDIENCE_PLATFORMS as readonly string[]).includes(r.platform),
+    );
+
+    const date = new Date().toISOString().slice(0, 10);
+    this.logger.log(
+      `Enqueuing audience refresh for ${eligible.length} channels for ${date}`,
+    );
+
+    for (let i = 0; i < eligible.length; i++) {
+      await this.queue.add(
+        'channel-audience-refresh',
+        { channelId: eligible[i].id },
+        { jobId: `audience-${eligible[i].id}-${date}`, delay: i * 200 },
       );
     }
   }

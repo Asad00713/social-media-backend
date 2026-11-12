@@ -200,4 +200,76 @@ describe('InstagramApiClient', () => {
     expect(err.message).toBe('Too Many Requests');
     expect(err.name).toBe('InstagramApiError');
   });
+
+  describe('getFollowerDemographics', () => {
+    it.each(['country', 'city', 'age', 'gender'] as const)(
+      'requests follower_demographics broken down by %s',
+      async (breakdown) => {
+        mockFetch.mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [] }),
+        });
+
+        const result = await client.getFollowerDemographics(
+          'ig-user-123',
+          'tok',
+          breakdown,
+        );
+
+        const [url, init] = mockFetch.mock.calls[0];
+        const parsed = new URL(url);
+        expect(parsed.origin + parsed.pathname).toBe(
+          'https://graph.instagram.com/ig-user-123/insights',
+        );
+        expect(parsed.searchParams.get('metric')).toBe('follower_demographics');
+        expect(parsed.searchParams.get('metric_type')).toBe('total_value');
+        expect(parsed.searchParams.get('period')).toBe('lifetime');
+        expect(parsed.searchParams.get('timeframe')).toBe('this_month');
+        expect(parsed.searchParams.get('breakdown')).toBe(breakdown);
+        expect((init as RequestInit).headers).toEqual({
+          Authorization: 'Bearer tok',
+        });
+        expect(result).toEqual({ data: [] });
+      },
+    );
+
+    it('carries the Graph error code as metaCode without changing the mapped code', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        json: async () => ({
+          error: {
+            code: 10,
+            message: 'Permission denied',
+            type: 'OAuthException',
+          },
+        }),
+      });
+
+      const err = await client
+        .getFollowerDemographics('ig-user-123', 'tok', 'country')
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(InstagramApiError);
+      expect((err as InstagramApiError).metaCode).toBe(10);
+      expect((err as InstagramApiError).code).toBe('permanent');
+    });
+
+    it('leaves metaCode undefined when the error body is not JSON', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => {
+          throw new Error('not json');
+        },
+      });
+
+      const err = await client
+        .getFollowerDemographics('ig-user-123', 'tok', 'country')
+        .catch((e: unknown) => e);
+
+      expect((err as InstagramApiError).metaCode).toBeUndefined();
+      expect((err as InstagramApiError).code).toBe('transient');
+    });
+  });
 });

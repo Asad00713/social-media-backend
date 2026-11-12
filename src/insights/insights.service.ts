@@ -5,32 +5,15 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import {
-  and,
-  desc,
-  eq,
-  gt,
-  gte,
-  inArray,
-  isNotNull,
-  lt,
-  lte,
-  ne,
-} from 'drizzle-orm';
+import { and, desc, eq, gt, gte, inArray, lt, lte, ne } from 'drizzle-orm';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
-import { channelAnalyticsDaily } from '../drizzle/schema/channel-analytics-daily.schema';
 import { channelSyncState } from '../drizzle/schema/channel-sync-state.schema';
 import {
   insightHiddenSteps,
   type HideReason,
 } from '../drizzle/schema/insight-hidden-steps.schema';
-import {
-  CHANNEL_CATEGORY,
-  PLATFORM_CONFIG,
-  socialMediaChannels,
-  type SupportedPlatform,
-} from '../drizzle/schema/channels.schema';
+import { PLATFORM_CONFIG } from '../drizzle/schema/channels.schema';
 import { workspace } from '../drizzle/schema/workspace.schema';
 import { safeTimeZone } from '../first-week/lib/first-week-slots';
 import type { FollowerRow } from '../post-performance/followers';
@@ -108,6 +91,10 @@ import { posts as postsTable } from '../drizzle/schema/posts.schema';
 import { isMeasured, median } from '../post-performance/engagement-stats';
 import { loadWorkspaceTimezone } from '../planner/lib/workspace-time';
 import type { InsightsSignalsDto, PostDetailDto } from './dto/insights.dto';
+import {
+  InsightsChannelsRepository,
+  type SocialChannel,
+} from './insights-channels.repository';
 import { InsightsTopicsRepository } from './insights-topics.repository';
 import {
   bestTimeGrid,
@@ -164,14 +151,6 @@ const usualSampleRange = (today: Date): { from: string; before: string } => {
   const t = isoDate(today);
   return { from: addDays(t, -USUAL_WINDOW_DAYS), before: addDays(t, 1) };
 };
-
-interface SocialChannel {
-  id: number;
-  platform: SupportedPlatform;
-  accountName: string;
-  isActive: boolean;
-  connectionStatus: string;
-}
 
 /** What a KPI is compared with; null where there is nothing to compare. */
 interface Comparison {
@@ -243,6 +222,9 @@ export class InsightsService {
     private readonly postPerformance: PostPerformanceRepository,
     // Nest injects it; the default keeps doubles built with two args working.
     private readonly topics: InsightsTopicsRepository = new InsightsTopicsRepository(
+      db,
+    ),
+    private readonly channels: InsightsChannelsRepository = new InsightsChannelsRepository(
       db,
     ),
   ) {}
@@ -689,27 +671,8 @@ export class InsightsService {
     return { all, rows: filterAndSort(all, table), social, window };
   }
 
-  /**
-   * Social channels, by id, paused and plan-locked ones included: their
-   * history is real (spec S3.1, Q4). Social is decided by platform: the
-   * stored `category` column may mislabel older rows.
-   */
-  private async socialChannels(workspaceId: string): Promise<SocialChannel[]> {
-    const rows = (await this.db
-      .select({
-        id: socialMediaChannels.id,
-        platform: socialMediaChannels.platform,
-        accountName: socialMediaChannels.accountName,
-        isActive: socialMediaChannels.isActive,
-        connectionStatus: socialMediaChannels.connectionStatus,
-      })
-      .from(socialMediaChannels)
-      .where(
-        eq(socialMediaChannels.workspaceId, workspaceId),
-      )) as SocialChannel[];
-    return rows
-      .filter((c) => CHANNEL_CATEGORY[c.platform] === 'social')
-      .sort((a, b) => a.id - b.id);
+  private socialChannels(workspaceId: string): Promise<SocialChannel[]> {
+    return this.channels.socialChannels(workspaceId);
   }
 
   /** The workspace's zone; UTC when the stored text is not a zone. */
@@ -737,53 +700,12 @@ export class InsightsService {
     );
   }
 
-  /**
-   * Follower rollup rows from `fromIso` up to, not including, `beforeIso`, plus
-   * each channel's newest known count before `fromIso` to seed the carry. The
-   * seed is found however old it is, so a channel whose rollup stopped long
-   * ago shows the same count whichever range is picked. It carries no gain:
-   * gains are only ever counted inside a window.
-   */
-  private async followerRows(
+  private followerRows(
     channelIds: number[],
     fromIso: string,
     beforeIso: string,
   ): Promise<FollowerRow[]> {
-    if (!channelIds.length) return [];
-    const inRange = await this.db
-      .select({
-        channelId: channelAnalyticsDaily.channelId,
-        date: channelAnalyticsDaily.date,
-        followersAtEndOfDay: channelAnalyticsDaily.followersAtEndOfDay,
-        followersGained: channelAnalyticsDaily.followersGained,
-      })
-      .from(channelAnalyticsDaily)
-      .where(
-        and(
-          inArray(channelAnalyticsDaily.channelId, channelIds),
-          gte(channelAnalyticsDaily.date, fromIso),
-          lt(channelAnalyticsDaily.date, beforeIso),
-        ),
-      );
-    const seeds = await this.db
-      .selectDistinctOn([channelAnalyticsDaily.channelId], {
-        channelId: channelAnalyticsDaily.channelId,
-        date: channelAnalyticsDaily.date,
-        followersAtEndOfDay: channelAnalyticsDaily.followersAtEndOfDay,
-      })
-      .from(channelAnalyticsDaily)
-      .where(
-        and(
-          inArray(channelAnalyticsDaily.channelId, channelIds),
-          lt(channelAnalyticsDaily.date, fromIso),
-          isNotNull(channelAnalyticsDaily.followersAtEndOfDay),
-        ),
-      )
-      .orderBy(
-        channelAnalyticsDaily.channelId,
-        desc(channelAnalyticsDaily.date),
-      );
-    return [...seeds.map((r) => ({ ...r, followersGained: null })), ...inRange];
+    return this.channels.followerRows(channelIds, fromIso, beforeIso);
   }
 
   private async syncState(channelIds: number[]): Promise<SyncStateRow[]> {

@@ -5,6 +5,7 @@ import {
   customWindow,
   isPeriodDays,
   isoDate,
+  utcToday,
   windowOf,
   yearBefore,
   type PeriodDays,
@@ -86,6 +87,25 @@ export function parsePeriod(
   }
   return { days, window: customWindow(from, to) };
 }
+
+/**
+ * `days=7|30|90` or `from&to` as Express hands them over, against today's UTC
+ * date. Each goes through `single`, so a repeated param is a 400, not a crash.
+ * Shared by the Insights and Audience controllers.
+ */
+export const periodOf = (
+  days?: string | string[],
+  from?: string | string[],
+  to?: string | string[],
+): ResolvedPeriod =>
+  parsePeriod(
+    {
+      days: single(days, 'days'),
+      from: single(from, 'from'),
+      to: single(to, 'to'),
+    },
+    utcToday(new Date()),
+  );
 
 export const COMPARE_MODES = ['usual', 'previous', 'year', 'none'] as const;
 export type CompareMode = (typeof COMPARE_MODES)[number];

@@ -517,7 +517,7 @@ const FACEBOOK_CAPABILITIES: PlatformCapabilities = {
   hasReach: true,
   hasEngagementRate: true,
   hasVideoMetrics: true,
-  hasDemographics: true, // page_fans_country + page_fans_gender_age via Page Insights
+  hasDemographics: true, // page_follows_country/city; age and gender removed by Meta (Mar 2024)
   hasTrafficSources: false,
   contentTypes: ['post'],
   vocabulary: {
@@ -571,7 +571,7 @@ const THREADS_CAPABILITIES: PlatformCapabilities = {
   hasReach: false, // no unique reach metric on Threads API
   hasEngagementRate: true,
   hasVideoMetrics: false,
-  hasDemographics: false,
+  hasDemographics: true,
   hasTrafficSources: false,
   contentTypes: ['thread'],
   vocabulary: {

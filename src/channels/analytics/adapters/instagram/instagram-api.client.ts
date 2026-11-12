@@ -15,6 +15,8 @@ export class InstagramApiError extends Error {
       | 'permanent',
     public status: number,
     message: string,
+    /** Numeric `error.code` from the Graph error body, when present. */
+    public metaCode?: number,
   ) {
     super(message);
     this.name = 'InstagramApiError';
@@ -118,6 +120,34 @@ export class InstagramApiClient {
     );
   }
 
+  /**
+   * Follower demographics for one breakdown. Meta returns nothing for an
+   * account under 100 followers. `timeframe` is required for demographic
+   * metrics. Meta deprecated last_14_days, last_30_days, last_90_days and
+   * prev_month on the neighbouring demographics metrics from v20, so we send
+   * `this_month`, which Meta defines as "the data in the last 30 days": the
+   * same window without the deprecation risk.
+   *   https://developers.facebook.com/docs/instagram-platform/api-reference/instagram-user/insights
+   * The value formats for city, age and gender are not in Meta's docs.
+   */
+  async getFollowerDemographics(
+    igUserId: string,
+    accessToken: string,
+    breakdown: 'country' | 'city' | 'age' | 'gender',
+  ): Promise<unknown> {
+    const params = new URLSearchParams({
+      metric: 'follower_demographics',
+      metric_type: 'total_value',
+      period: 'lifetime',
+      timeframe: 'this_month',
+      breakdown,
+    });
+    return this.request<unknown>(
+      `${this.baseUrl}/${igUserId}/insights?${params}`,
+      accessToken,
+    );
+  }
+
   private async request<T>(url: string, accessToken: string): Promise<T> {
     const res = await this.fetchImpl(url, {
       headers: { Authorization: `Bearer ${accessToken}` },
@@ -130,6 +160,7 @@ export class InstagramApiClient {
         this.mapCode(res.status, igError),
         res.status,
         message,
+        typeof igError.code === 'number' ? igError.code : undefined,
       );
     }
     return res.json() as Promise<T>;

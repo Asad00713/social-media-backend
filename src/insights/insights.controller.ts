@@ -25,16 +25,15 @@ import type {
   PostDetailDto,
 } from './dto/insights.dto';
 import type { InsightsSignalsDto } from './dto/insights.dto';
-import { utcToday } from '../post-performance/period';
 import { HideStepDto } from './dto/hide-step.dto';
 import { InsightsService } from './insights.service';
 import { STEP_ID_PATTERN } from './lib/next-steps';
 import {
   parseCompare,
-  parsePeriod,
   parsePostIds,
   parseTableQuery,
   parseTz,
+  periodOf,
   single,
 } from './lib/query';
 
@@ -43,17 +42,6 @@ import {
  * param goes through `single` so a repeat is a 400, never a crash.
  */
 type Raw = string | string[];
-
-/** `days=7|30|90` or `from&to`, against today's UTC date. */
-const periodOf = (days?: Raw, from?: Raw, to?: Raw) =>
-  parsePeriod(
-    {
-      days: single(days, 'days'),
-      from: single(from, 'from'),
-      to: single(to, 'to'),
-    },
-    utcToday(new Date()),
-  );
 
 /** The table's own params, each exactly once. */
 const tableOf = (raw: {

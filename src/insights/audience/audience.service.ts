@@ -1,0 +1,448 @@
+import { Inject, Injectable, Logger } from '@nestjs/common';
+import { InjectQueue } from '@nestjs/bullmq';
+import { inArray } from 'drizzle-orm';
+import type { Queue } from 'bullmq';
+import { decrypt } from '../../common/utils/encryption.util';
+import type { DbType } from '../../drizzle/db';
+import { DRIZZLE } from '../../drizzle/drizzle.module';
+import {
+  channelAudience,
+  type ChannelAudienceRow,
+} from '../../drizzle/schema/channel-audience.schema';
+import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
+import { YouTubeAnalyticsApiClient } from '../../channels/analytics/adapters/youtube/youtube-analytics-api.client';
+import { getCapabilities } from '../../channels/analytics/platform-capabilities.registry';
+import { REDIS_CLIENT } from '../../channels/analytics/redis-client.provider';
+import { addDays } from '../../post-performance/period';
+import { QUEUES } from '../../queue/queue.module';
+import {
+  InsightsChannelsRepository,
+  type SocialChannel,
+} from '../insights-channels.repository';
+import { parseChannels, type ResolvedPeriod } from '../lib/query';
+import type {
+  AudienceChannelDto,
+  AudienceChannelsDto,
+  AudienceGrowthDto,
+  AudienceSlice,
+} from './audience.dto';
+import { audienceCsv } from './audience-csv';
+import { audienceGrowth } from './growth';
+import { latestFollowerCounts } from './latest-followers';
+import { isAudienceRefreshable } from './refreshable';
+import { toShares, youtubeAges, youtubeGenders } from './normalize';
+
+/** Platforms whose breakdown comes from the stored `channel_audience` row. */
+const STORED_PLATFORMS: readonly string[] = [
+  'instagram',
+  'threads',
+  'facebook',
+];
+
+/** A stored row older than this is shown as is and refreshed in the background. */
+const STALE_AFTER_MS = 24 * 60 * 60 * 1000;
+
+/** YouTube's live breakdown is cached for 12 hours per channel and window. */
+export const YOUTUBE_CACHE_TTL_SECONDS = 43_200;
+
+/**
+ * How long a cache read may take. REDIS_CLIENT queues commands while Redis is
+ * down (maxRetriesPerRequest: null), so an unbounded `get` would hang the
+ * request; past this we go live instead.
+ */
+export const CACHE_READ_TIMEOUT_MS = 300;
+
+export const AUDIENCE_REFRESH_JOB = 'channel-audience-refresh';
+
+/** The slice of ioredis this service uses; a fake satisfies it in specs. */
+export interface AudienceCache {
+  /** ioredis connection state; only `ready` is worth sending a command to. */
+  status: string;
+  get(key: string): Promise<string | null>;
+  set(
+    key: string,
+    value: string,
+    mode: 'EX',
+    seconds: number,
+  ): Promise<unknown>;
+}
+
+interface YoutubeAudience {
+  countries: AudienceSlice[];
+  ages: AudienceSlice[];
+  genders: AudienceSlice[];
+  fetchedAt: string;
+}
+
+const EMPTY: Pick<
+  AudienceChannelDto,
+  'countries' | 'cities' | 'ages' | 'genders'
+> = { countries: [], cities: [], ages: [], genders: [] };
+
+/**
+ * What the Insights Audience tab reads: follower growth from the daily
+ * rollup, and the demographic breakdown per channel. No LLM anywhere in here.
+ */
+@Injectable()
+export class AudienceService {
+  private readonly logger = new Logger(AudienceService.name);
+
+  constructor(
+    private readonly channelsRepo: InsightsChannelsRepository,
+    @Inject(DRIZZLE) private readonly db: DbType,
+    private readonly youtube: YouTubeAnalyticsApiClient,
+    @Inject(REDIS_CLIENT) private readonly redis: AudienceCache,
+    @InjectQueue(QUEUES.CHANNEL_SNAPSHOTS) private readonly queue: Queue,
+  ) {}
+
+  /** The workspace's social channels narrowed by the `channels` param. */
+  private async filtered(
+    workspaceId: string,
+    channels: string | undefined,
+  ): Promise<SocialChannel[]> {
+    const social = await this.channelsRepo.socialChannels(workspaceId);
+    const wanted = new Set(
+      parseChannels(
+        channels,
+        social.map((c) => c.id),
+      ),
+    );
+    return social.filter((c) => wanted.has(c.id));
+  }
+
+  async growth(
+    workspaceId: string,
+    { window }: ResolvedPeriod,
+    channels: string | undefined,
+  ): Promise<AudienceGrowthDto> {
+    const kept = (await this.filtered(workspaceId, channels)).filter(
+      (c) => getCapabilities(c.platform).hasFollowerCount,
+    );
+    const rows = await this.channelsRepo.followerRows(
+      kept.map((c) => c.id),
+      window.from,
+      addDays(window.to, 1),
+    );
+    return audienceGrowth(rows, kept, window);
+  }
+
+  async csv(
+    workspaceId: string,
+    period: ResolvedPeriod,
+    channels: string | undefined,
+  ): Promise<{ filename: string; body: string }> {
+    const growth = await this.growth(workspaceId, period, channels);
+    return {
+      filename: `schedura-audience-${growth.window.from}-${growth.window.to}.csv`,
+      body: audienceCsv(growth),
+    };
+  }
+
+  async channels(
+    workspaceId: string,
+    { window }: ResolvedPeriod,
+    channels: string | undefined,
+    now = new Date(),
+  ): Promise<AudienceChannelsDto> {
+    const kept = await this.filtered(workspaceId, channels);
+    const ids = kept.map((c) => c.id);
+    const storedIds = kept
+      .filter((c) => STORED_PLATFORMS.includes(c.platform))
+      .map((c) => c.id);
+    const youtubeChannels = kept.filter((c) => c.platform === 'youtube');
+
+    // A DB failure in either read degrades those fields instead of 500ing
+    // the whole response; the live YouTube read has its own guards.
+    const [followers, stored, live] = await Promise.all([
+      latestFollowerCounts(this.db, ids).catch(
+        (err: unknown): Map<number, number | null> => {
+          this.logger.warn(
+            `Audience follower counts could not be read: ${(err as Error).message}`,
+          );
+          return new Map();
+        },
+      ),
+      this.storedRows(storedIds).catch((err: unknown): null => {
+        this.logger.warn(
+          `Stored audience rows could not be read: ${(err as Error).message}`,
+        );
+        return null;
+      }),
+      this.youtubeAudiences(youtubeChannels, window, now),
+    ]);
+
+    const out = kept.map((c): AudienceChannelDto => {
+      const base = {
+        channelId: c.id,
+        platform: c.platform,
+        name: c.accountName,
+        followerCount: followers.get(c.id) ?? null,
+      };
+
+      if (STORED_PLATFORMS.includes(c.platform)) {
+        // `stored === null`: the read failed, so every stored channel is failed.
+        return stored
+          ? this.storedChannel(c, base, stored.get(c.id), now)
+          : this.failedChannel(base);
+      }
+
+      if (c.platform === 'youtube') {
+        const audience = live.get(c.id);
+        return {
+          ...base,
+          status: audience ? 'ok' : 'failed',
+          reconnectable: false,
+          fetchedAt: audience?.fetchedAt ?? null,
+          measure: 'viewers',
+          countries: audience?.countries ?? [],
+          cities: [],
+          ages: audience?.ages ?? [],
+          genders: audience?.genders ?? [],
+        };
+      }
+
+      return {
+        ...base,
+        status: 'unsupported',
+        reconnectable: false,
+        fetchedAt: null,
+        measure: 'followers',
+        ...EMPTY,
+      };
+    });
+    return { channels: out };
+  }
+
+  /**
+   * One stored-platform channel. A row that cannot be mapped (malformed
+   * jsonb) fails that channel only, never the whole response.
+   */
+  private storedChannel(
+    c: SocialChannel,
+    base: Pick<
+      AudienceChannelDto,
+      'channelId' | 'platform' | 'name' | 'followerCount'
+    >,
+    row: ChannelAudienceRow | undefined,
+    now: Date,
+  ): AudienceChannelDto {
+    const failed = this.failedChannel(base);
+    try {
+      // The refresh job skips paused and not-connected channels without
+      // writing a row, so re-enqueueing one would never end and "pending"
+      // would be a lie. Their stored row, if any, is shown as stored.
+      if (!isAudienceRefreshable(c)) {
+        return row ? this.fromRow(c, base, row) : failed;
+      }
+      const isStale =
+        !row || now.getTime() - row.fetchedAt.getTime() > STALE_AFTER_MS;
+      if (isStale) this.enqueueRefresh(c.id, now);
+      if (!row) {
+        // Connected recently, not fetched yet: "couldn't load" would be false.
+        return { ...failed, status: 'pending' };
+      }
+      return this.fromRow(c, base, row);
+    } catch (err) {
+      this.logger.warn(
+        `Audience row for channel ${c.id} could not be read: ${(err as Error).message}`,
+      );
+      return failed;
+    }
+  }
+
+  private failedChannel(
+    base: Pick<
+      AudienceChannelDto,
+      'channelId' | 'platform' | 'name' | 'followerCount'
+    >,
+  ): AudienceChannelDto {
+    return {
+      ...base,
+      status: 'failed',
+      reconnectable: false,
+      fetchedAt: null,
+      measure: 'followers',
+      ...EMPTY,
+    };
+  }
+
+  private fromRow(
+    c: SocialChannel,
+    base: Pick<
+      AudienceChannelDto,
+      'channelId' | 'platform' | 'name' | 'followerCount'
+    >,
+    row: ChannelAudienceRow,
+  ): AudienceChannelDto {
+    return {
+      ...base,
+      status: row.status,
+      reconnectable:
+        c.platform === 'facebook' &&
+        row.status === 'no_permission' &&
+        process.env.FACEBOOK_REQUEST_READ_INSIGHTS === 'true',
+      fetchedAt: row.fetchedAt.toISOString(),
+      measure: 'followers',
+      countries: toShares(row.countries, 'countries'),
+      cities: toShares(row.cities, 'cities'),
+      ages: toShares(row.ages, 'ages'),
+      genders: toShares(row.genders, 'genders'),
+    };
+  }
+
+  private async storedRows(
+    channelIds: number[],
+  ): Promise<Map<number, ChannelAudienceRow>> {
+    if (channelIds.length === 0) return new Map();
+    const rows = (await this.db
+      .select()
+      .from(channelAudience)
+      .where(
+        inArray(channelAudience.channelId, channelIds),
+      )) as ChannelAudienceRow[];
+    return new Map(rows.map((r) => [r.channelId, r]));
+  }
+
+  /**
+   * Fires the same job, with the same id, as the daily cron, so a stale read
+   * and the cron dedupe. Never awaited and never throws: a queue outage must
+   * not fail the read.
+   */
+  private enqueueRefresh(channelId: number, now: Date): void {
+    const day = now.toISOString().slice(0, 10);
+    const log = (err: unknown) =>
+      this.logger.warn(
+        `Could not enqueue audience refresh for channel ${channelId}: ${(err as Error).message}`,
+      );
+    try {
+      void this.queue
+        .add(
+          AUDIENCE_REFRESH_JOB,
+          { channelId },
+          { jobId: `audience-${channelId}-${day}` },
+        )
+        .catch(log);
+    } catch (err) {
+      log(err);
+    }
+  }
+
+  /**
+   * Live YouTube viewer breakdowns, cached per channel and window. A channel
+   * missing from the result failed; failures are never cached.
+   */
+  private async youtubeAudiences(
+    channels: SocialChannel[],
+    window: { from: string; to: string },
+    now: Date,
+  ): Promise<Map<number, YoutubeAudience>> {
+    const out = new Map<number, YoutubeAudience>();
+    // A paused or not-connected channel has no usable token: failed, no call.
+    const usable = channels.filter(isAudienceRefreshable);
+    if (usable.length === 0) return out;
+
+    const misses: SocialChannel[] = [];
+    await Promise.all(
+      usable.map(async (c) => {
+        const hit = await this.cacheRead(cacheKey(c.id, window));
+        if (hit) out.set(c.id, hit);
+        else misses.push(c);
+      }),
+    );
+    if (misses.length === 0) return out;
+
+    let tokens: Map<number, string>;
+    try {
+      const rows = (await this.db
+        .select({
+          id: socialMediaChannels.id,
+          accessToken: socialMediaChannels.accessToken,
+        })
+        .from(socialMediaChannels)
+        .where(
+          inArray(
+            socialMediaChannels.id,
+            misses.map((c) => c.id),
+          ),
+        )) as Array<{ id: number; accessToken: string }>;
+      tokens = new Map(rows.map((r) => [r.id, r.accessToken]));
+    } catch (err) {
+      this.logger.warn(
+        `YouTube audience: token lookup failed: ${(err as Error).message}`,
+      );
+      return out;
+    }
+
+    await Promise.all(
+      misses.map(async (c) => {
+        try {
+          const stored = tokens.get(c.id);
+          if (!stored) throw new Error('channel has no access token');
+          const opts = {
+            accessToken: decrypt(stored),
+            startDate: window.from,
+            endDate: window.to,
+          };
+          const [demographics, countries] = await Promise.all([
+            this.youtube.getDemographics(opts),
+            this.youtube.getViewsByCountry(opts),
+          ]);
+          const audience: YoutubeAudience = {
+            countries: toShares(countries, 'countries'),
+            ages: toShares(youtubeAges(demographics), 'ages', true),
+            genders: toShares(youtubeGenders(demographics), 'genders', true),
+            fetchedAt: now.toISOString(),
+          };
+          out.set(c.id, audience);
+          this.cacheWrite(cacheKey(c.id, window), audience);
+        } catch (err) {
+          this.logger.warn(
+            `YouTube audience failed for channel ${c.id}: ${(err as Error).message}`,
+          );
+        }
+      }),
+    );
+    return out;
+  }
+
+  private async cacheRead(key: string): Promise<YoutubeAudience | null> {
+    if (this.redis.status !== 'ready') return null;
+    let timer: NodeJS.Timeout | undefined;
+    try {
+      const timeout = new Promise<null>((resolve) => {
+        timer = setTimeout(() => resolve(null), CACHE_READ_TIMEOUT_MS);
+      });
+      const raw = await Promise.race([this.redis.get(key), timeout]);
+      return raw ? (JSON.parse(raw) as YoutubeAudience) : null;
+    } catch (err) {
+      this.logger.warn(`Audience cache read failed: ${(err as Error).message}`);
+      return null;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  /** Fire-and-forget: the response never waits on Redis, and a failure is only logged. */
+  private cacheWrite(key: string, audience: YoutubeAudience): void {
+    if (this.redis.status !== 'ready') return;
+    const log = (err: unknown) =>
+      this.logger.warn(
+        `Audience cache write failed: ${(err as Error).message}`,
+      );
+    try {
+      void this.redis
+        .set(key, JSON.stringify(audience), 'EX', YOUTUBE_CACHE_TTL_SECONDS)
+        .catch(log);
+    } catch (err) {
+      log(err);
+    }
+  }
+}
+
+/** Includes the window: a 7-day view must not be served 90-day numbers. */
+export function cacheKey(
+  channelId: number,
+  window: { from: string; to: string },
+): string {
+  return `audience:yt:${channelId}:${window.from}:${window.to}`;
+}

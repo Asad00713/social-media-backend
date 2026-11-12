@@ -134,4 +134,73 @@ describe('FacebookApiClient', () => {
     expect(metric).toBe('post_media_view,post_total_media_view_unique');
     expect(url).not.toMatch(/post_impressions|post_engaged_users/);
   });
+
+  describe('getPageFollowsLocation', () => {
+    it.each(['page_follows_country', 'page_follows_city'] as const)(
+      'requests %s from the page insights edge',
+      async (metric) => {
+        mockFetch.mockResolvedValue({
+          ok: true,
+          json: async () => ({ data: [] }),
+        });
+
+        const result = await client.getPageFollowsLocation(
+          'page-1',
+          'tok',
+          metric,
+        );
+
+        const [url, init] = mockFetch.mock.calls[0];
+        const parsed = new URL(url);
+        expect(parsed.origin + parsed.pathname).toBe(
+          'https://graph.facebook.com/v22.0/page-1/insights',
+        );
+        expect(parsed.searchParams.get('metric')).toBe(metric);
+        expect(parsed.searchParams.get('period')).toBe('day');
+        expect((init as RequestInit).headers).toEqual({
+          Authorization: 'Bearer tok',
+        });
+        expect(result).toEqual({ data: [] });
+      },
+    );
+
+    it('carries the Graph error code as metaCode without changing the mapped code', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 400,
+        json: async () => ({
+          error: {
+            code: 10,
+            message: 'Permission denied',
+            type: 'OAuthException',
+          },
+        }),
+      });
+
+      const err = await client
+        .getPageFollowsLocation('page-1', 'tok', 'page_follows_country')
+        .catch((e: unknown) => e);
+
+      expect(err).toBeInstanceOf(FacebookApiError);
+      expect((err as FacebookApiError).metaCode).toBe(10);
+      expect((err as FacebookApiError).code).toBe('permanent');
+    });
+
+    it('leaves metaCode undefined when the error body is not JSON', async () => {
+      mockFetch.mockResolvedValue({
+        ok: false,
+        status: 500,
+        json: async () => {
+          throw new Error('not json');
+        },
+      });
+
+      const err = await client
+        .getPageFollowsLocation('page-1', 'tok', 'page_follows_country')
+        .catch((e: unknown) => e);
+
+      expect((err as FacebookApiError).metaCode).toBeUndefined();
+      expect((err as FacebookApiError).code).toBe('transient');
+    });
+  });
 });
