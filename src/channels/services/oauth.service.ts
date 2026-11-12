@@ -41,6 +41,11 @@ export function facebookScopesFor(
       'business_management',
     ];
   }
+  // `read_insights` (Page audience location breakdowns) needs Meta App Review
+  // approval, so it is only requested once the flag is switched on.
+  if (process.env.FACEBOOK_REQUEST_READ_INSIGHTS === 'true') {
+    return [...PLATFORM_CONFIG.facebook.oauthScopes, 'read_insights'];
+  }
   return PLATFORM_CONFIG.facebook.oauthScopes;
 }
 

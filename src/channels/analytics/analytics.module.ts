@@ -16,6 +16,7 @@ import { PostMetricSnapshotHandler } from './handlers/post-metric-snapshot.handl
 import { ChannelDailyRollupHandler } from './handlers/channel-daily-rollup.handler';
 import { ChannelInitialBackfillHandler } from './handlers/channel-initial-backfill.handler';
 import { ChannelRecentPostsSyncHandler } from './handlers/channel-recent-posts-sync.handler';
+import { ChannelAudienceRefreshHandler } from './handlers/channel-audience-refresh.handler';
 import { ChannelSnapshotsScheduler } from './schedulers/channel-snapshots.scheduler';
 import { TieredPollingScheduler } from './schedulers/tiered-polling.scheduler';
 import { ChannelSyncLifecycleService } from './services/channel-sync-lifecycle.service';
@@ -67,6 +68,7 @@ import { TwitterAnalyticsAdapter } from './adapters/twitter/twitter-analytics.ad
     ChannelDailyRollupHandler,
     ChannelInitialBackfillHandler,
     ChannelRecentPostsSyncHandler,
+    ChannelAudienceRefreshHandler,
     ChannelSnapshotsDispatcherProcessor,
     ChannelSnapshotsScheduler,
     TieredPollingScheduler,
