@@ -40,7 +40,7 @@ export interface ResolvedPeriod {
 const absent = (s?: string): boolean => s === undefined || s === '';
 
 /** A real calendar date, `YYYY-MM-DD`; it must survive a trip through Date.UTC. */
-function parseIsoDate(raw: string, name: string): number {
+export function parseIsoDate(raw: string, name: string): number {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
   const t = m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : NaN;
   if (Number.isNaN(t) || isoDate(new Date(t)) !== raw) {
