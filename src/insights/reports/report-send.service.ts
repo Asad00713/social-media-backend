@@ -6,10 +6,12 @@ import {
   GotenbergError,
   pdfFailureMessage,
 } from './gotenberg.client';
+import { isFinalAttempt } from '../../queue/is-final-attempt';
 import { nextRunAt } from './lib/next-run';
 import { briefTextOf, reportEmail, totalsOf } from './lib/report-email';
 import { settingsOf, type ReportRecord } from './lib/report-dto';
 import { resolveRecipients } from './lib/recipients';
+import { reportShareUrl, reportsFrontendUrl } from './lib/report-urls';
 import {
   NoChannelsLeftError,
   ReportPayloadService,
@@ -39,7 +41,8 @@ export type ReportSendOutcome =
 
 /**
  * Resend's default is 2 requests a second; a send with an attachment is one
- * request. The worker runs one job at a time, so this spacing holds globally.
+ * request. The worker runs one job at a time, so this spacing holds per worker
+ * process. Replicas, and all the app's other mail, share Resend's one limit.
  */
 const PAUSE_BETWEEN_SENDS_MS = 600;
 
@@ -122,12 +125,13 @@ export class ReportSendService {
       team,
     );
     if (!everyone.length) {
-      await this.repo.recordError(
+      const written = await this.repo.recordError(
         row.id,
         'No one left to send this report to',
         next,
         expected,
       );
+      this.warnIfSkipped(written, row.id, 'recordError');
       return 'no_recipients';
     }
     const done = new Set(data.sent ?? []);
@@ -141,12 +145,13 @@ export class ReportSendService {
         payload = await this.payloads.payload(row.workspaceId, settings, now);
       } catch (e) {
         if (!(e instanceof NoChannelsLeftError)) throw e;
-        await this.repo.recordError(
+        const written = await this.repo.recordError(
           row.id,
           'No channels left in this report',
           next,
           expected,
         );
+        this.warnIfSkipped(written, row.id, 'recordError');
         return 'no_channels';
       }
 
@@ -169,7 +174,7 @@ export class ReportSendService {
         totals:
           has('totals') && overview?.kpis ? totalsOf(overview.kpis) : null,
         shareUrl: row.shareToken
-          ? `${this.frontendUrl}/r/${row.shareToken}`
+          ? reportShareUrl(reportsFrontendUrl(this.config), row.shareToken)
           : null,
         note: payload.note,
       };
@@ -205,7 +210,8 @@ export class ReportSendService {
       }
     }
 
-    await this.repo.recordSent(row.id, now, next, expected);
+    const written = await this.repo.recordSent(row.id, now, next, expected);
+    this.warnIfSkipped(written, row.id, 'recordSent');
     return 'sent';
   }
 
@@ -233,7 +239,7 @@ export class ReportSendService {
         : null;
     const next =
       schedule && info ? nextRunAt(schedule, info.timezone, now) : undefined;
-    await this.repo.recordError(
+    const written = await this.repo.recordError(
       row.id,
       error.message.slice(0, MAX_ERROR_CHARS),
       next,
@@ -241,18 +247,38 @@ export class ReportSendService {
       // Some people did get this period's report before it failed.
       data.sent?.length ? now : undefined,
     );
+    this.warnIfSkipped(written, row.id, 'markFailed');
+  }
+
+  /** A write that matched no row lost the slot race: the report moved on first. */
+  private warnIfSkipped(
+    written: boolean,
+    reportId: string,
+    step: string,
+  ): void {
+    if (written) return;
+    this.logger.warn(
+      `Report ${reportId}: ${step} wrote nothing, the report's slot had moved on`,
+    );
   }
 
   protected pause(ms: number): Promise<void> {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  /** True while BullMQ is running the last attempt it will make. */
+  /**
+   * True while BullMQ is running the last attempt it will make. `attemptsMade`
+   * counts finished attempts, so a running one is the next: this is
+   * `isFinalAttempt` as it reads once the attempt that is running has ended.
+   */
   private isLastAttempt(job: {
     attemptsMade?: number;
     opts?: { attempts?: number };
   }): boolean {
-    return (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
+    return isFinalAttempt({
+      attemptsMade: (job.attemptsMade ?? 0) + 1,
+      opts: { attempts: job.opts?.attempts },
+    });
   }
 
   /**
@@ -286,12 +312,6 @@ export class ReportSendService {
       );
       return undefined;
     }
-  }
-
-  private get frontendUrl(): string {
-    const url =
-      this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:3001';
-    return url.replace(/\/+$/, '');
   }
 
   /**

@@ -611,6 +611,36 @@ describe('ReportsService.preview', () => {
     );
   });
 
+  it('previews a report whose saved logo was binned, without a logo', async () => {
+    const binned = setup({
+      logo: { type: 'image', mimeType: 'image/png', isDeleted: true },
+    });
+    await binned.service.preview(WS, createDto({ logoMediaId: LOGO }), NOW);
+    expect(binned.payloads.payload).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({ logoMediaId: null }),
+      NOW,
+    );
+
+    const gone = setup({ logo: null });
+    await gone.service.preview(WS, createDto({ logoMediaId: LOGO }), NOW);
+    expect(gone.payloads.payload).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({ logoMediaId: null }),
+      NOW,
+    );
+  });
+
+  it('keeps a live logo in the preview', async () => {
+    const { service, payloads } = setup();
+    await service.preview(WS, createDto({ logoMediaId: LOGO }), NOW);
+    expect(payloads.payload).toHaveBeenCalledWith(
+      WS,
+      expect.objectContaining({ logoMediaId: LOGO }),
+      NOW,
+    );
+  });
+
   it('checks the logo and the required fields like a save', async () => {
     const svg = setup({
       logo: { type: 'image', mimeType: 'image/svg+xml', isDeleted: false },

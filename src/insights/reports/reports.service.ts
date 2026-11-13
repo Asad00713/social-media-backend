@@ -40,6 +40,7 @@ import {
 } from './lib/report-dto';
 import { resolveReportPeriod } from './lib/report-period';
 import { pdfFilename } from './lib/report-format';
+import { reportShareUrl, reportsFrontendUrl } from './lib/report-urls';
 import {
   NoChannelsLeftError,
   ReportPayloadService,
@@ -115,9 +116,7 @@ export class ReportsService {
   }
 
   private get frontendUrl(): string {
-    const url =
-      this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:3001';
-    return url.replace(/\/+$/, '');
+    return reportsFrontendUrl(this.config);
   }
 
   private async context(workspaceId: string): Promise<ReportDtoContext> {
@@ -263,7 +262,7 @@ export class ReportsService {
         updatedAt: now,
       });
     }
-    return { url: token ? `${this.frontendUrl}/r/${token}` : null };
+    return { url: token ? reportShareUrl(this.frontendUrl, token) : null };
   }
 
   /**
@@ -317,8 +316,17 @@ export class ReportsService {
       workspaceId,
       settings.channelIds,
     );
-    await this.assertLogo(workspaceId, settings.logoMediaId);
-    return this.payloads.payload(workspaceId, { ...settings, channelIds }, now);
+    // A saved report can point at a logo that was binned since; its preview
+    // goes on without one (the saved report's own logo resolves to null too).
+    const logoMediaId = await this.livePreviewLogo(
+      workspaceId,
+      settings.logoMediaId,
+    );
+    return this.payloads.payload(
+      workspaceId,
+      { ...settings, channelIds, logoMediaId },
+      now,
+    );
   }
 
   /**
@@ -418,7 +426,7 @@ export class ReportsService {
     const info = await this.repo.workspaceInfo(row.workspaceId);
     if (!info) throw new NotFoundException('Workspace not found');
     const { window } = resolveReportPeriod(settingsOf(row), info.timezone, now);
-    const url = `${this.frontendUrl}/r/${this.tokens.renderToken(row.id)}?print=1`;
+    const url = `${reportShareUrl(this.frontendUrl, this.tokens.renderToken(row.id))}?print=1`;
     return {
       filename: pdfFilename(row.name, window),
       body: await this.gotenberg.pdfFromUrl(url),
@@ -477,6 +485,25 @@ export class ReportsService {
         'That logo is not in this workspace Library',
       );
     }
+    this.assertLogoType(item);
+  }
+
+  /** The logo id to preview with: null once the Library item is gone or binned. */
+  private async livePreviewLogo(
+    workspaceId: string,
+    logoMediaId: string | null,
+  ): Promise<string | null> {
+    if (!logoMediaId) return null;
+    const item = await this.repo.logoItem(workspaceId, logoMediaId);
+    if (!item || item.isDeleted) return null;
+    this.assertLogoType(item);
+    return logoMediaId;
+  }
+
+  private assertLogoType(item: {
+    type: string;
+    mimeType: string | null;
+  }): void {
     if (
       item.type !== 'image' ||
       !LOGO_MIME_TYPES.includes(item.mimeType ?? '')

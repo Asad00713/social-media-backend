@@ -10,9 +10,10 @@ import {
 } from './report-send.service';
 
 /**
- * Consumes the `reports` queue: one job emails one report. One job at a time,
- * so ReportSendService's spacing between sends holds across all reports and
- * stays under Resend's 2 requests a second.
+ * Consumes the `reports` queue: one job emails one report. One job at a time
+ * per worker process, so ReportSendService's spacing between sends holds
+ * across all reports in that process. Replicas, and the app's other mail,
+ * share Resend's limit of 2 requests a second.
  */
 @Processor(QUEUES.REPORTS, { concurrency: 1 })
 export class ReportsProcessor extends WorkerHost {

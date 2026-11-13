@@ -111,8 +111,8 @@ function setup(opts: Opts = {}) {
         opts.team ?? [{ userId: 'u0', email: 'Owner@x.com', isOwner: true }],
       ),
     ),
-    recordSent: jest.fn(() => Promise.resolve()),
-    recordError: jest.fn(() => Promise.resolve()),
+    recordSent: jest.fn(() => Promise.resolve(true)),
+    recordError: jest.fn(() => Promise.resolve(true)),
   };
   const payloads = {
     payload: jest.fn(() => Promise.resolve(payloadOf())),
@@ -566,6 +566,51 @@ describe('ReportSendService.markFailed', () => {
     const { service, repo } = setup({ row: null });
     await service.markFailed(SCHEDULED, new Error('boom'), NOW);
     expect(repo.recordError).not.toHaveBeenCalled();
+  });
+});
+
+describe('ReportSendService: a write that lost the slot race', () => {
+  const warned = (warn: {
+    mock: { calls: readonly (readonly unknown[])[] };
+  }): string[] => warn.mock.calls.map(([line]) => String(line));
+
+  it('warns, with the report id and no address, when recordSent wrote nothing', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn');
+    const { service, repo } = setup();
+    repo.recordSent.mockResolvedValueOnce(false);
+    await expect(service.run(job(SCHEDULED), NOW)).resolves.toBe('sent');
+    const lines = warned(warn).filter((l) => l.includes('recordSent'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(RID);
+    expect(lines[0]).not.toMatch(/@/);
+  });
+
+  it('warns when recordError wrote nothing after no one was left', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn');
+    const { service, repo } = setup({
+      row: row({ optedOut: ['a@x.com', 'b@y.com'] }),
+    });
+    repo.recordError.mockResolvedValueOnce(false);
+    await service.run(job(SCHEDULED), NOW);
+    expect(warned(warn).filter((l) => l.includes(RID))).toHaveLength(1);
+  });
+
+  it('warns when markFailed wrote nothing', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn');
+    const { service, repo } = setup();
+    repo.recordError.mockResolvedValueOnce(false);
+    await service.markFailed(SCHEDULED, new Error('boom'), NOW);
+    const lines = warned(warn).filter((l) => l.includes('markFailed'));
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain(RID);
+  });
+
+  it('stays quiet when the writes land', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn');
+    const { service } = setup();
+    await service.run(job(SCHEDULED), NOW);
+    await service.markFailed(SCHEDULED, new Error('boom'), NOW);
+    expect(warned(warn).filter((l) => l.includes('wrote nothing'))).toEqual([]);
   });
 });
 

@@ -1,4 +1,5 @@
 import type { InsightReportRow } from '../../../drizzle/schema/insight-reports.schema';
+import { reportShareUrl } from './report-urls';
 import type {
   ReportCadence,
   ReportChartMetric,
@@ -64,7 +65,9 @@ export function toReportDto(r: ReportRecord, ctx: ReportDtoContext): ReportDto {
     channelIds: settings.channelIds.filter((id) => ctx.socialIds.has(id)),
     id: row.id,
     logoUrl: r.logoUrl,
-    shareUrl: row.shareToken ? `${ctx.frontendUrl}/r/${row.shareToken}` : null,
+    shareUrl: row.shareToken
+      ? reportShareUrl(ctx.frontendUrl, row.shareToken)
+      : null,
     optedOut: row.optedOut,
     teamSize: ctx.teamSize,
     nextRunAt: row.nextRunAt?.toISOString() ?? null,

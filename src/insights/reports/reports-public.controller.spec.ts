@@ -4,6 +4,7 @@ import {
   Controller,
   Get,
   INestApplication,
+  Logger,
   ValidationPipe,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
@@ -285,6 +286,10 @@ describe('ReportsPublicController over HTTP', () => {
     });
 
     it('still carries the headers when the service throws', async () => {
+      // Nest's ExceptionsHandler logs each of the four on purpose; keep it quiet.
+      const quiet = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
       const boom = new Error('db down');
       repo.byShareToken.mockRejectedValueOnce(boom);
       repo.getById.mockRejectedValueOnce(boom);
@@ -308,6 +313,7 @@ describe('ReportsPublicController over HTTP', () => {
       expect(hits[3].headers['content-security-policy']).toContain(
         "frame-ancestors 'none'",
       );
+      quiet.mockRestore();
     });
 
     it('answers 409 when every channel is gone', async () => {
