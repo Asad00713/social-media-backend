@@ -69,6 +69,26 @@ describe('channelHealth precedence', () => {
     },
   );
 
+  it('reconnect carries since = last_error_at; other states never do', () => {
+    const broken = base({
+      connectionStatus: 'error',
+      lastError: 'Token revoked',
+      lastErrorAt: days(-3),
+    });
+    expect(channelHealth(broken, { now: NOW })).toEqual({
+      kind: 'reconnect',
+      reason: 'Token revoked',
+      since: days(-3).toISOString(),
+    });
+    // An error recorded on a channel that is fine again is not a reason.
+    expect(
+      channelHealth({ ...broken, connectionStatus: 'connected' }, { now: NOW }),
+    ).toEqual({ kind: 'ok' });
+    expect(
+      channelHealth({ ...broken, pausedAt: days(-1) }, { now: NOW }),
+    ).not.toHaveProperty('since');
+  });
+
   it('an expired access token with no refresh token needs a reconnect', () => {
     expect(
       channelHealth(base({ platform: 'facebook', tokenExpiresAt: days(-1) }), {

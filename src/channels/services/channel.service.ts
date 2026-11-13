@@ -28,7 +28,6 @@ import {
   PLATFORM_CONFIG,
   CHANNEL_CATEGORY,
   ConnectionStatus,
-  getRefreshTokenTtlDays,
   isBillablePlatform,
 } from '../../drizzle/schema/channels.schema';
 import { workspaceUsage } from '../../drizzle/schema';
@@ -50,7 +49,8 @@ import {
 } from '../dto/channel.dto';
 import type { PersonRef } from '../lib/channel-health';
 import { isExpiringWithin } from '../lib/channel-health';
-import { loadPeople, personOf } from '../lib/people';
+import { loadPeople } from '../lib/people';
+import { toChannelResponse } from '../lib/channel-response';
 
 /**
  * Shared "is this channel usable right now" predicate. A channel counts as
@@ -1458,59 +1458,7 @@ export class ChannelService {
     channel: typeof socialMediaChannels.$inferSelect,
     people: Map<string, PersonRef>,
   ): ChannelResponseDto {
-    const isTokenExpired = channel.tokenExpiresAt
-      ? channel.tokenExpiresAt < new Date()
-      : false;
-
-    const hasRefreshToken = !!channel.refreshToken;
-
-    const refreshTokenExpiresInDays = (() => {
-      if (!channel.refreshToken || !channel.refreshTokenIssuedAt) return null;
-      const ttlDays = getRefreshTokenTtlDays(
-        channel.platform as SupportedPlatform,
-      );
-      if (ttlDays === null) return null;
-      const issuedAt = new Date(channel.refreshTokenIssuedAt).getTime();
-      const expiresAt = issuedAt + ttlDays * 24 * 60 * 60 * 1000;
-      const remainingMs = expiresAt - Date.now();
-      return Math.floor(remainingMs / (24 * 60 * 60 * 1000));
-    })();
-
-    return {
-      id: channel.id,
-      workspaceId: channel.workspaceId,
-      platform: channel.platform,
-      accountType: channel.accountType,
-      platformAccountId: channel.platformAccountId,
-      accountName: channel.accountName,
-      username: channel.username,
-      profilePictureUrl: channel.profilePictureUrl,
-      permissions: (channel.permissions as string[]) || [],
-      capabilities: channel.capabilities as Record<string, any> | null,
-      isActive: channel.isActive,
-      connectionStatus: channel.connectionStatus,
-      lastError: channel.lastError,
-      lastSyncedAt: channel.lastSyncedAt,
-      lastPostedAt: channel.lastPostedAt,
-      metadata: (channel.metadata as Record<string, any>) || {},
-      displayOrder: channel.displayOrder,
-      timezone: channel.timezone,
-      color: channel.color,
-      tokenExpiresAt: channel.tokenExpiresAt,
-      isTokenExpired,
-      hasRefreshToken,
-      refreshTokenExpiresInDays,
-      createdAt: channel.createdAt,
-      updatedAt: channel.updatedAt,
-      category:
-        CHANNEL_CATEGORY[channel.platform as SupportedPlatform] ??
-        channel.category,
-      pausedAt: channel.pausedAt ?? null,
-      pausedBy: channel.pausedAt
-        ? personOf(people, channel.pausedByUserId)
-        : null,
-      connectedBy: personOf(people, channel.connectedByUserId),
-    };
+    return toChannelResponse(channel, people);
   }
 
   // ==========================================================================
