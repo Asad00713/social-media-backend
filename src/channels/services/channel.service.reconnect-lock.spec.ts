@@ -70,11 +70,12 @@ const row = (over: Record<string, unknown> = {}) => ({
 });
 
 function make(
-  billing: Partial<Record<'ownerOf' | 'reconcileLocks', jest.Mock>> = {},
+  billing: Partial<Record<'ownerOf' | 'releaseFreedSlots', jest.Mock>> = {},
 ) {
   const accountChannels = {
     ownerOf: billing.ownerOf ?? jest.fn(async () => 'owner-1'),
-    reconcileLocks: billing.reconcileLocks ?? jest.fn(async () => undefined),
+    releaseFreedSlots:
+      billing.releaseFreedSlots ?? jest.fn(async () => undefined),
   };
   const svc = new ChannelService(
     {} as never,
@@ -110,7 +111,7 @@ describe('reconnecting a plan-locked channel', () => {
     expect('isActive' in writes[0]).toBe(false);
     expect(writes[0].connectionStatus).toBe('connected');
     expect(accountChannels.ownerOf).toHaveBeenCalledWith('ws');
-    expect(accountChannels.reconcileLocks).toHaveBeenCalledWith('owner-1');
+    expect(accountChannels.releaseFreedSlots).toHaveBeenCalledWith('owner-1');
     // Billing kept it locked (over the ceiling): it stays locked.
     expect(dto.isActive).toBe(false);
   });
@@ -126,7 +127,7 @@ describe('reconnecting a plan-locked channel', () => {
   it('stays locked when the billing check fails', async () => {
     existing = row();
     const { svc } = make({
-      reconcileLocks: jest.fn(async () => {
+      releaseFreedSlots: jest.fn(async () => {
         throw new Error('db down');
       }),
     });
@@ -138,7 +139,7 @@ describe('reconnecting a plan-locked channel', () => {
     existing = row({ isActive: true });
     const { svc, accountChannels } = make();
     const dto = await reconnect(svc);
-    expect(accountChannels.reconcileLocks).not.toHaveBeenCalled();
+    expect(accountChannels.releaseFreedSlots).not.toHaveBeenCalled();
     expect('isActive' in writes[0]).toBe(false);
     expect(dto.isActive).toBe(true);
   });
@@ -147,7 +148,7 @@ describe('reconnecting a plan-locked channel', () => {
     existing = row({ platform: 'google_drive', accountType: 'storage' });
     const { svc, accountChannels } = make();
     const dto = await reconnect(svc, 'google_drive');
-    expect(accountChannels.reconcileLocks).not.toHaveBeenCalled();
+    expect(accountChannels.releaseFreedSlots).not.toHaveBeenCalled();
     expect(dto.isActive).toBe(false);
   });
 });

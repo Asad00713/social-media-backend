@@ -19,7 +19,6 @@ import { UsersService } from 'src/users/users.service';
 import { SubscriptionService } from 'src/billing/services/subscription.service';
 import { SubscriptionLookupService } from 'src/billing/services/subscription-lookup.service';
 import { AddonService } from 'src/billing/services/addon.service';
-import { AccountChannelsService } from 'src/billing/services/account-channels.service';
 import { resolveWorkspaceLimits } from 'src/billing/services/limit-resolver.util';
 import { getNextTokenResetDate } from 'src/billing/services/token-reset.util';
 import { LibrarySamplesService } from 'src/media-library/samples/library-samples.service';
@@ -48,7 +47,6 @@ export class WorkspaceService {
     private lookup: SubscriptionLookupService,
     @Inject(forwardRef(() => AddonService))
     private addonService: AddonService,
-    private accountChannels: AccountChannelsService,
     private librarySamples: LibrarySamplesService,
   ) {}
 
@@ -463,8 +461,9 @@ export class WorkspaceService {
             extraAiTokens: 0,
           };
 
+      // Also re-applies the account's channel locks: with this workspace's
+      // channels gone, previously locked ones may fit again.
       await this.lookup.applyLimitsToAllWorkspaces(userId, planCode, addons);
-      await this.accountChannels.reconcileLocks(userId);
     } catch (error) {
       this.logger.error(
         `Failed to re-apply limits after deleting workspace ${workspaceId}: ${
