@@ -1,4 +1,6 @@
 import { HttpException } from '@nestjs/common';
+import type { SQL } from 'drizzle-orm';
+import { PgDialect } from 'drizzle-orm/pg-core';
 import type { DbType } from '../../drizzle/db';
 import { subscriptions } from '../../drizzle/schema/billing.schema';
 import { channelConnectLinks } from '../../drizzle/schema/channel-connect-links.schema';
@@ -9,7 +11,7 @@ import type { WorkspaceRole } from '../../workspace-members/role-capabilities';
 import type { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
 import type { OAuthService } from '../services/oauth.service';
 import { ConnectLinkAccessService } from './connect-link-access.service';
-import { CONNECT_LINK_TTL_MS, createLinkToken } from './lib/connect-link-rules';
+import { CONNECT_LINK_TTL_MS, hashLinkToken } from './lib/connect-link-rules';
 
 const WS = '11111111-1111-4111-8111-111111111111';
 const OWNER = '44444444-4444-4444-8444-444444444444';
@@ -19,12 +21,36 @@ const BASE = new Date('2026-11-13T10:00:00Z');
 
 type Row = Record<string, unknown>;
 
-/** `select().from(table)` resolves to the rows given for that table. */
+/**
+ * `select().from(table)` resolves to the rows given for that table that satisfy
+ * the `eq(column, value)` conditions of the query's `where()`. The predicate is
+ * compiled to SQL with the real dialect and read back, so a lookup that stops
+ * filtering on a column (token hash, link id, workspace id) returns extra rows
+ * here and the test fails, instead of the fake quietly ignoring it.
+ */
 function fakeDb(tables: Map<unknown, Row[]>) {
+  const dialect = new PgDialect();
+  const camel = (col: string) =>
+    col.replace(/_([a-z])/g, (_, c: string) => c.toUpperCase());
   const chain = (rows: Row[]) => {
+    let condition: SQL | undefined;
     const c: Record<string, unknown> = {};
-    for (const m of ['where', 'orderBy', 'limit']) c[m] = () => c;
-    c.then = (resolve: (r: Row[]) => unknown) => resolve(rows);
+    c.where = (cond: SQL) => {
+      condition = cond;
+      return c;
+    };
+    for (const m of ['orderBy', 'limit']) c[m] = () => c;
+    c.then = (resolve: (r: Row[]) => unknown) => {
+      if (!condition) return resolve(rows);
+      const { sql, params } = dialect.sqlToQuery(condition);
+      const eqs = [...sql.matchAll(/"(\w+)"\."(\w+)" = \$(\d+)/g)].map((m) => ({
+        field: camel(m[2]),
+        value: params[Number(m[3]) - 1],
+      }));
+      return resolve(
+        rows.filter((r) => eqs.every((e) => r[e.field] === e.value)),
+      );
+    };
     return c;
   };
   return {
@@ -39,7 +65,7 @@ function linkRow(over: Row = {}): Row {
     createdByUserId: USER,
     email: 'client@example.com',
     networks: ['instagram', 'facebook'],
-    tokenHash: 'x',
+    tokenHash: hashLinkToken('t'),
     tokenEncrypted: 'x',
     expiresAt: new Date(BASE.getTime() + CONNECT_LINK_TTL_MS),
     revokedAt: null,
@@ -60,7 +86,6 @@ interface Opts {
 }
 
 function setup(opts: Opts = {}) {
-  const token = createLinkToken();
   const tables = new Map<unknown, Row[]>([
     [
       channelConnectLinks,
@@ -80,8 +105,18 @@ function setup(opts: Opts = {}) {
             },
           ],
     ],
-    [subscriptions, opts.subscription ? [opts.subscription] : []],
-    [socialMediaChannels, opts.channels ?? []],
+    [
+      subscriptions,
+      opts.subscription ? [{ userId: OWNER, ...opts.subscription }] : [],
+    ],
+    [
+      socialMediaChannels,
+      (opts.channels ?? []).map((c) => ({
+        workspaceId: WS,
+        connectLinkId: LINK,
+        ...c,
+      })),
+    ],
     [
       users,
       opts.sender === null
@@ -111,7 +146,7 @@ function setup(opts: Opts = {}) {
     { getRole } as unknown as WorkspaceRoleService,
     { initiateOAuth } as unknown as OAuthService,
   );
-  return { service, token, getRole, initiateOAuth };
+  return { service, getRole, initiateOAuth };
 }
 
 async function codeOf(p: Promise<unknown>): Promise<string | undefined> {
@@ -153,6 +188,17 @@ describe('ConnectLinkAccessService', () => {
       const { service } = setup({ link: null });
       expect(await codeOf(service.resolve('nope'))).toBe('LINK_NOT_FOUND');
       expect(await statusOf(service.resolve('nope'))).toBe(404);
+    });
+
+    it('looks the link up by the hash of the token, not by anything else', async () => {
+      // the row is stored under hash('t'); only that raw token finds it
+      const { service } = setup();
+      await expect(service.resolve('t')).resolves.toBeDefined();
+      expect(await codeOf(service.resolve('T'))).toBe('LINK_NOT_FOUND');
+      // the hash itself is not a token: presenting it finds nothing
+      expect(await codeOf(service.resolve(hashLinkToken('t')))).toBe(
+        'LINK_NOT_FOUND',
+      );
     });
 
     it('a revoked link -> LINK_REVOKED (410)', async () => {
@@ -326,6 +372,36 @@ describe('ConnectLinkAccessService', () => {
         },
         { platform: 'facebook', connected: [] },
       ]);
+    });
+
+    it('never lists a channel of another link or another workspace', async () => {
+      const OTHER_LINK = '55555555-5555-4555-8555-555555555555';
+      const OTHER_WS = '66666666-6666-4666-8666-666666666666';
+      const { service } = setup({
+        channels: [
+          { platform: 'instagram', accountName: '@mine' },
+          {
+            platform: 'instagram',
+            accountName: '@other-link',
+            connectLinkId: OTHER_LINK,
+          },
+          {
+            platform: 'instagram',
+            accountName: '@other-workspace',
+            workspaceId: OTHER_WS,
+          },
+          {
+            platform: 'facebook',
+            accountName: '@added-by-hand',
+            connectLinkId: null,
+          },
+        ],
+      });
+      const res = await service.preview('t');
+      const names = res.networks.flatMap((n) =>
+        n.connected.map((c) => c.accountName),
+      );
+      expect(names).toEqual(['@mine']);
     });
 
     it('a dead link previews as its error', async () => {

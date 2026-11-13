@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { LogWriterService } from './log-writer.service';
+import { redactSensitivePath } from './redact-path';
 
 /**
  * Global exception filter. It preserves Nest's default response exactly — same
@@ -45,7 +46,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
         message,
         context: 'HTTP',
         stack: stack ?? null,
-        path: request?.url ?? null,
+        // Some routes carry a bearer token in the path; never persist it.
+        path: request?.url ? redactSensitivePath(request.url) : null,
         method: request?.method ?? null,
         statusCode: status,
         userId: user?.userId ?? null,
