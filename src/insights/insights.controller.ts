@@ -146,6 +146,35 @@ export class InsightsController {
     return body;
   }
 
+  /**
+   * The window's day totals as a CSV, one row per day (the channel page's
+   * Export). `kind=daily` is the only kind; the posts table has its own
+   * `posts/export`.
+   */
+  @Get('export')
+  async exportDaily(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Res({ passthrough: true }) res: Response,
+    @Query('kind') kind?: Raw,
+    @Query('days') days?: Raw,
+    @Query('from') from?: Raw,
+    @Query('to') to?: Raw,
+    @Query('channels') channels?: Raw,
+  ): Promise<string> {
+    const k = single(kind, 'kind');
+    if (k !== undefined && k !== '' && k !== 'daily') {
+      throw new BadRequestException('kind must be daily');
+    }
+    const { filename, body } = await this.insights.dailyCsv(
+      workspaceId,
+      periodOf(days, from, to),
+      single(channels, 'channels'),
+    );
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    return body;
+  }
+
   /** Best time, What works and Next steps over the last 90 days. */
   @Get('signals')
   signals(

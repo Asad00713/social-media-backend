@@ -134,6 +134,9 @@ export type RelationshipType = (typeof RELATIONSHIP_TYPES)[number];
 // =============================================================================
 // 1. Social Media Channels - Main table for connected accounts
 // =============================================================================
+/** Longest channel nickname, once trimmed (column + CHECK, migration 0064). */
+export const CHANNEL_NICKNAME_MAX = 80;
+
 export const socialMediaChannels = pgTable(
   'social_media_channels',
   {
@@ -158,6 +161,10 @@ export const socialMediaChannels = pgTable(
 
     // Display information
     accountName: varchar('account_name', { length: 255 }).notNull(),
+    // The team's own name for the channel (migration 0064); NULL = use
+    // account_name. Separate because every reconnect overwrites account_name
+    // with the platform's name. 1-80 characters once trimmed (CHECK).
+    nickname: varchar('nickname', { length: CHANNEL_NICKNAME_MAX }),
     username: varchar('username', { length: 255 }), // @handle
     profilePictureUrl: text('profile_picture_url'),
 
@@ -221,6 +228,8 @@ export const socialMediaChannels = pgTable(
 
     // Display preferences
     displayOrder: integer('display_order').default(0).notNull(),
+    // Pinned to the app sidebar for the whole workspace (migration 0064).
+    showInSidebar: boolean('show_in_sidebar').default(false).notNull(),
     timezone: varchar('timezone', { length: 50 }).default('UTC'),
     color: varchar('color', { length: 7 }), // Hex color for UI
 
@@ -828,6 +837,9 @@ export const PLATFORM_CONFIG: Record<
     maxMediaPerPost: 0,
     maxTextLength: 4096,
     supportedMediaTypes: [],
-    oauthScopes: ['whatsapp_business_messaging', 'whatsapp_business_management'],
+    oauthScopes: [
+      'whatsapp_business_messaging',
+      'whatsapp_business_management',
+    ],
   },
 };

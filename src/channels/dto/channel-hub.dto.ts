@@ -1,5 +1,14 @@
 import { Transform } from 'class-transformer';
-import { IsNotEmpty, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  IsBoolean,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Matches,
+  MaxLength,
+  ValidateIf,
+} from 'class-validator';
+import { CHANNEL_NICKNAME_MAX } from '../../drizzle/schema/channels.schema';
 import {
   NETWORK_REQUEST_NAME_MAX,
   NETWORK_REQUEST_NOTE_MAX,
@@ -59,6 +68,12 @@ export interface ChannelCardSummary {
   nextPost: ChannelNextPost | null;
   lastPostedAt: string | null;
   health: ChannelHealth;
+  /** The team's own name for the channel; null = none set. */
+  nickname: string | null;
+  /** `nickname ?? accountName`. */
+  displayName: string;
+  /** Pinned to the app sidebar, for the whole workspace. */
+  showInSidebar: boolean;
 }
 
 /** `GET /channels/workspaces/:workspaceId/summary` */
@@ -66,6 +81,32 @@ export interface ChannelsSummaryResponse {
   /** The account's channel slots (billing usage numbers); null if unknown. */
   usage: ChannelsUsage | null;
   channels: ChannelCardSummary[];
+}
+
+// =============================================================================
+// Channel settings
+// =============================================================================
+
+/**
+ * `PATCH /channels/workspaces/:workspaceId/:channelId/settings`. Every field
+ * is optional; a field left out is left as it is.
+ */
+export class UpdateChannelSettingsDto {
+  /** Trimmed, 1-80 characters, no control characters; null clears it. */
+  @Transform(trimmed)
+  @IsOptional()
+  @IsString()
+  @IsNotEmpty({ message: 'nickname cannot be empty; send null to clear it' })
+  @MaxLength(CHANNEL_NICKNAME_MAX)
+  @Matches(/^[^\p{Cc}]*$/u, {
+    message: 'nickname cannot contain control characters',
+  })
+  nickname?: string | null;
+
+  /** null is refused: the column is NOT NULL. */
+  @ValidateIf((o: UpdateChannelSettingsDto) => o.showInSidebar !== undefined)
+  @IsBoolean()
+  showInSidebar?: boolean;
 }
 
 // =============================================================================

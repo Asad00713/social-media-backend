@@ -21,6 +21,10 @@ import {
 } from 'drizzle-orm';
 import { VERSION_ACTION } from '../composer/lib/draft-versions';
 import { db } from '../../drizzle/db';
+import {
+  listWorkspacePosts,
+  type WorkspacePostsOptions,
+} from '../lib/workspace-posts.query';
 import { derivePostStatus, publishedTargetState } from '../lib/post-status';
 import { assertNotInPast, refusal } from '../lib/refusal';
 import {
@@ -296,51 +300,9 @@ export class PostService {
    */
   async getWorkspacePosts(
     workspaceId: string,
-    options?: {
-      status?: PostStatus;
-      channelId?: string;
-      limit?: number;
-      offset?: number;
-    },
+    options?: WorkspacePostsOptions,
   ): Promise<{ posts: (typeof posts.$inferSelect)[]; total: number }> {
-    const conditions = [
-      eq(posts.workspaceId, workspaceId),
-      // Exclude campaign-materialized posts from the normal post list —
-      // they still appear on the calendar (getCalendarPosts is unaffected).
-      // Materialised means "has a slot": the composer can also file a post
-      // under a campaign (metadata.campaignId alone), and that post is still
-      // an ordinary post that Maestro and the chatbot must be able to list.
-      sql`(${posts.metadata} -> 'campaignSlot') is null`,
-    ];
-
-    if (options?.status) {
-      conditions.push(eq(posts.status, options.status));
-    }
-
-    // Get total count
-    const [{ count }] = await db
-      .select({ count: sql<number>`count(*)` })
-      .from(posts)
-      .where(and(...conditions));
-
-    // Get posts
-    const result = await db
-      .select()
-      .from(posts)
-      .where(and(...conditions))
-      .orderBy(desc(posts.createdAt))
-      .limit(options?.limit || 50)
-      .offset(options?.offset || 0);
-
-    // Filter by channelId if provided
-    let filteredPosts = result;
-    if (options?.channelId) {
-      filteredPosts = result.filter((post) =>
-        post.targets.some((t) => t.channelId === options.channelId),
-      );
-    }
-
-    return { posts: filteredPosts, total: Number(count) };
+    return listWorkspacePosts(db, workspaceId, options);
   }
 
   /**

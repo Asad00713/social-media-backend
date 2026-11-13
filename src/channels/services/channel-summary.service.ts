@@ -28,6 +28,7 @@ import type {
   ChannelsUsage,
 } from '../dto/channel-hub.dto';
 import { channelHealth } from '../lib/channel-health';
+import { channelDisplayName } from '../lib/channel-response';
 import {
   FOLLOWER_SERIES_DAYS,
   INBOX_PLATFORMS,
@@ -89,10 +90,14 @@ export class ChannelSummaryService {
         pausedByUserId: socialMediaChannels.pausedByUserId,
         connectionStatus: socialMediaChannels.connectionStatus,
         lastError: socialMediaChannels.lastError,
+        lastErrorAt: socialMediaChannels.lastErrorAt,
         tokenExpiresAt: socialMediaChannels.tokenExpiresAt,
         refreshToken: socialMediaChannels.refreshToken,
         refreshTokenIssuedAt: socialMediaChannels.refreshTokenIssuedAt,
         lastPostedAt: socialMediaChannels.lastPostedAt,
+        accountName: socialMediaChannels.accountName,
+        nickname: socialMediaChannels.nickname,
+        showInSidebar: socialMediaChannels.showInSidebar,
       })
       .from(socialMediaChannels)
       .where(eq(socialMediaChannels.workspaceId, workspaceId))
@@ -150,6 +155,9 @@ export class ChannelSummaryService {
           now,
           pausedBy: personOf(people, c.pausedByUserId),
         }),
+        nickname: c.nickname ?? null,
+        displayName: channelDisplayName(c),
+        showInSidebar: c.showInSidebar,
       };
     });
 

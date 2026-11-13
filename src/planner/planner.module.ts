@@ -37,5 +37,7 @@ import { QueueSlotsService } from './services/queue-slots.service';
     PlannerPreferencesService,
     QueueSlotsService,
   ],
+  // The channel page reads one channel's best times.
+  exports: [BestTimesService],
 })
 export class PlannerModule {}

@@ -30,5 +30,7 @@ import { InsightsTopicsRepository } from './insights-topics.repository';
     InsightsTopicsRepository,
     InsightsChannelsRepository,
   ],
+  // The channel page composes one channel's overview, posts and signals.
+  exports: [InsightsService],
 })
 export class InsightsModule {}

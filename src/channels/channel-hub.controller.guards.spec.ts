@@ -1,9 +1,15 @@
 import 'reflect-metadata';
+import { ForbiddenException, type ExecutionContext } from '@nestjs/common';
 import { MODULE_METADATA } from '@nestjs/common/constants';
+import { Reflector } from '@nestjs/core';
 import { REQUIRE_CAPABILITY } from '../workspace-members/require-capability.decorator';
 import { WorkspaceRoleGuard } from '../workspace-members/workspace-role.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
-import type { Capability } from '../workspace-members/role-capabilities';
+import type {
+  Capability,
+  WorkspaceRole,
+} from '../workspace-members/role-capabilities';
+import type { WorkspaceRoleService } from '../workspace-members/workspace-role.service';
 import { ChannelHubController } from './channel-hub.controller';
 import { ChannelsController } from './channels.controller';
 import { ChannelsModule } from './channels.module';
@@ -25,6 +31,11 @@ const EXPECTED: Record<
     cap: 'channels:manage',
     method: 'POST',
     path: 'network-requests',
+  },
+  updateSettings: {
+    cap: 'channels:manage',
+    method: 'PATCH',
+    path: ':channelId/settings',
   },
 };
 
@@ -83,6 +94,39 @@ describe('ChannelHubController', () => {
     );
     expect(EXPECTED.pause.cap).toBe(editCap);
     expect(EXPECTED.resume.cap).toBe(editCap);
+    expect(EXPECTED.updateSettings.cap).toBe(editCap);
+  });
+
+  describe('PATCH :channelId/settings through the real role guard', () => {
+    const run = (role: WorkspaceRole) => {
+      const roles = {
+        getRole: jest.fn(() => Promise.resolve(role)),
+        isPlatformSuperAdmin: jest.fn(() => Promise.resolve(false)),
+      } as unknown as WorkspaceRoleService;
+      const guard = new WorkspaceRoleGuard(new Reflector(), roles);
+      const ctx = {
+        switchToHttp: () => ({
+          getRequest: () => ({
+            user: { userId: 'u1' },
+            params: { workspaceId: 'w1', channelId: '7' },
+          }),
+        }),
+        getHandler: () => proto.updateSettings,
+        getClass: () => ChannelHubController,
+      } as unknown as ExecutionContext;
+      return guard.canActivate(ctx);
+    };
+
+    it('refuses a GUEST', async () => {
+      await expect(run('GUEST')).rejects.toBeInstanceOf(ForbiddenException);
+    });
+
+    it.each<WorkspaceRole>(['MEMBER', 'ADMIN', 'OWNER'])(
+      'lets a %s through',
+      async (role) => {
+        await expect(run(role)).resolves.toBe(true);
+      },
+    );
   });
 
   it('is registered before ChannelsController, so `summary` is not read as a channel id', () => {
