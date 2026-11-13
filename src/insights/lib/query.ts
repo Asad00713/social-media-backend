@@ -32,7 +32,10 @@ export const MAX_CUSTOM_DAYS = 90;
 
 /** The window asked for: a preset or a picked range, with its length. */
 export interface ResolvedPeriod {
-  /** Days in the window: 7, 30 or 90 for a preset, 1 to 90 when picked. */
+  /**
+   * Days in the window: 7, 30 or 90 for a preset, 1 to 90 when picked,
+   * 1 to 92 from a report.
+   */
   days: number;
   window: PeriodWindow;
 }
