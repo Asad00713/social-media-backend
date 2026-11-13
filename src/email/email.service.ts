@@ -876,4 +876,101 @@ This email was sent by Schedura.`.trim();
       text,
     });
   }
+
+  /**
+   * The email behind "Ask someone to connect": a client is asked to connect
+   * their own social accounts into a workspace through a public link. The
+   * recipient has no Schedura account, so the copy says they never need one.
+   */
+  async sendChannelConnectLink(
+    to: string,
+    data: {
+      workspaceName: string;
+      senderName: string;
+      networks: string[];
+      url: string;
+      expiresAt: Date;
+    },
+  ): Promise<EmailResult> {
+    const networks = formatNetworkList(data.networks);
+    const expires = data.expiresAt.toLocaleDateString('en-US', {
+      year: 'numeric',
+      month: 'long',
+      day: 'numeric',
+    });
+    const sender = escapeHtml(data.senderName);
+    const workspaceName = escapeHtml(data.workspaceName);
+    const url = escapeHtml(data.url);
+    const lifetime = `The link works until ${expires}. You log in on each network yourself — no Schedura account or password needed.`;
+
+    const html = `
+<!DOCTYPE html>
+<html>
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1.0"><title>Connect your accounts</title></head>
+<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
+  <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 30px; border-radius: 10px 10px 0 0;">
+    <h1 style="color: white; margin: 0; font-size: 24px;">Connect your accounts to ${workspaceName}</h1>
+  </div>
+  <div style="background: #f9fafb; padding: 30px; border: 1px solid #e5e7eb; border-top: none;">
+    <p style="font-size: 16px; margin-top: 0;">Hi there,</p>
+    <p><strong>${sender}</strong> from <strong>${workspaceName}</strong> asked you to connect your ${escapeHtml(networks)} to their workspace on Schedura.</p>
+    <div style="text-align: center; margin: 30px 0;">
+      <a href="${url}" style="display: inline-block; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; text-decoration: none; padding: 15px 30px; border-radius: 8px; font-weight: bold; font-size: 16px;">Connect your accounts</a>
+    </div>
+    <p style="color: #6b7280; font-size: 14px;">${escapeHtml(lifetime)}</p>
+    <div style="margin-top: 20px; padding-top: 20px; border-top: 1px solid #e5e7eb;">
+      <p style="color: #9ca3af; font-size: 12px; margin: 0;">If the button doesn't work, copy and paste this link:<br>
+        <a href="${url}" style="color: #667eea; word-break: break-all;">${url}</a>
+      </p>
+    </div>
+  </div>
+  <div style="text-align: center; padding: 20px; color: #9ca3af; font-size: 12px;"><p>This email was sent by Schedura.</p></div>
+</body>
+</html>`.trim();
+
+    const text = `
+${data.senderName} from ${data.workspaceName} asked you to connect your ${networks} to their workspace on Schedura.
+
+Connect your accounts:
+${data.url}
+
+${lifetime}
+
+---
+This email was sent by Schedura.`.trim();
+
+    return this.sendEmail({
+      to,
+      subject: `${data.senderName} asked you to connect ${networks} to ${data.workspaceName}`,
+      html,
+      text,
+    });
+  }
+}
+
+const NETWORK_LABELS: Record<string, string> = {
+  instagram: 'Instagram',
+  facebook: 'Facebook',
+  tiktok: 'TikTok',
+  linkedin: 'LinkedIn',
+  youtube: 'YouTube',
+  pinterest: 'Pinterest',
+  threads: 'Threads',
+  twitter: 'X',
+};
+
+/** "Instagram, Facebook and TikTok" for a list of platform ids. */
+function formatNetworkList(ids: string[]): string {
+  const names = ids.map((id) => NETWORK_LABELS[id] ?? id);
+  if (names.length <= 1) return names.join('');
+  return `${names.slice(0, -1).join(', ')} and ${names[names.length - 1]}`;
+}
+
+/** Names and addresses come from users; keep them inert inside the markup. */
+function escapeHtml(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;');
 }

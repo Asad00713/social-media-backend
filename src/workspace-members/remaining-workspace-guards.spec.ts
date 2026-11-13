@@ -14,6 +14,7 @@ import { InboxController } from '../inbox/inbox.controller';
 import { MediaLibraryController } from '../media-library/media-library.controller';
 import { MediaSourcesController } from '../media-sources/media-sources.controller';
 import { ChannelsController } from '../channels/channels.controller';
+import { ConnectLinksController } from '../channels/connect-links/connect-links.controller';
 
 type Cap =
   | 'posts:draft'
@@ -29,7 +30,9 @@ type Cap =
 // the route is deliberately not workspace-gated (public, OAuth callback, webhook,
 // user-scoped, or a proxy with no workspace in the path). A route missing from a
 // table, or carrying a different capability, fails the spec.
-const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap | null>]> = [
+const EXPECTED: Array<
+  [string, new (...a: any[]) => object, Record<string, Cap | null>]
+> = [
   [
     'AdsController',
     AdsController,
@@ -447,6 +450,17 @@ const EXPECTED: Array<[string, new (...a: any[]) => object, Record<string, Cap |
       connectWhatsAppEmbeddedSignup: 'channels:manage',
     },
   ],
+  [
+    'ConnectLinksController',
+    ConnectLinksController,
+    {
+      create: 'channels:manage',
+      list: 'channels:manage',
+      get: 'channels:manage',
+      resend: 'channels:manage',
+      revoke: 'channels:manage',
+    },
+  ],
 ];
 
 const WS_PARAM = /:(workspaceId|wsId|wid)/;
@@ -469,7 +483,9 @@ function guardsOf(ctrl: object, handler: object): unknown[] {
 describe.each(EXPECTED)('%s workspace guard', (_name, Ctrl, expected) => {
   const proto = Ctrl.prototype as Record<string, (...a: any[]) => unknown>;
   const handlers = Object.getOwnPropertyNames(proto).filter(
-    (n) => n !== 'constructor' && Reflect.getMetadata('path', proto[n]) !== undefined,
+    (n) =>
+      n !== 'constructor' &&
+      Reflect.getMetadata('path', proto[n]) !== undefined,
   );
 
   it('covers every route handler, none missing from the table', () => {
