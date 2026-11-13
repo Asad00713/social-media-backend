@@ -1,5 +1,6 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { AnalyticsModule } from '../channels/analytics/analytics.module';
 import { PostPerformanceModule } from '../post-performance/post-performance.module';
@@ -11,6 +12,7 @@ import { InsightsController } from './insights.controller';
 import { InsightsChannelsRepository } from './insights-channels.repository';
 import { InsightsService } from './insights.service';
 import { InsightsTopicsRepository } from './insights-topics.repository';
+import { GotenbergClient } from './reports/gotenberg.client';
 import { ReportPayloadService } from './reports/report-payload.service';
 import { ReportTokensService } from './reports/report-tokens.service';
 import { ReportsController } from './reports/reports.controller';
@@ -46,6 +48,12 @@ import { ReportsService } from './reports/reports.service';
     ReportsRepository,
     ReportPayloadService,
     ReportTokensService,
+    {
+      provide: GotenbergClient,
+      useFactory: (config: ConfigService) =>
+        new GotenbergClient(config.get<string>('GOTENBERG_URL')),
+      inject: [ConfigService],
+    },
     ReportsService,
   ],
 })

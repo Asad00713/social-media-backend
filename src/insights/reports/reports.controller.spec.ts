@@ -5,6 +5,8 @@ import type { App } from 'supertest/types';
 import { JwtAuthGuard } from '../../auth/guards/jwt-auth.guard';
 import { WorkspaceRoleGuard } from '../../workspace-members/workspace-role.guard';
 import { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
+import { GotenbergNotConfiguredError } from './gotenberg.client';
+import { NoChannelsLeftError } from './report-payload.service';
 import { ReportsController } from './reports.controller';
 import { ReportsService } from './reports.service';
 
@@ -32,6 +34,7 @@ describe('ReportsController over HTTP', () => {
     remove: jest.fn(),
     setShare: jest.fn(),
     preview: jest.fn(),
+    pdf: jest.fn(),
   };
 
   beforeAll(async () => {
@@ -76,6 +79,10 @@ describe('ReportsController over HTTP', () => {
     reports.remove.mockResolvedValue(undefined);
     reports.setShare.mockResolvedValue({ url: null });
     reports.preview.mockResolvedValue({ name: 'x' });
+    reports.pdf.mockResolvedValue({
+      filename: 'acme-report-2026-10-01-2026-10-31.pdf',
+      body: Buffer.from('%PDF-1.7 fake'),
+    });
   });
 
   const http = () => request(app.getHttpServer());
@@ -87,6 +94,7 @@ describe('ReportsController over HTTP', () => {
     ['delete', `${BASE}/${ID}`, 'remove', null],
     ['post', `${BASE}/${ID}/share`, 'setShare', { enabled: true }],
     ['post', `${BASE}/preview`, 'preview', BODY],
+    ['get', `${BASE}/${ID}/pdf`, 'pdf', null],
   ];
 
   it.each(routes)(
@@ -142,6 +150,48 @@ describe('ReportsController over HTTP', () => {
       .send({ enabled: true })
       .expect(200, { url: null });
     expect(reports.setShare).toHaveBeenCalledWith(WS, 'user-1', ID, true);
+  });
+
+  describe('GET :id/pdf', () => {
+    it('sends the file as an attachment, and a guest may download', async () => {
+      roles.getRole.mockResolvedValue('GUEST');
+      const res = await http()
+        .get(`${BASE}/${ID}/pdf`)
+        .buffer(true)
+        .parse((r, done) => {
+          const chunks: Buffer[] = [];
+          r.on('data', (c: Buffer) => chunks.push(c));
+          r.on('end', () => done(null, Buffer.concat(chunks)));
+        })
+        .expect(200);
+      expect(res.headers['content-type']).toBe('application/pdf');
+      expect(res.headers['content-disposition']).toBe(
+        'attachment; filename="acme-report-2026-10-01-2026-10-31.pdf"',
+      );
+      expect((res.body as Buffer).subarray(0, 4).toString()).toBe('%PDF');
+      expect(reports.pdf).toHaveBeenCalledWith(WS, ID);
+    });
+
+    it('answers 503 when PDF export is not set up', async () => {
+      reports.pdf.mockRejectedValue(new GotenbergNotConfiguredError());
+      const res = await http().get(`${BASE}/${ID}/pdf`).expect(503);
+      expect(res.body).toMatchObject({
+        message: "PDF export isn't set up on this server.",
+      });
+    });
+
+    it('answers 409 when every channel of the report is gone', async () => {
+      reports.pdf.mockRejectedValue(new NoChannelsLeftError());
+      const res = await http().get(`${BASE}/${ID}/pdf`).expect(409);
+      expect(res.body).toMatchObject({
+        message: 'No channels left in this report',
+      });
+    });
+
+    it('answers 400 to an id that is not a uuid', async () => {
+      await http().get(`${BASE}/probe/pdf`).expect(400);
+      expect(reports.pdf).not.toHaveBeenCalled();
+    });
   });
 
   it('routes /preview to preview, not to :id', async () => {

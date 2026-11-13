@@ -16,6 +16,7 @@ import { SKIP_LAUNCH_GATE } from '../../auth/decorators/skip-launch-gate.decorat
 import { AllowlistGuard } from '../../auth/guards/allowlist.guard';
 import { UsersService } from '../../users/users.service';
 import { InsightsChannelsRepository } from '../insights-channels.repository';
+import { GotenbergClient } from './gotenberg.client';
 import {
   NoChannelsLeftError,
   ReportPayloadService,
@@ -125,6 +126,7 @@ describe('ReportsPublicController over HTTP', () => {
         ReportTokensService,
         { provide: ReportsRepository, useValue: repo },
         { provide: InsightsChannelsRepository, useValue: {} },
+        { provide: GotenbergClient, useValue: {} },
         { provide: ReportPayloadService, useValue: payloads },
         { provide: ConfigService, useValue: config },
         { provide: UsersService, useValue: users },

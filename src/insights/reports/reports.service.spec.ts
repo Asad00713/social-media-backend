@@ -1,17 +1,22 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import type {
   InsightReportRow,
   NewInsightReportRow,
 } from '../../drizzle/schema/insight-reports.schema';
 import type { InsightsChannelsRepository } from '../insights-channels.repository';
+import type { GotenbergClient } from './gotenberg.client';
 import type {
   CreateReportDto,
   UpdateReportDto,
 } from './dto/report-settings.dto';
-import type { ReportPayloadService } from './report-payload.service';
+import {
+  NoChannelsLeftError,
+  type ReportPayloadService,
+} from './report-payload.service';
 import type { ReportPayloadDto } from './reports.dto';
-import type { ReportTokensService } from './report-tokens.service';
+import { ReportTokensService } from './report-tokens.service';
 import type { ReportsRepository } from './reports.repository';
 import { ReportsService } from './reports.service';
 
@@ -20,6 +25,7 @@ const USER = 'user-1';
 const OTHER_USER = 'user-2';
 const NOW = new Date('2026-11-13T00:00:00Z');
 const LOGO = '7a1b2c3d-1111-4222-8333-944455556666';
+const SECRET = 'reports-service-spec-secret';
 
 const SOCIAL = [1, 2, 3].map((id) => ({
   id,
@@ -53,6 +59,8 @@ function setup(
   opts: {
     logo?: { type: string; mimeType: string | null; isDeleted: boolean } | null;
     teamSize?: number;
+    /** A real ReportTokensService, to check the JWT the PDF page opens with. */
+    realTokens?: boolean;
   } = {},
 ) {
   const rows = new Map<string, InsightReportRow>();
@@ -136,7 +144,14 @@ function setup(
     payload: jest.fn(() => Promise.resolve({ name: 'x' } as ReportPayloadDto)),
   };
   const config = {
-    get: jest.fn(() => 'https://app.schedura.ai/'),
+    get: jest.fn((k: string) =>
+      k === 'JWT_ACCESS_SECRET' ? SECRET : 'https://app.schedura.ai/',
+    ),
+  };
+  const gotenberg = {
+    pdfFromUrl: jest.fn<Promise<Buffer>, [string]>(() =>
+      Promise.resolve(Buffer.from('%PDF-1.7 fake')),
+    ),
   };
   const tokens = {
     verifyRender: jest.fn<string | null, [string]>(() => null),
@@ -145,15 +160,30 @@ function setup(
       [string]
     >(() => null),
   };
+  const realTokens = new ReportTokensService(
+    new JwtService({}),
+    config as unknown as ConfigService,
+  );
   const service = new ReportsService(
     repo as unknown as ReportsRepository,
     channelsRepo as unknown as InsightsChannelsRepository,
     payloads as unknown as ReportPayloadService,
     config as unknown as ConfigService,
-    tokens as unknown as ReportTokensService,
+    (opts.realTokens ? realTokens : tokens) as unknown as ReportTokensService,
+    gotenberg as unknown as GotenbergClient,
   );
   const only = () => [...rows.values()][0];
-  return { service, repo, channelsRepo, payloads, tokens, rows, only };
+  return {
+    service,
+    repo,
+    channelsRepo,
+    payloads,
+    tokens,
+    realTokens,
+    gotenberg,
+    rows,
+    only,
+  };
 }
 
 async function rejection(p: Promise<unknown>): Promise<BadRequestException> {
@@ -674,5 +704,76 @@ describe('ReportsService.preview', () => {
       await expect(service.unsubscribe('t')).resolves.toBeNull();
       expect(repo.optOut).toHaveBeenCalledTimes(1);
     });
+  });
+});
+
+describe('ReportsService.pdf and pdfFor', () => {
+  const PERIOD_END = new Date('2026-11-03T08:00:00Z');
+
+  async function created(opts: Parameters<typeof setup>[0] = {}) {
+    const ctx = setup({ realTokens: true, ...opts });
+    await ctx.service.create(
+      WS,
+      USER,
+      createDto({ name: 'Acme report', period: 'last_month' }),
+      NOW,
+    );
+    return ctx;
+  }
+
+  it('opens the print page on a render token that verifies to the report', async () => {
+    const { service, repo, gotenberg, realTokens, only } = await created();
+    const record = await repo.get(WS, only().id);
+    await service.pdfFor(record as NonNullable<typeof record>, PERIOD_END);
+    expect(gotenberg.pdfFromUrl).toHaveBeenCalledTimes(1);
+    const url = gotenberg.pdfFromUrl.mock.calls[0][0];
+    const match = /^https:\/\/app\.schedura\.ai\/r\/([^/?]+)\?print=1$/.exec(
+      url,
+    );
+    expect(match).not.toBeNull();
+    expect(realTokens.verifyRender((match as RegExpExecArray)[1])).toBe(
+      only().id,
+    );
+  });
+
+  it('names the file from the report name and its window in the workspace zone', async () => {
+    const { service, repo, only } = await created();
+    const record = await repo.get(WS, only().id);
+    const out = await service.pdfFor(
+      record as NonNullable<typeof record>,
+      PERIOD_END,
+    );
+    expect(out.filename).toBe('acme-report-2026-10-01-2026-10-31.pdf');
+    expect(out.body.subarray(0, 4).toString()).toBe('%PDF');
+  });
+
+  it('pdf answers 404 for a report that is not in this workspace', async () => {
+    const { service, gotenberg } = setup();
+    await expect(service.pdf(WS, 'nope', PERIOD_END)).rejects.toMatchObject({
+      status: 404,
+      response: { message: 'Report not found' },
+    });
+    expect(gotenberg.pdfFromUrl).not.toHaveBeenCalled();
+  });
+
+  it('pdf prints a report that has channels left', async () => {
+    const { service, gotenberg, only } = await created();
+    const out = await service.pdf(WS, only().id, PERIOD_END);
+    expect(out.filename).toBe('acme-report-2026-10-01-2026-10-31.pdf');
+    expect(gotenberg.pdfFromUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it('pdf answers 409 before calling Gotenberg when every channel is gone', async () => {
+    const { service, channelsRepo, gotenberg, only } = await created();
+    channelsRepo.socialChannels.mockResolvedValue([]);
+    const err = await service
+      .pdf(WS, only().id, PERIOD_END)
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(NoChannelsLeftError);
+    expect(err).toMatchObject({
+      status: 409,
+      response: { message: 'No channels left in this report' },
+    });
+    expect(gotenberg.pdfFromUrl).not.toHaveBeenCalled();
   });
 });

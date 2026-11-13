@@ -15,6 +15,7 @@ import type {
   PreviewReportDto,
   UpdateReportDto,
 } from './dto/report-settings.dto';
+import { GotenbergClient } from './gotenberg.client';
 import { nextRunAt } from './lib/next-run';
 import {
   normalizeSettings,
@@ -24,8 +25,14 @@ import {
   settingsOf,
   toReportDto,
   type ReportDtoContext,
+  type ReportRecord,
 } from './lib/report-dto';
-import { ReportPayloadService } from './report-payload.service';
+import { resolveReportPeriod } from './lib/report-period';
+import { pdfFilename } from './lib/report-format';
+import {
+  NoChannelsLeftError,
+  ReportPayloadService,
+} from './report-payload.service';
 import { ReportTokensService } from './report-tokens.service';
 import type {
   ReportDto,
@@ -86,6 +93,7 @@ export class ReportsService {
     private readonly payloads: ReportPayloadService,
     private readonly config: ConfigService,
     private readonly tokens: ReportTokensService,
+    private readonly gotenberg: GotenbergClient,
   ) {}
 
   /** 43 URL-safe characters and no dot, so it sits in a path as is. */
@@ -319,6 +327,45 @@ export class ReportsService {
       verified.email.trim().toLowerCase(),
     );
     return done ? { reportName: done.reportName } : null;
+  }
+
+  /**
+   * The report as a PDF for a download. The channel check comes first: with
+   * none left the print page answers 409 and never marks itself ready, so
+   * Gotenberg would wait out its whole timeout.
+   */
+  async pdf(
+    workspaceId: string,
+    id: string,
+    now = new Date(),
+  ): Promise<{ filename: string; body: Buffer }> {
+    const record = await this.repo.get(workspaceId, id);
+    if (!record) throw new NotFoundException('Report not found');
+    const channelIds = await this.narrowedChannelIds(
+      workspaceId,
+      record.row.channelIds,
+    );
+    if (!channelIds.length) throw new NoChannelsLeftError();
+    return this.pdfFor(record, now);
+  }
+
+  /**
+   * Prints the report's print page with Gotenberg. The page opens on a
+   * render token, which works while the share link is off.
+   */
+  async pdfFor(
+    record: ReportRecord,
+    now = new Date(),
+  ): Promise<{ filename: string; body: Buffer }> {
+    const { row } = record;
+    const info = await this.repo.workspaceInfo(row.workspaceId);
+    if (!info) throw new NotFoundException('Workspace not found');
+    const { window } = resolveReportPeriod(settingsOf(row), info.timezone, now);
+    const url = `${this.frontendUrl}/r/${this.tokens.renderToken(row.id)}?print=1`;
+    return {
+      filename: pdfFilename(row.name, window),
+      body: await this.gotenberg.pdfFromUrl(url),
+    };
   }
 
   private payloadOf(

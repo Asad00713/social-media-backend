@@ -8,6 +8,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  StreamableFile,
   UseGuards,
 } from '@nestjs/common';
 import { CurrentUser } from '../../auth/decorators/current-user.decorator';
@@ -57,6 +58,18 @@ export class ReportsController {
     @Param('id', ParseUUIDPipe) id: string,
   ): Promise<ReportDto> {
     return this.reports.get(workspaceId, id);
+  }
+
+  @Get(':id/pdf')
+  async pdf(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<StreamableFile> {
+    const { filename, body } = await this.reports.pdf(workspaceId, id);
+    return new StreamableFile(body, {
+      type: 'application/pdf',
+      disposition: `attachment; filename="${filename}"`,
+    });
   }
 
   @Post()
