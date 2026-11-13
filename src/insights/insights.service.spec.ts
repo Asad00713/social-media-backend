@@ -1,9 +1,15 @@
 import { Logger, NotFoundException } from '@nestjs/common';
 import { getTableName, type Table } from 'drizzle-orm';
 import type { PublishedPost } from '../post-performance/post-performance';
-import { datesBetween, utcToday, windowOf } from '../post-performance/period';
+import {
+  customWindow,
+  datesBetween,
+  utcToday,
+  windowOf,
+} from '../post-performance/period';
 import { InsightsService } from './insights.service';
 import type { ResolvedPeriod } from './lib/query';
+import { lookbackStartOf } from './lib/usual';
 
 /**
  * A db double. Results are given in the overview's logical order: channels,
@@ -209,6 +215,36 @@ describe('InsightsService.overview', () => {
         reportsFollowers: false,
       },
     ]);
+  });
+
+  it('takes a 92-day report window: 92 series days and a usual from the 181-day lookback', async () => {
+    const { db } = fakeDb([CHANNELS, TZ, [], [], []]);
+    const repo = repoWith([]);
+    const period: ResolvedPeriod = {
+      days: 92,
+      window: customWindow('2026-06-30', '2026-09-29'),
+    };
+
+    const o = await new InsightsService(db as any, repo as any).overview(
+      'ws1',
+      period,
+      undefined,
+      'UTC',
+      'previous',
+      NOW,
+    );
+
+    expect(o.days).toBe(92);
+    expect(o.series).toHaveLength(92);
+    expect(o.series[0].date).toBe('2026-06-30');
+    expect(o.window.previousFrom).toBe('2026-03-30');
+    expect(lookbackStartOf('2026-06-30', 92)).toBe('2025-12-31');
+    expect(repo.publishedPosts).toHaveBeenCalledWith(
+      'ws1',
+      expect.anything(),
+      '2025-12-31',
+      expect.anything(),
+    );
   });
 
   it('narrows to the asked-for channels and drops ones that are not social or not here', async () => {
@@ -1258,7 +1294,11 @@ describe('InsightsService hidden steps before migration 0060', () => {
   const hiddenSteps = (svc: InsightsService) =>
     (
       svc as unknown as {
-        hiddenSteps: (w: string, u: string, n: Date) => Promise<Set<string>>;
+        hiddenSteps: (
+          w: string,
+          u: string | null,
+          n: Date,
+        ) => Promise<Set<string>>;
       }
     ).hiddenSteps('w', 'u', NOW);
   const failingWith = (err: unknown) =>
@@ -1292,5 +1332,21 @@ describe('InsightsService hidden steps before migration 0060', () => {
     await expect(hiddenSteps(failingWith(boom))).rejects.toBe(boom);
     await expect(hiddenSteps(failingWith(new Error('x')))).rejects.toThrow('x');
     expect(warn).not.toHaveBeenCalled();
+  });
+
+  it('hiddenSteps with no user returns no hidden steps and reads nothing', async () => {
+    const select = jest.fn();
+    const svc = new InsightsService({ select } as never, {} as never);
+    const hidden = await (
+      svc as unknown as {
+        hiddenSteps: (
+          w: string,
+          u: string | null,
+          n: Date,
+        ) => Promise<Set<string>>;
+      }
+    ).hiddenSteps('ws1', null, NOW);
+    expect(hidden).toEqual(new Set());
+    expect(select).not.toHaveBeenCalled();
   });
 });

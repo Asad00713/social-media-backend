@@ -30,6 +30,8 @@ async function bootstrap() {
       process.env.ADMIN_URL,
     ].filter(Boolean),
     credentials: true,
+    // The frontend reads the PDF file name from Content-Disposition.
+    exposedHeaders: ['Content-Disposition'],
   });
 
   // Slack Events API: capture raw body BEFORE the global JSON parser so that

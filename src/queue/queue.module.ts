@@ -23,6 +23,7 @@ export const QUEUES = {
   FIRST_WEEK: 'first-week',
   INBOX_LATER: 'inbox-later',
   INBOX_RESYNC: 'inbox-resync',
+  REPORTS: 'reports',
 } as const;
 
 @Module({
@@ -80,6 +81,7 @@ export const QUEUES = {
       { name: QUEUES.FIRST_WEEK },
       { name: QUEUES.INBOX_LATER },
       { name: QUEUES.INBOX_RESYNC },
+      { name: QUEUES.REPORTS },
     ),
   ],
   providers: [RateLimiterService],

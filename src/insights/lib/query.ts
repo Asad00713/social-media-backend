@@ -32,7 +32,10 @@ export const MAX_CUSTOM_DAYS = 90;
 
 /** The window asked for: a preset or a picked range, with its length. */
 export interface ResolvedPeriod {
-  /** Days in the window: 7, 30 or 90 for a preset, 1 to 90 when picked. */
+  /**
+   * Days in the window: 7, 30 or 90 for a preset, 1 to 90 when picked,
+   * 1 to 92 from a report.
+   */
   days: number;
   window: PeriodWindow;
 }
@@ -40,7 +43,7 @@ export interface ResolvedPeriod {
 const absent = (s?: string): boolean => s === undefined || s === '';
 
 /** A real calendar date, `YYYY-MM-DD`; it must survive a trip through Date.UTC. */
-function parseIsoDate(raw: string, name: string): number {
+export function parseIsoDate(raw: string, name: string): number {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(raw);
   const t = m ? Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : NaN;
   if (Number.isNaN(t) || isoDate(new Date(t)) !== raw) {

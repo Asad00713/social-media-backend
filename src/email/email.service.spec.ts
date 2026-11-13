@@ -35,3 +35,67 @@ describe('EmailService.sendWorkspaceInvitation', () => {
     expect(arg.subject).toContain('Acme');
   });
 });
+
+describe('EmailService.sendEmail attachments and headers', () => {
+  function makeSendingService() {
+    const config = {
+      get: (key: string, def?: string) =>
+        key === 'RESEND_API_KEY' ? 're_test_key' : def,
+    } as unknown as ConfigService;
+    const service = new EmailService(config);
+    const send = jest
+      .fn<Promise<unknown>, [Record<string, unknown>]>()
+      .mockResolvedValue({ data: { id: 'm1' } });
+    Object.assign(service, { resend: { emails: { send } } });
+    return { service, send };
+  }
+
+  const base = { to: 'a@b.co', subject: 'S', html: '<p>h</p>', text: 'h' };
+
+  it('passes attachments and replyTo to Resend', async () => {
+    const { service, send } = makeSendingService();
+    const attachments = [{ filename: 'r.pdf', content: Buffer.from('%PDF') }];
+    const res = await service.sendEmail({
+      ...base,
+      replyTo: 'owner@acme.com',
+      attachments,
+    });
+    expect(res).toEqual({ success: true, messageId: 'm1' });
+    expect(send).toHaveBeenCalledTimes(1);
+    expect(send.mock.calls[0][0].attachments).toBe(attachments);
+    expect(send.mock.calls[0][0].replyTo).toBe('owner@acme.com');
+  });
+
+  it('sends no attachments key without attachments, or with an empty list', async () => {
+    const { service, send } = makeSendingService();
+    await service.sendEmail(base);
+    await service.sendEmail({ ...base, attachments: [] });
+    expect(send.mock.calls[0][0]).not.toHaveProperty('attachments');
+    expect(send.mock.calls[1][0]).not.toHaveProperty('attachments');
+  });
+
+  it('passes headers through to Resend', async () => {
+    const { service, send } = makeSendingService();
+    const headers = { 'List-Unsubscribe': '<https://api/x>' };
+    await service.sendEmail({ ...base, headers });
+    expect(send.mock.calls[0][0].headers).toEqual(headers);
+  });
+
+  it('sends no headers key without headers, or with an empty object', async () => {
+    const { service, send } = makeSendingService();
+    await service.sendEmail(base);
+    await service.sendEmail({ ...base, headers: {} });
+    expect(send.mock.calls[0][0]).not.toHaveProperty('headers');
+    expect(send.mock.calls[1][0]).not.toHaveProperty('headers');
+  });
+
+  it('still reports a failure instead of throwing when Resend rejects', async () => {
+    const { service, send } = makeSendingService();
+    send.mockRejectedValueOnce(new Error('boom'));
+    const res = await service.sendEmail({
+      ...base,
+      attachments: [{ filename: 'r.pdf', content: Buffer.from('x') }],
+    });
+    expect(res.success).toBe(false);
+  });
+});
