@@ -1,5 +1,6 @@
 import { BullModule } from '@nestjs/bullmq';
 import { Module } from '@nestjs/common';
+import { JwtModule } from '@nestjs/jwt';
 import { AnalyticsModule } from '../channels/analytics/analytics.module';
 import { PostPerformanceModule } from '../post-performance/post-performance.module';
 import { QUEUES } from '../queue/queue.module';
@@ -11,7 +12,9 @@ import { InsightsChannelsRepository } from './insights-channels.repository';
 import { InsightsService } from './insights.service';
 import { InsightsTopicsRepository } from './insights-topics.repository';
 import { ReportPayloadService } from './reports/report-payload.service';
+import { ReportTokensService } from './reports/report-tokens.service';
 import { ReportsController } from './reports/reports.controller';
+import { ReportsPublicController } from './reports/reports-public.controller';
 import { ReportsRepository } from './reports/reports.repository';
 import { ReportsService } from './reports/reports.service';
 
@@ -23,11 +26,18 @@ import { ReportsService } from './reports/reports.service';
 @Module({
   imports: [
     WorkspaceRoleModule,
+    // The report tokens: signed with JWT_ACCESS_SECRET, as the TikTok proxy's.
+    JwtModule.register({}),
     PostPerformanceModule,
     AnalyticsModule,
     BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS }),
   ],
-  controllers: [InsightsController, AudienceController, ReportsController],
+  controllers: [
+    InsightsController,
+    AudienceController,
+    ReportsController,
+    ReportsPublicController,
+  ],
   providers: [
     InsightsService,
     AudienceService,
@@ -35,6 +45,7 @@ import { ReportsService } from './reports/reports.service';
     InsightsChannelsRepository,
     ReportsRepository,
     ReportPayloadService,
+    ReportTokensService,
     ReportsService,
   ],
 })

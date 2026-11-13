@@ -11,6 +11,7 @@ import type {
 } from './dto/report-settings.dto';
 import type { ReportPayloadService } from './report-payload.service';
 import type { ReportPayloadDto } from './reports.dto';
+import type { ReportTokensService } from './report-tokens.service';
 import type { ReportsRepository } from './reports.repository';
 import { ReportsService } from './reports.service';
 
@@ -112,6 +113,21 @@ function setup(
       }),
     ),
     logoItem: jest.fn(() => Promise.resolve(logo)),
+    byShareToken: jest.fn((token: string) => {
+      const row = [...rows.values()].find((r) => r.shareToken === token);
+      return Promise.resolve(row ? live(row) : null);
+    }),
+    getById: jest.fn((id: string) => {
+      const row = rows.get(id);
+      return Promise.resolve(row ? live(row) : null);
+    }),
+    optOut: jest.fn((id: string) =>
+      Promise.resolve(
+        rows.has(id)
+          ? { reportName: rows.get(id)?.name as string, workspaceName: 'Acme' }
+          : null,
+      ),
+    ),
   };
   const channelsRepo = {
     socialChannels: jest.fn(() => Promise.resolve(SOCIAL)),
@@ -122,14 +138,22 @@ function setup(
   const config = {
     get: jest.fn(() => 'https://app.schedura.ai/'),
   };
+  const tokens = {
+    verifyRender: jest.fn<string | null, [string]>(() => null),
+    verifyUnsubscribe: jest.fn<
+      { reportId: string; email: string } | null,
+      [string]
+    >(() => null),
+  };
   const service = new ReportsService(
     repo as unknown as ReportsRepository,
     channelsRepo as unknown as InsightsChannelsRepository,
     payloads as unknown as ReportPayloadService,
     config as unknown as ConfigService,
+    tokens as unknown as ReportTokensService,
   );
   const only = () => [...rows.values()][0];
-  return { service, repo, channelsRepo, payloads, rows, only };
+  return { service, repo, channelsRepo, payloads, tokens, rows, only };
 }
 
 async function rejection(p: Promise<unknown>): Promise<BadRequestException> {
@@ -566,5 +590,89 @@ describe('ReportsService.preview', () => {
         NOW,
       ),
     ).rejects.toThrow('period is required');
+  });
+
+  describe('public routes', () => {
+    const LINK_OFF = 'This report link is off';
+
+    it('serves the stored settings behind a live share token', async () => {
+      const { service, payloads, only } = setup();
+      await service.create(WS, USER, createDto(), NOW);
+      const { url } = await service.setShare(WS, USER, only().id, true, NOW);
+      const token = (url as string).split('/r/')[1];
+      await service.publicPayload(token, NOW);
+      expect(payloads.payload).toHaveBeenCalledWith(
+        WS,
+        expect.objectContaining({ name: 'Monthly review', channelIds: [1] }),
+        NOW,
+      );
+    });
+
+    it('asks the repository nothing for a string that is not a share token', async () => {
+      const { service, repo } = setup();
+      await expect(service.publicPayload('abc.def.ghi', NOW)).rejects.toThrow(
+        LINK_OFF,
+      );
+      expect(repo.byShareToken).not.toHaveBeenCalled();
+    });
+
+    it('404s a share token that matches no report', async () => {
+      const { service } = setup();
+      await expect(
+        service.publicPayload(ReportsService.newShareToken(), NOW),
+      ).rejects.toThrow(NotFoundException);
+    });
+
+    it('renders by a verified id and 404s a bad token or a deleted report', async () => {
+      const { service, tokens, payloads, only } = setup();
+      await service.create(WS, USER, createDto(), NOW);
+      const id = only().id;
+
+      tokens.verifyRender.mockReturnValueOnce(id);
+      await service.renderPayload('t', NOW);
+      expect(payloads.payload).toHaveBeenCalledTimes(1);
+
+      await expect(service.renderPayload('bad', NOW)).rejects.toThrow(LINK_OFF);
+
+      tokens.verifyRender.mockReturnValueOnce(
+        '00000000-0000-4000-8000-0000000000ff',
+      );
+      await expect(service.renderPayload('gone', NOW)).rejects.toThrow(
+        LINK_OFF,
+      );
+    });
+
+    it('reads the report name for the confirm page without opting anyone out', async () => {
+      const { service, tokens, repo, only } = setup();
+      await service.create(WS, USER, createDto(), NOW);
+      tokens.verifyUnsubscribe.mockReturnValue({
+        reportId: only().id,
+        email: 'a@b.co',
+      });
+      await expect(service.unsubscribeTarget('t')).resolves.toEqual({
+        reportName: 'Monthly review',
+      });
+      expect(repo.optOut).not.toHaveBeenCalled();
+
+      tokens.verifyUnsubscribe.mockReturnValue(null);
+      await expect(service.unsubscribeTarget('t')).resolves.toBeNull();
+    });
+
+    it('opts out the lowercased address of the token only', async () => {
+      const { service, tokens, repo, only } = setup();
+      await service.create(WS, USER, createDto(), NOW);
+      tokens.verifyUnsubscribe.mockReturnValue({
+        reportId: only().id,
+        email: ' Client@Acme.com ',
+      });
+      await expect(service.unsubscribe('t')).resolves.toEqual({
+        reportName: 'Monthly review',
+      });
+      expect(repo.optOut).toHaveBeenCalledWith(only().id, 'client@acme.com');
+
+      tokens.verifyUnsubscribe.mockReturnValue(null);
+      await expect(service.unsubscribe('t')).resolves.toBeNull();
+      expect(repo.optOut).toHaveBeenCalledTimes(1);
+    });
   });
 });

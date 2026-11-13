@@ -5,7 +5,10 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import type { NewInsightReportRow } from '../../drizzle/schema/insight-reports.schema';
+import type {
+  InsightReportRow,
+  NewInsightReportRow,
+} from '../../drizzle/schema/insight-reports.schema';
 import { InsightsChannelsRepository } from '../insights-channels.repository';
 import type {
   CreateReportDto,
@@ -23,6 +26,7 @@ import {
   type ReportDtoContext,
 } from './lib/report-dto';
 import { ReportPayloadService } from './report-payload.service';
+import { ReportTokensService } from './report-tokens.service';
 import type {
   ReportDto,
   ReportPayloadDto,
@@ -30,6 +34,9 @@ import type {
   ReportSettings,
 } from './reports.dto';
 import { ReportsRepository } from './reports.repository';
+
+/** Unknown share token, link turned off, bad render token: one answer. */
+const LINK_OFF = 'This report link is off';
 
 const LOGO_MIME_TYPES = ['image/png', 'image/jpeg'];
 
@@ -78,6 +85,7 @@ export class ReportsService {
     private readonly channelsRepo: InsightsChannelsRepository,
     private readonly payloads: ReportPayloadService,
     private readonly config: ConfigService,
+    private readonly tokens: ReportTokensService,
   ) {}
 
   /** 43 URL-safe characters and no dot, so it sits in a path as is. */
@@ -257,6 +265,67 @@ export class ReportsService {
     );
     await this.assertLogo(workspaceId, settings.logoMediaId);
     return this.payloads.payload(workspaceId, { ...settings, channelIds }, now);
+  }
+
+  /**
+   * The payload behind a public link. A token that is not a share token never
+   * reaches the database. A link turned off has no token, so it matches no row.
+   */
+  async publicPayload(
+    token: string,
+    now = new Date(),
+  ): Promise<ReportPayloadDto> {
+    if (!ReportTokensService.isShareToken(token)) {
+      throw new NotFoundException(LINK_OFF);
+    }
+    const record = await this.repo.byShareToken(token);
+    if (!record) throw new NotFoundException(LINK_OFF);
+    return this.payloadOf(record.row, now);
+  }
+
+  /**
+   * The payload behind a short-lived render token, which the PDF job opens
+   * the print page with. It works while the share link is off.
+   */
+  async renderPayload(
+    token: string,
+    now = new Date(),
+  ): Promise<ReportPayloadDto> {
+    const reportId = this.tokens.verifyRender(token);
+    const record = reportId ? await this.repo.getById(reportId) : null;
+    if (!record) throw new NotFoundException(LINK_OFF);
+    return this.payloadOf(record.row, now);
+  }
+
+  /** For the unsubscribe GET: reads only. Null for a bad token or a deleted report. */
+  async unsubscribeTarget(
+    token: string,
+  ): Promise<{ reportName: string } | null> {
+    const verified = this.tokens.verifyUnsubscribe(token);
+    if (!verified) return null;
+    const record = await this.repo.getById(verified.reportId);
+    return record ? { reportName: record.row.name } : null;
+  }
+
+  /**
+   * For the unsubscribe POST. Only the address inside the verified token is
+   * ever opted out. Doing it twice leaves one entry.
+   */
+  async unsubscribe(token: string): Promise<{ reportName: string } | null> {
+    const verified = this.tokens.verifyUnsubscribe(token);
+    if (!verified) return null;
+    const done = await this.repo.optOut(
+      verified.reportId,
+      verified.email.trim().toLowerCase(),
+    );
+    return done ? { reportName: done.reportName } : null;
+  }
+
+  private payloadOf(
+    row: InsightReportRow,
+    now: Date,
+  ): Promise<ReportPayloadDto> {
+    return this.payloads.payload(row.workspaceId, settingsOf(row), now);
   }
 
   /**
