@@ -7,7 +7,10 @@
 **Architecture:**
 - A new `insight_reports` table stores settings, never numbers. Everything lives in `src/insights/reports/` inside `InsightsModule`, because the payload calls `InsightsService` and `AudienceService` directly.
 - `ReportPayloadService.payload(workspaceId, settings, now)` resolves the period, calls `overview` / `signals` / audience `growth` + `channels` with a `ResolvedPeriod`, and keeps only the chosen sections' keys (`SECTION_FIELDS`).
-- Public reads go through `/reports/public/:token` (share token, throttled), `/reports/render/:token` (5-minute JWT, for Gotenberg) and `/reports/unsubscribe/:token` (HTML).
+- Public reads go through:
+  - `/reports/public/:token`: share token, throttled per client IP;
+  - `/reports/render/:token`: 5-minute JWT, for Gotenberg;
+  - `/reports/unsubscribe/:token`: a GET confirm page that changes nothing, and a POST that opts the address out, which RFC 8058 one-click also uses.
 - PDFs come from a Gotenberg service printing the frontend's `/r/:renderToken?print=1`. Sends run on a new `reports` BullMQ queue, fed by a 15-minute cron and by Send now.
 
 **Tech Stack:** NestJS 11, Drizzle (Postgres), BullMQ, `@nestjs/schedule`, `@nestjs/throttler` 6, `@nestjs/jwt`, Resend 6.7, class-validator, Jest 30, Node 22 global `fetch`/`FormData`.
@@ -83,8 +86,10 @@ These are decisions the recon left open. Each is settled here; tasks rely on the
    - Each token kind gets its own `audience` claim (`report-render`, `report-unsubscribe`). A login access token (no `aud`) can never verify as either.
    - A render token used as a Bearer fails `JwtStrategy.validate` (no `sub`).
    - Ruled out: the `zip-ticket.ts` HMAC pattern, which needs a new required secret env var.
-6. **Throttling.** It needs `@UseGuards(ThrottlerGuard)` + `@Throttle({ default: { limit: 60, ttl: 60_000 } })` on the route (as in `auth.controller.ts`). There is no global ThrottlerGuard; `ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }])` is global.
-   - Caveat, not fixed here: `main.ts` never sets `trust proxy`, so behind Railway every caller shares the edge IP for every throttled route in the app.
+6. **Throttling.** It needs `@UseGuards(<guard>)` + `@Throttle({ default: { limit, ttl } })` on the route (as in `auth.controller.ts`). There is no global ThrottlerGuard; `ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }])` is global.
+   - `main.ts` never sets `trust proxy`, so behind Railway `req.ip` is the edge's IP for every caller.
+   - **Ruling (controller):** do not set `trust proxy` globally; that would change `req.ip` for every existing route. The report routes use `ReportsPublicThrottlerGuard` (Task 8), which keys on the first `X-Forwarded-For` entry.
+   - That first hop is client-controlled when no proxy sits in front. This is acceptable for a soft limit.
 7. **Time zones.** `package.json` has no date library. `luxon` is only a transitive dependency of `cron`, so it is not importable safely. Reuse the in-repo, DST-tested helpers re-exported by `src/planner/lib/workspace-time.ts`: `wallClockToUtc`, `localDateOf`, `addDays`, `safeTimeZone`, `loadWorkspaceTimezone`. Planner, campaigns, recurrence and Insights' `next-free-slot` already use them.
 8. **Team.** Owner = `workspace.owner_id`. Members = `workspace_invitations` rows with `status = 'ACCEPTED'` and `user_id` not null, joined to `users` (`email`, `name`, `is_active`). `WorkspaceMembersService.getMembers` needs a request user and is not usable from a job.
 9. **Time zone changes** are written only by `WorkspaceService.update` (`src/workspace/workspace.service.ts`), with `...updateWorkspaceDto`. That is the hook point (Task 11).
@@ -586,12 +591,14 @@ These are decisions the recon left open. Each is settled here; tasks rely on the
 **Files:**
 - Create: `src/insights/reports/report-tokens.service.ts`
 - Create: `src/insights/reports/reports-public.controller.ts`
+- Create: `src/insights/reports/reports-public-throttler.guard.ts`
 - Create: `src/insights/reports/lib/report-pages.ts` (the unsubscribe HTML)
 - Modify:
   - `reports.service.ts`: the public methods below;
   - `insights.module.ts`: import `JwtModule.register({})`, add `ReportTokensService` and `ReportsPublicController`.
 - Test:
   - `src/insights/reports/report-tokens.service.spec.ts`;
+  - `src/insights/reports/reports-public-throttler.guard.spec.ts`;
   - `src/insights/reports/reports-public.controller.spec.ts`;
   - `src/insights/reports/lib/report-pages.spec.ts`.
 
@@ -606,15 +613,29 @@ These are decisions the recon left open. Each is settled here; tasks rely on the
 - Produces, `ReportsService`:
   - `publicPayload(token: string, now?: Date): Promise<ReportPayloadDto>`. Not a share token, or no row → 404 `This report link is off`.
   - `renderPayload(token: string, now?: Date): Promise<ReportPayloadDto>`. A bad or expired JWT, or a deleted report → 404, the same message. It works while the share link is off.
-  - `unsubscribe(token: string): Promise<{ reportName: string; workspaceName: string } | null>`
+  - `unsubscribeTarget(token: string): Promise<{ reportName: string } | null>`: reads only, used by the GET. A bad or expired token, or a deleted report, is null.
+  - `unsubscribe(token: string): Promise<{ reportName: string } | null>`: `repo.optOut`, which is idempotent (Task 5's DB spec pins one entry after two calls). Used by the POST.
+- Produces, `@Injectable() export class ReportsPublicThrottlerGuard extends ThrottlerGuard`:
+  - It overrides `protected getTracker(req: Record<string, any>): Promise<string>`.
+  - Tracker: the first comma-separated entry of `req.headers['x-forwarded-for']` (the first element when Express hands over an array), trimmed. When that is missing or empty, `req.ip`.
+  - The doc comment says the first hop is client-controlled without a proxy in front, which is acceptable for a soft limit. It is why `trust proxy` stays off globally.
 - Produces, in `report-pages.ts` (all interpolations HTML-escaped; inline styles; no script):
-  - `unsubscribedPage(reportName: string, workspaceName: string): string`, title `You're unsubscribed`, body `You won't get "{reportName}" from {workspaceName} any more.`
+  - `confirmUnsubscribePage(reportName: string, actionPath: string): string`:
+    - title and heading `Stop receiving {reportName}?`;
+    - a `<form method="post" action="{actionPath}">` whose single `<button type="submit">` reads `Stop receiving it`.
+    - `actionPath` is the request's own path, `/reports/unsubscribe/<token>`.
+  - `unsubscribedPage(reportName: string): string`, heading `You won't get {reportName} again.`
   - `invalidUnsubscribePage(): string`, title `This link doesn't work`, body `Ask the person who sent you the report to take you off the list.`
 - **Controller:** `@Controller('reports') @SkipLaunchGate()`, with no auth guard.
   - Every handler sets `Cache-Control: private, no-store` and `X-Robots-Tag: noindex` before any work, through `@Res({ passthrough: true })`, so a 404 carries them too.
-  - `GET 'public/:token'` `@UseGuards(ThrottlerGuard) @Throttle({ default: { limit: 60, ttl: 60_000 } })` → `publicPayload`.
+  - `GET 'public/:token'` `@UseGuards(ReportsPublicThrottlerGuard) @Throttle({ default: { limit: 60, ttl: 60_000 } })` → `publicPayload`.
   - `GET 'render/:token'` (not throttled) → `renderPayload`.
-  - `GET 'unsubscribe/:token'` → `Content-Type: text/html; charset=utf-8`; 200 `unsubscribedPage`, or 404 `invalidUnsubscribePage`.
+  - Unsubscribe, both `@UseGuards(ReportsPublicThrottlerGuard) @Throttle({ default: { limit: 10, ttl: 60_000 } })` and `Content-Type: text/html; charset=utf-8`:
+    - **`GET 'unsubscribe/:token'`** changes nothing, so a mail link scanner's prefetch is harmless. 200 `confirmUnsubscribePage`, or 404 `invalidUnsubscribePage`.
+    - **`POST 'unsubscribe/:token'`** `@HttpCode(200)` → `unsubscribe`. 200 `unsubscribedPage`, or 404 `invalidUnsubscribePage`.
+      - It never reads the body, so an empty body, the RFC 8058 `List-Unsubscribe=One-Click` form body, or a multipart body all work.
+      - There is no DTO, so the global `ValidationPipe` has nothing to reject.
+  - Note: Gmail and Yahoo one-click POSTs come from their own servers, so they share those IPs' 10/min. Revisit the limit if 429s show up in the logs.
 
 - [ ] **Step 1: Write the failing tests:**
   - `report-tokens.service.spec.ts`:
@@ -623,6 +644,11 @@ These are decisions the recon left open. Each is settled here; tasks rely on the
     - a login-style token (`jwtService.sign({ sub: 'u1', email: 'a@b.c' }, { secret })`) fails both;
     - with `jest.useFakeTimers({ now: T })`, a render token verifies at T + 299 s and fails at T + 301 s;
     - `isShareToken`: a minted share token is true; a token with a dot is false; 42 chars is false.
+  - `reports-public-throttler.guard.spec.ts`, calling `getTracker` on a guard built with `(options, storage, reflector)` doubles:
+    - `{ headers: { 'x-forwarded-for': ' 3.3.3.3 , 9.9.9.9, 8.8.8.8' }, ip: '10.0.0.1' }` → `'3.3.3.3'` (a spoofed long list still keys on its first entry);
+    - `{ headers: { 'x-forwarded-for': ['4.4.4.4, 5.5.5.5'] }, ip: '10.0.0.1' }` → `'4.4.4.4'`;
+    - `{ headers: {}, ip: '10.0.0.1' }` → `'10.0.0.1'`;
+    - `{ headers: { 'x-forwarded-for': ' ' }, ip: '10.0.0.1' }` → `'10.0.0.1'`.
   - `reports-public.controller.spec.ts`, an HTTP app with `ThrottlerModule.forRoot([{ ttl: 60_000, limit: 100 }])`, the real `ReportTokensService` and a fake repository + payload service:
     - **Review Focus 1:**
       1. Mint a share token and a render token for report R.
@@ -633,14 +659,25 @@ These are decisions the recon left open. Each is settled here; tasks rely on the
     - **Review Focus 5:** `/reports/public/<live>` with no `Authorization` → 200, and with `Authorization: Bearer garbage` → 200.
     - `Reflector.get(SKIP_LAUNCH_GATE, ReportsPublicController)` is true.
     - Headers `cache-control: private, no-store` and `x-robots-tag: noindex` on a 200 **and** on a 404.
-    - The 61st `GET /reports/public/<live>` within a minute → 429. 70 `GET /reports/render/<valid>` → no 429.
+    - Throttling on `GET /reports/public/<live>`:
+      - 60 requests with `X-Forwarded-For: 1.1.1.1` → all 200;
+      - the 61st from `1.1.1.1` → 429;
+      - one from `2.2.2.2` right after → 200 (tracked separately).
+    - 70 `GET /reports/render/<valid>` → no 429.
     - `/reports/public/abc.def.ghi` → 404, and the repository is never queried.
-    - Unsubscribe: a valid token → 200 HTML containing the escaped report name, and `repo.optOut` called with the lowercased email; a garbage token → 404 HTML.
-  - `report-pages.spec.ts`: a report named `<b>x</b>` renders as `&lt;b&gt;x&lt;/b&gt;`.
+    - Unsubscribe:
+      - a valid `GET` → 200 HTML containing `Stop receiving` + the escaped name, and a `<form method="post"` whose action is `/reports/unsubscribe/<token>`. `repo.optOut` is **not** called.
+      - `POST` with an empty body → 200 `You won't get … again.`, and `repo.optOut` is called with the lowercased email.
+      - `POST` with `Content-Type: application/x-www-form-urlencoded` and body `List-Unsubscribe=One-Click` → 200. A second `POST` → 200 again, with `repo.optOut` called twice; the single stored entry is pinned by Task 5's DB spec.
+      - A tampered token (one character of the signature changed), a token signed with `expiresIn: 1` and checked 2 s later, and a render token: each → 404 HTML on both `GET` and `POST`, with `repo.optOut` never called.
+      - The 11th unsubscribe request from one `X-Forwarded-For` within a minute → 429.
+  - `report-pages.spec.ts`:
+    - a report named `<b>x</b>` renders as `&lt;b&gt;x&lt;/b&gt;` on the confirm page and on the done page;
+    - the confirm page has exactly one `<form method="post"` and no `<script`.
 - [ ] **Step 2:** Run: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run `npx jest src/insights/reports src/workspace-members/every-workspace-route-guarded.spec.ts src/auth/launch-gate-routes.spec.ts`: PASS. Run tsc.
-- [ ] **Step 5:** Commit `feat(insights): public report link, render token and unsubscribe page`.
+- [ ] **Step 5:** Commit `feat(insights): public report link, render token and two-step unsubscribe`.
 
 ### Task 9: Gotenberg client and PDF download
 
@@ -714,10 +751,12 @@ These are decisions the recon left open. Each is settled here; tasks rely on the
 - [ ] **Step 4:** Run: PASS. Run tsc.
 - [ ] **Step 5:** Commit `feat(insights): report PDF through Gotenberg`.
 
-### Task 10: Email attachments and the report email
+### Task 10: Email attachments, headers and the report email
 
 **Files:**
-- Modify: `src/email/email.service.ts`. `sendEmail` gains `attachments?: { filename: string; content: Buffer }[]`, passed to `resend.emails.send` only when non-empty. Nothing else changes.
+- Modify: `src/email/email.service.ts`. `sendEmail` gains two options, each passed to `resend.emails.send` only when non-empty; nothing else changes:
+  - `attachments?: { filename: string; content: Buffer }[]`;
+  - `headers?: Record<string, string>`. Resend 6.7's `CreateEmailBaseOptions.headers` is `Record<string, string>`, checked in `node_modules/resend/dist/index.d.cts`.
 - Create: `src/insights/reports/lib/report-email.ts`
 - Test: `src/email/email.service.spec.ts` (extend), `src/insights/reports/lib/report-email.spec.ts`
 
@@ -730,7 +769,7 @@ These are decisions the recon left open. Each is settled here; tasks rely on the
     totals: { reach: number | null; engagements: number | null; followers: number | null; posts: number | null } | null
     shareUrl: string | null; note: string | null; unsubscribeUrl: string
   }
-  export function reportEmail(i: ReportEmailInput): { subject: string; html: string; text: string }
+  export function reportEmail(i: ReportEmailInput): { subject: string; html: string; text: string; headers: Record<string, string> }
   export function briefTextOf(brief: Brief): string   // 'ready' → segments' text joined; 'not_enough' → text
   export function totalsOf(kpis: InsightsOverviewDto['kpis']): NonNullable<ReportEmailInput['totals']>
     // reach.value, engagements.value, followers.value, postsPublished.value
@@ -747,23 +786,29 @@ These are decisions the recon left open. Each is settled here; tasks rely on the
     7. the note.
   - Footer `You get this because ${workspaceName} added you to this report.`, then a `Stop receiving this report` link to `unsubscribeUrl`.
   - A plain-text twin with the same content and URLs.
+  - RFC 8058 one-click headers:
+    - `List-Unsubscribe: <${unsubscribeUrl}>`;
+    - `List-Unsubscribe-Post: List-Unsubscribe=One-Click`.
+    - The URL is the same `/reports/unsubscribe/:token`, whose POST (Task 8) accepts that body.
   - Every user-supplied string is HTML-escaped (one local `escapeHtml`; no inline-template copies). Inline styles only, no SVG, no external CSS.
 
 - [ ] **Step 1: Write the failing tests:**
   - `email.service.spec.ts`:
     - with `RESEND_API_KEY` set in the config fake and `(service as any).resend = { emails: { send: jest.fn().mockResolvedValue({ data: { id: 'm1' } }) } }`, `sendEmail({ …, attachments: [{ filename: 'r.pdf', content: Buffer.from('%PDF') }] })` calls `send` with that `attachments` array and `replyTo`;
-    - without attachments, the call has no `attachments` key.
+    - without attachments, the call has no `attachments` key;
+    - `headers: { 'List-Unsubscribe': '<https://api/x>' }` is passed through as `headers`, and without headers the call has no `headers` key.
   - `report-email.spec.ts`:
     - subject `'Acme report: Nov 1 – Nov 30'`;
     - name `<script>x</script>` and note `a & b` are escaped in the HTML;
     - `shareUrl: null` → no `Open the report` in the HTML or the text;
     - `totals.followers: null` → the Followers tile reads `—`, and the HTML never shows `>0<` for it;
     - the footer sentence is exact, and `unsubscribeUrl` appears in both the HTML and the text;
+    - `headers` equals `{ 'List-Unsubscribe': '<https://api.schedura.ai/reports/unsubscribe/tok>', 'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click' }` for that `unsubscribeUrl`;
     - `briefTextOf` of a ready brief with segments `['Reach ', 'rose 12%', '.']` → `'Reach rose 12%.'`.
 - [ ] **Step 2:** Run: FAIL.
 - [ ] **Step 3:** Implement.
 - [ ] **Step 4:** Run `npx jest src/email src/insights/reports/lib`: PASS. Run tsc.
-- [ ] **Step 5:** Commit `feat(email): attachments; the scheduled report email`.
+- [ ] **Step 5:** Commit `feat(email): attachments and headers; the scheduled report email`.
 
 ### Task 11: Sending: queue, handler, cron, Send now, time zone changes
 
@@ -819,7 +864,7 @@ These are decisions the recon left open. Each is settled here; tasks rely on the
      - configured → `reports.pdfFor(record, now)`; a failure throws (BullMQ retries);
      - unset → `logger.warn(\`Report ${id}: GOTENBERG_URL is unset, sending link only\`)`, no attachment.
   5. For each remaining address, in order:
-     - `emailService.sendEmail({ to, ...reportEmail(...), replyTo: ownerEmail, attachments })`;
+     - `emailService.sendEmail({ to, ...reportEmail(...), replyTo: ownerEmail, attachments })`. The spread carries `headers`, the List-Unsubscribe pair;
        - the unsubscribe URL is `${API_PUBLIC_URL || APP_URL}/reports/unsubscribe/${unsubscribeToken(id, to)}`;
        - `shareUrl` is null when the link is off;
        - brief and totals are filled only when those sections are on and `payload.overview` has them;
@@ -846,7 +891,7 @@ These are decisions the recon left open. Each is settled here; tasks rely on the
     - A scheduled send processed 3 weeks late (`now = due + 21 d`) → `recordSent(id, now, nextRunAt(schedule, tz, now))`, which is after `now`.
     - `kind: 'now'` → `recordSent(id, now, undefined)`.
     - The link off → the email input has `shareUrl: null`. `replyTo` is the owner's email.
-    - The unsubscribe URL verifies with `verifyUnsubscribe` to `{ reportId, email: to }`.
+    - The unsubscribe URL verifies with `verifyUnsubscribe` to `{ reportId, email: to }`. Each `sendEmail` call's `headers['List-Unsubscribe']` is `<${that URL}>`, so each recipient gets their own token.
   - `reports.processor.spec.ts`: `onFailed` with `attemptsMade: 2` of 3 → no `markFailed`; with `3` of 3 → `markFailed(data, err)`.
   - `reports.scheduler.spec.ts`:
     - two due rows → two `add` calls named `report-send`;
@@ -877,5 +922,5 @@ These are decisions the recon left open. Each is settled here; tasks rely on the
 - [ ] Hand over to the final whole-branch review (opus), naming the Review Focus list, and the owner notes:
   - Gotenberg on Railway, `GOTENBERG_URL`;
   - `CLOUDFLARE_R2_PUBLIC_URL` must be set for logos;
-  - `trust proxy` for throttling;
-  - the unsubscribe GET can be triggered by mail link scanners.
+  - the report throttles key on the first `X-Forwarded-For` hop, and `trust proxy` stays off globally;
+  - the unsubscribe 10/min limit is shared by Gmail and Yahoo one-click servers.
