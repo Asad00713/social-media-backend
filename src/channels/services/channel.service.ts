@@ -28,7 +28,6 @@ import {
   PLATFORM_CONFIG,
   CHANNEL_CATEGORY,
   ConnectionStatus,
-  getRefreshTokenTtlDays,
   isBillablePlatform,
 } from '../../drizzle/schema/channels.schema';
 import { workspaceUsage } from '../../drizzle/schema';
@@ -50,7 +49,8 @@ import {
 } from '../dto/channel.dto';
 import type { PersonRef } from '../lib/channel-health';
 import { isExpiringWithin } from '../lib/channel-health';
-import { loadPeople, personOf } from '../lib/people';
+import { loadPeople } from '../lib/people';
+import { toChannelResponse } from '../lib/channel-response';
 
 /**
  * Shared "is this channel usable right now" predicate. A channel counts as
@@ -300,13 +300,13 @@ export class ChannelService {
 
   /**
    * A reconnected channel that was `is_active = false`: let BILLING decide
-   * whether it comes back, by running its own lock pass
-   * (AccountChannelsService.reconcileLocks, the oldest-first rule of
-   * channel-lock.util.ts). Under the account's ceiling it is released - the
+   * whether it comes back, by letting locked channels into any free slot
+   * (AccountChannelsService.releaseFreedSlots, oldest locked first - the
+   * rule of channel-lock.util.ts). With a slot free it is released - the
    * same release an upgrade gives, and how a channel deactivated for another
-   * reason (YouTube data deletion) comes back on reconnect; over it, it stays
-   * locked. Integrations never hold a slot, so billing never unlocks them
-   * either: their flag is left as it is. Any failure leaves the lock on.
+   * reason (YouTube data deletion) comes back on reconnect; with none, it
+   * stays locked. Integrations never hold a slot, so billing never unlocks
+   * them either: their flag is left as it is. Any failure leaves the lock on.
    */
   private async releaseLockIfBillingAllows(
     row: typeof socialMediaChannels.$inferSelect,
@@ -316,7 +316,7 @@ export class ChannelService {
     if (!isBillablePlatform(platform)) return row;
     try {
       const ownerId = await this.accountChannels.ownerOf(workspaceId);
-      await this.accountChannels.reconcileLocks(ownerId);
+      await this.accountChannels.releaseFreedSlots(ownerId);
       const [fresh] = await db
         .select()
         .from(socialMediaChannels)
@@ -733,11 +733,34 @@ export class ChannelService {
     // Only billable channels moved the counter up, so only they move it down.
     if (isBillablePlatform(channel[0].platform as SupportedPlatform)) {
       await this.decrementChannelCount(workspaceId);
+      await this.releaseFreedSlot(workspaceId, channelId);
     }
 
     this.logger.log(
       `Deleted ${channel[0].platform} channel ${channelId} from workspace ${workspaceId}`,
     );
+  }
+
+  /**
+   * A billable channel was disconnected, so its slot is free: a channel the
+   * plan locked comes back into it (Buffer and Later free the slot the same
+   * way). Best-effort - the disconnect has already happened, and the nightly
+   * sweep releases anything this misses.
+   */
+  private async releaseFreedSlot(
+    workspaceId: string,
+    channelId: number,
+  ): Promise<void> {
+    try {
+      const ownerId = await this.accountChannels.ownerOf(workspaceId);
+      await this.accountChannels.releaseFreedSlots(ownerId);
+    } catch (error) {
+      this.logger.warn(
+        `Releasing a locked channel after disconnecting ${channelId} failed: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
   }
 
   /**
@@ -1458,59 +1481,7 @@ export class ChannelService {
     channel: typeof socialMediaChannels.$inferSelect,
     people: Map<string, PersonRef>,
   ): ChannelResponseDto {
-    const isTokenExpired = channel.tokenExpiresAt
-      ? channel.tokenExpiresAt < new Date()
-      : false;
-
-    const hasRefreshToken = !!channel.refreshToken;
-
-    const refreshTokenExpiresInDays = (() => {
-      if (!channel.refreshToken || !channel.refreshTokenIssuedAt) return null;
-      const ttlDays = getRefreshTokenTtlDays(
-        channel.platform as SupportedPlatform,
-      );
-      if (ttlDays === null) return null;
-      const issuedAt = new Date(channel.refreshTokenIssuedAt).getTime();
-      const expiresAt = issuedAt + ttlDays * 24 * 60 * 60 * 1000;
-      const remainingMs = expiresAt - Date.now();
-      return Math.floor(remainingMs / (24 * 60 * 60 * 1000));
-    })();
-
-    return {
-      id: channel.id,
-      workspaceId: channel.workspaceId,
-      platform: channel.platform,
-      accountType: channel.accountType,
-      platformAccountId: channel.platformAccountId,
-      accountName: channel.accountName,
-      username: channel.username,
-      profilePictureUrl: channel.profilePictureUrl,
-      permissions: (channel.permissions as string[]) || [],
-      capabilities: channel.capabilities as Record<string, any> | null,
-      isActive: channel.isActive,
-      connectionStatus: channel.connectionStatus,
-      lastError: channel.lastError,
-      lastSyncedAt: channel.lastSyncedAt,
-      lastPostedAt: channel.lastPostedAt,
-      metadata: (channel.metadata as Record<string, any>) || {},
-      displayOrder: channel.displayOrder,
-      timezone: channel.timezone,
-      color: channel.color,
-      tokenExpiresAt: channel.tokenExpiresAt,
-      isTokenExpired,
-      hasRefreshToken,
-      refreshTokenExpiresInDays,
-      createdAt: channel.createdAt,
-      updatedAt: channel.updatedAt,
-      category:
-        CHANNEL_CATEGORY[channel.platform as SupportedPlatform] ??
-        channel.category,
-      pausedAt: channel.pausedAt ?? null,
-      pausedBy: channel.pausedAt
-        ? personOf(people, channel.pausedByUserId)
-        : null,
-      connectedBy: personOf(people, channel.connectedByUserId),
-    };
+    return toChannelResponse(channel, people);
   }
 
   // ==========================================================================

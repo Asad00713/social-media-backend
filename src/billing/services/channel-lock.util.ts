@@ -66,3 +66,38 @@ export function planChannelLocks(
 
   return plan;
 }
+
+/**
+ * Which locked channels a FREED slot lets back in, and nothing else.
+ *
+ * `planChannelLocks` is the rule a billing change applies: it knows the new
+ * plan for certain, so it may lock as well as release. Everything else that
+ * frees a slot (a channel disconnected, a workspace deleted, a reconnect, the
+ * nightly sweep) only knows the ceiling as `limitForUser` reads it, and that
+ * read treats a trialing or past-due subscription as FREE. Letting those paths
+ * lock would take channels away from an account billing never downgraded, so
+ * they only ever release.
+ *
+ * Releases the OLDEST locked channels first (the same order the lock rule
+ * keeps), and never more than the free slots: the account must not end up
+ * with more usable channels than its ceiling. A negative limit means
+ * unlimited, so every locked channel comes back.
+ */
+export function planChannelReleases(
+  channels: LockableChannel[],
+  limit: number,
+): number[] {
+  const locked = channels
+    .filter((c) => c.isActive === false)
+    .sort((a, b) => {
+      const byAge = a.createdAt.getTime() - b.createdAt.getTime();
+      return byAge !== 0 ? byAge : a.id - b.id;
+    })
+    .map((c) => c.id);
+
+  if (limit < 0) return locked;
+
+  const usable = channels.length - locked.length;
+  const free = Math.max(0, limit - usable);
+  return locked.slice(0, free);
+}

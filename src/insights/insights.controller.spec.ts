@@ -19,6 +19,7 @@ describe('InsightsController over HTTP', () => {
     overview: jest.fn(),
     posts: jest.fn(),
     csv: jest.fn(),
+    dailyCsv: jest.fn(),
     postMetrics: jest.fn(),
   };
 
@@ -56,6 +57,10 @@ describe('InsightsController over HTTP', () => {
     insights.csv.mockResolvedValue({
       filename: 'schedura-posts-a-b.csv',
       body: '\uFEFFx\r\n',
+    });
+    insights.dailyCsv.mockResolvedValue({
+      filename: 'schedura-daily-a-b.csv',
+      body: '\uFEFFdate\r\n',
     });
   });
 
@@ -219,6 +224,56 @@ describe('InsightsController over HTTP', () => {
     // The body arrives as sent; supertest may or may not keep the BOM when
     // decoding, so assert on what follows it.
     expect(res.text.replace(/^\uFEFF/, '')).toBe('x\r\n');
+  });
+
+  describe('export?kind=daily', () => {
+    it('downloads the day CSV for a picked range and channels', async () => {
+      const res = await request(app.getHttpServer())
+        .get(
+          `/insights/workspaces/${WS}/export?kind=daily&channels=7&from=2026-10-01&to=2026-10-14`,
+        )
+        .expect(200);
+      expect(res.headers['content-type']).toBe('text/csv; charset=utf-8');
+      expect(res.headers['content-disposition']).toBe(
+        'attachment; filename="schedura-daily-a-b.csv"',
+      );
+      expect(insights.dailyCsv).toHaveBeenCalledWith(
+        WS,
+        { days: 14, window: customWindow('2026-10-01', '2026-10-14') },
+        '7',
+      );
+      expect(insights.csv).not.toHaveBeenCalled();
+    });
+
+    it('defaults to 30 days', async () => {
+      await request(app.getHttpServer())
+        .get(`/insights/workspaces/${WS}/export?kind=daily`)
+        .expect(200);
+      expect(insights.dailyCsv).toHaveBeenCalledWith(
+        WS,
+        { days: 30, window: windowOf(utcToday(new Date()), 30) },
+        undefined,
+      );
+    });
+
+    it.each([
+      ['kind=posts'],
+      ['kind=daily&kind=daily'],
+      ['kind=daily&days=7&from=2026-10-01&to=2026-10-02'],
+    ])('answers 400 to %s', async (q) => {
+      await request(app.getHttpServer())
+        .get(`/insights/workspaces/${WS}/export?${q}`)
+        .expect(400);
+      expect(insights.dailyCsv).not.toHaveBeenCalled();
+    });
+
+    it('a non-member gets 403', async () => {
+      roles.getRole.mockResolvedValue(null);
+      await request(app.getHttpServer())
+        .get(`/insights/workspaces/${WS}/export?kind=daily`)
+        .expect(403);
+      expect(insights.dailyCsv).not.toHaveBeenCalled();
+    });
   });
 
   describe('posts/metrics', () => {

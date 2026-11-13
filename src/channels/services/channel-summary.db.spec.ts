@@ -4,7 +4,10 @@ import { describeDb, withRollbackDb } from '../../planner/testing/rollback-db';
 import { seedChannel, seedWorkspace } from '../../inbox/testing/inbox-db';
 import { ChannelSummaryService } from './channel-summary.service';
 
-const MIGRATION = '0063_channel_pause_and_network_requests.sql';
+const MIGRATIONS = [
+  '0063_channel_pause_and_network_requests.sql',
+  '0064_channel_nickname_sidebar.sql',
+];
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = new Date();
 const dayStr = (offset: number) =>
@@ -97,7 +100,7 @@ async function seedInbox(
 
 describeDb('ChannelSummaryService (database)', () => {
   it('builds every card in one call', () =>
-    withRollbackDb([MIGRATION], async (db, client) => {
+    withRollbackDb(MIGRATIONS, async (db, client) => {
       const { workspaceId: ws, ownerId } = await seedWorkspace(client);
       const bsky = await seedChannel(client, ws, 'bluesky');
       const drive = await seedChannel(client, ws, 'google_drive');
@@ -179,9 +182,15 @@ describeDb('ChannelSummaryService (database)', () => {
         `UPDATE social_media_channels SET paused_at = now(), paused_by_user_id = $2 WHERE id = $1`,
         [li, ownerId],
       );
+      const erroredAt = new Date(NOW.getTime() - 3 * DAY);
       await client.query(
-        `UPDATE social_media_channels SET connection_status = 'revoked', last_error = 'Grant revoked' WHERE id = $1`,
-        [drive],
+        `UPDATE social_media_channels SET connection_status = 'revoked', last_error = 'Grant revoked', last_error_at = $2 WHERE id = $1`,
+        // As drizzle writes a `timestamp` (no zone): the UTC wall clock.
+        [drive, erroredAt.toISOString()],
+      );
+      await client.query(
+        `UPDATE social_media_channels SET nickname = 'Daybreak', show_in_sidebar = true WHERE id = $1`,
+        [bsky],
       );
 
       const svc = new ChannelSummaryService(db, usageOk(ownerId) as never);
@@ -208,6 +217,11 @@ describeDb('ChannelSummaryService (database)', () => {
       });
       expect(b.lastPostedAt).toBe(publishedAt.toISOString());
       expect(b.health).toEqual({ kind: 'ok' });
+      expect(b).toMatchObject({
+        nickname: 'Daybreak',
+        displayName: 'Daybreak',
+        showInSidebar: true,
+      });
 
       const l = card(li);
       expect(l.followers).toBe(42);
@@ -227,12 +241,19 @@ describeDb('ChannelSummaryService (database)', () => {
         nextPost: null,
         scheduledCount: 0,
         lastPostedAt: null,
-        health: { kind: 'reconnect', reason: 'Grant revoked' },
+        nickname: null,
+        showInSidebar: false,
+      });
+      expect(d.displayName).toMatch(/^Account acct-/);
+      expect(d.health).toEqual({
+        kind: 'reconnect',
+        reason: 'Grant revoked',
+        since: erroredAt.toISOString(),
       });
     }));
 
   it('a plan-locked channel reads locked; usage is null when it cannot be read', () =>
-    withRollbackDb([MIGRATION], async (db, client) => {
+    withRollbackDb(MIGRATIONS, async (db, client) => {
       const { workspaceId: ws } = await seedWorkspace(client);
       const ch = await seedChannel(client, ws, 'bluesky');
       await client.query(
@@ -255,7 +276,7 @@ describeDb('ChannelSummaryService (database)', () => {
     }));
 
   it('an empty workspace has no cards', () =>
-    withRollbackDb([MIGRATION], async (db, client) => {
+    withRollbackDb(MIGRATIONS, async (db, client) => {
       const { workspaceId: ws, ownerId } = await seedWorkspace(client);
       const res = await new ChannelSummaryService(
         db,

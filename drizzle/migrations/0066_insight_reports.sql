@@ -1,4 +1,4 @@
--- 0064 - Insights Reports: saved analytics reports, one row per report.
+-- 0066 - Insights Reports: saved analytics reports, one row per report.
 --
 -- WHY
 -- The Insights Reports tab lets a workspace save a report (which channels, which

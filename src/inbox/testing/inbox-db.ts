@@ -18,6 +18,9 @@ export const INBOX_MIGRATIONS: string[] = [
   '0051_scheduled_inbox_messages_conversation.sql',
   '0052_inbox_conversations_backfill.sql',
   '0053_inbox_notification_types.sql',
+  // The channel columns every full `social_media_channels` select reads.
+  '0063_channel_pause_and_network_requests.sql',
+  '0064_channel_nickname_sidebar.sql',
 ];
 
 export const describeInboxDb = describeDb;

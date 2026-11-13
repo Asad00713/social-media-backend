@@ -23,6 +23,8 @@ export interface ChannelHealthInput {
   pausedAt: Date | null;
   connectionStatus: string | null;
   lastError: string | null;
+  /** When `lastError` was recorded; read only for `since`. */
+  lastErrorAt?: Date | null;
   tokenExpiresAt: Date | null;
   /** Encrypted or not: only its presence is read. */
   refreshToken: string | null;
@@ -49,6 +51,11 @@ export interface ChannelHealth {
   pausedBy?: PersonRef | null;
   /** For 'reconnect': the channel's last error, if it has one. */
   reason?: string | null;
+  /**
+   * For 'reconnect': when that error was recorded (`last_error_at`). Absent
+   * when unknown - a token that simply ran out records no error.
+   */
+  since?: string;
 }
 
 /**
@@ -81,7 +88,10 @@ export function refreshTokenExpiresAt(
  * hold (Facebook's long-lived token) bounds that too.
  */
 export function postingFailsAt(
-  channel: Omit<ChannelHealthInput, 'isActive' | 'pausedAt' | 'lastError'> & {
+  channel: Omit<
+    ChannelHealthInput,
+    'isActive' | 'pausedAt' | 'lastError' | 'lastErrorAt'
+  > & {
     connectionStatus?: string | null;
   },
 ): Date | null {
@@ -129,7 +139,13 @@ export function channelHealth(
     BROKEN_STATUSES.has(channel.connectionStatus ?? '') ||
     (failsAt && failsAt.getTime() <= now.getTime())
   ) {
-    return { kind: 'reconnect', reason: channel.lastError ?? null };
+    return {
+      kind: 'reconnect',
+      reason: channel.lastError ?? null,
+      ...(channel.lastErrorAt
+        ? { since: new Date(channel.lastErrorAt).toISOString() }
+        : {}),
+    };
   }
 
   if (

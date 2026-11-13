@@ -231,7 +231,14 @@ export class ChannelResponseDto {
   platform: string;
   accountType: string;
   platformAccountId: string;
+  /** The platform's name for the account; every reconnect rewrites it. */
   accountName: string;
+  /** The team's own name for the channel; null = none set. */
+  nickname: string | null;
+  /** What the app shows: `nickname ?? accountName`. */
+  displayName: string;
+  /** Pinned to the app sidebar, for the whole workspace. */
+  showInSidebar: boolean;
   username: string | null;
   profilePictureUrl: string | null;
   permissions: string[];

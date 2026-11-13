@@ -1,4 +1,8 @@
-import { planChannelLocks, LockableChannel } from './channel-lock.util';
+import {
+  planChannelLocks,
+  planChannelReleases,
+  LockableChannel,
+} from './channel-lock.util';
 
 const at = (iso: string) => new Date(iso);
 
@@ -106,5 +110,45 @@ describe('planChannelLocks', () => {
       { id: 2, createdAt: at('2026-02-01T00:00:00Z'), isActive: null },
     ];
     expect(planChannelLocks(nullActive, 1).lock).toEqual([2]);
+  });
+});
+
+describe('planChannelReleases', () => {
+  const lockedAt = (ids: number[]): LockableChannel[] =>
+    CHANNELS.map((c) => ({ ...c, isActive: !ids.includes(c.id) }));
+
+  it('releases a locked channel into a free slot', () => {
+    // 3 billable, 1 of them locked, ceiling 5: the lock that kept
+    // Mastodon off while usage read "3 of 5".
+    const channels = lockedAt([2]).slice(0, 3);
+    expect(planChannelReleases(channels, 5)).toEqual([2]);
+  });
+
+  it('releases the oldest locked channels first, never more than the free slots', () => {
+    expect(planChannelReleases(lockedAt([3, 4, 5]), 3)).toEqual([3]);
+    expect(planChannelReleases(lockedAt([5, 3, 4]), 4)).toEqual([3, 4]);
+  });
+
+  it('never locks, even when the account is over its ceiling', () => {
+    // A newer channel holds the slot an older locked one would get under
+    // planChannelLocks; a release-only pass leaves both as they are.
+    expect(planChannelReleases(lockedAt([2]), 3)).toEqual([]);
+  });
+
+  it('releases nothing when nothing is locked', () => {
+    expect(planChannelReleases(CHANNELS, 2)).toEqual([]);
+  });
+
+  it('releases everything on an unlimited plan', () => {
+    expect(planChannelReleases(lockedAt([1, 4]), -1)).toEqual([1, 4]);
+  });
+
+  it('is idempotent: applying the release leaves nothing more to release', () => {
+    const channels = lockedAt([3, 4, 5]);
+    const released = new Set(planChannelReleases(channels, 4));
+    const after = channels.map((c) =>
+      released.has(c.id) ? { ...c, isActive: true } : c,
+    );
+    expect(planChannelReleases(after, 4)).toEqual([]);
   });
 });

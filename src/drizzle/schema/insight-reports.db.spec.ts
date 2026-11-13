@@ -10,7 +10,7 @@ import {
 } from '../../media-library/testing/library-db';
 import { insightReports } from './insight-reports.schema';
 
-const MIGRATION = '0064_insight_reports.sql';
+const MIGRATION = '0066_insight_reports.sql';
 const MIGRATIONS = [...LIBRARY_MIGRATIONS, MIGRATION];
 
 type Row = Record<string, unknown>;

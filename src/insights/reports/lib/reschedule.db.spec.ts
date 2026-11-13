@@ -23,7 +23,7 @@ function report(workspaceId: string, over: Record<string, unknown> = {}) {
 
 describeDb('rescheduleWorkspaceReports (database)', () => {
   it('moves a weekly Monday 09:00 report from UTC to Karachi', async () => {
-    await withRollbackDb(['0064_insight_reports.sql'], async (db, client) => {
+    await withRollbackDb(['0066_insight_reports.sql'], async (db, client) => {
       const repo = new ReportsRepository(db);
       const { workspaceId } = await seedWorkspace(client);
       // 09:00 UTC on Monday 2026-11-16.
@@ -52,7 +52,7 @@ describeDb('rescheduleWorkspaceReports (database)', () => {
   });
 
   it('leaves an unscheduled report, and another workspace, alone', async () => {
-    await withRollbackDb(['0064_insight_reports.sql'], async (db, client) => {
+    await withRollbackDb(['0066_insight_reports.sql'], async (db, client) => {
       const repo = new ReportsRepository(db);
       const mine = await seedWorkspace(client);
       const other = await seedWorkspace(client);
@@ -88,7 +88,7 @@ describeDb('rescheduleWorkspaceReports (database)', () => {
       now: Date,
     ): Promise<Date | null | undefined> {
       return withRollbackDb(
-        ['0064_insight_reports.sql'],
+        ['0066_insight_reports.sql'],
         async (db, client) => {
           const repo = new ReportsRepository(db);
           const { workspaceId } = await seedWorkspace(client);

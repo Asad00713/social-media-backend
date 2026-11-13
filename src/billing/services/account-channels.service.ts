@@ -1,9 +1,5 @@
-import {
-  Injectable,
-  Logger,
-  InternalServerErrorException,
-} from '@nestjs/common';
-import { eq, sql, count, inArray, and, notInArray } from 'drizzle-orm';
+import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { eq, sql, count, and, notInArray } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
   workspace,
@@ -33,8 +29,6 @@ import { channelLimitReached } from './channel-limit.error';
  */
 @Injectable()
 export class AccountChannelsService {
-  private readonly logger = new Logger(AccountChannelsService.name);
-
   constructor(private readonly lookup: SubscriptionLookupService) {}
 
   /**
@@ -132,72 +126,19 @@ export class AccountChannelsService {
   }
 
   /**
-   * Which of the account's channels exceed its ceiling.
+   * A slot may have come free: let locked channels back into it, oldest
+   * first, and never lock one (`planChannelReleases` says why this path only
+   * releases; a billing change locks through
+   * SubscriptionLookupService.applyAccountChannelLocks). Locked channels keep
+   * their tokens, history and scheduled posts, so a released one simply
+   * publishes again.
    *
-   * Ordered oldest-first, tie-broken by id, so the survivors are stable across
-   * runs — the same rule `planChannelLocks` applies within a workspace, lifted
-   * to the account now that the ceiling lives there.
+   * Called when a channel is disconnected or reconnected, and by the nightly
+   * sweep (ChannelLockSweepService). Returns the ids it released.
    */
-  async findOverLimitChannelIds(userId: string): Promise<number[]> {
+  async releaseFreedSlots(userId: string): Promise<number[]> {
     const limit = await this.limitForUser(userId);
-    if (limit === UNLIMITED) return [];
-
-    const channels = await db
-      .select({ id: socialMediaChannels.id })
-      .from(socialMediaChannels)
-      .innerJoin(workspace, eq(workspace.id, socialMediaChannels.workspaceId))
-      .where(and(eq(workspace.ownerId, userId), this.billableOnly()))
-      .orderBy(socialMediaChannels.createdAt, socialMediaChannels.id);
-
-    return channels.slice(Math.max(0, limit)).map((c) => c.id);
-  }
-
-  /**
-   * Lock what is over the ceiling and release what is under it again.
-   *
-   * Locked channels keep their tokens, history and scheduled posts — they
-   * simply cannot publish (`getAccessToken` refuses them) — and an upgrade
-   * brings them straight back.
-   */
-  async reconcileLocks(userId: string): Promise<void> {
-    const overLimit = new Set(await this.findOverLimitChannelIds(userId));
-
-    const channels = await db
-      .select({
-        id: socialMediaChannels.id,
-        isActive: socialMediaChannels.isActive,
-      })
-      .from(socialMediaChannels)
-      .innerJoin(workspace, eq(workspace.id, socialMediaChannels.workspaceId))
-      .where(and(eq(workspace.ownerId, userId), this.billableOnly()));
-
-    const toLock = channels
-      .filter((c) => overLimit.has(c.id) && c.isActive !== false)
-      .map((c) => c.id);
-
-    const toUnlock = channels
-      .filter((c) => !overLimit.has(c.id) && c.isActive === false)
-      .map((c) => c.id);
-
-    if (toLock.length > 0) {
-      await db
-        .update(socialMediaChannels)
-        .set({ isActive: false, updatedAt: new Date() })
-        .where(inArray(socialMediaChannels.id, toLock));
-      this.logger.log(
-        `Locked ${toLock.length} channel(s) over the ceiling for user ${userId}`,
-      );
-    }
-
-    if (toUnlock.length > 0) {
-      await db
-        .update(socialMediaChannels)
-        .set({ isActive: true, updatedAt: new Date() })
-        .where(inArray(socialMediaChannels.id, toUnlock));
-      this.logger.log(
-        `Released ${toUnlock.length} channel(s) for user ${userId}`,
-      );
-    }
+    return this.lookup.releaseAccountChannelLocks(userId, limit);
   }
 
   /** Resolve a workspace to its owning account. */

@@ -19,7 +19,7 @@ import { workspace } from './workspace.schema';
  * numbers are never stored; they are computed when the report is opened, sent
  * or exported. Every timestamp is timestamptz. The CHECK constraints live in
  * the SQL only.
- * Migration: drizzle/migrations/0064_insight_reports.sql (hand-written).
+ * Migration: drizzle/migrations/0066_insight_reports.sql (hand-written).
  */
 export const insightReports = pgTable(
   'insight_reports',

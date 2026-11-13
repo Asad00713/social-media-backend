@@ -47,6 +47,7 @@ import { WhatsAppTemplatesModule } from './whatsapp-templates/whatsapp-templates
 import { HomeModule } from './home/home.module';
 import { FirstWeekModule } from './first-week/first-week.module';
 import { InsightsModule } from './insights/insights.module';
+import { ChannelPageModule } from './channels/channel-page/channel-page.module';
 import { WorkspaceHubModule } from './workspace-hub/workspace-hub.module';
 import { BrandKitModule } from './brand-kit/brand-kit.module';
 import { ShortLinksModule } from './short-links/short-links.module';
@@ -106,6 +107,7 @@ import { QUEUES } from './queue/queue.module';
     HomeModule,
     FirstWeekModule,
     InsightsModule,
+    ChannelPageModule,
     WorkspaceHubModule,
     BrandKitModule,
     ShortLinksModule,

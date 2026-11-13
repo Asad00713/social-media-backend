@@ -68,5 +68,7 @@ import { ReportsService } from './reports/reports.service';
     ReportsProcessor,
     ReportsScheduler,
   ],
+  // The channel page composes one channel's overview, posts and signals.
+  exports: [InsightsService],
 })
 export class InsightsModule {}

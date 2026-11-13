@@ -54,6 +54,9 @@ describe('daySeries', () => {
         impressions: 500,
         reach: 320,
         engagements: 40,
+        likes: 40,
+        comments: 0,
+        shares: 0,
         ratedEngagements: 10,
         followers: 900,
         followersGained: 12,
@@ -65,11 +68,56 @@ describe('daySeries', () => {
         impressions: null,
         reach: null,
         engagements: 0,
+        likes: 0,
+        comments: 0,
+        shares: 0,
         ratedEngagements: 0,
         followers: 900,
         followersGained: null,
       },
     ]);
+  });
+
+  it('splits each day into likes, comments and shares that add up to engagements', () => {
+    const series = daySeries(
+      [
+        post({ postId: 'a', likes: 10, comments: 3, shares: 1 }),
+        post({
+          postId: 'b',
+          channelId: 2,
+          likes: 5,
+          comments: null,
+          shares: 4,
+        }),
+        post({ postId: 'c', publishedOn: '2026-09-22', comments: 7 }),
+        // Outside the range: on no day.
+        post({ postId: 'd', publishedOn: '2026-09-23', likes: 99 }),
+      ],
+      [],
+      '2026-09-21',
+      '2026-09-22',
+    );
+    expect(
+      series.map(({ date, likes, comments, shares, engagements }) => ({
+        date,
+        likes,
+        comments,
+        shares,
+        engagements,
+      })),
+    ).toEqual([
+      {
+        date: '2026-09-21',
+        likes: 15,
+        comments: 3,
+        shares: 5,
+        engagements: 23,
+      },
+      { date: '2026-09-22', likes: 0, comments: 7, shares: 0, engagements: 7 },
+    ]);
+    for (const d of series) {
+      expect(d.likes + d.comments + d.shares).toBe(d.engagements);
+    }
   });
 
   it('a followers series with a null day carries the last value and gained stays null', () => {

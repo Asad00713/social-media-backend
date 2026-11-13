@@ -8,7 +8,7 @@ import {
 import type { NewInsightReportRow } from '../../drizzle/schema/insight-reports.schema';
 import { ReportsRepository } from './reports.repository';
 
-const MIGRATIONS = ['0064_insight_reports.sql'];
+const MIGRATIONS = ['0066_insight_reports.sql'];
 
 function run<T>(
   fn: (repo: ReportsRepository, client: PoolClient, db: DbType) => Promise<T>,

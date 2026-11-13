@@ -1,7 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
-import { and, inArray } from 'drizzle-orm';
+import { and, inArray, notInArray } from 'drizzle-orm';
 import {
   subscriptions,
   subscriptionItems,
@@ -10,14 +10,19 @@ import {
   workspaceUsage,
   socialMediaChannels,
   Subscription,
+  INTEGRATION_PLATFORMS,
 } from '../../drizzle/schema';
-import { PlanLimits, AddonQuantities } from './limit-resolver.util';
+import { PlanLimits, AddonQuantities, UNLIMITED } from './limit-resolver.util';
 import {
   buildUsageFanout,
   pickPrimaryWorkspaceId,
   WorkspaceRef,
 } from './usage-fanout.util';
-import { planChannelLocks } from './channel-lock.util';
+import {
+  planChannelLocks,
+  planChannelReleases,
+  LockableChannel,
+} from './channel-lock.util';
 import { FREE_STORAGE_BYTES } from '../plan-storage';
 
 /** Limits every account falls back to when it has no subscription row. */
@@ -206,79 +211,99 @@ export class SubscriptionLookupService {
       `Applied ${planCode} limits to ${writes.length} workspace(s) for user ${userId}`,
     );
 
-    for (const write of writes) {
-      await this.reconcileChannelLocks(write.workspaceId);
-    }
+    const channelCeiling =
+      plan.channelsPerWorkspace === UNLIMITED
+        ? UNLIMITED
+        : plan.channelsPerWorkspace + addons.extraChannels;
+    await this.applyAccountChannelLocks(userId, channelCeiling);
   }
 
   /**
-   * Bring one workspace's channels in line with its ceiling.
+   * Every billable channel the account holds, across all its workspaces.
    *
-   * Excess channels are LOCKED, never disconnected: tokens, history and
-   * scheduled posts survive, and an upgrade releases them again. The oldest
-   * channels are the ones kept — the customer makes no decision at the moment
-   * their plan lapses, and the same set survives however often this runs.
-   *
-   * Called after every limit write, so it covers downgrade, reset-to-FREE,
-   * add-on removal and payment failure without each path remembering to.
+   * Integrations (cloud storage, calendars) never hold a paid slot, so they
+   * are neither counted nor ever locked. Filtered by platform rather than the
+   * stored `category` column, for the reason AccountChannelsService gives.
    */
-  async reconcileChannelLocks(workspaceId: string): Promise<void> {
-    const usage = await db
-      .select({
-        channelsLimit: workspaceUsage.channelsLimit,
-        extraChannelsPurchased: workspaceUsage.extraChannelsPurchased,
-      })
-      .from(workspaceUsage)
-      .where(eq(workspaceUsage.workspaceId, workspaceId))
-      .limit(1);
-
-    if (usage.length === 0) return;
-
-    // The effective ceiling is base + purchased, the same sum every other
-    // reader computes.
-    const limit = usage[0].channelsLimit + usage[0].extraChannelsPurchased;
-
-    const channels = await db
+  private async listBillableChannels(
+    userId: string,
+  ): Promise<LockableChannel[]> {
+    return db
       .select({
         id: socialMediaChannels.id,
         createdAt: socialMediaChannels.createdAt,
         isActive: socialMediaChannels.isActive,
       })
       .from(socialMediaChannels)
-      .where(eq(socialMediaChannels.workspaceId, workspaceId));
+      .innerJoin(workspace, eq(workspace.id, socialMediaChannels.workspaceId))
+      .where(
+        and(
+          eq(workspace.ownerId, userId),
+          notInArray(socialMediaChannels.platform, INTEGRATION_PLATFORMS),
+        ),
+      );
+  }
 
+  /**
+   * Bring the account's channels in line with its ceiling, after a billing
+   * change that states the new plan.
+   *
+   * Excess channels are LOCKED, never disconnected: tokens, history and
+   * scheduled posts survive, and an upgrade releases them again. The oldest
+   * channels are the ones kept - the customer makes no decision at the moment
+   * their plan lapses, and the same set survives however often this runs.
+   *
+   * ACCOUNT-wide, like the ceiling itself (AccountChannelsService): channels
+   * are pooled across workspaces. This used to run per workspace against
+   * `workspace_usage.channels_limit`, which counted integrations as channels
+   * and gives every non-primary workspace a limit of 0 - so a Google Drive or
+   * Dropbox pushed a real channel over the line, and a plan change locked
+   * every channel outside the oldest workspace.
+   */
+  async applyAccountChannelLocks(userId: string, limit: number): Promise<void> {
+    const channels = await this.listBillableChannels(userId);
     if (channels.length === 0) return;
 
     const plan = planChannelLocks(channels, limit);
+    await this.setChannelsActive(plan.lock, false);
+    await this.setChannelsActive(plan.unlock, true);
 
-    if (plan.lock.length > 0) {
-      await db
-        .update(socialMediaChannels)
-        .set({ isActive: false, updatedAt: new Date() })
-        .where(
-          and(
-            eq(socialMediaChannels.workspaceId, workspaceId),
-            inArray(socialMediaChannels.id, plan.lock),
-          ),
-        );
+    if (plan.lock.length > 0 || plan.unlock.length > 0) {
       this.logger.log(
-        `Locked ${plan.lock.length} channel(s) over the ${limit}-channel ceiling in workspace ${workspaceId}`,
+        `Channel locks for user ${userId} (ceiling ${limit}): locked ${plan.lock.length}, released ${plan.unlock.length}`,
       );
     }
+  }
 
-    if (plan.unlock.length > 0) {
-      await db
-        .update(socialMediaChannels)
-        .set({ isActive: true, updatedAt: new Date() })
-        .where(
-          and(
-            eq(socialMediaChannels.workspaceId, workspaceId),
-            inArray(socialMediaChannels.id, plan.unlock),
-          ),
-        );
+  /**
+   * Let locked channels back into slots that are free, never lock one.
+   * See `planChannelReleases` for why the paths without a stated plan only
+   * ever release. Returns the ids it released.
+   */
+  async releaseAccountChannelLocks(
+    userId: string,
+    limit: number,
+  ): Promise<number[]> {
+    const channels = await this.listBillableChannels(userId);
+    const release = planChannelReleases(channels, limit);
+    await this.setChannelsActive(release, true);
+
+    if (release.length > 0) {
       this.logger.log(
-        `Released ${plan.unlock.length} channel(s) in workspace ${workspaceId}`,
+        `Released ${release.length} locked channel(s) into free slots for user ${userId}`,
       );
     }
+    return release;
+  }
+
+  private async setChannelsActive(
+    ids: number[],
+    isActive: boolean,
+  ): Promise<void> {
+    if (ids.length === 0) return;
+    await db
+      .update(socialMediaChannels)
+      .set({ isActive, updatedAt: new Date() })
+      .where(inArray(socialMediaChannels.id, ids));
   }
 }

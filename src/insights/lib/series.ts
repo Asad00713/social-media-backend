@@ -20,7 +20,12 @@ export interface InsightsDay {
   impressions: number | null;
   /** null when no post that day reported reach. */
   reach: number | null;
+  /** likes + comments + shares: the three below, added up. */
   engagements: number;
+  /** The day's posts' likes (reactions); 0 when none reported any. */
+  likes: number;
+  comments: number;
+  shares: number;
   /**
    * Engagements on posts that report impressions: the rate's numerator. Kept
    * apart so a week's rate is recomputed from sums, never averaged from days.
@@ -51,6 +56,9 @@ export function daySeries(
       impressions: null,
       reach: null,
       engagements: 0,
+      likes: 0,
+      comments: 0,
+      shares: 0,
       ratedEngagements: 0,
       followers: totals.get(date) ?? null,
       followersGained: null,
@@ -69,6 +77,9 @@ export function daySeries(
     const e = engagementsOf(p);
     day.postsPublished += 1;
     day.engagements += e;
+    day.likes += p.likes ?? 0;
+    day.comments += p.comments ?? 0;
+    day.shares += p.shares ?? 0;
     if (p.impressions !== null) {
       day.impressions = (day.impressions ?? 0) + p.impressions;
       day.ratedEngagements += e;
