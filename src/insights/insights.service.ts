@@ -46,6 +46,7 @@ import {
   tableTotals,
   type CsvChannel,
 } from './lib/content-table';
+import { dailyCsv } from './lib/daily-csv';
 import { freshnessOf, reportsOf, type SyncStateRow } from './lib/freshness';
 import {
   CAPTION_PREVIEW_CHARS,
@@ -616,6 +617,34 @@ export class InsightsService {
     return {
       filename: `schedura-posts-${window.from}-${window.to}.csv`,
       body: postsCsv(rows, labels),
+    };
+  }
+
+  /**
+   * The window's day totals (the chart's `series`) as a CSV, one row per
+   * day: the same posts and follower rows `overview` reads, on the same
+   * selected channels, without the comparison.
+   */
+  async dailyCsv(
+    workspaceId: string,
+    { window }: ResolvedPeriod,
+    channels: string | undefined,
+  ): Promise<{ filename: string; body: string }> {
+    const social = await this.socialChannels(workspaceId);
+    const channelIds = parseChannels(
+      channels,
+      social.map((c) => c.id),
+    );
+    const end = addDays(window.to, 1);
+    const [published, followers] = await Promise.all([
+      this.publishedPosts(workspaceId, channelIds, window.from, end),
+      // The repository seeds each channel's last count before the window,
+      // so followers carry forward into its first days.
+      this.followerRows(channelIds, window.from, end),
+    ]);
+    return {
+      filename: `schedura-daily-${window.from}-${window.to}.csv`,
+      body: dailyCsv(daySeries(published, followers, window.from, window.to)),
     };
   }
 
