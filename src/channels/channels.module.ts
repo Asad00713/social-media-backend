@@ -2,6 +2,7 @@ import { Module, forwardRef } from '@nestjs/common';
 import { ChannelsController } from './channels.controller';
 import { ChannelHubController } from './channel-hub.controller';
 import { ChannelPauseService } from './services/channel-pause.service';
+import { ChannelPostsCleanupService } from './services/channel-posts-cleanup.service';
 import { ChannelSettingsService } from './services/channel-settings.service';
 import { ChannelSummaryService } from './services/channel-summary.service';
 import { NetworkRequestsService } from './services/network-requests.service';
@@ -89,6 +90,7 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
   providers: [
     ChannelService,
     ChannelPauseService,
+    ChannelPostsCleanupService,
     ChannelSettingsService,
     ChannelSummaryService,
     NetworkRequestsService,
