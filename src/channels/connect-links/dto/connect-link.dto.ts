@@ -66,3 +66,19 @@ export interface ConnectLinkWithUrlResponse {
 export interface ConnectLinkResponse {
   link: ConnectLinkDto;
 }
+
+/** `GET /public/connect-links/:token`: all a client's browser is told. */
+export interface ConnectLinkPreviewDto {
+  workspaceName: string;
+  sender: { name: string; email: string };
+  expiresAt: string;
+  networks: Array<{
+    platform: string;
+    connected: Array<{ accountName: string; avatarUrl: string | null }>;
+  }>;
+}
+
+/** `POST /public/connect-links/:token/:platform/start`. */
+export interface ConnectLinkStartDto {
+  authorizationUrl: string;
+}

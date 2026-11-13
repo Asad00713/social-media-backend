@@ -3,6 +3,8 @@ import { ChannelsController } from './channels.controller';
 import { ChannelHubController } from './channel-hub.controller';
 import { ConnectLinksController } from './connect-links/connect-links.controller';
 import { ConnectLinksService } from './connect-links/connect-links.service';
+import { ConnectLinkAccessService } from './connect-links/connect-link-access.service';
+import { PublicConnectLinksController } from './connect-links/public-connect-links.controller';
 import { EmailModule } from '../email/email.module';
 import { ChannelPauseService } from './services/channel-pause.service';
 import { ChannelPostsCleanupService } from './services/channel-posts-cleanup.service';
@@ -96,6 +98,7 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
   controllers: [
     ChannelHubController,
     ConnectLinksController,
+    PublicConnectLinksController,
     ChannelsController,
   ],
   providers: [
@@ -103,6 +106,7 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
     ChannelConnectService,
     ChannelPauseService,
     ConnectLinksService,
+    ConnectLinkAccessService,
     ChannelPostsCleanupService,
     ChannelSettingsService,
     ChannelSummaryService,
