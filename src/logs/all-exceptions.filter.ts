@@ -30,9 +30,16 @@ export class AllExceptionsFilter implements ExceptionFilter {
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
 
-    const message =
-      exception instanceof Error ? exception.message : 'Unknown error';
-    const stack = exception instanceof Error ? exception.stack : undefined;
+    // Nest's own route-not-found 404 spells the URL in its message ("Cannot
+    // POST /public/connect-links/<token>"), and the stack repeats the
+    // message, so both get the same redaction as the path.
+    const message = redactSensitivePath(
+      exception instanceof Error ? exception.message : 'Unknown error',
+    );
+    const stack =
+      exception instanceof Error && exception.stack
+        ? redactSensitivePath(exception.stack)
+        : undefined;
 
     // Persist (guarded, fire-and-forget). Never let this affect the response.
     try {

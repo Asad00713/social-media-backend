@@ -36,6 +36,29 @@ describe('AllExceptionsFilter', () => {
     expect(JSON.stringify(entry)).not.toContain(TOKEN);
   });
 
+  it("keeps the token out of the message and stack of Nest's route-not-found 404", () => {
+    // Nest's own 404 for an unknown route spells the URL in its message:
+    // "Cannot POST /public/connect-links/<token>/nope"
+    const url = `/public/connect-links/${TOKEN}/nope`;
+    const { write, json } = run(
+      new NotFoundException(`Cannot POST ${url}`),
+      url,
+    );
+    const entry = write.mock.calls[0][0] as unknown as {
+      message: string;
+      stack: string | null;
+    };
+    expect(entry.message).toBe(
+      'Cannot POST /public/connect-links/[redacted]/nope',
+    );
+    expect(entry.stack).toContain('/public/connect-links/[redacted]/nope');
+    expect(JSON.stringify(write.mock.calls[0][0])).not.toContain(TOKEN);
+    // the response is unchanged: it goes back to whoever sent the token
+    expect(json).toHaveBeenCalledWith(
+      expect.objectContaining({ message: `Cannot POST ${url}` }),
+    );
+  });
+
   it('still answers with the exception, and stores ordinary paths as they are', () => {
     const { write, status, json } = run(
       new NotFoundException('nope'),
