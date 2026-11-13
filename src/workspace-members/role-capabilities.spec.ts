@@ -50,4 +50,12 @@ describe('roleCan', () => {
     expect(roleCan('ADMIN', 'maestro:view-all')).toBe(true);
     expect(roleCan('OWNER', 'maestro:view-all')).toBe(true);
   });
+
+  /** A report emails people outside the workspace, so a viewer cannot manage one. */
+  it('keeps managing reports MEMBER+', () => {
+    expect(roleCan('GUEST', 'reports:manage')).toBe(false);
+    expect(roleCan('MEMBER', 'reports:manage')).toBe(true);
+    expect(roleCan('ADMIN', 'reports:manage')).toBe(true);
+    expect(roleCan('OWNER', 'reports:manage')).toBe(true);
+  });
 });

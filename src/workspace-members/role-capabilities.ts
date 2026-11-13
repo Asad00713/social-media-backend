@@ -22,7 +22,9 @@ export type Capability =
    */
   | 'maestro:view-all'
   /** Change the workspace brand kit: colours, default logo, presets. */
-  | 'brand:manage';
+  | 'brand:manage'
+  /** Create, change, share and send Insights reports; they email people outside the workspace. */
+  | 'reports:manage';
 
 export const ROLE_RANK: Record<WorkspaceRole, number> = {
   OWNER: 4,
@@ -45,6 +47,7 @@ export const CAPABILITY_MIN_ROLE: Record<Capability, WorkspaceRole> = {
   'analytics:view': 'GUEST',
   'maestro:view-all': 'ADMIN',
   'brand:manage': 'ADMIN',
+  'reports:manage': 'MEMBER',
 };
 
 export function roleCan(role: WorkspaceRole, capability: Capability): boolean {

@@ -10,6 +10,10 @@ import { InsightsController } from './insights.controller';
 import { InsightsChannelsRepository } from './insights-channels.repository';
 import { InsightsService } from './insights.service';
 import { InsightsTopicsRepository } from './insights-topics.repository';
+import { ReportPayloadService } from './reports/report-payload.service';
+import { ReportsController } from './reports/reports.controller';
+import { ReportsRepository } from './reports/reports.repository';
+import { ReportsService } from './reports/reports.service';
 
 // AnalyticsModule supplies the YouTube client and the Redis client the
 // Audience routes read through. The queue is registered here too, to enqueue
@@ -23,12 +27,15 @@ import { InsightsTopicsRepository } from './insights-topics.repository';
     AnalyticsModule,
     BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS }),
   ],
-  controllers: [InsightsController, AudienceController],
+  controllers: [InsightsController, AudienceController, ReportsController],
   providers: [
     InsightsService,
     AudienceService,
     InsightsTopicsRepository,
     InsightsChannelsRepository,
+    ReportsRepository,
+    ReportPayloadService,
+    ReportsService,
   ],
 })
 export class InsightsModule {}

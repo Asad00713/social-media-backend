@@ -1,0 +1,360 @@
+import { randomBytes } from 'crypto';
+import {
+  BadRequestException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
+import type { NewInsightReportRow } from '../../drizzle/schema/insight-reports.schema';
+import { InsightsChannelsRepository } from '../insights-channels.repository';
+import type {
+  CreateReportDto,
+  PreviewReportDto,
+  UpdateReportDto,
+} from './dto/report-settings.dto';
+import { nextRunAt } from './lib/next-run';
+import {
+  normalizeSettings,
+  settingsFromCreate,
+} from './lib/normalize-settings';
+import {
+  settingsOf,
+  toReportDto,
+  type ReportDtoContext,
+} from './lib/report-dto';
+import { ReportPayloadService } from './report-payload.service';
+import type {
+  ReportDto,
+  ReportPayloadDto,
+  ReportSchedule,
+  ReportSettings,
+} from './reports.dto';
+import { ReportsRepository } from './reports.repository';
+
+const LOGO_MIME_TYPES = ['image/png', 'image/jpeg'];
+
+/** Fields a PATCH may clear with null only where the column is nullable. */
+const NOT_NULLABLE_ON_UPDATE = [
+  'name',
+  'channelIds',
+  'period',
+  'compare',
+  'chartMetric',
+  'sections',
+] as const;
+
+/** A report's settings as the columns that hold them. */
+function settingsColumns(
+  s: ReportSettings,
+): Omit<NewInsightReportRow, 'workspaceId'> {
+  return {
+    name: s.name,
+    channelIds: s.channelIds,
+    period: s.period,
+    customFrom: s.customFrom,
+    customTo: s.customTo,
+    compare: s.compare,
+    chartMetric: s.chartMetric,
+    sections: s.sections,
+    note: s.note,
+    logoMediaId: s.logoMediaId,
+    cadence: s.schedule?.cadence ?? null,
+    weekday: s.schedule?.weekday ?? null,
+    sendMinute: s.schedule?.sendMinute ?? null,
+    sendToTeam: s.schedule?.sendToTeam ?? false,
+    recipients: s.schedule?.recipients ?? [],
+    attachPdf: s.schedule?.attachPdf ?? true,
+  };
+}
+
+/**
+ * Saved Insights reports for the workspace routes: the save rules, the share
+ * link and the unsaved preview. The numbers come from ReportPayloadService.
+ */
+@Injectable()
+export class ReportsService {
+  constructor(
+    private readonly repo: ReportsRepository,
+    private readonly channelsRepo: InsightsChannelsRepository,
+    private readonly payloads: ReportPayloadService,
+    private readonly config: ConfigService,
+  ) {}
+
+  /** 43 URL-safe characters and no dot, so it sits in a path as is. */
+  static newShareToken(): string {
+    return randomBytes(32).toString('base64url');
+  }
+
+  private get frontendUrl(): string {
+    const url =
+      this.config.get<string>('FRONTEND_URL') ?? 'http://localhost:3001';
+    return url.replace(/\/+$/, '');
+  }
+
+  private async context(workspaceId: string): Promise<ReportDtoContext> {
+    const [social, team] = await Promise.all([
+      this.channelsRepo.socialChannels(workspaceId),
+      this.repo.team(workspaceId),
+    ]);
+    return {
+      socialIds: new Set(social.map((c) => c.id)),
+      teamSize: team.length,
+      frontendUrl: this.frontendUrl,
+    };
+  }
+
+  async list(workspaceId: string): Promise<ReportDto[]> {
+    const [records, ctx] = await Promise.all([
+      this.repo.list(workspaceId),
+      this.context(workspaceId),
+    ]);
+    return records.map((r) => toReportDto(r, ctx));
+  }
+
+  async get(workspaceId: string, id: string): Promise<ReportDto> {
+    const [record, ctx] = await Promise.all([
+      this.repo.get(workspaceId, id),
+      this.context(workspaceId),
+    ]);
+    if (!record) throw new NotFoundException('Report not found');
+    return toReportDto(record, ctx);
+  }
+
+  async create(
+    workspaceId: string,
+    userId: string,
+    dto: CreateReportDto,
+    now = new Date(),
+  ): Promise<ReportDto> {
+    const settings = await this.validated(
+      workspaceId,
+      settingsFromCreate(dto),
+      now,
+      null,
+    );
+    const id = await this.repo.insert({
+      ...settingsColumns(settings),
+      workspaceId,
+      nextRunAt: await this.slotOf(workspaceId, settings.schedule, now),
+      createdBy: userId,
+      updatedBy: userId,
+      createdAt: now,
+      updatedAt: now,
+    });
+    return this.get(workspaceId, id);
+  }
+
+  async update(
+    workspaceId: string,
+    userId: string,
+    id: string,
+    dto: UpdateReportDto,
+    now = new Date(),
+  ): Promise<ReportDto> {
+    this.assertNoNulls(dto);
+    const record = await this.repo.get(workspaceId, id);
+    if (!record) throw new NotFoundException('Report not found');
+    const { row } = record;
+    const stored = settingsOf(row);
+
+    // `undefined` keeps the stored value; `null` clears a nullable one.
+    const merged: ReportSettings = {
+      name: dto.name ?? stored.name,
+      channelIds: dto.channelIds ?? stored.channelIds,
+      period: dto.period ?? stored.period,
+      customFrom:
+        dto.customFrom === undefined ? stored.customFrom : dto.customFrom,
+      customTo: dto.customTo === undefined ? stored.customTo : dto.customTo,
+      compare: dto.compare ?? stored.compare,
+      chartMetric: dto.chartMetric ?? stored.chartMetric,
+      sections: dto.sections ?? stored.sections,
+      note: dto.note === undefined ? stored.note : dto.note,
+      logoMediaId:
+        dto.logoMediaId === undefined ? stored.logoMediaId : dto.logoMediaId,
+      schedule:
+        dto.schedule === undefined
+          ? stored.schedule
+          : dto.schedule && {
+              cadence: dto.schedule.cadence,
+              weekday: dto.schedule.weekday ?? null,
+              sendMinute: dto.schedule.sendMinute,
+              sendToTeam: dto.schedule.sendToTeam,
+              recipients: dto.schedule.recipients,
+              attachPdf: dto.schedule.attachPdf,
+            },
+    };
+    const settings = await this.validated(
+      workspaceId,
+      merged,
+      now,
+      stored.logoMediaId,
+    );
+    this.assertNoReAdd(settings.schedule, row.optedOut, row.recipients);
+
+    // A PATCH without `schedule` keeps the slot already queued.
+    const slot =
+      dto.schedule === undefined
+        ? {}
+        : { nextRunAt: await this.slotOf(workspaceId, settings.schedule, now) };
+    await this.repo.update(workspaceId, id, {
+      ...settingsColumns(settings),
+      ...slot,
+      updatedBy: userId,
+      updatedAt: now,
+    });
+    return this.get(workspaceId, id);
+  }
+
+  async remove(workspaceId: string, id: string): Promise<void> {
+    if (!(await this.repo.remove(workspaceId, id))) {
+      throw new NotFoundException('Report not found');
+    }
+  }
+
+  /**
+   * Turn the public link on or off. Turning it on while it is on keeps the
+   * token, so the dialog's Copy never kills a link already sent. Only a change
+   * counts as an edit.
+   */
+  async setShare(
+    workspaceId: string,
+    userId: string,
+    id: string,
+    enabled: boolean,
+    now = new Date(),
+  ): Promise<{ url: string | null }> {
+    const record = await this.repo.get(workspaceId, id);
+    if (!record) throw new NotFoundException('Report not found');
+    const current = record.row.shareToken;
+    const token = enabled ? (current ?? ReportsService.newShareToken()) : null;
+    if (token !== current) {
+      await this.repo.update(workspaceId, id, {
+        shareToken: token,
+        updatedBy: userId,
+        updatedAt: now,
+      });
+    }
+    return { url: token ? `${this.frontendUrl}/r/${token}` : null };
+  }
+
+  /**
+   * The payload for settings that are not saved. The schedule is ignored. Ids
+   * that match no channel are not refused here: the payload answers 409 when
+   * none is left.
+   */
+  async preview(
+    workspaceId: string,
+    dto: PreviewReportDto,
+    now = new Date(),
+  ): Promise<ReportPayloadDto> {
+    const settings = normalizeSettings(
+      { ...settingsFromCreate(dto), schedule: null },
+      now,
+    );
+    const channelIds = await this.narrowedChannelIds(
+      workspaceId,
+      settings.channelIds,
+    );
+    await this.assertLogo(workspaceId, settings.logoMediaId);
+    return this.payloads.payload(workspaceId, { ...settings, channelIds }, now);
+  }
+
+  /**
+   * Save rules 1 to 3: normalise, keep this workspace's channels, check the
+   * logo. A logo already saved on the report is not judged again: if it was
+   * binned since, the report must still be editable.
+   */
+  private async validated(
+    workspaceId: string,
+    input: ReportSettings,
+    now: Date,
+    savedLogoId: string | null,
+  ): Promise<ReportSettings> {
+    const settings = normalizeSettings(input, now);
+    const channelIds = await this.narrowedChannelIds(
+      workspaceId,
+      settings.channelIds,
+    );
+    if (!channelIds.length) {
+      throw new BadRequestException('Pick at least one channel');
+    }
+    if (settings.logoMediaId !== savedLogoId) {
+      await this.assertLogo(workspaceId, settings.logoMediaId);
+    }
+    return { ...settings, channelIds };
+  }
+
+  private async narrowedChannelIds(
+    workspaceId: string,
+    ids: number[],
+  ): Promise<number[]> {
+    const social = await this.channelsRepo.socialChannels(workspaceId);
+    const ours = new Set(social.map((c) => c.id));
+    return ids.filter((id) => ours.has(id));
+  }
+
+  private async assertLogo(
+    workspaceId: string,
+    logoMediaId: string | null,
+  ): Promise<void> {
+    if (!logoMediaId) return;
+    const item = await this.repo.logoItem(workspaceId, logoMediaId);
+    if (!item || item.isDeleted) {
+      throw new BadRequestException(
+        'That logo is not in this workspace Library',
+      );
+    }
+    if (
+      item.type !== 'image' ||
+      !LOGO_MIME_TYPES.includes(item.mimeType ?? '')
+    ) {
+      throw new BadRequestException('A report logo has to be a PNG or JPG');
+    }
+  }
+
+  /**
+   * Save rule 4: a manager can remove an opted-out address but cannot add it
+   * back. One that is still listed passes.
+   */
+  private assertNoReAdd(
+    schedule: ReportSchedule | null,
+    optedOut: string[],
+    storedRecipients: string[],
+  ): void {
+    if (!schedule) return;
+    const out = new Set(optedOut);
+    const had = new Set(storedRecipients);
+    const readded = schedule.recipients.find((e) => out.has(e) && !had.has(e));
+    if (readded) {
+      throw new BadRequestException(`${readded} opted out of this report`);
+    }
+  }
+
+  /** `null` clears a nullable field; on any other it is a client mistake. */
+  private assertNoNulls(dto: UpdateReportDto): void {
+    const body = dto as Record<string, unknown>;
+    for (const field of NOT_NULLABLE_ON_UPDATE) {
+      if (body[field] === null) {
+        throw new BadRequestException(`${field} cannot be empty`);
+      }
+    }
+    const schedule = dto.schedule as Record<string, unknown> | null | undefined;
+    for (const field of ['sendToTeam', 'attachPdf']) {
+      if (schedule && schedule[field] === null) {
+        throw new BadRequestException(`${field} cannot be empty`);
+      }
+    }
+  }
+
+  /** The next send for a schedule in the workspace's zone; null for none. */
+  private async slotOf(
+    workspaceId: string,
+    schedule: ReportSchedule | null,
+    now: Date,
+  ): Promise<Date | null> {
+    if (!schedule) return null;
+    const info = await this.repo.workspaceInfo(workspaceId);
+    if (!info) throw new NotFoundException('Workspace not found');
+    return nextRunAt(schedule, info.timezone, now);
+  }
+}
