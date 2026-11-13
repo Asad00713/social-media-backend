@@ -7,7 +7,7 @@ import type {
   NewInsightReportRow,
 } from '../../drizzle/schema/insight-reports.schema';
 import type { InsightsChannelsRepository } from '../insights-channels.repository';
-import type { GotenbergClient } from './gotenberg.client';
+import { GotenbergError, type GotenbergClient } from './gotenberg.client';
 import type {
   CreateReportDto,
   UpdateReportDto,
@@ -769,6 +769,47 @@ describe('ReportsService.pdf and pdfFor', () => {
     const out = await service.pdf(WS, only().id, PERIOD_END);
     expect(out.filename).toBe('acme-report-2026-10-01-2026-10-31.pdf');
     expect(gotenberg.pdfFromUrl).toHaveBeenCalledTimes(1);
+  });
+
+  it('pdf answers 504 when Gotenberg timed out and 502 when it failed', async () => {
+    const { service, gotenberg, only } = await created();
+    gotenberg.pdfFromUrl.mockRejectedValueOnce(
+      new GotenbergError('timed out after 30s', 'timeout'),
+    );
+    await expect(service.pdf(WS, only().id, PERIOD_END)).rejects.toMatchObject({
+      status: 504,
+      response: { message: 'The PDF took too long. Try again.' },
+    });
+    gotenberg.pdfFromUrl.mockRejectedValueOnce(
+      new GotenbergError('answered 500'),
+    );
+    await expect(service.pdf(WS, only().id, PERIOD_END)).rejects.toMatchObject({
+      status: 502,
+      response: { message: "Couldn't make the PDF. Try again." },
+    });
+  });
+
+  it('pdfFor lets GotenbergError through for the send job to retry', async () => {
+    const { service, repo, gotenberg, only } = await created();
+    const record = await repo.get(WS, only().id);
+    gotenberg.pdfFromUrl.mockRejectedValueOnce(
+      new GotenbergError('answered 500'),
+    );
+    await expect(
+      service.pdfFor(record as NonNullable<typeof record>, PERIOD_END),
+    ).rejects.toBeInstanceOf(GotenbergError);
+  });
+
+  it.each([
+    ['a quote and a header break', 'a"b\r\nX: y', 'a-b-x-y'],
+    ['an Urdu-only name', '\u0631\u067e\u0648\u0631\u0679', 'report'],
+  ])('names the file safely for %s', async (_label, name, slug) => {
+    const { service, rows, only } = await created();
+    const id = only().id;
+    rows.set(id, { ...(rows.get(id) as InsightReportRow), name });
+    const out = await service.pdf(WS, id, PERIOD_END);
+    expect(out.filename).toMatch(/^[a-z0-9-]+\.pdf$/);
+    expect(out.filename).toBe(`${slug}-2026-10-01-2026-10-31.pdf`);
   });
 
   it('pdf answers 409 before calling Gotenberg when every channel is gone', async () => {

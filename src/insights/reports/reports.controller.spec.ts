@@ -172,6 +172,7 @@ describe('ReportsController over HTTP', () => {
         })
         .expect(200);
       expect(res.headers['content-type']).toBe('application/pdf');
+      expect(res.headers['cache-control']).toBe('private, no-store');
       expect(res.headers['content-disposition']).toBe(
         'attachment; filename="acme-report-2026-10-01-2026-10-31.pdf"',
       );

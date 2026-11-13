@@ -9,7 +9,11 @@ export class GotenbergNotConfiguredError extends ServiceUnavailableException {
 
 /** Gotenberg answered with an error status, or did not answer in time. */
 export class GotenbergError extends Error {
-  constructor(message: string) {
+  constructor(
+    message: string,
+    /** `timeout` when the call was aborted, `failed` for anything else. */
+    readonly kind: 'timeout' | 'failed' = 'failed',
+  ) {
     super(message);
     this.name = 'GotenbergError';
   }
@@ -57,23 +61,31 @@ export class GotenbergClient {
     }
     form.set('printBackground', 'true');
 
-    let res: Response;
+    // The body is read inside the same try: a stall or reset while the PDF
+    // streams in is the same kind of failure as one before the headers.
     try {
-      res = await this.fetchImpl(`${this.baseUrl}/forms/chromium/convert/url`, {
-        method: 'POST',
-        body: form,
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
+      const res = await this.fetchImpl(
+        `${this.baseUrl}/forms/chromium/convert/url`,
+        {
+          method: 'POST',
+          body: form,
+          signal: AbortSignal.timeout(this.timeoutMs),
+        },
+      );
+      if (!res.ok) throw new GotenbergError(`answered ${res.status}`);
+      return Buffer.from(await res.arrayBuffer());
     } catch (e) {
+      if (e instanceof GotenbergError) throw e;
       const name = (e as { name?: string }).name;
       if (name === 'TimeoutError' || name === 'AbortError') {
-        throw new GotenbergError(`timed out after ${this.timeoutMs / 1000}s`);
+        throw new GotenbergError(
+          `timed out after ${this.timeoutMs / 1000}s`,
+          'timeout',
+        );
       }
       throw new GotenbergError(
         `could not be reached: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
-    if (!res.ok) throw new GotenbergError(`answered ${res.status}`);
-    return Buffer.from(await res.arrayBuffer());
   }
 }

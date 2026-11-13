@@ -3,6 +3,7 @@ import {
   Controller,
   Delete,
   Get,
+  Header,
   HttpCode,
   Param,
   ParseUUIDPipe,
@@ -61,6 +62,7 @@ export class ReportsController {
   }
 
   @Get(':id/pdf')
+  @Header('Cache-Control', 'private, no-store')
   async pdf(
     @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
     @Param('id', ParseUUIDPipe) id: string,

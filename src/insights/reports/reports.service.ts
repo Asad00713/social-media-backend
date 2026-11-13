@@ -1,8 +1,10 @@
 import { randomBytes } from 'crypto';
 import { InjectQueue } from '@nestjs/bullmq';
 import {
+  BadGatewayException,
   BadRequestException,
   ConflictException,
+  GatewayTimeoutException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -19,7 +21,7 @@ import type {
   PreviewReportDto,
   UpdateReportDto,
 } from './dto/report-settings.dto';
-import { GotenbergClient } from './gotenberg.client';
+import { GotenbergClient, GotenbergError } from './gotenberg.client';
 import { nextRunAt, sendNowJobId } from './lib/next-run';
 import {
   normalizeSettings,
@@ -386,12 +388,23 @@ export class ReportsService {
       record.row.channelIds,
     );
     if (!channelIds.length) throw new NoChannelsLeftError();
-    return this.pdfFor(record, now);
+    try {
+      return await this.pdfFor(record, now);
+    } catch (e) {
+      // Only here, not in pdfFor: the send job retries on GotenbergError.
+      if (!(e instanceof GotenbergError)) throw e;
+      if (e.kind === 'timeout') {
+        throw new GatewayTimeoutException('The PDF took too long. Try again.');
+      }
+      throw new BadGatewayException("Couldn't make the PDF. Try again.");
+    }
   }
 
   /**
    * Prints the report's print page with Gotenberg. The page opens on a
-   * render token, which works while the share link is off.
+   * render token, which works while the share link is off. The caller must
+   * have confirmed that channels remain: with none, the print page never
+   * marks itself ready and Gotenberg waits out its timeout (see `pdf()`).
    */
   async pdfFor(
     record: ReportRecord,

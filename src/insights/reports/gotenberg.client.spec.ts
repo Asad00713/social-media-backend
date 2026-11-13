@@ -61,6 +61,48 @@ describe('GotenbergClient', () => {
       .catch((e: unknown) => e);
     expect(err).toBeInstanceOf(GotenbergError);
     expect((err as Error).message).toBe('timed out after 0.02s');
+    expect((err as GotenbergError).kind).toBe('timeout');
+  });
+
+  it('marks a non-2xx answer as failed, not a timeout', async () => {
+    const { impl } = fetchFake(() => new Response('boom', { status: 502 }));
+    const err = await new GotenbergClient('http://g:3000', impl)
+      .pdfFromUrl('https://x.test/')
+      .catch((e: unknown) => e);
+    expect((err as GotenbergError).kind).toBe('failed');
+  });
+
+  it('throws GotenbergError (failed) when the body errors while it streams in', async () => {
+    const broken = new ReadableStream<Uint8Array>({
+      pull(controller) {
+        controller.error(new Error('connection reset'));
+      },
+    });
+    const { impl } = fetchFake(() => new Response(broken, { status: 200 }));
+    const err = await new GotenbergClient('http://g:3000', impl)
+      .pdfFromUrl('https://x.test/')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GotenbergError);
+    expect((err as GotenbergError).kind).toBe('failed');
+    expect((err as Error).message).toContain('connection reset');
+  });
+
+  it('throws GotenbergError (timeout) when the body stalls until the abort', async () => {
+    const stalled = ((_url: string, init?: RequestInit) => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          init?.signal?.addEventListener('abort', () =>
+            controller.error(init.signal?.reason as Error),
+          );
+        },
+      });
+      return Promise.resolve(new Response(body, { status: 200 }));
+    }) as unknown as typeof fetch;
+    const err = await new GotenbergClient('http://g:3000', stalled, 20)
+      .pdfFromUrl('https://x.test/')
+      .catch((e: unknown) => e);
+    expect(err).toBeInstanceOf(GotenbergError);
+    expect((err as GotenbergError).kind).toBe('timeout');
   });
 
   it('throws GotenbergError when Gotenberg cannot be reached', async () => {
