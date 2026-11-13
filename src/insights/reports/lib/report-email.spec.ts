@@ -140,6 +140,62 @@ describe('reportEmail', () => {
     );
   });
 
+  it('treats a blank note and a blank brief as absent, in both bodies', () => {
+    const { html, text } = reportEmail(
+      input({ note: '  \n ', briefText: ' ' }),
+    );
+    expect(html).not.toContain('In brief');
+    expect(html).not.toContain('white-space:pre-line');
+    expect(text).not.toContain('In brief');
+    // name, window, totals, button, footer: one blank line between each.
+    expect(text.split('\n\n')).toHaveLength(5);
+  });
+
+  it('trims a note and a brief that have padding', () => {
+    const { text } = reportEmail(
+      input({ note: '  Thanks  ', briefText: ' Up. ' }),
+    );
+    expect(text).toContain('In brief: Up.');
+    expect(text).toContain('\n\nThanks\n\n');
+  });
+
+  it('names the workspace in the logo alt text', () => {
+    const { html } = reportEmail(
+      input({ logoUrl: 'https://cdn.x/l.png', workspaceName: 'A"cme' }),
+    );
+    expect(html).toContain('alt="A&quot;cme"');
+  });
+
+  it('is a full document with a charset, viewport and title', () => {
+    const { html } = reportEmail(input({ reportName: 'A<b>' }));
+    expect(html).toContain('<head><meta charset="utf-8">');
+    expect(html).toContain('name="viewport"');
+    expect(html).toContain('<title>A&lt;b&gt;: Nov 1 – Nov 30</title>');
+  });
+
+  it('lays the HTML out as logo, name, window, brief, totals, button, note', () => {
+    const { html } = reportEmail(
+      input({
+        logoUrl: 'https://cdn.x/l.png',
+        briefText: 'Brief line',
+        note: 'Note line',
+      }),
+    );
+    const at = (needle: string) => html.indexOf(needle);
+    const order = [
+      '<img',
+      '<h1',
+      'Nov 1 – Nov 30</p>',
+      'Brief line',
+      'Engagements',
+      'Open the report</a>',
+      'Note line',
+      'You get this because',
+    ].map(at);
+    expect(order.every((n) => n >= 0)).toBe(true);
+    expect([...order].sort((a, b) => a - b)).toEqual(order);
+  });
+
   it('uses inline styles only', () => {
     const { html } = reportEmail(input());
     expect(html).not.toContain('<style');

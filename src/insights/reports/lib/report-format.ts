@@ -9,7 +9,7 @@ const DAY_FORMAT = new Intl.DateTimeFormat('en-US', {
 const dayLabel = (date: string): string =>
   DAY_FORMAT.format(new Date(`${date}T00:00:00Z`));
 
-/** `2026-11-01`, `2026-11-30` → `Nov 1 – Nov 30` (an en dash, spaced). */
+/** `2026-11-01`, `2026-11-30` → `Nov 1 – Nov 30` (an en dash, spaced). Expects date-only `YYYY-MM-DD` strings. */
 export function windowLabel(from: string, to: string): string {
   return `${dayLabel(from)} – ${dayLabel(to)}`;
 }

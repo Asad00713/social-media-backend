@@ -83,6 +83,9 @@ function totalsHtml(totals: Totals): string {
  */
 export function reportEmail(i: ReportEmailInput): ReportEmail {
   const { totals } = i;
+  // Typed by a person: blank counts as not written.
+  const briefText = i.briefText?.trim() || null;
+  const note = i.note?.trim() || null;
   const label = windowLabel(i.window.from, i.window.to);
   const subject = `${i.reportName}: ${label}`;
   const footer = `You get this because ${i.workspaceName} added you to this report.`;
@@ -90,23 +93,23 @@ export function reportEmail(i: ReportEmailInput): ReportEmail {
   const buttonLabel = 'Open the report';
 
   const html = [
-    `<!DOCTYPE html><html><body style="margin:0;padding:24px 12px;background:#f3f4f6;font-family:${FONT};">`,
+    `<!DOCTYPE html><html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>${escapeHtml(subject)}</title></head><body style="margin:0;padding:24px 12px;background:#f3f4f6;font-family:${FONT};">`,
     `<div style="max-width:600px;margin:0 auto;background:#ffffff;padding:32px;border-radius:8px;">`,
     i.logoUrl
-      ? `<img src="${escapeHtml(i.logoUrl)}" alt="" style="display:block;max-height:48px;max-width:200px;margin:0 0 20px;">`
+      ? `<img src="${escapeHtml(i.logoUrl)}" alt="${escapeHtml(i.workspaceName)}" style="display:block;max-height:48px;max-width:200px;margin:0 0 20px;">`
       : '',
     `<h1 style="margin:0 0 4px;font-size:22px;color:#111827;">${escapeHtml(i.reportName)}</h1>`,
     `<p style="margin:0 0 20px;font-size:14px;color:#6b7280;">${escapeHtml(label)}</p>`,
-    i.briefText
+    briefText
       ? `<p style="margin:0 0 4px;font-size:12px;font-weight:600;color:#6b7280;text-transform:uppercase;">In brief</p>` +
-        `<p style="margin:0 0 20px;font-size:15px;line-height:1.5;color:#111827;">${escapeHtml(i.briefText)}</p>`
+        `<p style="margin:0 0 20px;font-size:15px;line-height:1.5;color:#111827;">${escapeHtml(briefText)}</p>`
       : '',
     totals ? totalsHtml(totals) : '',
     i.shareUrl
       ? `<p style="margin:0 0 20px;"><a href="${escapeHtml(i.shareUrl)}" style="display:inline-block;padding:10px 20px;background:#111827;color:#ffffff;text-decoration:none;border-radius:6px;font-size:14px;">${buttonLabel}</a></p>`
       : '',
-    i.note
-      ? `<p style="margin:0 0 20px;font-size:14px;line-height:1.5;color:#374151;white-space:pre-line;">${escapeHtml(i.note)}</p>`
+    note
+      ? `<p style="margin:0 0 20px;font-size:14px;line-height:1.5;color:#374151;white-space:pre-line;">${escapeHtml(note)}</p>`
       : '',
     `<hr style="border:0;border-top:1px solid #e5e7eb;margin:24px 0 16px;">`,
     `<p style="margin:0 0 8px;font-size:12px;color:#6b7280;">${escapeHtml(footer)}</p>`,
@@ -117,14 +120,14 @@ export function reportEmail(i: ReportEmailInput): ReportEmail {
   const text = [
     i.reportName,
     label,
-    i.briefText ? `In brief: ${i.briefText}` : null,
+    briefText ? `In brief: ${briefText}` : null,
     totals
       ? TOTAL_LABELS.map(
           ([key, name]) => `${name}: ${formatTotal(totals[key])}`,
         ).join('\n')
       : null,
     i.shareUrl ? `${buttonLabel}: ${i.shareUrl}` : null,
-    i.note,
+    note,
     `---\n${footer}\n${unsubscribeLabel}: ${i.unsubscribeUrl}`,
   ]
     .filter((part): part is string => part !== null && part !== '')
