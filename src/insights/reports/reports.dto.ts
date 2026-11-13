@@ -118,8 +118,12 @@ export interface ReportPayloadDto {
   overview: Partial<InsightsOverviewDto> | null;
   signals: {
     whatWorks?: InsightsSignalsDto['whatWorks'];
+    /** `useSlot` is always null: a report never shows schedule gaps. */
     bestTimes?: InsightsSignalsDto['bestTimes'];
     timezone: string;
+    /** What the panels' "needs N more posts" states read. */
+    measuredPosts: InsightsSignalsDto['measuredPosts'];
+    minPosts: InsightsSignalsDto['minPosts'];
   } | null;
   audience: { growth: AudienceGrowthDto; channels: AudienceChannelsDto } | null;
 }
