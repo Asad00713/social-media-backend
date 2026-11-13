@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import type { EmailService } from '../../email/email.service';
 import type { InsightReportRow } from '../../drizzle/schema/insight-reports.schema';
 import type { GotenbergClient } from './gotenberg.client';
+import { GotenbergError } from './gotenberg.client';
 import { nextRunAt } from './lib/next-run';
 import { settingsOf } from './lib/report-dto';
 import { NoChannelsLeftError } from './report-payload.service';
@@ -19,6 +20,8 @@ const WS = '7a1b2c3d-1111-4222-8333-944455556666';
 const NOW = new Date('2026-11-13T00:00:00Z');
 const SECRET = 'report-send-spec-secret';
 const TZ = 'Asia/Karachi';
+/** The slot the default report is due at: before NOW. */
+const DUE = new Date('2026-11-12T04:00:00Z');
 const API = 'https://api.schedura.ai';
 
 const row = (over: Partial<InsightReportRow> = {}): InsightReportRow =>
@@ -43,7 +46,7 @@ const row = (over: Partial<InsightReportRow> = {}): InsightReportRow =>
     sendToTeam: false,
     recipients: ['a@x.com', 'b@y.com'],
     attachPdf: true,
-    nextRunAt: new Date('2026-11-16T04:00:00Z'),
+    nextRunAt: DUE,
     lastSentAt: null,
     lastError: null,
     createdBy: null,
@@ -82,6 +85,7 @@ interface Opts {
   row?: InsightReportRow | null;
   team?: { userId: string; email: string; isOwner: boolean }[];
   gotenberg?: boolean;
+  inactive?: boolean;
   config?: Record<string, string | undefined>;
 }
 
@@ -96,7 +100,11 @@ function setup(opts: Opts = {}) {
       ),
     ),
     workspaceInfo: jest.fn(() =>
-      Promise.resolve({ name: 'Acme', timezone: TZ, isActive: true }),
+      Promise.resolve({
+        name: 'Acme',
+        timezone: TZ,
+        isActive: !opts.inactive,
+      }),
     ),
     team: jest.fn(() =>
       Promise.resolve(
@@ -156,9 +164,12 @@ function setup(opts: Opts = {}) {
   return { service, repo, payloads, reports, gotenberg, email, tokens, pause };
 }
 
-function job(data: ReportSendJob) {
+/** `attemptsMade` of `attempts`: BullMQ's count of attempts already finished. */
+function job(data: ReportSendJob, attemptsMade = 0, attempts = 3) {
   return {
     data,
+    attemptsMade,
+    opts: { attempts },
     updateData: jest.fn<Promise<void>, [ReportSendJob]>(() =>
       Promise.resolve(),
     ),
@@ -209,6 +220,7 @@ describe('ReportSendService.run: guards', () => {
       RID,
       'No one left to send this report to',
       next,
+      DUE,
     );
     expect(email.sendEmail).not.toHaveBeenCalled();
     expect(payloads.payload).not.toHaveBeenCalled();
@@ -220,6 +232,7 @@ describe('ReportSendService.run: guards', () => {
     expect(repo.recordError).toHaveBeenCalledWith(
       RID,
       'No one left to send this report to',
+      undefined,
       undefined,
     );
   });
@@ -259,6 +272,7 @@ describe('ReportSendService.run: channels (Review Focus 3)', () => {
       RID,
       'No channels left in this report',
       next,
+      DUE,
     );
     expect(next.getTime()).toBeGreaterThan(NOW.getTime());
   });
@@ -388,14 +402,19 @@ describe('ReportSendService.run: the slot', () => {
     const { service, repo } = setup();
     await expect(service.run(job(SCHEDULED), late)).resolves.toBe('sent');
     const next = nextRunAt(settingsOf(row()).schedule!, TZ, late);
-    expect(repo.recordSent).toHaveBeenCalledWith(RID, late, next);
+    expect(repo.recordSent).toHaveBeenCalledWith(RID, late, next, DUE);
     expect(next.getTime()).toBeGreaterThan(late.getTime());
   });
 
   it('leaves the slot alone for a Send now', async () => {
     const { service, repo } = setup();
     await expect(service.run(job(NOW_JOB), NOW)).resolves.toBe('sent');
-    expect(repo.recordSent).toHaveBeenCalledWith(RID, NOW, undefined);
+    expect(repo.recordSent).toHaveBeenCalledWith(
+      RID,
+      NOW,
+      undefined,
+      undefined,
+    );
   });
 });
 
@@ -522,18 +541,194 @@ describe('ReportSendService.markFailed', () => {
     const { service, repo } = setup();
     await service.markFailed(SCHEDULED, new Error('x'.repeat(300)), NOW);
     const next = nextRunAt(settingsOf(row()).schedule!, TZ, NOW);
-    expect(repo.recordError).toHaveBeenCalledWith(RID, 'x'.repeat(200), next);
+    expect(repo.recordError).toHaveBeenCalledWith(
+      RID,
+      'x'.repeat(200),
+      next,
+      DUE,
+      undefined,
+    );
   });
 
   it('leaves the slot alone for a Send now', async () => {
     const { service, repo } = setup();
     await service.markFailed(NOW_JOB, new Error('boom'), NOW);
-    expect(repo.recordError).toHaveBeenCalledWith(RID, 'boom', undefined);
+    expect(repo.recordError).toHaveBeenCalledWith(
+      RID,
+      'boom',
+      undefined,
+      undefined,
+      undefined,
+    );
   });
 
   it('does nothing for a report that is gone', async () => {
     const { service, repo } = setup({ row: null });
     await service.markFailed(SCHEDULED, new Error('boom'), NOW);
     expect(repo.recordError).not.toHaveBeenCalled();
+  });
+});
+
+describe('ReportSendService.markFailed: the slot and the people', () => {
+  it('stamps last_sent_at when some people did get the report', async () => {
+    const { service, repo } = setup();
+    await service.markFailed(
+      { ...SCHEDULED, sent: ['a@x.com'] },
+      new Error('boom'),
+      NOW,
+    );
+    const next = nextRunAt(settingsOf(row()).schedule!, TZ, NOW);
+    expect(repo.recordError).toHaveBeenCalledWith(RID, 'boom', next, DUE, NOW);
+  });
+
+  it('does not mark a report that has moved past the failed slot', async () => {
+    const { service, repo } = setup({
+      row: row({ nextRunAt: new Date('2026-11-20T04:00:00Z') }),
+    });
+    await service.markFailed(SCHEDULED, new Error('boom'), NOW);
+    expect(repo.recordError).not.toHaveBeenCalled();
+  });
+});
+
+describe('ReportSendService.run: a stale or suspended send', () => {
+  it.each([
+    ['a slot in the future', new Date('2026-11-20T04:00:00Z')],
+    ['no slot at all', null],
+  ])('sends and writes nothing when the report has %s', async (_n, slot) => {
+    const { service, email, payloads, repo } = setup({
+      row: row({ nextRunAt: slot }),
+    });
+    await expect(service.run(job(SCHEDULED), NOW)).resolves.toBe('not_due');
+    expect(email.sendEmail).not.toHaveBeenCalled();
+    expect(payloads.payload).not.toHaveBeenCalled();
+    expect(repo.recordSent).not.toHaveBeenCalled();
+    expect(repo.recordError).not.toHaveBeenCalled();
+  });
+
+  it('still sends a Send now whatever the slot is', async () => {
+    const { service } = setup({ row: row({ nextRunAt: null }) });
+    await expect(service.run(job(NOW_JOB), NOW)).resolves.toBe('sent');
+  });
+
+  it('lets a retry that already emailed people finish', async () => {
+    const { service, email } = setup({
+      row: row({ nextRunAt: new Date('2026-11-20T04:00:00Z') }),
+    });
+    await expect(
+      service.run(job({ ...SCHEDULED, sent: ['a@x.com'] }), NOW),
+    ).resolves.toBe('sent');
+    expect(sentTo(email)).toEqual(['b@y.com']);
+  });
+
+  it('writes only against the slot it read', async () => {
+    const { service, repo } = setup();
+    await service.run(job(SCHEDULED), NOW);
+    expect(repo.recordSent).toHaveBeenCalledWith(
+      RID,
+      NOW,
+      expect.any(Date),
+      DUE,
+    );
+  });
+
+  it('emails nobody for a suspended workspace and writes nothing', async () => {
+    const { service, email, payloads, repo } = setup({ inactive: true });
+    await expect(service.run(job(SCHEDULED), NOW)).resolves.toBe('inactive');
+    await expect(service.run(job(NOW_JOB), NOW)).resolves.toBe('inactive');
+    expect(email.sendEmail).not.toHaveBeenCalled();
+    expect(payloads.payload).not.toHaveBeenCalled();
+    expect(repo.recordSent).not.toHaveBeenCalled();
+    expect(repo.recordError).not.toHaveBeenCalled();
+  });
+});
+
+describe('ReportSendService.run: pacing and counts', () => {
+  const three = () =>
+    setup({ row: row({ recipients: ['a@x.com', 'b@y.com', 'c@z.com'] }) });
+
+  it('waits longer after Resend says slow down', async () => {
+    const { service, email, pause } = three();
+    email.sendEmail
+      .mockResolvedValueOnce({
+        success: false,
+        error: 'Too many requests. You can only make 2 requests per second.',
+      })
+      .mockResolvedValue({ success: true, error: undefined });
+    await expect(service.run(job(SCHEDULED), NOW)).rejects.toThrow(
+      "Couldn't email 1 of 3 people: Too many requests",
+    );
+    expect(pause.mock.calls.map((c) => c[0])).toEqual([2000, 600]);
+  });
+
+  it('recognises a 429 in the message', async () => {
+    const { service, email, pause } = three();
+    email.sendEmail
+      .mockResolvedValueOnce({ success: false, error: 'HTTP 429' })
+      .mockResolvedValue({ success: true, error: undefined });
+    await expect(service.run(job(SCHEDULED), NOW)).rejects.toThrow();
+    expect(pause.mock.calls[0][0]).toBe(2000);
+  });
+
+  it('keeps the normal gap after any other failure', async () => {
+    const { service, email, pause } = three();
+    email.sendEmail
+      .mockResolvedValueOnce({ success: false, error: 'mailbox full' })
+      .mockResolvedValue({ success: true, error: undefined });
+    await expect(service.run(job(SCHEDULED), NOW)).rejects.toThrow();
+    expect(pause.mock.calls.map((c) => c[0])).toEqual([600, 600]);
+  });
+
+  it('counts the whole list in the final message, not only this attempt', async () => {
+    const { service, email } = three();
+    email.sendEmail.mockResolvedValue({ success: false, error: 'boom' });
+    await expect(
+      service.run(job({ ...SCHEDULED, sent: ['a@x.com'] }), NOW),
+    ).rejects.toThrow("Couldn't email 2 of 3 people: boom");
+  });
+});
+
+describe('ReportSendService.run: a PDF that fails', () => {
+  const raw = 'answered 500 from http://gotenberg.internal:3000/forms/chromium';
+
+  it('throws a friendly message, never Gotenberg text, while attempts remain', async () => {
+    const { service, reports, email } = setup();
+    reports.pdfFor.mockRejectedValue(new GotenbergError(raw));
+    const err = await service
+      .run(job(SCHEDULED, 0), NOW)
+      .catch((e: Error) => e);
+    expect((err as Error).message).toBe("Couldn't make the PDF. Try again.");
+    expect((err as Error).message).not.toContain('gotenberg.internal');
+    expect(email.sendEmail).not.toHaveBeenCalled();
+  });
+
+  it('says it took too long for a timeout', async () => {
+    const { service, reports } = setup();
+    reports.pdfFor.mockRejectedValue(new GotenbergError('slow', 'timeout'));
+    await expect(service.run(job(SCHEDULED, 1), NOW)).rejects.toThrow(
+      'The PDF took too long. Try again.',
+    );
+  });
+
+  it('sends the link without the attachment on the last attempt, and logs it', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn');
+    const { service, reports, email, repo } = setup();
+    reports.pdfFor.mockRejectedValue(new GotenbergError(raw));
+    await expect(service.run(job(SCHEDULED, 2), NOW)).resolves.toBe('sent');
+    expect(email.sendEmail).toHaveBeenCalledTimes(2);
+    for (const [o] of email.sendEmail.mock.calls) {
+      expect((o as { attachments?: unknown }).attachments).toBeUndefined();
+    }
+    expect(repo.recordSent).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(
+      `Report ${RID}: PDF failed on the last attempt, sending link only`,
+    );
+  });
+
+  it('still fails on the last attempt for something that is not the PDF', async () => {
+    const { service, reports } = setup();
+    reports.pdfFor.mockRejectedValue(new Error('Workspace not found'));
+    await expect(service.run(job(SCHEDULED, 2), NOW)).rejects.toThrow(
+      'Workspace not found',
+    );
   });
 });

@@ -21,7 +21,11 @@ import type {
   PreviewReportDto,
   UpdateReportDto,
 } from './dto/report-settings.dto';
-import { GotenbergClient, GotenbergError } from './gotenberg.client';
+import {
+  GotenbergClient,
+  GotenbergError,
+  pdfFailureMessage,
+} from './gotenberg.client';
 import { nextRunAt, sendNowJobId } from './lib/next-run';
 import {
   normalizeSettings,
@@ -393,10 +397,10 @@ export class ReportsService {
     } catch (e) {
       // Only here, not in pdfFor: the send job retries on GotenbergError.
       if (!(e instanceof GotenbergError)) throw e;
-      if (e.kind === 'timeout') {
-        throw new GatewayTimeoutException('The PDF took too long. Try again.');
-      }
-      throw new BadGatewayException("Couldn't make the PDF. Try again.");
+      const message = pdfFailureMessage(e.kind);
+      throw e.kind === 'timeout'
+        ? new GatewayTimeoutException(message)
+        : new BadGatewayException(message);
     }
   }
 

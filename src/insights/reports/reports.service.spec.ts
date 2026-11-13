@@ -97,9 +97,9 @@ function setup(
         return Promise.resolve(!!cur);
       },
     ),
-    get: jest.fn((_ws: string, id: string) => {
+    get: jest.fn((ws: string, id: string) => {
       const row = rows.get(id);
-      return Promise.resolve(row ? live(row) : null);
+      return Promise.resolve(row && row.workspaceId === ws ? live(row) : null);
     }),
     list: jest.fn(() => Promise.resolve([...rows.values()].map(live))),
     remove: jest.fn((_ws: string, id: string) =>
@@ -894,6 +894,14 @@ describe('ReportsService.sendNow', () => {
     await expect(service.sendNow(WS, id, NOW)).rejects.toMatchObject({
       status: 409,
     });
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('answers 404 and queues nothing for a report of another workspace', async () => {
+    const { service, queue, id } = await scheduled();
+    await expect(
+      service.sendNow('another-workspace', id, NOW),
+    ).rejects.toMatchObject({ status: 404 });
     expect(queue.add).not.toHaveBeenCalled();
   });
 

@@ -35,6 +35,14 @@ beforeEach(() => {
 afterEach(() => jest.restoreAllMocks());
 
 describe('ReportsProcessor', () => {
+  it('works one job at a time, so the gap between sends holds across reports', () => {
+    expect(
+      Reflect.getMetadata('bullmq:worker_metadata', ReportsProcessor),
+    ).toEqual({
+      concurrency: 1,
+    });
+  });
+
   it('hands the job to the send service', async () => {
     const { send, processor } = make();
     const j = job(0);

@@ -9,8 +9,12 @@ import {
   type ReportSendOutcome,
 } from './report-send.service';
 
-/** Consumes the `reports` queue: one job emails one report. */
-@Processor(QUEUES.REPORTS, { concurrency: 2 })
+/**
+ * Consumes the `reports` queue: one job emails one report. One job at a time,
+ * so ReportSendService's spacing between sends holds across all reports and
+ * stays under Resend's 2 requests a second.
+ */
+@Processor(QUEUES.REPORTS, { concurrency: 1 })
 export class ReportsProcessor extends WorkerHost {
   private readonly logger = new Logger(ReportsProcessor.name);
 

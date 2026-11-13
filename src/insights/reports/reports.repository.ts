@@ -5,6 +5,7 @@ import {
   desc,
   eq,
   isNotNull,
+  isNull,
   lte,
   sql,
   type SQL,
@@ -325,27 +326,50 @@ export class ReportsRepository {
    * A send went out: stamp it, clear the error and move to the next slot (an
    * undefined `nextRunAt` leaves the slot alone, as a Send now does). Not an
    * edit, so `updated_at` and `updated_by` stay.
+   *
+   * `expectedNextRunAt` (a scheduled send) is the slot the job read when it
+   * started: if a PATCH moved the slot since, the write matches no row and the
+   * newer schedule is not overwritten. False when nothing was written.
    */
   async recordSent(
     id: string,
     sentAt: Date,
     nextRunAt: Date | undefined,
-  ): Promise<void> {
-    await this.db
+    expectedNextRunAt?: Date | null,
+  ): Promise<boolean> {
+    const rows = await this.db
       .update(insightReports)
       .set({ lastSentAt: sentAt, lastError: null, nextRunAt })
-      .where(eq(insightReports.id, id));
+      .where(and(eq(insightReports.id, id), slotIs(expectedNextRunAt)))
+      .returning({ id: insightReports.id });
+    return rows.length > 0;
   }
 
-  /** A send failed for good. Same slot rule and the same "not an edit" as `recordSent`. */
+  /**
+   * A send failed for good. Same slot rule, the same guard and the same "not
+   * an edit" as `recordSent`. `sentAt` stamps `last_sent_at` when some people
+   * did get this period's report before it failed.
+   */
   async recordError(
     id: string,
     message: string,
     nextRunAt: Date | undefined,
-  ): Promise<void> {
-    await this.db
+    expectedNextRunAt?: Date | null,
+    sentAt?: Date,
+  ): Promise<boolean> {
+    const rows = await this.db
       .update(insightReports)
-      .set({ lastError: message, nextRunAt })
-      .where(eq(insightReports.id, id));
+      .set({ lastError: message, nextRunAt, lastSentAt: sentAt })
+      .where(and(eq(insightReports.id, id), slotIs(expectedNextRunAt)))
+      .returning({ id: insightReports.id });
+    return rows.length > 0;
   }
+}
+
+/** The slot guard of the `record*` writes; no guard when `expected` is undefined. */
+function slotIs(expected: Date | null | undefined): SQL | undefined {
+  if (expected === undefined) return undefined;
+  return expected === null
+    ? isNull(insightReports.nextRunAt)
+    : eq(insightReports.nextRunAt, expected);
 }

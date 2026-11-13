@@ -1,7 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EmailService } from '../../email/email.service';
-import { GotenbergClient } from './gotenberg.client';
+import {
+  GotenbergClient,
+  GotenbergError,
+  pdfFailureMessage,
+} from './gotenberg.client';
 import { nextRunAt } from './lib/next-run';
 import { briefTextOf, reportEmail, totalsOf } from './lib/report-email';
 import { settingsOf, type ReportRecord } from './lib/report-dto';
@@ -27,10 +31,22 @@ export type ReportSendOutcome =
   | 'gone'
   | 'unscheduled'
   | 'no_channels'
-  | 'no_recipients';
+  | 'no_recipients'
+  /** A scheduled job for a slot the report has since moved on from. */
+  | 'not_due'
+  /** The workspace is suspended: it emails nobody. */
+  | 'inactive';
 
-/** Resend's default is 2 requests a second; a send with an attachment is one request. */
+/**
+ * Resend's default is 2 requests a second; a send with an attachment is one
+ * request. The worker runs one job at a time, so this spacing holds globally.
+ */
 const PAUSE_BETWEEN_SENDS_MS = 600;
+
+/** After Resend said "slow down", the next send in the job waits this long. */
+const PAUSE_AFTER_RATE_LIMIT_MS = 2000;
+
+const RATE_LIMITED = /\b429\b|rate[ _-]?limit|too many requests/i;
 
 const MAX_ERROR_CHARS = 200;
 
@@ -57,6 +73,9 @@ export class ReportSendService {
     job: {
       data: ReportSendJob;
       updateData(data: ReportSendJob): Promise<void>;
+      /** BullMQ's count of attempts already finished; absent means a single attempt. */
+      attemptsMade?: number;
+      opts?: { attempts?: number };
     },
     now = new Date(),
   ): Promise<ReportSendOutcome> {
@@ -69,15 +88,30 @@ export class ReportSendService {
     // A Send now can outlive the schedule it was queued for.
     if (!schedule) return 'unscheduled';
 
+    // A scheduled job names a slot by its id. If the report has moved on since
+    // (a PATCH, a time zone change, an earlier job), this one is stale: send
+    // nothing and write nothing. A retry that already emailed people is
+    // finishing a due send, so it skips the check.
+    const isScheduled = data.kind === 'scheduled';
+    if (
+      isScheduled &&
+      !data.sent?.length &&
+      (!row.nextRunAt || row.nextRunAt.getTime() > now.getTime())
+    ) {
+      return 'not_due';
+    }
+    // The slot this job read; the writes below only land while it still holds.
+    const expected = isScheduled ? row.nextRunAt : undefined;
+
     const [info, team] = await Promise.all([
       this.repo.workspaceInfo(row.workspaceId),
       this.repo.team(row.workspaceId),
     ]);
     if (!info) return 'gone';
-    const next =
-      data.kind === 'scheduled'
-        ? nextRunAt(schedule, info.timezone, now)
-        : undefined;
+    if (!info.isActive) return 'inactive';
+    const next = isScheduled
+      ? nextRunAt(schedule, info.timezone, now)
+      : undefined;
 
     const everyone = resolveRecipients(
       {
@@ -92,6 +126,7 @@ export class ReportSendService {
         row.id,
         'No one left to send this report to',
         next,
+        expected,
       );
       return 'no_recipients';
     }
@@ -110,11 +145,17 @@ export class ReportSendService {
           row.id,
           'No channels left in this report',
           next,
+          expected,
         );
         return 'no_channels';
       }
 
-      const attachments = await this.attachmentsFor(record, schedule, now);
+      const attachments = await this.attachmentsFor(
+        record,
+        schedule,
+        now,
+        this.isLastAttempt(job),
+      );
       const has = (section: ReportSection) =>
         payload.sections.includes(section);
       const { overview } = payload;
@@ -136,8 +177,9 @@ export class ReportSendService {
 
       const failures: string[] = [];
       const sent = [...done];
+      let pauseMs = PAUSE_BETWEEN_SENDS_MS;
       for (const [i, to] of pending.entries()) {
-        if (i > 0) await this.pause(PAUSE_BETWEEN_SENDS_MS);
+        if (i > 0) await this.pause(pauseMs);
         const unsubscribeUrl = `${this.apiOrigin()}/reports/unsubscribe/${this.tokens.unsubscribeToken(row.id, to)}`;
         const result = await this.emailService.sendEmail({
           to,
@@ -148,18 +190,22 @@ export class ReportSendService {
         if (result.success === true) {
           sent.push(to);
           await job.updateData({ ...data, sent: [...sent] });
+          pauseMs = PAUSE_BETWEEN_SENDS_MS;
         } else {
-          failures.push(result.error ?? 'Unknown error');
+          const reason = result.error ?? 'Unknown error';
+          failures.push(reason);
+          // Resend said slow down: give it room before the next one.
+          if (RATE_LIMITED.test(reason)) pauseMs = PAUSE_AFTER_RATE_LIMIT_MS;
         }
       }
       if (failures.length) {
         throw new Error(
-          `Couldn't email ${failures.length} of ${pending.length} people: ${failures[0]}`,
+          `Couldn't email ${failures.length} of ${everyone.length} people: ${failures[0]}`,
         );
       }
     }
 
-    await this.repo.recordSent(row.id, now, next);
+    await this.repo.recordSent(row.id, now, next, expected);
     return 'sent';
   }
 
@@ -171,17 +217,29 @@ export class ReportSendService {
   ): Promise<void> {
     const record = await this.repo.getById(data.reportId);
     if (!record) return;
-    const { schedule } = settingsOf(record.row);
+    const { row } = record;
+    const { schedule } = settingsOf(row);
+    const isScheduled = data.kind === 'scheduled';
+    // A failure of a slot the report has moved on from is not its failure.
+    if (
+      isScheduled &&
+      (!row.nextRunAt || row.nextRunAt.getTime() > now.getTime())
+    ) {
+      return;
+    }
     const info =
-      data.kind === 'scheduled' && schedule
-        ? await this.repo.workspaceInfo(record.row.workspaceId)
+      isScheduled && schedule
+        ? await this.repo.workspaceInfo(row.workspaceId)
         : null;
     const next =
       schedule && info ? nextRunAt(schedule, info.timezone, now) : undefined;
     await this.repo.recordError(
-      record.row.id,
+      row.id,
       error.message.slice(0, MAX_ERROR_CHARS),
       next,
+      isScheduled ? row.nextRunAt : undefined,
+      // Some people did get this period's report before it failed.
+      data.sent?.length ? now : undefined,
     );
   }
 
@@ -189,11 +247,25 @@ export class ReportSendService {
     return new Promise((resolve) => setTimeout(resolve, ms));
   }
 
-  /** The PDF as an attachment; none when the report skips it or Gotenberg is not set up. */
+  /** True while BullMQ is running the last attempt it will make. */
+  private isLastAttempt(job: {
+    attemptsMade?: number;
+    opts?: { attempts?: number };
+  }): boolean {
+    return (job.attemptsMade ?? 0) + 1 >= (job.opts?.attempts ?? 1);
+  }
+
+  /**
+   * The PDF as an attachment; none when the report skips it or Gotenberg is
+   * not set up. A failed PDF throws a friendly message (Gotenberg's own names
+   * an internal host) and BullMQ retries; on the last attempt the people get
+   * the link without the attachment rather than nothing.
+   */
   private async attachmentsFor(
     record: ReportRecord,
     schedule: ReportSchedule,
     now: Date,
+    isLastAttempt: boolean,
   ): Promise<{ filename: string; content: Buffer }[] | undefined> {
     if (!schedule.attachPdf) return undefined;
     if (!this.gotenberg.isConfigured()) {
@@ -202,8 +274,18 @@ export class ReportSendService {
       );
       return undefined;
     }
-    const pdf = await this.reports.pdfFor(record, now);
-    return [{ filename: pdf.filename, content: pdf.body }];
+    try {
+      const pdf = await this.reports.pdfFor(record, now);
+      return [{ filename: pdf.filename, content: pdf.body }];
+    } catch (e) {
+      if (!(e instanceof GotenbergError)) throw e;
+      this.logger.warn(`Report ${record.row.id}: PDF failed: ${e.message}`);
+      if (!isLastAttempt) throw new Error(pdfFailureMessage(e.kind));
+      this.logger.warn(
+        `Report ${record.row.id}: PDF failed on the last attempt, sending link only`,
+      );
+      return undefined;
+    }
   }
 
   private get frontendUrl(): string {

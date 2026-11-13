@@ -553,6 +553,82 @@ describeDb('ReportsRepository (database)', () => {
         expect((await repo.getById(id))?.row.nextRunAt).toEqual(next);
       });
     });
+
+    it('recordError can stamp last_sent_at when some people got the report', async () => {
+      await run(async (repo, client) => {
+        const { workspaceId } = await seedWorkspace(client);
+        const id = await repo.insert(
+          values(workspaceId, { cadence: 'monthly', sendMinute: 540 }),
+        );
+        const at = new Date('2026-11-01T04:00:30Z');
+        await repo.recordError(id, 'Partly sent', undefined, undefined, at);
+        const row = (await repo.getById(id))?.row;
+        expect(row?.lastError).toBe('Partly sent');
+        expect(row?.lastSentAt).toEqual(at);
+      });
+    });
+
+    describe('with the slot the job read', () => {
+      const SLOT = new Date('2026-11-01T04:00:00Z');
+      const EDITED = new Date('2026-11-02T04:00:00Z');
+      const NEXT = new Date('2026-12-01T04:00:00Z');
+
+      async function seed(repo: ReportsRepository, workspaceId: string) {
+        return repo.insert(
+          values(workspaceId, {
+            cadence: 'monthly',
+            sendMinute: 540,
+            lastError: 'old',
+            nextRunAt: SLOT,
+          }),
+        );
+      }
+
+      it('writes while the slot is still the one read', async () => {
+        await run(async (repo, client) => {
+          const { workspaceId } = await seedWorkspace(client);
+          const id = await seed(repo, workspaceId);
+          const sentAt = new Date('2026-11-01T04:00:05Z');
+          expect(await repo.recordSent(id, sentAt, NEXT, SLOT)).toBe(true);
+          const row = (await repo.getById(id))?.row;
+          expect(row?.nextRunAt).toEqual(NEXT);
+          expect(row?.lastSentAt).toEqual(sentAt);
+        });
+      });
+
+      it('does not overwrite a schedule changed while the job ran', async () => {
+        await run(async (repo, client) => {
+          const { workspaceId } = await seedWorkspace(client);
+          const id = await seed(repo, workspaceId);
+          // A PATCH moves the slot after the job read SLOT.
+          await repo.update(workspaceId, id, { nextRunAt: EDITED });
+
+          expect(
+            await repo.recordSent(
+              id,
+              new Date('2026-11-01T04:00:05Z'),
+              NEXT,
+              SLOT,
+            ),
+          ).toBe(false);
+          expect(await repo.recordError(id, 'boom', NEXT, SLOT)).toBe(false);
+
+          const row = (await repo.getById(id))?.row;
+          expect(row?.nextRunAt).toEqual(EDITED);
+          expect(row?.lastSentAt).toBeNull();
+          expect(row?.lastError).toBe('old');
+        });
+      });
+
+      it('treats a null expected slot as "still unset"', async () => {
+        await run(async (repo, client) => {
+          const { workspaceId } = await seedWorkspace(client);
+          const id = await repo.insert(values(workspaceId));
+          expect(await repo.recordError(id, 'x', undefined, SLOT)).toBe(false);
+          expect(await repo.recordError(id, 'x', undefined, null)).toBe(true);
+        });
+      });
+    });
   });
 
   it('finds a report by share token, and not once the link is off', async () => {

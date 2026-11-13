@@ -19,6 +19,17 @@ export class GotenbergError extends Error {
   }
 }
 
+/**
+ * What a person may read about a failed PDF. A GotenbergError's own message
+ * names the internal host and status, so it goes to logs and never to
+ * `last_error` or a response.
+ */
+export function pdfFailureMessage(kind: GotenbergError['kind']): string {
+  return kind === 'timeout'
+    ? 'The PDF took too long. Try again.'
+    : "Couldn't make the PDF. Try again.";
+}
+
 /** A4 in inches, which is what Gotenberg reads a bare number as. */
 const A4_WIDTH = '8.27';
 const A4_HEIGHT = '11.7';
