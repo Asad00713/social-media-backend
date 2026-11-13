@@ -11,6 +11,7 @@ import type { WorkspaceRole } from '../../workspace-members/role-capabilities';
 import type { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
 import type { OAuthService } from '../services/oauth.service';
 import { ConnectLinkAccessService } from './connect-link-access.service';
+import { encrypt } from '../../common/utils/encryption.util';
 import { CONNECT_LINK_TTL_MS, hashLinkToken } from './lib/connect-link-rules';
 
 const WS = '11111111-1111-4111-8111-111111111111';
@@ -301,6 +302,39 @@ describe('ConnectLinkAccessService', () => {
         await codeOf(setup({ role: 'GUEST' }).service.resolveById(LINK)),
       ).toBe('LINK_UNAVAILABLE');
       await expect(setup().service.resolveById(LINK)).resolves.toBeDefined();
+    });
+  });
+
+  describe('rawTokenOf', () => {
+    it("decrypts the link's token whatever its status (the callback must reach /c/<token>)", async () => {
+      const tokenEncrypted = encrypt('the-raw-token');
+      expect(
+        await setup({ link: { tokenEncrypted } }).service.rawTokenOf(LINK),
+      ).toBe('the-raw-token');
+      expect(
+        await setup({
+          link: { tokenEncrypted, revokedAt: BASE },
+        }).service.rawTokenOf(LINK),
+      ).toBe('the-raw-token');
+    });
+
+    it('looks the link up by id: another id finds nothing', async () => {
+      const { service } = setup({
+        link: { tokenEncrypted: encrypt('the-raw-token') },
+      });
+      expect(
+        await service.rawTokenOf('99999999-9999-4999-8999-999999999999'),
+      ).toBeNull();
+    });
+
+    it('a missing link or an unreadable token -> null', async () => {
+      expect(await setup({ link: null }).service.rawTokenOf(LINK)).toBeNull();
+      // a corrupt ciphertext (decrypt throws) is not a token
+      expect(
+        await setup({
+          link: { tokenEncrypted: 'not:a-ciphertext' },
+        }).service.rawTokenOf(LINK),
+      ).toBeNull();
     });
   });
 

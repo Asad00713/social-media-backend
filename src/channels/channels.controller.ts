@@ -115,6 +115,19 @@ import { YoutubeDataDeletionService } from './services/youtube-data-deletion.ser
 import { ChannelPostsCleanupService } from './services/channel-posts-cleanup.service';
 import { errorCodeOf } from '../billing/services/channel-limit.error';
 import { GoogleOauthRevokeService } from './services/google-oauth-revoke.service';
+import {
+  ConnectLinkAccessService,
+  type ResolvedConnectLink,
+} from './connect-links/connect-link-access.service';
+import { ConnectLinkConnectService } from './connect-links/connect-link-connect.service';
+import { connectLinkError } from './connect-links/lib/connect-link-errors';
+import {
+  callbackTarget,
+  connectLinkIdOf,
+  linkErrorCodeOf,
+  NETWORK_DECLINED,
+  type CallbackTarget,
+} from './connect-links/lib/callback-target';
 
 @Controller('channels')
 export class ChannelsController {
@@ -164,7 +177,44 @@ export class ChannelsController {
     private readonly mentionLookup: MentionLookupService,
     private readonly postsCleanup: ChannelPostsCleanupService,
     private readonly channelConnect: ChannelConnectService,
+    private readonly connectLinkAccess: ConnectLinkAccessService,
+    private readonly connectLinkConnect: ConnectLinkConnectService,
   ) {}
+
+  /**
+   * Where a callback for a connect-link state goes back to: `/c/<token>`.
+   * Null when the link row is gone (the caller still refuses the connect -
+   * resolveById answers LINK_NOT_FOUND).
+   */
+  private async connectLinkTarget(
+    linkId: string,
+    frontendUrl: string,
+  ): Promise<CallbackTarget | null> {
+    const raw = await this.connectLinkAccess.rawTokenOf(linkId);
+    return raw ? callbackTarget({ frontendUrl, linkRaw: raw }) : null;
+  }
+
+  /**
+   * The link target of a state that is NOT being consumed (the network sent
+   * an error, or validation failed). Never throws: a lookup failure just
+   * leaves the old team error page.
+   */
+  private async connectLinkTargetOfState(
+    state: string | undefined,
+    frontendUrl: string,
+  ): Promise<CallbackTarget | null> {
+    if (!state) return null;
+    try {
+      const peeked = await this.oauthService.peekState(state);
+      const linkId = connectLinkIdOf(peeked?.additionalData);
+      return linkId ? await this.connectLinkTarget(linkId, frontendUrl) : null;
+    } catch (err) {
+      this.logger.warn(
+        `Connect-link lookup for an OAuth error failed: ${(err as Error).message}`,
+      );
+      return null;
+    }
+  }
 
   /**
    * Load a channel addressed only by its numeric id (body `channelId`) and
@@ -307,7 +357,32 @@ export class ChannelsController {
     console.log(`[OAuth Callback] Code received: ${code ? 'YES' : 'NO'}`);
     console.log(`[OAuth Callback] Error: ${error || 'none'}`);
 
+    // Where the browser goes: the team's /channels/connect/* pages, or - for
+    // a state started from a client's link page - back to /c/<token>.
+    let target = callbackTarget({ frontendUrl, linkRaw: null });
+    // The link of a state from a link page, resolved (open, sender allowed).
+    let linked: ResolvedConnectLink | null = null;
+    let fromLink = false;
+    const codeOf = (err: unknown) =>
+      fromLink ? linkErrorCodeOf(err) : errorCodeOf(err);
+
     try {
+      // The client cancelled or declined on the network's own screen. There
+      // is no code to exchange; a link visitor still goes back to the link
+      // page (the state is only peeked, not used up).
+      if (error || errorCode || errorMessage) {
+        const linkTarget = await this.connectLinkTargetOfState(
+          state,
+          frontendUrl,
+        );
+        if (linkTarget) {
+          const message = error
+            ? errorDescription || error
+            : errorMessage || errorCode || 'facebook_error';
+          return res.redirect(linkTarget.error(message, NETWORK_DECLINED));
+        }
+      }
+
       // Check for OAuth error (standard format)
       if (error) {
         const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent(error)}&description=${encodeURIComponent(errorDescription || '')}`;
@@ -334,10 +409,46 @@ export class ChannelsController {
 
       // Validate state and get stored data
       console.log(`[OAuth Callback] Validating state token...`);
-      const stateData = await this.oauthService.validateState(state);
+      let stateData: Awaited<ReturnType<OAuthService['validateState']>>;
+      try {
+        stateData = await this.oauthService.validateState(state);
+      } catch (stateError) {
+        // An expired or replayed state of a link still lands on the link page.
+        const linkTarget = await this.connectLinkTargetOfState(
+          state,
+          frontendUrl,
+        );
+        if (linkTarget) {
+          target = linkTarget;
+          fromLink = true;
+        }
+        throw stateError;
+      }
       console.log(
         `[OAuth Callback] State validated successfully for workspace: ${stateData.workspaceId}`,
       );
+
+      // A connect started from a client's link page: re-check the link (it
+      // may have been cancelled or expired, or the sender removed, while the
+      // client was on the network) before the code is spent, and only for a
+      // network the link offers. Everything below then creates the channels
+      // server-side, marked with the link, and answers on the link page.
+      const connectLinkId = connectLinkIdOf(stateData.additionalData);
+      if (connectLinkId) {
+        fromLink = true;
+        target =
+          (await this.connectLinkTarget(connectLinkId, frontendUrl)) ?? target;
+        linked = await this.connectLinkAccess.resolveById(connectLinkId);
+        if (!linked.link.networks.includes(platform)) {
+          throw connectLinkError(
+            'NETWORK_NOT_OFFERED',
+            'This link does not offer that network.',
+          );
+        }
+      }
+      const linkMark = linked
+        ? this.connectLinkConnect.markOf(linked)
+        : undefined;
 
       // Get the stored redirect_uri to ensure exact match during token exchange
       const storedRedirectUri = stateData.additionalData?._oauthRedirectUri as
@@ -403,12 +514,18 @@ export class ChannelsController {
 
           console.log(`[OAuth Callback] Slack channel created: ${channel.id}`);
 
-          const slackSuccessUrl = `${frontendUrl}/channels/connect/success?platform=slack&channelId=${channel.id}`;
-          return res.redirect(slackSuccessUrl);
+          return res.redirect(target.success('slack', channel.id));
         } catch (slackError) {
           console.error('[OAuth Callback] Slack setup failed:', slackError);
-          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Slack setup failed: ' + (slackError instanceof Error ? slackError.message : 'Unknown error'))}`;
-          return res.redirect(errorUrl);
+          return res.redirect(
+            target.error(
+              'Slack setup failed: ' +
+                (slackError instanceof Error
+                  ? slackError.message
+                  : 'Unknown error'),
+              codeOf(slackError),
+            ),
+          );
         }
       }
 
@@ -462,12 +579,18 @@ export class ChannelsController {
           console.log(
             `[OAuth Callback] Discord channel created: ${channel.id}`,
           );
-          const discordSuccessUrl = `${frontendUrl}/channels/connect/success?platform=discord&channelId=${channel.id}`;
-          return res.redirect(discordSuccessUrl);
+          return res.redirect(target.success('discord', channel.id));
         } catch (discordError) {
           console.error('[OAuth Callback] Discord setup failed:', discordError);
-          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Discord setup failed: ' + (discordError instanceof Error ? discordError.message : 'Unknown error'))}`;
-          return res.redirect(errorUrl);
+          return res.redirect(
+            target.error(
+              'Discord setup failed: ' +
+                (discordError instanceof Error
+                  ? discordError.message
+                  : 'Unknown error'),
+              codeOf(discordError),
+            ),
+          );
         }
       }
 
@@ -535,18 +658,23 @@ export class ChannelsController {
                 createdAt: twitterUser.createdAt,
               },
             },
+            linkMark,
           );
 
           console.log(
             `[OAuth Callback] Twitter channel created: ${channel.id}`,
           );
+          if (linked) {
+            await this.connectLinkConnect.notifyConnected(linked, channel);
+          }
 
           // Initiate OAuth 1.0a for media upload support
           const oauth1CallbackUrl = `${backendUrl}/channels/oauth/twitter/oauth1/callback`;
           const oauth1Result =
             await this.twitterService.getOAuth1RequestToken(oauth1CallbackUrl);
 
-          // Store OAuth 1.0a state with channel ID
+          // Store OAuth 1.0a state with channel ID (and the link, so the
+          // OAuth 1.0a callback returns a link visitor to the link page)
           await this.channelService.createOAuthState(
             stateData.workspaceId,
             stateData.userId,
@@ -554,7 +682,12 @@ export class ChannelsController {
             oauth1Result.oauthToken,
             oauth1CallbackUrl,
             oauth1Result.oauthTokenSecret,
-            { channelId: channel.id.toString() },
+            linked
+              ? {
+                  channelId: channel.id.toString(),
+                  connectLinkId: linked.link.id,
+                }
+              : { channelId: channel.id.toString() },
           );
 
           console.log(
@@ -568,9 +701,15 @@ export class ChannelsController {
             '[OAuth Callback] Twitter auto-setup failed:',
             twitterError,
           );
-          // Fall through to normal flow if Twitter-specific handling fails
-          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Twitter setup failed: ' + (twitterError instanceof Error ? twitterError.message : 'Unknown error'))}`;
-          return res.redirect(errorUrl);
+          return res.redirect(
+            target.error(
+              'Twitter setup failed: ' +
+                (twitterError instanceof Error
+                  ? twitterError.message
+                  : 'Unknown error'),
+              codeOf(twitterError),
+            ),
+          );
         }
       }
 
@@ -638,19 +777,27 @@ export class ChannelsController {
                 igWebhookId: instagramUser.userId ?? null,
               },
             },
+            linkMark,
           );
 
           console.log(
             `[OAuth Callback] Instagram channel created: ${channel.id}`,
           );
+          if (linked) {
+            await this.connectLinkConnect.notifyConnected(linked, channel);
+          }
 
           // Redirect to frontend success page
-          const successUrl = `${frontendUrl}/channels/connect/success?platform=instagram&channelId=${channel.id}`;
-          return res.redirect(successUrl);
+          return res.redirect(target.success('instagram', channel.id));
         } catch (igError) {
           console.error('[OAuth Callback] Instagram setup failed:', igError);
-          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Instagram setup failed: ' + (igError instanceof Error ? igError.message : 'Unknown error'))}`;
-          return res.redirect(errorUrl);
+          return res.redirect(
+            target.error(
+              'Instagram setup failed: ' +
+                (igError instanceof Error ? igError.message : 'Unknown error'),
+              codeOf(igError),
+            ),
+          );
         }
       }
 
@@ -694,19 +841,29 @@ export class ChannelsController {
                 threadsProfileUrl: threadsUser.threadsProfileUrl,
               },
             },
+            linkMark,
           );
 
           console.log(
             `[OAuth Callback] Threads channel created: ${channel.id}`,
           );
+          if (linked) {
+            await this.connectLinkConnect.notifyConnected(linked, channel);
+          }
 
           // Redirect to frontend success page
-          const successUrl = `${frontendUrl}/channels/connect/success?platform=threads&channelId=${channel.id}`;
-          return res.redirect(successUrl);
+          return res.redirect(target.success('threads', channel.id));
         } catch (threadsError) {
           console.error('[OAuth Callback] Threads setup failed:', threadsError);
-          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('Threads setup failed: ' + (threadsError instanceof Error ? threadsError.message : 'Unknown error'))}`;
-          return res.redirect(errorUrl);
+          return res.redirect(
+            target.error(
+              'Threads setup failed: ' +
+                (threadsError instanceof Error
+                  ? threadsError.message
+                  : 'Unknown error'),
+              codeOf(threadsError),
+            ),
+          );
         }
       }
 
@@ -756,17 +913,27 @@ export class ChannelsController {
                 isVerified: tiktokUser.isVerified,
               },
             },
+            linkMark,
           );
 
           console.log(`[OAuth Callback] TikTok channel created: ${channel.id}`);
+          if (linked) {
+            await this.connectLinkConnect.notifyConnected(linked, channel);
+          }
 
           // Redirect to frontend success page
-          const successUrl = `${frontendUrl}/channels/connect/success?platform=tiktok&channelId=${channel.id}`;
-          return res.redirect(successUrl);
+          return res.redirect(target.success('tiktok', channel.id));
         } catch (tiktokError) {
           console.error('[OAuth Callback] TikTok setup failed:', tiktokError);
-          const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent('TikTok setup failed: ' + (tiktokError instanceof Error ? tiktokError.message : 'Unknown error'))}`;
-          return res.redirect(errorUrl);
+          return res.redirect(
+            target.error(
+              'TikTok setup failed: ' +
+                (tiktokError instanceof Error
+                  ? tiktokError.message
+                  : 'Unknown error'),
+              codeOf(tiktokError),
+            ),
+          );
         }
       }
 
@@ -877,6 +1044,26 @@ export class ChannelsController {
         );
       }
 
+      // A link connect never sends tokens to the browser: LinkedIn, YouTube
+      // and Pinterest are created here; Facebook's user token is parked as a
+      // selection for the link page's Pages picker.
+      if (linked) {
+        const result = await this.connectLinkConnect.connectFromTokens(
+          linked,
+          platform,
+          {
+            accessToken: tokens.accessToken,
+            refreshToken: tokens.refreshToken || undefined,
+            tokenExpiresAt: tokenExpiresAt?.toISOString(),
+          },
+        );
+        return res.redirect(
+          result.kind === 'selection'
+            ? target.selection(result.id)
+            : target.success(platform, result.channel.id),
+        );
+      }
+
       // Default flow for other platforms: Redirect to frontend with success and tokens
       // Frontend will fetch account info and complete the channel creation
       const successUrl = new URL(`${frontendUrl}/channels/connect/success`);
@@ -894,12 +1081,17 @@ export class ChannelsController {
     } catch (err) {
       console.log(`[OAuth Callback] ERROR: ${err.message || 'Unknown error'}`);
       console.log(`[OAuth Callback] Full error:`, err);
-      // A coded refusal (CHANNEL_LIMIT_REACHED) keeps its code through the
-      // redirect, so the page can offer the upgrade instead of an error.
-      const code = errorCodeOf(err);
-      const codeParam = code ? `&code=${encodeURIComponent(code)}` : '';
-      const errorUrl = `${frontendUrl}/channels/connect/error?error=${encodeURIComponent(err.message || 'Unknown error')}&description=${encodeURIComponent('State token: ' + (state ? state.substring(0, 10) + '...' : 'missing'))}${codeParam}`;
-      return res.redirect(errorUrl);
+      // A coded refusal (CHANNEL_LIMIT_REACHED, LINK_REVOKED, ...) keeps its
+      // code through the redirect, so the page can offer the upgrade or show
+      // the link's status instead of a bare error.
+      return res.redirect(
+        target.error(
+          err.message || 'Unknown error',
+          codeOf(err),
+          'State token: ' +
+            (state ? state.substring(0, 10) + '...' : 'missing'),
+        ),
+      );
     }
   }
 
@@ -2528,10 +2720,33 @@ export class ChannelsController {
     @Res() res: Response,
   ) {
     const frontendUrl = process.env.FRONTEND_URL || 'http://localhost:3000';
+    // A Twitter connect started from a link page carries the link into this
+    // second (OAuth 1.0a) leg and ends on the link page too. The channel was
+    // already created, marked and announced in the first leg.
+    let target = callbackTarget({ frontendUrl, linkRaw: null });
+    const linkTargetOf = async (additionalData: unknown) => {
+      const linkId = connectLinkIdOf(
+        additionalData as Record<string, unknown> | null,
+      );
+      return linkId ? this.connectLinkTarget(linkId, frontendUrl) : null;
+    };
 
     try {
-      // Check if user denied access
+      // Check if user denied access (`denied` is the request token)
       if (denied) {
+        const deniedState =
+          await this.channelService.getOAuthStateByToken(denied);
+        const linkTarget = deniedState
+          ? await linkTargetOf(deniedState.additionalData)
+          : null;
+        if (linkTarget) {
+          return res.redirect(
+            linkTarget.error(
+              'X media uploads were not allowed. The account is connected without them.',
+              NETWORK_DECLINED,
+            ),
+          );
+        }
         return res.redirect(
           `${frontendUrl}/channels/connect/error?error=User%20denied%20Twitter%20access`,
         );
@@ -2552,6 +2767,7 @@ export class ChannelsController {
           `${frontendUrl}/channels/connect/error?error=OAuth%20state%20not%20found%20or%20expired`,
         );
       }
+      target = (await linkTargetOf(oauthState.additionalData)) ?? target;
 
       // Exchange for access tokens
       const credentials = await this.twitterService.getOAuth1AccessToken(
@@ -2567,9 +2783,7 @@ export class ChannelsController {
       const channelId = additionalData?.channelId;
 
       if (!channelId) {
-        return res.redirect(
-          `${frontendUrl}/channels/connect/error?error=Channel%20ID%20not%20found`,
-        );
+        return res.redirect(target.error('Channel ID not found'));
       }
 
       // Update the channel's metadata with OAuth 1.0a tokens
@@ -2579,9 +2793,7 @@ export class ChannelsController {
       );
 
       if (!channel) {
-        return res.redirect(
-          `${frontendUrl}/channels/connect/error?error=Channel%20not%20found`,
-        );
+        return res.redirect(target.error('Channel not found'));
       }
 
       const updatedMetadata = {
@@ -2600,13 +2812,19 @@ export class ChannelsController {
       await this.channelService.markOAuthStateUsed(oauthToken);
 
       // Redirect to success page
+      if (target.isLink) {
+        return res.redirect(target.success('twitter', parseInt(channelId, 10)));
+      }
       return res.redirect(
         `${frontendUrl}/channels/connect/success?platform=twitter&oauth1=true&channelId=${channelId}`,
       );
     } catch (err) {
       const errorMessage = err instanceof Error ? err.message : 'Unknown error';
       return res.redirect(
-        `${frontendUrl}/channels/connect/error?error=${encodeURIComponent(errorMessage)}`,
+        target.error(
+          errorMessage,
+          target.isLink ? linkErrorCodeOf(err) : errorCodeOf(err),
+        ),
       );
     }
   }

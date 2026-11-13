@@ -1,6 +1,7 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { SUSPENDED_STATUSES } from '../../auth/guards/workspace-suspended.guard';
+import { decrypt } from '../../common/utils/encryption.util';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { subscriptions } from '../../drizzle/schema/billing.schema';
@@ -67,6 +68,26 @@ export class ConnectLinkAccessService {
       .where(eq(channelConnectLinks.id, linkId))
       .limit(1);
     return this.check(link);
+  }
+
+  /**
+   * The raw token of a link whatever its status, or null when there is no
+   * such link. The OAuth callback only has the link id, and must send the
+   * visitor back to `/c/<token>` even when the link died mid-flow (the page
+   * then shows why). Grants nothing by itself: every action still resolves.
+   */
+  async rawTokenOf(linkId: string): Promise<string | null> {
+    const [row] = await this.db
+      .select({ tokenEncrypted: channelConnectLinks.tokenEncrypted })
+      .from(channelConnectLinks)
+      .where(eq(channelConnectLinks.id, linkId))
+      .limit(1);
+    if (!row) return null;
+    try {
+      return decrypt(row.tokenEncrypted);
+    } catch {
+      return null;
+    }
   }
 
   /**

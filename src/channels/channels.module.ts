@@ -4,6 +4,8 @@ import { ChannelHubController } from './channel-hub.controller';
 import { ConnectLinksController } from './connect-links/connect-links.controller';
 import { ConnectLinksService } from './connect-links/connect-links.service';
 import { ConnectLinkAccessService } from './connect-links/connect-link-access.service';
+import { ConnectLinkConnectService } from './connect-links/connect-link-connect.service';
+import { FacebookSelectionStore } from './connect-links/facebook-selection.store';
 import { PublicConnectLinksController } from './connect-links/public-connect-links.controller';
 import { EmailModule } from '../email/email.module';
 import { ChannelPauseService } from './services/channel-pause.service';
@@ -107,6 +109,8 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
     ChannelPauseService,
     ConnectLinksService,
     ConnectLinkAccessService,
+    ConnectLinkConnectService,
+    FacebookSelectionStore,
     ChannelPostsCleanupService,
     ChannelSettingsService,
     ChannelSummaryService,
