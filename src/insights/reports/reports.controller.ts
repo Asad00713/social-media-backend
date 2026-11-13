@@ -114,4 +114,15 @@ export class ReportsController {
   ): Promise<{ url: string | null }> {
     return this.reports.setShare(workspaceId, user.userId, id, dto.enabled);
   }
+
+  /** Queues a send to the schedule's people; the next scheduled send stays. */
+  @Post(':id/send')
+  @HttpCode(202)
+  @RequireCapability('reports:manage')
+  send(
+    @Param('workspaceId', ParseUUIDPipe) workspaceId: string,
+    @Param('id', ParseUUIDPipe) id: string,
+  ): Promise<{ recipients: number }> {
+    return this.reports.sendNow(workspaceId, id);
+  }
 }

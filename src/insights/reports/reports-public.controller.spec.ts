@@ -1,4 +1,5 @@
 import { createHmac } from 'crypto';
+import { getQueueToken } from '@nestjs/bullmq';
 import {
   Controller,
   Get,
@@ -14,6 +15,7 @@ import request from 'supertest';
 import type { App } from 'supertest/types';
 import { SKIP_LAUNCH_GATE } from '../../auth/decorators/skip-launch-gate.decorator';
 import { AllowlistGuard } from '../../auth/guards/allowlist.guard';
+import { QUEUES } from '../../queue/queue.module';
 import { UsersService } from '../../users/users.service';
 import { InsightsChannelsRepository } from '../insights-channels.repository';
 import { GotenbergClient } from './gotenberg.client';
@@ -127,6 +129,10 @@ describe('ReportsPublicController over HTTP', () => {
         { provide: ReportsRepository, useValue: repo },
         { provide: InsightsChannelsRepository, useValue: {} },
         { provide: GotenbergClient, useValue: {} },
+        {
+          provide: getQueueToken(QUEUES.REPORTS),
+          useValue: { add: jest.fn() },
+        },
         { provide: ReportPayloadService, useValue: payloads },
         { provide: ConfigService, useValue: config },
         { provide: UsersService, useValue: users },

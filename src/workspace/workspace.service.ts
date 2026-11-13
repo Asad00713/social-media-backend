@@ -23,6 +23,7 @@ import { AccountChannelsService } from 'src/billing/services/account-channels.se
 import { resolveWorkspaceLimits } from 'src/billing/services/limit-resolver.util';
 import { getNextTokenResetDate } from 'src/billing/services/token-reset.util';
 import { LibrarySamplesService } from 'src/media-library/samples/library-samples.service';
+import { rescheduleWorkspaceReports } from '../insights/reports/lib/reschedule';
 
 type GetAllREsponse = {
   // Omits the Maestro BYOK credential — it must never reach a client.
@@ -350,6 +351,8 @@ export class WorkspaceService {
       );
     }
 
+    // Set only when the new name makes a different slug.
+    let slugChange: { slug: string } | undefined;
     if (updateWorkspaceDto.name) {
       const newSlug = this.generateSlug(updateWorkspaceDto.name);
 
@@ -367,17 +370,7 @@ export class WorkspaceService {
           );
         }
 
-        const [updatedWorkspace] = await this.db
-          .update(workspace)
-          .set({
-            ...updateWorkspaceDto,
-            slug: newSlug,
-            updatedAt: new Date(),
-          })
-          .where(eq(workspace.id, workspaceId))
-          .returning();
-
-        return updatedWorkspace;
+        slugChange = { slug: newSlug };
       }
     }
 
@@ -385,12 +378,44 @@ export class WorkspaceService {
       .update(workspace)
       .set({
         ...updateWorkspaceDto,
+        ...slugChange,
         updatedAt: new Date(),
       })
       .where(eq(workspace.id, workspaceId))
       .returning();
 
+    // One tail for a rename and a plain save alike.
+    if (
+      updateWorkspaceDto.timezone !== undefined &&
+      updateWorkspaceDto.timezone !== existingWorkspace.timezone
+    ) {
+      await this.rescheduleReports(workspaceId, updateWorkspaceDto.timezone);
+    }
+
     return updatedWorkspace;
+  }
+
+  /**
+   * Scheduled Insights reports send at a wall-clock time in the workspace's
+   * zone, so a new zone moves their next send. A failure here never fails
+   * the settings save: the reports then keep their old slots.
+   */
+  private async rescheduleReports(
+    workspaceId: string,
+    timeZone: string,
+  ): Promise<void> {
+    try {
+      await rescheduleWorkspaceReports(
+        this.db,
+        workspaceId,
+        timeZone,
+        new Date(),
+      );
+    } catch (error) {
+      this.logger.warn(
+        `Could not reschedule reports for workspace ${workspaceId} after a time zone change: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   async remove(

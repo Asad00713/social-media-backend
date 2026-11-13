@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { AnalyticsModule } from '../channels/analytics/analytics.module';
+import { EmailModule } from '../email/email.module';
 import { PostPerformanceModule } from '../post-performance/post-performance.module';
 import { QUEUES } from '../queue/queue.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
@@ -14,15 +15,19 @@ import { InsightsService } from './insights.service';
 import { InsightsTopicsRepository } from './insights-topics.repository';
 import { GotenbergClient } from './reports/gotenberg.client';
 import { ReportPayloadService } from './reports/report-payload.service';
+import { ReportSendService } from './reports/report-send.service';
 import { ReportTokensService } from './reports/report-tokens.service';
 import { ReportsController } from './reports/reports.controller';
 import { ReportsPublicController } from './reports/reports-public.controller';
+import { ReportsProcessor } from './reports/reports.processor';
 import { ReportsRepository } from './reports/reports.repository';
+import { ReportsScheduler } from './reports/reports.scheduler';
 import { ReportsService } from './reports/reports.service';
 
 // AnalyticsModule supplies the YouTube client and the Redis client the
-// Audience routes read through. The queue is registered here too, to enqueue
-// a stale channel's refresh.
+// Audience routes read through. The queues are registered here too: the
+// snapshot queue to enqueue a stale channel's refresh, the reports queue for
+// Send now, the due-report sweep and the worker that emails them.
 // WorkspaceRoleModule (not WorkspaceMembersModule) supplies the guard's
 // dependencies without pulling in Billing; see home.module.ts.
 @Module({
@@ -32,7 +37,11 @@ import { ReportsService } from './reports/reports.service';
     JwtModule.register({}),
     PostPerformanceModule,
     AnalyticsModule,
-    BullModule.registerQueue({ name: QUEUES.CHANNEL_SNAPSHOTS }),
+    EmailModule,
+    BullModule.registerQueue(
+      { name: QUEUES.CHANNEL_SNAPSHOTS },
+      { name: QUEUES.REPORTS },
+    ),
   ],
   controllers: [
     InsightsController,
@@ -55,6 +64,9 @@ import { ReportsService } from './reports/reports.service';
       inject: [ConfigService],
     },
     ReportsService,
+    ReportSendService,
+    ReportsProcessor,
+    ReportsScheduler,
   ],
 })
 export class InsightsModule {}

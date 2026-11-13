@@ -1,14 +1,18 @@
 import { randomBytes } from 'crypto';
+import { InjectQueue } from '@nestjs/bullmq';
 import {
   BadRequestException,
+  ConflictException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import type { Queue } from 'bullmq';
 import type {
   InsightReportRow,
   NewInsightReportRow,
 } from '../../drizzle/schema/insight-reports.schema';
+import { QUEUES } from '../../queue/queue.module';
 import { InsightsChannelsRepository } from '../insights-channels.repository';
 import type {
   CreateReportDto,
@@ -16,11 +20,12 @@ import type {
   UpdateReportDto,
 } from './dto/report-settings.dto';
 import { GotenbergClient } from './gotenberg.client';
-import { nextRunAt } from './lib/next-run';
+import { nextRunAt, sendNowJobId } from './lib/next-run';
 import {
   normalizeSettings,
   settingsFromCreate,
 } from './lib/normalize-settings';
+import { resolveRecipients } from './lib/recipients';
 import {
   settingsOf,
   toReportDto,
@@ -33,6 +38,7 @@ import {
   NoChannelsLeftError,
   ReportPayloadService,
 } from './report-payload.service';
+import { REPORT_SEND_JOB, type ReportSendJob } from './report-send.job';
 import { ReportTokensService } from './report-tokens.service';
 import type {
   ReportDto,
@@ -94,6 +100,7 @@ export class ReportsService {
     private readonly config: ConfigService,
     private readonly tokens: ReportTokensService,
     private readonly gotenberg: GotenbergClient,
+    @InjectQueue(QUEUES.REPORTS) private readonly queue: Queue,
   ) {}
 
   /** 43 URL-safe characters and no dot, so it sits in a path as is. */
@@ -251,6 +258,39 @@ export class ReportsService {
       });
     }
     return { url: token ? `${this.frontendUrl}/r/${token}` : null };
+  }
+
+  /**
+   * Send now: queues one send to the people the schedule names. It does not
+   * move the next scheduled send. 409 when there is no schedule or everyone
+   * has opted out.
+   */
+  async sendNow(
+    workspaceId: string,
+    id: string,
+    now = new Date(),
+  ): Promise<{ recipients: number }> {
+    const record = await this.repo.get(workspaceId, id);
+    if (!record) throw new NotFoundException('Report not found');
+    const { schedule } = settingsOf(record.row);
+    const recipients = schedule
+      ? resolveRecipients(
+          {
+            sendToTeam: schedule.sendToTeam,
+            recipients: schedule.recipients,
+            optedOut: record.row.optedOut,
+          },
+          await this.repo.team(workspaceId),
+        )
+      : [];
+    if (!recipients.length) {
+      throw new ConflictException('This report has no one to send to');
+    }
+    const job: ReportSendJob = { reportId: id, kind: 'now' };
+    await this.queue.add(REPORT_SEND_JOB, job, {
+      jobId: sendNowJobId(id, now),
+    });
+    return { recipients: recipients.length };
   }
 
   /**

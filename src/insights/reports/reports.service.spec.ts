@@ -1,6 +1,7 @@
 import { BadRequestException, NotFoundException } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
+import type { Queue } from 'bullmq';
 import type {
   InsightReportRow,
   NewInsightReportRow,
@@ -164,6 +165,11 @@ function setup(
     new JwtService({}),
     config as unknown as ConfigService,
   );
+  const queue = {
+    add: jest.fn<Promise<void>, [string, unknown, { jobId: string }]>(() =>
+      Promise.resolve(),
+    ),
+  };
   const service = new ReportsService(
     repo as unknown as ReportsRepository,
     channelsRepo as unknown as InsightsChannelsRepository,
@@ -171,10 +177,12 @@ function setup(
     config as unknown as ConfigService,
     (opts.realTokens ? realTokens : tokens) as unknown as ReportTokensService,
     gotenberg as unknown as GotenbergClient,
+    queue as unknown as Queue,
   );
   const only = () => [...rows.values()][0];
   return {
     service,
+    queue,
     repo,
     channelsRepo,
     payloads,
@@ -775,5 +783,84 @@ describe('ReportsService.pdf and pdfFor', () => {
       response: { message: 'No channels left in this report' },
     });
     expect(gotenberg.pdfFromUrl).not.toHaveBeenCalled();
+  });
+});
+
+describe('ReportsService.sendNow', () => {
+  async function scheduled(
+    schedule: Partial<typeof WEEKLY> | null = {},
+    opts: Parameters<typeof setup>[0] = {},
+  ) {
+    const ctx = setup(opts);
+    await ctx.service.create(
+      WS,
+      USER,
+      createDto({ schedule: schedule && { ...WEEKLY, ...schedule } }),
+      NOW,
+    );
+    return { ...ctx, id: ctx.only().id };
+  }
+
+  it('queues one send now and counts the people it reaches', async () => {
+    const { service, queue, id } = await scheduled({
+      sendToTeam: true,
+      recipients: ['client@acme.com', 'u0@acme.com'],
+    });
+    // Three team members plus one address that is not in the team.
+    await expect(service.sendNow(WS, id, NOW)).resolves.toEqual({
+      recipients: 4,
+    });
+    expect(queue.add).toHaveBeenCalledTimes(1);
+    const [name, data, opts] = queue.add.mock.calls[0];
+    expect(name).toBe('report-send');
+    expect(data).toEqual({ reportId: id, kind: 'now' });
+    expect(opts.jobId).toMatch(/^report-[0-9a-f-]{36}-now-\d+$/);
+    expect(opts.jobId).not.toContain(':');
+  });
+
+  it('does not move the next scheduled send', async () => {
+    const { service, repo, only, id } = await scheduled();
+    const before = only().nextRunAt;
+    await service.sendNow(WS, id, NOW);
+    expect(only().nextRunAt).toEqual(before);
+    expect(repo.update).not.toHaveBeenCalledTimes(2);
+  });
+
+  it('does not count an opted-out address', async () => {
+    const { service, only, id } = await scheduled({
+      recipients: ['client@acme.com', 'other@acme.com'],
+    });
+    only().optedOut = ['other@acme.com'];
+    await expect(service.sendNow(WS, id, NOW)).resolves.toEqual({
+      recipients: 1,
+    });
+  });
+
+  it('answers 409 and queues nothing for a report with no schedule', async () => {
+    const { service, queue, id } = await scheduled(null);
+    await expect(service.sendNow(WS, id, NOW)).rejects.toMatchObject({
+      status: 409,
+      response: { message: 'This report has no one to send to' },
+    });
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('answers 409 and queues nothing when everyone opted out', async () => {
+    const { service, queue, only, id } = await scheduled({
+      recipients: ['client@acme.com'],
+    });
+    only().optedOut = ['client@acme.com'];
+    await expect(service.sendNow(WS, id, NOW)).rejects.toMatchObject({
+      status: 409,
+    });
+    expect(queue.add).not.toHaveBeenCalled();
+  });
+
+  it('answers 404 for a report that is not in this workspace', async () => {
+    const { service, queue } = setup();
+    await expect(service.sendNow(WS, 'nope', NOW)).rejects.toMatchObject({
+      status: 404,
+    });
+    expect(queue.add).not.toHaveBeenCalled();
   });
 });

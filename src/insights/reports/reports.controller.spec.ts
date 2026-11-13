@@ -1,4 +1,8 @@
-import { INestApplication, ValidationPipe } from '@nestjs/common';
+import {
+  ConflictException,
+  INestApplication,
+  ValidationPipe,
+} from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import request from 'supertest';
 import type { App } from 'supertest/types';
@@ -35,6 +39,7 @@ describe('ReportsController over HTTP', () => {
     setShare: jest.fn(),
     preview: jest.fn(),
     pdf: jest.fn(),
+    sendNow: jest.fn(),
   };
 
   beforeAll(async () => {
@@ -78,6 +83,7 @@ describe('ReportsController over HTTP', () => {
     reports.update.mockResolvedValue({ id: ID });
     reports.remove.mockResolvedValue(undefined);
     reports.setShare.mockResolvedValue({ url: null });
+    reports.sendNow.mockResolvedValue({ recipients: 2 });
     reports.preview.mockResolvedValue({ name: 'x' });
     reports.pdf.mockResolvedValue({
       filename: 'acme-report-2026-10-01-2026-10-31.pdf',
@@ -95,6 +101,7 @@ describe('ReportsController over HTTP', () => {
     ['post', `${BASE}/${ID}/share`, 'setShare', { enabled: true }],
     ['post', `${BASE}/preview`, 'preview', BODY],
     ['get', `${BASE}/${ID}/pdf`, 'pdf', null],
+    ['post', `${BASE}/${ID}/send`, 'sendNow', null],
   ];
 
   it.each(routes)(
@@ -191,6 +198,34 @@ describe('ReportsController over HTTP', () => {
     it('answers 400 to an id that is not a uuid', async () => {
       await http().get(`${BASE}/probe/pdf`).expect(400);
       expect(reports.pdf).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('POST :id/send', () => {
+    it('lets a member send now: 202 with the number of people', async () => {
+      await http().post(`${BASE}/${ID}/send`).expect(202, { recipients: 2 });
+      expect(reports.sendNow).toHaveBeenCalledWith(WS, ID);
+    });
+
+    it('refuses a guest with 403', async () => {
+      roles.getRole.mockResolvedValue('GUEST');
+      await http().post(`${BASE}/${ID}/send`).expect(403);
+      expect(reports.sendNow).not.toHaveBeenCalled();
+    });
+
+    it('answers 409 when there is no one to send to', async () => {
+      reports.sendNow.mockRejectedValue(
+        new ConflictException('This report has no one to send to'),
+      );
+      const res = await http().post(`${BASE}/${ID}/send`).expect(409);
+      expect(res.body).toMatchObject({
+        message: 'This report has no one to send to',
+      });
+    });
+
+    it('answers 400 to an id that is not a uuid', async () => {
+      await http().post(`${BASE}/probe/send`).expect(400);
+      expect(reports.sendNow).not.toHaveBeenCalled();
     });
   });
 
