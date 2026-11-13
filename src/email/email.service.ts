@@ -134,8 +134,12 @@ export class EmailService {
      * goes to us instead of to the person who wrote in.
      */
     replyTo?: string;
+    /** Files to attach (Resend sends them base64-encoded). */
+    attachments?: { filename: string; content: Buffer }[];
+    /** Extra message headers, e.g. `List-Unsubscribe`. */
+    headers?: Record<string, string>;
   }): Promise<EmailResult> {
-    const { to, subject, html, text, replyTo } = options;
+    const { to, subject, html, text, replyTo, attachments, headers } = options;
 
     if (!this.resend) {
       // Log the email instead of sending.
@@ -167,6 +171,8 @@ export class EmailService {
         html,
         text,
         ...(replyTo ? { replyTo } : {}),
+        ...(attachments?.length ? { attachments } : {}),
+        ...(headers && Object.keys(headers).length ? { headers } : {}),
       });
 
       if (result.error) {
