@@ -14,6 +14,7 @@ import {
 import { relations } from 'drizzle-orm';
 import { users } from './users.schema';
 import { workspace } from './workspace.schema';
+import { channelConnectLinks } from './channel-connect-links.schema';
 
 // Platform enum values
 export const SUPPORTED_PLATFORMS = [
@@ -225,6 +226,16 @@ export const socialMediaChannels = pgTable(
     connectedByUserId: uuid('connected_by_user_id')
       .notNull()
       .references(() => users.id, { onDelete: 'set null' }),
+
+    // Added through a connect link (migration 0066). connectLinkId says which
+    // link; the two marks are copied at connect time so they survive the link
+    // row. A channel is "added through a link" when addedViaLinkAt is set.
+    connectLinkId: uuid('connect_link_id').references(
+      () => channelConnectLinks.id,
+      { onDelete: 'set null' },
+    ),
+    addedViaLinkAt: timestamp('added_via_link_at', { withTimezone: true }),
+    addedViaLinkEmail: varchar('added_via_link_email', { length: 320 }),
 
     // Display preferences
     displayOrder: integer('display_order').default(0).notNull(),
