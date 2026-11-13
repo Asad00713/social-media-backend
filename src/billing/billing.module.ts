@@ -13,6 +13,7 @@ import { InvoiceService } from './services/invoice.service';
 import { PaymentMethodService } from './services/payment-method.service';
 import { SubscriptionLookupService } from './services/subscription-lookup.service';
 import { AccountChannelsService } from './services/account-channels.service';
+import { ChannelLockSweepService } from './services/channel-lock-sweep.service';
 import { PostQueueService } from './services/post-queue.service';
 import { StripeModule } from '../stripe/stripe.module';
 import { DrizzleModule } from '../drizzle/drizzle.module';
@@ -70,6 +71,7 @@ const PROVIDER_ADAPTER_REGISTRATION = {
     SubscriptionLookupService,
     PostQueueService,
     AccountChannelsService,
+    ChannelLockSweepService,
     ProviderRegistryService,
     CatalogueService,
     LemonSqueezyClient,

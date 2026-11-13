@@ -27,7 +27,6 @@ function makeService(samples: Pick<LibrarySamplesService, 'seedInBackground'>) {
     { createSubscription: jest.fn().mockResolvedValue(undefined) } as never,
     {} as never,
     {} as never,
-    {} as never,
     samples as LibrarySamplesService,
   );
   // Covered by workspace.usage-seed.spec.ts; not the unit here.

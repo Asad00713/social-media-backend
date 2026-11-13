@@ -26,6 +26,7 @@ import { readMigrations } from './runner';
  * and creates network_requests with foreign keys to workspace and users.
  * 0064 adds nickname and show_in_sidebar to social_media_channels (ACCESS
  * EXCLUSIVE).
+ * 0065 updates integration rows of social_media_channels (ROW EXCLUSIVE).
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -41,6 +42,7 @@ const FILES = [
   '0062_channel_audience.sql',
   '0063_channel_pause_and_network_requests.sql',
   '0064_channel_nickname_sidebar.sql',
+  '0065_release_locked_integrations.sql',
 ];
 
 const firstStatement = (sql: string): string =>
