@@ -15,17 +15,21 @@ export const DEFAULT_WORKSPACE_POSTS_LIMIT = 50;
  * A post that has a target on this channel. Every writer stores the target's
  * `channelId` as a string, but a hand-written or very old row could carry a
  * number, so both spellings are matched. Containment (`@>`) is what the
- * `posts_targets_gin_idx` (jsonb_path_ops) index serves.
+ * `posts_targets_gin_idx` (jsonb_path_ops) index serves. `targets` is the
+ * column as the caller's query names it (raw SQL may alias `posts`).
  */
-export function hasTargetOnChannelSql(channelId: string | number): SQL {
+export function hasTargetOnChannelSql(
+  channelId: string | number,
+  targets: SQL = sql`${posts.targets}`,
+): SQL {
   const asText = String(channelId);
   const asNumber = Number(asText);
   const textMatch = JSON.stringify([{ channelId: asText }]);
   if (!Number.isSafeInteger(asNumber)) {
-    return sql`${posts.targets} @> ${textMatch}::jsonb`;
+    return sql`${targets} @> ${textMatch}::jsonb`;
   }
   const numberMatch = JSON.stringify([{ channelId: asNumber }]);
-  return sql`(${posts.targets} @> ${textMatch}::jsonb OR ${posts.targets} @> ${numberMatch}::jsonb)`;
+  return sql`(${targets} @> ${textMatch}::jsonb OR ${targets} @> ${numberMatch}::jsonb)`;
 }
 
 /**
