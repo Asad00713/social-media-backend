@@ -85,5 +85,10 @@ export function toChannelResponse(
       ? personOf(people, channel.pausedByUserId)
       : null,
     connectedBy: personOf(people, channel.connectedByUserId),
+    // "Added through a link" is addedViaLinkAt; a connectLinkId alone (a stray
+    // write, or a link row since gone) does not make it one.
+    connectedVia: channel.addedViaLinkAt
+      ? { kind: 'link', email: channel.addedViaLinkEmail ?? null }
+      : null,
   };
 }

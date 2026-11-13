@@ -34,6 +34,7 @@ import { RequireCapability } from '../workspace-members/require-capability.decor
 import { WorkspaceAccessService } from '../workspace-members/workspace-access.service';
 import type { Capability } from '../workspace-members/role-capabilities';
 import { ChannelService } from './services/channel.service';
+import { ChannelConnectService } from './services/channel-connect.service';
 import { OAuthService } from './services/oauth.service';
 import { FacebookService } from './services/facebook.service';
 import { listFacebookWorkspacePages } from './facebook-workspace-pages';
@@ -162,6 +163,7 @@ export class ChannelsController {
     private readonly access: WorkspaceAccessService,
     private readonly mentionLookup: MentionLookupService,
     private readonly postsCleanup: ChannelPostsCleanupService,
+    private readonly channelConnect: ChannelConnectService,
   ) {}
 
   /**
@@ -1240,27 +1242,7 @@ export class ChannelsController {
   @UseGuards(JwtAuthGuard)
   @HttpCode(HttpStatus.OK)
   async getFacebookPages(@Body() dto: FetchPagesDto) {
-    const pages = await this.facebookService.getUserPages(dto.accessToken);
-
-    return pages.map((page) => ({
-      id: page.id,
-      name: page.name,
-      category: page.category,
-      pictureUrl: page.pictureUrl,
-      username: page.username,
-      followersCount: page.followersCount,
-      fanCount: page.fanCount,
-      hasInstagram: !!page.instagramBusinessAccount,
-      instagramAccount: page.instagramBusinessAccount
-        ? {
-            id: page.instagramBusinessAccount.id,
-            username: page.instagramBusinessAccount.username,
-            name: page.instagramBusinessAccount.name,
-            profilePictureUrl: page.instagramBusinessAccount.profilePictureUrl,
-            followersCount: page.instagramBusinessAccount.followersCount,
-          }
-        : null,
-    }));
+    return this.channelConnect.listFacebookPages(dto.accessToken);
   }
 
   /**
@@ -1322,156 +1304,18 @@ export class ChannelsController {
     @CurrentUser() user: { userId: string; email: string },
     @Body() dto: ConnectFacebookPageDto,
   ) {
-    // Get page details with Page Access Token
-    const page = await this.facebookService.getPage(
-      dto.pageId,
-      dto.userAccessToken,
-    );
-
-    if (!page) {
-      throw new Error('Failed to fetch page details');
-    }
-
-    // Create the Facebook Page channel
-    const fbChannel = await this.channelService.createChannel(
-      workspaceId,
-      user.userId,
-      {
-        platform: 'facebook',
-        accountType: 'page',
-        platformAccountId: page.id,
-        accountName: page.name,
-        username: page.username || undefined,
-        profilePictureUrl: page.pictureUrl || undefined,
-        accessToken: page.accessToken, // Page Access Token (never expires)
-        tokenExpiresAt: undefined, // Page tokens don't expire
-        permissions: PLATFORM_CONFIG.facebook.oauthScopes,
-        capabilities: {
-          canPost: true,
-          canSchedule: true,
-          canReadAnalytics: true,
-          canReply: true,
-          canDelete: true,
-          supportedMediaTypes: ['image', 'video', 'link'],
-          maxMediaPerPost: 10,
-          maxTextLength: 63206,
-        },
-        metadata: {
-          category: page.category,
-          followersCount: page.followersCount,
-          fanCount: page.fanCount,
-        },
-      },
-    );
-
-    let igChannel: Awaited<
-      ReturnType<typeof this.channelService.createChannel>
-    > | null = null;
-
-    // If Instagram is connected and user wants it, create Instagram channel too
-    if (dto.includeInstagram && page.instagramBusinessAccount) {
-      const ig = page.instagramBusinessAccount;
-
-      igChannel = await this.channelService.createChannel(
-        workspaceId,
-        user.userId,
-        {
-          platform: 'instagram',
-          accountType: 'business_account',
-          platformAccountId: ig.id,
-          accountName: ig.name,
-          username: ig.username,
-          profilePictureUrl: ig.profilePictureUrl || undefined,
-          accessToken: page.accessToken, // Uses same Page Access Token
-          tokenExpiresAt: undefined,
-          permissions: PLATFORM_CONFIG.instagram.oauthScopes,
-          capabilities: {
-            canPost: true,
-            canSchedule: true,
-            canReadAnalytics: true,
-            canReply: true,
-            canDelete: false, // Instagram doesn't allow delete via API
-            supportedMediaTypes: ['image', 'video', 'carousel'],
-            maxMediaPerPost: 20, // Instagram carousel cap
-            maxTextLength: 2200,
-          },
-          metadata: {
-            followersCount: ig.followersCount,
-            mediaCount: ig.mediaCount,
-            biography: ig.biography,
-            linkedFacebookPageId: page.id,
-          },
-        },
-      );
-    }
-
-    // Phase 2.3 — Auto-subscribe both FB Page + (if connected) IG account to
-    // their respective Meta webhook channels right after OAuth. Without this,
-    // events only arrive via polling (30 s lag); with it, DMs + comments
-    // arrive in <2 s. The subscribe calls are idempotent and best-effort so
-    // a webhook failure doesn't block the connect flow.
-    //
-    // We use `page.accessToken` directly (the FB Page Access Token from the
-    // OAuth flow) — the channelService response DTO strips the encrypted
-    // token, but the IG account uses the SAME Page Access Token as its FB
-    // parent, so one variable covers both subscribes.
-    try {
-      await this.facebookService.subscribePageToWebhooks(
-        page.id,
-        page.accessToken,
-        [
-          'feed',
-          'messages',
-          'messaging_postbacks',
-          'message_deliveries',
-          'message_reads',
-          'message_reactions',
-          'message_echoes',
-          'message_edits',
-        ],
-      );
-    } catch (err) {
-      console.warn(
-        `[connectFacebookPage] FB webhook auto-subscribe failed for page=${page.id}:`,
-        (err as Error).message,
-      );
-    }
-
-    if (igChannel && page.instagramBusinessAccount) {
-      try {
-        await this.instagramService.subscribeAccountToWebhooks(
-          page.instagramBusinessAccount.id,
-          page.accessToken,
-          ['comments', 'messages', 'messaging_postbacks', 'message_reactions'],
-        );
-      } catch (err) {
-        console.warn(
-          `[connectFacebookPage] IG webhook auto-subscribe failed for ig=${page.instagramBusinessAccount.id}:`,
-          (err as Error).message,
-        );
-      }
-    }
-
-    // Fire-and-forget ad account sync when intent=ads OAuth flow completes.
-    // Errors are logged but never propagate — we don't want a Meta API hiccup
-    // to fail the channel connect response. The user access token is required
-    // to read /me/adaccounts (Page-scoped tokens can't); pass it through here
-    // so the sync uses it and also caches it on the channel for later manual
-    // refreshes.
-    if (dto.intent === 'ads') {
-      this.adAccountsService
-        .syncForChannel(workspaceId, fbChannel.id, dto.userAccessToken)
-        .catch((err: Error) => {
-          console.warn(
-            `[connectFacebookPage] Ad account sync failed for workspace=${workspaceId}, channel=${fbChannel.id}: ${err.message}`,
-          );
-        });
-    }
+    const { facebookChannel, instagramChannel } =
+      await this.channelConnect.connectFacebookPage(workspaceId, user.userId, {
+        userAccessToken: dto.userAccessToken,
+        pageId: dto.pageId,
+        includeInstagram: dto.includeInstagram,
+        intent: dto.intent,
+      });
 
     return {
-      facebookChannel: fbChannel,
-      instagramChannel: igChannel,
-      message: igChannel
+      facebookChannel,
+      instagramChannel,
+      message: instagramChannel
         ? 'Facebook Page and Instagram account connected successfully'
         : 'Facebook Page connected successfully',
     };
@@ -1504,46 +1348,10 @@ export class ChannelsController {
     @Body()
     dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
   ) {
-    // Get Pinterest user info
-    const pinterestUser = await this.pinterestService.getCurrentUser(
-      dto.accessToken,
-    );
-
-    // Create the Pinterest channel
-    const channel = await this.channelService.createChannel(
+    const channel = await this.channelConnect.connectPinterest(
       workspaceId,
       user.userId,
-      {
-        platform: 'pinterest',
-        accountType:
-          pinterestUser.accountType === 'BUSINESS'
-            ? 'business_account'
-            : 'profile',
-        platformAccountId: pinterestUser.id,
-        accountName: pinterestUser.businessName || pinterestUser.username,
-        username: pinterestUser.username,
-        profilePictureUrl: pinterestUser.profileImage || undefined,
-        accessToken: dto.accessToken,
-        refreshToken: dto.refreshToken,
-        tokenExpiresAt: dto.tokenExpiresAt,
-        permissions: PLATFORM_CONFIG.pinterest.oauthScopes,
-        capabilities: {
-          canPost: true,
-          canSchedule: true,
-          canReadAnalytics: true,
-          canReply: false,
-          canDelete: true,
-          supportedMediaTypes: ['image', 'video'],
-          maxMediaPerPost: 1,
-          maxTextLength: 500,
-        },
-        metadata: {
-          followerCount: pinterestUser.followerCount,
-          followingCount: pinterestUser.followingCount,
-          monthlyViews: pinterestUser.monthlyViews,
-          websiteUrl: pinterestUser.websiteUrl,
-        },
-      },
+      dto,
     );
 
     return {
@@ -1971,43 +1779,10 @@ export class ChannelsController {
     @Body()
     dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
   ) {
-    // Get YouTube channel info
-    const youtubeChannel = await this.youtubeService.getCurrentChannel(
-      dto.accessToken,
-    );
-
-    // Create the YouTube channel
-    const channel = await this.channelService.createChannel(
+    const channel = await this.channelConnect.connectYouTube(
       workspaceId,
       user.userId,
-      {
-        platform: 'youtube',
-        accountType: 'channel',
-        platformAccountId: youtubeChannel.id,
-        accountName: youtubeChannel.title,
-        username: youtubeChannel.customUrl || undefined,
-        profilePictureUrl: youtubeChannel.thumbnailUrl || undefined,
-        accessToken: dto.accessToken,
-        refreshToken: dto.refreshToken,
-        tokenExpiresAt: dto.tokenExpiresAt,
-        permissions: PLATFORM_CONFIG.youtube.oauthScopes,
-        capabilities: {
-          canPost: true,
-          canSchedule: true,
-          canReadAnalytics: true,
-          canReply: true,
-          canDelete: true,
-          supportedMediaTypes: ['video'],
-          maxMediaPerPost: 1,
-          maxTextLength: 5000,
-        },
-        metadata: {
-          description: youtubeChannel.description,
-          subscriberCount: youtubeChannel.subscriberCount,
-          videoCount: youtubeChannel.videoCount,
-          viewCount: youtubeChannel.viewCount,
-        },
-      },
+      dto,
     );
 
     return {
@@ -2132,42 +1907,10 @@ export class ChannelsController {
     @Body()
     dto: FetchPagesDto & { refreshToken?: string; tokenExpiresAt?: string },
   ) {
-    // Get LinkedIn profile info
-    const linkedinProfile = await this.linkedinService.getCurrentUser(
-      dto.accessToken,
-    );
-
-    // Create the LinkedIn channel
-    const channel = await this.channelService.createChannel(
+    const channel = await this.channelConnect.connectLinkedIn(
       workspaceId,
       user.userId,
-      {
-        platform: 'linkedin',
-        accountType: 'profile',
-        platformAccountId: linkedinProfile.id,
-        accountName: linkedinProfile.fullName,
-        username: linkedinProfile.vanityName || undefined,
-        profilePictureUrl: linkedinProfile.profilePictureUrl || undefined,
-        accessToken: dto.accessToken,
-        refreshToken: dto.refreshToken,
-        tokenExpiresAt: dto.tokenExpiresAt,
-        permissions: PLATFORM_CONFIG.linkedin.oauthScopes,
-        capabilities: {
-          canPost: true,
-          canSchedule: true,
-          canReadAnalytics: false,
-          canReply: false,
-          canDelete: false,
-          supportedMediaTypes: ['text', 'image', 'video', 'link'],
-          maxMediaPerPost: 9,
-          maxTextLength: 3000,
-        },
-        metadata: {
-          email: linkedinProfile.email,
-          firstName: linkedinProfile.firstName,
-          lastName: linkedinProfile.lastName,
-        },
-      },
+      dto,
     );
 
     return {

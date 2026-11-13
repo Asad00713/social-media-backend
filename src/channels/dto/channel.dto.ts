@@ -269,6 +269,14 @@ export class ChannelResponseDto {
   pausedBy: ChannelPersonRef | null;
   /** Who connected it; null when that user is gone. */
   connectedBy: ChannelPersonRef | null;
+  /** Set when a client added it through a connect link (`email` is the one
+   * the link was sent to; null when the link had none). null otherwise. */
+  connectedVia: ChannelConnectedVia | null;
+}
+
+export interface ChannelConnectedVia {
+  kind: 'link';
+  email: string | null;
 }
 
 /** A person as the Channels page shows them. */

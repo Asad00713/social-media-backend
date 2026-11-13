@@ -10,6 +10,7 @@ import { ChannelSettingsService } from './services/channel-settings.service';
 import { ChannelSummaryService } from './services/channel-summary.service';
 import { NetworkRequestsService } from './services/network-requests.service';
 import { ChannelService } from './services/channel.service';
+import { ChannelConnectService } from './services/channel-connect.service';
 import { OAuthService } from './services/oauth.service';
 import { FacebookService } from './services/facebook.service';
 import { PinterestService } from './services/pinterest.service';
@@ -99,6 +100,7 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
   ],
   providers: [
     ChannelService,
+    ChannelConnectService,
     ChannelPauseService,
     ConnectLinksService,
     ChannelPostsCleanupService,
