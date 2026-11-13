@@ -1,9 +1,14 @@
+import { createHmac } from 'crypto';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import { ReportTokensService } from './report-tokens.service';
 import { ReportsService } from './reports.service';
 
 const SECRET = 'test-secret-not-real';
+/** The key report tokens are signed with, derived here independently. */
+const KEY = createHmac('sha256', SECRET)
+  .update('insight-report-tokens')
+  .digest('base64url');
 const RID = '5d0b6f0e-1111-4222-8333-944455556666';
 const T = new Date('2026-11-13T10:00:00Z');
 
@@ -59,6 +64,48 @@ describe('ReportTokensService', () => {
     expect(service.verifyRender(forged)).toBeNull();
   });
 
+  it('refuses a token signed with the same key under another algorithm', () => {
+    const { service, jwt } = build();
+    const hs512 = jwt.sign(
+      { rid: RID },
+      {
+        secret: KEY,
+        algorithm: 'HS512',
+        audience: 'report-render',
+        expiresIn: 300,
+      },
+    );
+    expect(service.verifyRender(hs512)).toBeNull();
+  });
+
+  describe('key separation', () => {
+    it('does not verify a report token with the raw JWT_ACCESS_SECRET', () => {
+      const { service, jwt } = build();
+      const render = service.renderToken(RID);
+      const unsub = service.unsubscribeToken(RID, 'a@b.co');
+      const rawVerify = (token: string, audience?: string) => () => {
+        jwt.verify<object>(token, { secret: SECRET, audience });
+      };
+      expect(rawVerify(render)).toThrow();
+      expect(rawVerify(unsub)).toThrow();
+      expect(rawVerify(unsub, 'report-unsubscribe')).toThrow();
+    });
+
+    it('does not verify a token signed with the raw secret, whatever its audience', () => {
+      const { service, jwt } = build();
+      const render = jwt.sign(
+        { rid: RID },
+        { secret: SECRET, audience: 'report-render', expiresIn: 300 },
+      );
+      const unsub = jwt.sign(
+        { rid: RID, email: 'a@b.co' },
+        { secret: SECRET, audience: 'report-unsubscribe' },
+      );
+      expect(service.verifyRender(render)).toBeNull();
+      expect(service.verifyUnsubscribe(unsub)).toBeNull();
+    });
+  });
+
   it('refuses a token that is not signed (alg none)', () => {
     const { service } = build();
     const b64 = (o: object) =>
@@ -70,7 +117,7 @@ describe('ReportTokensService', () => {
   it('refuses a payload whose id is not a uuid or whose address is missing', () => {
     const { service, jwt } = build();
     const sign = (p: object, aud: string) =>
-      jwt.sign(p, { secret: SECRET, audience: aud });
+      jwt.sign(p, { secret: KEY, audience: aud });
     expect(
       service.verifyRender(sign({ rid: 'not-a-uuid' }, 'report-render')),
     ).toBeNull();

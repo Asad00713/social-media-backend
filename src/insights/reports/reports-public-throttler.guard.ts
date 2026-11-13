@@ -5,8 +5,10 @@ import { ThrottlerGuard } from '@nestjs/throttler';
  * Throttles the unauthenticated report routes per caller. The app never sets
  * `trust proxy` (that would change `req.ip` for every route), so behind the
  * edge `req.ip` is the same for everyone. The caller is the first entry of
- * `X-Forwarded-For` instead. With no proxy in front that hop is client
- * controlled, which is acceptable for a soft limit.
+ * `X-Forwarded-For` instead. That entry is whatever the client sent: an edge
+ * proxy that appends to the header keeps it, so a caller can pick its own
+ * bucket even behind a proxy. This is a soft limit, and the ruling accepts
+ * that.
  *
  * The one exception is the unsubscribe POST, which keys on its token through
  * `unsubscribeTokenTracker`: Gmail and Yahoo send RFC 8058 one-click POSTs from

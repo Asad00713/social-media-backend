@@ -67,6 +67,7 @@ export class ReportsPublicController {
     @Param('token') token: string,
     @Res() res: Response,
   ): Promise<void> {
+    this.htmlHeaders(res);
     const target = await this.reports.unsubscribeTarget(token);
     if (!target) return this.html(res, 404, invalidUnsubscribePage());
     this.html(
@@ -95,6 +96,7 @@ export class ReportsPublicController {
     @Param('token') token: string,
     @Res() res: Response,
   ): Promise<void> {
+    this.htmlHeaders(res);
     const done = await this.reports.unsubscribe(token);
     if (!done) return this.html(res, 404, invalidUnsubscribePage());
     this.html(res, 200, unsubscribedPage(done.reportName));
@@ -105,9 +107,13 @@ export class ReportsPublicController {
     res.setHeader('X-Robots-Tag', 'noindex');
   }
 
-  private html(res: Response, status: number, body: string): void {
+  /** First line of an HTML handler, so even a 500 carries them. */
+  private htmlHeaders(res: Response): void {
     this.noStore(res);
     res.setHeader('Content-Security-Policy', PAGE_CSP);
+  }
+
+  private html(res: Response, status: number, body: string): void {
     res.status(status).type('text/html; charset=utf-8').send(body);
   }
 }

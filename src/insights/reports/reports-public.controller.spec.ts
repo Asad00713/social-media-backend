@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import {
   Controller,
   Get,
@@ -25,6 +26,10 @@ import { ReportsRepository } from './reports.repository';
 import { ReportsService } from './reports.service';
 
 const SECRET = 'public-controller-spec-secret';
+/** What report tokens are signed with (derived from the login secret). */
+const REPORT_KEY = createHmac('sha256', SECRET)
+  .update('insight-report-tokens')
+  .digest('base64url');
 const RID = '5d0b6f0e-1111-4222-8333-944455556666';
 const WS = '11111111-1111-4111-8111-111111111111';
 const NAME = 'Acme <Q4> & co';
@@ -271,6 +276,32 @@ describe('ReportsPublicController over HTTP', () => {
       expect(render.headers['x-robots-tag']).toBe('noindex');
     });
 
+    it('still carries the headers when the service throws', async () => {
+      const boom = new Error('db down');
+      repo.byShareToken.mockRejectedValueOnce(boom);
+      repo.getById.mockRejectedValueOnce(boom);
+      const path = unsubPath(mint('boom@acme.com'));
+      const hits = [
+        await get(`/reports/public/${shareToken}`),
+        await get(`/reports/render/${tokens.renderToken(RID)}`),
+      ];
+      repo.getById.mockRejectedValueOnce(boom);
+      hits.push(await get(path));
+      repo.optOut.mockRejectedValueOnce(boom);
+      hits.push(await post(path));
+      for (const res of hits) {
+        expect(res.status).toBe(500);
+        expect(res.headers['cache-control']).toBe('private, no-store');
+        expect(res.headers['x-robots-tag']).toBe('noindex');
+      }
+      expect(hits[2].headers['content-security-policy']).toContain(
+        "frame-ancestors 'none'",
+      );
+      expect(hits[3].headers['content-security-policy']).toContain(
+        "frame-ancestors 'none'",
+      );
+    });
+
     it('answers 409 when every channel is gone', async () => {
       payloads.payload.mockRejectedValueOnce(new NoChannelsLeftError());
       const pub = await get(`/reports/public/${shareToken}`);
@@ -367,6 +398,9 @@ describe('ReportsPublicController over HTTP', () => {
       expect(res.status).toBe(200);
       expect(res.headers['content-type']).toBe('text/html; charset=utf-8');
       expect(res.headers['cache-control']).toBe('private, no-store');
+      expect(res.headers['content-security-policy']).toContain(
+        "frame-ancestors 'none'",
+      );
       expect(res.text).toContain(
         "You won't get Acme &lt;Q4&gt; &amp; co again.",
       );
@@ -414,6 +448,9 @@ describe('ReportsPublicController over HTTP', () => {
           expect(res.status).toBe(404);
           expect(res.headers['content-type']).toBe('text/html; charset=utf-8');
           expect(res.headers['cache-control']).toBe('private, no-store');
+          expect(res.headers['content-security-policy']).toContain(
+            "frame-ancestors 'none'",
+          );
           expect(res.text).toContain("This link doesn't work");
         }
         expect(repo.getById).not.toHaveBeenCalled();
@@ -424,7 +461,7 @@ describe('ReportsPublicController over HTTP', () => {
     it('404s a token signed with an expiry that has passed', async () => {
       const stale = jwt.sign(
         { rid: RID, email: 'a@acme.com' },
-        { secret: SECRET, audience: 'report-unsubscribe', expiresIn: 1 },
+        { secret: REPORT_KEY, audience: 'report-unsubscribe', expiresIn: 1 },
       );
       later(2);
       const path = unsubPath(stale);

@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import { Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
@@ -8,13 +9,22 @@ const RENDER_TTL_SECONDS = 300;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * The signed tokens of the report routes that carry no login. Both are JWTs
- * under JWT_ACCESS_SECRET, each with its own audience, so a login access token
- * (no audience) verifies as neither, and neither kind verifies as the other.
+ * The signed tokens of the report routes that carry no login. Both are JWTs,
+ * each with its own audience, so a login access token (no audience) verifies as
+ * neither, and neither kind verifies as the other.
+ *
+ * They are signed with a key derived from JWT_ACCESS_SECRET, not with the
+ * secret itself. Several verifiers of that secret accept a token with no
+ * audience check (the JWT strategy, the launch gate, the websocket gateways),
+ * and an unsubscribe token never expires and carries an `email`. Under the
+ * derived key none of them can verify a report token.
  * The algorithm is pinned: a token that names `none` or another one is refused.
  */
 @Injectable()
 export class ReportTokensService {
+  /** The derived key, computed once per secret. */
+  private derived: { secret: string; key: string } | null = null;
+
   constructor(
     private readonly jwt: JwtService,
     private readonly config: ConfigService,
@@ -33,7 +43,7 @@ export class ReportTokensService {
     return this.jwt.sign(
       { rid: reportId },
       {
-        secret: this.requireSecret(),
+        secret: this.requireKey(),
         audience: RENDER_AUDIENCE,
         expiresIn: RENDER_TTL_SECONDS,
       },
@@ -53,7 +63,7 @@ export class ReportTokensService {
   unsubscribeToken(reportId: string, email: string): string {
     return this.jwt.sign(
       { rid: reportId, email },
-      { secret: this.requireSecret(), audience: UNSUBSCRIBE_AUDIENCE },
+      { secret: this.requireKey(), audience: UNSUBSCRIBE_AUDIENCE },
     );
   }
 
@@ -71,21 +81,35 @@ export class ReportTokensService {
     return { reportId: p.rid, email: p.email };
   }
 
-  private requireSecret(): string {
+  private key(): string | null {
     const secret = this.config.get<string>('JWT_ACCESS_SECRET');
-    if (!secret) {
+    if (!secret) return null;
+    if (this.derived?.secret !== secret) {
+      this.derived = {
+        secret,
+        key: createHmac('sha256', secret)
+          .update('insight-report-tokens')
+          .digest('base64url'),
+      };
+    }
+    return this.derived.key;
+  }
+
+  private requireKey(): string {
+    const key = this.key();
+    if (!key) {
       throw new Error(
         'JWT_ACCESS_SECRET is not configured - cannot mint a report token',
       );
     }
-    return secret;
+    return key;
   }
 
   private verify(
     token: string,
     audience: string,
   ): Record<string, unknown> | null {
-    const secret = this.config.get<string>('JWT_ACCESS_SECRET');
+    const secret = this.key();
     if (!secret) return null;
     try {
       return this.jwt.verify<Record<string, unknown>>(token, {
