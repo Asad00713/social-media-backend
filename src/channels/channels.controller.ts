@@ -111,6 +111,7 @@ import {
   type EmbeddedSignupConfig,
 } from './services/embedded-signup-config';
 import { YoutubeDataDeletionService } from './services/youtube-data-deletion.service';
+import { ChannelPostsCleanupService } from './services/channel-posts-cleanup.service';
 import { errorCodeOf } from '../billing/services/channel-limit.error';
 import { GoogleOauthRevokeService } from './services/google-oauth-revoke.service';
 
@@ -160,6 +161,7 @@ export class ChannelsController {
     private readonly googleRevoke: GoogleOauthRevokeService,
     private readonly access: WorkspaceAccessService,
     private readonly mentionLookup: MentionLookupService,
+    private readonly postsCleanup: ChannelPostsCleanupService,
   ) {}
 
   /**
@@ -1055,6 +1057,10 @@ export class ChannelsController {
         `Webhook teardown on disconnect failed (non-blocking): ${(err as Error).message}`,
       );
     }
+    // Its scheduled posts and drafts go with it (Buffer's rule), BEFORE the
+    // row: a failure here leaves the channel connected and the user can retry,
+    // rather than a deleted channel with posts still aimed at it.
+    await this.postsCleanup.removeUnpublished(workspaceId, id);
     await this.channelService.deleteChannel(id, workspaceId);
   }
 
