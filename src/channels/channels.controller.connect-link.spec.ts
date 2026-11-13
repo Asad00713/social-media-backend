@@ -159,6 +159,7 @@ function build(opts: BuildOpts = {}) {
     channelConnect as any,
     new FacebookSelectionStore(redis),
     { channelConnected } as any,
+    {} as any, // ConnectLinkAccessService: the callback resolves the link itself
   );
 
   c.instagramService = {

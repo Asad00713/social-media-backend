@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { ConflictException, Injectable, Logger } from '@nestjs/common';
 import {
   PLATFORM_CONFIG,
   type SupportedPlatform,
@@ -7,10 +7,19 @@ import { NotificationEmitterService } from '../../notifications/notification-emi
 import type { ChannelResponseDto } from '../dto/channel.dto';
 import {
   ChannelConnectService,
+  type ConnectedFacebookPage,
   type ConnectTokens,
 } from '../services/channel-connect.service';
 import type { CreateChannelOptions } from '../services/channel.service';
-import type { ResolvedConnectLink } from './connect-link-access.service';
+import {
+  ConnectLinkAccessService,
+  type ResolvedConnectLink,
+} from './connect-link-access.service';
+import type {
+  ConnectLinkConnectedChannelDto,
+  ConnectLinkFacebookConnectBody,
+  ConnectLinkFacebookConnectResponse,
+} from './dto/connect-link.dto';
 import { FacebookSelectionStore } from './facebook-selection.store';
 import { connectLinkError } from './lib/connect-link-errors';
 
@@ -32,7 +41,101 @@ export class ConnectLinkConnectService {
     private readonly channelConnect: ChannelConnectService,
     private readonly selections: FacebookSelectionStore,
     private readonly notifications: NotificationEmitterService,
+    private readonly access: ConnectLinkAccessService,
   ) {}
+
+  // ==========================================================================
+  // Public Facebook Pages (the link page, after `?selection=`)
+  // ==========================================================================
+
+  /**
+   * The Pages the client's Facebook user manages - same shape as the team's
+   * `POST /channels/facebook/pages`. Leaves the selection in place: the page
+   * may reload or retry.
+   */
+  async facebookPages(rawToken: string, selectionId: string) {
+    const resolved = await this.resolveForFacebook(rawToken);
+    const userAccessToken = await this.selections.read(
+      resolved.link.id,
+      selectionId,
+    );
+    return this.channelConnect.listFacebookPages(userAccessToken);
+  }
+
+  /**
+   * Connect the chosen Pages (and their Instagram accounts when asked and the
+   * link offers Instagram). Uses the selection up first, so it works once.
+   * Page by page: a Page the workspace already has is skipped as
+   * ALREADY_CONNECTED and the rest go on; any other refusal - the channel
+   * limit above all - stops the run, and the Pages before it stay connected.
+   */
+  async connectFacebook(
+    rawToken: string,
+    body: ConnectLinkFacebookConnectBody,
+  ): Promise<ConnectLinkFacebookConnectResponse> {
+    const resolved = await this.resolveForFacebook(rawToken);
+    const userAccessToken = await this.selections.take(
+      resolved.link.id,
+      body.selection,
+    );
+    const includeInstagram =
+      body.includeInstagram && resolved.link.networks.includes('instagram');
+    const mark = this.markOf(resolved);
+
+    const channels: ConnectLinkConnectedChannelDto[] = [];
+    const skipped: ConnectLinkFacebookConnectResponse['skipped'] = [];
+
+    for (const pageId of body.pageIds) {
+      let connected: ConnectedFacebookPage;
+      try {
+        connected = await this.channelConnect.connectFacebookPage(
+          resolved.link.workspaceId,
+          resolved.link.createdByUserId,
+          { userAccessToken, pageId, includeInstagram, intent: 'connect' },
+          mark,
+        );
+      } catch (err) {
+        if (err instanceof ConflictException) {
+          skipped.push({ pageId, code: 'ALREADY_CONNECTED' });
+          continue;
+        }
+        throw err;
+      }
+      for (const channel of [
+        connected.facebookChannel,
+        connected.instagramChannel,
+      ]) {
+        if (!channel) continue;
+        channels.push({
+          platform: channel.platform,
+          channelId: channel.id,
+          accountName: channel.accountName,
+        });
+        await this.notifyConnected(resolved, channel);
+      }
+    }
+
+    if (channels.length === 0 && skipped.length > 0) {
+      throw connectLinkError(
+        'ALREADY_CONNECTED',
+        'These Pages are already connected to this workspace.',
+      );
+    }
+    return { channels, skipped };
+  }
+
+  private async resolveForFacebook(
+    rawToken: string,
+  ): Promise<ResolvedConnectLink> {
+    const resolved = await this.access.resolve(rawToken);
+    if (!resolved.link.networks.includes('facebook')) {
+      throw connectLinkError(
+        'NETWORK_NOT_OFFERED',
+        'This link does not offer that network.',
+      );
+    }
+    return resolved;
+  }
 
   /** The `createChannel` options that mark a channel as added via the link. */
   markOf(resolved: ResolvedConnectLink): CreateChannelOptions {

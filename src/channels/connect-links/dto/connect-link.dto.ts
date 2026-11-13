@@ -82,3 +82,36 @@ export interface ConnectLinkPreviewDto {
 export interface ConnectLinkStartDto {
   authorizationUrl: string;
 }
+
+/** `POST /public/connect-links/:token/facebook/connect` */
+export class ConnectLinkFacebookConnectBody {
+  /** The id the callback put in `?selection=`. */
+  @IsString()
+  @MaxLength(64)
+  selection!: string;
+
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(25)
+  @IsString({ each: true })
+  @MaxLength(64, { each: true })
+  pageIds!: string[];
+
+  /** Also connect each Page's Instagram account (when the link offers it). */
+  @IsBoolean()
+  includeInstagram!: boolean;
+}
+
+/** One account the client connected from the Facebook Pages picker. */
+export interface ConnectLinkConnectedChannelDto {
+  platform: string;
+  channelId: number;
+  accountName: string;
+}
+
+/** The response of `POST /public/connect-links/:token/facebook/connect`. */
+export interface ConnectLinkFacebookConnectResponse {
+  channels: ConnectLinkConnectedChannelDto[];
+  /** Pages the workspace already had (healthy): left as they are. */
+  skipped: Array<{ pageId: string; code: 'ALREADY_CONNECTED' }>;
+}
