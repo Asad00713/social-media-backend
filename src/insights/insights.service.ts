@@ -760,10 +760,11 @@ export class InsightsService {
    * (under SETTLING_DAYS old) are left out of every median and count, so a
    * post an hour old with nothing yet cannot drag a cell or a bar down.
    * Next steps are this person's: the ones they hid are not in the list.
+   * With no user (a saved report) nothing is hidden.
    */
   async signals(
     workspaceId: string,
-    userId: string,
+    userId: string | null,
     channels: string | undefined,
     now = new Date(),
   ): Promise<InsightsSignalsDto> {
@@ -849,7 +850,7 @@ export class InsightsService {
    */
   private async nextStepsOf(
     workspaceId: string,
-    userId: string,
+    userId: string | null,
     selected: SocialChannel[],
     posts: StepPost[],
     sampleFrom: string,
@@ -970,9 +971,11 @@ export class InsightsService {
    */
   private async hiddenSteps(
     workspaceId: string,
-    userId: string,
+    userId: string | null,
     now: Date,
   ): Promise<Set<string>> {
+    // A saved report has no viewer: nothing is hidden, and nothing is read.
+    if (userId === null) return new Set();
     try {
       const rows = await this.db
         .select({ stepId: insightHiddenSteps.stepId })

@@ -43,4 +43,5 @@ export * from './insight-hidden-steps.schema';
 export * from './short-links.schema';
 export * from './channel-audience.schema';
 export * from './network-requests.schema';
+export * from './insight-reports.schema';
 export * from './channel-connect-links.schema';

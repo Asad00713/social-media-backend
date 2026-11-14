@@ -34,7 +34,10 @@ export interface LanePost {
 }
 
 export interface InsightsOverviewDto {
-  /** Days in the window: 7, 30 or 90, or 1 to 90 for a picked range. */
+  /**
+   * Days in the window: 7, 30 or 90 for a preset, 1 to 90 when picked,
+   * 1 to 92 from a report.
+   */
   days: number;
   /**
    * The window, the span just before it, and the dates the comparison reads

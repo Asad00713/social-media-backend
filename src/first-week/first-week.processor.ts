@@ -1,17 +1,13 @@
 import { OnWorkerEvent, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
+import { isFinalAttempt } from '../queue/is-final-attempt';
 import { QUEUES } from '../queue/queue.module';
 import { FirstWeekRunService } from './first-week-run.service';
 import type { FirstWeekJobData } from './first-week.types';
 
-/** True once BullMQ has used every attempt (attemptsMade counts the one that just failed). */
-export function isFinalAttempt(job: {
-  attemptsMade: number;
-  opts: { attempts?: number };
-}): boolean {
-  return job.attemptsMade >= (job.opts.attempts ?? 1);
-}
+// Moved to src/queue so other processors share it; the spec still imports it here.
+export { isFinalAttempt };
 
 /**
  * Consumes the `first-week` queue. Its own queue (not the analytics
