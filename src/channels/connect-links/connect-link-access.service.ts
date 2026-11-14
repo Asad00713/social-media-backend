@@ -59,8 +59,8 @@ export class ConnectLinkAccessService {
 
   /**
    * Find a link by its raw token and check it is usable. Order: not found,
-   * revoked, expired, then unavailable (workspace suspended, or the sender can
-   * no longer manage channels).
+   * revoked, expired, then unavailable (workspace suspended, the sender can
+   * no longer manage channels, or the sender's account is suspended).
    */
   async resolve(rawToken: string): Promise<ResolvedConnectLink> {
     const [link] = await this.db
@@ -219,12 +219,20 @@ export class ConnectLinkAccessService {
     );
     if (!role || !roleCan(role, 'channels:manage')) throw unavailable();
 
+    // A suspended sender (admin suspension sets is_active = false, and the
+    // JWT strategy then refuses them everywhere) stops acting through their
+    // links too.
     const [sender] = await this.db
-      .select({ id: users.id, name: users.name, email: users.email })
+      .select({
+        id: users.id,
+        name: users.name,
+        email: users.email,
+        isActive: users.isActive,
+      })
       .from(users)
       .where(eq(users.id, link.createdByUserId))
       .limit(1);
-    if (!sender) throw unavailable();
+    if (!sender || sender.isActive === false) throw unavailable();
 
     return {
       link,

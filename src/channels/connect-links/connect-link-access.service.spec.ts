@@ -11,6 +11,13 @@ import type { WorkspaceRole } from '../../workspace-members/role-capabilities';
 import type { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
 import type { OAuthService } from '../services/oauth.service';
 import { ConnectLinkAccessService } from './connect-link-access.service';
+import { ConnectLinkConnectService } from './connect-link-connect.service';
+import type { ChannelConnectService } from '../services/channel-connect.service';
+import type { NotificationEmitterService } from '../../notifications/notification-emitter.service';
+import {
+  FacebookSelectionStore,
+  type SelectionRedis,
+} from './facebook-selection.store';
 import { encrypt } from '../../common/utils/encryption.util';
 import { CONNECT_LINK_TTL_MS, hashLinkToken } from './lib/connect-link-rules';
 
@@ -127,6 +134,7 @@ function setup(opts: Opts = {}) {
               id: USER,
               name: 'Sam Sender',
               email: 'sam@agency.test',
+              isActive: true,
               ...(opts.sender ?? {}),
             },
           ],
@@ -302,6 +310,78 @@ describe('ConnectLinkAccessService', () => {
         await codeOf(setup({ role: 'GUEST' }).service.resolveById(LINK)),
       ).toBe('LINK_UNAVAILABLE');
       await expect(setup().service.resolveById(LINK)).resolves.toBeDefined();
+    });
+  });
+
+  describe('a suspended sender (users.is_active = false)', () => {
+    // An admin suspension refuses the user everywhere (JwtStrategy); their
+    // open links must stop acting in their name too, at every public step.
+    const SUSPENDED = { sender: { isActive: false } };
+
+    it('preview -> LINK_UNAVAILABLE (410)', async () => {
+      const { service } = setup(SUSPENDED);
+      expect(await codeOf(service.preview('t'))).toBe('LINK_UNAVAILABLE');
+      expect(await statusOf(service.preview('t'))).toBe(410);
+    });
+
+    it('start -> LINK_UNAVAILABLE, and the network is never reached', async () => {
+      const { service, initiateOAuth } = setup(SUSPENDED);
+      expect(await codeOf(service.start('t', 'instagram'))).toBe(
+        'LINK_UNAVAILABLE',
+      );
+      expect(initiateOAuth).not.toHaveBeenCalled();
+    });
+
+    it('the callback completion (resolveById) -> LINK_UNAVAILABLE', async () => {
+      const { service } = setup(SUSPENDED);
+      expect(await codeOf(service.resolveById(LINK))).toBe('LINK_UNAVAILABLE');
+    });
+
+    it('the Facebook Pages list and connect -> LINK_UNAVAILABLE, nothing connected', async () => {
+      const { service } = setup({
+        ...SUSPENDED,
+        link: { networks: ['facebook'] },
+      });
+      const redis: SelectionRedis = {
+        set: jest.fn(() => Promise.resolve('OK')),
+        get: jest.fn(() => Promise.resolve(null)),
+        del: jest.fn(() => Promise.resolve(0)),
+      };
+      const connectFacebookPageSettled = jest.fn();
+      const listFacebookPages = jest.fn();
+      const channelConnected = jest.fn();
+      const connect = new ConnectLinkConnectService(
+        {
+          connectFacebookPageSettled,
+          listFacebookPages,
+        } as unknown as ChannelConnectService,
+        new FacebookSelectionStore(redis),
+        { channelConnected } as unknown as NotificationEmitterService,
+        service,
+      );
+      expect(await codeOf(connect.facebookPages('t', 'sel'))).toBe(
+        'LINK_UNAVAILABLE',
+      );
+      expect(
+        await codeOf(
+          connect.connectFacebook('t', {
+            selection: 'sel',
+            pageIds: ['1'],
+            includeInstagram: false,
+          }),
+        ),
+      ).toBe('LINK_UNAVAILABLE');
+      // refused before the selection is touched or a Page is connected
+      expect(redis.get).not.toHaveBeenCalled();
+      expect(redis.del).not.toHaveBeenCalled();
+      expect(listFacebookPages).not.toHaveBeenCalled();
+      expect(connectFacebookPageSettled).not.toHaveBeenCalled();
+      expect(channelConnected).not.toHaveBeenCalled();
+    });
+
+    it('an active sender is still allowed', async () => {
+      const { service } = setup({ sender: { isActive: true } });
+      await expect(service.resolve('t')).resolves.toBeDefined();
     });
   });
 

@@ -35,7 +35,7 @@ No login: the token is the credential. Prefix `public/connect-links`. Throttled 
 | `GET /:token/facebook/pages?selection=<id>` | The Facebook Pages (and Instagram accounts, when the link offers Instagram) of the parked sign-in. Does not use the selection up |
 | `POST /:token/facebook/connect` | 201 `{ channels, skipped }` |
 
-Every request re-checks the link: it exists, is not revoked or expired, the workspace is active and not billing-suspended, and the sender is still a member with `channels:manage`.
+Every request re-checks the link: it exists, is not revoked or expired, the workspace is active and not billing-suspended, the sender is still a member with `channels:manage`, and the sender's account is not suspended (`users.is_active`). The OAuth callback re-checks it the same way before the code is exchanged.
 
 ### Facebook Pages
 
@@ -75,7 +75,7 @@ Body `{ statusCode, error, code, message }`; the same `code` is added as `?code=
 | `LINK_NOT_FOUND` | 404 | No link for that token |
 | `LINK_EXPIRED` | 410 | Past `expires_at` |
 | `LINK_REVOKED` | 410 | Cancelled by the sender |
-| `LINK_UNAVAILABLE` | 410 | Workspace suspended or inactive, or the sender is no longer a member with `channels:manage` |
+| `LINK_UNAVAILABLE` | 410 | Workspace suspended or inactive, the sender is no longer a member with `channels:manage`, or the sender's account is suspended |
 | `NETWORK_NOT_OFFERED` | 400 | The network is not one the link offers (also at create) |
 | `NO_EMAIL` | 400 | Send or resend with no email address |
 | `RESEND_TOO_SOON` | 429 | Within 60 seconds of the last send |
