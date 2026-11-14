@@ -1,5 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { Queue, UnrecoverableError } from 'bullmq';
 import type { PreferenceEventKey } from '../../notification-preferences/notification-events';
 import { NotificationPreferencesService } from '../../notification-preferences/notification-preferences.service';
@@ -12,6 +12,8 @@ import { getTemplate } from '../templates/registry';
 import type { AnyTemplateDef } from '../templates/types';
 import { EmailFooterService } from './email-footer.service';
 import {
+  EMAIL_JOB_ATTEMPTS,
+  EMAIL_JOB_BACKOFF_MS,
   EMAIL_JOB_SEND,
   IDEMPOTENCY_KEY_RE,
   RetryableEmailError,
@@ -23,10 +25,13 @@ type SendOutcome =
   | { status: 'sent'; messageId?: string }
   | { status: 'skipped:pref' | 'skipped:suppressed' };
 
+/** All digits: BullMQ refuses integer-like custom job ids. */
+const ALL_DIGITS_RE = /^\d+$/;
+
 function assertKey(key: string): void {
-  if (!IDEMPOTENCY_KEY_RE.test(key)) {
+  if (!IDEMPOTENCY_KEY_RE.test(key) || ALL_DIGITS_RE.test(key)) {
     throw new Error(
-      `Invalid email idempotency key "${key}": it must match ${String(IDEMPOTENCY_KEY_RE)}`,
+      `Invalid email idempotency key "${key}": it must match ${String(IDEMPOTENCY_KEY_RE)} and not be all digits`,
     );
   }
 }
@@ -51,6 +56,8 @@ function toJobData<P>(input: Omit<EnqueueEmail<P>, 'delayMs'>): EmailJobData {
  */
 @Injectable()
 export class EmailOutboxService {
+  private readonly logger = new Logger(EmailOutboxService.name);
+
   constructor(
     @InjectQueue(QUEUES.EMAIL) private readonly queue: Queue,
     private readonly email: EmailService,
@@ -65,8 +72,8 @@ export class EmailOutboxService {
     assertKey(input.idempotencyKey);
     await this.queue.add(EMAIL_JOB_SEND, toJobData(input), {
       jobId: input.idempotencyKey,
-      attempts: 5,
-      backoff: { type: 'exponential', delay: 2000 },
+      attempts: EMAIL_JOB_ATTEMPTS,
+      backoff: { type: 'exponential', delay: EMAIL_JOB_BACKOFF_MS },
       ...(input.delayMs !== undefined ? { delay: input.delayMs } : {}),
     });
   }
@@ -91,18 +98,25 @@ export class EmailOutboxService {
     }
   }
 
-  /** Shared by sendNow and the worker. */
+  /**
+   * Shared by sendNow and the worker. `attemptsMade` is the job's count of
+   * earlier failed attempts (0 on the first run and for sendNow).
+   */
   async process(
     data: EmailJobData,
+    attemptsMade = 0,
   ): Promise<'sent' | 'skipped:pref' | 'skipped:suppressed'> {
-    return (await this.send(data)).status;
+    return (await this.send(data, attemptsMade)).status;
   }
 
   /**
    * Guard, footer, render, deliver. Throws RetryableEmailError for a
    * transient failure and UnrecoverableError for one no retry can fix.
    */
-  private async send(data: EmailJobData): Promise<SendOutcome> {
+  private async send(
+    data: EmailJobData,
+    attemptsMade = 0,
+  ): Promise<SendOutcome> {
     const { to, workspaceId, props } = data;
     const def = this.templateOf(data.template);
 
@@ -140,6 +154,19 @@ export class EmailOutboxService {
         tags: { category: def.category, template: def.id },
       },
     );
+    if (
+      !result.success &&
+      result.errorCode === 'invalid_idempotent_request' &&
+      attemptsMade > 0
+    ) {
+      // On a retry this means an earlier attempt already used the key with a
+      // slightly different payload (the footer re-reads the workspace name):
+      // that attempt reached Resend, so the email went out.
+      this.logger.log(
+        `Email ${data.idempotencyKey} (${def.id}) was already sent by an earlier attempt`,
+      );
+      return { status: 'sent' };
+    }
     if (!result.success) {
       const reason = `Email ${data.idempotencyKey} (${def.id}) failed: ${result.error ?? 'unknown error'}`;
       throw result.retryable

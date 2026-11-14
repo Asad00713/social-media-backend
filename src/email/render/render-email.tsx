@@ -2,6 +2,7 @@ import { render } from '@react-email/components';
 import type { EmailTemplateDef, RenderContext } from '../templates/types';
 import { EmailLayout } from './components/layout';
 import { EmailContext } from './email-context';
+import { toSubjectLine } from './subject-line';
 
 export interface RenderedEmail {
   subject: string;
@@ -31,11 +32,6 @@ function tidyText(text: string): string {
     .join('\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
-}
-
-/** A subject is one header line: CR/LF would let text inject headers. */
-function toSubjectLine(subject: string): string {
-  return subject.replace(/\s*[\r\n]+\s*/g, ' ').trim();
 }
 
 /** Images in an email need an absolute http(s) URL; a relative one never loads. */

@@ -127,6 +127,7 @@ import { QUEUES } from './queue/queue.module';
       { name: QUEUES.DRIP_CAMPAIGNS, adapter: BullMQAdapter },
       { name: QUEUES.CHANNEL_SNAPSHOTS, adapter: BullMQAdapter },
       { name: QUEUES.INBOX_POLLING, adapter: BullMQAdapter },
+      { name: QUEUES.EMAIL, adapter: BullMQAdapter },
     ),
   ],
   controllers: [AppController, SiteVerificationController],

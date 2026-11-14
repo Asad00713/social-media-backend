@@ -2,6 +2,22 @@ import { Logger } from '@nestjs/common';
 import { EmailService } from './email.service';
 import { ConfigService } from '@nestjs/config';
 
+// Every EmailService log line is silenced; the spies let tests read what was logged.
+let logSpy: jest.SpyInstance<void, unknown[]>;
+let errorSpy: jest.SpyInstance<void, unknown[]>;
+beforeEach(() => {
+  logSpy = jest
+    .spyOn(Logger.prototype, 'log')
+    .mockImplementation(() => undefined);
+  errorSpy = jest
+    .spyOn(Logger.prototype, 'error')
+    .mockImplementation(() => undefined);
+  for (const level of ['warn', 'debug'] as const) {
+    jest.spyOn(Logger.prototype, level).mockImplementation(() => undefined);
+  }
+});
+afterEach(() => jest.restoreAllMocks());
+
 function makeService(): EmailService {
   // No RESEND_API_KEY → sendEmail logs instead of sending, and now reports
   // failure. This test is about how the accept URL is BUILT, which happens
@@ -106,13 +122,6 @@ describe('EmailService.sendEmail attachments and headers', () => {
 });
 
 describe('EmailService.deliver', () => {
-  beforeEach(() => {
-    for (const level of ['log', 'error', 'warn', 'debug'] as const) {
-      jest.spyOn(Logger.prototype, level).mockImplementation(() => undefined);
-    }
-  });
-  afterEach(() => jest.restoreAllMocks());
-
   function makeDeliverService(env: Record<string, string> = {}) {
     const values: Record<string, string> = {
       RESEND_API_KEY: 're_test_key',
@@ -186,11 +195,13 @@ describe('EmailService.deliver', () => {
       success: false,
       error: 'rate_limit_exceeded happened',
       retryable: true,
+      errorCode: 'rate_limit_exceeded',
     });
     expect(invalid).toEqual({
       success: false,
       error: 'validation_error happened',
       retryable: false,
+      errorCode: 'validation_error',
     });
   });
 
@@ -266,5 +277,49 @@ describe('EmailService.deliver', () => {
     expect(send.mock.calls[0][1]).toEqual({
       idempotencyKey: deliverOpts.idempotencyKey,
     });
+  });
+
+  it('logs a retryable failure at log level only and a final one at error', async () => {
+    const { service, send } = makeDeliverService();
+    send.mockResolvedValueOnce(resendError('rate_limit_exceeded', 429));
+    await service.deliver(msg, opts);
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(logSpy).toHaveBeenCalledWith(
+      expect.stringContaining('rate_limit_exceeded'),
+    );
+
+    send.mockRejectedValueOnce(new Error('socket hang up'));
+    await service.deliver(msg, opts);
+    expect(errorSpy).not.toHaveBeenCalled();
+
+    send.mockResolvedValueOnce(resendError('validation_error', 422));
+    await service.deliver(msg, opts);
+    expect(errorSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it('never logs the address, subject or body', async () => {
+    const secret = {
+      ...msg,
+      subject: 'Your code',
+      html: '<p>482910</p>',
+      text: '482910',
+    };
+    const { service, send } = makeDeliverService();
+    await service.deliver(secret, opts);
+    send.mockResolvedValueOnce(resendError('validation_error', 422));
+    await service.deliver(secret, opts);
+    const keyless = new EmailService({
+      get: (_key: string, def?: string) => def,
+    } as unknown as ConfigService);
+    await keyless.deliver(secret, opts);
+
+    const lines = [...logSpy.mock.calls, ...errorSpy.mock.calls]
+      .flat()
+      .map(String)
+      .join(' | ');
+    expect(lines).toContain('welcome.u1 (welcome)');
+    expect(lines).not.toContain('a@b.co');
+    expect(lines).not.toContain('Your code');
+    expect(lines).not.toContain('482910');
   });
 });

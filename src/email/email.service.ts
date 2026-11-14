@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend, type ErrorResponse } from 'resend';
+import { toSubjectLine } from './render/subject-line';
 
 export interface DripNotificationData {
   userEmail: string;
@@ -20,6 +21,8 @@ export interface EmailResult {
   error?: string;
   /** Set on a failure: true when a later attempt may succeed (429, 5xx, network). */
   retryable?: boolean;
+  /** Resend's error name on a rejected send, e.g. `invalid_idempotent_request`. */
+  errorCode?: string;
 }
 
 /** One message, fully rendered. */
@@ -54,11 +57,6 @@ function isRetryable(error: ErrorResponse): boolean {
     error.statusCode === null ||
     error.statusCode >= 500
   );
-}
-
-/** A subject is one header line: CR/LF would let text inject headers. */
-function toSubjectLine(subject: string): string {
-  return subject.replace(/\s*[\r\n]+\s*/g, ' ').trim();
 }
 
 @Injectable()
@@ -175,6 +173,9 @@ export class EmailService {
   ): Promise<EmailResult> {
     const { to, html, text, attachments, headers } = msg;
     const subject = toSubjectLine(msg.subject);
+    // Logs name the key and template only: never the address, subject or body
+    // (bodies carry codes and reset links; error/warn persist to error_logs).
+    const label = `${opts.idempotencyKey} (${opts.tags.template})`;
 
     if (!this.resend) {
       // Log the email instead of sending.
@@ -188,10 +189,7 @@ export class EmailService {
       // Callers that genuinely don't care whether the mail lands (background
       // notifications) can keep ignoring the result. The ones that gate a user
       // flow on it — email verification, password reset — must not.
-      this.logger.error(
-        `[EMAIL NOT SENT - No API Key] To: ${to}, Subject: ${subject}`,
-      );
-      this.logger.debug(`Email content: ${text || html.substring(0, 200)}`);
+      this.logger.error(`[EMAIL NOT SENT - No API Key] ${label}`);
       return {
         success: false,
         error: 'Email service is not configured (RESEND_API_KEY is unset)',
@@ -220,17 +218,21 @@ export class EmailService {
       );
 
       if (result.error) {
-        this.logger.error(
-          `Failed to send email ${opts.idempotencyKey}: ${result.error.name} ${result.error.message}`,
-        );
+        const retryable = isRetryable(result.error);
+        const line = `Failed to send email ${label}: ${result.error.name} ${result.error.message}`;
+        // A retryable failure is one attempt of several: console only. The
+        // worker's final-failure handler records the outcome once.
+        if (retryable) this.logger.log(line);
+        else this.logger.error(line);
         return {
           success: false,
           error: result.error.message,
-          retryable: isRetryable(result.error),
+          retryable,
+          errorCode: result.error.name,
         };
       }
 
-      this.logger.log(`Email sent to ${to}, ID: ${result.data?.id}`);
+      this.logger.log(`Email sent ${label}, ID: ${result.data?.id}`);
       return {
         success: true,
         messageId: result.data?.id,
@@ -240,7 +242,7 @@ export class EmailService {
       // means no answer came back: retrying under the same key is safe.
       const errorMessage =
         error instanceof Error ? error.message : 'Unknown error';
-      this.logger.error(`Email send failed: ${errorMessage}`);
+      this.logger.log(`Email send failed ${label}: ${errorMessage}`);
       return {
         success: false,
         error: errorMessage,
@@ -665,7 +667,6 @@ This email was sent by your Social Media Automation tool.
     name?: string,
   ): Promise<EmailResult> {
     const greeting = name ? `Hi ${name}` : 'Hi there';
-    const loginUrl = `${this.frontendUrl}/login`;
 
     const html = `
 <!DOCTYPE html>

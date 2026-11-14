@@ -86,6 +86,11 @@ export class EmailFooterService {
     }
   }
 
+  /**
+   * Read on every attempt, not frozen at enqueue: a rename between attempts
+   * changes the payload, which Resend answers with invalid_idempotent_request
+   * and the outbox treats as already sent. Accepted: renames are rare.
+   */
   private async workspaceName(workspaceId: string): Promise<string> {
     const [row] = await this.db
       .select({ name: workspace.name })

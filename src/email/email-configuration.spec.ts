@@ -1,4 +1,11 @@
+import { Logger } from '@nestjs/common';
 import { EmailService } from './email.service';
+
+// Module scope, not beforeEach: the service below is built while the describe
+// block is collected, and its constructor already logs.
+for (const level of ['log', 'error', 'warn', 'debug'] as const) {
+  jest.spyOn(Logger.prototype, level).mockImplementation(() => undefined);
+}
 
 /**
  * A missing API key must be reported as a failure.

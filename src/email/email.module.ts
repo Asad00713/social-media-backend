@@ -1,6 +1,10 @@
-import { Module } from '@nestjs/common';
+import { Inject, Module, type OnModuleDestroy } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
-import { RedisClientProvider } from '../channels/analytics/redis-client.provider';
+import type Redis from 'ioredis';
+import {
+  REDIS_CLIENT,
+  RedisClientProvider,
+} from '../channels/analytics/redis-client.provider';
 import { NotificationPreferencesModule } from '../notification-preferences/notification-preferences.module';
 import { QueueModule } from '../queue/queue.module';
 import { EmailOnceService } from './email-once.service';
@@ -25,4 +29,19 @@ import { EmailSuppressionRepository } from './suppression/email-suppression.repo
   ],
   exports: [EmailService, EmailOutboxService, AppLinks, EmailOnceService],
 })
-export class EmailModule {}
+export class EmailModule implements OnModuleDestroy {
+  constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
+
+  /**
+   * This module's own ioredis connection (EmailOnceService) closes on
+   * shutdown. A connection that is not ready is dropped instead: QUIT would sit
+   * in ioredis's offline queue and hold the shutdown up.
+   */
+  async onModuleDestroy(): Promise<void> {
+    if (this.redis.status !== 'ready') {
+      this.redis.disconnect();
+      return;
+    }
+    await this.redis.quit().catch(() => this.redis.disconnect());
+  }
+}

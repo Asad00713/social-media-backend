@@ -1,4 +1,5 @@
 import type { ConfigService } from '@nestjs/config';
+import { Logger } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import { UnrecoverableError } from 'bullmq';
 import { createElement } from 'react';
@@ -128,7 +129,12 @@ function job(def: AnyTemplateDef, extra: Partial<EmailJobData> = {}) {
   } as EmailJobData;
 }
 
-beforeEach(() => notificationBody.mockClear());
+let log: jest.SpyInstance;
+beforeEach(() => {
+  notificationBody.mockClear();
+  log = jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
+});
+afterEach(() => log.mockRestore());
 
 describe('EmailOutboxService.enqueue', () => {
   it('enqueue rejects a key with ":"', () => {
@@ -149,7 +155,18 @@ describe('EmailOutboxService.enqueue', () => {
     expect(queue.add).not.toHaveBeenCalled();
   });
 
-  it('enqueue adds jobId = key, attempts 5, exponential 2000, delay', async () => {
+  it('rejects an all-digit key, which BullMQ refuses as a custom job id', async () => {
+    const { outbox, queue } = make();
+    await expect(
+      outbox.enqueue({ ...input, idempotencyKey: '12345' }),
+    ).rejects.toThrow(/idempotency key/);
+    expect(queue.add).not.toHaveBeenCalled();
+    // Digits next to anything else are fine.
+    await outbox.enqueue({ ...input, idempotencyKey: '12345.6' });
+    expect(queue.add).toHaveBeenCalledTimes(1);
+  });
+
+  it('enqueue adds jobId = key, attempts 10, exponential 2000, delay', async () => {
     const { outbox, queue } = make();
     await outbox.enqueue({ ...input, replyTo: 'x@acme.com', delayMs: 60_000 });
     expect(queue.add).toHaveBeenCalledWith(
@@ -164,7 +181,7 @@ describe('EmailOutboxService.enqueue', () => {
       },
       {
         jobId: 'post-failed.u1.ws1.w1',
-        attempts: 5,
+        attempts: 10,
         backoff: { type: 'exponential', delay: 2000 },
         delay: 60_000,
       },
@@ -284,12 +301,33 @@ describe('EmailOutboxService.process', () => {
     });
     const data = job(postFailed);
     await expect(outbox.process(data)).rejects.toThrow(RetryableEmailError);
-    await expect(outbox.process(data)).resolves.toBe('sent');
+    await expect(outbox.process(data, 1)).resolves.toBe('sent');
 
     expect(email.deliver).toHaveBeenCalledTimes(2);
     const [first, second] = email.deliver.mock.calls.map(([, opts]) => opts);
     expect(first.idempotencyKey).toBe('post-failed.k1');
     expect(second.idempotencyKey).toBe(first.idempotencyKey);
+  });
+
+  it('treats invalid_idempotent_request on a retry as already sent', async () => {
+    const { outbox, email } = make();
+    const used = {
+      success: false,
+      error: 'This idempotency key has been used on a different request.',
+      retryable: false,
+      errorCode: 'invalid_idempotent_request',
+    };
+    email.deliver.mockResolvedValueOnce(used);
+    await expect(outbox.process(job(postFailed), 2)).resolves.toBe('sent');
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('already sent by an earlier attempt'),
+    );
+
+    // On a first attempt the key clash is a caller bug, not a lost response.
+    email.deliver.mockResolvedValueOnce(used);
+    await expect(outbox.process(job(postFailed), 0)).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
   });
 
   it('fails an unknown template without retrying', async () => {
