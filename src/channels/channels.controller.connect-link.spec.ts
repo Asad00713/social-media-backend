@@ -453,6 +453,20 @@ describe('ChannelsController.oauthCallback - connect link states', () => {
     );
   });
 
+  it('a state that expired 20 minutes ago still redirects to /c/<token>?error=', async () => {
+    // The visitor waited on the network's login page past the state's 15
+    // minutes: validateState refuses it, peekState (grace period) still reads
+    // it, so the visitor lands on the link page, not the team error page.
+    const t = build();
+    t.validateState.mockRejectedValue(new Error('OAuth state has expired'));
+    await t.callback('linkedin');
+    expect(t.peekState).toHaveBeenCalledWith(STATE);
+    expect(t.redirected()).toBe(
+      `${LINK_PAGE}?error=OAuth%20state%20has%20expired`,
+    );
+    expect(t.channelConnect.connectLinkedIn).not.toHaveBeenCalled();
+  });
+
   it('healthy duplicate maps to ALREADY_CONNECTED', async () => {
     // auto-create branch (Instagram Business Login)
     const ig = build({

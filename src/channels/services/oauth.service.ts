@@ -267,6 +267,14 @@ const OAUTH_CONFIGS: Record<SupportedPlatform, PlatformOAuthConfig> = {
   },
 };
 
+/**
+ * How long past its expires_at an OAuth state may still be PEEKED (never
+ * validated or consumed) so a connect-link visitor whose state timed out on
+ * the network's login page still lands back on /c/<token>. Bounded on purpose:
+ * the peek must never become a permanent oracle for old state tokens.
+ */
+export const LINK_STATE_PEEK_GRACE_MS = 60 * 60 * 1000;
+
 @Injectable()
 export class OAuthService {
   private readonly logger = new Logger(OAuthService.name);
@@ -486,9 +494,11 @@ export class OAuthService {
    * unknown token. For the callback's early exits (the network answered with
    * an error, or validation failed): a state started from a connect link must
    * still send the visitor back to the link page. A used state is still read
-   * (a replay lands on the link page), but only within the state's own
-   * lifetime: the link page URL carries the raw link token, so an old state
-   * must not keep answering with it.
+   * (a replay lands on the link page), and so is an expired one: a visitor
+   * can sit on the network's login page past the state's 15 minutes and must
+   * still come back to the link page, not the team error page. The window is
+   * bounded (LINK_STATE_PEEK_GRACE_MS past expiry): the link page URL carries
+   * the raw link token, so an old state must not keep answering with it.
    */
   async peekState(
     stateToken: string,
@@ -499,7 +509,10 @@ export class OAuthService {
       .where(
         and(
           eq(oauthStates.stateToken, stateToken),
-          gt(oauthStates.expiresAt, new Date()),
+          gt(
+            oauthStates.expiresAt,
+            new Date(Date.now() - LINK_STATE_PEEK_GRACE_MS),
+          ),
         ),
       )
       .limit(1);

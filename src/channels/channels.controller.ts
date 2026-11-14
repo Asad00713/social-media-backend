@@ -199,8 +199,10 @@ export class ChannelsController {
 
   /**
    * The link target of a state that is NOT being consumed (the network sent
-   * an error, or validation failed). Never throws: a lookup failure just
-   * leaves the old team error page.
+   * an error, or validation failed - including a state that timed out while
+   * the visitor sat on the network's login page). Never throws: a lookup
+   * failure, or a state older than the peek grace, just leaves the old team
+   * error page.
    */
   private async connectLinkTargetOfState(
     state: string | undefined,
@@ -416,7 +418,8 @@ export class ChannelsController {
       try {
         stateData = await this.oauthService.validateState(state);
       } catch (stateError) {
-        // An expired or replayed state of a link still lands on the link page.
+        // An expired or replayed state of a link still lands on the link
+        // page (peekState answers up to LINK_STATE_PEEK_GRACE_MS past expiry).
         const linkTarget = await this.connectLinkTargetOfState(
           state,
           frontendUrl,
