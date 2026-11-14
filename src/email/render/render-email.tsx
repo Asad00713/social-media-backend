@@ -38,12 +38,28 @@ function toSubjectLine(subject: string): string {
   return subject.replace(/\s*[\r\n]+\s*/g, ' ').trim();
 }
 
+/** Images in an email need an absolute http(s) URL; a relative one never loads. */
+function assertAbsoluteAssetBase(assetBaseUrl: string): void {
+  let protocol: string | null = null;
+  try {
+    protocol = new URL(assetBaseUrl).protocol;
+  } catch {
+    protocol = null;
+  }
+  if (protocol !== 'http:' && protocol !== 'https:') {
+    throw new Error(
+      `Email assetBaseUrl must be an absolute http(s) URL, got "${assetBaseUrl}"`,
+    );
+  }
+}
+
 /** Renders a template into the subject, preheader, HTML and plain-text parts. */
 export async function renderEmail<P>(
   def: EmailTemplateDef<P>,
   props: P,
   ctx: RenderContext,
 ): Promise<RenderedEmail> {
+  assertAbsoluteAssetBase(ctx.assetBaseUrl);
   const preheader = def.preheader(props);
   const email = (
     <EmailContext.Provider value={{ assetBaseUrl: ctx.assetBaseUrl }}>

@@ -22,15 +22,13 @@ export function PostRow({
   thumbnailUrl,
 }: PostRowProps) {
   return (
-    <Section
-      style={{
-        borderBottom: `1px solid ${EMAIL_COLORS.border}`,
-        padding: '12px 0',
-      }}
-    >
+    <Section style={{ borderBottom: `1px solid ${EMAIL_COLORS.border}` }}>
       <Row>
         {thumbnailUrl ? (
-          <Column style={{ width: '56px', verticalAlign: 'top' }}>
+          <Column
+            width="56"
+            style={{ width: '56px', padding: '12px 0', verticalAlign: 'top' }}
+          >
             <Img
               src={thumbnailUrl}
               width="44"
@@ -40,7 +38,7 @@ export function PostRow({
             />
           </Column>
         ) : null}
-        <Column style={{ verticalAlign: 'top' }}>
+        <Column style={{ padding: '12px 0', verticalAlign: 'top' }}>
           <Text
             style={{
               color: EMAIL_COLORS.heading,

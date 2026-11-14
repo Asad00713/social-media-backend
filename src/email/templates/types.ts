@@ -43,7 +43,7 @@ export interface EmailTemplateDef<P> {
   preheader(p: P): string;
   /** Overrides footer line 1 (e.g. A1, B1, C3, E1, F1, F2). */
   footerReason?(p: P): string;
-  /** Extra links before "Help center" (E1 adds Status). */
+  /** Extra links go AFTER "Help center" (E1: Help center · Status · Privacy). */
   extraFooterLinks?: FooterLink[];
   Body(p: P): ReactElement;
   /** Figma placeholder data, used by the preview and the contract spec. */

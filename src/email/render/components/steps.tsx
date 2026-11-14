@@ -10,31 +10,45 @@ interface StepsProps {
   steps: Step[];
 }
 
+const BADGE_SIZE = 28;
+
 /** Numbered first steps (F1): a number badge, a title and one line. */
 export function Steps({ steps }: StepsProps) {
   return (
     <Section style={{ margin: '0 0 16px' }}>
       {steps.map((step, i) => (
-        <Row key={step.title} style={{ marginBottom: '12px' }}>
-          <Column style={{ width: '42px', verticalAlign: 'top' }}>
-            <Text
-              style={{
-                width: '28px',
-                height: '28px',
-                borderRadius: '14px',
-                backgroundColor: EMAIL_COLORS.infoBg,
-                color: EMAIL_COLORS.primary,
-                fontSize: '13px',
-                lineHeight: '28px',
-                fontWeight: 600,
-                textAlign: 'center',
-                margin: 0,
-              }}
-            >
-              {i + 1}
-            </Text>
+        <Row key={`${step.title}-${i}`}>
+          <Column
+            width="42"
+            style={{
+              width: '42px',
+              paddingBottom: '12px',
+              verticalAlign: 'top',
+            }}
+          >
+            {/* A fixed-size cell, so Outlook keeps the badge round-ish and sized. */}
+            <Row width={String(BADGE_SIZE)} align="left">
+              <Column
+                width={String(BADGE_SIZE)}
+                height={String(BADGE_SIZE)}
+                align="center"
+                style={{
+                  width: `${BADGE_SIZE}px`,
+                  height: `${BADGE_SIZE}px`,
+                  borderRadius: `${BADGE_SIZE / 2}px`,
+                  backgroundColor: EMAIL_COLORS.primarySubtle,
+                  color: EMAIL_COLORS.primary,
+                  fontSize: '13px',
+                  lineHeight: `${BADGE_SIZE}px`,
+                  fontWeight: 600,
+                  textAlign: 'center',
+                }}
+              >
+                {i + 1}
+              </Column>
+            </Row>
           </Column>
-          <Column style={{ verticalAlign: 'top' }}>
+          <Column style={{ paddingBottom: '12px', verticalAlign: 'top' }}>
             <Text
               style={{
                 color: EMAIL_COLORS.heading,

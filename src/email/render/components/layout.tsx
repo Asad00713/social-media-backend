@@ -1,10 +1,12 @@
 import {
   Body,
+  Column,
   Container,
   Head,
   Html,
   Img,
   Preview,
+  Row,
   Section,
 } from '@react-email/components';
 import type { ReactNode } from 'react';
@@ -20,13 +22,21 @@ interface EmailLayoutProps {
   children: ReactNode;
 }
 
+/** The column width. Fixed, because Outlook for Windows ignores `max-width`. */
+const SHELL_WIDTH = 600;
+
 /**
- * At 375 the card goes almost edge to edge and the button fills the width
- * (Figma A1·m, C1·m, C3·m). Clients that drop `<style>` keep the desktop look.
+ * Below the column width the shell follows the screen. At 375 the card goes
+ * almost edge to edge and the button fills the width (Figma A1·m, C1·m,
+ * C3·m). Clients that drop `<style>` keep the desktop look. Padding sits on
+ * cells, never on tables: Outlook for Windows ignores table padding.
  */
 const RESPONSIVE_CSS = `
+@media only screen and (max-width: ${SHELL_WIDTH + 40}px) {
+  .email-shell { width: 100% !important; }
+}
 @media only screen and (max-width: 480px) {
-  .email-shell { padding: 12px 12px 24px !important; }
+  .email-gutter { padding: 12px 12px 24px !important; }
   .email-card { padding: 20px !important; }
   .email-button { display: block !important; }
 }
@@ -51,24 +61,41 @@ export function EmailLayout({ preheader, footer, children }: EmailLayoutProps) {
           padding: 0,
         }}
       >
-        <Container
-          className="email-shell"
-          style={{ maxWidth: '600px', width: '100%', padding: '32px 20px' }}
-        >
-          <Section
-            className="email-card"
-            style={{
-              backgroundColor: EMAIL_COLORS.card,
-              border: `1px solid ${EMAIL_COLORS.border}`,
-              borderRadius: '12px',
-              padding: '32px',
-            }}
-          >
-            <Img src={logoUrl} width="120" height="22" alt="Schedura" />
-            {children}
-          </Section>
-          <EmailFooter reason={footer.reason} links={footer.links} />
-        </Container>
+        <Section style={{ backgroundColor: EMAIL_COLORS.page }}>
+          <Row>
+            <Column className="email-gutter" style={{ padding: '32px 20px' }}>
+              <Container
+                className="email-shell"
+                width={String(SHELL_WIDTH)}
+                style={{
+                  width: `${SHELL_WIDTH}px`,
+                  maxWidth: `${SHELL_WIDTH}px`,
+                }}
+              >
+                <Section
+                  style={{
+                    backgroundColor: EMAIL_COLORS.card,
+                    border: `1px solid ${EMAIL_COLORS.border}`,
+                    borderRadius: '12px',
+                  }}
+                >
+                  <Row>
+                    <Column className="email-card" style={{ padding: '32px' }}>
+                      <Img
+                        src={logoUrl}
+                        width="120"
+                        height="22"
+                        alt="Schedura"
+                      />
+                      {children}
+                    </Column>
+                  </Row>
+                </Section>
+                <EmailFooter reason={footer.reason} links={footer.links} />
+              </Container>
+            </Column>
+          </Row>
+        </Section>
       </Body>
     </Html>
   );

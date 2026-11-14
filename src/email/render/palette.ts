@@ -10,6 +10,8 @@ export const EMAIL_COLORS = {
   body: '#374151',
   muted: '#6B7280',
   primary: '#2563EB',
+  /** Light-blue tint behind blue initials (Figma People avatar). */
+  primarySubtle: '#EFF6FF',
   onPrimary: '#FFFFFF',
   link: '#2563EB',
   infoBg: '#F3F4F6',
