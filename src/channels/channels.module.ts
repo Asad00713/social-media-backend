@@ -1,12 +1,20 @@
 import { Module, forwardRef } from '@nestjs/common';
 import { ChannelsController } from './channels.controller';
 import { ChannelHubController } from './channel-hub.controller';
+import { ConnectLinksController } from './connect-links/connect-links.controller';
+import { ConnectLinksService } from './connect-links/connect-links.service';
+import { ConnectLinkAccessService } from './connect-links/connect-link-access.service';
+import { ConnectLinkConnectService } from './connect-links/connect-link-connect.service';
+import { FacebookSelectionStore } from './connect-links/facebook-selection.store';
+import { PublicConnectLinksController } from './connect-links/public-connect-links.controller';
+import { EmailModule } from '../email/email.module';
 import { ChannelPauseService } from './services/channel-pause.service';
 import { ChannelPostsCleanupService } from './services/channel-posts-cleanup.service';
 import { ChannelSettingsService } from './services/channel-settings.service';
 import { ChannelSummaryService } from './services/channel-summary.service';
 import { NetworkRequestsService } from './services/network-requests.service';
 import { ChannelService } from './services/channel.service';
+import { ChannelConnectService } from './services/channel-connect.service';
 import { OAuthService } from './services/oauth.service';
 import { FacebookService } from './services/facebook.service';
 import { PinterestService } from './services/pinterest.service';
@@ -77,19 +85,32 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
     // module, NOT WorkspaceMembersModule (which pulls BillingModule and would
     // re-create a circular dependency through NotificationsModule).
     WorkspaceRoleModule,
+    // The connect-link invitation email. EmailModule imports only ConfigModule.
+    EmailModule,
     // Channels are pooled per ACCOUNT, so connecting one needs the account-wide
     // ceiling. BillingModule reaches back here via NotificationsModule
     // (Channels -> Billing -> Notifications -> Channels), so this must be a
     // forwardRef or the app fails to boot.
     forwardRef(() => BillingModule),
   ],
-  // ChannelHubController FIRST: Nest registers routes in this order, and
-  // ChannelsController's `GET workspaces/:workspaceId/:channelId` would
-  // otherwise swallow `GET workspaces/:workspaceId/summary`.
-  controllers: [ChannelHubController, ChannelsController],
+  // ChannelHubController and ConnectLinksController FIRST: Nest registers
+  // routes in this order, and ChannelsController's
+  // `GET workspaces/:workspaceId/:channelId` would otherwise swallow
+  // `GET workspaces/:workspaceId/summary` and `.../connect-links`.
+  controllers: [
+    ChannelHubController,
+    ConnectLinksController,
+    PublicConnectLinksController,
+    ChannelsController,
+  ],
   providers: [
     ChannelService,
+    ChannelConnectService,
     ChannelPauseService,
+    ConnectLinksService,
+    ConnectLinkAccessService,
+    ConnectLinkConnectService,
+    FacebookSelectionStore,
     ChannelPostsCleanupService,
     ChannelSettingsService,
     ChannelSummaryService,

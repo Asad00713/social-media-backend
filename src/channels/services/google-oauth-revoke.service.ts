@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 
 /**
@@ -50,9 +50,18 @@ export interface RevokeOutcome {
  * would make revocation isolated — that requires new credentials and a reconnect
  * for every existing Google channel, so it is deliberately out of scope here.
  *
+ * CONNECT LINKS: a channel added through a client's connect link
+ * (`connect_link_id` set) holds the CLIENT's own Google grant, although its
+ * `connected_by_user_id` is the link's sender. It is grouped with every other
+ * link-added Google channel of the SAME workspace (`connect_link_id IS NOT
+ * NULL AND workspace_id = <its workspace>`), whichever link added it: a
+ * sender may cancel a link and send a new one, and the client connects
+ * YouTube through one and Drive through the other, on one Google account.
+ * Grouping per link would revoke that shared grant. A team-connected channel
+ * never counts link-added ones.
+ *
  * KNOWN LIMITATIONS of the "last Google channel" check (limitation 1 below is
- * now MITIGATED for the common case; limitation 2 is unchanged and still
- * real):
+ * now MITIGATED for the common case; limitations 2-5 are real):
  *
  * 1. Cross-workspace blind spot — MITIGATED for the same connecting user.
  *    A Google grant belongs to a Google ACCOUNT, not a workspace, so a
@@ -86,7 +95,25 @@ export interface RevokeOutcome {
  *    user's connection. This is over-revocation — the same class of problem
  *    as limitation 1's pre-mitigation cross-workspace bug, but much narrower,
  *    since it requires two distinct app users sharing one Google account
- *    inside one workspace.
+ *    inside one workspace. This goes live with the first deploy where the
+ *    count query works (it always failed before, so revoke never ran): an
+ *    agency where two app users share one Google login will see the other
+ *    user's Drive, Photos, Calendar or YouTube break when one disconnects.
+ *
+ * 4. Link-added channels: two clients, one workspace (under-revocation).
+ *    Grouping link-added channels workspace-wide means two DIFFERENT clients
+ *    who each connected Google through links in one workspace keep each
+ *    other's grant alive: the first to disconnect is not revoked until the
+ *    other disconnects too. That is the "skip" direction, which the policy
+ *    below accepts (wrongly skipping only delays cleanup).
+ *
+ * 5. A team channel reconnected through a link stays in the team group.
+ *    Reconnecting an existing (broken) team-connected YouTube channel through
+ *    a link keeps `connect_link_id = NULL` on the row but swaps in the
+ *    client's tokens, so the row now holds the client's grant while it is
+ *    still counted in the sender's team group (and not in the workspace's
+ *    link group). Disconnecting it can then skip or revoke on the wrong
+ *    account's grouping.
  *
  * ROOT CAUSE: we don't store a common Google account identifier to compare
  * against, so there is no way to tell whether two Google channels in play
@@ -115,6 +142,14 @@ export class GoogleOauthRevokeService {
 
   constructor(@Inject(DRIZZLE) private readonly db: any) {}
 
+  /** Rows of a raw query, whichever shape the driver answers with. */
+  private async rowsOf(query: SQL): Promise<Array<Record<string, unknown>>> {
+    /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- `db` is injected untyped */
+    const result = await this.db.execute(query);
+    return result?.rows ?? result ?? [];
+    /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return */
+  }
+
   async revokeIfLastGoogleChannel(
     channelId: number,
     workspaceId: string,
@@ -136,40 +171,77 @@ export class GoogleOauthRevokeService {
       // the old workspace-scoped approximation — grouping every NULL-owner
       // channel together as though they shared one Google account would be
       // wrong in the other direction.
-      const ownerResult: any = await this.db.execute(sql`
-        SELECT connected_by_user_id AS connected_by_user_id
+      const ownerRows = await this.rowsOf(sql`
+        SELECT connected_by_user_id AS connected_by_user_id,
+               connect_link_id AS connect_link_id
         FROM social_media_channels
         WHERE id = ${channelId}
       `);
-      const ownerRows = ownerResult?.rows ?? ownerResult ?? [];
-      const connectedByUserId: string | null =
-        ownerRows[0]?.connected_by_user_id ?? null;
+      const connectedByUserId =
+        (ownerRows[0]?.connected_by_user_id as string | null | undefined) ??
+        null;
+      const connectLinkId =
+        (ownerRows[0]?.connect_link_id as string | null | undefined) ?? null;
 
-      // GOOGLE_PLATFORMS is a module constant, never user input, but pass it as
-      // a bound parameter anyway rather than interpolating it into the string.
-      const countResult: any = connectedByUserId
-        ? await this.db.execute(sql`
-            SELECT COUNT(*) AS count
-            FROM social_media_channels
-            WHERE connected_by_user_id = ${connectedByUserId}
-              AND id <> ${channelId}
-              AND platform = ANY(${[...GOOGLE_PLATFORMS]})
-          `)
-        : await this.db.execute(sql`
-            SELECT COUNT(*) AS count
-            FROM social_media_channels
-            WHERE workspace_id = ${workspaceId}
-              AND id <> ${channelId}
-              AND platform = ANY(${[...GOOGLE_PLATFORMS]})
-          `);
-      const rows = countResult?.rows ?? countResult ?? [];
-      remaining = Number(rows[0]?.count ?? 0);
+      // GOOGLE_PLATFORMS is a module constant, never user input, but pass each
+      // as a bound parameter anyway rather than interpolating it into the
+      // string. An IN list, not `= ANY(${array})`: drizzle spreads an array
+      // parameter into a row `($1, $2, ...)` and Postgres rejects `ANY(row)`,
+      // which made this count fail (and so revoke skip) every time.
+      const googlePlatformList = sql.join(
+        GOOGLE_PLATFORMS.map((p) => sql`${p}`),
+        sql`, `,
+      );
+      //
+      // Three groupings, by who owns the Google grant:
+      //  - a channel added through a connect link belongs to a CLIENT's own
+      //    Google account, so the other link-added Google channels of the same
+      //    workspace count, through any link (a client may connect through a
+      //    second link the sender sent). Its connected_by_user_id is the
+      //    link's sender, who has nothing to do with that grant.
+      //  - a team-connected channel counts that user's other Google channels,
+      //    never link-added ones (those hold the clients' grants, not theirs,
+      //    even though the sender's id is on them).
+      //  - the NULL-owner fallback is workspace-scoped, also excluding
+      //    link-added channels.
+      let countRows: Array<Record<string, unknown>>;
+      if (connectLinkId) {
+        countRows = await this.rowsOf(sql`
+          SELECT COUNT(*) AS count
+          FROM social_media_channels
+          WHERE workspace_id = ${workspaceId}
+            AND connect_link_id IS NOT NULL
+            AND id <> ${channelId}
+            AND platform IN (${googlePlatformList})
+        `);
+      } else if (connectedByUserId) {
+        countRows = await this.rowsOf(sql`
+          SELECT COUNT(*) AS count
+          FROM social_media_channels
+          WHERE connected_by_user_id = ${connectedByUserId}
+            AND connect_link_id IS NULL
+            AND id <> ${channelId}
+            AND platform IN (${googlePlatformList})
+        `);
+      } else {
+        countRows = await this.rowsOf(sql`
+          SELECT COUNT(*) AS count
+          FROM social_media_channels
+          WHERE workspace_id = ${workspaceId}
+            AND connect_link_id IS NULL
+            AND id <> ${channelId}
+            AND platform IN (${googlePlatformList})
+        `);
+      }
+      remaining = Number(countRows[0]?.count ?? 0);
     } catch (err) {
       // If we cannot tell whether other Google channels exist, do NOT revoke —
       // wrongly revoking breaks working Drive/Photos/Calendar connections,
       // while wrongly skipping only delays the grant cleanup.
       const reason = `could not count other Google channels: ${(err as Error).message}`;
-      this.logger.error(`Google revoke skipped for channel ${channelId} — ${reason}`);
+      this.logger.error(
+        `Google revoke skipped for channel ${channelId} — ${reason}`,
+      );
       return { revoked: false, reason };
     }
 
@@ -194,7 +266,9 @@ export class GoogleOauthRevokeService {
         const body = await res.text();
         const reason = `Google revoke returned ${res.status}: ${body}`;
         // Best effort, exactly like MastodonService.revokeToken — never throw.
-        this.logger.warn(`Google revoke failed for channel ${channelId}: ${reason}`);
+        this.logger.warn(
+          `Google revoke failed for channel ${channelId}: ${reason}`,
+        );
         return { revoked: false, reason };
       }
 
@@ -204,7 +278,9 @@ export class GoogleOauthRevokeService {
       return { revoked: true, reason: 'revoked' };
     } catch (err) {
       const reason = (err as Error).message;
-      this.logger.warn(`Google revoke failed for channel ${channelId}: ${reason}`);
+      this.logger.warn(
+        `Google revoke failed for channel ${channelId}: ${reason}`,
+      );
       return { revoked: false, reason };
     }
   }

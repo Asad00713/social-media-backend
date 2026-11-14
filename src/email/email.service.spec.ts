@@ -99,3 +99,21 @@ describe('EmailService.sendEmail attachments and headers', () => {
     expect(res.success).toBe(false);
   });
 });
+
+describe('EmailService.sendChannelConnectLink', () => {
+  it('states the expiry as a UTC date, labelled UTC, whatever the server time zone', async () => {
+    const service = makeService();
+    const spy = jest.spyOn(service, 'sendEmail');
+    // 23:30 UTC on Nov 20: already Nov 21 east of UTC, still Nov 20 in UTC
+    await service.sendChannelConnectLink('client@example.com', {
+      workspaceName: 'Acme',
+      senderName: 'Sam',
+      networks: ['instagram'],
+      url: 'https://app.schedura.ai/c/tok',
+      expiresAt: new Date('2026-11-20T23:30:00Z'),
+    });
+    const arg = spy.mock.calls[0][0];
+    expect(arg.text).toContain('works until November 20, 2026 (UTC)');
+    expect(arg.html).toContain('November 20, 2026 (UTC)');
+  });
+});

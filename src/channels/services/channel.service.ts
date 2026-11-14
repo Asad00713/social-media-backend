@@ -75,6 +75,19 @@ export function isChannelHealthy(channel: {
   );
 }
 
+/** The connect link a channel is being added through (see ConnectLinksService). */
+export interface ConnectLinkMark {
+  linkId: string;
+  /** The address the link was sent to; null when it was created without one. */
+  email: string | null;
+}
+
+export interface CreateChannelOptions {
+  /** Mark a NEW channel as added through this link. A reconnect of an
+   * existing channel never changes its mark. */
+  connectLink?: ConnectLinkMark;
+}
+
 @Injectable()
 export class ChannelService {
   private readonly logger = new Logger(ChannelService.name);
@@ -96,12 +109,15 @@ export class ChannelService {
   // ==========================================================================
 
   /**
-   * Create a new channel (after OAuth callback)
+   * Create a new channel (after OAuth callback). With `options.connectLink` a
+   * newly inserted channel is marked as added through that link; an existing
+   * channel that is reconnected keeps whatever mark it already has.
    */
   async createChannel(
     workspaceId: string,
     userId: string,
     dto: CreateChannelDto,
+    options?: CreateChannelOptions,
   ): Promise<ChannelResponseDto> {
     // Check for duplicate
     const existing = await db
@@ -259,6 +275,13 @@ export class ChannelService {
     if (dto.color) newChannel.color = dto.color;
     if (dto.telegramWebhookRouteId !== undefined) {
       newChannel.telegramWebhookRouteId = dto.telegramWebhookRouteId ?? null;
+    }
+    if (options?.connectLink) {
+      Object.assign(newChannel, {
+        connectLinkId: options.connectLink.linkId,
+        addedViaLinkAt: new Date(),
+        addedViaLinkEmail: options.connectLink.email,
+      });
     }
 
     const inserted = await db.transaction(async (tx) => {
