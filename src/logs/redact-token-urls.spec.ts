@@ -32,6 +32,15 @@ describe('redactTokenUrls', () => {
     );
   });
 
+  it('redacts any letter case, since Express routing ignores case', () => {
+    expect(redactTokenUrls(`/Email/Unsubscribe/${JWT}`)).toBe(
+      '/Email/Unsubscribe/[token]',
+    );
+    expect(redactTokenUrls(`/REPORTS/PUBLIC/${JWT}`)).toBe(
+      '/REPORTS/PUBLIC/[token]',
+    );
+  });
+
   it('works behind a global prefix', () => {
     expect(redactTokenUrls(`/api/v1/email/unsubscribe/${JWT}`)).toBe(
       '/api/v1/email/unsubscribe/[token]',
