@@ -1,6 +1,7 @@
+import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Resend } from 'resend';
+import { Resend, type ErrorResponse } from 'resend';
 
 export interface DripNotificationData {
   userEmail: string;
@@ -17,6 +18,47 @@ export interface EmailResult {
   success: boolean;
   messageId?: string;
   error?: string;
+  /** Set on a failure: true when a later attempt may succeed (429, 5xx, network). */
+  retryable?: boolean;
+}
+
+/** One message, fully rendered. */
+export interface OutgoingEmail {
+  to: string;
+  subject: string;
+  html: string;
+  text: string;
+  replyTo?: string;
+  headers?: Record<string, string>;
+  attachments?: { filename: string; content: Buffer }[];
+}
+
+export interface DeliverOptions {
+  /** Sent as Resend's Idempotency-Key: a retry within 24 h is not re-sent. */
+  idempotencyKey: string;
+  tags: { category: string; template: string };
+}
+
+/** Resend errors a later attempt can clear. Every other error is final. */
+const RETRYABLE_ERRORS = new Set<string>([
+  'rate_limit_exceeded',
+  'concurrent_idempotent_requests',
+  'application_error',
+  'internal_server_error',
+]);
+
+/** A null status is the SDK's "the request could not be resolved" (network). */
+function isRetryable(error: ErrorResponse): boolean {
+  return (
+    RETRYABLE_ERRORS.has(error.name) ||
+    error.statusCode === null ||
+    error.statusCode >= 500
+  );
+}
+
+/** A subject is one header line: CR/LF would let text inject headers. */
+function toSubjectLine(subject: string): string {
+  return subject.replace(/\s*[\r\n]+\s*/g, ' ').trim();
 }
 
 @Injectable()
@@ -24,6 +66,7 @@ export class EmailService {
   private readonly logger = new Logger(EmailService.name);
   private resend: Resend | null = null;
   private readonly fromEmail: string;
+  private readonly replyTo: string | undefined;
   private readonly frontendUrl: string;
   private readonly appUrl: string;
 
@@ -31,8 +74,10 @@ export class EmailService {
     const apiKey = this.configService.get<string>('RESEND_API_KEY');
     this.fromEmail = this.configService.get<string>(
       'RESEND_FROM_EMAIL',
-      'noreply@yourdomain.com',
+      'Schedura <noreply@schedura.ai>',
     );
+    this.replyTo =
+      this.configService.get<string>('RESEND_REPLY_TO') || undefined;
     // FRONTEND_URL for auth links (verification, password reset)
     this.frontendUrl = this.configService.get<string>(
       'FRONTEND_URL',
@@ -119,27 +164,17 @@ export class EmailService {
   }
 
   /**
-   * Send a generic email
+   * The one Resend call every email makes. Never throws: a failure comes back
+   * as `{ success: false, retryable }`, and the caller (the email worker)
+   * decides whether to retry. The same `idempotencyKey` on a retry means a
+   * send whose response was lost is not delivered twice.
    */
-  async sendEmail(options: {
-    to: string;
-    subject: string;
-    html: string;
-    text?: string;
-    /**
-     * Where a reply should go, when that is not the from-address.
-     *
-     * Needed by mail we send *about* someone rather than *to* them — a contact
-     * form enquiry arrives from our own Resend address, so without this a reply
-     * goes to us instead of to the person who wrote in.
-     */
-    replyTo?: string;
-    /** Files to attach (Resend sends them base64-encoded). */
-    attachments?: { filename: string; content: Buffer }[];
-    /** Extra message headers, e.g. `List-Unsubscribe`. */
-    headers?: Record<string, string>;
-  }): Promise<EmailResult> {
-    const { to, subject, html, text, replyTo, attachments, headers } = options;
+  async deliver(
+    msg: OutgoingEmail,
+    opts: DeliverOptions,
+  ): Promise<EmailResult> {
+    const { to, html, text, attachments, headers } = msg;
+    const subject = toSubjectLine(msg.subject);
 
     if (!this.resend) {
       // Log the email instead of sending.
@@ -160,26 +195,38 @@ export class EmailService {
       return {
         success: false,
         error: 'Email service is not configured (RESEND_API_KEY is unset)',
+        retryable: false,
       };
     }
 
+    const replyTo = msg.replyTo ?? this.replyTo;
     try {
-      const result = await this.resend.emails.send({
-        from: this.fromEmail,
-        to,
-        subject,
-        html,
-        text,
-        ...(replyTo ? { replyTo } : {}),
-        ...(attachments?.length ? { attachments } : {}),
-        ...(headers && Object.keys(headers).length ? { headers } : {}),
-      });
+      const result = await this.resend.emails.send(
+        {
+          from: this.fromEmail,
+          to,
+          subject,
+          html,
+          ...(text ? { text } : {}),
+          ...(replyTo ? { replyTo } : {}),
+          ...(attachments?.length ? { attachments } : {}),
+          ...(headers && Object.keys(headers).length ? { headers } : {}),
+          tags: [
+            { name: 'category', value: opts.tags.category },
+            { name: 'template', value: opts.tags.template },
+          ],
+        },
+        { idempotencyKey: opts.idempotencyKey },
+      );
 
       if (result.error) {
-        this.logger.error(`Failed to send email: ${result.error.message}`);
+        this.logger.error(
+          `Failed to send email ${opts.idempotencyKey}: ${result.error.name} ${result.error.message}`,
+        );
         return {
           success: false,
           error: result.error.message,
+          retryable: isRetryable(result.error),
         };
       }
 
@@ -189,14 +236,48 @@ export class EmailService {
         messageId: result.data?.id,
       };
     } catch (error) {
+      // The SDK turns HTTP and network failures into `result.error`, so a throw
+      // means no answer came back: retrying under the same key is safe.
       const errorMessage =
         error instanceof Error ? error.message : 'Unknown error';
       this.logger.error(`Email send failed: ${errorMessage}`);
       return {
         success: false,
         error: errorMessage,
+        retryable: true,
       };
     }
+  }
+
+  /**
+   * Send a generic email. Legacy entry point: each call gets a fresh key, so
+   * nothing is deduped. Deleted once every caller uses the outbox (T17).
+   */
+  async sendEmail(options: {
+    to: string;
+    subject: string;
+    html: string;
+    text?: string;
+    /**
+     * Where a reply should go, when that is not the from-address.
+     *
+     * Needed by mail we send *about* someone rather than *to* them — a contact
+     * form enquiry arrives from our own Resend address, so without this a reply
+     * goes to us instead of to the person who wrote in.
+     */
+    replyTo?: string;
+    /** Files to attach (Resend sends them base64-encoded). */
+    attachments?: { filename: string; content: Buffer }[];
+    /** Extra message headers, e.g. `List-Unsubscribe`. */
+    headers?: Record<string, string>;
+  }): Promise<EmailResult> {
+    return this.deliver(
+      { ...options, text: options.text ?? '' },
+      {
+        idempotencyKey: `legacy.${randomUUID()}`,
+        tags: { category: 'legacy', template: 'legacy' },
+      },
+    );
   }
 
   /**

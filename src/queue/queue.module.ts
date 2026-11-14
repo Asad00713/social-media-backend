@@ -24,6 +24,7 @@ export const QUEUES = {
   INBOX_LATER: 'inbox-later',
   INBOX_RESYNC: 'inbox-resync',
   REPORTS: 'reports',
+  EMAIL: 'email',
 } as const;
 
 @Module({
@@ -82,6 +83,7 @@ export const QUEUES = {
       { name: QUEUES.INBOX_LATER },
       { name: QUEUES.INBOX_RESYNC },
       { name: QUEUES.REPORTS },
+      { name: QUEUES.EMAIL },
     ),
   ],
   providers: [RateLimiterService],
