@@ -63,7 +63,6 @@ import { OneDriveService } from './services/onedrive.service';
 import { DropboxService } from './services/dropbox.service';
 import { UnsplashService } from './services/unsplash.service';
 import { RedditService } from './services/reddit.service';
-import { AdAccountsService } from '../ads/services/ad-accounts.service';
 import { SlackBackfillService } from '../inbox/services/slack-backfill.service';
 import { InboxService } from '../inbox/inbox.service';
 import {
@@ -164,7 +163,6 @@ export class ChannelsController {
     private readonly dropboxService: DropboxService,
     private readonly unsplashService: UnsplashService,
     private readonly redditService: RedditService,
-    private readonly adAccountsService: AdAccountsService,
     private readonly slackBackfill: SlackBackfillService,
     private readonly inboxService: InboxService,
     private readonly telegramConnectService: TelegramConnectService,

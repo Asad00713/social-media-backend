@@ -899,11 +899,14 @@ This email was sent by Schedura.`.trim();
     },
   ): Promise<EmailResult> {
     const networks = formatNetworkList(data.networks);
-    const expires = data.expiresAt.toLocaleDateString('en-US', {
+    // The UTC date, labelled: the server's own time zone could be a day off
+    // from what the label says.
+    const expires = `${data.expiresAt.toLocaleDateString('en-US', {
       year: 'numeric',
       month: 'long',
       day: 'numeric',
-    });
+      timeZone: 'UTC',
+    })} (UTC)`;
     const sender = escapeHtml(data.senderName);
     const workspaceName = escapeHtml(data.workspaceName);
     const url = escapeHtml(data.url);

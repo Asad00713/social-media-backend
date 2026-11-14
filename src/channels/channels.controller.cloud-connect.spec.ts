@@ -65,7 +65,6 @@ describe('ChannelsController - cloud storage connect routes', () => {
       noop, // dropboxService
       noop, // unsplashService
       noop, // redditService
-      noop, // adAccountsService
       noop, // slackBackfill
       noop, // inboxService
       noop, // telegramConnectService

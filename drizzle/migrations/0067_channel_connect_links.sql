@@ -22,18 +22,27 @@
 --
 -- SAFETY
 -- The boot migrator runs this file in ONE transaction; no BEGIN/COMMIT, no
--- CONCURRENTLY. ADD COLUMN of a nullable column is catalog-only (no rewrite),
--- but still takes ACCESS EXCLUSIVE on social_media_channels for the length of
--- this transaction; `lock_timeout` bounds the wait behind the still-running
--- old instance (I4). The new foreign key on social_media_channels is added
--- on a column that is NULL on every existing row, so its
--- validation scan finds nothing to check. channel_connect_links is a brand
--- new empty table, so its constraints and indexes are instant. Its foreign
--- keys take SHARE ROW EXCLUSIVE on workspace and users. No existing row is
--- read, written or dropped. Idempotent: CREATE ... IF NOT EXISTS, ADD COLUMN
--- IF NOT EXISTS, and each added constraint inside a duplicate_object guard.
--- The old backend never reads the new columns (drizzle selects only the
--- columns its schema names), so applying this before the deploy is safe.
+-- CONCURRENTLY. Every lock below is held until that transaction commits.
+-- Locks, in the order they are taken:
+--   1. CREATE TABLE channel_connect_links ... REFERENCES workspace / users
+--      takes SHARE ROW EXCLUSIVE on `workspace` and `users` first. From then
+--      on, writes to those two tables (e.g. users.last_login_at on sign-in)
+--      wait until this file commits - including while step 2 waits.
+--   2. ADD COLUMN of a nullable column is catalog-only (no rewrite), but it
+--      takes ACCESS EXCLUSIVE on social_media_channels. `lock_timeout` (10 s)
+--      bounds the wait behind the still-running old instance (I4); if it
+--      trips, the whole file rolls back.
+--   3. The new foreign key on social_media_channels.connect_link_id is
+--      validated by a full scan of social_media_channels, under the ACCESS
+--      EXCLUSIVE from step 2. The column is NULL on every existing row, so
+--      no row needs a lookup in channel_connect_links, but the scan itself
+--      still reads the whole table: fast at today's size, slower as it grows.
+-- channel_connect_links is a brand new empty table, so its own constraints
+-- and indexes are instant. No existing row is written or dropped.
+-- Idempotent: CREATE ... IF NOT EXISTS, ADD COLUMN IF NOT EXISTS, and each
+-- added constraint inside a duplicate_object guard. The old backend never
+-- reads the new columns (drizzle selects only the columns its schema names),
+-- so applying this before the deploy is safe.
 --
 -- NEVER edit this file after it has been applied: the migrator's checksum
 -- guard refuses to boot. Write a new migration for any later change.

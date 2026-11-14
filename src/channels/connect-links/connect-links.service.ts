@@ -1,4 +1,4 @@
-import { Inject, Injectable, NotFoundException } from '@nestjs/common';
+import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { and, desc, eq, gt, inArray, isNull, lte, or } from 'drizzle-orm';
 import { decrypt } from '../../common/utils/encryption.util';
 import type { DbType } from '../../drizzle/db';
@@ -37,6 +37,8 @@ import {
  */
 @Injectable()
 export class ConnectLinksService {
+  private readonly logger = new Logger(ConnectLinksService.name);
+
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
     private readonly email: EmailService,
@@ -190,10 +192,19 @@ export class ConnectLinksService {
         expiresAt: link.expiresAt,
       });
     } catch (err) {
-      await this.db
-        .update(channelConnectLinks)
-        .set({ lastSentAt: link.lastSentAt })
-        .where(eq(channelConnectLinks.id, link.id));
+      // Give the claim back. If that fails too, log it and still throw the
+      // send failure: the caller must see why the send failed (the claim
+      // then just runs out with the cool-down).
+      try {
+        await this.db
+          .update(channelConnectLinks)
+          .set({ lastSentAt: link.lastSentAt })
+          .where(eq(channelConnectLinks.id, link.id));
+      } catch (rollbackErr) {
+        this.logger.error(
+          `Connect link ${link.id}: giving back the resend claim failed: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)}`,
+        );
+      }
       throw err;
     }
 

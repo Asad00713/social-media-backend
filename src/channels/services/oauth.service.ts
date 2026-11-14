@@ -868,7 +868,16 @@ export class OAuthService {
   }
 
   /**
-   * Clean up expired OAuth states
+   * Clean up expired OAuth states.
+   *
+   * NOTE: nothing calls this today (no cron, no caller anywhere in src), so
+   * `oauth_states` only grows - a pre-existing gap. That is also the only
+   * reason peekState's grace period works: a connect-link visitor must land
+   * back on `/c/<token>` up to LINK_STATE_PEEK_GRACE_MS past a state's
+   * expiry, which needs the row to still exist. If this is ever wired to a
+   * cron it MUST delete only rows with
+   * `expires_at < now() - LINK_STATE_PEEK_GRACE_MS`, not `< now()` as below,
+   * or the grace silently stops working.
    */
   async cleanupExpiredStates(): Promise<number> {
     const result = await db

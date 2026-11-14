@@ -28,10 +28,6 @@ export interface ConnectOneFacebookPageInput extends ConnectFacebookPageInput {
   pageId: string;
 }
 
-export interface ConnectFacebookPagesInput extends ConnectFacebookPageInput {
-  pageIds: string[];
-}
-
 export interface ConnectedFacebookPage {
   facebookChannel: ChannelResponseDto;
   instagramChannel: ChannelResponseDto | null;
@@ -104,38 +100,6 @@ export class ChannelConnectService {
   }
 
   /**
-   * Connect several Pages, one after another (a Page's channels are finished
-   * before the next Page starts). The first failure stops the run and is
-   * rethrown as it is - CHANNEL_LIMIT_REACHED in particular - and the Pages
-   * connected before it stay connected, the same as connecting them one by
-   * one from the dialog.
-   */
-  async connectFacebookPages(
-    workspaceId: string,
-    userId: string,
-    input: ConnectFacebookPagesInput,
-    options?: CreateChannelOptions,
-  ): Promise<{ channels: ChannelResponseDto[] }> {
-    const { pageIds, ...rest } = input;
-    const channels: ChannelResponseDto[] = [];
-
-    for (const pageId of pageIds) {
-      const connected = await this.connectFacebookPage(
-        workspaceId,
-        userId,
-        { ...rest, pageId },
-        options,
-      );
-      channels.push(connected.facebookChannel);
-      if (connected.instagramChannel) {
-        channels.push(connected.instagramChannel);
-      }
-    }
-
-    return { channels };
-  }
-
-  /**
    * Connect one Facebook Page as a channel, and its Instagram business
    * account too when asked for and the Page has one. An Instagram failure is
    * rethrown as it always was (the team dialog shows it), but only after the
@@ -154,7 +118,17 @@ export class ChannelConnectService {
         input,
         options,
       );
-    if (instagramError !== null) throw instagramError;
+    if (instagramError !== null) {
+      // Rethrown as it came (an HttpException keeps its status and code); a
+      // thrown non-Error is wrapped so callers always get an Error.
+      throw instagramError instanceof Error
+        ? instagramError
+        : new Error(
+            typeof instagramError === 'string'
+              ? instagramError
+              : 'Instagram connect failed',
+          );
+    }
     return { facebookChannel, instagramChannel };
   }
 

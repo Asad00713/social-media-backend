@@ -1,4 +1,4 @@
-import { HttpException, NotFoundException } from '@nestjs/common';
+import { HttpException, Logger, NotFoundException } from '@nestjs/common';
 import { decrypt, hash } from '../../common/utils/encryption.util';
 import { channelConnectLinks } from '../../drizzle/schema/channel-connect-links.schema';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
@@ -102,7 +102,7 @@ function setup(
     sendChannelConnectLink: jest.fn(() => Promise.resolve({ success: true })),
   };
   const service = new ConnectLinksService(db, email as unknown as EmailService);
-  return { service, email, inserted, updates };
+  return { service, email, inserted, updates, db };
 }
 
 async function codeOf(p: Promise<unknown>): Promise<string | undefined> {
@@ -293,6 +293,37 @@ describe('ConnectLinksService', () => {
       expect(await codeOf(service.resend(WS, LINK))).toBe('EMAIL_SEND_FAILED');
       expect(updates).toHaveLength(2);
       expect(updates[1]).toEqual(expect.objectContaining({ lastSentAt: null }));
+    });
+
+    it('a failed rollback is logged and does not mask the send failure', async () => {
+      const { row } = storedLink();
+      const { service, email, db } = setup({
+        links: [row],
+        updateRows: [{ ...row, lastSentAt: BASE }],
+      });
+      email.sendChannelConnectLink.mockResolvedValueOnce({ success: false });
+      // the claim update works, the give-back update fails
+      const fake = db as unknown as { update: (t: unknown) => unknown };
+      const realUpdate = fake.update;
+      let calls = 0;
+      fake.update = (t: unknown) => {
+        calls += 1;
+        if (calls === 2) throw new Error('db went away');
+        return realUpdate(t);
+      };
+      const errorLog = jest
+        .spyOn(Logger.prototype, 'error')
+        .mockImplementation(() => undefined);
+      try {
+        expect(await codeOf(service.resend(WS, LINK))).toBe(
+          'EMAIL_SEND_FAILED',
+        );
+        expect(errorLog).toHaveBeenCalledWith(
+          expect.stringContaining('db went away'),
+        );
+      } finally {
+        errorLog.mockRestore();
+      }
     });
 
     it('a link of another workspace -> 404', async () => {

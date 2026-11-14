@@ -343,82 +343,6 @@ describe('ChannelConnectService.connectFacebookPage', () => {
   });
 });
 
-describe('ChannelConnectService.connectFacebookPages', () => {
-  it('connects the pages one after another and returns every channel', async () => {
-    const order: string[] = [];
-    const createChannel = jest.fn(async (_w: string, _u: string, dto: any) => {
-      order.push(`start:${dto.platformAccountId}`);
-      await new Promise((r) => setImmediate(r));
-      order.push(`end:${dto.platformAccountId}`);
-      return { id: order.length, platform: dto.platform };
-    });
-    const { svc } = make({ createChannel });
-
-    const out = await svc.connectFacebookPages(
-      WS,
-      USER,
-      {
-        userAccessToken: 'u',
-        pageIds: ['p1', 'p2'],
-        includeInstagram: true,
-      },
-      { connectLink: MARK },
-    );
-
-    expect(out.channels.map((c) => c.platform)).toEqual([
-      'facebook',
-      'instagram',
-      'facebook',
-      'instagram',
-    ]);
-    // Sequential: a page's channels finish before the next page starts.
-    expect(order).toEqual([
-      'start:p1',
-      'end:p1',
-      'start:ig-p1',
-      'end:ig-p1',
-      'start:p2',
-      'end:p2',
-      'start:ig-p2',
-      'end:ig-p2',
-    ]);
-  });
-
-  it('stops at CHANNEL_LIMIT_REACHED and rethrows; earlier pages stay connected', async () => {
-    const limit = channelLimitReached(3, 3);
-    const createChannel = jest
-      .fn()
-      .mockResolvedValueOnce({ id: 1, platform: 'facebook' })
-      .mockRejectedValueOnce(limit);
-    const { svc, facebook } = make({
-      createChannel,
-      pages: { p1: page('p1', false), p2: page('p2', false), p3: page('p3') },
-    });
-
-    await expect(
-      svc.connectFacebookPages(WS, USER, {
-        userAccessToken: 'u',
-        pageIds: ['p1', 'p2', 'p3'],
-        includeInstagram: false,
-      }),
-    ).rejects.toBe(limit);
-
-    expect(createChannel).toHaveBeenCalledTimes(2);
-    expect(facebook.getPage).not.toHaveBeenCalledWith('p3', 'u');
-  });
-
-  it('an empty list connects nothing', async () => {
-    const { svc, createChannel } = make();
-    const out = await svc.connectFacebookPages(WS, USER, {
-      userAccessToken: 'u',
-      pageIds: [],
-      includeInstagram: true,
-    });
-    expect(out.channels).toEqual([]);
-    expect(createChannel).not.toHaveBeenCalled();
-  });
-});
-
 describe('ChannelConnectService.listFacebookPages', () => {
   it('returns the shape POST /channels/facebook/pages returns today', async () => {
     const { svc, facebook } = make({
@@ -514,6 +438,22 @@ describe('ChannelConnectService - an Instagram step that fails after the Page ch
       }),
     ).rejects.toBe(limit);
     expect(facebook.subscribePageToWebhooks).toHaveBeenCalledTimes(1);
+  });
+
+  it('a non-Error IG failure is rethrown by connectFacebookPage as an Error with its text', async () => {
+    const { svc } = make({ createChannel: failingIg('graph said no') });
+    const err: unknown = await svc
+      .connectFacebookPage(WS, USER, {
+        userAccessToken: 'u',
+        pageId: 'p1',
+        includeInstagram: true,
+      })
+      .then(
+        () => null,
+        (e: unknown) => e,
+      );
+    expect(err).toBeInstanceOf(Error);
+    expect((err as Error).message).toBe('graph said no');
   });
 
   it('a Page-channel failure still throws before any webhook (nothing was created)', async () => {
