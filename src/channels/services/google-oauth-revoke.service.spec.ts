@@ -176,10 +176,33 @@ describe('GoogleOauthRevokeService', () => {
       const { sql, params } = render(execute.mock.calls[1][0]);
       expect(sql).toMatch(/connect_link_id = \$\d/);
       expect(sql).toMatch(/id <> \$\d/);
-      expect(sql).toMatch(/platform = ANY/);
+      expect(sql).toMatch(/platform IN \(\$\d, \$\d, \$\d, \$\d\)/);
       expect(params).toContain(LINK);
       expect(params).not.toContain(SENDER);
       expect(sql).not.toMatch(/connected_by_user_id/);
+    });
+
+    // Found on local Postgres: drizzle spreads an array parameter into a row
+    // `($3, $4, ...)`, and `x = ANY((row))` is rejected by Postgres ("op
+    // ANY/ALL (array) requires array on right side"). The count query failed,
+    // the error was swallowed as "could not count", and revoke never fired for
+    // anyone. A plain IN list is what a spread parameter list is valid for.
+    it.each([
+      ['a link-added channel', { connected_by_user_id: SENDER, connect_link_id: LINK }],
+      ['a team-connected channel', { connected_by_user_id: SENDER, connect_link_id: null }],
+      ['a channel with no owner', { connected_by_user_id: null, connect_link_id: null }],
+    ])('%s: the Google platform list is an IN list, never ANY(row)', async (_n, owner) => {
+      execute
+        .mockResolvedValueOnce({ rows: [owner] })
+        .mockResolvedValueOnce({ rows: [{ count: '0' }] });
+      const svc = await build();
+      await svc.revokeIfLastGoogleChannel(7, 'ws-a', 'youtube', 'TKN');
+      const { sql, params } = render(execute.mock.calls[1][0]);
+      expect(sql).not.toMatch(/ANY\s*\(/);
+      expect(sql).toMatch(/platform IN \(\$\d, \$\d, \$\d, \$\d\)/);
+      expect(params).toEqual(
+        expect.arrayContaining(['youtube', 'google_drive', 'google_photos', 'google_calendar']),
+      );
     });
 
     it('a link-added channel with another channel on the same link does not revoke', async () => {

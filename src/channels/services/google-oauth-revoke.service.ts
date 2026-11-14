@@ -154,8 +154,15 @@ export class GoogleOauthRevokeService {
       const connectLinkId: string | null =
         ownerRows[0]?.connect_link_id ?? null;
 
-      // GOOGLE_PLATFORMS is a module constant, never user input, but pass it as
-      // a bound parameter anyway rather than interpolating it into the string.
+      // GOOGLE_PLATFORMS is a module constant, never user input, but pass each
+      // as a bound parameter anyway rather than interpolating it into the
+      // string. An IN list, not `= ANY(${array})`: drizzle spreads an array
+      // parameter into a row `($1, $2, ...)` and Postgres rejects `ANY(row)`,
+      // which made this count fail (and so revoke skip) every time.
+      const googlePlatformList = sql.join(
+        GOOGLE_PLATFORMS.map((p) => sql`${p}`),
+        sql`, `,
+      );
       //
       // Three groupings, by who owns the Google grant:
       //  - a channel added through a connect link belongs to the CLIENT's own
@@ -174,7 +181,7 @@ export class GoogleOauthRevokeService {
           FROM social_media_channels
           WHERE connect_link_id = ${connectLinkId}
             AND id <> ${channelId}
-            AND platform = ANY(${[...GOOGLE_PLATFORMS]})
+            AND platform IN (${googlePlatformList})
         `);
       } else if (connectedByUserId) {
         countResult = await this.db.execute(sql`
@@ -183,7 +190,7 @@ export class GoogleOauthRevokeService {
           WHERE connected_by_user_id = ${connectedByUserId}
             AND connect_link_id IS NULL
             AND id <> ${channelId}
-            AND platform = ANY(${[...GOOGLE_PLATFORMS]})
+            AND platform IN (${googlePlatformList})
         `);
       } else {
         countResult = await this.db.execute(sql`
@@ -192,7 +199,7 @@ export class GoogleOauthRevokeService {
           WHERE workspace_id = ${workspaceId}
             AND connect_link_id IS NULL
             AND id <> ${channelId}
-            AND platform = ANY(${[...GOOGLE_PLATFORMS]})
+            AND platform IN (${googlePlatformList})
         `);
       }
       const rows = countResult?.rows ?? countResult ?? [];
