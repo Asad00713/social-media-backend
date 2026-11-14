@@ -50,6 +50,12 @@ export interface RevokeOutcome {
  * would make revocation isolated — that requires new credentials and a reconnect
  * for every existing Google channel, so it is deliberately out of scope here.
  *
+ * CONNECT LINKS: a channel added through a client's connect link
+ * (`connect_link_id` set) holds the CLIENT's own Google grant, although its
+ * `connected_by_user_id` is the link's sender. It is grouped by the link
+ * (other Google channels with the same `connect_link_id`), and a
+ * team-connected channel never counts link-added ones.
+ *
  * KNOWN LIMITATIONS of the "last Google channel" check (limitation 1 below is
  * now MITIGATED for the common case; limitation 2 is unchanged and still
  * real):
@@ -137,31 +143,58 @@ export class GoogleOauthRevokeService {
       // channel together as though they shared one Google account would be
       // wrong in the other direction.
       const ownerResult: any = await this.db.execute(sql`
-        SELECT connected_by_user_id AS connected_by_user_id
+        SELECT connected_by_user_id AS connected_by_user_id,
+               connect_link_id AS connect_link_id
         FROM social_media_channels
         WHERE id = ${channelId}
       `);
       const ownerRows = ownerResult?.rows ?? ownerResult ?? [];
       const connectedByUserId: string | null =
         ownerRows[0]?.connected_by_user_id ?? null;
+      const connectLinkId: string | null =
+        ownerRows[0]?.connect_link_id ?? null;
 
       // GOOGLE_PLATFORMS is a module constant, never user input, but pass it as
       // a bound parameter anyway rather than interpolating it into the string.
-      const countResult: any = connectedByUserId
-        ? await this.db.execute(sql`
-            SELECT COUNT(*) AS count
-            FROM social_media_channels
-            WHERE connected_by_user_id = ${connectedByUserId}
-              AND id <> ${channelId}
-              AND platform = ANY(${[...GOOGLE_PLATFORMS]})
-          `)
-        : await this.db.execute(sql`
-            SELECT COUNT(*) AS count
-            FROM social_media_channels
-            WHERE workspace_id = ${workspaceId}
-              AND id <> ${channelId}
-              AND platform = ANY(${[...GOOGLE_PLATFORMS]})
-          `);
+      //
+      // Three groupings, by who owns the Google grant:
+      //  - a channel added through a connect link belongs to the CLIENT's own
+      //    Google account, so only the other channels on the same link count.
+      //    Its connected_by_user_id is the link's sender, who has nothing to do
+      //    with that grant.
+      //  - a team-connected channel counts that user's other Google channels,
+      //    never link-added ones (those hold the clients' grants, not theirs,
+      //    even though the sender's id is on them).
+      //  - the NULL-owner fallback is workspace-scoped, also excluding
+      //    link-added channels.
+      let countResult: any;
+      if (connectLinkId) {
+        countResult = await this.db.execute(sql`
+          SELECT COUNT(*) AS count
+          FROM social_media_channels
+          WHERE connect_link_id = ${connectLinkId}
+            AND id <> ${channelId}
+            AND platform = ANY(${[...GOOGLE_PLATFORMS]})
+        `);
+      } else if (connectedByUserId) {
+        countResult = await this.db.execute(sql`
+          SELECT COUNT(*) AS count
+          FROM social_media_channels
+          WHERE connected_by_user_id = ${connectedByUserId}
+            AND connect_link_id IS NULL
+            AND id <> ${channelId}
+            AND platform = ANY(${[...GOOGLE_PLATFORMS]})
+        `);
+      } else {
+        countResult = await this.db.execute(sql`
+          SELECT COUNT(*) AS count
+          FROM social_media_channels
+          WHERE workspace_id = ${workspaceId}
+            AND connect_link_id IS NULL
+            AND id <> ${channelId}
+            AND platform = ANY(${[...GOOGLE_PLATFORMS]})
+        `);
+      }
       const rows = countResult?.rows ?? countResult ?? [];
       remaining = Number(rows[0]?.count ?? 0);
     } catch (err) {
