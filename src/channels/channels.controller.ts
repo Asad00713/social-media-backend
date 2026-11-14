@@ -14,6 +14,7 @@ import {
   Res,
   BadRequestException,
   ForbiddenException,
+  UnauthorizedException,
   Logger,
   Inject,
   forwardRef,
@@ -126,6 +127,8 @@ import {
   connectLinkIdOf,
   linkErrorCodeOf,
   NETWORK_DECLINED,
+  redactCallbackQuery,
+  X_MEDIA_DECLINED_MESSAGE,
   type CallbackTarget,
 } from './connect-links/lib/callback-target';
 
@@ -349,7 +352,7 @@ export class ChannelsController {
     // Log incoming callback for debugging
     console.log(`[OAuth Callback] Platform: ${platform}`);
     console.log(
-      `[OAuth Callback] ALL Query params: ${JSON.stringify(allQuery)}`,
+      `[OAuth Callback] ALL Query params: ${JSON.stringify(redactCallbackQuery(allQuery))}`,
     );
     console.log(
       `[OAuth Callback] State token received: ${state ? state.substring(0, 10) + '...' : 'MISSING'}`,
@@ -438,6 +441,12 @@ export class ChannelsController {
         fromLink = true;
         target =
           (await this.connectLinkTarget(connectLinkId, frontendUrl)) ?? target;
+        // The state was started for one network: it only completes there.
+        if (stateData.platform !== platform) {
+          throw new UnauthorizedException(
+            'Invalid OAuth state - started for another network',
+          );
+        }
         linked = await this.connectLinkAccess.resolveById(connectLinkId);
         if (!linked.link.networks.includes(platform)) {
           throw connectLinkError(
@@ -613,6 +622,9 @@ export class ChannelsController {
 
       // Special handling for Twitter: auto-create channel and chain to OAuth 1.0a
       if (platform === 'twitter') {
+        // Set once the X channel exists: a later failure (the OAuth 1.0a
+        // request token) no longer means "not connected".
+        let xChannelCreated = false;
         try {
           console.log(
             '[OAuth Callback] Twitter: Auto-creating channel and initiating OAuth 1.0a...',
@@ -664,6 +676,7 @@ export class ChannelsController {
           console.log(
             `[OAuth Callback] Twitter channel created: ${channel.id}`,
           );
+          xChannelCreated = true;
           if (linked) {
             await this.connectLinkConnect.notifyConnected(linked, channel);
           }
@@ -701,6 +714,13 @@ export class ChannelsController {
             '[OAuth Callback] Twitter auto-setup failed:',
             twitterError,
           );
+          // A link visitor whose X account is connected is told so, as for a
+          // declined media step - not that the connect failed.
+          if (linked && xChannelCreated) {
+            return res.redirect(
+              target.error(X_MEDIA_DECLINED_MESSAGE, NETWORK_DECLINED),
+            );
+          }
           return res.redirect(
             target.error(
               'Twitter setup failed: ' +
@@ -2741,10 +2761,7 @@ export class ChannelsController {
           : null;
         if (linkTarget) {
           return res.redirect(
-            linkTarget.error(
-              'X media uploads were not allowed. The account is connected without them.',
-              NETWORK_DECLINED,
-            ),
+            linkTarget.error(X_MEDIA_DECLINED_MESSAGE, NETWORK_DECLINED),
           );
         }
         return res.redirect(

@@ -29,6 +29,29 @@ export interface CallbackTarget {
  */
 export const NETWORK_DECLINED = 'NETWORK_DECLINED';
 
+/**
+ * X on a link: the account was connected by the OAuth 2.0 leg, but the
+ * OAuth 1.0a (media upload) leg did not finish - declined, or the request
+ * token could not be had. Sent with NETWORK_DECLINED.
+ */
+export const X_MEDIA_DECLINED_MESSAGE =
+  'X media uploads were not allowed. The account is connected without them.';
+
+/**
+ * The callback's query as it may be logged: the state is shortened the way
+ * the callback already logs it, the authorization code is never written.
+ */
+export function redactCallbackQuery(
+  query: Record<string, unknown>,
+): Record<string, unknown> {
+  const out: Record<string, unknown> = { ...query };
+  if (typeof out.state === 'string') {
+    out.state = `${out.state.substring(0, 10)}...`;
+  }
+  if (out.code !== undefined) out.code = '[redacted]';
+  return out;
+}
+
 export function callbackTarget(ctx: {
   frontendUrl: string;
   linkRaw: string | null;

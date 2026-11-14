@@ -12,6 +12,7 @@ export const CONNECT_LINK_ERRORS = {
   SELECTION_EXPIRED: 410,
   ALREADY_CONNECTED: 409,
   EMAIL_SEND_FAILED: 502,
+  CONNECT_FAILED: 502,
 } as const;
 
 export type ConnectLinkErrorCode = keyof typeof CONNECT_LINK_ERRORS;

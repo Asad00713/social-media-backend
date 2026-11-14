@@ -4,7 +4,7 @@ import {
   BadRequestException,
   UnauthorizedException,
 } from '@nestjs/common';
-import { eq, and, sql } from 'drizzle-orm';
+import { eq, and, gt, sql } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import {
   oauthStates,
@@ -485,8 +485,10 @@ export class OAuthService {
    * A state's additionalData WITHOUT using the state up, or null for an
    * unknown token. For the callback's early exits (the network answered with
    * an error, or validation failed): a state started from a connect link must
-   * still send the visitor back to the link page. Expiry and use are ignored
-   * on purpose - this only decides where an error is shown, never grants.
+   * still send the visitor back to the link page. A used state is still read
+   * (a replay lands on the link page), but only within the state's own
+   * lifetime: the link page URL carries the raw link token, so an old state
+   * must not keep answering with it.
    */
   async peekState(
     stateToken: string,
@@ -494,7 +496,12 @@ export class OAuthService {
     const [row] = await db
       .select({ additionalData: oauthStates.additionalData })
       .from(oauthStates)
-      .where(eq(oauthStates.stateToken, stateToken))
+      .where(
+        and(
+          eq(oauthStates.stateToken, stateToken),
+          gt(oauthStates.expiresAt, new Date()),
+        ),
+      )
       .limit(1);
     if (!row) return null;
     return {

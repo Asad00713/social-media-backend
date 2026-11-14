@@ -60,6 +60,7 @@ describe('ChannelsController - cloud storage connect routes', () => {
       googleDriveService, // googleDriveService
       googlePhotosService, // googlePhotosService
       noop, // googleCalendarService
+      noop, // outlookCalendarService
       noop, // oneDriveService
       noop, // dropboxService
       noop, // unsplashService
@@ -76,6 +77,12 @@ describe('ChannelsController - cloud storage connect routes', () => {
       noop, // calendarReconcileQueue
       noop, // youtubeDataDeletion
       noop, // googleRevoke
+      noop, // access
+      noop, // mentionLookup
+      noop, // postsCleanup
+      noop, // channelConnect
+      noop, // connectLinkAccess
+      noop, // connectLinkConnect
     );
 
     return { controller, createChannel, googleDriveService, googlePhotosService };

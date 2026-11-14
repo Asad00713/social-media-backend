@@ -1,4 +1,4 @@
-import { ConflictException, HttpException } from '@nestjs/common';
+import { ConflictException, HttpException, Logger } from '@nestjs/common';
 import { plainToInstance } from 'class-transformer';
 import { validate } from 'class-validator';
 import { channelLimitReached } from '../../billing/services/channel-limit.error';
@@ -68,6 +68,7 @@ function page(id: string, withIg = true) {
     instagramChannel: withIg
       ? { id: Number(id) + 100, platform: 'instagram', accountName: `IG ${id}` }
       : null,
+    instagramError: null as unknown,
   };
 }
 
@@ -88,7 +89,7 @@ function setup(opts: { networks?: string[]; resolve?: jest.Mock } = {}) {
     .fn()
     .mockResolvedValue([{ id: '1', name: 'Page 1', hasInstagram: true }]);
   const channelConnect = {
-    connectFacebookPage,
+    connectFacebookPageSettled: connectFacebookPage,
     listFacebookPages,
   } as unknown as ChannelConnectService;
   const channelConnected = jest.fn().mockResolvedValue(undefined);
@@ -328,9 +329,161 @@ describe('ConnectLinkConnectService - public Facebook Pages', () => {
     });
     expect(result).toEqual({
       channels: [{ platform: 'facebook', channelId: 2, accountName: 'Page 2' }],
-      skipped: [{ pageId: '1', code: 'ALREADY_CONNECTED' }],
+      skipped: [
+        { pageId: '1', platform: 'facebook', code: 'ALREADY_CONNECTED' },
+      ],
     });
     expect(t.channelConnected).toHaveBeenCalledTimes(1);
+  });
+
+  it('IG already connected: the Page is connected and announced, Instagram is in skipped', async () => {
+    const t = setup();
+    t.connectFacebookPage.mockImplementationOnce(() =>
+      Promise.resolve({
+        ...page('1', false),
+        instagramError: new ConflictException('already connected'),
+      }),
+    );
+    const id = await t.selections.create(LINK, USER_TOKEN);
+    const result = await t.service.connectFacebook(RAW, {
+      selection: id,
+      pageIds: ['1', '2'],
+      includeInstagram: true,
+    });
+    expect(result).toEqual({
+      channels: [
+        { platform: 'facebook', channelId: 1, accountName: 'Page 1' },
+        { platform: 'facebook', channelId: 2, accountName: 'Page 2' },
+        { platform: 'instagram', channelId: 102, accountName: 'IG 2' },
+      ],
+      skipped: [
+        { pageId: '1', platform: 'instagram', code: 'ALREADY_CONNECTED' },
+      ],
+    });
+    expect(t.channelConnected).toHaveBeenCalledWith(
+      SENDER,
+      'Facebook',
+      'Page 1',
+      WS,
+    );
+    expect(t.channelConnected).toHaveBeenCalledTimes(3);
+  });
+
+  it('IG hits CHANNEL_LIMIT_REACHED: the Page stays connected and the loop stops with the limit code', async () => {
+    const t = setup();
+    t.connectFacebookPage.mockImplementationOnce(() =>
+      Promise.resolve({
+        ...page('1', false),
+        instagramError: channelLimitReached(3, 3),
+      }),
+    );
+    const id = await t.selections.create(LINK, USER_TOKEN);
+    const result = await t.service.connectFacebook(RAW, {
+      selection: id,
+      pageIds: ['1', '2', '3'],
+      includeInstagram: true,
+    });
+    expect(result).toEqual({
+      channels: [{ platform: 'facebook', channelId: 1, accountName: 'Page 1' }],
+      skipped: [
+        { pageId: '1', platform: 'instagram', code: 'CHANNEL_LIMIT_REACHED' },
+        { pageId: '2', platform: 'facebook', code: 'CHANNEL_LIMIT_REACHED' },
+        { pageId: '3', platform: 'facebook', code: 'CHANNEL_LIMIT_REACHED' },
+      ],
+    });
+    // pages after the limit are never tried
+    expect(t.connectFacebookPage).toHaveBeenCalledTimes(1);
+    expect(t.channelConnected).toHaveBeenCalledTimes(1);
+  });
+
+  it('any other IG failure: the Page stays connected, Instagram skipped as CONNECT_FAILED, the rest go on', async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      const t = setup();
+      t.connectFacebookPage.mockImplementationOnce(() =>
+        Promise.resolve({
+          ...page('1', false),
+          instagramError: new Error('graph down'),
+        }),
+      );
+      const id = await t.selections.create(LINK, USER_TOKEN);
+      const result = await t.service.connectFacebook(RAW, {
+        selection: id,
+        pageIds: ['1', '2'],
+        includeInstagram: false,
+      });
+      expect(result.channels.map((c) => c.channelId)).toEqual([1, 2]);
+      expect(result.skipped).toEqual([
+        { pageId: '1', platform: 'instagram', code: 'CONNECT_FAILED' },
+      ]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('graph down'));
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a plain error fetching a Page (not a Nest error) is a coded skip, never a 500; the rest still connect', async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      const t = setup();
+      t.connectFacebookPage.mockImplementationOnce(() =>
+        Promise.reject(new Error('Failed to fetch page details')),
+      );
+      const id = await t.selections.create(LINK, USER_TOKEN);
+      const result = await t.service.connectFacebook(RAW, {
+        selection: id,
+        pageIds: ['1', '2'],
+        includeInstagram: false,
+      });
+      expect(result).toEqual({
+        channels: [
+          { platform: 'facebook', channelId: 2, accountName: 'Page 2' },
+        ],
+        skipped: [
+          { pageId: '1', platform: 'facebook', code: 'CONNECT_FAILED' },
+        ],
+      });
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('Failed to fetch page details'),
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('nothing connected because Pages failed → coded 502 CONNECT_FAILED, not a bare 500', async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      const t = setup();
+      t.connectFacebookPage.mockRejectedValue(new Error('graph down'));
+      const id = await t.selections.create(LINK, USER_TOKEN);
+      const p = t.service.connectFacebook(RAW, {
+        selection: id,
+        pageIds: ['1'],
+        includeInstagram: false,
+      });
+      await expect(p).rejects.toMatchObject({ status: 502 });
+      const again = setup();
+      again.connectFacebookPage.mockRejectedValue(new Error('graph down'));
+      const sel = await again.selections.create(LINK, USER_TOKEN);
+      expect(
+        await codeOf(
+          again.service.connectFacebook(RAW, {
+            selection: sel,
+            pageIds: ['1'],
+            includeInstagram: false,
+          }),
+        ),
+      ).toBe('CONNECT_FAILED');
+    } finally {
+      warn.mockRestore();
+    }
   });
 
   it('every page already connected → 409 ALREADY_CONNECTED', async () => {
@@ -361,23 +514,42 @@ describe('ConnectLinkConnectService - public Facebook Pages', () => {
     ).toBe('ALREADY_CONNECTED');
   });
 
-  it('CHANNEL_LIMIT_REACHED stops the loop; pages before it stay connected', async () => {
+  it('CHANNEL_LIMIT_REACHED stops the loop; pages before it stay connected and are returned', async () => {
     const t = setup();
     t.connectFacebookPage
       .mockImplementationOnce(() => Promise.resolve(page('1', false)))
       .mockImplementationOnce(() => Promise.reject(channelLimitReached(3, 3)));
     const id = await t.selections.create(LINK, USER_TOKEN);
+    const result = await t.service.connectFacebook(RAW, {
+      selection: id,
+      pageIds: ['1', '2', '3'],
+      includeInstagram: false,
+    });
+    expect(result).toEqual({
+      channels: [{ platform: 'facebook', channelId: 1, accountName: 'Page 1' }],
+      skipped: [
+        { pageId: '2', platform: 'facebook', code: 'CHANNEL_LIMIT_REACHED' },
+        { pageId: '3', platform: 'facebook', code: 'CHANNEL_LIMIT_REACHED' },
+      ],
+    });
+    expect(t.connectFacebookPage).toHaveBeenCalledTimes(2);
+    expect(t.channelConnected).toHaveBeenCalledTimes(1);
+  });
+
+  it('CHANNEL_LIMIT_REACHED on the first Page (nothing connected) is the 403 itself', async () => {
+    const t = setup();
+    t.connectFacebookPage.mockRejectedValue(channelLimitReached(3, 3));
+    const id = await t.selections.create(LINK, USER_TOKEN);
     expect(
       await codeOf(
         t.service.connectFacebook(RAW, {
           selection: id,
-          pageIds: ['1', '2', '3'],
+          pageIds: ['1', '2'],
           includeInstagram: false,
         }),
       ),
     ).toBe('CHANNEL_LIMIT_REACHED');
-    expect(t.connectFacebookPage).toHaveBeenCalledTimes(2);
-    expect(t.channelConnected).toHaveBeenCalledTimes(1);
+    expect(t.connectFacebookPage).toHaveBeenCalledTimes(1);
   });
 
   it('a dead link refuses before the selection is touched', async () => {
@@ -408,16 +580,48 @@ describe('ConnectLinkConnectService - public Facebook Pages', () => {
   });
 
   it('a failing notification does not fail the connect', async () => {
-    const t = setup();
-    t.channelConnected.mockRejectedValue(new Error('socket down'));
-    const id = await t.selections.create(LINK, USER_TOKEN);
-    await expect(
-      t.service.connectFacebook(RAW, {
-        selection: id,
-        pageIds: ['1'],
-        includeInstagram: false,
-      }),
-    ).resolves.toMatchObject({ channels: [{ channelId: 1 }] });
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      const t = setup();
+      t.channelConnected.mockRejectedValue(new Error('socket down'));
+      const id = await t.selections.create(LINK, USER_TOKEN);
+      await expect(
+        t.service.connectFacebook(RAW, {
+          selection: id,
+          pageIds: ['1'],
+          includeInstagram: false,
+        }),
+      ).resolves.toMatchObject({ channels: [{ channelId: 1 }] });
+      expect(warn).toHaveBeenCalledWith(
+        `Connect-link notification failed for link ${LINK}: socket down`,
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('the Pages list leaves out Instagram details when the link does not offer Instagram', async () => {
+    const igPage = {
+      id: '1',
+      name: 'Page 1',
+      hasInstagram: true,
+      instagramAccount: { id: 'ig-1', username: 'client_ig' },
+    };
+    const fbOnly = setup({ networks: ['facebook'] });
+    fbOnly.listFacebookPages.mockResolvedValue([igPage]);
+    const id = await fbOnly.selections.create(LINK, USER_TOKEN);
+    await expect(fbOnly.service.facebookPages(RAW, id)).resolves.toEqual([
+      { id: '1', name: 'Page 1', hasInstagram: false, instagramAccount: null },
+    ]);
+
+    const both = setup();
+    both.listFacebookPages.mockResolvedValue([igPage]);
+    const id2 = await both.selections.create(LINK, USER_TOKEN);
+    await expect(both.service.facebookPages(RAW, id2)).resolves.toEqual([
+      igPage,
+    ]);
   });
 });
 

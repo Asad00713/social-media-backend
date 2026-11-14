@@ -1,4 +1,5 @@
 /* eslint-disable @typescript-eslint/require-await, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-member-access -- service doubles; jest.fn calls are untyped */
+import { ConflictException } from '@nestjs/common';
 import { channelLimitReached } from '../../billing/services/channel-limit.error';
 import { ChannelConnectService } from './channel-connect.service';
 
@@ -452,5 +453,83 @@ describe('ChannelConnectService.listFacebookPages', () => {
     ]);
     // Never leaks the Page Access Token.
     expect(JSON.stringify(out)).not.toContain('page-token');
+  });
+});
+
+describe('ChannelConnectService - an Instagram step that fails after the Page channel exists', () => {
+  /** FB insert succeeds, the IG insert fails with `igError`. */
+  function failingIg(igError: unknown) {
+    return jest.fn(async (_ws: string, _u: string, dto: any) => {
+      if (dto.platform === 'instagram') throw igError;
+      return { id: 100, platform: 'facebook', accountName: 'Page p1' };
+    });
+  }
+
+  it.each([
+    ['a healthy duplicate', new ConflictException('already connected')],
+    ['the channel limit', channelLimitReached(3, 3)],
+    ['any other error', new Error('graph down')],
+  ])(
+    'connectFacebookPageSettled (%s): the Page channel is returned, its webhooks still subscribed, the IG error handed back',
+    async (_label, igError) => {
+      const { svc, facebook, instagram } = make({
+        createChannel: failingIg(igError),
+      });
+      const out = await svc.connectFacebookPageSettled(WS, USER, {
+        userAccessToken: 'u',
+        pageId: 'p1',
+        includeInstagram: true,
+      });
+      expect(out.facebookChannel).toMatchObject({ id: 100 });
+      expect(out.instagramChannel).toBeNull();
+      expect(out.instagramError).toBe(igError);
+      expect(facebook.subscribePageToWebhooks).toHaveBeenCalledWith(
+        'p1',
+        'page-token-p1',
+        expect.arrayContaining(['feed', 'messages']),
+      );
+      expect(instagram.subscribeAccountToWebhooks).not.toHaveBeenCalled();
+    },
+  );
+
+  it('connectFacebookPageSettled without an IG failure has instagramError null', async () => {
+    const { svc } = make();
+    const out = await svc.connectFacebookPageSettled(WS, USER, {
+      userAccessToken: 'u',
+      pageId: 'p1',
+      includeInstagram: true,
+    });
+    expect(out.instagramError).toBeNull();
+    expect(out.instagramChannel).toMatchObject({ platform: 'instagram' });
+  });
+
+  it('the team connectFacebookPage still rejects with the IG error, but only after the Page webhooks are subscribed', async () => {
+    const limit = channelLimitReached(3, 3);
+    const { svc, facebook } = make({ createChannel: failingIg(limit) });
+    await expect(
+      svc.connectFacebookPage(WS, USER, {
+        userAccessToken: 'u',
+        pageId: 'p1',
+        includeInstagram: true,
+      }),
+    ).rejects.toBe(limit);
+    expect(facebook.subscribePageToWebhooks).toHaveBeenCalledTimes(1);
+  });
+
+  it('a Page-channel failure still throws before any webhook (nothing was created)', async () => {
+    const dup = new ConflictException('dup');
+    const { svc, facebook } = make({
+      createChannel: jest.fn(async () => {
+        throw dup;
+      }),
+    });
+    await expect(
+      svc.connectFacebookPageSettled(WS, USER, {
+        userAccessToken: 'u',
+        pageId: 'p1',
+        includeInstagram: true,
+      }),
+    ).rejects.toBe(dup);
+    expect(facebook.subscribePageToWebhooks).not.toHaveBeenCalled();
   });
 });

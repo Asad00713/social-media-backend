@@ -37,6 +37,15 @@ export interface ConnectedFacebookPage {
   instagramChannel: ChannelResponseDto | null;
 }
 
+export interface SettledFacebookPage extends ConnectedFacebookPage {
+  /** Why the Instagram channel was not created; null when it was or was not asked for. */
+  instagramError: unknown;
+}
+
+type FacebookPageWithToken = NonNullable<
+  Awaited<ReturnType<FacebookService['getPage']>>
+>;
+
 /**
  * Connect a social account into a workspace from a freshly exchanged OAuth
  * token: look the account up on the platform, build the channel, create it.
@@ -128,7 +137,9 @@ export class ChannelConnectService {
 
   /**
    * Connect one Facebook Page as a channel, and its Instagram business
-   * account too when asked for and the Page has one.
+   * account too when asked for and the Page has one. An Instagram failure is
+   * rethrown as it always was (the team dialog shows it), but only after the
+   * Page channel's webhooks were subscribed.
    */
   async connectFacebookPage(
     workspaceId: string,
@@ -136,6 +147,29 @@ export class ChannelConnectService {
     input: ConnectOneFacebookPageInput,
     options?: CreateChannelOptions,
   ): Promise<ConnectedFacebookPage> {
+    const { facebookChannel, instagramChannel, instagramError } =
+      await this.connectFacebookPageSettled(
+        workspaceId,
+        userId,
+        input,
+        options,
+      );
+    if (instagramError !== null) throw instagramError;
+    return { facebookChannel, instagramChannel };
+  }
+
+  /**
+   * The same, but once the Page channel is created it is always returned: a
+   * failed Instagram step comes back as `instagramError` (already connected,
+   * the channel limit, or anything else) instead of losing the Page. A
+   * failure before the Page channel exists is thrown.
+   */
+  async connectFacebookPageSettled(
+    workspaceId: string,
+    userId: string,
+    input: ConnectOneFacebookPageInput,
+    options?: CreateChannelOptions,
+  ): Promise<SettledFacebookPage> {
     // Get page details with Page Access Token
     const page = await this.facebookService.getPage(
       input.pageId,
@@ -180,45 +214,92 @@ export class ChannelConnectService {
     );
 
     let igChannel: ChannelResponseDto | null = null;
+    // The Page channel exists from here on: an Instagram failure (already
+    // connected, the channel limit, anything) must not lose it, so it is
+    // handed back instead of thrown, and the Page's webhooks still run.
+    let instagramError: unknown = null;
 
     // If Instagram is connected and user wants it, create Instagram channel too
     if (input.includeInstagram && page.instagramBusinessAccount) {
       const ig = page.instagramBusinessAccount;
 
-      igChannel = await this.channelService.createChannel(
-        workspaceId,
-        userId,
-        {
-          platform: 'instagram',
-          accountType: 'business_account',
-          platformAccountId: ig.id,
-          accountName: ig.name,
-          username: ig.username,
-          profilePictureUrl: ig.profilePictureUrl || undefined,
-          accessToken: page.accessToken, // Uses same Page Access Token
-          tokenExpiresAt: undefined,
-          permissions: PLATFORM_CONFIG.instagram.oauthScopes,
-          capabilities: {
-            canPost: true,
-            canSchedule: true,
-            canReadAnalytics: true,
-            canReply: true,
-            canDelete: false, // Instagram doesn't allow delete via API
-            supportedMediaTypes: ['image', 'video', 'carousel'],
-            maxMediaPerPost: 20, // Instagram carousel cap
-            maxTextLength: 2200,
-          },
-          metadata: {
-            followersCount: ig.followersCount,
-            mediaCount: ig.mediaCount,
-            biography: ig.biography,
-            linkedFacebookPageId: page.id,
-          },
-        },
-        options,
-      );
+      try {
+        igChannel = await this.createInstagramForPage(
+          workspaceId,
+          userId,
+          page,
+          ig,
+          options,
+        );
+      } catch (err) {
+        instagramError = err;
+      }
     }
 
+    await this.afterFacebookPageConnected(
+      workspaceId,
+      input,
+      page,
+      fbChannel,
+      igChannel,
+    );
+
+    return {
+      facebookChannel: fbChannel,
+      instagramChannel: igChannel,
+      instagramError,
+    };
+  }
+
+  private createInstagramForPage(
+    workspaceId: string,
+    userId: string,
+    page: FacebookPageWithToken,
+    ig: NonNullable<FacebookPageWithToken['instagramBusinessAccount']>,
+    options?: CreateChannelOptions,
+  ): Promise<ChannelResponseDto> {
+    return this.channelService.createChannel(
+      workspaceId,
+      userId,
+      {
+        platform: 'instagram',
+        accountType: 'business_account',
+        platformAccountId: ig.id,
+        accountName: ig.name,
+        username: ig.username,
+        profilePictureUrl: ig.profilePictureUrl || undefined,
+        accessToken: page.accessToken, // Uses same Page Access Token
+        tokenExpiresAt: undefined,
+        permissions: PLATFORM_CONFIG.instagram.oauthScopes,
+        capabilities: {
+          canPost: true,
+          canSchedule: true,
+          canReadAnalytics: true,
+          canReply: true,
+          canDelete: false, // Instagram doesn't allow delete via API
+          supportedMediaTypes: ['image', 'video', 'carousel'],
+          maxMediaPerPost: 20, // Instagram carousel cap
+          maxTextLength: 2200,
+        },
+        metadata: {
+          followersCount: ig.followersCount,
+          mediaCount: ig.mediaCount,
+          biography: ig.biography,
+          linkedFacebookPageId: page.id,
+        },
+      },
+      options,
+    );
+  }
+
+  /** Webhooks and the ads sync for a Page channel that now exists. */
+  private async afterFacebookPageConnected(
+    workspaceId: string,
+    input: ConnectOneFacebookPageInput,
+    page: FacebookPageWithToken,
+    fbChannel: ChannelResponseDto,
+    igChannel: ChannelResponseDto | null,
+  ): Promise<void> {
     // Phase 2.3 — Auto-subscribe both FB Page + (if connected) IG account to
     // their respective Meta webhook channels right after OAuth. Without this,
     // events only arrive via polling (30 s lag); with it, DMs + comments
@@ -279,8 +360,6 @@ export class ChannelConnectService {
           );
         });
     }
-
-    return { facebookChannel: fbChannel, instagramChannel: igChannel };
   }
 
   // ==========================================================================

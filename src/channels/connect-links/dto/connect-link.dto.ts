@@ -112,6 +112,24 @@ export interface ConnectLinkConnectedChannelDto {
 /** The response of `POST /public/connect-links/:token/facebook/connect`. */
 export interface ConnectLinkFacebookConnectResponse {
   channels: ConnectLinkConnectedChannelDto[];
-  /** Pages the workspace already had (healthy): left as they are. */
-  skipped: Array<{ pageId: string; code: 'ALREADY_CONNECTED' }>;
+  /** Accounts not connected, one entry per Page or Instagram account. */
+  skipped: ConnectLinkSkippedDto[];
+}
+
+/**
+ * Why one account of the Pages picker was not connected:
+ * ALREADY_CONNECTED (the workspace has it, healthy), CHANNEL_LIMIT_REACHED
+ * (the limit was hit here, or before this Page was tried), CONNECT_FAILED
+ * (Facebook refused or failed for this Page).
+ */
+export type ConnectLinkSkipCode =
+  | 'ALREADY_CONNECTED'
+  | 'CHANNEL_LIMIT_REACHED'
+  | 'CONNECT_FAILED';
+
+export interface ConnectLinkSkippedDto {
+  pageId: string;
+  /** 'instagram' = the Page itself was connected, its Instagram was not. */
+  platform: 'facebook' | 'instagram';
+  code: ConnectLinkSkipCode;
 }

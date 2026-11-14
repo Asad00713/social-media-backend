@@ -5,6 +5,7 @@ import {
   callbackTarget,
   connectLinkIdOf,
   linkErrorCodeOf,
+  redactCallbackQuery,
 } from './callback-target';
 
 const FE = 'https://app.schedura.test';
@@ -128,5 +129,26 @@ describe('connectLinkIdOf', () => {
     expect(connectLinkIdOf({ connectLinkId: 5 })).toBeNull();
     expect(connectLinkIdOf({})).toBeNull();
     expect(connectLinkIdOf(null)).toBeNull();
+  });
+});
+
+describe('redactCallbackQuery', () => {
+  it('shortens the state and drops the code, leaves the rest', () => {
+    const q = {
+      state: 'abcdefghijklmnopqrstuvwxyz',
+      code: 'auth-code-secret',
+      error: 'access_denied',
+    };
+    expect(redactCallbackQuery(q)).toEqual({
+      state: 'abcdefghij...',
+      code: '[redacted]',
+      error: 'access_denied',
+    });
+    // the request's own query object is not changed
+    expect(q.state).toBe('abcdefghijklmnopqrstuvwxyz');
+  });
+
+  it('a query without state or code is passed as is', () => {
+    expect(redactCallbackQuery({ error: 'x' })).toEqual({ error: 'x' });
   });
 });

@@ -6,9 +6,13 @@ import {
 import { NotificationEmitterService } from '../../notifications/notification-emitter.service';
 import type { ChannelResponseDto } from '../dto/channel.dto';
 import {
+  CHANNEL_LIMIT_REACHED,
+  errorCodeOf,
+} from '../../billing/services/channel-limit.error';
+import {
   ChannelConnectService,
-  type ConnectedFacebookPage,
   type ConnectTokens,
+  type SettledFacebookPage,
 } from '../services/channel-connect.service';
 import type { CreateChannelOptions } from '../services/channel.service';
 import {
@@ -19,6 +23,8 @@ import type {
   ConnectLinkConnectedChannelDto,
   ConnectLinkFacebookConnectBody,
   ConnectLinkFacebookConnectResponse,
+  ConnectLinkSkipCode,
+  ConnectLinkSkippedDto,
 } from './dto/connect-link.dto';
 import { FacebookSelectionStore } from './facebook-selection.store';
 import { connectLinkError } from './lib/connect-link-errors';
@@ -59,15 +65,33 @@ export class ConnectLinkConnectService {
       resolved.link.id,
       selectionId,
     );
-    return this.channelConnect.listFacebookPages(userAccessToken);
+    const pages = await this.channelConnect.listFacebookPages(userAccessToken);
+    // Instagram via a Page is only connected when the link offers Instagram,
+    // so the picker is not shown an Instagram account it cannot add.
+    if (resolved.link.networks.includes('instagram')) return pages;
+    return pages.map((page) => ({
+      ...page,
+      hasInstagram: false,
+      instagramAccount: null,
+    }));
   }
 
   /**
    * Connect the chosen Pages (and their Instagram accounts when asked and the
-   * link offers Instagram). Uses the selection up first, so it works once.
-   * Page by page: a Page the workspace already has is skipped as
-   * ALREADY_CONNECTED and the rest go on; any other refusal - the channel
-   * limit above all - stops the run, and the Pages before it stay connected.
+   * link offers Instagram). Uses the selection up first, so it works once,
+   * and from then on never loses what was connected:
+   *
+   * - every channel created is returned and announced to the sender, even
+   *   when the Instagram step of its Page then fails;
+   * - a Page or Instagram account the workspace already has is skipped as
+   *   ALREADY_CONNECTED, any other failure of one Page as CONNECT_FAILED,
+   *   and the rest go on;
+   * - the channel limit stops the run: the account it hit and every Page not
+   *   tried yet are skipped as CHANNEL_LIMIT_REACHED.
+   *
+   * With nothing connected the answer is the refusal itself: the 403 limit,
+   * 409 ALREADY_CONNECTED when every skip was a duplicate, else 502
+   * CONNECT_FAILED.
    */
   async connectFacebook(
     rawToken: string,
@@ -83,27 +107,41 @@ export class ConnectLinkConnectService {
     const mark = this.markOf(resolved);
 
     const channels: ConnectLinkConnectedChannelDto[] = [];
-    const skipped: ConnectLinkFacebookConnectResponse['skipped'] = [];
+    const skipped: ConnectLinkSkippedDto[] = [];
+    const limitReachedFrom = (index: number) => {
+      for (const pageId of body.pageIds.slice(index)) {
+        skipped.push({
+          pageId,
+          platform: 'facebook',
+          code: CHANNEL_LIMIT_REACHED,
+        });
+      }
+    };
 
-    for (const pageId of body.pageIds) {
-      let connected: ConnectedFacebookPage;
+    for (const [index, pageId] of body.pageIds.entries()) {
+      let settled: SettledFacebookPage;
       try {
-        connected = await this.channelConnect.connectFacebookPage(
+        settled = await this.channelConnect.connectFacebookPageSettled(
           resolved.link.workspaceId,
           resolved.link.createdByUserId,
           { userAccessToken, pageId, includeInstagram, intent: 'connect' },
           mark,
         );
       } catch (err) {
-        if (err instanceof ConflictException) {
-          skipped.push({ pageId, code: 'ALREADY_CONNECTED' });
-          continue;
+        // Nothing was created for this Page.
+        const code = this.skipCodeOf(err, resolved, pageId, 'facebook');
+        if (code === CHANNEL_LIMIT_REACHED) {
+          if (channels.length === 0) throw err;
+          limitReachedFrom(index);
+          break;
         }
-        throw err;
+        skipped.push({ pageId, platform: 'facebook', code });
+        continue;
       }
+
       for (const channel of [
-        connected.facebookChannel,
-        connected.instagramChannel,
+        settled.facebookChannel,
+        settled.instagramChannel,
       ]) {
         if (!channel) continue;
         channels.push({
@@ -113,15 +151,52 @@ export class ConnectLinkConnectService {
         });
         await this.notifyConnected(resolved, channel);
       }
+
+      if (settled.instagramError !== null) {
+        const code = this.skipCodeOf(
+          settled.instagramError,
+          resolved,
+          pageId,
+          'instagram',
+        );
+        skipped.push({ pageId, platform: 'instagram', code });
+        if (code === CHANNEL_LIMIT_REACHED) {
+          limitReachedFrom(index + 1);
+          break;
+        }
+      }
     }
 
     if (channels.length === 0 && skipped.length > 0) {
+      if (skipped.every((s) => s.code === 'ALREADY_CONNECTED')) {
+        throw connectLinkError(
+          'ALREADY_CONNECTED',
+          'These Pages are already connected to this workspace.',
+        );
+      }
       throw connectLinkError(
-        'ALREADY_CONNECTED',
-        'These Pages are already connected to this workspace.',
+        'CONNECT_FAILED',
+        'Facebook did not let these Pages be connected. Try again.',
       );
     }
     return { channels, skipped };
+  }
+
+  /** The per-account code of a failed Page or Instagram step. */
+  private skipCodeOf(
+    err: unknown,
+    resolved: ResolvedConnectLink,
+    pageId: string,
+    platform: 'facebook' | 'instagram',
+  ): ConnectLinkSkipCode {
+    if (err instanceof ConflictException) return 'ALREADY_CONNECTED';
+    if (errorCodeOf(err) === CHANNEL_LIMIT_REACHED) {
+      return CHANNEL_LIMIT_REACHED;
+    }
+    this.logger.warn(
+      `Connect-link ${platform} connect failed for link ${resolved.link.id}, page ${pageId}: ${err instanceof Error ? err.message : String(err)}`,
+    );
+    return 'CONNECT_FAILED';
   }
 
   private async resolveForFacebook(

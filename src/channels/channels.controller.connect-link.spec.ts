@@ -1,6 +1,6 @@
 /* eslint-disable @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-return, @typescript-eslint/no-unsafe-argument -- the controller is built with Object.create and its private collaborators are stubbed by name */
 import 'reflect-metadata';
-import { ConflictException } from '@nestjs/common';
+import { ConflictException, Logger } from '@nestjs/common';
 import { channelLimitReached } from '../billing/services/channel-limit.error';
 import { ChannelsController } from './channels.controller';
 import { ConnectLinkConnectService } from './connect-links/connect-link-connect.service';
@@ -10,6 +10,7 @@ import {
   type SelectionRedis,
 } from './connect-links/facebook-selection.store';
 import { connectLinkError } from './connect-links/lib/connect-link-errors';
+import { X_MEDIA_DECLINED_MESSAGE } from './connect-links/lib/callback-target';
 import type { ResolvedConnectLink } from './connect-links/connect-link-access.service';
 
 /**
@@ -77,6 +78,8 @@ interface BuildOpts {
   rawToken?: string | null;
   createChannel?: jest.Mock;
   networks?: string[];
+  /** The platform the stored state was started for; default = the path's. */
+  statePlatform?: string;
 }
 
 function build(opts: BuildOpts = {}) {
@@ -87,14 +90,17 @@ function build(opts: BuildOpts = {}) {
       ? { connectLinkId: LINK, intent: 'connect' }
       : opts.additionalData;
 
-  const validateState = jest.fn().mockResolvedValue({
-    workspaceId: WS,
-    userId: SENDER,
-    platform: 'linkedin',
-    codeVerifier: null,
-    redirectUrl: null,
-    additionalData,
-  });
+  let pathPlatform = 'linkedin';
+  const validateState = jest.fn(() =>
+    Promise.resolve({
+      workspaceId: WS,
+      userId: SENDER,
+      platform: opts.statePlatform ?? pathPlatform,
+      codeVerifier: null,
+      redirectUrl: null,
+      additionalData,
+    }),
+  );
   const peekState = jest.fn().mockResolvedValue({ additionalData });
   const exchangeCodeForTokens = jest.fn().mockResolvedValue({
     accessToken: ACCESS,
@@ -213,8 +219,9 @@ function build(opts: BuildOpts = {}) {
       error_code?: string;
       error_message?: string;
     } = { code: 'the-code', state: STATE },
-  ) =>
-    c.oauthCallback(
+  ) => {
+    pathPlatform = platform;
+    return c.oauthCallback(
       platform,
       q.code,
       q.state,
@@ -225,6 +232,7 @@ function build(opts: BuildOpts = {}) {
       q,
       res,
     );
+  };
   const redirected = (): string => {
     expect(res.redirect).toHaveBeenCalledTimes(1);
     return res.redirect.mock.calls[0][0] as string;
@@ -510,10 +518,53 @@ describe('ChannelsController.oauthCallback - connect link states', () => {
   );
 
   it('a sender notification that fails does not fail the connect', async () => {
-    const t = build();
-    t.channelConnected.mockRejectedValue(new Error('socket down'));
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      const t = build();
+      t.channelConnected.mockRejectedValue(new Error('socket down'));
+      await t.callback('linkedin');
+      expect(t.redirected()).toBe(
+        `${LINK_PAGE}?connected=linkedin&channelId=9`,
+      );
+      expect(warn).toHaveBeenCalledWith(
+        `Connect-link notification failed for link ${LINK}: socket down`,
+      );
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a link state started for another platform is an invalid state: nothing exchanged', async () => {
+    const t = build({ statePlatform: 'facebook' });
     await t.callback('linkedin');
-    expect(t.redirected()).toBe(`${LINK_PAGE}?connected=linkedin&channelId=9`);
+    const url = t.redirected();
+    expect(url.startsWith(`${LINK_PAGE}?error=`)).toBe(true);
+    expect(url).not.toContain('code=');
+    expect(t.exchangeCodeForTokens).not.toHaveBeenCalled();
+    expect(t.channelConnect.connectLinkedIn).not.toHaveBeenCalled();
+  });
+
+  it('a team state is not held to the platform check (unchanged)', async () => {
+    const t = build({
+      additionalData: { intent: 'connect' },
+      statePlatform: 'facebook',
+    });
+    await t.callback('linkedin');
+    expect(t.exchangeCodeForTokens).toHaveBeenCalled();
+  });
+
+  it('never logs the full state token or the authorization code', async () => {
+    const t = build();
+    await t.callback('linkedin', { code: 'secret-auth-code', state: STATE });
+    const logged = [...logSpy.mock.calls, ...errSpy.mock.calls]
+      .flat()
+      .map((a) => (typeof a === 'string' ? a : JSON.stringify(a)))
+      .join('\n');
+    expect(logged).toContain('ALL Query params');
+    expect(logged).not.toContain(STATE);
+    expect(logged).not.toContain('secret-auth-code');
   });
 
   it('a platform the link does not offer -> NETWORK_NOT_OFFERED, nothing exchanged', async () => {
@@ -591,6 +642,41 @@ describe('ChannelsController.oauthCallback - connect link states', () => {
       );
       // not a second "connected" notification for the same channel
       expect(t.channelConnected).not.toHaveBeenCalled();
+    });
+
+    it('an OAuth1 request-token failure on a link: the X channel stays connected, NETWORK_DECLINED', async () => {
+      const t = build();
+      t.c.twitterService.getOAuth1RequestToken.mockRejectedValue(
+        new Error('X said no'),
+      );
+      await t.callback('twitter');
+      expect(t.redirected()).toBe(
+        `${LINK_PAGE}?error=${encodeURIComponent(X_MEDIA_DECLINED_MESSAGE)}&code=NETWORK_DECLINED`,
+      );
+      // the channel was created and announced, and is not undone
+      expect(t.createChannel).toHaveBeenCalledTimes(1);
+      expect(t.channelConnected).toHaveBeenCalledTimes(1);
+    });
+
+    it('a team OAuth1 request-token failure keeps the old error page', async () => {
+      const t = build({ additionalData: { intent: 'connect' } });
+      t.c.twitterService.getOAuth1RequestToken.mockRejectedValue(
+        new Error('X said no'),
+      );
+      await t.callback('twitter');
+      expect(t.redirected()).toBe(
+        `${FE}/channels/connect/error?error=${encodeURIComponent('Twitter setup failed: X said no')}`,
+      );
+    });
+
+    it('a duplicate X account on a link is still ALREADY_CONNECTED (not a media decline)', async () => {
+      const t = build({
+        createChannel: jest
+          .fn()
+          .mockRejectedValue(new ConflictException('already connected')),
+      });
+      await t.callback('twitter');
+      expect(t.redirected()).toMatch(/&code=ALREADY_CONNECTED$/);
     });
 
     it('declining the OAuth1 step on a link returns to the link page', async () => {
