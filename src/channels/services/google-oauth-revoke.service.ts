@@ -52,13 +52,16 @@ export interface RevokeOutcome {
  *
  * CONNECT LINKS: a channel added through a client's connect link
  * (`connect_link_id` set) holds the CLIENT's own Google grant, although its
- * `connected_by_user_id` is the link's sender. It is grouped by the link
- * (other Google channels with the same `connect_link_id`), and a
- * team-connected channel never counts link-added ones.
+ * `connected_by_user_id` is the link's sender. It is grouped with every other
+ * link-added Google channel of the SAME workspace (`connect_link_id IS NOT
+ * NULL AND workspace_id = <its workspace>`), whichever link added it: a
+ * sender may cancel a link and send a new one, and the client connects
+ * YouTube through one and Drive through the other, on one Google account.
+ * Grouping per link would revoke that shared grant. A team-connected channel
+ * never counts link-added ones.
  *
  * KNOWN LIMITATIONS of the "last Google channel" check (limitation 1 below is
- * now MITIGATED for the common case; limitation 2 is unchanged and still
- * real):
+ * now MITIGATED for the common case; limitations 2-5 are real):
  *
  * 1. Cross-workspace blind spot — MITIGATED for the same connecting user.
  *    A Google grant belongs to a Google ACCOUNT, not a workspace, so a
@@ -92,7 +95,25 @@ export interface RevokeOutcome {
  *    user's connection. This is over-revocation — the same class of problem
  *    as limitation 1's pre-mitigation cross-workspace bug, but much narrower,
  *    since it requires two distinct app users sharing one Google account
- *    inside one workspace.
+ *    inside one workspace. This goes live with the first deploy where the
+ *    count query works (it always failed before, so revoke never ran): an
+ *    agency where two app users share one Google login will see the other
+ *    user's Drive, Photos, Calendar or YouTube break when one disconnects.
+ *
+ * 4. Link-added channels: two clients, one workspace (under-revocation).
+ *    Grouping link-added channels workspace-wide means two DIFFERENT clients
+ *    who each connected Google through links in one workspace keep each
+ *    other's grant alive: the first to disconnect is not revoked until the
+ *    other disconnects too. That is the "skip" direction, which the policy
+ *    below accepts (wrongly skipping only delays cleanup).
+ *
+ * 5. A team channel reconnected through a link stays in the team group.
+ *    Reconnecting an existing (broken) team-connected YouTube channel through
+ *    a link keeps `connect_link_id = NULL` on the row but swaps in the
+ *    client's tokens, so the row now holds the client's grant while it is
+ *    still counted in the sender's team group (and not in the workspace's
+ *    link group). Disconnecting it can then skip or revoke on the wrong
+ *    account's grouping.
  *
  * ROOT CAUSE: we don't store a common Google account identifier to compare
  * against, so there is no way to tell whether two Google channels in play
@@ -173,10 +194,11 @@ export class GoogleOauthRevokeService {
       );
       //
       // Three groupings, by who owns the Google grant:
-      //  - a channel added through a connect link belongs to the CLIENT's own
-      //    Google account, so only the other channels on the same link count.
-      //    Its connected_by_user_id is the link's sender, who has nothing to do
-      //    with that grant.
+      //  - a channel added through a connect link belongs to a CLIENT's own
+      //    Google account, so the other link-added Google channels of the same
+      //    workspace count, through any link (a client may connect through a
+      //    second link the sender sent). Its connected_by_user_id is the
+      //    link's sender, who has nothing to do with that grant.
       //  - a team-connected channel counts that user's other Google channels,
       //    never link-added ones (those hold the clients' grants, not theirs,
       //    even though the sender's id is on them).
@@ -187,7 +209,8 @@ export class GoogleOauthRevokeService {
         countRows = await this.rowsOf(sql`
           SELECT COUNT(*) AS count
           FROM social_media_channels
-          WHERE connect_link_id = ${connectLinkId}
+          WHERE workspace_id = ${workspaceId}
+            AND connect_link_id IS NOT NULL
             AND id <> ${channelId}
             AND platform IN (${googlePlatformList})
         `);

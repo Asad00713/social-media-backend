@@ -88,4 +88,6 @@ Body `{ statusCode, error, code, message }`; the same `code` is added as `?code=
 
 ## Google disconnect
 
-A channel added through a link holds the client's own Google grant. When a Google channel is disconnected, `GoogleOauthRevokeService` revokes the grant only if no other channel depends on it: a link-added channel counts other Google channels with the same `connect_link_id`; a team-connected channel counts the same user's other Google channels and never counts link-added ones.
+A channel added through a link holds the client's own Google grant. When a Google channel is disconnected, `GoogleOauthRevokeService` revokes the grant only if no other channel depends on it: a link-added channel counts every other link-added Google channel of the same workspace (any link, so a client who connects through a second link is still grouped); a team-connected channel counts the same user's other Google channels and never counts link-added ones.
+
+Known limitations (listed in the service): two app users who share one Google account can over-revoke each other; two different clients connecting Google through links in one workspace keep each other's grant alive until both disconnect; a team YouTube channel reconnected through a link holds the client's grant but stays in the team group (`connect_link_id` stays NULL).

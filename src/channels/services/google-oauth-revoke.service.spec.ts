@@ -202,14 +202,16 @@ describe('GoogleOauthRevokeService', () => {
   // that user alone would let a client's YouTube disconnect see the sender's
   // own Drive (and skip the revoke), or the other way round: the sender's team
   // disconnect would see the client's channel and never revoke. The client's
-  // Google account is its own grant, so a link-added channel is grouped by the
-  // link and a team-connected one never counts link-added channels.
+  // Google account is its own grant, so a link-added channel is grouped with
+  // the other LINK-ADDED Google channels of its workspace (any link: a sender
+  // may cancel a link and send a new one, and the client connects through
+  // each), and a team-connected one never counts link-added channels.
   describe('connect-link grouping', () => {
     const LINK = '33333333-3333-4333-8333-333333333333';
     const SENDER = '22222222-2222-4222-8222-222222222222';
     const render = (q: unknown) => new PgDialect().sqlToQuery(q as SQL);
 
-    it('a link-added YouTube channel counts only other Google channels with the same connect_link_id', async () => {
+    it('a link-added YouTube channel counts the other link-added Google channels of its workspace, any link', async () => {
       execute
         .mockResolvedValueOnce({
           rows: [{ connected_by_user_id: SENDER, connect_link_id: LINK }],
@@ -227,10 +229,15 @@ describe('GoogleOauthRevokeService', () => {
       // the sender's own Google channels do not keep the CLIENT's grant alive
       expect(result.revoked).toBe(true);
       const { sql, params } = render(execute.mock.calls[1][0]);
-      expect(sql).toMatch(/connect_link_id = \$\d/);
+      expect(sql).toMatch(/workspace_id = \$\d/);
+      expect(sql).toMatch(/connect_link_id IS NOT NULL/);
       expect(sql).toMatch(/id <> \$\d/);
       expect(sql).toMatch(/platform IN \(\$\d, \$\d, \$\d, \$\d\)/);
-      expect(params).toContain(LINK);
+      expect(params).toContain('ws-a');
+      // not keyed by the link: a Drive added through ANOTHER link of the
+      // workspace counts too
+      expect(sql).not.toMatch(/connect_link_id = \$\d/);
+      expect(params).not.toContain(LINK);
       expect(params).not.toContain(SENDER);
       expect(sql).not.toMatch(/connected_by_user_id/);
     });
@@ -275,7 +282,7 @@ describe('GoogleOauthRevokeService', () => {
       },
     );
 
-    it('a link-added channel with another channel on the same link does not revoke', async () => {
+    it('a link-added channel with another link-added Google channel in the workspace does not revoke', async () => {
       execute
         .mockResolvedValueOnce({
           rows: [{ connected_by_user_id: SENDER, connect_link_id: LINK }],
