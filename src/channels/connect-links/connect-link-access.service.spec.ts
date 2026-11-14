@@ -342,10 +342,12 @@ describe('ConnectLinkAccessService', () => {
         ...SUSPENDED,
         link: { networks: ['facebook'] },
       });
+      const get = jest.fn(() => Promise.resolve(null));
+      const del = jest.fn(() => Promise.resolve(0));
       const redis: SelectionRedis = {
         set: jest.fn(() => Promise.resolve('OK')),
-        get: jest.fn(() => Promise.resolve(null)),
-        del: jest.fn(() => Promise.resolve(0)),
+        get,
+        del,
       };
       const connectFacebookPageSettled = jest.fn();
       const listFacebookPages = jest.fn();
@@ -372,8 +374,8 @@ describe('ConnectLinkAccessService', () => {
         ),
       ).toBe('LINK_UNAVAILABLE');
       // refused before the selection is touched or a Page is connected
-      expect(redis.get).not.toHaveBeenCalled();
-      expect(redis.del).not.toHaveBeenCalled();
+      expect(get).not.toHaveBeenCalled();
+      expect(del).not.toHaveBeenCalled();
       expect(listFacebookPages).not.toHaveBeenCalled();
       expect(connectFacebookPageSettled).not.toHaveBeenCalled();
       expect(channelConnected).not.toHaveBeenCalled();
