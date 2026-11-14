@@ -15,7 +15,7 @@ import { workspace } from './workspace.schema';
  * own social accounts into a workspace, with no Schedura account. Status
  * (open / expired / revoked) is derived from expires_at and revoked_at, never
  * stored. Rows are revoked, not deleted.
- * Migration: drizzle/migrations/0066_channel_connect_links.sql (hand-written;
+ * Migration: drizzle/migrations/0067_channel_connect_links.sql (hand-written;
  * the `networks` cardinality CHECK and the unique constraint on token_hash
  * live there).
  */

@@ -227,7 +227,7 @@ export const socialMediaChannels = pgTable(
       .notNull()
       .references(() => users.id, { onDelete: 'set null' }),
 
-    // Added through a connect link (migration 0066). connectLinkId says which
+    // Added through a connect link (migration 0067). connectLinkId says which
     // link; the two marks are copied at connect time so they survive the link
     // row. A channel is "added through a link" when addedViaLinkAt is set.
     connectLinkId: uuid('connect_link_id').references(

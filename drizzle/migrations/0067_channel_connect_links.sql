@@ -1,4 +1,4 @@
--- 0066 - Channel connect links: let a client connect their own accounts.
+-- 0067 - Channel connect links: let a client connect their own accounts.
 --
 -- WHY
 -- A teammate or agency often needs a social account that someone else owns.
