@@ -36,6 +36,19 @@ describe('AllExceptionsFilter', () => {
     expect(JSON.stringify(entry)).not.toContain(TOKEN);
   });
 
+  it('stores the Facebook Pages path without its selection id', () => {
+    const SEL = 'q7Yx2LmN0aBcDeFgHiJkLmNoPqRsTuVw';
+    const { write } = run(
+      new GoneException('gone'),
+      `/public/connect-links/${TOKEN}/facebook/pages?selection=${SEL}`,
+    );
+    const entry = write.mock.calls[0][0];
+    expect(entry.path).toBe(
+      '/public/connect-links/[redacted]/facebook/pages?selection=[redacted]',
+    );
+    expect(JSON.stringify(entry)).not.toContain(SEL);
+  });
+
   it("keeps the token out of the message and stack of Nest's route-not-found 404", () => {
     // Nest's own 404 for an unknown route spells the URL in its message:
     // "Cannot POST /public/connect-links/<token>/nope"

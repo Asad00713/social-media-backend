@@ -8,7 +8,7 @@ Code: `src/channels/connect-links/` (sender API, public API, callback finish), s
 
 - Lifetime 7 days from creation. Resend does not extend it. A link is revoked, never deleted; status (`open`, `expired`, `revoked`) is derived.
 - Networks a link may offer: `instagram`, `facebook`, `tiktok`, `linkedin`, `youtube`, `pinterest`, `threads`, `twitter` (1 to 8).
-- The token is 32 random bytes, base64url (43 characters). The database stores `token_hash` (SHA-256, the only column looked up) and `token_encrypted` (so Copy link and Resend reuse the same URL). The token is redacted from logs.
+- The token is 32 random bytes, base64url (43 characters). The database stores `token_hash` (SHA-256, the only column looked up) and `token_encrypted` (so Copy link and Resend reuse the same URL). The token is redacted from the stored error logs (path, message and stack, `src/logs/redact-path.ts`), and so is the Facebook `selection` id in the query of `/public/connect-links/*`.
 
 ## Sender API
 
