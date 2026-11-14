@@ -95,6 +95,31 @@ const inactiveReminder = register(
   }),
 );
 
+const paymentFailed = register(
+  defineTemplate<Props>({
+    id: 'payment-failed',
+    category: 'billing',
+    event: 'billing_alert',
+    footer: 'notification',
+    subject: () => 'Payment failed',
+    preheader: () => 'Update your card.',
+    Body: (p) => createElement('p', null, p.title),
+    fixture: { title: 'T' },
+  }),
+);
+const planChanged = register(
+  defineTemplate<Props>({
+    id: 'plan-changed',
+    category: 'billing',
+    event: 'draft_ready',
+    footer: 'notification',
+    subject: () => 'Plan changed',
+    preheader: () => 'Your plan changed.',
+    Body: (p) => createElement('p', null, p.title),
+    fixture: { title: 'T' },
+  }),
+);
+
 const SECRET = 'outbox-spec-secret';
 const USER = '5d0b6f0e-1111-4222-8333-944455556666';
 const WS = '11111111-1111-4111-8111-111111111111';
@@ -364,6 +389,8 @@ describe('EmailOutboxService.process', () => {
 describe('EmailOutboxService unsubscribe headers', () => {
   const member = { email: 'r@acme.com', userId: USER };
 
+  afterEach(() => jest.useRealTimers());
+
   /** The headers of the one message delivered. */
   async function headersOf(
     def: AnyTemplateDef,
@@ -410,6 +437,33 @@ describe('EmailOutboxService unsubscribe headers', () => {
     expect(
       tokens.verifyUnsubscribe(link.slice(link.lastIndexOf('/') + 1, -1)),
     ).toEqual({ uid: USER, ws: null, ev: 'inactivity_reminder' });
+  });
+
+  it('List-Unsubscribe is byte-identical on every attempt of the same job', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    const { outbox, email } = make();
+    const data = job(postFailed, { to: member, workspaceId: WS });
+    await outbox.process(data);
+    jest.setSystemTime(Date.now() + 5_000);
+    await outbox.process(data);
+    jest.setSystemTime(Date.now() + 60_000);
+    await outbox.process(data);
+    const [first, ...rest] = email.deliver.mock.calls.map(
+      ([msg]) => msg.headers,
+    );
+    expect(rest).toHaveLength(2);
+    expect(first?.['List-Unsubscribe']).toBeDefined();
+    for (const headers of rest) {
+      expect(JSON.stringify(headers)).toBe(JSON.stringify(first));
+    }
+  });
+
+  it('carries none when the event email is locked or the event sends no email', async () => {
+    const locked = await headersOf(paymentFailed, { workspaceId: WS });
+    expect(locked.headers).toBeUndefined();
+    const noEmail = await headersOf(planChanged, { workspaceId: WS });
+    expect(noEmail.headers).toBeUndefined();
+    expect(noEmail.email.deliver).toHaveBeenCalledTimes(1);
   });
 
   it('other lifecycle mail carries none, and neither does a recipient who is not a user', async () => {

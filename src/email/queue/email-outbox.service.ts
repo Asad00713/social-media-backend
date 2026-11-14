@@ -1,7 +1,10 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { Queue, UnrecoverableError } from 'bullmq';
-import type { PreferenceEventKey } from '../../notification-preferences/notification-events';
+import {
+  NOTIFICATION_EVENTS,
+  type PreferenceEventKey,
+} from '../../notification-preferences/notification-events';
 import { NotificationPreferencesService } from '../../notification-preferences/notification-preferences.service';
 import { QUEUES } from '../../queue/queue.module';
 import { EmailService, type EmailResult } from '../email.service';
@@ -36,6 +39,10 @@ function assertKey(key: string): void {
       `Invalid email idempotency key "${key}": it must match ${String(IDEMPOTENCY_KEY_RE)} and not be all digits`,
     );
   }
+}
+
+function isEventKey(key: string): key is PreferenceEventKey {
+  return Object.keys(NOTIFICATION_EVENTS).includes(key);
 }
 
 function toJobData<P>(input: Omit<EnqueueEmail<P>, 'delayMs'>): EmailJobData {
@@ -193,10 +200,16 @@ export class EmailOutboxService {
     const unsubscribable =
       def.footer === 'notification' || def.event === 'inactivity_reminder';
     if (!unsubscribable || !def.event || !to.userId) return {};
+    // Only an event whose email can be switched off: the link would otherwise
+    // lead to a page that does nothing.
+    const event = isEventKey(def.event)
+      ? NOTIFICATION_EVENTS[def.event]
+      : undefined;
+    if (!event?.email || event.email.locked) return {};
     const token = this.tokens.unsubscribeToken({
       uid: to.userId,
       ws: workspaceId,
-      ev: def.event as PreferenceEventKey,
+      ev: event.key,
     });
     return {
       headers: {

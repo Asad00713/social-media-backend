@@ -52,12 +52,18 @@ export class EmailTokensService {
     private readonly config: ConfigService,
   ) {}
 
+  /**
+   * Deterministic per (uid, ws, ev): no iat, so the List-Unsubscribe header of
+   * a queued email is byte-identical on every BullMQ attempt. Resend answers a
+   * retry that reuses an idempotency key with a different payload with a 409.
+   */
   unsubscribeToken(p: UnsubscribeClaims): string {
     return this.jwt.sign(
       { uid: p.uid, ws: p.ws, ev: p.ev },
       {
         secret: this.requireKey(UNSUBSCRIBE_LABEL),
         audience: UNSUBSCRIBE_AUDIENCE,
+        noTimestamp: true,
       },
     );
   }

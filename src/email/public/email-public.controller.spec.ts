@@ -171,12 +171,19 @@ describe('EmailPublicController over HTTP', () => {
     });
 
     it('changes nothing for a locked or no-email event either, and offers no button', async () => {
-      for (const ev of ['billing_alert', 'draft_ready'] as const) {
-        const res = await get(path(mint(ev)));
-        expect(res.status).toBe(200);
-        expect(res.text).toContain('This email can&#39;t be turned off');
-        expect(res.text).not.toContain('<form');
-      }
+      const locked = await get(path(mint('billing_alert')));
+      expect(locked.status).toBe(200);
+      expect(locked.text).toContain('This email can&#39;t be turned off');
+      expect(locked.text).not.toContain('<form');
+      const noEmail = await get(path(mint('draft_ready')));
+      expect(noEmail.status).toBe(200);
+      expect(noEmail.text).toContain(
+        'This notification doesn&#39;t send email',
+      );
+      expect(noEmail.text).toContain(
+        '&quot;Draft ready&quot; doesn&#39;t send email, so there is nothing to unsubscribe from.',
+      );
+      expect(noEmail.text).not.toContain('<form');
       expect(prefs.disableEmail).not.toHaveBeenCalled();
     });
   });
@@ -234,10 +241,13 @@ describe('EmailPublicController over HTTP', () => {
     });
 
     it('a locked or no-email event is answered truthfully: not unsubscribed, nothing written', async () => {
-      for (const ev of ['billing_alert', 'draft_ready'] as const) {
+      for (const [ev, title] of [
+        ['billing_alert', 'This email can&#39;t be turned off'],
+        ['draft_ready', 'This notification doesn&#39;t send email'],
+      ] as const) {
         const res = await post(path(mint(ev)));
         expect(res.status).toBe(200);
-        expect(res.text).toContain('This email can&#39;t be turned off');
+        expect(res.text).toContain(title);
         expect(res.text).toContain('there is nothing to unsubscribe from');
         expect(res.text).not.toContain('unsubscribed');
       }
@@ -318,6 +328,7 @@ describe('EmailPublicController over HTTP', () => {
       for (const res of [ok, done, missing, boom]) {
         expect(res.headers['cache-control']).toBe('private, no-store');
         expect(res.headers['x-robots-tag']).toBe('noindex');
+        expect(res.headers['referrer-policy']).toBe('no-referrer');
         expect(res.headers['content-security-policy']).toContain(
           "frame-ancestors 'none'",
         );

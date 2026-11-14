@@ -53,7 +53,7 @@ export class ResendWebhookController {
     if (!secret) {
       throw new ServiceUnavailableException('Resend webhook is not configured');
     }
-    const event = this.verified(req, secret);
+    const event = this.verified(req, this.webhook(secret));
 
     const reason = this.reasonOf(event);
     if (!reason) return { ignored: true };
@@ -70,8 +70,22 @@ export class ResendWebhookController {
     return { received: true };
   }
 
+  /**
+   * A malformed secret makes the svix constructor throw. That is a bad
+   * configuration, not a bad signature: log it once without the secret and
+   * answer 503, so it is never mistaken for a rejected delivery.
+   */
+  private webhook(secret: string): Webhook {
+    try {
+      return new Webhook(secret);
+    } catch {
+      this.logger.error('RESEND_WEBHOOK_SECRET is malformed: svix rejected it');
+      throw new ServiceUnavailableException('Resend webhook is not configured');
+    }
+  }
+
   /** 400 on a missing body, a missing header or a bad signature. */
-  private verified(req: RawBodyRequest<Request>, secret: string): ResendEvent {
+  private verified(req: RawBodyRequest<Request>, hook: Webhook): ResendEvent {
     const header = (name: string) => {
       const v = req.headers[name];
       return Array.isArray(v) ? v[0] : v;
@@ -83,7 +97,7 @@ export class ResendWebhookController {
       throw new BadRequestException('Invalid webhook');
     }
     try {
-      return new Webhook(secret).verify(req.rawBody.toString('utf8'), {
+      return hook.verify(req.rawBody.toString('utf8'), {
         'svix-id': id,
         'svix-timestamp': timestamp,
         'svix-signature': signature,

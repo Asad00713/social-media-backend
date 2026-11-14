@@ -53,6 +53,16 @@ describe('EmailTokensService', () => {
       ).toEqual(account);
     });
 
+    it('is deterministic: the same claims always give the same token, with no iat', () => {
+      const { service, jwt } = build();
+      jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+      const first = service.unsubscribeToken(claims);
+      jest.setSystemTime(Date.now() + 10_000);
+      expect(service.unsubscribeToken(claims)).toBe(first);
+      expect(jwt.decode(first)).not.toHaveProperty('iat');
+      expect(service.verifyUnsubscribe(first)).toEqual(claims);
+    });
+
     it('never expires', () => {
       const { service, jwt } = build();
       const token = service.unsubscribeToken(claims);
@@ -146,6 +156,15 @@ describe('EmailTokensService', () => {
       expect(service.verifySecurity(service.securityToken(full))).toEqual(full);
       const bare = { uid: UID, act: 'not_me' } as const;
       expect(service.verifySecurity(service.securityToken(bare))).toEqual(bare);
+    });
+
+    it('keeps iat and exp: it is never a header of queued mail', () => {
+      const { service, jwt } = build();
+      const decoded: unknown = jwt.decode(
+        service.securityToken({ uid: UID, act: 'not_me' }),
+      );
+      expect(decoded).toHaveProperty('iat');
+      expect(decoded).toHaveProperty('exp');
     });
 
     it('security token expires after 7 days', () => {

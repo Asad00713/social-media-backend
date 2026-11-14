@@ -7,13 +7,15 @@ import {
 } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { LogWriterService } from './log-writer.service';
+import { redactTokenUrls } from './redact-token-urls';
 
 /**
  * Global exception filter. It preserves Nest's default response exactly — same
  * status and body a client would otherwise get — and additionally persists a
  * row. 5xx are 'error'; 4xx are 'warn' (a validation 400 is worth seeing, not
  * worth alerting on). The DB write is fire-and-forget and can never change or
- * block the response.
+ * block the response. Token-bearing URLs (email and report links) are stored
+ * with the token replaced by [token].
  */
 @Catch()
 export class AllExceptionsFilter implements ExceptionFilter {
@@ -42,10 +44,10 @@ export class AllExceptionsFilter implements ExceptionFilter {
       ).user;
       this.writer.write({
         level: status >= 500 ? 'error' : 'warn',
-        message,
+        message: redactTokenUrls(message),
         context: 'HTTP',
-        stack: stack ?? null,
-        path: request?.url ?? null,
+        stack: stack ? redactTokenUrls(stack) : null,
+        path: request?.url ? redactTokenUrls(request.url) : null,
         method: request?.method ?? null,
         statusCode: status,
         userId: user?.userId ?? null,

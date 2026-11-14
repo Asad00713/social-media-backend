@@ -142,9 +142,18 @@ export class EmailPublicController {
   }
 
   private nothingToTurnOffPage(claims: UnsubscribeClaims): string {
+    const { label, email } = NOTIFICATION_EVENTS[claims.ev];
+    const copy = email
+      ? {
+          title: "This email can't be turned off",
+          body: `"${label}" emails can't be turned off, so there is nothing to unsubscribe from.`,
+        }
+      : {
+          title: "This notification doesn't send email",
+          body: `"${label}" doesn't send email, so there is nothing to unsubscribe from.`,
+        };
     return donePage({
-      title: "This email can't be turned off",
-      body: `"${NOTIFICATION_EVENTS[claims.ev].label}" emails can't be turned off, so there is nothing to unsubscribe from.`,
+      ...copy,
       ...(claims.ws
         ? {
             link: {
@@ -183,6 +192,7 @@ export class EmailPublicController {
   private noStore(res: Response): void {
     res.setHeader('Cache-Control', 'private, no-store');
     res.setHeader('X-Robots-Tag', 'noindex');
+    res.setHeader('Referrer-Policy', 'no-referrer');
   }
 
   /** First line of an HTML handler, so even a 500 carries them. */

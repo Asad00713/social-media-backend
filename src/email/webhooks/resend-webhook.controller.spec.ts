@@ -87,6 +87,23 @@ describe('ResendWebhookController over HTTP', () => {
     expect(suppressions.suppress).not.toHaveBeenCalled();
   });
 
+  it('webhook: a malformed secret is a 503 and one error log without the secret, not a 400', async () => {
+    const bad = 'whsec_not base64 !!';
+    secret = bad;
+    const error = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => undefined);
+    const res = await send(signed(bounced('Permanent')));
+    const noHeaders = await request(app.getHttpServer()).post(URL).send({});
+    const logged = JSON.stringify(error.mock.calls);
+    error.mockRestore();
+    expect(res.status).toBe(503);
+    expect(noHeaders.status).toBe(503);
+    expect(logged).toContain('RESEND_WEBHOOK_SECRET');
+    expect(logged).not.toContain(bad);
+    expect(suppressions.suppress).not.toHaveBeenCalled();
+  });
+
   it('webhook: an old timestamp is refused as a replay', async () => {
     const body = JSON.stringify(bounced('Permanent'));
     const old = new Date(Date.now() - 60 * 60 * 1000);
@@ -132,6 +149,17 @@ describe('ResendWebhookController over HTTP', () => {
     expect(transient.status).toBe(200);
     expect(transient.body).toEqual({ ignored: true });
     expect(suppressions.suppress).not.toHaveBeenCalled();
+  });
+
+  it('webhook: a redelivered svix-id (same payload twice) is harmless', async () => {
+    const delivery = signed(bounced('Permanent'), SECRET, 'msg_same');
+    expect((await send(delivery)).status).toBe(200);
+    expect((await send(delivery)).status).toBe(200);
+    // suppress() is an upsert on the address, so the repeat rewrites one row.
+    expect(suppressions.suppress).toHaveBeenCalledTimes(2);
+    for (const call of suppressions.suppress.mock.calls) {
+      expect(call).toEqual(['a@acme.com', 'bounced', 'em_1']);
+    }
   });
 
   it('webhook: a bounce of an unclassified type suppresses', async () => {
