@@ -8,6 +8,7 @@ import { EmailService, type EmailResult } from '../email.service';
 import { AppLinks } from '../links/app-links';
 import { renderEmail } from '../render/render-email';
 import { EmailSuppressionRepository } from '../suppression/email-suppression.repository';
+import { EmailTokensService } from '../tokens/email-tokens.service';
 import { getTemplate } from '../templates/registry';
 import type { AnyTemplateDef } from '../templates/types';
 import { EmailFooterService } from './email-footer.service';
@@ -18,6 +19,7 @@ import {
   IDEMPOTENCY_KEY_RE,
   RetryableEmailError,
   type EmailJobData,
+  type EmailRecipient,
   type EnqueueEmail,
 } from './email-job';
 
@@ -65,6 +67,7 @@ export class EmailOutboxService {
     private readonly suppressions: EmailSuppressionRepository,
     private readonly footer: EmailFooterService,
     private readonly links: AppLinks,
+    private readonly tokens: EmailTokensService,
   ) {}
 
   /** Throws on a bad key, so a caller bug surfaces before anything is queued. */
@@ -148,6 +151,7 @@ export class EmailOutboxService {
         html: rendered.html,
         text: rendered.text,
         ...(data.replyTo ? { replyTo: data.replyTo } : {}),
+        ...this.unsubscribeHeaders(def, to, workspaceId),
       },
       {
         idempotencyKey: data.idempotencyKey,
@@ -174,6 +178,32 @@ export class EmailOutboxService {
         : new UnrecoverableError(reason);
     }
     return { status: 'sent', messageId: result.messageId };
+  }
+
+  /**
+   * RFC 8058 one-click unsubscribe for the mail a person can switch off: a
+   * notification, and the account-level inactivity reminder. Mandatory mail
+   * has no event to switch off, so it carries neither header.
+   */
+  private unsubscribeHeaders(
+    def: AnyTemplateDef,
+    to: EmailRecipient,
+    workspaceId: string | null,
+  ): { headers?: Record<string, string> } {
+    const unsubscribable =
+      def.footer === 'notification' || def.event === 'inactivity_reminder';
+    if (!unsubscribable || !def.event || !to.userId) return {};
+    const token = this.tokens.unsubscribeToken({
+      uid: to.userId,
+      ws: workspaceId,
+      ev: def.event as PreferenceEventKey,
+    });
+    return {
+      headers: {
+        'List-Unsubscribe': `<${this.links.api('/email/unsubscribe/' + token)}>`,
+        'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
+      },
+    };
   }
 
   private templateOf(id: string): AnyTemplateDef {

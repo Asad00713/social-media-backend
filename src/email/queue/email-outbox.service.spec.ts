@@ -3,11 +3,13 @@ import { Logger } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import { UnrecoverableError } from 'bullmq';
 import { createElement } from 'react';
+import { JwtService } from '@nestjs/jwt';
 import type { NotificationPreferencesService } from '../../notification-preferences/notification-preferences.service';
 import type { EmailResult, EmailService } from '../email.service';
 import { AppLinks } from '../links/app-links';
 import type { EmailSuppressionRepository } from '../suppression/email-suppression.repository';
 import { defineTemplate } from '../templates/define-template';
+import { EmailTokensService } from '../tokens/email-tokens.service';
 import type { AnyTemplateDef, EmailTemplateDef } from '../templates/types';
 import type { EmailFooterService } from './email-footer.service';
 import {
@@ -79,6 +81,23 @@ const welcome = register(
   }),
 );
 
+const inactiveReminder = register(
+  defineTemplate<Props>({
+    id: 'inactive-reminder',
+    category: 'lifecycle',
+    event: 'inactivity_reminder',
+    footer: 'plain',
+    footerReason: () => 'You signed up.',
+    subject: () => 'We miss you',
+    preheader: () => 'Come back.',
+    Body: (p) => createElement('p', null, p.title),
+    fixture: { title: 'T' },
+  }),
+);
+
+const SECRET = 'outbox-spec-secret';
+const USER = '5d0b6f0e-1111-4222-8333-944455556666';
+const WS = '11111111-1111-4111-8111-111111111111';
 const TO = { email: 'r@acme.com', userId: 'u1' };
 const sent: EmailResult = { success: true, messageId: 'm1' };
 
@@ -99,6 +118,9 @@ function make() {
   const links = new AppLinks({
     get: (_key: string, d?: string) => d,
   } as unknown as ConfigService);
+  const tokens = new EmailTokensService(new JwtService({}), {
+    get: (k: string) => (k === 'JWT_ACCESS_SECRET' ? SECRET : undefined),
+  } as unknown as ConfigService);
   const outbox = new EmailOutboxService(
     queue as unknown as Queue,
     email as unknown as EmailService,
@@ -106,8 +128,9 @@ function make() {
     suppressions as unknown as EmailSuppressionRepository,
     footer as unknown as EmailFooterService,
     links,
+    tokens,
   );
-  return { outbox, queue, email, prefs, suppressions, footer };
+  return { outbox, queue, email, prefs, suppressions, footer, tokens };
 }
 
 const input: EnqueueEmail<Props> = {
@@ -335,6 +358,67 @@ describe('EmailOutboxService.process', () => {
     await expect(
       outbox.process({ ...job(postFailed), template: 'nope' as never }),
     ).rejects.toBeInstanceOf(UnrecoverableError);
+  });
+});
+
+describe('EmailOutboxService unsubscribe headers', () => {
+  const member = { email: 'r@acme.com', userId: USER };
+
+  /** The headers of the one message delivered. */
+  async function headersOf(
+    def: AnyTemplateDef,
+    extra: Partial<EmailJobData> = {},
+  ) {
+    const made = make();
+    await made.outbox.process(job(def, { to: member, ...extra }));
+    return { ...made, headers: made.email.deliver.mock.calls[0][0].headers };
+  }
+
+  it('notification mail carries List-Unsubscribe and List-Unsubscribe-Post; security mail carries neither', async () => {
+    const { headers, tokens } = await headersOf(postFailed, {
+      workspaceId: WS,
+    });
+    expect(headers?.['List-Unsubscribe-Post']).toBe(
+      'List-Unsubscribe=One-Click',
+    );
+    const link = headers?.['List-Unsubscribe'] ?? '';
+    expect(link).toMatch(
+      /^<http:\/\/localhost:3000\/email\/unsubscribe\/[\w.-]+>$/,
+    );
+    const token = link.slice(link.lastIndexOf('/') + 1, -1);
+    expect(tokens.verifyUnsubscribe(token)).toEqual({
+      uid: USER,
+      ws: WS,
+      ev: 'post_failed',
+    });
+
+    const security = await headersOf(passwordChanged, { workspaceId: null });
+    expect(security.headers).toBeUndefined();
+    expect(security.email.deliver.mock.calls[0][0]).not.toHaveProperty(
+      'headers',
+    );
+  });
+
+  it('the account-level inactivity reminder carries them with a null workspace', async () => {
+    const { headers, tokens } = await headersOf(inactiveReminder, {
+      workspaceId: null,
+    });
+    const link = headers?.['List-Unsubscribe'] ?? '';
+    expect(headers?.['List-Unsubscribe-Post']).toBe(
+      'List-Unsubscribe=One-Click',
+    );
+    expect(
+      tokens.verifyUnsubscribe(link.slice(link.lastIndexOf('/') + 1, -1)),
+    ).toEqual({ uid: USER, ws: null, ev: 'inactivity_reminder' });
+  });
+
+  it('other lifecycle mail carries none, and neither does a recipient who is not a user', async () => {
+    const lifecycle = await headersOf(welcome, { workspaceId: null });
+    expect(lifecycle.headers).toBeUndefined();
+    const guest = await headersOf(postFailed, {
+      to: { email: 'guest@acme.com', userId: null },
+    });
+    expect(guest.headers).toBeUndefined();
   });
 });
 

@@ -1,6 +1,7 @@
 import { Inject, Module, type OnModuleDestroy } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import type Redis from 'ioredis';
+import { JwtModule } from '@nestjs/jwt';
 import {
   REDIS_CLIENT,
   RedisClientProvider,
@@ -13,21 +14,37 @@ import { AppLinks } from './links/app-links';
 import { EmailFooterService } from './queue/email-footer.service';
 import { EmailOutboxService } from './queue/email-outbox.service';
 import { EmailProcessor } from './queue/email.processor';
+import { EmailPublicController } from './public/email-public.controller';
 import { EmailSuppressionRepository } from './suppression/email-suppression.repository';
+import { EmailTokensService } from './tokens/email-tokens.service';
+import { ResendWebhookController } from './webhooks/resend-webhook.controller';
 
 @Module({
-  imports: [ConfigModule, QueueModule, NotificationPreferencesModule],
+  imports: [
+    ConfigModule,
+    JwtModule.register({}),
+    QueueModule,
+    NotificationPreferencesModule,
+  ],
+  controllers: [EmailPublicController, ResendWebhookController],
   providers: [
     EmailService,
     AppLinks,
     EmailOnceService,
     RedisClientProvider,
     EmailSuppressionRepository,
+    EmailTokensService,
     EmailFooterService,
     EmailOutboxService,
     EmailProcessor,
   ],
-  exports: [EmailService, EmailOutboxService, AppLinks, EmailOnceService],
+  exports: [
+    EmailService,
+    EmailOutboxService,
+    AppLinks,
+    EmailOnceService,
+    EmailTokensService,
+  ],
 })
 export class EmailModule implements OnModuleDestroy {
   constructor(@Inject(REDIS_CLIENT) private readonly redis: Redis) {}
