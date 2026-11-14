@@ -64,7 +64,8 @@ describe('OAuthService.peekState', () => {
         where.mock.calls[0][0] as SQL,
       );
       const bound = params.find(
-        (p) => p instanceof Date || (typeof p === 'string' && /^\d{4}-/.test(p)),
+        (p) =>
+          p instanceof Date || (typeof p === 'string' && /^\d{4}-/.test(p)),
       );
       expect(bound).toBeDefined();
       return new Date(bound as Date | string);

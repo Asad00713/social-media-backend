@@ -1,5 +1,5 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { sql } from 'drizzle-orm';
+import { sql, type SQL } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 
 /**
@@ -121,6 +121,14 @@ export class GoogleOauthRevokeService {
 
   constructor(@Inject(DRIZZLE) private readonly db: any) {}
 
+  /** Rows of a raw query, whichever shape the driver answers with. */
+  private async rowsOf(query: SQL): Promise<Array<Record<string, unknown>>> {
+    /* eslint-disable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access, @typescript-eslint/no-unsafe-return -- `db` is injected untyped */
+    const result = await this.db.execute(query);
+    return result?.rows ?? result ?? [];
+    /* eslint-enable @typescript-eslint/no-unsafe-assignment, @typescript-eslint/no-unsafe-call, @typescript-eslint/no-unsafe-member-access */
+  }
+
   async revokeIfLastGoogleChannel(
     channelId: number,
     workspaceId: string,
@@ -142,17 +150,17 @@ export class GoogleOauthRevokeService {
       // the old workspace-scoped approximation — grouping every NULL-owner
       // channel together as though they shared one Google account would be
       // wrong in the other direction.
-      const ownerResult: any = await this.db.execute(sql`
+      const ownerRows = await this.rowsOf(sql`
         SELECT connected_by_user_id AS connected_by_user_id,
                connect_link_id AS connect_link_id
         FROM social_media_channels
         WHERE id = ${channelId}
       `);
-      const ownerRows = ownerResult?.rows ?? ownerResult ?? [];
-      const connectedByUserId: string | null =
-        ownerRows[0]?.connected_by_user_id ?? null;
-      const connectLinkId: string | null =
-        ownerRows[0]?.connect_link_id ?? null;
+      const connectedByUserId =
+        (ownerRows[0]?.connected_by_user_id as string | null | undefined) ??
+        null;
+      const connectLinkId =
+        (ownerRows[0]?.connect_link_id as string | null | undefined) ?? null;
 
       // GOOGLE_PLATFORMS is a module constant, never user input, but pass each
       // as a bound parameter anyway rather than interpolating it into the
@@ -174,9 +182,9 @@ export class GoogleOauthRevokeService {
       //    even though the sender's id is on them).
       //  - the NULL-owner fallback is workspace-scoped, also excluding
       //    link-added channels.
-      let countResult: any;
+      let countRows: Array<Record<string, unknown>>;
       if (connectLinkId) {
-        countResult = await this.db.execute(sql`
+        countRows = await this.rowsOf(sql`
           SELECT COUNT(*) AS count
           FROM social_media_channels
           WHERE connect_link_id = ${connectLinkId}
@@ -184,7 +192,7 @@ export class GoogleOauthRevokeService {
             AND platform IN (${googlePlatformList})
         `);
       } else if (connectedByUserId) {
-        countResult = await this.db.execute(sql`
+        countRows = await this.rowsOf(sql`
           SELECT COUNT(*) AS count
           FROM social_media_channels
           WHERE connected_by_user_id = ${connectedByUserId}
@@ -193,7 +201,7 @@ export class GoogleOauthRevokeService {
             AND platform IN (${googlePlatformList})
         `);
       } else {
-        countResult = await this.db.execute(sql`
+        countRows = await this.rowsOf(sql`
           SELECT COUNT(*) AS count
           FROM social_media_channels
           WHERE workspace_id = ${workspaceId}
@@ -202,14 +210,15 @@ export class GoogleOauthRevokeService {
             AND platform IN (${googlePlatformList})
         `);
       }
-      const rows = countResult?.rows ?? countResult ?? [];
-      remaining = Number(rows[0]?.count ?? 0);
+      remaining = Number(countRows[0]?.count ?? 0);
     } catch (err) {
       // If we cannot tell whether other Google channels exist, do NOT revoke —
       // wrongly revoking breaks working Drive/Photos/Calendar connections,
       // while wrongly skipping only delays the grant cleanup.
       const reason = `could not count other Google channels: ${(err as Error).message}`;
-      this.logger.error(`Google revoke skipped for channel ${channelId} — ${reason}`);
+      this.logger.error(
+        `Google revoke skipped for channel ${channelId} — ${reason}`,
+      );
       return { revoked: false, reason };
     }
 
@@ -234,7 +243,9 @@ export class GoogleOauthRevokeService {
         const body = await res.text();
         const reason = `Google revoke returned ${res.status}: ${body}`;
         // Best effort, exactly like MastodonService.revokeToken — never throw.
-        this.logger.warn(`Google revoke failed for channel ${channelId}: ${reason}`);
+        this.logger.warn(
+          `Google revoke failed for channel ${channelId}: ${reason}`,
+        );
         return { revoked: false, reason };
       }
 
@@ -244,7 +255,9 @@ export class GoogleOauthRevokeService {
       return { revoked: true, reason: 'revoked' };
     } catch (err) {
       const reason = (err as Error).message;
-      this.logger.warn(`Google revoke failed for channel ${channelId}: ${reason}`);
+      this.logger.warn(
+        `Google revoke failed for channel ${channelId}: ${reason}`,
+      );
       return { revoked: false, reason };
     }
   }
