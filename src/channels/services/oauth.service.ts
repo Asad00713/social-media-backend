@@ -490,8 +490,10 @@ export class OAuthService {
   }
 
   /**
-   * A state's additionalData WITHOUT using the state up, or null for an
-   * unknown token. For the callback's early exits (the network answered with
+   * A state's additionalData, and who it was started for (workspace, user),
+   * WITHOUT using the state up, or null for an unknown token. The callback
+   * answers with a link page only when that workspace and user are the
+   * link's own (isStateOfLink). For the callback's early exits (the network answered with
    * an error, or validation failed): a state started from a connect link must
    * still send the visitor back to the link page. A used state is still read
    * (a replay lands on the link page), and so is an expired one: a visitor
@@ -500,11 +502,17 @@ export class OAuthService {
    * bounded (LINK_STATE_PEEK_GRACE_MS past expiry): the link page URL carries
    * the raw link token, so an old state must not keep answering with it.
    */
-  async peekState(
-    stateToken: string,
-  ): Promise<{ additionalData: Record<string, unknown> | null } | null> {
+  async peekState(stateToken: string): Promise<{
+    workspaceId: string;
+    userId: string;
+    additionalData: Record<string, unknown> | null;
+  } | null> {
     const [row] = await db
-      .select({ additionalData: oauthStates.additionalData })
+      .select({
+        workspaceId: oauthStates.workspaceId,
+        userId: oauthStates.userId,
+        additionalData: oauthStates.additionalData,
+      })
       .from(oauthStates)
       .where(
         and(
@@ -518,6 +526,8 @@ export class OAuthService {
       .limit(1);
     if (!row) return null;
     return {
+      workspaceId: row.workspaceId,
+      userId: row.userId,
       additionalData:
         (row.additionalData as Record<string, unknown> | null) ?? null,
     };

@@ -64,6 +64,7 @@ Facebook returns many Pages, so the callback parks the sign-in instead of connec
    - `?error=<message>&code=<CODE>`
 4. X (Twitter) runs OAuth 2.0, then the OAuth 1.0a media step; the 1.0a callback also returns to `/c/<token>`. If only the 1.0a step is declined the account stays connected and the redirect is `?error=...&code=NETWORK_DECLINED`.
 5. If the network answers with an error (the client cancelled), or the state fails validation, the callback still returns to `/c/<token>`. It looks the state up with `peekState`, which does not use it up and answers up to 1 hour past the state's expiry (`LINK_STATE_PEEK_GRACE_MS`), so a visitor who waited on the login screen is not sent to the team error page. Team connects (no `connectLinkId`) keep their old redirects.
+6. Only the public `start` writes a link state, always for the link's own workspace and sender. The signed-in `POST /channels/workspaces/:workspaceId/oauth/initiate` keeps only the team keys of `additionalData` (`intent`; see `src/channels/lib/team-oauth-state.ts`), so a team client cannot set `connectLinkId`. As a second check, the callback (every path, including the error and expired-state exits and the X OAuth 1.0a leg) treats a state whose `connectLinkId` names a link of another workspace or another sender as an invalid state: team error page, the code is never exchanged, and the redirect never carries `/c/<token>`.
 
 ## Error codes
 

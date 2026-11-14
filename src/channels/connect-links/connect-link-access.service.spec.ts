@@ -305,17 +305,24 @@ describe('ConnectLinkAccessService', () => {
     });
   });
 
-  describe('rawTokenOf', () => {
+  describe('linkOfState', () => {
+    const OWN = { workspaceId: WS, userId: USER };
+    const OTHER_WS = '66666666-6666-4666-8666-666666666666';
+    const OTHER_USER = '77777777-7777-4777-8777-777777777777';
+
     it("decrypts the link's token whatever its status (the callback must reach /c/<token>)", async () => {
       const tokenEncrypted = encrypt('the-raw-token');
       expect(
-        await setup({ link: { tokenEncrypted } }).service.rawTokenOf(LINK),
-      ).toBe('the-raw-token');
+        await setup({ link: { tokenEncrypted } }).service.linkOfState(
+          LINK,
+          OWN,
+        ),
+      ).toEqual({ status: 'own', rawToken: 'the-raw-token' });
       expect(
         await setup({
           link: { tokenEncrypted, revokedAt: BASE },
-        }).service.rawTokenOf(LINK),
-      ).toBe('the-raw-token');
+        }).service.linkOfState(LINK, OWN),
+      ).toEqual({ status: 'own', rawToken: 'the-raw-token' });
     });
 
     it('looks the link up by id: another id finds nothing', async () => {
@@ -323,18 +330,44 @@ describe('ConnectLinkAccessService', () => {
         link: { tokenEncrypted: encrypt('the-raw-token') },
       });
       expect(
-        await service.rawTokenOf('99999999-9999-4999-8999-999999999999'),
-      ).toBeNull();
+        await service.linkOfState('99999999-9999-4999-8999-999999999999', OWN),
+      ).toEqual({ status: 'missing' });
     });
 
-    it('a missing link or an unreadable token -> null', async () => {
-      expect(await setup({ link: null }).service.rawTokenOf(LINK)).toBeNull();
+    it('a missing link -> missing; an unreadable token -> own without a token', async () => {
+      expect(
+        await setup({ link: null }).service.linkOfState(LINK, OWN),
+      ).toEqual({ status: 'missing' });
       // a corrupt ciphertext (decrypt throws) is not a token
       expect(
         await setup({
           link: { tokenEncrypted: 'not:a-ciphertext' },
-        }).service.rawTokenOf(LINK),
-      ).toBeNull();
+        }).service.linkOfState(LINK, OWN),
+      ).toEqual({ status: 'own', rawToken: null });
+    });
+
+    it("a state of another workspace is not the link's: foreign, and no token", async () => {
+      const { service } = setup({
+        link: { tokenEncrypted: encrypt('the-raw-token') },
+      });
+      const out = await service.linkOfState(LINK, {
+        workspaceId: OTHER_WS,
+        userId: USER,
+      });
+      expect(out).toEqual({ status: 'foreign' });
+      expect(JSON.stringify(out)).not.toContain('the-raw-token');
+    });
+
+    it("a state of another user in the link's workspace is foreign too", async () => {
+      const { service } = setup({
+        link: { tokenEncrypted: encrypt('the-raw-token') },
+      });
+      expect(
+        await service.linkOfState(LINK, {
+          workspaceId: WS,
+          userId: OTHER_USER,
+        }),
+      ).toEqual({ status: 'foreign' });
     });
   });
 

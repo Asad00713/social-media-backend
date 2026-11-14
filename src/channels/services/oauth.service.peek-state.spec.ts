@@ -2,7 +2,7 @@ import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
 
 const where = jest.fn<void, [unknown]>();
-let rows: Array<{ additionalData: unknown }> = [];
+let rows: Array<Record<string, unknown>> = [];
 
 jest.mock('../../drizzle/db', () => ({
   db: {
@@ -35,9 +35,21 @@ describe('OAuthService.peekState', () => {
   });
 
   it('only reads a state by its token whose expiry is within the grace period', async () => {
-    rows = [{ additionalData: { connectLinkId: 'l1' } }];
+    rows = [
+      {
+        workspaceId: 'ws-1',
+        userId: 'u-1',
+        additionalData: { connectLinkId: 'l1' },
+      },
+    ];
     const peeked = await new OAuthService().peekState('tok-123');
-    expect(peeked).toEqual({ additionalData: { connectLinkId: 'l1' } });
+    // who the state was started for comes back too: the callback checks the
+    // link belongs to that workspace and sender before it answers /c/<token>
+    expect(peeked).toEqual({
+      workspaceId: 'ws-1',
+      userId: 'u-1',
+      additionalData: { connectLinkId: 'l1' },
+    });
 
     const { sql, params } = new PgDialect().sqlToQuery(
       where.mock.calls[0][0] as SQL,

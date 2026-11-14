@@ -24,13 +24,24 @@ import type {
   ConnectLinkStartDto,
 } from './dto/connect-link.dto';
 import { connectLinkError } from './lib/connect-link-errors';
-import { hashLinkToken, linkStatus } from './lib/connect-link-rules';
+import {
+  hashLinkToken,
+  isStateOfLink,
+  linkStatus,
+  type StateOwner,
+} from './lib/connect-link-rules';
 
 export interface ResolvedConnectLink {
   link: ChannelConnectLink;
   workspace: { id: string; name: string };
   sender: { id: string; name: string; email: string };
 }
+
+/** See ConnectLinkAccessService.linkOfState. */
+export type StateLink =
+  | { status: 'missing' }
+  | { status: 'foreign' }
+  | { status: 'own'; rawToken: string | null };
 
 /**
  * The recipient side of a connect link: what a client's browser (no login)
@@ -71,22 +82,33 @@ export class ConnectLinkAccessService {
   }
 
   /**
-   * The raw token of a link whatever its status, or null when there is no
-   * such link. The OAuth callback only has the link id, and must send the
-   * visitor back to `/c/<token>` even when the link died mid-flow (the page
-   * then shows why). Grants nothing by itself: every action still resolves.
+   * The link a stored OAuth state names, as the callback may use it:
+   * - `missing`: there is no such link;
+   * - `foreign`: the link is not the state's (another workspace or another
+   *   sender). Only the public start writes a link state, so this one is
+   *   forged: the callback refuses it as an invalid state and never answers
+   *   it with the link's URL;
+   * - `own`: the state's own link, with its raw token whatever its status
+   *   (null when the stored token cannot be read). The callback must send the
+   *   visitor back to `/c/<token>` even when the link died mid-flow (the page
+   *   then shows why). Grants nothing by itself: every action still resolves.
    */
-  async rawTokenOf(linkId: string): Promise<string | null> {
+  async linkOfState(linkId: string, owner: StateOwner): Promise<StateLink> {
     const [row] = await this.db
-      .select({ tokenEncrypted: channelConnectLinks.tokenEncrypted })
+      .select({
+        workspaceId: channelConnectLinks.workspaceId,
+        createdByUserId: channelConnectLinks.createdByUserId,
+        tokenEncrypted: channelConnectLinks.tokenEncrypted,
+      })
       .from(channelConnectLinks)
       .where(eq(channelConnectLinks.id, linkId))
       .limit(1);
-    if (!row) return null;
+    if (!row) return { status: 'missing' };
+    if (!isStateOfLink(row, owner)) return { status: 'foreign' };
     try {
-      return decrypt(row.tokenEncrypted);
+      return { status: 'own', rawToken: decrypt(row.tokenEncrypted) };
     } catch {
-      return null;
+      return { status: 'own', rawToken: null };
     }
   }
 

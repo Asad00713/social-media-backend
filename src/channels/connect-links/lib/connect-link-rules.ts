@@ -62,6 +62,30 @@ export function linkStatus(
   return 'open';
 }
 
+/** Who a stored OAuth state was started for (its workspace and user). */
+export interface StateOwner {
+  workspaceId: string;
+  userId: string;
+}
+
+/**
+ * Whether a stored OAuth state may act for this link. Only the public link
+ * start writes a link state, and it always writes the link's own workspace
+ * and sender. A team initiate cannot carry `connectLinkId` (the controller
+ * keeps only the team keys), so any other pairing is a forged state and is
+ * treated as invalid: it must never create a channel, notify the sender, or
+ * be answered with the link's `/c/<token>`.
+ */
+export function isStateOfLink(
+  link: Pick<ChannelConnectLink, 'workspaceId' | 'createdByUserId'>,
+  owner: StateOwner,
+): boolean {
+  return (
+    link.workspaceId === owner.workspaceId &&
+    link.createdByUserId === owner.userId
+  );
+}
+
 /** The ids a link may not offer, in the order given. */
 export function invalidNetworks(networks: string[]): string[] {
   const allowed = new Set<string>(CONNECT_LINK_NETWORKS);

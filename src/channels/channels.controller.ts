@@ -123,6 +123,11 @@ import {
 import { ConnectLinkConnectService } from './connect-links/connect-link-connect.service';
 import { connectLinkError } from './connect-links/lib/connect-link-errors';
 import {
+  isStateOfLink,
+  type StateOwner,
+} from './connect-links/lib/connect-link-rules';
+import { teamOAuthStateData } from './lib/team-oauth-state';
+import {
   callbackTarget,
   connectLinkIdOf,
   linkErrorCodeOf,
@@ -186,15 +191,20 @@ export class ChannelsController {
 
   /**
    * Where a callback for a connect-link state goes back to: `/c/<token>`.
-   * Null when the link row is gone (the caller still refuses the connect -
-   * resolveById answers LINK_NOT_FOUND).
+   * Null when the link row is gone, or when the link is not the state's own
+   * (another workspace or sender: a forged state never learns the link's
+   * URL). The main callback path refuses both; the early exits fall back to
+   * the team error page.
    */
   private async connectLinkTarget(
     linkId: string,
+    owner: StateOwner,
     frontendUrl: string,
   ): Promise<CallbackTarget | null> {
-    const raw = await this.connectLinkAccess.rawTokenOf(linkId);
-    return raw ? callbackTarget({ frontendUrl, linkRaw: raw }) : null;
+    const found = await this.connectLinkAccess.linkOfState(linkId, owner);
+    return found.status === 'own' && found.rawToken
+      ? callbackTarget({ frontendUrl, linkRaw: found.rawToken })
+      : null;
   }
 
   /**
@@ -212,7 +222,9 @@ export class ChannelsController {
     try {
       const peeked = await this.oauthService.peekState(state);
       const linkId = connectLinkIdOf(peeked?.additionalData);
-      return linkId ? await this.connectLinkTarget(linkId, frontendUrl) : null;
+      return peeked && linkId
+        ? await this.connectLinkTarget(linkId, peeked, frontendUrl)
+        : null;
     } catch (err) {
       this.logger.warn(
         `Connect-link lookup for an OAuth error failed: ${(err as Error).message}`,
@@ -254,6 +266,10 @@ export class ChannelsController {
    * row so that the callback can identify the flow type.
    *
    * Default intent is 'connect' (full base scopes for posting + inbox).
+   *
+   * This stores a TEAM state: only the team keys of `additionalData` are
+   * kept (TEAM_OAUTH_STATE_KEYS). `connectLinkId` in particular is dropped -
+   * only the public link start may write a link state.
    */
   @Post('workspaces/:workspaceId/oauth/initiate')
   @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
@@ -264,7 +280,10 @@ export class ChannelsController {
     @CurrentUser() user: { userId: string; email: string },
     @Body() dto: InitiateOAuthDto,
   ) {
-    return await this.oauthService.initiateOAuth(workspaceId, user.userId, dto);
+    return await this.oauthService.initiateOAuth(workspaceId, user.userId, {
+      ...dto,
+      additionalData: teamOAuthStateData(dto.additionalData),
+    });
   }
 
   /**
@@ -441,9 +460,23 @@ export class ChannelsController {
       // server-side, marked with the link, and answers on the link page.
       const connectLinkId = connectLinkIdOf(stateData.additionalData);
       if (connectLinkId) {
+        // Only the public start writes a link state, always for the link's
+        // own workspace and sender. A state naming another workspace's link
+        // (or another sender's) is forged: an invalid state, answered on the
+        // team error page - no code spent, no /c/<token>.
+        const found = await this.connectLinkAccess.linkOfState(
+          connectLinkId,
+          stateData,
+        );
+        if (found.status === 'foreign') {
+          throw new UnauthorizedException(
+            'Invalid OAuth state - not started from this link',
+          );
+        }
         fromLink = true;
-        target =
-          (await this.connectLinkTarget(connectLinkId, frontendUrl)) ?? target;
+        if (found.status === 'own' && found.rawToken) {
+          target = callbackTarget({ frontendUrl, linkRaw: found.rawToken });
+        }
         // The state was started for one network: it only completes there.
         if (stateData.platform !== platform) {
           throw new UnauthorizedException(
@@ -451,6 +484,14 @@ export class ChannelsController {
           );
         }
         linked = await this.connectLinkAccess.resolveById(connectLinkId);
+        // Defence in depth: the link just resolved must still be the state's.
+        if (!isStateOfLink(linked.link, stateData)) {
+          fromLink = false;
+          target = callbackTarget({ frontendUrl, linkRaw: null });
+          throw new UnauthorizedException(
+            'Invalid OAuth state - not started from this link',
+          );
+        }
         if (!linked.link.networks.includes(platform)) {
           throw connectLinkError(
             'NETWORK_NOT_OFFERED',
@@ -2747,11 +2788,17 @@ export class ChannelsController {
     // second (OAuth 1.0a) leg and ends on the link page too. The channel was
     // already created, marked and announced in the first leg.
     let target = callbackTarget({ frontendUrl, linkRaw: null });
-    const linkTargetOf = async (additionalData: unknown) => {
+    const linkTargetOf = async (oauthState: {
+      workspaceId: string;
+      userId: string;
+      additionalData: unknown;
+    }) => {
       const linkId = connectLinkIdOf(
-        additionalData as Record<string, unknown> | null,
+        oauthState.additionalData as Record<string, unknown> | null,
       );
-      return linkId ? this.connectLinkTarget(linkId, frontendUrl) : null;
+      return linkId
+        ? this.connectLinkTarget(linkId, oauthState, frontendUrl)
+        : null;
     };
 
     try {
@@ -2759,9 +2806,7 @@ export class ChannelsController {
       if (denied) {
         const deniedState =
           await this.channelService.getOAuthStateByToken(denied);
-        const linkTarget = deniedState
-          ? await linkTargetOf(deniedState.additionalData)
-          : null;
+        const linkTarget = deniedState ? await linkTargetOf(deniedState) : null;
         if (linkTarget) {
           return res.redirect(
             linkTarget.error(X_MEDIA_DECLINED_MESSAGE, NETWORK_DECLINED),
@@ -2787,7 +2832,7 @@ export class ChannelsController {
           `${frontendUrl}/channels/connect/error?error=OAuth%20state%20not%20found%20or%20expired`,
         );
       }
-      target = (await linkTargetOf(oauthState.additionalData)) ?? target;
+      target = (await linkTargetOf(oauthState)) ?? target;
 
       // Exchange for access tokens
       const credentials = await this.twitterService.getOAuth1AccessToken(

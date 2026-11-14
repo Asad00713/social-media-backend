@@ -80,6 +80,9 @@ interface BuildOpts {
   networks?: string[];
   /** The platform the stored state was started for; default = the path's. */
   statePlatform?: string;
+  /** Who the stored state was started for; default = the link's own. */
+  stateWorkspaceId?: string;
+  stateUserId?: string;
 }
 
 function build(opts: BuildOpts = {}) {
@@ -91,17 +94,23 @@ function build(opts: BuildOpts = {}) {
       : opts.additionalData;
 
   let pathPlatform = 'linkedin';
+  const stateWorkspaceId = opts.stateWorkspaceId ?? WS;
+  const stateUserId = opts.stateUserId ?? SENDER;
   const validateState = jest.fn(() =>
     Promise.resolve({
-      workspaceId: WS,
-      userId: SENDER,
+      workspaceId: stateWorkspaceId,
+      userId: stateUserId,
       platform: opts.statePlatform ?? pathPlatform,
       codeVerifier: null,
       redirectUrl: null,
       additionalData,
     }),
   );
-  const peekState = jest.fn().mockResolvedValue({ additionalData });
+  const peekState = jest.fn().mockResolvedValue({
+    workspaceId: stateWorkspaceId,
+    userId: stateUserId,
+    additionalData,
+  });
   const exchangeCodeForTokens = jest.fn().mockResolvedValue({
     accessToken: ACCESS,
     refreshToken: REFRESH,
@@ -134,13 +143,24 @@ function build(opts: BuildOpts = {}) {
     markOAuthStateUsed,
   };
 
-  const rawTokenOf = jest
-    .fn()
-    .mockResolvedValue(opts.rawToken === undefined ? TOKEN : opts.rawToken);
+  // The link row is LINK, in WS, sent by SENDER: a state for anyone else is
+  // not that link's (the service's own rule is pinned in its spec).
+  const linkOfState = jest.fn(
+    (_id: string, owner: { workspaceId: string; userId: string }) => {
+      if (opts.rawToken === null) return Promise.resolve({ status: 'missing' });
+      if (owner.workspaceId !== WS || owner.userId !== SENDER) {
+        return Promise.resolve({ status: 'foreign' });
+      }
+      return Promise.resolve({
+        status: 'own',
+        rawToken: opts.rawToken ?? TOKEN,
+      });
+    },
+  );
   const resolveById =
     opts.resolveById ??
     jest.fn().mockResolvedValue(resolvedLink(opts.networks));
-  c.connectLinkAccess = { rawTokenOf, resolveById };
+  c.connectLinkAccess = { linkOfState, resolveById };
 
   const channelConnect = {
     connectLinkedIn: jest.fn().mockResolvedValue({
@@ -250,7 +270,7 @@ function build(opts: BuildOpts = {}) {
     createOAuthState,
     getOAuthStateByToken,
     resolveById,
-    rawTokenOf,
+    linkOfState,
     channelConnect,
     channelConnected,
     store,
@@ -613,6 +633,105 @@ describe('ChannelsController.oauthCallback - connect link states', () => {
     expect(t.exchangeCodeForTokens).not.toHaveBeenCalled();
   });
 
+  describe('a state that names a link it does not belong to (forged)', () => {
+    // Only the public start writes a link state, always for the link's own
+    // workspace and sender. A state that names some other workspace's link
+    // (a team initiate that slipped connectLinkId in) is an invalid state:
+    // refused before the code is spent, and never answered with /c/<token>.
+    const OTHER_WS = '77777777-7777-4777-8777-777777777777';
+    const OTHER_USER = '88888888-8888-4888-8888-888888888888';
+
+    function expectTeamRefusal(t: ReturnType<typeof build>) {
+      const url = t.redirected();
+      expect(url.startsWith(`${FE}/channels/connect/error?`)).toBe(true);
+      expect(url).not.toContain('/c/');
+      expect(url).not.toContain(TOKEN);
+      expect(url).not.toContain(encodeURIComponent(TOKEN));
+      expect(t.exchangeCodeForTokens).not.toHaveBeenCalled();
+      expect(t.createChannel).not.toHaveBeenCalled();
+      expect(t.channelConnect.connectLinkedIn).not.toHaveBeenCalled();
+      expect(t.channelConnected).not.toHaveBeenCalled();
+    }
+
+    it('a link state of another workspace is refused before the code exchange', async () => {
+      const t = build({ stateWorkspaceId: OTHER_WS, stateUserId: OTHER_USER });
+      await t.callback('linkedin');
+      expectTeamRefusal(t);
+      expect(t.redirected()).toContain('Invalid%20OAuth%20state');
+      expect(t.linkOfState).toHaveBeenCalledWith(
+        LINK,
+        expect.objectContaining({ workspaceId: OTHER_WS, userId: OTHER_USER }),
+      );
+      // the link itself is never resolved for it
+      expect(t.resolveById).not.toHaveBeenCalled();
+    });
+
+    it('a link state of the right workspace but another sender is refused too', async () => {
+      const t = build({ stateUserId: OTHER_USER });
+      await t.callback('linkedin');
+      expectTeamRefusal(t);
+    });
+
+    it('auto-create networks (instagram) never create in either workspace', async () => {
+      const t = build({ stateWorkspaceId: OTHER_WS, stateUserId: OTHER_USER });
+      await t.callback('instagram');
+      expectTeamRefusal(t);
+      expect(
+        t.c.instagramService.exchangeForLongLivedToken,
+      ).not.toHaveBeenCalled();
+    });
+
+    it('a network ?error= on a forged state keeps the team error page (no /c/<token>)', async () => {
+      const t = build({ stateWorkspaceId: OTHER_WS, stateUserId: OTHER_USER });
+      await t.callback('linkedin', {
+        error: 'x',
+        error_description: 'y',
+        state: STATE,
+      });
+      expect(t.redirected()).toBe(
+        `${FE}/channels/connect/error?error=x&description=y`,
+      );
+      expect(t.peekState).toHaveBeenCalledWith(STATE);
+    });
+
+    it('a forged state that fails validation keeps the team error page', async () => {
+      const t = build({ stateWorkspaceId: OTHER_WS, stateUserId: OTHER_USER });
+      t.validateState.mockRejectedValue(new Error('OAuth state already used'));
+      await t.callback('linkedin');
+      const url = t.redirected();
+      expect(url.startsWith(`${FE}/channels/connect/error?`)).toBe(true);
+      expect(url).not.toContain('/c/');
+    });
+
+    it('defence in depth: a resolved link of another workspace is refused even if the lookup passed', async () => {
+      const other = resolvedLink();
+      (other.link as { workspaceId: string }).workspaceId = OTHER_WS;
+      const t = build({ resolveById: jest.fn().mockResolvedValue(other) });
+      await t.callback('linkedin');
+      expectTeamRefusal(t);
+    });
+
+    it('a forged OAuth 1.0a state is answered on the team pages', async () => {
+      const t = build();
+      t.getOAuthStateByToken.mockResolvedValue({
+        workspaceId: OTHER_WS,
+        userId: OTHER_USER,
+        codeVerifier: 'oauth1-secret',
+        additionalData: { channelId: '21', connectLinkId: LINK },
+      });
+      await t.c.twitterOAuth1Callback(
+        undefined,
+        undefined,
+        'oauth1-token',
+        t.res,
+      );
+      const url = t.redirected();
+      expect(url).toBe(
+        `${FE}/channels/connect/error?error=User%20denied%20Twitter%20access`,
+      );
+    });
+  });
+
   describe('twitter (OAuth 2.0 then the OAuth 1.0a chain)', () => {
     it('marks the channel, carries connectLinkId into the OAuth1 state', async () => {
       const t = build();
@@ -642,6 +761,7 @@ describe('ChannelsController.oauthCallback - connect link states', () => {
       const t = build();
       t.getOAuthStateByToken.mockResolvedValue({
         workspaceId: WS,
+        userId: SENDER,
         codeVerifier: 'oauth1-secret',
         additionalData: { channelId: '21', connectLinkId: LINK },
       });
@@ -697,6 +817,7 @@ describe('ChannelsController.oauthCallback - connect link states', () => {
       const t = build();
       t.getOAuthStateByToken.mockResolvedValue({
         workspaceId: WS,
+        userId: SENDER,
         additionalData: { channelId: '21', connectLinkId: LINK },
       });
       await t.c.twitterOAuth1Callback(
@@ -714,6 +835,7 @@ describe('ChannelsController.oauthCallback - connect link states', () => {
       const t = build();
       t.getOAuthStateByToken.mockResolvedValue({
         workspaceId: WS,
+        userId: SENDER,
         codeVerifier: 'oauth1-secret',
         additionalData: { channelId: '21' },
       });
