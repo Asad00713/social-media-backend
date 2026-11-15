@@ -87,6 +87,7 @@ function make() {
     { onChannelConnected: jest.fn(async () => undefined) } as never,
     {} as never,
     { ownerOf: jest.fn(async () => 'owner-1') } as never,
+    {} as never,
   );
   // Not under test here: the billing counter and the orphaned-target re-link.
   (svc as any).incrementChannelCount = jest.fn(async () => undefined);

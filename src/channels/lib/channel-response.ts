@@ -6,6 +6,7 @@ import {
 } from '../../drizzle/schema/channels.schema';
 import type { ChannelResponseDto } from '../dto/channel.dto';
 import type { PersonRef } from './channel-health';
+import { mustDeleteOnDisconnect } from './disconnect-policy';
 import { personOf } from './people';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -90,5 +91,7 @@ export function toChannelResponse(
     connectedVia: channel.addedViaLinkAt
       ? { kind: 'link', email: channel.addedViaLinkEmail ?? null }
       : null,
+    disconnectedAt: channel.disconnectedAt ?? null,
+    keepsHistoryOnDisconnect: !mustDeleteOnDisconnect(channel.platform),
   };
 }

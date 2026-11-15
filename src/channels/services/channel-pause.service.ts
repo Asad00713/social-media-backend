@@ -1,4 +1,10 @@
-import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Inject,
+  Injectable,
+  Logger,
+  NotFoundException,
+} from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import type { Queue } from 'bullmq';
 import { and, eq, isNull, sql } from 'drizzle-orm';
@@ -6,7 +12,16 @@ import { DRIZZLE } from '../../drizzle/drizzle.module';
 import type { DbType } from '../../drizzle/db';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { QUEUES } from '../../queue/queue.module';
-import { enqueueHeldPost, isJobPending } from '../../posts/lib/held-targets';
+import {
+  enqueueHeldPost,
+  HELD_REASON,
+  holdTarget,
+  isHeld,
+  isJobPending,
+  isMissedRelease,
+  releaseTarget,
+} from '../../posts/lib/held-targets';
+import { posts, type PostTarget } from '../../drizzle/schema/posts.schema';
 import type {
   PauseChannelResponse,
   ResumeChannelResponse,
@@ -14,6 +29,18 @@ import type {
 import { loadPeople, personOf } from '../lib/people';
 
 type Row = Record<string, unknown>;
+
+/** What bringing a disconnected channel back did to its held posts. */
+export interface ReleaseHeldResult {
+  /** Will go out: at their own time, or now (see overdueCount). */
+  resumedCount: number;
+  /** Of resumedCount: their time passed during the disconnect; going now. */
+  overdueCount: number;
+  /** Missed by more than the grace: failed as missed, not sent late. */
+  missedCount: number;
+  /** Still held because the channel is also paused (resume sends them). */
+  stillPausedCount: number;
+}
 
 function rowsOf(result: unknown): Row[] {
   const r = result as { rows?: Row[] } | Row[];
@@ -182,6 +209,98 @@ export class ChannelPauseService {
     }));
   }
 
+  /**
+   * A disconnected channel is back (an undo, or a reconnect that revived the
+   * row). For every scheduled post holding a target on it:
+   *  - its publish job still waits (the post's time is ahead): the hold
+   *    markers come off this channel's targets, so the Planner shows it as
+   *    scheduled again, and that job sends it at its time;
+   *  - no job waits and its time is ahead or passed at most `graceMs` ago:
+   *    re-enqueued (at its time, or at once - `overdueCount`), the pause
+   *    resume rule;
+   *  - its time passed more than `graceMs` ago: enqueued as missed, which
+   *    fails the target with MISSED_HELD_MESSAGE - never published late
+   *    without anyone asking.
+   * A channel that is also paused keeps every post held: the targets are
+   * relabelled as paused, and resuming sends them.
+   *
+   * Call after the row is no longer 'disconnected' (a publish job racing
+   * this then sees the channel back and does not re-hold).
+   */
+  async releaseAfterReconnect(
+    workspaceId: string,
+    channelId: number,
+    graceMs: number,
+    now: Date = new Date(),
+  ): Promise<ReleaseHeldResult> {
+    const result: ReleaseHeldResult = {
+      resumedCount: 0,
+      overdueCount: 0,
+      missedCount: 0,
+      stillPausedCount: 0,
+    };
+    const [channel] = await this.db
+      .select({ pausedAt: socialMediaChannels.pausedAt })
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.id, channelId),
+          eq(socialMediaChannels.workspaceId, workspaceId),
+        ),
+      )
+      .limit(1);
+    if (!channel) return result;
+    const isPaused = !!channel.pausedAt;
+    const id = String(channelId);
+
+    const held = await this.heldPostsOf(workspaceId, channelId);
+    for (const post of held) {
+      const jobWaits = await isJobPending(this.publishingQueue, post.jobId);
+      if (isPaused || jobWaits) {
+        // Rewrite this channel's markers: a pause keeps the hold (as a
+        // pause); a waiting job sends the post itself, so no hold remains.
+        await this.db.transaction(async (tx) => {
+          const [row] = await tx
+            .select({ targets: posts.targets })
+            .from(posts)
+            .where(eq(posts.id, post.id))
+            .for('update');
+          if (!row) return;
+          const targets = (row.targets ?? []).map((t: PostTarget) =>
+            String(t.channelId) === id && isHeld(t)
+              ? isPaused
+                ? holdTarget(t, now, HELD_REASON)
+                : releaseTarget(t)
+              : t,
+          );
+          await tx
+            .update(posts)
+            .set({ targets, updatedAt: now })
+            .where(eq(posts.id, post.id));
+        });
+        if (isPaused) result.stillPausedCount++;
+        else result.resumedCount++;
+        continue;
+      }
+      if (isMissedRelease(post.scheduledAt, graceMs, now)) {
+        await enqueueHeldPost(this.publishingQueue, this.db, post, now, {
+          missed: true,
+        });
+        result.missedCount++;
+        continue;
+      }
+      await enqueueHeldPost(this.publishingQueue, this.db, post, now);
+      result.resumedCount++;
+      if (post.scheduledAt && post.scheduledAt.getTime() <= now.getTime()) {
+        result.overdueCount++;
+      }
+    }
+    this.logger.log(
+      `Channel ${channelId} is back: ${result.resumedCount} post(s) resume (${result.overdueCount} overdue), ${result.missedCount} missed, ${result.stillPausedCount} still paused`,
+    );
+    return result;
+  }
+
   private async assertChannel(
     workspaceId: string,
     channelId: number,
@@ -190,7 +309,10 @@ export class ChannelPauseService {
       throw new NotFoundException('Channel not found');
     }
     const [row] = await this.db
-      .select({ id: socialMediaChannels.id })
+      .select({
+        id: socialMediaChannels.id,
+        connectionStatus: socialMediaChannels.connectionStatus,
+      })
       .from(socialMediaChannels)
       .where(
         and(
@@ -200,5 +322,15 @@ export class ChannelPauseService {
       )
       .limit(1);
     if (!row) throw new NotFoundException('Channel not found');
+    // A disconnected channel already holds its posts; the undo or a
+    // reconnect releases them, not a pause or a resume.
+    if (row.connectionStatus === 'disconnected') {
+      throw new ConflictException({
+        statusCode: 409,
+        message: 'This channel is disconnected. Reconnect it first.',
+        error: 'Conflict',
+        code: 'CHANNEL_DISCONNECTED',
+      });
+    }
   }
 }

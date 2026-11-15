@@ -24,6 +24,8 @@ export const QUEUES = {
   INBOX_LATER: 'inbox-later',
   INBOX_RESYNC: 'inbox-resync',
   REPORTS: 'reports',
+  // Finalize of a soft-disconnected channel when its undo window closes.
+  CHANNEL_DISCONNECT: 'channel-disconnect',
 } as const;
 
 @Module({
@@ -82,6 +84,7 @@ export const QUEUES = {
       { name: QUEUES.INBOX_LATER },
       { name: QUEUES.INBOX_RESYNC },
       { name: QUEUES.REPORTS },
+      { name: QUEUES.CHANNEL_DISCONNECT },
     ),
   ],
   providers: [RateLimiterService],

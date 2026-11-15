@@ -14,7 +14,16 @@ export const GOOGLE_PLATFORMS: readonly string[] = [
   'google_calendar',
 ];
 
-const GOOGLE_REVOKE_URL = 'https://oauth2.googleapis.com/revoke';
+/**
+ * A channel still holds the shared grant unless it was disconnected and its
+ * undo window has closed (finalized). One disconnected but still undoable
+ * counts: it may come back, so the revoke waits for its own finalize.
+ */
+const STILL_HOLDS_GRANT = sql.raw(
+  "NOT (connection_status = 'disconnected' AND disconnect_finalized_at IS NOT NULL)",
+);
+
+const GOOGLE_REVOKE_URL ='https://oauth2.googleapis.com/revoke';
 
 export interface RevokeOutcome {
   revoked: boolean;
@@ -213,6 +222,7 @@ export class GoogleOauthRevokeService {
             AND connect_link_id IS NOT NULL
             AND id <> ${channelId}
             AND platform IN (${googlePlatformList})
+            AND ${STILL_HOLDS_GRANT}
         `);
       } else if (connectedByUserId) {
         countRows = await this.rowsOf(sql`
@@ -222,6 +232,7 @@ export class GoogleOauthRevokeService {
             AND connect_link_id IS NULL
             AND id <> ${channelId}
             AND platform IN (${googlePlatformList})
+            AND ${STILL_HOLDS_GRANT}
         `);
       } else {
         countRows = await this.rowsOf(sql`
@@ -231,6 +242,7 @@ export class GoogleOauthRevokeService {
             AND connect_link_id IS NULL
             AND id <> ${channelId}
             AND platform IN (${googlePlatformList})
+            AND ${STILL_HOLDS_GRANT}
         `);
       }
       remaining = Number(countRows[0]?.count ?? 0);

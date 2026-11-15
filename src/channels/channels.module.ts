@@ -10,6 +10,8 @@ import { PublicConnectLinksController } from './connect-links/public-connect-lin
 import { EmailModule } from '../email/email.module';
 import { ChannelPauseService } from './services/channel-pause.service';
 import { ChannelPostsCleanupService } from './services/channel-posts-cleanup.service';
+import { ChannelDisconnectService } from './services/channel-disconnect.service';
+import { ChannelDisconnectProcessor } from './processors/channel-disconnect.processor';
 import { ChannelSettingsService } from './services/channel-settings.service';
 import { ChannelSummaryService } from './services/channel-summary.service';
 import { NetworkRequestsService } from './services/network-requests.service';
@@ -112,6 +114,8 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
     ConnectLinkConnectService,
     FacebookSelectionStore,
     ChannelPostsCleanupService,
+    ChannelDisconnectService,
+    ChannelDisconnectProcessor,
     ChannelSettingsService,
     ChannelSummaryService,
     NetworkRequestsService,
