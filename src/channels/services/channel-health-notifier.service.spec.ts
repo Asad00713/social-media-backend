@@ -245,11 +245,14 @@ describe('ChannelHealthNotifier.expired', () => {
 
 describe('ChannelHealthNotifier.markExpired', () => {
   const FIELDS = { lastError: 'Token refresh failed', updatedAt: AT };
+  /** Lets the email work markExpired started in the background finish. */
+  const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
 
   it('flips the status once and emails only on the flip', async () => {
     const { notifier, notify, updates, flipped } = setup({ n: 2 });
     flipped.push({ ...CHANNEL, id: '5' });
     await notifier.markExpired(5, FIELDS);
+    await settle();
 
     expect(updates).toHaveLength(1);
     expect(updates[0].set).toEqual({
@@ -269,12 +272,47 @@ describe('ChannelHealthNotifier.markExpired', () => {
   it('sends nothing but still writes the fields when it was already expired', async () => {
     const { notifier, notify, updates } = setup();
     await notifier.markExpired(5, FIELDS);
+    await settle();
 
     expect(updates).toHaveLength(2);
     expect(updates[1].set).toEqual(updates[0].set);
     const q = new PgDialect().sqlToQuery(updates[1].where);
     expect(q.sql).not.toContain('<>');
     expect(notify.notify).not.toHaveBeenCalled();
+  });
+
+  it('returns once the status is written, without waiting for the email', async () => {
+    const { notifier, notify, recipients, updates, flipped } = setup({ n: 2 });
+    flipped.push({ ...CHANNEL, id: '5' });
+    let answerAdmins!: (admins: unknown[]) => void;
+    recipients.admins.mockReturnValueOnce(
+      new Promise((resolve) => (answerAdmins = resolve)),
+    );
+
+    // A slow lookup (Redis, the queue, the database) never holds the caller.
+    await notifier.markExpired(5, FIELDS);
+    expect(updates).toHaveLength(1);
+    expect(notify.notify).not.toHaveBeenCalled();
+
+    answerAdmins([OWNER, ADMIN]);
+    await settle();
+    expect(notify.notify).toHaveBeenCalledTimes(2);
+  });
+
+  it('logs a failed email by channel id and still resolves', async () => {
+    const { notifier, notify, flipped } = setup({ n: 2 });
+    flipped.push({ ...CHANNEL, id: '5' });
+    notify.notify.mockRejectedValue(new Error('queue down'));
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+
+    await expect(notifier.markExpired(5, FIELDS)).resolves.toBeUndefined();
+    await settle();
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringMatching(/channel 5 failed: queue down/),
+    );
+    warn.mockRestore();
   });
 });
 

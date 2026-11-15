@@ -93,7 +93,8 @@ export class ChannelHealthNotifier {
    * writer that actually flips it (not one that finds it already expired)
    * sends the email. `fields` are the writer's own columns (`lastError`, ...);
    * they are written either way, as each writer did before. A database error
-   * is the caller's, as it was; the email never throws.
+   * is the caller's, as it was. The email runs in the background, so a slow
+   * Redis, queue or lookup never delays a publish; it never throws.
    */
   async markExpired(channelId: number, fields: ExpiredFields): Promise<void> {
     const set = { ...fields, connectionStatus: 'expired' };
@@ -121,10 +122,11 @@ export class ChannelHealthNotifier {
         .where(eq(socialMediaChannels.id, channelId));
       return;
     }
-    await this.expired(
-      { ...flipped[0], id: Number(flipped[0].id) },
+    const channel = { ...flipped[0], id: Number(flipped[0].id) };
+    void this.expired(
+      channel,
       fields.updatedAt instanceof Date ? fields.updatedAt : new Date(),
-    );
+    ).catch((err) => this.fail('expired', channel, err));
   }
 
   /**
