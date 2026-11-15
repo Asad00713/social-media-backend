@@ -17,6 +17,12 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { setRefreshCookie } from '../auth/refresh-cookie';
 import { AccountSecurityService } from './account-security.service';
 import { ChangePasswordDto } from './dto/change-password.dto';
+import {
+  ConfirmEmailChangeDto,
+  RequestEmailChangeDto,
+} from './dto/email-change.dto';
+import { EmailChangeService } from './email-change.service';
+import type { PublicUser } from './users.service';
 
 /** The caller, as the JWT strategy attaches it. */
 interface Caller {
@@ -32,6 +38,11 @@ function perUserTracker(req: Record<string, unknown>): string {
   return 'pw:' + (req.user as Caller).userId;
 }
 
+/** The same, for the email change (spec §7.1: 5 an hour per user). */
+function emailChangeTracker(req: Record<string, unknown>): string {
+  return 'email:' + (req.user as Caller).userId;
+}
+
 /**
  * The signed-in person's own account security. Registered in AuthModule, not
  * UsersModule: it mints tokens through AuthService, and AuthModule already
@@ -43,6 +54,7 @@ export class AccountSecurityController {
   constructor(
     private readonly security: AccountSecurityService,
     private readonly auth: AuthService,
+    private readonly emailChange: EmailChangeService,
   ) {}
 
   /**
@@ -76,5 +88,37 @@ export class AccountSecurityController {
       await this.auth.generateRefreshToken(caller.userId, caller.email),
     );
     return { accessToken };
+  }
+
+  /**
+   * Starts an email change: a code goes to the new address (A3). 202, because
+   * nothing changes until the code comes back. 5 an hour per user.
+   */
+  @Post('email-change')
+  @HttpCode(HttpStatus.ACCEPTED)
+  @UseGuards(ThrottlerGuard)
+  @Throttle({
+    default: { limit: 5, ttl: 3_600_000, getTracker: emailChangeTracker },
+  })
+  requestEmailChange(
+    @CurrentUser() caller: Caller,
+    @Body() dto: RequestEmailChangeDto,
+  ): Promise<{ pendingEmail: string; expiresAt: string }> {
+    return this.emailChange.request(caller.userId, dto);
+  }
+
+  /** Switches the email when the code matches, and tells the old address (A4). */
+  @Post('email-change/confirm')
+  @HttpCode(HttpStatus.OK)
+  confirmEmailChange(
+    @CurrentUser() caller: Caller,
+    @Body() dto: ConfirmEmailChangeDto,
+    @Ip() ip: string | undefined,
+    @Headers('user-agent') userAgent: string | undefined,
+  ): Promise<PublicUser> {
+    return this.emailChange.confirm(caller.userId, dto.code, {
+      ip: ip ?? null,
+      userAgent: userAgent ?? null,
+    });
   }
 }

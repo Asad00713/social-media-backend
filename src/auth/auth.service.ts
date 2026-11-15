@@ -584,6 +584,23 @@ export class AuthService {
       }
     }
 
+    // The answer stays the same whether or not the email went out, so it
+    // cannot reveal the account.
+    await this.issuePasswordReset(user);
+
+    return { message: successMessage };
+  }
+
+  /**
+   * Issues a fresh one-hour reset token (replacing any earlier one, which stops
+   * working) and sends A2 with it to the account's address. Shared by "Forgot
+   * password" and the "This wasn't me" security link. Never throws for a
+   * failed send; returns whether the email went out.
+   */
+  async issuePasswordReset(user: {
+    id: string;
+    email: string;
+  }): Promise<boolean> {
     // Generate a secure token
     const rawToken = generateSecureToken(32);
     const hashedToken = hash(rawToken);
@@ -600,8 +617,7 @@ export class AuthService {
     );
 
     // Send email with raw token. Inline, never queued: queued job data (the
-    // reset link included) would sit in Redis and Bull Board for a day. The
-    // answer stays the same either way, so it cannot reveal the account.
+    // reset link included) would sit in Redis and Bull Board for a day.
     const result = await this.emailOutbox.sendNow({
       template: resetPasswordTemplate,
       props: {
@@ -617,8 +633,7 @@ export class AuthService {
         `Password reset email for user ${user.id} failed: ${result.error ?? 'unknown error'}`,
       );
     }
-
-    return { message: successMessage };
+    return result.success;
   }
 
   /**

@@ -83,6 +83,16 @@ export const users = pgTable('users', {
   // a password change or reset and by the "This wasn't me" security link.
   sessionsRevokedAt: timestamp('sessions_revoked_at', { withTimezone: true }),
 
+  // An email change waiting for its code (migration 0071): the new address,
+  // the sha256 of the code mailed to it, when the code expires, and the wrong
+  // guesses so far. `email` itself changes only when the code comes back.
+  pendingEmail: varchar('pending_email', { length: 255 }),
+  pendingEmailCodeHash: varchar('pending_email_code_hash', { length: 64 }),
+  pendingEmailExpiresAt: timestamp('pending_email_expires_at', {
+    withTimezone: true,
+  }),
+  pendingEmailAttempts: integer('pending_email_attempts').default(0).notNull(),
+
   // Last accessed workspace for redirect on login
   lastAccessedWorkspaceId: uuid('last_accessed_workspace_id'),
 

@@ -18,6 +18,8 @@ import { GoogleAuthController } from './google/google-auth.controller';
 import { AccountSecurityController } from '../users/account-security.controller';
 import { KnownDevicesService } from './devices/known-devices.service';
 import { WelcomeEmailService } from './welcome-email.service';
+import { EmailSecurityController } from '../email/public/email-security.controller';
+import { SecurityActionsService } from '../email/public/security-actions.service';
 
 @Module({
   imports: [UsersModule, PassportModule, JwtModule.register({}), EmailModule],
@@ -39,6 +41,9 @@ import { WelcomeEmailService } from './welcome-email.service';
     // has JwtModule and imports UsersModule, so the guard's deps resolve
     // cleanly here without needing to re-import them into AppModule.
     { provide: APP_GUARD, useClass: AllowlistGuard },
+    // The email security links (EmailSecurityController) secure an account
+    // through AuthService and AccountSecurityService, so they live here too.
+    SecurityActionsService,
   ],
   // AccountSecurityController (POST /users/me/password) mints tokens through
   // AuthService, so it is registered here: UsersModule cannot import AuthModule
@@ -47,6 +52,7 @@ import { WelcomeEmailService } from './welcome-email.service';
     AuthController,
     GoogleAuthController,
     AccountSecurityController,
+    EmailSecurityController,
   ],
 })
 export class AuthModule {}

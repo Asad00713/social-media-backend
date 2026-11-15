@@ -9,6 +9,7 @@ import type { Response } from 'express';
 import type { AuthService } from '../auth/auth.service';
 import { AccountSecurityController } from './account-security.controller';
 import type { AccountSecurityService } from './account-security.service';
+import type { EmailChangeService } from './email-change.service';
 
 describe('AccountSecurityController.changePassword', () => {
   function setup(refusal?: Error) {
@@ -33,6 +34,7 @@ describe('AccountSecurityController.changePassword', () => {
     const controller = new AccountSecurityController(
       security as unknown as AccountSecurityService,
       auth as unknown as AuthService,
+      {} as EmailChangeService,
     );
     return { controller, security, auth, response, calls };
   }
@@ -83,7 +85,7 @@ describe('AccountSecurityController.changePassword', () => {
   });
 });
 
-describe('POST /users/me/password throttle', () => {
+describe('per-user throttles on POST /users/me/password and /email-change', () => {
   let storage: ThrottlerStorageService;
   let guard: ThrottlerGuard;
 
@@ -100,13 +102,16 @@ describe('POST /users/me/password throttle', () => {
   // The in-memory storage holds one expiry timer per key.
   afterEach(() => storage.onApplicationShutdown());
 
-  function attempt(userId: string, ip: string): Promise<boolean> {
+  function attempt(
+    userId: string,
+    ip: string,
+    route: 'changePassword' | 'requestEmailChange' = 'changePassword',
+  ): Promise<boolean> {
     const req = { user: { userId, email: 'a@b.co' }, ip, headers: {} };
     const res = { header: jest.fn() };
     const context = {
       // The handler reference is only read for its @Throttle metadata.
-      // eslint-disable-next-line @typescript-eslint/unbound-method
-      getHandler: () => AccountSecurityController.prototype.changePassword,
+      getHandler: () => AccountSecurityController.prototype[route],
       getClass: () => AccountSecurityController,
       switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }),
     } as unknown as ExecutionContext;
@@ -122,5 +127,19 @@ describe('POST /users/me/password throttle', () => {
     );
     // Someone else behind the same IP is not affected.
     await expect(attempt('u2', '1.1.1.1')).resolves.toBe(true);
+  });
+
+  it('the email change counts per user too: two IPs share one 5-an-hour budget', async () => {
+    for (const ip of ['1.1.1.1', '2.2.2.2', '1.1.1.1', '2.2.2.2', '1.1.1.1']) {
+      await expect(attempt('u1', ip, 'requestEmailChange')).resolves.toBe(true);
+    }
+    await expect(
+      attempt('u1', '3.3.3.3', 'requestEmailChange'),
+    ).rejects.toBeInstanceOf(ThrottlerException);
+    await expect(attempt('u2', '1.1.1.1', 'requestEmailChange')).resolves.toBe(
+      true,
+    );
+    // Its own bucket: the password route is untouched.
+    await expect(attempt('u1', '1.1.1.1')).resolves.toBe(true);
   });
 });

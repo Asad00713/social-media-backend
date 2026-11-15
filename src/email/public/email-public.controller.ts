@@ -24,11 +24,13 @@ import {
   EmailTokensService,
   type UnsubscribeClaims,
 } from '../tokens/email-tokens.service';
-import { confirmPage, donePage, invalidLinkPage } from './email-pages';
-
-/** The pages carry no script and load nothing; nothing may frame the button. */
-const PAGE_CSP =
-  "default-src 'none'; style-src 'unsafe-inline'; form-action 'self'; frame-ancestors 'none'";
+import {
+  confirmPage,
+  donePage,
+  invalidLinkPage,
+  sendPage,
+  setPageHeaders,
+} from './email-pages';
 
 /** What the GET and the POST both need to know about a verified link. */
 interface UnsubscribeTarget {
@@ -189,19 +191,12 @@ export class EmailPublicController {
     return target.workspaceName ?? 'your account';
   }
 
-  private noStore(res: Response): void {
-    res.setHeader('Cache-Control', 'private, no-store');
-    res.setHeader('X-Robots-Tag', 'noindex');
-    res.setHeader('Referrer-Policy', 'no-referrer');
-  }
-
   /** First line of an HTML handler, so even a 500 carries them. */
   private htmlHeaders(res: Response): void {
-    this.noStore(res);
-    res.setHeader('Content-Security-Policy', PAGE_CSP);
+    setPageHeaders(res);
   }
 
   private html(res: Response, status: number, body: string): void {
-    res.status(status).type('text/html; charset=utf-8').send(body);
+    sendPage(res, status, body);
   }
 }

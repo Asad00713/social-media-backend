@@ -5,6 +5,7 @@ import { MediaModule } from '../media/media.module';
 import { EmailModule } from '../email/email.module';
 import { GeoipService } from '../auth/services/geoip.service';
 import { AccountSecurityService } from './account-security.service';
+import { EmailChangeService } from './email-change.service';
 
 @Module({
   // For R2, which issues the presigned URL a profile picture is uploaded to.
@@ -13,9 +14,14 @@ import { AccountSecurityService } from './account-security.service';
   // NotificationsModule.
   imports: [MediaModule, EmailModule],
   // GeoipService is stateless; AuthModule keeps its own instance.
-  providers: [UsersService, AccountSecurityService, GeoipService],
+  providers: [
+    UsersService,
+    AccountSecurityService,
+    EmailChangeService,
+    GeoipService,
+  ],
   // AccountSecurityController lives in AuthModule (it needs AuthService).
   controllers: [UsersController],
-  exports: [UsersService, AccountSecurityService],
+  exports: [UsersService, AccountSecurityService, EmailChangeService],
 })
 export class UsersModule {}
