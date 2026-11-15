@@ -41,6 +41,7 @@ import { ResendWebhookController } from './webhooks/resend-webhook.controller';
     PostFailureBatchService,
   ],
   exports: [
+    REDIS_CLIENT,
     EmailService,
     EmailOutboxService,
     AppLinks,

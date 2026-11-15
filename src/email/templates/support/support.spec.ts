@@ -157,6 +157,16 @@ describe('support templates', () => {
       expect(bare.text).not.toContain('Company');
     });
 
+    it('caps a long name in the quote meta as in the subject', async () => {
+      const r = await renderEmail(
+        contactEnquiryTemplate,
+        { ...enquiry, name: 'N'.repeat(200) },
+        ctx,
+      );
+      expect(r.html).toContain(`${'N'.repeat(80)} · Publishing`);
+      expect(r.html).not.toContain('N'.repeat(81) + ' ·');
+    });
+
     it('escapes every sender-supplied field', async () => {
       const r = await renderEmail(
         contactEnquiryTemplate,

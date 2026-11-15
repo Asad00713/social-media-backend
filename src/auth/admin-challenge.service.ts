@@ -150,10 +150,11 @@ export class AdminChallengeService {
 
     // Without a mail provider configured locally the send above is a no-op,
     // which would leave nothing to type. This is the only way in during local
-    // development, and it is gated on the environment rather than a flag so it
-    // cannot be switched on in production by accident.
-    if (this.configService.get<string>('NODE_ENV') !== 'production') {
-      this.logger.debug(`Admin login code for ${user.email}: ${otp}`);
+    // development, and it is gated on the environment rather than a flag. It
+    // is development only, not "anything but production": staging logs are
+    // shared, and must never hold a code or the address it was sent to.
+    if (this.configService.get<string>('NODE_ENV') === 'development') {
+      this.logger.debug(`Admin login code: ${otp}`);
     }
   }
 

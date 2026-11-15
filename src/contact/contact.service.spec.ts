@@ -4,6 +4,7 @@ import { AppLinks } from '../email/links/app-links';
 import type { EmailOutboxService } from '../email/queue/email-outbox.service';
 import { renderEmail } from '../email/render/render-email';
 import type { AnyTemplateDef } from '../email/templates/types';
+import type { ContactAckLimiter } from './contact-ack-limiter';
 import { ContactService } from './contact.service';
 import type { CreateContactDto } from './dto';
 
@@ -35,6 +36,7 @@ interface Sent {
 interface Doubles {
   sendNow?: jest.Mock;
   enqueue?: jest.Mock;
+  allow?: jest.Mock;
 }
 
 function makeService(
@@ -44,13 +46,15 @@ function makeService(
   const sendNow =
     doubles.sendNow ?? jest.fn().mockResolvedValue({ success: true });
   const enqueue = doubles.enqueue ?? jest.fn().mockResolvedValue(undefined);
+  const allow = doubles.allow ?? jest.fn().mockResolvedValue(true);
   const config = { get: (key: string) => env[key] } as unknown as ConfigService;
   const service = new ContactService(
     { sendNow, enqueue } as unknown as EmailOutboxService,
     new AppLinks(config),
+    { allow } as unknown as ContactAckLimiter,
     config,
   );
-  return { service, sendNow, enqueue };
+  return { service, sendNow, enqueue, allow };
 }
 
 const sentOf = (mock: jest.Mock): Sent => (mock.mock.calls as Sent[][])[0][0];
@@ -248,6 +252,35 @@ describe('ContactService', () => {
     expect(sendNow).not.toHaveBeenCalled();
     expect(enqueue).not.toHaveBeenCalled();
     expect(logged.join('\n')).toMatch(new RegExp(`#${REFERENCE_RE}`));
+  });
+
+  it('skips only the acknowledgement when the recipient is over their cap', async () => {
+    const { service, sendNow, enqueue, allow } = makeService(undefined, {
+      allow: jest.fn().mockResolvedValue(false),
+    });
+
+    const result = await service.submit(makeDto());
+
+    // The enquiry still reaches support and the sender sees success.
+    expect(result).toEqual({ delivered: true });
+    expect(sendNow).toHaveBeenCalledTimes(1);
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(allow).toHaveBeenCalledWith('ada@example.com');
+    const { reference } = sentOf(sendNow).props as { reference: string };
+    expect(logged.join('\n')).toContain(`#${reference}`);
+    expect(logged.join('\n')).not.toContain('ada@example.com');
+  });
+
+  it('does not count a recipient for a honeypot hit or a lost enquiry', async () => {
+    const spam = makeService();
+    await spam.service.submit(makeDto({ website: 'spam' }));
+    const lost = makeService(undefined, {
+      sendNow: jest.fn().mockResolvedValue({ success: false, error: 'boom' }),
+    });
+    await lost.service.submit(makeDto());
+
+    expect(spam.allow).not.toHaveBeenCalled();
+    expect(lost.allow).not.toHaveBeenCalled();
   });
 
   it('never logs the sender address or the message', async () => {

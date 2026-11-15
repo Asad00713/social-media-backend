@@ -19,6 +19,7 @@ function make(
     user?: object | undefined;
     recent?: object | undefined;
     sendNow?: jest.Mock;
+    nodeEnv?: string;
   } = {},
 ) {
   const user = 'user' in options ? options.user : ADMIN;
@@ -38,7 +39,10 @@ function make(
   const service = new AdminChallengeService(
     db as unknown as DbType,
     {} as JwtService,
-    { get: () => 'production' } as unknown as ConfigService,
+    {
+      get: (key: string) =>
+        key === 'NODE_ENV' ? (options.nodeEnv ?? 'production') : undefined,
+    } as unknown as ConfigService,
     { sendNow } as unknown as EmailOutboxService,
   );
   return { service, db, values, sendNow };
@@ -107,6 +111,31 @@ describe('AdminChallengeService.requestChallenge', () => {
 
     expect(logged.join('\n')).toContain('Resend is down');
     expect(logged.join('\n')).not.toMatch(/\b\d{6}\b/);
+  });
+
+  it.each(['production', 'staging', 'test', undefined])(
+    'does not log the code when NODE_ENV is %s',
+    async (nodeEnv) => {
+      const { service } = make({ nodeEnv: nodeEnv as string });
+
+      await service.requestChallenge(ADMIN.email);
+
+      expect(logged.join('\n')).not.toMatch(/\b\d{6}\b/);
+    },
+  );
+
+  it('logs the code in development, without the address', async () => {
+    const { service, sendNow } = make({ nodeEnv: 'development' });
+
+    await service.requestChallenge(ADMIN.email);
+
+    const { code } = (
+      sendNow.mock.calls as { props: { code: string } }[][]
+    )[0][0].props;
+    const line = logged.find((l) => l.includes(code));
+    expect(line).toBeDefined();
+    expect(line).not.toContain(ADMIN.email);
+    expect(line).not.toContain('schedura.test');
   });
 
   it('sends nothing for an address that is not an active super admin', async () => {

@@ -9,6 +9,7 @@ import {
   contactReceivedTemplate,
   MESSAGE_PREVIEW_CHARS,
 } from '../email/templates/support/contact-received';
+import { ContactAckLimiter } from './contact-ack-limiter';
 import { newContactReference } from './contact-reference';
 import type { ContactTopic, CreateContactDto } from './dto';
 
@@ -50,6 +51,7 @@ export class ContactService {
   constructor(
     private readonly outbox: EmailOutboxService,
     private readonly links: AppLinks,
+    private readonly ackLimiter: ContactAckLimiter,
     config: ConfigService,
   ) {
     this.inbox =
@@ -113,6 +115,16 @@ export class ContactService {
         `Contact form: failed to deliver enquiry #${reference}: ${toUs.error ?? 'unknown error'}`,
       );
       return { delivered: false };
+    }
+
+    // The form is public, so the acknowledgement could be aimed at a stranger:
+    // an address gets at most 2 an hour. Over the cap, or with Redis down, only
+    // the ack is skipped; the enquiry is already delivered.
+    if (!(await this.ackLimiter.allow(dto.email))) {
+      this.logger.warn(
+        `Contact form: acknowledgement for enquiry #${reference} skipped (recipient limit or limiter unavailable)`,
+      );
+      return { delivered: true };
     }
 
     // Best-effort. A failed acknowledgement must not lose us the enquiry we

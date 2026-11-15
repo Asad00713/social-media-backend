@@ -47,7 +47,7 @@ export const contactEnquiryTemplate = defineTemplate<ContactEnquiryProps>({
           ...(p.company ? [{ label: 'Company', value: p.company }] : []),
         ]}
       />
-      <Quote meta={`${p.name} · ${p.topic}`}>
+      <Quote meta={`${subjectName(p.name)} · ${p.topic}`}>
         <MessageText text={p.message} />
       </Quote>
       <Paragraph tone="muted">
