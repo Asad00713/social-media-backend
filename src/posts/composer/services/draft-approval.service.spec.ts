@@ -246,6 +246,20 @@ describe('DraftApprovalService emails', () => {
       });
     });
 
+    it('names a Google Business Profile channel like the other emails do', async () => {
+      const h = setup();
+      h.row.targets = [
+        { channelId: '7', platform: 'google_business', status: 'draft' },
+      ];
+      h.tables.set(socialMediaChannels, []);
+      await ask(h);
+      expect(h.queued[0].data.props).toMatchObject({
+        platform: 'google_business',
+        platformName: 'Google Business Profile',
+        handle: 'Google Business Profile',
+      });
+    });
+
     it('shows Not scheduled yet for a draft with no time', async () => {
       const h = setup({ scheduledAt: null });
       await ask(h);
@@ -430,6 +444,25 @@ describe('DraftApprovalService emails', () => {
       );
     });
 
+    it('does not warn about an unreadable time when no email would be queued', async () => {
+      const onlyRequester = setup({ admins: [PEOPLE[REQUESTER]] });
+      await (onlyRequester.service as any).notifyApprovers(
+        WS,
+        onlyRequester.row,
+        REQUESTER,
+        'not a date',
+      );
+      const noWorkspace = setup();
+      noWorkspace.recipients.workspace.mockResolvedValue(null);
+      await (noWorkspace.service as any).notifyApprovers(
+        WS,
+        noWorkspace.row,
+        REQUESTER,
+        'not a date',
+      );
+      expect(warn).not.toHaveBeenCalled();
+    });
+
     it('never fails the request when the recipient lookup throws', async () => {
       const h = setup();
       h.recipients.admins.mockRejectedValue(new Error('db gone'));
@@ -519,6 +552,27 @@ describe('DraftApprovalService emails', () => {
       expect(warn).toHaveBeenCalledWith(
         expect.stringContaining(`post ${POST} is unreadable`),
       );
+    });
+
+    it('names a Google Business Profile channel like the other emails do', async () => {
+      const h = setup();
+      h.row.targets = [
+        { channelId: '7', platform: 'google_business', status: 'draft' },
+      ];
+      pending(h);
+      await approve(h);
+      expect(h.queued[0].data.props).toMatchObject({
+        platformName: 'Google Business Profile',
+        goesOutSentence:
+          'It goes out on Google Business Profile Oct 26, 2026 at 6:30 PM GMT+5. Nothing else to do.',
+      });
+    });
+
+    it('does not warn about an unreadable time when the workspace is gone', async () => {
+      const h = setup();
+      h.recipients.workspace.mockResolvedValue(null);
+      await (h.service as any).notifyRequester(WS, h.row, ADMIN, REQUESTER, '');
+      expect(warn).not.toHaveBeenCalled();
     });
 
     it('turning the post_approved bell off stops the bell but not the email', async () => {

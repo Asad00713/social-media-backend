@@ -20,12 +20,12 @@ import {
 import { users } from '../../../drizzle/schema/users.schema';
 import { AppLinks } from '../../../email/links/app-links';
 import { formatWhen } from '../../../email/links/format-when';
+import { networkName } from '../../../email/render/components/post-card';
 import { APPROVAL_NEEDED } from '../../../email/templates/publishing/approval-needed';
 import {
   NOT_SCHEDULED,
   POST_APPROVED,
 } from '../../../email/templates/publishing/post-approved';
-import { platformNameOf } from '../../../insights/lib/post-detail';
 import { NotificationEmitterService } from '../../../notifications/notification-emitter.service';
 import { NotifyService } from '../../../notifications/notify.service';
 import { RecipientsService } from '../../../notifications/recipients.service';
@@ -415,7 +415,7 @@ export class DraftApprovalService {
   ): Promise<PostCardFacts> {
     const target = (row.targets ?? [])[0];
     const platform = target?.platform ?? '';
-    const platformName = platform ? platformNameOf(platform) : 'your channel';
+    const platformName = platform ? networkName(platform) : 'your channel';
     const [handle, campaignName] = await Promise.all([
       this.handleOf(workspaceId, target?.channelId, platformName),
       this.campaignNameOf(workspaceId, row.metadata?.campaignId),
@@ -492,17 +492,17 @@ export class DraftApprovalService {
   ): Promise<void> {
     try {
       const stamp = stampOf(requestedAt);
-      if (stamp === null) {
-        this.logger.warn(
-          `approval request time of post ${row.id} is unreadable: emails skipped`,
-        );
-      }
       const approvers = (await this.recipients.admins(workspaceId)).filter(
         (r) => ALLOW_SELF_APPROVAL || r.id !== actorId,
       );
       if (approvers.length === 0) return;
       const ws = await this.recipients.workspace(workspaceId);
       if (!ws) return;
+      if (stamp === null) {
+        this.logger.warn(
+          `approval request time of post ${row.id} is unreadable: emails skipped`,
+        );
+      }
       const [requester, card] = await Promise.all([
         this.recipients.user(actorId),
         this.postCard(workspaceId, row, ws.timezone),
@@ -568,13 +568,13 @@ export class DraftApprovalService {
     if (requesterId === approverId) return;
     try {
       const stamp = stampOf(approvedAt);
+      const ws = await this.recipients.workspace(workspaceId);
+      if (!ws) return;
       if (stamp === null) {
         this.logger.warn(
           `approval time of post ${row.id} is unreadable: email skipped`,
         );
       }
-      const ws = await this.recipients.workspace(workspaceId);
-      if (!ws) return;
       const [approver, card] = await Promise.all([
         this.recipients.user(approverId),
         this.postCard(workspaceId, row, ws.timezone),
