@@ -186,7 +186,7 @@ export class NotificationEmitterService {
       userId,
       'payment_failed',
       'Payment Failed',
-      `Your payment of $${amount.toFixed(2)} failed${reason ? `: ${reason}` : '. Please update your payment method.'}.`,
+      `Your payment of $${amount.toFixed(2)} failed${reason ? `: ${reason}.` : '. Please update your payment method.'}`,
       {
         priority: 'high',
         metadata: { amount, reason, ...extra?.metadata },
