@@ -275,6 +275,19 @@ export class AnalyticsEventsGateway
     this.server.to(this.workspaceRoom(workspaceId)).emit(eventName, payload);
   }
 
+  /**
+   * To every socket on the namespace. Only for payloads with no workspace
+   * data: every socket here passed the JWT check in handleConnection (a
+   * socket without a valid token is disconnected), but it may belong to any
+   * user of any workspace.
+   */
+  emitToAll<K extends AnalyticsEventName>(
+    eventName: K,
+    payload: AnalyticsEventPayloadMap[K],
+  ): void {
+    this.server.emit(eventName, payload);
+  }
+
   private workspaceRoom(workspaceId: string): string {
     return `workspace:${workspaceId}`;
   }

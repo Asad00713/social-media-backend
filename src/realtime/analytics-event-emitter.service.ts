@@ -45,6 +45,24 @@ export class AnalyticsEventEmitter {
   }
 
   /**
+   * To every connected client, whatever its workspace. Only for events whose
+   * payload holds no workspace data (the platform status).
+   */
+  broadcast<K extends AnalyticsEventName>(
+    eventName: K,
+    payload: AnalyticsEventPayloadMap[K],
+  ): void {
+    this.internalBus.emit(eventName, payload);
+    try {
+      this.gateway.emitToAll(eventName, payload);
+    } catch (err) {
+      this.logger.error(
+        `Failed to broadcast ${eventName}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
    * Subscribe to an analytics event by name. The handler receives the typed
    * payload. Used internally by `NotificationDispatcherService`.
    */

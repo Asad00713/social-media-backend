@@ -1,4 +1,8 @@
 import type {
+  PlatformState,
+  PlatformStatusReason,
+} from '../../drizzle/schema/platform-status.schema';
+import type {
   ComposerPublishStateChangedPayload,
   ComposerDraftStatusChangedPayload,
 } from './composer-events.types';
@@ -36,7 +40,8 @@ export type AnalyticsEventName =
   | 'lead.created'
   | 'lead.delivered'
   | 'maestro.bridge.message'
-  | 'calendar.external.changed';
+  | 'calendar.external.changed'
+  | 'platform.status.changed';
 
 export interface ChannelSnapshotUpdatedPayload {
   workspaceId: string;
@@ -253,6 +258,24 @@ export interface CalendarExternalChangedPayload {
   deleted: number;
 }
 
+/**
+ * A publishing platform's shown state changed (platform-status module).
+ * Broadcast to every connected client: it carries no workspace data, and
+ * each client knows which platforms its workspace uses.
+ */
+export interface PlatformStatusChangedPayload {
+  platform: string;
+  status: PlatformState;
+  previousStatus: PlatformState;
+  /** When it entered `status`. */
+  since: string;
+  reason: PlatformStatusReason | null;
+  /** What it means for the customer's posts. */
+  message: string;
+  /** The incident that set this state, if one did. */
+  incident: { id: string; title: string } | null;
+}
+
 export type AnalyticsEventPayloadMap = {
   'channel.snapshot.updated': ChannelSnapshotUpdatedPayload;
   'post.metrics.updated': PostMetricsUpdatedPayload;
@@ -280,4 +303,5 @@ export type AnalyticsEventPayloadMap = {
   'lead.delivered': LeadDeliveredPayload;
   'maestro.bridge.message': MaestroBridgeMessagePayload;
   'calendar.external.changed': CalendarExternalChangedPayload;
+  'platform.status.changed': PlatformStatusChangedPayload;
 };
