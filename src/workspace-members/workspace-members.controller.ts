@@ -3,7 +3,10 @@ import {
   Controller,
   Delete,
   Get,
+  HttpCode,
+  HttpStatus,
   Param,
+  ParseUUIDPipe,
   Patch,
   Post,
   Query,
@@ -60,6 +63,17 @@ export class WorkspaceMembersController {
     @CurrentUser() user: { userId: string; email: string },
   ) {
     return this.membersService.getPendingInvitations(workspaceId, user.userId);
+  }
+
+  // The accept link of one pending invitation (Copy invite link)
+  @Get(':workspaceId/invitations/:invitationId/link')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('team:manage')
+  getInvitationLink(
+    @Param('workspaceId') workspaceId: string,
+    @Param('invitationId', ParseUUIDPipe) invitationId: string,
+  ) {
+    return this.membersService.getInvitationLink(workspaceId, invitationId);
   }
 
   // Cancel invitation
@@ -147,5 +161,22 @@ export class WorkspaceMembersController {
     @CurrentUser() user: { userId: string; email: string },
   ) {
     return this.membersService.removeMember(workspaceId, memberId, user.userId);
+  }
+
+  // Undo a removal: within 15 minutes, by someone else, seat permitting
+  @Post(':workspaceId/members/:memberId/restore')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('team:manage')
+  restoreMember(
+    @Param('workspaceId') workspaceId: string,
+    @Param('memberId', ParseUUIDPipe) memberId: string,
+    @CurrentUser() user: { userId: string; email: string },
+  ) {
+    return this.membersService.restoreMember(
+      workspaceId,
+      memberId,
+      user.userId,
+    );
   }
 }

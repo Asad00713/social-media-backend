@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
-import { and, eq, sql } from 'drizzle-orm';
+import { and, eq, gt, sql } from 'drizzle-orm';
 import * as crypto from 'crypto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { users, workspace, workspaceInvitation } from 'src/drizzle/schema';
@@ -20,6 +20,40 @@ import { EmailService } from 'src/email/email.service';
 import { UsersService } from 'src/users/users.service';
 import { WorkspaceRoleService } from './workspace-role.service';
 import { normalizeEmail } from 'src/users/normalize-email';
+
+/**
+ * How long a removal can be undone (POST members/:memberId/restore). Long
+ * enough for the Team page's Undo toast and a second thought; short enough
+ * that a removal means removed.
+ */
+export const MEMBER_RESTORE_WINDOW_MS = 15 * 60 * 1000;
+
+const RESTORE_WINDOW_MESSAGE =
+  'A removal can only be undone within 15 minutes. Invite them again instead.';
+
+/** A 409 with a machine-readable `code` the frontend reads. */
+function memberConflict(code: string, message: string): ConflictException {
+  return new ConflictException({
+    statusCode: 409,
+    error: 'Conflict',
+    code,
+    message,
+  });
+}
+
+/**
+ * The row without its `token`. The token is the bearer secret of the accept
+ * link; it leaves the server only in the invitation email, through
+ * GET invitations/:invitationId/link (team:manage), and to the invitee
+ * themselves on GET invitations/me — never in a team list or a member row.
+ */
+function withoutToken<T extends { token?: unknown }>(
+  row: T,
+): Omit<T, 'token'> {
+  const rest: Partial<T> = { ...row };
+  delete rest.token;
+  return rest as Omit<T, 'token'>;
+}
 
 @Injectable()
 export class WorkspaceMembersService {
@@ -193,31 +227,10 @@ export class WorkspaceMembersService {
     }
 
     // seat gate: reserved = accepted members + pending invitations
-    let membersLimit = 0;
-    let membersCount = 0;
-    try {
-      const usage = await this.usageService.getWorkspaceUsage(workspaceId);
-      membersLimit = usage.membersLimit;
-      membersCount = usage.membersCount;
-    } catch (error) {
-      // If no usage record exists, treat as no seats available (matches
-      // enforceMemberLimit's 404-tolerance style, but conservatively for a gate)
-      if (error.status !== 404) {
-        throw error;
-      }
-    }
-
-    const pending = await this.db.query.workspaceInvitation.findMany({
-      where: and(
-        eq(workspaceInvitation.workspaceId, workspaceId),
-        eq(workspaceInvitation.status, 'PENDING'),
-      ),
-    });
-    const reserved = membersCount + pending.length;
-    if (reserved + invites.length > membersLimit) {
-      const available = Math.max(0, membersLimit - reserved);
+    const free = await this.freeSeats(workspaceId);
+    if (invites.length > free) {
       throw new ForbiddenException(
-        `SEAT_LIMIT_EXCEEDED: ${available} seat(s) left, ${invites.length} requested`,
+        `SEAT_LIMIT_EXCEEDED: ${Math.max(0, free)} seat(s) left, ${invites.length} requested`,
       );
     }
 
@@ -225,16 +238,22 @@ export class WorkspaceMembersService {
     const results: {
       email: string;
       status: 'invited' | 'skipped';
+      /** The new invitation, for the Invitation sent toast's Copy invite link. */
+      invitationId?: string;
       reason?: string;
     }[] = [];
     for (const item of invites) {
       try {
-        await this.inviteMember(
+        const created = await this.inviteMember(
           workspaceId,
           { email: item.email, role: item.role } as any,
           currentUserId,
         );
-        results.push({ email: item.email, status: 'invited' });
+        results.push({
+          email: item.email,
+          status: 'invited',
+          invitationId: created.invitation.id,
+        });
       } catch (e: any) {
         results.push({
           email: item.email,
@@ -355,7 +374,7 @@ export class WorkspaceMembersService {
     return {
       message: 'Invitation accepted successfully',
       workspace: invitation.workspace,
-      member: acceptedInvitation,
+      member: withoutToken(acceptedInvitation),
     };
   }
 
@@ -423,6 +442,9 @@ export class WorkspaceMembersService {
         eq(workspaceInvitation.workspaceId, workspaceId),
         eq(workspaceInvitation.status, 'PENDING'),
       ),
+      // The token is the accept link's secret: Copy invite link reads it
+      // through getInvitationLink, never from this list.
+      columns: { token: false },
       with: {
         inviter: {
           columns: {
@@ -551,6 +573,7 @@ export class WorkspaceMembersService {
         eq(workspaceInvitation.workspaceId, workspaceId),
         eq(workspaceInvitation.status, 'ACCEPTED'),
       ),
+      columns: { token: false },
       with: {
         user: {
           columns: {
@@ -625,7 +648,7 @@ export class WorkspaceMembersService {
       .where(eq(workspaceInvitation.id, memberId))
       .returning();
 
-    return updatedMember;
+    return withoutToken(updatedMember);
   }
 
   // Remove member (only ACCEPTED members)
@@ -665,9 +688,30 @@ export class WorkspaceMembersService {
       );
     }
 
-    await this.db
-      .delete(workspaceInvitation)
-      .where(eq(workspaceInvitation.id, memberId));
+    // Soft removal: the row is kept as REMOVED so the removal can be undone
+    // (restoreMember). Every reader filters on ACCEPTED or PENDING, so a
+    // REMOVED row grants no access, holds no seat and blocks no re-invite.
+    // Conditional on ACCEPTED, so two concurrent removals decrement once.
+    const now = new Date();
+    const [removed] = await this.db
+      .update(workspaceInvitation)
+      .set({
+        status: 'REMOVED',
+        removedAt: now,
+        removedBy: currentUserId,
+        updatedAt: now,
+      })
+      .where(
+        and(
+          eq(workspaceInvitation.id, memberId),
+          eq(workspaceInvitation.status, 'ACCEPTED'),
+        ),
+      )
+      .returning({ id: workspaceInvitation.id });
+
+    if (!removed) {
+      throw new NotFoundException('Member not found in this workspace');
+    }
 
     // Track usage - decrement member count
     try {
@@ -682,6 +726,166 @@ export class WorkspaceMembersService {
     }
 
     return { message: 'Member removed successfully' };
+  }
+
+  /**
+   * Undo of a removal (the Team page's Undo toast). Only a member removed by
+   * someone else (leaving on your own is final) within
+   * MEMBER_RESTORE_WINDOW_MS, and only when a seat is free, counted exactly
+   * as for an invitation. Restores ACCEPTED with the same role.
+   *
+   * Removal sends no notification or email, so nothing the removed person
+   * was told needs taking back; they simply have access again.
+   */
+  async restoreMember(
+    workspaceId: string,
+    memberId: string,
+    currentUserId: string,
+  ) {
+    const row = await this.db.query.workspaceInvitation.findFirst({
+      where: and(
+        eq(workspaceInvitation.workspaceId, workspaceId),
+        eq(workspaceInvitation.id, memberId),
+        eq(workspaceInvitation.status, 'REMOVED'),
+      ),
+    });
+
+    // Leaving on your own (removed_by = the member) is not undoable.
+    if (!row || !row.userId || row.removedBy === row.userId) {
+      throw new NotFoundException('Removed member not found in this workspace');
+    }
+
+    const windowStart = new Date(Date.now() - MEMBER_RESTORE_WINDOW_MS);
+    if (!row.removedAt || row.removedAt <= windowStart) {
+      throw memberConflict('RESTORE_WINDOW_PASSED', RESTORE_WINDOW_MESSAGE);
+    }
+
+    // Re-invited and already accepted since: there is nothing to restore.
+    if (await this.isUserMember(workspaceId, row.userId)) {
+      throw memberConflict(
+        'ALREADY_MEMBER',
+        'They are already a member of this workspace',
+      );
+    }
+
+    // A pending re-invitation to the same address is replaced by the restore
+    // (deleted below), so it does not count against the seat it would take.
+    const email = normalizeEmail(row.email);
+    const free = await this.freeSeats(workspaceId, email);
+    if (free < 1) {
+      throw memberConflict(
+        'SEAT_LIMIT_EXCEEDED',
+        'SEAT_LIMIT_EXCEEDED: 0 seat(s) left, 1 requested',
+      );
+    }
+
+    // Conditional on still REMOVED and inside the window: two concurrent
+    // restores (or one racing the window's end) restore and count once.
+    const [restored] = await this.db
+      .update(workspaceInvitation)
+      .set({
+        status: 'ACCEPTED',
+        removedAt: null,
+        removedBy: null,
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(workspaceInvitation.id, row.id),
+          eq(workspaceInvitation.status, 'REMOVED'),
+          gt(workspaceInvitation.removedAt, windowStart),
+        ),
+      )
+      .returning();
+
+    if (!restored) {
+      throw memberConflict('RESTORE_WINDOW_PASSED', RESTORE_WINDOW_MESSAGE);
+    }
+
+    await this.db
+      .delete(workspaceInvitation)
+      .where(
+        and(
+          eq(workspaceInvitation.workspaceId, workspaceId),
+          eq(workspaceInvitation.status, 'PENDING'),
+          sql`lower(${workspaceInvitation.email}) = ${email}`,
+        ),
+      );
+
+    try {
+      await this.usageService.incrementMemberCount(
+        workspaceId,
+        currentUserId,
+        row.userId,
+      );
+    } catch (error) {
+      // Log but don't fail if usage tracking fails (as accept and remove do)
+      console.error('Failed to track member restore:', error);
+    }
+
+    return { message: 'Member restored', member: withoutToken(restored) };
+  }
+
+  /**
+   * The accept URL of a pending, unexpired invitation of this workspace, for
+   * the Team page's Copy invite link: the URL its email carries
+   * (EmailService.invitationAcceptUrl). 404 for anything else: an accepted,
+   * rejected, expired or removed row, or another workspace's.
+   */
+  async getInvitationLink(workspaceId: string, invitationId: string) {
+    const invitation = await this.db.query.workspaceInvitation.findFirst({
+      where: and(
+        eq(workspaceInvitation.workspaceId, workspaceId),
+        eq(workspaceInvitation.id, invitationId),
+        eq(workspaceInvitation.status, 'PENDING'),
+      ),
+      columns: { token: true, expiresAt: true },
+    });
+
+    if (!invitation || invitation.expiresAt.getTime() <= Date.now()) {
+      throw new NotFoundException('Invitation not found or no longer pending');
+    }
+
+    return {
+      url: this.emailService.invitationAcceptUrl(invitation.token),
+      expiresAt: invitation.expiresAt,
+    };
+  }
+
+  /**
+   * Seats left: the member limit (with purchased extras) minus accepted
+   * members and pending invitations, which reserve a seat each.
+   * `exceptPendingTo` leaves out pending invitations to that normalized
+   * address. No usage record reads as no seats, conservatively for a gate.
+   */
+  private async freeSeats(
+    workspaceId: string,
+    exceptPendingTo?: string,
+  ): Promise<number> {
+    let membersLimit = 0;
+    let membersCount = 0;
+    try {
+      const usage = await this.usageService.getWorkspaceUsage(workspaceId);
+      membersLimit = usage.membersLimit;
+      membersCount = usage.membersCount;
+    } catch (error) {
+      if (error.status !== 404) {
+        throw error;
+      }
+    }
+
+    const pending = await this.db.query.workspaceInvitation.findMany({
+      where: and(
+        eq(workspaceInvitation.workspaceId, workspaceId),
+        eq(workspaceInvitation.status, 'PENDING'),
+      ),
+      columns: { email: true },
+    });
+    const reservedByPending = exceptPendingTo
+      ? pending.filter((p) => normalizeEmail(p.email) !== exceptPendingTo)
+          .length
+      : pending.length;
+    return membersLimit - (membersCount + reservedByPending);
   }
 
   // Public: minimal invitation info by token (no auth, no sensitive fields)
@@ -701,7 +905,12 @@ export class WorkspaceMembersService {
       inviterName: invitation.inviter?.name ?? null,
       invitedEmail: invitation.email,
       role: invitation.role as 'ADMIN' | 'MEMBER' | 'GUEST',
-      status: invitation.status as 'PENDING' | 'ACCEPTED' | 'REJECTED' | 'EXPIRED',
+      status: invitation.status as
+        | 'PENDING'
+        | 'ACCEPTED'
+        | 'REJECTED'
+        | 'EXPIRED'
+        | 'REMOVED',
       expired: new Date() > invitation.expiresAt,
     };
   }
