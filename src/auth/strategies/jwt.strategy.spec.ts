@@ -149,6 +149,7 @@ describe('the email the strategies hand on comes from the row, not the claim', (
       { record: jest.fn().mockResolvedValue(undefined) } as never,
       none,
       none,
+      none,
     );
 
     // What /auth/refresh does with the strategy's result.
