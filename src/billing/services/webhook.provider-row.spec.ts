@@ -270,10 +270,12 @@ function makeDb(): any {
       const target = tableName(t);
       let patch: Row = {};
       let match: Predicate = () => true;
-      const apply = (): void => {
-        for (const row of rowsOf(target)) {
-          if (match(row)) Object.assign(row, patch);
-        }
+      /** The rows the WHERE matched, as one atomic step like Postgres's. */
+      let updated: Row[] = [];
+      const apply = (): Row[] => {
+        const hit = rowsOf(target).filter((row) => match(row));
+        for (const row of hit) Object.assign(row, patch);
+        return hit;
       };
       const chain: any = {
         set: (v: Row) => {
@@ -282,9 +284,10 @@ function makeDb(): any {
         },
         where: (c: unknown) => {
           match = predicateFrom(c);
-          apply();
+          updated = apply();
           return chain;
         },
+        returning: () => Promise.resolve(updated.map((row) => ({ ...row }))),
         then: (resolve: (v: unknown) => unknown) => {
           apply();
           return Promise.resolve([]).then(resolve);
@@ -811,13 +814,41 @@ describe('billing emails', () => {
     expect(billingEmail.planChanged).toHaveBeenCalledTimes(2);
   });
 
+  it('two failure webhooks arriving together send one "moved to Free"', async () => {
+    seedInvoice();
+    const service = makeService();
+    await fail(service, 1);
+    await fail(service, 2);
+
+    // The 3rd and 4th failures race: each reads the episode as unrestricted.
+    await Promise.all([fail(service, 3), fail(service, 4)]);
+
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+    // The restriction itself is still applied by both.
+    expect(lookup.applyLimitsToAllWorkspaces).toHaveBeenCalledTimes(2);
+    expect(
+      rowsOf('failed_payments').every((r) => r.featuresRestricted === true),
+    ).toBe(true);
+  });
+
   it('applyPaymentFailureRestrictions emails payment_restricted with a period-stable key', async () => {
     const service = makeService();
+    const failure = (id: number): Row => ({
+      id,
+      subscriptionId: SUBSCRIPTION_ID,
+      resolved: false,
+      featuresRestricted: false,
+      createdAt: new Date(),
+    });
 
+    rowsOf('failed_payments').push(failure(1));
     await (service as any).applyPaymentFailureRestrictions(
       SUBSCRIPTION_ID,
       'user-1',
     );
+    // A second episode in the same billing period.
+    rowsOf('failed_payments')[0].resolved = true;
+    rowsOf('failed_payments').push(failure(2));
     await (service as any).applyPaymentFailureRestrictions(
       SUBSCRIPTION_ID,
       'user-1',

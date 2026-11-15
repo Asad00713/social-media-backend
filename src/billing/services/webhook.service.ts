@@ -606,13 +606,11 @@ export class WebhookService {
     const unresolvedFailures = recentFailures.filter((f) => !f.resolved);
 
     // If max attempts exceeded, apply restrictions. The "moved to Free" email
-    // goes out once per episode: failures that already carry the restriction
-    // flag say it was sent.
+    // goes out once per episode; applyPaymentFailureRestrictions decides that.
     if (unresolvedFailures.length >= this.MAX_FAILED_ATTEMPTS) {
       await this.applyPaymentFailureRestrictions(
         subscription[0].id,
         subscription[0].userId,
-        unresolvedFailures.some((f) => f.featuresRestricted),
       );
     }
 
@@ -807,7 +805,6 @@ export class WebhookService {
   private async applyPaymentFailureRestrictions(
     subscriptionId: number,
     userId: string,
-    alreadyRestricted = false,
   ): Promise<void> {
     this.logger.warn(
       `Applying payment failure restrictions to user ${userId}'s workspaces`,
@@ -863,21 +860,50 @@ export class WebhookService {
 
     // Every failure past the third lands here, but the person is told once
     // per episode. The flag lives on the unresolved failures (a payment that
-    // succeeds resolves them), so the next episode starts clean.
-    if (alreadyRestricted) return;
-    await db
+    // succeeds resolves them), so the next episode starts clean. The flip is
+    // one conditional UPDATE, not a read and a write, so two failures
+    // arriving together cannot both send.
+    const flipped = await db
       .update(failedPayments)
       .set({ featuresRestricted: true, restrictionDate: new Date() })
       .where(
         and(
           eq(failedPayments.subscriptionId, subscriptionId),
           eq(failedPayments.resolved, false),
+          eq(failedPayments.featuresRestricted, false),
         ),
-      );
+      )
+      .returning({ id: failedPayments.id });
+    if (!(await this.startsEpisode(subscriptionId, flipped))) return;
 
     await this.safely('payment restricted', () =>
       this.emailPaymentRestricted(subscriptionId, userId),
     );
+  }
+
+  /**
+   * Whether this flip restricted the episode, rather than a later failure of
+   * an episode already restricted (that one flips only its own new row): it
+   * holds the episode's first unresolved failure. Of two concurrent flips,
+   * only one can take that row, because Postgres re-checks
+   * `features_restricted = false` on it after the other commits.
+   */
+  private async startsEpisode(
+    subscriptionId: number,
+    flipped: { id: number }[],
+  ): Promise<boolean> {
+    if (flipped.length === 0) return false;
+    const unresolved = await db
+      .select({ id: failedPayments.id })
+      .from(failedPayments)
+      .where(
+        and(
+          eq(failedPayments.subscriptionId, subscriptionId),
+          eq(failedPayments.resolved, false),
+        ),
+      );
+    const first = Math.min(...unresolved.map((f) => f.id));
+    return flipped.some((f) => f.id === first);
   }
 
   // ---- Billing emails ------------------------------------------------------
