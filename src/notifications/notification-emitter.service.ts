@@ -3,6 +3,12 @@ import { NotificationsService } from './notifications.service';
 import { NotificationsGateway } from './notifications.gateway';
 import type { Notification, NotificationPriority } from 'src/drizzle/schema';
 
+/** Optional routing + metadata for a billing notification. */
+export interface BillingNotificationExtra {
+  actionUrl?: string;
+  metadata?: Record<string, unknown>;
+}
+
 /**
  * Helper service for emitting notifications from other services.
  * This provides a clean API for sending various types of notifications.
@@ -145,23 +151,47 @@ export class NotificationEmitterService {
 
   // ==================== Billing ====================
 
-  async paymentSuccessful(userId: string, amount: number, planName: string) {
+  /**
+   * `extra` lets a caller point the notification at a workspace route (the
+   * frontend has no `/billing` page outside `/w/:workspaceId/…`) and attach
+   * its own metadata, such as a dedupe key. Both are optional, so existing
+   * callers are unchanged.
+   */
+  async paymentSuccessful(
+    userId: string,
+    amount: number,
+    planName: string,
+    extra?: BillingNotificationExtra,
+  ) {
     return this.emitNotification(
       userId,
       'payment_successful',
       'Payment Successful',
       `Your payment of $${amount.toFixed(2)} for ${planName} was successful.`,
-      { priority: 'medium', metadata: { amount, planName } },
+      {
+        priority: 'medium',
+        metadata: { amount, planName, ...extra?.metadata },
+        actionUrl: extra?.actionUrl,
+      },
     );
   }
 
-  async paymentFailed(userId: string, amount: number, reason?: string) {
+  async paymentFailed(
+    userId: string,
+    amount: number,
+    reason?: string,
+    extra?: BillingNotificationExtra,
+  ) {
     return this.emitNotification(
       userId,
       'payment_failed',
       'Payment Failed',
       `Your payment of $${amount.toFixed(2)} failed${reason ? `: ${reason}` : '. Please update your payment method.'}.`,
-      { priority: 'high', metadata: { amount, reason }, actionUrl: '/billing' },
+      {
+        priority: 'high',
+        metadata: { amount, reason, ...extra?.metadata },
+        actionUrl: extra?.actionUrl ?? '/billing',
+      },
     );
   }
 
