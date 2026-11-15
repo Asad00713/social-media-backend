@@ -79,7 +79,8 @@ export const workspaceInvitation = defineTemplate<InvitationProps>({
       />
       <Heading>{`Join ${p.workspaceName} on Schedura`}</Heading>
       <Paragraph>
-        <Strong>{p.inviterName}</Strong> ({p.inviterEmail}) invited you to{' '}
+        <Strong>{p.inviterName}</Strong>
+        {p.inviterEmail ? ` (${p.inviterEmail})` : ''} invited you to{' '}
         <Strong>{p.workspaceName}</Strong> as {roleArticle(p.role)}{' '}
         <Strong>{ROLE_LABEL[p.role]}</Strong>.
       </Paragraph>

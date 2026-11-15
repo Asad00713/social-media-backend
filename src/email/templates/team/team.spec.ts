@@ -100,6 +100,25 @@ describe('team templates', () => {
       expect(r.html).toContain('1 person');
     });
 
+    it('leaves out the empty parentheses when the inviter has no email', async () => {
+      const r = await renderEmail(
+        workspaceInvitation,
+        { ...props, inviterName: 'A teammate', inviterEmail: '' },
+        ctx,
+      );
+      expect(r.html).toContain('A teammate');
+      expect(r.html).not.toContain('()');
+      expect(r.html).not.toContain('( )');
+      expect(r.text).toContain('A teammate invited you to');
+    });
+
+    it('shows the inviter email in parentheses when known', async () => {
+      const r = await renderEmail(workspaceInvitation, props, ctx);
+      expect(r.text).toContain(
+        'M Rehman (rehman@lumierecafe.pk) invited you to',
+      );
+    });
+
     it('escapes user-written names and keeps the subject on one line', async () => {
       const r = await renderEmail(
         workspaceInvitation,
