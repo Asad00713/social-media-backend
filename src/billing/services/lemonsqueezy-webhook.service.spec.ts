@@ -325,8 +325,15 @@ const lookup = {
   applyLimitsToAllWorkspaces: jest.fn().mockResolvedValue(undefined),
 };
 
+/** The email service has its own spec; here only what the webhook hands it. */
+const billingEmail = {
+  paymentFailed: jest.fn().mockResolvedValue(undefined),
+  planChanged: jest.fn().mockResolvedValue(undefined),
+  planName: jest.fn((code: string) => Promise.resolve(code)),
+};
+
 function make(): LemonSqueezyWebhookService {
-  return new LemonSqueezyWebhookService(lookup as never);
+  return new LemonSqueezyWebhookService(lookup as never, billingEmail as never);
 }
 
 /** A paying Lemon Squeezy account: a base plan and one add-on subscription. */
@@ -1508,5 +1515,185 @@ describe('the plan a checkout was for reaches subscriptions.plan_code', () => {
 
     expect(accountRow().planCode).toBe('PRO');
     expect(rowsOf('provider_subscriptions')).toHaveLength(1);
+  });
+});
+
+// ------------------------------------------------------------ billing emails
+
+describe('billing emails', () => {
+  /** A failed-payment invoice; `updated_at` is what tells attempts apart. */
+  function failedInvoice(
+    subscriptionId: string,
+    updatedAt: string,
+    invoiceId = 'ls_invoice_9',
+  ): unknown {
+    return {
+      meta: {},
+      data: {
+        id: invoiceId,
+        type: 'subscription-invoices',
+        attributes: {
+          subscription_id: subscriptionId,
+          status: 'open',
+          total: 2900,
+          currency: 'USD',
+          card_brand: 'visa',
+          card_last_four: '4242',
+          updated_at: updatedAt,
+        },
+      },
+    };
+  }
+
+  it('a failed payment emails the payer once per attempt, not once per delivery', async () => {
+    const first = failedInvoice(LS_SUB, '2026-10-20T08:00:00.000Z');
+    await make().handleEvent('subscription_payment_failed', first);
+    await make().handleEvent('subscription_payment_failed', first);
+    await make().handleEvent(
+      'subscription_payment_failed',
+      failedInvoice(LS_SUB, '2026-10-23T08:00:00.000Z'),
+    );
+
+    const calls = billingEmail.paymentFailed.mock.calls.map(
+      (c) => c[0] as Record<string, unknown>,
+    );
+    expect(calls).toHaveLength(3);
+    // A redelivery of the same attempt carries the same key, so the outbox
+    // drops it; the next attempt is a new key and a new email.
+    expect(calls[1].dedupeKey).toBe(calls[0].dedupeKey);
+    expect(calls[2].dedupeKey).not.toBe(calls[0].dedupeKey);
+    expect(calls[0]).toMatchObject({
+      userId: 'user-1',
+      planName: 'PRO',
+      amountCents: 2900,
+      currency: 'USD',
+      cardBrand: 'visa',
+      cardLast4: '4242',
+      reason: null,
+      nextAttempt: null,
+    });
+    expect(String(calls[0].dedupeKey)).toMatch(/^[A-Za-z0-9._-]{1,200}$/);
+  });
+
+  it('an add-on invoice or an unknown subscription sends nothing', async () => {
+    await make().handleEvent(
+      'subscription_payment_failed',
+      failedInvoice(LS_ADDON_SUB, '2026-10-20T08:00:00.000Z'),
+    );
+    await make().handleEvent(
+      'subscription_payment_failed',
+      failedInvoice('ls_unknown', '2026-10-20T08:00:00.000Z'),
+    );
+    await make().handleEvent('subscription_payment_success', invoice(LS_SUB));
+
+    expect(billingEmail.paymentFailed).not.toHaveBeenCalled();
+  });
+
+  it('a mail failure never fails the webhook or undoes its writes', async () => {
+    billingEmail.paymentFailed.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(
+      make().handleEvent(
+        'subscription_payment_failed',
+        failedInvoice(LS_SUB, '2026-10-20T08:00:00.000Z'),
+      ),
+    ).resolves.toBeUndefined();
+
+    expect(accountRow().status).toBe('past_due');
+  });
+
+  it('a cancellation emails cancel_scheduled with the end date, once', async () => {
+    const payload = lifecycle(LS_SUB, {
+      status: 'cancelled',
+      ends_at: '2026-11-30T08:00:00.000Z',
+    });
+    await make().handleEvent('subscription_cancelled', payload);
+    // The row now reads `cancelled`, so a redelivery has nothing new to say.
+    await make().handleEvent('subscription_cancelled', payload);
+
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+    const sent = billingEmail.planChanged.mock.calls[0][0] as {
+      endsOn: Date;
+    };
+    expect(sent).toMatchObject({
+      userId: 'user-1',
+      kind: 'cancel_scheduled',
+      fromPlan: 'PRO',
+      toPlan: 'Free',
+    });
+    expect(sent.endsOn.toISOString()).toBe('2026-11-30T08:00:00.000Z');
+    expect(accountRow().planCode).toBe('PRO');
+  });
+
+  it('an expiry emails ended with the plan it ended, even though the write resets it to FREE', async () => {
+    await make().handleEvent(
+      'subscription_expired',
+      lifecycle(LS_SUB, { status: 'expired', ends_at: '2026-11-30T08:00:00Z' }),
+    );
+
+    expect(accountRow().planCode).toBe('FREE');
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+    expect(billingEmail.planChanged.mock.calls[0][0]).toMatchObject({
+      kind: 'ended',
+      fromPlan: 'PRO',
+      endsOn: null,
+    });
+  });
+
+  it('an expiry of an account already on FREE, an add-on, or a dead row sends nothing', async () => {
+    await make().handleEvent(
+      'subscription_expired',
+      lifecycle(LS_ADDON_SUB, { status: 'expired' }),
+    );
+    expect(billingEmail.planChanged).not.toHaveBeenCalled();
+
+    baseRow().providerStatus = 'expired';
+    await make().handleEvent(
+      'subscription_expired',
+      lifecycle(LS_SUB, { status: 'expired' }),
+    );
+    expect(billingEmail.planChanged).not.toHaveBeenCalled();
+
+    seedPayingAccount();
+    accountRow().planCode = 'FREE';
+    await make().handleEvent(
+      'subscription_cancelled',
+      lifecycle(LS_SUB, { status: 'cancelled' }),
+    );
+    expect(billingEmail.planChanged).not.toHaveBeenCalled();
+  });
+
+  it('a mail failure on a cancellation still applies the status', async () => {
+    billingEmail.planName.mockRejectedValueOnce(new Error('boom'));
+
+    await make().handleEvent(
+      'subscription_cancelled',
+      lifecycle(LS_SUB, { status: 'cancelled' }),
+    );
+
+    expect(accountRow().cancelAtPeriodEnd).toBe(true);
+    expect(billingEmail.planChanged).not.toHaveBeenCalled();
+  });
+
+  it('writes the trial end the cron reads, and keeps it when a later event has none', async () => {
+    await make().handleEvent(
+      'subscription_updated',
+      lifecycle(LS_SUB, {
+        status: 'on_trial',
+        trial_ends_at: '2026-11-02T10:00:00.000Z',
+      }),
+    );
+    expect(accountRow().status).toBe('trialing');
+    expect((accountRow().trialEnd as Date).toISOString()).toBe(
+      '2026-11-02T10:00:00.000Z',
+    );
+
+    await make().handleEvent(
+      'subscription_updated',
+      lifecycle(LS_SUB, { status: 'on_trial' }),
+    );
+    expect((accountRow().trialEnd as Date).toISOString()).toBe(
+      '2026-11-02T10:00:00.000Z',
+    );
   });
 });

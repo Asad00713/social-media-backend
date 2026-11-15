@@ -145,7 +145,7 @@ function predicateFrom(condition: unknown): Predicate {
   }
   const chunks = flatten(top);
 
-  const pairs: { column: string; value: unknown }[] = [];
+  const pairs: { column: string; value: unknown; isGt?: boolean }[] = [];
   for (let i = 0; i < chunks.length; i++) {
     const chunk: any = chunks[i];
     if (isColumn(chunk)) {
@@ -163,8 +163,12 @@ function predicateFrom(condition: unknown): Predicate {
         while (i + 1 < chunks.length && !isColumn(chunks[i + 1])) i++;
         continue;
       }
-      if (!opText.includes('=')) {
-        throw new Error(`The db fake only understands '=', saw "${opText}".`);
+      // '>' is drizzle's gt(): the failed-payments window reads it.
+      const isGt = !opText.includes('=') && opText.includes('>');
+      if (!opText.includes('=') && !isGt) {
+        throw new Error(
+          `The db fake only understands '=' and '>', saw "${opText}".`,
+        );
       }
       // The bound value is a drizzle `Param`, not the raw literal.
       const param = chunks[i + 2] as any;
@@ -172,7 +176,7 @@ function predicateFrom(condition: unknown): Predicate {
         param && typeof param === 'object' && 'value' in param
           ? param.value
           : param;
-      pairs.push({ column: camel(chunk.name), value });
+      pairs.push({ column: camel(chunk.name), value, isGt });
       i += 2;
     }
   }
@@ -186,6 +190,13 @@ function predicateFrom(condition: unknown): Predicate {
   return (row: Row) =>
     pairs.every((p) => {
       const actual = row[p.column];
+      if (p.isGt) {
+        return (
+          actual instanceof Date &&
+          p.value instanceof Date &&
+          actual.getTime() > p.value.getTime()
+        );
+      }
       // Dates compare by value; ids arrive as numbers or strings.
       if (actual instanceof Date && p.value instanceof Date) {
         return actual.getTime() === p.value.getTime();
@@ -229,7 +240,14 @@ function makeDb(): any {
         values: (v: Row | Row[]) => {
           const incoming = Array.isArray(v) ? v : [v];
           for (const row of incoming) {
-            rowsOf(target).push({ id: rowsOf(target).length + 1, ...row });
+            rowsOf(target).push({
+              id: rowsOf(target).length + 1,
+              // A column default the real table fills in.
+              ...(target === 'failed_payments'
+                ? { createdAt: new Date() }
+                : {}),
+              ...row,
+            });
           }
           return chain;
         },
@@ -424,8 +442,23 @@ const lookup = {
   applyLimitsToAllWorkspaces: jest.fn().mockResolvedValue(undefined),
 };
 
+/** The email service has its own spec; here only what the webhook hands it. */
+const billingEmail = {
+  paymentFailed: jest.fn().mockResolvedValue(undefined),
+  trialEnding: jest.fn().mockResolvedValue(undefined),
+  planChanged: jest.fn().mockResolvedValue(undefined),
+  planName: jest.fn((code: string) =>
+    Promise.resolve(code === 'PRO' ? 'Pro' : code),
+  ),
+};
+
 function makeService(): WebhookService {
-  return new WebhookService({} as never, {} as never, lookup as never);
+  return new WebhookService(
+    {} as never,
+    {} as never,
+    lookup as never,
+    billingEmail as never,
+  );
 }
 
 /** Reach the private handler under test without going through the dispatcher. */
@@ -629,5 +662,208 @@ describe('customer.subscription.updated', () => {
     });
 
     expect(rowsOf('provider_subscriptions')).toHaveLength(0);
+  });
+});
+
+// ------------------------------------------------------------ billing emails
+
+describe('billing emails', () => {
+  const FAILED_INVOICE = {
+    id: 'in_1',
+    amount_due: 2900,
+    currency: 'usd',
+    attempt_count: 2,
+    next_payment_attempt: 1790000000,
+    last_payment_error: { message: 'Your card has insufficient funds.' },
+  };
+
+  function seedInvoice(): void {
+    rowsOf('invoices').push({
+      id: 7,
+      stripeInvoiceId: 'in_1',
+      subscriptionId: SUBSCRIPTION_ID,
+    });
+    rowsOf('payment_methods').push({
+      id: 1,
+      stripeCustomerId: 'cus_live',
+      cardBrand: 'visa',
+      cardLast4: '4242',
+      isDefault: true,
+      createdAt: new Date('2026-09-01'),
+    });
+  }
+
+  it('a failed payment emails the payer with the invoice, card and next try', async () => {
+    seedInvoice();
+
+    await call(makeService(), 'handleInvoicePaymentFailed', FAILED_INVOICE);
+
+    expect(billingEmail.paymentFailed).toHaveBeenCalledTimes(1);
+    expect(billingEmail.paymentFailed.mock.calls[0][0]).toEqual({
+      userId: 'user-1',
+      planName: 'Pro',
+      amountCents: 2900,
+      currency: 'usd',
+      cardLast4: '4242',
+      cardBrand: 'visa',
+      reason: 'Your card has insufficient funds.',
+      nextAttempt: new Date(1790000000 * 1000),
+      dedupeKey: 'payment-failed.in_1.2',
+    });
+  });
+
+  it('the same failure delivered twice carries one key; the next attempt a new one', async () => {
+    seedInvoice();
+    const service = makeService();
+
+    await call(service, 'handleInvoicePaymentFailed', FAILED_INVOICE);
+    await call(service, 'handleInvoicePaymentFailed', FAILED_INVOICE);
+    await call(service, 'handleInvoicePaymentFailed', {
+      ...FAILED_INVOICE,
+      attempt_count: 3,
+    });
+
+    const keys = billingEmail.paymentFailed.mock.calls.map(
+      (c) => (c[0] as { dedupeKey: string }).dedupeKey,
+    );
+    expect(keys).toEqual([
+      'payment-failed.in_1.2',
+      'payment-failed.in_1.2',
+      'payment-failed.in_1.3',
+    ]);
+  });
+
+  it('the third unresolved failure restricts the account and emails payment_restricted', async () => {
+    seedInvoice();
+    const service = makeService();
+
+    for (const attempt of [1, 2]) {
+      await call(service, 'handleInvoicePaymentFailed', {
+        ...FAILED_INVOICE,
+        attempt_count: attempt,
+      });
+    }
+    expect(billingEmail.planChanged).not.toHaveBeenCalled();
+
+    await call(service, 'handleInvoicePaymentFailed', {
+      ...FAILED_INVOICE,
+      attempt_count: 3,
+    });
+
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+    expect(billingEmail.planChanged.mock.calls[0][0]).toMatchObject({
+      userId: 'user-1',
+      kind: 'payment_restricted',
+      fromPlan: 'Pro',
+      toPlan: 'Free',
+    });
+  });
+
+  it('applyPaymentFailureRestrictions emails payment_restricted with a period-stable key', async () => {
+    const service = makeService();
+
+    await (service as any).applyPaymentFailureRestrictions(
+      SUBSCRIPTION_ID,
+      'user-1',
+    );
+    await (service as any).applyPaymentFailureRestrictions(
+      SUBSCRIPTION_ID,
+      'user-1',
+    );
+
+    const key = `plan-changed.user-1.payment_restricted.sub_live.${new Date('2026-10-01').getTime()}`;
+    const keys = billingEmail.planChanged.mock.calls.map(
+      (c) => (c[0] as { dedupeKey: string }).dedupeKey,
+    );
+    expect(keys).toEqual([key, key]);
+  });
+
+  it('a mail failure never fails the webhook or loses the failure record', async () => {
+    seedInvoice();
+    billingEmail.paymentFailed.mockRejectedValueOnce(new Error('boom'));
+
+    await expect(
+      call(makeService(), 'handleInvoicePaymentFailed', FAILED_INVOICE),
+    ).resolves.toBeUndefined();
+
+    expect(rowsOf('failed_payments')).toHaveLength(1);
+    expect(rowsOf('subscriptions')[0].status).toBe('past_due');
+  });
+
+  it('trial_will_end hands the trial to the email service, with the card state', async () => {
+    const trialEnd = 1790000000;
+    await call(makeService(), 'handleTrialWillEnd', {
+      id: 'sub_live',
+      trial_end: trialEnd,
+      default_payment_method: null,
+    });
+    await call(makeService(), 'handleTrialWillEnd', {
+      id: 'sub_live',
+      trial_end: trialEnd,
+      default_payment_method: 'pm_1',
+    });
+
+    const base = {
+      userId: 'user-1',
+      subscriptionId: SUBSCRIPTION_ID,
+      trialEnd: new Date(trialEnd * 1000),
+      planCode: 'PRO',
+    };
+    expect(billingEmail.trialEnding.mock.calls.map((c) => c[0])).toEqual([
+      { ...base, hasCard: false },
+      { ...base, hasCard: true },
+    ]);
+  });
+
+  it('cancel_at_period_end false -> true emails cancel_scheduled; true -> true does not', async () => {
+    const service = makeService();
+    const event = {
+      id: 'sub_live',
+      status: 'active',
+      cancel_at_period_end: true,
+      items: { data: [{ id: 'si_1', current_period_end: 1790000000 }] },
+    };
+
+    await call(service, 'handleSubscriptionUpdated', event);
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+    expect(billingEmail.planChanged.mock.calls[0][0]).toMatchObject({
+      userId: 'user-1',
+      kind: 'cancel_scheduled',
+      fromPlan: 'Pro',
+      toPlan: 'Free',
+      endsOn: new Date(1790000000 * 1000),
+    });
+
+    // The first update stored the flag, so this one is true -> true.
+    await call(service, 'handleSubscriptionUpdated', event);
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+  });
+
+  it('a subscription that never cancelled sends no plan email on update', async () => {
+    await call(makeService(), 'handleSubscriptionUpdated', {
+      id: 'sub_live',
+      status: 'active',
+      cancel_at_period_end: false,
+      items: { data: [{ id: 'si_1', current_period_end: 1790000000 }] },
+    });
+
+    expect(billingEmail.planChanged).not.toHaveBeenCalled();
+  });
+
+  it('subscription.deleted emails ended with the plan that ended', async () => {
+    await call(makeService(), 'handleSubscriptionDeleted', {
+      id: 'sub_live',
+      status: 'canceled',
+      items: { data: [{ id: 'si_1', current_period_end: 1790000000 }] },
+    });
+
+    expect(rowsOf('subscriptions')[0].planCode).toBe('FREE');
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+    expect(billingEmail.planChanged.mock.calls[0][0]).toMatchObject({
+      userId: 'user-1',
+      kind: 'ended',
+      fromPlan: 'Pro',
+      toPlan: 'Free',
+    });
   });
 });

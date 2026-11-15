@@ -28,6 +28,7 @@ import {
   endStripeProviderRows,
   refreshStripeProviderRowStatus,
 } from '../providers/stripe-provider-row.util';
+import { BillingEmailService, billingEmailKey } from './billing-email.service';
 
 @Injectable()
 export class WebhookService {
@@ -41,6 +42,7 @@ export class WebhookService {
     private subscriptionService: SubscriptionService,
     private stripeService: StripeService,
     private readonly lookup: SubscriptionLookupService,
+    private readonly billingEmail: BillingEmailService,
   ) {}
 
   async handleWebhook(event: Stripe.Event): Promise<void> {
@@ -187,7 +189,9 @@ export class WebhookService {
     // flight at deploy time still lands.
     const userId =
       meta.userId ??
-      (meta.workspaceId ? await this.lookup.getOwnerId(meta.workspaceId) : null);
+      (meta.workspaceId
+        ? await this.lookup.getOwnerId(meta.workspaceId)
+        : null);
 
     if (!userId || !planCode) {
       this.logger.error(
@@ -232,6 +236,8 @@ export class WebhookService {
 
     // Update subscription details. Period now lives on the subscription item
     // (Clover API), so read it via the shared helper.
+    // Read before the update below: the cancel email fires on the edge.
+    const wasCancelling = existingSub[0].cancelAtPeriodEnd;
     const sub: any = subscription;
     const period = getSubscriptionPeriod(subscription);
     const updateData: any = {
@@ -262,6 +268,20 @@ export class WebhookService {
       subscriptionId: existingSub[0].id,
       stripeSubscription: subscription,
     });
+
+    // A cancellation was just scheduled (from our app or the Stripe
+    // Dashboard). Only the false -> true edge emails: every later update on a
+    // subscription that already cancels carries the same flag.
+    if (!wasCancelling && subscription.cancel_at_period_end) {
+      await this.safely('cancel scheduled', () =>
+        this.emailCancelScheduled(
+          existingSub[0],
+          subscription.cancel_at
+            ? new Date(subscription.cancel_at * 1000)
+            : period.end,
+        ),
+      );
+    }
 
     // If a paid→paid downgrade was scheduled, apply it once the period rolls over.
     await this.applyScheduledDowngradeIfDue(existingSub[0], period.start);
@@ -350,6 +370,9 @@ export class WebhookService {
       return;
     }
     const existing = existingSub[0];
+    // The write below resets the plan; the email names the one that ended.
+    const endedPlanCode = existing.planCode;
+    const endedPeriodEnd = existing.currentPeriodEnd;
 
     // End the PROVIDER rows first. They name the subscription Stripe has just
     // deleted, and the write below nulls `stripe_subscription_id` — which is
@@ -423,6 +446,27 @@ export class WebhookService {
     this.logger.log(
       `User ${existing.userId} reset to FREE after subscription ${subscription.id} ended`,
     );
+
+    if (endedPlanCode !== 'FREE') {
+      await this.safely('plan ended', async () => {
+        await this.billingEmail.planChanged({
+          userId: existing.userId,
+          kind: 'ended',
+          fromPlan: await this.billingEmail.planName(endedPlanCode),
+          toPlan: 'Free',
+          billed: null,
+          nextCharge: null,
+          endsOn: null,
+          dedupeKey: billingEmailKey(
+            'plan-changed',
+            existing.userId,
+            'ended',
+            subscription.id,
+            endedPeriodEnd?.getTime() ?? Date.now(),
+          ),
+        });
+      });
+    }
   }
 
   /**
@@ -534,6 +578,10 @@ export class WebhookService {
 
     await db.insert(failedPayments).values(failedPayment);
 
+    await this.safely('payment failed', () =>
+      this.emailPaymentFailed(invoice, subscription[0]),
+    );
+
     // Count recent failed payments for this subscription
     const thirtyDaysAgo = new Date();
     thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
@@ -635,10 +683,12 @@ export class WebhookService {
       return;
     }
 
-    // This is typically used to send email notifications
-    // The actual notification would be handled by an email service
     this.logger.log(
       `Subscription ${existingSub[0].id} trial ends at ${existingSub[0].trialEnd}`,
+    );
+
+    await this.safely('trial ending', () =>
+      this.emailTrialEnding(existingSub[0], subscription),
     );
   }
 
@@ -781,6 +831,154 @@ export class WebhookService {
     this.logger.log(
       `Restrictions applied to user ${userId} due to payment failures`,
     );
+
+    await this.safely('payment restricted', () =>
+      this.emailPaymentRestricted(subscriptionId, userId),
+    );
+  }
+
+  // ---- Billing emails ------------------------------------------------------
+  // A mail problem must never fail the webhook: Stripe would retry the event
+  // and every database write above would be applied twice.
+
+  private async safely(what: string, work: () => Promise<void>): Promise<void> {
+    try {
+      await work();
+    } catch (error) {
+      this.logger.warn(
+        `Billing email (${what}) skipped: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
+  }
+
+  /** The newest saved card for the customer, preferring the default one. */
+  private async storedCard(
+    stripeCustomerId: string | null,
+  ): Promise<{ brand: string | null; last4: string | null } | null> {
+    if (!stripeCustomerId) return null;
+    const rows = await db
+      .select()
+      .from(paymentMethods)
+      .where(eq(paymentMethods.stripeCustomerId, stripeCustomerId));
+    const cards = rows.filter((row) => row.cardLast4);
+    const card =
+      cards.find((row) => row.isDefault) ??
+      [...cards].sort(
+        (a, b) => (b.createdAt?.getTime() ?? 0) - (a.createdAt?.getTime() ?? 0),
+      )[0];
+    return card ? { brand: card.cardBrand, last4: card.cardLast4 } : null;
+  }
+
+  private async emailPaymentFailed(
+    invoice: Stripe.Invoice,
+    sub: typeof subscriptions.$inferSelect,
+  ): Promise<void> {
+    // The fields this email reads. Not all are on the SDK's Invoice type (the
+    // dunning facts moved between API versions), so name what is relied on.
+    const inv = invoice as unknown as {
+      amount_due?: number;
+      currency?: string;
+      attempt_count?: number;
+      next_payment_attempt?: number | null;
+      last_payment_error?: { message?: string } | null;
+    };
+    const card = await this.storedCard(sub.stripeCustomerId);
+    await this.billingEmail.paymentFailed({
+      userId: sub.userId,
+      planName: await this.billingEmail.planName(sub.planCode),
+      amountCents: inv.amount_due ?? 0,
+      currency: inv.currency ?? 'usd',
+      cardLast4: card?.last4 ?? null,
+      cardBrand: card?.brand ?? null,
+      reason: inv.last_payment_error?.message ?? null,
+      nextAttempt: inv.next_payment_attempt
+        ? new Date(inv.next_payment_attempt * 1000)
+        : null,
+      // One mail per attempt: Stripe redelivering this event keeps the key,
+      // the next dunning attempt (attempt_count + 1) gets a new one.
+      dedupeKey: billingEmailKey(
+        'payment-failed',
+        invoice.id ?? sub.id,
+        inv.attempt_count || 1,
+      ),
+    });
+  }
+
+  private async emailTrialEnding(
+    sub: typeof subscriptions.$inferSelect,
+    stripeSubscription: Stripe.Subscription,
+  ): Promise<void> {
+    const trialEnd = stripeSubscription.trial_end
+      ? new Date(stripeSubscription.trial_end * 1000)
+      : sub.trialEnd;
+    if (!trialEnd) return;
+    // The provider's word wins: a default payment method on the subscription
+    // means a card is on file. Otherwise fall back to the cards we saved for
+    // the customer; with no customer id there is nothing to say either way.
+    const hasCard = stripeSubscription.default_payment_method
+      ? true
+      : sub.stripeCustomerId
+        ? (await this.storedCard(sub.stripeCustomerId)) !== null
+        : null;
+    await this.billingEmail.trialEnding({
+      userId: sub.userId,
+      subscriptionId: sub.id,
+      trialEnd,
+      planCode: sub.planCode,
+      hasCard,
+    });
+  }
+
+  private async emailCancelScheduled(
+    sub: typeof subscriptions.$inferSelect,
+    endsOn: Date | null,
+  ): Promise<void> {
+    await this.billingEmail.planChanged({
+      userId: sub.userId,
+      kind: 'cancel_scheduled',
+      fromPlan: await this.billingEmail.planName(sub.planCode),
+      toPlan: 'Free',
+      billed: null,
+      nextCharge: null,
+      endsOn,
+      dedupeKey: billingEmailKey(
+        'plan-changed',
+        sub.userId,
+        'cancel_scheduled',
+        sub.stripeSubscriptionId ?? sub.id,
+        endsOn?.getTime() ?? Date.now(),
+      ),
+    });
+  }
+
+  private async emailPaymentRestricted(
+    subscriptionId: number,
+    userId: string,
+  ): Promise<void> {
+    const [sub] = await db
+      .select()
+      .from(subscriptions)
+      .where(eq(subscriptions.id, subscriptionId))
+      .limit(1);
+    if (!sub) return;
+    await this.billingEmail.planChanged({
+      userId,
+      kind: 'payment_restricted',
+      fromPlan: await this.billingEmail.planName(sub.planCode),
+      toPlan: 'Free',
+      billed: null,
+      nextCharge: null,
+      endsOn: null,
+      // Every failure past the third restricts again: the billing period
+      // keeps those repeats on one key, so the person is told once.
+      dedupeKey: billingEmailKey(
+        'plan-changed',
+        userId,
+        'payment_restricted',
+        sub.stripeSubscriptionId ?? sub.id,
+        sub.currentPeriodEnd?.getTime() ?? Date.now(),
+      ),
+    });
   }
 
   // Remove restrictions when payment succeeds

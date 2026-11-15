@@ -156,6 +156,7 @@ interface Harness {
   service: PlanChangeService;
   adapter: { name: string; changePlan: jest.Mock; cancel: jest.Mock };
   stripeService: { getSubscription: jest.Mock; getClient: jest.Mock };
+  billingEmail: { planChanged: jest.Mock };
 }
 
 function makeService(): Harness {
@@ -181,7 +182,7 @@ function makeService(): Harness {
     getAddonQuantities: jest.fn().mockResolvedValue({}),
   };
 
-  const notificationEmitter = {
+  const billingEmail = {
     planChanged: jest.fn().mockResolvedValue(undefined),
   };
 
@@ -196,11 +197,11 @@ function makeService(): Harness {
     stripeService as never,
     usageService as never,
     lookup as never,
-    notificationEmitter as never,
+    billingEmail as never,
     providers as never,
   );
 
-  return { service, adapter, stripeService };
+  return { service, adapter, stripeService, billingEmail };
 }
 
 beforeEach(() => {
@@ -235,7 +236,7 @@ describe('a real Stripe subscriber with no provider rows (production shape)', ()
   });
 
   it('changePlan on a paid→paid upgrade does not create a SECOND Stripe subscription', async () => {
-    const { service, adapter } = makeService();
+    const { service, adapter, billingEmail } = makeService();
 
     jest.spyOn(service, 'previewPlanChange').mockResolvedValue({
       currentPlan: { code: 'BASIC', name: 'Basic', priceCents: 10000 },
@@ -269,6 +270,19 @@ describe('a real Stripe subscriber with no provider rows (production shape)', ()
 
     // ...and the change went through the existing subscription instead.
     expect(adapter.changePlan).toHaveBeenCalledWith(42, 'PRO');
+
+    // The user is told, by email and bell, through the one service.
+    expect(billingEmail.planChanged).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        kind: 'upgraded',
+        fromPlan: 'Basic',
+        toPlan: 'Pro',
+        billed: '$200 monthly',
+        nextCharge: STRIPE_SUBSCRIPTION.currentPeriodEnd,
+        provider: 'stripe',
+      }),
+    );
   });
 
   /**

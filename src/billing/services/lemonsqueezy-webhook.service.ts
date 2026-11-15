@@ -16,6 +16,7 @@ import { mapLemonSqueezyStatus } from '../providers/lemonsqueezy-status.util';
 // two. It was a private method here until the Stripe direction of the same
 // cutover turned out to have no equivalent at all.
 import { rehomeDefault } from './rehome-default.util';
+import { BillingEmailService, billingEmailKey } from './billing-email.service';
 
 const PROVIDER = 'lemonsqueezy' as const;
 
@@ -81,6 +82,7 @@ interface LsSubscriptionAttributes {
   status?: string;
   ends_at?: string | null;
   renews_at?: string | null;
+  trial_ends_at?: string | null;
   customer_id?: string | number | null;
   variant_id?: string | number | null;
   first_subscription_item?: {
@@ -92,6 +94,13 @@ interface LsSubscriptionAttributes {
 interface LsInvoiceAttributes {
   /** On a subscription-invoice payload this names the subscription. */
   subscription_id?: string | number | null;
+  /** The amount charged, in cents of `currency`. */
+  total?: number | null;
+  currency?: string | null;
+  card_brand?: string | null;
+  card_last_four?: string | null;
+  /** Moves on every payment attempt, so it tells one attempt from the next. */
+  updated_at?: string | null;
 }
 
 /** What a webhook was resolved down to before anything is written. */
@@ -136,7 +145,10 @@ interface Target {
 export class LemonSqueezyWebhookService {
   private readonly logger = new Logger(LemonSqueezyWebhookService.name);
 
-  constructor(private readonly lookup: SubscriptionLookupService) {}
+  constructor(
+    private readonly lookup: SubscriptionLookupService,
+    private readonly billingEmail: BillingEmailService,
+  ) {}
 
   // -------------------------------------------------------------- signature
 
@@ -236,7 +248,84 @@ export class LemonSqueezyWebhookService {
       return;
     }
 
+    // Read what the email needs BEFORE the write: an expiry resets the plan
+    // to FREE, which would leave nothing to say was lost.
+    const notice = await this.planNotice(
+      eventName,
+      target,
+      attrs,
+      providerSubscriptionId,
+    );
     await this.applyStatus(target, attrs);
+    if (notice) {
+      try {
+        await this.billingEmail.planChanged(notice);
+      } catch (error) {
+        this.logger.warn(
+          `Billing email (${eventName}) skipped: ${error instanceof Error ? error.message : String(error)}`,
+        );
+      }
+    }
+  }
+
+  /**
+   * The plan-changed email for a cancellation or an expiry of the BASE PLAN,
+   * or null when there is nothing new to say. Never throws: the webhook must
+   * answer 200 whatever happens to the mail.
+   *
+   * Only a genuine edge counts. A row already `cancelled` or `expired` has had
+   * its email; redelivery and the `subscription_updated` that follows a
+   * cancellation do not match these event names at all.
+   */
+  private async planNotice(
+    eventName: string,
+    target: Target,
+    attrs: LsSubscriptionAttributes,
+    providerSubscriptionId: string,
+  ): Promise<Parameters<BillingEmailService['planChanged']>[0] | null> {
+    try {
+      const ended = eventName === 'subscription_expired';
+      if (!ended && eventName !== 'subscription_cancelled') return null;
+      if (target.itemType !== 'BASE_PLAN') return null;
+
+      const before = (target.providerStatus ?? '').toLowerCase();
+      if (LS_TERMINAL_STATUSES.has(before)) return null;
+      if (!ended && before === 'cancelled') return null;
+
+      const rows = await db
+        .select({
+          userId: subscriptions.userId,
+          planCode: subscriptions.planCode,
+        })
+        .from(subscriptions)
+        .where(eq(subscriptions.id, target.subscriptionId));
+      const account = (rows as { userId: string; planCode: string }[])[0];
+      if (!account || account.planCode === 'FREE') return null;
+
+      const endsOn = dateOf(attrs.ends_at);
+      const kind = ended ? 'ended' : 'cancel_scheduled';
+      return {
+        userId: account.userId,
+        kind,
+        fromPlan: await this.billingEmail.planName(account.planCode),
+        toPlan: 'Free',
+        billed: null,
+        nextCharge: null,
+        endsOn: ended ? null : endsOn,
+        dedupeKey: billingEmailKey(
+          'plan-changed',
+          account.userId,
+          kind,
+          providerSubscriptionId,
+          endsOn?.getTime() ?? Date.now(),
+        ),
+      };
+    } catch (error) {
+      this.logger.warn(
+        `Billing email (${eventName}) skipped: ${error instanceof Error ? error.message : String(error)}`,
+      );
+      return null;
+    }
   }
 
   /**
@@ -564,6 +653,10 @@ export class LemonSqueezyWebhookService {
       cancelAtPeriodEnd: mapped.cancelAtPeriodEnd,
       updatedAt: new Date(),
     };
+    // The trial's end, which the trial-ending cron reads. Written only when
+    // Lemon Squeezy sends one, so an update without it never clears the date.
+    const trialEnd = dateOf(attrs.trial_ends_at);
+    if (trialEnd) subPatch.trialEnd = trialEnd;
     if (terminal) {
       subPatch.planCode = 'FREE';
       subPatch.cancelAtPeriodEnd = false;
@@ -822,6 +915,59 @@ export class LemonSqueezyWebhookService {
       .update(providerSubscriptions)
       .set({ providerStatus: status, updatedAt: new Date() })
       .where(eq(providerSubscriptions.id, target.rowId));
+
+    if (eventName === 'subscription_payment_failed') {
+      await this.emailPaymentFailed(envelope, target, providerSubscriptionId);
+    }
+  }
+
+  /**
+   * Tell the payer the charge failed. Never throws: Lemon Squeezy does not
+   * redeliver a delivery it got a 200 for, and a 500 here would only make the
+   * database writes above run twice.
+   *
+   * One mail per attempt. Lemon Squeezy retries the same invoice, so the
+   * invoice id alone would silence every retry after the first; its
+   * `updated_at` moves with each attempt and is identical on a redelivery of
+   * the same one. Without it (not expected) the key falls back to the day.
+   */
+  private async emailPaymentFailed(
+    envelope: LsEnvelope,
+    target: Target,
+    providerSubscriptionId: string,
+  ): Promise<void> {
+    try {
+      const attrs = envelope.data?.attributes ?? {};
+      const rows = await db
+        .select({
+          userId: subscriptions.userId,
+          planCode: subscriptions.planCode,
+        })
+        .from(subscriptions)
+        .where(eq(subscriptions.id, target.subscriptionId));
+      const account = (rows as { userId: string; planCode: string }[])[0];
+      if (!account) return;
+
+      const invoiceId = idOf(envelope.data?.id) ?? providerSubscriptionId;
+      const attempt =
+        dateOf(attrs.updated_at)?.getTime() ??
+        `d${new Date().toISOString().slice(0, 10)}`;
+      await this.billingEmail.paymentFailed({
+        userId: account.userId,
+        planName: await this.billingEmail.planName(account.planCode),
+        amountCents: attrs.total ?? 0,
+        currency: attrs.currency ?? 'usd',
+        cardLast4: attrs.card_last_four ?? null,
+        cardBrand: attrs.card_brand ?? null,
+        reason: null,
+        nextAttempt: null,
+        dedupeKey: billingEmailKey('payment-failed', 'ls', invoiceId, attempt),
+      });
+    } catch (error) {
+      this.logger.warn(
+        `Billing email (payment failed) skipped: ${error instanceof Error ? error.message : String(error)}`,
+      );
+    }
   }
 
   // ------------------------------------------------------------------ shared

@@ -24,6 +24,9 @@ import { LemonSqueezyClient } from './providers/lemonsqueezy.client';
 import { StripeAdapter } from './providers/stripe.adapter';
 import { LemonSqueezyAdapter } from './providers/lemonsqueezy.adapter';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
+import { EmailModule } from '../email/email.module';
+import { BillingEmailService } from './services/billing-email.service';
+import { TrialEndingCron } from './services/trial-ending.cron';
 
 /**
  * Adapters announce themselves to the registry at boot instead of being
@@ -55,8 +58,11 @@ const PROVIDER_ADAPTER_REGISTRATION = {
     StripeModule,
     DrizzleModule,
     NotificationsModule,
+    EmailModule,
   ],
   providers: [
+    BillingEmailService,
+    TrialEndingCron,
     BillingService,
     CustomerService,
     SubscriptionService,
