@@ -10,6 +10,7 @@ import {
   ProviderItemType,
 } from '../../drizzle/schema';
 import { SubscriptionLookupService } from './subscription-lookup.service';
+import { PaymentAlertsService, toCard } from './payment-alerts.service';
 import { mapLemonSqueezyStatus } from '../providers/lemonsqueezy-status.util';
 // The heir search lives in the shared helper now, and it filters on the SAME
 // `isLive` predicate `hasLiveBasePlan` reads — one definition of "live", not
@@ -92,6 +93,13 @@ interface LsSubscriptionAttributes {
 interface LsInvoiceAttributes {
   /** On a subscription-invoice payload this names the subscription. */
   subscription_id?: string | number | null;
+  /** The card the charge was attempted on (`visa`, `mastercard`…). */
+  card_brand?: string | null;
+  card_last_four?: string | null;
+  /** Invoice total in cents. */
+  total?: number | null;
+  /** Moves on each retry; a redelivery carries the same value. */
+  updated_at?: string | null;
 }
 
 /** What a webhook was resolved down to before anything is written. */
@@ -136,7 +144,10 @@ interface Target {
 export class LemonSqueezyWebhookService {
   private readonly logger = new Logger(LemonSqueezyWebhookService.name);
 
-  constructor(private readonly lookup: SubscriptionLookupService) {}
+  constructor(
+    private readonly lookup: SubscriptionLookupService,
+    private readonly paymentAlerts: PaymentAlertsService,
+  ) {}
 
   // -------------------------------------------------------------- signature
 
@@ -795,6 +806,10 @@ export class LemonSqueezyWebhookService {
     const status =
       eventName === 'subscription_payment_failed' ? 'past_due' : 'active';
 
+    // Read BEFORE the write: whether this success ends a dunning episode is a
+    // question about the status the account had when the event arrived.
+    const account = await this.billingAccount(target.subscriptionId);
+
     await db
       .update(subscriptions)
       .set({ status, updatedAt: new Date() })
@@ -822,6 +837,60 @@ export class LemonSqueezyWebhookService {
       .update(providerSubscriptions)
       .set({ providerStatus: status, updatedAt: new Date() })
       .where(eq(providerSubscriptions.id, target.rowId));
+
+    if (account) await this.alertOwner(eventName, envelope, account);
+  }
+
+  /**
+   * Tell the billing owner, after the billing writes are done.
+   *
+   * A failure alerts once per failed ATTEMPT: the key is the invoice plus its
+   * `updated_at`, which moves on each retry and is identical on a redelivery.
+   * A success alerts only when it ends dunning (see `paymentSucceeded`):
+   * `subscription_payment_success` also fires on every ordinary renewal.
+   */
+  private async alertOwner(
+    eventName: string,
+    envelope: LsEnvelope,
+    account: { userId: string; status: string; planCode: string },
+  ): Promise<void> {
+    const attrs = envelope.data?.attributes;
+    if (eventName === 'subscription_payment_failed') {
+      const invoiceId =
+        idOf(envelope.data?.id) ??
+        `sub-${idOf(attrs?.subscription_id) ?? 'unknown'}`;
+      await this.paymentAlerts.paymentFailed({
+        userId: account.userId,
+        provider: PROVIDER,
+        dedupeKey: `${PROVIDER}:${invoiceId}:${strOf(attrs?.updated_at) ?? 'na'}`,
+        amountMinor: typeof attrs?.total === 'number' ? attrs.total : null,
+        card: toCard(attrs?.card_brand, attrs?.card_last_four),
+        reason: null,
+      });
+      return;
+    }
+    await this.paymentAlerts.paymentSucceeded({
+      userId: account.userId,
+      provider: PROVIDER,
+      amountMinor: typeof attrs?.total === 'number' ? attrs.total : null,
+      planCode: account.planCode,
+      wasPastDue: account.status === 'past_due',
+    });
+  }
+
+  private async billingAccount(
+    subscriptionId: number,
+  ): Promise<{ userId: string; status: string; planCode: string } | null> {
+    const rows = await db
+      .select({
+        userId: subscriptions.userId,
+        status: subscriptions.status,
+        planCode: subscriptions.planCode,
+      })
+      .from(subscriptions)
+      .where(eq(subscriptions.id, subscriptionId))
+      .limit(1);
+    return rows[0] ?? null;
   }
 
   // ------------------------------------------------------------------ shared

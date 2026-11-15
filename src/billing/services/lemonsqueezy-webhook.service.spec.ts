@@ -325,8 +325,16 @@ const lookup = {
   applyLimitsToAllWorkspaces: jest.fn().mockResolvedValue(undefined),
 };
 
+const paymentAlerts = {
+  paymentFailed: jest.fn().mockResolvedValue(true),
+  paymentSucceeded: jest.fn().mockResolvedValue(true),
+};
+
 function make(): LemonSqueezyWebhookService {
-  return new LemonSqueezyWebhookService(lookup as never);
+  return new LemonSqueezyWebhookService(
+    lookup as never,
+    paymentAlerts as never,
+  );
 }
 
 /** A paying Lemon Squeezy account: a base plan and one add-on subscription. */
@@ -1097,6 +1105,100 @@ describe('payment events (a subscription INVOICE, not a subscription)', () => {
     });
 
     expect(accountRow().status).toBe('active');
+  });
+});
+
+// ------------------------------------------------------------ owner alerts
+
+describe('payment alerts to the billing owner', () => {
+  function failedInvoice(updatedAt: string): unknown {
+    return {
+      meta: {},
+      data: {
+        id: 'ls_invoice_9',
+        type: 'subscription-invoices',
+        attributes: {
+          subscription_id: LS_SUB,
+          status: 'failed',
+          card_brand: 'visa',
+          card_last_four: '4242',
+          total: 2900,
+          updated_at: updatedAt,
+        },
+      },
+    };
+  }
+
+  it('a failure alerts the owner with the declined card, keyed on invoice + attempt', async () => {
+    await make().handleEvent(
+      'subscription_payment_failed',
+      failedInvoice('2026-11-15T10:00:00.000000Z'),
+    );
+
+    expect(paymentAlerts.paymentFailed).toHaveBeenCalledWith({
+      userId: 'user-1',
+      provider: 'lemonsqueezy',
+      dedupeKey: 'lemonsqueezy:ls_invoice_9:2026-11-15T10:00:00.000000Z',
+      amountMinor: 2900,
+      card: { brand: 'visa', last4: '4242' },
+      reason: null,
+    });
+    // The alert follows the billing write; it does not replace it.
+    expect(accountRow().status).toBe('past_due');
+  });
+
+  it('a redelivery carries the same key; a retry carries a new one', async () => {
+    const first = failedInvoice('2026-11-15T10:00:00.000000Z');
+    await make().handleEvent('subscription_payment_failed', first);
+    await make().handleEvent('subscription_payment_failed', first);
+    await make().handleEvent(
+      'subscription_payment_failed',
+      failedInvoice('2026-11-18T10:00:00.000000Z'),
+    );
+
+    const keys = paymentAlerts.paymentFailed.mock.calls.map(
+      (c: [{ dedupeKey: string }]) => c[0].dedupeKey,
+    );
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[2]).not.toBe(keys[0]);
+  });
+
+  it('a recovery reports the dunning it read BEFORE writing active', async () => {
+    accountRow().status = 'past_due';
+
+    await make().handleEvent('subscription_payment_recovered', invoice(LS_SUB));
+
+    expect(paymentAlerts.paymentSucceeded).toHaveBeenCalledWith(
+      expect.objectContaining({
+        userId: 'user-1',
+        provider: 'lemonsqueezy',
+        planCode: 'PRO',
+        wasPastDue: true,
+      }),
+    );
+    expect(accountRow().status).toBe('active');
+  });
+
+  it('an ordinary renewal reports no dunning', async () => {
+    await make().handleEvent('subscription_payment_success', invoice(LS_SUB));
+
+    expect(paymentAlerts.paymentSucceeded).toHaveBeenCalledWith(
+      expect.objectContaining({ wasPastDue: false }),
+    );
+    expect(paymentAlerts.paymentFailed).not.toHaveBeenCalled();
+  });
+
+  it('an add-on, a refund and an expired account alert nobody', async () => {
+    await make().handleEvent(
+      'subscription_payment_failed',
+      invoice(LS_ADDON_SUB),
+    );
+    await make().handleEvent('subscription_payment_refunded', invoice(LS_SUB));
+    baseRow().providerStatus = 'expired';
+    await make().handleEvent('subscription_payment_failed', invoice(LS_SUB));
+
+    expect(paymentAlerts.paymentFailed).not.toHaveBeenCalled();
+    expect(paymentAlerts.paymentSucceeded).not.toHaveBeenCalled();
   });
 });
 
