@@ -407,7 +407,7 @@ export class UserInactivityService {
         } catch (error) {
           noticeQueued = false;
           this.logger.warn(
-            `Could not queue the pause notice for user ${user.id}: ${error.message}`,
+            `Could not queue the pause notice for user ${user.id}: ${error instanceof Error ? error.message : String(error)}`,
           );
         }
 
