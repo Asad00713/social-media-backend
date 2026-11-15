@@ -1,6 +1,15 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { EmailService } from '../email/email.service';
+import { EmailOutboxService } from '../email/queue/email-outbox.service';
+import { AppLinks } from '../email/links/app-links';
+import { formatWhen } from '../email/links/format-when';
+import { clipMessage } from '../email/templates/support/message-text';
+import { contactEnquiryTemplate } from '../email/templates/support/contact-enquiry';
+import {
+  contactReceivedTemplate,
+  MESSAGE_PREVIEW_CHARS,
+} from '../email/templates/support/contact-received';
+import { newContactReference } from './contact-reference';
 import type { ContactTopic, CreateContactDto } from './dto';
 
 /** Where each subject should land. */
@@ -13,13 +22,18 @@ const TOPIC_LABELS: Record<ContactTopic, string> = {
   legal: 'Legal',
 };
 
-/** Escape anything a sender typed before it goes into an HTML email body. */
-function esc(value: string): string {
-  return value
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+/**
+ * A Reply-To is the sender's address, typed into a public form. The DTO has
+ * validated it as an email; this refuses anything that could still break out
+ * of a header (whitespace, CR/LF, a display name, a second address).
+ */
+const SAFE_REPLY_TO_RE = /^[^\s<>",;]+@[^\s<>",;]+$/;
+const MAX_ADDRESS_CHARS = 254;
+
+function safeReplyTo(email: string): string | undefined {
+  return email.length <= MAX_ADDRESS_CHARS && SAFE_REPLY_TO_RE.test(email)
+    ? email
+    : undefined;
 }
 
 export interface ContactResult {
@@ -30,16 +44,16 @@ export interface ContactResult {
 @Injectable()
 export class ContactService {
   private readonly logger = new Logger(ContactService.name);
+  /** Where enquiries land: CONTACT_INBOX_EMAIL, else SUPPORT_EMAIL. */
   private readonly inbox: string;
 
   constructor(
-    private readonly email: EmailService,
-    private readonly config: ConfigService,
+    private readonly outbox: EmailOutboxService,
+    private readonly links: AppLinks,
+    config: ConfigService,
   ) {
-    this.inbox = this.config.get<string>(
-      'CONTACT_INBOX_EMAIL',
-      'info@schedura.ai',
-    );
+    this.inbox =
+      config.get<string>('CONTACT_INBOX_EMAIL') || this.links.supportEmail();
   }
 
   /**
@@ -47,147 +61,86 @@ export class ContactService {
    *
    * Two messages go out, and they are deliberately not treated the same way:
    *
-   * - **To us**, carrying the enquiry. If this fails the submission has
-   *   effectively been lost, so the failure is surfaced to the caller and the
-   *   form can tell the sender to email us directly instead of showing a
-   *   success screen for a message nobody received.
-   * - **To the sender**, acknowledging it. Best-effort: if their mail server
-   *   rejects it, we still have the enquiry, and failing the request would
-   *   invite a resend that duplicates something we already hold.
+   * - **To us**, carrying the enquiry. Sent inline: if this fails the
+   *   submission has effectively been lost, so the failure is surfaced to the
+   *   caller and the form can tell the sender to email us directly instead of
+   *   showing a success screen for a message nobody received.
+   * - **To the sender**, acknowledging it. Queued and best-effort: if it
+   *   cannot be queued or their mail server rejects it, we still have the
+   *   enquiry, and failing the request would invite a resend that duplicates
+   *   something we already hold.
    *
-   * The `Reply-To` on our copy is the sender's address, so a reply goes back
-   * to them rather than to the Resend from-address.
+   * Both quote the same reference, so a reply threads to the enquiry. The
+   * `Reply-To` on our copy is the sender's address, and on theirs the inbox.
+   * Logs carry the reference, never an address or the message.
    */
   async submit(dto: CreateContactDto): Promise<ContactResult> {
     // Honeypot. Accepted and dropped rather than rejected — a 400 would tell
     // the sender which field tripped it.
     if (dto.website) {
-      this.logger.warn(`Contact form honeypot tripped by ${dto.email}`);
+      this.logger.warn('Contact form honeypot tripped');
       return { delivered: true };
     }
 
-    const label = TOPIC_LABELS[dto.topic];
+    const reference = newContactReference();
+    const topic = TOPIC_LABELS[dto.topic];
 
-    const toUs = await this.email.sendEmail({
-      to: this.inbox,
-      replyTo: dto.email,
-      subject: `[${label}] ${dto.name}`,
-      html: this.enquiryHtml(dto, label),
-      text: this.enquiryText(dto, label),
-    });
-
-    if (!toUs.success) {
+    if (!this.inbox) {
       this.logger.error(
-        `Contact form: failed to deliver enquiry from ${dto.email}: ${toUs.error}`,
+        `Contact form: no inbox configured, enquiry #${reference} was not sent`,
       );
       return { delivered: false };
     }
 
-    // Best-effort. A bounced acknowledgement must not lose us the enquiry we
-    // have already accepted, so its result is logged and not returned.
-    const ack = await this.email.sendEmail({
-      to: dto.email,
-      subject: 'We got your message — Schedura',
-      html: this.acknowledgementHtml(dto, label),
-      text: this.acknowledgementText(dto, label),
+    const toUs = await this.outbox.sendNow({
+      template: contactEnquiryTemplate,
+      props: {
+        reference,
+        topic,
+        name: dto.name,
+        email: dto.email,
+        company: dto.company || null,
+        message: dto.message,
+      },
+      to: { email: this.inbox, userId: null },
+      workspaceId: null,
+      idempotencyKey: `contact.${reference}`,
+      replyTo: safeReplyTo(dto.email),
     });
 
-    if (!ack.success) {
+    if (!toUs.success) {
+      this.logger.error(
+        `Contact form: failed to deliver enquiry #${reference}: ${toUs.error ?? 'unknown error'}`,
+      );
+      return { delivered: false };
+    }
+
+    // Best-effort. A failed acknowledgement must not lose us the enquiry we
+    // have already accepted, so its failure is logged and not returned.
+    try {
+      await this.outbox.enqueue({
+        template: contactReceivedTemplate,
+        props: {
+          reference,
+          topic,
+          sentAt: formatWhen(new Date(), 'UTC'),
+          // The job payload sits in Redis: keep what the quote shows, not 5 000 characters.
+          message: clipMessage(dto.message, MESSAGE_PREVIEW_CHARS),
+          maestroUrl: this.links.frontend('/'),
+        },
+        to: { email: dto.email, userId: null },
+        workspaceId: null,
+        idempotencyKey: `contact-ack.${reference}`,
+        replyTo: this.inbox,
+      });
+    } catch (err) {
       this.logger.warn(
-        `Contact form: enquiry from ${dto.email} was received but the acknowledgement failed: ${ack.error}`,
+        `Contact form: enquiry #${reference} was received but the acknowledgement could not be queued: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
       );
     }
 
     return { delivered: true };
-  }
-
-  private enquiryHtml(dto: CreateContactDto, label: string): string {
-    const rows: Array<[string, string]> = [
-      ['Name', dto.name],
-      ['Email', dto.email],
-      ...(dto.company ? ([['Company', dto.company]] as Array<[string, string]>) : []),
-      ['Topic', label],
-    ];
-
-    return `
-      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:600px;color:#16181d">
-        <h2 style="margin:0 0 4px;font-size:17px">${esc(label)}</h2>
-        <p style="margin:0 0 20px;color:#5b6270;font-size:13px">
-          Sent from the contact form on schedura.ai
-        </p>
-        <table style="border-collapse:collapse;width:100%;font-size:14px">
-          ${rows
-            .map(
-              ([k, v]) => `
-            <tr>
-              <td style="padding:6px 12px 6px 0;color:#5b6270;white-space:nowrap;vertical-align:top">${esc(k)}</td>
-              <td style="padding:6px 0"><strong>${esc(v)}</strong></td>
-            </tr>`,
-            )
-            .join('')}
-        </table>
-        <div style="margin-top:20px;padding:16px;background:#f6f6f7;border-radius:10px;font-size:14px;line-height:1.6;white-space:pre-wrap">${esc(
-          dto.message,
-        )}</div>
-        <p style="margin-top:20px;font-size:13px;color:#5b6270">
-          Reply to this email and it goes straight back to ${esc(dto.email)}.
-        </p>
-      </div>`;
-  }
-
-  private enquiryText(dto: CreateContactDto, label: string): string {
-    return [
-      `${label} — via schedura.ai contact form`,
-      '',
-      `Name:    ${dto.name}`,
-      `Email:   ${dto.email}`,
-      ...(dto.company ? [`Company: ${dto.company}`] : []),
-      '',
-      dto.message,
-      '',
-      `Reply to this email to answer ${dto.email} directly.`,
-    ].join('\n');
-  }
-
-  private acknowledgementHtml(dto: CreateContactDto, label: string): string {
-    const firstName = dto.name.split(' ')[0];
-    return `
-      <div style="font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;max-width:560px;color:#16181d">
-        <p style="font-size:15px;line-height:1.6">Hi ${esc(firstName)},</p>
-        <p style="font-size:15px;line-height:1.6">
-          Thanks for writing — your message reached us and a person will read it.
-          We reply to most enquiries within one business day.
-        </p>
-        <p style="font-size:15px;line-height:1.6">
-          There's nothing you need to do in the meantime. If something changes or
-          you want to add to it, just reply to this email.
-        </p>
-        <div style="margin:22px 0;padding:16px;background:#f6f6f7;border-radius:10px">
-          <p style="margin:0 0 6px;font-size:12px;color:#5b6270;text-transform:uppercase;letter-spacing:.04em">
-            ${esc(label)} — what you sent
-          </p>
-          <div style="font-size:14px;line-height:1.6;white-space:pre-wrap">${esc(dto.message)}</div>
-        </div>
-        <p style="font-size:15px;line-height:1.6">— The Schedura team</p>
-        <p style="margin-top:26px;font-size:12px;color:#8a909b">
-          Schedura LLC · 1309 Coffeen Avenue STE 1200, Sheridan, WY 82801, USA
-        </p>
-      </div>`;
-  }
-
-  private acknowledgementText(dto: CreateContactDto, label: string): string {
-    const firstName = dto.name.split(' ')[0];
-    return [
-      `Hi ${firstName},`,
-      '',
-      'Thanks for writing — your message reached us and a person will read it.',
-      'We reply to most enquiries within one business day.',
-      '',
-      `${label} — what you sent:`,
-      dto.message,
-      '',
-      '— The Schedura team',
-      'Schedura LLC · 1309 Coffeen Avenue STE 1200, Sheridan, WY 82801, USA',
-    ].join('\n');
   }
 }

@@ -44,7 +44,10 @@ export class EmailFooterService {
       href: this.links.privacy(),
     };
     const override = def.footerReason?.(props);
-    const extra = def.extraFooterLinks ?? [];
+    const extra =
+      typeof def.extraFooterLinks === 'function'
+        ? def.extraFooterLinks(this.links)
+        : (def.extraFooterLinks ?? []);
     const footer = (reason: string, lead: FooterLink[]): FooterContext => ({
       reason: override ?? reason,
       links: [...lead, ...extra, privacy],

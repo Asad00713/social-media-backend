@@ -132,6 +132,20 @@ describe('EmailFooterService', () => {
     expect(f.links).toEqual([HELP, status, PRIVACY]);
   });
 
+  it('builds extra links from AppLinks when given a function', async () => {
+    const { footer } = make();
+    const contact = def('plain', {
+      footerReason: () => 'You wrote to us.',
+      extraFooterLinks: (links) => [{ label: 'Status', href: links.status() }],
+    });
+    const f = await footer.build(contact, {}, TO, null);
+    expect(f.links.map((l) => l.label)).toEqual([
+      'Help center',
+      'Status',
+      'Privacy',
+    ]);
+  });
+
   it('refuses a notification footer with no workspace or event', async () => {
     const { footer } = make();
     await expect(

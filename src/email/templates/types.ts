@@ -1,4 +1,5 @@
 import type { ReactElement } from 'react';
+import type { AppLinks } from '../links/app-links';
 import type { TemplateId } from './template-ids';
 
 /** The Resend `category` tag (spec §4.2). */
@@ -43,8 +44,11 @@ export interface EmailTemplateDef<P> {
   preheader(p: P): string;
   /** Overrides footer line 1 (e.g. A1, B1, C3, E1, F1, F2). */
   footerReason?(p: P): string;
-  /** Extra links go AFTER "Help center" (E1: Help center · Status · Privacy). */
-  extraFooterLinks?: FooterLink[];
+  /**
+   * Extra links go AFTER "Help center" (E1: Help center · Status · Privacy).
+   * A function gets AppLinks, for a link built from env (E1 Status).
+   */
+  extraFooterLinks?: FooterLink[] | ((links: AppLinks) => FooterLink[]);
   Body(p: P): ReactElement;
   /** Figma placeholder data, used by the preview and the contract spec. */
   fixture: P;
