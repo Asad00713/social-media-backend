@@ -30,8 +30,9 @@ const WS = '22222222-2222-4222-8222-222222222222';
 const T0 = new Date('2026-11-14T13:00:00.000Z');
 
 /**
- * In-memory Redis with the real list, NX, TTL and RENAME semantics the batch
- * relies on (RENAME carries the source's TTL, as in Redis).
+ * In-memory Redis with the list, NX, TTL and RENAME semantics the batch
+ * relies on. Real RENAME carries the source's TTL; the close script then
+ * EXPIREs the batch, so the fake skips the carry and sets the script's TTL.
  */
 class FakeRedis implements PostFailureRedis {
   readonly lists = new Map<string, string[]>();
