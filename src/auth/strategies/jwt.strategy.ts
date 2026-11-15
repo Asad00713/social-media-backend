@@ -16,7 +16,8 @@ export interface JwtPayload {
  * Refuses a token issued before the user's sessions were revoked (a password
  * change or reset, "This wasn't me"). `iat` has whole seconds only, so a token
  * from the revocation second itself passes: that is the fresh pair the
- * password change hands back. Shared by the access and refresh strategies.
+ * password change hands back. Shared by the access and refresh strategies and
+ * the notifications socket handshake.
  */
 export function assertSessionLive(
   iat: number | undefined,

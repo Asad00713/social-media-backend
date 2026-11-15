@@ -25,6 +25,14 @@ interface Caller {
 }
 
 /**
+ * Throttle key for the signed-in person. The class-level JwtAuthGuard runs
+ * before the method's ThrottlerGuard, so `req.user` is always set here.
+ */
+function perUserTracker(req: Record<string, unknown>): string {
+  return 'pw:' + (req.user as Caller).userId;
+}
+
+/**
  * The signed-in person's own account security. Registered in AuthModule, not
  * UsersModule: it mints tokens through AuthService, and AuthModule already
  * imports UsersModule, so the other way round would be a module cycle.
@@ -40,11 +48,14 @@ export class AccountSecurityController {
   /**
    * Changes the password and signs out every other session. This device gets
    * a fresh pair, minted after the revocation, so it stays signed in.
+   * 5 an hour per user, not per IP: a stolen access token can rotate IPs.
    */
   @Post('password')
   @HttpCode(HttpStatus.OK)
   @UseGuards(ThrottlerGuard)
-  @Throttle({ default: { limit: 5, ttl: 3_600_000 } })
+  @Throttle({
+    default: { limit: 5, ttl: 3_600_000, getTracker: perUserTracker },
+  })
   async changePassword(
     @CurrentUser() caller: Caller,
     @Body() dto: ChangePasswordDto,

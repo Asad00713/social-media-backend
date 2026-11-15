@@ -1,3 +1,10 @@
+import type { ExecutionContext } from '@nestjs/common';
+import { Reflector } from '@nestjs/core';
+import {
+  ThrottlerException,
+  ThrottlerGuard,
+  ThrottlerStorageService,
+} from '@nestjs/throttler';
 import type { Response } from 'express';
 import type { AuthService } from '../auth/auth.service';
 import { AccountSecurityController } from './account-security.controller';
@@ -73,5 +80,47 @@ describe('AccountSecurityController.changePassword', () => {
     ).rejects.toBe(refused);
     expect(auth.generateAccessToken).not.toHaveBeenCalled();
     expect(response.cookie).not.toHaveBeenCalled();
+  });
+});
+
+describe('POST /users/me/password throttle', () => {
+  let storage: ThrottlerStorageService;
+  let guard: ThrottlerGuard;
+
+  beforeEach(async () => {
+    storage = new ThrottlerStorageService();
+    // The app-wide default (100 a minute); the route's own limit must win.
+    guard = new ThrottlerGuard(
+      [{ ttl: 60_000, limit: 100 }],
+      storage,
+      new Reflector(),
+    );
+    await guard.onModuleInit();
+  });
+  // The in-memory storage holds one expiry timer per key.
+  afterEach(() => storage.onApplicationShutdown());
+
+  function attempt(userId: string, ip: string): Promise<boolean> {
+    const req = { user: { userId, email: 'a@b.co' }, ip, headers: {} };
+    const res = { header: jest.fn() };
+    const context = {
+      // The handler reference is only read for its @Throttle metadata.
+      // eslint-disable-next-line @typescript-eslint/unbound-method
+      getHandler: () => AccountSecurityController.prototype.changePassword,
+      getClass: () => AccountSecurityController,
+      switchToHttp: () => ({ getRequest: () => req, getResponse: () => res }),
+    } as unknown as ExecutionContext;
+    return guard.canActivate(context);
+  }
+
+  it('counts per user: five tries from two IPs use up the hour, a sixth from a new IP is refused', async () => {
+    for (const ip of ['1.1.1.1', '2.2.2.2', '1.1.1.1', '2.2.2.2', '1.1.1.1']) {
+      await expect(attempt('u1', ip)).resolves.toBe(true);
+    }
+    await expect(attempt('u1', '3.3.3.3')).rejects.toBeInstanceOf(
+      ThrottlerException,
+    );
+    // Someone else behind the same IP is not affected.
+    await expect(attempt('u2', '1.1.1.1')).resolves.toBe(true);
   });
 });

@@ -264,11 +264,15 @@ describe('AuthService A1 / A2 / A5 mail', () => {
     expect(sent.props.email).toBe('a@b.co');
     expect(hash(sent.props.code)).toBe(storedHash);
 
-    jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    const logged = jest.spyOn(Logger.prototype, 'error').mockImplementation();
     const failed = registering({ success: false, error: 'Resend down' });
     const res = await failed.service.register(dto);
     expect(res.accessToken).toBe('signed');
     expect(res.message).toMatch(/could not send the verification code/);
+    // Logs name the user by id, never by address.
+    const lines = logged.mock.calls.map((c) => String(c[0]));
+    expect(lines.some((l) => l.includes('user u1'))).toBe(true);
+    expect(lines.join('\n')).not.toContain('a@b.co');
   });
 
   it('forgotPassword sends A2 through sendNow with the reset key and the frontend link', async () => {

@@ -137,7 +137,7 @@ export class AuthService {
     } catch (error) {
       emailDelivered = false;
       this.logger.error(
-        `Registration for ${user.email} completed but the verification email failed: ${
+        `Registration for user ${user.id} completed but the verification email failed: ${
           error instanceof Error ? error.message : 'unknown error'
         }`,
       );
@@ -372,7 +372,7 @@ export class AuthService {
     // background concern to be logged and shrugged off — it has to surface.
     if (!result.success) {
       this.logger.error(
-        `Verification email to ${email} failed: ${result.error ?? 'unknown error'}`,
+        `Verification email for user ${userId} failed: ${result.error ?? 'unknown error'}`,
       );
       throw new InternalServerErrorException({
         statusCode: 500,

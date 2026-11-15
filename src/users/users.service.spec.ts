@@ -309,3 +309,39 @@ describe('UsersService.resetPassword', () => {
     expect(sql).toMatch(/password_reset_token = NULL/);
   });
 });
+
+describe('UsersService.applyGoogleSignIn', () => {
+  async function run(clearPassword: boolean) {
+    const execute = jest.fn().mockResolvedValue(undefined);
+    const service = new UsersService({ execute } as never);
+    const before = Date.now();
+    await service.applyGoogleSignIn('u1', {
+      googleSub: 'g-1',
+      name: 'Sara',
+      clearPassword,
+    });
+    return { ...render(firstArg<SQL>(execute)), before };
+  }
+
+  it('pre-hijack clear ends the squatter sessions in the same UPDATE as the password', async () => {
+    const { sql, params, before } = await run(true);
+    const m =
+      /sessions_revoked_at = CASE WHEN \$(\d+) THEN \$(\d+) ELSE sessions_revoked_at END/.exec(
+        sql,
+      );
+    expect(m).not.toBeNull();
+    expect(params[Number(m![1]) - 1]).toBe(true);
+    const revokedAt = params[Number(m![2]) - 1] as Date;
+    expect(revokedAt).toBeInstanceOf(Date);
+    expect(revokedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(sql).toMatch(
+      /password = CASE WHEN \$\d+ THEN NULL ELSE password END/,
+    );
+  });
+
+  it('a verified link keeps the sessions (the CASE flag is false)', async () => {
+    const { sql, params } = await run(false);
+    const m = /sessions_revoked_at = CASE WHEN \$(\d+) THEN/.exec(sql);
+    expect(params[Number(m![1]) - 1]).toBe(false);
+  });
+});

@@ -492,6 +492,11 @@ export class UsersService {
    * Google proved the mailbox, so the address is verified. The sub is linked
    * only when the row has none, and a name only fills an empty one — a name
    * the person typed themselves is never overwritten by Google's.
+   *
+   * `clearPassword` (pre-hijack) also ends every session in the same write:
+   * whoever registered the address before its owner loses the sessions they
+   * opened. The clock is read before the UPDATE, so the session Google
+   * sign-in mints right after is issued in or after the revocation second.
    */
   async applyGoogleSignIn(
     userId: string,
@@ -501,6 +506,7 @@ export class UsersService {
       clearPassword: boolean;
     },
   ): Promise<void> {
+    const now = new Date();
     await this.db.execute(sql`
       UPDATE users
       SET
@@ -508,7 +514,8 @@ export class UsersService {
         google_sub = COALESCE(google_sub, ${input.googleSub}),
         name = COALESCE(name, ${input.name}),
         password = CASE WHEN ${input.clearPassword} THEN NULL ELSE password END,
-        updated_at = ${new Date()}
+        sessions_revoked_at = CASE WHEN ${input.clearPassword} THEN ${now} ELSE sessions_revoked_at END,
+        updated_at = ${now}
       WHERE id = ${userId}
     `);
   }

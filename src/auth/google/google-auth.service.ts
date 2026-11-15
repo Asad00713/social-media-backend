@@ -167,8 +167,10 @@ export class GoogleAuthService {
         name: claims.name,
         // Pre-hijack: an unverified row's password was never proven to belong to
         // the mailbox owner (anyone could have registered their address). Google
-        // has now proven it, so the password goes; the owner can set one again
-        // via Forgot password or Profile.
+        // has now proven it, so the password goes and every session the
+        // squatter opened ends with it (same UPDATE). The owner can set a
+        // password again only via Forgot password: PATCH /users/:id no longer
+        // takes one, and POST /users/me/password answers PASSWORD_NOT_SET.
         clearPassword: !decision.user.isEmailVerified,
       });
       await this.loginActivity.record(decision.user.id, ip);
