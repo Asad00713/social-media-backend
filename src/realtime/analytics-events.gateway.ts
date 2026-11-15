@@ -35,7 +35,6 @@ interface CachedRole {
 
 interface AuthedSocket extends Socket {
   userId?: string;
-  email?: string;
   /** Cached `{ id, name, avatarUrl }` for typing relays (looked up once per socket). */
   typingUser?: UserRef;
   /** `<conversationId>:<state>` -> epoch ms the throttle slot was claimed. */
@@ -89,7 +88,6 @@ export class AnalyticsEventsGateway
       });
 
       socket.userId = payload.sub ?? payload.userId;
-      socket.email = payload.email;
       this.logger.log(
         `Socket ${socket.id} connected for user ${socket.userId}`,
       );
