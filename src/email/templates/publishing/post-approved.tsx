@@ -18,6 +18,9 @@ export interface PostApprovedProps {
   plannerUrl: string;
 }
 
+/** What a draft with no time reads as in an email. */
+export const NOT_SCHEDULED = 'Not scheduled yet';
+
 /** The first word of a name; an email address gives its local part. */
 export function firstName(name: string): string {
   const first = name.trim().split(/\s+/)[0] ?? '';
@@ -31,7 +34,11 @@ export const POST_APPROVED = defineTemplate<PostApprovedProps>({
   event: 'post_approved',
   footer: 'notification',
   subject: (p) => `${firstName(p.approverName)} approved your post`,
-  preheader: (p) => p.goesOutSentence,
+  // Built from the parts, so it is the sentence without "Nothing else to do."
+  preheader: (p) =>
+    p.when === NOT_SCHEDULED
+      ? "It's ready to schedule."
+      : `It goes out on ${p.platformName} ${p.when}.`,
   Body: (p) => (
     <>
       <Heading>{`${firstName(p.approverName)} approved your post`}</Heading>

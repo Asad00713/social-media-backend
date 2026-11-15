@@ -21,7 +21,10 @@ import { users } from '../../../drizzle/schema/users.schema';
 import { AppLinks } from '../../../email/links/app-links';
 import { formatWhen } from '../../../email/links/format-when';
 import { APPROVAL_NEEDED } from '../../../email/templates/publishing/approval-needed';
-import { POST_APPROVED } from '../../../email/templates/publishing/post-approved';
+import {
+  NOT_SCHEDULED,
+  POST_APPROVED,
+} from '../../../email/templates/publishing/post-approved';
 import { platformNameOf } from '../../../insights/lib/post-detail';
 import { NotificationEmitterService } from '../../../notifications/notification-emitter.service';
 import { NotifyService } from '../../../notifications/notify.service';
@@ -86,14 +89,15 @@ function thumbnailOf(media: MediaItem[]): string | null {
   return /^https?:\/\//i.test(url) ? url : null;
 }
 
-/** An ISO time as the milliseconds a job key carries; now if unreadable. */
-function stampOf(iso: string): number {
+/**
+ * An ISO time as the milliseconds a job key carries. Null when unreadable: a
+ * made-up stamp would give a retry a different key, so the send is skipped.
+ */
+function stampOf(iso: string): number | null {
   const ms = Date.parse(iso);
-  return Number.isNaN(ms) ? Date.now() : ms;
+  return Number.isNaN(ms) ? null : ms;
 }
 
-/** What a draft with no time reads as in an email. */
-const NOT_SCHEDULED = 'Not scheduled yet';
 const UUID_RE =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -173,7 +177,9 @@ export class DraftApprovalService {
         userId,
       );
       if (changed) {
-        await this.notifyApprovers(
+        // Not awaited: a slow queue must never delay the request. The method
+        // catches and logs its own failures.
+        void this.notifyApprovers(
           workspaceId,
           row,
           userId,
@@ -262,7 +268,8 @@ export class DraftApprovalService {
         'The draft changed while you were approving it. Open it again to see the latest version.',
       );
     }
-    await this.notifyRequester(
+    // Not awaited, like notifyApprovers.
+    void this.notifyRequester(
       workspaceId,
       row,
       userId,
@@ -484,6 +491,12 @@ export class DraftApprovalService {
     requestedAt: string,
   ): Promise<void> {
     try {
+      const stamp = stampOf(requestedAt);
+      if (stamp === null) {
+        this.logger.warn(
+          `approval request time of post ${row.id} is unreadable: emails skipped`,
+        );
+      }
       const approvers = (await this.recipients.admins(workspaceId)).filter(
         (r) => ALLOW_SELF_APPROVAL || r.id !== actorId,
       );
@@ -500,7 +513,6 @@ export class DraftApprovalService {
       const preview = readyPreview(row.content);
       // One key per request: sending it for approval again after an edit is a
       // new request (new timestamp), a queue retry of the same one is not.
-      const stamp = stampOf(requestedAt);
       await Promise.all(
         approvers.map((approver) =>
           this.notify.notify({
@@ -514,24 +526,27 @@ export class DraftApprovalService {
                 requestedByName: requesterName,
                 preview,
               }),
-            email: {
-              template: APPROVAL_NEEDED,
-              to: approver.email,
-              props: {
-                requesterName,
-                platform: card.platform,
-                platformName: card.platformName,
-                handle: card.handle,
-                when: card.when,
-                caption: card.caption,
-                thumbnailUrl: card.thumbnailUrl,
-                campaignName: card.campaignName,
-                goesOut: card.when,
-                reviewUrl: this.links.planner(workspaceId, row.id),
-                workspaceName: ws.name,
-              },
-              idempotencyKey: `approval-requested.${row.id}.${stamp}.${approver.id}`,
-            },
+            email:
+              stamp === null
+                ? undefined
+                : {
+                    template: APPROVAL_NEEDED,
+                    to: approver.email,
+                    props: {
+                      requesterName,
+                      platform: card.platform,
+                      platformName: card.platformName,
+                      handle: card.handle,
+                      when: card.when,
+                      caption: card.caption,
+                      thumbnailUrl: card.thumbnailUrl,
+                      campaignName: card.campaignName,
+                      goesOut: card.when,
+                      reviewUrl: this.links.planner(workspaceId, row.id),
+                      workspaceName: ws.name,
+                    },
+                    idempotencyKey: `approval-requested.${row.id}.${stamp}.${approver.id}`,
+                  },
           }),
         ),
       );
@@ -552,6 +567,12 @@ export class DraftApprovalService {
   ): Promise<void> {
     if (requesterId === approverId) return;
     try {
+      const stamp = stampOf(approvedAt);
+      if (stamp === null) {
+        this.logger.warn(
+          `approval time of post ${row.id} is unreadable: email skipped`,
+        );
+      }
       const ws = await this.recipients.workspace(workspaceId);
       if (!ws) return;
       const [approver, card] = await Promise.all([
@@ -572,23 +593,26 @@ export class DraftApprovalService {
             approvedByName: approverName,
             preview: readyPreview(row.content),
           }),
-        email: {
-          template: POST_APPROVED,
-          props: {
-            approverName,
-            platform: card.platform,
-            platformName: card.platformName,
-            handle: card.handle,
-            when: card.when,
-            caption: card.caption,
-            thumbnailUrl: card.thumbnailUrl,
-            goesOutSentence: row.scheduledAt
-              ? `It goes out on ${card.platformName} ${card.when}. Nothing else to do.`
-              : "It's ready to schedule.",
-            plannerUrl: this.links.planner(workspaceId, row.id),
-          },
-          idempotencyKey: `post-approved.${row.id}.${stampOf(approvedAt)}`,
-        },
+        email:
+          stamp === null
+            ? undefined
+            : {
+                template: POST_APPROVED,
+                props: {
+                  approverName,
+                  platform: card.platform,
+                  platformName: card.platformName,
+                  handle: card.handle,
+                  when: card.when,
+                  caption: card.caption,
+                  thumbnailUrl: card.thumbnailUrl,
+                  goesOutSentence: row.scheduledAt
+                    ? `It goes out on ${card.platformName} ${card.when}. Nothing else to do.`
+                    : "It's ready to schedule.",
+                  plannerUrl: this.links.planner(workspaceId, row.id),
+                },
+                idempotencyKey: `post-approved.${row.id}.${stamp}`,
+              },
       });
     } catch (err) {
       this.logger.warn(

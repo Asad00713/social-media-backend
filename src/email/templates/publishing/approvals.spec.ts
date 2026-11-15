@@ -51,8 +51,9 @@ describe('approval templates', () => {
       expect(r.html).toContain('data-email-button="primary"');
       expect(r.html).toContain(props.reviewUrl);
       expect(r.html).toContain(
-        'Approve or request changes in Schedura. It won&#x27;t publish until someone approves it.',
+        'Review and approve it in Schedura. It won&#x27;t publish until someone approves it.',
       );
+      expect(r.html).not.toContain('request changes');
       expect(r.html).not.toContain('Note from');
     });
 
@@ -159,7 +160,25 @@ describe('approval templates', () => {
       expect(r.html).toContain('View in Planner');
       expect(r.html).toContain('data-email-button="secondary"');
       expect(r.html).toContain(props.plannerUrl);
-      expect(r.preheader).toBe(props.goesOutSentence);
+    });
+
+    it('builds the preheader from the parts, without "Nothing else to do."', async () => {
+      expect(POST_APPROVED.preheader(props)).toBe(
+        'It goes out on Instagram Oct 26, 2026 at 6:30 PM GMT+5.',
+      );
+      const r = await renderEmail(POST_APPROVED, props, ctx);
+      expect(r.preheader).toBe(
+        'It goes out on Instagram Oct 26, 2026 at 6:30 PM GMT+5.',
+      );
+      expect(r.preheader).not.toContain('Nothing else to do');
+      // The body keeps the full sentence.
+      expect(r.html).toContain('Nothing else to do.');
+    });
+
+    it('reads ready to schedule in the preheader when there is no time', () => {
+      expect(
+        POST_APPROVED.preheader(POST_APPROVED.variants!['not-scheduled']),
+      ).toBe("It's ready to schedule.");
     });
 
     it('says the post is ready to schedule when there is no time', async () => {

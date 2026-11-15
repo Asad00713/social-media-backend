@@ -153,8 +153,17 @@ function setup(
   return { service, row, queued, bell, add, outbox, prefs, recipients, tables };
 }
 
-const ask = (h: Harness, userId = REQUESTER) =>
-  h.service.setRequired(WS, POST, userId, 'MEMBER', true);
+/**
+ * The notifications are fire-and-forget, so the request returns before they
+ * run. Every fake here settles in microtasks, so one macrotask drains them.
+ */
+const settle = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+const ask = async (h: Harness, userId = REQUESTER) => {
+  const view = await h.service.setRequired(WS, POST, userId, 'MEMBER', true);
+  await settle();
+  return view;
+};
 
 /** The pending request, as the approve path reads it from the row. */
 function pending(h: Harness, requestedAt = '2026-10-26T09:00:00.000Z') {
@@ -171,8 +180,23 @@ function pending(h: Harness, requestedAt = '2026-10-26T09:00:00.000Z') {
   };
 }
 
-const approve = (h: Harness, userId = ADMIN) =>
-  h.service.approve(WS, POST, userId, 'ADMIN');
+const approve = async (h: Harness, userId = ADMIN) => {
+  const view = await h.service.approve(WS, POST, userId, 'ADMIN');
+  await settle();
+  return view;
+};
+
+const NEVER = new Promise<never>(() => undefined);
+const TIMED_OUT = Symbol('timed out');
+
+/** Resolves with the call's result, or TIMED_OUT if it is still blocked. */
+const unlessBlocked = <T>(call: Promise<T>) =>
+  Promise.race([
+    call,
+    new Promise<typeof TIMED_OUT>((resolve) =>
+      setTimeout(() => resolve(TIMED_OUT), 500),
+    ),
+  ]);
 
 describe('DraftApprovalService emails', () => {
   let warn: jest.SpyInstance;
@@ -382,6 +406,30 @@ describe('DraftApprovalService emails', () => {
       expect(logged).not.toContain('SECRET CAPTION TEXT');
     });
 
+    it('does not wait for the notifications: a lookup that never answers does not block the request', async () => {
+      const h = setup();
+      h.recipients.admins.mockReturnValue(NEVER);
+      const view = await unlessBlocked(
+        h.service.setRequired(WS, POST, REQUESTER, 'MEMBER', true),
+      );
+      expect(view).not.toBe(TIMED_OUT);
+    });
+
+    it('skips the email but still rings the bell when the request time is unreadable', async () => {
+      const h = setup();
+      await (h.service as any).notifyApprovers(
+        WS,
+        h.row,
+        REQUESTER,
+        'not a date',
+      );
+      expect(h.queued).toHaveLength(0);
+      expect(h.bell.approvalRequested).toHaveBeenCalledTimes(2);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining(`post ${POST} is unreadable`),
+      );
+    });
+
     it('never fails the request when the recipient lookup throws', async () => {
       const h = setup();
       h.recipients.admins.mockRejectedValue(new Error('db gone'));
@@ -449,6 +497,27 @@ describe('DraftApprovalService emails', () => {
         WS,
         'post_approved',
         'email',
+      );
+    });
+
+    it('does not wait for the notifications: a lookup that never answers does not block the approval', async () => {
+      const h = setup();
+      pending(h);
+      h.recipients.workspace.mockReturnValue(NEVER);
+      const view = await unlessBlocked(
+        h.service.approve(WS, POST, ADMIN, 'ADMIN'),
+      );
+      expect(view).not.toBe(TIMED_OUT);
+      expect(view).toMatchObject({ required: true });
+    });
+
+    it('skips the email but still rings the bell when the approval time is unreadable', async () => {
+      const h = setup();
+      await (h.service as any).notifyRequester(WS, h.row, ADMIN, REQUESTER, '');
+      expect(h.queued).toHaveLength(0);
+      expect(h.bell.draftApproved).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining(`post ${POST} is unreadable`),
       );
     });
 

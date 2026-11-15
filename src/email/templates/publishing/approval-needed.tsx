@@ -58,7 +58,7 @@ export const APPROVAL_NEEDED = defineTemplate<ApprovalNeededProps>({
         Review post
       </EmailButton>
       <Paragraph tone="muted">
-        Approve or request changes in Schedura. It won't publish until someone
+        Review and approve it in Schedura. It won't publish until someone
         approves it.
       </Paragraph>
     </>
