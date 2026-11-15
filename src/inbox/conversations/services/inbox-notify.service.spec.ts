@@ -2,6 +2,7 @@ import { Logger } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import type { DbType } from '../../../drizzle/db';
 import type { EmailService } from '../../../email/email.service';
+import type { EmailOnceService } from '../../../email/email-once.service';
 import { AppLinks } from '../../../email/links/app-links';
 import type { EmailFooterService } from '../../../email/queue/email-footer.service';
 import type { EmailJobData } from '../../../email/queue/email-job';
@@ -35,9 +36,7 @@ type InboxArgs = {
   assignedByName?: string;
   authorName?: string;
 };
-type RedisFake = {
-  set: jest.Mock<Promise<'OK' | null>, []>;
-};
+type ClaimFake = jest.Mock<Promise<boolean>, [string, number]>;
 
 /** Boundary cast for a partial test double. */
 function fake<T>(partial: object): T {
@@ -88,7 +87,12 @@ const links = new AppLinks({
 function build(opts: {
   members: Person[];
   notify?: Record<string, Notify>;
-  redis?: Array<'OK' | null>;
+  /** The answers of the throttle claim, in order; true once they run out. */
+  claims?: boolean[];
+  /** Replaces the throttle claim, e.g. with a real set. */
+  claim?: ClaimFake;
+  /** Replaces the preference check the email is gated on. */
+  prefs?: { shouldSend: jest.Mock };
   db?: object;
   /** Replaces the NotifyService double, e.g. with the real one. */
   notifyService?: NotifyService;
@@ -122,22 +126,26 @@ function build(opts: {
       return Promise.resolve(m);
     }),
   };
-  const redisReplies = [...(opts.redis ?? [])];
-  const redis: RedisFake = {
-    set: jest.fn<Promise<'OK' | null>, []>(() =>
-      Promise.resolve(redisReplies.length ? redisReplies.shift()! : 'OK'),
-    ),
+  const replies = [...(opts.claims ?? [])];
+  const claim: ClaimFake =
+    opts.claim ??
+    jest.fn<Promise<boolean>, [string, number]>(() =>
+      Promise.resolve(replies.length ? replies.shift()! : true),
+    );
+  const prefs = opts.prefs ?? {
+    shouldSend: jest.fn(() => Promise.resolve(true)),
   };
   const svc = new StubbedNotify(
     fake<NotificationEmitterService>(emitter),
     opts.notifyService ?? fake<NotifyService>(notify),
     fake<InboxSettingsService>(settings),
     fake<DbType>(opts.db ?? {}),
-    redis,
+    fake<EmailOnceService>({ claim }),
     links,
+    fake<NotificationPreferencesService>(prefs),
   );
   svc.members = opts.members;
-  return { svc, emitter, notify, redis, settings };
+  return { svc, emitter, notify, claim, prefs, settings };
 }
 
 /** Every notify() call that carried an email. */
@@ -180,8 +188,16 @@ describe('InboxNotifyService', () => {
         conversationId: CONV,
         assignedByName: 'Hina',
       });
-      expect(t.notify.notify).toHaveBeenCalledTimes(1);
-      const [input] = t.notify.notify.mock.calls[0];
+      // The bell goes first, on its own; the email follows.
+      expect(t.notify.notify).toHaveBeenCalledTimes(2);
+      const [bell] = t.notify.notify.mock.calls[0];
+      expect(bell).toMatchObject({
+        userId: 'a',
+        workspaceId: WS,
+        event: 'inbox_assigned',
+      });
+      expect(bell.email).toBeUndefined();
+      const [input] = emailsOf(t);
       expect(input).toMatchObject({
         userId: 'a',
         workspaceId: WS,
@@ -197,13 +213,13 @@ describe('InboxNotifyService', () => {
           conversationUrl: 'https://app.test/w/w1/inbox?c=c1',
         },
       });
-      expect(t.redis.set).toHaveBeenCalledWith(
-        'inbox-mail:a:c1',
-        '1',
-        'EX',
-        600,
-        'NX',
+      expect(t.prefs.shouldSend).toHaveBeenCalledWith(
+        'a',
+        WS,
+        'inbox_assigned',
+        'email',
       );
+      expect(t.claim).toHaveBeenCalledWith('inbox-mail:a:c1', 600);
     });
 
     it('keys the email by person, conversation and 10-minute window', async () => {
@@ -226,7 +242,7 @@ describe('InboxNotifyService', () => {
     });
 
     it('a second call inside 10 minutes keeps the bell but sends no email', async () => {
-      const t = build({ members: [A], redis: [null] });
+      const t = build({ members: [A], claims: [false] });
       await t.svc.assigned(ASSIGN);
       expect(t.emitter.inboxAssigned).toHaveBeenCalledTimes(1);
       expect(t.notify.notify).toHaveBeenCalledTimes(1);
@@ -253,9 +269,41 @@ describe('InboxNotifyService', () => {
       await expect(t.svc.assigned(ASSIGN)).resolves.toBeUndefined();
     });
 
-    it('still sends the bell when Redis fails, and skips only the email', async () => {
+    it('rings the bell even when the throttle claim never answers', async () => {
       const t = build({ members: [A] });
-      t.redis.set.mockRejectedValue(new Error('redis down'));
+      t.claim.mockReturnValue(new Promise(() => undefined));
+      // Not awaited: with a hung Redis the email path never finishes.
+      void t.svc.assigned(ASSIGN);
+      await new Promise((resolve) => setImmediate(resolve));
+      await new Promise((resolve) => setImmediate(resolve));
+      expect(t.emitter.inboxAssigned).toHaveBeenCalledTimes(1);
+      expect(emailsOf(t)).toHaveLength(0);
+    });
+
+    it('still sends the bell when the claim fails, and skips only the email', async () => {
+      const t = build({ members: [A] });
+      t.claim.mockRejectedValue(new Error('redis down'));
+      await expect(t.svc.assigned(ASSIGN)).resolves.toBeUndefined();
+      expect(t.emitter.inboxAssigned).toHaveBeenCalledTimes(1);
+      expect(emailsOf(t)).toHaveLength(0);
+    });
+
+    it('skips both the claim and the email when the person switched the email off', async () => {
+      const t = build({
+        members: [A],
+        prefs: { shouldSend: jest.fn(() => Promise.resolve(false)) },
+      });
+      await t.svc.assigned(ASSIGN);
+      expect(t.emitter.inboxAssigned).toHaveBeenCalledTimes(1);
+      expect(t.claim).not.toHaveBeenCalled();
+      expect(emailsOf(t)).toHaveLength(0);
+    });
+
+    it('skips the email, not the bell, when the preference check fails', async () => {
+      const t = build({
+        members: [A],
+        prefs: { shouldSend: jest.fn(() => Promise.reject(new Error('db'))) },
+      });
       await expect(t.svc.assigned(ASSIGN)).resolves.toBeUndefined();
       expect(t.emitter.inboxAssigned).toHaveBeenCalledTimes(1);
       expect(emailsOf(t)).toHaveLength(0);
@@ -295,12 +343,20 @@ describe('InboxNotifyService', () => {
         links,
         fake<EmailTokensService>({ unsubscribeToken: () => 'tok' }),
       );
+      const once = new Set<string>();
+      const claim: ClaimFake = jest.fn<Promise<boolean>, [string, number]>(
+        (key) => {
+          if (once.has(key)) return Promise.resolve(false);
+          once.add(key);
+          return Promise.resolve(true);
+        },
+      );
       const real = new NotifyService(
         fake<NotificationPreferencesService>(prefs),
         outbox,
         fake<RecipientsService>({}),
       );
-      return { queued, outbox, real, deliver, prefs };
+      return { queued, outbox, real, deliver, prefs, claim };
     }
 
     it('notify everything with inbox_new_message email off: bell, no email', async () => {
@@ -309,6 +365,8 @@ describe('InboxNotifyService', () => {
         members: [A],
         notify: { a: 'everything' },
         notifyService: w.real,
+        prefs: w.prefs,
+        claim: w.claim,
       });
       await t.svc.newInbound({
         workspaceId: WS,
@@ -317,14 +375,47 @@ describe('InboxNotifyService', () => {
         platformCreatedAt: new Date(),
       });
       expect(t.emitter.inboxNewMessage).toHaveBeenCalledTimes(1);
+      expect(w.queued).toHaveLength(0);
+      expect(w.claim).not.toHaveBeenCalled();
+      expect(w.deliver).not.toHaveBeenCalled();
+    });
+
+    it('a dropped new-message email does not use up the window for an assignment', async () => {
+      const w = wired('inbox_new_message');
+      const t = build({
+        members: [A],
+        notify: { a: 'everything' },
+        notifyService: w.real,
+        prefs: w.prefs,
+        claim: w.claim,
+      });
+      await t.svc.newInbound({
+        workspaceId: WS,
+        conversationId: CONV,
+        authorName: 'Sam',
+        platformCreatedAt: new Date(),
+      });
+      await t.svc.assigned(ASSIGN);
+      expect(t.emitter.inboxNewMessage).toHaveBeenCalledTimes(1);
+      expect(t.emitter.inboxAssigned).toHaveBeenCalledTimes(1);
       expect(w.queued).toHaveLength(1);
+      await expect(w.outbox.process(w.queued[0])).resolves.toBe('sent');
+      expect(w.deliver).toHaveBeenCalledTimes(1);
+    });
+
+    it('still re-checks at send time, so an unsubscribe after enqueue is honoured', async () => {
+      const w = wired('inbox_new_message');
+      const t = build({
+        members: [A],
+        notifyService: w.real,
+        prefs: w.prefs,
+        claim: w.claim,
+      });
+      await t.svc.assigned(ASSIGN);
+      expect(w.queued).toHaveLength(1);
+      // Switched off between enqueue and send.
+      w.prefs.shouldSend.mockResolvedValue(false);
       await expect(w.outbox.process(w.queued[0])).resolves.toBe('skipped:pref');
-      expect(w.prefs.shouldSend).toHaveBeenCalledWith(
-        'a',
-        WS,
-        'inbox_new_message',
-        'email',
-      );
       expect(w.deliver).not.toHaveBeenCalled();
     });
 

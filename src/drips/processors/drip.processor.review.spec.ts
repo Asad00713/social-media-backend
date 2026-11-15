@@ -7,6 +7,7 @@ import { workspace } from '../../drizzle/schema/workspace.schema';
 
 let historyRows: Record<string, unknown>[];
 let dripStatus: string;
+let workspaceReadFails: boolean;
 
 const rowsFor = (table: unknown): unknown[] => {
   if (table === dripPosts) {
@@ -43,7 +44,12 @@ const rowsFor = (table: unknown): unknown[] => {
 const mockDb = {
   select: jest.fn(() => ({
     from: (table: unknown) => ({
-      where: async () => rowsFor(table),
+      where: async () => {
+        if (table === workspace && workspaceReadFails) {
+          throw new Error('connection reset');
+        }
+        return rowsFor(table);
+      },
     }),
   })),
   insert: jest.fn(() => ({
@@ -92,6 +98,7 @@ const job = {
 beforeEach(() => {
   historyRows = [];
   dripStatus = 'pending_review';
+  workspaceReadFails = false;
   jest.spyOn(Logger.prototype, 'log').mockImplementation(() => undefined);
 });
 afterEach(() => jest.restoreAllMocks());
@@ -185,6 +192,19 @@ describe('DripProcessor review email', () => {
       action: 'notification_sent',
       details: { notificationType: 'email', emailQueued: true },
     });
+  });
+
+  it('falls back to UTC, and still queues the email, when the time zone read fails', async () => {
+    workspaceReadFails = true;
+    const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    const { processor, notify } = make();
+    await expect(processor.process(job)).resolves.toEqual({
+      success: true,
+      notificationQueued: true,
+    });
+    expect(queued(notify).email.props.when).toBe('Nov 20, 2026 at 4:00 AM UTC');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('using UTC'));
+    expect(historyRows).toHaveLength(1);
   });
 
   it('sends nothing for a post that is no longer pending review', async () => {

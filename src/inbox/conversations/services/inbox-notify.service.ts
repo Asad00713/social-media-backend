@@ -5,12 +5,14 @@ import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { users } from '../../../drizzle/schema/users.schema';
 import { workspace } from '../../../drizzle/schema/workspace.schema';
 import { workspaceInvitation } from '../../../drizzle/schema/workspace-invitation.schema';
+import { EmailOnceService } from '../../../email/email-once.service';
 import { AppLinks } from '../../../email/links/app-links';
 import {
   inboxActivity,
   INBOX_EVENT,
   type InboxActivityProps,
 } from '../../../email/templates/inbox/inbox-activity';
+import { NotificationPreferencesService } from '../../../notification-preferences/notification-preferences.service';
 import { NotificationEmitterService } from '../../../notifications/notification-emitter.service';
 import { NotifyService } from '../../../notifications/notify.service';
 import {
@@ -32,16 +34,6 @@ interface Member {
 
 type EventKind = 'assigned' | 'mention' | 'new_message';
 
-interface RedisLike {
-  set(
-    key: string,
-    value: string,
-    mode: 'EX',
-    seconds: number,
-    flag: 'NX',
-  ): Promise<'OK' | null>;
-}
-
 /**
  * Bell and email notifications for the Inbox (R7). Every public method is
  * fire-and-forget safe: failures are logged and never thrown, so a
@@ -56,8 +48,9 @@ export class InboxNotifyService {
     private readonly notify: NotifyService,
     private readonly settings: InboxSettingsService,
     @Inject(DRIZZLE) private readonly db: DbType,
-    @Inject('REDIS_CLIENT') private readonly redis: RedisLike,
+    private readonly once: EmailOnceService,
     private readonly links: AppLinks,
+    private readonly prefs: NotificationPreferencesService,
   ) {}
 
   async assigned(args: {
@@ -147,7 +140,8 @@ export class InboxNotifyService {
   /**
    * Applies each recipient's notify level, then hands the bell and the
    * (throttled) email to NotifyService, which applies the person's own
-   * per-channel preferences on top of the level.
+   * per-channel preferences on top of the level. The bell goes first and
+   * never waits on the email's throttle claim.
    */
   private async fanOut(
     workspaceId: string,
@@ -169,6 +163,15 @@ export class InboxNotifyService {
         const notify = settings.get(r.id)?.notify ?? 'assigned_and_mentions';
         if (notify === 'nothing') return;
         if (kind === 'new_message' && notify !== 'everything') return;
+        const event = INBOX_EVENT[kind];
+        await this.safely(`bell to ${r.id}`, () =>
+          this.notify.notify({
+            userId: r.id,
+            workspaceId,
+            event,
+            bell: () => bell(r.id),
+          }),
+        );
         const email = await this.mailFor(
           r,
           workspaceId,
@@ -176,23 +179,20 @@ export class InboxNotifyService {
           { kind, sentence },
           nameOf,
         );
-        await this.safely(`notify ${r.id}`, () =>
-          this.notify.notify({
-            userId: r.id,
-            workspaceId,
-            event: INBOX_EVENT[kind],
-            bell: () => bell(r.id),
-            email,
-          }),
+        if (!email) return;
+        await this.safely(`email to ${r.id}`, () =>
+          this.notify.notify({ userId: r.id, workspaceId, event, email }),
         );
       }),
     );
   }
 
   /**
-   * The email for one person, or undefined when their 10-minute throttle for
-   * this conversation is still running. Never throws, so a Redis or lookup
-   * failure costs the email and not the bell.
+   * The email for one person, or undefined when they switched this event's
+   * email off or their 10-minute throttle for this conversation is still
+   * running. The preference is checked before the claim, so a mail they don't
+   * want never uses up the window for one they do. The claim has a timeout and
+   * fails open (EmailOnceService). Never throws.
    */
   private async mailFor(
     to: Member,
@@ -202,15 +202,18 @@ export class InboxNotifyService {
     workspaceName: () => Promise<string>,
   ) {
     try {
-      const key = `inbox-mail:${to.id}:${conversationId}`;
-      const claimed = await this.redis.set(
-        key,
-        '1',
-        'EX',
-        MAIL_WINDOW_SECONDS,
-        'NX',
+      const wanted = await this.prefs.shouldSend(
+        to.id,
+        workspaceId,
+        INBOX_EVENT[what.kind],
+        'email',
       );
-      if (claimed !== 'OK') return undefined;
+      if (!wanted) return undefined;
+      const claimed = await this.once.claim(
+        `inbox-mail:${to.id}:${conversationId}`,
+        MAIL_WINDOW_SECONDS,
+      );
+      if (!claimed) return undefined;
       const props: InboxActivityProps = {
         ...what,
         workspaceName: await workspaceName(),

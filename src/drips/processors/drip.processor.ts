@@ -309,10 +309,20 @@ export class DripProcessor extends WorkerHost {
       { text: string; hashtags?: string[] }
     >;
 
-    const [ws] = await db
-      .select({ timezone: workspace.timezone })
-      .from(workspace)
-      .where(eq(workspace.id, campaign.workspaceId));
+    // Only the wording of the time depends on this: a failed read shows UTC
+    // and never fails the job.
+    let timezone = 'UTC';
+    try {
+      const [ws] = await db
+        .select({ timezone: workspace.timezone })
+        .from(workspace)
+        .where(eq(workspace.id, campaign.workspaceId));
+      timezone = ws?.timezone || 'UTC';
+    } catch (err) {
+      this.logger.warn(
+        `Workspace time zone read failed for drip post ${dripPostId}, using UTC: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
 
     // Queue the review email. NotifyService never throws and applies the
     // creator's drip_review preference when the worker sends it: an email
@@ -325,10 +335,7 @@ export class DripProcessor extends WorkerHost {
         template: dripReview,
         props: {
           campaignName: campaign.name,
-          when: formatWhen(
-            dripPost.scheduledAt,
-            usableZone(ws?.timezone || 'UTC'),
-          ),
+          when: formatWhen(dripPost.scheduledAt, usableZone(timezone)),
           caption: dripPost.generatedContent || '',
           platforms: Object.keys(platformContent ?? {}).map(networkName),
           reviewUrl: this.links.planner(campaign.workspaceId),

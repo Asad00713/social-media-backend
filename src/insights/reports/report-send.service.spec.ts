@@ -127,7 +127,11 @@ function setup(opts: Opts = {}) {
   const gotenberg = { isConfigured: jest.fn(() => opts.gotenberg ?? true) };
   const email = {
     deliver: jest.fn<
-      Promise<{ success: boolean; error: string | undefined }>,
+      Promise<{
+        success: boolean;
+        error: string | undefined;
+        errorCode?: string;
+      }>,
       [
         { to: string },
         {
@@ -454,6 +458,63 @@ describe('ReportSendService.run: idempotency and tags', () => {
       expect(opts.idempotencyKey).not.toContain(':');
       expect(opts.idempotencyKey).not.toContain('@');
     }
+  });
+
+  describe('a retry after a lost response (invalid_idempotent_request)', () => {
+    const REFUSED = {
+      success: false,
+      error: 'Same key, different payload',
+      errorCode: 'invalid_idempotent_request',
+    };
+
+    it('counts the recipient as sent on a retry: an earlier attempt delivered it', async () => {
+      const { service, email, repo } = setup();
+      email.deliver.mockResolvedValue(REFUSED);
+      const j = job(SCHEDULED, 1);
+      await expect(service.run(j, NOW)).resolves.toBe('sent');
+      expect(j.updateData).toHaveBeenLastCalledWith({
+        ...SCHEDULED,
+        sent: ['a@x.com', 'b@y.com'],
+      });
+      expect(repo.recordSent).toHaveBeenCalledTimes(1);
+      expect(repo.recordError).not.toHaveBeenCalled();
+    });
+
+    it('is still a failure on the first attempt', async () => {
+      const { service, email, repo } = setup();
+      email.deliver.mockResolvedValue(REFUSED);
+      const j = job(SCHEDULED, 0);
+      await expect(service.run(j, NOW)).rejects.toThrow(
+        "Couldn't email 2 of 2 people: Same key, different payload",
+      );
+      expect(j.updateData).not.toHaveBeenCalled();
+      expect(repo.recordSent).not.toHaveBeenCalled();
+    });
+
+    it('does not excuse any other error on a retry', async () => {
+      const { service, email } = setup();
+      email.deliver.mockResolvedValue({
+        success: false,
+        error: 'Invalid key',
+        errorCode: 'validation_error',
+      });
+      await expect(service.run(job(SCHEDULED, 2), NOW)).rejects.toThrow(
+        "Couldn't email 2 of 2 people",
+      );
+    });
+
+    it('keeps sending to the rest of the list after the refused one', async () => {
+      const { service, email } = setup();
+      email.deliver
+        .mockResolvedValueOnce(REFUSED)
+        .mockResolvedValueOnce({ success: true, error: undefined });
+      const j = job(SCHEDULED, 1);
+      await expect(service.run(j, NOW)).resolves.toBe('sent');
+      expect(j.updateData).toHaveBeenLastCalledWith({
+        ...SCHEDULED,
+        sent: ['a@x.com', 'b@y.com'],
+      });
+    });
   });
 
   it('reuses the key on a retry, so a lost response is not sent twice', async () => {

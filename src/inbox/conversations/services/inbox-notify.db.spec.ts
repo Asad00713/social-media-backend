@@ -4,7 +4,9 @@ import {
   seedWorkspace,
   withInboxDb,
 } from '../../testing/inbox-db';
+import type { EmailOnceService } from '../../../email/email-once.service';
 import type { AppLinks } from '../../../email/links/app-links';
+import type { NotificationPreferencesService } from '../../../notification-preferences/notification-preferences.service';
 import type { NotificationEmitterService } from '../../../notifications/notification-emitter.service';
 import type { NotifyService } from '../../../notifications/notify.service';
 import { InboxNotifyService } from './inbox-notify.service';
@@ -60,8 +62,9 @@ describeInboxDb('InboxNotifyService recipient queries', () => {
         unused<NotifyService>(),
         unused<InboxSettingsService>(),
         db,
-        { set: () => Promise.resolve(null) },
+        unused<EmailOnceService>(),
         unused<AppLinks>(),
+        unused<NotificationPreferencesService>(),
       );
 
       const all = await svc.load(workspaceId);

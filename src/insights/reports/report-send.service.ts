@@ -211,7 +211,20 @@ export class ReportSendService {
             tags: { category: 'reports', template: 'insight-report' },
           },
         );
-        if (result.success === true) {
+        // The unsubscribe token carries its issue time, so a retry after a lost
+        // response sends the same key with a different body. Resend refuses
+        // that, which means an earlier attempt already delivered this one
+        // (the same rule as email-outbox.service.ts).
+        const alreadySent =
+          result.success !== true &&
+          result.errorCode === 'invalid_idempotent_request' &&
+          (job.attemptsMade ?? 0) > 0;
+        if (alreadySent) {
+          this.logger.log(
+            `Report ${row.id}: a recipient was already sent by an earlier attempt`,
+          );
+        }
+        if (result.success === true || alreadySent) {
           sent.push(to);
           await job.updateData({ ...data, sent: [...sent] });
           pauseMs = PAUSE_BETWEEN_SENDS_MS;
