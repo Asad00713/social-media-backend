@@ -1,12 +1,12 @@
 import { Logger } from '@nestjs/common';
 import type { SQL } from 'drizzle-orm';
 import { PgDialect } from 'drizzle-orm/pg-core';
+import { AppLinks } from '../../email/links/app-links';
+import { IDEMPOTENCY_KEY_RE } from '../../email/queue/email-job';
 import {
   channelReconnect,
   type ChannelReconnectProps,
 } from '../../email/templates/publishing/channel-reconnect';
-import { AppLinks } from '../../email/links/app-links';
-import { IDEMPOTENCY_KEY_RE } from '../../email/queue/email-job';
 import { NOTIFICATION_EVENTS } from '../../notification-preferences/notification-events';
 import { ChannelHealthNotifier } from './channel-health-notifier.service';
 
@@ -18,6 +18,7 @@ const CHANNEL = {
   workspaceId: WS,
   platform: 'instagram',
   accountName: 'Lumiere Cafe',
+  username: 'lumierecafe',
   accountType: 'business_account',
 };
 const DAY = 24 * 60 * 60 * 1000;
@@ -41,7 +42,22 @@ function setup(opts: { n?: number; next?: Date | null } = {}) {
   const where = jest
     .fn<Promise<unknown[]>, [SQL]>()
     .mockResolvedValue([{ n, next: n > 0 ? (opts.next ?? NEXT) : null }]);
-  const db = { select: () => ({ from: () => ({ where }) }) };
+  /** What each `update().set().where()` saw, and what `returning` answers. */
+  const updates: Array<{ set: Record<string, unknown>; where: SQL }> = [];
+  const flipped: Array<Record<string, unknown>> = [];
+  const db = {
+    select: () => ({ from: () => ({ where }) }),
+    update: () => ({
+      set: (set: Record<string, unknown>) => ({
+        where: (w: SQL) => {
+          updates.push({ set, where: w });
+          return Object.assign(Promise.resolve(undefined), {
+            returning: () => Promise.resolve(flipped),
+          });
+        },
+      }),
+    }),
+  };
   const notify = {
     notify: jest.fn<Promise<void>, [SentNotice]>().mockResolvedValue(undefined),
   };
@@ -69,7 +85,16 @@ function setup(opts: { n?: number; next?: Date | null } = {}) {
     links,
     emitter as never,
   );
-  return { notifier, notify, recipients, once, emitter, where };
+  return {
+    notifier,
+    notify,
+    recipients,
+    once,
+    emitter,
+    where,
+    updates,
+    flipped,
+  };
 }
 
 describe('ChannelHealthNotifier.expired', () => {
@@ -88,9 +113,8 @@ describe('ChannelHealthNotifier.expired', () => {
       kind: 'expired',
       platform: 'instagram',
       platformName: 'Instagram',
-      handle: 'Lumiere Cafe',
-      accountType: 'Business account',
-      statusLine: 'Instagram · disconnected today, 9:12 AM',
+      handle: '@lumierecafe',
+      statusLine: 'Instagram Business · disconnected today, 9:12 AM',
       waiting: 3,
       nextWhen: 'Nov 20, 2026 at 6:00 PM GMT+5',
       reconnectUrl: `http://localhost:3001/w/${WS}/channels`,
@@ -101,6 +125,18 @@ describe('ChannelHealthNotifier.expired', () => {
       'Instagram',
       'Lumiere Cafe',
     );
+  });
+
+  it('falls back to the account name and drops an unknown type label', async () => {
+    const { notifier, notify } = setup();
+    await notifier.expired(
+      { ...CHANNEL, username: null, accountType: 'storage' },
+      AT,
+    );
+    expect(notify.notify.mock.calls[0][0].email.props).toMatchObject({
+      handle: 'Lumiere Cafe',
+      statusLine: 'Instagram · disconnected today, 9:12 AM',
+    });
   });
 
   it('gives each recipient their own valid idempotency key', async () => {
@@ -152,14 +188,26 @@ describe('ChannelHealthNotifier.expired', () => {
     });
   });
 
-  it('counts scheduled posts that target the channel by string id', async () => {
+  it('counts only future scheduled posts on the channel, not ones already published to it', async () => {
     const { notifier, where } = setup({ n: 1 });
     await notifier.expired(CHANNEL, AT);
     const q = new PgDialect().sqlToQuery(where.mock.calls[0][0]);
+    expect(q.sql).toContain('"scheduled_at" >');
     expect(q.sql).toContain('@>');
+    expect(q.sql).toContain('not ');
     expect(q.params).toContain(JSON.stringify([{ channelId: '5' }]));
+    expect(q.params).toContain(
+      JSON.stringify([{ channelId: '5', status: 'published' }]),
+    );
     expect(q.params).toContain(WS);
     expect(q.params).toContain('scheduled');
+    // The driver value of a Date is its ISO string: it must be 'now'.
+    const bound = q.params.find(
+      (p) => typeof p === 'string' && /^\d{4}-\d\d-\d\dT/.test(p),
+    ) as string;
+    expect(Math.abs(new Date(bound).getTime() - Date.now())).toBeLessThan(
+      60_000,
+    );
   });
 
   it('never throws and logs no address when a lookup fails', async () => {
@@ -174,10 +222,59 @@ describe('ChannelHealthNotifier.expired', () => {
     warn.mockRestore();
   });
 
+  it('does not use up the claim when the lookup fails, so the next run sends', async () => {
+    const { notifier, recipients, notify, once } = setup();
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    recipients.admins.mockRejectedValueOnce(new Error('db down'));
+    await notifier.expired(CHANNEL, AT);
+    expect(once.claim).not.toHaveBeenCalled();
+    expect(notify.notify).not.toHaveBeenCalled();
+    await notifier.expired(CHANNEL, AT);
+    expect(notify.notify).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
+  });
+
   it('is a notification-footer template on an unlocked email event', () => {
     expect(channelReconnect.footer).toBe('notification');
     expect(channelReconnect.event).toBe('channel_health');
     expect(NOTIFICATION_EVENTS.channel_health.email?.locked).toBe(false);
+  });
+});
+
+describe('ChannelHealthNotifier.markExpired', () => {
+  const FIELDS = { lastError: 'Token refresh failed', updatedAt: AT };
+
+  it('flips the status once and emails only on the flip', async () => {
+    const { notifier, notify, updates, flipped } = setup({ n: 2 });
+    flipped.push({ ...CHANNEL, id: '5' });
+    await notifier.markExpired(5, FIELDS);
+
+    expect(updates).toHaveLength(1);
+    expect(updates[0].set).toEqual({
+      lastError: 'Token refresh failed',
+      updatedAt: AT,
+      connectionStatus: 'expired',
+    });
+    const q = new PgDialect().sqlToQuery(updates[0].where);
+    expect(q.sql).toMatch(/"connection_status" <> \$/);
+    expect(q.params).toContain('expired');
+    expect(notify.notify).toHaveBeenCalledTimes(2);
+    expect(notify.notify.mock.calls[0][0].email.idempotencyKey).toBe(
+      `channel-expired.5.${AT.getTime()}.u-owner`,
+    );
+  });
+
+  it('sends nothing but still writes the fields when it was already expired', async () => {
+    const { notifier, notify, updates } = setup();
+    await notifier.markExpired(5, FIELDS);
+
+    expect(updates).toHaveLength(2);
+    expect(updates[1].set).toEqual(updates[0].set);
+    const q = new PgDialect().sqlToQuery(updates[1].where);
+    expect(q.sql).not.toContain('<>');
+    expect(notify.notify).not.toHaveBeenCalled();
   });
 });
 
@@ -266,6 +363,19 @@ describe('ChannelHealthNotifier.expiring', () => {
     await notifier.expiring(channel, -1, new Date(Date.now() - 1000));
     expect(once.claim).not.toHaveBeenCalled();
     expect(notify.notify).not.toHaveBeenCalled();
+  });
+
+  it('does not use up the claim when the lookup fails, so the next scan sends', async () => {
+    const { notifier, recipients, notify, once } = setup();
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    recipients.workspace.mockRejectedValueOnce(new Error('db down'));
+    await notifier.expiring(channel, 6, ENDS);
+    expect(once.claim).not.toHaveBeenCalled();
+    await notifier.expiring(channel, 6, ENDS);
+    expect(notify.notify).toHaveBeenCalledTimes(2);
+    warn.mockRestore();
   });
 
   it('never throws when the claim fails', async () => {

@@ -68,7 +68,13 @@ const channel = (over: Record<string, unknown> = {}) => ({
 });
 
 const svc = () =>
-  new ChannelService({} as never, {} as never, {} as never, {} as never);
+  new ChannelService(
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+    {} as never,
+  );
 
 beforeEach(() => {
   userQueries = 0;

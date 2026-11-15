@@ -8,14 +8,13 @@ import { defineTemplate } from '../define-template';
 
 export interface ChannelReconnectProps {
   kind: 'expired' | 'expiring';
-  /** The platform id (`instagram`), for the network glyph. */
+  /** The platform id (`instagram`), for the network glyph and the company. */
   platform: string;
   platformName: string;
   handle: string;
-  accountType: string;
-  /** The card's second line, e.g. `Instagram · disconnected today, 9:12 AM`. */
+  /** The card's second line, e.g. `Instagram Business · disconnected today, 9:12 AM`. */
   statusLine: string;
-  /** Scheduled posts that target this channel. */
+  /** Scheduled posts that target this channel and have not gone out yet. */
   waiting: number;
   /** The earliest of them, already formatted in the workspace zone. */
   nextWhen: string | null;
@@ -29,30 +28,35 @@ const BADGE_LABEL: Record<ChannelReconnectProps['kind'], string> = {
   expiring: 'Expires soon',
 };
 
-const BADGE_BACKGROUND: Record<ChannelReconnectProps['kind'], string> = {
-  expired: EMAIL_COLORS.dangerBg,
-  expiring: EMAIL_COLORS.warnBg,
+/** Who asks you to confirm your account, by platform id. */
+const COMPANY: Record<string, string> = {
+  instagram: 'Meta',
+  facebook: 'Meta',
+  threads: 'Meta',
+  whatsapp: 'Meta',
+  youtube: 'Google',
+  google_business: 'Google',
+  linkedin: 'LinkedIn',
+  twitter: 'X',
+  tiktok: 'TikTok',
+  pinterest: 'Pinterest',
 };
 
-const BADGE_COLOR: Record<ChannelReconnectProps['kind'], string> = {
-  expired: EMAIL_COLORS.dangerText,
-  expiring: EMAIL_COLORS.heading,
-};
+const scheduledPosts = (n: number) =>
+  `${n} scheduled ${n === 1 ? 'post' : 'posts'}`;
 
-const posts = (n: number) => `${n} scheduled ${n === 1 ? 'post' : 'posts'}`;
-
-/** C2: a PostCard-style box for the channel: network, handle, status and a badge. */
+/** C2: a grey panel for the channel: network, handle, status line and a badge. */
 function ChannelCard(p: ChannelReconnectProps) {
   return (
     <Section
       style={{
-        border: `1px solid ${EMAIL_COLORS.border}`,
-        borderRadius: '12px',
+        backgroundColor: EMAIL_COLORS.codeBg,
+        borderRadius: '8px',
         margin: '0 0 24px',
       }}
     >
       <Row>
-        <Column style={{ padding: '16px' }}>
+        <Column style={{ padding: '12px 16px' }}>
           <Row>
             <Column
               style={{
@@ -64,23 +68,12 @@ function ChannelCard(p: ChannelReconnectProps) {
             >
               <NetworkGlyph platform={p.platform} size={16} />
               <span style={{ verticalAlign: 'middle' }}>{p.handle}</span>
-              {p.accountType ? (
-                <span
-                  style={{
-                    color: EMAIL_COLORS.muted,
-                    fontWeight: 400,
-                    verticalAlign: 'middle',
-                  }}
-                >
-                  {` · ${p.accountType}`}
-                </span>
-              ) : null}
             </Column>
             <Column align="right" style={{ whiteSpace: 'nowrap' }}>
               <span
                 style={{
-                  backgroundColor: BADGE_BACKGROUND[p.kind],
-                  color: BADGE_COLOR[p.kind],
+                  backgroundColor: EMAIL_COLORS.warnBg,
+                  color: EMAIL_COLORS.warnText,
                   borderRadius: '999px',
                   fontSize: '12px',
                   lineHeight: '20px',
@@ -97,7 +90,7 @@ function ChannelCard(p: ChannelReconnectProps) {
               color: EMAIL_COLORS.muted,
               fontSize: '13px',
               lineHeight: '20px',
-              margin: '8px 0 0',
+              margin: '4px 0 0',
             }}
           >
             {p.statusLine}
@@ -114,15 +107,22 @@ function stakes(p: ChannelReconnectProps) {
   if (p.kind === 'expiring') {
     return (
       <Callout tone="warning">
-        {`Reconnect before ${p.endsOn} so ${posts(p.waiting)} still ${p.waiting === 1 ? 'goes' : 'go'} out.`}
+        {`Reconnect before ${p.endsOn} so ${scheduledPosts(p.waiting)} still ${p.waiting === 1 ? 'goes' : 'go'} out.`}
       </Callout>
     );
   }
   return (
-    <Callout tone="danger">
-      {`${posts(p.waiting)} won't publish until you reconnect.${p.nextWhen ? ` The next one is ${p.nextWhen}.` : ''}`}
+    <Callout tone="warning">
+      {`${scheduledPosts(p.waiting)} won't publish until you reconnect.${p.nextWhen ? ` The next one is ${p.nextWhen}.` : ''}`}
     </Callout>
   );
+}
+
+function expiredPreheader(p: ChannelReconnectProps): string {
+  if (p.waiting <= 0) {
+    return `${p.platformName} access for ${p.handle} has expired.`;
+  }
+  return `${scheduledPosts(p.waiting)} ${p.waiting === 1 ? 'is' : 'are'} waiting on ${p.handle}.`;
 }
 
 /**
@@ -141,7 +141,7 @@ export const channelReconnect = defineTemplate<ChannelReconnectProps>({
   preheader: (p) =>
     p.kind === 'expiring'
       ? `${p.platformName} access for ${p.handle} ends on ${p.endsOn}.`
-      : `${p.platformName} access for ${p.handle} has expired.`,
+      : expiredPreheader(p),
   Body: (p) => (
     <>
       <Heading>
@@ -150,6 +150,11 @@ export const channelReconnect = defineTemplate<ChannelReconnectProps>({
           : `Reconnect ${p.platformName} to keep posting`}
       </Heading>
       <ChannelCard {...p} />
+      {p.kind === 'expired' ? (
+        <Paragraph>
+          {`${p.platformName} ended Schedura's access. This usually happens after a password change, or when ${COMPANY[p.platform] ?? p.platformName} asks you to confirm your account.`}
+        </Paragraph>
+      ) : null}
       {stakes(p)}
       <EmailButton href={p.reconnectUrl} variant="primary">
         {`Reconnect ${p.platformName}`}
@@ -164,10 +169,9 @@ export const channelReconnect = defineTemplate<ChannelReconnectProps>({
     platform: 'instagram',
     platformName: 'Instagram',
     handle: '@lumierecafe',
-    accountType: 'Business account',
-    statusLine: 'Instagram · disconnected today, 9:12 AM',
+    statusLine: 'Instagram Business · disconnected today, 9:12 AM',
     waiting: 4,
-    nextWhen: 'Oct 26, 2026 at 6:00 PM GMT+5',
+    nextWhen: 'Nov 15, 2026 at 6:30 PM GMT+5',
     reconnectUrl: 'https://app.schedura.ai/w/demo/channels',
   },
   variants: {
@@ -176,11 +180,10 @@ export const channelReconnect = defineTemplate<ChannelReconnectProps>({
       platform: 'instagram',
       platformName: 'Instagram',
       handle: '@lumierecafe',
-      accountType: 'Business account',
-      statusLine: 'Instagram · access ends Nov 2, 2026',
+      statusLine: 'Instagram · access ends Nov 22, 2026',
       waiting: 4,
-      nextWhen: 'Oct 26, 2026 at 6:00 PM GMT+5',
-      endsOn: 'Nov 2, 2026',
+      nextWhen: 'Nov 15, 2026 at 6:30 PM GMT+5',
+      endsOn: 'Nov 22, 2026',
       reconnectUrl: 'https://app.schedura.ai/w/demo/channels',
     },
   },

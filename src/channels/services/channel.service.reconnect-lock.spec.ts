@@ -82,6 +82,7 @@ function make(
     { onChannelConnected: jest.fn(async () => undefined) } as never,
     {} as never,
     accountChannels as never,
+    {} as never,
   );
   return { svc, accountChannels };
 }

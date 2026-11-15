@@ -1,4 +1,21 @@
-import { formatDay, formatWhen, initials } from './format-when';
+import { formatDay, formatTime, formatWhen, initials } from './format-when';
+
+describe('formatTime', () => {
+  it('formats the time of day in the zone, with no zone name', () => {
+    expect(formatTime(new Date('2026-11-15T04:12:00Z'), 'Asia/Karachi')).toBe(
+      '9:12 AM',
+    );
+    expect(
+      formatTime(new Date('2026-07-01T18:05:00Z'), 'America/New_York'),
+    ).toBe('2:05 PM');
+  });
+
+  it('falls back to UTC for an invalid zone', () => {
+    expect(formatTime(new Date('2026-10-26T05:42:00Z'), 'Not/AZone')).toBe(
+      '5:42 AM',
+    );
+  });
+});
 
 describe('formatWhen', () => {
   const at = new Date('2026-10-26T05:42:00Z');

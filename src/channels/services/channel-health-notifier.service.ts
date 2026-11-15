@@ -1,12 +1,19 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { and, eq, min, count, sql } from 'drizzle-orm';
+import { and, count, eq, gt, min, ne, not, sql } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
-import { PLATFORM_CONFIG } from '../../drizzle/schema/channels.schema';
+import {
+  PLATFORM_CONFIG,
+  socialMediaChannels,
+} from '../../drizzle/schema/channels.schema';
 import { posts } from '../../drizzle/schema/posts.schema';
 import { EmailOnceService } from '../../email/email-once.service';
 import { AppLinks } from '../../email/links/app-links';
-import { formatDay, formatWhen } from '../../email/links/format-when';
+import {
+  formatDay,
+  formatTime,
+  formatWhen,
+} from '../../email/links/format-when';
 import {
   channelReconnect,
   type ChannelReconnectProps,
@@ -20,14 +27,28 @@ interface HealthChannel {
   workspaceId: string;
   platform: string;
   accountName: string;
-  /** `business_account`; shown as `Business account`. Left out when unknown. */
+  /** The `@handle`, shown instead of `accountName` when there is one. */
+  username?: string | null;
+  /** `business_account`; shown as `Business` in `Instagram Business`. Left out when unknown. */
   accountType?: string | null;
 }
+
+/** What a writer changes besides the status, e.g. `lastError`. */
+type ExpiredFields = Partial<typeof socialMediaChannels.$inferInsert>;
 
 const DAY_SECONDS = 24 * 60 * 60;
 const EXPIRED_CLAIM_TTL_S = 7 * DAY_SECONDS;
 const EXPIRING_CLAIM_TTL_S = 30 * DAY_SECONDS;
 const DEFAULT_TIMEZONE = 'UTC';
+
+/** Short names for the account type, as the Figma card shows them. */
+const ACCOUNT_TYPE_LABEL: Record<string, string> = {
+  business_account: 'Business',
+  page: 'Page',
+  profile: 'Profile',
+  channel: 'Channel',
+  group: 'Group',
+};
 
 function platformNameOf(platform: string): string {
   if (platform === 'twitter') return 'X';
@@ -37,19 +58,22 @@ function platformNameOf(platform: string): string {
   );
 }
 
-function accountTypeLabel(accountType: string | null | undefined): string {
-  const words = (accountType ?? '').replace(/_/g, ' ').trim();
-  return words ? words.charAt(0).toUpperCase() + words.slice(1) : '';
+function handleOf(channel: HealthChannel): string {
+  const username = channel.username?.trim().replace(/^@/, '');
+  return username ? `@${username}` : channel.accountName;
 }
 
 /**
  * C2: tells a workspace's owner and admins that a channel needs reconnecting,
  * once it has expired and a week and a day before it does. Callers are the
- * token refresh job and the daily expiry scan; neither may fail or stall
- * because of email, so nothing here throws.
+ * writers of `connection_status = 'expired'`, the token refresh job and the
+ * daily expiry scan; none may fail or stall because of email, so the email
+ * methods never throw.
  *
  * Each email is claimed in Redis per channel and expiry episode, because a
- * channel stays expired across many refresh runs and several replicas.
+ * channel stays expired across many refresh runs and several replicas. The
+ * claim is the last thing before the send, after everything that can throw,
+ * so a failed lookup never uses it up.
  */
 @Injectable()
 export class ChannelHealthNotifier {
@@ -65,30 +89,64 @@ export class ChannelHealthNotifier {
   ) {}
 
   /**
+   * The one place a channel moves to `expired`: a compare-and-set, so only the
+   * writer that actually flips it (not one that finds it already expired)
+   * sends the email. `fields` are the writer's own columns (`lastError`, ...);
+   * they are written either way, as each writer did before. A database error
+   * is the caller's, as it was; the email never throws.
+   */
+  async markExpired(channelId: number, fields: ExpiredFields): Promise<void> {
+    const set = { ...fields, connectionStatus: 'expired' };
+    const flipped = await this.db
+      .update(socialMediaChannels)
+      .set(set)
+      .where(
+        and(
+          eq(socialMediaChannels.id, channelId),
+          ne(socialMediaChannels.connectionStatus, 'expired'),
+        ),
+      )
+      .returning({
+        id: socialMediaChannels.id,
+        workspaceId: socialMediaChannels.workspaceId,
+        platform: socialMediaChannels.platform,
+        accountName: socialMediaChannels.accountName,
+        username: socialMediaChannels.username,
+        accountType: socialMediaChannels.accountType,
+      });
+    if (flipped.length === 0) {
+      await this.db
+        .update(socialMediaChannels)
+        .set(set)
+        .where(eq(socialMediaChannels.id, channelId));
+      return;
+    }
+    await this.expired(
+      { ...flipped[0], id: Number(flipped[0].id) },
+      fields.updatedAt instanceof Date ? fields.updatedAt : new Date(),
+    );
+  }
+
+  /**
    * The channel just moved to `expired` (the caller saw the transition). The
    * day claim stops a channel that flaps between connected and expired from
    * mailing every time; a later day sends again.
    */
   async expired(channel: HealthChannel, at: Date): Promise<void> {
     try {
-      const day = at.toISOString().slice(0, 10);
-      if (
-        !(await this.once.claim(
-          `channel-expired.${channel.id}.${day}`,
-          EXPIRED_CLAIM_TTL_S,
-        ))
-      ) {
-        return;
-      }
       const ctx = await this.context(channel);
       const platformName = platformNameOf(channel.platform);
-      const time = formatWhen(at, ctx.timeZone)
-        .replace(/^.* at /, '')
-        .replace(/ \S+$/, '');
+      const label = ACCOUNT_TYPE_LABEL[channel.accountType ?? ''];
+      const network = label ? `${platformName} ${label}` : platformName;
       const props = this.props(channel, ctx, {
         kind: 'expired',
-        statusLine: `${platformName} · disconnected today, ${time}`,
+        statusLine: `${network} · disconnected today, ${formatTime(at, ctx.timeZone)}`,
       });
+      const claimed = await this.once.claim(
+        `channel-expired.${channel.id}.${at.toISOString().slice(0, 10)}`,
+        EXPIRED_CLAIM_TTL_S,
+      );
+      if (!claimed) return;
       for (const r of ctx.admins) {
         await this.notify.notify({
           userId: r.id,
@@ -119,11 +177,10 @@ export class ChannelHealthNotifier {
     endsAt: Date,
   ): Promise<void> {
     try {
-      // Access that already ended is the refresh job's `expired` mail.
+      // Access that already ended is the `expired` mail's business.
       if (endsAt.getTime() <= Date.now()) return;
       const stage = daysLeft <= 1 ? '1' : '7';
       const claimKey = `channel-expiring.${channel.id}.${new Date(channel.refreshTokenIssuedAt).getTime()}.${stage}`;
-      if (!(await this.once.claim(claimKey, EXPIRING_CLAIM_TTL_S))) return;
       const ctx = await this.context(channel);
       const endsOn = formatDay(endsAt, ctx.timeZone);
       const props = this.props(channel, ctx, {
@@ -131,6 +188,7 @@ export class ChannelHealthNotifier {
         statusLine: `${platformNameOf(channel.platform)} · access ends ${endsOn}`,
         endsOn,
       });
+      if (!(await this.once.claim(claimKey, EXPIRING_CLAIM_TTL_S))) return;
       for (const r of ctx.admins) {
         await this.notify.notify({
           userId: r.id,
@@ -161,10 +219,16 @@ export class ChannelHealthNotifier {
     };
   }
 
-  /** Scheduled posts whose targets include the channel (targets hold it as a string id). */
+  /**
+   * Posts still to go out that target the channel (`targets` holds it as a
+   * string id): scheduled, in the future, and with no published target on
+   * this channel. A partly published post has already left `scheduled`, the
+   * target test covers the rest.
+   */
   private async waiting(
     channel: HealthChannel,
   ): Promise<{ waiting: number; next: Date | null }> {
+    const channelId = String(channel.id);
     const [row] = await this.db
       .select({ n: count(), next: min(posts.scheduledAt) })
       .from(posts)
@@ -172,7 +236,11 @@ export class ChannelHealthNotifier {
         and(
           eq(posts.workspaceId, channel.workspaceId),
           eq(posts.status, 'scheduled'),
-          sql`${posts.targets} @> ${JSON.stringify([{ channelId: String(channel.id) }])}::jsonb`,
+          gt(posts.scheduledAt, new Date()),
+          sql`${posts.targets} @> ${JSON.stringify([{ channelId }])}::jsonb`,
+          not(
+            sql`${posts.targets} @> ${JSON.stringify([{ channelId, status: 'published' }])}::jsonb`,
+          ),
         ),
       );
     const waiting = Number(row?.n ?? 0);
@@ -191,8 +259,7 @@ export class ChannelHealthNotifier {
       ...part,
       platform: channel.platform,
       platformName: platformNameOf(channel.platform),
-      handle: channel.accountName,
-      accountType: accountTypeLabel(channel.accountType),
+      handle: handleOf(channel),
       waiting: ctx.waiting,
       nextWhen: ctx.next ? formatWhen(ctx.next, ctx.timeZone) : null,
       reconnectUrl: this.links.channels(channel.workspaceId),

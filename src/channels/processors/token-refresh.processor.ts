@@ -1,7 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { and, eq, ne } from 'drizzle-orm';
+import { eq } from 'drizzle-orm';
 import { QUEUES } from '../../queue/queue.module';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -92,33 +92,12 @@ export class TokenRefreshProcessor extends WorkerHost {
         `Token refresh failed: channelId=${channelId} platform=${channel.platform}: ${message}`,
       );
 
-      // Mark as expired so user is prompted to reconnect. Only the row that
-      // actually moves to expired comes back, so only that run emails.
-      const now = new Date();
-      const moved = await this.db
-        .update(socialMediaChannels)
-        .set({
-          connectionStatus: 'expired',
-          lastError: `Refresh failed: ${message}`.slice(0, 500),
-          updatedAt: now,
-        })
-        .where(
-          and(
-            eq(socialMediaChannels.id, channelId),
-            ne(socialMediaChannels.connectionStatus, 'expired'),
-          ),
-        )
-        .returning({ id: socialMediaChannels.id });
-
-      if (moved.length > 0) {
-        try {
-          await this.health.expired(channel, now);
-        } catch (notifyErr) {
-          this.logger.warn(
-            `Token refresh: reconnect email for channel ${channelId} failed: ${(notifyErr as Error)?.message ?? 'Unknown error'}`,
-          );
-        }
-      }
+      // Mark as expired so user is prompted to reconnect. The notifier flips
+      // the status once and emails only the run that actually flipped it.
+      await this.health.markExpired(channelId, {
+        lastError: `Refresh failed: ${message}`.slice(0, 500),
+        updatedAt: new Date(),
+      });
 
       return { ok: false };
     }

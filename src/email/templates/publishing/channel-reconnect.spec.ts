@@ -1,4 +1,5 @@
 import { renderEmail } from '../../render/render-email';
+import { EMAIL_COLORS } from '../../render/palette';
 import type { RenderContext } from '../types';
 import {
   channelReconnect,
@@ -29,38 +30,82 @@ describe('C2 channel-reconnect', () => {
   });
 
   describe('expired', () => {
-    it('has the Figma subject, heading, badge and button', async () => {
+    it('has the Figma subject, preheader, heading and button', async () => {
       const r = await renderEmail(channelReconnect, expired, ctx);
       expect(r.subject).toBe('Reconnect Instagram to keep posting');
+      expect(r.preheader).toBe(
+        '4 scheduled posts are waiting on @lumierecafe.',
+      );
       expect(r.html).toContain('Reconnect Instagram to keep posting');
-      expect(r.html).toContain('Needs you');
       expect(r.html).toContain('Reconnect Instagram');
-      expect(r.html).toContain('@lumierecafe');
-      expect(r.html).toContain('Business account');
-      expect(r.html).toContain('Instagram · disconnected today, 9:12 AM');
       expect(r.html).toContain(expired.reconnectUrl);
       expect(r.html).toContain(
         'Only owners and admins can reconnect a channel.',
       );
     });
 
+    it('has the card: handle alone, then network, type and when', async () => {
+      const r = await renderEmail(channelReconnect, expired, ctx);
+      expect(r.html).toContain('@lumierecafe');
+      expect(r.html).toContain(
+        'Instagram Business · disconnected today, 9:12 AM',
+      );
+      expect(r.html).not.toContain('@lumierecafe · ');
+      expect(r.html).toContain('Needs you');
+    });
+
+    it('explains why, naming the company that asks for confirmation', async () => {
+      const r = await renderEmail(channelReconnect, expired, ctx);
+      expect(r.text).toContain(
+        "Instagram ended Schedura's access. This usually happens after a password change, or when Meta asks you to confirm your account.",
+      );
+    });
+
+    it.each([
+      ['facebook', 'Meta'],
+      ['threads', 'Meta'],
+      ['whatsapp', 'Meta'],
+      ['youtube', 'Google'],
+      ['google_business', 'Google'],
+      ['linkedin', 'LinkedIn'],
+      ['twitter', 'X'],
+      ['tiktok', 'TikTok'],
+      ['pinterest', 'Pinterest'],
+    ])('names %s as asked by %s', async (platform, company) => {
+      const r = await renderEmail(
+        channelReconnect,
+        { ...expired, platform, platformName: 'Net' },
+        ctx,
+      );
+      expect(r.text).toContain(`or when ${company} asks you to confirm`);
+    });
+
+    it('falls back to the network name for any other platform', async () => {
+      const r = await renderEmail(
+        channelReconnect,
+        { ...expired, platform: 'bluesky', platformName: 'Bluesky' },
+        ctx,
+      );
+      expect(r.text).toContain(
+        "Bluesky ended Schedura's access. This usually happens after a password change, or when Bluesky asks you to confirm your account.",
+      );
+    });
+
     it('says how many posts are held and when the next one is', async () => {
       const r = await renderEmail(channelReconnect, expired, ctx);
       expect(r.text).toContain(
-        "4 scheduled posts won't publish until you reconnect. The next one is Oct 26, 2026 at 6:00 PM GMT+5.",
+        "4 scheduled posts won't publish until you reconnect. The next one is Nov 15, 2026 at 6:30 PM GMT+5.",
       );
     });
 
-    it('uses the singular for one post', async () => {
-      const r = await renderEmail(
-        channelReconnect,
-        { ...expired, waiting: 1 },
-        ctx,
-      );
+    it('uses the singular for one post, in the callout and the preheader', async () => {
+      const props = { ...expired, waiting: 1 };
+      const r = await renderEmail(channelReconnect, props, ctx);
       expect(r.text).toContain("1 scheduled post won't publish");
+      expect(r.preheader).toBe('1 scheduled post is waiting on @lumierecafe.');
     });
 
-    it('omits the callout when nothing is waiting', async () => {
+    it('omits the callout and falls back to the expired preheader when nothing is waiting', async () => {
       const r = await renderEmail(
         channelReconnect,
         { ...expired, waiting: 0, nextWhen: null },
@@ -68,7 +113,19 @@ describe('C2 channel-reconnect', () => {
       );
       expect(r.html).not.toContain('scheduled post');
       expect(r.html).not.toContain('publish until you reconnect');
+      expect(r.preheader).toBe(
+        'Instagram access for @lumierecafe has expired.',
+      );
       expect(r.html).toContain('Reconnect Instagram');
+    });
+
+    it('uses amber, not danger, for the badge and the callout', async () => {
+      const r = await renderEmail(channelReconnect, expired, ctx);
+      expect(r.html).toContain(EMAIL_COLORS.warnBg);
+      expect(r.html).toContain(EMAIL_COLORS.warnText);
+      expect(r.html).not.toContain(EMAIL_COLORS.dangerBg);
+      expect(r.html).not.toContain(EMAIL_COLORS.dangerText);
+      expect(r.html).toContain('icon-warning.png');
     });
 
     it('escapes a handle with markup', async () => {
@@ -85,16 +142,21 @@ describe('C2 channel-reconnect', () => {
   describe('expiring', () => {
     it('has the expiring subject, preheader, badge and warning callout', async () => {
       const r = await renderEmail(channelReconnect, expiring, ctx);
-      expect(r.subject).toBe('Reconnect Instagram before Nov 2, 2026');
+      expect(r.subject).toBe('Reconnect Instagram before Nov 22, 2026');
       expect(r.preheader).toBe(
-        'Instagram access for @lumierecafe ends on Nov 2, 2026.',
+        'Instagram access for @lumierecafe ends on Nov 22, 2026.',
       );
       expect(r.html).toContain('Expires soon');
-      expect(r.html).toContain('Instagram · access ends Nov 2, 2026');
+      expect(r.html).toContain('Instagram · access ends Nov 22, 2026');
       expect(r.text).toContain(
-        'Reconnect before Nov 2, 2026 so 4 scheduled posts still go out.',
+        'Reconnect before Nov 22, 2026 so 4 scheduled posts still go out.',
       );
       expect(r.html).not.toContain('Needs you');
+    });
+
+    it('has no "ended access" paragraph', async () => {
+      const r = await renderEmail(channelReconnect, expiring, ctx);
+      expect(r.text).not.toContain("ended Schedura's access");
     });
 
     it('omits the callout when nothing is waiting', async () => {

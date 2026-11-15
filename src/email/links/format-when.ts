@@ -40,6 +40,16 @@ export function formatDay(date: Date, timeZone: string): string {
   return `${p.month} ${p.day}, ${p.year}`;
 }
 
+/** '9:12 AM' in `timeZone` (an invalid zone falls back to UTC). */
+export function formatTime(date: Date, timeZone: string): string {
+  const p = parts(date, timeZone, {
+    hour: 'numeric',
+    minute: '2-digit',
+    hour12: true,
+  });
+  return `${p.hour}:${p.minute} ${p.dayPeriod}`;
+}
+
 /**
  * 'Oct 26, 2026 at 10:42 AM GMT+5': the day, the time and a short zone name,
  * in `timeZone` (an invalid zone falls back to UTC). Assembled from parts

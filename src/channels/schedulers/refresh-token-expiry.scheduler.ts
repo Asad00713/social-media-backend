@@ -38,6 +38,7 @@ export class RefreshTokenExpiryScheduler {
         platform: socialMediaChannels.platform,
         accountName: socialMediaChannels.accountName,
         accountType: socialMediaChannels.accountType,
+        username: socialMediaChannels.username,
         workspaceId: socialMediaChannels.workspaceId,
         refreshTokenIssuedAt: socialMediaChannels.refreshTokenIssuedAt,
       })
@@ -56,6 +57,7 @@ export class RefreshTokenExpiryScheduler {
       platform: string;
       accountName: string;
       accountType: string;
+      username: string | null;
       workspaceId: string;
       refreshTokenIssuedAt: Date;
       endsAt: Date;
@@ -76,6 +78,7 @@ export class RefreshTokenExpiryScheduler {
           platform: r.platform,
           accountName: r.accountName,
           accountType: r.accountType,
+          username: r.username,
           workspaceId: r.workspaceId,
           refreshTokenIssuedAt: new Date(r.refreshTokenIssuedAt),
           endsAt: new Date(expiresAt),

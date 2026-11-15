@@ -16,6 +16,7 @@ export const EMAIL_COLORS = {
   link: '#2563EB',
   infoBg: '#F3F4F6',
   warnBg: '#FEF3C7',
+  warnText: '#B45309',
   dangerBg: '#FEE2E2',
   dangerText: '#B91C1C',
   codeBg: '#F9FAFB',

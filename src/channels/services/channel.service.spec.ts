@@ -32,9 +32,10 @@ jest.mock('../../drizzle/db', () => ({
 describe('ChannelService.findChannelsByPlatformAccountAllWorkspaces', () => {
   it('returns every workspace holding this platform account', async () => {
     // ChannelService's constructor takes (oauthService, syncLifecycle,
-    // googleRevoke, accountChannels) — none of them are touched by this
-    // method, so stub all four.
+    // googleRevoke, accountChannels, health) — none of them are touched by this
+    // method, so stub all five.
     const service = new ChannelService(
+      {} as any,
       {} as any,
       {} as any,
       {} as any,
