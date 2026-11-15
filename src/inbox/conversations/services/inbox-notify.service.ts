@@ -1,13 +1,18 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 import { and, eq } from 'drizzle-orm';
 import type { DbType } from '../../../drizzle/db';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { users } from '../../../drizzle/schema/users.schema';
 import { workspace } from '../../../drizzle/schema/workspace.schema';
 import { workspaceInvitation } from '../../../drizzle/schema/workspace-invitation.schema';
+import { AppLinks } from '../../../email/links/app-links';
+import {
+  inboxActivity,
+  INBOX_EVENT,
+  type InboxActivityProps,
+} from '../../../email/templates/inbox/inbox-activity';
 import { NotificationEmitterService } from '../../../notifications/notification-emitter.service';
-import { EmailService } from '../../../email/email.service';
+import { NotifyService } from '../../../notifications/notify.service';
 import {
   roleCan,
   type WorkspaceRole,
@@ -35,15 +40,6 @@ interface RedisLike {
     seconds: number,
     flag: 'NX',
   ): Promise<'OK' | null>;
-  del(key: string): Promise<unknown>;
-}
-
-function escapeHtml(s: string): string {
-  return s
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
 
 /**
@@ -57,11 +53,11 @@ export class InboxNotifyService {
 
   constructor(
     private readonly emitter: NotificationEmitterService,
-    private readonly email: EmailService,
+    private readonly notify: NotifyService,
     private readonly settings: InboxSettingsService,
     @Inject(DRIZZLE) private readonly db: DbType,
     @Inject('REDIS_CLIENT') private readonly redis: RedisLike,
-    private readonly config: ConfigService,
+    private readonly links: AppLinks,
   ) {}
 
   async assigned(args: {
@@ -148,7 +144,11 @@ export class InboxNotifyService {
     });
   }
 
-  /** Applies each recipient's notify level, then bell and (throttled) email. */
+  /**
+   * Applies each recipient's notify level, then hands the bell and the
+   * (throttled) email to NotifyService, which applies the person's own
+   * per-channel preferences on top of the level.
+   */
   private async fanOut(
     workspaceId: string,
     conversationId: string,
@@ -158,6 +158,8 @@ export class InboxNotifyService {
     bell: (userId: string) => Promise<unknown>,
   ): Promise<void> {
     if (recipients.length === 0) return;
+    let workspaceName: Promise<string> | undefined;
+    const nameOf = () => (workspaceName ??= this.workspaceName(workspaceId));
     const settings = await this.settings.getMany(
       recipients.map((r) => r.id),
       workspaceId,
@@ -167,53 +169,74 @@ export class InboxNotifyService {
         const notify = settings.get(r.id)?.notify ?? 'assigned_and_mentions';
         if (notify === 'nothing') return;
         if (kind === 'new_message' && notify !== 'everything') return;
-        await this.safely(`bell to ${r.id}`, () => bell(r.id));
-        await this.safely(`email to ${r.id}`, () =>
-          this.mail(r, workspaceId, conversationId, sentence),
+        const email = await this.mailFor(
+          r,
+          workspaceId,
+          conversationId,
+          { kind, sentence },
+          nameOf,
+        );
+        await this.safely(`notify ${r.id}`, () =>
+          this.notify.notify({
+            userId: r.id,
+            workspaceId,
+            event: INBOX_EVENT[kind],
+            bell: () => bell(r.id),
+            email,
+          }),
         );
       }),
     );
   }
 
-  private async mail(
+  /**
+   * The email for one person, or undefined when their 10-minute throttle for
+   * this conversation is still running. Never throws, so a Redis or lookup
+   * failure costs the email and not the bell.
+   */
+  private async mailFor(
     to: Member,
     workspaceId: string,
     conversationId: string,
-    sentence: string,
-  ): Promise<void> {
-    const key = `inbox-mail:${to.id}:${conversationId}`;
-    const claimed = await this.redis.set(
-      key,
-      '1',
-      'EX',
-      MAIL_WINDOW_SECONDS,
-      'NX',
-    );
-    if (claimed !== 'OK') return;
-    const base = this.config.get<string>('FRONTEND_URL') ?? '';
-    const url = `${base}/w/${workspaceId}/inbox?c=${conversationId}`;
-    const safe = escapeHtml(sentence);
-    let sent = false;
+    what: Pick<InboxActivityProps, 'kind' | 'sentence'>,
+    workspaceName: () => Promise<string>,
+  ) {
     try {
-      const result = await this.email.sendEmail({
+      const key = `inbox-mail:${to.id}:${conversationId}`;
+      const claimed = await this.redis.set(
+        key,
+        '1',
+        'EX',
+        MAIL_WINDOW_SECONDS,
+        'NX',
+      );
+      if (claimed !== 'OK') return undefined;
+      const props: InboxActivityProps = {
+        ...what,
+        workspaceName: await workspaceName(),
+        conversationUrl: this.links.inbox(workspaceId, conversationId),
+      };
+      return {
+        template: inboxActivity,
+        props,
         to: to.email,
-        subject: sentence,
-        html: `<p>${safe}</p><p><a href="${url}" style="display:inline-block;padding:10px 16px;background:#111;color:#fff;border-radius:6px;text-decoration:none">Open conversation</a></p>`,
-        text: `${sentence}
-
-Open the conversation: ${url}`,
-      });
-      // EmailService reports failure in its result instead of throwing.
-      sent = !(result && result.success === false);
-      if (!sent) {
-        this.logger.warn(
-          `inbox email to ${to.id} not sent: ${result?.error ?? 'unknown'}`,
-        );
-      }
-    } finally {
-      // Nothing went out: free the claim so a later event can retry.
-      if (!sent) await this.redis.del(key).catch(() => undefined);
+        // One mail per person and conversation in each 10-minute window.
+        idempotencyKey: `inbox.${to.id}.${conversationId}.${Math.floor(Date.now() / (MAIL_WINDOW_SECONDS * 1000))}`,
+      };
+    } catch (err) {
+      this.logger.warn(
+        `inbox email for ${to.id} skipped: ${(err as Error).message}`,
+      );
+      return undefined;
     }
+  }
+
+  protected async workspaceName(workspaceId: string): Promise<string> {
+    const [row] = await this.db
+      .select({ name: workspace.name })
+      .from(workspace)
+      .where(eq(workspace.id, workspaceId));
+    return row?.name ?? 'your workspace';
   }
 
   /**

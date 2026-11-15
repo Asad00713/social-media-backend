@@ -1,3 +1,5 @@
+import type { ConfigService } from '@nestjs/config';
+import { AppLinks } from '../../../email/links/app-links';
 import type { Brief } from '../../lib/brief';
 import {
   briefTextOf,
@@ -7,6 +9,10 @@ import {
 } from './report-email';
 
 const UNSUB = 'https://api.schedura.ai/reports/unsubscribe/tok';
+
+const LINKS = new AppLinks({
+  get: () => undefined,
+} as unknown as ConfigService);
 
 function input(over: Partial<ReportEmailInput> = {}): ReportEmailInput {
   return {
@@ -23,115 +29,125 @@ function input(over: Partial<ReportEmailInput> = {}): ReportEmailInput {
   };
 }
 
+const email = (over: Partial<ReportEmailInput> = {}) =>
+  reportEmail(input(over), LINKS);
+
 describe('reportEmail', () => {
-  it('puts the name and window in the subject', () => {
-    expect(reportEmail(input()).subject).toBe('Acme report: Nov 1 – Nov 30');
+  it('puts the name and window in the subject', async () => {
+    expect((await email()).subject).toBe('Acme report: Nov 1 – Nov 30');
   });
 
-  it('escapes the name and the note in the HTML', () => {
-    const { html } = reportEmail(
-      input({ reportName: '<script>x</script>', note: 'a & b' }),
-    );
+  it('escapes the name and the note in the HTML', async () => {
+    const { html } = await email({
+      reportName: '<script>x</script>',
+      note: 'a & b',
+    });
     expect(html).not.toContain('<script>');
     expect(html).toContain('&lt;script&gt;x&lt;/script&gt;');
     expect(html).toContain('a &amp; b');
   });
 
-  it('escapes the workspace name, the brief and the logo url', () => {
-    const { html } = reportEmail(
-      input({
-        workspaceName: 'A<b>',
-        briefText: '<i>up</i>',
-        logoUrl: 'https://x/l.png" onerror="y',
-      }),
-    );
+  it('escapes the workspace name, the brief and the logo url', async () => {
+    const { html } = await email({
+      workspaceName: 'A<b>',
+      briefText: '<i>up</i>',
+      logoUrl: 'https://x/l.png" onerror="y',
+    });
     expect(html).toContain('A&lt;b&gt;');
     expect(html).toContain('&lt;i&gt;up&lt;/i&gt;');
     expect(html).not.toContain('onerror="y');
   });
 
-  it('shows the logo only when set', () => {
-    expect(reportEmail(input()).html).not.toContain('<img');
-    expect(
-      reportEmail(input({ logoUrl: 'https://cdn.x/logo.png' })).html,
-    ).toContain('<img src="https://cdn.x/logo.png"');
+  it('shows the workspace logo only when set, after the Schedura mark', async () => {
+    expect((await email()).html).not.toContain('cdn.x/logo.png');
+    const { html } = await email({ logoUrl: 'https://cdn.x/logo.png' });
+    expect(html).toContain('src="https://cdn.x/logo.png"');
+    expect(html.indexOf('/email/logo.png')).toBeLessThan(
+      html.indexOf('src="https://cdn.x/logo.png"'),
+    );
   });
 
-  it('shows the In brief text only when given', () => {
-    expect(reportEmail(input()).html).not.toContain('In brief');
-    const { html, text } = reportEmail(input({ briefText: 'Reach rose 12%.' }));
+  it('shows the In brief text only when given', async () => {
+    expect((await email()).html).not.toContain('In brief');
+    const { html, text } = await email({ briefText: 'Reach rose 12%.' });
+    expect(html).toContain('In brief');
     expect(html).toContain('Reach rose 12%.');
     expect(text).toContain('Reach rose 12%.');
   });
 
-  it('formats the four totals in en-US', () => {
-    const { html, text } = reportEmail(input());
+  it('formats the four totals in en-US', async () => {
+    const { html, text } = await email();
     for (const label of ['Reach', 'Engagements', 'Followers', 'Posts']) {
       expect(html).toContain(label);
       expect(text).toContain(label);
     }
     expect(html).toContain('12,345');
-    expect(text).toContain('Reach: 12,345');
+    expect(text).toContain('Reach 12,345');
   });
 
-  it('leaves the totals out when there are none', () => {
-    const { html, text } = reportEmail(input({ totals: null }));
+  it('leaves the totals out when there are none', async () => {
+    const { html, text } = await email({ totals: null });
     expect(html).not.toContain('Engagements');
     expect(text).not.toContain('Engagements');
   });
 
-  it('omits the button when there is no share url', () => {
-    const { html, text } = reportEmail(input({ shareUrl: null }));
+  it('omits the button when there is no share url', async () => {
+    const { html, text } = await email({ shareUrl: null });
     expect(html).not.toContain('Open the report');
     expect(text).not.toContain('Open the report');
   });
 
-  it('has the button and the url when a share url is given', () => {
-    const { html, text } = reportEmail(input());
+  it('has the button and the url when a share url is given', async () => {
+    const { html, text } = await email();
     expect(html).toContain('Open the report');
     expect(html).toContain('href="https://app.schedura.ai/r/abc"');
-    expect(text).toContain('Open the report: https://app.schedura.ai/r/abc');
+    expect(html.match(/data-email-button/g)).toHaveLength(1);
+    expect(text).toContain('Open the report https://app.schedura.ai/r/abc');
   });
 
-  it('shows a missing total as a dash, never 0', () => {
-    const { html, text } = reportEmail(
-      input({
-        totals: { reach: 5, engagements: 6, followers: null, posts: 7 },
-      }),
-    );
+  it('shows a missing total as a dash, never 0', async () => {
+    const { html, text } = await email({
+      totals: { reach: 5, engagements: 6, followers: null, posts: 7 },
+    });
     expect(html).toMatch(/Followers[\s\S]*?>—</);
     expect(html).not.toContain('>0<');
-    expect(text).toContain('Followers: —');
+    expect(text).toContain('Followers —');
   });
 
-  it('shows a real zero as 0', () => {
-    const { text } = reportEmail(
-      input({
-        totals: { reach: 0, engagements: 0, followers: 0, posts: 0 },
-      }),
-    );
-    expect(text).toContain('Posts: 0');
+  it('shows a real zero as 0', async () => {
+    const { text } = await email({
+      totals: { reach: 0, engagements: 0, followers: 0, posts: 0 },
+    });
+    expect(text).toContain('Posts 0');
   });
 
-  it('says why the person gets it and links to stop it, in both bodies', () => {
-    const { html, text } = reportEmail(input());
+  it('says why the person gets it and links to stop it, in both bodies', async () => {
+    const { html, text } = await email();
     const sentence = 'You get this because Acme added you to this report.';
     expect(html).toContain(sentence);
     expect(text).toContain(sentence);
     expect(html).toContain(`href="${UNSUB}"`);
     expect(html).toContain('Stop receiving this report');
-    expect(text).toContain(`Stop receiving this report: ${UNSUB}`);
+    expect(text).toContain(`Stop receiving this report ${UNSUB}`);
   });
 
-  it('carries the one-click unsubscribe headers', () => {
-    expect(reportEmail(input()).headers).toEqual({
+  it('ends with the shared footer, help and privacy links included', async () => {
+    const { html, text } = await email();
+    expect(html).toContain('Schedura · schedura.ai');
+    expect(text).toContain('Schedura · schedura.ai');
+    expect(html).toContain('href="https://schedura.ai/help"');
+    expect(html).toContain('href="https://schedura.ai/privacy"');
+  });
+
+  it('carries the one-click unsubscribe headers', async () => {
+    expect((await email()).headers).toEqual({
       'List-Unsubscribe': '<https://api.schedura.ai/reports/unsubscribe/tok>',
       'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
     });
   });
 
-  it('puts the note after the button and before the footer', () => {
-    const { text } = reportEmail(input({ note: 'Thanks all' }));
+  it('puts the note after the button and before the footer', async () => {
+    const { text } = await email({ note: 'Thanks all' });
     expect(text.indexOf('Thanks all')).toBeGreaterThan(
       text.indexOf('Open the report'),
     );
@@ -140,55 +156,52 @@ describe('reportEmail', () => {
     );
   });
 
-  it('treats a blank note and a blank brief as absent, in both bodies', () => {
-    const { html, text } = reportEmail(
-      input({ note: '  \n ', briefText: ' ' }),
-    );
+  it('keeps a note on its own lines in the HTML', async () => {
+    const { html } = await email({ note: 'Thanks all' });
+    expect(html).toContain('white-space:pre-line');
+  });
+
+  it('treats a blank note and a blank brief as absent, in both bodies', async () => {
+    const { html, text } = await email({ note: '  \n ', briefText: ' ' });
     expect(html).not.toContain('In brief');
     expect(html).not.toContain('white-space:pre-line');
     expect(text).not.toContain('In brief');
-    // name, window, totals, button, footer: one blank line between each.
-    expect(text.split('\n\n')).toHaveLength(5);
   });
 
-  it('trims a note and a brief that have padding', () => {
-    const { text } = reportEmail(
-      input({ note: '  Thanks  ', briefText: ' Up. ' }),
-    );
-    expect(text).toContain('In brief: Up.');
-    expect(text).toContain('\n\nThanks\n\n');
+  it('trims a note and a brief that have padding', async () => {
+    const { text } = await email({ note: '  Thanks  ', briefText: ' Up. ' });
+    expect(text).toMatch(/In brief\s+Up\./);
+    expect(text).toMatch(/\n\nThanks\n\n/);
   });
 
-  it('names the workspace in the logo alt text', () => {
-    const { html } = reportEmail(
-      input({ logoUrl: 'https://cdn.x/l.png', workspaceName: 'A"cme' }),
-    );
+  it('names the workspace in the logo alt text', async () => {
+    const { html } = await email({
+      logoUrl: 'https://cdn.x/l.png',
+      workspaceName: 'A"cme',
+    });
     expect(html).toContain('alt="A&quot;cme"');
   });
 
-  it('is a full document with a charset, viewport and title', () => {
-    const { html } = reportEmail(input({ reportName: 'A<b>' }));
-    expect(html).toContain('<head><meta charset="utf-8">');
-    expect(html).toContain('name="viewport"');
-    expect(html).toContain('<title>A&lt;b&gt;: Nov 1 – Nov 30</title>');
+  it('is a full document with a preheader after the subject', async () => {
+    const { html } = await email({ reportName: 'A<b>' });
+    expect(html).toMatch(/^<!DOCTYPE html/);
+    expect(html).toContain('Nov 1 – Nov 30 · Acme');
   });
 
-  it('lays the HTML out as logo, name, window, brief, totals, button, note', () => {
-    const { html } = reportEmail(
-      input({
-        logoUrl: 'https://cdn.x/l.png',
-        briefText: 'Brief line',
-        note: 'Note line',
-      }),
-    );
+  it('lays the HTML out as logo, name, window, brief, totals, button, note', async () => {
+    const { html } = await email({
+      logoUrl: 'https://cdn.x/l.png',
+      briefText: 'Brief line',
+      note: 'Note line',
+    });
     const at = (needle: string) => html.indexOf(needle);
     const order = [
-      '<img',
+      'src="https://cdn.x/l.png"',
       '<h1',
       'Nov 1 – Nov 30</p>',
       'Brief line',
       'Engagements',
-      'Open the report</a>',
+      'Open the report</span>',
       'Note line',
       'You get this because',
     ].map(at);
@@ -196,11 +209,11 @@ describe('reportEmail', () => {
     expect([...order].sort((a, b) => a - b)).toEqual(order);
   });
 
-  it('uses inline styles only', () => {
-    const { html } = reportEmail(input());
-    expect(html).not.toContain('<style');
+  it('uses inline styles and no scripts', async () => {
+    const { html } = await email();
+    expect(html).not.toContain('<script');
     expect(html).not.toContain('<svg');
-    expect(html).not.toContain('<link');
+    expect(html).not.toContain('rel="stylesheet"');
   });
 });
 

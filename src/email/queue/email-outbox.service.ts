@@ -12,6 +12,7 @@ import { AppLinks } from '../links/app-links';
 import { renderEmail } from '../render/render-email';
 import { EmailSuppressionRepository } from '../suppression/email-suppression.repository';
 import { EmailTokensService } from '../tokens/email-tokens.service';
+import { eventOf } from '../templates/define-template';
 import { getTemplate } from '../templates/registry';
 import type { AnyTemplateDef } from '../templates/types';
 import { EmailFooterService } from './email-footer.service';
@@ -130,11 +131,12 @@ export class EmailOutboxService {
     const { to, workspaceId, props } = data;
     const def = this.templateOf(data.template);
 
-    if (def.event && to.userId) {
+    const event = eventOf(def, props);
+    if (event && to.userId) {
       const allowed = await this.prefs.shouldSend(
         to.userId,
         workspaceId,
-        def.event as PreferenceEventKey,
+        event as PreferenceEventKey,
         'email',
       );
       if (!allowed) return { status: 'skipped:pref' };
@@ -158,7 +160,7 @@ export class EmailOutboxService {
         html: rendered.html,
         text: rendered.text,
         ...(data.replyTo ? { replyTo: data.replyTo } : {}),
-        ...this.unsubscribeHeaders(def, to, workspaceId),
+        ...this.unsubscribeHeaders(def, props, to, workspaceId),
       },
       {
         idempotencyKey: data.idempotencyKey,
@@ -194,17 +196,17 @@ export class EmailOutboxService {
    */
   private unsubscribeHeaders(
     def: AnyTemplateDef,
+    props: unknown,
     to: EmailRecipient,
     workspaceId: string | null,
   ): { headers?: Record<string, string> } {
+    const key = eventOf(def, props);
     const unsubscribable =
-      def.footer === 'notification' || def.event === 'inactivity_reminder';
-    if (!unsubscribable || !def.event || !to.userId) return {};
+      def.footer === 'notification' || key === 'inactivity_reminder';
+    if (!unsubscribable || !key || !to.userId) return {};
     // Only an event whose email can be switched off: the link would otherwise
     // lead to a page that does nothing.
-    const event = isEventKey(def.event)
-      ? NOTIFICATION_EVENTS[def.event]
-      : undefined;
+    const event = isEventKey(key) ? NOTIFICATION_EVENTS[key] : undefined;
     if (!event?.email || event.email.locked) return {};
     const token = this.tokens.unsubscribeToken({
       uid: to.userId,

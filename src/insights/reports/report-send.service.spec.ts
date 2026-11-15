@@ -1,7 +1,9 @@
+import { createHash } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import type { ConfigService } from '@nestjs/config';
 import { JwtService } from '@nestjs/jwt';
 import type { EmailService } from '../../email/email.service';
+import { AppLinks } from '../../email/links/app-links';
 import type { InsightReportRow } from '../../drizzle/schema/insight-reports.schema';
 import type { GotenbergClient } from './gotenberg.client';
 import { GotenbergError } from './gotenberg.client';
@@ -124,9 +126,15 @@ function setup(opts: Opts = {}) {
   };
   const gotenberg = { isConfigured: jest.fn(() => opts.gotenberg ?? true) };
   const email = {
-    sendEmail: jest.fn<
+    deliver: jest.fn<
       Promise<{ success: boolean; error: string | undefined }>,
-      [{ to: string }]
+      [
+        { to: string },
+        {
+          idempotencyKey: string;
+          tags: { category: string; template: string };
+        },
+      ]
     >(() =>
       Promise.resolve({
         success: true as boolean,
@@ -154,6 +162,7 @@ function setup(opts: Opts = {}) {
     email as unknown as EmailService,
     tokens,
     config as unknown as ConfigService,
+    new AppLinks(config as unknown as ConfigService),
   );
   const pause = jest
     .spyOn(
@@ -180,7 +189,7 @@ const SCHEDULED: ReportSendJob = { reportId: RID, kind: 'scheduled' };
 const NOW_JOB: ReportSendJob = { reportId: RID, kind: 'now' };
 
 const sentTo = (email: ReturnType<typeof setup>['email']): string[] =>
-  email.sendEmail.mock.calls.map((c) => c[0].to);
+  email.deliver.mock.calls.map((c) => c[0].to);
 
 beforeEach(() => {
   jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
@@ -191,7 +200,7 @@ describe('ReportSendService.run: guards', () => {
   it('answers gone for a deleted report, without throwing or sending', async () => {
     const { service, email, payloads } = setup({ row: null });
     await expect(service.run(job(SCHEDULED), NOW)).resolves.toBe('gone');
-    expect(email.sendEmail).not.toHaveBeenCalled();
+    expect(email.deliver).not.toHaveBeenCalled();
     expect(payloads.payload).not.toHaveBeenCalled();
   });
 
@@ -202,7 +211,7 @@ describe('ReportSendService.run: guards', () => {
         row: row({ cadence: null, weekday: null, sendMinute: null }),
       });
       await expect(service.run(job(data), NOW)).resolves.toBe('unscheduled');
-      expect(email.sendEmail).not.toHaveBeenCalled();
+      expect(email.deliver).not.toHaveBeenCalled();
       expect(repo.recordError).not.toHaveBeenCalled();
       expect(repo.recordSent).not.toHaveBeenCalled();
     },
@@ -222,7 +231,7 @@ describe('ReportSendService.run: guards', () => {
       next,
       DUE,
     );
-    expect(email.sendEmail).not.toHaveBeenCalled();
+    expect(email.deliver).not.toHaveBeenCalled();
     expect(payloads.payload).not.toHaveBeenCalled();
   });
 
@@ -253,7 +262,7 @@ describe('ReportSendService.run: guards', () => {
     });
     await service.run(job(SCHEDULED), NOW);
     expect(sentTo(email)).toEqual(['owner@x.com', 'mate@x.com', 'a@x.com']);
-    for (const [o] of email.sendEmail.mock.calls) {
+    for (const [o] of email.deliver.mock.calls) {
       expect(o).toMatchObject({ replyTo: 'Owner@x.com' });
     }
   });
@@ -264,7 +273,7 @@ describe('ReportSendService.run: channels (Review Focus 3)', () => {
     const { service, email, reports, payloads, repo } = setup();
     payloads.payload.mockRejectedValue(new NoChannelsLeftError());
     await expect(service.run(job(SCHEDULED), NOW)).resolves.toBe('no_channels');
-    expect(email.sendEmail).not.toHaveBeenCalled();
+    expect(email.deliver).not.toHaveBeenCalled();
     expect(reports.pdfFor).not.toHaveBeenCalled();
     expect(repo.recordSent).not.toHaveBeenCalled();
     const next = nextRunAt(settingsOf(row()).schedule!, TZ, NOW);
@@ -287,7 +296,7 @@ describe('ReportSendService.run: channels (Review Focus 3)', () => {
     const { service, payloads, email, repo } = setup();
     payloads.payload.mockRejectedValue(new Error('db down'));
     await expect(service.run(job(SCHEDULED), NOW)).rejects.toThrow('db down');
-    expect(email.sendEmail).not.toHaveBeenCalled();
+    expect(email.deliver).not.toHaveBeenCalled();
     expect(repo.recordError).not.toHaveBeenCalled();
   });
 });
@@ -295,7 +304,7 @@ describe('ReportSendService.run: channels (Review Focus 3)', () => {
 describe('ReportSendService.run: delivery', () => {
   it('keeps who got it, so a retry emails only the rest', async () => {
     const { service, email, repo } = setup();
-    email.sendEmail
+    email.deliver
       .mockResolvedValueOnce({ success: true, error: undefined })
       .mockResolvedValueOnce({ success: false, error: 'rate limited' });
 
@@ -309,7 +318,7 @@ describe('ReportSendService.run: delivery', () => {
     });
     expect(repo.recordSent).not.toHaveBeenCalled();
 
-    email.sendEmail.mockClear();
+    email.deliver.mockClear();
     await expect(
       service.run(job({ ...SCHEDULED, sent: ['a@x.com'] }), NOW),
     ).resolves.toBe('sent');
@@ -317,9 +326,9 @@ describe('ReportSendService.run: delivery', () => {
     expect(repo.recordSent).toHaveBeenCalledTimes(1);
   });
 
-  it('counts a resolved sendEmail with success false as a failure (F3)', async () => {
+  it('counts a resolved deliver with success false as a failure (F3)', async () => {
     const { service, email, repo } = setup();
-    email.sendEmail.mockResolvedValue({ success: false, error: 'Resend down' });
+    email.deliver.mockResolvedValue({ success: false, error: 'Resend down' });
     const j = job(SCHEDULED);
     await expect(service.run(j, NOW)).rejects.toThrow(
       "Couldn't email 2 of 2 people: Resend down",
@@ -333,7 +342,7 @@ describe('ReportSendService.run: delivery', () => {
     await expect(
       service.run(job({ ...SCHEDULED, sent: ['a@x.com', 'b@y.com'] }), NOW),
     ).resolves.toBe('sent');
-    expect(email.sendEmail).not.toHaveBeenCalled();
+    expect(email.deliver).not.toHaveBeenCalled();
     expect(payloads.payload).not.toHaveBeenCalled();
     expect(repo.recordSent).toHaveBeenCalledTimes(1);
   });
@@ -353,7 +362,7 @@ describe('ReportSendService.run: PDF', () => {
     const { service, email, reports } = setup();
     await service.run(job(SCHEDULED), NOW);
     expect(reports.pdfFor).toHaveBeenCalledTimes(1);
-    for (const [o] of email.sendEmail.mock.calls) {
+    for (const [o] of email.deliver.mock.calls) {
       expect(o).toMatchObject({
         attachments: [
           { filename: 'acme.pdf', content: Buffer.from('%PDF-1.7') },
@@ -367,7 +376,7 @@ describe('ReportSendService.run: PDF', () => {
     const { service, email, reports } = setup({ gotenberg: false });
     await expect(service.run(job(SCHEDULED), NOW)).resolves.toBe('sent');
     expect(reports.pdfFor).not.toHaveBeenCalled();
-    for (const [o] of email.sendEmail.mock.calls) {
+    for (const [o] of email.deliver.mock.calls) {
       expect((o as { attachments?: unknown }).attachments).toBeUndefined();
     }
     expect(warn).toHaveBeenCalledWith(
@@ -381,7 +390,7 @@ describe('ReportSendService.run: PDF', () => {
     });
     await service.run(job(SCHEDULED), NOW);
     expect(reports.pdfFor).not.toHaveBeenCalled();
-    expect(email.sendEmail).toHaveBeenCalledTimes(2);
+    expect(email.deliver).toHaveBeenCalledTimes(2);
   });
 
   it('fails the run, for a retry, when the PDF cannot be made', async () => {
@@ -390,7 +399,7 @@ describe('ReportSendService.run: PDF', () => {
     await expect(service.run(job(SCHEDULED), NOW)).rejects.toThrow(
       'Gotenberg timed out',
     );
-    expect(email.sendEmail).not.toHaveBeenCalled();
+    expect(email.deliver).not.toHaveBeenCalled();
     expect(repo.recordSent).not.toHaveBeenCalled();
   });
 });
@@ -418,13 +427,64 @@ describe('ReportSendService.run: the slot', () => {
   });
 });
 
+const hash12 = (email: string): string =>
+  createHash('sha256').update(email).digest('hex').slice(0, 12);
+
+describe('ReportSendService.run: idempotency and tags', () => {
+  it('names each send by report, slot and recipient, with the reports tags', async () => {
+    const { service, email } = setup();
+    await service.run(job(SCHEDULED), NOW);
+    expect(email.deliver.mock.calls.map((c) => c[1])).toEqual([
+      {
+        idempotencyKey: `report.${RID}.${DUE.getTime()}.${hash12('a@x.com')}`,
+        tags: { category: 'reports', template: 'insight-report' },
+      },
+      {
+        idempotencyKey: `report.${RID}.${DUE.getTime()}.${hash12('b@y.com')}`,
+        tags: { category: 'reports', template: 'insight-report' },
+      },
+    ]);
+  });
+
+  it('keeps the key valid for Resend and BullMQ, and the address out of it', async () => {
+    const { service, email } = setup();
+    await service.run(job(SCHEDULED), NOW);
+    for (const [, opts] of email.deliver.mock.calls) {
+      expect(opts.idempotencyKey).toMatch(/^[A-Za-z0-9._-]{1,200}$/);
+      expect(opts.idempotencyKey).not.toContain(':');
+      expect(opts.idempotencyKey).not.toContain('@');
+    }
+  });
+
+  it('reuses the key on a retry, so a lost response is not sent twice', async () => {
+    const { service, email } = setup();
+    email.deliver.mockResolvedValueOnce({ success: false, error: 'lost' });
+    await expect(service.run(job(SCHEDULED), NOW)).rejects.toThrow();
+    // The retry runs later: the slot, not the clock, names the send.
+    await service.run(job(SCHEDULED), new Date(NOW.getTime() + 60_000));
+    const keys = email.deliver.mock.calls.map((c) => c[1].idempotencyKey);
+    const first = `report.${RID}.${DUE.getTime()}.${hash12('a@x.com')}`;
+    expect(keys.filter((k) => k === first)).toHaveLength(2);
+  });
+
+  it('names a Send now by its job, which a retry shares', async () => {
+    const { service, email } = setup();
+    const j = { ...job(NOW_JOB), timestamp: 1_790_000_000_000 };
+    await service.run(j, NOW);
+    await service.run(j, new Date(NOW.getTime() + 60_000));
+    const keys = email.deliver.mock.calls.map((c) => c[1].idempotencyKey);
+    expect(keys[0]).toBe(`report.${RID}.1790000000000.${hash12('a@x.com')}`);
+    expect(keys[0]).toBe(keys[2]);
+  });
+});
+
 describe('ReportSendService.run: the email', () => {
   it('has no link when sharing is off, and the owner as reply-to', async () => {
     const { service, email } = setup({
       row: row({ shareToken: null, sendToTeam: true, recipients: [] }),
     });
     await service.run(job(SCHEDULED), NOW);
-    const [o] = email.sendEmail.mock.calls[0] as unknown as [
+    const [o] = email.deliver.mock.calls[0] as unknown as [
       { html: string; text: string; replyTo: string },
     ];
     expect(o.replyTo).toBe('Owner@x.com');
@@ -435,42 +495,60 @@ describe('ReportSendService.run: the email', () => {
   it('links to the live report when sharing is on', async () => {
     const { service, email } = setup();
     await service.run(job(SCHEDULED), NOW);
-    const [o] = email.sendEmail.mock.calls[0] as unknown as [{ text: string }];
+    const [o] = email.deliver.mock.calls[0] as unknown as [{ text: string }];
     expect(o.text).toContain('https://app.schedura.ai/r/sharetoken');
   });
 
   it('fills the brief and totals only for the sections that are on', async () => {
     const on = setup();
     await on.service.run(job(SCHEDULED), NOW);
-    const [withAll] = on.email.sendEmail.mock.calls[0] as unknown as [
+    const [withAll] = on.email.deliver.mock.calls[0] as unknown as [
       { text: string },
     ];
-    expect(withAll.text).toContain('In brief: Engagement rose 12%.');
-    expect(withAll.text).toContain('Reach: 1,234');
+    expect(withAll.text).toMatch(/In brief\s+Engagement rose 12%\./);
+    expect(withAll.text).toContain('Reach 1,234');
 
     const off = setup();
     off.payloads.payload.mockResolvedValue(payloadOf({ sections: [] }));
     await off.service.run(job(SCHEDULED), NOW);
-    const [without] = off.email.sendEmail.mock.calls[0] as unknown as [
+    const [without] = off.email.deliver.mock.calls[0] as unknown as [
       { text: string },
     ];
     expect(without.text).not.toContain('In brief');
-    expect(without.text).not.toContain('Reach:');
+    expect(without.text).not.toContain('Reach');
   });
 
   it('leaves the totals out when the overview has none, never writing zeros', async () => {
     const { service, email, payloads } = setup();
     payloads.payload.mockResolvedValue(payloadOf({ overview: null }));
     await service.run(job(SCHEDULED), NOW);
-    const [o] = email.sendEmail.mock.calls[0] as unknown as [{ text: string }];
-    expect(o.text).not.toContain('Reach:');
-    expect(o.text).not.toContain(': 0');
+    const [o] = email.deliver.mock.calls[0] as unknown as [{ text: string }];
+    expect(o.text).not.toContain('Reach');
+    expect(o.text).not.toContain(' 0');
+  });
+
+  it('restyles the email into the shared layout, keeping the report footer', async () => {
+    const { service, email } = setup();
+    await service.run(job(SCHEDULED), NOW);
+    const [o] = email.deliver.mock.calls[0] as unknown as [
+      { html: string; subject: string; headers: Record<string, string> },
+    ];
+    expect(o.subject).toBe('Monthly review: Oct 14 – Nov 12');
+    expect(o.html).toContain('Schedura · schedura.ai');
+    expect(o.html).toContain(
+      'You get this because Acme added you to this report.',
+    );
+    expect(o.html).toContain('Stop receiving this report');
+    expect(o.html).toContain('src="https://app.schedura.ai/email/logo.png"');
+    expect(o.headers['List-Unsubscribe-Post']).toBe(
+      'List-Unsubscribe=One-Click',
+    );
   });
 
   it('gives each person their own unsubscribe link on the API origin', async () => {
     const { service, email, tokens } = setup();
     await service.run(job(SCHEDULED), NOW);
-    const urls = email.sendEmail.mock.calls.map((c) => {
+    const urls = email.deliver.mock.calls.map((c) => {
       const o = c[0] as unknown as {
         to: string;
         text: string;
@@ -497,7 +575,7 @@ describe('ReportSendService.run: the email', () => {
   it('falls back to APP_URL when API_PUBLIC_URL is unset', async () => {
     const { service, email } = setup({ config: { API_PUBLIC_URL: undefined } });
     await service.run(job(SCHEDULED), NOW);
-    const [o] = email.sendEmail.mock.calls[0] as unknown as [
+    const [o] = email.deliver.mock.calls[0] as unknown as [
       { headers: Record<string, string> },
     ];
     expect(o.headers['List-Unsubscribe']).toMatch(
@@ -511,7 +589,7 @@ describe('ReportSendService.run: the email', () => {
       config: { API_PUBLIC_URL: undefined, APP_URL: undefined, PORT: '4100' },
     });
     await service.run(job(SCHEDULED), NOW);
-    const [o] = email.sendEmail.mock.calls[0] as unknown as [
+    const [o] = email.deliver.mock.calls[0] as unknown as [
       { headers: Record<string, string> },
     ];
     expect(o.headers['List-Unsubscribe']).toMatch(
@@ -527,7 +605,7 @@ describe('ReportSendService.run: the email', () => {
       config: { API_PUBLIC_URL: undefined, APP_URL: undefined },
     });
     await service.run(job(SCHEDULED), NOW);
-    const [o] = email.sendEmail.mock.calls[0] as unknown as [
+    const [o] = email.deliver.mock.calls[0] as unknown as [
       { headers: Record<string, string> },
     ];
     expect(o.headers['List-Unsubscribe']).toContain(
@@ -644,7 +722,7 @@ describe('ReportSendService.run: a stale or suspended send', () => {
       row: row({ nextRunAt: slot }),
     });
     await expect(service.run(job(SCHEDULED), NOW)).resolves.toBe('not_due');
-    expect(email.sendEmail).not.toHaveBeenCalled();
+    expect(email.deliver).not.toHaveBeenCalled();
     expect(payloads.payload).not.toHaveBeenCalled();
     expect(repo.recordSent).not.toHaveBeenCalled();
     expect(repo.recordError).not.toHaveBeenCalled();
@@ -680,7 +758,7 @@ describe('ReportSendService.run: a stale or suspended send', () => {
     const { service, email, payloads, repo } = setup({ inactive: true });
     await expect(service.run(job(SCHEDULED), NOW)).resolves.toBe('inactive');
     await expect(service.run(job(NOW_JOB), NOW)).resolves.toBe('inactive');
-    expect(email.sendEmail).not.toHaveBeenCalled();
+    expect(email.deliver).not.toHaveBeenCalled();
     expect(payloads.payload).not.toHaveBeenCalled();
     expect(repo.recordSent).not.toHaveBeenCalled();
     expect(repo.recordError).not.toHaveBeenCalled();
@@ -693,7 +771,7 @@ describe('ReportSendService.run: pacing and counts', () => {
 
   it('waits longer after Resend says slow down', async () => {
     const { service, email, pause } = three();
-    email.sendEmail
+    email.deliver
       .mockResolvedValueOnce({
         success: false,
         error: 'Too many requests. You can only make 2 requests per second.',
@@ -707,7 +785,7 @@ describe('ReportSendService.run: pacing and counts', () => {
 
   it('recognises a 429 in the message', async () => {
     const { service, email, pause } = three();
-    email.sendEmail
+    email.deliver
       .mockResolvedValueOnce({ success: false, error: 'HTTP 429' })
       .mockResolvedValue({ success: true, error: undefined });
     await expect(service.run(job(SCHEDULED), NOW)).rejects.toThrow();
@@ -716,7 +794,7 @@ describe('ReportSendService.run: pacing and counts', () => {
 
   it('keeps the normal gap after any other failure', async () => {
     const { service, email, pause } = three();
-    email.sendEmail
+    email.deliver
       .mockResolvedValueOnce({ success: false, error: 'mailbox full' })
       .mockResolvedValue({ success: true, error: undefined });
     await expect(service.run(job(SCHEDULED), NOW)).rejects.toThrow();
@@ -725,7 +803,7 @@ describe('ReportSendService.run: pacing and counts', () => {
 
   it('counts the whole list in the final message, not only this attempt', async () => {
     const { service, email } = three();
-    email.sendEmail.mockResolvedValue({ success: false, error: 'boom' });
+    email.deliver.mockResolvedValue({ success: false, error: 'boom' });
     await expect(
       service.run(job({ ...SCHEDULED, sent: ['a@x.com'] }), NOW),
     ).rejects.toThrow("Couldn't email 2 of 3 people: boom");
@@ -743,7 +821,7 @@ describe('ReportSendService.run: a PDF that fails', () => {
       .catch((e: Error) => e);
     expect((err as Error).message).toBe("Couldn't make the PDF. Try again.");
     expect((err as Error).message).not.toContain('gotenberg.internal');
-    expect(email.sendEmail).not.toHaveBeenCalled();
+    expect(email.deliver).not.toHaveBeenCalled();
   });
 
   it('says it took too long for a timeout', async () => {
@@ -759,8 +837,8 @@ describe('ReportSendService.run: a PDF that fails', () => {
     const { service, reports, email, repo } = setup();
     reports.pdfFor.mockRejectedValue(new GotenbergError(raw));
     await expect(service.run(job(SCHEDULED, 2), NOW)).resolves.toBe('sent');
-    expect(email.sendEmail).toHaveBeenCalledTimes(2);
-    for (const [o] of email.sendEmail.mock.calls) {
+    expect(email.deliver).toHaveBeenCalledTimes(2);
+    for (const [o] of email.deliver.mock.calls) {
       expect((o as { attachments?: unknown }).attachments).toBeUndefined();
     }
     expect(repo.recordSent).toHaveBeenCalledTimes(1);

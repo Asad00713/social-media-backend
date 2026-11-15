@@ -4,9 +4,9 @@ import {
   seedWorkspace,
   withInboxDb,
 } from '../../testing/inbox-db';
-import type { ConfigService } from '@nestjs/config';
-import type { EmailService } from '../../../email/email.service';
+import type { AppLinks } from '../../../email/links/app-links';
 import type { NotificationEmitterService } from '../../../notifications/notification-emitter.service';
+import type { NotifyService } from '../../../notifications/notify.service';
 import { InboxNotifyService } from './inbox-notify.service';
 import type { InboxSettingsService } from './inbox-settings.service';
 
@@ -57,11 +57,11 @@ describeInboxDb('InboxNotifyService recipient queries', () => {
       }
       const svc = new ExposedNotify(
         unused<NotificationEmitterService>(),
-        unused<EmailService>(),
+        unused<NotifyService>(),
         unused<InboxSettingsService>(),
         db,
-        { set: () => Promise.resolve(null), del: () => Promise.resolve(0) },
-        unused<ConfigService>(),
+        { set: () => Promise.resolve(null) },
+        unused<AppLinks>(),
       );
 
       const all = await svc.load(workspaceId);

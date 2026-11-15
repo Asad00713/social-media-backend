@@ -39,6 +39,11 @@ export interface EmailTemplateDef<P> {
   category: EmailCategory;
   /** Preference key that can turn it off; null = mandatory. Typed as string here; T2 narrows it. */
   event: string | null;
+  /**
+   * For a template that serves several preference events (`inbox-activity`):
+   * the event for these props. It wins over `event`, which stays the default.
+   */
+  eventFor?(p: P): string;
   footer: FooterKind;
   subject(p: P): string;
   preheader(p: P): string;

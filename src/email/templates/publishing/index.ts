@@ -2,6 +2,7 @@ import type { AnyTemplateDef } from '../types';
 import { APPROVAL_NEEDED } from './approval-needed';
 import { channelReconnect } from './channel-reconnect';
 import { POST_APPROVED } from './post-approved';
+import { dripReview } from './drip-review';
 import { POST_FAILED } from './post-failed';
 import { POSTS_FAILED } from './posts-failed';
 
@@ -12,4 +13,5 @@ export const PUBLISHING_TEMPLATES: AnyTemplateDef[] = [
   channelReconnect,
   APPROVAL_NEEDED,
   POST_APPROVED,
+  dripReview,
 ];

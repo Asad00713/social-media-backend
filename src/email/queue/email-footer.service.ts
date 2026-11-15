@@ -9,6 +9,7 @@ import {
   type PreferenceEventKey,
 } from '../../notification-preferences/notification-events';
 import { AppLinks } from '../links/app-links';
+import { eventOf } from '../templates/define-template';
 import { EmailTokensService } from '../tokens/email-tokens.service';
 import type {
   AnyTemplateDef,
@@ -48,6 +49,7 @@ export class EmailFooterService {
       typeof def.extraFooterLinks === 'function'
         ? def.extraFooterLinks(this.links)
         : (def.extraFooterLinks ?? []);
+    const key = eventOf(def, props);
     const footer = (reason: string, lead: FooterLink[]): FooterContext => ({
       reason: override ?? reason,
       links: [...lead, ...extra, privacy],
@@ -55,8 +57,8 @@ export class EmailFooterService {
 
     switch (def.footer) {
       case 'notification': {
-        const event = def.event
-          ? NOTIFICATION_EVENTS[def.event as PreferenceEventKey]
+        const event = key
+          ? NOTIFICATION_EVENTS[key as PreferenceEventKey]
           : undefined;
         if (!event || !workspaceId) {
           throw new UnrecoverableError(
@@ -89,7 +91,7 @@ export class EmailFooterService {
         }
         // F2 (spec 4.1) is the one plain-footer email a person can switch off:
         // its links row leads with the one-click unsubscribe link.
-        if (def.event === 'inactivity_reminder') {
+        if (key === 'inactivity_reminder') {
           if (!to.userId) {
             throw new UnrecoverableError(
               `Template ${def.id} needs a user to unsubscribe`,

@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EmailService } from '../../email/email.service';
+import { AppLinks } from '../../email/links/app-links';
 import {
   GotenbergClient,
   GotenbergError,
@@ -27,6 +29,11 @@ import { ReportsRepository } from './reports.repository';
 import { ReportsService } from './reports.service';
 
 export { REPORT_SEND_JOB, type ReportSendJob } from './report-send.job';
+
+/** A stable, address-free stand-in for a recipient in an idempotency key. */
+function recipientHash(email: string): string {
+  return createHash('sha256').update(email).digest('hex').slice(0, 12);
+}
 
 export type ReportSendOutcome =
   | 'sent'
@@ -70,6 +77,7 @@ export class ReportSendService {
     private readonly emailService: EmailService,
     private readonly tokens: ReportTokensService,
     private readonly config: ConfigService,
+    private readonly links: AppLinks,
   ) {}
 
   async run(
@@ -78,6 +86,8 @@ export class ReportSendService {
       updateData(data: ReportSendJob): Promise<void>;
       /** BullMQ's count of attempts already finished; absent means a single attempt. */
       attemptsMade?: number;
+      /** When BullMQ created the job: the same on every retry of it. */
+      timestamp?: number;
       opts?: { attempts?: number };
     },
     now = new Date(),
@@ -179,6 +189,10 @@ export class ReportSendService {
         note: payload.note,
       };
       const replyTo = team.find((t) => t.isOwner)?.email;
+      // Names this send for Resend's idempotency: a scheduled run is its slot,
+      // a Send now is its job. Both are the same on every retry.
+      const runAtMs =
+        (expected ?? undefined)?.getTime() ?? job.timestamp ?? now.getTime();
 
       const failures: string[] = [];
       const sent = [...done];
@@ -186,12 +200,17 @@ export class ReportSendService {
       for (const [i, to] of pending.entries()) {
         if (i > 0) await this.pause(pauseMs);
         const unsubscribeUrl = `${this.apiOrigin()}/reports/unsubscribe/${this.tokens.unsubscribeToken(row.id, to)}`;
-        const result = await this.emailService.sendEmail({
-          to,
-          ...reportEmail({ ...common, unsubscribeUrl }),
-          replyTo,
-          attachments,
-        });
+        const { subject, html, text, headers } = await reportEmail(
+          { ...common, unsubscribeUrl },
+          this.links,
+        );
+        const result = await this.emailService.deliver(
+          { to, subject, html, text, headers, replyTo, attachments },
+          {
+            idempotencyKey: `report.${row.id}.${runAtMs}.${recipientHash(to)}`,
+            tags: { category: 'reports', template: 'insight-report' },
+          },
+        );
         if (result.success === true) {
           sent.push(to);
           await job.updateData({ ...data, sent: [...sent] });

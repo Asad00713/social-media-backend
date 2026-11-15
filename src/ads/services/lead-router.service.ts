@@ -3,6 +3,14 @@ import { eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { leads, leadForms } from '../../drizzle/schema';
 import { EmailService } from '../../email/email.service';
+import { AppLinks } from '../../email/links/app-links';
+import { formatWhen } from '../../email/links/format-when';
+import { renderEmail } from '../../email/render/render-email';
+import {
+  leadDelivered,
+  leadFooterReason,
+  type LeadDeliveredProps,
+} from '../../email/templates/reports/lead-delivered';
 import { signWebhookPayload } from '../utils/hmac';
 
 type RouteType = 'inbox' | 'email' | 'webhook';
@@ -37,7 +45,10 @@ type AttemptRecord = {
 export class LeadRouterService {
   private readonly logger = new Logger(LeadRouterService.name);
 
-  constructor(private readonly email: EmailService) {}
+  constructor(
+    private readonly email: EmailService,
+    private readonly links: AppLinks,
+  ) {}
 
   async deliver(
     leadId: string,
@@ -88,7 +99,11 @@ export class LeadRouterService {
           attempt = await this.deliverToInbox(payload);
           break;
         case 'email':
-          attempt = await this.deliverToEmail(payload, config as EmailConfig);
+          attempt = await this.deliverToEmail(
+            payload,
+            config as EmailConfig,
+            routeId,
+          );
           break;
         case 'webhook':
           attempt = await this.deliverToWebhook(
@@ -142,16 +157,42 @@ export class LeadRouterService {
   private async deliverToEmail(
     payload: LeadPayload,
     config: EmailConfig,
+    routeId: string,
   ): Promise<AttemptRecord> {
     const to = config?.to;
     if (!to) {
       throw new Error('Email route config missing "to" address');
     }
 
-    const subject = `New lead captured: ${payload.formName}`;
-    const html = formatLeadEmail(payload);
+    const props: LeadDeliveredProps = {
+      formName: payload.formName,
+      capturedAt: formatWhen(new Date(payload.capturedAt), 'UTC'),
+      leadId: payload.id,
+      fields: Object.entries(payload.data).map(([name, value]) => ({
+        name,
+        value,
+      })),
+    };
+    const { subject, html, text } = await renderEmail(leadDelivered, props, {
+      assetBaseUrl: this.links.assetBase(),
+      footer: {
+        reason: leadFooterReason(payload.formName),
+        links: [
+          { label: 'Help center', href: this.links.help() },
+          { label: 'Privacy', href: this.links.privacy() },
+        ],
+      },
+    });
 
-    const result = await this.email.sendEmail({ to, subject, html });
+    // The key names this lead and route, so a BullMQ retry after a lost
+    // response is not sent twice (Resend dedupes the key for 24 h).
+    const result = await this.email.deliver(
+      { to, subject, html, text },
+      {
+        idempotencyKey: `lead.${payload.id}.${routeId}`,
+        tags: { category: 'leads', template: 'lead-delivered' },
+      },
+    );
 
     if (!result.success) {
       throw new Error(result.error ?? 'EmailService returned failure');
@@ -231,67 +272,4 @@ export class LeadRouterService {
       })
       .where(eq(leads.id, lead.id));
   }
-}
-
-// ----------------------------------------------------------------------------
-// Email formatting helper
-// ----------------------------------------------------------------------------
-
-function formatLeadEmail(payload: LeadPayload): string {
-  const rows = Object.entries(payload.data)
-    .map(
-      ([key, value]) =>
-        `<tr>
-          <td style="padding: 8px 12px; font-weight: 600; color: #374151; background: #f3f4f6; border: 1px solid #e5e7eb;">${escapeHtml(key)}</td>
-          <td style="padding: 8px 12px; color: #111827; border: 1px solid #e5e7eb;">${escapeHtml(value)}</td>
-        </tr>`,
-    )
-    .join('\n');
-
-  return `
-<!DOCTYPE html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>New Lead: ${escapeHtml(payload.formName)}</title>
-</head>
-<body style="font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif; line-height: 1.6; color: #333; max-width: 600px; margin: 0 auto; padding: 20px;">
-  <div style="background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); padding: 24px 30px; border-radius: 10px 10px 0 0;">
-    <h1 style="color: white; margin: 0; font-size: 22px;">New Lead Captured</h1>
-    <p style="color: rgba(255,255,255,0.85); margin: 6px 0 0; font-size: 14px;">Form: ${escapeHtml(payload.formName)}</p>
-  </div>
-
-  <div style="background: #f9fafb; padding: 24px 30px; border: 1px solid #e5e7eb; border-top: none;">
-    <p style="margin: 0 0 16px; color: #6b7280; font-size: 13px;">
-      Captured at: <strong>${payload.capturedAt}</strong> &nbsp;|&nbsp; Lead ID: <code style="font-size: 12px;">${payload.id}</code>
-    </p>
-
-    <table style="width: 100%; border-collapse: collapse; font-size: 14px;">
-      <thead>
-        <tr>
-          <th style="padding: 8px 12px; text-align: left; background: #e5e7eb; border: 1px solid #d1d5db;">Field</th>
-          <th style="padding: 8px 12px; text-align: left; background: #e5e7eb; border: 1px solid #d1d5db;">Value</th>
-        </tr>
-      </thead>
-      <tbody>
-        ${rows}
-      </tbody>
-    </table>
-  </div>
-
-  <div style="text-align: center; padding: 16px; color: #9ca3af; font-size: 12px;">
-    <p style="margin: 0;">This notification was sent by Schedura.</p>
-  </div>
-</body>
-</html>
-  `.trim();
-}
-
-function escapeHtml(str: string): string {
-  return str
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
 }
