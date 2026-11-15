@@ -346,3 +346,108 @@ describe('PostService.publishPost on paused channels', () => {
     expect(lastTargets().every((t) => !('heldAt' in t))).toBe(true);
   });
 });
+
+describe('PostService.publishPost on disconnected channels', () => {
+  const DISCONNECTED_7 = [
+    {
+      id: 7,
+      accountName: 'Bluesky',
+      pausedAt: null,
+      connectionStatus: 'disconnected',
+    },
+  ];
+
+  it('a scheduled job holds the disconnected target as disconnected, publishes the rest', async () => {
+    currentRow = row();
+    pausedAnswers = [DISCONNECTED_7, DISCONNECTED_7];
+    const { svc, publisher } = make();
+
+    await svc.publishPost('p1', 'w1', 'u1', { triggeredBy: 'scheduler' });
+
+    expect(publisher.publish).toHaveBeenCalledTimes(1);
+    const targets = lastTargets();
+    const held = targets.find((t) => t.channelId === '7');
+    expect(held.heldReason).toBe('channel_disconnected');
+    expect(typeof held.heldAt).toBe('string');
+    expect(held.status).toBe('draft');
+    expect(targets.find((t) => t.channelId === '9').status).toBe('published');
+    // Part still waits: the post stays scheduled.
+    expect(statusWrites().at(-1)).toBe('scheduled');
+  });
+
+  it('Publish now names the disconnected channel (CHANNEL_DISCONNECTED), before a pause', async () => {
+    currentRow = row({ status: 'draft' });
+    pausedAnswers = [
+      [
+        ...DISCONNECTED_7,
+        { id: 9, accountName: 'Mastodon', pausedAt: new Date() },
+      ],
+    ];
+    const { svc, publisher } = make();
+
+    const err = await svc
+      .publishPost('p1', 'w1', 'u1', { triggeredBy: 'user' })
+      .catch((e: any) => e);
+    expect(err.getResponse()).toMatchObject({
+      code: 'CHANNEL_DISCONNECTED',
+      message: expect.stringContaining('Disconnected: Bluesky'),
+    });
+    expect(publisher.publish).not.toHaveBeenCalled();
+  });
+
+  it('a missed release fails the held target instead of publishing it late', async () => {
+    const heldAt = new Date(Date.now() - 86_400_000).toISOString();
+    currentRow = row({
+      scheduledAt: new Date(Date.now() - 86_400_000),
+      targets: [
+        {
+          channelId: '7',
+          platform: 'bluesky',
+          status: 'draft',
+          heldAt,
+          heldReason: 'channel_disconnected',
+        },
+        { channelId: '9', platform: 'mastodon', status: 'published' },
+      ],
+    });
+    pausedAnswers = [[]];
+    const { svc, publisher } = make();
+
+    await svc.publishPost('p1', 'w1', 'u1', {
+      triggeredBy: 'scheduler',
+      heldOnly: true,
+      missedHeld: true,
+    });
+
+    expect(publisher.publish).not.toHaveBeenCalled();
+    const t7 = lastTargets().find((t) => t.channelId === '7');
+    expect(t7.status).toBe('failed');
+    expect(t7.errorMessage).toMatch(/time passed while the channel was disconnected/);
+    expect('heldAt' in t7).toBe(false);
+    expect(statusWrites().at(-1)).toBe('partially_published');
+  });
+
+  it('without missedHeld the held target (channel back) is published', async () => {
+    currentRow = row({
+      targets: [
+        {
+          channelId: '7',
+          platform: 'bluesky',
+          status: 'draft',
+          heldAt: new Date().toISOString(),
+          heldReason: 'channel_disconnected',
+        },
+      ],
+    });
+    pausedAnswers = [[], []];
+    const { svc, publisher } = make();
+
+    await svc.publishPost('p1', 'w1', 'u1', {
+      triggeredBy: 'scheduler',
+      heldOnly: true,
+    });
+    expect(publisher.publish).toHaveBeenCalledTimes(1);
+    expect(lastTargets()[0].status).toBe('published');
+    expect('heldReason' in lastTargets()[0]).toBe(false);
+  });
+});

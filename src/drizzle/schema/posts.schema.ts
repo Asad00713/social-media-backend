@@ -105,7 +105,8 @@ export interface PostTarget {
    * is next attempted. Kept in the existing `targets` jsonb, no migration.
    */
   heldAt?: string;
-  heldReason?: 'channel_paused';
+  // Paused by the user, or disconnected (channel soft disconnect, 0081).
+  heldReason?: 'channel_paused' | 'channel_disconnected';
   contentOverride?: PlatformContent;
   /**
    * Sub-destination for chat/messaging platforms (Slack/Discord): which

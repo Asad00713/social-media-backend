@@ -136,8 +136,25 @@ describe('presentPost', () => {
     expect(waiting.targets[0]).toMatchObject({
       status: 'scheduled',
       heldAt: at,
+      // Why it waits is part of the contract (soft disconnect): a pause here.
+      heldReason: 'channel_paused',
     });
-    expect('heldReason' in waiting.targets[0]).toBe(false);
+
+    const disconnected = presentPost(
+      row({
+        targets: [
+          {
+            channelId: '7',
+            platform: 'bluesky',
+            status: 'draft',
+            heldAt: at,
+            heldReason: 'channel_disconnected',
+          },
+        ] as never,
+      }),
+      { users },
+    );
+    expect(disconnected.targets[0].heldReason).toBe('channel_disconnected');
 
     const sent = presentPost(
       row({
@@ -154,6 +171,7 @@ describe('presentPost', () => {
       { users },
     );
     expect('heldAt' in sent.targets[0]).toBe(false);
+    expect('heldReason' in sent.targets[0]).toBe(false);
   });
 
   // D4: the "published with issues" note reaches the Planner API.
