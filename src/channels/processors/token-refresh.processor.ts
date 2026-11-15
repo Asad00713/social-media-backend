@@ -1,7 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { QUEUES } from '../../queue/queue.module';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -10,6 +10,7 @@ import {
 } from '../../drizzle/schema/channels.schema';
 import { OAuthService } from '../services/oauth.service';
 import { encrypt, decrypt } from '../../common/utils/encryption.util';
+import { ChannelHealthNotifier } from '../services/channel-health-notifier.service';
 
 export interface TokenRefreshJob {
   channelId: number;
@@ -22,6 +23,7 @@ export class TokenRefreshProcessor extends WorkerHost {
   constructor(
     private readonly oauth: OAuthService,
     @Inject(DRIZZLE) private readonly db: any,
+    private readonly health: ChannelHealthNotifier,
   ) {
     super();
   }
@@ -90,15 +92,33 @@ export class TokenRefreshProcessor extends WorkerHost {
         `Token refresh failed: channelId=${channelId} platform=${channel.platform}: ${message}`,
       );
 
-      // Mark as expired so user is prompted to reconnect
-      await this.db
+      // Mark as expired so user is prompted to reconnect. Only the row that
+      // actually moves to expired comes back, so only that run emails.
+      const now = new Date();
+      const moved = await this.db
         .update(socialMediaChannels)
         .set({
           connectionStatus: 'expired',
           lastError: `Refresh failed: ${message}`.slice(0, 500),
-          updatedAt: new Date(),
+          updatedAt: now,
         })
-        .where(eq(socialMediaChannels.id, channelId));
+        .where(
+          and(
+            eq(socialMediaChannels.id, channelId),
+            ne(socialMediaChannels.connectionStatus, 'expired'),
+          ),
+        )
+        .returning({ id: socialMediaChannels.id });
+
+      if (moved.length > 0) {
+        try {
+          await this.health.expired(channel, now);
+        } catch (notifyErr) {
+          this.logger.warn(
+            `Token refresh: reconnect email for channel ${channelId} failed: ${(notifyErr as Error)?.message ?? 'Unknown error'}`,
+          );
+        }
+      }
 
       return { ok: false };
     }

@@ -1,4 +1,5 @@
 import type { AnyTemplateDef } from '../types';
+import { channelReconnect } from './channel-reconnect';
 import { POST_FAILED } from './post-failed';
 import { POSTS_FAILED } from './posts-failed';
 
@@ -6,4 +7,5 @@ import { POSTS_FAILED } from './posts-failed';
 export const PUBLISHING_TEMPLATES: AnyTemplateDef[] = [
   POST_FAILED,
   POSTS_FAILED,
+  channelReconnect,
 ];
