@@ -131,7 +131,7 @@ function harness(
     { deliver } as unknown as EmailService,
     prefs as never,
     { isSuppressed: jest.fn().mockResolvedValue(false) } as never,
-    new EmailFooterService(links, {} as never),
+    new EmailFooterService(links, {} as never, {} as never),
     links,
     {} as never,
   );
