@@ -814,6 +814,23 @@ describe('billing emails', () => {
     expect(billingEmail.planChanged).toHaveBeenCalledTimes(2);
   });
 
+  it('a flagged failure older than 30 days does not block a new episode', async () => {
+    seedInvoice();
+    const service = makeService();
+    // Unpaid and flagged, from an episode outside the 30-day window.
+    rowsOf('failed_payments').push({
+      id: 1,
+      subscriptionId: SUBSCRIPTION_ID,
+      resolved: false,
+      featuresRestricted: true,
+      createdAt: new Date(Date.now() - 40 * 24 * 60 * 60 * 1000),
+    });
+
+    for (const attempt of [1, 2, 3]) await fail(service, attempt);
+
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+  });
+
   it('two failure webhooks arriving together send one "moved to Free"', async () => {
     seedInvoice();
     const service = makeService();

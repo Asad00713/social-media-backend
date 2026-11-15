@@ -886,13 +886,17 @@ export class WebhookService {
    * an episode already restricted (that one flips only its own new row): it
    * holds the episode's first unresolved failure. Of two concurrent flips,
    * only one can take that row, because Postgres re-checks
-   * `features_restricted = false` on it after the other commits.
+   * `features_restricted = false` on it after the other commits. The episode
+   * is the same 30-day window the caller counts, so an unpaid failure older
+   * than that never stands in for a new episode's first.
    */
   private async startsEpisode(
     subscriptionId: number,
     flipped: { id: number }[],
   ): Promise<boolean> {
     if (flipped.length === 0) return false;
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
     const unresolved = await db
       .select({ id: failedPayments.id })
       .from(failedPayments)
@@ -900,6 +904,7 @@ export class WebhookService {
         and(
           eq(failedPayments.subscriptionId, subscriptionId),
           eq(failedPayments.resolved, false),
+          gt(failedPayments.createdAt, thirtyDaysAgo),
         ),
       );
     const first = Math.min(...unresolved.map((f) => f.id));
