@@ -12,6 +12,7 @@ import { relations, sql } from 'drizzle-orm';
 import { users } from './users.schema';
 import { workspace } from './workspace.schema';
 import { socialMediaChannels, SupportedPlatform } from './channels.schema';
+import type { PublishErrorCode } from '../../posts/composer/types/draft.types';
 
 // Post status enum values
 export const POST_STATUSES = [
@@ -86,6 +87,14 @@ export interface PostTarget {
   platformPostUrl?: string;
   publishedAt?: string;
   errorMessage?: string;
+  /**
+   * The failure's cause in one coarse code, from the shared classifier
+   * (posts/composer/services/composer-error-mapper.service.ts). Set on a
+   * failed target by Publish now and by the scheduled job alike; cleared
+   * when the target is attempted again. Kept in the existing `targets`
+   * jsonb, no migration.
+   */
+  errorCode?: PublishErrorCode;
   /** Per-item results when the post went out as several (see above). */
   itemResults?: PublishItemResult[];
   /**

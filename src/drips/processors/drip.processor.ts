@@ -471,7 +471,9 @@ export class DripProcessor extends WorkerHost {
         campaign.createdById,
         // A channel the user paused holds this occurrence until it is
         // resumed, as a scheduled post would - it is not a failure.
-        { onPaused: 'hold' },
+        // Nobody pressed anything: a failure is told to the author, as a
+        // scheduled post's is.
+        { onPaused: 'hold', trigger: 'scheduled' },
       );
 
       // Held for a paused channel: the post is now `scheduled` and resume

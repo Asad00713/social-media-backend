@@ -81,7 +81,9 @@ import { syncHeldDripPost } from '../../drips/lib/held-drip-sync';
 import type {
   PostStatusChangedPayload,
   PostStatusChangedTarget,
+  PublishTrigger,
 } from '../../realtime/types/analytics-events.types';
+import { classifyPublishError } from '../composer/services/composer-error-mapper.service';
 
 export interface CreatePostDto {
   content?: string;
@@ -147,6 +149,7 @@ export class PostService {
       platformPostUrl: t.platformPostUrl,
       publishedAt: t.publishedAt,
       errorMessage: t.errorMessage,
+      errorCode: t.errorCode,
     }));
   }
 
@@ -160,6 +163,9 @@ export class PostService {
     lastError: string | null;
     triggeredBy: 'user' | 'scheduler';
     triggeredByUserId: string | null;
+    /** The post's author: who hears about a publish nobody pressed. */
+    authorId: string | null;
+    trigger: PublishTrigger;
   }): void {
     const payload: PostStatusChangedPayload = {
       workspaceId: args.workspaceId,
@@ -172,6 +178,8 @@ export class PostService {
       updatedAt: new Date().toISOString(),
       triggeredBy: args.triggeredBy,
       triggeredByUserId: args.triggeredByUserId,
+      authorId: args.authorId,
+      trigger: args.trigger,
     };
     this.realtimeEmitter.emit(args.workspaceId, 'post.status.changed', payload);
   }
@@ -606,9 +614,20 @@ export class PostService {
        * an automated "publish now" (a drip occurrence) passes 'hold'.
        */
       onPaused?: 'hold' | 'refuse';
+      /**
+       * Whether a person is waiting on this publish ('publish_now': they see
+       * its outcome where they pressed it) or it ran on its own
+       * ('scheduled': the post's author is told through the realtime event).
+       * Defaults from `triggeredBy`; a drip occurrence, published by the drip
+       * job with nobody watching, passes 'scheduled'.
+       */
+      trigger?: PublishTrigger;
     },
   ): Promise<typeof posts.$inferSelect> {
     const triggeredBy = options?.triggeredBy ?? 'user';
+    const trigger: PublishTrigger =
+      options?.trigger ??
+      (triggeredBy === 'scheduler' ? 'scheduled' : 'publish_now');
     const heldOnly = options?.heldOnly === true;
     const onPaused =
       options?.onPaused ?? (triggeredBy === 'scheduler' ? 'hold' : 'refuse');
@@ -652,7 +671,7 @@ export class PostService {
     // `publishing`, no retry burned.
     const pending = post.targets.filter((t) => t.status !== 'published');
     if (pending.length > 0 && pending.every(isPausedTarget)) {
-      return this.holdPausedTargets(post, isPausedTarget, userId);
+      return this.holdPausedTargets(post, isPausedTarget, userId, trigger);
     }
 
     const previousStatus = post.status;
@@ -682,6 +701,8 @@ export class PostService {
       lastError: null,
       triggeredBy,
       triggeredByUserId: userId,
+      authorId: post.createdById ?? null,
+      trigger,
     });
 
     // Publish to each channel
@@ -776,6 +797,7 @@ export class PostService {
             ...target,
             status: 'failed',
             errorMessage: `Could not send your reminder: ${errorMessage}`,
+            errorCode: classifyPublishError(error).code,
           });
           allSuccess = false;
         }
@@ -795,6 +817,7 @@ export class PostService {
             ...target,
             status: 'failed',
             errorMessage: `Rate limit exceeded. Retry after ${Math.ceil((globalRateLimit.retryAfterMs || 0) / 1000 / 60)} minutes`,
+            errorCode: 'rate_limited',
           });
           allSuccess = false;
 
@@ -829,6 +852,7 @@ export class PostService {
             ...target,
             status: 'failed',
             errorMessage: `Channel rate limit exceeded. Retry after ${Math.ceil((channelRateLimit.retryAfterMs || 0) / 1000 / 60)} minutes`,
+            errorCode: 'rate_limited',
           });
           allSuccess = false;
 
@@ -866,6 +890,10 @@ export class PostService {
           platformPostId: result.platformPostId,
           platformPostUrl: result.platformPostUrl,
           publishedAt: new Date().toISOString(),
+          // A target that failed before and went out now: the old failure
+          // must not ride the live post.
+          errorMessage: undefined,
+          errorCode: undefined,
           ...(result.itemResults?.length
             ? { itemResults: result.itemResults }
             : {}),
@@ -908,6 +936,8 @@ export class PostService {
           ...target,
           status: 'failed',
           errorMessage,
+          // One classifier for Publish now and the scheduled job.
+          errorCode: classifyPublishError(error).code,
           warnings: undefined,
           // Part of the post is live (one Pin per image): keep what went
           // out, so the retry resumes after it rather than repeating it.
@@ -1025,6 +1055,8 @@ export class PostService {
       lastError: updatedPost.lastError ?? null,
       triggeredBy,
       triggeredByUserId: userId,
+      authorId: updatedPost.createdById ?? post.createdById ?? null,
+      trigger,
     });
 
     // Post has left 'scheduled' status; syncPost will remove the (now stale)
@@ -1087,6 +1119,7 @@ export class PostService {
     post: typeof posts.$inferSelect,
     isPausedTarget: (t: PostTarget) => boolean,
     userId: string,
+    trigger: PublishTrigger,
   ): Promise<typeof posts.$inferSelect> {
     const now = new Date();
     const held = post.targets.filter(isPausedTarget);
@@ -1130,6 +1163,8 @@ export class PostService {
         lastError: post.lastError ?? null,
         triggeredBy: 'scheduler',
         triggeredByUserId: userId,
+        authorId: post.createdById ?? null,
+        trigger,
       });
       this.syncCalendarForPost(post.id);
     }

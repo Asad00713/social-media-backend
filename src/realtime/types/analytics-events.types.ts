@@ -1,3 +1,4 @@
+import type { PublishErrorCode } from '../../posts/composer/types/draft.types';
 import type {
   ComposerPublishStateChangedPayload,
   ComposerDraftStatusChangedPayload,
@@ -85,7 +86,16 @@ export interface PostStatusChangedTarget {
   platformPostUrl?: string;
   publishedAt?: string;
   errorMessage?: string;
+  /** Why a failed target failed, in one coarse code (absent otherwise). */
+  errorCode?: PublishErrorCode;
 }
+
+/**
+ * Whether a person is waiting on the publish: 'publish_now' (they pressed
+ * it and see the outcome there) or 'scheduled' (it ran on its own - a
+ * scheduled time, a resumed channel, a drip occurrence).
+ */
+export type PublishTrigger = 'scheduled' | 'publish_now';
 
 export interface PostStatusChangedPayload {
   workspaceId: string;
@@ -98,6 +108,13 @@ export interface PostStatusChangedPayload {
   updatedAt: string;
   triggeredBy: 'user' | 'scheduler';
   triggeredByUserId: string | null;
+  /**
+   * The post's author. A failed scheduled publish is told to them, not to
+   * everyone in the workspace; `triggeredByUserId` is whoever pressed
+   * Publish now, which on a retry is not always the author.
+   */
+  authorId: string | null;
+  trigger: PublishTrigger;
 }
 
 export type InboxItemType = 'comment' | 'dm' | 'mention';
