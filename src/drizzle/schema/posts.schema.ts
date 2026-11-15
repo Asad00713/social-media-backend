@@ -212,6 +212,9 @@ export const posts = pgTable(
     index('posts_status_idx').on(table.status),
     index('posts_scheduled_at_idx').on(table.scheduledAt),
     index('posts_created_at_idx').on(table.createdAt),
+    // Migration 0083: the platform-status measurement reads the posts
+    // updated in its window.
+    index('posts_updated_at_idx').on(table.updatedAt),
     index('posts_workspace_draft_idx')
       .on(table.workspaceId, table.updatedAt.desc())
       .where(sql`${table.status} = 'draft'`),

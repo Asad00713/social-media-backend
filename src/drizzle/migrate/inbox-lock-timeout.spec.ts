@@ -32,6 +32,8 @@ import { readMigrations } from './runner';
  * 0067 creates channel_connect_links with foreign keys to workspace and users
  * (SHARE ROW EXCLUSIVE on each) and adds three columns plus a foreign key to
  * social_media_channels (ACCESS EXCLUSIVE).
+ * 0083 creates platform_incidents with foreign keys to users (SHARE ROW
+ * EXCLUSIVE) and builds an index on posts (SHARE).
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -50,6 +52,7 @@ const FILES = [
   '0065_release_locked_integrations.sql',
   '0066_insight_reports.sql',
   '0067_channel_connect_links.sql',
+  '0083_platform_status.sql',
 ];
 
 const firstStatement = (sql: string): string =>
