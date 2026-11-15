@@ -319,6 +319,7 @@ const EXPECTED: Array<
       completeOAuth: 'channels:manage',
       updateChannel: 'channels:manage',
       deleteChannel: 'channels:manage',
+      restoreChannel: 'channels:manage',
       deleteYoutubeData: 'channels:manage',
       reorderChannels: 'channels:manage',
       refreshToken: 'channels:manage',
