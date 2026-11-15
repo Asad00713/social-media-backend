@@ -62,6 +62,7 @@ import { CalendarPushSyncService } from '../../calendar-sync/services/calendar-p
 import { CampaignStatusSyncListener } from '../../campaigns/campaign-status-sync.listener';
 import { PostQueueService } from '../../billing/services/post-queue.service';
 import { PostReminderService } from './post-reminder.service';
+import { PublishFailureNotifier } from './publish-failure-notifier.service';
 import { withSharedThumbnail } from '../lib/shared-thumbnail';
 import { sharedMetadataFor } from '../lib/publish-metadata';
 import { warningsField } from '../lib/publish-warnings';
@@ -119,6 +120,7 @@ export class PostService {
     private readonly campaignStatusSync: CampaignStatusSyncListener,
     private readonly postQueue: PostQueueService,
     private readonly reminders: PostReminderService,
+    private readonly failureNotifier: PublishFailureNotifier,
   ) {}
 
   /**
@@ -1034,6 +1036,18 @@ export class PostService {
     this.logger.log(
       `Post ${postId} publishing completed with status: ${finalStatus}`,
     );
+
+    // C1/C1a: a scheduled publish that failed tells the people behind it.
+    // Not awaited, so email never slows or fails the publish.
+    void this.failureNotifier
+      .onPublishOutcome(updatedPost, triggeredBy)
+      .catch((error) => {
+        this.logger.warn(
+          `Post failure notice failed for post ${postId}: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      });
     return updatedPost;
   }
 

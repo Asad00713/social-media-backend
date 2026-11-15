@@ -16,6 +16,9 @@ jest.mock('../../drizzle/db-utils', () => ({
   withRetry: (fn: () => unknown) => fn(),
 }));
 
+import { Logger } from '@nestjs/common';
+import type { Job } from 'bullmq';
+import type { PublishJobData } from '../lib/held-targets';
 import { PostPublishProcessor } from './post-publish.processor';
 
 const order: string[] = [];
@@ -40,12 +43,18 @@ function make(existingJobs: string[] = [], ensureNext?: jest.Mock) {
       existingJobs.includes(id) ? { id } : null,
     ),
   };
+  const failureNotifier = {
+    onFinalJobFailure: jest.fn<Promise<undefined>, [string, Error]>(
+      async () => undefined,
+    ),
+  };
   const processor = new PostPublishProcessor(
     postService as any,
     queue as any,
     repeats as any,
+    failureNotifier as any,
   );
-  return { processor, postService, queue, repeats };
+  return { processor, postService, queue, repeats, failureNotifier };
 }
 
 const job = (id: string) => ({ id, data: { postId: 'p1' } }) as any;
@@ -160,5 +169,28 @@ describe('PostPublishProcessor', () => {
       skipped: true,
     });
     expect(postService.publishPost).not.toHaveBeenCalled();
+  });
+});
+
+describe('PostPublishProcessor.onFailed', () => {
+  const failedJob = (attemptsMade: number) =>
+    ({
+      id: 'j1',
+      data: { postId: 'p1' },
+      attemptsMade,
+      opts: { attempts: 3 },
+    }) as unknown as Job<PublishJobData>;
+
+  it('tells the failure notifier only on the last attempt', () => {
+    const { processor, failureNotifier } = make();
+    const error = new Error('db down');
+    const log = jest
+      .spyOn(Logger.prototype, 'error')
+      .mockImplementation(() => {});
+    processor.onFailed(failedJob(2), error);
+    expect(failureNotifier.onFinalJobFailure).not.toHaveBeenCalled();
+    processor.onFailed(failedJob(3), error);
+    expect(failureNotifier.onFinalJobFailure).toHaveBeenCalledWith('p1', error);
+    log.mockRestore();
   });
 });

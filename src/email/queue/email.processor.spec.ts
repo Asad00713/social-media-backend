@@ -7,6 +7,7 @@ import {
   RetryableEmailError,
   type EmailJobData,
 } from './email-job';
+import type { PostFailureBatchService } from '../batching/post-failure-batch.service';
 import type { EmailOutboxService } from './email-outbox.service';
 import { EmailProcessor } from './email.processor';
 
@@ -20,9 +21,16 @@ const DATA: EmailJobData = {
 
 function make() {
   const outbox = { process: jest.fn(() => Promise.resolve('sent' as const)) };
+  const postFailures = {
+    flush: jest.fn(() => Promise.resolve('empty' as const)),
+  };
   return {
     outbox,
-    processor: new EmailProcessor(outbox as unknown as EmailOutboxService),
+    postFailures,
+    processor: new EmailProcessor(
+      outbox as unknown as EmailOutboxService,
+      postFailures as unknown as PostFailureBatchService,
+    ),
   };
 }
 
@@ -57,6 +65,25 @@ describe('EmailProcessor', () => {
       'sent',
     );
     expect(outbox.process).toHaveBeenCalledWith(DATA, 3);
+  });
+
+  it('hands a post-failed-flush job to the batch with its attempt count', async () => {
+    const { outbox, postFailures, processor } = make();
+    const flush = {
+      id: 'post-failed.u1.w1.1763125200000',
+      name: 'post-failed-flush',
+      data: { userId: 'u1', workspaceId: 'w1', windowId: '1763125200000' },
+      attemptsMade: 2,
+      opts: { attempts: 5 },
+    } as unknown as Job<EmailJobData>;
+    await expect(processor.process(flush)).resolves.toBe('empty');
+    expect(postFailures.flush).toHaveBeenCalledWith(
+      'u1',
+      'w1',
+      '1763125200000',
+      2,
+    );
+    expect(outbox.process).not.toHaveBeenCalled();
   });
 
   it('fails an unknown job name without retrying', async () => {

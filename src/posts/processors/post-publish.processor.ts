@@ -10,8 +10,10 @@ import { eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
 import { withRetry } from '../../drizzle/db-utils';
 import { posts } from '../../drizzle/schema/posts.schema';
+import { isFinalAttempt } from '../../queue/is-final-attempt';
 import { QUEUES } from '../../queue/queue.module';
 import { PostService } from '../services/post.service';
+import { PublishFailureNotifier } from '../services/publish-failure-notifier.service';
 import { RepeatPostsService } from '../services/repeat-posts.service';
 import type { PublishJobData } from '../lib/held-targets';
 
@@ -26,6 +28,7 @@ export class PostPublishProcessor extends WorkerHost {
     @InjectQueue(QUEUES.POST_PUBLISHING)
     private readonly publishingQueue: Queue,
     private readonly repeats: RepeatPostsService,
+    private readonly failureNotifier: PublishFailureNotifier,
   ) {
     super();
   }
@@ -132,12 +135,16 @@ export class PostPublishProcessor extends WorkerHost {
     this.logger.log(`Job ${job.id} completed for post ${job.data.postId}`);
   }
 
+  /** The last attempt also tells the people behind the post (C1/C1a). */
   @OnWorkerEvent('failed')
   onFailed(job: Job<PublishJobData> | undefined, error: Error) {
     if (job) {
       this.logger.error(
         `Job ${job.id} failed for post ${job.data.postId} after ${job.attemptsMade} attempts: ${error.message}`,
       );
+      if (isFinalAttempt(job)) {
+        void this.failureNotifier.onFinalJobFailure(job.data.postId, error);
+      }
     }
   }
 

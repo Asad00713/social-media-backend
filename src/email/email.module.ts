@@ -8,6 +8,7 @@ import {
 } from '../channels/analytics/redis-client.provider';
 import { NotificationPreferencesModule } from '../notification-preferences/notification-preferences.module';
 import { QueueModule } from '../queue/queue.module';
+import { PostFailureBatchService } from './batching/post-failure-batch.service';
 import { EmailOnceService } from './email-once.service';
 import { EmailService } from './email.service';
 import { AppLinks } from './links/app-links';
@@ -37,6 +38,7 @@ import { ResendWebhookController } from './webhooks/resend-webhook.controller';
     EmailFooterService,
     EmailOutboxService,
     EmailProcessor,
+    PostFailureBatchService,
   ],
   exports: [
     EmailService,
@@ -44,6 +46,7 @@ import { ResendWebhookController } from './webhooks/resend-webhook.controller';
     AppLinks,
     EmailOnceService,
     EmailTokensService,
+    PostFailureBatchService,
   ],
 })
 export class EmailModule implements OnModuleDestroy {

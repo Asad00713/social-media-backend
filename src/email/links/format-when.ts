@@ -1,7 +1,7 @@
 const FALLBACK_ZONE = 'UTC';
 
 /** `timeZone` when the runtime knows it, else UTC. */
-function usableZone(timeZone: string): string {
+export function usableZone(timeZone: string): string {
   try {
     new Intl.DateTimeFormat('en-US', { timeZone });
     return timeZone;

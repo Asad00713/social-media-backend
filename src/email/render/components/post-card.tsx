@@ -33,6 +33,15 @@ const NETWORK_LABELS: Record<string, string> = {
   reddit: 'Reddit',
 };
 
+/** A platform's display name ('twitter' -> 'X'); unknown ones are title-cased. */
+export function networkName(platform: string): string {
+  if (Object.hasOwn(NETWORK_LABELS, platform)) return NETWORK_LABELS[platform];
+  return platform
+    .split('_')
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+    .join(' ');
+}
+
 /**
  * Post text as an email shows it: blank reads `(No caption)`, and over 280
  * characters keeps the first 279 plus `…`. Counts code points so an emoji is

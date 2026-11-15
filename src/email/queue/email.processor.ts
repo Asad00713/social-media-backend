@@ -3,14 +3,19 @@ import { Logger } from '@nestjs/common';
 import { Job, UnrecoverableError } from 'bullmq';
 import { isFinalAttempt } from '../../queue/is-final-attempt';
 import { QUEUES } from '../../queue/queue.module';
+import {
+  POST_FAILED_FLUSH_JOB,
+  PostFailureBatchService,
+  type PostFailedFlushData,
+} from '../batching/post-failure-batch.service';
 import { EMAIL_JOB_SEND, type EmailJobData } from './email-job';
 import { EmailOutboxService } from './email-outbox.service';
 
 /**
  * Consumes the `email` queue at 8 sends a second (spec §9). BullMQ keeps the
  * limiter's counter in Redis, per queue, so every worker on every replica
- * shares the one 8/s budget. Job names: `send` now; Task 11 adds
- * `post-failed-flush`.
+ * shares the one 8/s budget. Job names: `send`, and `post-failed-flush`
+ * (the C1/C1a window closing).
  */
 @Processor(QUEUES.EMAIL, {
   concurrency: 4,
@@ -19,14 +24,29 @@ import { EmailOutboxService } from './email-outbox.service';
 export class EmailProcessor extends WorkerHost {
   private readonly logger = new Logger(EmailProcessor.name);
 
-  constructor(private readonly outbox: EmailOutboxService) {
+  constructor(
+    private readonly outbox: EmailOutboxService,
+    private readonly postFailures: PostFailureBatchService,
+  ) {
     super();
   }
 
-  async process(job: Job<EmailJobData>): Promise<string> {
+  async process(
+    job: Job<EmailJobData> | Job<PostFailedFlushData>,
+  ): Promise<string> {
     switch (job.name) {
       case EMAIL_JOB_SEND:
-        return this.outbox.process(job.data, job.attemptsMade);
+        return this.outbox.process(job.data as EmailJobData, job.attemptsMade);
+      case POST_FAILED_FLUSH_JOB: {
+        const { userId, workspaceId, windowId } =
+          job.data as PostFailedFlushData;
+        return this.postFailures.flush(
+          userId,
+          workspaceId,
+          windowId,
+          job.attemptsMade,
+        );
+      }
       default:
         throw new UnrecoverableError(`Unknown email job "${job.name}"`);
     }
