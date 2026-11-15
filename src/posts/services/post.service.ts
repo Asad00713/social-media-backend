@@ -83,7 +83,11 @@ import type {
   PostStatusChangedTarget,
   PublishTrigger,
 } from '../../realtime/types/analytics-events.types';
-import { classifyPublishError } from '../composer/services/composer-error-mapper.service';
+import {
+  ClassifiedPublishError,
+  classifyPublishError,
+} from '../composer/services/composer-error-mapper.service';
+import { REMINDER_FAILURE_PREFIX } from '../lib/post-failure';
 
 export interface CreatePostDto {
   content?: string;
@@ -166,6 +170,8 @@ export class PostService {
     /** The post's author: who hears about a publish nobody pressed. */
     authorId: string | null;
     trigger: PublishTrigger;
+    /** Only on the outcome of a run: the targets that run attempted. */
+    attemptedChannelIds?: string[];
   }): void {
     const payload: PostStatusChangedPayload = {
       workspaceId: args.workspaceId,
@@ -180,6 +186,9 @@ export class PostService {
       triggeredByUserId: args.triggeredByUserId,
       authorId: args.authorId,
       trigger: args.trigger,
+      ...(args.attemptedChannelIds
+        ? { attemptedChannelIds: args.attemptedChannelIds }
+        : {}),
     };
     this.realtimeEmitter.emit(args.workspaceId, 'post.status.changed', payload);
   }
@@ -714,6 +723,10 @@ export class PostService {
     let newSuccess = false;
     // Targets held for a paused channel; any keeps the post `scheduled`.
     const heldChannels = new Map<string, string>();
+    // The targets THIS run tried (published, failed or reminded). A target
+    // carried over untouched - live already, held, or an old failure a
+    // resume leaves alone - is not in it, so a client tells only the news.
+    const attemptedChannelIds: string[] = [];
     const now = new Date();
 
     for (const storedTarget of post.targets) {
@@ -756,6 +769,7 @@ export class PostService {
 
       // Attempted now, so no longer held.
       const target = releaseTarget(storedTarget);
+      attemptedChannelIds.push(String(target.channelId));
 
       // "Publish: Remind me" (Instagram / Facebook): the platform is not
       // called. The person is notified with everything copied and posts it
@@ -775,6 +789,7 @@ export class PostService {
             status: REMINDER_TARGET_STATUS,
             reminderSentAt: new Date().toISOString(),
             errorMessage: undefined,
+            errorCode: undefined,
           });
           anySuccess = true;
           newSuccess = true;
@@ -796,8 +811,10 @@ export class PostService {
           updatedTargets.push({
             ...target,
             status: 'failed',
-            errorMessage: `Could not send your reminder: ${errorMessage}`,
-            errorCode: classifyPublishError(error).code,
+            errorMessage: `${REMINDER_FAILURE_PREFIX}: ${errorMessage}`,
+            // Our own notification failed, not the platform: never through
+            // the platform classifier ("Couldn't reach Instagram" would lie).
+            errorCode: 'reminder_failed',
           });
           allSuccess = false;
         }
@@ -1057,6 +1074,7 @@ export class PostService {
       triggeredByUserId: userId,
       authorId: updatedPost.createdById ?? post.createdById ?? null,
       trigger,
+      attemptedChannelIds,
     });
 
     // Post has left 'scheduled' status; syncPost will remove the (now stale)
@@ -1266,9 +1284,13 @@ export class PostService {
     }
 
     if (channel.connectionStatus !== 'connected') {
-      throw new Error(
-        `Channel is not connected (status: ${channel.connectionStatus})`,
-      );
+      const message = `Channel is not connected (status: ${channel.connectionStatus})`;
+      // An ended login is the network signing Schedura out: Reconnect fixes
+      // it. Other states ('error', 'refreshing') are left to the classifier.
+      throw channel.connectionStatus === 'expired' ||
+        channel.connectionStatus === 'revoked'
+        ? new ClassifiedPublishError(message, 'auth_failed')
+        : new Error(message);
     }
 
     // This channel's own caption and media: the composer's

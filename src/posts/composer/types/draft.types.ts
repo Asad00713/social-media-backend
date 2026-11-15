@@ -112,7 +112,12 @@ export type PublishErrorCode =
   | 'media_invalid'
   | 'content_rejected'
   | 'transient'
-  | 'permanent';
+  | 'permanent'
+  /**
+   * "Publish: Remind me": our own notification (email/in-app) could not be
+   * sent. Never a platform failure - the platform was not called.
+   */
+  | 'reminder_failed';
 
 export interface ScheduleConfig {
   mode: 'now' | 'all_same_time' | 'per_channel';

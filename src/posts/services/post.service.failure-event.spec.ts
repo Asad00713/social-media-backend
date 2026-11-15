@@ -38,13 +38,19 @@ import { PostService } from './post.service';
  * author) and whether anyone was waiting on it (`trigger`), so the app can
  * toast the author once and never twice.
  */
-function make(opts: { channelAllowed?: boolean } = {}) {
+function make(
+  opts: {
+    channelAllowed?: boolean;
+    connectionStatus?: string;
+    reminderSend?: jest.Mock;
+  } = {},
+) {
   const publisher = { publish: jest.fn() };
   const emitter = { emit: jest.fn() };
   const svc = new PostService(
     {
       getChannelById: jest.fn(async () => ({
-        connectionStatus: 'connected',
+        connectionStatus: opts.connectionStatus ?? 'connected',
         platformAccountId: 'acc',
         metadata: {},
       })),
@@ -72,7 +78,7 @@ function make(opts: { channelAllowed?: boolean } = {}) {
     } as any,
     { syncFromPost: jest.fn(async () => undefined) } as any,
     { enforceQueueLimit: jest.fn(async () => undefined) } as any,
-    { send: jest.fn() } as any, // PostReminderService
+    { send: opts.reminderSend ?? jest.fn() } as any, // PostReminderService
   );
   return { svc, publisher, emitter };
 }
@@ -228,5 +234,115 @@ describe('PostService.publishPost - failure cause and event routing', () => {
       errorCode: 'content_rejected',
       errorMessage: 'Tweet text is too long',
     });
+  });
+
+  it('a channel whose login expired fails as auth_failed (Reconnect), not permanent', async () => {
+    const { svc, publisher } = make({ connectionStatus: 'expired' });
+    currentRow = row();
+    await svc.publishPost('p1', 'w1', 'author-1', { triggeredBy: 'scheduler' });
+    expect(publisher.publish).not.toHaveBeenCalled();
+    expect(finalTarget()).toMatchObject({
+      status: 'failed',
+      errorCode: 'auth_failed',
+      errorMessage: 'Channel is not connected (status: expired)',
+    });
+  });
+
+  it('a revoked channel is auth_failed too; an "error" state is left to the classifier', async () => {
+    const revoked = make({ connectionStatus: 'revoked' });
+    currentRow = row();
+    await revoked.svc.publishPost('p1', 'w1', 'author-1');
+    expect(finalTarget().errorCode).toBe('auth_failed');
+
+    const errored = make({ connectionStatus: 'error' });
+    currentRow = row();
+    await errored.svc.publishPost('p1', 'w1', 'author-1');
+    expect(finalTarget().errorCode).toBe('permanent');
+  });
+
+  it('the outcome names the targets this run attempted; the "publishing" event does not', async () => {
+    const { svc, publisher, emitter } = make();
+    publisher.publish.mockRejectedValue(new Error('Wat'));
+    currentRow = {
+      ...row(),
+      targets: [
+        { channelId: '1', platform: 'instagram', status: 'scheduled' },
+        { channelId: '2', platform: 'facebook', status: 'published' },
+      ],
+    };
+    await svc.publishPost('p1', 'w1', 'author-1', { triggeredBy: 'scheduler' });
+    expect(lastEvent(emitter).attemptedChannelIds).toEqual(['1']);
+    const first = emitter.emit.mock.calls.find(
+      (c) => c[1] === 'post.status.changed',
+    )![2];
+    expect('attemptedChannelIds' in first).toBe(false);
+  });
+
+  it('a resume leaves an old failure out of the attempted set', async () => {
+    const { svc, publisher, emitter } = make();
+    publisher.publish.mockResolvedValue({ platformPostId: 'x1' });
+    currentRow = {
+      ...row(),
+      targets: [
+        {
+          channelId: '1',
+          platform: 'instagram',
+          status: 'scheduled',
+          heldAt: '2026-11-12T09:00:00.000Z',
+          heldReason: 'channel_paused',
+        },
+        {
+          channelId: '2',
+          platform: 'facebook',
+          status: 'failed',
+          errorCode: 'media_invalid',
+          errorMessage: 'old',
+        },
+      ],
+    };
+    await svc.publishPost('p1', 'w1', 'author-1', {
+      triggeredBy: 'scheduler',
+      heldOnly: true,
+    });
+    const ev = lastEvent(emitter);
+    expect(ev.status).toBe('partially_published');
+    expect(ev.attemptedChannelIds).toEqual(['1']);
+  });
+
+  it('a "Remind me" that cannot be sent is reminder_failed, never a platform cause', async () => {
+    const { svc } = make({
+      reminderSend: jest.fn(async () => {
+        throw new Error('network down');
+      }),
+    });
+    currentRow = {
+      ...row(),
+      platformContent: {
+        instagram: { platformSpecific: { publishMode: 'remind' } },
+      },
+    };
+    await svc.publishPost('p1', 'w1', 'author-1', { triggeredBy: 'scheduler' });
+    expect(finalTarget()).toMatchObject({
+      status: 'failed',
+      errorCode: 'reminder_failed',
+    });
+  });
+
+  it('a "Remind me" sent on retry clears the old code and message', async () => {
+    const { svc } = make({ reminderSend: jest.fn(async () => undefined) });
+    currentRow = {
+      ...row({
+        status: 'failed',
+        errorCode: 'reminder_failed',
+        errorMessage: 'Could not send your reminder: x',
+      }),
+      status: 'failed',
+      platformContent: {
+        instagram: { platformSpecific: { publishMode: 'remind' } },
+      },
+    };
+    await svc.publishPost('p1', 'w1', 'author-1');
+    expect(finalTarget().errorCode).toBeUndefined();
+    expect(finalTarget().errorMessage).toBeUndefined();
   });
 });

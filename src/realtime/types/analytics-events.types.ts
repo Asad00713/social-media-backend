@@ -115,6 +115,12 @@ export interface PostStatusChangedPayload {
    */
   authorId: string | null;
   trigger: PublishTrigger;
+  /**
+   * On the outcome of a publish run only: the channel ids that run attempted.
+   * A failed target outside it is an old failure carried over (a resume of a
+   * paused channel leaves it alone) and is not news. Absent on other events.
+   */
+  attemptedChannelIds?: string[];
 }
 
 export type InboxItemType = 'comment' | 'dm' | 'mention';
