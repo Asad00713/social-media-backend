@@ -16,6 +16,10 @@ async function bootstrap() {
   // BillingController.handleStripeWebhook.
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
+  // Run onModuleDestroy / onApplicationShutdown on SIGTERM, so Redis
+  // connections quit and BullMQ workers close instead of being cut off.
+  app.enableShutdownHooks();
+
   app.enableCors({
     origin: [
       'http://localhost:3000',
