@@ -30,11 +30,13 @@ export class WelcomeEmailService {
   ) {}
 
   async send(user: WelcomeRecipient): Promise<void> {
+    // The claim covers days (Resend's own key only 24 h); the idempotency
+    // key below is what makes a concurrent double call a single job.
+    const key = `welcome.${user.id}`;
+    let claimed = false;
     try {
-      // The claim covers days (Resend's own key only 24 h); the idempotency
-      // key below is what makes a concurrent double call a single job.
-      const key = `welcome.${user.id}`;
-      if (!(await this.once.claim(key, CLAIM_TTL_SECONDS))) return;
+      claimed = await this.once.claim(key, CLAIM_TTL_SECONDS);
+      if (!claimed) return;
       await this.outbox.enqueue({
         template: welcome,
         props: {
@@ -46,6 +48,9 @@ export class WelcomeEmailService {
         idempotencyKey: key,
       });
     } catch (err) {
+      // Nothing was queued: give the claim back so the next verify path
+      // can send. `release` never throws.
+      if (claimed) await this.once.release(key);
       this.logger.warn(
         `welcome email for user ${user.id} failed: ${err instanceof Error ? err.message : String(err)}`,
       );

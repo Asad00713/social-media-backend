@@ -15,16 +15,17 @@ function make(
       ? Promise.reject(over.claim)
       : Promise.resolve(over.claim ?? true),
   );
+  const release = jest.fn(() => Promise.resolve());
   const links = new AppLinks({
     get: (key: string) =>
       key === 'FRONTEND_URL' ? 'https://app.test' : undefined,
   } as never);
   const service = new WelcomeEmailService(
     { enqueue } as never,
-    { claim } as never,
+    { claim, release } as never,
     links,
   );
-  return { service, enqueue, claim };
+  return { service, enqueue, claim, release };
 }
 
 function job(enqueue: jest.Mock): EnqueueEmail<WelcomeProps> {
@@ -85,12 +86,32 @@ describe('WelcomeEmailService', () => {
     expect(line).not.toContain('Rehman');
   });
 
+  it('gives the claim back when the enqueue fails, so the next verify can send', async () => {
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    const { service, release } = make({
+      enqueue: jest.fn().mockRejectedValue(new Error('redis down')),
+    });
+    await service.send({ id: USER, email: 'a@b.co', name: 'Rehman' });
+    expect(release).toHaveBeenCalledWith(`welcome.${USER}`);
+  });
+
+  it('keeps the claim after a send, and touches none it did not take', async () => {
+    const sent = make();
+    await sent.service.send({ id: USER, email: 'a@b.co', name: 'Rehman' });
+    expect(sent.release).not.toHaveBeenCalled();
+
+    const taken = make({ claim: false });
+    await taken.service.send({ id: USER, email: 'a@b.co', name: 'Rehman' });
+    expect(taken.release).not.toHaveBeenCalled();
+  });
+
   it('never rejects when the claim itself throws', async () => {
     jest.spyOn(Logger.prototype, 'warn').mockImplementation();
-    const { service, enqueue } = make({ claim: new Error('boom') });
+    const { service, enqueue, release } = make({ claim: new Error('boom') });
     await expect(
       service.send({ id: USER, email: 'a@b.co', name: 'Rehman' }),
     ).resolves.toBeUndefined();
     expect(enqueue).not.toHaveBeenCalled();
+    expect(release).not.toHaveBeenCalled();
   });
 });
