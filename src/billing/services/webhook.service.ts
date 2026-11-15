@@ -78,7 +78,10 @@ export class WebhookService {
           break;
 
         case 'customer.subscription.updated':
-          await this.handleSubscriptionUpdated(event.data.object);
+          await this.handleSubscriptionUpdated(
+            event.data.object,
+            event.data.previous_attributes,
+          );
           break;
 
         case 'customer.subscription.deleted':
@@ -219,6 +222,7 @@ export class WebhookService {
 
   private async handleSubscriptionUpdated(
     subscription: Stripe.Subscription,
+    previousAttributes?: Partial<Stripe.Subscription>,
   ): Promise<void> {
     this.logger.log(`Subscription updated: ${subscription.id}`);
 
@@ -236,8 +240,6 @@ export class WebhookService {
 
     // Update subscription details. Period now lives on the subscription item
     // (Clover API), so read it via the shared helper.
-    // Read before the update below: the cancel email fires on the edge.
-    const wasCancelling = existingSub[0].cancelAtPeriodEnd;
     const sub: any = subscription;
     const period = getSubscriptionPeriod(subscription);
     const updateData: any = {
@@ -270,9 +272,14 @@ export class WebhookService {
     });
 
     // A cancellation was just scheduled (from our app or the Stripe
-    // Dashboard). Only the false -> true edge emails: every later update on a
-    // subscription that already cancels carries the same flag.
-    if (!wasCancelling && subscription.cancel_at_period_end) {
+    // Dashboard). The edge is read from STRIPE's record of the change, not
+    // from our row: the app's own cancel writes `cancelAtPeriodEnd` before
+    // this event arrives, so our row already says true by then. Every later
+    // update on a subscription that already cancels carries no such change.
+    if (
+      subscription.cancel_at_period_end === true &&
+      previousAttributes?.cancel_at_period_end === false
+    ) {
       await this.safely('cancel scheduled', () =>
         this.emailCancelScheduled(
           existingSub[0],
@@ -598,11 +605,14 @@ export class WebhookService {
 
     const unresolvedFailures = recentFailures.filter((f) => !f.resolved);
 
-    // If max attempts exceeded, apply restrictions
+    // If max attempts exceeded, apply restrictions. The "moved to Free" email
+    // goes out once per episode: failures that already carry the restriction
+    // flag say it was sent.
     if (unresolvedFailures.length >= this.MAX_FAILED_ATTEMPTS) {
       await this.applyPaymentFailureRestrictions(
         subscription[0].id,
         subscription[0].userId,
+        unresolvedFailures.some((f) => f.featuresRestricted),
       );
     }
 
@@ -686,6 +696,24 @@ export class WebhookService {
     this.logger.log(
       `Subscription ${existingSub[0].id} trial ends at ${existingSub[0].trialEnd}`,
     );
+
+    // The warning is for a trial that is still running and will convert or
+    // lapse. Stripe also sends it when a trial is ended early (the trial end
+    // is then now, or already past) and for a subscription already set to
+    // cancel: neither person should be told "choose a plan".
+    const trialEndMs = subscription.trial_end
+      ? subscription.trial_end * 1000
+      : 0;
+    if (
+      subscription.status !== 'trialing' ||
+      subscription.cancel_at_period_end ||
+      trialEndMs <= Date.now()
+    ) {
+      this.logger.log(
+        `Trial-ending email skipped for subscription ${existingSub[0].id}: no longer a live trial`,
+      );
+      return;
+    }
 
     await this.safely('trial ending', () =>
       this.emailTrialEnding(existingSub[0], subscription),
@@ -779,6 +807,7 @@ export class WebhookService {
   private async applyPaymentFailureRestrictions(
     subscriptionId: number,
     userId: string,
+    alreadyRestricted = false,
   ): Promise<void> {
     this.logger.warn(
       `Applying payment failure restrictions to user ${userId}'s workspaces`,
@@ -832,6 +861,20 @@ export class WebhookService {
       `Restrictions applied to user ${userId} due to payment failures`,
     );
 
+    // Every failure past the third lands here, but the person is told once
+    // per episode. The flag lives on the unresolved failures (a payment that
+    // succeeds resolves them), so the next episode starts clean.
+    if (alreadyRestricted) return;
+    await db
+      .update(failedPayments)
+      .set({ featuresRestricted: true, restrictionDate: new Date() })
+      .where(
+        and(
+          eq(failedPayments.subscriptionId, subscriptionId),
+          eq(failedPayments.resolved, false),
+        ),
+      );
+
     await this.safely('payment restricted', () =>
       this.emailPaymentRestricted(subscriptionId, userId),
     );
@@ -880,7 +923,6 @@ export class WebhookService {
       currency?: string;
       attempt_count?: number;
       next_payment_attempt?: number | null;
-      last_payment_error?: { message?: string } | null;
     };
     const card = await this.storedCard(sub.stripeCustomerId);
     await this.billingEmail.paymentFailed({
@@ -890,7 +932,10 @@ export class WebhookService {
       currency: inv.currency ?? 'usd',
       cardLast4: card?.last4 ?? null,
       cardBrand: card?.brand ?? null,
-      reason: inv.last_payment_error?.message ?? null,
+      // The invoice carries no bank reason (`last_payment_error` is a
+      // PaymentIntent field) and fetching it would cost a Stripe call per
+      // failure, so the email simply omits the sentence.
+      reason: null,
       nextAttempt: inv.next_payment_attempt
         ? new Date(inv.next_payment_attempt * 1000)
         : null,
@@ -969,8 +1014,8 @@ export class WebhookService {
       billed: null,
       nextCharge: null,
       endsOn: null,
-      // Every failure past the third restricts again: the billing period
-      // keeps those repeats on one key, so the person is told once.
+      // The caller sends this once per episode; the period keeps the key
+      // stable should a delivery repeat inside the outbox's window.
       dedupeKey: billingEmailKey(
         'plan-changed',
         userId,

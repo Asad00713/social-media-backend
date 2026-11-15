@@ -63,7 +63,14 @@ function fakeDb(): never {
 /** A BullMQ stand-in that drops a repeat job id, as the real queue does. */
 class FakeQueue {
   readonly jobs = new Map<string, { data: EmailJobData }>();
+  /** Set to make the next `add` fail, as a Redis outage would. */
+  failNext: Error | null = null;
   add(_name: string, data: EmailJobData, opts: { jobId: string }): void {
+    if (this.failNext) {
+      const err = this.failNext;
+      this.failNext = null;
+      throw err;
+    }
     if (!this.jobs.has(opts.jobId)) this.jobs.set(opts.jobId, { data });
   }
 }
@@ -107,6 +114,8 @@ interface Harness {
   prefs: { shouldSend: jest.Mock };
   claimed: Set<string>;
   deliver: jest.Mock;
+  once: { claim: jest.Mock; release: jest.Mock };
+  recipients: { user: jest.Mock; workspace: jest.Mock };
 }
 
 function harness(
@@ -151,6 +160,10 @@ function harness(
       claimed.add(key);
       return Promise.resolve(true);
     }),
+    release: jest.fn((key: string) => {
+      claimed.delete(key);
+      return Promise.resolve();
+    }),
   };
   const emitter = {
     paymentFailed: jest.fn().mockResolvedValue(undefined),
@@ -164,8 +177,19 @@ function harness(
     once as never,
     links,
     emitter as never,
+    outbox,
   );
-  return { service, queue, outbox, emitter, prefs, claimed, deliver };
+  return {
+    service,
+    queue,
+    outbox,
+    emitter,
+    prefs,
+    claimed,
+    deliver,
+    once,
+    recipients,
+  };
 }
 
 const failedInput = {
@@ -382,6 +406,36 @@ describe('BillingEmailService.trialEnding (D2)', () => {
     expect(h.emitter.subscriptionExpiring).toHaveBeenCalledTimes(1);
   });
 
+  it('a failed enqueue gives the claim back, so the next run still sends', async () => {
+    const h = harness();
+    h.queue.failNext = new Error('redis is down');
+
+    await h.service.trialEnding(input);
+
+    expect(h.queue.jobs.size).toBe(0);
+    expect(h.once.release).toHaveBeenCalledWith(key);
+    expect(h.claimed.size).toBe(0);
+    // No bell for a mail that never went out.
+    expect(h.emitter.subscriptionExpiring).not.toHaveBeenCalled();
+
+    await h.service.trialEnding(input);
+    expect(h.queue.jobs.size).toBe(1);
+    expect(h.emitter.subscriptionExpiring).toHaveBeenCalledTimes(1);
+  });
+
+  it('reads everything it needs before claiming: a failed read leaves the trial unclaimed', async () => {
+    const h = harness();
+    h.recipients.user.mockRejectedValueOnce(new Error('db is down'));
+
+    await h.service.trialEnding(input);
+
+    expect(h.once.claim).not.toHaveBeenCalled();
+    expect(h.claimed.size).toBe(0);
+
+    await h.service.trialEnding(input);
+    expect(h.queue.jobs.size).toBe(1);
+  });
+
   it('does not claim when the plan is unknown, so a later fix can still send', async () => {
     const h = harness();
     await h.service.trialEnding({ ...input, planCode: 'NOPE' });
@@ -482,6 +536,38 @@ describe('BillingEmailService.planChanged (D3)', () => {
     );
     // No bell for these: the in-app planChanged exists for plan switches only.
     expect(h.emitter.planChanged).not.toHaveBeenCalled();
+  });
+
+  it('a scheduled downgrade says the plan changes later, never that it already has', async () => {
+    const h = harness();
+    await h.service.planChanged({
+      ...base,
+      kind: 'downgrade_scheduled',
+      fromPlan: 'Max',
+      toPlan: 'Pro',
+      billed: '$29 monthly',
+      nextCharge: null,
+      endsOn: new Date('2026-11-30T08:00:00Z'),
+      provider: 'stripe',
+    });
+
+    const mail = await renderJob(h.queue, base.dedupeKey);
+    expect(mail.subject).toBe(
+      'Your plan changes to Schedura Pro on Nov 30, 2026',
+    );
+    expect(mail.html).toContain(
+      'Your plan changes to Schedura Pro on Nov 30, 2026',
+    );
+    expect(mail.html).toContain('Until then you keep everything in Max.');
+    expect(mail.html).toContain('Changes on');
+    expect(mail.html).toContain('Max → Pro');
+    expect(mail.html).toContain('$29 monthly');
+    expect(mail.html).toContain('Manage billing');
+    expect(mail.html).not.toContain('You&#x27;re on Schedura');
+    expect(mail.html).not.toContain('now allow');
+    expect(mail.html).not.toContain('Stripe sends the receipt');
+    // The in-app "Plan Updated" bell this site always rang is kept.
+    expect(h.emitter.planChanged).toHaveBeenCalledWith(USER_ID, 'Max', 'Pro');
   });
 
   it('a lemon squeezy cancel without an end date still reads', async () => {

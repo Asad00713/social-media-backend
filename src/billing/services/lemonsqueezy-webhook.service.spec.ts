@@ -27,6 +27,7 @@
 /* eslint-disable @typescript-eslint/no-unsafe-assignment */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 
+import { Logger } from '@nestjs/common';
 import * as crypto from 'crypto';
 
 interface Row {
@@ -1521,6 +1522,15 @@ describe('the plan a checkout was for reaches subscriptions.plan_code', () => {
 // ------------------------------------------------------------ billing emails
 
 describe('billing emails', () => {
+  // The "skipped: boom" warnings are the behaviour under test, not output.
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+  });
+  afterEach(() => warn.mockRestore());
+
   /** A failed-payment invoice; `updated_at` is what tells attempts apart. */
   function failedInvoice(
     subscriptionId: string,
@@ -1602,13 +1612,32 @@ describe('billing emails', () => {
     expect(accountRow().status).toBe('past_due');
   });
 
-  it('a cancellation emails cancel_scheduled with the end date, once', async () => {
+  it('an in-app cancel still emails: the adapter wrote `cancelled` before the webhook', async () => {
+    // `recordCancelled` stores the raw status the moment the customer cancels
+    // in our app, so the row already reads `cancelled` when this arrives.
+    baseRow().providerStatus = 'cancelled';
     const payload = lifecycle(LS_SUB, {
       status: 'cancelled',
       ends_at: '2026-11-30T08:00:00.000Z',
     });
+
     await make().handleEvent('subscription_cancelled', payload);
-    // The row now reads `cancelled`, so a redelivery has nothing new to say.
+    // A redelivery sends the same key again, which the outbox drops.
+    await make().handleEvent('subscription_cancelled', payload);
+
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(2);
+    const [first, second] = billingEmail.planChanged.mock.calls.map(
+      (c) => c[0] as { dedupeKey: string; kind: string },
+    );
+    expect(first.kind).toBe('cancel_scheduled');
+    expect(second.dedupeKey).toBe(first.dedupeKey);
+  });
+
+  it('a cancellation emails cancel_scheduled with the end date', async () => {
+    const payload = lifecycle(LS_SUB, {
+      status: 'cancelled',
+      ends_at: '2026-11-30T08:00:00.000Z',
+    });
     await make().handleEvent('subscription_cancelled', payload);
 
     expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);

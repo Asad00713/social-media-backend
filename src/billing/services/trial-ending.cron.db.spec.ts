@@ -25,6 +25,7 @@ async function ensurePlans(client: PoolClient): Promise<void> {
 interface SeedSub {
   status: string;
   trialEnd: Date;
+  cancelAtPeriodEnd?: boolean;
   provider: 'lemonsqueezy' | 'stripe';
   itemType?: string;
 }
@@ -39,11 +40,17 @@ async function seedSubscription(
   );
   const userId = u.rows[0].id;
   const s = await client.query<{ id: number }>(
-    `INSERT INTO subscriptions (user_id, plan_code, status, trial_end)
-     VALUES ($1, 'PRO', $2, $3) RETURNING id`,
+    `INSERT INTO subscriptions
+       (user_id, plan_code, status, trial_end, cancel_at_period_end)
+     VALUES ($1, 'PRO', $2, $3, $4) RETURNING id`,
     // As an ISO string, the way drizzle writes the column: a raw Date would
     // go through node-pg's local-time formatting and shift by the host offset.
-    [userId, seed.status, seed.trialEnd.toISOString()],
+    [
+      userId,
+      seed.status,
+      seed.trialEnd.toISOString(),
+      seed.cancelAtPeriodEnd ?? false,
+    ],
   );
   await client.query(
     `INSERT INTO provider_subscriptions
@@ -55,7 +62,7 @@ async function seedSubscription(
 }
 
 describeDb('TrialEndingCron (database)', () => {
-  it('picks the Lemon Squeezy trials ending in (2, 3] days and sends once across two runs', async () => {
+  it('picks the Lemon Squeezy trials ending within 3 days, missed runs included, and sends once across two runs', async () => {
     await withRollbackDb([], async (db, client) => {
       await ensurePlans(client);
       const inWindow = await seedSubscription(client, {
@@ -63,16 +70,34 @@ describeDb('TrialEndingCron (database)', () => {
         trialEnd: at(60),
         provider: 'lemonsqueezy',
       });
-      // Exactly 3 days is in; exactly 2 days is out (the lower bound is open).
+      // Exactly 3 days is in: the mail never goes out earlier than that.
       const upperEdge = await seedSubscription(client, {
         status: 'trialing',
         trialEnd: at(72),
         provider: 'lemonsqueezy',
       });
+      // A run that was missed: these are inside 2 days now and still go out.
+      const missed = await seedSubscription(client, {
+        status: 'trialing',
+        trialEnd: at(30),
+        provider: 'lemonsqueezy',
+      });
+      const lastDay = await seedSubscription(client, {
+        status: 'trialing',
+        trialEnd: at(1),
+        provider: 'lemonsqueezy',
+      });
+      // Already over, set to cancel: nobody to warn.
       await seedSubscription(client, {
         status: 'trialing',
-        trialEnd: at(48),
+        trialEnd: at(-1),
         provider: 'lemonsqueezy',
+      });
+      await seedSubscription(client, {
+        status: 'trialing',
+        trialEnd: at(60),
+        provider: 'lemonsqueezy',
+        cancelAtPeriodEnd: true,
       });
       await seedSubscription(client, {
         status: 'trialing',
@@ -97,6 +122,7 @@ describeDb('TrialEndingCron (database)', () => {
       });
 
       const notify = { notify: jest.fn().mockResolvedValue(undefined) };
+      const outbox = { enqueue: jest.fn().mockResolvedValue(undefined) };
       const claimed = new Set<string>();
       const once = {
         claim: jest.fn((key: string) => {
@@ -112,19 +138,24 @@ describeDb('TrialEndingCron (database)', () => {
         once as never,
         new AppLinks({ get: () => undefined } as unknown as ConfigService),
         {} as never,
+        outbox as never,
       );
       const cron = new TrialEndingCron(db, billingEmail);
 
       const first = await cron.sendDue(NOW);
       const second = await cron.sendDue(NOW);
 
-      // Both runs see the same two trials; the claim lets only the first send.
-      expect(first).toBe(2);
-      expect(second).toBe(2);
-      const sentTo = (notify.notify.mock.calls as Array<[{ userId: string }]>)
-        .map(([input]) => input.userId)
+      // Both runs see the same four trials; the claim lets only the first send.
+      expect(first).toBe(4);
+      expect(second).toBe(4);
+      const sentTo = (
+        outbox.enqueue.mock.calls as Array<[{ to: { userId: string } }]>
+      )
+        .map(([mail]) => mail.to.userId)
         .sort();
-      expect(sentTo).toEqual([inWindow.userId, upperEdge.userId].sort());
+      expect(sentTo).toEqual(
+        [inWindow, upperEdge, missed, lastDay].map((s) => s.userId).sort(),
+      );
     });
   });
 });

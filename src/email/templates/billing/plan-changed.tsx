@@ -6,6 +6,7 @@ import { defineTemplate } from '../define-template';
 export type PlanChangeKind =
   | 'upgraded'
   | 'downgraded'
+  | 'downgrade_scheduled'
   | 'cancel_scheduled'
   | 'ended'
   | 'payment_restricted';
@@ -36,6 +37,10 @@ function heading(p: PlanChangedProps): string {
     case 'upgraded':
     case 'downgraded':
       return `You're on Schedura ${p.toPlan}`;
+    case 'downgrade_scheduled':
+      return p.endsOn
+        ? `Your plan changes to Schedura ${p.toPlan} on ${p.endsOn}`
+        : `Your plan changes to Schedura ${p.toPlan} at the end of your billing period`;
     case 'cancel_scheduled':
       return p.endsOn
         ? `Your ${p.fromPlan} plan ends on ${p.endsOn}`
@@ -70,6 +75,7 @@ function preheader(p: PlanChangedProps): string {
         ? `${next} Your receipt comes from Stripe.`
         : next;
     }
+    case 'downgrade_scheduled':
     case 'cancel_scheduled':
       return `You keep ${p.fromPlan} until then.`;
     case 'ended':
@@ -95,6 +101,10 @@ function body(p: PlanChangedProps): string | null {
       return hasLimits
         ? `Your workspaces now allow ${p.channels} channels and ${p.members} members.`
         : null;
+    case 'downgrade_scheduled':
+      return hasLimits
+        ? `Until then you keep everything in ${p.fromPlan}. After that, your workspaces allow ${p.channels} channels and ${p.members} members.`
+        : `Until then you keep everything in ${p.fromPlan}.`;
     case 'cancel_scheduled':
       return p.endsOn
         ? `Your workspaces move to Free on ${p.endsOn}. Nothing is deleted.`
@@ -116,7 +126,10 @@ export const PLAN_CHANGED = defineTemplate<PlanChangedProps>({
   preheader,
   Body: (p) => {
     const text = body(p);
-    const isChange = p.kind === 'upgraded' || p.kind === 'downgraded';
+    const isChange =
+      p.kind === 'upgraded' ||
+      p.kind === 'downgraded' ||
+      p.kind === 'downgrade_scheduled';
     const isRestriction = p.kind === 'payment_restricted';
     return (
       <>
@@ -128,6 +141,9 @@ export const PLAN_CHANGED = defineTemplate<PlanChangedProps>({
               ...(p.billed ? [{ label: 'Billed', value: p.billed }] : []),
               ...(p.nextCharge
                 ? [{ label: 'Next charge', value: p.nextCharge }]
+                : []),
+              ...(p.kind === 'downgrade_scheduled' && p.endsOn
+                ? [{ label: 'Changes on', value: p.endsOn }]
                 : []),
             ]}
           />
@@ -162,6 +178,18 @@ export const PLAN_CHANGED = defineTemplate<PlanChangedProps>({
       billed: '$12 monthly',
       nextCharge: 'Nov 26, 2026',
       endsOn: null,
+      channels: 5,
+      members: 2,
+      showStripeReceipt: false,
+      billingUrl: BILLING_URL,
+    },
+    downgrade_scheduled: {
+      kind: 'downgrade_scheduled',
+      fromPlan: 'Pro',
+      toPlan: 'Basic',
+      billed: '$12 monthly',
+      nextCharge: null,
+      endsOn: 'Nov 26, 2026',
       channels: 5,
       members: 2,
       showStripeReceipt: false,

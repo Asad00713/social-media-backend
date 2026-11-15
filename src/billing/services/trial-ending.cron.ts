@@ -13,10 +13,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * Lemon Squeezy sends no "trial will end" event (Stripe does), so a daily
- * sweep finds the trials that end in about three days: those with a trial end
- * in `(now + 2 days, now + 3 days]`, which a once-a-day run visits exactly
- * once. `BillingEmailService.trialEnding` claims each trial for a week, so a
- * second run or a second instance sends nothing more.
+ * sweep finds the trials that end within three days: a trial end in
+ * `(now, now + 3 days]`. The upper bound keeps the mail from going out
+ * earlier than three days before. The lower bound is just "not over yet", so
+ * a missed run is made up the next day instead of losing the trial.
+ * `BillingEmailService.trialEnding` claims each trial for a week, so the
+ * daily overlap, a second run or a second instance sends nothing more.
+ * A trial that is set to cancel is skipped: its owner already chose to leave.
  *
  * `ScheduleModule.forRoot()` is registered in AppModule.
  */
@@ -55,7 +58,8 @@ export class TrialEndingCron {
       .where(
         and(
           eq(subscriptions.status, 'trialing'),
-          gt(subscriptions.trialEnd, new Date(now.getTime() + 2 * DAY_MS)),
+          eq(subscriptions.cancelAtPeriodEnd, false),
+          gt(subscriptions.trialEnd, now),
           lte(subscriptions.trialEnd, new Date(now.getTime() + 3 * DAY_MS)),
         ),
       );

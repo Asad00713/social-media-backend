@@ -273,9 +273,12 @@ export class LemonSqueezyWebhookService {
    * or null when there is nothing new to say. Never throws: the webhook must
    * answer 200 whatever happens to the mail.
    *
-   * Only a genuine edge counts. A row already `cancelled` or `expired` has had
-   * its email; redelivery and the `subscription_updated` that follows a
-   * cancellation do not match these event names at all.
+   * A row already `expired` has had its email. A row already `cancelled` has
+   * NOT: the app's own cancel (`recordCancelled` in the adapter) writes that
+   * status before this event arrives, so it cannot mark an edge. A
+   * redelivered cancellation is deduped by its key, which ends in `ends_at`;
+   * the `subscription_updated` that follows one does not match these event
+   * names at all.
    */
   private async planNotice(
     eventName: string,
@@ -290,7 +293,6 @@ export class LemonSqueezyWebhookService {
 
       const before = (target.providerStatus ?? '').toLowerCase();
       if (LS_TERMINAL_STATUSES.has(before)) return null;
-      if (!ended && before === 'cancelled') return null;
 
       const rows = await db
         .select({

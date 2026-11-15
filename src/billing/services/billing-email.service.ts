@@ -8,6 +8,7 @@ import { workspace } from '../../drizzle/schema/workspace.schema';
 import { EmailOnceService } from '../../email/email-once.service';
 import { AppLinks } from '../../email/links/app-links';
 import { formatDay } from '../../email/links/format-when';
+import { EmailOutboxService } from '../../email/queue/email-outbox.service';
 import { PAYMENT_FAILED } from '../../email/templates/billing/payment-failed';
 import {
   PLAN_CHANGED,
@@ -164,6 +165,7 @@ export class BillingEmailService {
     private readonly once: EmailOnceService,
     private readonly links: AppLinks,
     private readonly emitter: NotificationEmitterService,
+    private readonly outbox: EmailOutboxService,
   ) {}
 
   async paymentFailed(i: PaymentFailedInput): Promise<void> {
@@ -220,25 +222,31 @@ export class BillingEmailService {
         i.subscriptionId,
         i.trialEnd.getTime(),
       );
-      if (!(await this.once.claim(key, TRIAL_CLAIM_TTL_SECONDS))) return;
-
+      // Everything that can fail on a read comes BEFORE the claim, so a
+      // failure there leaves the trial unclaimed for the next run.
       const ctx = await this.context(i.userId);
+      const address = (await this.recipients.user(i.userId))?.email;
+      if (!address) {
+        this.logger.warn(
+          `Trial-ending email skipped: user ${i.userId} has no address`,
+        );
+        return;
+      }
       const daysLeft = Math.max(
         1,
         Math.ceil((i.trialEnd.getTime() - Date.now()) / DAY_MS),
       );
-      await this.notify.notify({
-        userId: i.userId,
-        workspaceId: ctx.workspaceId,
-        event: 'billing_alert',
-        bell: () =>
-          this.emitter.subscriptionExpiring(
-            i.userId,
-            TRIAL_WARNING_DAYS,
-            current.name,
-          ),
-        email: {
+      if (!(await this.once.claim(key, TRIAL_CLAIM_TTL_SECONDS))) return;
+
+      // Enqueued directly, not through NotifyService, which swallows an
+      // enqueue failure: here a failure must give the claim back, or the
+      // trial would never be mailed.
+      try {
+        await this.outbox.enqueue({
           template: TRIAL_ENDING,
+          to: { email: address, userId: i.userId },
+          workspaceId: ctx.workspaceId,
+          idempotencyKey: key,
           props: {
             planName: current.name,
             trialEnd: formatDay(i.trialEnd, ctx.timezone),
@@ -263,12 +271,22 @@ export class BillingEmailService {
             ],
             billingUrl: ctx.billingUrl,
           },
-          idempotencyKey: billingEmailKey(
-            'trial-ending',
-            i.subscriptionId,
-            i.trialEnd.getTime(),
+        });
+      } catch (err) {
+        await this.once.release(key);
+        throw err;
+      }
+
+      await this.notify.notify({
+        userId: i.userId,
+        workspaceId: ctx.workspaceId,
+        event: 'billing_alert',
+        bell: () =>
+          this.emitter.subscriptionExpiring(
+            i.userId,
+            TRIAL_WARNING_DAYS,
+            current.name,
           ),
-        },
       });
     });
   }
@@ -279,7 +297,10 @@ export class BillingEmailService {
       const target = (await this.plans()).find(
         (p) => p.name === i.toPlan || p.code === i.toPlan,
       );
-      const isSwitch = i.kind === 'upgraded' || i.kind === 'downgraded';
+      const isSwitch =
+        i.kind === 'upgraded' ||
+        i.kind === 'downgraded' ||
+        i.kind === 'downgrade_scheduled';
       await this.notify.notify({
         userId: i.userId,
         workspaceId: ctx.workspaceId,

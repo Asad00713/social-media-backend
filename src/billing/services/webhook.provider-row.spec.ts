@@ -52,6 +52,8 @@
 /* eslint-disable @typescript-eslint/no-unsafe-call */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
 
+import { Logger } from '@nestjs/common';
+
 interface Row {
   [column: string]: unknown;
 }
@@ -244,7 +246,11 @@ function makeDb(): any {
               id: rowsOf(target).length + 1,
               // A column default the real table fills in.
               ...(target === 'failed_payments'
-                ? { createdAt: new Date() }
+                ? {
+                    createdAt: new Date(),
+                    resolved: false,
+                    featuresRestricted: false,
+                  }
                 : {}),
               ...row,
             });
@@ -461,6 +467,16 @@ function makeService(): WebhookService {
   );
 }
 
+/** The same, for the handlers that also take Stripe's `previous_attributes`. */
+function call2(
+  service: WebhookService,
+  handler: string,
+  payload: unknown,
+  previous: unknown,
+): Promise<void> {
+  return (service as any)[handler](payload, previous) as Promise<void>;
+}
+
 /** Reach the private handler under test without going through the dispatcher. */
 function call(
   service: WebhookService,
@@ -668,6 +684,17 @@ describe('customer.subscription.updated', () => {
 // ------------------------------------------------------------ billing emails
 
 describe('billing emails', () => {
+  // The "skipped: boom" warnings are the behaviour under test, not output.
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+  });
+  afterEach(() => warn.mockRestore());
+
+  // The bank's reason is deliberately in the payload: the email must ignore
+  // it (it is a PaymentIntent field, not an Invoice one).
   const FAILED_INVOICE = {
     id: 'in_1',
     amount_due: 2900,
@@ -706,7 +733,7 @@ describe('billing emails', () => {
       currency: 'usd',
       cardLast4: '4242',
       cardBrand: 'visa',
-      reason: 'Your card has insufficient funds.',
+      reason: null,
       nextAttempt: new Date(1790000000 * 1000),
       dedupeKey: 'payment-failed.in_1.2',
     });
@@ -733,22 +760,21 @@ describe('billing emails', () => {
     ]);
   });
 
+  const fail = (service: WebhookService, attempt: number) =>
+    call(service, 'handleInvoicePaymentFailed', {
+      ...FAILED_INVOICE,
+      attempt_count: attempt,
+    });
+
   it('the third unresolved failure restricts the account and emails payment_restricted', async () => {
     seedInvoice();
     const service = makeService();
 
-    for (const attempt of [1, 2]) {
-      await call(service, 'handleInvoicePaymentFailed', {
-        ...FAILED_INVOICE,
-        attempt_count: attempt,
-      });
-    }
+    await fail(service, 1);
+    await fail(service, 2);
     expect(billingEmail.planChanged).not.toHaveBeenCalled();
 
-    await call(service, 'handleInvoicePaymentFailed', {
-      ...FAILED_INVOICE,
-      attempt_count: 3,
-    });
+    await fail(service, 3);
 
     expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
     expect(billingEmail.planChanged.mock.calls[0][0]).toMatchObject({
@@ -757,6 +783,32 @@ describe('billing emails', () => {
       fromPlan: 'Pro',
       toPlan: 'Free',
     });
+  });
+
+  it('the 4th and 5th failures of the same episode send no second "moved to Free"', async () => {
+    seedInvoice();
+    const service = makeService();
+
+    for (const attempt of [1, 2, 3, 4, 5]) await fail(service, attempt);
+
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+    // Each failure still gets its own "payment didn't go through" email.
+    expect(billingEmail.paymentFailed).toHaveBeenCalledTimes(5);
+    // The limits are still re-applied on every failure past the third.
+    expect(lookup.applyLimitsToAllWorkspaces).toHaveBeenCalledTimes(3);
+  });
+
+  it('a new episode, after the old failures were resolved, restricts and emails again', async () => {
+    seedInvoice();
+    const service = makeService();
+    for (const attempt of [1, 2, 3]) await fail(service, attempt);
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
+
+    // A payment succeeded: `handleInvoicePaymentSucceeded` resolves them.
+    for (const row of rowsOf('failed_payments')) row.resolved = true;
+    for (const attempt of [1, 2, 3]) await fail(service, attempt);
+
+    expect(billingEmail.planChanged).toHaveBeenCalledTimes(2);
   });
 
   it('applyPaymentFailureRestrictions emails payment_restricted with a period-stable key', async () => {
@@ -790,64 +842,187 @@ describe('billing emails', () => {
     expect(rowsOf('subscriptions')[0].status).toBe('past_due');
   });
 
-  it('trial_will_end hands the trial to the email service, with the card state', async () => {
-    const trialEnd = 1790000000;
-    await call(makeService(), 'handleTrialWillEnd', {
+  describe('trial_will_end', () => {
+    const inDays = (days: number) =>
+      Math.floor(Date.now() / 1000) + days * 24 * 60 * 60;
+    const trial = (over: Record<string, unknown> = {}) => ({
       id: 'sub_live',
-      trial_end: trialEnd,
-      default_payment_method: null,
-    });
-    await call(makeService(), 'handleTrialWillEnd', {
-      id: 'sub_live',
-      trial_end: trialEnd,
-      default_payment_method: 'pm_1',
-    });
-
-    const base = {
-      userId: 'user-1',
-      subscriptionId: SUBSCRIPTION_ID,
-      trialEnd: new Date(trialEnd * 1000),
-      planCode: 'PRO',
-    };
-    expect(billingEmail.trialEnding.mock.calls.map((c) => c[0])).toEqual([
-      { ...base, hasCard: false },
-      { ...base, hasCard: true },
-    ]);
-  });
-
-  it('cancel_at_period_end false -> true emails cancel_scheduled; true -> true does not', async () => {
-    const service = makeService();
-    const event = {
-      id: 'sub_live',
-      status: 'active',
-      cancel_at_period_end: true,
-      items: { data: [{ id: 'si_1', current_period_end: 1790000000 }] },
-    };
-
-    await call(service, 'handleSubscriptionUpdated', event);
-    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
-    expect(billingEmail.planChanged.mock.calls[0][0]).toMatchObject({
-      userId: 'user-1',
-      kind: 'cancel_scheduled',
-      fromPlan: 'Pro',
-      toPlan: 'Free',
-      endsOn: new Date(1790000000 * 1000),
-    });
-
-    // The first update stored the flag, so this one is true -> true.
-    await call(service, 'handleSubscriptionUpdated', event);
-    expect(billingEmail.planChanged).toHaveBeenCalledTimes(1);
-  });
-
-  it('a subscription that never cancelled sends no plan email on update', async () => {
-    await call(makeService(), 'handleSubscriptionUpdated', {
-      id: 'sub_live',
-      status: 'active',
+      status: 'trialing',
       cancel_at_period_end: false,
-      items: { data: [{ id: 'si_1', current_period_end: 1790000000 }] },
+      trial_end: inDays(3),
+      default_payment_method: null,
+      ...over,
     });
 
-    expect(billingEmail.planChanged).not.toHaveBeenCalled();
+    it('a normal trial is handed to the email service, with the card state', async () => {
+      const event = trial();
+      await call(makeService(), 'handleTrialWillEnd', event);
+      await call(
+        makeService(),
+        'handleTrialWillEnd',
+        trial({ default_payment_method: 'pm_1', trial_end: event.trial_end }),
+      );
+
+      const base = {
+        userId: 'user-1',
+        subscriptionId: SUBSCRIPTION_ID,
+        trialEnd: new Date(event.trial_end * 1000),
+        planCode: 'PRO',
+      };
+      expect(billingEmail.trialEnding.mock.calls.map((c) => c[0])).toEqual([
+        { ...base, hasCard: false },
+        { ...base, hasCard: true },
+      ]);
+    });
+
+    it('sends nothing for a trial that was ended early', async () => {
+      // Ending a trial now moves the end to now (or the past) and the status
+      // off `trialing`: nobody should be told to "choose a plan".
+      await call(
+        makeService(),
+        'handleTrialWillEnd',
+        trial({ status: 'active', trial_end: inDays(-1) }),
+      );
+      await call(
+        makeService(),
+        'handleTrialWillEnd',
+        trial({ trial_end: inDays(-1) }),
+      );
+      await call(
+        makeService(),
+        'handleTrialWillEnd',
+        trial({ status: 'active' }),
+      );
+
+      expect(billingEmail.trialEnding).not.toHaveBeenCalled();
+    });
+
+    it('sends nothing for a trial that is set to cancel', async () => {
+      await call(
+        makeService(),
+        'handleTrialWillEnd',
+        trial({ cancel_at_period_end: true }),
+      );
+
+      expect(billingEmail.trialEnding).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('cancellation', () => {
+    const update = (cancel: boolean) => ({
+      id: 'sub_live',
+      status: 'active',
+      cancel_at_period_end: cancel,
+      items: { data: [{ id: 'si_1', current_period_end: 1790000000 }] },
+    });
+    const previously = (cancel: boolean | undefined) =>
+      cancel === undefined ? undefined : { cancel_at_period_end: cancel };
+
+    function sent(): Array<{ kind: string; dedupeKey: string }> {
+      return billingEmail.planChanged.mock.calls.map(
+        (c) => c[0] as { kind: string; dedupeKey: string },
+      );
+    }
+
+    it('Stripe saying false -> true emails cancel_scheduled', async () => {
+      await call2(
+        makeService(),
+        'handleSubscriptionUpdated',
+        update(true),
+        previously(false),
+      );
+
+      expect(sent()).toHaveLength(1);
+      expect(billingEmail.planChanged.mock.calls[0][0]).toMatchObject({
+        userId: 'user-1',
+        kind: 'cancel_scheduled',
+        fromPlan: 'Pro',
+        toPlan: 'Free',
+        endsOn: new Date(1790000000 * 1000),
+      });
+    });
+
+    it('an in-app cancel still emails: our row was written before the webhook arrived', async () => {
+      // `downgradeToFree` and `cancelSubscription` store cancelAtPeriodEnd
+      // themselves, so by the time Stripe's event lands our row says true.
+      rowsOf('subscriptions')[0].cancelAtPeriodEnd = true;
+
+      await call2(
+        makeService(),
+        'handleSubscriptionUpdated',
+        update(true),
+        previously(false),
+      );
+
+      expect(sent().map((s) => s.kind)).toEqual(['cancel_scheduled']);
+    });
+
+    it('the same event delivered again carries the same key', async () => {
+      const service = makeService();
+      for (let i = 0; i < 2; i++) {
+        await call2(
+          service,
+          'handleSubscriptionUpdated',
+          update(true),
+          previously(false),
+        );
+      }
+
+      const [first, second] = sent();
+      expect(second.dedupeKey).toBe(first.dedupeKey);
+    });
+
+    it('an update that did not change the flag sends nothing', async () => {
+      const service = makeService();
+      await call2(
+        service,
+        'handleSubscriptionUpdated',
+        update(true),
+        previously(undefined),
+      );
+      await call2(service, 'handleSubscriptionUpdated', update(true), {
+        status: 'trialing',
+      });
+      await call2(
+        service,
+        'handleSubscriptionUpdated',
+        update(false),
+        previously(true),
+      );
+
+      expect(sent()).toHaveLength(0);
+    });
+
+    it('applying a scheduled downgrade at renewal sends no second email', async () => {
+      Object.assign(rowsOf('subscriptions')[0], {
+        scheduledPlanCode: 'BASIC',
+        scheduledChangeAt: new Date(1789000000 * 1000),
+      });
+      rowsOf('plans').push({ id: 1, code: 'BASIC', name: 'Basic' });
+
+      await call2(
+        makeService(),
+        'handleSubscriptionUpdated',
+        {
+          id: 'sub_live',
+          status: 'active',
+          cancel_at_period_end: false,
+          items: {
+            data: [
+              {
+                id: 'si_1',
+                current_period_start: 1790000000,
+                current_period_end: 1792600000,
+              },
+            ],
+          },
+        },
+        { current_period_start: 1787400000 },
+      );
+
+      expect(rowsOf('subscriptions')[0].planCode).toBe('BASIC');
+      expect(billingEmail.planChanged).not.toHaveBeenCalled();
+    });
   });
 
   it('subscription.deleted emails ended with the plan that ended', async () => {

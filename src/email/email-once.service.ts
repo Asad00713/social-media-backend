@@ -10,6 +10,7 @@ export interface EmailOnceRedis {
     ttlSeconds: number,
     flag: 'NX',
   ): Promise<'OK' | null>;
+  del(key: string): Promise<number>;
 }
 
 const KEY_PREFIX = 'email-once:';
@@ -27,6 +28,21 @@ export class EmailOnceService {
   private readonly logger = new Logger(EmailOnceService.name);
 
   constructor(@Inject(REDIS_CLIENT) private readonly redis: EmailOnceRedis) {}
+
+  /**
+   * Gives a claim back, for a send that failed after it: without this the
+   * retry would find the key taken and the mail would never go. Never throws;
+   * if Redis is down the claim simply stays until its TTL.
+   */
+  async release(key: string): Promise<void> {
+    try {
+      await this.redis.del(`${KEY_PREFIX}${key}`);
+    } catch (err) {
+      this.logger.warn(
+        `email-once release for ${key} failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   /** True the first time `key` is claimed within `ttlSeconds`, false after. */
   async claim(key: string, ttlSeconds: number): Promise<boolean> {

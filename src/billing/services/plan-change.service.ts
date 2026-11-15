@@ -955,20 +955,22 @@ export class PlanChangeService {
       `Scheduled downgrade for user ${sub.userId}: ${oldPlanCode} -> ${target.code} at ${sub.currentPeriodEnd?.toISOString() ?? 'period end'}`,
     );
 
-    // Never throws; see the note on step 10 of `changePlan` for the key.
+    // The plan only changes at period end, so this says so (the applying
+    // webhook sends nothing more). Never throws; see the note on step 10 of
+    // `changePlan` for the key.
     await this.billingEmail.planChanged({
       userId,
-      kind: 'downgraded',
+      kind: 'downgrade_scheduled',
       fromPlan: preview.currentPlan.name,
       toPlan: preview.newPlan.name,
       billed: formatMonthlyPrice(target.basePriceCents),
-      nextCharge: sub.currentPeriodEnd,
-      endsOn: null,
+      nextCharge: null,
+      endsOn: sub.currentPeriodEnd,
       provider: adapter.name,
       dedupeKey: billingEmailKey(
         'plan-changed',
         userId,
-        'downgraded',
+        'downgrade_scheduled',
         sub.stripeSubscriptionId ?? `sub${sub.id}`,
         Date.now(),
       ),

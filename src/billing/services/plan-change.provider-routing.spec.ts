@@ -293,14 +293,16 @@ describe('changePlan routes a paid→paid change to the account’s provider', (
     // never told, so the customer kept being billed at the old price.
     expect(adapter.changePlan).toHaveBeenCalledWith(42, 'PRO');
 
-    // A scheduled downgrade is a plan change the person is told about, and
-    // the receipt sentence belongs to Stripe upgrades only.
+    // A scheduled downgrade is told as a FUTURE change (it only applies at
+    // period end), not as "you're now on ...".
     expect(billingEmail.planChanged).toHaveBeenCalledWith(
       expect.objectContaining({
         userId: 'user-1',
-        kind: 'downgraded',
+        kind: 'downgrade_scheduled',
         fromPlan: 'Basic',
         toPlan: 'Pro',
+        endsOn: LS_SUBSCRIPTION.currentPeriodEnd,
+        nextCharge: null,
         provider: 'lemonsqueezy',
       }),
     );
