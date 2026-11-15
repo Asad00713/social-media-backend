@@ -51,7 +51,11 @@ export class WorkspaceMembersController {
     @Body() dto: BatchInviteDto,
     @CurrentUser() user: { userId: string; email: string },
   ) {
-    return this.membersService.batchInvite(workspaceId, dto.invites, user.userId);
+    return this.membersService.batchInvite(
+      workspaceId,
+      dto.invites,
+      user.userId,
+    );
   }
 
   // Get pending invitations for a workspace

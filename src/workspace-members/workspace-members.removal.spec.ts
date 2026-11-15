@@ -21,7 +21,9 @@ const WS = '11111111-1111-4111-8111-111111111111';
 const ADMIN = 'admin-user';
 const MEMBER_USER = 'member-user';
 
-const roleService = { isPlatformSuperAdmin: jest.fn().mockResolvedValue(false) };
+const roleService = {
+  isPlatformSuperAdmin: jest.fn().mockResolvedValue(false),
+};
 
 /** An update chain that records what it was given and answers `rows`. */
 function updateChain(rows: unknown[]) {
@@ -105,7 +107,9 @@ describe('WorkspaceMembersService.getInvitationLink', () => {
   it('404s an invitation that is not pending in this workspace', async () => {
     const svc = makeService({
       query: {
-        workspaceInvitation: { findFirst: jest.fn().mockResolvedValue(undefined) },
+        workspaceInvitation: {
+          findFirst: jest.fn().mockResolvedValue(undefined),
+        },
       },
     });
     await expect(svc.getInvitationLink(WS, 'other')).rejects.toBeInstanceOf(
@@ -149,7 +153,12 @@ describe('no response carries the invitation token', () => {
   });
 
   it('a role change and an accept answer the row without it', async () => {
-    const row = { id: 'm1', role: 'ADMIN', token: 'secret', status: 'ACCEPTED' };
+    const row = {
+      id: 'm1',
+      role: 'ADMIN',
+      token: 'secret',
+      status: 'ACCEPTED',
+    };
     const { update } = updateChain([row]);
     const svc = makeService({
       query: {
@@ -171,42 +180,45 @@ describe('no response carries the invitation token', () => {
   });
 
   it('batch results name each new invitation instead', async () => {
-    const svc = makeService({
-      query: {
-        workspace: {
-          findFirst: jest
-            .fn()
-            .mockResolvedValue({ id: WS, ownerId: ADMIN, name: 'Acme' }),
+    const svc = makeService(
+      {
+        query: {
+          workspace: {
+            findFirst: jest
+              .fn()
+              .mockResolvedValue({ id: WS, ownerId: ADMIN, name: 'Acme' }),
+          },
+          users: { findFirst: jest.fn().mockResolvedValue(undefined) },
+          workspaceInvitation: {
+            findFirst: jest.fn().mockResolvedValue(undefined),
+            findMany: jest.fn().mockResolvedValue([]),
+          },
         },
-        users: { findFirst: jest.fn().mockResolvedValue(undefined) },
-        workspaceInvitation: {
-          findFirst: jest.fn().mockResolvedValue(undefined),
-          findMany: jest.fn().mockResolvedValue([]),
-        },
-      },
-      insert: () => ({
-        values: () => ({
-          returning: () =>
-            Promise.resolve([
-              {
-                id: 'inv-new',
-                email: 'sana@x.pk',
-                role: 'MEMBER',
-                token: 'secret',
-                expiresAt: new Date(),
-              },
-            ]),
+        insert: () => ({
+          values: () => ({
+            returning: () =>
+              Promise.resolve([
+                {
+                  id: 'inv-new',
+                  email: 'sana@x.pk',
+                  role: 'MEMBER',
+                  token: 'secret',
+                  expiresAt: new Date(),
+                },
+              ]),
+          }),
         }),
-      }),
-    }, {
-      usage: {
-        getWorkspaceUsage: jest
-          .fn()
-          .mockResolvedValue({ membersLimit: 5, membersCount: 1 }),
-        enforceMemberLimit: jest.fn().mockResolvedValue(undefined),
       },
-      email: { sendWorkspaceInvitation: jest.fn().mockResolvedValue({}) },
-    });
+      {
+        usage: {
+          getWorkspaceUsage: jest
+            .fn()
+            .mockResolvedValue({ membersLimit: 5, membersCount: 1 }),
+          enforceMemberLimit: jest.fn().mockResolvedValue(undefined),
+        },
+        email: { sendWorkspaceInvitation: jest.fn().mockResolvedValue({}) },
+      },
+    );
     const res = await svc.batchInvite(
       WS,
       [{ email: 'sana@x.pk', role: 'MEMBER' }],
@@ -318,7 +330,9 @@ describe('WorkspaceMembersService.restoreMember', () => {
           findFirst: jest
             .fn()
             .mockResolvedValueOnce(row)
-            .mockResolvedValueOnce(opts.alreadyMember ? { id: 'm2' } : undefined),
+            .mockResolvedValueOnce(
+              opts.alreadyMember ? { id: 'm2' } : undefined,
+            ),
           findMany: jest.fn().mockResolvedValue(opts.pending ?? []),
         },
       },
@@ -334,7 +348,9 @@ describe('WorkspaceMembersService.restoreMember', () => {
   }
 
   const usageWith = (membersLimit: number, membersCount: number) => ({
-    getWorkspaceUsage: jest.fn().mockResolvedValue({ membersLimit, membersCount }),
+    getWorkspaceUsage: jest
+      .fn()
+      .mockResolvedValue({ membersLimit, membersCount }),
     incrementMemberCount: jest.fn().mockResolvedValue(undefined),
   });
 
@@ -350,16 +366,26 @@ describe('WorkspaceMembersService.restoreMember', () => {
       updatedAt: expect.any(Date),
     });
     expect(calls[0].set.role).toBeUndefined();
-    expect(res.member).toMatchObject({ id: 'm1', role: 'ADMIN', status: 'ACCEPTED' });
+    expect(res.member).toMatchObject({
+      id: 'm1',
+      role: 'ADMIN',
+      status: 'ACCEPTED',
+    });
     expect(JSON.stringify(res)).not.toContain('secret');
-    expect(usage.incrementMemberCount).toHaveBeenCalledWith(WS, ADMIN, MEMBER_USER);
+    expect(usage.incrementMemberCount).toHaveBeenCalledWith(
+      WS,
+      ADMIN,
+      MEMBER_USER,
+    );
     // The update is conditional on REMOVED and the window, so a double click counts once.
     expect(dialect.sqlToQuery(calls[0].where).params).toContain('REMOVED');
   });
 
   it('refuses after the 15-minute window: 409 RESTORE_WINDOW_PASSED', async () => {
     const { db, calls } = restoreDb(
-      removedRow({ removedAt: new Date(Date.now() - MEMBER_RESTORE_WINDOW_MS - 1) }),
+      removedRow({
+        removedAt: new Date(Date.now() - MEMBER_RESTORE_WINDOW_MS - 1),
+      }),
     );
     const err = await makeService(db)
       .restoreMember(WS, 'm1', ADMIN)
@@ -395,7 +421,9 @@ describe('WorkspaceMembersService.restoreMember', () => {
     );
     expect(calls).toHaveLength(1);
     const q = dialect.sqlToQuery(deleted[0]);
-    expect(q.params).toEqual(expect.arrayContaining([WS, 'PENDING', 'sana@x.pk']));
+    expect(q.params).toEqual(
+      expect.arrayContaining([WS, 'PENDING', 'sana@x.pk']),
+    );
   });
 
   it('leaving on your own is not restorable: 404', async () => {

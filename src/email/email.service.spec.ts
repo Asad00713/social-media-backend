@@ -30,8 +30,12 @@ describe('EmailService.sendWorkspaceInvitation', () => {
     expect(res.success).toBe(false);
     const arg = spy.mock.calls[0][0];
     expect(arg.to).toBe('teammate@acme.com');
-    expect(arg.html).toContain('https://app.schedura.ai/invite/accept?token=tok123');
-    expect(arg.text).toContain('https://app.schedura.ai/invite/accept?token=tok123');
+    expect(arg.html).toContain(
+      'https://app.schedura.ai/invite/accept?token=tok123',
+    );
+    expect(arg.text).toContain(
+      'https://app.schedura.ai/invite/accept?token=tok123',
+    );
     expect(arg.subject).toContain('Acme');
   });
 });

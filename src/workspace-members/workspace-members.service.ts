@@ -47,9 +47,7 @@ function memberConflict(code: string, message: string): ConflictException {
  * GET invitations/:invitationId/link (team:manage), and to the invitee
  * themselves on GET invitations/me — never in a team list or a member row.
  */
-function withoutToken<T extends { token?: unknown }>(
-  row: T,
-): Omit<T, 'token'> {
+function withoutToken<T extends { token?: unknown }>(row: T): Omit<T, 'token'> {
   const rest: Partial<T> = { ...row };
   delete rest.token;
   return rest as Omit<T, 'token'>;
