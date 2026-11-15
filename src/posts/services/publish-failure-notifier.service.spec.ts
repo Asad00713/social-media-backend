@@ -1,4 +1,4 @@
-import { Logger } from '@nestjs/common';
+import { BadRequestException, Logger } from '@nestjs/common';
 import type { DbType } from '../../drizzle/db';
 import type {
   FailureEntry,
@@ -12,6 +12,7 @@ import type {
 import type { RecipientsService } from '../../notifications/recipients.service';
 import type { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
 import {
+  GENERIC_REASON,
   PublishFailureNotifier,
   type NotifiablePost,
 } from './publish-failure-notifier.service';
@@ -259,6 +260,38 @@ describe('PublishFailureNotifier.onPublishOutcome', () => {
     expect(batch.record.mock.calls[0][2].caption).toBe('IG only words');
   });
 
+  it('keeps a target reason from the publisher, but not internal text or a blank one', async () => {
+    const { svc, batch } = make();
+    await svc.onPublishOutcome(
+      post({
+        targets: [
+          {
+            channelId: '1',
+            platform: 'instagram',
+            status: 'failed',
+            errorMessage: 'Video is longer than 90 seconds',
+          },
+          {
+            channelId: '2',
+            platform: 'linkedin',
+            status: 'failed',
+            errorMessage: 'Failed query: select * from "social_media_channels"',
+          },
+          { channelId: '3', platform: 'facebook', status: 'failed' },
+        ],
+      }),
+      'scheduler',
+    );
+    const forCreator = batch.record.mock.calls
+      .filter(([u]) => u === 'creator')
+      .map(([, , e]) => e.reason);
+    expect(forCreator).toEqual([
+      'Video is longer than 90 seconds',
+      GENERIC_REASON,
+      GENERIC_REASON,
+    ]);
+  });
+
   it('never throws, and logs no address, when recording fails', async () => {
     const { svc, batch } = make();
     batch.record.mockRejectedValue(new Error('redis down'));
@@ -283,7 +316,7 @@ describe('PublishFailureNotifier.onPublishOutcome', () => {
 });
 
 describe('PublishFailureNotifier.onFinalJobFailure', () => {
-  it('records every target that did not go out as failed with the job error', async () => {
+  it('records every target that did not go out, with a publish refusal kept as the reason', async () => {
     const { svc, batch, setPost } = make();
     setPost(
       post({
@@ -294,16 +327,47 @@ describe('PublishFailureNotifier.onFinalJobFailure', () => {
         ],
       }),
     );
-    await svc.onFinalJobFailure('post-1', new Error('database timeout'));
+    await svc.onFinalJobFailure(
+      'post-1',
+      new BadRequestException('Post has no target channels'),
+    );
 
     const entries = batch.record.mock.calls.map(([, , e]) => e);
     expect(entries).toHaveLength(3);
     expect(entries[0]).toMatchObject({
       postId: 'post-1',
       platform: 'instagram',
-      reason: 'database timeout',
+      reason: 'Post has no target channels',
       otherPublished: ['Facebook'],
     });
+  });
+
+  it('a database error never reaches the bell or the email: the generic reason does', async () => {
+    const { svc, batch, emitter, setPost } = make();
+    setPost(post({ status: 'publishing' }));
+    const dbError = new Error(
+      'Failed query: select "id" from "posts" where "id" = $1\nparams: post-1',
+    );
+    await svc.onFinalJobFailure('post-1', dbError);
+
+    expect(GENERIC_REASON).toBe("Schedura couldn't publish it.");
+    for (const [, , e] of batch.record.mock.calls) {
+      expect(e.reason).toBe(GENERIC_REASON);
+    }
+    for (const call of emitter.postFailed.mock.calls as unknown as string[][]) {
+      expect(call[3]).toBe(GENERIC_REASON);
+    }
+    // The raw text is logged, by post id only.
+    const logged = warn.mock.calls.map(([m]) => String(m)).join('\n');
+    expect(logged).toContain('Post post-1');
+    expect(logged).toContain('Failed query');
+  });
+
+  it('a plain error from the job (a timeout, a bug) is not shown either', async () => {
+    const { svc, batch, setPost } = make();
+    setPost(post({ status: 'publishing' }));
+    await svc.onFinalJobFailure('post-1', new Error('database timeout'));
+    expect(batch.record.mock.calls[0][2].reason).toBe(GENERIC_REASON);
   });
 
   it('does nothing for a post that is gone or went out', async () => {

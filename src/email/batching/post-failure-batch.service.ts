@@ -55,10 +55,31 @@ export interface PostFailureRedis {
     flag: 'NX',
   ): Promise<'OK' | null>;
   del(key: string): Promise<number>;
-  rename(from: string, to: string): Promise<'OK'>;
   lrange(key: string, start: number, stop: number): Promise<string[]>;
   exists(key: string): Promise<number>;
+  eval(script: string, numKeys: number, ...args: string[]): Promise<unknown>;
 }
+
+/**
+ * Closes a window atomically, only for the job that owns it: when the open
+ * key still holds this windowId, DEL it and RENAME the list to the batch key.
+ * Returns 1 when it took a list, 0 when it owned the window but the list was
+ * gone, -1 when the window is not this job's (already closed, expired, or a
+ * newer window is open) - that list belongs to the newer window's flush.
+ * KEYS: open, list, batch. ARGV: windowId. A fixed server-side script: every
+ * value travels as a key or an argument, never in the script text.
+ */
+export const CLOSE_WINDOW_SCRIPT = `
+if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+  return -1
+end
+redis.call('DEL', KEYS[1])
+if redis.call('EXISTS', KEYS[2]) == 0 then
+  return 0
+end
+redis.call('RENAME', KEYS[2], KEYS[3])
+return 1
+`;
 
 export const POST_FAILED_FLUSH_JOB = 'post-failed-flush';
 export const POST_FAILURE_WINDOW_MS = 600_000;
@@ -92,10 +113,6 @@ export function postTitle(caption: string): string {
   if (chars.length === 0) return '(No caption)';
   if (chars.length <= TITLE_LIMIT) return chars.join('');
   return `${chars.slice(0, TITLE_LIMIT - 1).join('')}…`;
-}
-
-function isNoSuchKey(err: unknown): boolean {
-  return err instanceof Error && /no such key/i.test(err.message);
 }
 
 function parseEntries(raw: string[]): FailureEntry[] {
@@ -194,14 +211,18 @@ export class PostFailureBatchService {
   ): Promise<'sent' | 'empty' | 'skipped'> {
     const batch = flushKey(userId, workspaceId, windowId);
     if (!(await this.redis.exists(batch))) {
-      // DEL first: a failure recorded from here on opens a new window.
-      await this.redis.del(openKey(userId, workspaceId));
-      try {
-        await this.redis.rename(listKey(userId, workspaceId), batch);
-      } catch (err) {
-        if (isNoSuchKey(err)) return 'empty';
-        throw err;
-      }
+      // Atomic, and only while the window is still this job's: a stalled
+      // re-run of a finished flush, or a flush whose open key expired in a
+      // backlog, must not close a newer window and steal its failures.
+      const closed = await this.redis.eval(
+        CLOSE_WINDOW_SCRIPT,
+        3,
+        openKey(userId, workspaceId),
+        listKey(userId, workspaceId),
+        batch,
+        windowId,
+      );
+      if (Number(closed) !== 1) return 'empty';
     }
 
     const entries = dedupe(parseEntries(await this.redis.lrange(batch, 0, -1)));
@@ -285,7 +306,7 @@ export class PostFailureBatchService {
     zone: string,
   ): Promise<PostsFailedProps> {
     return {
-      count: entries.length,
+      count: new Set(entries.map((e) => e.postId)).size,
       rows: entries.slice(0, MAX_ROWS).map((e) => ({
         platform: e.platform,
         handle: e.handle,
@@ -295,6 +316,7 @@ export class PostFailureBatchService {
         thumbnailUrl: e.thumbnailUrl,
       })),
       more: Math.max(0, entries.length - MAX_ROWS),
+      platforms: [...new Set(entries.map((e) => e.platform))],
       otherOnTime: await this.publishedToday(
         workspaceId,
         entries.map((e) => e.postId),

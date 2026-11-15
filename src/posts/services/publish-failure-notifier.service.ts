@@ -1,4 +1,4 @@
-import { Inject, Injectable, Logger } from '@nestjs/common';
+import { HttpException, Inject, Injectable, Logger } from '@nestjs/common';
 import { and, eq, inArray } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
@@ -15,6 +15,8 @@ import { NotifyService } from '../../notifications/notify.service';
 import { RecipientsService } from '../../notifications/recipients.service';
 import { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
 import { channelContent } from '../lib/channel-content';
+import { PartialPublishError } from '../publishers/base.publisher';
+import { TikTokComplianceError } from '../publishers/tiktok-compliance';
 
 interface NotifiableTarget {
   channelId: number | string;
@@ -37,7 +39,33 @@ export interface NotifiablePost {
 }
 
 const NOTIFY_STATUSES = new Set(['failed', 'partially_published']);
-const UNKNOWN_REASON = 'Unknown error';
+/** Shown instead of a message that was never meant for people. */
+export const GENERIC_REASON = "Schedura couldn't publish it.";
+/** What publishPost stores when the thrown value was not an Error. */
+const UNKNOWN_ERROR = 'Unknown error';
+/**
+ * Driver, ORM and network text: a failed query with its params, a missing
+ * relation, a socket error. It can carry SQL and user data.
+ */
+const INTERNAL_MESSAGE_RE =
+  /failed query|\bparams:|relation "[^"]*" does not exist|column "[^"]*" does not exist|violates [a-z ]*constraint|deadlock detected|connection terminated|\bECONN[A-Z]+\b|\bETIMEDOUT\b|\bENOTFOUND\b|getaddrinfo|socket hang up/i;
+
+function looksInternal(message: string): boolean {
+  return INTERNAL_MESSAGE_RE.test(message);
+}
+
+/**
+ * A job error a person may read: a publish refusal (a 4xx HttpException
+ * such as "Post has no target channels") or a publisher's own error type.
+ * Anything else - a database or network failure - is internal.
+ */
+function isUserFacingJobError(error: Error): boolean {
+  const known =
+    (error instanceof HttpException && error.getStatus() < 500) ||
+    error instanceof PartialPublishError ||
+    error instanceof TikTokComplianceError;
+  return known && !!error.message && !looksInternal(error.message);
+}
 
 function errorText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
@@ -82,7 +110,7 @@ export class PublishFailureNotifier {
       await this.notifyFailures(
         post,
         post.targets.filter((t) => t.status === 'failed'),
-        (t) => t.errorMessage || UNKNOWN_REASON,
+        (t) => this.targetReason(post.id, t.errorMessage),
       );
     } catch (err) {
       this.logger.warn(
@@ -100,16 +128,41 @@ export class PublishFailureNotifier {
         .where(eq(posts.id, postId))
         .limit(1);
       if (!post || post.status === 'published') return;
+      let reason = error.message;
+      if (!isUserFacingJobError(error)) {
+        this.logger.warn(
+          `Post ${postId}: final publish error kept out of the notice: ${errorText(error)}`,
+        );
+        reason = GENERIC_REASON;
+      }
       await this.notifyFailures(
         post,
         post.targets.filter((t) => t.status !== 'published'),
-        () => error.message || UNKNOWN_REASON,
+        () => reason,
       );
     } catch (err) {
       this.logger.warn(
         `Post failure notice for ${postId} (final job failure) failed: ${errorText(err)}`,
       );
     }
+  }
+
+  /**
+   * The target's stored errorMessage is what the publisher said, and is kept;
+   * an empty one, or one that is internal text, becomes the generic reason.
+   */
+  private targetReason(
+    postId: string,
+    message: string | null | undefined,
+  ): string {
+    if (!message || message === UNKNOWN_ERROR) return GENERIC_REASON;
+    if (looksInternal(message)) {
+      this.logger.warn(
+        `Post ${postId}: target error kept out of the notice: ${message}`,
+      );
+      return GENERIC_REASON;
+    }
+    return message;
   }
 
   private async notifyFailures(

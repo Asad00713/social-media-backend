@@ -15,25 +15,32 @@ export interface PostsFailedRow {
 }
 
 export interface PostsFailedProps {
+  /** Distinct posts: one post failing on two networks counts once. */
   count: number;
-  /** At most 10; `more` counts the rest. */
+  /** One per failure (a post on a network), at most 10; `more` counts the rest. */
   rows: PostsFailedRow[];
   more: number;
+  /** Every network that turned one down, the hidden rows' included. */
+  platforms: string[];
   /** Posts in the workspace that went out since local midnight. */
   otherOnTime: number;
   plannerUrl: string;
 }
 
 /**
- * 'Instagram, TikTok and LinkedIn each turned one down.' when every listed
- * failure is on its own network; otherwise 'Instagram turned them down.'
+ * 'Instagram, TikTok and LinkedIn each turned one down.' when every failure
+ * is on its own network; otherwise 'Instagram turned them down.'
  */
 function networksLine(p: PostsFailedProps): string {
-  const names = [...new Set(p.rows.map((r) => networkName(r.platform)))];
-  const eachOnce = p.more === 0 && names.length === p.rows.length;
+  const names = [...new Set(p.platforms.map(networkName))];
+  const eachOnce = names.length === p.rows.length + p.more;
   return eachOnce
     ? `${listNames(names)} each turned one down.`
     : `${listNames(names)} turned them down.`;
+}
+
+function headline(count: number): string {
+  return `${count} ${count === 1 ? 'post' : 'posts'} didn't publish today`;
 }
 
 function onTimeLine(n: number): string {
@@ -47,11 +54,11 @@ export const POSTS_FAILED = defineTemplate<PostsFailedProps>({
   category: 'publishing',
   event: 'post_failed',
   footer: 'notification',
-  subject: (p) => `${p.count} posts didn't publish today`,
+  subject: (p) => headline(p.count),
   preheader: networksLine,
   Body: (p) => (
     <>
-      <Heading>{`${p.count} posts didn't publish today`}</Heading>
+      <Heading>{headline(p.count)}</Heading>
       <Paragraph>
         {`Each one needs a quick fix.${onTimeLine(p.otherOnTime)}`}
       </Paragraph>
@@ -103,6 +110,7 @@ export const POSTS_FAILED = defineTemplate<PostsFailedProps>({
       },
     ],
     more: 0,
+    platforms: ['instagram', 'tiktok', 'linkedin'],
     otherOnTime: 9,
     plannerUrl: 'http://localhost:3001/w/demo/planner',
   },
@@ -118,6 +126,7 @@ export const POSTS_FAILED = defineTemplate<PostsFailedProps>({
         thumbnailUrl: null,
       })),
       more: 5,
+      platforms: ['instagram'],
       otherOnTime: 0,
       plannerUrl: 'http://localhost:3001/w/demo/planner',
     },

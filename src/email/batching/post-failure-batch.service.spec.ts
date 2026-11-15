@@ -15,10 +15,12 @@ import type { PostFailedProps } from '../templates/publishing/post-failed';
 import type { PostsFailedProps } from '../templates/publishing/posts-failed';
 import type { RenderContext } from '../templates/types';
 import {
+  CLOSE_WINDOW_SCRIPT,
   POST_FAILED_FLUSH_JOB,
   POST_FAILURE_WINDOW_MS,
   PostFailureBatchService,
   type FailureEntry,
+  flushJobId,
   type PostFailedFlushData,
   type PostFailureRedis,
 } from './post-failure-batch.service';
@@ -31,8 +33,8 @@ const T0 = new Date('2026-11-14T13:00:00.000Z');
 class FakeRedis implements PostFailureRedis {
   readonly lists = new Map<string, string[]>();
   readonly strings = new Map<string, string>();
-  /** Runs after a DEL, so a spec can interleave a record() mid-flush. */
-  afterDel: ((key: string) => Promise<void>) | null = null;
+  /** Runs right after a window closes, so a spec can interleave a record(). */
+  afterClose: (() => Promise<void>) | null = null;
 
   rpush(key: string, value: string): Promise<number> {
     const list = this.lists.get(key) ?? [];
@@ -51,22 +53,39 @@ class FakeRedis implements PostFailureRedis {
     return Promise.resolve('OK');
   }
 
-  async del(key: string): Promise<number> {
+  del(key: string): Promise<number> {
     const had = this.lists.delete(key) || this.strings.delete(key);
-    const hook = this.afterDel;
-    if (hook) {
-      this.afterDel = null;
-      await hook(key);
-    }
-    return had ? 1 : 0;
+    return Promise.resolve(had ? 1 : 0);
   }
 
-  rename(from: string, to: string): Promise<'OK'> {
-    const list = this.lists.get(from);
-    if (!list) return Promise.reject(new Error('ERR no such key'));
-    this.lists.delete(from);
-    this.lists.set(to, list);
-    return Promise.resolve('OK');
+  /** CLOSE_WINDOW_SCRIPT, run as one step the way Redis runs a script. */
+  async eval(
+    script: string,
+    numKeys: number,
+    ...args: string[]
+  ): Promise<unknown> {
+    if (script !== CLOSE_WINDOW_SCRIPT || numKeys !== 3) {
+      throw new Error('unexpected script');
+    }
+    const [open, list, batch, windowId] = args;
+    let result: number;
+    if (this.strings.get(open) !== windowId) {
+      result = -1;
+    } else {
+      this.strings.delete(open);
+      const items = this.lists.get(list);
+      if (items) {
+        this.lists.delete(list);
+        this.lists.set(batch, items);
+      }
+      result = items ? 1 : 0;
+    }
+    const hook = this.afterClose;
+    if (hook) {
+      this.afterClose = null;
+      await hook();
+    }
+    return result;
   }
 
   lrange(key: string): Promise<string[]> {
@@ -330,7 +349,7 @@ describe('PostFailureBatchService.flush', () => {
     expect(sentProps<PostFailedProps>(outbox).reason).toBe('second try');
   });
 
-  it('keeps one post that failed on two networks as two rows', async () => {
+  it('keeps one post that failed on two networks as two rows, counted as 1 post', async () => {
     const { svc, queue, outbox } = make();
     await svc.record(U, WS, entry({ platform: 'instagram' }));
     await svc.record(U, WS, entry({ platform: 'tiktok' }));
@@ -338,8 +357,35 @@ describe('PostFailureBatchService.flush', () => {
 
     expect(outbox.process.mock.calls[0][0].template).toBe('posts-failed');
     const props = sentProps<PostsFailedProps>(outbox);
-    expect(props.count).toBe(2);
+    expect(props.count).toBe(1);
     expect(props.rows.map((r) => r.platform)).toEqual(['instagram', 'tiktok']);
+    const r = await renderEmail(getTemplate('posts-failed'), props, CTX);
+    expect(r.subject).toBe("1 post didn't publish today");
+    expect(r.text).toContain("1 post didn't publish today");
+    expect(r.preheader).toBe('Instagram and TikTok each turned one down.');
+  });
+
+  it('C1a counts distinct posts and names every network, hidden rows included', async () => {
+    const { svc, queue, outbox } = make();
+    for (let i = 0; i < 10; i += 1) {
+      await svc.record(U, WS, entry({ postId: `p${i}` }));
+    }
+    // Rows 11 and 12 are hidden behind "and 2 more".
+    await svc.record(U, WS, entry({ postId: 'p10', platform: 'tiktok' }));
+    await svc.record(U, WS, entry({ postId: 'p0', platform: 'linkedin' }));
+    await svc.flush(U, WS, windowOf(queue));
+
+    const props = sentProps<PostsFailedProps>(outbox);
+    expect(props.rows).toHaveLength(10);
+    expect(props.more).toBe(2);
+    expect(props.count).toBe(11);
+    expect(props.platforms).toEqual(['instagram', 'tiktok', 'linkedin']);
+    const r = await renderEmail(getTemplate('posts-failed'), props, CTX);
+    expect(r.subject).toBe("11 posts didn't publish today");
+    expect(r.preheader).toBe(
+      'Instagram, TikTok and LinkedIn turned them down.',
+    );
+    expect(r.text).toContain('and 2 more');
   });
 
   it('a failure recorded during flush lands in a new window', async () => {
@@ -348,16 +394,17 @@ describe('PostFailureBatchService.flush', () => {
     const first = windowOf(queue);
     jest.setSystemTime(T0.getTime() + POST_FAILURE_WINDOW_MS);
 
-    // Between "DEL open" and "RENAME": it opens a new window at once.
-    redis.afterDel = async () => {
+    // Right after the window closes: it opens a new window at once.
+    redis.afterClose = async () => {
       await svc.record(U, WS, entry({ postId: 'b' }));
     };
     await svc.flush(U, WS, first);
     expect(queue.add).toHaveBeenCalledTimes(2);
     const second = windowOf(queue, 1);
     expect(second).not.toBe(first);
+    expect(sentProps<PostFailedProps>(outbox).editUrl).toContain('post=a');
 
-    // After the RENAME: it waits in the new window's list.
+    // Later in the new window: it joins the same list.
     await svc.record(U, WS, entry({ postId: 'c' }));
     expect(queue.add).toHaveBeenCalledTimes(2);
     await svc.flush(U, WS, second);
@@ -388,6 +435,54 @@ describe('PostFailureBatchService.flush', () => {
     );
     expect(outbox.process).not.toHaveBeenCalled();
     expect(redis.lists.size).toBe(0);
+  });
+
+  it('a stalled re-run of a finished flush leaves the next window alone', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    const w1 = windowOf(queue);
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('sent');
+
+    jest.setSystemTime(T0.getTime() + POST_FAILURE_WINDOW_MS + 1000);
+    await svc.record(U, WS, entry({ postId: 'b' }));
+    const w2 = windowOf(queue, 1);
+
+    // BullMQ re-runs W1 (a stalled job): its batch is gone and W2 is open.
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
+    expect(outbox.process).toHaveBeenCalledTimes(1);
+    expect(redis.strings.get(`email:pf-open:${U}:${WS}`)).toBe(w2);
+    expect(redis.lists.get(`email:pf:${U}:${WS}`)).toHaveLength(1);
+
+    await expect(svc.flush(U, WS, w2)).resolves.toBe('sent');
+    expect(outbox.process).toHaveBeenCalledTimes(2);
+    expect(outbox.process.mock.calls[1][0].idempotencyKey).toBe(
+      flushJobId(U, WS, w2),
+    );
+    expect(sentProps<PostFailedProps>(outbox, 1).editUrl).toContain('post=b');
+  });
+
+  it('a flush delayed past its open key does not close the window after it', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    const w1 = windowOf(queue);
+    // A queue backlog: the 900 s open key expires before W1's flush runs.
+    jest.setSystemTime(T0.getTime() + 901_000);
+    redis.strings.delete(`email:pf-open:${U}:${WS}`);
+    await svc.record(U, WS, entry({ postId: 'b' }));
+    const w2 = windowOf(queue, 1);
+    expect(w2).not.toBe(w1);
+
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
+    expect(outbox.process).not.toHaveBeenCalled();
+
+    await expect(svc.flush(U, WS, w2)).resolves.toBe('sent');
+    expect(outbox.process).toHaveBeenCalledTimes(1);
+    const data = outbox.process.mock.calls[0][0];
+    expect(data.idempotencyKey).toBe(flushJobId(U, WS, w2));
+    const props = data.props as PostsFailedProps;
+    // W1's failure travels with W2's, and each reaches the person once.
+    expect(props.rows).toHaveLength(2);
+    expect(props.count).toBe(2);
   });
 
   it('returns empty when the window holds nothing', async () => {
@@ -521,6 +616,7 @@ describe('C1 / C1a copy', () => {
       count: 2,
       rows: [],
       more: 0,
+      platforms: [],
       otherOnTime: 1,
       plannerUrl: 'https://app.test/w/ws/planner',
     };
