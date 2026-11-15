@@ -16,9 +16,11 @@ async function bootstrap() {
   // BillingController.handleStripeWebhook.
   const app = await NestFactory.create(AppModule, { rawBody: true });
 
-  // Run onModuleDestroy / onApplicationShutdown on SIGTERM, so Redis
-  // connections quit and BullMQ workers close instead of being cut off.
-  app.enableShutdownHooks();
+  // Shutdown hooks stay off on purpose. Nest runs onModuleDestroy (which
+  // quits our Redis clients) before onApplicationShutdown (which closes the
+  // BullMQ workers), so workers would keep taking jobs on closed clients: a
+  // publish could succeed, be marked failed, and double-post on retry.
+  // Railway drains for 0 s by default, so the hooks would buy nothing.
 
   app.enableCors({
     origin: [
