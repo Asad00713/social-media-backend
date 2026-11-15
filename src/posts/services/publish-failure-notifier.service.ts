@@ -54,6 +54,23 @@ function looksInternal(message: string): boolean {
   return INTERNAL_MESSAGE_RE.test(message);
 }
 
+/** A URL that ends the reason, with the "from"/"at"/":" that introduces it. */
+const TRAILING_URL_RE = /(?:\s+(?:from|at|for)|\s*:)?\s*https?:\/\/\S+\s*$/i;
+const URL_RE = /https?:\/\/\S+/gi;
+
+/**
+ * A kept reason without its URLs: a media link can be a signed, private one
+ * (`Failed to upload media: <url>`). A closing URL clause is dropped; a URL
+ * inside the sentence becomes "the media file". Nothing left: generic.
+ */
+function withoutUrls(reason: string): string {
+  const text = reason
+    .replace(TRAILING_URL_RE, '')
+    .replace(URL_RE, 'the media file')
+    .trim();
+  return text || GENERIC_REASON;
+}
+
 /**
  * A job error a person may read: a publish refusal (a 4xx HttpException
  * such as "Post has no target channels") or a publisher's own error type.
@@ -128,7 +145,7 @@ export class PublishFailureNotifier {
         .where(eq(posts.id, postId))
         .limit(1);
       if (!post || post.status === 'published') return;
-      let reason = error.message;
+      let reason = withoutUrls(error.message);
       if (!isUserFacingJobError(error)) {
         this.logger.warn(
           `Post ${postId}: final publish error kept out of the notice: ${errorText(error)}`,
@@ -148,8 +165,9 @@ export class PublishFailureNotifier {
   }
 
   /**
-   * The target's stored errorMessage is what the publisher said, and is kept;
-   * an empty one, or one that is internal text, becomes the generic reason.
+   * The target's stored errorMessage is what the publisher said, and is kept
+   * without its URLs; an empty one, or one that is internal text, becomes the
+   * generic reason.
    */
   private targetReason(
     postId: string,
@@ -162,7 +180,7 @@ export class PublishFailureNotifier {
       );
       return GENERIC_REASON;
     }
-    return message;
+    return withoutUrls(message);
   }
 
   private async notifyFailures(

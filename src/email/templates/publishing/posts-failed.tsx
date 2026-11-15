@@ -48,6 +48,11 @@ function onTimeLine(n: number): string {
   return ` Your other ${n} ${n === 1 ? 'post' : 'posts'} went out on time.`;
 }
 
+/** One post that failed on several networks is "it", not "each one". */
+function fixLine(count: number): string {
+  return count === 1 ? 'It needs a quick fix.' : 'Each one needs a quick fix.';
+}
+
 /** C1a: several failures from one 10-minute window. */
 export const POSTS_FAILED = defineTemplate<PostsFailedProps>({
   id: 'posts-failed',
@@ -59,9 +64,7 @@ export const POSTS_FAILED = defineTemplate<PostsFailedProps>({
   Body: (p) => (
     <>
       <Heading>{headline(p.count)}</Heading>
-      <Paragraph>
-        {`Each one needs a quick fix.${onTimeLine(p.otherOnTime)}`}
-      </Paragraph>
+      <Paragraph>{`${fixLine(p.count)}${onTimeLine(p.otherOnTime)}`}</Paragraph>
       {p.rows.map((r, i) => (
         <PostRow
           key={i}

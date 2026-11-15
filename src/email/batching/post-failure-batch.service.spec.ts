@@ -29,12 +29,26 @@ const U = '11111111-1111-4111-8111-111111111111';
 const WS = '22222222-2222-4222-8222-222222222222';
 const T0 = new Date('2026-11-14T13:00:00.000Z');
 
-/** In-memory Redis with the real list, NX and RENAME semantics the batch relies on. */
+/**
+ * In-memory Redis with the real list, NX, TTL and RENAME semantics the batch
+ * relies on (RENAME carries the source's TTL, as in Redis).
+ */
 class FakeRedis implements PostFailureRedis {
   readonly lists = new Map<string, string[]>();
   readonly strings = new Map<string, string>();
+  /** Seconds each key was last given to live. */
+  readonly ttls = new Map<string, number>();
+  /**
+   * Runs once, when the next close script is called and before it runs, so a
+   * spec can interleave another flush between a flush's start and its close.
+   */
+  beforeClose: (() => Promise<void>) | null = null;
   /** Runs right after a window closes, so a spec can interleave a record(). */
   afterClose: (() => Promise<void>) | null = null;
+
+  private has(key: string): boolean {
+    return this.lists.has(key) || this.strings.has(key);
+  }
 
   rpush(key: string, value: string): Promise<number> {
     const list = this.lists.get(key) ?? [];
@@ -43,8 +57,10 @@ class FakeRedis implements PostFailureRedis {
     return Promise.resolve(list.length);
   }
 
-  expire(key: string): Promise<number> {
-    return Promise.resolve(this.lists.has(key) ? 1 : 0);
+  expire(key: string, seconds: number): Promise<number> {
+    if (!this.has(key)) return Promise.resolve(0);
+    this.ttls.set(key, seconds);
+    return Promise.resolve(1);
   }
 
   set(key: string, value: string, ...opts: unknown[]): Promise<'OK' | null> {
@@ -52,11 +68,14 @@ class FakeRedis implements PostFailureRedis {
       return Promise.resolve(null);
     }
     this.strings.set(key, value);
+    const ex = opts.indexOf('EX');
+    if (ex >= 0) this.ttls.set(key, Number(opts[ex + 1]));
     return Promise.resolve('OK');
   }
 
   del(key: string): Promise<number> {
     const had = this.lists.delete(key) || this.strings.delete(key);
+    this.ttls.delete(key);
     return Promise.resolve(had ? 1 : 0);
   }
 
@@ -66,22 +85,42 @@ class FakeRedis implements PostFailureRedis {
     numKeys: number,
     ...args: string[]
   ): Promise<unknown> {
-    if (script !== CLOSE_WINDOW_SCRIPT || numKeys !== 3) {
+    if (script !== CLOSE_WINDOW_SCRIPT || numKeys !== 4) {
       throw new Error('unexpected script');
     }
-    const [open, list, batch, windowId] = args;
-    const current = this.strings.get(open);
+    const before = this.beforeClose;
+    if (before) {
+      this.beforeClose = null;
+      await before();
+    }
+    const [open, list, batch, done, windowId, batchTtl, doneTtl] = args;
     let result: number;
-    if (current !== undefined && current !== windowId) {
-      result = -1;
+    if (this.has(done)) {
+      result = -2;
+    } else if (this.has(batch)) {
+      result = 2;
     } else {
-      this.strings.delete(open);
-      const items = this.lists.get(list);
-      if (items) {
-        this.lists.delete(list);
-        this.lists.set(batch, items);
+      const current = this.strings.get(open);
+      if (current !== undefined && current !== windowId) {
+        result = -1;
+      } else {
+        this.strings.delete(open);
+        this.ttls.delete(open);
+        const items = this.lists.get(list);
+        if (items) {
+          this.lists.delete(list);
+          this.lists.set(batch, items);
+          this.ttls.delete(list);
+          this.ttls.set(batch, Number(batchTtl));
+          result = 1;
+        } else {
+          result = 0;
+        }
       }
-      result = items ? 1 : 0;
+      if (result !== 1) {
+        this.strings.set(done, '1');
+        this.ttls.set(done, Number(doneTtl));
+      }
     }
     const hook = this.afterClose;
     if (hook) {
@@ -93,12 +132,6 @@ class FakeRedis implements PostFailureRedis {
 
   lrange(key: string): Promise<string[]> {
     return Promise.resolve([...(this.lists.get(key) ?? [])]);
-  }
-
-  exists(key: string): Promise<number> {
-    return Promise.resolve(
-      this.lists.has(key) || this.strings.has(key) ? 1 : 0,
-    );
   }
 }
 
@@ -365,6 +398,10 @@ describe('PostFailureBatchService.flush', () => {
     const r = await renderEmail(getTemplate('posts-failed'), props, CTX);
     expect(r.subject).toBe("1 post didn't publish today");
     expect(r.text).toContain("1 post didn't publish today");
+    expect(r.text).toContain(
+      'It needs a quick fix. Your other 9 posts went out on time.',
+    );
+    expect(r.text).not.toContain('Each one');
     expect(r.preheader).toBe('Instagram and TikTok each turned one down.');
   });
 
@@ -557,6 +594,91 @@ describe('PostFailureBatchService.flush', () => {
     expect(retry[1]).toBe(1);
     expect(redis.lists.get(`email:pf:${U}:${WS}`)).toHaveLength(1);
     expect(redis.strings.has(`email:pf-open:${U}:${WS}`)).toBe(true);
+  });
+
+  it('the batch lives for a day, not for the list TTL it was renamed from', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry());
+    const w1 = windowOf(queue);
+    const batch = `email:pf-flush:${U}:${WS}:${w1}`;
+    expect(redis.ttls.get(`email:pf:${U}:${WS}`)).toBe(1800);
+
+    outbox.process.mockRejectedValueOnce(new Error('resend 503'));
+    await expect(svc.flush(U, WS, w1)).rejects.toThrow('resend 503');
+    // Kept for the delayed retry, well past the list's 30 minutes.
+    expect(redis.lists.has(batch)).toBe(true);
+    expect(redis.ttls.get(batch)).toBe(86_400);
+  });
+
+  it('two copies of one flush: the second never overwrites the batch the first is sending', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    const w1 = windowOf(queue);
+    const list = `email:pf:${U}:${WS}`;
+
+    let reachedSend!: () => void;
+    const atSend = new Promise<void>((resolve) => (reachedSend = resolve));
+    let releaseSend!: () => void;
+    outbox.process.mockImplementationOnce(() => {
+      reachedSend();
+      return new Promise((resolve) => (releaseSend = () => resolve('sent')));
+    });
+    let copyA!: Promise<string>;
+    // Copy B starts; before its close runs, copy A closes the window and is
+    // mid-send, and a new failure is pushed before its window opens.
+    redis.beforeClose = async () => {
+      copyA = svc.flush(U, WS, w1);
+      await atSend;
+      await redis.rpush(list, JSON.stringify(entry({ postId: 'b' })));
+    };
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('sent');
+    releaseSend();
+    await expect(copyA).resolves.toBe('sent');
+
+    // Both copies sent A's batch under the one key; B's failure is untouched.
+    expect(outbox.process).toHaveBeenCalledTimes(2);
+    for (const [data] of outbox.process.mock.calls) {
+      expect(data.idempotencyKey).toBe(flushJobId(U, WS, w1));
+      expect((data.props as PostFailedProps).editUrl).toContain('post=a');
+    }
+    expect(redis.lists.get(list)).toHaveLength(1);
+    expect(redis.lists.has(`email:pf-flush:${U}:${WS}:${w1}`)).toBe(false);
+  });
+
+  it('two copies of one flush: the second, after the first finished, never takes an in-flight list', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    const w1 = windowOf(queue);
+    const list = `email:pf:${U}:${WS}`;
+
+    // Copy B starts; before its close runs, copy A finishes the whole flush,
+    // and a new failure is pushed before its window opens.
+    redis.beforeClose = async () => {
+      await expect(svc.flush(U, WS, w1)).resolves.toBe('sent');
+      await redis.rpush(list, JSON.stringify(entry({ postId: 'b' })));
+    };
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
+
+    expect(outbox.process).toHaveBeenCalledTimes(1);
+    expect(sentProps<PostFailedProps>(outbox).editUrl).toContain('post=a');
+    expect(redis.lists.get(list)).toHaveLength(1);
+    expect(redis.lists.has(`email:pf-flush:${U}:${WS}:${w1}`)).toBe(false);
+  });
+
+  it('a newer window or an empty one marks the flush done in the same step', async () => {
+    const { svc, queue, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    const w1 = windowOf(queue);
+    redis.strings.set(`email:pf-open:${U}:${WS}`, 'newer');
+
+    // Checked inside the close, before anything else could run.
+    redis.afterClose = () => {
+      expect(redis.strings.has(`email:pf-done:${U}:${WS}:${w1}`)).toBe(true);
+      return Promise.resolve();
+    };
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
+    expect(redis.ttls.get(`email:pf-done:${U}:${WS}:${w1}`)).toBe(86_400);
+    expect(redis.lists.get(`email:pf:${U}:${WS}`)).toHaveLength(1);
   });
 
   it('15 failures → 10 rows and "and 5 more"', async () => {

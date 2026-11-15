@@ -11,6 +11,7 @@ import type {
 } from '../../notifications/notify.service';
 import type { RecipientsService } from '../../notifications/recipients.service';
 import type { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
+import { PartialPublishError } from '../publishers/base.publisher';
 import {
   GENERIC_REASON,
   PublishFailureNotifier,
@@ -292,6 +293,47 @@ describe('PublishFailureNotifier.onPublishOutcome', () => {
     ]);
   });
 
+  it('keeps no URL in a target reason, in the bell or the email', async () => {
+    const { svc, batch, emitter } = make();
+    const signed = 'https://cdn.test/u/7/v.mp4?X-Amz-Signature=abc';
+    await svc.onPublishOutcome(
+      post({
+        targets: [
+          {
+            channelId: '1',
+            platform: 'twitter',
+            status: 'failed',
+            errorMessage: `Failed to upload media: ${signed}`,
+          },
+          {
+            channelId: '2',
+            platform: 'twitter',
+            status: 'failed',
+            errorMessage: `Failed to download media from ${signed}`,
+          },
+          {
+            channelId: '3',
+            platform: 'facebook',
+            status: 'failed',
+            errorMessage: `The video at ${signed} is too long`,
+          },
+        ],
+      }),
+      'scheduler',
+    );
+    const forCreator = batch.record.mock.calls
+      .filter(([u]) => u === 'creator')
+      .map(([, , e]) => e.reason);
+    expect(forCreator).toEqual([
+      'Failed to upload media',
+      'Failed to download media',
+      'The video at the media file is too long',
+    ]);
+    const bells = emitter.postFailed.mock.calls as unknown as string[][];
+    expect(bells.length).toBeGreaterThan(0);
+    for (const call of bells) expect(call[3]).not.toMatch(/https?:\/\//);
+  });
+
   it('never throws, and logs no address, when recording fails', async () => {
     const { svc, batch } = make();
     batch.record.mockRejectedValue(new Error('redis down'));
@@ -367,6 +409,39 @@ describe('PublishFailureNotifier.onFinalJobFailure', () => {
     const { svc, batch, setPost } = make();
     setPost(post({ status: 'publishing' }));
     await svc.onFinalJobFailure('post-1', new Error('database timeout'));
+    expect(batch.record.mock.calls[0][2].reason).toBe(GENERIC_REASON);
+  });
+
+  it('keeps no URL in a kept job error', async () => {
+    const { svc, batch, setPost } = make();
+    setPost(post({ status: 'publishing' }));
+    await svc.onFinalJobFailure(
+      'post-1',
+      new PartialPublishError(
+        'Failed to upload media: https://cdn.test/u/7/a.jpg',
+        [],
+      ),
+    );
+    for (const [, , e] of batch.record.mock.calls) {
+      expect(e.reason).toBe('Failed to upload media');
+    }
+  });
+
+  it('a reason that was only a URL becomes the generic reason', async () => {
+    const { svc, batch } = make();
+    await svc.onPublishOutcome(
+      post({
+        targets: [
+          {
+            channelId: '1',
+            platform: 'twitter',
+            status: 'failed',
+            errorMessage: 'https://cdn.test/u/7/a.jpg',
+          },
+        ],
+      }),
+      'scheduler',
+    );
     expect(batch.record.mock.calls[0][2].reason).toBe(GENERIC_REASON);
   });
 

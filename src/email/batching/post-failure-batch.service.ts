@@ -56,33 +56,50 @@ export interface PostFailureRedis {
   ): Promise<'OK' | null>;
   del(key: string): Promise<number>;
   lrange(key: string, start: number, stop: number): Promise<string[]>;
-  exists(key: string): Promise<number>;
   eval(script: string, numKeys: number, ...args: string[]): Promise<unknown>;
 }
 
 /**
- * Closes a window atomically. The flush owns the list when the open key holds
- * its windowId, or when the open key is gone (it expired in a queue backlog
- * and no newer window opened: nobody else will send these failures). It then
- * DELs the open key if present and RENAMEs the list to the batch key.
- * Returns 1 when it took a list, 0 when it owned the window but there was no
- * list, -1 when a newer window is open: that window's list already holds
- * this one's failures, and its flush sends them.
- * KEYS: open, list, batch. ARGV: windowId. A fixed server-side script: every
- * value travels as a key or an argument, never in the script text.
+ * Closes a window atomically, so two copies of one flush job (a stalled
+ * re-run beside the original) can neither overwrite a batch nor take a list
+ * that a newer failure is filling.
+ * - The flush is done: returns -2 and touches nothing.
+ * - Its batch exists (an earlier attempt or the other copy took the list):
+ *   returns 2, and the caller sends that batch again under the same key.
+ * - Otherwise the flush owns the list when the open key holds its windowId,
+ *   or when the open key is gone (it expired in a queue backlog and no newer
+ *   window opened: nobody else will send these failures). It DELs the open
+ *   key if present, RENAMEs the list to the batch key and gives the batch its
+ *   own TTL (RENAME keeps the list's 30 minutes, too short for a delayed
+ *   retry). Returns 1.
+ * - It owned the window but there was no list (0), or a newer window is open
+ *   (-1: that window's list already holds this one's failures, and its flush
+ *   sends them): it marks the flush done in the same step and returns.
+ * KEYS: open, list, batch, done. ARGV: windowId, batch TTL, done TTL. A fixed
+ * server-side script: every value travels as a key or an argument, never in
+ * the script text.
  */
 export const CLOSE_WINDOW_SCRIPT = `
+if redis.call('EXISTS', KEYS[4]) == 1 then
+  return -2
+end
+if redis.call('EXISTS', KEYS[3]) == 1 then
+  return 2
+end
 local open = redis.call('GET', KEYS[1])
 if open and open ~= ARGV[1] then
+  redis.call('SET', KEYS[4], '1', 'EX', ARGV[3])
   return -1
 end
 if open then
   redis.call('DEL', KEYS[1])
 end
 if redis.call('EXISTS', KEYS[2]) == 0 then
+  redis.call('SET', KEYS[4], '1', 'EX', ARGV[3])
   return 0
 end
 redis.call('RENAME', KEYS[2], KEYS[3])
+redis.call('EXPIRE', KEYS[3], ARGV[2])
 return 1
 `;
 
@@ -93,6 +110,8 @@ const LIST_TTL_S = 1800;
 const OPEN_TTL_S = 900;
 /** A finished flush is remembered for a day, past any stalled re-run. */
 const DONE_TTL_S = 86_400;
+/** A taken batch waits a day for the flush's delayed retries. */
+const BATCH_TTL_S = 86_400;
 const FLUSH_ATTEMPTS = 5;
 const FLUSH_BACKOFF_MS = 2000;
 const MAX_ROWS = 10;
@@ -219,26 +238,24 @@ export class PostFailureBatchService {
     attemptsMade = 0,
   ): Promise<'sent' | 'empty' | 'skipped'> {
     const done = doneKey(userId, workspaceId, windowId);
-    // A stalled re-run of a flush that already finished: it never renames.
-    if (await this.redis.exists(done)) return 'empty';
-
     const batch = flushKey(userId, workspaceId, windowId);
-    if (!(await this.redis.exists(batch))) {
-      // Atomic: a newer open window keeps its list (which holds this
-      // window's failures too); otherwise this flush takes it.
-      const closed = await this.redis.eval(
+    // One atomic step: a finished flush (a stalled re-run) never renames, an
+    // existing batch is reused, a newer open window keeps its list (which
+    // holds this window's failures too); otherwise this flush takes it.
+    const closed = Number(
+      await this.redis.eval(
         CLOSE_WINDOW_SCRIPT,
-        3,
+        4,
         openKey(userId, workspaceId),
         listKey(userId, workspaceId),
         batch,
+        done,
         windowId,
-      );
-      if (Number(closed) !== 1) {
-        await this.markDone(done);
-        return 'empty';
-      }
-    }
+        String(BATCH_TTL_S),
+        String(DONE_TTL_S),
+      ),
+    );
+    if (closed !== 1 && closed !== 2) return 'empty';
 
     const entries = dedupe(parseEntries(await this.redis.lrange(batch, 0, -1)));
     const outcome =
