@@ -17,6 +17,7 @@ import { LinkPreviewService } from './services/link-preview.service';
 import { QueueModule } from '../../queue/queue.module';
 import { ChannelsModule } from '../../channels/channels.module';
 import { DrizzleModule } from '../../drizzle/drizzle.module';
+import { EmailModule } from '../../email/email.module';
 import { WorkspaceRoleModule } from '../../workspace-members/workspace-role.module';
 import { PostsModule } from '../posts.module';
 import { CalendarSyncModule } from '../../calendar-sync/calendar-sync.module';
@@ -26,6 +27,8 @@ import { BillingModule } from '../../billing/billing.module';
 @Module({
   imports: [
     DrizzleModule,
+    // AppLinks, for the approval emails' Planner links.
+    EmailModule,
     WorkspaceRoleModule,
     ChannelsModule,
     PostsModule,

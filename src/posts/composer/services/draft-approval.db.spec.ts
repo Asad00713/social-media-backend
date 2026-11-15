@@ -14,6 +14,7 @@ import {
 } from '../../../planner/testing/rollback-db';
 import { seedMember, seedWorkspace } from '../../../inbox/testing/inbox-db';
 import { posts, postHistory } from '../../../drizzle/schema/posts.schema';
+import { RecipientsService } from '../../../notifications/recipients.service';
 import { DraftApprovalService } from './draft-approval.service';
 import { DraftStoreService } from './draft-store.service';
 import { ComposerSchedulingService } from './composer-scheduling.service';
@@ -32,7 +33,21 @@ function harness(db: DbType) {
       id: opts.jobId,
     })),
   };
-  const approvals = new DraftApprovalService(db, notifications as any);
+  // The real recipients lookup; NotifyService is a double that only runs the
+  // bell, so the email path stays out of these approval-rule tests.
+  const notify = {
+    notify: jest.fn(async (input: any) => {
+      await input.bell?.();
+    }),
+  };
+  const links = { planner: () => 'https://app.test/planner' };
+  const approvals = new DraftApprovalService(
+    db,
+    notifications as any,
+    notify as any,
+    new RecipientsService(db),
+    links as any,
+  );
   const store = new DraftStoreService(db);
   const scheduling = new ComposerSchedulingService(
     db,
