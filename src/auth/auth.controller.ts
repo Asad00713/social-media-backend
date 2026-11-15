@@ -9,6 +9,7 @@ import {
   Res,
   UseGuards,
   Get,
+  Headers,
 } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Response } from 'express';
@@ -275,7 +276,15 @@ export class AuthController {
   @Post('reset-password')
   @HttpCode(HttpStatus.OK)
   @SkipLaunchGate()
-  async resetPassword(@Body() dto: ResetPasswordDto) {
-    return this.authService.resetPassword(dto.token, dto.password);
+  async resetPassword(
+    @Body() dto: ResetPasswordDto,
+    @Ip() ip: string | undefined,
+    @Headers('user-agent') userAgent: string | undefined,
+  ) {
+    // The request context feeds A5's Device and Location rows.
+    return this.authService.resetPassword(dto.token, dto.password, {
+      ip: ip ?? null,
+      userAgent: userAgent ?? null,
+    });
   }
 }

@@ -1,37 +1,60 @@
 import * as bcrypt from 'bcrypt';
-import { BadRequestException, HttpException, HttpStatus } from '@nestjs/common';
+import {
+  BadRequestException,
+  HttpException,
+  HttpStatus,
+  Logger,
+} from '@nestjs/common';
 import { hash } from '../common/utils/encryption.util';
+import { AppLinks } from '../email/links/app-links';
+import type { EnqueueEmail } from '../email/queue/email-job';
+import type { ResetPasswordProps } from '../email/templates/security/reset-password';
+import type { VerifyEmailProps } from '../email/templates/security/verify-email';
 import { AuthService } from './auth.service';
 
 jest.mock('bcrypt', () => ({ compare: jest.fn(), hash: jest.fn() }));
 
+/** The first argument of a mock's first call, typed (mock.calls is any[][]). */
+function firstArg<T>(mock: jest.Mock): T {
+  return (mock.mock.calls as unknown[][])[0][0] as T;
+}
+
 /**
- * AuthService takes eight collaborators. Each test overrides only the ones it
+ * AuthService takes ten collaborators. Each test overrides only the ones it
  * exercises; the rest are inert stubs that fail loudly if reached.
  */
 export function makeAuthService(
   overrides: {
     db?: unknown;
     usersService?: Record<string, jest.Mock>;
-    emailService?: Record<string, jest.Mock>;
+    outbox?: Record<string, jest.Mock>;
   } = {},
 ) {
   const db = overrides.db ?? { query: { users: { findFirst: jest.fn() } } };
   const usersService = overrides.usersService ?? {};
-  const emailService = overrides.emailService ?? {
-    sendVerificationEmail: jest.fn().mockResolvedValue({ success: true }),
+  const outbox = overrides.outbox ?? {
+    sendNow: jest.fn().mockResolvedValue({ success: true }),
+  };
+  const links = new AppLinks({
+    get: (key: string) =>
+      key === 'FRONTEND_URL' ? 'https://app.test' : undefined,
+  } as never);
+  const accountSecurity = {
+    sendPasswordChanged: jest.fn().mockResolvedValue(undefined),
   };
   const service = new AuthService(
     db as never,
     usersService as never,
     { sign: jest.fn().mockReturnValue('signed') } as never,
     { get: jest.fn().mockReturnValue('secret') } as never,
-    emailService as never,
-    { emailVerified: jest.fn(), passwordChanged: jest.fn() } as never,
+    outbox as never,
+    { emailVerified: jest.fn() } as never,
     { verifyChallengeToken: jest.fn() } as never,
     { record: jest.fn(), recordSync: jest.fn() } as never,
+    links,
+    accountSecurity as never,
   );
-  return { service, db, usersService, emailService };
+  return { service, db, usersService, outbox, accountSecurity };
 }
 
 describe('AuthService.validateUser', () => {
@@ -184,7 +207,7 @@ describe('AuthService.resendVerificationEmail cooldown', () => {
   it('answers 429 CODE_COOLDOWN with the seconds left', async () => {
     // Issued 20s ago → 10-minute expiry is 9m40s away → 40s of cooldown left.
     const issuedAt = Date.now() - 20_000;
-    const { service, emailService } = makeAuthService({
+    const { service, outbox } = makeAuthService({
       usersService: {
         findByEmail: jest.fn().mockResolvedValue({
           id: 'u1',
@@ -205,6 +228,94 @@ describe('AuthService.resendVerificationEmail cooldown', () => {
     expect(body.code).toBe('CODE_COOLDOWN');
     expect(body.retryAfterSeconds).toBeGreaterThanOrEqual(39);
     expect(body.retryAfterSeconds).toBeLessThanOrEqual(41);
-    expect(emailService.sendVerificationEmail).not.toHaveBeenCalled();
+    expect(outbox.sendNow).not.toHaveBeenCalled();
+  });
+});
+
+describe('AuthService A1 / A2 / A5 mail', () => {
+  const USER = { id: 'u1', email: 'a@b.co', name: 'A' };
+  afterEach(() => jest.restoreAllMocks());
+
+  function registering(sendResult: { success: boolean; error?: string }) {
+    const usersService = {
+      create: jest.fn().mockResolvedValue(USER),
+      setEmailVerificationToken: jest.fn().mockResolvedValue(undefined),
+    };
+    const outbox = { sendNow: jest.fn().mockResolvedValue(sendResult) };
+    return { ...makeAuthService({ usersService, outbox }), usersService };
+  }
+
+  const dto = { email: 'a@b.co', name: 'A', password: 'Secret123' };
+
+  it('register sends A1 through sendNow with the verify key and still reports a send failure', async () => {
+    const { service, outbox, usersService } = registering({ success: true });
+    const ok = await service.register(dto);
+    expect(ok.message).toMatch(/check your email/);
+
+    const [, storedHash, expiresAt] = usersService.setEmailVerificationToken
+      .mock.calls[0] as [string, string, Date];
+    const sent = firstArg<EnqueueEmail<VerifyEmailProps>>(outbox.sendNow);
+    expect(sent.template.id).toBe('verify-email');
+    expect(sent.template.footer).toBe('plain');
+    expect(sent.to).toEqual({ email: 'a@b.co', userId: 'u1' });
+    expect(sent.workspaceId).toBeNull();
+    expect(sent.idempotencyKey).toBe(`verify.u1.${expiresAt.getTime()}`);
+    expect(sent.props.code).toMatch(/^\d{6}$/);
+    expect(sent.props.email).toBe('a@b.co');
+    expect(hash(sent.props.code)).toBe(storedHash);
+
+    jest.spyOn(Logger.prototype, 'error').mockImplementation();
+    const failed = registering({ success: false, error: 'Resend down' });
+    const res = await failed.service.register(dto);
+    expect(res.accessToken).toBe('signed');
+    expect(res.message).toMatch(/could not send the verification code/);
+  });
+
+  it('forgotPassword sends A2 through sendNow with the reset key and the frontend link', async () => {
+    const usersService = {
+      findByEmail: jest.fn().mockResolvedValue({
+        ...USER,
+        passwordResetTokenExpiresAt: null,
+      }),
+      setPasswordResetToken: jest.fn().mockResolvedValue(undefined),
+    };
+    const { service, outbox } = makeAuthService({ usersService });
+
+    await service.forgotPassword('a@b.co');
+
+    const [, storedHash, expiresAt] = usersService.setPasswordResetToken.mock
+      .calls[0] as [string, string, Date];
+    const sent = firstArg<EnqueueEmail<ResetPasswordProps>>(outbox.sendNow);
+    expect(sent.template.id).toBe('reset-password');
+    expect(sent.idempotencyKey).toBe(`reset.u1.${expiresAt.getTime()}`);
+    expect(sent.props.email).toBe('a@b.co');
+    const token = new URL(sent.props.resetUrl).searchParams.get('token');
+    expect(sent.props.resetUrl).toBe(
+      `https://app.test/reset-password?token=${token}`,
+    );
+    expect(hash(token!)).toBe(storedHash);
+  });
+
+  it('resetPassword revokes sessions and enqueues password-changed with via "reset"', async () => {
+    const usersService = {
+      findByPasswordResetToken: jest.fn().mockResolvedValue({
+        ...USER,
+        passwordResetTokenExpiresAt: new Date(Date.now() + 60_000),
+      }),
+      resetPassword: jest.fn().mockResolvedValue(undefined),
+    };
+    const { service, accountSecurity } = makeAuthService({ usersService });
+    const ctx = { ip: '39.48.12.201', userAgent: 'UA' };
+
+    await service.resetPassword('raw', 'Secret123', ctx);
+
+    // UsersService.resetPassword stamps sessions_revoked_at in the same UPDATE
+    // as the new hash (users.service.spec).
+    expect(usersService.resetPassword).toHaveBeenCalledWith('u1', 'Secret123');
+    expect(accountSecurity.sendPasswordChanged).toHaveBeenCalledWith(
+      'u1',
+      ctx,
+      'reset',
+    );
   });
 });

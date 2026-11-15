@@ -15,6 +15,7 @@ import { LoginActivityService } from './services/login-activity.service';
 import { GoogleOAuthClient } from './google/google-oauth.client';
 import { GoogleAuthService } from './google/google-auth.service';
 import { GoogleAuthController } from './google/google-auth.controller';
+import { AccountSecurityController } from '../users/account-security.controller';
 
 @Module({
   imports: [UsersModule, PassportModule, JwtModule.register({}), EmailModule],
@@ -35,6 +36,13 @@ import { GoogleAuthController } from './google/google-auth.controller';
     // cleanly here without needing to re-import them into AppModule.
     { provide: APP_GUARD, useClass: AllowlistGuard },
   ],
-  controllers: [AuthController, GoogleAuthController],
+  // AccountSecurityController (POST /users/me/password) mints tokens through
+  // AuthService, so it is registered here: UsersModule cannot import AuthModule
+  // back without a module cycle.
+  controllers: [
+    AuthController,
+    GoogleAuthController,
+    AccountSecurityController,
+  ],
 })
 export class AuthModule {}

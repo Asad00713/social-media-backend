@@ -1,0 +1,42 @@
+-- 0070 - users.sessions_revoked_at: sign a person out of every session at once.
+--
+-- WHY
+-- Changing the password (POST /users/me/password), resetting it, and the
+-- "This wasn't me" security link must end every other session. Access and
+-- refresh tokens are stateless JWTs, so there is nothing to delete: instead
+-- both JWT strategies reject a token whose `iat` (whole seconds) is earlier
+-- than floor(sessions_revoked_at / 1000). A token minted in the same second as
+-- the revocation, such as the fresh pair the password change itself returns,
+-- is still accepted, so the device that made the change stays signed in.
+-- NULL means nothing was ever revoked. The column is timestamptz,
+-- deliberately: a bare `timestamp` next to timestamptz columns misreads by the
+-- session offset (the mixed-column trap).
+--
+-- SAFETY
+-- The boot migrator runs this file in ONE transaction; no BEGIN/COMMIT, no
+-- CONCURRENTLY. One nullable column with no default: no row is read, changed
+-- or dropped, and the table is not rewritten. Idempotent: ADD COLUMN IF NOT
+-- EXISTS. The old code never reads the column, so applying this BEFORE (or
+-- with) the new code is always safe, and the boot migrator does exactly that.
+-- Applying it AFTER the new code is running is NOT tolerated: both JWT
+-- strategies select the column, so every authenticated request answers 500
+-- until it exists.
+--
+-- LOCKS AND COST
+-- `SET LOCAL lock_timeout = '10s'` comes first. ADD COLUMN takes an ACCESS
+-- EXCLUSIVE lock on users for an instant (a catalog change only); without the
+-- timeout it would queue behind any open transaction on the still-running old
+-- instance, and every read of users, every sign-in, would queue behind it.
+-- With it a blocked deploy fails fast and rolls back; retry the deploy.
+--
+-- NEVER edit this file after it has been applied: the migrator's checksum
+-- guard refuses to boot. Write a new migration for any later change.
+--
+-- ROLLBACK
+--   ALTER TABLE users DROP COLUMN IF EXISTS sessions_revoked_at;
+--
+-- Never run `db:push` against prod. The boot migrator applies this file.
+
+SET LOCAL lock_timeout = '10s';
+
+ALTER TABLE "users" ADD COLUMN IF NOT EXISTS "sessions_revoked_at" timestamptz;

@@ -79,6 +79,10 @@ export const users = pgTable('users', {
   passwordResetToken: varchar('password_reset_token', { length: 255 }),
   passwordResetTokenExpiresAt: timestamp('password_reset_token_expires_at'),
 
+  // Every token issued before this second is refused (migration 0070): set by
+  // a password change or reset and by the "This wasn't me" security link.
+  sessionsRevokedAt: timestamp('sessions_revoked_at', { withTimezone: true }),
+
   // Last accessed workspace for redirect on login
   lastAccessedWorkspaceId: uuid('last_accessed_workspace_id'),
 

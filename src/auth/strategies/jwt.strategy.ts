@@ -8,6 +8,24 @@ import type { UserRole } from '../../drizzle/schema';
 export interface JwtPayload {
   sub: string;
   email: string;
+  /** Issued-at, whole seconds. Set on every token we sign. */
+  iat?: number;
+}
+
+/**
+ * Refuses a token issued before the user's sessions were revoked (a password
+ * change or reset, "This wasn't me"). `iat` has whole seconds only, so a token
+ * from the revocation second itself passes: that is the fresh pair the
+ * password change hands back. Shared by the access and refresh strategies.
+ */
+export function assertSessionLive(
+  iat: number | undefined,
+  sessionsRevokedAt: Date | null,
+): void {
+  if (!sessionsRevokedAt) return;
+  if ((iat ?? 0) < Math.floor(sessionsRevokedAt.getTime() / 1000)) {
+    throw new UnauthorizedException('Session ended');
+  }
 }
 
 export interface JwtUser {
@@ -54,6 +72,8 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
         message: 'Your account has been suspended.',
       });
     }
+
+    assertSessionLive(payload.iat, user.sessionsRevokedAt);
 
     return { userId: payload.sub, email: payload.email, role: user.role };
   }

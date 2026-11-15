@@ -12,8 +12,15 @@ import {
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import * as bcrypt from 'bcrypt';
-import { UsersService, PublicUser } from '../users/users.service';
-import { EmailService } from '../email/email.service';
+import { UsersService, PublicUser, toPublicUser } from '../users/users.service';
+import {
+  AccountSecurityService,
+  type RequestContext,
+} from '../users/account-security.service';
+import { AppLinks } from '../email/links/app-links';
+import { EmailOutboxService } from '../email/queue/email-outbox.service';
+import { resetPasswordTemplate } from '../email/templates/security/reset-password';
+import { verifyEmailTemplate } from '../email/templates/security/verify-email';
 import { LoginDto } from './dto/login.dto';
 import type { User, UserRole } from '../drizzle/schema';
 import { users, workspace, workspaceInvitation } from '../drizzle/schema';
@@ -92,12 +99,14 @@ export class AuthService {
     private usersService: UsersService,
     private jwtService: JwtService,
     private configService: ConfigService,
-    private emailService: EmailService,
+    private emailOutbox: EmailOutboxService,
     private notificationEmitter: NotificationEmitterService,
     // One-way dependency: the challenge service knows nothing about AuthService,
     // so this needs no forwardRef.
     private adminChallengeService: AdminChallengeService,
     private loginActivityService: LoginActivityService,
+    private appLinks: AppLinks,
+    private accountSecurity: AccountSecurityService,
   ) {}
 
   async register(
@@ -124,7 +133,7 @@ export class AuthService {
     // instead of "check your email" for a message that was never sent.
     let emailDelivered = true;
     try {
-      await this.sendVerificationEmailInternal(user.id, user.email, user.name);
+      await this.sendVerificationEmailInternal(user.id, user.email);
     } catch (error) {
       emailDelivered = false;
       this.logger.error(
@@ -198,20 +207,10 @@ export class AuthService {
     // lookup inside runs detached, so a slow resolver can't hold up the login.
     await this.loginActivityService.record(user.id, ip);
 
-    const {
-      password: _password,
-      emailVerificationToken: _evt,
-      emailVerificationTokenExpiresAt: _evte,
-      emailVerificationAttempts: _eva,
-      passwordResetToken: _prt,
-      passwordResetTokenExpiresAt: _prte,
-      googleSub: _gs,
-      ...publicUser
-    } = user;
-
     return {
       accessToken,
-      user: publicUser,
+      // Narrowed to the allow-list, so a column added later cannot leak here.
+      user: toPublicUser(user),
     };
   }
 
@@ -342,7 +341,6 @@ export class AuthService {
   private async sendVerificationEmailInternal(
     userId: string,
     email: string,
-    name?: string | null,
   ): Promise<void> {
     const otp = generateOtp(6);
     const hashedOtp = hash(otp);
@@ -354,11 +352,15 @@ export class AuthService {
       expiresAt,
     );
 
-    const result = await this.emailService.sendVerificationEmail(
-      email,
-      otp,
-      name || undefined,
-    );
+    // Inline, never queued: queued job data (the code included) would sit in
+    // Redis and Bull Board for a day.
+    const result = await this.emailOutbox.sendNow({
+      template: verifyEmailTemplate,
+      props: { code: otp, email },
+      to: { email, userId },
+      workspaceId: null,
+      idempotencyKey: `verify.${userId}.${expiresAt.getTime()}`,
+    });
 
     // sendEmail never throws — it reports failure in its return value, and
     // this call site used to discard it. That silence is what reached a real
@@ -426,7 +428,7 @@ export class AuthService {
       }
     }
 
-    await this.sendVerificationEmailInternal(user.id, user.email, user.name);
+    await this.sendVerificationEmailInternal(user.id, user.email);
 
     return { message: 'Verification email sent. Please check your inbox.' };
   }
@@ -583,12 +585,24 @@ export class AuthService {
       expiresAt,
     );
 
-    // Send email with raw token
-    await this.emailService.sendPasswordResetEmail(
-      user.email,
-      rawToken,
-      user.name || undefined,
-    );
+    // Send email with raw token. Inline, never queued: queued job data (the
+    // reset link included) would sit in Redis and Bull Board for a day. The
+    // answer stays the same either way, so it cannot reveal the account.
+    const result = await this.emailOutbox.sendNow({
+      template: resetPasswordTemplate,
+      props: {
+        email: user.email,
+        resetUrl: this.appLinks.resetPassword(rawToken),
+      },
+      to: { email: user.email, userId: user.id },
+      workspaceId: null,
+      idempotencyKey: `reset.${user.id}.${expiresAt.getTime()}`,
+    });
+    if (!result.success) {
+      this.logger.error(
+        `Password reset email for user ${user.id} failed: ${result.error ?? 'unknown error'}`,
+      );
+    }
 
     return { message: successMessage };
   }
@@ -599,6 +613,7 @@ export class AuthService {
   async resetPassword(
     token: string,
     newPassword: string,
+    ctx: RequestContext = { ip: null, userAgent: null },
   ): Promise<{ message: string }> {
     // Hash the provided token to compare with stored hash
     const hashedToken = hash(token);
@@ -619,11 +634,11 @@ export class AuthService {
       );
     }
 
-    // Reset the password
+    // Reset the password; the same write ends every session.
     await this.usersService.resetPassword(user.id, newPassword);
 
-    // Send notification
-    await this.notificationEmitter.passwordChanged(user.id);
+    // A5 and the bell. Never throws.
+    await this.accountSecurity.sendPasswordChanged(user.id, ctx, 'reset');
 
     return {
       message:

@@ -4,10 +4,12 @@ import { PassportStrategy } from '@nestjs/passport';
 import { Request } from 'express';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { UsersService } from '../../users/users.service';
+import { assertSessionLive } from './jwt.strategy';
 
 export interface JwtRefreshPayload {
   sub: string;
   email: string;
+  iat?: number;
 }
 
 @Injectable()
@@ -46,11 +48,15 @@ export class JwtRefreshStrategy extends PassportStrategy(
       throw new UnauthorizedException('Refresh token not found');
     }
 
-    const user = await this.usersService.findOne(payload.sub);
+    // findOneWithSuspension for sessionsRevokedAt; suspension itself is still
+    // enforced by the access-token strategy only.
+    const user = await this.usersService.findOneWithSuspension(payload.sub);
 
     if (!user) {
       throw new UnauthorizedException('User not found');
     }
+
+    assertSessionLive(payload.iat, user.sessionsRevokedAt);
 
     return { userId: payload.sub, email: payload.email, refreshToken };
   }
