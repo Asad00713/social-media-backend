@@ -27,6 +27,10 @@ import type {
   AnalyticsEventName,
   AnalyticsEventPayloadMap,
 } from './types/analytics-events.types';
+import type {
+  UserEventName,
+  UserEventPayloadMap,
+} from './types/user-events.types';
 
 interface CachedRole {
   role: WorkspaceRole | null;
@@ -90,6 +94,9 @@ export class AnalyticsEventsGateway
 
       socket.userId = payload.sub ?? payload.userId;
       socket.email = payload.email;
+      // Per-user events (billing) go to this room. Joined from the verified
+      // token only — a client never names the room it joins.
+      if (socket.userId) await socket.join(this.userRoom(socket.userId));
       this.logger.log(
         `Socket ${socket.id} connected for user ${socket.userId}`,
       );
@@ -273,6 +280,19 @@ export class AnalyticsEventsGateway
     payload: AnalyticsEventPayloadMap[K],
   ): void {
     this.server.to(this.workspaceRoom(workspaceId)).emit(eventName, payload);
+  }
+
+  /** Send to every socket of one user, whichever workspace it is showing. */
+  emitToUser<K extends UserEventName>(
+    userId: string,
+    eventName: K,
+    payload: UserEventPayloadMap[K],
+  ): void {
+    this.server.to(this.userRoom(userId)).emit(eventName, payload);
+  }
+
+  private userRoom(userId: string): string {
+    return `user:${userId}`;
   }
 
   private workspaceRoom(workspaceId: string): string {
