@@ -13,6 +13,9 @@ export const invitationStatusEnum = pgEnum('invitation_status', [
   'ACCEPTED',
   'REJECTED',
   'EXPIRED',
+  // A member who was removed (0080). The row is kept so the removal can be
+  // undone for a short while; nothing reads REMOVED as a member or invite.
+  'REMOVED',
 ]);
 
 export const workspaceInvitation = pgTable('workspace_invitations', {
@@ -30,6 +33,12 @@ export const workspaceInvitation = pgTable('workspace_invitations', {
   token: varchar('token', { length: 255 }).notNull().unique(), // unique token for invitation link
   expiresAt: timestamp('expires_at').notNull(), // invitation expires after X days
   acceptedAt: timestamp('accepted_at'),
+  // Set when the member is removed (status REMOVED). removedBy equal to
+  // userId means they left on their own, which is never restorable.
+  removedAt: timestamp('removed_at', { withTimezone: true }),
+  removedBy: uuid('removed_by').references(() => users.id, {
+    onDelete: 'set null',
+  }),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });
