@@ -1,4 +1,4 @@
-import type { ExecutionContext } from '@nestjs/common';
+import { UnauthorizedException, type ExecutionContext } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
 import {
   ThrottlerException,
@@ -107,7 +107,13 @@ describe('per-user throttles on POST /users/me/password and /email-change', () =
     ip: string,
     route: 'changePassword' | 'requestEmailChange' = 'changePassword',
   ): Promise<boolean> {
-    const req = { user: { userId, email: 'a@b.co' }, ip, headers: {} };
+    return run({ user: { userId, email: 'a@b.co' }, ip, headers: {} }, route);
+  }
+
+  function run(
+    req: Record<string, unknown>,
+    route: 'changePassword' | 'requestEmailChange' = 'changePassword',
+  ): Promise<boolean> {
     const res = { header: jest.fn() };
     const context = {
       // The handler reference is only read for its @Throttle metadata.
@@ -142,4 +148,16 @@ describe('per-user throttles on POST /users/me/password and /email-change', () =
     // Its own bucket: the password route is untouched.
     await expect(attempt('u1', '1.1.1.1')).resolves.toBe(true);
   });
+
+  it.each(['changePassword', 'requestEmailChange'] as const)(
+    '%s without a signed-in user is a 401, not a TypeError',
+    async (route) => {
+      await expect(
+        run({ ip: '1.1.1.1', headers: {} }, route),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+      await expect(
+        run({ user: {}, ip: '1.1.1.1', headers: {} }, route),
+      ).rejects.toBeInstanceOf(UnauthorizedException);
+    },
+  );
 });

@@ -7,6 +7,7 @@ import {
   Ip,
   Post,
   Res,
+  UnauthorizedException,
   UseGuards,
 } from '@nestjs/common';
 import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
@@ -31,16 +32,24 @@ interface Caller {
 }
 
 /**
- * Throttle key for the signed-in person. The class-level JwtAuthGuard runs
- * before the method's ThrottlerGuard, so `req.user` is always set here.
+ * The signed-in person's id for a throttle key. The class-level JwtAuthGuard
+ * runs before the method's ThrottlerGuard, so `req.user` is set in practice;
+ * if it ever is not, that is a 401, never a TypeError (500).
  */
+function callerIdOf(req: Record<string, unknown>): string {
+  const user = req.user as Partial<Caller> | undefined;
+  if (!user?.userId) throw new UnauthorizedException();
+  return user.userId;
+}
+
+/** Throttle key for the password change. */
 function perUserTracker(req: Record<string, unknown>): string {
-  return 'pw:' + (req.user as Caller).userId;
+  return 'pw:' + callerIdOf(req);
 }
 
 /** The same, for the email change (spec §7.1: 5 an hour per user). */
 function emailChangeTracker(req: Record<string, unknown>): string {
-  return 'email:' + (req.user as Caller).userId;
+  return 'email:' + callerIdOf(req);
 }
 
 /**
