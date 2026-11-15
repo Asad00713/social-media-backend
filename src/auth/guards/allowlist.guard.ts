@@ -54,7 +54,7 @@ export class AllowlistGuard implements CanActivate {
     const auth = req.headers?.authorization;
     if (!auth || !auth.startsWith('Bearer ')) return true; // unauthenticated → not our job
 
-    let payload: { sub?: string; email?: string };
+    let payload: { sub?: string };
     try {
       payload = this.jwtService.verify(auth.slice(7), {
         secret: this.configService.get<string>('JWT_ACCESS_SECRET'),
@@ -63,19 +63,25 @@ export class AllowlistGuard implements CanActivate {
       return true; // invalid/expired token → let JwtAuthGuard 401 it
     }
 
-    // Need the role to honor "super admin always passes". A failed lookup
-    // fails SAFE (role undefined → not a super admin → blocked below).
+    // The role ("super admin always passes") and the CURRENT address come from
+    // the row, never from the token: the token's email claim is frozen at
+    // sign-in, so after an email change it would still name an address the
+    // account gave up, one someone else may since have registered. A failed
+    // lookup fails SAFE (no role, no email → blocked below).
     let role: string | undefined;
+    let email: string | undefined;
     try {
       const user = await this.usersService.findOneWithSuspension(
         payload.sub as string,
       );
       role = user?.role;
+      email = user?.email;
     } catch {
       role = undefined;
+      email = undefined;
     }
 
-    if (isEmailAllowlisted(payload.email, role)) return true;
+    if (isEmailAllowlisted(email, role)) return true;
 
     // Not allowlisted → blocked from the whole app, regardless of onboarding
     // state. The genuine pre-launch setup routes a signed-up user still needs

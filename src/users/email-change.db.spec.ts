@@ -122,8 +122,16 @@ async function codeOf(
 }
 
 describeDb('email change on a real database (0071)', () => {
+  const savedAllowlist = process.env.ALLOWLIST_EMAILS;
   beforeEach(() => {
     jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+    // The launch gate is off here: these addresses are not on any list.
+    delete process.env.ALLOWLIST_EMAILS;
+  });
+  afterAll(() => {
+    if (savedAllowlist !== undefined) {
+      process.env.ALLOWLIST_EMAILS = savedAllowlist;
+    }
   });
   afterEach(() => jest.restoreAllMocks());
 

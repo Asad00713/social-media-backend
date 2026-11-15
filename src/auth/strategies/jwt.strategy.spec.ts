@@ -1,4 +1,6 @@
 import { UnauthorizedException } from '@nestjs/common';
+import { JwtService } from '@nestjs/jwt';
+import { AuthService } from '../auth.service';
 import { JwtRefreshStrategy } from './jwt-refresh.strategy';
 import { JwtStrategy } from './jwt.strategy';
 
@@ -108,5 +110,62 @@ describe('JwtRefreshStrategy session revocation', () => {
         iat: 1_700_000_000,
       }),
     ).resolves.toMatchObject({ userId: 'u1', refreshToken: 'rt' });
+  });
+});
+
+describe('the email the strategies hand on comes from the row, not the claim', () => {
+  // The token was minted before the email change; the row has the new address.
+  const STALE = { sub: 'u1', email: 'old@example.test', iat: 1_800_000_000 };
+  const users = {
+    findOneWithSuspension: jest.fn().mockResolvedValue({
+      ...ACTIVE,
+      email: 'new@example.test',
+      sessionsRevokedAt: null,
+    }),
+  };
+
+  it('the access strategy gives handlers the current address', async () => {
+    const strategy = new JwtStrategy(config as never, users as never);
+
+    await expect(strategy.validate(STALE)).resolves.toMatchObject({
+      userId: 'u1',
+      email: 'new@example.test',
+    });
+  });
+
+  it('after an email change, refresh mints tokens carrying the new email', async () => {
+    const strategy = new JwtRefreshStrategy(config as never, users as never);
+    const jwt = new JwtService({});
+    // Only the token minting and the last-seen write run on this path.
+    const none = null as never;
+    const auth = new AuthService(
+      none,
+      none,
+      jwt,
+      config as never,
+      none,
+      none,
+      none,
+      { record: jest.fn().mockResolvedValue(undefined) } as never,
+      none,
+      none,
+    );
+
+    // What /auth/refresh does with the strategy's result.
+    const caller = await strategy.validate(
+      { cookies: { refreshToken: 'rt' } } as never,
+      STALE,
+    );
+    const access = await auth.refreshTokens(caller.userId, caller.email);
+    const refresh = await auth.generateRefreshToken(
+      caller.userId,
+      caller.email,
+    );
+
+    for (const token of [access, refresh]) {
+      expect(jwt.decode<{ email: string }>(token).email).toBe(
+        'new@example.test',
+      );
+    }
   });
 });

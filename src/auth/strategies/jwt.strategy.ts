@@ -76,6 +76,8 @@ export class JwtStrategy extends PassportStrategy(Strategy, 'jwt') {
 
     assertSessionLive(payload.iat, user.sessionsRevokedAt);
 
-    return { userId: payload.sub, email: payload.email, role: user.role };
+    // The address from the row, not the claim: the claim is frozen at sign-in
+    // and goes stale after an email change.
+    return { userId: payload.sub, email: user.email, role: user.role };
   }
 }

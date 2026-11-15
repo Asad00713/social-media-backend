@@ -35,6 +35,7 @@ type RevertClaims = SecurityClaims & { from: string; to: string };
 
 type RevertResult =
   | { kind: 'reverted'; account: Account }
+  | { kind: 'already' }
   | { kind: 'refused' }
   | { kind: 'gone' };
 
@@ -112,9 +113,10 @@ export class SecurityActionsService {
    * Safe to repeat. `not_me` secures the account each time. A revert switches
    * the email only while it is still the address the link was sent about
    * (`to`); once switched, a repeat finds the email already back at `from`
-   * and only secures again. After any other change since, the link refuses
-   * and writes nothing, so an old link can never move the account onto an
-   * address it no longer uses.
+   * and says so without signing out or mailing again (it secures again only
+   * if a new email change has been started since). After any other change,
+   * the link refuses and writes nothing, so an old link can never move the
+   * account onto an address it no longer uses.
    */
   async perform(token: string): Promise<SecurityDone | null> {
     const claims = this.tokens.verifySecurity(token);
@@ -135,6 +137,12 @@ export class SecurityActionsService {
     if (!isRevert(claims)) return null;
     const result = await this.revertEmail(claims);
     if (result.kind === 'gone') return null;
+    if (result.kind === 'already') {
+      return {
+        title: 'This is already done',
+        body: `Your sign-in email is already back to ${maskEmail(claims.from)}.`,
+      };
+    }
     if (result.kind === 'refused') {
       return {
         title: "Your email wasn't switched back",
@@ -161,14 +169,16 @@ export class SecurityActionsService {
     try {
       return await this.db.transaction(async (tx): Promise<RevertResult> => {
         const [row] = await tx
-          .select({ email: users.email })
+          .select({ email: users.email, pendingEmail: users.pendingEmail })
           .from(users)
           .where(eq(users.id, claims.uid))
           .for('update');
         if (!row) return { kind: 'gone' };
         const current = normalizeEmail(row.email);
         if (current === from) {
-          // Already switched back: a repeat click secures again.
+          // Already switched back. Nothing to undo, unless a new change has
+          // been started since: then secure again, which cancels it.
+          if (!row.pendingEmail) return { kind: 'already' };
           return {
             kind: 'reverted',
             account: { id: claims.uid, email: row.email },

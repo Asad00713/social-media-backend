@@ -88,6 +88,7 @@ function fakeDb(
             id: row.id,
             email: row.email,
             password: row.password,
+            role: row.role,
           }),
         ),
       },
@@ -145,13 +146,16 @@ function setup(
   } = {},
 ) {
   const { db, writes } = fakeDb(row, opts);
-  const sendNow = jest
-    .fn()
-    .mockResolvedValue(
-      opts.sendFails
-        ? { success: false, error: 'Resend 500' }
-        : { success: true, messageId: 'm1' },
-    );
+  const sendNow = jest.fn().mockResolvedValue(
+    opts.sendFails
+      ? {
+          success: false,
+          // Providers quote the recipient in their messages.
+          error: `Invalid \`to\` field: ${NEW_EMAIL}`,
+          errorCode: 'validation_error',
+        }
+      : { success: true, messageId: 'm1' },
+  );
   const enqueue = jest.fn().mockResolvedValue(undefined);
   const tokens = { securityToken: jest.fn().mockReturnValue('sec-token') };
   const links = new AppLinks({
@@ -211,10 +215,18 @@ function firstArg<T>(mock: jest.Mock): T {
   return (mock.mock.calls as unknown[][])[0][0] as T;
 }
 
+const SAVED_ALLOWLIST = process.env.ALLOWLIST_EMAILS;
 beforeEach(() => {
   jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
+  // The launch gate reads the env at call time; the gate tests turn it on.
+  delete process.env.ALLOWLIST_EMAILS;
 });
 afterEach(() => jest.restoreAllMocks());
+afterAll(() => {
+  if (SAVED_ALLOWLIST !== undefined) {
+    process.env.ALLOWLIST_EMAILS = SAVED_ALLOWLIST;
+  }
+});
 
 describe('EmailChangeService.request', () => {
   it('request: password user without current password → CURRENT_PASSWORD_REQUIRED', async () => {
@@ -353,6 +365,75 @@ describe('EmailChangeService.request', () => {
       pendingEmailExpiresAt: null,
       pendingEmailAttempts: 0,
     });
+  });
+
+  it('the send-failure log carries the error code, never the address', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn');
+    const { service } = setup(userRow(), { sendFails: true });
+
+    await refusal(
+      service.request('u1', { newEmail: NEW_EMAIL, currentPassword: PASSWORD }),
+    );
+
+    const logged = (warn.mock.calls as unknown[][]).flat().join(' ');
+    expect(logged).toContain('validation_error');
+    expect(logged).not.toContain(NEW_EMAIL);
+    expect(logged).not.toContain('@');
+  });
+});
+
+describe('EmailChangeService.request before launch (allowlist gate)', () => {
+  it('gate on: an address not on the list → 400 EMAIL_NOT_ALLOWLISTED, nothing written or sent', async () => {
+    process.env.ALLOWLIST_EMAILS = `${OLD_EMAIL}, listed@example.test`;
+    const { service, writes, sendNow } = setup(userRow());
+
+    const { status, body } = await refusal(
+      service.request('u1', { newEmail: NEW_EMAIL, currentPassword: PASSWORD }),
+    );
+
+    expect(status).toBe(400);
+    expect(body).toMatchObject({
+      code: 'EMAIL_NOT_ALLOWLISTED',
+      message: "That address isn't on the early-access list yet.",
+    });
+    expect(writes).toEqual([]);
+    expect(sendNow).not.toHaveBeenCalled();
+  });
+
+  it('gate on: a listed address (any case) goes through', async () => {
+    process.env.ALLOWLIST_EMAILS = `${OLD_EMAIL}, listed@example.test`;
+    const { service, sendNow } = setup(userRow());
+
+    await service.request('u1', {
+      newEmail: 'Listed@Example.test',
+      currentPassword: PASSWORD,
+    });
+
+    expect(sendNow).toHaveBeenCalledTimes(1);
+  });
+
+  it('gate on: a super admin is never locked out, so the list does not apply', async () => {
+    process.env.ALLOWLIST_EMAILS = OLD_EMAIL;
+    const { service, sendNow } = setup(userRow({ role: 'SUPER_ADMIN' }));
+
+    await service.request('u1', {
+      newEmail: NEW_EMAIL,
+      currentPassword: PASSWORD,
+    });
+
+    expect(sendNow).toHaveBeenCalledTimes(1);
+  });
+
+  it('gate off: any address goes through', async () => {
+    delete process.env.ALLOWLIST_EMAILS;
+    const { service, sendNow } = setup(userRow());
+
+    await service.request('u1', {
+      newEmail: NEW_EMAIL,
+      currentPassword: PASSWORD,
+    });
+
+    expect(sendNow).toHaveBeenCalledTimes(1);
   });
 });
 

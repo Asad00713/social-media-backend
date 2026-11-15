@@ -9,6 +9,7 @@ import {
   ServiceUnavailableException,
 } from '@nestjs/common';
 import { and, eq, ne, sql } from 'drizzle-orm';
+import { isEmailAllowlisted } from '../auth/allowlist';
 import { GeoipService } from '../auth/services/geoip.service';
 import {
   MAX_CODE_ATTEMPTS,
@@ -124,7 +125,7 @@ export class EmailChangeService {
   ): Promise<{ pendingEmail: string; expiresAt: string }> {
     const user = await this.db.query.users.findFirst({
       where: eq(users.id, userId),
-      columns: { id: true, email: true, password: true },
+      columns: { id: true, email: true, password: true, role: true },
     });
     if (!user) throw new NotFoundException('User not found');
     await this.security.verifyCurrentPassword(user, body.currentPassword);
@@ -132,6 +133,14 @@ export class EmailChangeService {
     const newEmail = normalizeEmail(body.newEmail);
     if (newEmail === normalizeEmail(user.email)) {
       throw changeError('EMAIL_UNCHANGED', "That's already your email.");
+    }
+    // Before launch the gate admits listed addresses only: moving onto an
+    // unlisted one would lock the person out of the app (spec A.2).
+    if (!isEmailAllowlisted(newEmail, user.role)) {
+      throw changeError(
+        'EMAIL_NOT_ALLOWLISTED',
+        "That address isn't on the early-access list yet.",
+      );
     }
     if (await this.isTaken(this.db, newEmail, userId)) throw emailTaken();
 
@@ -158,8 +167,9 @@ export class EmailChangeService {
       idempotencyKey: `change-email-code.${userId}.${expiresAt.getTime()}`,
     });
     if (!sent.success) {
+      // The code only: a provider message can quote the recipient address.
       this.logger.warn(
-        `Change-email code for user ${userId} was not sent: ${sent.error ?? 'unknown error'}`,
+        `Change-email code for user ${userId} was not sent (${sent.errorCode ?? (sent.retryable ? 'retryable' : 'failed')})`,
       );
       // Only this request's code: a newer request may already have replaced it.
       await this.db

@@ -629,8 +629,9 @@ export class AuthService {
       idempotencyKey: `reset.${user.id}.${expiresAt.getTime()}`,
     });
     if (!result.success) {
+      // The code only: a provider message can quote the recipient address.
       this.logger.error(
-        `Password reset email for user ${user.id} failed: ${result.error ?? 'unknown error'}`,
+        `Password reset email for user ${user.id} failed (${result.errorCode ?? (result.retryable ? 'retryable' : 'failed')})`,
       );
     }
     return result.success;

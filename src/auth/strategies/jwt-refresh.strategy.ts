@@ -58,6 +58,8 @@ export class JwtRefreshStrategy extends PassportStrategy(
 
     assertSessionLive(payload.iat, user.sessionsRevokedAt);
 
-    return { userId: payload.sub, email: payload.email, refreshToken };
+    // The current address, not the claim: /auth/refresh re-mints both tokens
+    // from this, so a stale claim would otherwise live on after an email change.
+    return { userId: payload.sub, email: user.email, refreshToken };
   }
 }

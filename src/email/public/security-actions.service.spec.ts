@@ -31,7 +31,12 @@ function fakeDb(
     const b = {
       from: () => b,
       where: () => b,
-      for: () => Promise.resolve(row ? [{ email: row.email }] : []),
+      for: () =>
+        Promise.resolve(
+          row
+            ? [{ email: row.email, pendingEmail: row.pendingEmail ?? null }]
+            : [],
+        ),
       limit: () => Promise.resolve(opts.taken ? [{ id: 'someone-else' }] : []),
     };
     return b;
@@ -284,19 +289,42 @@ describe('SecurityActionsService.perform (POST)', () => {
     expect(security.revokeSessions).not.toHaveBeenCalled();
   });
 
-  it('a repeat POST finds the email already back: it secures again and writes no email', async () => {
+  it('a second POST of a used revert link says it is already done: no sign-out, no reset email, no write', async () => {
     const row = { id: UID, email: NEW };
     const { service, writes, security, auth } = setup(REVERT, row);
 
     await service.perform('tok');
+    expect(security.revokeSessions).toHaveBeenCalledTimes(1);
+    expect(auth.issuePasswordReset).toHaveBeenCalledTimes(1);
     writes.length = 0;
+
     const again = await service.perform('tok');
 
-    expect(again?.title).toBe('Your account is secured');
-    expect(writes.some((w) => 'email' in w)).toBe(false);
+    expect(again).toEqual({
+      title: 'This is already done',
+      body: 'Your sign-in email is already back to r•••@lumierecafe.pk.',
+    });
+    expect(writes).toEqual([]);
     expect(row.email).toBe(OLD);
-    expect(security.revokeSessions).toHaveBeenCalledTimes(2);
-    expect(auth.issuePasswordReset).toHaveBeenLastCalledWith({
+    expect(security.revokeSessions).toHaveBeenCalledTimes(1);
+    expect(auth.issuePasswordReset).toHaveBeenCalledTimes(1);
+  });
+
+  it('back at the old address but with a new change pending since: secures again, which cancels it', async () => {
+    const row: Row = {
+      id: UID,
+      email: OLD,
+      pendingEmail: 'attacker@evil.test',
+    };
+    const { service, writes, security, auth } = setup(REVERT, row);
+
+    const done = await service.perform('tok');
+
+    expect(done?.title).toBe('Your account is secured');
+    expect(writes.some((w) => 'email' in w)).toBe(false);
+    expect(row.pendingEmail).toBeNull();
+    expect(security.revokeSessions).toHaveBeenCalledWith(UID);
+    expect(auth.issuePasswordReset).toHaveBeenCalledWith({
       id: UID,
       email: OLD,
     });
