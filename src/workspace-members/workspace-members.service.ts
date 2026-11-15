@@ -9,7 +9,7 @@ import {
 } from '@nestjs/common';
 import type { DbType } from 'src/drizzle/db';
 import { DRIZZLE } from 'src/drizzle/drizzle.module';
-import { and, eq, gt, sql } from 'drizzle-orm';
+import { and, eq, gt, inArray, sql } from 'drizzle-orm';
 import * as crypto from 'crypto';
 import { InviteMemberDto } from './dto/invite-member.dto';
 import { users, workspace, workspaceInvitation } from 'src/drizzle/schema';
@@ -498,10 +498,14 @@ export class WorkspaceMembersService {
     invitationId: string,
     currentUserId: string,
   ) {
+    // Only an invitation, never a member row: an ACCEPTED row goes through
+    // removeMember (which counts the seat), and a REMOVED one must stay
+    // until its undo window has passed.
     const invitation = await this.db.query.workspaceInvitation.findFirst({
       where: and(
         eq(workspaceInvitation.id, invitationId),
         eq(workspaceInvitation.workspaceId, workspaceId),
+        inArray(workspaceInvitation.status, ['PENDING', 'REJECTED', 'EXPIRED']),
       ),
     });
 

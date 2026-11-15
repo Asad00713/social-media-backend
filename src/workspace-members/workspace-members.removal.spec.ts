@@ -461,3 +461,20 @@ describe('WorkspaceMembersService.restoreMember', () => {
     expect(usage.incrementMemberCount).not.toHaveBeenCalled();
   });
 });
+
+describe('cancelInvitation cannot reach a member row', () => {
+  it('looks only at invitation states, so a REMOVED (or ACCEPTED) row is a 404', async () => {
+    const findFirst = jest.fn().mockResolvedValue(undefined);
+    const del = jest.fn();
+    const svc = makeService({
+      query: { workspaceInvitation: { findFirst } },
+      delete: del,
+    });
+    await expect(svc.cancelInvitation(WS, 'm1', ADMIN)).rejects.toBeInstanceOf(
+      NotFoundException,
+    );
+    const q = whereOf(findFirst.mock.calls[0][0]);
+    expect(q.params).toEqual(['m1', WS, 'PENDING', 'REJECTED', 'EXPIRED']);
+    expect(del).not.toHaveBeenCalled();
+  });
+});
