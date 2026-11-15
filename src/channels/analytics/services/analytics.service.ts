@@ -371,6 +371,21 @@ export class AnalyticsService {
     channelId: number,
     workspaceId: string,
   ): Promise<ManualRefreshResponse> {
+    // A disconnected channel is history: there is nothing to refresh.
+    const [state] = await this.db
+      .select({ connectionStatus: socialMediaChannels.connectionStatus })
+      .from(socialMediaChannels)
+      .where(eq(socialMediaChannels.id, channelId))
+      .limit(1);
+    if (state?.connectionStatus === 'disconnected') {
+      return {
+        accepted: false,
+        reason: 'channel_disconnected',
+        nextAllowedAt: null,
+        message: 'This channel is disconnected. Reconnect it to refresh.',
+      };
+    }
+
     // Validation 1: Per-channel 1/hour rate limit
     const channelKey = `refresh-limit:channel:${channelId}`;
     const channelExisting = await this.redis.get(channelKey);

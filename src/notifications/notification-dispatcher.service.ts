@@ -1,5 +1,6 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
+import { isDisconnected } from '../channels/lib/live-channel';
 import { db } from '../drizzle/db';
 import { notificationRoutes, socialMediaChannels } from '../drizzle/schema';
 import { NotificationRoutesService } from './notification-routes.service';
@@ -93,6 +94,12 @@ export class NotificationDispatcherService implements OnModuleInit {
     if (!channel) {
       this.logger.warn(
         `Route ${route.id} references missing channel ${route.channelId} — skipping`,
+      );
+      return;
+    }
+    if (isDisconnected(channel)) {
+      this.logger.log(
+        `Route ${route.id}: channel ${route.channelId} is disconnected — skipping`,
       );
       return;
     }

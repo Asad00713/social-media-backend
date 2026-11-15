@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { and, desc, eq, gte, sql } from 'drizzle-orm';
+import { isDisconnected } from '../../channels/lib/live-channel';
 import { db } from '../../drizzle/db';
 import { QUEUES } from '../../queue/queue.module';
 import {
@@ -88,6 +89,10 @@ export class InboxPollProcessor extends WorkerHost {
     if (!channelRow) {
       this.logger.warn(`Inbox poll: channel ${channelId} not found`);
       return { ok: false, ingested: 0 };
+    }
+    if (isDisconnected(channelRow)) {
+      this.logger.verbose(`Inbox poll: channel ${channelId} is disconnected`);
+      return { ok: true, ingested: 0 };
     }
 
     const platform = channelRow.platform as SupportedPlatform;

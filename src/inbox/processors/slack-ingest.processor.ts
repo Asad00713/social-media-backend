@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { eq, and } from 'drizzle-orm';
+import { liveChannel } from '../../channels/lib/live-channel';
 import { db } from '../../drizzle/db';
 import { socialMediaChannels } from '../../drizzle/schema';
 import { QUEUES } from '../../queue/queue.module';
@@ -59,6 +60,8 @@ export class SlackIngestProcessor extends WorkerHost {
         and(
           eq(socialMediaChannels.platform, 'slack'),
           eq(socialMediaChannels.platformAccountId, teamId),
+          // A disconnected workspace (history) ingests nothing new.
+          liveChannel(),
         ),
       );
 

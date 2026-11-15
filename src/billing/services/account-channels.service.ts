@@ -1,5 +1,6 @@
 import { Injectable, InternalServerErrorException } from '@nestjs/common';
 import { eq, sql, count, and, notInArray } from 'drizzle-orm';
+import { liveChannel } from '../../channels/lib/live-channel';
 import { db } from '../../drizzle/db';
 import {
   workspace,
@@ -40,7 +41,11 @@ export class AccountChannelsService {
    * row can mislabel itself. The platform is always correct.
    */
   private billableOnly() {
-    return notInArray(socialMediaChannels.platform, INTEGRATION_PLATFORMS);
+    // A disconnected channel (kept as history) gave its slot back.
+    return and(
+      notInArray(socialMediaChannels.platform, INTEGRATION_PLATFORMS),
+      liveChannel(),
+    );
   }
 
   /** Every channel the account holds, across all its workspaces. */

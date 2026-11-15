@@ -5,6 +5,7 @@ import {
   socialMediaChannels,
   type SupportedPlatform,
 } from '../../../drizzle/schema/channels.schema';
+import { isDisconnected } from '../../lib/live-channel';
 import { channelSnapshots } from '../../../drizzle/schema/channel-snapshots.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import { AdapterRegistryService } from '../services/adapter-registry.service';
@@ -39,6 +40,11 @@ export class ChannelInitialBackfillHandler {
       .where(eq(socialMediaChannels.id, channelId))
       .limit(1);
     const channel = rows[0];
+    // Disconnected (history): nothing is fetched for it.
+    if (channel && isDisconnected(channel)) {
+      this.logger.log(`Backfill: channel ${channelId} is disconnected, skipping`);
+      return { ok: true };
+    }
     if (!channel || !this.registry.has(channel.platform as SupportedPlatform)) {
       this.logger.log(
         `Backfill: no adapter for ${channel?.platform ?? 'unknown'}, skipping channelId=${channelId}`,

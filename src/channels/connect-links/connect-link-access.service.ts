@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
+import { liveChannel } from '../lib/live-channel';
 import { SUSPENDED_STATUSES } from '../../auth/guards/workspace-suspended.guard';
 import { decrypt } from '../../common/utils/encryption.util';
 import type { DbType } from '../../drizzle/db';
@@ -131,6 +132,8 @@ export class ConnectLinkAccessService {
         and(
           eq(socialMediaChannels.workspaceId, link.workspaceId),
           eq(socialMediaChannels.connectLinkId, link.id),
+          // A disconnected channel is no longer "connected through" it.
+          liveChannel(),
         ),
       )
       .orderBy(socialMediaChannels.addedViaLinkAt);

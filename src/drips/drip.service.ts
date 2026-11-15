@@ -7,6 +7,7 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { eq, and, desc, asc, gte, lte, inArray } from 'drizzle-orm';
+import { liveChannel } from '../channels/lib/live-channel';
 import { db } from '../drizzle/db';
 import {
   dripCampaigns,
@@ -960,10 +961,13 @@ export class DripService {
 
     const numericIds = channelIds.map((id) => parseInt(id, 10));
 
+    // A disconnected channel cannot be a new target.
     const channels = await db
       .select()
       .from(socialMediaChannels)
-      .where(eq(socialMediaChannels.workspaceId, workspaceId));
+      .where(
+        and(eq(socialMediaChannels.workspaceId, workspaceId), liveChannel()),
+      );
 
     const validIds = channels.map((c) => c.id);
     const invalidIds = numericIds.filter((id) => !validIds.includes(id));

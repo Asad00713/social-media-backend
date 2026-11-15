@@ -85,7 +85,7 @@ export class TieredPollingScheduler {
         ) AS last_snapshot_at
       FROM active_posts ap
       JOIN ${socialMediaChannels} c ON c.id = (ap.channel_id_str)::bigint
-      WHERE c.is_active = true
+      WHERE c.is_active = true AND c.connection_status <> 'disconnected'
     `);
     const rows = (result.rows ?? result) as Array<{
       post_id: string;

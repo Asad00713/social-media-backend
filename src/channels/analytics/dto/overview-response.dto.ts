@@ -5,7 +5,8 @@ export type ManualRefreshReason =
   | 'ok'
   | 'channel_rate_limited'
   | 'workspace_daily_cap'
-  | 'platform_quota_exhausted';
+  | 'platform_quota_exhausted'
+  | 'channel_disconnected';
 
 export interface ManualRefreshResponse {
   accepted: boolean;

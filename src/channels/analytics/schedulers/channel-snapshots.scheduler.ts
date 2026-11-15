@@ -6,6 +6,7 @@ import { and, eq, isNull, lt, or } from 'drizzle-orm';
 import { QUEUES } from '../../../queue/queue.module';
 import { DRIZZLE } from '../../../drizzle/drizzle.module';
 import { socialMediaChannels } from '../../../drizzle/schema/channels.schema';
+import { isDisconnected } from '../../lib/live-channel';
 import type { SupportedPlatform } from '../../../drizzle/schema/channels.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import { isAudienceRefreshable } from '../../../insights/audience/refreshable';
@@ -65,12 +66,15 @@ export class ChannelSnapshotsScheduler {
         workspaceId: socialMediaChannels.workspaceId,
         platform: socialMediaChannels.platform,
         isActive: socialMediaChannels.isActive,
+        connectionStatus: socialMediaChannels.connectionStatus,
       })
       .from(socialMediaChannels);
 
+    // A disconnected channel is history: nothing more is fetched for it.
     const eligible = rows.filter(
-      (r: { isActive: boolean; platform: string }) =>
+      (r: { isActive: boolean; platform: string; connectionStatus: string }) =>
         r.isActive &&
+        !isDisconnected(r) &&
         (SOCIAL_PLATFORMS as readonly string[]).includes(r.platform),
     );
 
@@ -103,12 +107,15 @@ export class ChannelSnapshotsScheduler {
         id: socialMediaChannels.id,
         platform: socialMediaChannels.platform,
         isActive: socialMediaChannels.isActive,
+        connectionStatus: socialMediaChannels.connectionStatus,
       })
       .from(socialMediaChannels);
 
+    // A disconnected channel gets no new day: its history stays as it was.
     const eligible = rows.filter(
-      (r: { isActive: boolean; platform: string }) =>
+      (r: { isActive: boolean; platform: string; connectionStatus: string }) =>
         r.isActive &&
+        !isDisconnected(r) &&
         (SOCIAL_PLATFORMS as readonly string[]).includes(r.platform),
     );
 

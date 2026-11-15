@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, count, eq, isNull, notInArray, or, sql } from 'drizzle-orm';
+import { liveChannel } from '../channels/lib/live-channel';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import {
@@ -228,6 +229,7 @@ export class FirstWeekRepository {
           eq(socialMediaChannels.workspaceId, workspaceId),
           eq(socialMediaChannels.isActive, true),
           notInArray(socialMediaChannels.platform, INTEGRATION_PLATFORMS),
+          liveChannel(),
         ),
       );
 
@@ -256,6 +258,7 @@ export class FirstWeekRepository {
           eq(socialMediaChannels.workspaceId, workspaceId),
           eq(socialMediaChannels.isActive, true),
           notInArray(socialMediaChannels.platform, INTEGRATION_PLATFORMS),
+          liveChannel(),
         ),
       )
       .orderBy(socialMediaChannels.id);
@@ -270,6 +273,7 @@ export class FirstWeekRepository {
           eq(socialMediaChannels.workspaceId, workspaceId),
           eq(socialMediaChannels.isActive, true),
           notInArray(socialMediaChannels.platform, INTEGRATION_PLATFORMS),
+          liveChannel(),
         ),
       );
     return Number(row?.n ?? 0);
