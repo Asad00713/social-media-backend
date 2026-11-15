@@ -3,18 +3,30 @@
  * and sends it down both channels: the notification row (the bell) and the
  * `billing.payment.changed` event on `/realtime` (the toast).
  *
- * The db is faked per table: each test states what the `notifications` and
- * `plans` tables answer. Where clauses are captured so the dedupe test can
- * prove the key it was given is the key it looked up.
+ * "Already alerted?" lives in `billing_payment_alerts`, claimed with
+ * INSERT … ON CONFLICT (alert_key) DO NOTHING RETURNING. The fake below keeps
+ * that table for real: an insert whose key exists returns no row, exactly as
+ * Postgres does, and the conflict target is read off the real drizzle column
+ * so dropping it from the service fails these tests. The SQL itself is proven
+ * on local Postgres (see the report for the BEGIN … ROLLBACK script).
  */
 
 /* eslint-disable @typescript-eslint/no-unsafe-return */
 /* eslint-disable @typescript-eslint/no-unsafe-member-access */
+/* eslint-disable @typescript-eslint/no-unsafe-assignment */
 
-type Rows = Record<string, unknown>[];
+interface AlertRow {
+  id: number;
+  userId: string;
+  alertKey: string;
+  kind: 'failed' | 'recovered';
+  provider: string;
+  createdAt: Date;
+}
 
-let answers: Record<string, Rows>;
-const wheres: { table: string; condition: unknown }[] = [];
+let alertsTable: AlertRow[];
+let plansTable: { code: string; name: string }[];
+let clock = 0;
 
 function tableName(t: unknown): string {
   const sym = Object.getOwnPropertySymbols(t as object).find((s) =>
@@ -31,30 +43,75 @@ const mockDb = {
         table = tableName(t);
         return chain;
       },
-      where: (c: unknown) => {
-        wheres.push({ table, condition: c });
-        return chain;
-      },
+      where: () => chain,
       orderBy: () => chain,
       limit: () => chain,
-      then: (resolve: (v: unknown) => unknown) =>
-        Promise.resolve(answers[table] ?? []).then(resolve),
+      then: (resolve: (v: unknown) => unknown) => {
+        if (table === 'billing_payment_alerts') {
+          // Newest first, as `ORDER BY created_at DESC, id DESC` returns it.
+          const rows = [...alertsTable].sort(
+            (a, b) =>
+              b.createdAt.getTime() - a.createdAt.getTime() || b.id - a.id,
+          );
+          return Promise.resolve(rows).then(resolve);
+        }
+        if (table === 'plans') return Promise.resolve(plansTable).then(resolve);
+        return Promise.resolve([]).then(resolve);
+      },
     };
     return chain;
   },
+  insert: (t: unknown) => {
+    if (tableName(t) !== 'billing_payment_alerts') {
+      throw new Error(`unexpected insert into ${tableName(t)}`);
+    }
+    let row: Omit<AlertRow, 'id' | 'createdAt'>;
+    let conflictTarget: unknown = null;
+    const chain: any = {
+      values: (v: Omit<AlertRow, 'id' | 'createdAt'>) => {
+        row = v;
+        return chain;
+      },
+      onConflictDoNothing: (arg: { target: { name?: string } }) => {
+        conflictTarget = arg?.target?.name;
+        return chain;
+      },
+      returning: () => {
+        if (conflictTarget !== 'alert_key') {
+          throw new Error('the claim must conflict on alert_key');
+        }
+        if (alertsTable.some((r) => r.alertKey === row.alertKey)) {
+          return Promise.resolve([]);
+        }
+        const stored: AlertRow = {
+          ...row,
+          id: alertsTable.length + 1,
+          createdAt: new Date(++clock * 1000),
+        };
+        alertsTable.push(stored);
+        return Promise.resolve([{ id: stored.id }]);
+      },
+    };
+    return chain;
+  },
+  delete: () => ({
+    where: (c: unknown) => {
+      const id = boundValues(c).find((v) => typeof v === 'number');
+      alertsTable = alertsTable.filter((r) => r.id !== id);
+      return Promise.resolve([]);
+    },
+  }),
 };
 jest.mock('../../drizzle/db', () => ({ db: mockDb }));
 
-import { PaymentAlertsService, toCard } from './payment-alerts.service';
+import {
+  NO_WORKSPACE_BILLING_URL,
+  PaymentAlertsService,
+  toCard,
+} from './payment-alerts.service';
 
-/** Every bound value inside a drizzle condition, however deeply nested. */
+/** Every bound value inside a drizzle condition. */
 function boundValues(node: unknown, out: unknown[] = []): unknown[] {
-  // A primitive interpolated into a raw sql`` template sits in queryChunks
-  // as itself; drizzle binds it as a parameter.
-  if (typeof node === 'string' || typeof node === 'number') {
-    out.push(node);
-    return out;
-  }
   if (!node || typeof node !== 'object') return out;
   const chunks = (node as any).queryChunks as unknown[] | undefined;
   if (Array.isArray(chunks)) {
@@ -90,16 +147,26 @@ function make(): PaymentAlertsService {
 const FAILED = {
   userId: USER,
   provider: 'stripe' as const,
-  dedupeKey: 'stripe:in_1:1',
+  alertKey: 'stripe:failed:evt_1',
   amountMinor: 2900,
   card: null,
-  reason: 'Your card was declined.',
+  reason: null,
+};
+
+const SUCCEEDED = {
+  userId: USER,
+  provider: 'stripe' as const,
+  alertKey: 'stripe:recovered:in_1',
+  amountMinor: 2900,
+  planCode: 'PRO',
+  wasPastDue: true,
 };
 
 beforeEach(() => {
   jest.clearAllMocks();
-  wheres.length = 0;
-  answers = {};
+  alertsTable = [];
+  plansTable = [];
+  clock = 0;
   lookup.getPrimaryWorkspaceId.mockResolvedValue(WS);
   paymentMethods.getDefaultPaymentMethod.mockResolvedValue({
     brand: 'visa',
@@ -111,20 +178,33 @@ describe('paymentFailed', () => {
   it('notifies the owner with a workspace billing link and the saved card', async () => {
     await expect(make().paymentFailed(FAILED)).resolves.toBe(true);
 
+    expect(notifier.paymentFailed).toHaveBeenCalledWith(USER, 29, undefined, {
+      actionUrl: `/w/${WS}/settings/billing`,
+      metadata: {
+        alertKey: 'stripe:failed:evt_1',
+        provider: 'stripe',
+        workspaceId: WS,
+        card: { brand: 'visa', last4: '4242' },
+      },
+    });
+    expect(alertsTable).toEqual([
+      expect.objectContaining({
+        userId: USER,
+        alertKey: 'stripe:failed:evt_1',
+        kind: 'failed',
+        provider: 'stripe',
+      }),
+    ]);
+  });
+
+  it('strips a trailing full stop from a provider reason (the emitter adds one)', async () => {
+    await make().paymentFailed({ ...FAILED, reason: 'Card declined.' });
+
     expect(notifier.paymentFailed).toHaveBeenCalledWith(
       USER,
       29,
-      // The emitter adds its own full stop; the reason's would double it.
-      'Your card was declined',
-      {
-        actionUrl: `/w/${WS}/settings/billing`,
-        metadata: {
-          dedupeKey: 'stripe:in_1:1',
-          provider: 'stripe',
-          workspaceId: WS,
-          card: { brand: 'visa', last4: '4242' },
-        },
-      },
+      'Card declined',
+      expect.anything(),
     );
   });
 
@@ -144,19 +224,32 @@ describe('paymentFailed', () => {
     );
   });
 
-  it('is silent when that attempt was already notified (webhook redelivery)', async () => {
-    answers.notifications = [{ id: 'n0' }];
+  it('alerts once per key, even when two deliveries race', async () => {
+    const service = make();
+    const results = await Promise.all([
+      service.paymentFailed(FAILED),
+      service.paymentFailed(FAILED),
+    ]);
+
+    expect(results.sort()).toEqual([false, true]);
+    expect(notifier.paymentFailed).toHaveBeenCalledTimes(1);
+    expect(realtime.emitToUser).toHaveBeenCalledTimes(1);
+  });
+
+  it('does not depend on notification rows: "clear all" never re-arms an alert', async () => {
+    await make().paymentFailed(FAILED);
+    // The user deletes every notification; the claim is billing data.
+    await expect(make().paymentFailed(FAILED)).resolves.toBe(false);
+    expect(notifier.paymentFailed).toHaveBeenCalledTimes(1);
+  });
+
+  it('a send that fails gives the key back, so a later delivery can alert', async () => {
+    notifier.paymentFailed.mockRejectedValueOnce(new Error('db down'));
 
     await expect(make().paymentFailed(FAILED)).resolves.toBe(false);
+    expect(alertsTable).toHaveLength(0);
 
-    expect(notifier.paymentFailed).not.toHaveBeenCalled();
-    expect(realtime.emitToUser).not.toHaveBeenCalled();
-    // The lookup was for THIS key, this user, this type.
-    const lookupClause = wheres.find((w) => w.table === 'notifications');
-    const values = boundValues(lookupClause?.condition);
-    expect(values).toEqual(
-      expect.arrayContaining([USER, 'payment_failed', 'stripe:in_1:1']),
-    );
+    await expect(make().paymentFailed(FAILED)).resolves.toBe(true);
   });
 
   it('uses the card the webhook named instead of the saved one', async () => {
@@ -186,24 +279,29 @@ describe('paymentFailed', () => {
     );
   });
 
-  it('never throws: a failing notifier must not fail the webhook', async () => {
-    notifier.paymentFailed.mockRejectedValueOnce(new Error('db down'));
+  it('an owner with no workspace is sent to their own hub, never into another workspace', async () => {
+    lookup.getPrimaryWorkspaceId.mockResolvedValue(null);
 
-    await expect(make().paymentFailed(FAILED)).resolves.toBe(false);
+    await make().paymentFailed(FAILED);
+
+    expect(notifier.paymentFailed).toHaveBeenCalledWith(
+      USER,
+      29,
+      undefined,
+      expect.objectContaining({ actionUrl: NO_WORKSPACE_BILLING_URL }),
+    );
+    expect(NO_WORKSPACE_BILLING_URL).toBe('/workspaces');
+    expect(realtime.emitToUser).toHaveBeenCalledWith(
+      USER,
+      'billing.payment.changed',
+      expect.objectContaining({ workspaceId: null }),
+    );
   });
 });
 
 describe('paymentSucceeded', () => {
-  const SUCCEEDED = {
-    userId: USER,
-    provider: 'stripe' as const,
-    amountMinor: 2900,
-    planCode: 'PRO',
-    wasPastDue: true,
-  };
-
   it('announces a recovery the caller saw (was past_due)', async () => {
-    answers.plans = [{ name: 'Pro' }];
+    plansTable = [{ code: 'PRO', name: 'Pro' }];
 
     await expect(make().paymentSucceeded(SUCCEEDED)).resolves.toBe(true);
 
@@ -211,6 +309,7 @@ describe('paymentSucceeded', () => {
       actionUrl: `/w/${WS}/settings/billing`,
       metadata: {
         kind: 'payment_recovered',
+        alertKey: 'stripe:recovered:in_1',
         provider: 'stripe',
         workspaceId: WS,
       },
@@ -223,18 +322,15 @@ describe('paymentSucceeded', () => {
   });
 
   it('announces a recovery when the status already flipped but the last alert is a failure', async () => {
-    // The provider's status event overtook the payment event.
-    answers.notifications = [{ type: 'payment_failed' }];
+    await make().paymentFailed(FAILED);
 
     await expect(
       make().paymentSucceeded({ ...SUCCEEDED, wasPastDue: false }),
     ).resolves.toBe(true);
-    expect(realtime.emitToUser).toHaveBeenCalledTimes(1);
+    expect(notifier.paymentSuccessful).toHaveBeenCalledTimes(1);
   });
 
   it('stays silent on an ordinary renewal', async () => {
-    answers.notifications = [];
-
     await expect(
       make().paymentSucceeded({ ...SUCCEEDED, wasPastDue: false }),
     ).resolves.toBe(false);
@@ -242,13 +338,34 @@ describe('paymentSucceeded', () => {
     expect(realtime.emitToUser).not.toHaveBeenCalled();
   });
 
-  it('stays silent on a redelivered recovery (the last alert is the recovery)', async () => {
-    answers.notifications = [{ type: 'payment_successful' }];
+  it('stays silent on a renewal after an earlier, already announced recovery', async () => {
+    await make().paymentFailed(FAILED);
+    await make().paymentSucceeded(SUCCEEDED);
+    jest.clearAllMocks();
 
     await expect(
-      make().paymentSucceeded({ ...SUCCEEDED, wasPastDue: false }),
+      make().paymentSucceeded({
+        ...SUCCEEDED,
+        alertKey: 'stripe:recovered:in_2',
+        wasPastDue: false,
+      }),
     ).resolves.toBe(false);
     expect(realtime.emitToUser).not.toHaveBeenCalled();
+  });
+
+  it('the success/recovered pair for one invoice announces ONCE, even concurrently', async () => {
+    await make().paymentFailed(FAILED);
+    jest.clearAllMocks();
+    const service = make();
+
+    const results = await Promise.all([
+      service.paymentSucceeded({ ...SUCCEEDED, wasPastDue: true }),
+      service.paymentSucceeded({ ...SUCCEEDED, wasPastDue: false }),
+    ]);
+
+    expect(results.filter(Boolean)).toHaveLength(1);
+    expect(notifier.paymentSuccessful).toHaveBeenCalledTimes(1);
+    expect(realtime.emitToUser).toHaveBeenCalledTimes(1);
   });
 
   it('falls back to the plan code when the plan row is missing', async () => {
@@ -260,6 +377,13 @@ describe('paymentSucceeded', () => {
       'PRO',
       expect.anything(),
     );
+  });
+
+  it('never throws: a failing notifier must not fail the webhook', async () => {
+    notifier.paymentSuccessful.mockRejectedValueOnce(new Error('db down'));
+
+    await expect(make().paymentSucceeded(SUCCEEDED)).resolves.toBe(false);
+    expect(alertsTable).toHaveLength(0);
   });
 });
 

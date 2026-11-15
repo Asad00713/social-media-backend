@@ -98,7 +98,7 @@ export class WebhookService {
           break;
 
         case 'invoice.payment_failed':
-          await this.handleInvoicePaymentFailed(event.data.object);
+          await this.handleInvoicePaymentFailed(event.data.object, event.id);
           break;
 
         case 'invoice.payment_succeeded':
@@ -468,6 +468,7 @@ export class WebhookService {
 
   private async handleInvoicePaymentFailed(
     invoice: Stripe.Invoice,
+    eventId: string,
   ): Promise<void> {
     this.logger.error(`Invoice payment failed: ${invoice.id}`);
 
@@ -576,16 +577,21 @@ export class WebhookService {
         `Total unresolved: ${unresolvedFailures.length}/${this.MAX_FAILED_ATTEMPTS}`,
     );
 
-    // One alert per failed ATTEMPT of this invoice. Stripe retries the same
-    // invoice, bumping `attempt_count`; a redelivered event repeats it.
+    // One alert per failure EVENT. Keyed on the event id, not the invoice's
+    // `attempt_count`: a manual retry that fails again does not bump the count
+    // but is a new event. Redelivery of the same event is stopped earlier by
+    // the billing_events check, and the alert claim is unique besides.
     await this.paymentAlerts.paymentFailed({
       userId: subscription[0].userId,
       provider: 'stripe',
-      dedupeKey: `stripe:${invoice.id}:${invoice.attempt_count || 1}`,
+      alertKey: `stripe:failed:${eventId}`,
       amountMinor:
         typeof invoice.amount_due === 'number' ? invoice.amount_due : null,
       card: null, // the saved default card; the invoice does not carry one
-      reason: failedPayment.failureReason ?? null,
+      // An Invoice carries no decline message (that lives on the
+      // PaymentIntent), so the notification uses its default sentence rather
+      // than a placeholder reading "failed: Payment failed".
+      reason: null,
     });
   }
 
@@ -649,6 +655,7 @@ export class WebhookService {
         await this.paymentAlerts.paymentSucceeded({
           userId: subscription[0].userId,
           provider: 'stripe',
+          alertKey: `stripe:recovered:${invoice.id}`,
           amountMinor:
             typeof invoice.amount_paid === 'number'
               ? invoice.amount_paid

@@ -806,9 +806,27 @@ export class LemonSqueezyWebhookService {
     const status =
       eventName === 'subscription_payment_failed' ? 'past_due' : 'active';
 
-    // Read BEFORE the write: whether this success ends a dunning episode is a
-    // question about the status the account had when the event arrived.
     const account = await this.billingAccount(target.subscriptionId);
+
+    // Whether this success ENDS dunning is decided by the write itself:
+    // `past_due -> active` matches one row for exactly one caller. Lemon
+    // Squeezy sends `subscription_payment_success` and
+    // `subscription_payment_recovered` together; a read-then-write let both
+    // see `past_due` and both announce the recovery.
+    let wasPastDue = false;
+    if (status === 'active') {
+      const moved = await db
+        .update(subscriptions)
+        .set({ status, updatedAt: new Date() })
+        .where(
+          and(
+            eq(subscriptions.id, target.subscriptionId),
+            eq(subscriptions.status, 'past_due'),
+          ),
+        )
+        .returning({ id: subscriptions.id });
+      wasPastDue = moved.length > 0;
+    }
 
     await db
       .update(subscriptions)
@@ -838,7 +856,12 @@ export class LemonSqueezyWebhookService {
       .set({ providerStatus: status, updatedAt: new Date() })
       .where(eq(providerSubscriptions.id, target.rowId));
 
-    if (account) await this.alertOwner(eventName, envelope, account);
+    if (account) {
+      await this.alertOwner(eventName, envelope, account.userId, {
+        planCode: account.planCode,
+        wasPastDue,
+      });
+    }
   }
 
   /**
@@ -847,22 +870,25 @@ export class LemonSqueezyWebhookService {
    * A failure alerts once per failed ATTEMPT: the key is the invoice plus its
    * `updated_at`, which moves on each retry and is identical on a redelivery.
    * A success alerts only when it ends dunning (see `paymentSucceeded`):
-   * `subscription_payment_success` also fires on every ordinary renewal.
+   * `subscription_payment_success` also fires on every ordinary renewal. Its
+   * key is the invoice alone, so the success/recovered pair for one invoice
+   * alerts once.
    */
   private async alertOwner(
     eventName: string,
     envelope: LsEnvelope,
-    account: { userId: string; status: string; planCode: string },
+    userId: string,
+    success: { planCode: string; wasPastDue: boolean },
   ): Promise<void> {
     const attrs = envelope.data?.attributes;
+    const invoiceId =
+      idOf(envelope.data?.id) ??
+      `sub-${idOf(attrs?.subscription_id) ?? 'unknown'}`;
     if (eventName === 'subscription_payment_failed') {
-      const invoiceId =
-        idOf(envelope.data?.id) ??
-        `sub-${idOf(attrs?.subscription_id) ?? 'unknown'}`;
       await this.paymentAlerts.paymentFailed({
-        userId: account.userId,
+        userId,
         provider: PROVIDER,
-        dedupeKey: `${PROVIDER}:${invoiceId}:${strOf(attrs?.updated_at) ?? 'na'}`,
+        alertKey: `${PROVIDER}:failed:${invoiceId}:${strOf(attrs?.updated_at) ?? 'na'}`,
         amountMinor: typeof attrs?.total === 'number' ? attrs.total : null,
         card: toCard(attrs?.card_brand, attrs?.card_last_four),
         reason: null,
@@ -870,21 +896,21 @@ export class LemonSqueezyWebhookService {
       return;
     }
     await this.paymentAlerts.paymentSucceeded({
-      userId: account.userId,
+      userId,
       provider: PROVIDER,
+      alertKey: `${PROVIDER}:recovered:${invoiceId}`,
       amountMinor: typeof attrs?.total === 'number' ? attrs.total : null,
-      planCode: account.planCode,
-      wasPastDue: account.status === 'past_due',
+      planCode: success.planCode,
+      wasPastDue: success.wasPastDue,
     });
   }
 
   private async billingAccount(
     subscriptionId: number,
-  ): Promise<{ userId: string; status: string; planCode: string } | null> {
+  ): Promise<{ userId: string; planCode: string } | null> {
     const rows = await db
       .select({
         userId: subscriptions.userId,
-        status: subscriptions.status,
         planCode: subscriptions.planCode,
       })
       .from(subscriptions)

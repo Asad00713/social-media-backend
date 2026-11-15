@@ -1,7 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { and, desc, eq, inArray, sql } from 'drizzle-orm';
+import { desc, eq } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
-import { notifications, plans } from '../../drizzle/schema';
+import {
+  billingPaymentAlerts,
+  plans,
+  type BillingPaymentAlertKind,
+} from '../../drizzle/schema';
 import { NotificationEmitterService } from '../../notifications/notification-emitter.service';
 import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
 import type { BillingPaymentCard } from '../../realtime/types/user-events.types';
@@ -15,10 +19,11 @@ export interface PaymentFailedInput {
   userId: string;
   provider: PaymentProvider;
   /**
-   * Identifies ONE failed attempt (provider + invoice + attempt). The same key
-   * never notifies twice, so a redelivered webhook is a no-op here.
+   * Identifies ONE failure (Stripe: the event id; Lemon Squeezy: invoice +
+   * `updated_at`). Claimed atomically in `billing_payment_alerts`, so the
+   * same key never alerts twice, however often or concurrently it arrives.
    */
-  dedupeKey: string;
+  alertKey: string;
   /** Amount that failed, in minor units (cents). */
   amountMinor: number | null;
   /**
@@ -26,17 +31,24 @@ export interface PaymentFailedInput {
    * falls back to the account's saved default card (Stripe).
    */
   card: BillingPaymentCard | null;
+  /** The provider's decline message, when it sent one. */
   reason: string | null;
 }
 
 export interface PaymentSucceededInput {
   userId: string;
   provider: PaymentProvider;
+  /**
+   * Identifies the payment (provider + invoice). Lemon Squeezy sends
+   * `subscription_payment_success` AND `subscription_payment_recovered` for
+   * one invoice; both carry the same key, so only one recovery goes out.
+   */
+  alertKey: string;
   amountMinor: number | null;
   planCode: string | null;
   /**
-   * The caller's own evidence of dunning, read before its writes (status was
-   * `past_due`, or unresolved failure rows existed).
+   * The caller's own evidence of dunning, decided atomically with its write
+   * (the account moved from `past_due`, or unresolved failure rows existed).
    */
   wasPastDue: boolean;
 }
@@ -46,10 +58,14 @@ export interface PaymentSucceededInput {
  *
  * Two channels, each with one job:
  * - a `payment_failed` / `payment_successful` NOTIFICATION row: the record in
- *   the bell, routed to the owner's workspace billing page;
+ *   the bell, routed to the owner's own billing page;
  * - a `billing.payment.changed` event on `/realtime` to the owner's own room:
  *   the live signal that opens the "Payment failed" toast, and closes it (and
  *   the banner) on recovery without a reload.
+ *
+ * Whether an alert already went out lives in `billing_payment_alerts`
+ * (billing data, unique `alert_key`), never in `notifications`: a user can
+ * delete notifications, and "clear all" must not re-arm an alert.
  *
  * Never throws. Both webhook services call this AFTER their billing writes;
  * an alert that fails must not fail the webhook — the provider would redeliver
@@ -68,11 +84,11 @@ export class PaymentAlertsService {
 
   /** Returns true when an alert went out, false when deduped or it failed. */
   async paymentFailed(input: PaymentFailedInput): Promise<boolean> {
+    let claimId: number | null = null;
     try {
-      if (await this.alreadyNotified(input.userId, input.dedupeKey)) {
-        this.logger.log(
-          `Payment failure ${input.dedupeKey} already notified; skipping.`,
-        );
+      claimId = await this.claim(input, 'failed');
+      if (claimId === null) {
+        this.logger.log(`Payment alert ${input.alertKey} already sent.`);
         return false;
       }
 
@@ -86,7 +102,7 @@ export class PaymentAlertsService {
         {
           actionUrl: billingUrl(workspaceId),
           metadata: {
-            dedupeKey: input.dedupeKey,
+            alertKey: input.alertKey,
             provider: input.provider,
             workspaceId,
             card,
@@ -103,9 +119,10 @@ export class PaymentAlertsService {
       });
       return true;
     } catch (err) {
+      await this.release(claimId);
       this.logger.error(
         `Could not alert user ${input.userId} about payment failure ` +
-          `${input.dedupeKey}: ${(err as Error).message}`,
+          `${input.alertKey}: ${(err as Error).message}`,
       );
       return false;
     }
@@ -116,17 +133,20 @@ export class PaymentAlertsService {
    * renewals succeed every month and must stay silent.
    *
    * It is a recovery when the caller saw dunning (`wasPastDue`) OR the
-   * owner's latest billing alert is still a failure. The second check exists
-   * because providers do not order their events: the subscription-status
-   * event can land first and flip the account to `active` before the payment
-   * event arrives, and `wasPastDue` alone would then miss the recovery.
-   * Redelivery stays silent: once announced, the latest alert is the recovery
-   * and the account is `active`.
+   * owner's latest alert is still a failure. The second check exists because
+   * providers do not order their events: the subscription-status event can
+   * land first and flip the account to `active` before the payment event
+   * arrives, and `wasPastDue` alone would then miss the recovery. The claim on
+   * `alertKey` makes it once-only even when two events race through here.
    */
   async paymentSucceeded(input: PaymentSucceededInput): Promise<boolean> {
+    let claimId: number | null = null;
     try {
       if (!input.wasPastDue && !(await this.latestAlertIsFailure(input.userId)))
         return false;
+
+      claimId = await this.claim(input, 'recovered');
+      if (claimId === null) return false;
 
       const workspaceId = await this.lookup.getPrimaryWorkspaceId(input.userId);
       await this.notifier.paymentSuccessful(
@@ -137,6 +157,7 @@ export class PaymentAlertsService {
           actionUrl: billingUrl(workspaceId),
           metadata: {
             kind: 'payment_recovered',
+            alertKey: input.alertKey,
             provider: input.provider,
             workspaceId,
           },
@@ -152,45 +173,64 @@ export class PaymentAlertsService {
       });
       return true;
     } catch (err) {
+      await this.release(claimId);
       this.logger.error(
-        `Could not alert user ${input.userId} about payment recovery: ` +
-          `${(err as Error).message}`,
+        `Could not alert user ${input.userId} about payment recovery ` +
+          `${input.alertKey}: ${(err as Error).message}`,
       );
       return false;
     }
   }
 
-  private async alreadyNotified(
-    userId: string,
-    dedupeKey: string,
-  ): Promise<boolean> {
+  /**
+   * Atomic "first one wins": the unique `alert_key` makes a concurrent or
+   * redelivered claim insert nothing. Returns the new row's id, or null.
+   */
+  private async claim(
+    input: { userId: string; provider: PaymentProvider; alertKey: string },
+    kind: BillingPaymentAlertKind,
+  ): Promise<number | null> {
     const rows = await db
-      .select({ id: notifications.id })
-      .from(notifications)
-      .where(
-        and(
-          eq(notifications.userId, userId),
-          eq(notifications.type, 'payment_failed'),
-          sql`${notifications.metadata}->>'dedupeKey' = ${dedupeKey}`,
-        ),
-      )
-      .limit(1);
-    return rows.length > 0;
+      .insert(billingPaymentAlerts)
+      .values({
+        userId: input.userId,
+        alertKey: input.alertKey,
+        kind,
+        provider: input.provider,
+      })
+      .onConflictDoNothing({ target: billingPaymentAlerts.alertKey })
+      .returning({ id: billingPaymentAlerts.id });
+    return rows[0]?.id ?? null;
+  }
+
+  /**
+   * The alert could not be sent: give the key back so a later delivery of the
+   * same event can try again, rather than leaving a claim nobody was told of.
+   */
+  private async release(claimId: number | null): Promise<void> {
+    if (claimId === null) return;
+    try {
+      await db
+        .delete(billingPaymentAlerts)
+        .where(eq(billingPaymentAlerts.id, claimId));
+    } catch (err) {
+      this.logger.error(
+        `Could not release payment alert claim ${claimId}: ${(err as Error).message}`,
+      );
+    }
   }
 
   private async latestAlertIsFailure(userId: string): Promise<boolean> {
     const rows = await db
-      .select({ type: notifications.type })
-      .from(notifications)
-      .where(
-        and(
-          eq(notifications.userId, userId),
-          inArray(notifications.type, ['payment_failed', 'payment_successful']),
-        ),
+      .select({ kind: billingPaymentAlerts.kind })
+      .from(billingPaymentAlerts)
+      .where(eq(billingPaymentAlerts.userId, userId))
+      .orderBy(
+        desc(billingPaymentAlerts.createdAt),
+        desc(billingPaymentAlerts.id),
       )
-      .orderBy(desc(notifications.createdAt))
       .limit(1);
-    return rows[0]?.type === 'payment_failed';
+    return rows[0]?.kind === 'failed';
   }
 
   private async savedCard(userId: string): Promise<BillingPaymentCard | null> {
@@ -220,9 +260,17 @@ export function toCard(
   return { brand: b, last4: l };
 }
 
-/** The frontend routes billing under a workspace: `/w/:id/settings/billing`. */
-function billingUrl(workspaceId: string | null): string | undefined {
-  return workspaceId ? `/w/${workspaceId}/settings/billing` : undefined;
+/**
+ * Where the owner fixes billing. The frontend routes billing under a workspace
+ * (`/w/:id/settings/billing`); an owner with no workspace of their own goes to
+ * their workspaces hub, never into a workspace someone else owns.
+ */
+export const NO_WORKSPACE_BILLING_URL = '/workspaces';
+
+function billingUrl(workspaceId: string | null): string {
+  return workspaceId
+    ? `/w/${workspaceId}/settings/billing`
+    : NO_WORKSPACE_BILLING_URL;
 }
 
 function toMajor(amountMinor: number | null): number {

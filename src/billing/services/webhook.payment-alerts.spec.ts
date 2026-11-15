@@ -178,17 +178,33 @@ function make(): WebhookService {
   );
 }
 
-function call(handler: string, payload: unknown): Promise<void> {
-  return (make() as any)[handler](payload) as Promise<void>;
+function call(
+  handler: string,
+  payload: unknown,
+  eventId?: string,
+): Promise<void> {
+  return (make() as any)[handler](payload, eventId) as Promise<void>;
 }
 
+/**
+ * A Stripe Invoice as the API sends it. It has NO `last_payment_error` (that
+ * lives on the PaymentIntent) — a fixture carrying one hid that the alert's
+ * reason was always the placeholder "Payment failed".
+ */
 function failedInvoice(attempt: number): unknown {
   return {
     id: 'in_1',
     subscription: 'sub_1',
     attempt_count: attempt,
     amount_due: 2900,
-    last_payment_error: { message: 'Your card was declined.' },
+  };
+}
+
+function failedEvent(id: string, attempt = 1): unknown {
+  return {
+    id,
+    type: 'invoice.payment_failed',
+    data: { object: failedInvoice(attempt) },
   };
 }
 
@@ -216,30 +232,38 @@ beforeEach(() => {
 });
 
 describe('invoice.payment_failed', () => {
-  it('alerts the billing owner once per attempt, keyed on invoice + attempt', async () => {
-    await call('handleInvoicePaymentFailed', failedInvoice(2));
+  it('alerts the billing owner, keyed on the EVENT, with no placeholder reason', async () => {
+    await call('handleInvoicePaymentFailed', failedInvoice(2), 'evt_1');
 
     expect(alerts.paymentFailed).toHaveBeenCalledTimes(1);
     expect(alerts.paymentFailed).toHaveBeenCalledWith({
       userId: USER,
       provider: 'stripe',
-      dedupeKey: 'stripe:in_1:2',
+      alertKey: 'stripe:failed:evt_1',
       amountMinor: 2900,
       card: null,
-      reason: 'Your card was declined.',
+      // null lets the notification use its own sentence, not "failed: Payment failed."
+      reason: null,
     });
     // The billing write the alert follows still happened.
     expect(account().status).toBe('past_due');
   });
 
-  it('a retry of the same invoice is a NEW key, not a duplicate', async () => {
-    await call('handleInvoicePaymentFailed', failedInvoice(1));
-    await call('handleInvoicePaymentFailed', failedInvoice(2));
+  it('a manual retry that fails again alerts again (attempt_count does not move)', async () => {
+    await make().handleWebhook(failedEvent('evt_1', 1) as never);
+    await make().handleWebhook(failedEvent('evt_2', 1) as never);
 
     const keys = alerts.paymentFailed.mock.calls.map(
-      (c: [{ dedupeKey: string }]) => c[0].dedupeKey,
+      (c: [{ alertKey: string }]) => c[0].alertKey,
     );
-    expect(keys).toEqual(['stripe:in_1:1', 'stripe:in_1:2']);
+    expect(keys).toEqual(['stripe:failed:evt_1', 'stripe:failed:evt_2']);
+  });
+
+  it('a redelivered event alerts nothing (billing_events stops it first)', async () => {
+    await make().handleWebhook(failedEvent('evt_1') as never);
+    await make().handleWebhook(failedEvent('evt_1') as never);
+
+    expect(alerts.paymentFailed).toHaveBeenCalledTimes(1);
   });
 
   it('does not alert for an invoice it cannot tie to a subscription', async () => {
@@ -247,7 +271,7 @@ describe('invoice.payment_failed', () => {
       { id: 7, stripeInvoiceId: 'in_1', subscriptionId: null },
     ];
 
-    await call('handleInvoicePaymentFailed', failedInvoice(1));
+    await call('handleInvoicePaymentFailed', failedInvoice(1), 'evt_1');
 
     expect(alerts.paymentFailed).not.toHaveBeenCalled();
   });
@@ -262,6 +286,7 @@ describe('invoice.payment_succeeded', () => {
     expect(alerts.paymentSucceeded).toHaveBeenCalledWith({
       userId: USER,
       provider: 'stripe',
+      alertKey: 'stripe:recovered:in_1',
       amountMinor: 2900,
       planCode: 'PRO',
       wasPastDue: true,
