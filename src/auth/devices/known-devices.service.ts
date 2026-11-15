@@ -1,6 +1,5 @@
 import { createHash } from 'crypto';
 import { Inject, Injectable, Logger } from '@nestjs/common';
-import Bowser from 'bowser';
 import { and, eq } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
@@ -13,6 +12,7 @@ import { NotificationEmitterService } from '../../notifications/notification-emi
 import { NotifyService } from '../../notifications/notify.service';
 import { RecipientsService } from '../../notifications/recipients.service';
 import { GeoipService } from '../services/geoip.service';
+import { deviceLabel } from './device-label';
 
 export type DeviceSighting = 'known' | 'first' | 'new';
 
@@ -21,20 +21,7 @@ export interface SignInContext {
   userAgent: string | null;
 }
 
-const UNKNOWN_BROWSER = 'Unknown browser';
-const LABEL_MAX = 120;
-
-/**
- * 'Chrome on Windows' from a user agent (bowser), 'Unknown browser' when it
- * names no browser. Never the raw string: user agents are personal data.
- */
-export function deviceLabel(userAgent: string | null): string {
-  if (!userAgent) return UNKNOWN_BROWSER;
-  const { browser, os } = Bowser.parse(userAgent);
-  if (!browser.name) return UNKNOWN_BROWSER;
-  const label = os.name ? `${browser.name} on ${os.name}` : browser.name;
-  return label.slice(0, LABEL_MAX);
-}
+export { deviceLabel };
 
 /** The client address: the first of a proxy list, IPv4-in-IPv6 unmapped. */
 function clientIp(ip: string | null): string | null {

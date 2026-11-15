@@ -506,6 +506,56 @@ describe('EmailChangeService.confirm', () => {
     expect(row.email).toBe(OLD_EMAIL);
   });
 
+  describe('allowlist gate at confirm time', () => {
+    it('gate on and the new address not listed (list changed since the request) → 400 EMAIL_NOT_ALLOWLISTED, email unchanged, no A4', async () => {
+      process.env.ALLOWLIST_EMAILS = OLD_EMAIL;
+      const { service, row, enqueue } = setup(pendingRow('305771'));
+
+      const { status, body } = await refusal(
+        service.confirm('u1', '305771', CTX),
+      );
+
+      expect(status).toBe(400);
+      expect(body).toMatchObject({
+        code: 'EMAIL_NOT_ALLOWLISTED',
+        message: "That address isn't on the early-access list yet.",
+      });
+      expect(row.email).toBe(OLD_EMAIL);
+      expect(row.isEmailVerified).toBe(false);
+      expect(enqueue).not.toHaveBeenCalled();
+    });
+
+    it('gate on and the new address listed → switches', async () => {
+      process.env.ALLOWLIST_EMAILS = `${OLD_EMAIL}, ${NEW_EMAIL.toUpperCase()}`;
+      const { service, row } = setup(pendingRow('305771'));
+
+      await service.confirm('u1', '305771', CTX);
+
+      expect(row.email).toBe(NEW_EMAIL);
+    });
+
+    it('gate on: a super admin is never locked out, so the list does not apply', async () => {
+      process.env.ALLOWLIST_EMAILS = OLD_EMAIL;
+      const { service, row } = setup(
+        pendingRow('305771', { role: 'SUPER_ADMIN' }),
+      );
+
+      await service.confirm('u1', '305771', CTX);
+
+      expect(row.email).toBe(NEW_EMAIL);
+    });
+
+    it('a wrong code still counts as a wrong code before the gate is looked at', async () => {
+      process.env.ALLOWLIST_EMAILS = OLD_EMAIL;
+      const { service, row } = setup(pendingRow('305771'));
+
+      const { body } = await refusal(service.confirm('u1', '000000', CTX));
+
+      expect(body.code).toBe('CODE_INVALID');
+      expect(row.pendingEmailAttempts).toBe(1);
+    });
+  });
+
   it('confirm: "305 771" with a space is accepted', async () => {
     const { service, row } = setup(pendingRow('305771'));
 

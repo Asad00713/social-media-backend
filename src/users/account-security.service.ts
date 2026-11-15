@@ -6,8 +6,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
-import Bowser from 'bowser';
 import { eq } from 'drizzle-orm';
+import { deviceLabel } from '../auth/devices/device-label';
 import { GeoipService } from '../auth/services/geoip.service';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
@@ -35,7 +35,6 @@ export interface ChangePasswordInput {
 }
 
 const BCRYPT_ROUNDS = 10;
-const UNKNOWN_BROWSER = 'Unknown browser';
 
 /**
  * Always a 400 (spec Appendix A.3). The frontend's API client answers a 401 by
@@ -54,7 +53,7 @@ function accountError(code: string, message: string): BadRequestException {
 /**
  * Changing the password from Settings, ending sessions, and the A5 email. The
  * change email flow (Task 7) reuses `verifyCurrentPassword` and
- * `revokeSessions`; the new sign-in email (Task 8) reuses `deviceLabel`.
+ * `revokeSessions`; the new sign-in email (Task 8) uses `deviceLabel`.
  */
 @Injectable()
 export class AccountSecurityService {
@@ -149,14 +148,6 @@ export class AccountSecurityService {
     }
   }
 
-  /** `Chrome on Windows`; `Unknown browser` when the agent is missing or unreadable. */
-  deviceLabel(userAgent: string | null): string {
-    if (!userAgent) return UNKNOWN_BROWSER;
-    const { browser, os } = Bowser.parse(userAgent);
-    if (!browser.name) return UNKNOWN_BROWSER;
-    return os.name ? `${browser.name} on ${os.name}` : browser.name;
-  }
-
   /**
    * A5 (queued, security footer) and the `passwordChanged` bell, which rings
    * only when the person's `security_alert` in-app switch is on. Never throws:
@@ -175,7 +166,7 @@ export class AccountSecurityService {
       const token = this.tokens.securityToken({ uid: userId, act: 'not_me' });
       const props: PasswordChangedProps = {
         when: formatWhen(new Date(), timeZone),
-        device: this.deviceLabel(ctx.userAgent),
+        device: deviceLabel(ctx.userAgent),
         location: geo?.country ?? null,
         via,
         resetUrl: this.links.api('/email/security/' + token),

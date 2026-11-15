@@ -10,6 +10,7 @@ import {
 } from '@nestjs/common';
 import { and, eq, ne, sql } from 'drizzle-orm';
 import { isEmailAllowlisted } from '../auth/allowlist';
+import { deviceLabel } from '../auth/devices/device-label';
 import { GeoipService } from '../auth/services/geoip.service';
 import {
   MAX_CODE_ATTEMPTS,
@@ -192,7 +193,8 @@ export class EmailChangeService {
    * Checks the code and switches the email, in one transaction with the row
    * locked, so two confirms cannot both spend the last attempt or both
    * switch. The address is checked again: someone may have signed up with it
-   * since the request. Then A4 goes to the OLD address.
+   * since the request, and the launch allowlist is checked again. Then A4
+   * goes to the OLD address.
    */
   async confirm(
     userId: string,
@@ -206,6 +208,7 @@ export class EmailChangeService {
         const [row] = await tx
           .select({
             email: users.email,
+            role: users.role,
             pendingEmail: users.pendingEmail,
             pendingEmailCodeHash: users.pendingEmailCodeHash,
             pendingEmailExpiresAt: users.pendingEmailExpiresAt,
@@ -247,6 +250,14 @@ export class EmailChangeService {
             kind: 'invalid',
             attemptsLeft: MAX_CODE_ATTEMPTS - attempts,
           };
+        }
+        // The list may have changed since the request, and a code mailed before
+        // the gate went up must not move the person onto an unlisted address.
+        if (!isEmailAllowlisted(pendingEmail, row.role)) {
+          throw changeError(
+            'EMAIL_NOT_ALLOWLISTED',
+            "That address isn't on the early-access list yet.",
+          );
         }
         if (await this.isTaken(tx, pendingEmail, userId)) throw emailTaken();
 
@@ -306,7 +317,7 @@ export class EmailChangeService {
         this.recipients.userTimezone(userId),
         this.geoip.lookup(ctx.ip),
       ]);
-      const browser = this.security.deviceLabel(ctx.userAgent);
+      const browser = deviceLabel(ctx.userAgent);
       const token = this.tokens.securityToken({
         uid: userId,
         act: 'revert_email',

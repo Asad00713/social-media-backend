@@ -264,6 +264,20 @@ describe('AccountSecurityService.sendPasswordChanged', () => {
       location: null,
     });
   });
+
+  it('cuts the device label to the 120-char column, like the sign-in email', async () => {
+    const { service, enqueue } = setup();
+    const name = 'Z'.repeat(200);
+
+    await service.sendPasswordChanged(
+      'u1',
+      { ip: null, userAgent: `${name}/1.0 (Windows NT 10.0; Win64)` },
+      'settings',
+    );
+
+    const job = firstArg<EnqueueEmail<PasswordChangedProps>>(enqueue);
+    expect(job.props.device).toHaveLength(120);
+  });
 });
 
 describe('AccountSecurityService.revokeSessions', () => {
@@ -294,26 +308,5 @@ describe('AccountSecurityService.verifyCurrentPassword', () => {
       service.verifyCurrentPassword({ password: bcrypt.hashSync(OLD, 4) }, ''),
     );
     expect(body.code).toBe('CURRENT_PASSWORD_REQUIRED');
-  });
-});
-
-describe('AccountSecurityService.deviceLabel', () => {
-  const { service } = setup();
-
-  it.each([
-    [CHROME_WINDOWS, 'Chrome on Windows'],
-    [
-      'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Safari/605.1.15',
-      'Safari on macOS',
-    ],
-    [
-      'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.5 Mobile/15E148 Safari/604.1',
-      'Safari on iOS',
-    ],
-    [null, 'Unknown browser'],
-    ['', 'Unknown browser'],
-    ['curl-like garbage ###', 'Unknown browser'],
-  ])('%p → %p', (ua, label) => {
-    expect(service.deviceLabel(ua)).toBe(label);
   });
 });
