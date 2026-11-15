@@ -30,7 +30,8 @@ interface StatePayload {
 
 export interface GoogleCallbackResult {
   redirectUrl: string;
-  session: { userId: string; email: string } | null;
+  /** `isNewAccount`: the create branch; its first device is recorded silently. */
+  session: { userId: string; email: string; isNewAccount: boolean } | null;
   mode: GoogleAuthMode;
 }
 
@@ -159,7 +160,7 @@ export class GoogleAuthService {
           googleSub: claims.sub,
         });
         await this.loginActivity.recordSync(created.id, ip);
-        return this.succeed(mode, created.id, created.email);
+        return this.succeed(mode, created.id, created.email, true);
       }
 
       await this.users.applyGoogleSignIn(decision.user.id, {
@@ -176,7 +177,7 @@ export class GoogleAuthService {
       await this.loginActivity.record(decision.user.id, ip);
       // The stored email, not Google's spelling: the session's email claim is
       // compared against the allowlist and shown back to the user.
-      return this.succeed(mode, decision.user.id, decision.user.email);
+      return this.succeed(mode, decision.user.id, decision.user.email, false);
     } catch (error) {
       this.logger.warn(
         `Google sign-in failed after exchange: ${error instanceof Error ? error.message : 'unknown'}`,
@@ -189,10 +190,11 @@ export class GoogleAuthService {
     mode: GoogleAuthMode,
     userId: string,
     email: string,
+    isNewAccount: boolean,
   ): GoogleCallbackResult {
     return {
       redirectUrl: this.done('success', mode),
-      session: { userId, email },
+      session: { userId, email, isNewAccount },
       mode,
     };
   }

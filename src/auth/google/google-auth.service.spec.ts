@@ -154,7 +154,7 @@ describe('GoogleAuthService.callback', () => {
     expect(b.loginActivity.recordSync).toHaveBeenCalledWith('new', '1.2.3.4');
     expect(r).toEqual({
       redirectUrl: `${FRONTEND}/auth/google/done?status=success&mode=popup`,
-      session: { userId: 'new', email: 'sara@gmail.com' },
+      session: { userId: 'new', email: 'sara@gmail.com', isNewAccount: true },
       mode: 'popup',
     });
   });
@@ -181,7 +181,11 @@ describe('GoogleAuthService.callback', () => {
       clearPassword: false,
     });
     expect(b.loginActivity.record).toHaveBeenCalledWith('u1', undefined);
-    expect(r.session).toEqual({ userId: 'u1', email: 'Sara@Gmail.com' });
+    expect(r.session).toEqual({
+      userId: 'u1',
+      email: 'Sara@Gmail.com',
+      isNewAccount: false,
+    });
   });
 
   it('refuses an admin without touching the account', async () => {

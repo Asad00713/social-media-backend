@@ -1,4 +1,5 @@
 import type { AnyTemplateDef } from '../types';
+import { NEW_SIGN_IN } from './new-sign-in';
 import { passwordChangedTemplate } from './password-changed';
 import { resetPasswordTemplate } from './reset-password';
 import { verifyEmailTemplate } from './verify-email';
@@ -8,4 +9,5 @@ export const SECURITY_TEMPLATES: AnyTemplateDef[] = [
   verifyEmailTemplate,
   resetPasswordTemplate,
   passwordChangedTemplate,
+  NEW_SIGN_IN,
 ];

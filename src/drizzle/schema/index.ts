@@ -46,3 +46,4 @@ export * from './network-requests.schema';
 export * from './insight-reports.schema';
 export * from './notification-preferences.schema';
 export * from './email-suppressions.schema';
+export * from './known-devices.schema';
