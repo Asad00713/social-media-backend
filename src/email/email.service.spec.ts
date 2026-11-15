@@ -36,6 +36,23 @@ describe('EmailService.sendWorkspaceInvitation', () => {
   });
 });
 
+describe('EmailService.invitationAcceptUrl', () => {
+  it('is the one accept URL: the email and Copy invite link both use it', async () => {
+    const service = makeService();
+    expect(service.invitationAcceptUrl('tok123')).toBe(
+      'https://app.schedura.ai/invite/accept?token=tok123',
+    );
+    const spy = jest.spyOn(service, 'invitationAcceptUrl');
+    await service.sendWorkspaceInvitation('teammate@acme.com', {
+      workspaceName: 'Acme',
+      role: 'MEMBER',
+      token: 'tok456',
+      expiresAt: new Date('2026-08-02T00:00:00Z'),
+    });
+    expect(spy).toHaveBeenCalledWith('tok456');
+  });
+});
+
 describe('EmailService.sendEmail attachments and headers', () => {
   function makeSendingService() {
     const config = {

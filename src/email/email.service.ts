@@ -816,6 +816,14 @@ This email was sent by your Social Media Automation tool.
   }
 
   /**
+   * The accept URL of a workspace invitation. The one place it is built: the
+   * invitation email and the Team page's Copy invite link both use it.
+   */
+  invitationAcceptUrl(token: string): string {
+    return `${this.frontendUrl}/invite/accept?token=${encodeURIComponent(token)}`;
+  }
+
+  /**
    * Send a workspace invitation email with an accept link.
    */
   async sendWorkspaceInvitation(
@@ -828,7 +836,7 @@ This email was sent by your Social Media Automation tool.
       expiresAt: Date;
     },
   ): Promise<EmailResult> {
-    const acceptUrl = `${this.frontendUrl}/invite/accept?token=${data.token}`;
+    const acceptUrl = this.invitationAcceptUrl(data.token);
     const inviter = data.inviterName
       ? `${data.inviterName} invited you`
       : 'You have been invited';
