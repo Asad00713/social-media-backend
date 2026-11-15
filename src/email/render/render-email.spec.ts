@@ -104,6 +104,17 @@ describe('renderEmail', () => {
   );
 });
 
+describe('renderEmail head', () => {
+  it('has a viewport meta so a phone does not zoom the 600 px column out', async () => {
+    const { html } = await renderEmail(def, def.fixture, ctx);
+    const head = html.match(/<head>[\s\S]*?<\/head>/)?.[0] ?? '';
+    expect(head).toContain(
+      '<meta name="viewport" content="width=device-width, initial-scale=1"',
+    );
+    expect(html.match(/name="viewport"/g)).toHaveLength(1);
+  });
+});
+
 describe('renderEmail layout for Outlook', () => {
   // Every block in one body, so the table checks cover all of them.
   const allBlocks = defineTemplate<Record<string, never>>({

@@ -21,11 +21,18 @@ describe('EmailService without an API key', () => {
   const service = new EmailService(config as never);
 
   it('reports failure rather than a phantom success', async () => {
-    const result = await service.sendEmail({
-      to: 'someone@example.com',
-      subject: 'Verify your email',
-      html: '<p>123456</p>',
-    });
+    const result = await service.deliver(
+      {
+        to: 'someone@example.com',
+        subject: 'Verify your email',
+        html: '<p>123456</p>',
+        text: '123456',
+      },
+      {
+        idempotencyKey: 'verify-email.u1',
+        tags: { category: 'account', template: 'verify-email' },
+      },
+    );
 
     expect(result.success).toBe(false);
     // The reason has to name the missing configuration — an operator reading

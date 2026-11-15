@@ -18,7 +18,7 @@ beforeEach(() => {
 });
 afterEach(() => jest.restoreAllMocks());
 
-describe('EmailService.sendEmail attachments and headers', () => {
+describe('EmailService.deliver attachments and headers', () => {
   function makeSendingService() {
     const config = {
       get: (key: string, def?: string) =>
@@ -33,15 +33,18 @@ describe('EmailService.sendEmail attachments and headers', () => {
   }
 
   const base = { to: 'a@b.co', subject: 'S', html: '<p>h</p>', text: 'h' };
+  const opts = {
+    idempotencyKey: 'k.1',
+    tags: { category: 'lifecycle', template: 'welcome' },
+  };
 
   it('passes attachments and replyTo to Resend', async () => {
     const { service, send } = makeSendingService();
     const attachments = [{ filename: 'r.pdf', content: Buffer.from('%PDF') }];
-    const res = await service.sendEmail({
-      ...base,
-      replyTo: 'owner@acme.com',
-      attachments,
-    });
+    const res = await service.deliver(
+      { ...base, replyTo: 'owner@acme.com', attachments },
+      opts,
+    );
     expect(res).toEqual({ success: true, messageId: 'm1' });
     expect(send).toHaveBeenCalledTimes(1);
     expect(send.mock.calls[0][0].attachments).toBe(attachments);
@@ -50,8 +53,8 @@ describe('EmailService.sendEmail attachments and headers', () => {
 
   it('sends no attachments key without attachments, or with an empty list', async () => {
     const { service, send } = makeSendingService();
-    await service.sendEmail(base);
-    await service.sendEmail({ ...base, attachments: [] });
+    await service.deliver(base, opts);
+    await service.deliver({ ...base, attachments: [] }, opts);
     expect(send.mock.calls[0][0]).not.toHaveProperty('attachments');
     expect(send.mock.calls[1][0]).not.toHaveProperty('attachments');
   });
@@ -59,14 +62,14 @@ describe('EmailService.sendEmail attachments and headers', () => {
   it('passes headers through to Resend', async () => {
     const { service, send } = makeSendingService();
     const headers = { 'List-Unsubscribe': '<https://api/x>' };
-    await service.sendEmail({ ...base, headers });
+    await service.deliver({ ...base, headers }, opts);
     expect(send.mock.calls[0][0].headers).toEqual(headers);
   });
 
   it('sends no headers key without headers, or with an empty object', async () => {
     const { service, send } = makeSendingService();
-    await service.sendEmail(base);
-    await service.sendEmail({ ...base, headers: {} });
+    await service.deliver(base, opts);
+    await service.deliver({ ...base, headers: {} }, opts);
     expect(send.mock.calls[0][0]).not.toHaveProperty('headers');
     expect(send.mock.calls[1][0]).not.toHaveProperty('headers');
   });
@@ -74,10 +77,13 @@ describe('EmailService.sendEmail attachments and headers', () => {
   it('still reports a failure instead of throwing when Resend rejects', async () => {
     const { service, send } = makeSendingService();
     send.mockRejectedValueOnce(new Error('boom'));
-    const res = await service.sendEmail({
-      ...base,
-      attachments: [{ filename: 'r.pdf', content: Buffer.from('x') }],
-    });
+    const res = await service.deliver(
+      {
+        ...base,
+        attachments: [{ filename: 'r.pdf', content: Buffer.from('x') }],
+      },
+      opts,
+    );
     expect(res.success).toBe(false);
   });
 });
@@ -220,24 +226,6 @@ describe('EmailService.deliver', () => {
     const without = makeDeliverService();
     await without.service.deliver(msg, opts);
     expect(without.send.mock.calls[0][0]).not.toHaveProperty('replyTo');
-  });
-
-  it('sendEmail goes through deliver with a legacy key and tags', async () => {
-    const { service, send } = makeDeliverService();
-    const deliver = jest.spyOn(service, 'deliver');
-    await service.sendEmail({ to: 'a@b.co', subject: 'S', html: '<p>h</p>' });
-    expect(deliver).toHaveBeenCalledTimes(1);
-    const [, deliverOpts] = deliver.mock.calls[0];
-    expect(deliverOpts.idempotencyKey).toMatch(
-      /^legacy\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-    );
-    expect(deliverOpts.tags).toEqual({
-      category: 'legacy',
-      template: 'legacy',
-    });
-    expect(send.mock.calls[0][1]).toEqual({
-      idempotencyKey: deliverOpts.idempotencyKey,
-    });
   });
 
   it('logs a retryable failure at log level only and a final one at error', async () => {

@@ -188,6 +188,13 @@ describe('reportEmail', () => {
     expect(html).toContain('Nov 1 – Nov 30 · Acme');
   });
 
+  it('declares a viewport so a phone shows the column at full width', async () => {
+    const { html } = await email();
+    expect(html).toContain(
+      '<meta name="viewport" content="width=device-width, initial-scale=1"',
+    );
+  });
+
   it('lays the HTML out as logo, name, window, brief, totals, button, note', async () => {
     const { html } = await email({
       logoUrl: 'https://cdn.x/l.png',

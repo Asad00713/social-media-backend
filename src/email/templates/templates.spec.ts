@@ -1,5 +1,9 @@
+import { readdirSync, readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { NOTIFICATION_EVENTS } from '../../notification-preferences/notification-events';
 import { renderEmail } from '../render/render-email';
 import { ALL_TEMPLATES, getTemplate } from './registry';
+import { eventOf } from './define-template';
 import { TEMPLATE_IDS } from './template-ids';
 import type { AnyTemplateDef, RenderContext } from './types';
 
@@ -65,5 +69,64 @@ describe('template registry', () => {
   it('TEMPLATE_IDS lists the 29 ids from the spec, once each', () => {
     expect(TEMPLATE_IDS).toHaveLength(29);
     expect(new Set(TEMPLATE_IDS).size).toBe(29);
+  });
+
+  it('every TEMPLATE_ID is registered', () => {
+    expect(ALL_TEMPLATES.map((d) => d.id).sort()).toEqual(
+      [...TEMPLATE_IDS].sort(),
+    );
+  });
+
+  it('every notification-footer template has an event, and every event-less template a non-notification footer', () => {
+    // The two halves are one rule: a notification footer carries the
+    // unsubscribe link for an event, so an event-less (mandatory) template
+    // can never use it.
+    const broken = ALL_TEMPLATES.filter(
+      (d) => d.footer === 'notification' && d.event === null,
+    ).map((d) => d.id);
+    expect(broken).toEqual([]);
+  });
+
+  it('every event a template names is a key of NOTIFICATION_EVENTS', () => {
+    for (const d of ALL_TEMPLATES) {
+      const events = [
+        d.event,
+        ...CASES.filter(([, c]) => c === d).map(([, c, props]) =>
+          eventOf(c, props),
+        ),
+      ];
+      for (const e of events) {
+        if (e !== null) expect(Object.keys(NOTIFICATION_EVENTS)).toContain(e);
+      }
+    }
+  });
+});
+
+describe('email source text', () => {
+  /** Every non-spec .ts/.tsx under src/email, read as text. */
+  function sourceFiles(dir: string): string[] {
+    return readdirSync(dir, { withFileTypes: true }).flatMap((e) => {
+      const full = join(dir, e.name);
+      if (e.isDirectory()) return sourceFiles(full);
+      return /\.tsx?$/.test(e.name) && !/\.spec\.tsx?$/.test(e.name)
+        ? [full]
+        : [];
+    });
+  }
+
+  it('no template or EmailService string contains a placeholder domain or the old product name', () => {
+    const files = sourceFiles(join(__dirname, '..'));
+    expect(files.length).toBeGreaterThan(40);
+    for (const file of files) {
+      const text = readFileSync(file, 'utf8');
+      expect({ file, hit: /yourdomain/i.test(text) }).toEqual({
+        file,
+        hit: false,
+      });
+      expect({ file, hit: /Social Media Automation/i.test(text) }).toEqual({
+        file,
+        hit: false,
+      });
+    }
   });
 });

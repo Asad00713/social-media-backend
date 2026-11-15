@@ -364,7 +364,7 @@ export class AuthService {
       idempotencyKey: `verify.${userId}.${expiresAt.getTime()}`,
     });
 
-    // sendEmail never throws — it reports failure in its return value, and
+    // sendNow never throws — it reports failure in its return value, and
     // this call site used to discard it. That silence is what reached a real
     // user: a misconfigured RESEND_API_KEY meant no verification email was
     // ever sent, while registration still answered 201 "check your email".

@@ -1,4 +1,3 @@
-import { randomUUID } from 'node:crypto';
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Resend, type ErrorResponse } from 'resend';
@@ -169,36 +168,5 @@ export class EmailService {
         retryable: true,
       };
     }
-  }
-
-  /**
-   * Send a generic email. Legacy entry point: each call gets a fresh key, so
-   * nothing is deduped. Deleted once every caller uses the outbox (T17).
-   */
-  async sendEmail(options: {
-    to: string;
-    subject: string;
-    html: string;
-    text?: string;
-    /**
-     * Where a reply should go, when that is not the from-address.
-     *
-     * Needed by mail we send *about* someone rather than *to* them — a contact
-     * form enquiry arrives from our own Resend address, so without this a reply
-     * goes to us instead of to the person who wrote in.
-     */
-    replyTo?: string;
-    /** Files to attach (Resend sends them base64-encoded). */
-    attachments?: { filename: string; content: Buffer }[];
-    /** Extra message headers, e.g. `List-Unsubscribe`. */
-    headers?: Record<string, string>;
-  }): Promise<EmailResult> {
-    return this.deliver(
-      { ...options, text: options.text ?? '' },
-      {
-        idempotencyKey: `legacy.${randomUUID()}`,
-        tags: { category: 'legacy', template: 'legacy' },
-      },
-    );
   }
 }
