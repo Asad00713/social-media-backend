@@ -1,4 +1,5 @@
 import {
+  ClassifiedPublishError,
   ComposerErrorMapperService,
   classifyPublishError,
 } from './composer-error-mapper.service';
@@ -146,5 +147,56 @@ describe('classifyPublishError - platform messages', () => {
     expect(classifyPublishError('Instagram Reels require a video').code).toBe(
       'permanent',
     );
+  });
+
+  it('a channel whose login ended reads as auth_failed (messages stored before the typed error)', () => {
+    expect(
+      classifyPublishError('Channel is not connected (status: expired)').code,
+    ).toBe('auth_failed');
+    expect(
+      classifyPublishError('Channel is not connected (status: revoked)').code,
+    ).toBe('auth_failed');
+    expect(
+      classifyPublishError('Channel is not connected (status: error)').code,
+    ).toBe('permanent');
+  });
+
+  it.each([
+    'Failed to download media from https://cdn.example.com/a.mp4 (502)',
+    'Failed to upload media: socket hang up',
+    'Video upload failed: connect ETIMEDOUT 1.2.3.4:443',
+  ])('a network failure around media is transient, not media: %s', (m) => {
+    expect(classifyPublishError(m).code).toBe('transient');
+  });
+
+  it('matches media problems as words ("information" is not "format")', () => {
+    expect(
+      classifyPublishError('Video metadata: missing information').code,
+    ).toBe('permanent');
+    expect(classifyPublishError('Unsupported video format').code).toBe(
+      'media_invalid',
+    );
+    expect(classifyPublishError('Image uploading failed').code).toBe(
+      'media_invalid',
+    );
+  });
+
+  it("YouTube's daily upload cap is a rate limit, not a media problem", () => {
+    expect(
+      classifyPublishError(
+        'The user has exceeded the number of videos they may upload.',
+      ),
+    ).toEqual({ code: 'rate_limited', retryable: true });
+  });
+
+  it('a typed failure keeps the code it was thrown with', () => {
+    expect(
+      classifyPublishError(
+        new ClassifiedPublishError('network down', 'reminder_failed'),
+      ),
+    ).toEqual({ code: 'reminder_failed', retryable: false });
+    expect(
+      classifyPublishError(new ClassifiedPublishError('x', 'transient')),
+    ).toEqual({ code: 'transient', retryable: true });
   });
 });
