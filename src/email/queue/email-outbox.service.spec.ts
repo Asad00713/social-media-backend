@@ -378,6 +378,32 @@ describe('EmailOutboxService.process', () => {
     );
   });
 
+  it('reports any other failure on a retry as failed, never as already sent', async () => {
+    const { outbox, email } = make();
+    email.deliver.mockResolvedValueOnce({
+      success: false,
+      error: 'invalid `to` field',
+      retryable: false,
+      errorCode: 'validation_error',
+    });
+    await expect(outbox.process(job(postFailed), 3)).rejects.toBeInstanceOf(
+      UnrecoverableError,
+    );
+
+    email.deliver.mockResolvedValueOnce({
+      success: false,
+      error: 'Too many requests',
+      retryable: true,
+      errorCode: 'rate_limit_exceeded',
+    });
+    await expect(outbox.process(job(postFailed), 3)).rejects.toBeInstanceOf(
+      RetryableEmailError,
+    );
+    expect(log).not.toHaveBeenCalledWith(
+      expect.stringContaining('already sent by an earlier attempt'),
+    );
+  });
+
   it('fails an unknown template without retrying', async () => {
     const { outbox } = make();
     await expect(
