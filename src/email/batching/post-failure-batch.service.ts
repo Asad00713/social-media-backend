@@ -52,7 +52,7 @@ export interface PostFailureRedis {
     value: string,
     mode: 'EX',
     seconds: number,
-    flag: 'NX',
+    flag?: 'NX',
   ): Promise<'OK' | null>;
   del(key: string): Promise<number>;
   lrange(key: string, start: number, stop: number): Promise<string[]>;
@@ -61,19 +61,24 @@ export interface PostFailureRedis {
 }
 
 /**
- * Closes a window atomically, only for the job that owns it: when the open
- * key still holds this windowId, DEL it and RENAME the list to the batch key.
- * Returns 1 when it took a list, 0 when it owned the window but the list was
- * gone, -1 when the window is not this job's (already closed, expired, or a
- * newer window is open) - that list belongs to the newer window's flush.
+ * Closes a window atomically. The flush owns the list when the open key holds
+ * its windowId, or when the open key is gone (it expired in a queue backlog
+ * and no newer window opened: nobody else will send these failures). It then
+ * DELs the open key if present and RENAMEs the list to the batch key.
+ * Returns 1 when it took a list, 0 when it owned the window but there was no
+ * list, -1 when a newer window is open: that window's list already holds
+ * this one's failures, and its flush sends them.
  * KEYS: open, list, batch. ARGV: windowId. A fixed server-side script: every
  * value travels as a key or an argument, never in the script text.
  */
 export const CLOSE_WINDOW_SCRIPT = `
-if redis.call('GET', KEYS[1]) ~= ARGV[1] then
+local open = redis.call('GET', KEYS[1])
+if open and open ~= ARGV[1] then
   return -1
 end
-redis.call('DEL', KEYS[1])
+if open then
+  redis.call('DEL', KEYS[1])
+end
 if redis.call('EXISTS', KEYS[2]) == 0 then
   return 0
 end
@@ -86,6 +91,8 @@ export const POST_FAILURE_WINDOW_MS = 600_000;
 
 const LIST_TTL_S = 1800;
 const OPEN_TTL_S = 900;
+/** A finished flush is remembered for a day, past any stalled re-run. */
+const DONE_TTL_S = 86_400;
 const FLUSH_ATTEMPTS = 5;
 const FLUSH_BACKOFF_MS = 2000;
 const MAX_ROWS = 10;
@@ -100,6 +107,8 @@ const openKey = (u: string, ws: string) => `email:pf-open:${u}:${ws}`;
  */
 const flushKey = (u: string, ws: string, windowId: string) =>
   `email:pf-flush:${u}:${ws}:${windowId}`;
+const doneKey = (u: string, ws: string, windowId: string) =>
+  `email:pf-done:${u}:${ws}:${windowId}`;
 /** The job id and the email's idempotency key: one per window, no `:`. */
 export const flushJobId = (u: string, ws: string, windowId: string) =>
   `post-failed.${u}.${ws}.${windowId}`;
@@ -209,11 +218,14 @@ export class PostFailureBatchService {
     windowId: string,
     attemptsMade = 0,
   ): Promise<'sent' | 'empty' | 'skipped'> {
+    const done = doneKey(userId, workspaceId, windowId);
+    // A stalled re-run of a flush that already finished: it never renames.
+    if (await this.redis.exists(done)) return 'empty';
+
     const batch = flushKey(userId, workspaceId, windowId);
     if (!(await this.redis.exists(batch))) {
-      // Atomic, and only while the window is still this job's: a stalled
-      // re-run of a finished flush, or a flush whose open key expired in a
-      // backlog, must not close a newer window and steal its failures.
+      // Atomic: a newer open window keeps its list (which holds this
+      // window's failures too); otherwise this flush takes it.
       const closed = await this.redis.eval(
         CLOSE_WINDOW_SCRIPT,
         3,
@@ -222,7 +234,10 @@ export class PostFailureBatchService {
         batch,
         windowId,
       );
-      if (Number(closed) !== 1) return 'empty';
+      if (Number(closed) !== 1) {
+        await this.markDone(done);
+        return 'empty';
+      }
     }
 
     const entries = dedupe(parseEntries(await this.redis.lrange(batch, 0, -1)));
@@ -230,8 +245,14 @@ export class PostFailureBatchService {
       entries.length === 0
         ? 'empty'
         : await this.send(userId, workspaceId, windowId, entries, attemptsMade);
+    // Marked before the batch goes: a retry after a failed DEL sends nothing.
+    await this.markDone(done);
     await this.redis.del(batch);
     return outcome;
+  }
+
+  private async markDone(key: string): Promise<void> {
+    await this.redis.set(key, '1', 'EX', DONE_TTL_S);
   }
 
   private async send(

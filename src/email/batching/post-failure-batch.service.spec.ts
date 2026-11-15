@@ -47,8 +47,10 @@ class FakeRedis implements PostFailureRedis {
     return Promise.resolve(this.lists.has(key) ? 1 : 0);
   }
 
-  set(key: string, value: string): Promise<'OK' | null> {
-    if (this.strings.has(key)) return Promise.resolve(null);
+  set(key: string, value: string, ...opts: unknown[]): Promise<'OK' | null> {
+    if (opts.includes('NX') && this.strings.has(key)) {
+      return Promise.resolve(null);
+    }
     this.strings.set(key, value);
     return Promise.resolve('OK');
   }
@@ -68,8 +70,9 @@ class FakeRedis implements PostFailureRedis {
       throw new Error('unexpected script');
     }
     const [open, list, batch, windowId] = args;
+    const current = this.strings.get(open);
     let result: number;
-    if (this.strings.get(open) !== windowId) {
+    if (current !== undefined && current !== windowId) {
       result = -1;
     } else {
       this.strings.delete(open);
@@ -448,6 +451,7 @@ describe('PostFailureBatchService.flush', () => {
     const w2 = windowOf(queue, 1);
 
     // BullMQ re-runs W1 (a stalled job): its batch is gone and W2 is open.
+    expect(redis.strings.has(`email:pf-done:${U}:${WS}:${w1}`)).toBe(true);
     await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
     expect(outbox.process).toHaveBeenCalledTimes(1);
     expect(redis.strings.get(`email:pf-open:${U}:${WS}`)).toBe(w2);
@@ -461,7 +465,50 @@ describe('PostFailureBatchService.flush', () => {
     expect(sentProps<PostFailedProps>(outbox, 1).editUrl).toContain('post=b');
   });
 
-  it('a flush delayed past its open key does not close the window after it', async () => {
+  it('a re-run of a finished flush never renames, even with no open key', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    const w1 = windowOf(queue);
+    await svc.flush(U, WS, w1);
+
+    jest.setSystemTime(T0.getTime() + POST_FAILURE_WINDOW_MS + 1000);
+    await svc.record(U, WS, entry({ postId: 'b' }));
+    const w2 = windowOf(queue, 1);
+    // W2's open key expires too, in a backlog.
+    redis.strings.delete(`email:pf-open:${U}:${WS}`);
+
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
+    expect(redis.lists.get(`email:pf:${U}:${WS}`)).toHaveLength(1);
+
+    await expect(svc.flush(U, WS, w2)).resolves.toBe('sent');
+    expect(outbox.process).toHaveBeenCalledTimes(2);
+    expect(outbox.process.mock.calls[1][0].idempotencyKey).toBe(
+      flushJobId(U, WS, w2),
+    );
+    expect(sentProps<PostFailedProps>(outbox, 1).editUrl).toContain('post=b');
+  });
+
+  it('(c) an expired open key and no new failure: W1 still sends, once', async () => {
+    const { svc, queue, outbox, redis } = make();
+    await svc.record(U, WS, entry({ postId: 'a' }));
+    await svc.record(U, WS, entry({ postId: 'b' }));
+    const w1 = windowOf(queue);
+    jest.setSystemTime(T0.getTime() + 901_000);
+    redis.strings.delete(`email:pf-open:${U}:${WS}`);
+
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('sent');
+    expect(outbox.process).toHaveBeenCalledTimes(1);
+    const data = outbox.process.mock.calls[0][0];
+    expect(data.idempotencyKey).toBe(flushJobId(U, WS, w1));
+    expect((data.props as PostsFailedProps).count).toBe(2);
+
+    // A stalled re-run sends nothing more, and nothing is left behind.
+    await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
+    expect(outbox.process).toHaveBeenCalledTimes(1);
+    expect(redis.lists.size).toBe(0);
+  });
+
+  it('(d) an expired open key, then W2 opens before W1 flushes: every failure once', async () => {
     const { svc, queue, outbox, redis } = make();
     await svc.record(U, WS, entry({ postId: 'a' }));
     const w1 = windowOf(queue);
@@ -472,6 +519,7 @@ describe('PostFailureBatchService.flush', () => {
     const w2 = windowOf(queue, 1);
     expect(w2).not.toBe(w1);
 
+    // W2 owns the list, which holds W1's failure as well.
     await expect(svc.flush(U, WS, w1)).resolves.toBe('empty');
     expect(outbox.process).not.toHaveBeenCalled();
 
