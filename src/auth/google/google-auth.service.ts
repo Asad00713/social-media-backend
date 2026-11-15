@@ -4,6 +4,7 @@ import { JwtService } from '@nestjs/jwt';
 import { UsersService } from '../../users/users.service';
 import { normalizeEmail } from '../../users/normalize-email';
 import { LoginActivityService } from '../services/login-activity.service';
+import { WelcomeEmailService } from '../welcome-email.service';
 import {
   generateCodeChallenge,
   generateCodeVerifier,
@@ -45,6 +46,7 @@ export class GoogleAuthService {
     private readonly config: ConfigService,
     private readonly users: UsersService,
     private readonly loginActivity: LoginActivityService,
+    private readonly welcomeEmail: WelcomeEmailService,
   ) {}
 
   start(mode: GoogleAuthMode): {
@@ -160,6 +162,12 @@ export class GoogleAuthService {
           googleSub: claims.sub,
         });
         await this.loginActivity.recordSync(created.id, ip);
+        // F1: fire and forget, it never rejects and never delays the sign-up.
+        void this.welcomeEmail.send({
+          id: created.id,
+          email: created.email,
+          name: created.name,
+        });
         return this.succeed(mode, created.id, created.email, true);
       }
 

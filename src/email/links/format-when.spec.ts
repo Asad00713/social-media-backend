@@ -1,4 +1,10 @@
-import { formatDay, formatTime, formatWhen, initials } from './format-when';
+import {
+  formatDay,
+  formatMonthDay,
+  formatTime,
+  formatWhen,
+  initials,
+} from './format-when';
 
 describe('formatTime', () => {
   it('formats the time of day in the zone, with no zone name', () => {
@@ -41,6 +47,17 @@ describe('formatWhen', () => {
     expect(
       formatWhen(new Date('2026-07-01T18:05:00Z'), 'America/New_York'),
     ).toBe('Jul 1, 2026 at 2:05 PM EDT');
+  });
+});
+
+describe('formatMonthDay', () => {
+  it('drops the year and uses the zone, not the server', () => {
+    expect(
+      formatMonthDay(new Date('2026-11-01T22:00:00Z'), 'Asia/Karachi'),
+    ).toBe('Nov 2');
+    expect(formatMonthDay(new Date('2026-11-01T22:00:00Z'), 'nope')).toBe(
+      'Nov 1',
+    );
   });
 });
 

@@ -50,6 +50,12 @@ export function formatTime(date: Date, timeZone: string): string {
   return `${p.hour}:${p.minute} ${p.dayPeriod}`;
 }
 
+/** 'Nov 2': the day without the year, for a date in the near future (F3). */
+export function formatMonthDay(date: Date, timeZone: string): string {
+  const p = parts(date, timeZone, { month: 'short', day: 'numeric' });
+  return `${p.month} ${p.day}`;
+}
+
 /**
  * 'Oct 26, 2026 at 10:42 AM GMT+5': the day, the time and a short zone name,
  * in `timeZone` (an invalid zone falls back to UTC). Assembled from parts

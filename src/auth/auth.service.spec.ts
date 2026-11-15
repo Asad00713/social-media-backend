@@ -28,6 +28,7 @@ export function makeAuthService(
     db?: unknown;
     usersService?: Record<string, jest.Mock>;
     outbox?: Record<string, jest.Mock>;
+    welcome?: { send: jest.Mock };
   } = {},
 ) {
   const db = overrides.db ?? { query: { users: { findFirst: jest.fn() } } };
@@ -39,6 +40,7 @@ export function makeAuthService(
     get: (key: string) =>
       key === 'FRONTEND_URL' ? 'https://app.test' : undefined,
   } as never);
+  const welcome = overrides.welcome ?? { send: jest.fn() };
   const accountSecurity = {
     sendPasswordChanged: jest.fn().mockResolvedValue(undefined),
   };
@@ -53,8 +55,9 @@ export function makeAuthService(
     { record: jest.fn(), recordSync: jest.fn() } as never,
     links,
     accountSecurity as never,
+    welcome as never,
   );
-  return { service, db, usersService, outbox, accountSecurity };
+  return { service, db, usersService, outbox, accountSecurity, welcome };
 }
 
 describe('AuthService.validateUser', () => {
@@ -126,6 +129,90 @@ async function codeOf(p: Promise<unknown>) {
   }
   throw new Error('expected a BadRequestException');
 }
+
+describe('AuthService F1 welcome email', () => {
+  it('sends the welcome once when the OTP verifies, and not on a repeat', async () => {
+    const user = pendingUser({ name: 'Rehman Khan' });
+    const findFirst = jest
+      .fn()
+      .mockResolvedValueOnce(user)
+      .mockResolvedValue({ ...user, isEmailVerified: true });
+    const welcome = { send: jest.fn() };
+    const { service } = makeAuthService({
+      db: { query: { users: { findFirst } } },
+      usersService: {
+        verifyEmail: jest.fn(),
+        incrementVerificationAttempts: jest.fn().mockResolvedValue(1),
+        clearEmailVerificationToken: jest.fn(),
+      },
+      welcome,
+    });
+
+    await service.verifyEmailWithOtp('u1', CODE);
+    await service.verifyEmailWithOtp('u1', CODE);
+
+    expect(welcome.send).toHaveBeenCalledTimes(1);
+    expect(welcome.send).toHaveBeenCalledWith({
+      id: 'u1',
+      email: 'a@b.co',
+      name: 'Rehman Khan',
+    });
+  });
+
+  it('sends nothing for a wrong code', async () => {
+    const welcome = { send: jest.fn() };
+    const built = otpService(pendingUser(), 1);
+    const { service } = makeAuthService({
+      db: built.db,
+      usersService: built.usersService,
+      welcome,
+    });
+    await codeOf(service.verifyEmailWithOtp('u1', '000000'));
+    expect(welcome.send).not.toHaveBeenCalled();
+  });
+
+  it('does not fail or wait for the verify when the welcome email is slow or broken', async () => {
+    const never = new Promise<void>(() => undefined);
+    const { service } = makeAuthService({
+      db: {
+        query: {
+          users: { findFirst: jest.fn().mockResolvedValue(pendingUser()) },
+        },
+      },
+      usersService: {
+        verifyEmail: jest.fn(),
+        incrementVerificationAttempts: jest.fn().mockResolvedValue(1),
+        clearEmailVerificationToken: jest.fn(),
+      },
+      welcome: { send: jest.fn().mockReturnValue(never) },
+    });
+    await expect(service.verifyEmailWithOtp('u1', CODE)).resolves.toEqual({
+      message: 'Email verified successfully.',
+    });
+  });
+
+  it('sends the welcome when the legacy link verifies', async () => {
+    const welcome = { send: jest.fn() };
+    const { service } = makeAuthService({
+      usersService: {
+        findByVerificationToken: jest.fn().mockResolvedValue({
+          id: 'u2',
+          email: 'c@d.co',
+          name: null,
+          emailVerificationTokenExpiresAt: new Date(Date.now() + 60_000),
+        }),
+        verifyEmail: jest.fn(),
+      },
+      welcome,
+    });
+    await service.verifyEmail('tok');
+    expect(welcome.send).toHaveBeenCalledWith({
+      id: 'u2',
+      email: 'c@d.co',
+      name: null,
+    });
+  });
+});
 
 describe('AuthService.verifyEmailWithOtp attempt limit', () => {
   it('claims an attempt, then verifies a correct code', async () => {

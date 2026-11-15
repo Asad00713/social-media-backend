@@ -17,6 +17,7 @@ import { GoogleAuthService } from './google/google-auth.service';
 import { GoogleAuthController } from './google/google-auth.controller';
 import { AccountSecurityController } from '../users/account-security.controller';
 import { KnownDevicesService } from './devices/known-devices.service';
+import { WelcomeEmailService } from './welcome-email.service';
 
 @Module({
   imports: [UsersModule, PassportModule, JwtModule.register({}), EmailModule],
@@ -28,6 +29,7 @@ import { KnownDevicesService } from './devices/known-devices.service';
     GoogleOAuthClient,
     GoogleAuthService,
     KnownDevicesService,
+    WelcomeEmailService,
     JwtStrategy,
     JwtRefreshStrategy,
     // Global launch-gate enforcement (see AllowlistGuard). Registered here

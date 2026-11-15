@@ -22,6 +22,7 @@ import { EmailOutboxService } from '../email/queue/email-outbox.service';
 import { resetPasswordTemplate } from '../email/templates/security/reset-password';
 import { verifyEmailTemplate } from '../email/templates/security/verify-email';
 import { LoginDto } from './dto/login.dto';
+import { WelcomeEmailService } from './welcome-email.service';
 import type { User, UserRole } from '../drizzle/schema';
 import { users, workspace, workspaceInvitation } from '../drizzle/schema';
 import { CreateUserDto } from '../users/dto/create-user.dto';
@@ -107,6 +108,7 @@ export class AuthService {
     private loginActivityService: LoginActivityService,
     private appLinks: AppLinks,
     private accountSecurity: AccountSecurityService,
+    private welcomeEmail: WelcomeEmailService,
   ) {}
 
   async register(
@@ -459,6 +461,12 @@ export class AuthService {
     }
 
     await this.usersService.verifyEmail(user.id);
+    // F1: fire and forget, it never rejects and never delays the response.
+    void this.welcomeEmail.send({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+    });
 
     await this.notificationEmitter.emailVerified(user.id);
 
@@ -521,6 +529,12 @@ export class AuthService {
 
     if (secureCompare(hash(otp), user.emailVerificationToken)) {
       await this.usersService.verifyEmail(user.id);
+      // F1: fire and forget, it never rejects and never delays the response.
+      void this.welcomeEmail.send({
+        id: user.id,
+        email: user.email,
+        name: user.name,
+      });
       await this.notificationEmitter.emailVerified(user.id);
       return { message: 'Email verified successfully.' };
     }

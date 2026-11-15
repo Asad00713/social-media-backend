@@ -41,11 +41,12 @@ function build(
     findByEmail: jest.fn().mockResolvedValue(undefined),
     createFromGoogle: jest
       .fn()
-      .mockResolvedValue({ id: 'new', email: 'sara@gmail.com' }),
+      .mockResolvedValue({ id: 'new', email: 'sara@gmail.com', name: 'Sara' }),
     applyGoogleSignIn: jest.fn(),
     ...over.users,
   };
   const loginActivity = { record: jest.fn(), recordSync: jest.fn() };
+  const welcome = { send: jest.fn() };
   const service = new GoogleAuthService(
     client as never,
     jwt,
@@ -54,8 +55,9 @@ function build(
       : config) as never,
     users as never,
     loginActivity as never,
+    welcome as never,
   );
-  return { service, client, users, loginActivity, jwt };
+  return { service, client, users, loginActivity, jwt, welcome };
 }
 
 /** A real state cookie from start(), plus the state Google would echo back. */
@@ -159,6 +161,26 @@ describe('GoogleAuthService.callback', () => {
     });
   });
 
+  it('sends the F1 welcome for a new account only', async () => {
+    const b = build();
+    const { stateCookie, state } = begin(b);
+    await b.service.callback({ code: 'c', state }, stateCookie);
+    expect(b.welcome.send).toHaveBeenCalledTimes(1);
+    expect(b.welcome.send).toHaveBeenCalledWith({
+      id: 'new',
+      email: 'sara@gmail.com',
+      name: 'Sara',
+    });
+  });
+
+  it('does not wait for the welcome email, and a broken one does not fail the sign-up', async () => {
+    const b = build();
+    b.welcome.send.mockReturnValue(new Promise<void>(() => undefined));
+    const { stateCookie, state } = begin(b);
+    const r = await b.service.callback({ code: 'c', state }, stateCookie);
+    expect(r.session).toEqual(expect.objectContaining({ isNewAccount: true }));
+  });
+
   it('links an existing password account and keeps its stored email (Review Focus 3)', async () => {
     const existing = {
       id: 'u1',
@@ -175,6 +197,7 @@ describe('GoogleAuthService.callback', () => {
     const r = await b.service.callback({ code: 'c', state }, stateCookie);
 
     expect(b.users.createFromGoogle).not.toHaveBeenCalled();
+    expect(b.welcome.send).not.toHaveBeenCalled();
     expect(b.users.applyGoogleSignIn).toHaveBeenCalledWith('u1', {
       googleSub: 'g-1',
       name: 'Sara',

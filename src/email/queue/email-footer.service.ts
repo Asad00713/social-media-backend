@@ -9,6 +9,7 @@ import {
   type PreferenceEventKey,
 } from '../../notification-preferences/notification-events';
 import { AppLinks } from '../links/app-links';
+import { EmailTokensService } from '../tokens/email-tokens.service';
 import type {
   AnyTemplateDef,
   FooterContext,
@@ -28,6 +29,7 @@ export class EmailFooterService {
   constructor(
     private readonly links: AppLinks,
     @Inject(DRIZZLE) private readonly db: DbType,
+    private readonly tokens: EmailTokensService,
   ) {}
 
   async build(
@@ -81,6 +83,27 @@ export class EmailFooterService {
           throw new UnrecoverableError(
             `Template ${def.id} has a plain footer but no footerReason`,
           );
+        }
+        // F2 (spec 4.1) is the one plain-footer email a person can switch off:
+        // its links row leads with the one-click unsubscribe link.
+        if (def.event === 'inactivity_reminder') {
+          if (!to.userId) {
+            throw new UnrecoverableError(
+              `Template ${def.id} needs a user to unsubscribe`,
+            );
+          }
+          const token = this.tokens.unsubscribeToken({
+            uid: to.userId,
+            ws: null,
+            ev: 'inactivity_reminder',
+          });
+          return footer(override, [
+            {
+              label: 'Stop these reminders',
+              href: this.links.api(`/email/unsubscribe/${token}`),
+            },
+            help,
+          ]);
         }
         return footer(override, [help]);
     }

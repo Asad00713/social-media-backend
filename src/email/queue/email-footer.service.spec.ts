@@ -1,8 +1,10 @@
 import type { ConfigService } from '@nestjs/config';
+import { JwtService } from '@nestjs/jwt';
 import { UnrecoverableError } from 'bullmq';
 import { createElement, Fragment } from 'react';
 import type { DbType } from '../../drizzle/db';
 import { AppLinks } from '../links/app-links';
+import { EmailTokensService } from '../tokens/email-tokens.service';
 import { defineTemplate } from '../templates/define-template';
 import type { AnyTemplateDef, FooterKind } from '../templates/types';
 import type { EmailRecipient } from './email-job';
@@ -37,8 +39,12 @@ function make(rows: { name: string }[] = [{ name: 'Rehman Workspace' }]) {
   const links = new AppLinks({
     get: (_key: string, d?: string) => d,
   } as unknown as ConfigService);
+  const tokens = new EmailTokensService(new JwtService({}), {
+    get: (k: string) => (k === 'JWT_ACCESS_SECRET' ? 'test-secret' : undefined),
+  } as unknown as ConfigService);
   return {
-    footer: new EmailFooterService(links, db as unknown as DbType),
+    footer: new EmailFooterService(links, db as unknown as DbType, tokens),
+    tokens,
     where,
   };
 }
@@ -141,6 +147,68 @@ describe('EmailFooterService', () => {
     await expect(
       footer.build(def('notification'), {}, TO, 'ws1'),
     ).rejects.toBeInstanceOf(UnrecoverableError);
+  });
+
+  describe('the inactivity reminder (F2)', () => {
+    const USER = '3f0f5a52-6d8b-4b5e-9a37-0a1c2d3e4f50';
+    const reminder = () =>
+      def('plain', {
+        event: 'inactivity_reminder',
+        footerReason: () => 'You get this because you have been away.',
+      });
+
+    it('leads the links row with a one-click "Stop these reminders" link', async () => {
+      const { footer, tokens } = make();
+      const f = await footer.build(
+        reminder(),
+        {},
+        { email: 'r@acme.com', userId: USER },
+        null,
+      );
+      expect(f.reason).toBe('You get this because you have been away.');
+      expect(f.links.map((l) => l.label)).toEqual([
+        'Stop these reminders',
+        'Help center',
+        'Privacy',
+      ]);
+      const href = f.links[0].href;
+      expect(href.startsWith('http://localhost:3000/email/unsubscribe/')).toBe(
+        true,
+      );
+      // The token is the signed unsubscribe token the T4 route verifies; the
+      // user id never appears as a bare value in the URL.
+      expect(href).not.toContain(USER);
+      const token = href.slice(href.lastIndexOf('/') + 1);
+      expect(tokens.verifyUnsubscribe(token)).toEqual({
+        uid: USER,
+        ws: null,
+        ev: 'inactivity_reminder',
+      });
+    });
+
+    it('is not added to other plain-footer mail', async () => {
+      const { footer } = make();
+      const plain = def('plain', { footerReason: () => 'Because.' });
+      const f = await footer.build(
+        plain,
+        {},
+        { email: 'r@acme.com', userId: USER },
+        null,
+      );
+      expect(f.links).toEqual([HELP, PRIVACY]);
+    });
+
+    it('refuses to send a reminder that has no user to unsubscribe', async () => {
+      const { footer } = make();
+      await expect(
+        footer.build(
+          reminder(),
+          {},
+          { email: 'r@acme.com', userId: null },
+          null,
+        ),
+      ).rejects.toBeInstanceOf(UnrecoverableError);
+    });
   });
 
   it('refuses a plain footer without footerReason', async () => {
