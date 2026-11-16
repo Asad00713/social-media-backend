@@ -51,6 +51,7 @@ import { ChannelPageModule } from './channels/channel-page/channel-page.module';
 import { WorkspaceHubModule } from './workspace-hub/workspace-hub.module';
 import { BrandKitModule } from './brand-kit/brand-kit.module';
 import { ShortLinksModule } from './short-links/short-links.module';
+import { PlatformStatusModule } from './platform-status/platform-status.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
 import { BullMQAdapter } from '@bull-board/api/bullMQAdapter';
@@ -111,6 +112,7 @@ import { QUEUES } from './queue/queue.module';
     WorkspaceHubModule,
     BrandKitModule,
     ShortLinksModule,
+    PlatformStatusModule,
     BullBoardModule.forRoot({
       // Moved off '/admin/queues' so it stops swallowing the admin queue API,
       // which lives under that same prefix. Bull Board keeps its full job

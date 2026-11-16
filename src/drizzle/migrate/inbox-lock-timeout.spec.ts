@@ -34,6 +34,9 @@ import { readMigrations } from './runner';
  * social_media_channels (ACCESS EXCLUSIVE).
  * 0080 adds removed_at / removed_by to workspace_invitations (ACCESS
  * EXCLUSIVE) and a foreign key to users (SHARE ROW EXCLUSIVE).
+ * 0083 creates platform_incidents with a foreign key to users (SHARE ROW
+ * EXCLUSIVE). 0086 builds an index on posts (SHARE) with a tighter bound of
+ * its own, checked below.
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -53,6 +56,7 @@ const FILES = [
   '0066_insight_reports.sql',
   '0067_channel_connect_links.sql',
   '0080_member_soft_removal.sql',
+  '0083_platform_status.sql',
 ];
 
 const firstStatement = (sql: string): string =>
@@ -69,5 +73,31 @@ describe('migrations bound their lock wait (I4)', () => {
     const file = files.find((f) => f.name === name);
     expect(file).toBeDefined();
     expect(firstStatement(file!.sql)).toBe("SET LOCAL lock_timeout = '10s'");
+  });
+});
+
+describe('0086 bounds both the lock wait and the build', () => {
+  const files = readMigrations(join(process.cwd(), 'drizzle', 'migrations'));
+  const statements = (sql: string): string[] =>
+    sql
+      .replace(/^\s*--.*$/gm, '')
+      .split(';')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+  it('sets a 3 s lock_timeout and a statement_timeout before the index', () => {
+    const file = files.find(
+      (f) => f.name === '0086_posts_updated_at_index.sql',
+    );
+    expect(file).toBeDefined();
+    const [first, second, third] = statements(file!.sql);
+    expect(first).toBe("SET LOCAL lock_timeout = '3s'");
+    expect(second).toMatch(/^SET LOCAL statement_timeout = '\d+s'$/);
+    expect(third).toMatch(/^CREATE INDEX IF NOT EXISTS "posts_updated_at_idx"/);
+  });
+
+  it('keeps the index out of 0083', () => {
+    const file = files.find((f) => f.name === '0083_platform_status.sql');
+    expect(file!.sql.replace(/^\s*--.*$/gm, '')).not.toMatch(/ON "posts"/);
   });
 });
