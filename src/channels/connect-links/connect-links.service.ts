@@ -11,7 +11,11 @@ import {
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { users } from '../../drizzle/schema/users.schema';
 import { workspace } from '../../drizzle/schema/workspace.schema';
-import { EmailService } from '../../email/email.service';
+import { EmailOutboxService } from '../../email/queue/email-outbox.service';
+import {
+  channelConnectLink,
+  formatLinkExpiry,
+} from '../../email/templates/team/channel-connect-link';
 import { displayNameOf } from '../lib/people';
 import type {
   ConnectLinkConnectedDto,
@@ -42,7 +46,7 @@ export class ConnectLinksService {
 
   constructor(
     @Inject(DRIZZLE) private readonly db: DbType,
-    private readonly email: EmailService,
+    private readonly outbox: EmailOutboxService,
   ) {}
 
   async create(
@@ -76,13 +80,18 @@ export class ConnectLinksService {
         this.workspaceName(workspaceId),
         this.userOf(userId),
       ]);
-      await this.deliver(email, {
-        workspaceName: ws,
-        senderName: sender.name,
-        networks,
-        url,
-        expiresAt,
-      });
+      await this.deliver(
+        workspaceId,
+        email,
+        {
+          workspaceName: ws,
+          senderName: sender.name,
+          networks,
+          url,
+          expiresAt,
+        },
+        `connect-link.${token.hash.slice(0, 32)}.${now.getTime()}`,
+      );
     }
 
     const [row] = await this.db
@@ -185,13 +194,18 @@ export class ConnectLinksService {
         this.workspaceName(workspaceId),
         this.userOf(link.createdByUserId),
       ]);
-      await this.deliver(link.email, {
-        workspaceName: ws,
-        senderName: sender.name,
-        networks: link.networks,
-        url: linkUrl(decrypt(link.tokenEncrypted)),
-        expiresAt: link.expiresAt,
-      });
+      await this.deliver(
+        workspaceId,
+        link.email,
+        {
+          workspaceName: ws,
+          senderName: sender.name,
+          networks: link.networks,
+          url: linkUrl(decrypt(link.tokenEncrypted)),
+          expiresAt: link.expiresAt,
+        },
+        `connect-link.${link.tokenHash.slice(0, 32)}.${now.getTime()}`,
+      );
     } catch (err) {
       // Give the claim back. If that fails too, log it and still throw the
       // send failure: the caller must see why the send failed (the claim
@@ -260,11 +274,37 @@ export class ConnectLinksService {
     return row;
   }
 
+  /**
+   * Sent inline, not queued: the URL carries the link token, which must not
+   * sit in Redis. The recipient has no account (`userId: null`). `key` is one
+   * per send (the link and the send time), so a Resend is a new email.
+   */
   private async deliver(
+    workspaceId: string,
     to: string,
-    data: Parameters<EmailService['sendChannelConnectLink']>[1],
+    data: {
+      workspaceName: string;
+      senderName: string;
+      networks: string[];
+      url: string;
+      expiresAt: Date;
+    },
+    key: string,
   ): Promise<void> {
-    const result = await this.email.sendChannelConnectLink(to, data);
+    const result = await this.outbox.sendNow({
+      template: channelConnectLink,
+      props: {
+        senderName: data.senderName,
+        workspaceName: data.workspaceName,
+        networks: data.networks,
+        connectUrl: data.url,
+        expiresOn: formatLinkExpiry(data.expiresAt),
+        recipientEmail: to,
+      },
+      to: { email: to, userId: null },
+      workspaceId,
+      idempotencyKey: key,
+    });
     if (!result.success) {
       throw connectLinkError(
         'EMAIL_SEND_FAILED',

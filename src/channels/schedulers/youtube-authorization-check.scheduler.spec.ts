@@ -1,15 +1,14 @@
 import { Test } from '@nestjs/testing';
 import { YoutubeAuthorizationCheckScheduler } from './youtube-authorization-check.scheduler';
+import { ChannelHealthNotifier } from '../services/channel-health-notifier.service';
 import { ChannelService } from '../services/channel.service';
 import { YouTubeService } from '../services/youtube.service';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 
 const execute = jest.fn();
+/** The notifier's compare-and-set that flips a channel to expired. */
 const update = jest.fn();
-const fakeDb = {
-  execute,
-  update: () => ({ set: () => ({ where: update }) }),
-};
+const fakeDb = { execute };
 const channelService = { getAccessToken: jest.fn() };
 const youtube = { checkAuthorization: jest.fn() };
 
@@ -20,6 +19,7 @@ async function build() {
       { provide: DRIZZLE, useValue: fakeDb },
       { provide: ChannelService, useValue: channelService },
       { provide: YouTubeService, useValue: youtube },
+      { provide: ChannelHealthNotifier, useValue: { markExpired: update } },
     ],
   }).compile();
   return mod.get(YoutubeAuthorizationCheckScheduler);
@@ -70,7 +70,12 @@ describe('YoutubeAuthorizationCheckScheduler', () => {
     });
     const scheduler = await build();
     await scheduler.verifyYoutubeAuthorizations();
-    expect(update).toHaveBeenCalled();
+    expect(update).toHaveBeenCalledTimes(1);
+    expect(update).toHaveBeenCalledWith(1, {
+      lastError:
+        'YouTube authorization is no longer valid — reconnect to continue',
+      updatedAt: expect.any(Date) as Date,
+    });
   });
 
   // CRITICAL regression case: a network blip / Google 5xx must NOT brick a
@@ -121,6 +126,8 @@ describe('YoutubeAuthorizationCheckScheduler', () => {
   it('swallows a top-level failure rather than throwing', async () => {
     execute.mockRejectedValue(new Error('db is down'));
     const scheduler = await build();
-    await expect(scheduler.verifyYoutubeAuthorizations()).resolves.toBeUndefined();
+    await expect(
+      scheduler.verifyYoutubeAuthorizations(),
+    ).resolves.toBeUndefined();
   });
 });

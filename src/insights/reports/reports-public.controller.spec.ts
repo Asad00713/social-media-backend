@@ -278,11 +278,13 @@ describe('ReportsPublicController over HTTP', () => {
       for (const res of [ok, missing]) {
         expect(res.headers['cache-control']).toBe('private, no-store');
         expect(res.headers['x-robots-tag']).toBe('noindex');
+        expect(res.headers['referrer-policy']).toBe('no-referrer');
       }
       const render = await get(`/reports/render/nope`);
       expect(render.status).toBe(404);
       expect(render.headers['cache-control']).toBe('private, no-store');
       expect(render.headers['x-robots-tag']).toBe('noindex');
+      expect(render.headers['referrer-policy']).toBe('no-referrer');
     });
 
     it('still carries the headers when the service throws', async () => {

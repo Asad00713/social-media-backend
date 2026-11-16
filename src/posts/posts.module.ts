@@ -11,6 +11,9 @@ import { QueueModule, QUEUES } from '../queue/queue.module';
 import { AnalyticsModule } from '../channels/analytics/analytics.module';
 import { MediaModule } from '../media/media.module';
 import { CalendarSyncModule } from '../calendar-sync/calendar-sync.module';
+// PostFailureBatchService (C1/C1a email windows). EmailModule imports no
+// feature module, so this adds no cycle.
+import { EmailModule } from '../email/email.module';
 // For PostQueueService — the per-channel scheduling ceiling. BillingModule
 // reaches only Stripe/Drizzle/Notifications, none of which import PostsModule,
 // so this is a plain import rather than a forwardRef.
@@ -40,6 +43,7 @@ import { DiscordPublisher } from './publishers/discord.publisher';
 import { PostPublishProcessor } from './processors/post-publish.processor';
 import { RepeatPostsService } from './services/repeat-posts.service';
 import { PostReminderService } from './services/post-reminder.service';
+import { PublishFailureNotifier } from './services/publish-failure-notifier.service';
 
 @Module({
   imports: [
@@ -51,6 +55,7 @@ import { PostReminderService } from './services/post-reminder.service';
     AnalyticsModule,
     MediaModule,
     BillingModule,
+    EmailModule,
     // Circular by design: posts push to calendars (CalendarPushSyncService) and
     // calendars write back to posts (CalendarPullSyncService → PostService).
     forwardRef(() => CalendarSyncModule),
@@ -77,6 +82,7 @@ import { PostReminderService } from './services/post-reminder.service';
     PostPublishProcessor,
     RepeatPostsService,
     PostReminderService,
+    PublishFailureNotifier,
     CampaignStatusSyncListener,
   ],
   exports: [

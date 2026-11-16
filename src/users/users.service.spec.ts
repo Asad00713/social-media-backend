@@ -1,6 +1,16 @@
+import { BadRequestException } from '@nestjs/common';
+import { drizzle } from 'drizzle-orm/node-postgres';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import type { SQL } from 'drizzle-orm';
-import { UsersService } from './users.service';
+import type { Pool } from 'pg';
+import * as schema from '../drizzle/schema';
+import type { User } from '../drizzle/schema';
+import { UsersService, toPublicUser } from './users.service';
+
+/** The first argument of a mock's first call, typed (mock.calls is any[][]). */
+function firstArg<T>(mock: jest.Mock): T {
+  return (mock.mock.calls as unknown[][])[0][0] as T;
+}
 
 const dialect = new PgDialect();
 const render = (where: SQL) => dialect.sqlToQuery(where);
@@ -164,5 +174,174 @@ describe('UsersService public user shape', () => {
     const result = await service.update('u1', { name: 'Sara' });
 
     expect(result).toHaveProperty('useCase', null);
+  });
+});
+
+describe('UsersService.update refuses the email and password fields', () => {
+  function build() {
+    const row = { id: 'u1', name: 'Sara', password: 'hash' };
+    const returning = jest.fn().mockResolvedValue([{ ...row, name: 'Sana' }]);
+    const where = jest.fn().mockReturnValue({ returning });
+    const set = jest.fn().mockReturnValue({ where });
+    const update = jest.fn().mockReturnValue({ set });
+    const service = new UsersService({
+      query: { users: { findFirst: jest.fn().mockResolvedValue(row) } },
+      update,
+    } as never);
+    return { service, update, set };
+  }
+
+  async function bodyOf(p: Promise<unknown>) {
+    try {
+      await p;
+    } catch (e) {
+      expect(e).toBeInstanceOf(BadRequestException);
+      return (e as BadRequestException).getResponse();
+    }
+    throw new Error('expected a BadRequestException');
+  }
+
+  it('PATCH /users/:id with email → USE_EMAIL_CHANGE_FLOW; with name only → updates', async () => {
+    const { service, update, set } = build();
+
+    await expect(
+      bodyOf(service.update('u1', { email: 'new@x.co', name: 'Sana' })),
+    ).resolves.toEqual({
+      statusCode: 400,
+      error: 'Bad Request',
+      code: 'USE_EMAIL_CHANGE_FLOW',
+      message: 'Change your email from Settings → Profile.',
+    });
+    expect(update).not.toHaveBeenCalled();
+
+    const result = await service.update('u1', { name: 'Sana' });
+    expect(result.name).toBe('Sana');
+    expect(firstArg<object>(set)).toMatchObject({ name: 'Sana' });
+  });
+
+  it('with password → USE_PASSWORD_CHANGE_FLOW and nothing is written', async () => {
+    const { service, update } = build();
+    await expect(
+      bodyOf(service.update('u1', { password: 'Secret123' })),
+    ).resolves.toEqual({
+      statusCode: 400,
+      error: 'Bad Request',
+      code: 'USE_PASSWORD_CHANGE_FLOW',
+      message: 'Change your password from Settings → Profile.',
+    });
+    expect(update).not.toHaveBeenCalled();
+  });
+});
+
+describe('UsersService hasPassword', () => {
+  const row = {
+    id: 'u1',
+    email: 'sara@daybreak.co',
+    name: 'Sara',
+    role: 'USER',
+    isEmailVerified: true,
+    lastAccessedWorkspaceId: null,
+    onboardingCompletedAt: null,
+    maestroTone: 'professional',
+    useCase: null,
+    avatarUrl: null,
+    avatarColor: 'amber',
+    createdAt: new Date(0),
+    updatedAt: new Date(0),
+    password: 'hash',
+    passwordResetToken: 'reset-hash',
+    sessionsRevokedAt: new Date(0),
+  } as unknown as User;
+
+  it('toPublicUser exposes hasPassword and never password', () => {
+    const withPassword = toPublicUser(row);
+    expect(withPassword.hasPassword).toBe(true);
+    expect(withPassword).not.toHaveProperty('password');
+    expect(withPassword).not.toHaveProperty('passwordResetToken');
+    expect(withPassword).not.toHaveProperty('sessionsRevokedAt');
+
+    expect(toPublicUser({ ...row, password: null }).hasPassword).toBe(false);
+  });
+
+  it('every public read derives hasPassword in SQL and never selects the hash', async () => {
+    const findFirst = jest.fn().mockResolvedValue({ id: 'u1' });
+    const service = new UsersService({
+      query: { users: { findFirst } },
+    } as never);
+
+    await service.findOne('u1');
+
+    // Replay the same query on a client-less Drizzle instance to see its SQL.
+    const real = drizzle({ client: {} as Pool, schema });
+    const { sql } = real.query.users
+      .findFirst(
+        firstArg<Parameters<typeof real.query.users.findFirst>[0]>(findFirst),
+      )
+      .toSQL();
+    expect(sql).toMatch(/"password" is not null/i);
+    expect(sql).not.toMatch(/"password"(?! is not null)/i);
+  });
+
+  it('findOneWithSuspension also reads sessionsRevokedAt for the JWT strategies', async () => {
+    const findFirst = jest.fn().mockResolvedValue({ id: 'u1' });
+    const service = new UsersService({
+      query: { users: { findFirst } },
+    } as never);
+
+    await service.findOneWithSuspension('u1');
+
+    expect(firstArg<{ columns: object }>(findFirst).columns).toMatchObject({
+      sessionsRevokedAt: true,
+      isActive: true,
+    });
+  });
+});
+
+describe('UsersService.resetPassword', () => {
+  it('ends every session in the same write as the new password', async () => {
+    const execute = jest.fn().mockResolvedValue(undefined);
+    const service = new UsersService({ execute } as never);
+
+    await service.resetPassword('u1', 'Secret123');
+
+    const { sql } = render(firstArg<SQL>(execute));
+    expect(sql).toMatch(/sessions_revoked_at = \$\d+/);
+    expect(sql).toMatch(/password_reset_token = NULL/);
+  });
+});
+
+describe('UsersService.applyGoogleSignIn', () => {
+  async function run(clearPassword: boolean) {
+    const execute = jest.fn().mockResolvedValue(undefined);
+    const service = new UsersService({ execute } as never);
+    const before = Date.now();
+    await service.applyGoogleSignIn('u1', {
+      googleSub: 'g-1',
+      name: 'Sara',
+      clearPassword,
+    });
+    return { ...render(firstArg<SQL>(execute)), before };
+  }
+
+  it('pre-hijack clear ends the squatter sessions in the same UPDATE as the password', async () => {
+    const { sql, params, before } = await run(true);
+    const m =
+      /sessions_revoked_at = CASE WHEN \$(\d+) THEN \$(\d+) ELSE sessions_revoked_at END/.exec(
+        sql,
+      );
+    expect(m).not.toBeNull();
+    expect(params[Number(m![1]) - 1]).toBe(true);
+    const revokedAt = params[Number(m![2]) - 1] as Date;
+    expect(revokedAt).toBeInstanceOf(Date);
+    expect(revokedAt.getTime()).toBeGreaterThanOrEqual(before);
+    expect(sql).toMatch(
+      /password = CASE WHEN \$\d+ THEN NULL ELSE password END/,
+    );
+  });
+
+  it('a verified link keeps the sessions (the CASE flag is false)', async () => {
+    const { sql, params } = await run(false);
+    const m = /sessions_revoked_at = CASE WHEN \$(\d+) THEN/.exec(sql);
+    expect(params[Number(m![1]) - 1]).toBe(false);
   });
 });

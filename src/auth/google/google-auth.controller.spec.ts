@@ -19,8 +19,13 @@ function build(callbackResult?: unknown, tokenError?: Error) {
     clearCookie: jest.fn(),
     redirect: jest.fn(),
   };
-  const controller = new GoogleAuthController(google as never, auth as never);
-  return { controller, google, auth, res };
+  const knownDevices = { track: jest.fn() };
+  const controller = new GoogleAuthController(
+    google as never,
+    auth as never,
+    knownDevices as never,
+  );
+  return { controller, google, auth, res, knownDevices };
 }
 
 describe('GoogleAuthController.start', () => {
@@ -77,6 +82,7 @@ describe('GoogleAuthController.callback', () => {
       '1.1.1.1',
     );
     expect(b.res.cookie).not.toHaveBeenCalled();
+    expect(b.knownDevices.track).not.toHaveBeenCalled();
     expect(b.res.redirect).toHaveBeenCalledWith(302, 'https://done');
   });
 
@@ -96,6 +102,63 @@ describe('GoogleAuthController.callback', () => {
     expect(b.res.redirect).toHaveBeenCalledWith(302, 'https://ok');
   });
 
+  it.each([
+    ['an existing account: A6 when the device is new', false],
+    ['a new account: recorded silently', true],
+  ])(
+    'after the session, keeps a valid device cookie and tracks it (%s)',
+    async (_name, isNewAccount) => {
+      const id = 'k'.repeat(43);
+      const b = build({
+        redirectUrl: 'https://ok',
+        session: { userId: 'u1', email: 'a@b.c', isNewAccount },
+        mode: 'popup',
+      });
+      await b.controller.callback(
+        {},
+        { cookies: { g_auth: 'state-cookie', sd_device: id } } as never,
+        '1.2.3.4',
+        b.res as never,
+        'Mozilla/5.0',
+      );
+      expect(b.res.cookie).toHaveBeenCalledWith(
+        'sd_device',
+        id,
+        expect.objectContaining({
+          httpOnly: true,
+          secure: true,
+          sameSite: 'none',
+        }),
+      );
+      expect(b.knownDevices.track).toHaveBeenCalledWith(
+        'u1',
+        id,
+        { ip: '1.2.3.4', userAgent: 'Mozilla/5.0' },
+        { silent: isNewAccount },
+      );
+    },
+  );
+
+  it('a JSON-decoded device cookie gets a fresh string id', async () => {
+    const b = build({
+      redirectUrl: 'https://ok',
+      session: { userId: 'u1', email: 'a@b.c', isNewAccount: false },
+      mode: 'popup',
+    });
+    await b.controller.callback(
+      {},
+      {
+        cookies: { g_auth: 'state-cookie', sd_device: ['k'.repeat(43)] },
+      } as never,
+      'ip',
+      b.res as never,
+    );
+    const tracked = b.knownDevices.track.mock.calls[0] as unknown[];
+    expect(typeof tracked[1]).toBe('string');
+    expect(tracked[1]).toMatch(/^[A-Za-z0-9_-]{43}$/);
+    expect(tracked[1]).not.toBe('k'.repeat(43));
+  });
+
   it('redirects to the failure url when minting the refresh token fails', async () => {
     const b = build(
       {
@@ -109,5 +172,7 @@ describe('GoogleAuthController.callback', () => {
     expect(b.google.failureUrl).toHaveBeenCalledWith('popup');
     expect(b.res.redirect).toHaveBeenCalledWith(302, FAIL_URL);
     expect(b.res.cookie).not.toHaveBeenCalled();
+    // No session, so no device row and no A6.
+    expect(b.knownDevices.track).not.toHaveBeenCalled();
   });
 });

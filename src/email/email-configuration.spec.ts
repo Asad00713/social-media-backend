@@ -1,4 +1,11 @@
+import { Logger } from '@nestjs/common';
 import { EmailService } from './email.service';
+
+// Module scope, not beforeEach: the service below is built while the describe
+// block is collected, and its constructor already logs.
+for (const level of ['log', 'error', 'warn', 'debug'] as const) {
+  jest.spyOn(Logger.prototype, level).mockImplementation(() => undefined);
+}
 
 /**
  * A missing API key must be reported as a failure.
@@ -14,11 +21,18 @@ describe('EmailService without an API key', () => {
   const service = new EmailService(config as never);
 
   it('reports failure rather than a phantom success', async () => {
-    const result = await service.sendEmail({
-      to: 'someone@example.com',
-      subject: 'Verify your email',
-      html: '<p>123456</p>',
-    });
+    const result = await service.deliver(
+      {
+        to: 'someone@example.com',
+        subject: 'Verify your email',
+        html: '<p>123456</p>',
+        text: '123456',
+      },
+      {
+        idempotencyKey: 'verify-email.u1',
+        tags: { category: 'account', template: 'verify-email' },
+      },
+    );
 
     expect(result.success).toBe(false);
     // The reason has to name the missing configuration — an operator reading

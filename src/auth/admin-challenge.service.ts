@@ -10,7 +10,8 @@ import { and, desc, eq, isNull, gt, lt } from 'drizzle-orm';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import type { DbType } from '../drizzle/db';
 import { adminLoginChallenges, users } from '../drizzle/schema';
-import { EmailService } from '../email/email.service';
+import { EmailOutboxService } from '../email/queue/email-outbox.service';
+import { adminLoginCodeTemplate } from '../email/templates/security/admin-login-code';
 import { generateOtp, hash } from '../common/utils/encryption.util';
 
 /** Ten minutes, matching the email-verification OTP already in this codebase. */
@@ -60,7 +61,7 @@ export class AdminChallengeService {
     @Inject(DRIZZLE) private db: DbType,
     private jwtService: JwtService,
     private configService: ConfigService,
-    private emailService: EmailService,
+    private emailOutbox: EmailOutboxService,
   ) {}
 
   /**
@@ -121,25 +122,40 @@ export class AdminChallengeService {
 
     const otp = generateOtp(6);
 
-    await this.db.insert(adminLoginChallenges).values({
-      userId: user.id,
-      otpHash: hash(otp),
-      expiresAt: new Date(Date.now() + CHALLENGE_TTL_MS),
-      requestIp: requestIp?.slice(0, 45),
-    });
+    const [challenge] = await this.db
+      .insert(adminLoginChallenges)
+      .values({
+        userId: user.id,
+        otpHash: hash(otp),
+        expiresAt: new Date(Date.now() + CHALLENGE_TTL_MS),
+        requestIp: requestIp?.slice(0, 45),
+      })
+      .returning({ id: adminLoginChallenges.id });
 
-    await this.emailService.sendEmail({
-      to: user.email,
-      subject: `${otp} is your Schedura admin code`,
-      html: this.buildEmail(otp),
+    // Inline, never queued: queued job data (the code included) would sit in
+    // Redis and Bull Board for a day. The challenge id keys the send, so a
+    // retry of this request cannot double-send one code.
+    const result = await this.emailOutbox.sendNow({
+      template: adminLoginCodeTemplate,
+      props: { code: otp, ip: requestIp?.slice(0, 45) ?? null },
+      to: { email: user.email, userId: user.id },
+      workspaceId: null,
+      idempotencyKey: `admin-code.${challenge.id}`,
     });
+    if (!result.success) {
+      this.logger.error(
+        // The code only: a provider message can quote the recipient address.
+        `Admin login code email for user ${user.id} failed: ${result.errorCode ?? (result.retryable ? 'retryable' : 'failed')}`,
+      );
+    }
 
     // Without a mail provider configured locally the send above is a no-op,
     // which would leave nothing to type. This is the only way in during local
-    // development, and it is gated on the environment rather than a flag so it
-    // cannot be switched on in production by accident.
-    if (this.configService.get<string>('NODE_ENV') !== 'production') {
-      this.logger.debug(`Admin login code for ${user.email}: ${otp}`);
+    // development, and it is gated on the environment rather than a flag. It
+    // is development only, not "anything but production": staging logs are
+    // shared, and must never hold a code or the address it was sent to.
+    if (this.configService.get<string>('NODE_ENV') === 'development') {
+      this.logger.debug(`Admin login code: ${otp}`);
     }
   }
 
@@ -264,24 +280,5 @@ export class AdminChallengeService {
     }
 
     return secret;
-  }
-
-  private buildEmail(otp: string): string {
-    return `
-      <div style="font-family: system-ui, -apple-system, sans-serif; max-width: 480px;">
-        <p style="font-size: 15px; color: #111;">
-          Use this code to finish signing in to the Schedura admin dashboard.
-        </p>
-        <p style="font-size: 32px; font-weight: 600; letter-spacing: 6px; margin: 24px 0; color: #111;">
-          ${otp}
-        </p>
-        <p style="font-size: 14px; color: #555;">
-          It expires in 10 minutes and can only be used once.
-        </p>
-        <p style="font-size: 14px; color: #555;">
-          If you did not try to sign in, someone has your password. Change it.
-        </p>
-      </div>
-    `;
   }
 }

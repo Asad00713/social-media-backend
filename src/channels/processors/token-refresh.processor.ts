@@ -10,6 +10,7 @@ import {
 } from '../../drizzle/schema/channels.schema';
 import { OAuthService } from '../services/oauth.service';
 import { encrypt, decrypt } from '../../common/utils/encryption.util';
+import { ChannelHealthNotifier } from '../services/channel-health-notifier.service';
 import { isDisconnected, liveChannel } from '../lib/live-channel';
 
 export interface TokenRefreshJob {
@@ -23,6 +24,7 @@ export class TokenRefreshProcessor extends WorkerHost {
   constructor(
     private readonly oauth: OAuthService,
     @Inject(DRIZZLE) private readonly db: any,
+    private readonly health: ChannelHealthNotifier,
   ) {
     super();
   }
@@ -100,15 +102,12 @@ export class TokenRefreshProcessor extends WorkerHost {
         `Token refresh failed: channelId=${channelId} platform=${channel.platform}: ${message}`,
       );
 
-      // Mark as expired so user is prompted to reconnect
-      await this.db
-        .update(socialMediaChannels)
-        .set({
-          connectionStatus: 'expired',
-          lastError: `Refresh failed: ${message}`.slice(0, 500),
-          updatedAt: new Date(),
-        })
-        .where(and(eq(socialMediaChannels.id, channelId), liveChannel()));
+      // Mark as expired so user is prompted to reconnect. The notifier flips
+      // the status once and emails only the run that actually flipped it.
+      await this.health.markExpired(channelId, {
+        lastError: `Refresh failed: ${message}`.slice(0, 500),
+        updatedAt: new Date(),
+      });
 
       return { ok: false };
     }

@@ -16,6 +16,7 @@ import {
 } from './google-oauth-revoke.service';
 import { eq, and, desc, asc, sql } from 'drizzle-orm';
 import { db } from '../../drizzle/db';
+import { ChannelHealthNotifier } from './channel-health-notifier.service';
 import {
   socialMediaChannels,
   channelRelationships,
@@ -108,6 +109,7 @@ export class ChannelService {
     private readonly googleRevoke: GoogleOauthRevokeService,
     @Inject(forwardRef(() => AccountChannelsService))
     private readonly accountChannels: AccountChannelsService,
+    private readonly health: ChannelHealthNotifier,
     // Releases the posts a disconnected channel held when a reconnect
     // revives its row.
     private readonly heldPosts: ChannelPauseService,
@@ -1240,16 +1242,12 @@ export class ChannelService {
         // If token is expired (not just about to expire), throw error
         if (isExpired) {
           // Mark channel as expired
-          await db
-            .update(socialMediaChannels)
-            .set({
-              connectionStatus: 'expired',
-              lastError: 'Token refresh failed',
-              lastErrorAt: new Date(),
-              consecutiveErrors: (channelData.consecutiveErrors || 0) + 1,
-              updatedAt: new Date(),
-            })
-            .where(eq(socialMediaChannels.id, channelId));
+          await this.health.markExpired(channelId, {
+            lastError: 'Token refresh failed',
+            lastErrorAt: new Date(),
+            consecutiveErrors: (channelData.consecutiveErrors || 0) + 1,
+            updatedAt: new Date(),
+          });
 
           throw new BadRequestException(
             `Access token has expired and refresh failed. Please reconnect the ${platform} channel.`,
@@ -1323,15 +1321,11 @@ export class ChannelService {
         // Mark channel as expired so the UI surfaces a reconnect CTA. The
         // refreshJwt itself can expire if the App Password was revoked.
         if (res.status === 400 || res.status === 401) {
-          await db
-            .update(socialMediaChannels)
-            .set({
-              connectionStatus: 'expired',
-              lastError: `Bluesky session refresh failed: ${errText}`,
-              lastErrorAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(eq(socialMediaChannels.id, channelData.id));
+          await this.health.markExpired(channelData.id, {
+            lastError: `Bluesky session refresh failed: ${errText}`,
+            lastErrorAt: new Date(),
+            updatedAt: new Date(),
+          });
         }
         return decrypt(channelData.accessToken);
       }

@@ -20,13 +20,18 @@ import {
   SupportedPlatform,
 } from '../../drizzle/schema/channels.schema';
 import { users } from '../../drizzle/schema/users.schema';
+import { workspace } from '../../drizzle/schema/workspace.schema';
 import { QUEUES } from '../../queue/queue.module';
 import {
   DripContentGeneratorService,
   GeneratedDripContent,
 } from '../../ai/services/drip-content-generator.service';
 import { PostService } from '../../posts/services/post.service';
-import { EmailService } from '../../email/email.service';
+import { AppLinks } from '../../email/links/app-links';
+import { formatWhen, usableZone } from '../../email/links/format-when';
+import { networkName } from '../../email/render/components/post-card';
+import { dripReview } from '../../email/templates/publishing/drip-review';
+import { NotifyService } from '../../notifications/notify.service';
 
 interface DripJobData {
   dripPostId: string;
@@ -43,7 +48,8 @@ export class DripProcessor extends WorkerHost {
   constructor(
     private readonly contentGenerator: DripContentGeneratorService,
     private readonly postService: PostService,
-    private readonly emailService: EmailService,
+    private readonly notify: NotifyService,
+    private readonly links: AppLinks,
   ) {
     super();
   }
@@ -310,15 +316,40 @@ export class DripProcessor extends WorkerHost {
       { text: string; hashtags?: string[] }
     >;
 
-    // Send email notification
-    const emailResult = await this.emailService.sendDripNotification({
-      userEmail: user.email,
-      userName: user.name || undefined,
-      campaignName: campaign.name,
-      dripPostId: dripPost.id,
-      scheduledAt: dripPost.scheduledAt,
-      generatedContent: dripPost.generatedContent || '',
-      platformContent,
+    // Only the wording of the time depends on this: a failed read shows UTC
+    // and never fails the job.
+    let timezone = 'UTC';
+    try {
+      const [ws] = await db
+        .select({ timezone: workspace.timezone })
+        .from(workspace)
+        .where(eq(workspace.id, campaign.workspaceId));
+      timezone = ws?.timezone || 'UTC';
+    } catch (err) {
+      this.logger.warn(
+        `Workspace time zone read failed for drip post ${dripPostId}, using UTC: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+
+    // Queue the review email. NotifyService never throws and applies the
+    // creator's drip_review preference when the worker sends it: an email
+    // failure must not block the post from publishing.
+    await this.notify.notify({
+      userId: user.id,
+      workspaceId: campaign.workspaceId,
+      event: 'drip_review',
+      email: {
+        template: dripReview,
+        props: {
+          campaignName: campaign.name,
+          when: formatWhen(dripPost.scheduledAt, usableZone(timezone)),
+          caption: dripPost.generatedContent || '',
+          platforms: Object.keys(platformContent ?? {}).map(networkName),
+          reviewUrl: this.links.planner(campaign.workspaceId),
+        },
+        to: user.email,
+        idempotencyKey: `drip-review.${dripPost.id}`,
+      },
     });
 
     await this.recordHistory(
@@ -331,29 +362,16 @@ export class DripProcessor extends WorkerHost {
       {
         notificationType: 'email',
         emailTo: user.email,
-        emailSuccess: emailResult.success,
-        emailMessageId: emailResult.messageId,
+        emailQueued: true,
         scheduledAt: dripPost.scheduledAt.toISOString(),
       },
     );
 
-    if (!emailResult.success) {
-      this.logger.error(
-        `Failed to send notification email: ${emailResult.error}`,
-      );
-      // Don't throw - email failure shouldn't block the post from publishing
-    } else {
-      this.logger.log(
-        `Notification email sent to ${user.email} for drip post ${dripPostId}`,
-      );
-    }
+    this.logger.log(
+      `Review email queued for user ${user.id}, drip post ${dripPostId}`,
+    );
 
-    return {
-      success: true,
-      notificationSent: emailResult.success,
-      messageId: emailResult.messageId,
-      error: emailResult.error,
-    };
+    return { success: true, notificationQueued: true };
   }
 
   /**

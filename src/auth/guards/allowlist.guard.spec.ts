@@ -18,6 +18,8 @@ function make(opts: {
   skip?: boolean;
   verify?: (t: string) => { sub: string; email: string };
   role?: string;
+  /** The address on the users row; the claim's email is never read. */
+  email?: string;
   // Onboarding state of the looked-up user. Default: a real timestamp, i.e.
   // ONBOARDED — so the "block unlisted" tests exercise the post-onboarding
   // lock. Pass `null` to simulate a user still in onboarding; pass a custom
@@ -36,6 +38,7 @@ function make(opts: {
       ? opts.user
       : {
           role: opts.role ?? 'USER',
+          email: opts.email ?? 'x@x.com',
           onboardingCompletedAt:
             opts.onboardingCompletedAt === undefined
               ? new Date('2026-01-01T00:00:00Z')
@@ -142,6 +145,7 @@ describe('AllowlistGuard', () => {
     const g = make({
       verify: () => ({ sub: 'u1', email: 'a@x.com' }),
       role: 'USER',
+      email: 'a@x.com',
     });
     await expect(
       g.canActivate(ctx({ authorization: 'Bearer t' })),
@@ -156,6 +160,29 @@ describe('AllowlistGuard', () => {
     });
     await expect(
       g.canActivate(ctx({ authorization: 'Bearer t' })),
+    ).resolves.toBe(true);
+  });
+
+  it('decides on the address in the database, not a stale claim from before an email change', async () => {
+    process.env.ALLOWLIST_EMAILS = 'a@x.com';
+    // The token still says a@x.com; the account moved to c@z.com since.
+    const moved = make({
+      verify: () => ({ sub: 'u1', email: 'a@x.com' }),
+      role: 'USER',
+      email: 'c@z.com',
+    });
+    await expect(
+      moved.canActivate(ctx({ authorization: 'Bearer t' })),
+    ).rejects.toMatchObject({ response: { code: 'NOT_LAUNCHED' } });
+
+    // And the other way round: a listed address on the row is enough.
+    const listed = make({
+      verify: () => ({ sub: 'u1', email: 'c@z.com' }),
+      role: 'USER',
+      email: 'a@x.com',
+    });
+    await expect(
+      listed.canActivate(ctx({ authorization: 'Bearer t' })),
     ).resolves.toBe(true);
   });
 });

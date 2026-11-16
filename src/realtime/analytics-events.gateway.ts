@@ -12,6 +12,7 @@ import { Server, Socket } from 'socket.io';
 import { JwtService } from '@nestjs/jwt';
 import { ConfigService } from '@nestjs/config';
 import { and, eq } from 'drizzle-orm';
+import { assertSessionLive } from '../auth/strategies/jwt.strategy';
 import { db } from '../drizzle/db';
 import { users } from '../drizzle/schema/users.schema';
 import { WorkspaceRoleService } from '../workspace-members/workspace-role.service';
@@ -39,7 +40,6 @@ interface CachedRole {
 
 interface AuthedSocket extends Socket {
   userId?: string;
-  email?: string;
   /** Cached `{ id, name, avatarUrl }` for typing relays (looked up once per socket). */
   typingUser?: UserRef;
   /** `<conversationId>:<state>` -> epoch ms the throttle slot was claimed. */
@@ -88,15 +88,30 @@ export class AnalyticsEventsGateway
         return;
       }
 
-      const payload = await this.jwtService.verifyAsync(token, {
+      const payload = await this.jwtService.verifyAsync<{
+        sub?: string;
+        userId?: string;
+        iat?: number;
+      }>(token, {
         secret: this.config.get<string>('JWT_ACCESS_SECRET'),
       });
+      const userId = payload.sub ?? payload.userId;
+      if (!userId) throw new Error('Token names no user');
 
-      socket.userId = payload.sub ?? payload.userId;
-      socket.email = payload.email;
+      // A token from before a password change, reset or "This wasn't me" is
+      // refused, as on the HTTP side and the notifications socket. Checked
+      // once, at connect.
+      const account = await db.query.users.findFirst({
+        where: eq(users.id, userId),
+        columns: { sessionsRevokedAt: true },
+      });
+      if (!account) throw new Error(`User ${userId} not found`);
+      assertSessionLive(payload.iat, account.sessionsRevokedAt);
+
+      socket.userId = userId;
       // Per-user events (billing) go to this room. Joined from the verified
       // token only — a client never names the room it joins.
-      if (socket.userId) await socket.join(this.userRoom(socket.userId));
+      await socket.join(this.userRoom(userId));
       this.logger.log(
         `Socket ${socket.id} connected for user ${socket.userId}`,
       );

@@ -7,13 +7,15 @@ import {
   getRefreshTokenTtlDays,
   type SupportedPlatform,
 } from '../../drizzle/schema/channels.schema';
+import { ChannelHealthNotifier } from '../services/channel-health-notifier.service';
 
-const WARNING_THRESHOLD_DAYS = 3;
+const WARNING_THRESHOLD_DAYS = 7;
 
 /**
  * Daily check (12:00 UTC) that scans active channels with refresh tokens and
- * flags any whose refresh token will expire within WARNING_THRESHOLD_DAYS.
- * Today: just logs warnings. Future: enqueue notifications to user.
+ * flags any whose refresh token will expire within WARNING_THRESHOLD_DAYS,
+ * logging each and emailing the owner and admins (C2). The notifier sends each
+ * stage once per token, so a channel that stays in the window is not re-mailed.
  *
  * NOTE: this is a SEPARATE concern from the 10-min access-token cron.
  * Access tokens get auto-refreshed silently. Refresh tokens can only be
@@ -23,7 +25,10 @@ const WARNING_THRESHOLD_DAYS = 3;
 export class RefreshTokenExpiryScheduler {
   private readonly logger = new Logger(RefreshTokenExpiryScheduler.name);
 
-  constructor(@Inject(DRIZZLE) private readonly db: any) {}
+  constructor(
+    @Inject(DRIZZLE) private readonly db: any,
+    private readonly health: ChannelHealthNotifier,
+  ) {}
 
   @Cron('0 12 * * *', { timeZone: 'UTC', name: 'checkRefreshTokenExpiry' })
   async checkRefreshTokenExpiry(): Promise<void> {
@@ -32,6 +37,8 @@ export class RefreshTokenExpiryScheduler {
         id: socialMediaChannels.id,
         platform: socialMediaChannels.platform,
         accountName: socialMediaChannels.accountName,
+        accountType: socialMediaChannels.accountType,
+        username: socialMediaChannels.username,
         workspaceId: socialMediaChannels.workspaceId,
         refreshTokenIssuedAt: socialMediaChannels.refreshTokenIssuedAt,
       })
@@ -49,7 +56,11 @@ export class RefreshTokenExpiryScheduler {
       id: number;
       platform: string;
       accountName: string;
+      accountType: string;
+      username: string | null;
       workspaceId: string;
+      refreshTokenIssuedAt: Date;
+      endsAt: Date;
       daysLeft: number;
     }> = [];
 
@@ -66,7 +77,11 @@ export class RefreshTokenExpiryScheduler {
           id: Number(r.id),
           platform: r.platform,
           accountName: r.accountName,
+          accountType: r.accountType,
+          username: r.username,
           workspaceId: r.workspaceId,
+          refreshTokenIssuedAt: new Date(r.refreshTokenIssuedAt),
+          endsAt: new Date(expiresAt),
           daysLeft,
         });
       }
@@ -87,6 +102,8 @@ export class RefreshTokenExpiryScheduler {
         `  - channelId=${c.id} platform=${c.platform} account="${c.accountName}" workspaceId=${c.workspaceId} daysLeft=${c.daysLeft}`,
       );
     }
-    // TODO: enqueue user-facing notifications via NotificationsModule (deferred to next phase)
+    for (const c of expiringSoon) {
+      await this.health.expiring(c, c.daysLeft, c.endsAt);
+    }
   }
 }

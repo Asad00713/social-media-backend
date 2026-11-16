@@ -5,8 +5,10 @@ import {
   NotFoundException,
   ParseUUIDPipe,
 } from '@nestjs/common';
+import type { ConfigService } from '@nestjs/config';
 import { PgDialect } from 'drizzle-orm/pg-core';
 import { ROUTE_ARGS_METADATA } from '@nestjs/common/constants';
+import { AppLinks } from 'src/email/links/app-links';
 import {
   MEMBER_RESTORE_WINDOW_MS,
   WorkspaceMembersService,
@@ -48,11 +50,37 @@ const executed = (db: any): string[] =>
     (c: any[]) => dialect.sqlToQuery(c[0]).sql as string,
   );
 
-function makeService(db: any, over: { usage?: any; email?: any } = {}) {
+/** The email and notification collaborators, faked; tests read the calls. */
+function makeMail() {
+  return {
+    outbox: { sendNow: jest.fn().mockResolvedValue({ success: true }) },
+    notify: { notify: jest.fn().mockResolvedValue(undefined) },
+    emitter: { memberRemoved: jest.fn().mockResolvedValue(undefined) },
+    recipients: {
+      user: jest.fn().mockResolvedValue(null),
+      displayName: (u: { name?: string | null; email: string }) =>
+        u.name ?? u.email,
+    },
+  };
+}
+
+type Mail = ReturnType<typeof makeMail>;
+
+const links = new AppLinks({
+  get: (key: string) =>
+    key === 'FRONTEND_URL' ? 'https://app.schedura.ai' : undefined,
+} as unknown as ConfigService);
+
+function makeService(db: any, over: { usage?: any; mail?: Mail } = {}) {
   // Transactions and savepoints run the callback on the same mock; the
-  // seat lock is recorded by `execute`.
+  // seat lock is recorded by `execute`. The invitation email counts channels
+  // and members through `select`.
   db.execute ??= jest.fn().mockResolvedValue(undefined);
   db.transaction ??= (fn: (tx: unknown) => unknown) => fn(db);
+  db.select ??= () => ({
+    from: () => ({ where: () => Promise.resolve([{ count: 0 }]) }),
+  });
+  const mail = over.mail ?? makeMail();
   return new WorkspaceMembersService(
     db,
     over.usage ?? {
@@ -62,12 +90,13 @@ function makeService(db: any, over: { usage?: any; email?: any } = {}) {
       incrementMemberCount: jest.fn().mockResolvedValue(undefined),
       decrementMemberCount: jest.fn().mockResolvedValue(undefined),
     },
-    over.email ?? {
-      invitationAcceptUrl: (t: string) =>
-        `https://app.schedura.ai/invite/accept?token=${t}`,
-    },
+    mail.outbox as any,
     {} as any,
     roleService as any,
+    mail.notify as any,
+    mail.emitter as any,
+    mail.recipients as any,
+    links,
   );
 }
 
@@ -229,7 +258,6 @@ describe('no response carries the invitation token', () => {
             .mockResolvedValue({ membersLimit: 5, membersCount: 1 }),
           enforceMemberLimit: jest.fn().mockResolvedValue(undefined),
         },
-        email: { sendWorkspaceInvitation: jest.fn().mockResolvedValue({}) },
       },
     );
     const res = await svc.batchInvite(
@@ -294,10 +322,13 @@ describe('WorkspaceMembersService.removeMember (soft)', () => {
   it('a removal that lost the race to another is a 404 and counts nothing', async () => {
     const { db } = removalDb([]);
     const usage = { decrementMemberCount: jest.fn() };
+    const mail = makeMail();
     await expect(
-      makeService(db, { usage }).removeMember(WS, 'm1', ADMIN),
+      makeService(db, { usage, mail }).removeMember(WS, 'm1', ADMIN),
     ).rejects.toBeInstanceOf(NotFoundException);
     expect(usage.decrementMemberCount).not.toHaveBeenCalled();
+    // The removal that won sends the email; the loser sends nothing.
+    expect(mail.notify.notify).not.toHaveBeenCalled();
   });
 });
 
@@ -583,17 +614,16 @@ describe('the seat lock on invites and accepts', () => {
     } as any;
   }
 
-  const email = { sendWorkspaceInvitation: jest.fn().mockResolvedValue({}) };
-
   it('a single invite checks the seat under the lock and refuses the last one taken', async () => {
     const db = inviteDb();
+    const mail = makeMail();
     const usage = {
       getWorkspaceUsage: jest
         .fn()
         .mockResolvedValue({ membersLimit: 2, membersCount: 2 }),
     };
     await expect(
-      makeService(db, { usage, email }).inviteMember(
+      makeService(db, { usage, mail }).inviteMember(
         WS,
         { email: 'a@x.pk', role: 'MEMBER' } as any,
         OWNER,
@@ -601,17 +631,18 @@ describe('the seat lock on invites and accepts', () => {
     ).rejects.toThrow(/SEAT_LIMIT_EXCEEDED/);
     expect(executed(db)[0]).toContain('pg_advisory_xact_lock');
     expect(db.insert).not.toHaveBeenCalled();
-    expect(email.sendWorkspaceInvitation).not.toHaveBeenCalled();
+    expect(mail.outbox.sendNow).not.toHaveBeenCalled();
   });
 
   it('a batch invite takes the lock once, before the seat check, and emails after', async () => {
     const db = inviteDb();
+    const mail = makeMail();
     const usage = {
       getWorkspaceUsage: jest
         .fn()
         .mockResolvedValue({ membersLimit: 5, membersCount: 1 }),
     };
-    const res = await makeService(db, { usage, email }).batchInvite(
+    const res = await makeService(db, { usage, mail }).batchInvite(
       WS,
       [
         { email: 'a@x.pk', role: 'MEMBER' },
@@ -627,7 +658,7 @@ describe('the seat lock on invites and accepts', () => {
     expect(db.execute.mock.invocationCallOrder[0]).toBeLessThan(
       usage.getWorkspaceUsage.mock.invocationCallOrder[0],
     );
-    expect(email.sendWorkspaceInvitation).toHaveBeenCalledTimes(2);
+    expect(mail.outbox.sendNow).toHaveBeenCalledTimes(2);
   });
 
   it('an accept only turns a still-PENDING row ACCEPTED, under the lock', async () => {

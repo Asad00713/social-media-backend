@@ -68,6 +68,7 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
 import { TokenRefreshProcessor } from './processors/token-refresh.processor';
 import { TokenRefreshScheduler } from './schedulers/token-refresh.scheduler';
 import { RefreshTokenExpiryScheduler } from './schedulers/refresh-token-expiry.scheduler';
+import { ChannelHealthModule } from './channel-health.module';
 import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authorization-check.scheduler';
 
 // CalendarSyncModule is imported (forwardRef — CalendarSyncModule imports this
@@ -94,6 +95,8 @@ import { YoutubeAuthorizationCheckScheduler } from './schedulers/youtube-authori
     // (Channels -> Billing -> Notifications -> Channels), so this must be a
     // forwardRef or the app fails to boot.
     forwardRef(() => BillingModule),
+    // C2 reconnect emails (ChannelHealthNotifier).
+    ChannelHealthModule,
   ],
   // ChannelHubController and ConnectLinksController FIRST: Nest registers
   // routes in this order, and ChannelsController's

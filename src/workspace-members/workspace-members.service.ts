@@ -4,6 +4,7 @@ import {
   ForbiddenException,
   Inject,
   Injectable,
+  Logger,
   NotFoundException,
   BadRequestException,
 } from '@nestjs/common';
@@ -12,14 +13,29 @@ import { DRIZZLE } from 'src/drizzle/drizzle.module';
 import { and, eq, gt, inArray, sql, type SQL } from 'drizzle-orm';
 import * as crypto from 'crypto';
 import { InviteMemberDto } from './dto/invite-member.dto';
-import { users, workspace, workspaceInvitation } from 'src/drizzle/schema';
+import {
+  socialMediaChannels,
+  users,
+  workspace,
+  workspaceInvitation,
+} from 'src/drizzle/schema';
 import { UpdateMemberDto } from './dto/update-member.dto';
 import { MemberRole } from './dto/add-member.dto';
 import { UsageService } from 'src/billing/services/usage.service';
-import { EmailService } from 'src/email/email.service';
+import { AppLinks } from 'src/email/links/app-links';
+import { formatDay } from 'src/email/links/format-when';
+import { EmailOutboxService } from 'src/email/queue/email-outbox.service';
+import { invitationAccepted } from 'src/email/templates/team/invitation-accepted';
+import { removedFromWorkspace } from 'src/email/templates/team/removed-from-workspace';
+import { workspaceInvitation as workspaceInvitationEmail } from 'src/email/templates/team/workspace-invitation';
+import { NotificationEmitterService } from 'src/notifications/notification-emitter.service';
+import { NotifyService } from 'src/notifications/notify.service';
+import { RecipientsService } from 'src/notifications/recipients.service';
 import { UsersService } from 'src/users/users.service';
 import { WorkspaceRoleService } from './workspace-role.service';
 import { normalizeEmail } from 'src/users/normalize-email';
+
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /**
  * How long a removal can be undone (POST members/:memberId/restore). Long
@@ -27,6 +43,13 @@ import { normalizeEmail } from 'src/users/normalize-email';
  * that a removal means removed.
  */
 export const MEMBER_RESTORE_WINDOW_MS = 15 * 60 * 1000;
+
+/**
+ * B3 waits out the undo window, plus a margin so an Undo pressed in its last
+ * second still lands first. At send time the template checks the row is
+ * still REMOVED by this removal (removedFromWorkspace.stillApplies).
+ */
+export const MEMBER_REMOVED_EMAIL_DELAY_MS = MEMBER_RESTORE_WINDOW_MS + 30_000;
 
 const RESTORE_WINDOW_MESSAGE =
   'A removal can only be undone within 15 minutes. Invite them again instead.';
@@ -86,12 +109,18 @@ function seatLimitExceeded(
 
 @Injectable()
 export class WorkspaceMembersService {
+  private readonly logger = new Logger(WorkspaceMembersService.name);
+
   constructor(
     @Inject(DRIZZLE) private db: DbType,
     private usageService: UsageService,
-    private emailService: EmailService,
+    private emailOutbox: EmailOutboxService,
     private usersService: UsersService,
     private roleService: WorkspaceRoleService,
+    private notifyService: NotifyService,
+    private notifications: NotificationEmitterService,
+    private recipients: RecipientsService,
+    private links: AppLinks,
   ) {}
 
   // ==================== INVITATION FLOW ====================
@@ -134,10 +163,12 @@ export class WorkspaceMembersService {
       });
     });
 
+    // Best-effort: the row exists regardless, and a failed send is logged.
     await this.sendInvitationEmail(
-      workspaceData.name ?? 'your workspace',
       invitation,
+      workspaceData,
       currentUserId,
+      invitation.userId ?? null,
     );
 
     return {
@@ -223,29 +254,6 @@ export class WorkspaceMembersService {
     return invitation;
   }
 
-  /** The invitation email, best-effort: the row exists regardless and resend covers retries. */
-  private async sendInvitationEmail(
-    workspaceName: string,
-    invitation: { email: string; role: string; token: string; expiresAt: Date },
-    inviterId: string,
-  ): Promise<void> {
-    try {
-      const inviterUser = await this.db.query.users.findFirst({
-        where: eq(users.id, inviterId),
-        columns: { name: true },
-      });
-      await this.emailService.sendWorkspaceInvitation(invitation.email, {
-        workspaceName,
-        inviterName: inviterUser?.name ?? undefined,
-        role: invitation.role as MemberRoleName,
-        token: invitation.token,
-        expiresAt: invitation.expiresAt,
-      });
-    } catch (err) {
-      console.error('Failed to send invitation email:', err);
-    }
-  }
-
   // Step 1b: Batch invite (seat-gated up front)
   async batchInvite(
     workspaceId: string,
@@ -309,9 +317,10 @@ export class WorkspaceMembersService {
     for (const o of outcomes) {
       if (o.invitation) {
         await this.sendInvitationEmail(
-          workspaceData.name ?? 'your workspace',
           o.invitation,
+          workspaceData,
           currentUserId,
+          o.invitation.userId ?? null,
         );
         results.push({
           email: o.email,
@@ -445,6 +454,12 @@ export class WorkspaceMembersService {
         error,
       );
     }
+
+    await this.notifyInviterOfAcceptance(
+      invitation,
+      currentUser,
+      acceptedInvitation,
+    );
 
     return {
       message: 'Invitation accepted successfully',
@@ -807,6 +822,16 @@ export class WorkspaceMembersService {
       console.error('Failed to track member removal:', error);
     }
 
+    if (member.userId && member.userId !== currentUserId) {
+      // After the conditional update above, so a removal emails once even
+      // when two removals race.
+      await this.notifyMemberRemoved(
+        workspaceData,
+        { id: memberId, userId: member.userId, removedAt: now },
+        currentUserId,
+      );
+    }
+
     return { message: 'Member removed successfully' };
   }
 
@@ -821,8 +846,10 @@ export class WorkspaceMembersService {
    * deleted and returned in `droppedInvitations`: the restored membership
    * replaces it.
    *
-   * Removal sends no notification or email, so nothing the removed person
-   * was told needs taking back; they simply have access again.
+   * A removal by someone else rings the removed person's bell at once and
+   * queues the B3 "removed from workspace" email for after this window; a
+   * restore drops that email (its send-time check finds the row ACCEPTED) and
+   * sends nothing back, they simply have access again.
    */
   async restoreMember(
     workspaceId: string,
@@ -966,7 +993,7 @@ export class WorkspaceMembersService {
   /**
    * The accept URL of a pending, unexpired invitation of this workspace, for
    * the Team page's Copy invite link: the URL its email carries
-   * (EmailService.invitationAcceptUrl). 404 for anything else: an accepted,
+   * (AppLinks.invite). 404 for anything else: an accepted,
    * rejected, expired or removed row, or another workspace's.
    */
   async getInvitationLink(workspaceId: string, invitationId: string) {
@@ -984,7 +1011,7 @@ export class WorkspaceMembersService {
     }
 
     return {
-      url: this.emailService.invitationAcceptUrl(invitation.token),
+      url: this.links.invite(invitation.token),
       expiresAt: invitation.expiresAt,
     };
   }
@@ -1051,6 +1078,191 @@ export class WorkspaceMembersService {
         | 'REMOVED',
       expired: new Date() > invitation.expiresAt,
     };
+  }
+
+  // ==================== EMAIL ====================
+
+  /**
+   * B1. Sent inline, not queued: the props carry the invite token, which must
+   * not sit in Redis. Never throws: the invitation already exists.
+   */
+  private async sendInvitationEmail(
+    invitation: typeof workspaceInvitation.$inferSelect,
+    workspaceData: { id: string; name: string | null },
+    inviterId: string,
+    inviteeUserId: string | null,
+  ): Promise<void> {
+    try {
+      const [inviter, channels, members] = await Promise.all([
+        this.recipients.user(inviterId),
+        this.countConnectedChannels(workspaceData.id),
+        this.countMembers(workspaceData.id),
+      ]);
+      const result = await this.emailOutbox.sendNow({
+        template: workspaceInvitationEmail,
+        props: {
+          inviterName: inviter
+            ? this.recipients.displayName(inviter)
+            : 'A teammate',
+          inviterEmail: inviter?.email ?? '',
+          workspaceName: workspaceData.name ?? 'your workspace',
+          role: invitation.role,
+          channels,
+          members,
+          acceptUrl: this.links.invite(invitation.token),
+          inviteeEmail: invitation.email,
+          expiresInDays: Math.max(
+            1,
+            Math.round((invitation.expiresAt.getTime() - Date.now()) / DAY_MS),
+          ),
+        },
+        to: { email: invitation.email, userId: inviteeUserId },
+        workspaceId: workspaceData.id,
+        idempotencyKey: `invite.${invitation.id}.${invitation.expiresAt.getTime()}`,
+      });
+      if (!result.success) {
+        this.logger.warn(
+          // The error text can quote the address, so only its code is logged.
+          `Invitation email ${invitation.id} not sent (${result.errorCode ?? 'send failed'})`,
+        );
+      }
+    } catch (err) {
+      this.logger.warn(
+        `Invitation email ${invitation.id} failed: ${(err as Error)?.message ?? String(err)}`,
+      );
+    }
+  }
+
+  /** B2 and its bell, to whoever invited the member. Never throws. */
+  private async notifyInviterOfAcceptance(
+    invitation: {
+      id: string;
+      workspaceId: string;
+      invitedBy: string;
+      workspace: { name: string; timezone?: string | null };
+    },
+    member: { id: string; name: string | null; email: string },
+    accepted: { role: 'ADMIN' | 'MEMBER' | 'GUEST'; acceptedAt: Date | null },
+  ): Promise<void> {
+    try {
+      const inviterId = invitation.invitedBy;
+      if (inviterId === member.id) return;
+      const memberName = this.recipients.displayName(member);
+      const workspaceName = invitation.workspace.name;
+      await this.notifyService.notify({
+        userId: inviterId,
+        workspaceId: invitation.workspaceId,
+        event: 'member_activity',
+        bell: () =>
+          this.notifications.invitationAccepted(
+            inviterId,
+            memberName,
+            workspaceName,
+          ),
+        email: {
+          template: invitationAccepted,
+          props: {
+            memberName,
+            memberEmail: member.email,
+            workspaceName,
+            role: accepted.role,
+            joined: formatDay(
+              accepted.acceptedAt ?? new Date(),
+              invitation.workspace.timezone || 'UTC',
+            ),
+            membersUrl: this.links.members(invitation.workspaceId),
+          },
+          idempotencyKey: `invite-accepted.${invitation.id}`,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Accepted-invitation notice ${invitation.id} failed: ${(err as Error)?.message ?? String(err)}`,
+      );
+    }
+  }
+
+  /**
+   * The bell now and B3 after the undo window, to the member who was removed.
+   * Never throws.
+   */
+  private async notifyMemberRemoved(
+    workspaceData: {
+      id: string;
+      name: string | null;
+      timezone?: string | null;
+    },
+    removal: { id: string; userId: string; removedAt: Date },
+    removedById: string,
+  ): Promise<void> {
+    const removedUserId = removal.userId;
+    try {
+      const remover = await this.recipients.user(removedById);
+      const removedByName = remover
+        ? this.recipients.displayName(remover)
+        : 'A workspace admin';
+      const workspaceName = workspaceData.name ?? 'the workspace';
+      await this.notifyService.notify({
+        userId: removedUserId,
+        workspaceId: workspaceData.id,
+        event: null,
+        bell: () =>
+          this.notifications.memberRemoved(
+            removedUserId,
+            workspaceName,
+            removedByName,
+          ),
+        email: {
+          template: removedFromWorkspace,
+          props: {
+            workspaceName,
+            removedByName,
+            removedOn: formatDay(
+              removal.removedAt,
+              workspaceData.timezone || 'UTC',
+            ),
+            openUrl: this.links.frontend('/'),
+            membershipId: removal.id,
+            removedAtMs: removal.removedAt.getTime(),
+          },
+          delayMs: MEMBER_REMOVED_EMAIL_DELAY_MS,
+          // One per removal: the row and the moment it was marked REMOVED.
+          idempotencyKey: `member-removed.${removal.id}.${removal.removedAt.getTime()}`,
+        },
+      });
+    } catch (err) {
+      this.logger.warn(
+        `Member-removed notice for workspace ${workspaceData.id} failed: ${(err as Error)?.message ?? String(err)}`,
+      );
+    }
+  }
+
+  private async countConnectedChannels(workspaceId: string): Promise<number> {
+    const [row] = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.workspaceId, workspaceId),
+          eq(socialMediaChannels.connectionStatus, 'connected'),
+          eq(socialMediaChannels.isActive, true),
+        ),
+      );
+    return row?.count ?? 0;
+  }
+
+  /** Accepted members plus the owner, who has no invitation row. */
+  private async countMembers(workspaceId: string): Promise<number> {
+    const [row] = await this.db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(workspaceInvitation)
+      .where(
+        and(
+          eq(workspaceInvitation.workspaceId, workspaceId),
+          eq(workspaceInvitation.status, 'ACCEPTED'),
+        ),
+      );
+    return (row?.count ?? 0) + 1;
   }
 
   // Helper methods

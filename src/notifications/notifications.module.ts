@@ -9,6 +9,10 @@ import { NotificationRoutesService } from './notification-routes.service';
 import { NotificationDispatcherService } from './notification-dispatcher.service';
 import { ChannelsModule } from '../channels/channels.module';
 import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module';
+import { EmailModule } from '../email/email.module';
+import { NotificationPreferencesModule } from '../notification-preferences/notification-preferences.module';
+import { NotifyService } from './notify.service';
+import { RecipientsService } from './recipients.service';
 
 @Global() // Make this module global so other services can inject NotificationsService
 @Module({
@@ -18,6 +22,8 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
   // Both sides of that cycle must be forwardRef'd or Nest cannot build it.
   imports: [
     WorkspaceRoleModule,
+    EmailModule,
+    NotificationPreferencesModule,
     JwtModule.register({}),
     forwardRef(() => ChannelsModule),
   ],
@@ -28,12 +34,16 @@ import { WorkspaceRoleModule } from '../workspace-members/workspace-role.module'
     NotificationEmitterService,
     NotificationRoutesService,
     NotificationDispatcherService,
+    NotifyService,
+    RecipientsService,
   ],
   exports: [
     NotificationsService,
     NotificationsGateway,
     NotificationEmitterService,
     NotificationRoutesService,
+    NotifyService,
+    RecipientsService,
   ],
 })
 export class NotificationsModule {}

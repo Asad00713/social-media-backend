@@ -79,6 +79,7 @@ function make(
     { syncFromPost: jest.fn(async () => undefined) } as any,
     { enforceQueueLimit: jest.fn(async () => undefined) } as any,
     { send: opts.reminderSend ?? jest.fn() } as any, // PostReminderService
+    { onPublishOutcome: jest.fn(async () => undefined) } as any, // PublishFailureNotifier
   );
   return { svc, publisher, emitter };
 }

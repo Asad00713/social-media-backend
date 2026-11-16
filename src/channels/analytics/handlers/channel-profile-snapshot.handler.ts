@@ -12,6 +12,7 @@ import { AdapterRegistryService } from '../services/adapter-registry.service';
 import { QuotaTrackerService } from '../services/quota-tracker.service';
 import { decrypt } from '../../../common/utils/encryption.util';
 import { AnalyticsEventEmitter } from '../../../realtime/analytics-event-emitter.service';
+import { ChannelHealthNotifier } from '../../services/channel-health-notifier.service';
 
 export interface ChannelProfileSnapshotJob {
   channelId: number;
@@ -27,6 +28,7 @@ export class ChannelProfileSnapshotHandler {
     private readonly quota: QuotaTrackerService,
     private readonly events: AnalyticsEventEmitter,
     @Inject(DRIZZLE) private readonly db: any,
+    private readonly health: ChannelHealthNotifier,
   ) {}
 
   async handle(data: ChannelProfileSnapshotJob): Promise<{ ok: boolean }> {
@@ -230,13 +232,11 @@ export class ChannelProfileSnapshotHandler {
       result.error.code === 'auth_failed' &&
       nextConsecutive >= RECONNECT_THRESHOLD
     ) {
-      await this.db
-        .update(socialMediaChannels)
-        .set({
-          connectionStatus: 'expired',
-          lastError: result.error.message?.slice(0, 500) ?? null,
-        })
-        .where(eq(socialMediaChannels.id, channelId));
+      // Through the notifier, which flips the status once and sends the C2
+      // reconnect email only on that flip.
+      await this.health.markExpired(channelId, {
+        lastError: result.error.message?.slice(0, 500) ?? null,
+      });
       this.logger.warn(
         `Channel ${channelId} marked 'expired' after ${nextConsecutive} consecutive auth failures`,
       );

@@ -1,6 +1,7 @@
 import {
   Controller,
   Get,
+  Headers,
   Ip,
   Query,
   Req,
@@ -11,6 +12,12 @@ import { Throttle, ThrottlerGuard } from '@nestjs/throttler';
 import type { Request, Response } from 'express';
 import { AuthService } from '../auth.service';
 import { SkipLaunchGate } from '../decorators/skip-launch-gate.decorator';
+import {
+  deviceCookieOf,
+  readOrMintDeviceId,
+  setDeviceCookie,
+} from '../devices/device-cookie';
+import { KnownDevicesService } from '../devices/known-devices.service';
 import { setRefreshCookie } from '../refresh-cookie';
 import { GOOGLE_STATE_COOKIE, GoogleAuthService } from './google-auth.service';
 import type { GoogleAuthMode } from './google-sign-in.decision';
@@ -35,6 +42,7 @@ export class GoogleAuthController {
   constructor(
     private readonly google: GoogleAuthService,
     private readonly auth: AuthService,
+    private readonly knownDevices: KnownDevicesService,
   ) {}
 
   @Get('start')
@@ -60,6 +68,7 @@ export class GoogleAuthController {
     @Req() req: Request,
     @Ip() ip: string,
     @Res() res: Response,
+    @Headers('user-agent') userAgent?: string,
   ) {
     const stateCookie = (req.cookies as Record<string, string> | undefined)?.[
       GOOGLE_STATE_COOKIE
@@ -82,6 +91,16 @@ export class GoogleAuthController {
       } catch {
         return res.redirect(302, this.google.failureUrl(mode));
       }
+      // Only once the session exists. A new account's first browser is
+      // recorded without an email; a known account's new one sends A6.
+      const device = readOrMintDeviceId(deviceCookieOf(req.cookies));
+      setDeviceCookie(res, device.id);
+      this.knownDevices.track(
+        session.userId,
+        device.id,
+        { ip, userAgent: userAgent ?? null },
+        { silent: session.isNewAccount },
+      );
     }
     return res.redirect(302, redirectUrl);
   }

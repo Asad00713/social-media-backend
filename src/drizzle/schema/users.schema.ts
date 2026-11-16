@@ -79,6 +79,23 @@ export const users = pgTable('users', {
   passwordResetToken: varchar('password_reset_token', { length: 255 }),
   passwordResetTokenExpiresAt: timestamp('password_reset_token_expires_at'),
 
+  // Every token issued before this second is refused (migration 0070): set by
+  // a password change or reset and by the "This wasn't me" security link.
+  sessionsRevokedAt: timestamp('sessions_revoked_at', { withTimezone: true }),
+
+  // An email change waiting for its code (migration 0071): the new address,
+  // the sha256 of the code mailed to it, when the code expires, and the wrong
+  // guesses so far. `email` itself changes only when the code comes back.
+  pendingEmail: varchar('pending_email', { length: 255 }),
+  pendingEmailCodeHash: varchar('pending_email_code_hash', { length: 64 }),
+  pendingEmailExpiresAt: timestamp('pending_email_expires_at', {
+    withTimezone: true,
+  }),
+  pendingEmailAttempts: integer('pending_email_attempts').default(0).notNull(),
+  // When the sign-in email last changed, by a confirm or a revert (migration
+  // 0073). A new change waits 7 days, so A4's revert link stays usable.
+  emailChangedAt: timestamp('email_changed_at', { withTimezone: true }),
+
   // Last accessed workspace for redirect on login
   lastAccessedWorkspaceId: uuid('last_accessed_workspace_id'),
 

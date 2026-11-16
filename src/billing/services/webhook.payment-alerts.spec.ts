@@ -174,6 +174,11 @@ function make(): WebhookService {
     {} as never,
     {} as never,
     lookup as never,
+    // The templated payment-failed email is billing-email's (its own spec).
+    {
+      paymentFailed: jest.fn().mockResolvedValue(undefined),
+      planName: jest.fn((code: string) => Promise.resolve(code)),
+    } as never,
     alerts as never,
   );
 }

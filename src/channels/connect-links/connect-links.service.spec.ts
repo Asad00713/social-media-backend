@@ -5,7 +5,8 @@ import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { users } from '../../drizzle/schema/users.schema';
 import { workspace } from '../../drizzle/schema/workspace.schema';
 import type { DbType } from '../../drizzle/db';
-import type { EmailService } from '../../email/email.service';
+import type { EmailOutboxService } from '../../email/queue/email-outbox.service';
+import { formatLinkExpiry } from '../../email/templates/team/channel-connect-link';
 import { ConnectLinksService } from './connect-links.service';
 import { CONNECT_LINK_TTL_MS, createLinkToken } from './lib/connect-link-rules';
 
@@ -99,9 +100,14 @@ function setup(
   ]);
   const { db, inserted, updates } = fakeDb(tables, () => opts.updateRows ?? []);
   const email = {
-    sendChannelConnectLink: jest.fn(() => Promise.resolve({ success: true })),
+    sendNow: jest
+      .fn<Promise<{ success: boolean }>, [unknown]>()
+      .mockResolvedValue({ success: true }),
   };
-  const service = new ConnectLinksService(db, email as unknown as EmailService);
+  const service = new ConnectLinksService(
+    db,
+    email as unknown as EmailOutboxService,
+  );
   return { service, email, inserted, updates, db };
 }
 
@@ -150,7 +156,7 @@ describe('ConnectLinksService', () => {
         service.create(WS, USER, { networks: ['instagram'], send: true }),
       );
       expect(code).toBe('NO_EMAIL');
-      expect(email.sendChannelConnectLink).not.toHaveBeenCalled();
+      expect(email.sendNow).not.toHaveBeenCalled();
     });
 
     it('a network the link cannot offer -> NETWORK_NOT_OFFERED', async () => {
@@ -192,15 +198,26 @@ describe('ConnectLinksService', () => {
         networks: ['instagram', 'facebook'],
         send: true,
       });
-      expect(email.sendChannelConnectLink).toHaveBeenCalledTimes(1);
-      expect(email.sendChannelConnectLink).toHaveBeenCalledWith(
-        'client@example.com',
+      expect(email.sendNow).toHaveBeenCalledTimes(1);
+      expect(email.sendNow).toHaveBeenCalledWith(
         expect.objectContaining({
-          workspaceName: 'Acme Agency',
-          senderName: 'Sam Sender',
-          networks: ['instagram', 'facebook'],
-          url: res.url,
-          expiresAt: new Date(BASE.getTime() + CONNECT_LINK_TTL_MS),
+          template: expect.objectContaining({ id: 'channel-connect-link' }),
+          // Inline, to a person with no account.
+          to: { email: 'client@example.com', userId: null },
+          workspaceId: WS,
+          props: {
+            workspaceName: 'Acme Agency',
+            senderName: 'Sam Sender',
+            networks: ['instagram', 'facebook'],
+            connectUrl: res.url,
+            expiresOn: formatLinkExpiry(
+              new Date(BASE.getTime() + CONNECT_LINK_TTL_MS),
+            ),
+            recipientEmail: 'client@example.com',
+          },
+          idempotencyKey: expect.stringMatching(
+            new RegExp(`^connect-link\\.[0-9a-f]{32}\\.${BASE.getTime()}$`),
+          ),
         }),
       );
       expect(inserted[0].lastSentAt).toEqual(BASE);
@@ -214,14 +231,14 @@ describe('ConnectLinksService', () => {
         networks: ['instagram'],
         send: false,
       });
-      expect(email.sendChannelConnectLink).not.toHaveBeenCalled();
+      expect(email.sendNow).not.toHaveBeenCalled();
       expect(inserted[0].email).toBe('client@example.com');
       expect(inserted[0].lastSentAt).toBeNull();
     });
 
     it('a failed email creates no link', async () => {
       const { service, email, inserted } = setup();
-      email.sendChannelConnectLink.mockResolvedValueOnce({ success: false });
+      email.sendNow.mockResolvedValueOnce({ success: false });
       const code = await codeOf(
         service.create(WS, USER, {
           email: 'client@example.com',
@@ -242,7 +259,7 @@ describe('ConnectLinksService', () => {
       // the conditional claim matches no row while the cool-down is running
       const { service, email } = setup({ links: [row], updateRows: [] });
       expect(await codeOf(service.resend(WS, LINK))).toBe('RESEND_TOO_SOON');
-      expect(email.sendChannelConnectLink).not.toHaveBeenCalled();
+      expect(email.sendNow).not.toHaveBeenCalled();
     });
 
     it('a link without an email -> NO_EMAIL', async () => {
@@ -271,11 +288,13 @@ describe('ConnectLinksService', () => {
         updateRows: [{ ...row, lastSentAt: BASE }],
       });
       const res = await service.resend(WS, LINK);
-      expect(email.sendChannelConnectLink).toHaveBeenCalledWith(
-        'client@example.com',
+      expect(email.sendNow).toHaveBeenCalledWith(
         expect.objectContaining({
-          url: `https://app.test/c/${token.raw}`,
-          expiresAt: row.expiresAt,
+          to: { email: 'client@example.com', userId: null },
+          props: expect.objectContaining({
+            connectUrl: `https://app.test/c/${token.raw}`,
+            expiresOn: formatLinkExpiry(row.expiresAt as Date),
+          }),
         }),
       );
       expect(updates[0]).toEqual(expect.objectContaining({ lastSentAt: BASE }));
@@ -289,7 +308,7 @@ describe('ConnectLinksService', () => {
         links: [row],
         updateRows: [{ ...row, lastSentAt: BASE }],
       });
-      email.sendChannelConnectLink.mockResolvedValueOnce({ success: false });
+      email.sendNow.mockResolvedValueOnce({ success: false });
       expect(await codeOf(service.resend(WS, LINK))).toBe('EMAIL_SEND_FAILED');
       expect(updates).toHaveLength(2);
       expect(updates[1]).toEqual(expect.objectContaining({ lastSentAt: null }));
@@ -301,7 +320,7 @@ describe('ConnectLinksService', () => {
         links: [row],
         updateRows: [{ ...row, lastSentAt: BASE }],
       });
-      email.sendChannelConnectLink.mockResolvedValueOnce({ success: false });
+      email.sendNow.mockResolvedValueOnce({ success: false });
       // the claim update works, the give-back update fails
       const fake = db as unknown as { update: (t: unknown) => unknown };
       const realUpdate = fake.update;

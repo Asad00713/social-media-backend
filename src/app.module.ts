@@ -51,6 +51,7 @@ import { ChannelPageModule } from './channels/channel-page/channel-page.module';
 import { WorkspaceHubModule } from './workspace-hub/workspace-hub.module';
 import { BrandKitModule } from './brand-kit/brand-kit.module';
 import { ShortLinksModule } from './short-links/short-links.module';
+import { NotificationPreferencesModule } from './notification-preferences/notification-preferences.module';
 import { PlatformStatusModule } from './platform-status/platform-status.module';
 import { BullBoardModule } from '@bull-board/nestjs';
 import { ExpressAdapter } from '@bull-board/express';
@@ -112,6 +113,7 @@ import { QUEUES } from './queue/queue.module';
     WorkspaceHubModule,
     BrandKitModule,
     ShortLinksModule,
+    NotificationPreferencesModule,
     PlatformStatusModule,
     BullBoardModule.forRoot({
       // Moved off '/admin/queues' so it stops swallowing the admin queue API,
@@ -127,6 +129,7 @@ import { QUEUES } from './queue/queue.module';
       { name: QUEUES.DRIP_CAMPAIGNS, adapter: BullMQAdapter },
       { name: QUEUES.CHANNEL_SNAPSHOTS, adapter: BullMQAdapter },
       { name: QUEUES.INBOX_POLLING, adapter: BullMQAdapter },
+      { name: QUEUES.EMAIL, adapter: BullMQAdapter },
     ),
   ],
   controllers: [AppController, SiteVerificationController],

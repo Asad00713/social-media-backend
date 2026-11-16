@@ -1,11 +1,36 @@
 import { Injectable, Logger, Inject } from '@nestjs/common';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
-import { users, workspace, workspaceInvitation } from '../drizzle/schema';
-import { eq, and, isNull, isNotNull, or, sql } from 'drizzle-orm';
-import { EmailService } from '../email/email.service';
+import {
+  INTEGRATION_PLATFORMS,
+  posts,
+  socialMediaChannels,
+  users,
+  workspace,
+  workspaceInvitation,
+} from '../drizzle/schema';
+import {
+  eq,
+  and,
+  gt,
+  isNull,
+  isNotNull,
+  lte,
+  notInArray,
+  or,
+  sql,
+} from 'drizzle-orm';
+import { AppLinks } from '../email/links/app-links';
+import { formatDay, formatMonthDay } from '../email/links/format-when';
+import { EmailOutboxService } from '../email/queue/email-outbox.service';
+import { accountPaused } from '../email/templates/lifecycle/account-paused';
+import { inactiveReminder } from '../email/templates/lifecycle/inactive-reminder';
+import { pausingSoon } from '../email/templates/lifecycle/pausing-soon';
 import { NotificationsService } from '../notifications/notifications.service';
+import { RecipientsService } from '../notifications/recipients.service';
 import { NotificationType } from '../drizzle/schema';
+
+const DAY_MS = 86_400_000;
 
 @Injectable()
 export class UserInactivityService {
@@ -13,9 +38,60 @@ export class UserInactivityService {
 
   constructor(
     @Inject(DRIZZLE) private db: DbType,
-    private emailService: EmailService,
     private notificationsService: NotificationsService,
+    private emailOutbox: EmailOutboxService,
+    private recipients: RecipientsService,
+    private links: AppLinks,
   ) {}
+
+  /**
+   * The moment the inactivity clock started: the last login, else signup. The
+   * same expression the sweeps select on, and part of each email's
+   * idempotency key so a person who comes back and lapses again is mailed
+   * again.
+   */
+  private lastActive(user: { lastLoginAt: Date | null; createdAt: Date }) {
+    return user.lastLoginAt ?? user.createdAt;
+  }
+
+  /** F2's numbers: what is waiting in the workspace the person last opened. */
+  private async workspaceSnapshot(workspaceId: string) {
+    const now = new Date();
+    const [channels, drafts, scheduled] = await Promise.all([
+      this.db
+        .select({ count: sql<number>`count(*)` })
+        .from(socialMediaChannels)
+        .where(
+          and(
+            eq(socialMediaChannels.workspaceId, workspaceId),
+            eq(socialMediaChannels.connectionStatus, 'connected'),
+            notInArray(socialMediaChannels.platform, INTEGRATION_PLATFORMS),
+          ),
+        ),
+      this.db
+        .select({ count: sql<number>`count(*)` })
+        .from(posts)
+        .where(
+          and(eq(posts.workspaceId, workspaceId), eq(posts.status, 'draft')),
+        ),
+      this.db
+        .select({ count: sql<number>`count(*)` })
+        .from(posts)
+        .where(
+          and(
+            eq(posts.workspaceId, workspaceId),
+            eq(posts.status, 'scheduled'),
+            gt(posts.scheduledAt, now),
+            lte(posts.scheduledAt, new Date(now.getTime() + 7 * DAY_MS)),
+          ),
+        ),
+    ]);
+    return {
+      channels: Number(channels[0]?.count) || 0,
+      drafts: Number(drafts[0]?.count) || 0,
+      scheduledThisWeek: Number(scheduled[0]?.count) || 0,
+    };
+  }
 
   /**
    * Get all super admin user IDs for notifications
@@ -124,6 +200,7 @@ export class UserInactivityService {
         name: users.name,
         lastLoginAt: users.lastLoginAt,
         createdAt: users.createdAt,
+        lastAccessedWorkspaceId: users.lastAccessedWorkspaceId,
       })
       .from(users)
       .where(
@@ -142,32 +219,52 @@ export class UserInactivityService {
     const processedUsers: string[] = [];
     for (const user of inactiveUsers) {
       try {
-        // Send email
-        const result = await this.emailService.sendInactivityReminder15Days(
-          user.email,
-          user.name || undefined,
-        );
-
-        if (result.success) {
-          // Mark email as sent
-          await this.db
-            .update(users)
-            .set({
-              inactivityEmail15DaysSentAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(eq(users.id, user.id));
-
-          processedUsers.push(user.email);
-          this.logger.log(`Sent 15-day inactivity email to ${user.email}`);
-        } else {
-          this.logger.error(
-            `Failed to send 15-day email to ${user.email}: ${result.error}`,
+        // F2 says what is waiting in the workspace the person last opened.
+        // Nothing to say without one, so skip (and leave them unmarked).
+        const ws = user.lastAccessedWorkspaceId
+          ? await this.recipients.workspace(user.lastAccessedWorkspaceId)
+          : null;
+        if (!ws) {
+          this.logger.log(
+            `Skipped 15-day inactivity email for user ${user.id}: no workspace`,
           );
+          continue;
         }
+
+        const queued = await this.emailOutbox.enqueue({
+          template: inactiveReminder,
+          props: {
+            workspaceName: ws.name,
+            ...(await this.workspaceSnapshot(ws.id)),
+            openUrl: this.links.frontend('/'),
+          },
+          to: { email: user.email, userId: user.id },
+          workspaceId: null,
+          idempotencyKey: `inactive-reminder.${user.id}.${this.lastActive(user).getTime()}`,
+        });
+        // Redis did not answer in time: leave the user unmarked, so the next
+        // run tries again (the same key keeps a late add from doubling it).
+        if (!queued) {
+          this.logger.warn(
+            `15-day inactivity email for user ${user.id} not queued; left for the next run`,
+          );
+          continue;
+        }
+
+        // Mark email as queued
+        await this.db
+          .update(users)
+          .set({
+            inactivityEmail15DaysSentAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, user.id));
+
+        processedUsers.push(user.email);
+        this.logger.log(`Queued 15-day inactivity email for user ${user.id}`);
       } catch (error) {
         this.logger.error(
-          `Error processing 15-day inactive user ${user.email}: ${error.message}`,
+          `Error processing 15-day inactive user ${user.id}: ${error.message}`,
         );
       }
     }
@@ -195,6 +292,8 @@ export class UserInactivityService {
         id: users.id,
         email: users.email,
         name: users.name,
+        lastLoginAt: users.lastLoginAt,
+        createdAt: users.createdAt,
       })
       .from(users)
       .where(
@@ -213,30 +312,43 @@ export class UserInactivityService {
     const processedUsers: string[] = [];
     for (const user of inactiveUsers) {
       try {
-        const result = await this.emailService.sendInactivityReminder25Days(
-          user.email,
-          user.name || undefined,
-        );
-
-        if (result.success) {
-          await this.db
-            .update(users)
-            .set({
-              inactivityEmail25DaysSentAt: new Date(),
-              updatedAt: new Date(),
-            })
-            .where(eq(users.id, user.id));
-
-          processedUsers.push(user.email);
-          this.logger.log(`Sent 25-day inactivity email to ${user.email}`);
-        } else {
-          this.logger.error(
-            `Failed to send 25-day email to ${user.email}: ${result.error}`,
+        // The pause lands 30 days after the last activity, as the 30-day
+        // sweep counts it.
+        const lastActive = this.lastActive(user);
+        const pauseOn = new Date(lastActive.getTime() + 30 * DAY_MS);
+        const queued = await this.emailOutbox.enqueue({
+          template: pausingSoon,
+          props: {
+            pauseDate: formatMonthDay(
+              pauseOn,
+              await this.recipients.userTimezone(user.id),
+            ),
+            signInUrl: this.links.frontend('/login'),
+          },
+          to: { email: user.email, userId: user.id },
+          workspaceId: null,
+          idempotencyKey: `pausing-soon.${user.id}.${lastActive.getTime()}`,
+        });
+        if (!queued) {
+          this.logger.warn(
+            `25-day inactivity email for user ${user.id} not queued; left for the next run`,
           );
+          continue;
         }
+
+        await this.db
+          .update(users)
+          .set({
+            inactivityEmail25DaysSentAt: new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(users.id, user.id));
+
+        processedUsers.push(user.email);
+        this.logger.log(`Queued 25-day inactivity email for user ${user.id}`);
       } catch (error) {
         this.logger.error(
-          `Error processing 25-day inactive user ${user.email}: ${error.message}`,
+          `Error processing 25-day inactive user ${user.id}: ${error.message}`,
         );
       }
     }
@@ -264,6 +376,8 @@ export class UserInactivityService {
         id: users.id,
         email: users.email,
         name: users.name,
+        lastLoginAt: users.lastLoginAt,
+        createdAt: users.createdAt,
       })
       .from(users)
       .where(
@@ -282,11 +396,34 @@ export class UserInactivityService {
     const deactivatedUsers: string[] = [];
     for (const user of inactiveUsers) {
       try {
-        // Send deactivation notice email
-        const result = await this.emailService.sendInactivityDeactivationNotice(
-          user.email,
-          user.name || undefined,
-        );
+        // Queue the pause notice (F4). Suspend regardless of whether it could
+        // be queued, as before.
+        let noticeQueued = true;
+        try {
+          const now = new Date();
+          const timeZone = await this.recipients.userTimezone(user.id);
+          noticeQueued = await this.emailOutbox.enqueue({
+            template: accountPaused,
+            props: {
+              pausedSince: formatDay(now, timeZone),
+              // The 365-day step deletes a year after the suspension.
+              deleteOn: formatDay(
+                new Date(now.getTime() + 365 * DAY_MS),
+                timeZone,
+              ),
+              signInUrl: this.links.frontend('/login'),
+              supportEmail: this.links.supportEmail(),
+            },
+            to: { email: user.email, userId: user.id },
+            workspaceId: null,
+            idempotencyKey: `account-paused.${user.id}.${this.lastActive(user).getTime()}`,
+          });
+        } catch (error) {
+          noticeQueued = false;
+          this.logger.warn(
+            `Could not queue the pause notice for user ${user.id}: ${error instanceof Error ? error.message : String(error)}`,
+          );
+        }
 
         // Deactivate the user regardless of email success
         await this.db
@@ -302,18 +439,12 @@ export class UserInactivityService {
           .where(eq(users.id, user.id));
 
         deactivatedUsers.push(user.email);
-        if (result.success) {
-          this.logger.log(
-            `Deactivated user ${user.email} due to 30 days inactivity (email sent)`,
-          );
-        } else {
-          this.logger.warn(
-            `Deactivated user ${user.email} but email failed: ${result.error}`,
-          );
-        }
+        this.logger.log(
+          `Deactivated user ${user.id} due to 30 days inactivity (${noticeQueued ? 'notice queued' : 'notice not queued'})`,
+        );
       } catch (error) {
         this.logger.error(
-          `Error processing 30-day inactive user ${user.email}: ${error.message}`,
+          `Error processing 30-day inactive user ${user.id}: ${error.message}`,
         );
       }
     }
