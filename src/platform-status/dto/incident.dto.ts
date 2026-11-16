@@ -1,0 +1,98 @@
+import { Transform, Type } from 'class-transformer';
+import {
+  IsDate,
+  IsIn,
+  IsInt,
+  IsNotEmpty,
+  IsOptional,
+  IsString,
+  Max,
+  MaxLength,
+  Min,
+  ValidateIf,
+} from 'class-validator';
+import {
+  INCIDENT_SEVERITIES,
+  type IncidentSeverity,
+} from '../../drizzle/schema/platform-status.schema';
+import { STATUS_PLATFORMS, type StatusPlatform } from '../lib/status-platforms';
+
+/** Trims a string; leaves anything else for the validators to refuse. */
+const trim = ({ value }: { value: unknown }): unknown =>
+  typeof value === 'string' ? value.trim() : value;
+
+/** Every DTO here carries decorators: the global ValidationPipe whitelists by
+ *  them (see the note at the top of admin.controller.ts). */
+export class CreateIncidentDto {
+  /** Omitted or null = every platform. */
+  @IsOptional()
+  @IsIn(STATUS_PLATFORMS)
+  platform?: StatusPlatform | null;
+
+  @IsIn(INCIDENT_SEVERITIES)
+  severity!: IncidentSeverity;
+
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  title!: string;
+
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(2000)
+  body?: string | null;
+
+  /** When it began, if earlier than now (posting late). */
+  @IsOptional()
+  @Type(() => Date)
+  @IsDate()
+  startedAt?: Date;
+}
+
+/** Absent skips the field; null is checked like any value (and refused). */
+const whenSent = ValidateIf(
+  (_o: unknown, value: unknown) => value !== undefined,
+);
+
+/**
+ * Every field optional; `platform: null` moves it to every platform and
+ * `body: null` clears it. `severity` and `title` are NOT NULL columns, so a
+ * null for either is a 400, not a 500 from the database.
+ */
+export class UpdateIncidentDto {
+  @IsOptional()
+  @IsIn(STATUS_PLATFORMS)
+  platform?: StatusPlatform | null;
+
+  @whenSent
+  @IsIn(INCIDENT_SEVERITIES)
+  severity?: IncidentSeverity;
+
+  @whenSent
+  @Transform(trim)
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(120)
+  title?: string;
+
+  @IsOptional()
+  @Transform(trim)
+  @IsString()
+  @MaxLength(2000)
+  body?: string | null;
+}
+
+export class IncidentListQueryDto {
+  @IsOptional()
+  @IsIn(['open', 'all'])
+  state?: 'open' | 'all';
+
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(200)
+  limit?: number;
+}

@@ -49,6 +49,24 @@ export class AnalyticsEventEmitter {
   }
 
   /**
+   * To every connected client, whatever its workspace. Only for events whose
+   * payload holds no workspace data (the platform status).
+   */
+  broadcast<K extends AnalyticsEventName>(
+    eventName: K,
+    payload: AnalyticsEventPayloadMap[K],
+  ): void {
+    this.internalBus.emit(eventName, payload);
+    try {
+      this.gateway.emitToAll(eventName, payload);
+    } catch (err) {
+      this.logger.error(
+        `Failed to broadcast ${eventName}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
    * Send an event to one user's sockets (room `user:<id>`), not to a
    * workspace. For account-level state such as billing, which belongs to the
    * owner rather than to everyone in the owner's workspaces.
