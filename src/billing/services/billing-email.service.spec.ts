@@ -65,7 +65,17 @@ class FakeQueue {
   readonly jobs = new Map<string, { data: EmailJobData }>();
   /** Set to make the next `add` fail, as a Redis outage would. */
   failNext: Error | null = null;
-  add(_name: string, data: EmailJobData, opts: { jobId: string }): void {
+  /** Set to make the next `add` never answer, as a hung Redis would. */
+  hangNext = false;
+  add(
+    _name: string,
+    data: EmailJobData,
+    opts: { jobId: string },
+  ): void | Promise<never> {
+    if (this.hangNext) {
+      this.hangNext = false;
+      return new Promise<never>(() => undefined);
+    }
     if (this.failNext) {
       const err = this.failNext;
       this.failNext = null;
@@ -421,6 +431,26 @@ describe('BillingEmailService.trialEnding (D2)', () => {
     await h.service.trialEnding(input);
     expect(h.queue.jobs.size).toBe(1);
     expect(h.emitter.subscriptionExpiring).toHaveBeenCalledTimes(1);
+  });
+
+  it('an enqueue that times out ("not queued") gives the claim back and rings no bell', async () => {
+    jest.useFakeTimers({ doNotFake: ['nextTick', 'setImmediate'] });
+    jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+    try {
+      const h = harness();
+      h.queue.hangNext = true;
+
+      const run = h.service.trialEnding(input);
+      await jest.advanceTimersByTimeAsync(5000);
+      await run;
+
+      expect(h.queue.jobs.size).toBe(0);
+      expect(h.once.release).toHaveBeenCalledWith(key);
+      expect(h.claimed.size).toBe(0);
+      expect(h.emitter.subscriptionExpiring).not.toHaveBeenCalled();
+    } finally {
+      jest.useRealTimers();
+    }
   });
 
   it('reads everything it needs before claiming: a failed read leaves the trial unclaimed', async () => {

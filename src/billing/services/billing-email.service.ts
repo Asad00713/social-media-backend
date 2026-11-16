@@ -240,9 +240,10 @@ export class BillingEmailService {
 
       // Enqueued directly, not through NotifyService, which swallows an
       // enqueue failure: here a failure must give the claim back, or the
-      // trial would never be mailed.
+      // trial would never be mailed. A timeout ("not queued") counts too.
+      let queued: boolean;
       try {
-        await this.outbox.enqueue({
+        queued = await this.outbox.enqueue({
           template: TRIAL_ENDING,
           to: { email: address, userId: i.userId },
           workspaceId: ctx.workspaceId,
@@ -275,6 +276,13 @@ export class BillingEmailService {
       } catch (err) {
         await this.once.release(key);
         throw err;
+      }
+      if (!queued) {
+        await this.once.release(key);
+        this.logger.warn(
+          `Trial-ending email for user ${i.userId} not queued; the next run tries again`,
+        );
+        return;
       }
 
       await this.notify.notify({

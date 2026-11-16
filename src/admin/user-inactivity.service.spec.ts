@@ -57,7 +57,7 @@ function make(
 ) {
   jest.useFakeTimers({ now: NOW, doNotFake: ['nextTick', 'setImmediate'] });
   const db = fakeDb(selects);
-  const enqueue = over.enqueue ?? jest.fn().mockResolvedValue(undefined);
+  const enqueue = over.enqueue ?? jest.fn().mockResolvedValue(true);
   const recipients = {
     workspace: jest
       .fn()
@@ -205,6 +205,20 @@ describe('UserInactivityService', () => {
       await service['process15DayInactiveUsers']();
       expect(db.updates).toEqual([]);
     });
+
+    it('does not mark the person as reminded when Redis times out ("not queued")', async () => {
+      const warn = jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      const log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+      const { service, db } = make(
+        [[user()], [{ count: 1 }], [{ count: 1 }], [{ count: 1 }]],
+        { enqueue: jest.fn().mockResolvedValue(false) },
+      );
+      await service['process15DayInactiveUsers']();
+      expect(db.updates).toEqual([]);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('not queued'));
+      const logged = log.mock.calls.map((c) => String(c[0])).join(' ');
+      expect(logged).not.toContain('Queued 15-day');
+    });
   });
 
   describe('F3 pausing-soon (25 days)', () => {
@@ -225,6 +239,15 @@ describe('UserInactivityService', () => {
       expect(db.updates).toEqual([
         expect.objectContaining({ inactivityEmail25DaysSentAt: NOW }),
       ]);
+    });
+
+    it('does not mark the person when Redis times out ("not queued")', async () => {
+      jest.spyOn(Logger.prototype, 'warn').mockImplementation();
+      const { service, db } = make([[user()], ADMINS], {
+        enqueue: jest.fn().mockResolvedValue(false),
+      });
+      await service['process25DayInactiveUsers']();
+      expect(db.updates).toEqual([]);
     });
   });
 
@@ -261,6 +284,20 @@ describe('UserInactivityService', () => {
       expect(db.updates).toEqual([
         expect.objectContaining({ isActive: false }),
       ]);
+    });
+
+    it('says "notice not queued" when Redis times out, and still suspends', async () => {
+      const log = jest.spyOn(Logger.prototype, 'log').mockImplementation();
+      const { service, db } = make([[user()], ADMINS], {
+        enqueue: jest.fn().mockResolvedValue(false),
+      });
+      await service['process30DayInactiveUsers']();
+      expect(db.updates).toEqual([
+        expect.objectContaining({ isActive: false }),
+      ]);
+      const logged = log.mock.calls.map((c) => String(c[0])).join(' ');
+      expect(logged).toContain('notice not queued');
+      expect(logged).not.toContain('(notice queued)');
     });
   });
 

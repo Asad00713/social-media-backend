@@ -231,7 +231,7 @@ export class UserInactivityService {
           continue;
         }
 
-        await this.emailOutbox.enqueue({
+        const queued = await this.emailOutbox.enqueue({
           template: inactiveReminder,
           props: {
             workspaceName: ws.name,
@@ -242,6 +242,14 @@ export class UserInactivityService {
           workspaceId: null,
           idempotencyKey: `inactive-reminder.${user.id}.${this.lastActive(user).getTime()}`,
         });
+        // Redis did not answer in time: leave the user unmarked, so the next
+        // run tries again (the same key keeps a late add from doubling it).
+        if (!queued) {
+          this.logger.warn(
+            `15-day inactivity email for user ${user.id} not queued; left for the next run`,
+          );
+          continue;
+        }
 
         // Mark email as queued
         await this.db
@@ -308,7 +316,7 @@ export class UserInactivityService {
         // sweep counts it.
         const lastActive = this.lastActive(user);
         const pauseOn = new Date(lastActive.getTime() + 30 * DAY_MS);
-        await this.emailOutbox.enqueue({
+        const queued = await this.emailOutbox.enqueue({
           template: pausingSoon,
           props: {
             pauseDate: formatMonthDay(
@@ -321,6 +329,12 @@ export class UserInactivityService {
           workspaceId: null,
           idempotencyKey: `pausing-soon.${user.id}.${lastActive.getTime()}`,
         });
+        if (!queued) {
+          this.logger.warn(
+            `25-day inactivity email for user ${user.id} not queued; left for the next run`,
+          );
+          continue;
+        }
 
         await this.db
           .update(users)
@@ -388,7 +402,7 @@ export class UserInactivityService {
         try {
           const now = new Date();
           const timeZone = await this.recipients.userTimezone(user.id);
-          await this.emailOutbox.enqueue({
+          noticeQueued = await this.emailOutbox.enqueue({
             template: accountPaused,
             props: {
               pausedSince: formatDay(now, timeZone),
