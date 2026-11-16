@@ -125,7 +125,7 @@ describe('planStatus', () => {
     expect(moved.rows[0].since).toEqual(NOW);
   });
 
-  it('an active incident overrides the measurement, better or worse', () => {
+  it('an active incident overrides a milder measurement, never a worse one', () => {
     const worse = plan({
       measured: { instagram: measured('operational') },
       incidents: [incident({ severity: 'outage' })],
@@ -141,9 +141,22 @@ describe('planStatus', () => {
       measured: { instagram: measured('outage') },
       incidents: [incident({ severity: 'delayed' })],
     });
+    // A "delayed" incident must not hide a measured outage.
     expect(milder.rows[0]).toMatchObject({
-      status: 'delayed',
+      status: 'outage',
       measuredStatus: 'outage',
+      reason: 'publish_failures',
+      incidentId: null,
+    });
+
+    const tie = plan({
+      measured: { instagram: measured('delayed', 'publish_lag') },
+      incidents: [incident({ severity: 'delayed' })],
+    });
+    expect(tie.rows[0]).toMatchObject({
+      status: 'delayed',
+      reason: 'incident',
+      incidentId: 'inc-1',
     });
   });
 

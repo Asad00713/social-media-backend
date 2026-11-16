@@ -5,7 +5,7 @@ import type {
   PlatformState,
   PlatformStatusReason,
 } from '../../drizzle/schema/platform-status.schema';
-import { stateRank } from './status-platforms';
+import { stateRank, worstState } from './status-platforms';
 import type { Measurement } from './classify';
 
 /** An unresolved incident. `platform` null = every platform. */
@@ -72,8 +72,10 @@ export function governingIncident(
  * The next row for every platform. `measured` holds this run's measurements;
  * a platform missing from it (an incident was posted or resolved between two
  * runs) keeps its stored measurement. An active incident overrides the
- * measurement, whichever is worse. A platform with no row yet starts from
- * "operational", so a first measurement of "operational" is not a change.
+ * measurement when it is as bad or worse; a milder incident (a "delayed"
+ * notice during a measured outage) never hides the worse measured state.
+ * A platform with no row yet starts from "operational", so a first
+ * measurement of "operational" is not a change.
  */
 export function planStatus(input: {
   platforms: readonly string[];
@@ -97,11 +99,18 @@ export function planStatus(input: {
           : (prior?.measuredReason ?? null);
 
     const incident = governingIncident(platform, input.incidents);
-    const status: PlatformState = incident ? incident.severity : measuredStatus;
-    const reason: PlatformStatusReason | null = incident
+    // The incident governs only when it is at least as bad as the
+    // measurement; on a tie it names the cause, which a person wrote.
+    const governs =
+      incident !== null &&
+      stateRank(incident.severity) >= stateRank(measuredStatus);
+    const status: PlatformState = incident
+      ? worstState(incident.severity, measuredStatus)
+      : measuredStatus;
+    const reason: PlatformStatusReason | null = governs
       ? 'incident'
       : measuredReason;
-    const incidentId = incident?.id ?? null;
+    const incidentId = incident && governs ? incident.id : null;
 
     const before = prior?.status ?? 'operational';
     const changed = before !== status;
