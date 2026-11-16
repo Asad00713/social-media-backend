@@ -30,6 +30,7 @@ interface Row {
   pendingEmailCodeHash: string | null;
   pendingEmailExpiresAt: Date | null;
   pendingEmailAttempts: number;
+  emailChangedAt: Date | null;
   [column: string]: unknown;
 }
 
@@ -89,6 +90,7 @@ function fakeDb(
             email: row.email,
             password: row.password,
             role: row.role,
+            emailChangedAt: row.emailChangedAt,
           }),
         ),
       },
@@ -123,6 +125,7 @@ function userRow(over: Partial<Row> = {}): Row {
     pendingEmailCodeHash: null,
     pendingEmailExpiresAt: null,
     pendingEmailAttempts: 0,
+    emailChangedAt: null,
     ...over,
   };
 }
@@ -382,6 +385,77 @@ describe('EmailChangeService.request', () => {
   });
 });
 
+const DAY_MS = 24 * 60 * 60 * 1000;
+const daysAgo = (days: number) => new Date(Date.now() - days * DAY_MS);
+
+describe('EmailChangeService.request after a recent change (revert window)', () => {
+  it('a second request inside 7 days → 409 EMAIL_CHANGE_LOCKED, nothing written or sent', async () => {
+    const { service, writes, sendNow } = setup(
+      userRow({ emailChangedAt: daysAgo(6.9) }),
+    );
+
+    const { status, body } = await refusal(
+      service.request('u1', { newEmail: NEW_EMAIL, currentPassword: PASSWORD }),
+    );
+
+    expect(status).toBe(409);
+    expect(body).toEqual({
+      statusCode: 409,
+      error: 'Conflict',
+      code: 'EMAIL_CHANGE_LOCKED',
+      message: 'You changed your email recently. Try again in a few days.',
+    });
+    expect(writes).toEqual([]);
+    expect(sendNow).not.toHaveBeenCalled();
+  });
+
+  it('a request after 7 days is allowed', async () => {
+    const { service, sendNow } = setup(
+      userRow({ emailChangedAt: daysAgo(7.01) }),
+    );
+
+    await service.request('u1', {
+      newEmail: NEW_EMAIL,
+      currentPassword: PASSWORD,
+    });
+
+    expect(sendNow).toHaveBeenCalledTimes(1);
+  });
+
+  it('a super admin gets no special case', async () => {
+    const { service, sendNow } = setup(
+      userRow({ role: 'SUPER_ADMIN', emailChangedAt: daysAgo(1) }),
+    );
+
+    const { status, body } = await refusal(
+      service.request('u1', { newEmail: NEW_EMAIL, currentPassword: PASSWORD }),
+    );
+
+    expect(status).toBe(409);
+    expect(body.code).toBe('EMAIL_CHANGE_LOCKED');
+    expect(sendNow).not.toHaveBeenCalled();
+  });
+
+  it('confirm re-checks under the row lock: a code issued after a change landed → 409, pending cleared', async () => {
+    const { service, row, enqueue } = setup(
+      pendingRow('305771', { emailChangedAt: daysAgo(0) }),
+    );
+
+    const { status, body } = await refusal(
+      service.confirm('u1', '305771', CTX),
+    );
+
+    expect(status).toBe(409);
+    expect(body.code).toBe('EMAIL_CHANGE_LOCKED');
+    expect(row).toMatchObject({
+      email: OLD_EMAIL,
+      pendingEmail: null,
+      pendingEmailCodeHash: null,
+    });
+    expect(enqueue).not.toHaveBeenCalled();
+  });
+});
+
 describe('EmailChangeService.request before launch (allowlist gate)', () => {
   it('gate on: an address not on the list → 400 EMAIL_NOT_ALLOWLISTED, nothing written or sent', async () => {
     process.env.ALLOWLIST_EMAILS = `${OLD_EMAIL}, listed@example.test`;
@@ -578,6 +652,8 @@ describe('EmailChangeService.confirm', () => {
       pendingEmailExpiresAt: null,
       pendingEmailAttempts: 0,
     });
+    // The confirmed change opens the 7-day lock on the next one.
+    expect(row.emailChangedAt).toBeInstanceOf(Date);
     expect(user).toMatchObject({
       id: 'u1',
       email: NEW_EMAIL,

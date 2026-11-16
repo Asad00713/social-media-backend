@@ -23,6 +23,7 @@ import { EmailChangeService } from './email-change.service';
 const MIGRATIONS = [
   '0070_users_sessions_revoked_at.sql',
   '0071_users_pending_email.sql',
+  '0073_users_email_changed_at.sql',
 ];
 const CTX = { ip: null, userAgent: null };
 const rand = () => Math.random().toString(36).slice(2, 10);
@@ -34,6 +35,7 @@ interface UserState {
   pending_email_code_hash: string | null;
   pending_email_attempts: number;
   sessions_revoked_at: Date | null;
+  email_changed_at: Date | null;
 }
 
 async function seedUser(client: PoolClient, email: string): Promise<string> {
@@ -47,7 +49,7 @@ async function seedUser(client: PoolClient, email: string): Promise<string> {
 async function stateOf(client: PoolClient, id: string): Promise<UserState> {
   const r = await client.query<UserState>(
     `SELECT email, is_email_verified, pending_email, pending_email_code_hash,
-            pending_email_attempts, sessions_revoked_at
+            pending_email_attempts, sessions_revoked_at, email_changed_at
        FROM users WHERE id = $1`,
     [id],
   );
@@ -121,7 +123,7 @@ async function codeOf(
   throw new Error('expected a refusal');
 }
 
-describeDb('email change on a real database (0071)', () => {
+describeDb('email change on a real database (0071, 0073)', () => {
   const savedAllowlist = process.env.ALLOWLIST_EMAILS;
   beforeEach(() => {
     jest.spyOn(Logger.prototype, 'warn').mockImplementation(() => undefined);
@@ -199,7 +201,7 @@ describeDb('email change on a real database (0071)', () => {
     });
   });
 
-  it('the revert link switches back once; a link minted before a second change refuses', async () => {
+  it('a second change inside 7 days is locked; once the window passes, a link minted before it refuses but signs out', async () => {
     await withRollbackDb(MIGRATIONS, async (db, client) => {
       const a = `a-${rand()}@example.test`;
       const b = `b-${rand()}@example.test`;
@@ -207,19 +209,30 @@ describeDb('email change on a real database (0071)', () => {
       const id = await seedUser(client, a);
       const { changes, actions, lastCode, auth } = build(db);
 
-      // a -> b (tok1: from a to b), then b -> c (tok2: from b to c).
+      // a -> b (tok1: from a to b) starts the 7-day lock.
       await changes.request(id, { newEmail: b });
       await changes.confirm(id, lastCode(), CTX);
+      expect((await stateOf(client, id)).email_changed_at).toBeInstanceOf(Date);
+      await expect(
+        codeOf(changes.request(id, { newEmail: c })),
+      ).resolves.toEqual({ status: 409, code: 'EMAIL_CHANGE_LOCKED' });
+
+      // Eight days later b -> c (tok2: from b to c) goes through.
+      await client.query(
+        `UPDATE users SET email_changed_at = now() - interval '8 days' WHERE id = $1`,
+        [id],
+      );
       await changes.request(id, { newEmail: c });
       await changes.confirm(id, lastCode(), CTX);
 
-      // tok1 would put the account back on `a`, but the account is on `c` now.
+      // tok1 would put the account back on `a`, but the account is on `c`
+      // now: it refuses, and still signs every session out.
       const stale = await actions.perform('tok1');
       expect(stale?.title).toBe("Your email wasn't switched back");
-      expect(await stateOf(client, id)).toMatchObject({
-        email: c,
-        sessions_revoked_at: null,
-      });
+      const refused = await stateOf(client, id);
+      expect(refused.email).toBe(c);
+      expect(refused.sessions_revoked_at).toBeInstanceOf(Date);
+      expect(auth.issuePasswordReset).not.toHaveBeenCalled();
 
       // tok2 still describes the current state: back to `b`, signed out.
       const done = await actions.perform('tok2');
@@ -228,6 +241,10 @@ describeDb('email change on a real database (0071)', () => {
       expect(after.email).toBe(b);
       expect(after.sessions_revoked_at).toBeInstanceOf(Date);
       expect(auth.issuePasswordReset).toHaveBeenCalledWith({ id, email: b });
+      // The revert restarts the 7-day lock.
+      expect(after.email_changed_at?.getTime()).toBeGreaterThan(
+        Date.now() - 60_000,
+      );
     });
   });
 

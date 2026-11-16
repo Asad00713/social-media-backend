@@ -11,7 +11,8 @@ const UNSUBSCRIBE_LABEL = 'email-prefs-tokens';
 const UNSUBSCRIBE_AUDIENCE = 'email-unsubscribe';
 const SECURITY_LABEL = 'email-security-tokens';
 const SECURITY_AUDIENCE = 'email-security';
-const SECURITY_TTL_SECONDS = 7 * 24 * 60 * 60;
+/** How long a security link works; an email change waits this long too. */
+export const SECURITY_TTL_SECONDS = 7 * 24 * 60 * 60;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 export interface UnsubscribeClaims {

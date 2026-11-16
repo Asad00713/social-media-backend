@@ -92,6 +92,9 @@ export const users = pgTable('users', {
     withTimezone: true,
   }),
   pendingEmailAttempts: integer('pending_email_attempts').default(0).notNull(),
+  // When the sign-in email last changed, by a confirm or a revert (migration
+  // 0073). A new change waits 7 days, so A4's revert link stays usable.
+  emailChangedAt: timestamp('email_changed_at', { withTimezone: true }),
 
   // Last accessed workspace for redirect on login
   lastAccessedWorkspaceId: uuid('last_accessed_workspace_id'),

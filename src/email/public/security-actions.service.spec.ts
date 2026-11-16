@@ -240,6 +240,8 @@ describe('SecurityActionsService.perform (POST)', () => {
     const done = await service.perform('tok');
 
     expect(row).toMatchObject({ email: OLD, isEmailVerified: true });
+    // The revert starts a new 7-day lock on email changes.
+    expect(row.emailChangedAt).toBeInstanceOf(Date);
     expect(security.revokeSessions).toHaveBeenCalledWith(UID);
     expect(auth.issuePasswordReset).toHaveBeenCalledWith({
       id: UID,
@@ -251,19 +253,38 @@ describe('SecurityActionsService.perform (POST)', () => {
     });
   });
 
-  it('POST revert_email when the email was changed again since → failure page, nothing written', async () => {
-    const row = { id: UID, email: 'third@else.test' };
-    const { service, writes, security, auth } = setup(REVERT, row);
+  it('chained change (victim → a1 → a2): the victim’s link refuses but still signs out everywhere and cancels a pending change', async () => {
+    // The link was minted for victim → a1; the attacker has moved on to a2.
+    const row: Row = {
+      id: UID,
+      email: 'a2@evil.test',
+      pendingEmail: 'a3@evil.test',
+    };
+    const chained: SecurityClaims = {
+      uid: UID,
+      act: 'revert_email',
+      from: OLD,
+      to: 'a1@evil.test',
+    };
+    const { service, writes, security, auth } = setup(chained, row);
 
     const done = await service.perform('tok');
 
+    // The page copy is unchanged.
     expect(done).toEqual({
       title: "Your email wasn't switched back",
       body: "We couldn't switch your email back. Write to help@schedura.test and we'll help.",
     });
-    expect(writes).toEqual([]);
-    expect(row.email).toBe('third@else.test');
-    expect(security.revokeSessions).not.toHaveBeenCalled();
+    expect(security.revokeSessions).toHaveBeenCalledWith(UID);
+    expect(row).toMatchObject({
+      email: 'a2@evil.test',
+      pendingEmail: null,
+      pendingEmailCodeHash: null,
+      pendingEmailExpiresAt: null,
+      pendingEmailAttempts: 0,
+    });
+    expect(writes.some((w) => 'email' in w)).toBe(false);
+    // A reset link would go to the attacker's address.
     expect(auth.issuePasswordReset).not.toHaveBeenCalled();
   });
 

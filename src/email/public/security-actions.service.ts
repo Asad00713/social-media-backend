@@ -37,6 +37,7 @@ type RevertResult =
   | { kind: 'reverted'; account: Account }
   | { kind: 'already' }
   | { kind: 'refused' }
+  | { kind: 'superseded'; account: Account }
   | { kind: 'gone' };
 
 const SECURE_BUTTON = 'Secure my account';
@@ -115,8 +116,11 @@ export class SecurityActionsService {
    * (`to`); once switched, a repeat finds the email already back at `from`
    * and says so without signing out or mailing again (it secures again only
    * if a new email change has been started since). After any other change,
-   * the link refuses and writes nothing, so an old link can never move the
-   * account onto an address it no longer uses.
+   * the link refuses and leaves the email alone, so an old link can never
+   * move the account onto an address it no longer uses. It still signs out
+   * everywhere and cancels a pending change: the clicker reads an address the
+   * account had, and a chained change (victim → a1 → a2) must not leave the
+   * person who made it signed in. No reset link: it would go to that address.
    */
   async perform(token: string): Promise<SecurityDone | null> {
     const claims = this.tokens.verifySecurity(token);
@@ -143,7 +147,8 @@ export class SecurityActionsService {
         body: `Your sign-in email is already back to ${maskEmail(claims.from)}.`,
       };
     }
-    if (result.kind === 'refused') {
+    if (result.kind === 'superseded') await this.protect(result.account);
+    if (result.kind === 'refused' || result.kind === 'superseded') {
       return {
         title: "Your email wasn't switched back",
         body: `We couldn't switch your email back. Write to ${this.links.supportEmail()} and we'll help.`,
@@ -184,7 +189,12 @@ export class SecurityActionsService {
             account: { id: claims.uid, email: row.email },
           };
         }
-        if (current !== normalizeEmail(claims.to)) return { kind: 'refused' };
+        if (current !== normalizeEmail(claims.to)) {
+          return {
+            kind: 'superseded',
+            account: { id: claims.uid, email: row.email },
+          };
+        }
 
         const [taken] = await tx
           .select({ id: users.id })
@@ -200,6 +210,7 @@ export class SecurityActionsService {
           .set({
             email: claims.from,
             isEmailVerified: true,
+            emailChangedAt: new Date(),
             updatedAt: new Date(),
           })
           .where(eq(users.id, claims.uid));
@@ -217,6 +228,12 @@ export class SecurityActionsService {
 
   /** Signs out everywhere, cancels a pending email change, mails a reset link. */
   private async secure(account: Account): Promise<boolean> {
+    await this.protect(account);
+    return this.auth.issuePasswordReset(account);
+  }
+
+  /** Signs out everywhere and cancels a pending email change. */
+  private async protect(account: Account): Promise<void> {
     await this.security.revokeSessions(account.id);
     await this.db
       .update(users)
@@ -227,7 +244,6 @@ export class SecurityActionsService {
         pendingEmailAttempts: 0,
       })
       .where(eq(users.id, account.id));
-    return this.auth.issuePasswordReset(account);
   }
 
   private async account(uid: string): Promise<Account | null> {

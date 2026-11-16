@@ -27,7 +27,10 @@ import {
   emailChangedTemplate,
   type EmailChangedProps,
 } from '../email/templates/security/email-changed';
-import { EmailTokensService } from '../email/tokens/email-tokens.service';
+import {
+  EmailTokensService,
+  SECURITY_TTL_SECONDS,
+} from '../email/tokens/email-tokens.service';
 import { RecipientsService } from '../notifications/recipients.service';
 import {
   AccountSecurityService,
@@ -42,6 +45,13 @@ export interface RequestEmailChangeInput {
 }
 
 const CODE_TTL_MS = 10 * 60 * 1000;
+
+/**
+ * A new change waits until A4's revert link from the last one has expired. A
+ * second change inside that window would leave the link pointing at an
+ * address the account no longer has, so it could not switch anything back.
+ */
+const CHANGE_LOCK_MS = SECURITY_TTL_SECONDS * 1000;
 
 /** The root db or the confirm transaction: both run the same queries. */
 type Executor = DbType | Parameters<Parameters<DbType['transaction']>[0]>[0];
@@ -58,6 +68,7 @@ const NO_PENDING_CHANGE = {
 type ConfirmOutcome =
   | { kind: 'invalid'; attemptsLeft: number }
   | { kind: 'locked' }
+  | { kind: 'changeLocked' }
   | { kind: 'changed'; row: typeof users.$inferSelect; oldEmail: string };
 
 const sha256 = (value: string) =>
@@ -95,6 +106,23 @@ function emailTaken(): ConflictException {
   });
 }
 
+function changeLocked(): ConflictException {
+  return new ConflictException({
+    statusCode: 409,
+    error: 'Conflict',
+    code: 'EMAIL_CHANGE_LOCKED',
+    message: 'You changed your email recently. Try again in a few days.',
+  });
+}
+
+/** True while the revert window of the last change is still open. */
+function isChangeLocked(emailChangedAt: Date | null): boolean {
+  return (
+    emailChangedAt !== null &&
+    Date.now() - emailChangedAt.getTime() < CHANGE_LOCK_MS
+  );
+}
+
 /**
  * Changing the sign-in email (spec §7.1). The new address gets a 6-digit code
  * (A3) and `email` changes only when the code comes back, so nobody can move
@@ -118,7 +146,8 @@ export class EmailChangeService {
   /**
    * Stores the pending change and mails the code to the new address. A second
    * request replaces the first: its code stops working and the count of wrong
-   * guesses starts again.
+   * guesses starts again. Within 7 days of the last change (or revert) it
+   * answers 409 EMAIL_CHANGE_LOCKED, so A4's revert link keeps working.
    */
   async request(
     userId: string,
@@ -126,10 +155,18 @@ export class EmailChangeService {
   ): Promise<{ pendingEmail: string; expiresAt: string }> {
     const user = await this.db.query.users.findFirst({
       where: eq(users.id, userId),
-      columns: { id: true, email: true, password: true, role: true },
+      columns: {
+        id: true,
+        email: true,
+        password: true,
+        role: true,
+        emailChangedAt: true,
+      },
     });
     if (!user) throw new NotFoundException('User not found');
     await this.security.verifyCurrentPassword(user, body.currentPassword);
+    // Every role, super admins included: the revert link protects them too.
+    if (isChangeLocked(user.emailChangedAt)) throw changeLocked();
 
     const newEmail = normalizeEmail(body.newEmail);
     if (newEmail === normalizeEmail(user.email)) {
@@ -213,6 +250,7 @@ export class EmailChangeService {
             pendingEmailCodeHash: users.pendingEmailCodeHash,
             pendingEmailExpiresAt: users.pendingEmailExpiresAt,
             pendingEmailAttempts: users.pendingEmailAttempts,
+            emailChangedAt: users.emailChangedAt,
           })
           .from(users)
           .where(eq(users.id, userId))
@@ -225,6 +263,12 @@ export class EmailChangeService {
             'EMAIL_CHANGE_NOT_STARTED',
             'Start the email change again.',
           );
+        }
+        // Checked again under the row lock: a request that raced a confirm
+        // can hold a code issued after the email had already changed.
+        if (isChangeLocked(row.emailChangedAt)) {
+          await this.clearPending(tx, userId);
+          return { kind: 'changeLocked' };
         }
         if (pendingEmailExpiresAt.getTime() <= Date.now()) {
           throw verificationCodeError(
@@ -267,6 +311,7 @@ export class EmailChangeService {
             ...NO_PENDING_CHANGE,
             email: pendingEmail,
             isEmailVerified: true,
+            emailChangedAt: new Date(),
             updatedAt: new Date(),
           })
           .where(eq(users.id, userId))
@@ -279,6 +324,7 @@ export class EmailChangeService {
       throw err;
     }
 
+    if (outcome.kind === 'changeLocked') throw changeLocked();
     if (outcome.kind === 'locked') {
       throw verificationCodeError(
         'CODE_LOCKED',
