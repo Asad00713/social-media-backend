@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto';
 import { Logger } from '@nestjs/common';
 import {
   ACK_WINDOW_SECONDS,
+  ACKS_PER_WINDOW_GLOBAL,
   ContactAckLimiter,
   type AckLimiterRedis,
 } from './contact-ack-limiter';
@@ -96,5 +97,52 @@ describe('ContactAckLimiter', () => {
     await jest.advanceTimersByTimeAsync(2500);
 
     await expect(result).resolves.toBe(false);
+  });
+
+  describe('global budget', () => {
+    it('allows 30 an hour across all addresses, refuses the 31st, and logs once per window', async () => {
+      const { redis, counts, expiries } = fakeRedis();
+      const limiter = new ContactAckLimiter(redis as AckLimiterRedis);
+
+      for (let i = 0; i < ACKS_PER_WINDOW_GLOBAL; i++) {
+        expect(await limiter.allowGlobal()).toBe(true);
+      }
+      expect(await limiter.allowGlobal()).toBe(false);
+      expect(await limiter.allowGlobal()).toBe(false);
+      expect(await limiter.allowGlobal()).toBe(false);
+
+      expect([...counts.keys()]).toEqual(['contact-ack-global']);
+      expect(expiries.get('contact-ack-global')).toBe('3600');
+      expect(logged).toHaveLength(1);
+      expect(logged[0]).toContain('30 this hour');
+    });
+
+    it('fails open when Redis errors', async () => {
+      const redis = {
+        eval: jest.fn().mockRejectedValue(new Error('connection refused')),
+      };
+      const limiter = new ContactAckLimiter(redis as AckLimiterRedis);
+
+      await expect(limiter.allowGlobal()).resolves.toBe(true);
+      expect(logged.join(' ')).toContain('connection refused');
+    });
+
+    it('fails open when Redis hangs, after 2 s', async () => {
+      jest.useFakeTimers();
+      const redis = {
+        eval: jest.fn(() => new Promise<never>(() => undefined)),
+      };
+      const limiter = new ContactAckLimiter(redis as AckLimiterRedis);
+      let settled = false;
+
+      const result = limiter.allowGlobal().finally(() => {
+        settled = true;
+      });
+      await jest.advanceTimersByTimeAsync(1900);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(200);
+
+      await expect(result).resolves.toBe(true);
+    });
   });
 });

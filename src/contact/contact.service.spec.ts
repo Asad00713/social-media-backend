@@ -4,7 +4,11 @@ import { AppLinks } from '../email/links/app-links';
 import type { EmailOutboxService } from '../email/queue/email-outbox.service';
 import { renderEmail } from '../email/render/render-email';
 import type { AnyTemplateDef } from '../email/templates/types';
-import type { ContactAckLimiter } from './contact-ack-limiter';
+import {
+  ACKS_PER_WINDOW_GLOBAL,
+  ContactAckLimiter,
+  type AckLimiterRedis,
+} from './contact-ack-limiter';
 import { ContactService } from './contact.service';
 import type { CreateContactDto } from './dto';
 
@@ -37,6 +41,8 @@ interface Doubles {
   sendNow?: jest.Mock;
   enqueue?: jest.Mock;
   allow?: jest.Mock;
+  allowGlobal?: jest.Mock;
+  limiter?: ContactAckLimiter;
 }
 
 function makeService(
@@ -47,14 +53,15 @@ function makeService(
     doubles.sendNow ?? jest.fn().mockResolvedValue({ success: true });
   const enqueue = doubles.enqueue ?? jest.fn().mockResolvedValue(undefined);
   const allow = doubles.allow ?? jest.fn().mockResolvedValue(true);
+  const allowGlobal = doubles.allowGlobal ?? jest.fn().mockResolvedValue(true);
   const config = { get: (key: string) => env[key] } as unknown as ConfigService;
   const service = new ContactService(
     { sendNow, enqueue } as unknown as EmailOutboxService,
     new AppLinks(config),
-    { allow } as unknown as ContactAckLimiter,
+    doubles.limiter ?? ({ allow, allowGlobal } as unknown as ContactAckLimiter),
     config,
   );
-  return { service, sendNow, enqueue, allow };
+  return { service, sendNow, enqueue, allow, allowGlobal };
 }
 
 const sentOf = (mock: jest.Mock): Sent => (mock.mock.calls as Sent[][])[0][0];
@@ -108,11 +115,24 @@ describe('ContactService', () => {
     expect(reference).toMatch(new RegExp(`^${REFERENCE_RE}$`));
     expect(ack.idempotencyKey).toBe(`contact-ack.${reference}`);
     expect(sentOf(sendNow).idempotencyKey).toBe(`contact.${reference}`);
-    expect(ack.props).toMatchObject({
-      topic: 'Billing & refunds',
-      message: 'I was charged twice for the same period.',
+    expect(ack.props).toEqual({
+      reference,
       maestroUrl: 'http://localhost:3001/',
     });
+  });
+
+  it('the acknowledgement HTML and text never contain the submitted message', async () => {
+    const { service, enqueue } = makeService();
+    const message = 'Claim your prize at https://phish.test/win now';
+
+    await service.submit(makeDto({ message }));
+
+    const ack = await render(sentOf(enqueue));
+    for (const out of [ack.html, ack.text, ack.subject, ack.preheader]) {
+      expect(out).not.toContain('phish.test');
+      expect(out).not.toContain('Claim your prize');
+    }
+    expect(JSON.stringify(sentOf(enqueue).props)).not.toContain('phish');
   });
 
   it('puts the topic and reference in the enquiry subject', async () => {
@@ -179,11 +199,10 @@ describe('ContactService', () => {
 
     const enquiry = await render(sentOf(sendNow));
     const ack = await render(sentOf(enqueue));
-    for (const { html } of [enquiry, ack]) {
-      expect(html).not.toContain('<b>hi</b>');
-      expect(html).not.toContain('<img src=x');
-      expect(html).toContain('&lt;b&gt;hi&lt;/b&gt; &amp; &lt;img');
-    }
+    expect(enquiry.html).not.toContain('<b>hi</b>');
+    expect(enquiry.html).not.toContain('<img src=x');
+    expect(enquiry.html).toContain('&lt;b&gt;hi&lt;/b&gt; &amp; &lt;img');
+    expect(ack.html).not.toContain('hi</b>');
     expect(enquiry.html).not.toContain('<script>');
     expect(enquiry.html).toContain('&lt;script&gt;');
     expect(enquiry.html).toContain('&lt;i&gt;Acme&lt;/i&gt;');
@@ -217,20 +236,6 @@ describe('ContactService', () => {
     const { subject } = await render(sentOf(sendNow));
     expect(subject).toContain(`[Billing & refunds] ${'A'.repeat(80)} · #`);
     expect(subject).not.toContain('A'.repeat(81));
-  });
-
-  it('queues only the first 1 000 characters of the message for the acknowledgement', async () => {
-    const { service, sendNow, enqueue } = makeService();
-    const message = 'x'.repeat(4000);
-
-    await service.submit(makeDto({ message }));
-
-    const queued = (sentOf(enqueue).props as { message: string }).message;
-    expect(queued).toHaveLength(1000);
-    // Our own copy keeps all of it.
-    expect((sentOf(sendNow).props as { message: string }).message).toBe(
-      message,
-    );
   });
 
   it('falls back to SUPPORT_EMAIL when no contact inbox is set', async () => {
@@ -269,6 +274,38 @@ describe('ContactService', () => {
     const { reference } = sentOf(sendNow).props as { reference: string };
     expect(logged.join('\n')).toContain(`#${reference}`);
     expect(logged.join('\n')).not.toContain('ada@example.com');
+  });
+
+  it('the 31st acknowledgement in the hour is skipped, the enquiry still delivered, logged once', async () => {
+    // The real limiter on an in-memory INCR + EXPIRE.
+    const counts = new Map<string, number>();
+    const redis: AckLimiterRedis = {
+      eval: (_script, _numKeys, key) => {
+        const n = (counts.get(key) ?? 0) + 1;
+        counts.set(key, n);
+        return Promise.resolve(n);
+      },
+    };
+    const { service, sendNow, enqueue } = makeService(undefined, {
+      limiter: new ContactAckLimiter(redis),
+    });
+
+    for (let i = 1; i <= ACKS_PER_WINDOW_GLOBAL + 2; i++) {
+      // A new address each time: the per-address cap never trips.
+      await expect(
+        service.submit(makeDto({ email: `target${i}@example.com` })),
+      ).resolves.toEqual({ delivered: true });
+    }
+
+    expect(ACKS_PER_WINDOW_GLOBAL).toBe(30);
+    expect(sendNow).toHaveBeenCalledTimes(32);
+    expect(enqueue).toHaveBeenCalledTimes(30);
+    const recipients = (enqueue.mock.calls as Sent[][]).map(
+      ([sent]) => sent.to.email,
+    );
+    expect(recipients).not.toContain('target31@example.com');
+    expect(recipients).not.toContain('target32@example.com');
+    expect(logged.filter((l) => l.includes('this hour'))).toHaveLength(1);
   });
 
   it('does not count a recipient for a honeypot hit or a lost enquiry', async () => {

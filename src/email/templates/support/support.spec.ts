@@ -64,9 +64,8 @@ describe('support templates', () => {
       expect(r.text).toContain(
         'A person on our team will reply within 1 business day. Your reference is #SCH-2481.',
       );
-      expect(r.text).toContain(
-        'Your message · Publishing · Oct 26, 2026 at 10:42 AM UTC',
-      );
+      // No quote block: the sender's text is never echoed (public form).
+      expect(r.text).not.toContain('Your message');
       expect(r.text).toContain(
         'To add details or screenshots, reply to this email. It goes to the same conversation.',
       );
@@ -81,46 +80,6 @@ describe('support templates', () => {
       expect(r.html).not.toContain('data-email-button="primary"');
       expect(r.html).toContain('href="https://app.schedura.ai/"');
       expect(r.text).toContain('Ask Maestro');
-    });
-
-    it('shows at most 1 000 characters of the message, ending in an ellipsis', async () => {
-      const r = await renderEmail(
-        contactReceivedTemplate,
-        { ...ack, message: 'x'.repeat(5000) },
-        ctx,
-      );
-      expect(r.html).toContain(`${'x'.repeat(999)}…`);
-      expect(r.html).not.toContain('x'.repeat(1000));
-    });
-
-    it('leaves a message of exactly 1 000 characters whole', async () => {
-      const r = await renderEmail(
-        contactReceivedTemplate,
-        { ...ack, message: 'y'.repeat(1000) },
-        ctx,
-      );
-      expect(r.html).toContain('y'.repeat(1000));
-      expect(r.html).not.toContain('…');
-    });
-
-    it('escapes the message and topic', async () => {
-      const r = await renderEmail(
-        contactReceivedTemplate,
-        { ...ack, topic: '<u>T</u>', message: '<b>hi</b>' },
-        ctx,
-      );
-      expect(r.html).not.toContain('<b>hi</b>');
-      expect(r.html).toContain('&lt;b&gt;hi&lt;/b&gt;');
-      expect(r.html).not.toContain('<u>T</u>');
-    });
-
-    it('keeps the message line breaks', async () => {
-      const r = await renderEmail(
-        contactReceivedTemplate,
-        { ...ack, message: 'one\r\ntwo' },
-        ctx,
-      );
-      expect(r.html).toMatch(/one<br\/?>two/);
     });
   });
 

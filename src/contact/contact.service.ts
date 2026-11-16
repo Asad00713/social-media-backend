@@ -2,13 +2,8 @@ import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { EmailOutboxService } from '../email/queue/email-outbox.service';
 import { AppLinks } from '../email/links/app-links';
-import { formatWhen } from '../email/links/format-when';
-import { clipMessage } from '../email/templates/support/message-text';
 import { contactEnquiryTemplate } from '../email/templates/support/contact-enquiry';
-import {
-  contactReceivedTemplate,
-  MESSAGE_PREVIEW_CHARS,
-} from '../email/templates/support/contact-received';
+import { contactReceivedTemplate } from '../email/templates/support/contact-received';
 import { ContactAckLimiter } from './contact-ack-limiter';
 import { newContactReference } from './contact-reference';
 import type { ContactTopic, CreateContactDto } from './dto';
@@ -126,20 +121,17 @@ export class ContactService {
       );
       return { delivered: true };
     }
+    // And all addresses together get at most 30 an hour, so rotating
+    // addresses does not get round the cap. The limiter logs once per window.
+    if (!(await this.ackLimiter.allowGlobal())) return { delivered: true };
 
     // Best-effort. A failed acknowledgement must not lose us the enquiry we
     // have already accepted, so its failure is logged and not returned.
     try {
       await this.outbox.enqueue({
         template: contactReceivedTemplate,
-        props: {
-          reference,
-          topic,
-          sentAt: formatWhen(new Date(), 'UTC'),
-          // The job payload sits in Redis: keep what the quote shows, not 5 000 characters.
-          message: clipMessage(dto.message, MESSAGE_PREVIEW_CHARS),
-          maestroUrl: this.links.frontend('/'),
-        },
+        // Nothing the sender typed: E1 may reach a stranger's inbox.
+        props: { reference, maestroUrl: this.links.frontend('/') },
         to: { email: dto.email, userId: null },
         workspaceId: null,
         idempotencyKey: `contact-ack.${reference}`,
