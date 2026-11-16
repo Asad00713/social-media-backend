@@ -20,21 +20,17 @@
 --                            NULL means every platform. While unresolved
 --                            (resolved_at NULL) the incident's severity
 --                            overrides the measured state of its platform.
--- posts gets an index on updated_at: the measurement reads the composer's
--- "publish now" outcomes, which live only in posts.targets, from the posts
--- updated in the last half hour.
+-- The index the measurement uses on posts.updated_at is in its own file,
+-- 0086_posts_updated_at_index.sql, so a slow build there never rolls these
+-- tables back.
 --
 -- SAFETY
 -- The boot migrator runs this file in ONE transaction; no BEGIN/COMMIT, no
 -- CONCURRENTLY. Locks, in the order they are taken:
 --   1. CREATE TABLE platform_incidents ... REFERENCES users takes SHARE ROW
 --      EXCLUSIVE on `users`; writes to users (last_login_at on sign-in) wait
---      until this file commits.
---   2. CREATE INDEX on posts takes SHARE on `posts` for the build: inserts and
---      updates of posts (saving, publishing) wait for it. One btree over a
---      timestamptz column: fast at today's size. `lock_timeout` (10 s)
---      bounds the wait behind the still-running old instance (I4); if it
---      trips, the whole file rolls back.
+--      until this file commits. `lock_timeout` (10 s) bounds the wait behind
+--      the still-running old instance (I4); if it trips, the file rolls back.
 -- The three new tables are empty, so their own constraints and indexes are
 -- instant. No existing row is written or dropped.
 -- Idempotent: CREATE ... IF NOT EXISTS throughout.
@@ -43,7 +39,6 @@
 -- guard refuses to boot. Write a new migration for any later change.
 --
 -- ROLLBACK
---   DROP INDEX IF EXISTS posts_updated_at_idx;
 --   DROP TABLE IF EXISTS platform_status_changes;
 --   DROP TABLE IF EXISTS platform_status;
 --   DROP TABLE IF EXISTS platform_incidents;
@@ -129,6 +124,3 @@ CREATE TABLE IF NOT EXISTS "platform_status_changes" (
 
 CREATE INDEX IF NOT EXISTS "platform_status_changes_created_idx"
   ON "platform_status_changes" ("created_at" DESC);
-
-CREATE INDEX IF NOT EXISTS "posts_updated_at_idx"
-  ON "posts" ("updated_at");

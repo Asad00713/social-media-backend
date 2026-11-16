@@ -3,7 +3,11 @@ import { describeDb, withRollbackDb } from '../planner/testing/rollback-db';
 import { PlatformStatusRepository } from './platform-status.repository';
 import { PlatformStatusService } from './platform-status.service';
 
-const MIGRATION = '0083_platform_status.sql';
+/** The tables, then the index on posts (each applied twice). */
+const MIGRATIONS = [
+  '0083_platform_status.sql',
+  '0086_posts_updated_at_index.sql',
+];
 
 /** A platform no real row uses, so the local database's own data never
  *  leaks into the counts. */
@@ -80,23 +84,26 @@ async function history(
   at: Date,
   errorMessage?: string,
 ): Promise<void> {
+  // As PostService.recordHistory writes it: the platform column stays NULL,
+  // the platform goes in details.
   await client.query(
-    `INSERT INTO post_history (post_id, action, platform, channel_id, details, created_at)
-     VALUES ($1, $2, $3, $4, $5::jsonb, $6)`,
+    `INSERT INTO post_history (post_id, action, channel_id, details, created_at)
+     VALUES ($1, $2, $3, $4::jsonb, $5)`,
     [
       postId,
       action,
-      P,
       channelId,
-      JSON.stringify(errorMessage ? { errorMessage } : {}),
+      JSON.stringify(
+        errorMessage ? { platform: P, errorMessage } : { platform: P },
+      ),
       at,
     ],
   );
 }
 
-describeDb('platform status on Postgres (0083)', () => {
+describeDb('platform status on Postgres (0083, 0086)', () => {
   it('reads every signal source, and only the window', () =>
-    withRollbackDb([MIGRATION], async (db, client) => {
+    withRollbackDb(MIGRATIONS, async (db, client) => {
       const now = new Date();
       const owner = await seedUser(client);
       const w1 = await seedWorkspace(client, owner);
@@ -184,11 +191,20 @@ describeDb('platform status on Postgres (0083)', () => {
         ],
       });
 
-      // Still waiting 40 minutes past its time; the held target is skipped.
+      // Not picked up 50 minutes past its time: our queue, never a sample.
+      await seedPost(client, {
+        workspaceId: w2,
+        owner,
+        status: 'scheduled',
+        scheduledAt: ago(now, 50),
+        targets: [{ channelId: String(c2), platform: P, status: 'draft' }],
+      });
+
+      // Publishing for 40 minutes past its time; the held target is skipped.
       await seedPost(client, {
         workspaceId: w1,
         owner,
-        status: 'scheduled',
+        status: 'publishing',
         scheduledAt: ago(now, 40),
         targets: [
           { channelId: String(c1), platform: P, status: 'draft' },
@@ -240,7 +256,12 @@ describeDb('platform status on Postgres (0083)', () => {
     }));
 
   it('stores the plan, keeps history, and lets an incident override it', () =>
-    withRollbackDb([MIGRATION], async (db, client) => {
+    withRollbackDb(MIGRATIONS, async (db, client) => {
+      // Start from empty status tables (the local database may hold rows
+      // from a dev run); the harness rolls this back.
+      await client.query(
+        'DELETE FROM platform_status_changes; DELETE FROM platform_status; DELETE FROM platform_incidents',
+      );
       const owner = await seedUser(client);
       const repo = new PlatformStatusRepository(db);
       const broadcast = jest.fn();
@@ -321,7 +342,7 @@ describeDb('platform status on Postgres (0083)', () => {
       'platform_status_changes_differ_chk',
     ],
   ])('refuses %s', (_label, statement, constraint) =>
-    withRollbackDb([MIGRATION], async (_db, client) => {
+    withRollbackDb(MIGRATIONS, async (_db, client) => {
       await client.query('SAVEPOINT chk');
       await expect(client.query(statement)).rejects.toMatchObject({
         constraint,

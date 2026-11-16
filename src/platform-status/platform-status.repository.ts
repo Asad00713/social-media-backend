@@ -37,6 +37,17 @@ type Rows<T> = { rows: T[] };
  *  measurement and an admin posting an incident must not interleave. */
 const STATUS_LOCK_KEY = 'platform_status';
 
+/**
+ * The platform of a post_history row. Every writer of the publish actions
+ * (PostService.recordHistory: published, failed, rate_limited, held) puts
+ * it in `details.platform` and leaves the column NULL; the column is read
+ * first in case a writer ever fills it. Not a join on channel_id: that is
+ * SET NULL when the channel is deleted, and the outcome still counts.
+ */
+const HISTORY_PLATFORM = sql.raw(
+  `COALESCE(ph.platform, ph.details->>'platform')`,
+);
+
 /** An ISO-8601 instant, as `Date#toISOString` writes into posts.targets. A
  *  hand-edited or legacy value must not make the cast throw. */
 const ISO_INSTANT = '^\\d{4}-\\d\\d-\\d\\dT\\d\\d:\\d\\d:\\d\\d(\\.\\d+)?Z$';
@@ -99,7 +110,7 @@ export class PlatformStatusRepository {
     );
 
     const history = (await this.db.execute(sql`
-      SELECT ph.platform AS platform,
+      SELECT ${HISTORY_PLATFORM} AS platform,
              p.workspace_id AS workspace_id,
              ph.action AS action,
              ph.details->>'errorMessage' AS error_message
@@ -107,7 +118,7 @@ export class PlatformStatusRepository {
         JOIN posts p ON p.id = ph.post_id
        WHERE ph.created_at >= ${publishSince}
          AND ph.action IN ('published', 'failed', 'rate_limited')
-         AND ph.platform IN (${list})
+         AND ${HISTORY_PLATFORM} IN (${list})
     `)) as unknown as Rows<{
       platform: string;
       workspace_id: string;
@@ -164,7 +175,7 @@ export class PlatformStatusRepository {
     // channel: a publish after a failure, or after the channel was paused,
     // measures a person or a pause, not the network.
     const published = (await this.db.execute(sql`
-      SELECT ph.platform AS platform,
+      SELECT ${HISTORY_PLATFORM} AS platform,
              p.workspace_id AS workspace_id,
              (EXTRACT(EPOCH FROM (ph.created_at - p.scheduled_at)) * 1000)::bigint
                AS lag_ms
@@ -172,7 +183,7 @@ export class PlatformStatusRepository {
         JOIN posts p ON p.id = ph.post_id
        WHERE ph.created_at >= ${publishSince}
          AND ph.action = 'published'
-         AND ph.platform IN (${list})
+         AND ${HISTORY_PLATFORM} IN (${list})
          AND p.scheduled_at IS NOT NULL
          AND p.scheduled_at >= ${lagFloor}
          AND ph.created_at >= p.scheduled_at
@@ -195,8 +206,10 @@ export class PlatformStatusRepository {
       });
     }
 
-    // Still waiting past its time: the queue has not finished it. A target
-    // held for a paused channel is the customer's choice, not lag.
+    // Started publishing (status 'publishing') and still not done past its
+    // time: the network is slow to answer. A post still 'scheduled' past its
+    // time has not been picked up yet, which is our queue, not the network.
+    // A target held for a paused channel is the customer's choice, not lag.
     const overdue = (await this.db.execute(sql`
       SELECT t->>'platform' AS platform,
              p.workspace_id AS workspace_id,
@@ -207,7 +220,7 @@ export class PlatformStatusRepository {
           CASE WHEN jsonb_typeof(p.targets) = 'array' THEN p.targets
                ELSE '[]'::jsonb END
         ) AS t
-       WHERE p.status IN ('scheduled', 'publishing')
+       WHERE p.status = 'publishing'
          AND p.scheduled_at >= ${lagFloor}
          AND p.scheduled_at <= ${overdueAfter}
          AND t->>'platform' IN (${list})
