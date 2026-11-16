@@ -31,6 +31,12 @@ type SendOutcome =
   | { status: 'sent'; messageId?: string }
   | { status: 'skipped:pref' | 'skipped:suppressed' };
 
+/**
+ * BullMQ's connection retries for 10-20 s while Redis is unreachable, and
+ * webhooks and settings requests await enqueue: past this, give up waiting.
+ */
+const ENQUEUE_TIMEOUT_MS = 5000;
+
 /** All digits: BullMQ refuses integer-like custom job ids. */
 const ALL_DIGITS_RE = /^\d+$/;
 
@@ -78,15 +84,39 @@ export class EmailOutboxService {
     private readonly tokens: EmailTokensService,
   ) {}
 
-  /** Throws on a bad key, so a caller bug surfaces before anything is queued. */
-  async enqueue<P>(input: EnqueueEmail<P>): Promise<void> {
+  /**
+   * Throws on a bad key, so a caller bug surfaces before anything is queued.
+   * Resolves true once queued, or false ("not queued") when Redis has not
+   * answered within 5 s: a timeout is logged by key and never thrown. The add
+   * may still land later; the job id is the idempotency key, so that is safe.
+   */
+  async enqueue<P>(input: EnqueueEmail<P>): Promise<boolean> {
     assertKey(input.idempotencyKey);
-    await this.queue.add(EMAIL_JOB_SEND, toJobData(input), {
-      jobId: input.idempotencyKey,
-      attempts: EMAIL_JOB_ATTEMPTS,
-      backoff: { type: 'exponential', delay: EMAIL_JOB_BACKOFF_MS },
-      ...(input.delayMs !== undefined ? { delay: input.delayMs } : {}),
+    const add = Promise.resolve(
+      this.queue.add(EMAIL_JOB_SEND, toJobData(input), {
+        jobId: input.idempotencyKey,
+        attempts: EMAIL_JOB_ATTEMPTS,
+        backoff: { type: 'exponential', delay: EMAIL_JOB_BACKOFF_MS },
+        ...(input.delayMs !== undefined ? { delay: input.delayMs } : {}),
+      }),
+    );
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<false>((resolve) => {
+      timer = setTimeout(() => resolve(false), ENQUEUE_TIMEOUT_MS);
     });
+    try {
+      const queued = await Promise.race([add.then(() => true), timedOut]);
+      if (!queued) {
+        // A late rejection has no one awaiting it: keep it off the process.
+        add.catch(() => undefined);
+        this.logger.warn(
+          `Email ${input.idempotencyKey} not queued: Redis did not answer within ${ENQUEUE_TIMEOUT_MS} ms`,
+        );
+      }
+      return queued;
+    } finally {
+      clearTimeout(timer);
+    }
   }
 
   /** Never throws: every failure, a bad key included, is `{ success: false }`. */

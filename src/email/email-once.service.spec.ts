@@ -77,4 +77,24 @@ describe('EmailOnceService', () => {
     await expect(claim).resolves.toBe(true);
     expect(warn).toHaveBeenCalledWith(expect.stringContaining('timeout'));
   });
+
+  it('release gives up after 2 s when Redis never answers, without throwing', async () => {
+    jest.useFakeTimers();
+    const redis: EmailOnceRedis = {
+      set: () => Promise.resolve('OK'),
+      del: () => new Promise(() => undefined),
+    };
+    let settled = false;
+    const release = new EmailOnceService(redis)
+      .release('trial-ending.9')
+      .finally(() => {
+        settled = true;
+      });
+
+    await jest.advanceTimersByTimeAsync(1900);
+    expect(settled).toBe(false);
+    await jest.advanceTimersByTimeAsync(100);
+    await expect(release).resolves.toBeUndefined();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('timeout'));
+  });
 });

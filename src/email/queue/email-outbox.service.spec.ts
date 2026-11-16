@@ -246,6 +246,64 @@ describe('EmailOutboxService.enqueue', () => {
     ][];
     expect(calls[0][2]).not.toHaveProperty('delay');
   });
+
+  it('resolves true once the job is queued', async () => {
+    const { outbox } = make();
+    await expect(outbox.enqueue(input)).resolves.toBe(true);
+  });
+
+  it('a Redis that never answers: after 5 s resolves "not queued", logs the key, never throws', async () => {
+    jest.useFakeTimers();
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      const { outbox, queue } = make();
+      queue.add.mockReturnValueOnce(new Promise<never>(() => undefined));
+      let settled = false;
+      const queued = outbox.enqueue(input).finally(() => {
+        settled = true;
+      });
+
+      await jest.advanceTimersByTimeAsync(4900);
+      expect(settled).toBe(false);
+      await jest.advanceTimersByTimeAsync(100);
+
+      await expect(queued).resolves.toBe(false);
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('post-failed.u1.ws1.w1'),
+      );
+    } finally {
+      jest.useRealTimers();
+      warn.mockRestore();
+    }
+  });
+
+  it('a late Redis error after the timeout reaches no one', async () => {
+    jest.useFakeTimers();
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    try {
+      const { outbox, queue } = make();
+      let fail: (err: Error) => void = () => undefined;
+      queue.add.mockReturnValueOnce(
+        new Promise<never>((_, reject) => {
+          fail = reject;
+        }),
+      );
+      const queued = outbox.enqueue(input);
+      await jest.advanceTimersByTimeAsync(5000);
+      await expect(queued).resolves.toBe(false);
+
+      fail(new Error('connection lost'));
+      // An unhandled rejection would fail the run here.
+      await jest.advanceTimersByTimeAsync(0);
+    } finally {
+      jest.useRealTimers();
+      warn.mockRestore();
+    }
+  });
 });
 
 describe('EmailOutboxService.process', () => {
