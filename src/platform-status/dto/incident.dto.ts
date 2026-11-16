@@ -9,6 +9,7 @@ import {
   Max,
   MaxLength,
   Min,
+  ValidateIf,
 } from 'class-validator';
 import {
   INCIDENT_SEVERITIES,
@@ -50,17 +51,26 @@ export class CreateIncidentDto {
   startedAt?: Date;
 }
 
-/** Every field optional; `platform: null` moves it to every platform. */
+/** Absent skips the field; null is checked like any value (and refused). */
+const whenSent = ValidateIf(
+  (_o: unknown, value: unknown) => value !== undefined,
+);
+
+/**
+ * Every field optional; `platform: null` moves it to every platform and
+ * `body: null` clears it. `severity` and `title` are NOT NULL columns, so a
+ * null for either is a 400, not a 500 from the database.
+ */
 export class UpdateIncidentDto {
   @IsOptional()
   @IsIn(STATUS_PLATFORMS)
   platform?: StatusPlatform | null;
 
-  @IsOptional()
+  @whenSent
   @IsIn(INCIDENT_SEVERITIES)
   severity?: IncidentSeverity;
 
-  @IsOptional()
+  @whenSent
   @Transform(trim)
   @IsString()
   @IsNotEmpty()

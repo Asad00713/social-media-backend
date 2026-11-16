@@ -149,6 +149,32 @@ describe('platform status over HTTP', () => {
       expect(incidents.create).not.toHaveBeenCalled();
     });
 
+    it.each([
+      ['severity null', { severity: null }],
+      ['title null', { title: null }],
+      ['a blank title', { title: '  ' }],
+      ['an unknown severity', { severity: 'meh' }],
+    ])('refuses an update with %s', async (_label, payload) => {
+      role = 'SUPER_ADMIN';
+      await request(app.getHttpServer())
+        .patch(`/admin/status/incidents/${INCIDENT_ID}`)
+        .send(payload)
+        .expect(400);
+      expect(incidents.update).not.toHaveBeenCalled();
+    });
+
+    it('lets an update clear the body and move it to every platform', async () => {
+      role = 'SUPER_ADMIN';
+      await request(app.getHttpServer())
+        .patch(`/admin/status/incidents/${INCIDENT_ID}`)
+        .send({ platform: null, body: null })
+        .expect(200);
+      expect(incidents.update).toHaveBeenCalledWith('user-1', INCIDENT_ID, {
+        platform: null,
+        body: null,
+      });
+    });
+
     it('refuses a non-uuid id', async () => {
       role = 'SUPER_ADMIN';
       await request(app.getHttpServer())
