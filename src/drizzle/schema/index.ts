@@ -46,3 +46,4 @@ export * from './network-requests.schema';
 export * from './insight-reports.schema';
 export * from './channel-connect-links.schema';
 export * from './platform-status.schema';
+export * from './billing-payment-alerts.schema';

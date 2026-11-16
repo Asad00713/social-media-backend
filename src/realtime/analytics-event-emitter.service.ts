@@ -5,6 +5,10 @@ import type {
   AnalyticsEventName,
   AnalyticsEventPayloadMap,
 } from './types/analytics-events.types';
+import type {
+  UserEventName,
+  UserEventPayloadMap,
+} from './types/user-events.types';
 
 /**
  * Thin facade over the WebSocket gateway. Handlers/services inject THIS,
@@ -58,6 +62,25 @@ export class AnalyticsEventEmitter {
     } catch (err) {
       this.logger.error(
         `Failed to broadcast ${eventName}: ${(err as Error).message}`,
+      );
+    }
+  }
+
+  /**
+   * Send an event to one user's sockets (room `user:<id>`), not to a
+   * workspace. For account-level state such as billing, which belongs to the
+   * owner rather than to everyone in the owner's workspaces.
+   */
+  emitToUser<K extends UserEventName>(
+    userId: string,
+    eventName: K,
+    payload: UserEventPayloadMap[K],
+  ): void {
+    try {
+      this.gateway.emitToUser(userId, eventName, payload);
+    } catch (err) {
+      this.logger.error(
+        `Failed to emit ${eventName} for user=${userId}: ${(err as Error).message}`,
       );
     }
   }
