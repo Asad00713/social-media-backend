@@ -1726,6 +1726,16 @@ describe('billing emails', () => {
     expect(String(calls[0].dedupeKey)).toMatch(/^[A-Za-z0-9._-]{1,200}$/);
   });
 
+  it('the email is mandatory: still sent when the bell and toast stay silent (billing_alert app off)', async () => {
+    paymentAlerts.paymentFailed.mockResolvedValueOnce(false);
+    await make().handleEvent(
+      'subscription_payment_failed',
+      failedInvoice(LS_SUB, '2026-10-20T08:00:00.000Z'),
+    );
+    expect(paymentAlerts.paymentFailed).toHaveBeenCalledTimes(1);
+    expect(billingEmail.paymentFailed).toHaveBeenCalledTimes(1);
+  });
+
   it('an add-on invoice or an unknown subscription sends nothing', async () => {
     await make().handleEvent(
       'subscription_payment_failed',

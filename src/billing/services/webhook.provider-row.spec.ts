@@ -725,6 +725,23 @@ describe('billing emails', () => {
     });
   }
 
+  it('the email is mandatory: still sent when the bell and toast stay silent (billing_alert app off)', async () => {
+    seedInvoice();
+    const silent = { paymentFailed: jest.fn().mockResolvedValue(false) };
+    const service = new WebhookService(
+      {} as never,
+      {} as never,
+      lookup as never,
+      billingEmail as never,
+      silent as never,
+    );
+
+    await call(service, 'handleInvoicePaymentFailed', FAILED_INVOICE);
+
+    expect(silent.paymentFailed).toHaveBeenCalledTimes(1);
+    expect(billingEmail.paymentFailed).toHaveBeenCalledTimes(1);
+  });
+
   it('a failed payment emails the payer with the invoice, card and next try', async () => {
     seedInvoice();
 

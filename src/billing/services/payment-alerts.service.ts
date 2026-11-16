@@ -6,6 +6,7 @@ import {
   plans,
   type BillingPaymentAlertKind,
 } from '../../drizzle/schema';
+import { NotificationPreferencesService } from '../../notification-preferences/notification-preferences.service';
 import { NotificationEmitterService } from '../../notifications/notification-emitter.service';
 import { AnalyticsEventEmitter } from '../../realtime/analytics-event-emitter.service';
 import type { BillingPaymentCard } from '../../realtime/types/user-events.types';
@@ -80,9 +81,17 @@ export class PaymentAlertsService {
     private readonly realtime: AnalyticsEventEmitter,
     private readonly lookup: SubscriptionLookupService,
     private readonly paymentMethods: PaymentMethodService,
+    private readonly prefs: NotificationPreferencesService,
   ) {}
 
-  /** Returns true when an alert went out, false when deduped or it failed. */
+  /**
+   * Returns true when an alert went out; false when deduped, switched off or
+   * it failed. The bell and the toast follow the owner's in-app
+   * `billing_alert` switch for the workspace the bell links to (account level
+   * without one). Off keeps the claim: the failure stays on record, so a
+   * redelivery stays quiet and a later recovery is still recognised. The
+   * payment-failed EMAIL is mandatory and sent by the webhooks, not here.
+   */
   async paymentFailed(input: PaymentFailedInput): Promise<boolean> {
     let claimId: number | null = null;
     try {
@@ -93,6 +102,18 @@ export class PaymentAlertsService {
       }
 
       const workspaceId = await this.lookup.getPrimaryWorkspaceId(input.userId);
+      const wanted = await this.prefs.shouldSend(
+        input.userId,
+        workspaceId,
+        'billing_alert',
+        'app',
+      );
+      if (!wanted) {
+        this.logger.log(
+          `Payment alert ${input.alertKey}: in-app billing alerts are off for user ${input.userId}.`,
+        );
+        return false;
+      }
       const card = input.card ?? (await this.savedCard(input.userId));
 
       await this.notifier.paymentFailed(
