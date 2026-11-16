@@ -81,7 +81,26 @@ function setup(
     geoip as unknown as GeoipService,
     emitter as unknown as NotificationEmitterService,
   );
-  return { service, db, set, where, shouldSend, enqueue, tokens, emitter };
+  return {
+    service,
+    db,
+    set,
+    where,
+    shouldSend,
+    enqueue,
+    tokens,
+    emitter,
+    geoip,
+  };
+}
+
+/**
+ * changePassword detaches the notice: resolves once the one it started has
+ * finished, so its effects can be asserted.
+ */
+async function noticeSettled(spy: jest.SpyInstance): Promise<void> {
+  expect(spy).toHaveBeenCalledTimes(1);
+  await (spy.mock.results[0] as { value: Promise<void> }).value;
 }
 
 async function bodyOf(p: Promise<unknown>): Promise<Record<string, unknown>> {
@@ -171,6 +190,7 @@ describe('AccountSecurityService.changePassword', () => {
 
   it('success hashes, sets sessions_revoked_at, enqueues password-changed (security footer), rings passwordChanged when security_alert app is on', async () => {
     const { service, set, shouldSend, enqueue, tokens, emitter } = setup();
+    const notice = jest.spyOn(service, 'sendPasswordChanged');
     const before = Date.now();
 
     await service.changePassword(
@@ -178,6 +198,7 @@ describe('AccountSecurityService.changePassword', () => {
       { currentPassword: OLD, newPassword: NEW },
       CTX,
     );
+    await noticeSettled(notice);
 
     const written = firstArg<{ password: string; sessionsRevokedAt: Date }>(
       set,
@@ -218,17 +239,20 @@ describe('AccountSecurityService.changePassword', () => {
 
   it('does not ring the bell when the security_alert app switch is off, and still emails', async () => {
     const { service, enqueue, emitter } = setup({ appAllowed: false });
+    const notice = jest.spyOn(service, 'sendPasswordChanged');
     await service.changePassword(
       'u1',
       { currentPassword: OLD, newPassword: NEW },
       CTX,
     );
+    await noticeSettled(notice);
     expect(emitter.passwordChanged).not.toHaveBeenCalled();
     expect(enqueue).toHaveBeenCalledTimes(1);
   });
 
   it('a failing notification never fails the password change', async () => {
     const { service, set, tokens } = setup();
+    const notice = jest.spyOn(service, 'sendPasswordChanged');
     tokens.securityToken.mockImplementation(() => {
       throw new Error('JWT_ACCESS_SECRET is not configured');
     });
@@ -239,8 +263,47 @@ describe('AccountSecurityService.changePassword', () => {
         CTX,
       ),
     ).resolves.toBeUndefined();
+    await noticeSettled(notice);
     expect(set).toHaveBeenCalledTimes(1);
     expect(warn).toHaveBeenCalled();
+  });
+
+  it('answers without waiting for a slow GeoIP lookup or notify, after the sessions are revoked', async () => {
+    const { service, set, where, enqueue, emitter, geoip } = setup();
+    // It never resolves: an awaited notice would hang the response.
+    geoip.lookup.mockReturnValue(new Promise<never>(() => undefined));
+    const notice = jest.spyOn(service, 'sendPasswordChanged');
+
+    await expect(
+      service.changePassword(
+        'u1',
+        { currentPassword: OLD, newPassword: NEW },
+        CTX,
+      ),
+    ).resolves.toBeUndefined();
+
+    // Revoke first, then answer: the one write landed before the notice ran.
+    expect(set).toHaveBeenCalledTimes(1);
+    expect(where).toHaveBeenCalledTimes(1);
+    expect(notice).toHaveBeenCalledTimes(1);
+    expect(where.mock.invocationCallOrder[0]).toBeLessThan(
+      notice.mock.invocationCallOrder[0],
+    );
+    expect(enqueue).not.toHaveBeenCalled();
+    expect(emitter.passwordChanged).not.toHaveBeenCalled();
+  });
+
+  it('answers without waiting for a notify that hangs', async () => {
+    const { service, shouldSend } = setup();
+    shouldSend.mockReturnValue(new Promise<never>(() => undefined));
+
+    await expect(
+      service.changePassword(
+        'u1',
+        { currentPassword: OLD, newPassword: NEW },
+        CTX,
+      ),
+    ).resolves.toBeUndefined();
   });
 });
 

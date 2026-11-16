@@ -108,7 +108,10 @@ export class AccountSecurityService {
       .set({ password, sessionsRevokedAt: now, updatedAt: now })
       .where(eq(users.id, userId));
 
-    await this.sendPasswordChanged(userId, ctx, 'settings');
+    // Detached: the caller mints this device's fresh tokens next, and the old
+    // sessions are already refused, so GeoIP, the bell and A5 must not hold
+    // up that response. sendPasswordChanged never throws.
+    void this.sendPasswordChanged(userId, ctx, 'settings');
   }
 
   /**
