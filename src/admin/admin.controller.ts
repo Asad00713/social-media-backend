@@ -813,6 +813,7 @@ export class AdminController {
     @Query('search') search?: string,
     @Query('since') since?: string,
     @Query('cursor') cursor?: string,
+    @Query('requestId') requestId?: string,
   ) {
     return this.adminLogsService.getLogs({
       level,
@@ -820,6 +821,7 @@ export class AdminController {
       search,
       since,
       cursor,
+      requestId,
     });
   }
 

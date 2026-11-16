@@ -34,9 +34,10 @@ import { readMigrations } from './runner';
  * social_media_channels (ACCESS EXCLUSIVE).
  * 0080 adds removed_at / removed_by to workspace_invitations (ACCESS
  * EXCLUSIVE) and a foreign key to users (SHARE ROW EXCLUSIVE).
+ * 0082 adds request_id to error_logs (ACCESS EXCLUSIVE, catalog-only).
  * 0083 creates platform_incidents with a foreign key to users (SHARE ROW
- * EXCLUSIVE). 0086 builds an index on posts (SHARE) with a tighter bound of
- * its own, checked below.
+ * EXCLUSIVE). 0086 builds an index on posts (SHARE) and 0087 one on
+ * error_logs (SHARE), each with a tighter bound of its own, checked below.
  */
 const FILES = [
   '0046_inbox_items_thread_key.sql',
@@ -56,6 +57,7 @@ const FILES = [
   '0066_insight_reports.sql',
   '0067_channel_connect_links.sql',
   '0080_member_soft_removal.sql',
+  '0082_error_logs_request_id.sql',
   '0083_platform_status.sql',
 ];
 
@@ -99,5 +101,34 @@ describe('0086 bounds both the lock wait and the build', () => {
   it('keeps the index out of 0083', () => {
     const file = files.find((f) => f.name === '0083_platform_status.sql');
     expect(file!.sql.replace(/^\s*--.*$/gm, '')).not.toMatch(/ON "posts"/);
+  });
+});
+
+describe('0087 bounds both the lock wait and the build', () => {
+  const files = readMigrations(join(process.cwd(), 'drizzle', 'migrations'));
+  const statements = (sql: string): string[] =>
+    sql
+      .replace(/^\s*--.*$/gm, '')
+      .split(';')
+      .map((s) => s.trim())
+      .filter(Boolean);
+
+  it('sets a 3 s lock_timeout and a statement_timeout before a partial index', () => {
+    const file = files.find(
+      (f) => f.name === '0087_error_logs_request_id_index.sql',
+    );
+    expect(file).toBeDefined();
+    const [first, second, third, ...rest] = statements(file!.sql);
+    expect(first).toBe("SET LOCAL lock_timeout = '3s'");
+    expect(second).toMatch(/^SET LOCAL statement_timeout = '\d+s'$/);
+    expect(third).toMatch(
+      /^CREATE INDEX IF NOT EXISTS "error_logs_request_id_idx"[\s\S]*WHERE "request_id" IS NOT NULL$/,
+    );
+    expect(rest).toEqual([]);
+  });
+
+  it('keeps the index out of 0082, so its ACCESS EXCLUSIVE lock is short', () => {
+    const file = files.find((f) => f.name === '0082_error_logs_request_id.sql');
+    expect(file!.sql.replace(/^\s*--.*$/gm, '')).not.toMatch(/CREATE INDEX/i);
   });
 });
