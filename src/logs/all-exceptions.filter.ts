@@ -9,11 +9,13 @@ import type { Request, Response } from 'express';
 import { LogWriterService } from './log-writer.service';
 import { redactTokenUrls } from './redact-token-urls';
 import { redactSensitivePath } from './redact-path';
+import { currentRequestId } from './request-context';
 
 /**
- * Global exception filter. It preserves Nest's default response exactly — same
- * status and body a client would otherwise get — and additionally persists a
- * row. 5xx are 'error'; 4xx are 'warn' (a validation 400 is worth seeing, not
+ * Global exception filter. It preserves Nest's default response — same status
+ * and body a client would otherwise get, plus one additive `requestId` field
+ * (the request's X-Request-Id, see request-context.ts) — and additionally
+ * persists a row carrying the same id. 5xx are 'error'; 4xx are 'warn' (a validation 400 is worth seeing, not
  * worth alerting on). The DB write is fire-and-forget and can never change or
  * block the response. Token-bearing URLs (email and report links) are stored
  * with the token replaced by [token].
@@ -31,6 +33,8 @@ export class AllExceptionsFilter implements ExceptionFilter {
       exception instanceof HttpException
         ? exception.getStatus()
         : HttpStatus.INTERNAL_SERVER_ERROR;
+
+    const requestId = request?.requestId ?? currentRequestId();
 
     // Nest's own route-not-found 404 spells the URL in its message ("Cannot
     // POST /public/connect-links/<token>"), and the stack repeats the
@@ -63,16 +67,24 @@ export class AllExceptionsFilter implements ExceptionFilter {
         statusCode: status,
         userId: user?.userId ?? null,
         workspaceId: user?.workspaceId ?? null,
+        requestId: requestId ?? null,
       });
     } catch {
       // ignore — logging must not break the response
     }
 
-    // Reproduce Nest's default response shape.
-    const body =
+    // Reproduce Nest's default response shape (BaseExceptionFilter: an object
+    // response goes out as is, a string one as { statusCode, message }), then
+    // add the request id.
+    const raw: unknown =
       exception instanceof HttpException
         ? exception.getResponse()
         : { statusCode: status, message: 'Internal server error' };
+    const body: Record<string, unknown> =
+      raw !== null && typeof raw === 'object'
+        ? { ...(raw as Record<string, unknown>) }
+        : { statusCode: status, message: raw };
+    if (requestId) body.requestId = requestId;
 
     response.status(status).json(body);
   }

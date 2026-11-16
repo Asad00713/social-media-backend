@@ -2,6 +2,7 @@ import { Inject, Injectable } from '@nestjs/common';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import { errorLogs, type LogLevel } from '../drizzle/schema';
+import { currentRequestId } from './request-context';
 
 export interface LogWriteEntry {
   level: LogLevel;
@@ -13,6 +14,12 @@ export interface LogWriteEntry {
   statusCode?: number | null;
   userId?: string | null;
   workspaceId?: string | null;
+  /**
+   * The HTTP request's X-Request-Id. Left out (undefined) = take it from the
+   * request scope, so a logger.error() inside a request carries the same id
+   * as the filter's row; null = explicitly none.
+   */
+  requestId?: string | null;
   metadata?: Record<string, unknown>;
 }
 
@@ -43,6 +50,10 @@ export class LogWriterService {
         statusCode: entry.statusCode ?? null,
         userId: entry.userId ?? null,
         workspaceId: entry.workspaceId ?? null,
+        requestId:
+          entry.requestId === undefined
+            ? (currentRequestId() ?? null)
+            : entry.requestId,
         metadata: entry.metadata ?? {},
       })
       .catch((err: unknown) => {
