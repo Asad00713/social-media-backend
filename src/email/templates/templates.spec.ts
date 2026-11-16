@@ -60,7 +60,7 @@ describe('thumbnail previews', () => {
     '%s has a --thumbnail preview that shows preview-thumbnail.png',
     async (id) => {
       const def = getTemplate(id);
-      const props = def.variants?.thumbnail;
+      const props: unknown = def.variants?.thumbnail;
       expect(props).toBeDefined();
       const r = await renderEmail(def, props, ctx);
       expect(r.html).toMatch(/<img[^>]+src="[^"]*\/preview-thumbnail\.png"/);

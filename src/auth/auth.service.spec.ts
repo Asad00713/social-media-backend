@@ -323,7 +323,11 @@ describe('AuthService A1 / A2 / A5 mail', () => {
   const USER = { id: 'u1', email: 'a@b.co', name: 'A' };
   afterEach(() => jest.restoreAllMocks());
 
-  function registering(sendResult: { success: boolean; error?: string }) {
+  function registering(sendResult: {
+    success: boolean;
+    error?: string;
+    errorCode?: string;
+  }) {
     const usersService = {
       create: jest.fn().mockResolvedValue(USER),
       setEmailVerificationToken: jest.fn().mockResolvedValue(undefined),

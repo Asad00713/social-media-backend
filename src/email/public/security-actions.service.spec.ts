@@ -234,7 +234,7 @@ describe('SecurityActionsService.perform (POST)', () => {
   });
 
   it('revert_email switches the email back, verified, then secures the account at the old address', async () => {
-    const row = { id: UID, email: NEW };
+    const row: Row = { id: UID, email: NEW };
     const { service, security, auth } = setup(REVERT, row);
 
     const done = await service.perform('tok');

@@ -81,7 +81,7 @@ function make(
   };
   // Every claim wins unless a test passes its own key set (EmailOnceService).
   const once = {
-    claim: jest.fn((key: string, _ttl: number) => {
+    claim: jest.fn((key: string) => {
       const keys = opts.onceKeys;
       if (!keys) return Promise.resolve(true);
       if (keys.has(key)) return Promise.resolve(false);
