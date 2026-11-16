@@ -4,7 +4,7 @@ import {
   Injectable,
   Logger,
 } from '@nestjs/common';
-import { and, eq } from 'drizzle-orm';
+import { and, eq, ne } from 'drizzle-orm';
 import { PayloadResolverService } from './payload-resolver.service';
 import {
   ClassifiedPublishError,
@@ -544,7 +544,13 @@ export class PublishOrchestratorService {
           connectionStatus: 'connected',
           lastError: null,
         })
-        .where(eq(socialMediaChannels.id, numericId));
+        // Never a disconnected one: it comes back only by undo or reconnect.
+        .where(
+          and(
+            eq(socialMediaChannels.id, numericId),
+            ne(socialMediaChannels.connectionStatus, 'disconnected'),
+          ),
+        );
 
       await this.db
         .update(channelSyncState)

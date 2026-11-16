@@ -2,6 +2,7 @@ import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
 import { and, desc, eq, isNotNull } from 'drizzle-orm';
+import { isDisconnected } from '../../channels/lib/live-channel';
 import { db } from '../../drizzle/db';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { inboxItems } from '../../drizzle/schema/inbox.schema';
@@ -50,6 +51,11 @@ export class TelegramIngestProcessor extends WorkerHost {
       .limit(1);
     if (!channel) {
       this.logger.warn(`Telegram ingest: channel ${channelId} not found`);
+      return;
+    }
+    // Queued before the disconnect: dropped, the bot is history now.
+    if (isDisconnected(channel)) {
+      this.logger.log(`Telegram ingest: channel ${channelId} is disconnected`);
       return;
     }
     const botId = Number(channel.platformAccountId);

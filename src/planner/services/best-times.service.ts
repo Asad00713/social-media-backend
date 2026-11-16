@@ -1,5 +1,6 @@
 import { Inject, Injectable } from '@nestjs/common';
 import { and, eq, inArray, max } from 'drizzle-orm';
+import { liveChannel } from '../../channels/lib/live-channel';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
@@ -151,6 +152,7 @@ export class BestTimesService {
         and(
           eq(socialMediaChannels.workspaceId, workspaceId),
           eq(socialMediaChannels.isActive, true),
+          liveChannel(),
         ),
       );
     return rows as SocialChannel[];

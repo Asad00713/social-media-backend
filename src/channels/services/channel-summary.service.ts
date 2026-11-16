@@ -94,6 +94,8 @@ export class ChannelSummaryService {
         tokenExpiresAt: socialMediaChannels.tokenExpiresAt,
         refreshToken: socialMediaChannels.refreshToken,
         refreshTokenIssuedAt: socialMediaChannels.refreshTokenIssuedAt,
+        disconnectedAt: socialMediaChannels.disconnectedAt,
+        disconnectFinalizedAt: socialMediaChannels.disconnectFinalizedAt,
         lastPostedAt: socialMediaChannels.lastPostedAt,
         accountName: socialMediaChannels.accountName,
         nickname: socialMediaChannels.nickname,

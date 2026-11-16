@@ -51,6 +51,12 @@ import type { PersonRef } from '../lib/channel-health';
 import { isExpiringWithin } from '../lib/channel-health';
 import { loadPeople } from '../lib/people';
 import { toChannelResponse } from '../lib/channel-response';
+import { isDisconnected, liveChannel } from '../lib/live-channel';
+import {
+  CHANNEL_RESTORE_WINDOW_MS,
+  mustDeleteOnDisconnect,
+} from '../lib/disconnect-policy';
+import { ChannelPauseService } from './channel-pause.service';
 
 /**
  * Shared "is this channel usable right now" predicate. A channel counts as
@@ -102,6 +108,9 @@ export class ChannelService {
     private readonly googleRevoke: GoogleOauthRevokeService,
     @Inject(forwardRef(() => AccountChannelsService))
     private readonly accountChannels: AccountChannelsService,
+    // Releases the posts a disconnected channel held when a reconnect
+    // revives its row.
+    private readonly heldPosts: ChannelPauseService,
   ) {}
 
   // ==========================================================================
@@ -180,12 +189,88 @@ export class ChannelService {
       if (dto.profilePictureUrl !== undefined) {
         reconnectData.profilePictureUrl = dto.profilePictureUrl;
       }
+      // A re-added Telegram bot gets a fresh webhook route (the connect flow
+      // already pointed the bot at it); keeping the old id would orphan it.
+      if (dto.telegramWebhookRouteId !== undefined) {
+        reconnectData.telegramWebhookRouteId = dto.telegramWebhookRouteId ?? null;
+      }
 
-      const updated = await db
-        .update(socialMediaChannels)
-        .set(reconnectData)
-        .where(eq(socialMediaChannels.id, existingChannel.id))
-        .returning();
+      // A channel the user disconnected (soft disconnect) comes back with its
+      // history: same row, same id. It gave its slot back when it was
+      // disconnected, so it must fit under the account's ceiling again -
+      // checked under the same advisory lock a new channel takes.
+      const isRevival = isDisconnected(existingChannel);
+      // A must-delete disconnect whose finalize has claimed the row is being
+      // deleted right now: reviving it would hand the new grant to that
+      // delete. Retry in a moment and the account connects as a new channel.
+      if (
+        isRevival &&
+        existingChannel.disconnectFinalizedAt &&
+        mustDeleteOnDisconnect(dto.platform)
+      ) {
+        throw new ConflictException({
+          statusCode: 409,
+          message:
+            'This channel is being removed after its disconnect. Try connecting it again in a minute.',
+          error: 'Conflict',
+          code: 'CHANNEL_BEING_REMOVED',
+        });
+      }
+      if (isRevival) {
+        Object.assign(reconnectData, {
+          disconnectedAt: null,
+          disconnectedByUserId: null,
+          statusBeforeDisconnect: null,
+          disconnectFinalizedAt: null,
+          // The new grant is this person's (Google revoke groups by it).
+          connectedByUserId: userId,
+        });
+      }
+      const revivalOwnerId =
+        isRevival && isBillablePlatform(dto.platform)
+          ? await this.accountChannels.ownerOf(workspaceId)
+          : null;
+
+      const updated = await db.transaction(async (tx) => {
+        if (revivalOwnerId) {
+          await this.accountChannels.enforceWithinTransaction(
+            tx,
+            revivalOwnerId,
+          );
+        }
+        const rows = await tx
+          .update(socialMediaChannels)
+          .set(reconnectData)
+          .where(
+            isRevival
+              ? // Only the very disconnect read above: never a row a
+                // finalize changed meanwhile.
+                and(
+                  eq(socialMediaChannels.id, existingChannel.id),
+                  eq(socialMediaChannels.connectionStatus, 'disconnected'),
+                  eq(
+                    socialMediaChannels.disconnectedAt,
+                    existingChannel.disconnectedAt!,
+                  ),
+                )
+              : eq(socialMediaChannels.id, existingChannel.id),
+          )
+          .returning();
+        if (isRevival && rows.length === 0) {
+          throw new ConflictException({
+            statusCode: 409,
+            message:
+              'This channel changed while reconnecting. Try connecting it again.',
+            error: 'Conflict',
+            code: 'CHANNEL_BEING_REMOVED',
+          });
+        }
+        // The slot is counted in the same transaction as the revival.
+        if (revivalOwnerId) {
+          await this.incrementChannelCount(workspaceId, tx);
+        }
+        return rows;
+      });
 
       // Re-fire lifecycle hook to reset sync state and enqueue fresh backfill
       await this.syncLifecycle.onChannelConnected(
@@ -193,8 +278,28 @@ export class ChannelService {
         workspaceId,
       );
 
+      if (isRevival) {
+        // Its held posts: those still ahead go out at their time; those that
+        // came due while it was disconnected are failed as missed, not sent
+        // late. A failure here leaves them held (visible as such in the
+        // Planner) rather than failing the reconnect.
+        try {
+          await this.heldPosts.releaseAfterReconnect(
+            workspaceId,
+            existingChannel.id,
+            CHANNEL_RESTORE_WINDOW_MS,
+          );
+        } catch (error) {
+          this.logger.error(
+            `Revived channel ${existingChannel.id} but could not release its held posts: ${
+              error instanceof Error ? error.message : String(error)
+            }`,
+          );
+        }
+      }
+
       this.logger.log(
-        `Reconnected ${dto.platform} channel ${existingChannel.id} for workspace ${workspaceId}`,
+        `${isRevival ? 'Revived disconnected' : 'Reconnected'} ${dto.platform} channel ${existingChannel.id} for workspace ${workspaceId}`,
       );
 
       const row =
@@ -454,6 +559,7 @@ export class ChannelService {
     platform: string,
     platformAccountId: string,
   ): Promise<{ id: number } | null> {
+    // A disconnected row is history: it no longer owns the bot.
     const [row] = await db
       .select({ id: socialMediaChannels.id })
       .from(socialMediaChannels)
@@ -461,6 +567,7 @@ export class ChannelService {
         and(
           eq(socialMediaChannels.platform, platform as any),
           eq(socialMediaChannels.platformAccountId, platformAccountId),
+          liveChannel(),
         ),
       )
       .limit(1);
@@ -497,6 +604,8 @@ export class ChannelService {
         and(
           eq(socialMediaChannels.platform, platform),
           eq(socialMediaChannels.platformAccountId, platformAccountId),
+          // A disconnected row is history: it owns no webhook routing.
+          liveChannel(),
         ),
       )
       .orderBy(asc(socialMediaChannels.id));
@@ -510,6 +619,15 @@ export class ChannelService {
     query?: ChannelQueryDto,
   ): Promise<ChannelResponseDto[]> {
     const conditions = [eq(socialMediaChannels.workspaceId, workspaceId)];
+
+    // Disconnected channels are history: no picker, filter or list offers
+    // them unless it asks (the Channels page shows them to reconnect).
+    if (
+      !query?.includeDisconnected &&
+      query?.connectionStatus !== 'disconnected'
+    ) {
+      conditions.push(liveChannel());
+    }
 
     if (query?.platform) {
       conditions.push(eq(socialMediaChannels.platform, query.platform));
@@ -631,10 +749,11 @@ export class ChannelService {
       updateData.refreshToken = encrypt(refreshToken);
     }
 
+    // Never onto a disconnected row: its tokens are cleared on purpose.
     await db
       .update(socialMediaChannels)
       .set(updateData)
-      .where(eq(socialMediaChannels.id, channelId));
+      .where(and(eq(socialMediaChannels.id, channelId), liveChannel()));
   }
 
   /**
@@ -698,10 +817,16 @@ export class ChannelService {
       .limit(1);
     if (!row) throw new NotFoundException('Channel not found');
 
-    await db
+    // A disconnected channel comes back through the undo or a reconnect,
+    // never by a status reset.
+    const reset = await db
       .update(socialMediaChannels)
       .set({ connectionStatus: 'connected', lastError: null })
-      .where(eq(socialMediaChannels.id, channelId));
+      .where(and(eq(socialMediaChannels.id, channelId), liveChannel()))
+      .returning({ id: socialMediaChannels.id });
+    if (reset.length === 0) {
+      throw new ConflictException('This channel is disconnected. Reconnect it.');
+    }
 
     await db
       .update(channelSyncState)
@@ -711,7 +836,18 @@ export class ChannelService {
     return { success: true, channelId };
   }
 
-  async deleteChannel(channelId: number, workspaceId: string): Promise<void> {
+  async deleteChannel(
+    channelId: number,
+    workspaceId: string,
+    opts: {
+      /**
+       * Finalize of a must-delete disconnect: delete only while the row is
+       * still that disconnect. A row revived meanwhile is left alone (and
+       * its new grant is never revoked).
+       */
+      onlyIfDisconnectedAt?: Date;
+    } = {},
+  ): Promise<void> {
     const channel = await db
       .select()
       .from(socialMediaChannels)
@@ -727,21 +863,47 @@ export class ChannelService {
       throw new NotFoundException('Channel not found');
     }
 
+    // A soft-disconnected row already stopped syncing and gave its slot back.
+    const wasDisconnected = isDisconnected(channel[0]);
+    const expected = opts.onlyIfDisconnectedAt;
+    if (
+      expected &&
+      (!wasDisconnected ||
+        !channel[0].disconnectedAt ||
+        new Date(channel[0].disconnectedAt).getTime() !==
+          new Date(expected).getTime())
+    ) {
+      this.logger.warn(
+        `Delete of channel ${channelId} skipped: it is no longer the disconnect being finalized`,
+      );
+      return;
+    }
+
     // Cancel pending snapshot jobs and null out next-sync window before deletion
-    await this.syncLifecycle.onChannelDisconnected(channelId);
+    if (!wasDisconnected) {
+      await this.syncLifecycle.onChannelDisconnected(channelId);
+    }
 
     // Revoke the Google grant BEFORE deleting the row — afterwards we no longer
     // have the token. Best-effort by design: a revoke failure must not stop the
-    // user disconnecting, and the data deletion below happens regardless.
+    // user disconnecting, and the data deletion below happens regardless. A
+    // finalized disconnect has no token left (the finalize job revoked it).
     if (GOOGLE_PLATFORMS.includes(channel[0].platform)) {
       try {
-        const accessToken = await this.getAccessToken(channelId, workspaceId);
-        await this.googleRevoke.revokeIfLastGoogleChannel(
-          channelId,
-          workspaceId,
-          channel[0].platform,
-          accessToken,
-        );
+        // A disconnected row's access token has usually expired: revoke with
+        // its refresh token, which takes the grant itself.
+        const accessToken = wasDisconnected
+          ? (this.readStoredRevokeToken(channel[0]) ??
+            this.readStoredAccessToken(channel[0]))
+          : await this.getAccessToken(channelId, workspaceId);
+        if (accessToken) {
+          await this.googleRevoke.revokeIfLastGoogleChannel(
+            channelId,
+            workspaceId,
+            channel[0].platform,
+            accessToken,
+          );
+        }
       } catch (err) {
         this.logger.warn(
           `Could not revoke Google grant for channel ${channelId}: ${(err as Error).message}`,
@@ -751,17 +913,68 @@ export class ChannelService {
 
     await db
       .delete(socialMediaChannels)
-      .where(eq(socialMediaChannels.id, channelId));
+      .where(
+        expected
+          ? and(
+              eq(socialMediaChannels.id, channelId),
+              eq(socialMediaChannels.connectionStatus, 'disconnected'),
+              eq(socialMediaChannels.disconnectedAt, expected),
+            )
+          : eq(socialMediaChannels.id, channelId),
+      );
 
-    // Only billable channels moved the counter up, so only they move it down.
-    if (isBillablePlatform(channel[0].platform as SupportedPlatform)) {
-      await this.decrementChannelCount(workspaceId);
-      await this.releaseFreedSlot(workspaceId, channelId);
+    // Only billable channels moved the counter up, so only they move it down
+    // - and a disconnected one already did.
+    if (
+      !wasDisconnected &&
+      isBillablePlatform(channel[0].platform as SupportedPlatform)
+    ) {
+      await this.releaseSlot(workspaceId, channelId);
     }
 
     this.logger.log(
       `Deleted ${channel[0].platform} channel ${channelId} from workspace ${workspaceId}`,
     );
+  }
+
+  /**
+   * A billable channel stopped holding a slot (deleted, or soft-disconnected):
+   * the usage counter goes down and a plan-locked channel may take the slot.
+   */
+  async releaseSlot(workspaceId: string, channelId: number): Promise<void> {
+    await this.decrementChannelCount(workspaceId);
+    await this.releaseFreedSlot(workspaceId, channelId);
+  }
+
+  /**
+   * The token that revokes a disconnected channel's Google grant: the
+   * refresh token when one is stored (it revokes the grant whatever the
+   * access token's age), else null. Never refreshes.
+   */
+  readStoredRevokeToken(channel: {
+    refreshToken: string | null;
+  }): string | null {
+    if (!channel.refreshToken) return null;
+    try {
+      return decrypt(channel.refreshToken);
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * The stored access token, decrypted, whatever the channel's state - for
+   * teardown of a disconnected channel (webhook delete, grant revoke), which
+   * `getAccessToken` refuses. Null once the finalize job cleared it. Never
+   * refreshes.
+   */
+  readStoredAccessToken(channel: { accessToken: string | null }): string | null {
+    if (!channel.accessToken) return null;
+    try {
+      return decrypt(channel.accessToken);
+    } catch {
+      return null;
+    }
   }
 
   /**
@@ -836,10 +1049,11 @@ export class ChannelService {
     if (dto.tokenExpiresAt)
       updateData.tokenExpiresAt = new Date(dto.tokenExpiresAt);
 
+    // Never onto a disconnected row: a late refresh must not revive it.
     await db
       .update(socialMediaChannels)
       .set(updateData)
-      .where(eq(socialMediaChannels.id, channelId));
+      .where(and(eq(socialMediaChannels.id, channelId), liveChannel()));
 
     // Log the refresh - build data conditionally
     const refreshLogData: any = {
@@ -879,6 +1093,14 @@ export class ChannelService {
     }
 
     const channelData = channel[0];
+
+    // A disconnected channel is history: nothing may use its tokens (they
+    // are kept only so the disconnect can be undone, then cleared).
+    if (isDisconnected(channelData)) {
+      throw new ForbiddenException(
+        `"${channelData.accountName}" is disconnected. Reconnect it to use it again.`,
+      );
+    }
 
     // A channel locked by a downgrade keeps its tokens and history — it is not
     // disconnected — but it must not publish. Every publish path needs a token,
@@ -1289,7 +1511,8 @@ export class ChannelService {
       .where(eq(socialMediaChannels.id, channelId))
       .limit(1);
 
-    if (channel.length === 0) {
+    // A disconnected channel keeps its status: an error on it changes nothing.
+    if (channel.length === 0 || isDisconnected(channel[0])) {
       return;
     }
 
@@ -1307,7 +1530,7 @@ export class ChannelService {
         consecutiveErrors,
         updatedAt: new Date(),
       })
-      .where(eq(socialMediaChannels.id, channelId));
+      .where(and(eq(socialMediaChannels.id, channelId), liveChannel()));
 
     // Log the failure
     await db.insert(tokenRefreshLogs).values({
@@ -1380,7 +1603,9 @@ export class ChannelService {
     const channels = await db
       .select()
       .from(socialMediaChannels)
-      .where(eq(socialMediaChannels.workspaceId, workspaceId));
+      .where(
+        and(eq(socialMediaChannels.workspaceId, workspaceId), liveChannel()),
+      );
 
     const stats: ChannelStatsResponseDto = {
       totalChannels: channels.length,
@@ -1430,6 +1655,7 @@ export class ChannelService {
         and(
           eq(socialMediaChannels.workspaceId, workspaceId),
           eq(socialMediaChannels.isActive, true),
+          liveChannel(),
           sql`(
             (${socialMediaChannels.tokenExpiresAt} > ${now}
               AND ${socialMediaChannels.tokenExpiresAt} <= ${windowEnd})
@@ -1452,8 +1678,11 @@ export class ChannelService {
   /**
    * Increment channel count in workspace usage
    */
-  private async incrementChannelCount(workspaceId: string): Promise<void> {
-    await db
+  private async incrementChannelCount(
+    workspaceId: string,
+    executor: Pick<typeof db, 'update'> = db,
+  ): Promise<void> {
+    await executor
       .update(workspaceUsage)
       .set({
         channelsCount: sql`${workspaceUsage.channelsCount} + 1`,

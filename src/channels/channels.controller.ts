@@ -82,6 +82,7 @@ import {
   UpdateChannelDto,
   ReorderChannelsDto,
   ChannelQueryDto,
+  DisconnectChannelQueryDto,
   FetchPagesDto,
   ConnectFacebookPageDto,
   CreatePinterestBoardDto,
@@ -112,7 +113,11 @@ import {
   type EmbeddedSignupConfig,
 } from './services/embedded-signup-config';
 import { YoutubeDataDeletionService } from './services/youtube-data-deletion.service';
-import { ChannelPostsCleanupService } from './services/channel-posts-cleanup.service';
+import { ChannelDisconnectService } from './services/channel-disconnect.service';
+import type {
+  DisconnectChannelResponse,
+  RestoreChannelResponse,
+} from './dto/channel-disconnect.dto';
 import { errorCodeOf } from '../billing/services/channel-limit.error';
 import { GoogleOauthRevokeService } from './services/google-oauth-revoke.service';
 import {
@@ -181,7 +186,7 @@ export class ChannelsController {
     private readonly googleRevoke: GoogleOauthRevokeService,
     private readonly access: WorkspaceAccessService,
     private readonly mentionLookup: MentionLookupService,
-    private readonly postsCleanup: ChannelPostsCleanupService,
+    private readonly disconnects: ChannelDisconnectService,
     private readonly channelConnect: ChannelConnectService,
     private readonly connectLinkAccess: ConnectLinkAccessService,
     private readonly connectLinkConnect: ConnectLinkConnectService,
@@ -1278,46 +1283,48 @@ export class ChannelsController {
   }
 
   /**
-   * Delete a channel (disconnect)
+   * Disconnect a channel. Soft by default: it stays as history, its
+   * scheduled posts pause, and the disconnect can be undone (`/restore`) for
+   * CHANNEL_RESTORE_WINDOW_MS; then its tokens are cleared - or the channel
+   * is deleted, where the platform's policy requires (disconnect-policy.ts).
+   * `?deleteHistory=true` (and every integration) is the old hard delete:
+   * gone at once with its history and unpublished posts, no undo. Also how a
+   * disconnected channel's history is deleted later.
    */
   @Delete('workspaces/:workspaceId/:channelId')
   @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
   @RequireCapability('channels:manage')
-  @HttpCode(HttpStatus.NO_CONTENT)
+  @HttpCode(HttpStatus.OK)
   async deleteChannel(
     @Param('workspaceId') workspaceId: string,
     @Param('channelId') channelId: string,
-  ) {
-    const id = parseInt(channelId, 10);
-    // Telegram: best-effort remove the bot's webhook before deleting the row,
-    // so a re-add of the same bot can set a fresh webhook cleanly.
-    //
-    // Calendar (Google/Outlook): stop the provider push subscription BEFORE the
-    // row is deleted — the stop/DELETE call needs the channel's access token,
-    // which the delete takes with it. `teardown()` never throws (a stale
-    // provider-side channel just 404s on delivery and expires on its own).
-    try {
-      const channel = await this.channelService.getChannelById(id, workspaceId);
-      if (channel.platform === 'telegram') {
-        const token = await this.channelService.getAccessToken(id, workspaceId);
-        await this.telegramService.forToken(token).deleteWebhook();
-      }
-      if (
-        channel.platform === 'google_calendar' ||
-        channel.platform === 'outlook_calendar'
-      ) {
-        await this.calendarSubscriptionService.teardown(id);
-      }
-    } catch (err) {
-      this.logger.warn(
-        `Webhook teardown on disconnect failed (non-blocking): ${(err as Error).message}`,
-      );
-    }
-    // Its scheduled posts and drafts go with it (Buffer's rule), BEFORE the
-    // row: a failure here leaves the channel connected and the user can retry,
-    // rather than a deleted channel with posts still aimed at it.
-    await this.postsCleanup.removeUnpublished(workspaceId, id);
-    await this.channelService.deleteChannel(id, workspaceId);
+    @Query() query: DisconnectChannelQueryDto,
+    @CurrentUser() user: { userId: string },
+  ): Promise<DisconnectChannelResponse> {
+    return this.disconnects.disconnect(
+      workspaceId,
+      parseInt(channelId, 10),
+      user.userId,
+      { deleteHistory: query.deleteHistory === true },
+    );
+  }
+
+  /**
+   * Undo a disconnect: only while the channel is disconnected and its undo
+   * window is open. Takes its slot back (409 CHANNEL_LIMIT_REACHED when the
+   * account is full), restores its status and sync, and releases its paused
+   * posts (those that came due meanwhile go out now - counted in
+   * `overdueCount`). 409 RESTORE_WINDOW_CLOSED once the window has passed.
+   */
+  @Post('workspaces/:workspaceId/:channelId/restore')
+  @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
+  @RequireCapability('channels:manage')
+  @HttpCode(HttpStatus.OK)
+  async restoreChannel(
+    @Param('workspaceId') workspaceId: string,
+    @Param('channelId') channelId: string,
+  ): Promise<RestoreChannelResponse> {
+    return this.disconnects.restore(workspaceId, parseInt(channelId, 10));
   }
 
   /**

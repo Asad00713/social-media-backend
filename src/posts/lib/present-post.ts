@@ -27,6 +27,7 @@ interface StoredTarget {
   contentOverride?: PlannerPostTargetDto['contentOverride'];
   warnings?: unknown;
   heldAt?: unknown;
+  heldReason?: unknown;
 }
 
 /** Stored warnings, if the row holds a usable list (see publish-warnings). */
@@ -61,6 +62,14 @@ function presentTarget(
     heldAt:
       status === 'scheduled' && typeof target.heldAt === 'string'
         ? target.heldAt
+        : undefined,
+    // Why it waits: a pause (resume sends it) or a disconnect (the undo or
+    // a reconnect does). A hold written before reasons existed is a pause.
+    heldReason:
+      status === 'scheduled' && typeof target.heldAt === 'string'
+        ? target.heldReason === 'channel_disconnected'
+          ? 'channel_disconnected'
+          : 'channel_paused'
         : undefined,
   };
   for (const key of Object.keys(optional) as (keyof typeof optional)[]) {

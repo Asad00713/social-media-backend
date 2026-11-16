@@ -1,6 +1,6 @@
 import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import { eq, sql } from 'drizzle-orm';
+import { and, eq, sql } from 'drizzle-orm';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
 import { ChannelService } from '../services/channel.service';
@@ -101,7 +101,13 @@ export class YoutubeAuthorizationCheckScheduler {
                   'YouTube authorization is no longer valid — reconnect to continue',
                 updatedAt: new Date(),
               })
-              .where(eq(socialMediaChannels.id, Number(row.id)));
+              .where(
+                and(
+                  eq(socialMediaChannels.id, Number(row.id)),
+                  // Disconnected meanwhile: it keeps that status.
+                  eq(socialMediaChannels.connectionStatus, 'connected'),
+                ),
+              );
 
             this.logger.warn(
               `YouTube channel ${row.id} is no longer authorized — marked expired`,

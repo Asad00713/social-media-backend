@@ -11,11 +11,12 @@ import {
 } from '@nestjs/common';
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import type { Request, Response } from 'express';
 import { QUEUES } from '../../queue/queue.module';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
 import { socialMediaChannels } from '../../drizzle/schema/channels.schema';
+import { liveChannel } from '../lib/live-channel';
 import { YouTubePubSubHubbubService } from './services/youtube-pubsubhubbub.service';
 
 /**
@@ -113,7 +114,11 @@ export class YouTubePubSubHubbubController {
       })
       .from(socialMediaChannels)
       .where(
-        eq(socialMediaChannels.platformAccountId, parsed.channelId),
+        and(
+          eq(socialMediaChannels.platformAccountId, parsed.channelId),
+          // A disconnected channel ingests nothing new.
+          liveChannel(),
+        ),
       )) as Array<{ id: number; workspaceId: string }>;
 
     if (rows.length === 0) {

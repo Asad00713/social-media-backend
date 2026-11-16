@@ -1,5 +1,5 @@
 import { Logger } from '@nestjs/common';
-import { UnrecoverableError, type Job } from 'bullmq';
+import { DelayedError, UnrecoverableError, type Job } from 'bullmq';
 import type { ScheduledInboxMessage } from '../../drizzle/schema/scheduled-inbox-messages.schema';
 import type { WorkspaceRole } from '../../workspace-members/role-capabilities';
 import type { WorkspaceRoleService } from '../../workspace-members/workspace-role.service';
@@ -35,6 +35,7 @@ function setup(role: WorkspaceRole | null, claimed = row()) {
     markSent: jest.fn().mockResolvedValue(undefined),
     markFailed: jest.fn().mockResolvedValue(undefined),
     resetToPendingForRetry: jest.fn().mockResolvedValue(undefined),
+    undoWaitUntil: jest.fn().mockResolvedValue(null),
   };
   const inbox = {
     sendDm: jest.fn().mockResolvedValue({ id: 'item-1' }),
@@ -193,5 +194,27 @@ describe('ScheduledInboxProcessor after delivery (I1)', () => {
     await expect(processor.process(job)).rejects.toThrow('platform 500');
     expect(scheduled.resetToPendingForRetry).toHaveBeenCalledTimes(1);
     expect(scheduled.markSent).not.toHaveBeenCalled();
+  });
+});
+
+describe('ScheduledInboxProcessor: a channel disconnected inside its undo window', () => {
+  it('waits for the window instead of failing, without burning an attempt', async () => {
+    const { processor, scheduled, inbox, job } = setup('ADMIN');
+    const until = new Date(Date.now() + 9 * 60_000);
+    scheduled.undoWaitUntil.mockResolvedValue(until);
+    const moveToDelayed = jest.fn().mockResolvedValue(undefined);
+    Object.assign(job, { moveToDelayed });
+
+    await expect(processor.process(job, 'tok')).rejects.toBeInstanceOf(
+      DelayedError,
+    );
+    expect(moveToDelayed).toHaveBeenCalledWith(until.getTime(), 'tok');
+    expect(scheduled.resetToPendingForRetry).toHaveBeenCalledWith(
+      's1',
+      expect.stringContaining('disconnected'),
+    );
+    expect(scheduled.markFailed).not.toHaveBeenCalled();
+    expect(inbox.sendDm).not.toHaveBeenCalled();
+    expect(inbox.reply).not.toHaveBeenCalled();
   });
 });

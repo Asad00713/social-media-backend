@@ -1,5 +1,6 @@
 import { Inject, Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { and, desc, eq, gt, inArray, isNull, lte, or } from 'drizzle-orm';
+import { liveChannel } from '../lib/live-channel';
 import { decrypt } from '../../common/utils/encryption.util';
 import type { DbType } from '../../drizzle/db';
 import { DRIZZLE } from '../../drizzle/drizzle.module';
@@ -329,6 +330,8 @@ export class ConnectLinksService {
           and(
             eq(socialMediaChannels.workspaceId, links[0].workspaceId),
             inArray(socialMediaChannels.connectLinkId, ids),
+            // A disconnected channel is no longer "connected through" it.
+            liveChannel(),
           ),
         )
         .orderBy(socialMediaChannels.addedViaLinkAt),

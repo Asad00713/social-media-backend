@@ -1,5 +1,6 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { eq } from 'drizzle-orm';
+import { liveChannel } from '../../channels/lib/live-channel';
 import { db } from '../../drizzle/db';
 import { and, inArray, notInArray } from 'drizzle-orm';
 import {
@@ -240,6 +241,8 @@ export class SubscriptionLookupService {
         and(
           eq(workspace.ownerId, userId),
           notInArray(socialMediaChannels.platform, INTEGRATION_PLATFORMS),
+          // A disconnected channel holds no slot: never locked or released.
+          liveChannel(),
         ),
       );
   }

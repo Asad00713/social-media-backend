@@ -7,6 +7,7 @@ import {
   socialMediaChannels,
   type SupportedPlatform,
 } from '../../../drizzle/schema/channels.schema';
+import { isDisconnected } from '../../lib/live-channel';
 import { posts as postsTable } from '../../../drizzle/schema/posts.schema';
 import { postMetricSnapshots } from '../../../drizzle/schema/post-metric-snapshots.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
@@ -67,6 +68,12 @@ export class ChannelRecentPostsSyncHandler {
     if (!channel) {
       this.logger.warn(`Recent posts sync: channel ${channelId} not found`);
       return { ok: false };
+    }
+    if (isDisconnected(channel)) {
+      this.logger.log(
+        `Recent posts sync: channel ${channelId} is disconnected, skipping`,
+      );
+      return { ok: true };
     }
 
     const platform = channel.platform as SupportedPlatform;

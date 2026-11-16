@@ -247,3 +247,48 @@ describe('isExpiringWithin (/expiring)', () => {
     ).toBe(false);
   });
 });
+
+describe('channelHealth: disconnected', () => {
+  const at = new Date('2026-11-15T12:00:00Z');
+  const disconnected = (over: Partial<ChannelHealthInput> = {}) =>
+    base({
+      connectionStatus: 'disconnected',
+      disconnectedAt: at,
+      disconnectFinalizedAt: null,
+      // Disconnected wins over everything else on the row.
+      isActive: false,
+      pausedAt: at,
+      ...over,
+    });
+
+  it('inside the undo window it can be restored until disconnectedAt + 10 min', () => {
+    const h = channelHealth(disconnected(), {
+      now: new Date(at.getTime() + 60_000),
+    });
+    expect(h).toEqual({
+      kind: 'disconnected',
+      disconnectedAt: at.toISOString(),
+      restoreUntil: new Date(at.getTime() + 600_000).toISOString(),
+      historyKept: true,
+    });
+  });
+
+  it('after the window, or once finalized, there is no undo', () => {
+    expect(
+      channelHealth(disconnected(), { now: new Date(at.getTime() + 600_001) })
+        .restoreUntil,
+    ).toBeNull();
+    expect(
+      channelHealth(disconnected({ disconnectFinalizedAt: at }), {
+        now: new Date(at.getTime() + 1000),
+      }).restoreUntil,
+    ).toBeNull();
+  });
+
+  it('a must-delete platform says its history is not kept', () => {
+    expect(
+      channelHealth(disconnected({ platform: 'youtube' }), { now: at })
+        .historyKept,
+    ).toBe(false);
+  });
+});

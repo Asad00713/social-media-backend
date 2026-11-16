@@ -5,6 +5,7 @@ import {
   socialMediaChannels,
   type SupportedPlatform,
 } from '../../../drizzle/schema/channels.schema';
+import { isDisconnected } from '../../lib/live-channel';
 import { channelSnapshots } from '../../../drizzle/schema/channel-snapshots.schema';
 import { channelSyncState } from '../../../drizzle/schema/channel-sync-state.schema';
 import { AdapterRegistryService } from '../services/adapter-registry.service';
@@ -42,6 +43,13 @@ export class ChannelProfileSnapshotHandler {
         `Profile snapshot: channel ${channelId} not found, skipping`,
       );
       return { ok: false };
+    }
+    // Disconnected (history): never fetched, never re-marked expired.
+    if (isDisconnected(channel)) {
+      this.logger.log(
+        `Profile snapshot: channel ${channelId} is disconnected, skipping`,
+      );
+      return { ok: true };
     }
 
     const platform = channel.platform as SupportedPlatform;

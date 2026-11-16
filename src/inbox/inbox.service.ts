@@ -21,6 +21,7 @@ import {
   sql,
   type SQL,
 } from 'drizzle-orm';
+import { liveChannel } from '../channels/lib/live-channel';
 import { db, type DbType } from '../drizzle/db';
 import {
   inboxItems,
@@ -2830,10 +2831,12 @@ export class InboxService {
     platform: SupportedPlatform,
     platformAccountId: string,
   ) {
+    // A disconnected channel (history) ingests nothing new from webhooks.
     return db.query.socialMediaChannels.findMany({
       where: and(
         eq(socialMediaChannels.platform, platform),
         eq(socialMediaChannels.platformAccountId, platformAccountId),
+        liveChannel(),
       ),
       orderBy: (c, { asc }) => asc(c.id),
     });
@@ -2873,6 +2876,7 @@ export class InboxService {
       where: and(
         eq(socialMediaChannels.platform, 'instagram'),
         sql`${socialMediaChannels.metadata}->>'igWebhookId' = ${webhookId}`,
+        liveChannel(),
       ),
       orderBy: (c, { asc }) => asc(c.id),
     });
@@ -2887,7 +2891,14 @@ export class InboxService {
         workspaceId: socialMediaChannels.workspaceId,
       })
       .from(socialMediaChannels)
-      .where(eq(socialMediaChannels.telegramWebhookRouteId, routeId))
+      .where(
+        and(
+          eq(socialMediaChannels.telegramWebhookRouteId, routeId),
+          // Until finalize deletes the webhook, a disconnected bot still
+          // posts here: ignored.
+          liveChannel(),
+        ),
+      )
       .limit(1);
     return row ?? null;
   }
@@ -3869,6 +3880,7 @@ export class InboxService {
       where: and(
         eq(socialMediaChannels.workspaceId, workspaceId),
         eq(socialMediaChannels.platform, platform),
+        liveChannel(),
       ),
     });
     if (!row) return null;

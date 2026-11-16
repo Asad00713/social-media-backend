@@ -118,6 +118,9 @@ export const CONNECTION_STATUSES = [
   'revoked',
   'error',
   'refreshing',
+  // The user disconnected it (migration 0081). The row stays as history;
+  // `disconnected_at` is set exactly when this is the status (CHECK).
+  'disconnected',
 ] as const;
 
 export type ConnectionStatus = (typeof CONNECTION_STATUSES)[number];
@@ -208,6 +211,24 @@ export const socialMediaChannels = pgTable(
     connectionStatus: varchar('connection_status', { length: 20 })
       .default('connected')
       .notNull(),
+
+    // Soft disconnect (migration 0081). Set together with connection_status
+    // 'disconnected' (a CHECK keeps the two in step). Until
+    // `disconnect_finalized_at` the tokens are kept so the disconnect can be
+    // undone (CHANNEL_RESTORE_WINDOW_MS); the finalize job then clears them,
+    // or deletes the row when the platform's policy requires it.
+    disconnectedAt: timestamp('disconnected_at', { withTimezone: true }),
+    disconnectedByUserId: uuid('disconnected_by_user_id').references(
+      () => users.id,
+      { onDelete: 'set null' },
+    ),
+    // What an undo puts back: the status the channel had when disconnected.
+    statusBeforeDisconnect: varchar('status_before_disconnect', {
+      length: 20,
+    }),
+    disconnectFinalizedAt: timestamp('disconnect_finalized_at', {
+      withTimezone: true,
+    }),
     lastError: text('last_error'),
     lastErrorAt: timestamp('last_error_at'),
     consecutiveErrors: integer('consecutive_errors').default(0).notNull(),

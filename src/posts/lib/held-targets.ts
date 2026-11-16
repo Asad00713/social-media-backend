@@ -1,7 +1,9 @@
+import type { BadRequestException } from '@nestjs/common';
 import type { Queue } from 'bullmq';
 import { eq } from 'drizzle-orm';
 import type { DbType } from '../../drizzle/db';
 import { posts, type PostTarget } from '../../drizzle/schema/posts.schema';
+import { refusal } from './refusal';
 
 /**
  * Targets held because their channel is paused by the user.
@@ -15,6 +17,17 @@ import { posts, type PostTarget } from '../../drizzle/schema/posts.schema';
  */
 
 export const HELD_REASON = 'channel_paused' as const;
+/** Held because the user disconnected the channel (soft disconnect). */
+export const HELD_REASON_DISCONNECTED = 'channel_disconnected' as const;
+export type HeldReason = typeof HELD_REASON | typeof HELD_REASON_DISCONNECTED;
+
+/**
+ * Why a target that was held is failed instead of sent when its channel comes
+ * back (see PublishJobData.missedHeld): its time passed long enough ago that
+ * sending it now would be a silent late post.
+ */
+export const MISSED_HELD_MESSAGE =
+  'Not sent: its time passed while the channel was disconnected. Reschedule it or publish it now.';
 
 /** Job states in which an enqueued publish is still going to run. */
 const PENDING_STATES: ReadonlySet<string> = new Set([
@@ -29,18 +42,32 @@ export interface PublishJobData {
   postId: string;
   /** Resume of a paused channel: publish only the held targets. */
   heldOnly?: boolean;
+  /**
+   * With heldOnly: the held targets missed their time (a channel reconnected
+   * long after it was disconnected). They are failed with
+   * MISSED_HELD_MESSAGE rather than published late.
+   */
+  missedHeld?: boolean;
 }
 
 export function isHeld(target: Pick<PostTarget, 'heldAt'>): boolean {
   return typeof target.heldAt === 'string' && target.heldAt !== '';
 }
 
-/** The target, held. Its status fields are deliberately not touched. */
-export function holdTarget<T extends PostTarget>(target: T, now: Date): T {
+/**
+ * The target, held. Its status fields are deliberately not touched. The
+ * reason is rewritten (a held target whose channel was then disconnected
+ * reads as disconnected); the first hold time is kept.
+ */
+export function holdTarget<T extends PostTarget>(
+  target: T,
+  now: Date,
+  reason: HeldReason = HELD_REASON,
+): T {
   return {
     ...target,
     heldAt: isHeld(target) ? target.heldAt : now.toISOString(),
-    heldReason: HELD_REASON,
+    heldReason: reason,
   };
 }
 
@@ -83,11 +110,15 @@ export async function enqueueHeldPost(
   db: Pick<DbType, 'update'>,
   post: { id: string; scheduledAt: Date | string | null },
   now: Date = new Date(),
+  opts: { missed?: boolean } = {},
 ): Promise<string> {
   const jobId = `post-${post.id}-resume-${now.getTime()}`;
-  const data: PublishJobData = { postId: post.id, heldOnly: true };
+  const data: PublishJobData = opts.missed
+    ? { postId: post.id, heldOnly: true, missedHeld: true }
+    : { postId: post.id, heldOnly: true };
   const job = await queue.add('publish-post', data, {
-    delay: resumeDelayMs(post.scheduledAt, now),
+    // A missed post is failed at once; the others go at their own time.
+    delay: opts.missed ? 0 : resumeDelayMs(post.scheduledAt, now),
     jobId,
     attempts: 3,
     backoff: { type: 'exponential', delay: 5000 },
@@ -95,4 +126,61 @@ export async function enqueueHeldPost(
   const id = (job.id as string) ?? jobId;
   await db.update(posts).set({ jobId: id }).where(eq(posts.id, post.id));
   return id;
+}
+
+/** A channel whose targets are held, and why. */
+export interface HoldingChannel {
+  name: string;
+  reason: HeldReason;
+}
+
+/**
+ * Why a channel holds its posts, or null when it does not. A disconnect wins
+ * over a pause: reconnecting, not resuming, is what releases those posts.
+ */
+export function holdingReasonOf(channel: {
+  pausedAt: Date | string | null;
+  connectionStatus: string | null;
+}): HeldReason | null {
+  if (channel.connectionStatus === 'disconnected') {
+    return HELD_REASON_DISCONNECTED;
+  }
+  return channel.pausedAt ? HELD_REASON : null;
+}
+
+/**
+ * The 400 a person pressing Publish now gets when a target's channel holds
+ * its posts. A disconnected channel is named first: resuming would not help.
+ */
+export function publishRefusalFor(
+  holding: Map<string, HoldingChannel>,
+): BadRequestException {
+  const all = [...holding.values()];
+  const disconnected = all.filter((c) => c.reason === HELD_REASON_DISCONNECTED);
+  if (disconnected.length > 0) {
+    const names = disconnected.map((c) => c.name).join(', ');
+    return refusal(
+      `Disconnected: ${names}. Reconnect ${disconnected.length === 1 ? 'it' : 'them'} to publish - scheduled posts wait until you do.`,
+      'CHANNEL_DISCONNECTED',
+    );
+  }
+  const names = all.map((c) => c.name).join(', ');
+  return refusal(
+    `Paused: ${names}. Resume ${all.length === 1 ? 'it' : 'them'} to publish now - scheduled posts wait until you do.`,
+    'CHANNEL_PAUSED',
+  );
+}
+
+/**
+ * True when a held post's time passed more than `graceMs` ago: releasing it
+ * would publish it late without anyone asking, so it is failed as missed.
+ * A post with no time (a drip occurrence) is never missed.
+ */
+export function isMissedRelease(
+  scheduledAt: Date | string | null,
+  graceMs: number,
+  now: Date = new Date(),
+): boolean {
+  if (!scheduledAt) return false;
+  return now.getTime() - new Date(scheduledAt).getTime() > graceMs;
 }
