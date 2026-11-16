@@ -1,8 +1,10 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { WorkspaceRoleService } from '../workspace-members/workspace-role.service';
 import {
+  ACCOUNT_STORED_EVENTS,
   NOTIFICATION_EVENT_KEYS,
   NOTIFICATION_EVENTS,
+  storageWorkspaceId,
   type ChannelPreference,
   type ChannelRule,
   type NotificationPreferenceDto,
@@ -53,6 +55,7 @@ export class NotificationPreferencesService {
    * at send time, so an unsubscribe or a removal after enqueue is honoured.
    * Order: unavailable channel, locked channel, membership, override, default.
    * `workspaceId` null means an account-level event: no membership check.
+   * A security event reads its account-level row whatever `workspaceId` is.
    */
   async shouldSend(
     userId: string,
@@ -67,16 +70,27 @@ export class NotificationPreferencesService {
       const role = await this.roles.getRole(workspaceId, userId);
       if (!role) return false;
     }
-    const rows = await this.repo.findForUser(userId, workspaceId);
+    const rows = await this.repo.findForUser(
+      userId,
+      storageWorkspaceId(event, workspaceId),
+    );
     return overrideOf(rows, event, channel) ?? rule.default;
   }
 
-  /** The caller's switches for every workspace-scope event, catalogue order. */
+  /**
+   * The caller's switches for every workspace-scope event, catalogue order.
+   * Security events come from the account-level rows (ACCOUNT_STORED_EVENTS).
+   */
   async list(
     userId: string,
     workspaceId: string,
   ): Promise<NotificationPreferencesResponse> {
-    const rows = await this.repo.findForUser(userId, workspaceId);
+    const [workspaceRows, accountRows] = await Promise.all([
+      this.repo.findForUser(userId, workspaceId),
+      this.repo.findForUser(userId, null),
+    ]);
+    const rowsFor = (event: PreferenceEventKey) =>
+      ACCOUNT_STORED_EVENTS.has(event) ? accountRows : workspaceRows;
     const view = (
       event: PreferenceEventKey,
       channel: PreferenceChannel,
@@ -86,7 +100,7 @@ export class NotificationPreferencesService {
         locked: rule.locked,
         enabled: rule.locked
           ? true
-          : (overrideOf(rows, event, channel) ?? rule.default),
+          : (overrideOf(rowsFor(event), event, channel) ?? rule.default),
       };
     const events: NotificationPreferenceDto[] = NOTIFICATION_EVENT_KEYS.map(
       (event) => {
@@ -127,7 +141,13 @@ export class NotificationPreferencesService {
       }
     }
     for (const { event, channel, enabled } of changes) {
-      await this.repo.upsert(userId, workspaceId, event, channel, enabled);
+      await this.repo.upsert(
+        userId,
+        storageWorkspaceId(event, workspaceId),
+        event,
+        channel,
+        enabled,
+      );
     }
     return this.list(userId, workspaceId);
   }
@@ -144,6 +164,12 @@ export class NotificationPreferencesService {
   ): Promise<void> {
     const rule = NOTIFICATION_EVENTS[event].email;
     if (!rule || rule.locked) return;
-    await this.repo.upsert(userId, workspaceId, event, 'email', false);
+    await this.repo.upsert(
+      userId,
+      storageWorkspaceId(event, workspaceId),
+      event,
+      'email',
+      false,
+    );
   }
 }

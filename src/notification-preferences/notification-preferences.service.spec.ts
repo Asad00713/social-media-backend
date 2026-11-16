@@ -9,6 +9,9 @@ import type {
   PreferenceOverride,
 } from './notification-preferences.repository';
 import { NotificationPreferencesService } from './notification-preferences.service';
+import type { EmailOutboxService } from '../email/queue/email-outbox.service';
+import type { RecipientsService } from '../notifications/recipients.service';
+import { NotifyService } from '../notifications/notify.service';
 
 const USER = 'user-1';
 const WS = '11111111-1111-4111-8111-111111111111';
@@ -292,5 +295,78 @@ describe('NotificationPreferencesService.disableEmail', () => {
     await service.disableEmail(USER, WS, 'security_alert');
     await service.disableEmail(USER, WS, 'draft_ready');
     expect(repo.upsert).not.toHaveBeenCalled();
+  });
+});
+
+describe('security events are account-level', () => {
+  const OTHER_WS = '22222222-2222-4222-8222-222222222222';
+
+  it('a workspace PUT turning the Security in-app switch off silences the A5 and A6 bells', async () => {
+    const { service, repo } = setup();
+    // The settings page saves the Security group with a workspace id.
+    await service.update(USER, WS, [
+      { event: 'security_alert', channel: 'app', enabled: false },
+    ]);
+    expect(repo.upsert).toHaveBeenCalledWith(
+      USER,
+      null,
+      'security_alert',
+      'app',
+      false,
+    );
+
+    // A5 and A6 ring through NotifyService with workspaceId null.
+    const notify = new NotifyService(
+      service,
+      { enqueue: jest.fn() } as unknown as EmailOutboxService,
+      {} as unknown as RecipientsService,
+    );
+    const passwordChanged = jest.fn();
+    const newLogin = jest.fn();
+    await notify.notify({
+      userId: USER,
+      workspaceId: null,
+      event: 'security_alert',
+      bell: passwordChanged,
+    });
+    await notify.notify({
+      userId: USER,
+      workspaceId: null,
+      event: 'security_alert',
+      bell: newLogin,
+    });
+    expect(passwordChanged).not.toHaveBeenCalled();
+    expect(newLogin).not.toHaveBeenCalled();
+  });
+
+  it('every workspace GET shows the account-level Security switch; other events stay per workspace', async () => {
+    const { service } = setup();
+    await service.update(USER, WS, [
+      { event: 'security_alert', channel: 'app', enabled: false },
+      { event: 'post_approved', channel: 'app', enabled: false },
+    ]);
+
+    const other = await service.list(USER, OTHER_WS);
+    const pick = (event: string) =>
+      other.events.find((e) => e.event === event)?.app;
+    expect(pick('security_alert')).toEqual({ enabled: false, locked: false });
+    expect(pick('post_approved')).toEqual({ enabled: true, locked: false });
+    // The same workspace still reads its own post_approved row.
+    const same = await service.list(USER, WS);
+    expect(
+      same.events.find((e) => e.event === 'post_approved')?.app?.enabled,
+    ).toBe(false);
+  });
+
+  it('a security event checked with a workspace id still reads the account-level row', async () => {
+    const { service, repo } = setup();
+    repo.seed(null, {
+      event: 'security_alert',
+      channel: 'app',
+      enabled: false,
+    });
+    expect(await service.shouldSend(USER, WS, 'security_alert', 'app')).toBe(
+      false,
+    );
   });
 });

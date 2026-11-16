@@ -82,6 +82,24 @@ function def(
   return { key, label, scope, email, app };
 }
 
+/**
+ * Events listed in the workspace matrix but stored at account level
+ * (`workspace_id IS NULL`): a security alert is about the person, not a
+ * workspace, and A5/A6 read the account-level row. A PUT for any workspace
+ * writes that row, and every workspace's GET reads it.
+ */
+export const ACCOUNT_STORED_EVENTS: ReadonlySet<PreferenceEventKey> = new Set([
+  'security_alert',
+]);
+
+/** Where `event`'s override row lives for a request about `workspaceId`. */
+export function storageWorkspaceId(
+  event: PreferenceEventKey,
+  workspaceId: string | null,
+): string | null {
+  return ACCOUNT_STORED_EVENTS.has(event) ? null : workspaceId;
+}
+
 /** In display order: `list` returns the workspace-scope events in this order. */
 export const NOTIFICATION_EVENTS: Record<
   PreferenceEventKey,
