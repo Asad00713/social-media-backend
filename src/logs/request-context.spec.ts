@@ -58,9 +58,9 @@ describe('request ids', () => {
     expect(setHeader).toHaveBeenCalledWith(REQUEST_ID_HEADER, id);
   });
 
-  it('ignores a repeated X-Request-Id header (array) and generates one', () => {
+  it('replaces a repeated X-Request-Id, which Node joins into one "a, b" string', () => {
     const req = fakeReq({
-      'x-request-id': ['req_0123456789abcdef01234567', 'req_aaaaaaaaaaaaaaaaaaaaaaaa'],
+      'x-request-id': 'req_0123456789abcdef01234567, req_aaaaaaaaaaaaaaaaaaaaaaaa',
     });
     const { res } = fakeRes();
     expect(resolveRequestId(req, res)).toMatch(/^req_[0-9a-f]{24}$/);

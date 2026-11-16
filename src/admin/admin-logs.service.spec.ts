@@ -51,6 +51,19 @@ describe('AdminLogsService.getLogs requestId filter', () => {
     ).rejects.toBeInstanceOf(BadRequestException);
   });
 
+  it('refuses a repeated ?requestId= (Express hands over an array) with a 400', async () => {
+    const { service } = setup();
+    await expect(
+      service.getLogs({ requestId: [ID, ID] as unknown as string }),
+    ).rejects.toBeInstanceOf(BadRequestException);
+  });
+
+  it('ignores a repeated ?search= instead of throwing', async () => {
+    const { service, whereSql } = setup();
+    await service.getLogs({ search: ['a', 'b'] as unknown as string });
+    expect(whereSql()).toBeUndefined();
+  });
+
   it('applies no filter when requestId is blank', async () => {
     const { service, whereSql } = setup();
     await service.getLogs({ requestId: '   ' });

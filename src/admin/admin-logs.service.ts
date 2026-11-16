@@ -56,10 +56,13 @@ export class AdminLogsService {
     if (keyset) conditions.push(keyset);
     if (opts.level) conditions.push(eq(errorLogs.level, opts.level));
     if (opts.context) conditions.push(eq(errorLogs.context, opts.context));
-    if (opts.search?.trim())
+    if (typeof opts.search === 'string' && opts.search.trim())
       conditions.push(ilike(errorLogs.message, `%${opts.search.trim()}%`));
     if (opts.since)
       conditions.push(gte(errorLogs.createdAt, new Date(opts.since)));
+    // A repeated ?requestId= arrives as an array: refuse it like a bad id.
+    if (opts.requestId !== undefined && typeof opts.requestId !== 'string')
+      throw new BadRequestException('That is not an error ID.');
     const requestId = opts.requestId?.trim();
     if (requestId) {
       // Pasted by hand: refuse what can't be an id instead of an empty page
