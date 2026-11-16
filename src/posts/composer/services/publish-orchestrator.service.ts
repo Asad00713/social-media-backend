@@ -6,7 +6,11 @@ import {
 } from '@nestjs/common';
 import { and, eq } from 'drizzle-orm';
 import { PayloadResolverService } from './payload-resolver.service';
-import { ComposerErrorMapperService } from './composer-error-mapper.service';
+import {
+  ClassifiedPublishError,
+  ComposerErrorMapperService,
+} from './composer-error-mapper.service';
+import { REMINDER_FAILURE_PREFIX } from '../../lib/post-failure';
 import { PublisherFactory } from '../../publishers/publisher.factory';
 import { PartialPublishError } from '../../publishers/base.publisher';
 import { PostReminderService } from '../../services/post-reminder.service';
@@ -203,17 +207,26 @@ export class PublishOrchestratorService {
         // notified now with everything copied. Not a proof the token works,
         // so the channel is not healed.
         if (isReminderTarget(target.platform, draft.perPlatform)) {
-          await this.reminders.send({
-            userId,
-            workspaceId,
-            postId: draft.id,
-            channelId: target.channelId,
-            content: reminderContent(target.platform, {
-              content: draft.base.text,
-              mediaItems: draft.base.mediaItems,
-              platformContent: draft.perPlatform as Record<string, any>,
-            }),
-          });
+          try {
+            await this.reminders.send({
+              userId,
+              workspaceId,
+              postId: draft.id,
+              channelId: target.channelId,
+              content: reminderContent(target.platform, {
+                content: draft.base.text,
+                mediaItems: draft.base.mediaItems,
+                platformContent: draft.perPlatform as Record<string, any>,
+              }),
+            });
+          } catch (sendErr) {
+            // Our own notification failed, not the platform: it carries its
+            // code past the platform classifier.
+            throw new ClassifiedPublishError(
+              `${REMINDER_FAILURE_PREFIX}: ${sendErr instanceof Error ? sendErr.message : String(sendErr)}`,
+              'reminder_failed',
+            );
+          }
           const reminded: ChannelTarget = {
             ...next,
             publishStatus: 'published',
