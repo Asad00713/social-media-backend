@@ -36,6 +36,10 @@ export const errorLogs = pgTable(
     statusCode: integer('status_code'),
     userId: uuid('user_id'),
     workspaceId: uuid('workspace_id'),
+    // The HTTP request's X-Request-Id (logs/request-context.ts): the id a user
+    // copies from an error toast. NULL for rows written outside a request
+    // (queue workers, crons) and for rows from before migration 0082.
+    requestId: varchar('request_id', { length: 68 }),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}),
     createdAt: timestamp('created_at', { withTimezone: true })
       .defaultNow()
@@ -51,6 +55,7 @@ export const errorLogs = pgTable(
       table.createdAt,
     ),
     createdIdx: index('error_logs_created_idx').on(table.createdAt),
+    requestIdIdx: index('error_logs_request_id_idx').on(table.requestId),
   }),
 );
 
