@@ -112,3 +112,18 @@ export function mustDeleteOnDisconnect(platform: string): boolean {
   // An unknown platform is deleted: never keep data we have no ruling for.
   return policy ? policy.mustDelete : true;
 }
+
+/** Until when a disconnect can be undone, or null once it cannot. */
+export function restoreDeadline(
+  channel: {
+    disconnectedAt: Date | string | null;
+    disconnectFinalizedAt: Date | string | null;
+  },
+  now: Date = new Date(),
+): Date | null {
+  if (!channel.disconnectedAt || channel.disconnectFinalizedAt) return null;
+  const until = new Date(
+    new Date(channel.disconnectedAt).getTime() + CHANNEL_RESTORE_WINDOW_MS,
+  );
+  return until.getTime() > now.getTime() ? until : null;
+}

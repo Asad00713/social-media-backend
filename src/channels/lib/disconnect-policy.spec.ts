@@ -3,6 +3,7 @@ import {
   CHANNEL_RESTORE_WINDOW_MS,
   MUST_DELETE_ON_DISCONNECT,
   mustDeleteOnDisconnect,
+  restoreDeadline,
 } from './disconnect-policy';
 
 describe('disconnect policy', () => {
@@ -39,5 +40,18 @@ describe('disconnect policy', () => {
 
   it('the undo window is ten minutes', () => {
     expect(CHANNEL_RESTORE_WINDOW_MS).toBe(600_000);
+  });
+});
+
+describe('restoreDeadline', () => {
+  it('open for ten minutes, closed once finalized', () => {
+    const at = new Date('2026-11-15T12:00:00Z');
+
+    expect(
+      restoreDeadline({ disconnectedAt: at, disconnectFinalizedAt: null }, new Date(at.getTime() + 1)),
+    ).toEqual(new Date(at.getTime() + 600_000));
+    expect(
+      restoreDeadline({ disconnectedAt: at, disconnectFinalizedAt: at }, at),
+    ).toBeNull();
   });
 });

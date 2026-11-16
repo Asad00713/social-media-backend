@@ -207,7 +207,7 @@ describe('reconnecting a channel the user disconnected (revival)', () => {
       expect.anything(),
       'owner-1',
     );
-    expect(increment).toHaveBeenCalledWith('ws');
+    expect(increment).toHaveBeenCalledWith('ws', expect.anything());
     expect(heldPosts.releaseAfterReconnect).toHaveBeenCalledWith(
       'ws',
       7,
@@ -253,5 +253,24 @@ describe('reconnecting a channel the user disconnected (revival)', () => {
       telegramWebhookRouteId: 'fresh',
     } as never);
     expect(writes[0].telegramWebhookRouteId).toBe('fresh');
+  });
+});
+
+describe('reconnecting a must-delete channel its finalize is deleting', () => {
+  it('is refused (409 CHANNEL_BEING_REMOVED) and writes nothing', async () => {
+    existing = row({
+      platform: 'youtube',
+      isActive: true,
+      connectionStatus: 'disconnected',
+      disconnectedAt: new Date('2026-11-01T10:00:00Z'),
+      disconnectFinalizedAt: new Date('2026-11-01T10:10:00Z'),
+    });
+    const { svc, heldPosts } = make();
+    const err = await reconnect(svc, 'youtube').catch((e: unknown) => e);
+    expect((err as { getResponse(): unknown }).getResponse()).toMatchObject({
+      code: 'CHANNEL_BEING_REMOVED',
+    });
+    expect(writes).toHaveLength(0);
+    expect(heldPosts.releaseAfterReconnect).not.toHaveBeenCalled();
   });
 });

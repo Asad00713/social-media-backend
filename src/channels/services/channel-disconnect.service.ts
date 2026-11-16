@@ -24,12 +24,16 @@ import { CalendarSubscriptionService } from '../../calendar-sync/services/calend
 import {
   HELD_REASON_DISCONNECTED,
   holdTarget,
+  isHeld,
+  releaseTarget,
 } from '../../posts/lib/held-targets';
+import { workspaceUsage } from '../../drizzle/schema';
 import { ChannelSyncLifecycleService } from '../analytics/services/channel-sync-lifecycle.service';
 import {
   CHANNEL_RESTORE_WINDOW_MS,
   MUST_DELETE_ON_DISCONNECT,
   mustDeleteOnDisconnect,
+  restoreDeadline,
 } from '../lib/disconnect-policy';
 import { isDisconnected } from '../lib/live-channel';
 import type {
@@ -75,17 +79,7 @@ export function finalizeJobId(channelId: number, disconnectedAt: Date): string {
   return `channel-finalize-${channelId}-${disconnectedAt.getTime()}`;
 }
 
-/** Until when a disconnect can be undone, or null once it cannot. */
-export function restoreDeadline(
-  channel: Pick<ChannelRow, 'disconnectedAt' | 'disconnectFinalizedAt'>,
-  now: Date = new Date(),
-): Date | null {
-  if (!channel.disconnectedAt || channel.disconnectFinalizedAt) return null;
-  const until = new Date(
-    new Date(channel.disconnectedAt).getTime() + CHANNEL_RESTORE_WINDOW_MS,
-  );
-  return until.getTime() > now.getTime() ? until : null;
-}
+export { restoreDeadline };
 
 function conflict(message: string, code: string): ConflictException {
   return new ConflictException({
@@ -227,22 +221,38 @@ export class ChannelDisconnectService {
     }
 
     // Its scheduled posts read as paused in the Planner at once; a publish
-    // job that fires before the undo holds them too (PostService).
-    const held = await this.holdScheduled(workspaceId, channelId, now);
+    // job that fires before the undo holds them too (PostService). The row
+    // is already marked: a failure here must not answer 500 and lose the
+    // Undo - the publish job holds them anyway.
+    let held = 0;
+    try {
+      held = await this.holdScheduled(workspaceId, channelId, now);
+    } catch (error) {
+      this.logger.error(
+        `Disconnect ${channelId}: could not mark its scheduled posts paused (their jobs hold them): ${messageOf(error)}`,
+      );
+    }
 
-    await this.finalizeQueue.add(
-      'finalize-disconnect',
-      {
-        channelId,
-        disconnectedAt: now.toISOString(),
-      } satisfies FinalizeDisconnectJob,
-      {
-        jobId: finalizeJobId(channelId, now),
-        delay: CHANNEL_RESTORE_WINDOW_MS,
-        attempts: 5,
-        backoff: { type: 'exponential', delay: 30_000 },
-      },
-    );
+    // A lost job is recovered by the sweep (every 5 minutes).
+    try {
+      await this.finalizeQueue.add(
+        'finalize-disconnect',
+        {
+          channelId,
+          disconnectedAt: now.toISOString(),
+        } satisfies FinalizeDisconnectJob,
+        {
+          jobId: finalizeJobId(channelId, now),
+          delay: CHANNEL_RESTORE_WINDOW_MS,
+          attempts: 5,
+          backoff: { type: 'exponential', delay: 30_000 },
+        },
+      );
+    } catch (error) {
+      this.logger.error(
+        `Disconnect ${channelId}: finalize job not queued (the sweep finalizes it): ${messageOf(error)}`,
+      );
+    }
 
     this.logger.log(
       `Channel ${channelId} (${row.platform}) disconnected; ${held} scheduled post(s) paused; finalize in ${CHANNEL_RESTORE_WINDOW_MS / 60000} min`,
@@ -321,29 +331,6 @@ export class ChannelDisconnectService {
       );
     }
 
-    // A bot or WhatsApp number can live in one workspace only: if another
-    // workspace connected it meanwhile, this one cannot take it back.
-    if (GLOBALLY_UNIQUE_PLATFORMS.has(row.platform)) {
-      const elsewhere = await this.db
-        .select({ id: socialMediaChannels.id })
-        .from(socialMediaChannels)
-        .where(
-          and(
-            eq(socialMediaChannels.platform, row.platform),
-            eq(socialMediaChannels.platformAccountId, row.platformAccountId),
-            ne(socialMediaChannels.id, row.id),
-            ne(socialMediaChannels.connectionStatus, 'disconnected'),
-          ),
-        )
-        .limit(1);
-      if (elsewhere.length > 0) {
-        throw conflict(
-          'This account is now connected in another workspace.',
-          'CHANNEL_CONNECTED_ELSEWHERE',
-        );
-      }
-    }
-
     const billable = isBillablePlatform(row.platform as SupportedPlatform);
     const ownerId = billable
       ? await this.accountChannels.ownerOf(workspaceId)
@@ -356,10 +343,22 @@ export class ChannelDisconnectService {
       if (ownerId) {
         await this.accountChannels.enforceWithinTransaction(tx, ownerId);
       }
-      return tx
+      // A bot or WhatsApp number can live in one workspace only: if another
+      // workspace connected it meanwhile, this one cannot take it back.
+      // Inside the transaction, after the account lock.
+      if (
+        GLOBALLY_UNIQUE_PLATFORMS.has(row.platform) &&
+        (await this.isLiveElsewhere(row, tx))
+      ) {
+        throw conflict(
+          'This account is now connected in another workspace.',
+          'CHANNEL_CONNECTED_ELSEWHERE',
+        );
+      }
+      const updated = await tx
         .update(socialMediaChannels)
         .set({
-          connectionStatus: row.statusBeforeDisconnect ?? 'connected',
+          connectionStatus: restoredStatus(row.statusBeforeDisconnect),
           disconnectedAt: null,
           disconnectedByUserId: null,
           statusBeforeDisconnect: null,
@@ -378,6 +377,17 @@ export class ChannelDisconnectService {
         .returning({
           connectionStatus: socialMediaChannels.connectionStatus,
         });
+      // The slot is counted in the same transaction as the status change.
+      if (updated.length > 0 && billable) {
+        await tx
+          .update(workspaceUsage)
+          .set({
+            channelsCount: sql`${workspaceUsage.channelsCount} + 1`,
+            updatedAt: now,
+          })
+          .where(eq(workspaceUsage.workspaceId, workspaceId));
+      }
+      return updated;
     });
 
     if (restored.length === 0) {
@@ -388,15 +398,6 @@ export class ChannelDisconnectService {
       );
     }
 
-    if (billable) {
-      try {
-        await this.channels.takeSlot(workspaceId);
-      } catch (error) {
-        this.logger.warn(
-          `Restore ${channelId}: usage counter not incremented: ${messageOf(error)}`,
-        );
-      }
-    }
 
     // The finalize job would no-op now; remove it so it never runs at all.
     try {
@@ -503,8 +504,10 @@ export class ChannelDisconnectService {
 
     if (mustDelete) {
       // The old hard delete: its unpublished posts go, the cascades take its
-      // history, the Google grant is revoked if it was the last one.
-      await this.hardDelete(claimed);
+      // history, the Google grant is revoked if it was the last one - only
+      // while the row is still this disconnect (a revive is refused on a
+      // claimed row, and the delete re-checks).
+      await this.hardDelete(claimed, { onlyIfDisconnectedAt: row.disconnectedAt });
       this.logger.log(
         `Channel ${channelId} (${row.platform}) finalized: deleted (policy: ${MUST_DELETE_ON_DISCONNECT[row.platform as SupportedPlatform]?.source ?? 'unknown platform'})`,
       );
@@ -512,6 +515,20 @@ export class ChannelDisconnectService {
     }
 
     await this.teardownExternal(claimed);
+    // History is kept but the channel does not come back on its own: its
+    // paused posts resolve as failed instead of waiting forever.
+    try {
+      const failed = await this.failHeldPosts(claimed.workspaceId, channelId);
+      if (failed > 0) {
+        this.logger.log(
+          `Channel ${channelId} finalized: ${failed} paused post(s) marked failed`,
+        );
+      }
+    } catch (error) {
+      this.logger.error(
+        `Channel ${channelId} finalized but its paused posts were not resolved: ${messageOf(error)}`,
+      );
+    }
     this.logger.log(
       `Channel ${channelId} (${row.platform}) finalized: history kept, tokens cleared`,
     );
@@ -573,12 +590,17 @@ export class ChannelDisconnectService {
    * then the row (FK cascades take its history). Used for deleteHistory,
    * integrations and must-delete platforms.
    */
-  private async hardDelete(row: ChannelRow): Promise<void> {
+  private async hardDelete(
+    row: ChannelRow,
+    opts: { onlyIfDisconnectedAt?: Date | null } = {},
+  ): Promise<void> {
     const token = isDisconnected(row)
       ? this.channels.readStoredAccessToken(row)
       : null;
     try {
-      if (row.platform === 'telegram') {
+      // The same bot live in another workspace (connected during the undo
+      // window) shares the webhook: never pull it out from under that one.
+      if (row.platform === 'telegram' && !(await this.isLiveElsewhere(row))) {
         const t =
           token ??
           (isDisconnected(row)
@@ -600,7 +622,80 @@ export class ChannelDisconnectService {
     // Before the row: a failure here leaves the channel and the user can
     // retry, rather than a deleted channel with posts still aimed at it.
     await this.postsCleanup.removeUnpublished(row.workspaceId, row.id);
-    await this.channels.deleteChannel(row.id, row.workspaceId);
+    await this.channels.deleteChannel(row.id, row.workspaceId, {
+      onlyIfDisconnectedAt: opts.onlyIfDisconnectedAt ?? undefined,
+    });
+  }
+
+  /**
+   * True when the same platform account is live (not disconnected) in a row
+   * other than this one - another workspace connected it meanwhile. Shared
+   * external state (a Telegram webhook, a Google grant) must then be left.
+   */
+  private async isLiveElsewhere(
+    row: ChannelRow,
+    executor: Pick<DbType, 'select'> = this.db,
+  ): Promise<boolean> {
+    const others = await executor
+      .select({ id: socialMediaChannels.id })
+      .from(socialMediaChannels)
+      .where(
+        and(
+          eq(socialMediaChannels.platform, row.platform),
+          eq(socialMediaChannels.platformAccountId, row.platformAccountId),
+          ne(socialMediaChannels.id, row.id),
+          ne(socialMediaChannels.connectionStatus, 'disconnected'),
+        ),
+      )
+      .limit(1);
+    return others.length > 0;
+  }
+
+  /**
+   * A kept-history channel was finalized: every scheduled post still holding
+   * a target on it gets that target failed ("Channel disconnected"), and a
+   * post with nothing left to send resolves (failed, or partly published).
+   * A reconnect later does not resend them - they are visible and retryable.
+   */
+  async failHeldPosts(workspaceId: string, channelId: number): Promise<number> {
+    const id = String(channelId);
+    const now = new Date();
+    let touched = 0;
+    await this.db.transaction(async (tx) => {
+      const rows = await tx
+        .select({ id: posts.id, targets: posts.targets })
+        .from(posts)
+        .where(
+          and(
+            eq(posts.workspaceId, workspaceId),
+            eq(posts.status, 'scheduled'),
+            sql`EXISTS (SELECT 1 FROM jsonb_array_elements(${posts.targets}) AS t WHERE t->>'channelId' = ${id} AND t->>'heldAt' IS NOT NULL)`,
+          ),
+        )
+        .for('update');
+      for (const row of rows) {
+        const targets = (row.targets ?? []).map((t: PostTarget) =>
+          String(t.channelId) === id && isHeld(t)
+            ? {
+                ...releaseTarget(t),
+                status: 'failed' as const,
+                errorMessage: CHANNEL_DISCONNECTED_MESSAGE,
+              }
+            : t,
+        );
+        const status = resolvedStatus(targets);
+        await tx
+          .update(posts)
+          .set({
+            targets,
+            ...(status ? { status, lastError: CHANNEL_DISCONNECTED_MESSAGE } : {}),
+            updatedAt: now,
+          })
+          .where(eq(posts.id, row.id));
+        touched++;
+      }
+    });
+    return touched;
   }
 
   /** Teardown for a kept disconnected channel, with the token just cleared. */
@@ -608,15 +703,19 @@ export class ChannelDisconnectService {
     const token = this.channels.readStoredAccessToken(row);
     if (!token) return;
     try {
+      // Shared with a live row elsewhere (connected during the window): leave it.
+      if (await this.isLiveElsewhere(row)) return;
       if (row.platform === 'telegram') {
         await this.telegram.forToken(token).deleteWebhook();
       }
       if (GOOGLE_PLATFORMS.includes(row.platform)) {
+        // The refresh token revokes the grant itself; a stored access token
+        // has usually expired by now and its revoke is a no-op.
         await this.googleRevoke.revokeIfLastGoogleChannel(
           row.id,
           row.workspaceId,
           row.platform,
-          token,
+          this.channels.readStoredRevokeToken(row) ?? token,
         );
       }
     } catch (error) {
@@ -646,6 +745,32 @@ export class ChannelDisconnectService {
     if (!row) throw new NotFoundException('Channel not found');
     return row;
   }
+}
+
+/** Why a finalized channel's paused posts failed. */
+export const CHANNEL_DISCONNECTED_MESSAGE =
+  'Not sent: the channel was disconnected. Reconnect it and reschedule the post.';
+
+/** What an undo puts back: never a transient 'refreshing'. */
+export function restoredStatus(before: string | null): string {
+  if (!before || before === 'refreshing') return 'connected';
+  return before;
+}
+
+/**
+ * A post's status once a target was failed: null while something is still
+ * to go; else failed, or partly published when some target went out.
+ */
+export function resolvedStatus(
+  targets: PostTarget[],
+): 'failed' | 'partially_published' | null {
+  const isOut = (t: PostTarget) =>
+    t.status === 'published' ||
+    (t as PostTarget & { publishStatus?: string }).publishStatus ===
+      'published';
+  const pending = targets.some((t) => !isOut(t) && t.status !== 'failed');
+  if (pending) return null;
+  return targets.some(isOut) ? 'partially_published' : 'failed';
 }
 
 /** A target that already went out or failed is history, never held. */

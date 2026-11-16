@@ -66,9 +66,10 @@ function make(
   const heldPosts = new ChannelPauseService(db, publishQueue as never);
   const channels = {
     releaseSlot: jest.fn(async () => undefined),
-    takeSlot: jest.fn(async () => undefined),
     readStoredAccessToken: (c: { accessToken: string | null }) =>
       c.accessToken ? `plain-${c.accessToken}` : null,
+    readStoredRevokeToken: (c: { refreshToken: string | null }) =>
+      c.refreshToken ? `refresh-${c.refreshToken}` : null,
     getAccessToken: jest.fn(async () => 'live-token'),
     deleteChannel: jest.fn(async (id: number) => {
       await client.query('DELETE FROM social_media_channels WHERE id = $1', [id]);
@@ -288,7 +289,6 @@ describeDb('ChannelDisconnectService (database)', () => {
         status_before_disconnect: null,
       });
       expect(m.accountChannels.enforceWithinTransaction).toHaveBeenCalled();
-      expect(m.channels.takeSlot).toHaveBeenCalledWith(ws);
       expect(m.syncLifecycle.onChannelConnected).toHaveBeenCalledWith(ch, ws);
       expect(m.finalizeQueue.removed).toEqual([finalizeJobId(ch, now)]);
       expect((await targetsOf(client, ahead))[0].heldAt).toBeUndefined();
@@ -322,7 +322,6 @@ describeDb('ChannelDisconnectService (database)', () => {
       expect((await channelRow(client, full))!.connection_status).toBe(
         'disconnected',
       );
-      expect(capped.channels.takeSlot).not.toHaveBeenCalled();
     }));
 
   it('finalize keeps the history and clears the tokens; idempotent; no undo after', () =>
@@ -380,7 +379,9 @@ describeDb('ChannelDisconnectService (database)', () => {
 
       expect(await m.svc.finalize(yt, now)).toBe('deleted');
       expect(m.postsCleanup.removeUnpublished).toHaveBeenCalledWith(ws, yt);
-      expect(m.channels.deleteChannel).toHaveBeenCalledWith(yt, ws);
+      expect(m.channels.deleteChannel).toHaveBeenCalledWith(yt, ws, {
+        onlyIfDisconnectedAt: now,
+      });
       expect(await channelRow(client, yt)).toBeUndefined();
     }));
 
@@ -500,5 +501,73 @@ describeDb('ChannelPauseService.releaseAfterReconnect (database)', () => {
       expect((await targetsOf(client, post))[0].heldReason).toBe(
         'channel_paused',
       );
+    }));
+});
+
+describeDb('ChannelDisconnectService review fixes (database)', () => {
+  it('finalize (history kept) resolves its paused posts as failed', () =>
+    withRollbackDb(MIGRATIONS, async (db, client) => {
+      const { workspaceId: ws, ownerId } = await seedWorkspace(client);
+      const ch = await seedChannel(client, ws, 'bluesky');
+      const other = await seedChannel(client, ws, 'mastodon');
+      const only = await seedPost(client, ws, ownerId, [t(ch)]);
+      const shared = await seedPost(client, ws, ownerId, [
+        t(ch),
+        t(other, { status: 'published' }),
+      ]);
+      const stillGoing = await seedPost(client, ws, ownerId, [t(ch), t(other)]);
+      const now = new Date(Date.now() - 11 * MIN);
+      const m = make(db, client);
+      await m.svc.disconnect(ws, ch, ownerId, {}, now);
+
+      expect(await m.svc.finalize(ch, now)).toBe('tokens-cleared');
+      const status = async (id: string) =>
+        (await client.query(`SELECT status FROM posts WHERE id = $1`, [id]))
+          .rows[0].status as string;
+      expect(await status(only)).toBe('failed');
+      expect(await status(shared)).toBe('partially_published');
+      expect(await status(stillGoing)).toBe('scheduled');
+      const [target] = await targetsOf(client, only);
+      expect(target).toMatchObject({ status: 'failed' });
+      expect(target.heldAt).toBeUndefined();
+      expect(target.errorMessage).toMatch(/channel was disconnected/);
+    }));
+
+  it('a bot live in another workspace keeps its webhook (finalize and delete)', () =>
+    withRollbackDb(MIGRATIONS, async (db, client) => {
+      const a = await seedWorkspace(client);
+      const b = await seedWorkspace(client);
+      const bot = await seedChannel(client, a.workspaceId, 'telegram');
+      const now = new Date(Date.now() - 11 * MIN);
+      const m = make(db, client);
+      await m.svc.disconnect(a.workspaceId, bot, a.ownerId, {}, now);
+      // Workspace B connects the same bot during the undo window.
+      await client.query(
+        `INSERT INTO social_media_channels
+           (workspace_id, platform, account_type, platform_account_id, account_name, access_token, connected_by_user_id)
+         SELECT $1, 'telegram', 'bot', platform_account_id, 'Bot', 'y', $2
+           FROM social_media_channels WHERE id = $3`,
+        [b.workspaceId, b.ownerId, bot],
+      );
+
+      expect(await m.svc.finalize(bot, now)).toBe('tokens-cleared');
+      expect(m.deleteWebhook).not.toHaveBeenCalled();
+      await m.svc.disconnect(a.workspaceId, bot, a.ownerId, {
+        deleteHistory: true,
+      });
+      expect(m.deleteWebhook).not.toHaveBeenCalled();
+    }));
+
+  it('a must-delete finalize deletes only this very disconnect (a revive is never deleted)', () =>
+    withRollbackDb(MIGRATIONS, async (db, client) => {
+      const { workspaceId: ws, ownerId } = await seedWorkspace(client);
+      const yt = await seedChannel(client, ws, 'youtube');
+      const now = new Date(Date.now() - 11 * MIN);
+      const m = make(db, client);
+      await m.svc.disconnect(ws, yt, ownerId, {}, now);
+      expect(await m.svc.finalize(yt, now)).toBe('deleted');
+      expect(m.channels.deleteChannel).toHaveBeenCalledWith(yt, ws, {
+        onlyIfDisconnectedAt: now,
+      });
     }));
 });
