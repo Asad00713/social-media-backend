@@ -352,7 +352,7 @@ describe('PostFailureBatchService.flush', () => {
     });
 
     const r = await renderEmail(getTemplate('posts-failed'), props, CTX);
-    expect(r.subject).toBe("3 posts didn't publish today");
+    expect(r.subject).toBe('3 posts didn’t publish today');
     expect(r.preheader).toBe(
       'Instagram, TikTok and LinkedIn each turned one down.',
     );
@@ -397,8 +397,8 @@ describe('PostFailureBatchService.flush', () => {
     expect(props.count).toBe(1);
     expect(props.rows.map((r) => r.platform)).toEqual(['instagram', 'tiktok']);
     const r = await renderEmail(getTemplate('posts-failed'), props, CTX);
-    expect(r.subject).toBe("1 post didn't publish today");
-    expect(r.text).toContain("1 post didn't publish today");
+    expect(r.subject).toBe('1 post didn’t publish today');
+    expect(r.text).toContain('1 post didn’t publish today');
     expect(r.text).toContain(
       'It needs a quick fix. Your other 9 posts went out on time.',
     );
@@ -422,7 +422,7 @@ describe('PostFailureBatchService.flush', () => {
     expect(props.count).toBe(11);
     expect(props.platforms).toEqual(['instagram', 'tiktok', 'linkedin']);
     const r = await renderEmail(getTemplate('posts-failed'), props, CTX);
-    expect(r.subject).toBe("11 posts didn't publish today");
+    expect(r.subject).toBe('11 posts didn’t publish today');
     expect(r.preheader).toBe(
       'Instagram, TikTok and LinkedIn turned them down.',
     );
@@ -694,7 +694,7 @@ describe('PostFailureBatchService.flush', () => {
     expect(props.rows).toHaveLength(10);
     expect(props.more).toBe(5);
     const r = await renderEmail(getTemplate('posts-failed'), props, CTX);
-    expect(r.subject).toBe("15 posts didn't publish today");
+    expect(r.subject).toBe('15 posts didn’t publish today');
     expect(r.text).toContain('and 5 more');
     expect(r.preheader).toBe('Instagram turned them down.');
   });
@@ -757,7 +757,7 @@ describe('C1 / C1a copy', () => {
     when: 'Today, 6:30 PM',
     caption: 'Iced caramel latte',
     thumbnailUrl: null,
-    reason: "Instagram didn't accept the video",
+    reason: 'Instagram didn’t accept the video',
     otherPublished: ['Facebook', 'TikTok'],
     editUrl: 'https://app.test/w/ws/planner?post=p1',
   };
@@ -765,9 +765,9 @@ describe('C1 / C1a copy', () => {
   it('C1 says which networks went out, else asks for a fix', async () => {
     const def = getTemplate('post-failed');
     const r = await renderEmail(def, c1, CTX);
-    expect(r.subject).toBe("Your Instagram post didn't publish");
+    expect(r.subject).toBe('Your Instagram post didn’t publish');
     expect(r.preheader).toBe(
-      "Instagram didn't accept it. Edit it and we'll try again.",
+      'Instagram didn’t accept it. Edit it and we’ll try again.',
     );
     expect(r.text).toContain(
       'The same post on Facebook and TikTok went out on time.',

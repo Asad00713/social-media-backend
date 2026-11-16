@@ -57,7 +57,7 @@ describe('C2 channel-reconnect', () => {
     it('explains why, naming the company that asks for confirmation', async () => {
       const r = await renderEmail(channelReconnect, expired, ctx);
       expect(r.text).toContain(
-        "Instagram ended Schedura's access. This usually happens after a password change, or when Meta asks you to confirm your account.",
+        'Instagram ended Schedura’s access. This usually happens after a password change, or when Meta asks you to confirm your account.',
       );
     });
 
@@ -87,21 +87,21 @@ describe('C2 channel-reconnect', () => {
         ctx,
       );
       expect(r.text).toContain(
-        "Bluesky ended Schedura's access. This usually happens after a password change, or when Bluesky asks you to confirm your account.",
+        'Bluesky ended Schedura’s access. This usually happens after a password change, or when Bluesky asks you to confirm your account.',
       );
     });
 
     it('says how many posts are held and when the next one is', async () => {
       const r = await renderEmail(channelReconnect, expired, ctx);
       expect(r.text).toContain(
-        "4 scheduled posts won't publish until you reconnect. The next one is Nov 15, 2026 at 6:30 PM GMT+5.",
+        '4 scheduled posts won’t publish until you reconnect. The next one is Nov 15, 2026 at 6:30 PM GMT+5.',
       );
     });
 
     it('uses the singular for one post, in the callout and the preheader', async () => {
       const props = { ...expired, waiting: 1 };
       const r = await renderEmail(channelReconnect, props, ctx);
-      expect(r.text).toContain("1 scheduled post won't publish");
+      expect(r.text).toContain('1 scheduled post won’t publish');
       expect(r.preheader).toBe('1 scheduled post is waiting on @lumierecafe.');
     });
 
@@ -156,7 +156,7 @@ describe('C2 channel-reconnect', () => {
 
     it('has no "ended access" paragraph', async () => {
       const r = await renderEmail(channelReconnect, expiring, ctx);
-      expect(r.text).not.toContain("ended Schedura's access");
+      expect(r.text).not.toContain('ended Schedura’s access');
     });
 
     it('omits the callout when nothing is waiting', async () => {

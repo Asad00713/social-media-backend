@@ -62,7 +62,7 @@ export const contactEnquiryTemplate = defineTemplate<ContactEnquiryProps>({
     email: 'rehman@lumierecafe.pk',
     company: 'Lumiere Cafe',
     message:
-      "Two of my Instagram posts failed this morning and I can't see why.\nThe video is under a minute.",
+      'Two of my Instagram posts failed this morning and I can’t see why.\nThe video is under a minute.',
   },
   variants: {
     'no-company': {

@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { renderEmail } from '../render/render-email';
 import { ALL_TEMPLATES } from '../templates/registry';
 import type { RenderContext } from '../templates/types';
+import { PREVIEW_ASSET_BASE } from './preview-assets';
 
 interface PreviewEntry {
   file: string;
@@ -18,8 +19,7 @@ interface PreviewEntry {
 const OUT_DIR = join(process.cwd(), 'email-previews');
 
 const CTX: RenderContext = {
-  assetBaseUrl:
-    process.env.EMAIL_ASSET_BASE_URL ?? 'http://localhost:3001/email',
+  assetBaseUrl: PREVIEW_ASSET_BASE,
   footer: {
     reason: 'Preview footer',
     links: [

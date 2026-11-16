@@ -75,12 +75,12 @@ export class EmailFooterService {
         return footer(reason, [manage, help]);
       }
       case 'security':
-        return footer("Security emails can't be turned off.", [help]);
+        return footer('Security emails can’t be turned off.', [help]);
       case 'account':
-        return footer("Account emails can't be turned off.", [help]);
+        return footer('Account emails can’t be turned off.', [help]);
       case 'billing':
         return footer(
-          "Billing emails go to workspace owners and can't be turned off.",
+          'Billing emails go to workspace owners and can’t be turned off.',
           [{ label: 'Billing help', href: this.links.billingHelp() }],
         );
       case 'plain':

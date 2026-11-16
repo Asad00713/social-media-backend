@@ -28,12 +28,12 @@ export const inactiveReminder = defineTemplate<InactiveReminderProps>({
     p.channels === 0 && p.drafts === 0
       ? `Pick up where you left off in ${p.workspaceName}.`
       : `${plural(p.channels, 'channel', 'channels')} and ${plural(p.drafts, 'draft', 'drafts')} are waiting in ${p.workspaceName}.`,
-  footerReason: () => "You get this because you haven't signed in for 15 days.",
+  footerReason: () => 'You get this because you haven’t signed in for 15 days.',
   Body: (p) => (
     <>
       <Heading>Your workspace is ready when you are</Heading>
       <Paragraph>
-        {`It's been two weeks since you signed in. Here's what's waiting in ${p.workspaceName}:`}
+        {`It’s been two weeks since you signed in. Here’s what’s waiting in ${p.workspaceName}:`}
       </Paragraph>
       <DetailRows
         rows={[

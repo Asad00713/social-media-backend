@@ -36,7 +36,7 @@ export const NEW_SIGN_IN = defineTemplate<NewSignInProps>({
     <>
       <Heading>New sign-in to your account</Heading>
       <Paragraph>
-        Someone signed in from a device we haven&apos;t seen before.
+        Someone signed in from a device we haven’t seen before.
       </Paragraph>
       <DetailRows
         rows={[
@@ -49,10 +49,10 @@ export const NEW_SIGN_IN = defineTemplate<NewSignInProps>({
         ]}
       />
       <Paragraph tone="muted">
-        If this was you, there&apos;s nothing else to do.
+        If this was you, there’s nothing else to do.
       </Paragraph>
       <EmailButton href={p.notMeUrl} variant="secondary">
-        This wasn&apos;t me
+        This wasn’t me
       </EmailButton>
     </>
   ),

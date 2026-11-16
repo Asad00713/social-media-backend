@@ -19,7 +19,7 @@ export interface PasswordChangedProps {
 
 const BODY: Record<PasswordChangedProps['via'], string> = {
   settings:
-    "You're still signed in on this device. We signed you out everywhere else.",
+    'You’re still signed in on this device. We signed you out everywhere else.',
   reset: 'We signed you out everywhere. Sign in with your new password.',
 };
 
@@ -44,9 +44,9 @@ export const passwordChangedTemplate = defineTemplate<PasswordChangedProps>({
             : []),
         ]}
       />
-      <Paragraph>If this was you, you don't need to do anything.</Paragraph>
+      <Paragraph>If this was you, you don’t need to do anything.</Paragraph>
       <Callout tone="danger">
-        Wasn't you? Reset your password now, then check Settings → Security.
+        Wasn’t you? Reset your password now, then check Settings → Security.
       </Callout>
       <EmailButton href={p.resetUrl} variant="secondary">
         Reset password

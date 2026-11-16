@@ -27,7 +27,7 @@ export const verifyEmailTemplate = defineTemplate<VerifyEmailProps>({
       </Paragraph>
       <CodeBox code={p.code} />
       <Paragraph tone="muted">
-        The code expires in 10 minutes. If you didn't create a Schedura account,
+        The code expires in 10 minutes. If you didn’t create a Schedura account,
         you can ignore this email.
       </Paragraph>
     </>

@@ -27,11 +27,11 @@ export const deletionWarning = defineTemplate<DeletionWarningProps>({
     <>
       <Heading>{`Your account will be deleted on ${p.deleteOn}`}</Heading>
       <Paragraph>
-        {`Your account has been paused for 11 months. On ${p.deleteOnLong} we'll permanently delete it.`}
+        {`Your account has been paused for 11 months. On ${p.deleteOnLong} we’ll permanently delete it.`}
       </Paragraph>
       <Callout tone="danger">
         This deletes your workspace, posts, drafts, media and analytics. It
-        can&apos;t be undone.
+        can’t be undone.
       </Callout>
       <EmailButton href={p.signInUrl} variant="primary">
         Keep my account

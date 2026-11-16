@@ -31,7 +31,7 @@ export const resetPasswordTemplate = defineTemplate<ResetPasswordProps>({
       </EmailButton>
       <FallbackLink href={p.resetUrl} />
       <Paragraph tone="muted">
-        The link works once, for 1 hour. Didn't ask for this? Ignore this email
+        The link works once, for 1 hour. Didn’t ask for this? Ignore this email
         and your password stays the same.
       </Paragraph>
     </>

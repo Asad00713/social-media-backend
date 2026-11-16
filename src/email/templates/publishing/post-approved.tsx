@@ -1,6 +1,7 @@
 import { EmailButton } from '../../render/components/button';
 import { PostCard } from '../../render/components/post-card';
 import { Heading, Paragraph } from '../../render/components/text';
+import { PREVIEW_THUMBNAIL_URL } from '../../preview/preview-assets';
 import { defineTemplate } from '../define-template';
 
 export interface PostApprovedProps {
@@ -17,6 +18,20 @@ export interface PostApprovedProps {
   goesOutSentence: string;
   plannerUrl: string;
 }
+
+const FIXTURE: PostApprovedProps = {
+  approverName: 'Sana Noor',
+  platform: 'instagram',
+  platformName: 'Instagram',
+  handle: '@lumierecafe',
+  when: 'Oct 26, 2026 at 6:30 PM GMT+5',
+  caption:
+    'Summer menu is here: iced caramel latte for Rs 650, all week. Tag a friend who needs one.',
+  thumbnailUrl: null,
+  goesOutSentence:
+    'It goes out on Instagram Oct 26, 2026 at 6:30 PM GMT+5. Nothing else to do.',
+  plannerUrl: 'https://app.schedura.ai/w/ws-1/planner?post=post-1',
+};
 
 /** What a draft with no time reads as in an email. */
 export const NOT_SCHEDULED = 'Not scheduled yet';
@@ -37,7 +52,7 @@ export const POST_APPROVED = defineTemplate<PostApprovedProps>({
   // Built from the parts, so it is the sentence without "Nothing else to do."
   preheader: (p) =>
     p.when === NOT_SCHEDULED
-      ? "It's ready to schedule."
+      ? 'It’s ready to schedule.'
       : `It goes out on ${p.platformName} ${p.when}.`,
   Body: (p) => (
     <>
@@ -55,20 +70,10 @@ export const POST_APPROVED = defineTemplate<PostApprovedProps>({
       </EmailButton>
     </>
   ),
-  fixture: {
-    approverName: 'Sana Noor',
-    platform: 'instagram',
-    platformName: 'Instagram',
-    handle: '@lumierecafe',
-    when: 'Oct 26, 2026 at 6:30 PM GMT+5',
-    caption:
-      'Summer menu is here: iced caramel latte for Rs 650, all week. Tag a friend who needs one.',
-    thumbnailUrl: null,
-    goesOutSentence:
-      'It goes out on Instagram Oct 26, 2026 at 6:30 PM GMT+5. Nothing else to do.',
-    plannerUrl: 'https://app.schedura.ai/w/ws-1/planner?post=post-1',
-  },
+  fixture: FIXTURE,
   variants: {
+    // Preview only: a loadable picture, so the thumbnail branch is seen.
+    thumbnail: { ...FIXTURE, thumbnailUrl: PREVIEW_THUMBNAIL_URL },
     'not-scheduled': {
       approverName: 'Sana Noor',
       platform: 'instagram',
@@ -77,7 +82,7 @@ export const POST_APPROVED = defineTemplate<PostApprovedProps>({
       when: 'Not scheduled yet',
       caption: 'Summer menu is here.',
       thumbnailUrl: null,
-      goesOutSentence: "It's ready to schedule.",
+      goesOutSentence: 'It’s ready to schedule.',
       plannerUrl: 'https://app.schedura.ai/w/ws-1/planner?post=post-1',
     },
   },

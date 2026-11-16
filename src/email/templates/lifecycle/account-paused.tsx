@@ -32,7 +32,7 @@ export const accountPaused = defineTemplate<AccountPausedProps>({
           { label: 'Paused since', value: p.pausedSince },
           {
             label: 'Deleted on',
-            value: `${p.deleteOn}, if you don't come back`,
+            value: `${p.deleteOn}, if you don’t come back`,
           },
         ]}
       />

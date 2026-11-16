@@ -2,6 +2,7 @@ import { EmailButton } from '../../render/components/button';
 import { DetailRows } from '../../render/components/detail-rows';
 import { PostCard } from '../../render/components/post-card';
 import { Heading, Paragraph } from '../../render/components/text';
+import { PREVIEW_THUMBNAIL_URL } from '../../preview/preview-assets';
 import { defineTemplate } from '../define-template';
 
 export interface ApprovalNeededProps {
@@ -21,6 +22,22 @@ export interface ApprovalNeededProps {
   reviewUrl: string;
   workspaceName: string;
 }
+
+const FIXTURE: ApprovalNeededProps = {
+  requesterName: 'M Rehman',
+  platform: 'instagram',
+  platformName: 'Instagram',
+  handle: '@lumierecafe',
+  when: 'Oct 26, 2026 at 6:30 PM GMT+5',
+  caption:
+    'Summer menu is here: iced caramel latte for Rs 600, all week. Tag a friend who needs one.',
+  thumbnailUrl: null,
+  // Figma C3: the preheader reads … · Summer menu campaign.
+  campaignName: 'Summer menu campaign',
+  goesOut: 'Oct 26, 2026 at 6:30 PM GMT+5',
+  reviewUrl: 'https://app.schedura.ai/w/ws-1/planner?post=post-1',
+  workspaceName: 'Rehman Workspace',
+};
 
 /**
  * C3: sent to each person who can approve. The Figma "Note from ..." quote is
@@ -58,26 +75,15 @@ export const APPROVAL_NEEDED = defineTemplate<ApprovalNeededProps>({
         Review post
       </EmailButton>
       <Paragraph tone="muted">
-        Review and approve it in Schedura. It won't publish until someone
+        Review and approve it in Schedura. It won’t publish until someone
         approves it.
       </Paragraph>
     </>
   ),
-  fixture: {
-    requesterName: 'M Rehman',
-    platform: 'instagram',
-    platformName: 'Instagram',
-    handle: '@lumierecafe',
-    when: 'Oct 26, 2026 at 6:30 PM GMT+5',
-    caption:
-      'Summer menu is here: iced caramel latte for Rs 600, all week. Tag a friend who needs one.',
-    thumbnailUrl: null,
-    campaignName: 'Summer menu',
-    goesOut: 'Oct 26, 2026 at 6:30 PM GMT+5',
-    reviewUrl: 'https://app.schedura.ai/w/ws-1/planner?post=post-1',
-    workspaceName: 'Rehman Workspace',
-  },
+  fixture: FIXTURE,
   variants: {
+    // Preview only: a loadable picture, so the thumbnail branch is seen.
+    thumbnail: { ...FIXTURE, thumbnailUrl: PREVIEW_THUMBNAIL_URL },
     'not-scheduled': {
       requesterName: 'M Rehman',
       platform: 'instagram',

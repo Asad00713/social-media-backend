@@ -36,7 +36,7 @@ function heading(p: PlanChangedProps): string {
   switch (p.kind) {
     case 'upgraded':
     case 'downgraded':
-      return `You're on Schedura ${p.toPlan}`;
+      return `You’re on Schedura ${p.toPlan}`;
     case 'downgrade_scheduled':
       return p.endsOn
         ? `Your plan changes to Schedura ${p.toPlan} on ${p.endsOn}`
@@ -46,7 +46,7 @@ function heading(p: PlanChangedProps): string {
         ? `Your ${p.fromPlan} plan ends on ${p.endsOn}`
         : `Your ${p.fromPlan} plan is set to end`;
     case 'ended':
-      return "You're on Schedura Free";
+      return 'You’re on Schedura Free';
     case 'payment_restricted':
       return 'Your workspaces moved to Free';
   }
@@ -56,7 +56,7 @@ function subject(p: PlanChangedProps): string {
   switch (p.kind) {
     case 'upgraded':
     case 'downgraded':
-      return `You're now on Schedura ${p.toPlan}`;
+      return `You’re now on Schedura ${p.toPlan}`;
     case 'ended':
       return `Your Schedura ${p.fromPlan} plan has ended`;
     default:
@@ -112,7 +112,7 @@ function body(p: PlanChangedProps): string | null {
     case 'ended':
       return 'Your workspaces are now on Free. Nothing is deleted.';
     case 'payment_restricted':
-      return `We couldn't collect payment for Schedura ${p.fromPlan} after 3 tries. Update your card to switch back.`;
+      return `We couldn’t collect payment for Schedura ${p.fromPlan} after 3 tries. Update your card to switch back.`;
   }
 }
 

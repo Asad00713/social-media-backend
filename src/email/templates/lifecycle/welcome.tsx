@@ -37,7 +37,7 @@ export const welcome = defineTemplate<WelcomeProps>({
     <>
       <Heading>{`Welcome to Schedura, ${p.firstName}`}</Heading>
       <Paragraph>
-        Here&apos;s the quickest way to your first scheduled post.
+        Here’s the quickest way to your first scheduled post.
       </Paragraph>
       <Steps steps={STEPS} />
       <EmailButton href={p.openUrl} variant="primary">

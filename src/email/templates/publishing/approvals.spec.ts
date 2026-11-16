@@ -51,7 +51,7 @@ describe('approval templates', () => {
       expect(r.html).toContain('data-email-button="primary"');
       expect(r.html).toContain(props.reviewUrl);
       expect(r.html).toContain(
-        'Review and approve it in Schedura. It won&#x27;t publish until someone approves it.',
+        'Review and approve it in Schedura. It won’t publish until someone approves it.',
       );
       expect(r.html).not.toContain('request changes');
       expect(r.html).not.toContain('Note from');
@@ -59,7 +59,7 @@ describe('approval templates', () => {
 
     it('builds the preheader from network, time and campaign', () => {
       expect(APPROVAL_NEEDED.preheader(props)).toBe(
-        'Instagram · Oct 26, 2026 at 6:30 PM GMT+5 · Summer menu',
+        'Instagram · Oct 26, 2026 at 6:30 PM GMT+5 · Summer menu campaign',
       );
       expect(APPROVAL_NEEDED.preheader({ ...props, campaignName: null })).toBe(
         'Instagram · Oct 26, 2026 at 6:30 PM GMT+5',
@@ -178,7 +178,7 @@ describe('approval templates', () => {
     it('reads ready to schedule in the preheader when there is no time', () => {
       expect(
         POST_APPROVED.preheader(POST_APPROVED.variants!['not-scheduled']),
-      ).toBe("It's ready to schedule.");
+      ).toBe('It’s ready to schedule.');
     });
 
     it('says the post is ready to schedule when there is no time', async () => {
@@ -187,7 +187,7 @@ describe('approval templates', () => {
         POST_APPROVED.variants!['not-scheduled'],
         ctx,
       );
-      expect(r.html).toContain('It&#x27;s ready to schedule.');
+      expect(r.html).toContain('It’s ready to schedule.');
       expect(r.html).toContain('Not scheduled yet');
     });
 

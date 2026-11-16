@@ -55,6 +55,22 @@ describeEachTemplate?.('%s', (_name, def, props) => {
   });
 });
 
+describe('thumbnail previews', () => {
+  it.each(['post-failed', 'posts-failed', 'approval-needed', 'post-approved'])(
+    '%s has a --thumbnail preview that shows preview-thumbnail.png',
+    async (id) => {
+      const def = getTemplate(id);
+      const props = def.variants?.thumbnail;
+      expect(props).toBeDefined();
+      const r = await renderEmail(def, props, ctx);
+      expect(r.html).toMatch(/<img[^>]+src="[^"]*\/preview-thumbnail\.png"/);
+      // The fixture itself stays as it was: no thumbnail.
+      const plain = await renderEmail(def, def.fixture, ctx);
+      expect(plain.html).not.toContain('preview-thumbnail.png');
+    },
+  );
+});
+
 describe('template registry', () => {
   it('template ids are unique and known', () => {
     const ids = ALL_TEMPLATES.map((d) => d.id);

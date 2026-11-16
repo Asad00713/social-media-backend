@@ -74,7 +74,7 @@ describe('EmailFooterService', () => {
     const { footer, where } = make();
     const f = await footer.build(def('billing'), {}, TO, 'ws1');
     expect(f).toEqual({
-      reason: "Billing emails go to workspace owners and can't be turned off.",
+      reason: 'Billing emails go to workspace owners and can’t be turned off.',
       links: [
         { label: 'Billing help', href: 'https://schedura.ai/help/billing' },
         PRIVACY,
@@ -86,16 +86,16 @@ describe('EmailFooterService', () => {
   it('security and account kinds say they cannot be turned off', async () => {
     const { footer } = make();
     expect(await footer.build(def('security'), {}, TO, null)).toEqual({
-      reason: "Security emails can't be turned off.",
+      reason: 'Security emails can’t be turned off.',
       links: [HELP, PRIVACY],
     });
     expect(await footer.build(def('account'), {}, TO, null)).toEqual({
-      reason: "Account emails can't be turned off.",
+      reason: 'Account emails can’t be turned off.',
       links: [HELP, PRIVACY],
     });
   });
 
-  it("plain kind uses the template's own sentence", async () => {
+  it('plain kind uses the template’s own sentence', async () => {
     const { footer } = make();
     const plain = def('plain', {
       footerReason: (p: { name: string }) => `Because ${p.name} wrote in.`,

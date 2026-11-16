@@ -234,7 +234,7 @@ describe('BillingEmailService.paymentFailed (D1)', () => {
 
     const mail = await renderJob(h.queue, 'payment-failed.in_123.2');
     expect(mail.subject).toBe(
-      "Your payment for Schedura Pro didn't go through",
+      'Your payment for Schedura Pro didn’t go through',
     );
     expect(mail.html).toContain('$29.00');
     expect(mail.html).toContain('Visa •• 4242');
@@ -318,7 +318,7 @@ describe('BillingEmailService.paymentFailed (D1)', () => {
     ];
     expect(message.headers).toBeUndefined();
     expect(message.html).toContain(
-      'Billing emails go to workspace owners and can&#x27;t be turned off.',
+      'Billing emails go to workspace owners and can’t be turned off.',
     );
     expect(options.tags.category).toBe('billing');
   });
@@ -463,8 +463,8 @@ describe('BillingEmailService.planChanged (D3)', () => {
       provider: 'stripe',
     });
     const mail = await renderJob(stripe.queue, base.dedupeKey);
-    expect(mail.subject).toBe("You're now on Schedura Max");
-    expect(mail.html).toContain('You&#x27;re on Schedura Max');
+    expect(mail.subject).toBe('You’re now on Schedura Max');
+    expect(mail.html).toContain('You’re on Schedura Max');
     expect(mail.html).toContain('Pro → Max');
     expect(mail.html).toContain('$49 monthly');
     expect(mail.html).toContain('Nov 26, 2026');
@@ -507,7 +507,7 @@ describe('BillingEmailService.planChanged (D3)', () => {
     ],
     [
       'ended',
-      'You&#x27;re on Schedura Free',
+      'You’re on Schedura Free',
       'Your Schedura Pro plan has ended',
       null,
     ],
@@ -515,7 +515,7 @@ describe('BillingEmailService.planChanged (D3)', () => {
       'payment_restricted',
       'Your workspaces moved to Free',
       'Your workspaces moved to Free',
-      'We couldn&#x27;t collect payment for Schedura Pro after 3 tries. Update your card to switch back.',
+      'We couldn’t collect payment for Schedura Pro after 3 tries. Update your card to switch back.',
     ],
   ])('%s: heading, subject and body', async (kind, heading, subject, text) => {
     const h = harness();
@@ -563,7 +563,7 @@ describe('BillingEmailService.planChanged (D3)', () => {
     expect(mail.html).toContain('Max → Pro');
     expect(mail.html).toContain('$29 monthly');
     expect(mail.html).toContain('Manage billing');
-    expect(mail.html).not.toContain('You&#x27;re on Schedura');
+    expect(mail.html).not.toContain('You’re on Schedura');
     expect(mail.html).not.toContain('now allow');
     expect(mail.html).not.toContain('Stripe sends the receipt');
     // The in-app "Plan Updated" bell this site always rang is kept.

@@ -25,7 +25,7 @@ export const emailChangedTemplate = defineTemplate<EmailChangedProps>({
   footer: 'security',
   subject: () => 'Your Schedura email was changed',
   preheader: (p) =>
-    `New sign-in email: ${p.to}. Wasn't you? Secure your account.`,
+    `New sign-in email: ${p.to}. Wasn’t you? Secure your account.`,
   Body: (p) => (
     <>
       <Heading>Your sign-in email was changed</Heading>
@@ -38,7 +38,7 @@ export const emailChangedTemplate = defineTemplate<EmailChangedProps>({
         ]}
       />
       <Callout tone="warning">
-        Wasn't you? Secure your account now. This link works for 7 days and
+        Wasn’t you? Secure your account now. This link works for 7 days and
         switches your email back.
       </Callout>
       <EmailButton href={p.secureUrl} variant="secondary">

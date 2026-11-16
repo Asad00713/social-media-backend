@@ -2,6 +2,7 @@ import { EmailButton } from '../../render/components/button';
 import { Callout } from '../../render/components/callout';
 import { PostCard } from '../../render/components/post-card';
 import { Heading, Paragraph } from '../../render/components/text';
+import { PREVIEW_THUMBNAIL_URL } from '../../preview/preview-assets';
 import { defineTemplate } from '../define-template';
 
 export interface PostFailedProps {
@@ -33,18 +34,31 @@ export function failureReason(reason: string): string {
   return `${chars.slice(0, REASON_LIMIT - 1).join('')}…`;
 }
 
+const FIXTURE: PostFailedProps = {
+  platform: 'instagram',
+  platformName: 'Instagram',
+  handle: '@lumierecafe',
+  when: 'Today, 6:30 PM',
+  caption:
+    'Iced caramel latte, one more week. Come in before Sunday and try it with our new oat milk.',
+  thumbnailUrl: null,
+  reason: 'Instagram didn’t accept the video: it’s longer than 90 seconds.',
+  otherPublished: ['Facebook', 'TikTok'],
+  editUrl: 'http://localhost:3001/w/demo/planner?post=demo',
+};
+
 /** C1: one post did not publish. */
 export const POST_FAILED = defineTemplate<PostFailedProps>({
   id: 'post-failed',
   category: 'publishing',
   event: 'post_failed',
   footer: 'notification',
-  subject: (p) => `Your ${p.platformName} post didn't publish`,
+  subject: (p) => `Your ${p.platformName} post didn’t publish`,
   preheader: (p) =>
-    `${p.platformName} didn't accept it. Edit it and we'll try again.`,
+    `${p.platformName} didn’t accept it. Edit it and we’ll try again.`,
   Body: (p) => (
     <>
-      <Heading>{`Your ${p.platformName} post didn't publish`}</Heading>
+      <Heading>{`Your ${p.platformName} post didn’t publish`}</Heading>
       <PostCard
         platform={p.platform}
         handle={p.handle}
@@ -63,19 +77,10 @@ export const POST_FAILED = defineTemplate<PostFailedProps>({
       </EmailButton>
     </>
   ),
-  fixture: {
-    platform: 'instagram',
-    platformName: 'Instagram',
-    handle: '@lumierecafe',
-    when: 'Today, 6:30 PM',
-    caption:
-      'Iced caramel latte, one more week. Come in before Sunday and try it with our new oat milk.',
-    thumbnailUrl: null,
-    reason: "Instagram didn't accept the video: it's longer than 90 seconds.",
-    otherPublished: ['Facebook', 'TikTok'],
-    editUrl: 'http://localhost:3001/w/demo/planner?post=demo',
-  },
+  fixture: FIXTURE,
   variants: {
+    // Preview only: a loadable picture, so the thumbnail branch is seen.
+    thumbnail: { ...FIXTURE, thumbnailUrl: PREVIEW_THUMBNAIL_URL },
     alone: {
       platform: 'linkedin',
       platformName: 'LinkedIn',

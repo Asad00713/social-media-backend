@@ -2,6 +2,7 @@ import { EmailButton } from '../../render/components/button';
 import { networkName } from '../../render/components/post-card';
 import { PostRow } from '../../render/components/post-row';
 import { Heading, Paragraph } from '../../render/components/text';
+import { PREVIEW_THUMBNAIL_URL } from '../../preview/preview-assets';
 import { defineTemplate } from '../define-template';
 import { failureReason, listNames } from './post-failed';
 
@@ -40,7 +41,7 @@ function networksLine(p: PostsFailedProps): string {
 }
 
 function headline(count: number): string {
-  return `${count} ${count === 1 ? 'post' : 'posts'} didn't publish today`;
+  return `${count} ${count === 1 ? 'post' : 'posts'} didn’t publish today`;
 }
 
 function onTimeLine(n: number): string {
@@ -52,6 +53,40 @@ function onTimeLine(n: number): string {
 function fixLine(count: number): string {
   return count === 1 ? 'It needs a quick fix.' : 'Each one needs a quick fix.';
 }
+
+const FIXTURE: PostsFailedProps = {
+  count: 3,
+  rows: [
+    {
+      platform: 'instagram',
+      handle: '@lumierecafe',
+      when: '6:30 PM',
+      title: 'Iced caramel latte, one more week',
+      reason: 'Video is longer than 90 seconds',
+      thumbnailUrl: null,
+    },
+    {
+      platform: 'tiktok',
+      handle: '@lumierecafe',
+      when: '8:00 AM',
+      title: 'Behind the bar: morning prep',
+      reason: 'TikTok needs you to sign in again',
+      thumbnailUrl: null,
+    },
+    {
+      platform: 'linkedin',
+      handle: 'Lumière Café',
+      when: '12:15 PM',
+      title: 'We’re hiring baristas in DHA',
+      reason: 'Image is larger than LinkedIn allows',
+      thumbnailUrl: null,
+    },
+  ],
+  more: 0,
+  platforms: ['instagram', 'tiktok', 'linkedin'],
+  otherOnTime: 9,
+  plannerUrl: 'http://localhost:3001/w/demo/planner',
+};
 
 /** C1a: several failures from one 10-minute window. */
 export const POSTS_FAILED = defineTemplate<PostsFailedProps>({
@@ -84,40 +119,16 @@ export const POSTS_FAILED = defineTemplate<PostsFailedProps>({
       </EmailButton>
     </>
   ),
-  fixture: {
-    count: 3,
-    rows: [
-      {
-        platform: 'instagram',
-        handle: '@lumierecafe',
-        when: '6:30 PM',
-        title: 'Iced caramel latte, one more week',
-        reason: 'Video is longer than 90 seconds',
-        thumbnailUrl: null,
-      },
-      {
-        platform: 'tiktok',
-        handle: '@lumierecafe',
-        when: '8:00 AM',
-        title: 'Behind the bar: morning prep',
-        reason: 'TikTok needs you to sign in again',
-        thumbnailUrl: null,
-      },
-      {
-        platform: 'linkedin',
-        handle: 'Lumière Café',
-        when: '12:15 PM',
-        title: "We're hiring baristas in DHA",
-        reason: 'Image is larger than LinkedIn allows',
-        thumbnailUrl: null,
-      },
-    ],
-    more: 0,
-    platforms: ['instagram', 'tiktok', 'linkedin'],
-    otherOnTime: 9,
-    plannerUrl: 'http://localhost:3001/w/demo/planner',
-  },
+  fixture: FIXTURE,
   variants: {
+    // Preview only: a loadable picture, so the thumbnail branch is seen.
+    thumbnail: {
+      ...FIXTURE,
+      rows: FIXTURE.rows.map((r) => ({
+        ...r,
+        thumbnailUrl: PREVIEW_THUMBNAIL_URL,
+      })),
+    },
     overflow: {
       count: 15,
       rows: Array.from({ length: 10 }, (_, i) => ({

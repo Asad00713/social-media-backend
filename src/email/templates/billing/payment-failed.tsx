@@ -35,16 +35,16 @@ export const PAYMENT_FAILED = defineTemplate<PaymentFailedProps>({
   category: 'billing',
   event: null,
   footer: 'billing',
-  subject: (p) => `Your payment for Schedura ${p.planName} didn't go through`,
+  subject: (p) => `Your payment for Schedura ${p.planName} didn’t go through`,
   preheader: (p) =>
     p.nextTry
-      ? `We'll try again on ${p.nextTry}. Update your card to keep ${p.planName}.`
+      ? `We’ll try again on ${p.nextTry}. Update your card to keep ${p.planName}.`
       : `Update your card to keep ${p.planName}.`,
   Body: (p) => (
     <>
-      <Heading>Your payment didn&apos;t go through</Heading>
+      <Heading>Your payment didn’t go through</Heading>
       <Paragraph>
-        {`We couldn't charge your card for Schedura ${p.planName}.${
+        {`We couldn’t charge your card for Schedura ${p.planName}.${
           p.reason ? ` Your bank said: ${p.reason}` : ''
         }`}
       </Paragraph>

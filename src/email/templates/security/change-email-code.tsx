@@ -29,7 +29,7 @@ export const changeEmailCodeTemplate = defineTemplate<ChangeEmailCodeProps>({
       </Paragraph>
       <CodeBox code={p.code} />
       <Paragraph tone="muted">
-        The code expires in 10 minutes. If you didn't ask for this, ignore this
+        The code expires in 10 minutes. If you didn’t ask for this, ignore this
         email; nothing changes.
       </Paragraph>
     </>

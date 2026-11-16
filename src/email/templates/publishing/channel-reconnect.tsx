@@ -113,7 +113,7 @@ function stakes(p: ChannelReconnectProps) {
   }
   return (
     <Callout tone="warning">
-      {`${scheduledPosts(p.waiting)} won't publish until you reconnect.${p.nextWhen ? ` The next one is ${p.nextWhen}.` : ''}`}
+      {`${scheduledPosts(p.waiting)} won’t publish until you reconnect.${p.nextWhen ? ` The next one is ${p.nextWhen}.` : ''}`}
     </Callout>
   );
 }
@@ -152,7 +152,7 @@ export const channelReconnect = defineTemplate<ChannelReconnectProps>({
       <ChannelCard {...p} />
       {p.kind === 'expired' ? (
         <Paragraph>
-          {`${p.platformName} ended Schedura's access. This usually happens after a password change, or when ${COMPANY[p.platform] ?? p.platformName} asks you to confirm your account.`}
+          {`${p.platformName} ended Schedura’s access. This usually happens after a password change, or when ${COMPANY[p.platform] ?? p.platformName} asks you to confirm your account.`}
         </Paragraph>
       ) : null}
       {stakes(p)}

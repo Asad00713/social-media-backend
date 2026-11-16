@@ -30,8 +30,7 @@ export const adminLoginCodeTemplate = defineTemplate<AdminLoginCodeProps>({
         }`}
       </Paragraph>
       <Paragraph tone="muted">
-        If you didn&apos;t try to sign in, someone has your password. Change it
-        now.
+        If you didn’t try to sign in, someone has your password. Change it now.
       </Paragraph>
     </>
   ),

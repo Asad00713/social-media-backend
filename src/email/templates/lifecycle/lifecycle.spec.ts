@@ -94,7 +94,7 @@ describe('lifecycle templates', () => {
       expect(inactiveReminder.event).toBe('inactivity_reminder');
       expect(inactiveReminder.footer).toBe('plain');
       expect(inactiveReminder.footerReason?.(props)).toBe(
-        "You get this because you haven't signed in for 15 days.",
+        'You get this because you haven’t signed in for 15 days.',
       );
       expect(NOTIFICATION_EVENTS.inactivity_reminder.email?.locked).toBe(false);
     });
@@ -157,7 +157,7 @@ describe('lifecycle templates', () => {
       );
       expect(r.html).toContain('Your account will be paused on Nov 2');
       expect(r.html).toContain(
-        'You haven&#x27;t signed in for 25 days. To keep your account active, sign in before Nov 2.',
+        'You haven’t signed in for 25 days. To keep your account active, sign in before Nov 2.',
       );
       expect(r.html).toContain(
         'While paused, scheduled posts stop publishing. Nothing is deleted.',
@@ -174,7 +174,7 @@ describe('lifecycle templates', () => {
       );
       expect(r.html).toContain('Posts, drafts, media and channels');
       expect(r.html).toContain('Nov 2, 2026');
-      expect(r.html).toContain('Nov 2, 2027, if you don&#x27;t come back');
+      expect(r.html).toContain('Nov 2, 2027, if you don’t come back');
       expect(r.html).toContain('Sign in to reactivate');
       expect(r.html).toContain('Questions? Write to support@schedura.ai.');
     });
@@ -190,9 +190,7 @@ describe('lifecycle templates', () => {
         'Sign in before then to keep your workspace and posts.',
       );
       expect(r.html).toContain('Your account will be deleted on Dec 1');
-      expect(r.html).toContain(
-        'On Dec 1, 2026 we&#x27;ll permanently delete it.',
-      );
+      expect(r.html).toContain('On Dec 1, 2026 we’ll permanently delete it.');
       expect(r.html).toContain(
         'This deletes your workspace, posts, drafts, media and analytics.',
       );

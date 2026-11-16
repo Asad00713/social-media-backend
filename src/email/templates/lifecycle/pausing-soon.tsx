@@ -21,7 +21,7 @@ export const pausingSoon = defineTemplate<PausingSoonProps>({
     <>
       <Heading>{`Your account will be paused on ${p.pauseDate}`}</Heading>
       <Paragraph>
-        {`You haven't signed in for 25 days. To keep your account active, sign in before ${p.pauseDate}.`}
+        {`You haven’t signed in for 25 days. To keep your account active, sign in before ${p.pauseDate}.`}
       </Paragraph>
       <Callout tone="warning">
         While paused, scheduled posts stop publishing. Nothing is deleted.
