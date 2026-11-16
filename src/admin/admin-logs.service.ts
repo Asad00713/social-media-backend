@@ -1,8 +1,9 @@
-import { Inject, Injectable } from '@nestjs/common';
+import { BadRequestException, Inject, Injectable } from '@nestjs/common';
 import { and, desc, eq, gte, ilike, lt, or, sql, type SQL } from 'drizzle-orm';
 import type { DbType } from '../drizzle/db';
 import { DRIZZLE } from '../drizzle/drizzle.module';
 import { errorLogs, type ErrorLog, type LogLevel } from '../drizzle/schema';
+import { isWellFormedRequestId } from '../logs/request-context';
 
 const PAGE_SIZE = 50;
 
@@ -47,6 +48,8 @@ export class AdminLogsService {
     search?: string;
     since?: string;
     cursor?: string;
+    /** An X-Request-Id a user copied from an error toast ("Copy error ID"). */
+    requestId?: string;
   }): Promise<{ items: ErrorLog[]; nextCursor: string | null }> {
     const conditions: SQL[] = [];
     const keyset = this.keysetBefore(opts.cursor);
@@ -57,6 +60,14 @@ export class AdminLogsService {
       conditions.push(ilike(errorLogs.message, `%${opts.search.trim()}%`));
     if (opts.since)
       conditions.push(gte(errorLogs.createdAt, new Date(opts.since)));
+    const requestId = opts.requestId?.trim();
+    if (requestId) {
+      // Pasted by hand: refuse what can't be an id instead of an empty page
+      // that reads as "no such error".
+      if (!isWellFormedRequestId(requestId))
+        throw new BadRequestException('That is not an error ID.');
+      conditions.push(eq(errorLogs.requestId, requestId));
+    }
 
     const rows = await this.db
       .select()
