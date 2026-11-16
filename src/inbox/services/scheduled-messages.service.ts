@@ -9,6 +9,7 @@ import {
 import { InjectQueue } from '@nestjs/bullmq';
 import { Queue } from 'bullmq';
 import { and, eq, gte, inArray, lte } from 'drizzle-orm';
+import { restoreDeadline } from '../../channels/lib/disconnect-policy';
 import { db } from '../../drizzle/db';
 import {
   scheduledInboxMessages,
@@ -1252,6 +1253,26 @@ export class ScheduledMessagesService {
   }
 
   /** Between BullMQ retries — keep the row claimable by the next attempt. */
+  /**
+   * When a message's channel is disconnected but the disconnect can still be
+   * undone: until when to wait (the window's end plus a minute) before
+   * sending. Null otherwise - a live channel sends, a finalized one fails.
+   */
+  async undoWaitUntil(channelId: number): Promise<Date | null> {
+    const [row] = await db
+      .select({
+        connectionStatus: socialMediaChannels.connectionStatus,
+        disconnectedAt: socialMediaChannels.disconnectedAt,
+        disconnectFinalizedAt: socialMediaChannels.disconnectFinalizedAt,
+      })
+      .from(socialMediaChannels)
+      .where(eq(socialMediaChannels.id, channelId))
+      .limit(1);
+    if (!row || row.connectionStatus !== 'disconnected') return null;
+    const until = restoreDeadline(row);
+    return until ? new Date(until.getTime() + 60_000) : null;
+  }
+
   async resetToPendingForRetry(id: string, lastError: string): Promise<void> {
     const attempts = (await this.bumpAttempts(id)) ?? 0;
     await db

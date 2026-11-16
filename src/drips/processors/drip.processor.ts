@@ -1,7 +1,8 @@
 import { Processor, WorkerHost, OnWorkerEvent } from '@nestjs/bullmq';
 import { Injectable, Logger } from '@nestjs/common';
 import { Job } from 'bullmq';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
+import { liveChannel } from '../../channels/lib/live-channel';
 import { db } from '../../drizzle/db';
 import { withRetry } from '../../drizzle/db-utils';
 import {
@@ -149,7 +150,13 @@ export class DripProcessor extends WorkerHost {
       db
         .select()
         .from(socialMediaChannels)
-        .where(eq(socialMediaChannels.workspaceId, campaign.workspaceId)),
+        .where(
+          and(
+            eq(socialMediaChannels.workspaceId, campaign.workspaceId),
+            // A disconnected channel gets no new content (no AI spend).
+            liveChannel(),
+          ),
+        ),
     );
 
     const targetPlatforms = channels
@@ -410,7 +417,13 @@ export class DripProcessor extends WorkerHost {
     const channels = await db
       .select()
       .from(socialMediaChannels)
-      .where(eq(socialMediaChannels.workspaceId, campaign.workspaceId));
+      .where(
+        and(
+          eq(socialMediaChannels.workspaceId, campaign.workspaceId),
+          // A disconnected channel gets no new post.
+          liveChannel(),
+        ),
+      );
 
     const targetChannels = channels.filter((c) =>
       targetChannelIds.includes(String(c.id)),

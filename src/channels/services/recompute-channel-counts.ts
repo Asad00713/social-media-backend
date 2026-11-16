@@ -16,6 +16,7 @@ export function buildRecomputeSql(): string {
       SELECT workspace_id, count(*) AS cnt
       FROM social_media_channels
       WHERE category <> 'integration'
+        AND connection_status <> 'disconnected'
       GROUP BY workspace_id
     ) sub ON sub.workspace_id = all_ws.workspace_id
     WHERE wu.workspace_id = all_ws.workspace_id;

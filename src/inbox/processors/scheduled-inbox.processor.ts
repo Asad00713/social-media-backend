@@ -1,6 +1,6 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger, OnModuleInit } from '@nestjs/common';
-import { Job, UnrecoverableError } from 'bullmq';
+import { DelayedError, Job, UnrecoverableError } from 'bullmq';
 import { QUEUES } from '../../queue/queue.module';
 import { ScheduledMessagesService } from '../services/scheduled-messages.service';
 import { InboxService, UNRECORDED_SEND_ID } from '../inbox.service';
@@ -53,7 +53,10 @@ export class ScheduledInboxProcessor
     );
   }
 
-  async process(job: Job<ScheduledInboxFireJob>): Promise<{ ok: boolean }> {
+  async process(
+    job: Job<ScheduledInboxFireJob>,
+    token?: string,
+  ): Promise<{ ok: boolean }> {
     this.logger.log(
       `→ Processing job ${job.id} (name=${job.name}, attempt=${job.attemptsMade + 1}, delay-ms-overdue=${Date.now() - (job.timestamp + (job.opts.delay ?? 0))})`,
     );
@@ -71,6 +74,20 @@ export class ScheduledInboxProcessor
     this.logger.log(
       `Claimed scheduled ${scheduledId} (type=${claimed.type}, channel=${claimed.channelId}, thread=${claimed.threadKey}) — dispatching now.`,
     );
+
+    // Its channel was just disconnected and may come back (Undo): wait for
+    // the window instead of failing for good. Not an attempt.
+    const waitUntil = await this.scheduledService.undoWaitUntil(
+      claimed.channelId,
+    );
+    if (waitUntil && token) {
+      await this.scheduledService.resetToPendingForRetry(
+        scheduledId,
+        'Channel disconnected - waiting to see if it is undone',
+      );
+      await job.moveToDelayed(waitUntil.getTime(), token);
+      throw new DelayedError();
+    }
 
     const isFinalAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
 
