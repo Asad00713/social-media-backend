@@ -12,6 +12,7 @@ import { settingsOf } from './lib/report-dto';
 import { NoChannelsLeftError } from './report-payload.service';
 import type { ReportPayloadService } from './report-payload.service';
 import { ReportSendService, type ReportSendJob } from './report-send.service';
+import type { EmailSuppressionRepository } from '../../email/suppression/email-suppression.repository';
 import { ReportTokensService } from './report-tokens.service';
 import type { ReportPayloadDto } from './reports.dto';
 import type { ReportsRepository } from './reports.repository';
@@ -89,6 +90,8 @@ interface Opts {
   gotenberg?: boolean;
   inactive?: boolean;
   config?: Record<string, string | undefined>;
+  /** Addresses on the suppression list (bounced or complained). */
+  suppressed?: string[];
 }
 
 function setup(opts: Opts = {}) {
@@ -167,6 +170,10 @@ function setup(opts: Opts = {}) {
     tokens,
     config as unknown as ConfigService,
     new AppLinks(config as unknown as ConfigService),
+    {
+      isSuppressed: (to: string) =>
+        Promise.resolve((opts.suppressed ?? []).includes(to.toLowerCase())),
+    } as unknown as EmailSuppressionRepository,
   );
   const pause = jest
     .spyOn(
@@ -248,6 +255,19 @@ describe('ReportSendService.run: guards', () => {
       undefined,
       undefined,
     );
+  });
+
+  it('skips a suppressed recipient (bounced or complained) and logs it, without failing the run', async () => {
+    const warn = jest.spyOn(Logger.prototype, 'warn');
+    const { service, email, repo } = setup({ suppressed: ['a@x.com'] });
+
+    await expect(service.run(job(SCHEDULED), NOW)).resolves.toBe('sent');
+
+    expect(sentTo(email)).toEqual(['b@y.com']);
+    expect(repo.recordSent).toHaveBeenCalledTimes(1);
+    const lines = warn.mock.calls.map((c) => String(c[0])).join(' ');
+    expect(lines).toContain('suppressed');
+    expect(lines).not.toContain('a@x.com');
   });
 
   it('skips an opted-out recipient at send time', async () => {

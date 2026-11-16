@@ -39,11 +39,13 @@ jest.mock('../../drizzle/db', () => ({ db: mockDb }));
 
 import type { DeliverOptions, EmailService } from '../../email/email.service';
 import { AppLinks } from '../../email/links/app-links';
+import type { EmailSuppressionRepository } from '../../email/suppression/email-suppression.repository';
 import { LeadRouterService } from './lead-router.service';
 
 type Msg = { to: string; subject: string; html: string; text?: string };
 
-function setup() {
+function setup(suppressed = false) {
+  const isSuppressed = jest.fn(() => Promise.resolve(suppressed));
   const deliver = jest.fn<
     Promise<{ success: boolean; error?: string }>,
     [Msg, DeliverOptions]
@@ -52,8 +54,9 @@ function setup() {
   const service = new LeadRouterService(
     { deliver } as unknown as EmailService,
     new AppLinks(config),
+    { isSuppressed } as unknown as EmailSuppressionRepository,
   );
-  return { service, deliver };
+  return { service, deliver, isSuppressed };
 }
 
 const ROUTE = { to: 'owner@lumierecafe.pk' };
@@ -67,6 +70,24 @@ beforeEach(() => {
 afterEach(() => jest.restoreAllMocks());
 
 describe('LeadRouterService email route', () => {
+  it('skips a suppressed recipient: no send, a failed attempt recorded, logged, no retry', async () => {
+    const warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+    const { service, deliver, isSuppressed } = setup(true);
+
+    await expect(
+      service.deliver('lead-1', 'route-1', 'email', ROUTE),
+    ).resolves.toBeUndefined();
+
+    expect(isSuppressed).toHaveBeenCalledWith('owner@lumierecafe.pk');
+    expect(deliver).not.toHaveBeenCalled();
+    expect(updates.at(-1)).toMatchObject({ deliveryStatus: 'failed' });
+    const lines = warn.mock.calls.map((c) => String(c[0])).join(' ');
+    expect(lines).toContain('suppressed');
+    expect(lines).not.toContain('owner@lumierecafe.pk');
+  });
+
   it('sends the lead-delivered email through deliver, tagged for leads', async () => {
     const { service, deliver } = setup();
     await service.deliver('lead-1', 'route-1', 'email', ROUTE);

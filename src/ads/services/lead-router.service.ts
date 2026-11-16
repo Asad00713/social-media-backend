@@ -6,6 +6,7 @@ import { EmailService } from '../../email/email.service';
 import { AppLinks } from '../../email/links/app-links';
 import { formatWhen } from '../../email/links/format-when';
 import { renderEmail } from '../../email/render/render-email';
+import { EmailSuppressionRepository } from '../../email/suppression/email-suppression.repository';
 import {
   leadDelivered,
   leadFooterReason,
@@ -48,6 +49,7 @@ export class LeadRouterService {
   constructor(
     private readonly email: EmailService,
     private readonly links: AppLinks,
+    private readonly suppressions: EmailSuppressionRepository,
   ) {}
 
   async deliver(
@@ -162,6 +164,19 @@ export class LeadRouterService {
     const to = config?.to;
     if (!to) {
       throw new Error('Email route config missing "to" address');
+    }
+    // An address that bounced or complained gets nothing more, as in the
+    // outbox. Recorded as a failed attempt, not thrown: no retry can fix it.
+    if (await this.suppressions.isSuppressed(to)) {
+      this.logger.warn(
+        `LeadRouterService: lead=${payload.id} route=${routeId} email skipped, the recipient is suppressed`,
+      );
+      return {
+        type: 'email',
+        status: 'failed',
+        at: new Date().toISOString(),
+        error: 'Recipient address is suppressed (bounced or complained)',
+      };
     }
 
     const props: LeadDeliveredProps = {

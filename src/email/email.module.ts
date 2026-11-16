@@ -47,6 +47,7 @@ import { ResendWebhookController } from './webhooks/resend-webhook.controller';
     AppLinks,
     EmailOnceService,
     EmailTokensService,
+    EmailSuppressionRepository,
     PostFailureBatchService,
   ],
 })
