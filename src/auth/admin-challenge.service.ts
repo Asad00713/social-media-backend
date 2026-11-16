@@ -144,7 +144,8 @@ export class AdminChallengeService {
     });
     if (!result.success) {
       this.logger.error(
-        `Admin login code email for user ${user.id} failed: ${result.error ?? 'unknown error'}`,
+        // The code only: a provider message can quote the recipient address.
+        `Admin login code email for user ${user.id} failed: ${result.errorCode ?? (result.retryable ? 'retryable' : 'failed')}`,
       );
     }
 

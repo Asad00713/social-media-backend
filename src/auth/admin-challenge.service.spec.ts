@@ -98,18 +98,22 @@ describe('AdminChallengeService.requestChallenge', () => {
     expect(sent.props.ip).toBeNull();
   });
 
-  it('answers the same way and logs the failure, never the code, when the send fails', async () => {
+  it('answers the same way and logs the failure code, never the code or the provider message, when the send fails', async () => {
     const { service } = make({
-      sendNow: jest
-        .fn()
-        .mockResolvedValue({ success: false, error: 'Resend is down' }),
+      sendNow: jest.fn().mockResolvedValue({
+        success: false,
+        // Providers quote the recipient in their messages.
+        error: `Invalid \`to\` field: ${ADMIN.email}`,
+        errorCode: 'validation_error',
+      }),
     });
 
     await expect(
       service.requestChallenge(ADMIN.email),
     ).resolves.toBeUndefined();
 
-    expect(logged.join('\n')).toContain('Resend is down');
+    expect(logged.join('\n')).toContain('validation_error');
+    expect(logged.join('\n')).not.toContain(ADMIN.email);
     expect(logged.join('\n')).not.toMatch(/\b\d{6}\b/);
   });
 

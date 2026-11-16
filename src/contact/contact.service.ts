@@ -107,7 +107,7 @@ export class ContactService {
 
     if (!toUs.success) {
       this.logger.error(
-        `Contact form: failed to deliver enquiry #${reference}: ${toUs.error ?? 'unknown error'}`,
+        `Contact form: failed to deliver enquiry #${reference}: ${toUs.errorCode ?? (toUs.retryable ? 'retryable' : 'failed')}`,
       );
       return { delivered: false };
     }

@@ -101,10 +101,12 @@ export class EmailOutboxService {
       }
       return { success: true, messageId: outcome.messageId };
     } catch (err) {
+      const errorCode = (err as { errorCode?: unknown } | null)?.errorCode;
       return {
         success: false,
         error: err instanceof Error ? err.message : String(err),
         retryable: err instanceof RetryableEmailError,
+        ...(typeof errorCode === 'string' ? { errorCode } : {}),
       };
     }
   }
@@ -181,10 +183,16 @@ export class EmailOutboxService {
       return { status: 'sent' };
     }
     if (!result.success) {
-      const reason = `Email ${data.idempotencyKey} (${def.id}) failed: ${result.error ?? 'unknown error'}`;
-      throw result.retryable
-        ? new RetryableEmailError(reason)
-        : new UnrecoverableError(reason);
+      // The code only: the worker logs this at error level (error_logs), and
+      // a provider message can quote the recipient address.
+      const reason = `Email ${data.idempotencyKey} (${def.id}) failed: ${result.errorCode ?? (result.retryable ? 'retryable' : 'failed')}`;
+      // The code rides along, so sendNow callers can log it.
+      throw Object.assign(
+        result.retryable
+          ? new RetryableEmailError(reason)
+          : new UnrecoverableError(reason),
+        { errorCode: result.errorCode },
+      );
     }
     return { status: 'sent', messageId: result.messageId };
   }

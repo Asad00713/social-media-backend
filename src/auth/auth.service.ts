@@ -374,7 +374,8 @@ export class AuthService {
     // background concern to be logged and shrugged off — it has to surface.
     if (!result.success) {
       this.logger.error(
-        `Verification email for user ${userId} failed: ${result.error ?? 'unknown error'}`,
+        // The code only: a provider message can quote the recipient address.
+        `Verification email for user ${userId} failed: ${result.errorCode ?? (result.retryable ? 'retryable' : 'failed')}`,
       );
       throw new InternalServerErrorException({
         statusCode: 500,

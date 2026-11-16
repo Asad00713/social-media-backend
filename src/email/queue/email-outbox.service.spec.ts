@@ -337,7 +337,22 @@ describe('EmailOutboxService.process', () => {
     expect(err).toBeInstanceOf(RetryableEmailError);
     expect(err).toBeInstanceOf(Error);
     expect(err).not.toBeInstanceOf(UnrecoverableError);
-    expect((err as Error).message).toContain('Too many requests');
+    expect((err as Error).message).toContain('retryable');
+  });
+
+  it('the failure reason the worker logs carries the error code, never the provider message', async () => {
+    const { outbox, email } = make();
+    email.deliver.mockResolvedValueOnce({
+      success: false,
+      error: 'Invalid `to` field: victim@example.com',
+      retryable: false,
+      errorCode: 'validation_error',
+    });
+    const err = await outbox.process(job(postFailed)).catch((e: unknown) => e);
+
+    expect(err).toBeInstanceOf(UnrecoverableError);
+    expect((err as Error).message).toContain('validation_error');
+    expect((err as Error).message).not.toContain('@');
   });
 
   it('a BullMQ retry re-sends with the same idempotencyKey', async () => {
@@ -523,11 +538,15 @@ describe('EmailOutboxService.sendNow', () => {
       success: false,
       error: 'Too many requests',
       retryable: true,
+      errorCode: 'rate_limit_exceeded',
     });
     const res = await outbox.sendNow({ ...input, template: passwordChanged });
     expect(res.success).toBe(false);
-    expect(res.error).toContain('Too many requests');
+    expect(res.error).toContain('rate_limit_exceeded');
+    expect(res.error).not.toContain('Too many requests');
     expect(res.retryable).toBe(true);
+    // Callers log the code.
+    expect(res.errorCode).toBe('rate_limit_exceeded');
   });
 
   it('reports a bad key as a failure', async () => {

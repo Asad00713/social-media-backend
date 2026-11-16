@@ -47,6 +47,13 @@ function isRetryable(error: ErrorResponse): boolean {
   );
 }
 
+/** A thrown error's code (`ECONNRESET`) or name, never its message. */
+function errorNameOf(error: unknown): string {
+  if (!(error instanceof Error)) return 'unknown error';
+  const code = (error as { code?: unknown }).code;
+  return typeof code === 'string' ? code : error.name;
+}
+
 @Injectable()
 export class EmailService {
   private readonly logger = new Logger(EmailService.name);
@@ -138,7 +145,9 @@ export class EmailService {
 
       if (result.error) {
         const retryable = isRetryable(result.error);
-        const line = `Failed to send email ${label}: ${result.error.name} ${result.error.message}`;
+        // The code only: a provider message can quote the recipient address,
+        // and error lines persist to error_logs.
+        const line = `Failed to send email ${label}: ${result.error.name}`;
         // A retryable failure is one attempt of several: console only. The
         // worker's final-failure handler records the outcome once.
         if (retryable) this.logger.log(line);
@@ -161,7 +170,7 @@ export class EmailService {
       // means no answer came back: retrying under the same key is safe.
       const errorMessage =
         error instanceof Error ? error.message : 'Unknown error';
-      this.logger.log(`Email send failed ${label}: ${errorMessage}`);
+      this.logger.log(`Email send failed ${label}: ${errorNameOf(error)}`);
       return {
         success: false,
         error: errorMessage,

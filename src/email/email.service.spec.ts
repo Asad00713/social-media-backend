@@ -246,6 +246,34 @@ describe('EmailService.deliver', () => {
     expect(errorSpy).toHaveBeenCalledTimes(1);
   });
 
+  it('logs the Resend error name, never its message (it can quote the address)', async () => {
+    const { service, send } = makeDeliverService();
+    send.mockResolvedValueOnce({
+      data: null,
+      error: {
+        name: 'validation_error',
+        message: 'Invalid `to` field: victim@example.com',
+        statusCode: 422,
+      },
+    });
+    send.mockRejectedValueOnce(
+      Object.assign(new Error('connect ECONNREFUSED for victim@example.com'), {
+        code: 'ECONNREFUSED',
+      }),
+    );
+
+    await service.deliver(msg, opts);
+    await service.deliver(msg, opts);
+
+    const lines = [...logSpy.mock.calls, ...errorSpy.mock.calls]
+      .flat()
+      .map(String)
+      .join(' | ');
+    expect(lines).toContain('validation_error');
+    expect(lines).toContain('ECONNREFUSED');
+    expect(lines).not.toContain('victim@example.com');
+  });
+
   it('never logs the address, subject or body', async () => {
     const secret = {
       ...msg,
