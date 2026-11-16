@@ -144,6 +144,7 @@ function harness(
     new EmailFooterService(links, {} as never, {} as never),
     links,
     {} as never,
+    {} as never,
   );
   const recipients = {
     user: jest.fn().mockResolvedValue({

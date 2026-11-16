@@ -1,4 +1,5 @@
 import type { ReactElement } from 'react';
+import type { DbType } from '../../drizzle/db';
 import type { AppLinks } from '../links/app-links';
 import type { TemplateId } from './template-ids';
 
@@ -34,6 +35,11 @@ export interface FooterContext {
   links: FooterLink[];
 }
 
+/** What a template's `stillApplies` guard may read. */
+export interface TemplateGuardDeps {
+  db: DbType;
+}
+
 export interface EmailTemplateDef<P> {
   id: TemplateId;
   category: EmailCategory;
@@ -55,6 +61,13 @@ export interface EmailTemplateDef<P> {
    */
   extraFooterLinks?: FooterLink[] | ((links: AppLinks) => FooterLink[]);
   Body(p: P): ReactElement;
+  /**
+   * Send-time guard for mail that can go stale while its job waits (B3 waits
+   * out the removal undo window). The worker checks it after the preference
+   * and suppression checks and before rendering: false skips the send, and so
+   * does a guard that throws.
+   */
+  stillApplies?(p: P, deps: TemplateGuardDeps): Promise<boolean>;
   /** Figma placeholder data, used by the preview and the contract spec. */
   fixture: P;
   /** Extra previews (D3 kinds, C2 kinds, A5 via). */

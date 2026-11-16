@@ -215,6 +215,57 @@ describe('team templates', () => {
       expect(r.html).toContain(NASTY_ESCAPED);
       expect(r.html).not.toContain('<B>');
     });
+
+    describe('stillApplies: sent only for the removal it announces', () => {
+      const REMOVED_AT = props.removedAtMs;
+
+      function guardDb(
+        row: { status: string; removedAt: Date | null } | undefined,
+      ) {
+        const findFirst = jest.fn().mockResolvedValue(row);
+        return {
+          findFirst,
+          deps: {
+            db: { query: { workspaceInvitation: { findFirst } } } as never,
+          },
+        };
+      }
+
+      it('sends while the row is still REMOVED by that same removal', async () => {
+        const { deps, findFirst } = guardDb({
+          status: 'REMOVED',
+          removedAt: new Date(REMOVED_AT),
+        });
+        await expect(
+          removedFromWorkspace.stillApplies?.(props, deps),
+        ).resolves.toBe(true);
+        expect(findFirst).toHaveBeenCalledTimes(1);
+      });
+
+      it('skips a member restored inside the undo window', async () => {
+        const { deps } = guardDb({ status: 'ACCEPTED', removedAt: null });
+        await expect(
+          removedFromWorkspace.stillApplies?.(props, deps),
+        ).resolves.toBe(false);
+      });
+
+      it('skips when they were restored and removed again: a later removal sends its own', async () => {
+        const { deps } = guardDb({
+          status: 'REMOVED',
+          removedAt: new Date(REMOVED_AT + 60_000),
+        });
+        await expect(
+          removedFromWorkspace.stillApplies?.(props, deps),
+        ).resolves.toBe(false);
+      });
+
+      it('skips a row that no longer exists', async () => {
+        const { deps } = guardDb(undefined);
+        await expect(
+          removedFromWorkspace.stillApplies?.(props, deps),
+        ).resolves.toBe(false);
+      });
+    });
   });
 
   describe('channel-connect-link', () => {

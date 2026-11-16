@@ -9,8 +9,14 @@ import type { EmailResult, EmailService } from '../email.service';
 import { AppLinks } from '../links/app-links';
 import type { EmailSuppressionRepository } from '../suppression/email-suppression.repository';
 import { defineTemplate } from '../templates/define-template';
+import { removedFromWorkspace } from '../templates/team/removed-from-workspace';
 import { EmailTokensService } from '../tokens/email-tokens.service';
-import type { AnyTemplateDef, EmailTemplateDef } from '../templates/types';
+import type {
+  AnyTemplateDef,
+  EmailTemplateDef,
+  TemplateGuardDeps,
+} from '../templates/types';
+import type { DbType } from '../../drizzle/db';
 import type { EmailFooterService } from './email-footer.service';
 import {
   EMAIL_JOB_SEND,
@@ -120,6 +126,40 @@ const planChanged = register(
   }),
 );
 
+const stillApplies = jest.fn<Promise<boolean>, [Props, TemplateGuardDeps]>();
+const guardedBody = jest.fn((p: Props) => createElement('p', null, p.title));
+const guarded = register(
+  defineTemplate<Props>({
+    id: 'invitation-accepted',
+    category: 'team',
+    event: null,
+    footer: 'plain',
+    footerReason: () => 'Your team changed.',
+    subject: () => 'Accepted',
+    preheader: () => 'They joined.',
+    stillApplies,
+    Body: guardedBody,
+    fixture: { title: 'T' },
+  }),
+);
+// Lifecycle mail is suppressible, so it shows where the guard runs.
+const guardedLifecycle = register(
+  defineTemplate<Props>({
+    id: 'pausing-soon',
+    category: 'lifecycle',
+    event: null,
+    footer: 'plain',
+    footerReason: () => 'You signed up.',
+    subject: () => 'Welcome back',
+    preheader: () => 'Pick up where you left off.',
+    stillApplies,
+    Body: guardedBody,
+    fixture: { title: 'T' },
+  }),
+);
+// The real B3 def, guard included: the worker side of the removal undo.
+register(removedFromWorkspace);
+
 const SECRET = 'outbox-spec-secret';
 const USER = '5d0b6f0e-1111-4222-8333-944455556666';
 const WS = '11111111-1111-4111-8111-111111111111';
@@ -143,6 +183,17 @@ function make() {
   const links = new AppLinks({
     get: (_key: string, d?: string) => d,
   } as unknown as ConfigService);
+  // Only a template's stillApplies guard reads it (B3 reads the member row).
+  const db = {
+    query: {
+      workspaceInvitation: {
+        findFirst: jest.fn<
+          Promise<{ status: string; removedAt: Date | null } | undefined>,
+          [unknown]
+        >(() => Promise.resolve(undefined)),
+      },
+    },
+  };
   const tokens = new EmailTokensService(new JwtService({}), {
     get: (k: string) => (k === 'JWT_ACCESS_SECRET' ? SECRET : undefined),
   } as unknown as ConfigService);
@@ -154,8 +205,9 @@ function make() {
     footer as unknown as EmailFooterService,
     links,
     tokens,
+    db as unknown as DbType,
   );
-  return { outbox, queue, email, prefs, suppressions, footer, tokens };
+  return { outbox, queue, email, prefs, suppressions, footer, tokens, db };
 }
 
 const input: EnqueueEmail<Props> = {
@@ -482,6 +534,116 @@ describe('EmailOutboxService.process', () => {
     await expect(
       outbox.process({ ...job(postFailed), template: 'nope' as never }),
     ).rejects.toBeInstanceOf(UnrecoverableError);
+  });
+});
+
+describe('EmailOutboxService send-time guard (stillApplies)', () => {
+  let warn: jest.SpyInstance;
+  beforeEach(() => {
+    stillApplies.mockReset();
+    guardedBody.mockClear();
+    warn = jest
+      .spyOn(Logger.prototype, 'warn')
+      .mockImplementation(() => undefined);
+  });
+  afterEach(() => warn.mockRestore());
+
+  it('sends when the guard says the mail still applies, and hands it the props and the db', async () => {
+    const { outbox, email, db } = make();
+    stillApplies.mockResolvedValue(true);
+    await expect(outbox.process(job(guarded))).resolves.toBe('sent');
+    expect(stillApplies).toHaveBeenCalledWith({ title: 'Launch' }, { db });
+    expect(email.deliver).toHaveBeenCalledTimes(1);
+  });
+
+  it('skips without rendering when the guard says it no longer applies, and logs the skip', async () => {
+    const { outbox, email, footer } = make();
+    stillApplies.mockResolvedValue(false);
+    await expect(outbox.process(job(guarded))).resolves.toBe('skipped:stale');
+    expect(guardedBody).not.toHaveBeenCalled();
+    expect(footer.build).not.toHaveBeenCalled();
+    expect(email.deliver).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      expect.stringContaining('invitation-accepted.k1'),
+    );
+  });
+
+  it('fails closed: a guard that throws skips the send and logs a warning', async () => {
+    const { outbox, email } = make();
+    stillApplies.mockRejectedValue(new Error('db down'));
+    await expect(outbox.process(job(guarded))).resolves.toBe('skipped:stale');
+    expect(email.deliver).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('db down'));
+  });
+
+  it('runs after the preference and suppression checks: a suppressed recipient never reaches the guard', async () => {
+    const { outbox, suppressions } = make();
+    suppressions.isSuppressed.mockResolvedValue(true);
+    await expect(outbox.process(job(guardedLifecycle))).resolves.toBe(
+      'skipped:suppressed',
+    );
+    expect(stillApplies).not.toHaveBeenCalled();
+  });
+
+  it('sendNow reports a stale send as not sent', async () => {
+    const { outbox } = make();
+    stillApplies.mockResolvedValue(false);
+    await expect(
+      outbox.sendNow({ ...input, template: guarded }),
+    ).resolves.toEqual({ success: false, error: 'Not sent: skipped:stale' });
+  });
+
+  describe('B3 after the undo window', () => {
+    const removal = removedFromWorkspace.fixture;
+    const b3 = job(removedFromWorkspace, {
+      props: removal,
+      idempotencyKey: `member-removed.${removal.membershipId}.${removal.removedAtMs}`,
+    });
+
+    it('a member still removed gets the email', async () => {
+      const { outbox, email, db } = make();
+      db.query.workspaceInvitation.findFirst.mockResolvedValue({
+        status: 'REMOVED',
+        removedAt: new Date(removal.removedAtMs),
+      });
+      await expect(outbox.process(b3)).resolves.toBe('sent');
+      expect(email.deliver).toHaveBeenCalledTimes(1);
+      expect(email.deliver.mock.calls[0][0].subject).toBe(
+        'You no longer have access to Rehman Workspace',
+      );
+    });
+
+    it('a member restored inside the window gets nothing', async () => {
+      const { outbox, email, db } = make();
+      db.query.workspaceInvitation.findFirst.mockResolvedValue({
+        status: 'ACCEPTED',
+        removedAt: null,
+      });
+      await expect(outbox.process(b3)).resolves.toBe('skipped:stale');
+      expect(email.deliver).not.toHaveBeenCalled();
+    });
+
+    it('a member restored then removed again gets nothing for the first removal', async () => {
+      const { outbox, email, db } = make();
+      db.query.workspaceInvitation.findFirst.mockResolvedValue({
+        status: 'REMOVED',
+        removedAt: new Date(removal.removedAtMs + 5 * 60_000),
+      });
+      await expect(outbox.process(b3)).resolves.toBe('skipped:stale');
+      expect(email.deliver).not.toHaveBeenCalled();
+    });
+
+    it('a DB read that throws skips the send (fail closed) and logs it', async () => {
+      const { outbox, email, db } = make();
+      db.query.workspaceInvitation.findFirst.mockRejectedValue(
+        new Error('connection reset'),
+      );
+      await expect(outbox.process(b3)).resolves.toBe('skipped:stale');
+      expect(email.deliver).not.toHaveBeenCalled();
+      expect(warn).toHaveBeenCalledWith(
+        expect.stringContaining('connection reset'),
+      );
+    });
   });
 });
 

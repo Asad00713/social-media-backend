@@ -133,6 +133,7 @@ function setup(
     {} as any,
     { assetBase: () => 'https://app.test/email' } as any,
     {} as any,
+    {} as any,
   );
   const notify = new NotifyService(prefs as any, outbox, recipients as any);
   const bell = {

@@ -12,7 +12,11 @@ import type {
   NotifyService,
 } from 'src/notifications/notify.service';
 import { RecipientsService } from 'src/notifications/recipients.service';
-import { WorkspaceMembersService } from './workspace-members.service';
+import {
+  MEMBER_REMOVED_EMAIL_DELAY_MS,
+  MEMBER_RESTORE_WINDOW_MS,
+  WorkspaceMembersService,
+} from './workspace-members.service';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -574,7 +578,7 @@ describe('WorkspaceMembersService.removeMember email (B3)', () => {
     decrementMemberCount: jest.fn().mockResolvedValue(undefined),
   };
 
-  it('tells a removed member with a bell and the B3 email', async () => {
+  it('rings the bell now and queues B3 for after the undo window', async () => {
     const mail = makeMail();
     await build(
       removeDb({ userId: 'user-1' }),
@@ -590,16 +594,21 @@ describe('WorkspaceMembersService.removeMember email (B3)', () => {
     expect(input.workspaceId).toBe('ws1');
     expect(input.event).toBeNull();
     expect(input.email?.template.id).toBe('removed-from-workspace');
-    expect(input.email?.idempotencyKey).toMatch(
-      /^member-removed\.m1\.\d+$/,
-    );
+    const key = input.email?.idempotencyKey ?? '';
+    expect(key).toMatch(/^member-removed\.m1\.\d+$/);
+    // The undo window plus a 30 s margin, built from the window constant.
+    expect(input.email?.delayMs).toBe(MEMBER_RESTORE_WINDOW_MS + 30_000);
+    expect(MEMBER_REMOVED_EMAIL_DELAY_MS).toBe(15 * 60 * 1000 + 30_000);
     const { removedOn, ...rest } = input.email?.props as {
       removedOn: string;
     };
+    // The send-time guard checks the key's removal: same row, same instant.
     expect(rest).toEqual({
       workspaceName: 'Rehman Workspace',
       removedByName: 'M Rehman',
       openUrl: 'http://localhost:3001/',
+      membershipId: 'm1',
+      removedAtMs: Number(key.split('.')[2]),
     });
     expect(removedOn).toMatch(/^[A-Z][a-z]{2} \d{1,2}, \d{4}$/);
     await input.bell?.();

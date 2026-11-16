@@ -44,6 +44,13 @@ const DAY_MS = 24 * 60 * 60 * 1000;
  */
 export const MEMBER_RESTORE_WINDOW_MS = 15 * 60 * 1000;
 
+/**
+ * B3 waits out the undo window, plus a margin so an Undo pressed in its last
+ * second still lands first. At send time the template checks the row is
+ * still REMOVED by this removal (removedFromWorkspace.stillApplies).
+ */
+export const MEMBER_REMOVED_EMAIL_DELAY_MS = MEMBER_RESTORE_WINDOW_MS + 30_000;
+
 const RESTORE_WINDOW_MESSAGE =
   'A removal can only be undone within 15 minutes. Invite them again instead.';
 
@@ -839,9 +846,10 @@ export class WorkspaceMembersService {
    * deleted and returned in `droppedInvitations`: the restored membership
    * replaces it.
    *
-   * A removal by someone else told the removed person (bell and the B3
-   * "removed from workspace" email); a restore sends nothing back, they
-   * simply have access again.
+   * A removal by someone else rings the removed person's bell at once and
+   * queues the B3 "removed from workspace" email for after this window; a
+   * restore drops that email (its send-time check finds the row ACCEPTED) and
+   * sends nothing back, they simply have access again.
    */
   async restoreMember(
     workspaceId: string,
@@ -1174,7 +1182,10 @@ export class WorkspaceMembersService {
     }
   }
 
-  /** B3 and its bell, to the member who was removed. Never throws. */
+  /**
+   * The bell now and B3 after the undo window, to the member who was removed.
+   * Never throws.
+   */
   private async notifyMemberRemoved(
     workspaceData: {
       id: string;
@@ -1211,7 +1222,10 @@ export class WorkspaceMembersService {
               workspaceData.timezone || 'UTC',
             ),
             openUrl: this.links.frontend('/'),
+            membershipId: removal.id,
+            removedAtMs: removal.removedAt.getTime(),
           },
+          delayMs: MEMBER_REMOVED_EMAIL_DELAY_MS,
           // One per removal: the row and the moment it was marked REMOVED.
           idempotencyKey: `member-removed.${removal.id}.${removal.removedAt.getTime()}`,
         },

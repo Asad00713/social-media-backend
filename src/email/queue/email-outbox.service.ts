@@ -1,6 +1,8 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { Injectable, Logger } from '@nestjs/common';
+import { Inject, Injectable, Logger } from '@nestjs/common';
 import { Queue, UnrecoverableError } from 'bullmq';
+import type { DbType } from '../../drizzle/db';
+import { DRIZZLE } from '../../drizzle/drizzle.module';
 import {
   NOTIFICATION_EVENTS,
   type PreferenceEventKey,
@@ -27,9 +29,11 @@ import {
   type EnqueueEmail,
 } from './email-job';
 
+type SkipStatus = 'skipped:pref' | 'skipped:suppressed' | 'skipped:stale';
+
 type SendOutcome =
   | { status: 'sent'; messageId?: string }
-  | { status: 'skipped:pref' | 'skipped:suppressed' };
+  | { status: SkipStatus };
 
 /**
  * BullMQ's connection retries for 10-20 s while Redis is unreachable, and
@@ -82,6 +86,7 @@ export class EmailOutboxService {
     private readonly footer: EmailFooterService,
     private readonly links: AppLinks,
     private readonly tokens: EmailTokensService,
+    @Inject(DRIZZLE) private readonly db: DbType,
   ) {}
 
   /**
@@ -148,7 +153,7 @@ export class EmailOutboxService {
   async process(
     data: EmailJobData,
     attemptsMade = 0,
-  ): Promise<'sent' | 'skipped:pref' | 'skipped:suppressed'> {
+  ): Promise<'sent' | SkipStatus> {
     return (await this.send(data, attemptsMade)).status;
   }
 
@@ -178,6 +183,10 @@ export class EmailOutboxService {
       def.footer === 'notification' || def.category === 'lifecycle';
     if (toggleable && (await this.suppressions.isSuppressed(to.email))) {
       return { status: 'skipped:suppressed' };
+    }
+
+    if (def.stillApplies && !(await this.stillApplies(def, data))) {
+      return { status: 'skipped:stale' };
     }
 
     const footer = await this.footer.build(def, props, to, workspaceId);
@@ -257,6 +266,28 @@ export class EmailOutboxService {
         'List-Unsubscribe-Post': 'List-Unsubscribe=One-Click',
       },
     };
+  }
+
+  /**
+   * The template's send-time guard. Fails closed: a guard that throws skips
+   * the send, since only stale-prone notices carry one and none of them is
+   * worth sending on a guess. Logs by key and template, never the address.
+   */
+  private async stillApplies(
+    def: AnyTemplateDef,
+    data: EmailJobData,
+  ): Promise<boolean> {
+    try {
+      if (await def.stillApplies?.(data.props, { db: this.db })) return true;
+      this.logger.log(
+        `Email ${data.idempotencyKey} (${def.id}) skipped: no longer applies`,
+      );
+    } catch (err) {
+      this.logger.warn(
+        `Email ${data.idempotencyKey} (${def.id}) skipped: its send-time check failed: ${(err as Error)?.message ?? String(err)}`,
+      );
+    }
+    return false;
   }
 
   private templateOf(id: string): AnyTemplateDef {

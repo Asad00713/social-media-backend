@@ -342,6 +342,7 @@ describe('InboxNotifyService', () => {
         }),
         links,
         fake<EmailTokensService>({ unsubscribeToken: () => 'tok' }),
+        fake<DbType>({}),
       );
       const once = new Set<string>();
       const claim: ClaimFake = jest.fn<Promise<boolean>, [string, number]>(
