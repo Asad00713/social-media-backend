@@ -8,6 +8,7 @@ import {
   timestamp,
   index,
 } from 'drizzle-orm/pg-core';
+import { sql } from 'drizzle-orm';
 
 export const LOG_LEVELS = ['error', 'warn'] as const;
 export type LogLevel = (typeof LOG_LEVELS)[number];
@@ -39,6 +40,7 @@ export const errorLogs = pgTable(
     // The HTTP request's X-Request-Id (logs/request-context.ts): the id a user
     // copies from an error toast. NULL for rows written outside a request
     // (queue workers, crons) and for rows from before migration 0082.
+    // Indexed by 0087, partially: only rows that carry an id.
     requestId: varchar('request_id', { length: 68 }),
     metadata: jsonb('metadata').$type<Record<string, unknown>>().default({}),
     createdAt: timestamp('created_at', { withTimezone: true })
@@ -55,7 +57,9 @@ export const errorLogs = pgTable(
       table.createdAt,
     ),
     createdIdx: index('error_logs_created_idx').on(table.createdAt),
-    requestIdIdx: index('error_logs_request_id_idx').on(table.requestId),
+    requestIdIdx: index('error_logs_request_id_idx')
+      .on(table.requestId)
+      .where(sql`${table.requestId} IS NOT NULL`),
   }),
 );
 
